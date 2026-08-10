@@ -5,11 +5,12 @@
 #include "Evaluation/OwnerError.h"
 #include "Evaluation/Request.h"
 
+#include "ArtifactLocalReferenceRegistry.h"
 #include "Common/Artifact.h"
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
-#include "ArtifactLocalReferenceRegistry.h"
 #include "ImplementationPlatform/TechnologyCorner.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -111,7 +112,7 @@ void expectOwnerCodecUnavailable(const char *test, llvm::Error error) {
 }
 
 void expectSimulationExecutionOwnerUnavailable(const char *test,
-                                                llvm::Error error) {
+                                               llvm::Error error) {
   if (!error)
     fail(test, "expected the SimulationExecution owner to be unavailable");
   bool matched = false;
@@ -129,7 +130,7 @@ void expectSimulationExecutionOwnerUnavailable(const char *test,
 
 template <typename T>
 void expectSimulationExecutionOwnerUnavailable(const char *test,
-                                                llvm::Expected<T> value) {
+                                               llvm::Expected<T> value) {
   if (value)
     fail(test, "expected the SimulationExecution owner to be unavailable");
   expectSimulationExecutionOwnerUnavailable(test, value.takeError());
@@ -236,7 +237,7 @@ SubjectReferenceType clockLocalType() {
 
 llvm::Expected<SubjectTargetRef>
 failCycleResolution(const EvaluationCase &, const CaseArtifactResolution &,
-                    const ArtifactStore &) {
+                    const ArtifactStore &, const BlobStore &) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "test reference-cycle resolution failure");
 }
@@ -359,13 +360,18 @@ const ArtifactStore &artifactStore() {
   return store;
 }
 
+const BlobStore &blobStore() {
+  static const BlobStore store("/nonexistent/loom-evaluation-case-test-blobs");
+  return store;
+}
+
 EvaluationCase
 evaluationCase(const char *test, llvm::ArrayRef<EvaluationCondition> conditions,
                EvaluationCaseSignatureRef signature = testSignatureRef()) {
   return takeExpected(test, EvaluationCase::get(signature, bindings(test),
                                                 std::nullopt, std::nullopt,
                                                 conditions, resolution(test),
-                                                artifactStore()));
+                                                artifactStore(), blobStore()));
 }
 
 SubjectTargetRef rootTarget(ArtifactRootReference target) {
@@ -414,7 +420,10 @@ const std::vector<OrderedTargetPattern> relationPatterns = {
 };
 
 const ScopeFormDescriptor scopeForms[] = {
-    {ScopeFormRef(0), "the entire exact case", {}, WholeExactCaseScope{},
+    {ScopeFormRef(0),
+     "the entire exact case",
+     {},
+     WholeExactCaseScope{},
      nullptr},
     {ScopeFormRef(1), "one exact root", rootRoles,
      ExactTargetPatternsScope{rootPatterns}, nullptr},
@@ -449,8 +458,8 @@ decodeEmptyFindingOccurrence(llvm::ArrayRef<std::uint8_t> canonicalPayload) {
   return OwnerValue::get(EmptyFindingOccurrence{});
 }
 
-llvm::Error validateEmptyFindingOccurrence(
-    const OwnerValue &occurrence, const FindingOccurrenceContext &) {
+llvm::Error validateEmptyFindingOccurrence(const OwnerValue &occurrence,
+                                           const FindingOccurrenceContext &) {
   if (!occurrence.getIf<EmptyFindingOccurrence>())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
@@ -669,9 +678,9 @@ const EvaluationModelDescriptor failingCycleModelDescriptor{
     {},
     ProviderForm::InProcess};
 
-ResolvedModelBinding
-modelBinding(const char *test, const EvaluationModelDescriptor &descriptor,
-             std::vector<ModelInputBinding> inputs = {}) {
+ResolvedModelBinding modelBinding(const char *test,
+                                  const EvaluationModelDescriptor &descriptor,
+                                  std::vector<ModelInputBinding> inputs = {}) {
   return takeExpected(test, ResolvedModelBinding::project(
                                 descriptor.reference(), std::move(inputs),
                                 defaultResolvedConfig()));
@@ -700,11 +709,11 @@ void sharedSignatureDerivesOneCaseKeyAcrossDescriptors() {
   const EvaluationRequest firstRequest = takeExpected(
       __func__,
       EvaluationRequest::get(firstCase, {}, findingRequests, firstBinding, 0,
-                             resolved, artifactStore()));
+                             resolved, artifactStore(), blobStore()));
   const EvaluationRequest secondRequest = takeExpected(
       __func__,
       EvaluationRequest::get(secondCase, {}, findingRequests, secondBinding, 0,
-                             resolved, artifactStore()));
+                             resolved, artifactStore(), blobStore()));
 
   require(__func__, firstRequest.metricRequests().empty(),
           "finding-only request gained a metric request");
@@ -733,40 +742,43 @@ void requestVerifierRejectsNoncanonicalAndForeignBindings() {
   const FindingRequest second =
       findingRequest(__func__, secondFindingKind, current, resolved);
   const EvaluationCondition quantile{QuantileCondition{ratio(__func__, 9, 10)}};
-  expectErrorContains(
-      __func__, FindingRequest::get(first.query(), {quantile}, current,
-                                    resolved, artifactStore()),
-      "not permitted in finding-request conditions");
+  expectErrorContains(__func__,
+                      FindingRequest::get(first.query(), {quantile}, current,
+                                          resolved, artifactStore()),
+                      "not permitted in finding-request conditions");
 
   const ResolvedModelBinding firstBinding =
       modelBinding(__func__, firstModelDescriptor);
   expectErrorContains(__func__,
                       EvaluationRequest::get(current, {}, {}, firstBinding, 0,
-                                             resolved, artifactStore()),
-                      "requires a metric or finding request");
+                                             resolved, artifactStore(),
+                                             blobStore()),
+                      "requires a metric, finding, or required completed "
+                      "output");
   expectErrorContains(__func__,
                       EvaluationRequest::get(current, {}, {first, first},
                                              firstBinding, 0, resolved,
-                                             artifactStore()),
+                                             artifactStore(), blobStore()),
                       "duplicate finding request");
   expectErrorContains(__func__,
                       EvaluationRequest::get(current, {}, {first}, firstBinding,
-                                             1, resolved, artifactStore()),
+                                             1, resolved, artifactStore(),
+                                             blobStore()),
                       "replicate_index zero");
   const std::vector<std::uint8_t> invalidConfigBytes{0x01};
   const ComponentViewDigest invalidConfigDigest = takeExpected(
       __func__, computeComponentViewDigest(emptyModelConfigSchemaBytes(),
                                            invalidConfigBytes));
-  expectErrorContains(__func__,
-                      ResolvedModelBinding::adopt(
-                          firstModelDescriptor.reference(), {},
-                          invalidConfigBytes, invalidConfigDigest),
-                      "test model config must be empty");
+  expectErrorContains(
+      __func__,
+      ResolvedModelBinding::adopt(firstModelDescriptor.reference(), {},
+                                  invalidConfigBytes, invalidConfigDigest),
+      "test model config must be empty");
 
   const EvaluationRequest ordered = takeExpected(
       __func__,
       EvaluationRequest::get(current, {}, {second, first}, firstBinding, 0,
-                             resolved, artifactStore()));
+                             resolved, artifactStore(), blobStore()));
   require(__func__,
           ordered.resolve(FindingRequestOrdinal(0))->query().kind ==
               testFindingKind,
@@ -777,21 +789,22 @@ void requestVerifierRejectsNoncanonicalAndForeignBindings() {
           "second finding request ordinal was unstable");
   require(__func__, ordered.resolve(FindingRequestOrdinal(2)) == nullptr,
           "out-of-range finding ordinal resolved");
-  expectErrorContains(
-      __func__,
-      EvaluationCase::get(testSignatureRef(), bindings(__func__), std::nullopt,
-                          std::nullopt, {quantile}, resolved, artifactStore()),
-      "not permitted in base");
+  expectErrorContains(__func__,
+                      EvaluationCase::get(testSignatureRef(),
+                                          bindings(__func__), std::nullopt,
+                                          std::nullopt, {quantile}, resolved,
+                                          artifactStore(), blobStore()),
+                      "not permitted in base");
 
   const EvaluationCase conditioned =
       evaluationCase(__func__, {clockPeriod(__func__, 8)});
   const FindingRequest conditionedFinding =
       findingRequest(__func__, testFindingKind, conditioned, resolved);
-  expectErrorContains(
-      __func__, EvaluationRequest::get(conditioned, {}, {conditionedFinding},
-                                       firstBinding, 0, resolved,
-                                       artifactStore()),
-      "does not recognize condition");
+  expectErrorContains(__func__,
+                      EvaluationRequest::get(
+                          conditioned, {}, {conditionedFinding}, firstBinding,
+                          0, resolved, artifactStore(), blobStore()),
+                      "does not recognize condition");
 
   expectErrorContains(
       __func__,
@@ -805,13 +818,12 @@ void requestVerifierRejectsNoncanonicalAndForeignBindings() {
                           {{ModelInputSlotRef(0), {platformArtifact()}}},
                           defaultResolvedConfig()),
                       "rejects artifact schema");
-  const ResolvedModelBinding unresolvedInputBinding = modelBinding(
-      __func__, slottedModelDescriptor,
-      {{ModelInputSlotRef(0), {subjectArtifact()}}});
-  takeExpected(__func__,
-               EvaluationRequest::get(current, {}, {first},
-                                      unresolvedInputBinding, 0, resolved,
-                                      artifactStore()));
+  const ResolvedModelBinding unresolvedInputBinding =
+      modelBinding(__func__, slottedModelDescriptor,
+                   {{ModelInputSlotRef(0), {subjectArtifact()}}});
+  takeExpected(__func__, EvaluationRequest::get(
+                             current, {}, {first}, unresolvedInputBinding, 0,
+                             resolved, artifactStore(), blobStore()));
   TemporaryDirectory directory(__func__);
   const ArtifactStore inputStore(directory.path());
   const ArtifactIdentity inputIdentity = takeExpected(
@@ -820,17 +832,17 @@ void requestVerifierRejectsNoncanonicalAndForeignBindings() {
                      CanonicalSemanticBytes(std::vector<std::uint8_t>{0x5a})));
   const ArtifactRootReference inputArtifact =
       root(subjectSchema, inputIdentity);
-  const ResolvedModelBinding slottedBinding = modelBinding(
-      __func__, slottedModelDescriptor,
-      {{ModelInputSlotRef(0), {inputArtifact}}});
+  const ResolvedModelBinding slottedBinding =
+      modelBinding(__func__, slottedModelDescriptor,
+                   {{ModelInputSlotRef(0), {inputArtifact}}});
   takeExpected(__func__,
                EvaluationRequest::get(current, {}, {first}, slottedBinding, 0,
-                                      resolved, inputStore));
-  expectErrorContains(
-      __func__,
-      EvaluationRequest::get(current, {}, {second}, slottedBinding, 0,
-                             resolved, inputStore),
-      "omits a mandatory terminal finding");
+                                      resolved, inputStore, blobStore()));
+  expectErrorContains(__func__,
+                      EvaluationRequest::get(current, {}, {second},
+                                             slottedBinding, 0, resolved,
+                                             inputStore, blobStore()),
+                      "omits a mandatory terminal finding");
 
   const ModelOutputSlotDescriptor *output =
       slottedModelDescriptor.outputSlotByOrdinal(0);
@@ -854,10 +866,10 @@ void wholeCaseMetricRequiresSignatureCycleBasis() {
   const EvaluationCase current = evaluationCase(__func__, {});
   const CaseArtifactResolution resolved = resolution(__func__);
   const MetricRequest metric = takeExpected(
-      __func__, MetricRequest::get(
-                    MetricQuery{MetricKind::CycleCount,
-                                EvaluationScope{ScopeFormRef(0), {}}},
-                    {}, current, resolved, artifactStore()));
+      __func__,
+      MetricRequest::get(MetricQuery{MetricKind::CycleCount,
+                                     EvaluationScope{ScopeFormRef(0), {}}},
+                         {}, current, resolved, artifactStore()));
   const ResolvedModelBinding binding =
       modelBinding(__func__, firstModelDescriptor);
   require(__func__,
@@ -866,19 +878,21 @@ void wholeCaseMetricRequiresSignatureCycleBasis() {
           "model binding did not retain the owner-typed config view");
   const EvaluationRequest request = takeExpected(
       __func__, EvaluationRequest::get(current, {metric}, {}, binding, 0,
-                                       resolved, artifactStore()));
-  require(__func__, request.metricRequests().size() == 1 &&
-                        request.findingRequests().empty(),
+                                       resolved, artifactStore(), blobStore()));
+  require(__func__,
+          request.metricRequests().size() == 1 &&
+              request.findingRequests().empty(),
           "metric-only Request changed its requested result sets");
 
   const EvaluationCase foreignCase =
       evaluationCase(__func__, {}, noCycleSignatureRef());
   const FindingRequest foreignFinding =
       findingRequest(__func__, testFindingKind, foreignCase, resolved);
-  expectErrorContains(
-      __func__, EvaluationRequest::get(foreignCase, {}, {foreignFinding},
-                                       binding, 0, resolved, artifactStore()),
-      "signature does not match");
+  expectErrorContains(__func__,
+                      EvaluationRequest::get(foreignCase, {}, {foreignFinding},
+                                             binding, 0, resolved,
+                                             artifactStore(), blobStore()),
+                      "signature does not match");
 
   const EvaluationModelDescriptor invalidModel{
       EvaluationModelKind{35},
@@ -911,15 +925,14 @@ void requestVerifierDistinguishesLocalClockTargets() {
   const ArtifactRootReference dependentSubject =
       storeSubject(__func__, store, 0x52);
   const ArtifactRootReference sharedOwner = storeSubject(__func__, store, 0x60);
-  const EvaluationSubjectBindings twoAnchors = takeExpected(
-      __func__,
-      EvaluationSubjectBindings::get({{clockReferenceRole(), {referenceSubject}},
-                                       {clockDependentRole(), {dependentSubject}}}));
+  const EvaluationSubjectBindings twoAnchors =
+      takeExpected(__func__, EvaluationSubjectBindings::get(
+                                 {{clockReferenceRole(), {referenceSubject}},
+                                  {clockDependentRole(), {dependentSubject}}}));
   const CaseArtifactResolution resolved = takeExpected(
-      __func__, CaseArtifactResolution::get(
-                    {{referenceSubject, {sharedOwner}},
-                     {dependentSubject, {sharedOwner}},
-                     {sharedOwner, {}}}));
+      __func__, CaseArtifactResolution::get({{referenceSubject, {sharedOwner}},
+                                             {dependentSubject, {sharedOwner}},
+                                             {sharedOwner, {}}}));
   const ResolvedModelBinding binding =
       modelBinding(__func__, clockAliasModelDescriptor);
   const SubjectTargetRef referenceTarget{
@@ -930,42 +943,45 @@ void requestVerifierDistinguishesLocalClockTargets() {
   // exact SubjectTarget identities and are accepted across the two roles.
   const EvaluationCondition distinctLocals{RelativeClockScheduleCondition{
       referenceTarget,
-      SubjectTargetRef{clockDependentRole(), dependentSubject,
-                       EncodedArtifactLocalReference{sharedOwner, clockLocalKind,
-                                                     {0x02}}},
+      SubjectTargetRef{
+          clockDependentRole(), dependentSubject,
+          EncodedArtifactLocalReference{sharedOwner, clockLocalKind, {0x02}}},
       ratio(__func__, 1, 1), ratio(__func__, 0, 1)}};
-  const EvaluationCase distinctCase = takeExpected(
-      __func__, EvaluationCase::get(clockAliasSignatureRef(), twoAnchors,
-                                    std::nullopt, std::nullopt, {distinctLocals},
-                                    resolved, store));
+  const EvaluationCase distinctCase =
+      takeExpected(__func__, EvaluationCase::get(clockAliasSignatureRef(),
+                                                 twoAnchors, std::nullopt,
+                                                 std::nullopt, {distinctLocals},
+                                                 resolved, store, blobStore()));
   const MetricRequest distinctMetric = takeExpected(
-      __func__, MetricRequest::get(
-                    MetricQuery{MetricKind::CycleCount,
-                                EvaluationScope{ScopeFormRef(0), {}}},
-                    {}, distinctCase, resolved, store));
+      __func__,
+      MetricRequest::get(MetricQuery{MetricKind::CycleCount,
+                                     EvaluationScope{ScopeFormRef(0), {}}},
+                         {}, distinctCase, resolved, store));
   takeExpected(__func__, EvaluationRequest::get(distinctCase, {distinctMetric},
-                                                {}, binding, 0, resolved, store));
+                                                {}, binding, 0, resolved, store,
+                                                blobStore()));
 
   // The same exact local target across the two roles resolves to one identity
   // and is rejected, even though both the role and the anchor differ.
   const EvaluationCondition sameLocal{RelativeClockScheduleCondition{
       referenceTarget,
-      SubjectTargetRef{clockDependentRole(), dependentSubject,
-                       EncodedArtifactLocalReference{sharedOwner, clockLocalKind,
-                                                     {0x01}}},
+      SubjectTargetRef{
+          clockDependentRole(), dependentSubject,
+          EncodedArtifactLocalReference{sharedOwner, clockLocalKind, {0x01}}},
       ratio(__func__, 1, 1), ratio(__func__, 0, 1)}};
   const EvaluationCase sameCase = takeExpected(
       __func__, EvaluationCase::get(clockAliasSignatureRef(), twoAnchors,
                                     std::nullopt, std::nullopt, {sameLocal},
-                                    resolved, store));
+                                    resolved, store, blobStore()));
   const MetricRequest sameMetric = takeExpected(
-      __func__, MetricRequest::get(
-                    MetricQuery{MetricKind::CycleCount,
-                                EvaluationScope{ScopeFormRef(0), {}}},
-                    {}, sameCase, resolved, store));
+      __func__,
+      MetricRequest::get(MetricQuery{MetricKind::CycleCount,
+                                     EvaluationScope{ScopeFormRef(0), {}}},
+                         {}, sameCase, resolved, store));
   expectErrorContains(__func__,
-                      EvaluationRequest::get(sameCase, {sameMetric}, {}, binding,
-                                             0, resolved, store),
+                      EvaluationRequest::get(sameCase, {sameMetric}, {},
+                                             binding, 0, resolved, store,
+                                             blobStore()),
                       "clock domain");
 }
 
@@ -979,7 +995,7 @@ void metricScopeAdmissibilityReturnsValidatedBasis() {
   // a second time.
   auto cycleAdmission = validateMetricScopeAdmissibility(
       MetricKind::CycleCount, ScopeFormRef(0), current, resolved,
-      artifactStore());
+      artifactStore(), blobStore());
   const std::optional<ReferenceCycleBasis> basis =
       takeExpected(__func__, std::move(cycleAdmission));
   require(__func__, basis.has_value(),
@@ -989,7 +1005,8 @@ void metricScopeAdmissibilityReturnsValidatedBasis() {
 
   // Runtime does not require a cycle basis, so admission returns no basis.
   auto runtimeAdmission = validateMetricScopeAdmissibility(
-      MetricKind::Runtime, ScopeFormRef(0), current, resolved, artifactStore());
+      MetricKind::Runtime, ScopeFormRef(0), current, resolved, artifactStore(),
+      blobStore());
   require(__func__,
           !takeExpected(__func__, std::move(runtimeAdmission)).has_value(),
           "runtime admission returned an unexpected cycle basis");
@@ -1001,7 +1018,7 @@ void metricScopeAdmissibilityReturnsValidatedBasis() {
   expectErrorContains(__func__,
                       validateMetricScopeAdmissibility(
                           MetricKind::CycleCount, ScopeFormRef(0), withoutCycle,
-                          resolved, artifactStore()),
+                          resolved, artifactStore(), blobStore()),
                       "requires a unique whole-case reference cycle");
 }
 
@@ -1013,19 +1030,19 @@ void requestVerifierOwnsExactCycleBasisResolution() {
       evaluationCase(__func__, {}, failingCycleSignatureRef());
   const CaseArtifactResolution resolved = resolution(__func__);
   const MetricRequest metric = takeExpected(
-      __func__, MetricRequest::get(
-                    MetricQuery{MetricKind::CycleCount,
-                                EvaluationScope{ScopeFormRef(0), {}}},
-                    {}, failingCase, resolved, artifactStore()));
+      __func__,
+      MetricRequest::get(MetricQuery{MetricKind::CycleCount,
+                                     EvaluationScope{ScopeFormRef(0), {}}},
+                         {}, failingCase, resolved, artifactStore()));
   const ResolvedModelBinding binding =
       modelBinding(__func__, failingCycleModelDescriptor);
   // RequestVerifier owns the exact request-context admission and resolves the
   // basis exactly once, so the resolver failure surfaces here and only here.
-  expectErrorContains(
-      __func__,
-      EvaluationRequest::get(failingCase, {metric}, {}, binding, 0, resolved,
-                             artifactStore()),
-      "test reference-cycle resolution failure");
+  expectErrorContains(__func__,
+                      EvaluationRequest::get(failingCase, {metric}, {}, binding,
+                                             0, resolved, artifactStore(),
+                                             blobStore()),
+                      "test reference-cycle resolution failure");
 }
 
 void requestCanonicalRoundTripAndStoreImport() {
@@ -1040,7 +1057,7 @@ void requestCanonicalRoundTripAndStoreImport() {
       modelBinding(__func__, firstModelDescriptor);
   const EvaluationRequest request = takeExpected(
       __func__, EvaluationRequest::get(current, {}, {finding}, binding, 0,
-                                       resolved, artifactStore()));
+                                       resolved, artifactStore(), blobStore()));
 
   const std::string canonical = serializeEvaluationRequest(request);
   require(__func__,
@@ -1049,23 +1066,22 @@ void requestCanonicalRoundTripAndStoreImport() {
               !llvm::StringRef(canonical).contains("model_key") &&
               !llvm::StringRef(canonical).contains("cache"),
           "request serialized a forbidden derived authority");
-  require(__func__,
+  require(
+      __func__,
+      llvm::StringRef(canonical).contains(
+          "\"descriptor_ref\":{\"schema_major\":2,\"schema_minor\":1,") &&
           llvm::StringRef(canonical).contains(
-              "\"descriptor_ref\":{\"schema_major\":2,\"schema_minor\":0,") &&
-              llvm::StringRef(canonical).contains(
-                  "\"resolved_model_config\":{\"canonical_view_bytes\":\"\"") &&
-              llvm::StringRef(canonical).contains(
-                  "\"component_view_digest\":\"") &&
-              !llvm::StringRef(canonical).contains(
-                  "\"resolved_model_config\":[]"),
-          "request did not use the descriptor-owned component-view wire");
+              "\"resolved_model_config\":{\"canonical_view_bytes\":\"\"") &&
+          llvm::StringRef(canonical).contains("\"component_view_digest\":\"") &&
+          !llvm::StringRef(canonical).contains("\"resolved_model_config\":[]"),
+      "request did not use the descriptor-owned component-view wire");
   const std::string findingQueryJson =
       takeExpected(__func__, serializeFindingQuery(finding.query()));
   require(__func__,
           findingQueryJson ==
-              "{\"schema\":\"evaluation.finding_query\",\"schema_version\":"
-              "\"1.0\",\"finding\":\"test_finding\",\"scope\":{\"form\":0,"
-              "\"targets\":[]}}" &&
+                  "{\"schema\":\"evaluation.finding_query\",\"schema_version\":"
+                  "\"1.0\",\"finding\":\"test_finding\",\"scope\":{\"form\":0,"
+                  "\"targets\":[]}}" &&
               llvm::StringRef(canonical).contains(
                   "\"query\":{\"finding\":\"test_finding\",\"scope\":{"
                   "\"form\":0,\"targets\":[]}}"),
@@ -1075,7 +1091,8 @@ void requestCanonicalRoundTripAndStoreImport() {
               finding.query(),
           "finding query payload did not roundtrip");
   const EvaluationRequest parsed = takeExpected(
-      __func__, parseEvaluationRequest(canonical, resolved, artifactStore()));
+      __func__, parseEvaluationRequest(canonical, resolved, artifactStore(),
+                                       blobStore()));
   require(__func__, serializeEvaluationRequest(parsed) == canonical,
           "request canonical roundtrip changed bytes");
   require(__func__,
@@ -1083,31 +1100,32 @@ void requestCanonicalRoundTripAndStoreImport() {
               evaluationRequestIdentity(request),
           "request canonical roundtrip changed identity");
   std::array<std::uint8_t, ComponentViewDigest::byteSize> staleDigestBytes{};
-  const ComponentViewDigest staleDigest = takeExpected(
-      __func__, ComponentViewDigest::fromBytes(staleDigestBytes));
-  expectErrorContains(
-      __func__, ResolvedModelBinding::adopt(firstModelDescriptor.reference(),
-                                            {}, {}, staleDigest),
-      "component_view_digest_mismatch");
+  const ComponentViewDigest staleDigest =
+      takeExpected(__func__, ComponentViewDigest::fromBytes(staleDigestBytes));
   expectErrorContains(
       __func__,
-      parseEvaluationRequest(canonical + "\n", resolved, artifactStore()),
-      "not canonical");
+      ResolvedModelBinding::adopt(firstModelDescriptor.reference(), {}, {},
+                                  staleDigest),
+      "component_view_digest_mismatch");
+  expectErrorContains(__func__,
+                      parseEvaluationRequest(canonical + "\n", resolved,
+                                             artifactStore(), blobStore()),
+                      "not canonical");
 
   std::string legacyDescriptorVersion = canonical;
   const std::string legacyDescriptorTag =
-      "\"schema_major\":2,\"schema_minor\":0";
+      "\"schema_major\":2,\"schema_minor\":1";
   const std::size_t descriptorPosition =
       legacyDescriptorVersion.find(legacyDescriptorTag);
   require(__func__, descriptorPosition != std::string::npos,
           "descriptor reference wire anchor moved");
   legacyDescriptorVersion.replace(descriptorPosition,
-                                 legacyDescriptorTag.size(),
-                                 "\"schema_version\":\"1.0\"");
-  expectErrorContains(
-      __func__,
-      parseEvaluationRequest(legacyDescriptorVersion, resolved, artifactStore()),
-      "unknown field 'schema_version'");
+                                  legacyDescriptorTag.size(),
+                                  "\"schema_version\":\"1.0\"");
+  expectErrorContains(__func__,
+                      parseEvaluationRequest(legacyDescriptorVersion, resolved,
+                                             artifactStore(), blobStore()),
+                      "unknown field 'schema_version'");
 
   TemporaryDirectory directory(__func__);
   const ArtifactStore store(directory.path());
@@ -1116,38 +1134,40 @@ void requestCanonicalRoundTripAndStoreImport() {
     fail(__func__, "Request publication accepted a missing direct dependency");
   const std::string missingMessage =
       llvm::toString(missingDependency.takeError());
-  require(__func__,
-          llvm::StringRef(missingMessage).starts_with(
-              "artifact_store_missing:"),
-          "Request publication changed the ArtifactStore error class: " +
-              missingMessage);
+  require(
+      __func__,
+      llvm::StringRef(missingMessage).starts_with("artifact_store_missing:"),
+      "Request publication changed the ArtifactStore error class: " +
+          missingMessage);
 
   const ArtifactIdentity storedSubjectIdentity = takeExpected(
       __func__, store.put(subjectSchema, CanonicalSemanticBytes(
-                                           std::vector<std::uint8_t>{0x41})));
+                                             std::vector<std::uint8_t>{0x41})));
   const ArtifactRootReference storedSubject =
       root(subjectSchema, storedSubjectIdentity);
   const EvaluationSubjectBindings storedBindings = takeExpected(
-      __func__, EvaluationSubjectBindings::get(
-                    {{subjectRole(), {storedSubject}}}));
+      __func__,
+      EvaluationSubjectBindings::get({{subjectRole(), {storedSubject}}}));
   const CaseArtifactResolution storedResolution = takeExpected(
       __func__, CaseArtifactResolution::get({{storedSubject, {}}}));
   const EvaluationCase storedCase = takeExpected(
       __func__, EvaluationCase::get(testSignatureRef(), storedBindings,
                                     std::nullopt, std::nullopt, {},
-                                    storedResolution, store));
+                                    storedResolution, store, blobStore()));
   const FindingRequest storedFinding = takeExpected(
-      __func__, FindingRequest::get(
-                    FindingQuery{testFindingKind,
-                                 EvaluationScope{ScopeFormRef(0), {}}},
-                    {}, storedCase, storedResolution, store));
+      __func__,
+      FindingRequest::get(
+          FindingQuery{testFindingKind, EvaluationScope{ScopeFormRef(0), {}}},
+          {}, storedCase, storedResolution, store));
   const EvaluationRequest storedRequest = takeExpected(
-      __func__, EvaluationRequest::get(storedCase, {}, {storedFinding},
-                                       binding, 0, storedResolution, store));
+      __func__,
+      EvaluationRequest::get(storedCase, {}, {storedFinding}, binding, 0,
+                             storedResolution, store, blobStore()));
   const ArtifactRootReference published =
       takeExpected(__func__, publishEvaluationRequest(storedRequest, store));
   const EvaluationRequest imported = takeExpected(
-      __func__, importEvaluationRequest(published, storedResolution, store));
+      __func__,
+      importEvaluationRequest(published, storedResolution, store, blobStore()));
   require(__func__,
           serializeEvaluationRequest(imported) ==
               serializeEvaluationRequest(storedRequest),
@@ -1156,32 +1176,33 @@ void requestCanonicalRoundTripAndStoreImport() {
   TemporaryDirectory incompleteDirectory(__func__);
   const ArtifactStore incompleteStore(incompleteDirectory.path());
   const ArtifactIdentity incompleteIdentity = takeExpected(
-      __func__, incompleteStore.put(EvaluationRequest::artifactSchema,
-                                    canonicalEvaluationRequestBytes(
-                                        storedRequest)));
+      __func__,
+      incompleteStore.put(EvaluationRequest::artifactSchema,
+                          canonicalEvaluationRequestBytes(storedRequest)));
   const ArtifactRootReference incompleteReference{
       EvaluationRequest::artifactSchema.identity.str(),
       EvaluationRequest::artifactSchema.version, incompleteIdentity};
   auto missingImport = importEvaluationRequest(
-      incompleteReference, storedResolution, incompleteStore);
+      incompleteReference, storedResolution, incompleteStore, blobStore());
   if (missingImport)
     fail(__func__, "Request import accepted a missing direct dependency");
   const std::string missingImportMessage =
       llvm::toString(missingImport.takeError());
   require(__func__,
-          llvm::StringRef(missingImportMessage).starts_with(
-              "artifact_store_missing:"),
+          llvm::StringRef(missingImportMessage)
+              .starts_with("artifact_store_missing:"),
           "Request import changed the ArtifactStore error class: " +
               missingImportMessage);
 
   ArtifactRootReference foreign = published;
   foreign.schemaIdentity = "loom.test.foreign_request";
-  expectErrorContains(__func__,
-                      importEvaluationRequest(foreign, resolved, store),
-                      "foreign EvaluationRequest");
+  expectErrorContains(
+      __func__, importEvaluationRequest(foreign, resolved, store, blobStore()),
+      "foreign EvaluationRequest");
   ArtifactRootReference stale = published;
   stale.artifact = testArtifact({0xee});
-  expectError(__func__, importEvaluationRequest(stale, resolved, store));
+  expectError(__func__,
+              importEvaluationRequest(stale, resolved, store, blobStore()));
 }
 
 void scopeChecksAnchorClosureLocalProviderAndRoleOrder() {
@@ -1262,7 +1283,7 @@ void conditionsCheckLocationApplicabilityDuplicatesAndConflicts() {
       EvaluationCase::get(
           testSignatureRef(), bindings(__func__), std::nullopt, std::nullopt,
           {EvaluationCondition{QuantileCondition{ratio(__func__, 1, 2)}}},
-          resolved, artifactStore()),
+          resolved, artifactStore(), blobStore()),
       "not permitted in base conditions");
 
   const EvaluationCondition period = clockPeriod(__func__, 8);
@@ -1278,7 +1299,7 @@ void conditionsCheckLocationApplicabilityDuplicatesAndConflicts() {
           testSignatureRef(), bindings(__func__), std::nullopt, std::nullopt,
           {EvaluationCondition{SupplyVoltageCondition{
               rootTarget(subjectArtifact()), decimal(__func__, 9, -1)}}},
-          resolved, artifactStore()),
+          resolved, artifactStore(), blobStore()),
       "is not applicable");
 
   expectOwnerCodecUnavailable(
@@ -1289,7 +1310,7 @@ void conditionsCheckLocationApplicabilityDuplicatesAndConflicts() {
               rootTarget(subjectArtifact()),
               platform::TechnologyCornerRef{platformArtifact().artifact,
                                             platform::TechnologyCornerId(0)}}}},
-          resolved, artifactStore()));
+          resolved, artifactStore(), blobStore()));
 
   expectSimulationExecutionOwnerUnavailable(
       __func__,
@@ -1298,19 +1319,19 @@ void conditionsCheckLocationApplicabilityDuplicatesAndConflicts() {
           {EvaluationCondition{ActivityBindingCondition{
               rootTarget(subjectArtifact()),
               ExecutionActivitySource{dependencyArtifact(), 0}}}},
-          resolved, artifactStore()));
+          resolved, artifactStore(), blobStore()));
 
-  expectErrorContains(__func__,
-                      EvaluationCase::get(testSignatureRef(),
-                                          bindings(__func__), std::nullopt,
-                                          std::nullopt, {period, period},
-                                          resolved, artifactStore()),
-                      "duplicate evaluation condition");
+  expectErrorContains(
+      __func__,
+      EvaluationCase::get(testSignatureRef(), bindings(__func__), std::nullopt,
+                          std::nullopt, {period, period}, resolved,
+                          artifactStore(), blobStore()),
+      "duplicate evaluation condition");
   expectErrorContains(
       __func__,
       EvaluationCase::get(testSignatureRef(), bindings(__func__), std::nullopt,
                           std::nullopt, {period, clockPeriod(__func__, 6)},
-                          resolved, artifactStore()),
+                          resolved, artifactStore(), blobStore()),
       "conflicting");
 
   const EvaluationCondition schedule{RelativeClockScheduleCondition{
@@ -1354,15 +1375,14 @@ void conditionsCheckLocationApplicabilityDuplicatesAndConflicts() {
 }
 
 void modelDescriptorOwnerContractsAreClosed() {
-  expectErrorContains(
-      __func__, EvaluationInteractionDomainRef::get("", {1, 0}, 0),
-      "nonempty canonical ASCII");
+  expectErrorContains(__func__,
+                      EvaluationInteractionDomainRef::get("", {1, 0}, 0),
+                      "nonempty canonical ASCII");
 
   const EvaluationCase current = evaluationCase(__func__, {});
   EvaluationModelDescriptor invalidMethod = firstModelDescriptor;
   invalidMethod.modelKind = EvaluationModelKind(36);
-  invalidMethod.executionMethod =
-      static_cast<EvaluationExecutionMethod>(99);
+  invalidMethod.executionMethod = static_cast<EvaluationExecutionMethod>(99);
   expectErrorContains(__func__,
                       validateModelCapability(invalidMethod, current, {}),
                       "invalid execution method");
@@ -1376,9 +1396,9 @@ void modelDescriptorOwnerContractsAreClosed() {
       __func__, validateModelCapability(duplicatePhenomenonModel, current, {}),
       "modeled phenomena must be canonical");
 
-  const EvaluationInteractionDomainRef unknownDomain = takeExpected(
-      __func__, EvaluationInteractionDomainRef::get(
-                    "loom.test.unknown_interaction", {1, 0}, 0));
+  const EvaluationInteractionDomainRef unknownDomain =
+      takeExpected(__func__, EvaluationInteractionDomainRef::get(
+                                 "loom.test.unknown_interaction", {1, 0}, 0));
   const EvaluationInteractionCapability unknownCapabilities[] = {
       {unknownDomain, incrementalModes}};
   EvaluationModelDescriptor unknownInteractionModel = firstModelDescriptor;
@@ -1394,8 +1414,7 @@ void modelDescriptorOwnerContractsAreClosed() {
       {testInteractionDomainRef(), guidanceModes}};
   EvaluationModelDescriptor unsupportedInteractionModel = firstModelDescriptor;
   unsupportedInteractionModel.modelKind = EvaluationModelKind(39);
-  unsupportedInteractionModel.interactionCapabilities =
-      unsupportedCapabilities;
+  unsupportedInteractionModel.interactionCapabilities = unsupportedCapabilities;
   expectErrorContains(
       __func__,
       validateModelCapability(unsupportedInteractionModel, current, {}),
@@ -1422,8 +1441,8 @@ void registry20ReferencesAreRequired() {
   if (legacyModel)
     fail(__func__, "a 1.0 model descriptor reference was reinterpreted");
   llvm::consumeError(legacyModel.takeError());
-  if (evaluationSchemaVersion() != SchemaVersion{2, 0})
-    fail(__func__, "the Evaluation registry did not move to schema 2.0");
+  if (evaluationSchemaVersion() != SchemaVersion{2, 1})
+    fail(__func__, "the Evaluation registry did not move to schema 2.1");
   // The Request and Evidence artifact root records stay at their own 1.0.
   if (EvaluationRequest::artifactSchema.version != SchemaVersion{1, 0} ||
       EvaluationEvidence::artifactSchema.version != SchemaVersion{1, 0})
@@ -1437,7 +1456,8 @@ int main() {
     fail("registration", llvm::toString(std::move(error)));
   if (llvm::Error error = registerEvaluationCaseSignature(clockAliasSignature))
     fail("registration", llvm::toString(std::move(error)));
-  if (llvm::Error error = registerEvaluationCaseSignature(failingCycleSignature))
+  if (llvm::Error error =
+          registerEvaluationCaseSignature(failingCycleSignature))
     fail("registration", llvm::toString(std::move(error)));
   if (llvm::Error error = registerArtifactLocalReferenceKind(
           subjectSchema, clockLocalKind,

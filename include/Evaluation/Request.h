@@ -129,7 +129,7 @@ public:
       llvm::ArrayRef<FindingRequest> findingRequests,
       ResolvedModelBinding modelBinding, std::uint64_t replicateIndex,
       const CaseArtifactResolution &resolution,
-      const ArtifactStore &artifactStore);
+      const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
   static llvm::Expected<EvaluationRequest>
   get(EvaluationSubjectBindings subjectBindings,
@@ -140,7 +140,7 @@ public:
       llvm::ArrayRef<FindingRequest> findingRequests,
       ResolvedModelBinding modelBinding, std::uint64_t replicateIndex,
       const CaseArtifactResolution &resolution,
-      const ArtifactStore &artifactStore);
+      const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
   const EvaluationSubjectBindings &subjectBindings() const {
     return subjectBindings_;
@@ -196,14 +196,17 @@ private:
 class RequestVerifier {
 public:
   RequestVerifier(const CaseArtifactResolution &resolution,
-                  const ArtifactStore &artifactStore)
-      : resolution_(resolution), artifactStore_(artifactStore) {}
+                  const ArtifactStore &artifactStore,
+                  const BlobStore &blobStore)
+      : resolution_(resolution), artifactStore_(artifactStore),
+        blobStore_(blobStore) {}
 
   llvm::Error verify(const EvaluationRequest &request) const;
 
 private:
   const CaseArtifactResolution &resolution_;
   const ArtifactStore &artifactStore_;
+  const BlobStore &blobStore_;
 };
 
 const EvaluationModelDescriptor *
@@ -227,10 +230,9 @@ llvm::Expected<std::vector<EvaluationCondition>>
 parseEvaluationConditions(llvm::StringRef json);
 
 std::string serializeEvaluationRequest(const EvaluationRequest &request);
-llvm::Expected<EvaluationRequest>
-parseEvaluationRequest(llvm::StringRef json,
-                       const CaseArtifactResolution &resolution,
-                       const ArtifactStore &artifactStore);
+llvm::Expected<EvaluationRequest> parseEvaluationRequest(
+    llvm::StringRef json, const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
 ArtifactIdentity evaluationRequestIdentity(const EvaluationRequest &request);
 ArtifactRootReference
 evaluationRequestReference(const EvaluationRequest &request);
@@ -240,7 +242,8 @@ publishEvaluationRequest(const EvaluationRequest &request,
 llvm::Expected<EvaluationRequest>
 importEvaluationRequest(const ArtifactRootReference &reference,
                         const CaseArtifactResolution &resolution,
-                        const ArtifactStore &artifactStore);
+                        const ArtifactStore &artifactStore,
+                        const BlobStore &blobStore);
 
 /// A removable derived index over exact case facts. It is never serialized
 /// into Request or Evidence, and it is not an Artifact identity.

@@ -25,14 +25,39 @@ enum class MetricKind {
   DynamicPower,
   LeakagePower,
   MaximumVoltageDrop,
+  LimitingClockFrequencyPredictionError,
+  TotalAreaPredictionError,
+  DynamicPowerPredictionError,
+  LeakagePowerPredictionError,
+  RuntimePredictionError,
 };
 enum class MetricValueKind { Integer, Decimal };
-enum class MetricDimension { Cycle, Time, Frequency, Area, Power, Voltage };
-enum class MetricValueDomain { NonNegative, Positive };
+enum class MetricDimension {
+  Cycle,
+  Time,
+  Frequency,
+  Area,
+  Power,
+  Voltage,
+  Dimensionless,
+};
+
+struct NonNegativeMetricDomain {};
+struct PositiveMetricDomain {};
+struct ClosedDecimalIntervalMetricDomain {
+  DecimalValue lower;
+  DecimalValue upper;
+};
+using MetricValueDomain =
+    std::variant<NonNegativeMetricDomain, PositiveMetricDomain,
+                 ClosedDecimalIntervalMetricDomain>;
 
 enum class ObservationForm { Point, Interval, Censored, NotApplicable };
 enum class UncertaintyKind {
-  ExactWithinModel, Bounded, Statistical, Unquantified
+  ExactWithinModel,
+  Bounded,
+  Statistical,
+  Unquantified
 };
 enum class CensoredReason { SubjectDidNotComplete };
 enum class NotApplicableReason { UndefinedForSubject };
@@ -69,6 +94,10 @@ struct MetricDescriptor {
       permittedRequestConditionPatterns;
   std::uint8_t permittedObservationForms;
   std::optional<CensoredReasonPolicy> censoredReasonPolicy;
+  /// Request-specific patterns that must each occur exactly once after
+  /// canonical condition admission.
+  llvm::ArrayRef<ConditionApplicabilityPattern>
+      requiredRequestConditionPatterns = {};
 
   bool permitsObservationForm(ObservationForm form) const;
 };
@@ -119,11 +148,11 @@ llvm::Error validateMetricScopeAdmissibility(
     MetricKind metric, ScopeFormRef form,
     const EvaluationCaseSignatureDescriptor &caseSignature);
 llvm::Expected<std::optional<ReferenceCycleBasis>>
-validateMetricScopeAdmissibility(
-    MetricKind metric, ScopeFormRef form,
-    const EvaluationCase &evaluationCase,
-    const CaseArtifactResolution &resolution,
-    const ArtifactStore &artifactStore);
+validateMetricScopeAdmissibility(MetricKind metric, ScopeFormRef form,
+                                 const EvaluationCase &evaluationCase,
+                                 const CaseArtifactResolution &resolution,
+                                 const ArtifactStore &artifactStore,
+                                 const BlobStore &blobStore);
 
 /// Canonical query collections sort by registry kind and the complete
 /// canonical scope key; exact duplicates are invalid.
@@ -177,9 +206,9 @@ using MetricObservationValue =
                  NotApplicableObservation>;
 
 ObservationForm observationForm(const MetricObservationValue &observation);
-llvm::Error validateMetricObservationValue(
-    MetricKind metric, UncertaintyKind uncertainty,
-    const MetricObservationValue &observation);
+llvm::Error
+validateMetricObservationValue(MetricKind metric, UncertaintyKind uncertainty,
+                               const MetricObservationValue &observation);
 
 } // namespace loom::evaluation
 

@@ -1,5 +1,5 @@
 #include "ADG/Builder.h"
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 #include "ConfigurationTransportTestSupport.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
@@ -500,10 +500,10 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
     }
     const auto physical = qualifyConfigurationField(test, fixture.spatialCore,
                                                     descriptor.reference);
-    const auto slot = take(
-        test, loom::fabric::qualifyFabricConfigurationSlot(
-                  physical,
-                  loom::fabric::FabricStaticConfigurationResidency{}));
+    const auto slot =
+        take(test,
+             loom::fabric::qualifyFabricConfigurationSlot(
+                 physical, loom::fabric::FabricStaticConfigurationResidency{}));
     const ProgrammingUnit *candidate = fieldOwner(fixture.abi.abi(), slot);
     require(test, candidate != nullptr,
             "PE configuration field has no programming owner");
@@ -513,9 +513,8 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
     else
       owner = candidate;
     auto encoded = take(test, schema.encode(descriptor.reference, value));
-    values.push_back(
-        {slot, std::vector<std::uint8_t>(encoded.bytes().begin(),
-                                         encoded.bytes().end())});
+    values.push_back({slot, std::vector<std::uint8_t>(encoded.bytes().begin(),
+                                                      encoded.bytes().end())});
   }
 
   auto fuActivation = take(

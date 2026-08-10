@@ -25,7 +25,8 @@ prepareSimulationComparisonEvaluation(
     const CaseArtifactResolution &referenceResolution,
     const ArtifactRootReference &candidateExecution,
     const CaseArtifactResolution &candidateResolution,
-    const ResolvedConfig &config, const ArtifactStore &artifactStore);
+    const ResolvedConfig &config, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore);
 
 llvm::Expected<EvaluationEvidence> evaluateSimulationComparison(
     const PreparedSimulationComparisonEvaluation &prepared,

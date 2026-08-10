@@ -222,13 +222,12 @@ void writeFindingResult(llvm::json::OStream &json,
   });
 }
 
-llvm::Expected<FindingResult>
-parseFindingResult(const llvm::json::Value &value,
-                   const EvaluationRequest &request,
-                   FindingRequestOrdinal ordinal,
-                   llvm::ArrayRef<ModelOutputBinding> outputBindings,
-                   const CaseArtifactResolution &resolution,
-                   const ArtifactStore &artifactStore) {
+llvm::Expected<FindingResult> parseFindingResult(
+    const llvm::json::Value &value, const EvaluationRequest &request,
+    FindingRequestOrdinal ordinal,
+    llvm::ArrayRef<ModelOutputBinding> outputBindings,
+    const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   const llvm::json::Object *object = value.getAsObject();
   if (!object)
     return evaluationError("finding result must be an object");
@@ -257,10 +256,8 @@ parseFindingResult(const llvm::json::Value &value,
         findFindingDescriptor(requestItem->query().kind);
     if (!descriptor)
       return evaluationError("finding result kind is unregistered");
-    if (llvm::Error error = requireFindingOccurrenceOwner(*descriptor))
-      return std::move(error);
-    const FindingOccurrenceContext context(request, ordinal, outputBindings,
-                                           resolution, artifactStore);
+    const FindingOccurrenceContext context(
+        request, ordinal, outputBindings, resolution, artifactStore, blobStore);
     for (const llvm::json::Value &occurrenceValue : **array) {
       auto occurrence = parseFindingOccurrence(
           occurrenceValue, descriptor->occurrenceCodec, context);
@@ -320,7 +317,7 @@ llvm::Expected<EvaluationEvidenceOutcome>
 parseOutcome(const llvm::json::Object &root, const EvaluationRequest &request,
              llvm::ArrayRef<ModelOutputBinding> outputBindings,
              const CaseArtifactResolution &resolution,
-             const ArtifactStore &artifactStore) {
+             const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   auto object = requireObject(root, "outcome", "evaluation.evidence root");
   if (!object)
     return object.takeError();
@@ -352,7 +349,7 @@ parseOutcome(const llvm::json::Object &root, const EvaluationRequest &request,
     for (std::size_t index = 0; index < (*findings)->size(); ++index) {
       auto finding = parseFindingResult(
           (**findings)[index], request, FindingRequestOrdinal(index),
-          outputBindings, resolution, artifactStore);
+          outputBindings, resolution, artifactStore, blobStore);
       if (!finding)
         return finding.takeError();
       completed.findingResults.push_back(std::move(*finding));
@@ -403,10 +400,9 @@ std::string serializeEvaluationEvidence(const EvaluationEvidence &evidence) {
   return output.str().str();
 }
 
-llvm::Expected<EvaluationEvidence>
-parseEvaluationEvidence(llvm::StringRef jsonText,
-                        const CaseArtifactResolution &resolution,
-                        const ArtifactStore &artifactStore) {
+llvm::Expected<EvaluationEvidence> parseEvaluationEvidence(
+    llvm::StringRef jsonText, const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   auto value = parseEvidenceEnvelope(jsonText);
   if (!value)
     return value.takeError();
@@ -414,20 +410,20 @@ parseEvaluationEvidence(llvm::StringRef jsonText,
   auto requestRef = parseEvidenceRequestReference(*root);
   if (!requestRef)
     return requestRef.takeError();
-  auto request =
-      importEvaluationRequest(*requestRef, resolution, artifactStore);
+  auto request = importEvaluationRequest(*requestRef, resolution, artifactStore,
+                                         blobStore);
   if (!request)
     return request.takeError();
   auto outputs = parseOutputBindings(*root);
   if (!outputs)
     return outputs.takeError();
-  auto outcome =
-      parseOutcome(*root, *request, *outputs, resolution, artifactStore);
+  auto outcome = parseOutcome(*root, *request, *outputs, resolution,
+                              artifactStore, blobStore);
   if (!outcome)
     return outcome.takeError();
-  auto evidence =
-      EvaluationEvidence::get(*request, std::move(*outputs),
-                              std::move(*outcome), resolution, artifactStore);
+  auto evidence = EvaluationEvidence::get(*request, std::move(*outputs),
+                                          std::move(*outcome), resolution,
+                                          artifactStore, blobStore);
   if (!evidence)
     return evidence.takeError();
   if (evidence->requestRef() != *requestRef)

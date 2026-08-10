@@ -47,6 +47,9 @@ add_mlir_library(LoomSimulator
   SimulationWorkload.cpp
   StructuredProgramSimulationRuntimeInput.cpp
   StructuredProgramSimulationWorkload.cpp
+  SystemSimulationExecution.cpp
+  SystemSimulationRuntimeInput.cpp
+  SystemSimulationWorkload.cpp
 
   PARTIAL_SOURCES_INTENDED
 
@@ -55,6 +58,7 @@ add_mlir_library(LoomSimulator
 
   LINK_LIBS PUBLIC
   LoomCommon
+  LoomDeployment
   LoomEvaluation
   LoomFabricArtifact
   LoomMappingInspection

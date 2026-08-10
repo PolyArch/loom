@@ -15,7 +15,7 @@
 #include "Hardware/Implementation/PhysicalRepresentationIndex.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 
 #include "Dataflow/IR/DataflowDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -236,7 +236,7 @@ RequestFixture
 makeRequest(const FinalizedHardwareImplementation &hardware,
             const platform::FinalizedImplementationPlatform &platform,
             const std::vector<ExternalFileTreeMember> &pgvMembers,
-            const ArtifactStore &artifacts) {
+            const ArtifactStore &artifacts, const BlobStore &blobs) {
   const ArtifactRootReference hardwareRef = hardware.reference();
   CaseArtifactResolution resolution =
       take(__func__,
@@ -266,7 +266,7 @@ makeRequest(const FinalizedHardwareImplementation &hardware,
                                         .descriptor()
                                         ->caseSignature,
                                     subjects, std::nullopt, std::nullopt,
-                                    conditions, resolution, artifacts));
+                                    conditions, resolution, artifacts, blobs));
   const MetricRequest metric = take(
       __func__, MetricRequest::get({MetricKind::MaximumVoltageDrop,
                                     EvaluationScope{ScopeFormRef(0), {}}},
@@ -281,9 +281,9 @@ makeRequest(const FinalizedHardwareImplementation &hardware,
       __func__, ResolvedModelBinding::project(
                     cadenceVoltusStaticRailModelDescriptorRef(), {}, config));
   EvaluationRequest request =
-      take(__func__,
-           EvaluationRequest::get(evaluationCase, {metric}, {},
-                                  std::move(model), 0, resolution, artifacts));
+      take(__func__, EvaluationRequest::get(evaluationCase, {metric}, {},
+                                            std::move(model), 0, resolution,
+                                            artifacts, blobs));
   const ArtifactRootReference published =
       take(__func__, publishEvaluationRequest(request, artifacts));
   require(__func__, published == evaluationRequestReference(request),
@@ -351,7 +351,7 @@ tclsh drivers/voltus-rail-publish.tcl
   const FinalizedHardwareImplementation physical =
       makePhysicalImplementation(platform, artifacts, blobs, false);
   const RequestFixture fixture =
-      makeRequest(physical, platform, pgvMembers, artifacts);
+      makeRequest(physical, platform, pgvMembers, artifacts, blobs);
   const std::filesystem::path bundle = root / "complete";
   EvaluationModelPreparation preparation =
       take(__func__, prepareEvaluationModelInvocation(
@@ -396,7 +396,7 @@ tclsh drivers/voltus-rail-publish.tcl
   const FinalizedHardwareImplementation multiDomain =
       makePhysicalImplementation(platform, artifacts, blobs, true);
   const RequestFixture unsupported =
-      makeRequest(multiDomain, platform, pgvMembers, artifacts);
+      makeRequest(multiDomain, platform, pgvMembers, artifacts, blobs);
   EvaluationModelPreparation rejected =
       take(__func__,
            prepareEvaluationModelInvocation(
@@ -414,7 +414,7 @@ tclsh drivers/voltus-rail-publish.tcl
   const FinalizedHardwareImplementation partialNetwork =
       makePhysicalImplementation(platform, artifacts, blobs, false, true);
   const RequestFixture partial =
-      makeRequest(partialNetwork, platform, pgvMembers, artifacts);
+      makeRequest(partialNetwork, platform, pgvMembers, artifacts, blobs);
   EvaluationModelPreparation partialRejected = take(
       __func__,
       prepareEvaluationModelInvocation(

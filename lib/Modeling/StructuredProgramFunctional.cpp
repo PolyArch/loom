@@ -1,4 +1,5 @@
 #include "Evaluation/Models/StructuredProgramFunctional.h"
+#include "Evaluation/ProductionRegistry.h"
 #include "StructuredEvaluationInvocationCacheInternal.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -27,14 +28,16 @@
 namespace loom::evaluation::models {
 namespace {
 
-constexpr EvaluationCaseKind kCaseKind(2);
-constexpr EvaluationModelKind kModelKind(4);
+constexpr BuiltinEvaluationCase kCase =
+    BuiltinEvaluationCase::StructuredProgramFunctionalComparison;
+constexpr BuiltinEvaluationModel kModel =
+    BuiltinEvaluationModel::StructuredProgramFunctional;
 constexpr CaseSubjectRoleRef kCandidateRole(0);
 constexpr ScopeFormRef kWholeExactCaseScope(0);
 
 EvaluationCaseSignatureRef caseSignatureRef() {
-  return llvm::cantFail(
-      EvaluationCaseSignatureRef::get(evaluationSchemaVersion(), kCaseKind));
+  return llvm::cantFail(EvaluationCaseSignatureRef::get(
+      evaluationSchemaVersion(), builtinEvaluationCaseKind(kCase)));
 }
 
 const ArtifactSchemaDescriptor *const kStructuredSchemas[] = {
@@ -49,10 +52,11 @@ const CaseSubjectRoleDescriptor kSubjectRoles[] = {
      SubjectRoleCardinality::ExactlyOne, kStructuredSchemas, nullptr}};
 
 llvm::Error verifyWorkloadCompatibility(
-    const EvaluationSubjectBindings &,
+    const EvaluationCase &, const EvaluationSubjectBindings &,
     const std::optional<ArtifactRootReference> &workload,
     const std::optional<ArtifactRootReference> &runtimeInput,
-    const CaseArtifactResolution &resolution) {
+    const CaseArtifactResolution &resolution, const ArtifactStore &,
+    const BlobStore &) {
   if (!workload || !runtimeInput)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
@@ -84,7 +88,7 @@ llvm::Error verifyWorkloadCompatibility(
 }
 
 const EvaluationCaseSignatureDescriptor kCaseSignature{
-    kCaseKind,
+    builtinEvaluationCaseKind(kCase),
     "structured_program_functional_comparison",
     "One exact Structured candidate compared with its workload-owned source.",
     kSubjectRoles,
@@ -230,7 +234,7 @@ const ResolvedModelConfigViewContract kConfigView{
     configSchemaBytes(), &projectConfig, &encodeConfig, &adoptConfig};
 
 const EvaluationModelDescriptor kModelDescriptor{
-    kModelKind,
+    builtinEvaluationModelKind(kModel),
     "structured_program_functional",
     "loom.structured_program.functional.v1",
     caseSignatureRef(),
@@ -394,8 +398,7 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
 }
 
 const EvaluationModelProvider kProvider{
-    kModelDescriptor.reference(),
-    EvaluationModelInProcessProvider{&evaluate}};
+    kModelDescriptor.reference(), EvaluationModelInProcessProvider{&evaluate}};
 
 llvm::Expected<CaseArtifactResolution>
 resolveCase(const ArtifactRootReference &candidate,
@@ -559,7 +562,7 @@ prepareStructuredProgramFunctionalEvaluation(
     const ArtifactRootReference &candidate,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
-    const ArtifactStore &artifactStore) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   if (llvm::Error error = registerStructuredProgramFunctionalModel())
     return std::move(error);
   auto inputs = sim::importStructuredProgramSimulationInputs(
@@ -578,9 +581,9 @@ prepareStructuredProgramFunctionalEvaluation(
       EvaluationSubjectBindings::get({{kCandidateRole, {candidate}}});
   if (!bindings)
     return bindings.takeError();
-  auto evaluationCase =
-      EvaluationCase::get(caseSignatureRef(), std::move(*bindings), workload,
-                          runtimeInput, {}, *resolution, artifactStore);
+  auto evaluationCase = EvaluationCase::get(
+      caseSignatureRef(), std::move(*bindings), workload, runtimeInput, {},
+      *resolution, artifactStore, blobStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
   auto finding = FindingRequest::get(
@@ -595,7 +598,7 @@ prepareStructuredProgramFunctionalEvaluation(
     return modelBinding.takeError();
   auto request = EvaluationRequest::get(*evaluationCase, {}, {*finding},
                                         std::move(*modelBinding), 0,
-                                        *resolution, artifactStore);
+                                        *resolution, artifactStore, blobStore);
   if (!request)
     return request.takeError();
   auto published = publishEvaluationRequest(*request, artifactStore);

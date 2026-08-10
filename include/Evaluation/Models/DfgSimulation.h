@@ -29,12 +29,11 @@ struct DfgSimulationAttemptLimits final {
 
 llvm::Error registerDfgSimulationModel();
 
-llvm::Expected<PreparedDfgSimulationEvaluation>
-prepareDfgSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
-                               const ArtifactRootReference &workload,
-                               const ArtifactRootReference &runtimeInput,
-                               const ResolvedConfig &config,
-                               const ArtifactStore &artifactStore);
+llvm::Expected<PreparedDfgSimulationEvaluation> prepareDfgSimulationEvaluation(
+    const ArtifactRootReference &canonicalDataflow,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
 /// Executes one exact prepared Request and returns its canonical Evidence
 /// value. The caller owns Evidence publication and attempt bookkeeping.

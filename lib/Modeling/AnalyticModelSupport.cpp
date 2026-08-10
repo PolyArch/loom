@@ -564,6 +564,11 @@ LowConfidenceMetricSet::result(MetricKind metric) const {
   case MetricKind::CycleCount:
   case MetricKind::ClockPeriod:
   case MetricKind::MaximumVoltageDrop:
+  case MetricKind::LimitingClockFrequencyPredictionError:
+  case MetricKind::TotalAreaPredictionError:
+  case MetricKind::DynamicPowerPredictionError:
+  case MetricKind::LeakagePowerPredictionError:
+  case MetricKind::RuntimePredictionError:
     llvm_unreachable("unsupported metric passed quantum validation");
   }
   llvm_unreachable("unknown MetricKind");
@@ -583,6 +588,11 @@ lowConfidenceMetricQuantumBase10Exponent(MetricKind metric) {
   case MetricKind::CycleCount:
   case MetricKind::ClockPeriod:
   case MetricKind::MaximumVoltageDrop:
+  case MetricKind::LimitingClockFrequencyPredictionError:
+  case MetricKind::TotalAreaPredictionError:
+  case MetricKind::DynamicPowerPredictionError:
+  case MetricKind::LeakagePowerPredictionError:
+  case MetricKind::RuntimePredictionError:
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "low_confidence_model_invalid: unsupported metric '%s'",

@@ -6,6 +6,7 @@
 #include "Common/Artifact.h"
 #include "Evaluation/Case.h"
 #include "Evaluation/Finding.h"
+#include "Evaluation/ModelDescriptor.h"
 #include "Evaluation/NumericValue.h"
 #include "Evaluation/OwnerValue.h"
 
@@ -20,7 +21,8 @@
 
 namespace loom {
 class ArtifactStore;
-}
+class BlobStore;
+} // namespace loom
 
 namespace loom::sim {
 
@@ -39,6 +41,15 @@ struct StoppedByLimitExecution {};
 using ExecutionTerminal =
     std::variant<RetiredExecution, HaltedExecution, StoppedByLimitExecution>;
 
+struct TerminalWitnessRef {
+  evaluation::ModelOutputSlotRef executionOutputSlot;
+  std::uint64_t executionOutputOrdinal = 0;
+};
+
+/// Simulation Artifacts owns the Evidence occurrence codec for terminal
+/// witnesses. Finding owners select this codec but never duplicate it.
+const evaluation::FindingOccurrenceCodec &terminalWitnessRefOccurrenceCodec();
+
 struct SpatialEventCoordinate {
   evaluation::ExactRatio referenceCycle;
   std::uint64_t delta = 0;
@@ -54,6 +65,27 @@ struct SpatialProgressObservations {
   SpatialEventCoordinate launchAccepted;
   std::optional<SpatialEventCoordinate> graphRetirementVisible;
   SpatialEventCoordinate terminalObserved;
+};
+
+struct SystemFunctionalObservations {
+  std::vector<ValueResultObservation> valueResults;
+  std::vector<ValueResultObservation> externalValueOutputs;
+  std::vector<CanonicalStreamSequence> externalStreamOutputs;
+  std::vector<MemoryObservationPayload> memories;
+};
+
+struct SystemEventCoordinate {
+  std::uint64_t gem5Tick = 0;
+  std::uint64_t delta = 0;
+};
+
+int compareSystemEventCoordinates(const SystemEventCoordinate &lhs,
+                                  const SystemEventCoordinate &rhs);
+
+struct SystemProgressObservations {
+  SystemEventCoordinate programEntryAccepted;
+  std::optional<SystemEventCoordinate> programExitVisible;
+  SystemEventCoordinate terminalObserved;
 };
 
 enum class ActivityWindow : std::uint32_t {
@@ -79,10 +111,8 @@ struct ActorTransitionsActivitySummary {
   std::vector<ActorTransitionEntry> transitions;
 };
 
-/// The currently owner-complete Spatial execution root. It carries no Spatial
-/// discriminator: the exact Request's workload selects this form. System
-/// authoring remains unavailable until the Deployment-owned workload root is
-/// implemented.
+/// The Spatial observation form selected by a Spatial workload. It carries no
+/// root discriminator: the exact Request's workload selects this form.
 struct SpatialSimulationExecution {
   ArtifactRootReference request;
   ExecutionTerminal terminal;
@@ -90,6 +120,21 @@ struct SpatialSimulationExecution {
   SpatialProgressObservations progressObservations;
   std::vector<ActorTransitionsActivitySummary> activitySummaries;
 };
+
+/// The Deployment-owned observation form selected by a System workload. The
+/// root wire remains untagged; request -> workload selects this form.
+struct SystemSimulationExecution {
+  ArtifactRootReference request;
+  ExecutionTerminal terminal;
+  SystemFunctionalObservations functionalObservations;
+  SystemProgressObservations progressObservations;
+  // Schema 1.0 activity payloads use Spatial reference-cycle windows, so this
+  // collection is required to be empty for System executions.
+  std::vector<ActorTransitionsActivitySummary> activitySummaries;
+};
+
+using SimulationExecutionModel =
+    std::variant<SpatialSimulationExecution, SystemSimulationExecution>;
 
 class CanonicalSimulationExecution {
 public:
@@ -101,16 +146,36 @@ public:
   operator=(CanonicalSimulationExecution &&) = default;
 
   const ArtifactIdentity &identity() const { return identity_; }
-  const ArtifactRootReference &request() const { return model_.request; }
-  const ExecutionTerminal &terminal() const { return model_.terminal; }
-  const SpatialFunctionalObservations &functionalObservations() const {
-    return model_.functionalObservations;
+  const ArtifactRootReference &request() const {
+    return std::visit(
+        [](const auto &root) -> const ArtifactRootReference & {
+          return root.request;
+        },
+        model_);
   }
-  const SpatialProgressObservations &progressObservations() const {
-    return model_.progressObservations;
+  const ExecutionTerminal &terminal() const {
+    return std::visit(
+        [](const auto &root) -> const ExecutionTerminal & {
+          return root.terminal;
+        },
+        model_);
   }
-  llvm::ArrayRef<ActorTransitionsActivitySummary> activitySummaries() const {
-    return model_.activitySummaries;
+  const SimulationExecutionModel &root() const { return model_; }
+  const SpatialSimulationExecution *spatial() const {
+    return std::get_if<SpatialSimulationExecution>(&model_);
+  }
+  const SystemSimulationExecution *system() const {
+    return std::get_if<SystemSimulationExecution>(&model_);
+  }
+  const SpatialFunctionalObservations &spatialFunctionalObservations() const {
+    return std::get<SpatialSimulationExecution>(model_).functionalObservations;
+  }
+  const SpatialProgressObservations &spatialProgressObservations() const {
+    return std::get<SpatialSimulationExecution>(model_).progressObservations;
+  }
+  llvm::ArrayRef<ActorTransitionsActivitySummary>
+  spatialActivitySummaries() const {
+    return std::get<SpatialSimulationExecution>(model_).activitySummaries;
   }
   const CanonicalSemanticBytes &canonicalBytes() const { return bytes_; }
 
@@ -120,34 +185,50 @@ private:
                                CanonicalSemanticBytes bytes)
       : identity_(identity), model_(std::move(model)),
         bytes_(std::move(bytes)) {}
+  CanonicalSimulationExecution(ArtifactIdentity identity,
+                               SystemSimulationExecution model,
+                               CanonicalSemanticBytes bytes)
+      : identity_(identity), model_(std::move(model)),
+        bytes_(std::move(bytes)) {}
 
   ArtifactIdentity identity_;
-  SpatialSimulationExecution model_;
+  SimulationExecutionModel model_;
   CanonicalSemanticBytes bytes_;
 
   friend llvm::Expected<CanonicalSimulationExecution>
   finalizeSimulationExecution(const SpatialSimulationExecution &,
                               const evaluation::CaseArtifactResolution &,
-                              const ArtifactStore &);
+                              const ArtifactStore &, const BlobStore &);
+  friend llvm::Expected<CanonicalSimulationExecution>
+  finalizeSimulationExecution(const SystemSimulationExecution &,
+                              const evaluation::CaseArtifactResolution &,
+                              const ArtifactStore &, const BlobStore &);
   friend llvm::Expected<CanonicalSimulationExecution>
   importSimulationExecution(const ArtifactRootReference &,
                             const evaluation::CaseArtifactResolution &,
-                            const ArtifactStore &);
+                            const ArtifactStore &, const BlobStore &);
 };
 
 llvm::Expected<CanonicalSimulationExecution> finalizeSimulationExecution(
     const SpatialSimulationExecution &execution,
     const evaluation::CaseArtifactResolution &resolution,
-    const ArtifactStore &store);
+    const ArtifactStore &store, const BlobStore &blobs);
+
+llvm::Expected<CanonicalSimulationExecution> finalizeSimulationExecution(
+    const SystemSimulationExecution &execution,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &store, const BlobStore &blobs);
 
 llvm::Expected<ArtifactRootReference>
 publishSimulationExecution(const CanonicalSimulationExecution &execution,
                            const ArtifactStore &store);
 
+/// Imports the workload-selected Spatial or System execution form. Both the
+/// Request and Deployment closure are validated through their exact stores.
 llvm::Expected<CanonicalSimulationExecution>
 importSimulationExecution(const ArtifactRootReference &reference,
                           const evaluation::CaseArtifactResolution &resolution,
-                          const ArtifactStore &store);
+                          const ArtifactStore &store, const BlobStore &blobs);
 
 /// Resolves the exact Request root carried by one stored execution. This is
 /// the owner-level dependency projection used to assemble an import closure;

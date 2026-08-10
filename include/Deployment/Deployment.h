@@ -2,6 +2,7 @@
 #define LOOM_DEPLOYMENT_DEPLOYMENT_H
 
 #include "Common/Artifact.h"
+#include "Deployment/DeploymentReference.h"
 #include "Deployment/ExecutableLeaves.h"
 
 #include "llvm/ADT/ArrayRef.h"

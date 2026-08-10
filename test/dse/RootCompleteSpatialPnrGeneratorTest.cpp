@@ -1013,7 +1013,7 @@ void spatialMappingPromotionExecutesExactCgraCase() {
       take(loom::dse::prepareCgraSimulationEvidenceObligationTemplate(
           fixture.dataflowReference, fixture.fabric.reference(), spatialMapping,
           workloadReference, runtimeReference, loom::defaultResolvedConfig(),
-          store));
+          store, blobs));
   const std::array<loom::dse::EvidenceObligationTemplateRef, 1> obligationRefs =
       {loom::dse::EvidenceObligationTemplateRef(0)};
   auto acquisitionConfig =
@@ -1143,7 +1143,7 @@ void spatialMappingPromotionKeepsEveryCandidateLineage() {
       take(loom::dse::prepareCgraSimulationEvidenceObligationTemplate(
           dataflowReference, fabric.reference(), mappings.front(),
           simulationInputs.workload, simulationInputs.runtimeInput,
-          loom::defaultResolvedConfig(), store));
+          loom::defaultResolvedConfig(), store, blobs));
   const std::array<loom::dse::EvidenceObligationTemplateRef, 1> obligations = {
       loom::dse::EvidenceObligationTemplateRef(0)};
   auto acquisitionConfig = take(
@@ -1251,13 +1251,13 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
       take(loom::evaluation::models::prepareCgraSimulationEvaluation(
           dataflowReference, fabric.reference(), spatialMapping,
           simulationInputs.workload, simulationInputs.runtimeInput,
-          loom::defaultResolvedConfig(), store));
+          loom::defaultResolvedConfig(), store, blobs));
 
   auto obligation =
       take(loom::dse::prepareCgraSimulationEvidenceObligationTemplate(
           dataflowReference, fabric.reference(), spatialMapping,
           simulationInputs.workload, simulationInputs.runtimeInput,
-          loom::defaultResolvedConfig(), store));
+          loom::defaultResolvedConfig(), store, blobs));
   const std::array<loom::dse::EvidenceObligationTemplateRef, 1> obligations = {
       loom::dse::EvidenceObligationTemplateRef(0)};
   auto acquisitionConfig = take(
@@ -1363,7 +1363,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
       preparedCgra.request, {{loom::evaluation::ModelOutputSlotRef(0), {}}},
       loom::evaluation::UnsupportedEvidence{
           loom::evaluation::OutcomeReason::RuntimeCapabilityUnavailable},
-      preparedCgra.resolution, store));
+      preparedCgra.resolution, store, blobs));
   const loom::ArtifactRootReference unsupportedReference = take(
       loom::evaluation::publishEvaluationEvidence(unsupportedEvidence, store));
   auto feedbackBinding =
@@ -1403,13 +1403,14 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
       std::move(impersonatingSubjects), simulationInputs.workload,
       simulationInputs.runtimeInput, preparedCgra.request.baseConditions(),
       preparedCgra.request.metricRequests(), {},
-      std::move(impersonatingBinding), 0, preparedCgra.resolution, store));
+      std::move(impersonatingBinding), 0, preparedCgra.resolution, store,
+      blobs));
   take(loom::evaluation::publishEvaluationRequest(impersonatingRequest, store));
   auto impersonatingEvidence = take(loom::evaluation::EvaluationEvidence::get(
       impersonatingRequest, {{loom::evaluation::ModelOutputSlotRef(0), {}}},
       loom::evaluation::UnsupportedEvidence{
           loom::evaluation::OutcomeReason::RuntimeCapabilityUnavailable},
-      preparedCgra.resolution, store));
+      preparedCgra.resolution, store, blobs));
   const loom::ArtifactRootReference impersonatingReference =
       take(loom::evaluation::publishEvaluationEvidence(impersonatingEvidence,
                                                        store));
@@ -1435,7 +1436,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
       loom::evaluation::EvaluationEvidence::artifactSchema.version,
       take(loom::ArtifactIdentity::fromBytes(missingBytes))};
   auto directMissing = loom::evaluation::importEvaluationEvidence(
-      missingEvidence, preparedCgra.resolution, store);
+      missingEvidence, preparedCgra.resolution, store, blobs);
   if (directMissing)
     fail("missing Evidence unexpectedly exists in the ArtifactStore");
   const std::string directMissingMessage =
@@ -1570,7 +1571,7 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
       take(loom::dse::prepareCgraSimulationEvidenceObligationTemplate(
           *dataflowReference, fabric.reference(), spatial.mapping,
           spatialInputs.workload, spatialInputs.runtimeInput,
-          loom::defaultResolvedConfig(), store));
+          loom::defaultResolvedConfig(), store, blobs));
   const std::array<loom::dse::EvidenceObligationTemplateRef, 1> cgraRefs = {
       loom::dse::EvidenceObligationTemplateRef(0)};
   auto cgraConfig =
@@ -1636,7 +1637,7 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
       loom::dse::prepareCanonicalDataflowFunctionalEvidenceObligationTemplate(
           child, *structuredParent, sourceInputs.workloadReference,
           sourceInputs.runtimeInputReference, loom::defaultResolvedConfig(),
-          store));
+          store, blobs));
   const std::array<loom::dse::EvidenceObligationTemplateRef, 1> functionalRefs =
       {loom::dse::EvidenceObligationTemplateRef(0)};
   auto functionalConfig =

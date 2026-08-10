@@ -37,10 +37,11 @@ llvm::Error requireAvailable(const ArtifactRootReference &reference,
   return llvm::Error::success();
 }
 
-llvm::Expected<std::vector<ModelOutputBinding>> canonicalizeOutputBindings(
-    const EvaluationRequest &request, EvidenceOutcomeKind outcome,
-    std::vector<ModelOutputBinding> bindings,
-    const ArtifactStore &artifactStore) {
+llvm::Expected<std::vector<ModelOutputBinding>>
+canonicalizeOutputBindings(const EvaluationRequest &request,
+                           EvidenceOutcomeKind outcome,
+                           std::vector<ModelOutputBinding> bindings,
+                           const ArtifactStore &artifactStore) {
   const EvaluationModelDescriptor *descriptor =
       resolveEvaluationModelDescriptor(request);
   if (!descriptor)
@@ -87,10 +88,10 @@ llvm::Expected<std::vector<ModelOutputBinding>> canonicalizeOutputBindings(
   return bindings;
 }
 
-llvm::Error validateMetricResult(
-    MetricResult &result, MetricRequestOrdinal ordinal,
-    const EvaluationRequest &request,
-    const EvaluationModelDescriptor &descriptor) {
+llvm::Error validateMetricResult(MetricResult &result,
+                                 MetricRequestOrdinal ordinal,
+                                 const EvaluationRequest &request,
+                                 const EvaluationModelDescriptor &descriptor) {
   const MetricRequest *requestItem = request.resolve(ordinal);
   const MetricCapability *capability =
       descriptor.findMetricCapability(requestItem->query().metric);
@@ -100,8 +101,7 @@ llvm::Error validateMetricResult(
   if ((capability->permittedObservationForms & observationFormMask(form)) == 0)
     return evaluationError("model does not permit the metric result form");
   if (llvm::Error error = validateMetricObservationValue(
-          requestItem->query().metric, result.uncertainty,
-          result.observation))
+          requestItem->query().metric, result.uncertainty, result.observation))
     return error;
 
   std::sort(result.calibrationInputSlots.begin(),
@@ -121,11 +121,10 @@ llvm::Error validateMetricResult(
 
 llvm::Error validateFindingResult(
     FindingResult &result, FindingRequestOrdinal ordinal,
-    const EvaluationRequest &request,
-    const EvaluationModelDescriptor &model,
+    const EvaluationRequest &request, const EvaluationModelDescriptor &model,
     llvm::ArrayRef<ModelOutputBinding> outputBindings,
     const CaseArtifactResolution &resolution,
-    const ArtifactStore &artifactStore) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   const FindingRequest *requestItem = request.resolve(ordinal);
   const FindingCapability *capability =
       model.findFindingCapability(requestItem->query().kind);
@@ -145,13 +144,11 @@ llvm::Error validateFindingResult(
       findFindingDescriptor(requestItem->query().kind);
   if (!finding)
     return evaluationError("finding result references an unregistered kind");
-  if (finding->terminalWitnessSchema && present->occurrences.size() != 1)
+  if (finding->terminalWitnessCodec && present->occurrences.size() != 1)
     return evaluationError(
         "terminal finding Present requires exactly one occurrence");
-  if (llvm::Error error = requireFindingOccurrenceOwner(*finding))
-    return error;
   const FindingOccurrenceContext context(request, ordinal, outputBindings,
-                                         resolution, artifactStore);
+                                         resolution, artifactStore, blobStore);
   for (FindingOccurrence &occurrence : present->occurrences)
     if (llvm::Error error =
             occurrence.canonicalize(finding->occurrenceCodec, context))
@@ -168,24 +165,26 @@ llvm::Expected<CompletedEvidence> canonicalizeCompleted(
     const EvaluationModelDescriptor &descriptor,
     llvm::ArrayRef<ModelOutputBinding> outputBindings,
     const CaseArtifactResolution &resolution,
-    const ArtifactStore &artifactStore) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   if (completed.metricResults.size() != request.metricRequests().size())
     return evaluationError(
         "completed Evidence metric results are not total over metric requests");
   for (std::size_t index = 0; index < completed.metricResults.size(); ++index) {
-    if (llvm::Error error = validateMetricResult(
-            completed.metricResults[index], MetricRequestOrdinal(index),
-            request, descriptor))
+    if (llvm::Error error = validateMetricResult(completed.metricResults[index],
+                                                 MetricRequestOrdinal(index),
+                                                 request, descriptor))
       return std::move(error);
   }
 
   if (completed.findingResults.size() != request.findingRequests().size())
     return evaluationError("completed Evidence finding results are not total "
                            "over finding requests");
-  for (std::size_t index = 0; index < completed.findingResults.size(); ++index) {
+  for (std::size_t index = 0; index < completed.findingResults.size();
+       ++index) {
     if (llvm::Error error = validateFindingResult(
             completed.findingResults[index], FindingRequestOrdinal(index),
-            request, descriptor, outputBindings, resolution, artifactStore))
+            request, descriptor, outputBindings, resolution, artifactStore,
+            blobStore))
       return std::move(error);
   }
   return completed;
@@ -318,17 +317,17 @@ EvidenceOutcomeKind outcomeKind(const EvaluationEvidenceOutcome &outcome) {
   return static_cast<EvidenceOutcomeKind>(outcome.index());
 }
 
-llvm::Expected<EvaluationEvidence>
-EvaluationEvidence::get(
+llvm::Expected<EvaluationEvidence> EvaluationEvidence::get(
     const EvaluationRequest &request,
     std::vector<ModelOutputBinding> outputBindings,
-    EvaluationEvidenceOutcome outcome,
-    const CaseArtifactResolution &resolution,
-    const ArtifactStore &artifactStore) {
+    EvaluationEvidenceOutcome outcome, const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   const ArtifactRootReference requestRef = evaluationRequestReference(request);
-  if (llvm::Error error =
-          requireAvailable(requestRef, "EvaluationRequest reference",
-                           artifactStore))
+  if (llvm::Error error = requireAvailable(
+          requestRef, "EvaluationRequest reference", artifactStore))
+    return std::move(error);
+  RequestVerifier verifier(resolution, artifactStore, blobStore);
+  if (llvm::Error error = verifier.verify(request))
     return std::move(error);
   const EvaluationModelDescriptor *descriptor =
       resolveEvaluationModelDescriptor(request);
@@ -344,14 +343,13 @@ EvaluationEvidence::get(
   if (auto *completed = std::get_if<CompletedEvidence>(&outcome)) {
     auto canonical = canonicalizeCompleted(
         std::move(*completed), request, *descriptor, *canonicalOutputs,
-        resolution, artifactStore);
+        resolution, artifactStore, blobStore);
     if (!canonical)
       return canonical.takeError();
     outcome = std::move(*canonical);
   } else if (const auto *unsupported =
                  std::get_if<UnsupportedEvidence>(&outcome)) {
-    if (llvm::Error error =
-            validateOutcomeReason(kind, unsupported->reason))
+    if (llvm::Error error = validateOutcomeReason(kind, unsupported->reason))
       return std::move(error);
   } else if (const auto *failed =
                  std::get_if<ExecutionFailedEvidence>(&outcome)) {
@@ -374,7 +372,8 @@ canonicalEvaluationEvidenceBytes(const EvaluationEvidence &evidence) {
       std::vector<std::uint8_t>(json.begin(), json.end()));
 }
 
-ArtifactIdentity evaluationEvidenceIdentity(const EvaluationEvidence &evidence) {
+ArtifactIdentity
+evaluationEvidenceIdentity(const EvaluationEvidence &evidence) {
   return finalizeArtifactIdentity(EvaluationEvidence::artifactSchema,
                                   canonicalEvaluationEvidenceBytes(evidence));
 }
@@ -405,18 +404,20 @@ publishEvaluationEvidence(const EvaluationEvidence &evidence,
 llvm::Expected<EvaluationEvidence>
 importEvaluationEvidence(const ArtifactRootReference &reference,
                          const CaseArtifactResolution &resolution,
-                         const ArtifactStore &artifactStore) {
+                         const ArtifactStore &artifactStore,
+                         const BlobStore &blobStore) {
   if (reference.schemaIdentity != EvaluationEvidence::artifactSchema.identity ||
       reference.schemaVersion != EvaluationEvidence::artifactSchema.version)
     return evaluationError("foreign EvaluationEvidence reference schema");
-  auto bytes = artifactStore.get(EvaluationEvidence::artifactSchema,
-                                 reference.artifact);
+  auto bytes =
+      artifactStore.get(EvaluationEvidence::artifactSchema, reference.artifact);
   if (!bytes)
     return bytes.takeError();
   const llvm::ArrayRef<std::uint8_t> payload = bytes->bytes();
   llvm::StringRef json(reinterpret_cast<const char *>(payload.data()),
                        payload.size());
-  auto evidence = parseEvaluationEvidence(json, resolution, artifactStore);
+  auto evidence =
+      parseEvaluationEvidence(json, resolution, artifactStore, blobStore);
   if (!evidence)
     return evidence.takeError();
   if (evaluationEvidenceIdentity(*evidence) != reference.artifact)

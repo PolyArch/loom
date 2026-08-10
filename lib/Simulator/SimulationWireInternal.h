@@ -9,8 +9,10 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/DataflowStructuralRefs.h"
 
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
@@ -127,6 +129,9 @@ int compareObservableTargets(const SpatialMemoryObservableTarget &lhs,
                              const SpatialMemoryObservableTarget &rhs);
 int compareStructuredMemoryTargets(const StructuredProgramMemoryTarget &lhs,
                                    const StructuredProgramMemoryTarget &rhs);
+int compareSystemInterfaceRefs(
+    const deployment::DeploymentExternalInterfaceRef &lhs,
+    const deployment::DeploymentExternalInterfaceRef &rhs);
 
 //===----------------------------------------------------------------------===//
 // Resolved launch context
@@ -205,6 +210,39 @@ llvm::Error validateStructuredProgramWorkload(
 /// and byte-reencoded by its normal owner importer.
 llvm::Expected<::loom::ArtifactIdentity>
 structuredProgramWorkloadOwnerIdentity(llvm::ArrayRef<std::uint8_t> bytes);
+
+struct ResolvedSystemContext {
+  ::loom::ArtifactIdentity deploymentIdentity;
+  deployment::HostProgramEntry entry;
+  std::vector<deployment::HostExternalInterface> interfaces;
+  std::vector<LaneShape> valueArgumentShapes;
+  std::vector<LaneShape> valueResultShapes;
+  std::vector<std::optional<LaneShape>> externalInterfaceShapes;
+  mlir::OwningOpRef<mlir::ModuleOp> layoutScope;
+
+  mlir::Operation *layoutOperation() const {
+    return layoutScope.get().getOperation();
+  }
+};
+
+llvm::Expected<ResolvedSystemContext>
+resolveSystemContext(const deployment::FinalizedDeployment &deployment,
+                     const deployment::DeploymentProgramEntryRef &entry,
+                     const ::loom::ArtifactStore &store);
+
+llvm::Expected<const deployment::HostExternalInterface *>
+resolveSystemInterface(
+    const ResolvedSystemContext &context,
+    const deployment::DeploymentExternalInterfaceRef &reference);
+llvm::Expected<std::size_t> resolveSystemInterfaceIndex(
+    const ResolvedSystemContext &context,
+    const deployment::DeploymentExternalInterfaceRef &reference);
+
+llvm::Error validateSystemWorkload(const SystemSimulationWorkload &workload,
+                                   const ResolvedSystemContext &context);
+
+llvm::Expected<::loom::ArtifactIdentity>
+systemWorkloadOwnerIdentity(llvm::ArrayRef<std::uint8_t> bytes);
 
 //===----------------------------------------------------------------------===//
 // Semantic value, stream, and memory-byte validation and codec
@@ -302,6 +340,18 @@ llvm::Expected<SpatialSimulationRuntimeInput> canonicalizeSpatialRuntimeInput(
     const ::loom::ArtifactIdentity &workloadIdentity,
     const ResolvedLaunchContext &context,
     const dataflow::CanonicalDataflowProgramView &view);
+
+llvm::Error
+validateSystemRuntimeInput(const SystemSimulationRuntimeInput &input,
+                           const SystemSimulationWorkload &workload,
+                           const ::loom::ArtifactIdentity &workloadIdentity,
+                           const ResolvedSystemContext &context);
+
+llvm::Expected<SystemSimulationRuntimeInput>
+canonicalizeSystemRuntimeInput(const SystemSimulationRuntimeInputDraft &draft,
+                               const SystemSimulationWorkload &workload,
+                               const ::loom::ArtifactIdentity &workloadIdentity,
+                               const ResolvedSystemContext &context);
 
 } // namespace loom::sim::detail
 

@@ -6,7 +6,7 @@
 #include "Hardware/RTL/SystemImplementation.h"
 #include "Hardware/RTL/SystemSkeleton.h"
 
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 #include "ConfigurationTransportTestSupport.h"
 #include "PortableProviderTestSupport.h"
 
@@ -679,8 +679,8 @@ SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
   std::error_code filesystemError;
   std::filesystem::create_directory(blobRoot, filesystemError);
   if (filesystemError)
-    fail(test, "unable to create the System BlobStore: " +
-                   filesystemError.message());
+    fail(test,
+         "unable to create the System BlobStore: " + filesystemError.message());
   loom::BlobStore blobs(blobRoot.string());
   const auto implementation = take(
       test,
@@ -698,12 +698,12 @@ SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
   }
   const auto system =
       take(test, loom::fabric::requireSystemRoot(fabric.system.view()));
-  const std::size_t expectedData = llvm::count_if(
-      system.spatialAttachments(), [](const auto &attachment) {
+  const std::size_t expectedData =
+      llvm::count_if(system.spatialAttachments(), [](const auto &attachment) {
         return attachment.spatialEndpoint.transport() != nullptr;
       });
-  const std::size_t expectedMemory = llvm::count_if(
-      system.spatialAttachments(), [](const auto &attachment) {
+  const std::size_t expectedMemory =
+      llvm::count_if(system.spatialAttachments(), [](const auto &attachment) {
         return attachment.spatialEndpoint.memory() != nullptr;
       });
   require(test,
@@ -936,8 +936,8 @@ repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
   std::error_code filesystemError;
   std::filesystem::create_directory(blobRoot, filesystemError);
   if (filesystemError)
-    fail(test, "unable to create the System BlobStore: " +
-                   filesystemError.message());
+    fail(test,
+         "unable to create the System BlobStore: " + filesystemError.message());
   loom::BlobStore blobs(blobRoot.string());
   mlir::MLIRContext systemContext;
   systemContext.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
@@ -948,10 +948,9 @@ repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
               systemProviders))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog systemContracts;
-  auto systemSkeleton =
-      take(test, loom::hardware::rtl::buildPortableSystemRootCirctSkeleton(
-                     systemContext, fabric.abi, systemProviders,
-                     systemContracts));
+  auto systemSkeleton = take(
+      test, loom::hardware::rtl::buildPortableSystemRootCirctSkeleton(
+                systemContext, fabric.abi, systemProviders, systemContracts));
   require(test,
           systemSkeleton.spatialDefinitionCount == 1 &&
               systemSkeleton.spatialInstanceCount == 2,
@@ -960,16 +959,15 @@ repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
       take(test, loom::hardware::rtl::lowerAndExportSpecializedSystemVerilog(
                      *systemSkeleton.module));
   const auto implementation = take(
+      test, loom::hardware::rtl::finalizePortableSystemHardwareImplementation(
+                systemContext, fabric.abi, systemProviders, systemContracts,
+                store, blobs));
+  require(
       test,
-      loom::hardware::rtl::finalizePortableSystemHardwareImplementation(
-          systemContext, fabric.abi, systemProviders, systemContracts, store,
-          blobs));
-  require(test,
-          implementation.implementation().representationRoot().top ==
-              loom::hardware::RepresentationLocator{
-                  loom::hardware::RepresentationObjectKind::Module,
-                  "loom_system"},
-          "System HardwareImplementation changed its root module");
+      implementation.implementation().representationRoot().top ==
+          loom::hardware::RepresentationLocator{
+              loom::hardware::RepresentationObjectKind::Module, "loom_system"},
+      "System HardwareImplementation changed its root module");
   std::size_t clockInterfaces = 0;
   std::size_t resetInterfaces = 0;
   std::size_t configurationInterfaces = 0;

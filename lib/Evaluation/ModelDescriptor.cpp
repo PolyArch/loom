@@ -1,4 +1,5 @@
 #include "Evaluation/ModelDescriptor.h"
+#include "Evaluation/ProductionRegistry.h"
 
 #include "CanonicalSupport.h"
 #include "Evaluation/Request.h"
@@ -9,6 +10,7 @@
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -22,9 +24,36 @@ using detail::appendU32Be;
 using detail::appendU64Be;
 using detail::evaluationError;
 
-std::vector<const EvaluationModelDescriptor *> &modelDescriptors() {
-  static std::vector<const EvaluationModelDescriptor *> descriptors;
+constexpr SchemaVersion evaluationSchema20{2, 0};
+constexpr std::uint32_t lastModelKind20 =
+    builtinEvaluationModelKind(BuiltinEvaluationModel::CadenceVoltusStaticRail)
+        .ordinal();
+
+bool schemaContainsModelKind(SchemaVersion version,
+                             EvaluationModelKind modelKind) {
+  return version == evaluationSchemaVersion() ||
+         (version == evaluationSchema20 &&
+          modelKind.ordinal() <= lastModelKind20);
+}
+
+struct ModelDescriptorRegistryEntry {
+  SchemaVersion version;
+  const EvaluationModelDescriptor *descriptor;
+};
+
+struct OwnedModelDescriptorView {
+  std::vector<ModelConditionCapability> conditionCapabilities;
+  EvaluationModelDescriptor descriptor;
+};
+
+std::vector<ModelDescriptorRegistryEntry> &modelDescriptors() {
+  static std::vector<ModelDescriptorRegistryEntry> descriptors;
   return descriptors;
+}
+
+std::deque<OwnedModelDescriptorView> &ownedModelDescriptorViews() {
+  static std::deque<OwnedModelDescriptorView> views;
+  return views;
 }
 
 std::mutex &modelDescriptorMutex() {
@@ -75,18 +104,17 @@ bool supportsInteractionMode(
                    requested) != descriptor.implementedModes.end();
 }
 
-llvm::Error validateInteractionModes(
-    llvm::StringRef owner, llvm::ArrayRef<EvaluationInteractionMode> modes) {
+llvm::Error
+validateInteractionModes(llvm::StringRef owner,
+                         llvm::ArrayRef<EvaluationInteractionMode> modes) {
   if (modes.empty())
     return evaluationError(owner + " requires at least one interaction mode");
   for (std::size_t index = 0; index < modes.size(); ++index) {
     if (!isValidInteractionMode(modes[index]))
       return evaluationError(owner + " has an invalid interaction mode");
-    if (index != 0 &&
-        static_cast<std::uint32_t>(modes[index - 1]) >=
-            static_cast<std::uint32_t>(modes[index]))
-      return evaluationError(owner +
-                             " interaction modes must be canonical");
+    if (index != 0 && static_cast<std::uint32_t>(modes[index - 1]) >=
+                          static_cast<std::uint32_t>(modes[index]))
+      return evaluationError(owner + " interaction modes must be canonical");
   }
   return llvm::Error::success();
 }
@@ -190,13 +218,12 @@ llvm::Error validateDescriptor(const EvaluationModelDescriptor &descriptor) {
   if (!isValidExecutionMethod(descriptor.executionMethod))
     return evaluationError("model '" + descriptor.spelling +
                            "' has an invalid execution method");
-  for (std::size_t index = 0;
-       index < descriptor.interactionCapabilities.size(); ++index) {
+  for (std::size_t index = 0; index < descriptor.interactionCapabilities.size();
+       ++index) {
     const EvaluationInteractionCapability &capability =
         descriptor.interactionCapabilities[index];
-    if (index != 0 &&
-        !(descriptor.interactionCapabilities[index - 1].domain <
-          capability.domain))
+    if (index != 0 && !(descriptor.interactionCapabilities[index - 1].domain <
+                        capability.domain))
       return evaluationError("model '" + descriptor.spelling +
                              "' interaction capabilities must be canonical");
     if (llvm::Error error = validateInteractionModes(
@@ -210,10 +237,9 @@ llvm::Error validateDescriptor(const EvaluationModelDescriptor &descriptor) {
                              "domain");
     for (EvaluationInteractionMode mode : capability.modes) {
       if (!supportsInteractionMode(*domain, mode))
-        return evaluationError("interaction domain '" +
-                               capability.domain.ownerRegistryIdentity() +
-                               "' does not implement interaction mode '" +
-                               toString(mode) + "'");
+        return evaluationError(
+            "interaction domain '" + capability.domain.ownerRegistryIdentity() +
+            "' does not implement interaction mode '" + toString(mode) + "'");
       if (llvm::Error error = domain->validateTypedProtocol(mode))
         return error;
     }
@@ -311,6 +337,17 @@ llvm::Error validateDescriptor(const EvaluationModelDescriptor &descriptor) {
         return evaluationError("model '" + descriptor.spelling +
                                "' input schemas must be canonical");
     }
+    const bool acceptsParameterBundle =
+        std::any_of(slot.acceptedSchemas.begin(), slot.acceptedSchemas.end(),
+                    [](const ArtifactSchemaDescriptor *schema) {
+                      return *schema == modelParameterBundleSchema;
+                    });
+    if (acceptsParameterBundle != slot.modelParameterContract.has_value())
+      return evaluationError(
+          "model '" + descriptor.spelling + "' input slot '" +
+          slot.semanticRole +
+          "' must declare exactly one parameter contract iff it accepts "
+          "ModelParameterBundle");
     for (std::size_t previous = 0; previous < index; ++previous)
       if (descriptor.inputSlots[previous].semanticRole == slot.semanticRole)
         return evaluationError("model '" + descriptor.spelling +
@@ -429,9 +466,8 @@ EvaluationInteractionDomainRef::get(llvm::StringRef ownerRegistryIdentity,
   if (!isCanonicalAscii(ownerRegistryIdentity))
     return evaluationError(
         "interaction domain owner identity must be nonempty canonical ASCII");
-  return EvaluationInteractionDomainRef(ownerRegistryIdentity.str(),
-                                        ownerRegistryVersion,
-                                        ownerLocalDomainKind);
+  return EvaluationInteractionDomainRef(
+      ownerRegistryIdentity.str(), ownerRegistryVersion, ownerLocalDomainKind);
 }
 
 bool operator<(const EvaluationInteractionDomainRef &lhs,
@@ -452,8 +488,8 @@ llvm::Error registerEvaluationInteractionDomain(
     return evaluationError(
         "an interaction domain requires a semantic definition and typed "
         "protocol validator");
-  if (llvm::Error error = validateInteractionModes(
-          "interaction domain", descriptor.implementedModes))
+  if (llvm::Error error = validateInteractionModes("interaction domain",
+                                                   descriptor.implementedModes))
     return error;
   for (EvaluationInteractionMode mode : descriptor.implementedModes)
     if (llvm::Error error = descriptor.validateTypedProtocol(mode))
@@ -493,14 +529,21 @@ findEvaluationInteractionDomain(const EvaluationInteractionDomainRef &domain) {
 llvm::Expected<EvaluationModelDescriptorRef>
 EvaluationModelDescriptorRef::get(SchemaVersion schemaVersion,
                                   EvaluationModelKind modelKind) {
-  if (schemaVersion != evaluationSchemaVersion())
+  if (schemaVersion != evaluationSchemaVersion() &&
+      schemaVersion != evaluationSchema20)
     return evaluationError("unsupported Evaluation model descriptor version");
+  if (!schemaContainsModelKind(schemaVersion, modelKind))
+    return evaluationError("Evaluation model descriptor version does not "
+                           "contain model kind " +
+                           std::to_string(modelKind.ordinal()));
   return EvaluationModelDescriptorRef(schemaVersion, modelKind);
 }
 
 const EvaluationModelDescriptor *
 EvaluationModelDescriptorRef::descriptor() const {
-  return findEvaluationModelDescriptor(modelKind_);
+  if (!schemaContainsModelKind(schemaVersion_, modelKind_))
+    return nullptr;
+  return findEvaluationModelDescriptor(schemaVersion_, modelKind_);
 }
 
 llvm::StringRef toString(EvidenceOutcomeKind outcome) {
@@ -543,7 +586,7 @@ validateArtifactCollectionCardinality(ArtifactCollectionCardinality cardinality,
 
 EvaluationModelDescriptorRef EvaluationModelDescriptor::reference() const {
   return llvm::cantFail(
-      EvaluationModelDescriptorRef::get(evaluationSchemaVersion(), modelKind));
+      EvaluationModelDescriptorRef::get(registryVersion, modelKind));
 }
 
 const ModelConditionCapability *
@@ -606,11 +649,17 @@ bool EvaluationModelDescriptor::supportsFindingQuery(
 
 llvm::Error
 registerEvaluationModelDescriptor(const EvaluationModelDescriptor &descriptor) {
+  if (descriptor.registryVersion != evaluationSchemaVersion())
+    return evaluationError(
+        "authored model descriptors must use the current registry version");
   if (llvm::Error error = validateDescriptor(descriptor))
     return error;
 
   std::lock_guard<std::mutex> lock(modelDescriptorMutex());
-  for (const EvaluationModelDescriptor *existing : modelDescriptors()) {
+  for (const ModelDescriptorRegistryEntry &entry : modelDescriptors()) {
+    if (entry.version != evaluationSchemaVersion())
+      continue;
+    const EvaluationModelDescriptor *existing = entry.descriptor;
     if (existing->modelKind == descriptor.modelKind) {
       if (existing == &descriptor)
         return llvm::Error::success();
@@ -622,21 +671,53 @@ registerEvaluationModelDescriptor(const EvaluationModelDescriptor &descriptor) {
       return evaluationError("conflicting registration for Evaluation model '" +
                              descriptor.spelling + "'");
   }
-  modelDescriptors().push_back(&descriptor);
+  modelDescriptors().push_back({evaluationSchemaVersion(), &descriptor});
+
+  if (schemaContainsModelKind(evaluationSchema20, descriptor.modelKind)) {
+    OwnedModelDescriptorView view{{}, descriptor};
+    view.conditionCapabilities.reserve(descriptor.conditionCapabilities.size());
+    for (const ModelConditionCapability &capability :
+         descriptor.conditionCapabilities) {
+      ModelConditionCapability projected = capability;
+      projected.pattern.targets.caseSignature =
+          llvm::cantFail(EvaluationCaseSignatureRef::get(
+              evaluationSchema20, descriptor.caseSignature.caseKind()));
+      view.conditionCapabilities.push_back(std::move(projected));
+    }
+    view.descriptor.registryVersion = evaluationSchema20;
+    view.descriptor.caseSignature =
+        llvm::cantFail(EvaluationCaseSignatureRef::get(
+            evaluationSchema20, descriptor.caseSignature.caseKind()));
+    view.descriptor.conditionCapabilities = view.conditionCapabilities;
+    ownedModelDescriptorViews().push_back(std::move(view));
+    modelDescriptors().push_back(
+        {evaluationSchema20, &ownedModelDescriptorViews().back().descriptor});
+  }
   std::sort(modelDescriptors().begin(), modelDescriptors().end(),
-            [](const EvaluationModelDescriptor *lhs,
-               const EvaluationModelDescriptor *rhs) {
-              return lhs->modelKind < rhs->modelKind;
+            [](const ModelDescriptorRegistryEntry &lhs,
+               const ModelDescriptorRegistryEntry &rhs) {
+              if (lhs.version.major != rhs.version.major)
+                return lhs.version.major < rhs.version.major;
+              if (lhs.version.minor != rhs.version.minor)
+                return lhs.version.minor < rhs.version.minor;
+              return lhs.descriptor->modelKind < rhs.descriptor->modelKind;
             });
   return llvm::Error::success();
 }
 
 const EvaluationModelDescriptor *
 findEvaluationModelDescriptor(EvaluationModelKind modelKind) {
+  return findEvaluationModelDescriptor(evaluationSchemaVersion(), modelKind);
+}
+
+const EvaluationModelDescriptor *
+findEvaluationModelDescriptor(SchemaVersion schemaVersion,
+                              EvaluationModelKind modelKind) {
   std::lock_guard<std::mutex> lock(modelDescriptorMutex());
-  for (const EvaluationModelDescriptor *descriptor : modelDescriptors())
-    if (descriptor->modelKind == modelKind)
-      return descriptor;
+  for (const ModelDescriptorRegistryEntry &entry : modelDescriptors())
+    if (entry.version == schemaVersion &&
+        entry.descriptor->modelKind == modelKind)
+      return entry.descriptor;
   return nullptr;
 }
 
@@ -757,9 +838,8 @@ ResolvedModelConfigView::adopt(EvaluationModelDescriptorRef descriptorRef,
   if (*reencoded != canonicalViewBytes)
     return evaluationError(
         "resolved model config decode/re-encode changed canonical bytes");
-  return ResolvedModelConfigView(descriptorRef,
-                                 std::move(canonicalViewBytes), digest,
-                                 std::move(*adopted));
+  return ResolvedModelConfigView(descriptorRef, std::move(canonicalViewBytes),
+                                 digest, std::move(*adopted));
 }
 
 const ModelInputBinding *
@@ -776,8 +856,7 @@ llvm::Error validateResolvedModelBinding(const ResolvedModelBinding &binding) {
   if (!descriptor)
     return evaluationError("model binding references an unregistered "
                            "descriptor");
-  if (binding.resolvedModelConfig().descriptorRef() !=
-      binding.descriptorRef())
+  if (binding.resolvedModelConfig().descriptorRef() != binding.descriptorRef())
     return evaluationError(
         "model binding carries a config view from a foreign descriptor");
   if (binding.inputBindings().size() != descriptor->inputSlots.size())

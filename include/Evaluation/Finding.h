@@ -15,12 +15,36 @@
 
 namespace loom {
 class ArtifactStore;
-}
+class BlobStore;
+} // namespace loom
 
 namespace loom::evaluation {
 
 class ModelOutputSlotRef;
+class EvaluationRequest;
 class FindingOccurrenceContext;
+
+/// Exact closure supplied to a Finding owner's Halted witness codec.
+class FindingTerminalWitnessContext {
+public:
+  FindingTerminalWitnessContext(const EvaluationRequest &request,
+                                const CaseArtifactResolution &resolution,
+                                const ArtifactStore &artifactStore,
+                                const BlobStore &blobStore)
+      : request_(request), resolution_(resolution),
+        artifactStore_(artifactStore), blobStore_(blobStore) {}
+
+  const EvaluationRequest &request() const { return request_; }
+  const CaseArtifactResolution &resolution() const { return resolution_; }
+  const ArtifactStore &artifactStore() const { return artifactStore_; }
+  const BlobStore &blobStore() const { return blobStore_; }
+
+private:
+  const EvaluationRequest &request_;
+  const CaseArtifactResolution &resolution_;
+  const ArtifactStore &artifactStore_;
+  const BlobStore &blobStore_;
+};
 
 /// A stable registry ordinal naming one finding kind within the exact
 /// Evaluation schema version.
@@ -73,6 +97,19 @@ struct FindingOccurrenceCodec {
                           const FindingOccurrenceContext &context);
 };
 
+/// Complete owner codec for the witness instance stored by one Halted
+/// SimulationExecution. This is distinct from the Evidence occurrence codec,
+/// which stores only an output-relative TerminalWitnessRef.
+struct FindingTerminalWitnessCodec {
+  FindingPayloadSchemaDescriptor witnessSchema;
+  llvm::Expected<std::vector<std::uint8_t>> (*encode)(
+      const OwnerValue &witness);
+  llvm::Expected<OwnerValue> (*decode)(
+      llvm::ArrayRef<std::uint8_t> canonicalPayload);
+  llvm::Error (*validate)(const OwnerValue &witness,
+                          const FindingTerminalWitnessContext &context);
+};
+
 struct FindingDescriptor {
   FindingKind kind;
   llvm::StringRef spelling;
@@ -81,13 +118,11 @@ struct FindingDescriptor {
   llvm::ArrayRef<ConditionApplicabilityPattern>
       permittedRequestConditionPatterns;
   FindingOccurrenceCodec occurrenceCodec;
-  std::optional<FindingPayloadSchemaDescriptor> terminalWitnessSchema;
+  std::optional<FindingTerminalWitnessCodec> terminalWitnessCodec;
 };
 
 llvm::Error registerFindingDescriptor(const FindingDescriptor &descriptor);
 const FindingDescriptor *findFindingDescriptor(FindingKind kind);
-llvm::Error requireFindingOccurrenceOwner(
-    const FindingDescriptor &descriptor);
 
 llvm::Expected<FindingKind> parseFindingKind(llvm::StringRef spelling);
 llvm::StringRef toString(FindingKind kind);

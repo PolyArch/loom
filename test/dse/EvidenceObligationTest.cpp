@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -137,19 +138,21 @@ ArtifactRootReference storeArtifact(const ArtifactStore &store,
 EvaluationRequest makePrototype(const ArtifactRootReference &candidate,
                                 const ArtifactRootReference &context,
                                 const CaseArtifactResolution &resolution,
-                                const ArtifactStore &store) {
+                                const ArtifactStore &store,
+                                const BlobStore &blobs) {
   EvaluationSubjectBindings bindings = take(EvaluationSubjectBindings::get(
       {{candidateRole, {candidate}}, {contextRole, {context}}}));
   EvaluationCase evaluationCase = take(
       EvaluationCase::get(signatureRef(), std::move(bindings), std::nullopt,
-                          std::nullopt, {}, resolution, store));
+                          std::nullopt, {}, resolution, store, blobs));
   MetricRequest metric = take(MetricRequest::get(
       MetricQuery{MetricKind::Runtime, EvaluationScope{ScopeFormRef(0), {}}},
       {}, evaluationCase, resolution, store));
   ResolvedModelBinding model = take(ResolvedModelBinding::project(
       modelDescriptor.reference(), {}, defaultResolvedConfig()));
   return take(EvaluationRequest::get(evaluationCase, {metric}, {},
-                                     std::move(model), 0, resolution, store));
+                                     std::move(model), 0, resolution, store,
+                                     blobs));
 }
 
 void exerciseCanonicalTemplateAndInstantiation() {
@@ -163,6 +166,7 @@ void exerciseCanonicalTemplateAndInstantiation() {
           "loom-dse-obligation", directory))
     fail(error.message());
   ArtifactStore store(directory);
+  BlobStore blobs(directory);
   const ArtifactRootReference candidateA =
       storeArtifact(store, candidateSchema, 0x11);
   const ArtifactRootReference candidateB =
@@ -181,11 +185,11 @@ void exerciseCanonicalTemplateAndInstantiation() {
   const InputSubjectBinding contextInput{contextRole,
                                          EvidenceAcquisitionInputSlotRef(1)};
   EvidenceObligationTemplate first = take(EvidenceObligationTemplate::get(
-      makePrototype(candidateA, contextA, resolution, store), candidateRole,
-      {contextInput}));
+      makePrototype(candidateA, contextA, resolution, store, blobs),
+      candidateRole, {contextInput}));
   EvidenceObligationTemplate second = take(EvidenceObligationTemplate::get(
-      makePrototype(candidateB, contextB, resolution, store), candidateRole,
-      {contextInput}));
+      makePrototype(candidateB, contextB, resolution, store, blobs),
+      candidateRole, {contextInput}));
   if (first.canonicalBytes() != second.canonicalBytes())
     fail("dynamic subjects changed template identity");
 
@@ -193,7 +197,7 @@ void exerciseCanonicalTemplateAndInstantiation() {
       take(adoptEvidenceObligationTemplate(first.canonicalBytes()));
   EvaluationRequest request = take(instantiateEvidenceObligation(
       adopted, candidateB, {{EvidenceAcquisitionInputSlotRef(1), {contextB}}},
-      0, resolution, store));
+      0, resolution, store, blobs));
   if (request.subjectBindings().subjects(candidateRole).size() != 1 ||
       request.subjectBindings().subjects(candidateRole).front() != candidateB ||
       request.subjectBindings().subjects(contextRole).size() != 1 ||
@@ -202,23 +206,23 @@ void exerciseCanonicalTemplateAndInstantiation() {
     fail("template instantiation did not bind the exact candidate and input");
 
   requireErrorContains(instantiateEvidenceObligation(adopted, candidateB, {}, 0,
-                                                     resolution, store),
+                                                     resolution, store, blobs),
                        "input slot 1");
   requireErrorContains(instantiateEvidenceObligation(
                            adopted, candidateB,
                            {{EvidenceAcquisitionInputSlotRef(1), {candidateA}}},
-                           0, resolution, store),
+                           0, resolution, store, blobs),
                        "does not accept schema");
   requireErrorContains(instantiateEvidenceObligation(
                            adopted, candidateB,
                            {{EvidenceAcquisitionInputSlotRef(1), {contextB}},
                             {EvidenceAcquisitionInputSlotRef(2), {contextA}}},
-                           0, resolution, store),
+                           0, resolution, store, blobs),
                        "unreferenced slot 2");
   requireErrorContains(
       EvidenceObligationTemplate::get(
-          makePrototype(candidateA, contextA, resolution, store), candidateRole,
-          {{candidateRole, EvidenceAcquisitionInputSlotRef(1)}}),
+          makePrototype(candidateA, contextA, resolution, store, blobs),
+          candidateRole, {{candidateRole, EvidenceAcquisitionInputSlotRef(1)}}),
       "candidate role");
 
   std::vector<std::uint8_t> noncanonical(first.canonicalBytes().begin(),

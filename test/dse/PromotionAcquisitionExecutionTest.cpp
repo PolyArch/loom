@@ -188,8 +188,7 @@ llvm::Expected<EvaluationModelResult> evaluate(const EvaluationRequest &request,
 }
 
 const EvaluationModelProvider modelProvider{
-    modelDescriptor.reference(),
-    EvaluationModelInProcessProvider{&evaluate}};
+    modelDescriptor.reference(), EvaluationModelInProcessProvider{&evaluate}};
 
 constexpr std::array<std::uint8_t, 4> acquisitionConfigSchema = {0x41, 0x43,
                                                                  0x51, 0x31};
@@ -359,30 +358,33 @@ ArtifactRootReference storeArtifact(const ArtifactStore &store,
 EvaluationRequest makePrototype(const ArtifactRootReference &candidate,
                                 const ArtifactRootReference &context,
                                 const CaseArtifactResolution &resolution,
-                                const ArtifactStore &store) {
+                                const ArtifactStore &store,
+                                const BlobStore &blobs) {
   EvaluationSubjectBindings subjects = take(EvaluationSubjectBindings::get(
       {{candidateRole, {candidate}}, {contextRole, {context}}}));
   EvaluationCase evaluationCase = take(
       EvaluationCase::get(signatureRef(), std::move(subjects), std::nullopt,
-                          std::nullopt, {}, resolution, store));
+                          std::nullopt, {}, resolution, store, blobs));
   MetricRequest metric = take(MetricRequest::get(
       {MetricKind::Runtime, EvaluationScope{ScopeFormRef(0), {}}}, {},
       evaluationCase, resolution, store));
   ResolvedModelBinding model = take(ResolvedModelBinding::project(
       modelDescriptor.reference(), {}, defaultResolvedConfig()));
   return take(EvaluationRequest::get(evaluationCase, {metric}, {},
-                                     std::move(model), 0, resolution, store));
+                                     std::move(model), 0, resolution, store,
+                                     blobs));
 }
 
 EvaluationRequest makeFindingPrototype(const ArtifactRootReference &candidate,
                                        const ArtifactRootReference &context,
                                        const CaseArtifactResolution &resolution,
-                                       const ArtifactStore &store) {
+                                       const ArtifactStore &store,
+                                       const BlobStore &blobs) {
   EvaluationSubjectBindings subjects = take(EvaluationSubjectBindings::get(
       {{candidateRole, {candidate}}, {contextRole, {context}}}));
   EvaluationCase evaluationCase = take(
       EvaluationCase::get(signatureRef(), std::move(subjects), std::nullopt,
-                          std::nullopt, {}, resolution, store));
+                          std::nullopt, {}, resolution, store, blobs));
   FindingRequest finding =
       take(FindingRequest::get({standard_findings::FunctionalMismatch,
                                 EvaluationScope{ScopeFormRef(0), {}}},
@@ -390,7 +392,8 @@ EvaluationRequest makeFindingPrototype(const ArtifactRootReference &candidate,
   ResolvedModelBinding model = take(ResolvedModelBinding::project(
       modelDescriptor.reference(), {}, defaultResolvedConfig()));
   return take(EvaluationRequest::get(evaluationCase, {}, {finding},
-                                     std::move(model), 0, resolution, store));
+                                     std::move(model), 0, resolution, store,
+                                     blobs));
 }
 
 void exactTemplateDrivesProductionAcquisition() {
@@ -424,8 +427,8 @@ void exactTemplateDrivesProductionAcquisition() {
   const CaseArtifactResolution prototypeResolution = take(
       CaseArtifactResolution::get({{first, {}}, {second, {}}, {context, {}}}));
   EvidenceObligationTemplate obligation = take(EvidenceObligationTemplate::get(
-      makePrototype(first, context, prototypeResolution, store), candidateRole,
-      {{contextRole, EvidenceAcquisitionInputSlotRef(1)}}));
+      makePrototype(first, context, prototypeResolution, store, blobs),
+      candidateRole, {{contextRole, EvidenceAcquisitionInputSlotRef(1)}}));
 
   const ComponentViewDigest cardinalityDigest = take(computeComponentViewDigest(
       acquisitionConfigSchema, llvm::ArrayRef<std::uint8_t>({0x00})));
@@ -489,10 +492,10 @@ void exactTemplateDrivesProductionAcquisition() {
     fail("production acquisition did not select candidates with Evidence");
 
   for (const ArtifactRootReference &evidenceRef : completed->resolve({0, 1})) {
-    EvaluationEvidence evidence =
-        take(importEvaluationEvidence(evidenceRef, prototypeResolution, store));
+    EvaluationEvidence evidence = take(importEvaluationEvidence(
+        evidenceRef, prototypeResolution, store, blobs));
     EvaluationRequest request = take(importEvaluationRequest(
-        evidence.requestRef(), prototypeResolution, store));
+        evidence.requestRef(), prototypeResolution, store, blobs));
     const llvm::ArrayRef<ArtifactRootReference> contexts =
         request.subjectBindings().subjects(contextRole);
     if (request.subjectBindings().subjects(candidateRole).size() != 1 ||
@@ -530,11 +533,11 @@ void topKAcquiresOnlyTheRequiredFunctionalPrefix() {
   const CaseArtifactResolution resolution = take(CaseArtifactResolution::get(
       {{first, {}}, {second, {}}, {third, {}}, {fourth, {}}, {context, {}}}));
   EvidenceObligationTemplate runtime = take(EvidenceObligationTemplate::get(
-      makePrototype(first, context, resolution, store), candidateRole,
+      makePrototype(first, context, resolution, store, blobs), candidateRole,
       {{contextRole, EvidenceAcquisitionInputSlotRef(1)}}));
   EvidenceObligationTemplate functional = take(EvidenceObligationTemplate::get(
-      makeFindingPrototype(first, context, resolution, store), candidateRole,
-      {{contextRole, EvidenceAcquisitionInputSlotRef(1)}}));
+      makeFindingPrototype(first, context, resolution, store, blobs),
+      candidateRole, {{contextRole, EvidenceAcquisitionInputSlotRef(1)}}));
   std::vector<EvidenceObligationTemplate> obligations;
   obligations.push_back(std::move(runtime));
   obligations.push_back(std::move(functional));
@@ -628,8 +631,8 @@ void taskLocalInputSelectionIsVerified() {
   const CaseArtifactResolution resolution = take(CaseArtifactResolution::get(
       {{first, {}}, {second, {}}, {firstContext, {}}, {secondContext, {}}}));
   EvidenceObligationTemplate obligation = take(EvidenceObligationTemplate::get(
-      makePrototype(first, firstContext, resolution, store), candidateRole,
-      {{contextRole, EvidenceAcquisitionInputSlotRef(1)}}));
+      makePrototype(first, firstContext, resolution, store, blobs),
+      candidateRole, {{contextRole, EvidenceAcquisitionInputSlotRef(1)}}));
 
   const std::array<std::uint8_t, 1> configBytes = {0x03};
   const ComponentViewDigest configDigest =
@@ -668,10 +671,9 @@ void taskLocalInputSelectionIsVerified() {
         acquisitionConfigSchema, invalidConfigBytes));
     auto invalidBinding = take(ResolvedPromotionAcquisitionBinding::get(
         acquisitionDescriptor.reference(), invalidConfigBytes, invalidDigest));
-    auto invalid = invokePromotionAcquisition(inputs, invalidBinding,
-                                              {obligation},
-                                              {candidates, obligations}, store,
-                                              blobs);
+    auto invalid =
+        invokePromotionAcquisition(inputs, invalidBinding, {obligation},
+                                   {candidates, obligations}, store, blobs);
     if (invalid)
       fail("provider malformed task input selection was accepted");
     requireErrorContains(invalid.takeError(), error);

@@ -71,4 +71,22 @@ bool haveExactlyEqualSpatialFunctionalObservations(
          llvm::equal(reference.memories, candidate.memories, sameMemory);
 }
 
+bool haveExactlyEqualSystemFunctionalObservations(
+    const SystemFunctionalObservations &reference,
+    const SystemFunctionalObservations &candidate) {
+  return reference.valueResults.size() == candidate.valueResults.size() &&
+         reference.externalValueOutputs.size() ==
+             candidate.externalValueOutputs.size() &&
+         reference.externalStreamOutputs.size() ==
+             candidate.externalStreamOutputs.size() &&
+         reference.memories.size() == candidate.memories.size() &&
+         llvm::equal(reference.valueResults, candidate.valueResults,
+                     sameValueResult) &&
+         llvm::equal(reference.externalValueOutputs,
+                     candidate.externalValueOutputs, sameValueResult) &&
+         llvm::equal(reference.externalStreamOutputs,
+                     candidate.externalStreamOutputs, sameStream) &&
+         llvm::equal(reference.memories, candidate.memories, sameMemory);
+}
+
 } // namespace loom::sim

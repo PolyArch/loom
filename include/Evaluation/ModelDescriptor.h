@@ -4,6 +4,7 @@
 #include "Evaluation/Case.h"
 #include "Evaluation/Finding.h"
 #include "Evaluation/Metric.h"
+#include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/OwnerValue.h"
 
 #include "Common/ComponentViewDigest.h"
@@ -15,6 +16,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -256,8 +258,11 @@ struct ModelInputSlotDescriptor {
   ArtifactCollectionCardinality cardinality;
   llvm::Error (*verifyCompatibility)(
       llvm::ArrayRef<ArtifactRootReference> artifacts,
-      llvm::ArrayRef<ModelInputBinding> allBindings,
-      const ArtifactStore &artifactStore);
+      const EvaluationCase &evaluationCase,
+      const CaseArtifactResolution &resolution,
+      const ArtifactStore &artifactStore, const BlobStore &blobStore);
+  std::optional<ModelParameterContractRef> modelParameterContract =
+      std::nullopt;
 };
 
 struct ModelOutputSlotDescriptor {
@@ -288,8 +293,7 @@ struct FindingCapability {
 struct ResolvedModelConfigViewContract {
   llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes;
   llvm::Expected<OwnerValue> (*project)(const ResolvedConfig &config);
-  llvm::Expected<std::vector<std::uint8_t>> (*encode)(
-      const OwnerValue &view);
+  llvm::Expected<std::vector<std::uint8_t>> (*encode)(const OwnerValue &view);
   llvm::Expected<OwnerValue> (*adopt)(
       llvm::ArrayRef<std::uint8_t> canonicalViewBytes,
       const ComponentViewDigest &digest);
@@ -368,8 +372,12 @@ struct EvaluationModelDescriptor {
   DeterminismContract determinism;
   llvm::ArrayRef<FindingQuery> mandatoryTerminalFindings;
   /// The closed provider form of this model descriptor, recovered from the
-  /// exact registry-2.0 reference before any implementation lookup.
+  /// exact registry reference before any implementation lookup.
   ProviderForm providerForm;
+
+  /// The exact catalog version that owns this immutable descriptor view.
+  /// Compatible older views are mechanically derived by the registry.
+  SchemaVersion registryVersion = evaluationSchemaVersion();
 
   EvaluationModelDescriptorRef reference() const;
   const ModelConditionCapability *
@@ -389,6 +397,9 @@ llvm::Error
 registerEvaluationModelDescriptor(const EvaluationModelDescriptor &descriptor);
 const EvaluationModelDescriptor *
 findEvaluationModelDescriptor(EvaluationModelKind modelKind);
+const EvaluationModelDescriptor *
+findEvaluationModelDescriptor(SchemaVersion schemaVersion,
+                              EvaluationModelKind modelKind);
 
 /// Canonical binary projection of the descriptor-owned phenomenon, execution,
 /// and interaction capability fields.

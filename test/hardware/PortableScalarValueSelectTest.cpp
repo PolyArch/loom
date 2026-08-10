@@ -1,6 +1,6 @@
 #include "ADG/Builder.h"
 #include "ADG/FuLibrary.h"
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarValueSelect.h"

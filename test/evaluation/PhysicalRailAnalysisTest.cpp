@@ -1,6 +1,7 @@
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Common/ComponentViewDigest.h"
 #include "Config/ResolvedConfig.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
@@ -132,7 +133,8 @@ ResolvedConfig railResolvedConfig() {
   return config;
 }
 
-void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store) {
+void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store,
+                                                  const BlobStore &blobs) {
   const llvm::StringRef test = __func__;
   const Fixture fixture = makeFixture(store);
   if (llvm::Error error = registerCadenceVoltusStaticRailModel())
@@ -145,7 +147,7 @@ void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store) {
                          ->caseSignature,
                      bindings(fixture.hardware), std::nullopt, std::nullopt,
                      conditions(fixture, platform::TechnologyCornerId(0)),
-                     fixture.resolution, store));
+                     fixture.resolution, store, blobs));
   const MetricRequest metric =
       take(test,
            MetricRequest::get(MetricQuery{MetricKind::MaximumVoltageDrop,
@@ -171,10 +173,10 @@ void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store) {
   const EvaluationRequest request =
       take(test, EvaluationRequest::get(evaluationCase, {metric}, {},
                                         std::move(modelBinding), 0,
-                                        fixture.resolution, store));
+                                        fixture.resolution, store, blobs));
   const CompleteRailAnalysisConfiguration projected =
       take(test, projectCompleteRailAnalysisConfiguration(
-                     request, fixture.resolution, store));
+                     request, fixture.resolution, store, blobs));
 
   require(test, projected.model == staticExplicitRailAnalysisModelConfig(),
           "projection changed the descriptor-owned rail model config");
@@ -182,8 +184,8 @@ void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store) {
           "projection changed the exact Voltus provider binding");
   require(test,
           projected.providerBinding.powerGridLibraryEntrypoints ==
-              std::vector<std::string>({"technology.cl",
-                                        "libraries/standard_cells.cl"}),
+              std::vector<std::string>(
+                  {"technology.cl", "libraries/standard_cells.cl"}),
           "projection changed the ordered PGV entrypoints");
   require(
       test,
@@ -208,7 +210,8 @@ void exactRequestProjectsOneCompleteConfiguration(const ArtifactStore &store) {
           "projection changed the explicit activity assumption");
 }
 
-void ownerAndConfigBoundariesRejectInvalidInputs(const ArtifactStore &store) {
+void ownerAndConfigBoundariesRejectInvalidInputs(const ArtifactStore &store,
+                                                 const BlobStore &blobs) {
   const llvm::StringRef test = __func__;
   const Fixture fixture = makeFixture(store);
   if (llvm::Error error = registerCadenceVoltusStaticRailModel())
@@ -222,7 +225,7 @@ void ownerAndConfigBoundariesRejectInvalidInputs(const ArtifactStore &store) {
                           bindings(fixture.hardware), std::nullopt,
                           std::nullopt,
                           conditions(fixture, platform::TechnologyCornerId(1)),
-                          fixture.resolution, store),
+                          fixture.resolution, store, blobs),
       "out of range");
 
   expectErrorContains(
@@ -309,7 +312,8 @@ int main(int argc, char **argv) {
       std::filesystem::absolute(argv[1]).lexically_normal();
   std::filesystem::create_directories(root);
   const ArtifactStore store(root.string());
-  exactRequestProjectsOneCompleteConfiguration(store);
-  ownerAndConfigBoundariesRejectInvalidInputs(store);
+  const BlobStore blobs(root.string());
+  exactRequestProjectsOneCompleteConfiguration(store, blobs);
+  ownerAndConfigBoundariesRejectInvalidInputs(store, blobs);
   return 0;
 }

@@ -132,8 +132,8 @@ invocationFacts(const evaluation::EvaluationRequest &request,
   using namespace evaluation::models;
   using namespace hardware;
 
-  auto analysis =
-      projectCompleteRailAnalysisConfiguration(request, resolution, artifacts);
+  auto analysis = projectCompleteRailAnalysisConfiguration(request, resolution,
+                                                           artifacts, blobs);
   if (!analysis)
     return analysis.takeError();
   const auto subjects = request.subjectBindings().subjects(

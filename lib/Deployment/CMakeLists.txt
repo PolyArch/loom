@@ -2,6 +2,8 @@ add_library(LoomDeployment
   Deployment.cpp
   DeploymentCodec.cpp
   DeploymentPipeline.cpp
+  DeploymentReference.cpp
+  DeploymentSpatialLaunchSelection.cpp
   ExecutableLeaves.cpp
   HardwareConfigurationImage.cpp
   Package.cpp

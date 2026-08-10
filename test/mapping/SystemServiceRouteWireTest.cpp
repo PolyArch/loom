@@ -1,7 +1,9 @@
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Mapping/IR/MappingActivationKey.h"
 #include "Mapping/IR/MappingDialect.h"
+#include "Mapping/IR/MappingSchema.h"
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -19,6 +21,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -128,6 +131,65 @@ Fixture makeFixture() {
                  destination,
                  loom::fabric::FabricPhysicalTraversalRef::pointConnection(
                      source, destination)};
+}
+
+void testSpatialExecutionContextPointSelection(const Fixture &fixture) {
+  const dataflow::RootedGraphLaunchRef graph{
+      fixture.root,
+      dataflow::StaticGraphLaunchRef{fixture.dataflowIdentity,
+                                     dataflow::StaticGraphLaunchId(12)}};
+  const loom::ArtifactRootReference firstMapping{
+      loom::mapping::mappingArtifactSchema.identity.str(),
+      loom::mapping::mappingArtifactSchema.version, identity(97)};
+  const loom::ArtifactRootReference secondMapping{
+      loom::mapping::mappingArtifactSchema.identity.str(),
+      loom::mapping::mappingArtifactSchema.version, identity(129)};
+  const loom::mapping::SpatialExecutionContextKey firstContext{
+      fixture.core, firstMapping.artifact};
+  const loom::mapping::SpatialExecutionContextKey secondContext{
+      loom::fabric::AccCoreOccurrenceRef(9), secondMapping.artifact};
+
+  // x == 4 with s >= 0 and x == 4 with s <= -1 are disjoint symbolic
+  // domains. Fixing only x leaves both legal, so the context is ambiguous.
+  const loom::mapping::SystemPresburgerCell nonnegativeSymbol{
+      1, 1, 0, {{1, 0, -4}}, {{0, 1, 0}}};
+  const loom::mapping::SystemPresburgerCell negativeSymbol{
+      1, 1, 0, {{1, 0, -4}}, {{0, -1, -1}}};
+  const loom::mapping::SystemExecutionContextProjection ambiguous{
+      {},
+      {{graph, firstMapping, firstContext, {nonnegativeSymbol}},
+       {graph, secondMapping, secondContext, {negativeSymbol}}}};
+  requireError(
+      loom::mapping::selectSystemSpatialExecutionContext(ambiguous, graph, {4}),
+      "Spatial context selection fixed launch symbols instead of preserving "
+      "their legal valuations");
+
+  const loom::mapping::SystemExecutionContextProjection unique{
+      {}, {{graph, firstMapping, firstContext, {nonnegativeSymbol}}}};
+  const auto selected = take(
+      loom::mapping::selectSystemSpatialExecutionContext(unique, graph, {4}));
+  require(selected.spatialMapping == firstMapping &&
+              selected.context == firstContext,
+          "Spatial context selection did not return the unique mapped owner");
+  requireError(
+      loom::mapping::selectSystemSpatialExecutionContext(unique, graph, {5}),
+      "Spatial context selection accepted a point outside its domain");
+  requireError(
+      loom::mapping::selectSystemSpatialExecutionContext(unique, graph, {}),
+      "Spatial context selection accepted the wrong coordinate rank");
+  requireError(loom::mapping::selectSystemSpatialExecutionContext(
+                   unique, graph,
+                   {static_cast<std::uint64_t>(
+                        std::numeric_limits<std::int64_t>::max()) +
+                    1}),
+               "Spatial context selection truncated an unsigned coordinate");
+  const dataflow::RootedGraphLaunchRef foreignGraph{
+      fixture.root,
+      dataflow::StaticGraphLaunchRef{fixture.dataflowIdentity,
+                                     dataflow::StaticGraphLaunchId(13)}};
+  requireError(loom::mapping::selectSystemSpatialExecutionContext(
+                   unique, foreignGraph, {4}),
+               "Spatial context selection accepted an unbound graph launch");
 }
 
 mlir::OwningOpRef<mlir::Operation *>
@@ -415,6 +477,7 @@ int main() {
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   context.getOrLoadDialect<::mapping::MappingDialect>();
   const Fixture fixture = makeFixture();
+  testSpatialExecutionContextPointSelection(fixture);
   testSystemResourceUseWire(context, fixture);
   const dataflow::RootedGraphLaunchRef rootedGraph{
       fixture.root,

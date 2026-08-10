@@ -159,7 +159,7 @@ void retiredExecutionBecomesEvidenceOutput() {
 
   auto prepared = take(loom::evaluation::models::prepareDfgSimulationEvaluation(
       dataflowRef, workloadRef, runtimeRef, loom::defaultResolvedConfig(),
-      store));
+      store, blobs));
   auto limited = take(loom::evaluation::models::evaluateDfgSimulation(
       prepared, {1, std::nullopt}, store, blobs));
   require(limited.outcomeKind() ==
@@ -180,7 +180,7 @@ void retiredExecutionBecomesEvidenceOutput() {
   const loom::ArtifactRootReference executionRef =
       evidence.outputBindings().front().artifacts.front();
   auto execution = take(loom::sim::importSimulationExecution(
-      executionRef, prepared.resolution, store));
+      executionRef, prepared.resolution, store, blobs));
   require(execution.request() ==
               loom::evaluation::evaluationRequestReference(prepared.request),
           "execution is not coupled to the exact EvaluationRequest");
@@ -188,15 +188,15 @@ void retiredExecutionBecomesEvidenceOutput() {
       std::holds_alternative<loom::sim::RetiredExecution>(execution.terminal()),
       "successful DFG run did not retain a Retired terminal");
 
-  require(execution.functionalObservations().valueResults.size() == 1,
+  require(execution.spatialFunctionalObservations().valueResults.size() == 1,
           "execution value observations are not total");
   const auto *published = std::get_if<loom::sim::PublishedValueResult>(
-      &execution.functionalObservations().valueResults.front());
+      &execution.spatialFunctionalObservations().valueResults.front());
   require(published && published->value.lanes.size() == 1 &&
               published->value.lanes.front().bits.getZExtValue() == 16,
           "execution did not preserve the real DFG result");
 
-  const auto &progress = execution.progressObservations();
+  const auto &progress = execution.spatialProgressObservations();
   require(progress.launchAccepted.referenceCycle.isZero() &&
               progress.graphRetirementVisible.has_value() &&
               progress.graphRetirementVisible->referenceCycle.numerator() > 0 &&
@@ -225,7 +225,7 @@ void retiredExecutionBecomesEvidenceOutput() {
   const loom::ArtifactRootReference evidenceRef =
       take(loom::evaluation::publishEvaluationEvidence(evidence, store));
   auto importedEvidence = take(loom::evaluation::importEvaluationEvidence(
-      evidenceRef, prepared.resolution, store));
+      evidenceRef, prepared.resolution, store, blobs));
   require(importedEvidence.outputBindings() == evidence.outputBindings(),
           "Evidence strict import changed the execution binding");
 }

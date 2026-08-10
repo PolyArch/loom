@@ -1,4 +1,4 @@
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"

@@ -1,5 +1,5 @@
 #include "ADG/Builder.h"
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 #include "ConfigurationTransportTestSupport.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
@@ -482,10 +482,10 @@ makeCommonConfiguration(llvm::StringRef test, const FabricFixture &fixture,
     }
     const auto physical =
         qualifyPeField(test, spatialCore, descriptor.reference);
-    const auto slot = take(
-        test, loom::fabric::qualifyFabricConfigurationSlot(
-                  physical,
-                  loom::fabric::FabricStaticConfigurationResidency{}));
+    const auto slot =
+        take(test,
+             loom::fabric::qualifyFabricConfigurationSlot(
+                 physical, loom::fabric::FabricStaticConfigurationResidency{}));
     const ProgrammingUnit *fieldOwner =
         findProgrammingUnit(test, abi.abi(), slot);
     if (owner)
@@ -494,9 +494,8 @@ makeCommonConfiguration(llvm::StringRef test, const FabricFixture &fixture,
     else
       owner = fieldOwner;
     const auto bytes = take(test, peSchema.encode(descriptor.reference, value));
-    values.push_back(
-        {slot, std::vector<std::uint8_t>(bytes.bytes().begin(),
-                                         bytes.bytes().end())});
+    values.push_back({slot, std::vector<std::uint8_t>(bytes.bytes().begin(),
+                                                      bytes.bytes().end())});
   }
 
   auto fuActivation =
@@ -531,10 +530,10 @@ makeCommonConfiguration(llvm::StringRef test, const FabricFixture &fixture,
       take(test, loom::hardware::test::qualifyPhysicalConfigurationField(
                      fixture.physicalOccurrence,
                      resolved.configurationFieldSchema.front().ordinal));
-  const auto operationSlot = take(
-      test, loom::fabric::qualifyFabricConfigurationSlot(
-                operationField,
-                loom::fabric::FabricStaticConfigurationResidency{}));
+  const auto operationSlot =
+      take(test, loom::fabric::qualifyFabricConfigurationSlot(
+                     operationField,
+                     loom::fabric::FabricStaticConfigurationResidency{}));
   const ProgrammingUnit *operationOwner =
       findProgrammingUnit(test, abi.abi(), operationSlot);
   if (owner)

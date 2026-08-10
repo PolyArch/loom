@@ -1,5 +1,5 @@
-#ifndef LOOM_TEST_HARDWARE_CONFIGURATIONABI2TESTSUPPORT_H
-#define LOOM_TEST_HARDWARE_CONFIGURATIONABI2TESTSUPPORT_H
+#ifndef LOOM_TEST_HARDWARE_CONFIGURATIONABITESTSUPPORT_H
+#define LOOM_TEST_HARDWARE_CONFIGURATIONABITESTSUPPORT_H
 
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
@@ -40,4 +40,4 @@ llvm::Expected<ConfigurationABIDraft> makeCompleteConfigurationABIDraft(
 
 } // namespace loom::hardware::test
 
-#endif // LOOM_TEST_HARDWARE_CONFIGURATIONABI2TESTSUPPORT_H
+#endif // LOOM_TEST_HARDWARE_CONFIGURATIONABITESTSUPPORT_H

@@ -336,6 +336,18 @@ target_link_libraries(loom-simulator-simulation-execution-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-simulator-system-simulation-artifact-test
+  SystemSimulationArtifactTest.cpp
+)
+
+target_link_libraries(loom-simulator-system-simulation-artifact-test PRIVATE
+  LoomDeploymentTestSupport
+  LoomSimulator
+  LoomEvaluation
+  LoomConfig
+  LLVMSupport
+)
+
 add_executable(loom-simulator-dfg-evaluation-test
   DFGEvaluationTest.cpp
 )

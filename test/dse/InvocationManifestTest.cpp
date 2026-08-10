@@ -232,6 +232,7 @@ void registerOwner() {
 }
 
 ArtifactRootReference publishEvidence(const ArtifactStore &store,
+                                      const BlobStore &blobs,
                                       const ArtifactRootReference &subject,
                                       std::uint64_t observation) {
   evaluation::CaseArtifactResolution resolution =
@@ -242,7 +243,7 @@ ArtifactRootReference publishEvidence(const ArtifactStore &store,
   evaluation::EvaluationCase evaluationCase =
       take(evaluation::EvaluationCase::get(
           evidenceSignatureRef(), std::move(subjects), std::nullopt,
-          std::nullopt, {}, resolution, store));
+          std::nullopt, {}, resolution, store, blobs));
   evaluation::MetricRequest metric = take(evaluation::MetricRequest::get(
       {evaluation::MetricKind::Runtime,
        evaluation::EvaluationScope{evaluation::ScopeFormRef(0), {}}},
@@ -253,7 +254,7 @@ ArtifactRootReference publishEvidence(const ArtifactStore &store,
   evaluation::EvaluationRequest request =
       take(evaluation::EvaluationRequest::get(evaluationCase, {metric}, {},
                                               std::move(model), 0, resolution,
-                                              store));
+                                              store, blobs));
   take(evaluation::publishEvaluationRequest(request, store));
   evaluation::EvaluationEvidence evidence =
       take(evaluation::EvaluationEvidence::get(
@@ -264,7 +265,7 @@ ArtifactRootReference publishEvidence(const ArtifactStore &store,
                     take(evaluation::DecimalValue::get(observation, 0))},
                 {}}},
               {}},
-          resolution, store));
+          resolution, store, blobs));
   return take(evaluation::publishEvaluationEvidence(evidence, store));
 }
 
@@ -325,7 +326,7 @@ Fixture makeFixture(const ArtifactStore &store, const BlobStore &blobs,
   }
   DsePlanGenerateInvocationRecords records =
       takeDsePlanGenerateInvocationRecords(std::move(execution));
-  ArtifactRootReference evidence = publishEvidence(store, source, 0x21);
+  ArtifactRootReference evidence = publishEvidence(store, blobs, source, 0x21);
   return Fixture(std::move(config), std::move(source), std::move(evidence),
                  std::move(records), selected);
 }
@@ -350,7 +351,7 @@ void testRunKeyAndRoundTrip(const ArtifactStore &store,
     fail("canonical input order changed the run key");
 
   const ArtifactRootReference secondEvidence =
-      publishEvidence(store, fixture.source, 0x22);
+      publishEvidence(store, blobs, fixture.source, 0x22);
   InvocationManifest manifest = take(InvocationManifest::get(
       std::move(first), 7, std::nullopt, fixture.config, fixture.records,
       InvocationCompletedSelection{

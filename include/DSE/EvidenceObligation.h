@@ -13,7 +13,8 @@
 
 namespace loom {
 class ArtifactStore;
-}
+class BlobStore;
+} // namespace loom
 
 namespace loom::dse {
 
@@ -161,7 +162,7 @@ private:
       llvm::ArrayRef<EvidenceAcquisitionInputBinding> inputBindings,
       std::uint64_t replicateIndex,
       const evaluation::CaseArtifactResolution &resolution,
-      const ArtifactStore &artifactStore);
+      const ArtifactStore &artifactStore, const BlobStore &blobStore);
 };
 
 llvm::Expected<EvidenceObligationTemplate>
@@ -173,7 +174,7 @@ llvm::Expected<evaluation::EvaluationRequest> instantiateEvidenceObligation(
     llvm::ArrayRef<EvidenceAcquisitionInputBinding> inputBindings,
     std::uint64_t replicateIndex,
     const evaluation::CaseArtifactResolution &resolution,
-    const ArtifactStore &artifactStore);
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
 } // namespace loom::dse
 

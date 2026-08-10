@@ -1,6 +1,7 @@
 #include "Evaluation/Metric.h"
 #include "Evaluation/CaseText.h"
 #include "Evaluation/MetricText.h"
+#include "Evaluation/ProductionRegistry.h"
 #include "QueryText.h"
 
 #include "CanonicalSupport.h"
@@ -44,24 +45,57 @@ constexpr CensoredReasonPolicy subjectDidNotCompletePolicy{
     CensoredReason::SubjectDidNotComplete, true, false};
 
 const ScopeFormDescriptor cycleBasedWholeCaseScopeForms[] = {
-    {ScopeFormRef(0), "the entire exact Evaluation case", {},
-     WholeExactCaseScope{}, nullptr,
+    {ScopeFormRef(0),
+     "the entire exact Evaluation case",
+     {},
+     WholeExactCaseScope{},
+     nullptr,
      ReferenceCycleRequirement::ExactCaseUniqueReferenceCycle},
 };
 
 const ScopeFormDescriptor runtimeWholeCaseScopeForms[] = {
-    {ScopeFormRef(0), "the entire exact Evaluation case", {},
-     WholeExactCaseScope{}, nullptr, ReferenceCycleRequirement::NotRequired},
+    {ScopeFormRef(0),
+     "the entire exact Evaluation case",
+     {},
+     WholeExactCaseScope{},
+     nullptr,
+     ReferenceCycleRequirement::NotRequired},
 };
 
-const std::array<MetricDescriptor, 8> metricDescriptors = {{
+const ClosedDecimalIntervalMetricDomain predictionErrorDomain{
+    llvm::cantFail(DecimalValue::get(0, 0)),
+    llvm::cantFail(DecimalValue::get(2, 0))};
+
+ConditionApplicabilityPattern quantilePattern(EvaluationCaseKind caseKind) {
+  return ConditionApplicabilityPattern{
+      EvaluationConditionKind::Quantile,
+      {llvm::cantFail(EvaluationCaseSignatureRef::get(evaluationSchemaVersion(),
+                                                      caseKind)),
+       {}}};
+}
+
+llvm::ArrayRef<ConditionApplicabilityPattern> fpaQuantilePatterns() {
+  static const std::array<ConditionApplicabilityPattern, 1> patterns = {
+      quantilePattern(builtinEvaluationCaseKind(
+          BuiltinEvaluationCase::FpaModelParameterCalibration))};
+  return patterns;
+}
+
+llvm::ArrayRef<ConditionApplicabilityPattern> runtimeQuantilePatterns() {
+  static const std::array<ConditionApplicabilityPattern, 1> patterns = {
+      quantilePattern(builtinEvaluationCaseKind(
+          BuiltinEvaluationCase::SystemRuntimeModelParameterCalibration))};
+  return patterns;
+}
+
+const std::array<MetricDescriptor, 13> metricDescriptors = {{
     {MetricKind::CycleCount,
      "cycle_count",
      "Number of subject clock cycles required by the observed work.",
      MetricValueKind::Integer,
      MetricDimension::Cycle,
      "cycle",
-     MetricValueDomain::NonNegative,
+     NonNegativeMetricDomain{},
      cycleBasedWholeCaseScopeForms,
      {},
      allObservationForms,
@@ -72,7 +106,7 @@ const std::array<MetricDescriptor, 8> metricDescriptors = {{
      MetricValueKind::Decimal,
      MetricDimension::Time,
      "second",
-     MetricValueDomain::Positive,
+     PositiveMetricDomain{},
      cycleBasedWholeCaseScopeForms,
      {},
      nonCensoredObservationForms,
@@ -83,7 +117,7 @@ const std::array<MetricDescriptor, 8> metricDescriptors = {{
      MetricValueKind::Decimal,
      MetricDimension::Time,
      "second",
-     MetricValueDomain::NonNegative,
+     NonNegativeMetricDomain{},
      runtimeWholeCaseScopeForms,
      {},
      allObservationForms,
@@ -95,7 +129,7 @@ const std::array<MetricDescriptor, 8> metricDescriptors = {{
      MetricValueKind::Decimal,
      MetricDimension::Frequency,
      "hertz",
-     MetricValueDomain::Positive,
+     PositiveMetricDomain{},
      runtimeWholeCaseScopeForms,
      {},
      nonCensoredObservationForms,
@@ -107,7 +141,7 @@ const std::array<MetricDescriptor, 8> metricDescriptors = {{
      MetricValueKind::Decimal,
      MetricDimension::Area,
      "square_meter",
-     MetricValueDomain::NonNegative,
+     NonNegativeMetricDomain{},
      runtimeWholeCaseScopeForms,
      {},
      nonCensoredObservationForms,
@@ -119,7 +153,7 @@ const std::array<MetricDescriptor, 8> metricDescriptors = {{
      MetricValueKind::Decimal,
      MetricDimension::Power,
      "watt",
-     MetricValueDomain::NonNegative,
+     NonNegativeMetricDomain{},
      runtimeWholeCaseScopeForms,
      {},
      nonCensoredObservationForms,
@@ -131,7 +165,7 @@ const std::array<MetricDescriptor, 8> metricDescriptors = {{
      MetricValueKind::Decimal,
      MetricDimension::Power,
      "watt",
-     MetricValueDomain::NonNegative,
+     NonNegativeMetricDomain{},
      runtimeWholeCaseScopeForms,
      {},
      nonCensoredObservationForms,
@@ -143,11 +177,38 @@ const std::array<MetricDescriptor, 8> metricDescriptors = {{
      MetricValueKind::Decimal,
      MetricDimension::Voltage,
      "volt",
-     MetricValueDomain::NonNegative,
+     NonNegativeMetricDomain{},
      runtimeWholeCaseScopeForms,
      {},
      nonCensoredObservationForms,
      std::nullopt},
+    {MetricKind::LimitingClockFrequencyPredictionError,
+     "limiting_clock_frequency_prediction_error",
+     "Symmetric relative error of a limiting-clock-frequency prediction.",
+     MetricValueKind::Decimal, MetricDimension::Dimensionless, "one",
+     predictionErrorDomain, runtimeWholeCaseScopeForms, fpaQuantilePatterns(),
+     nonCensoredObservationForms, std::nullopt, fpaQuantilePatterns()},
+    {MetricKind::TotalAreaPredictionError, "total_area_prediction_error",
+     "Symmetric relative error of a total-area prediction.",
+     MetricValueKind::Decimal, MetricDimension::Dimensionless, "one",
+     predictionErrorDomain, runtimeWholeCaseScopeForms, fpaQuantilePatterns(),
+     nonCensoredObservationForms, std::nullopt, fpaQuantilePatterns()},
+    {MetricKind::DynamicPowerPredictionError, "dynamic_power_prediction_error",
+     "Symmetric relative error of a dynamic-power prediction.",
+     MetricValueKind::Decimal, MetricDimension::Dimensionless, "one",
+     predictionErrorDomain, runtimeWholeCaseScopeForms, fpaQuantilePatterns(),
+     nonCensoredObservationForms, std::nullopt, fpaQuantilePatterns()},
+    {MetricKind::LeakagePowerPredictionError, "leakage_power_prediction_error",
+     "Symmetric relative error of a leakage-power prediction.",
+     MetricValueKind::Decimal, MetricDimension::Dimensionless, "one",
+     predictionErrorDomain, runtimeWholeCaseScopeForms, fpaQuantilePatterns(),
+     nonCensoredObservationForms, std::nullopt, fpaQuantilePatterns()},
+    {MetricKind::RuntimePredictionError, "runtime_prediction_error",
+     "Symmetric relative error of a whole-system runtime prediction.",
+     MetricValueKind::Decimal, MetricDimension::Dimensionless, "one",
+     predictionErrorDomain, runtimeWholeCaseScopeForms,
+     runtimeQuantilePatterns(), nonCensoredObservationForms, std::nullopt,
+     runtimeQuantilePatterns()},
 }};
 
 template <typename Enum>
@@ -186,11 +247,29 @@ llvm::Error validateValue(const MetricDescriptor &descriptor,
     return evaluationError(descriptor.spelling + " requires integer values");
   if (descriptor.valueKind == MetricValueKind::Decimal && isInteger)
     return evaluationError(descriptor.spelling + " requires decimal values");
-  if (isNegative(value))
+  if (std::holds_alternative<NonNegativeMetricDomain>(descriptor.valueDomain)) {
+    if (isNegative(value))
+      return evaluationError(descriptor.spelling +
+                             " requires non-negative values");
+    return llvm::Error::success();
+  }
+  if (std::holds_alternative<PositiveMetricDomain>(descriptor.valueDomain)) {
+    if (isNegative(value) || isZero(value))
+      return evaluationError(descriptor.spelling + " requires positive values");
+    return llvm::Error::success();
+  }
+
+  if (isInteger)
     return evaluationError(descriptor.spelling +
-                           " requires non-negative values");
-  if (descriptor.valueDomain == MetricValueDomain::Positive && isZero(value))
-    return evaluationError(descriptor.spelling + " requires positive values");
+                           " requires decimal interval values");
+  const auto &domain =
+      std::get<ClosedDecimalIntervalMetricDomain>(descriptor.valueDomain);
+  const MetricValue lower = domain.lower;
+  const MetricValue upper = domain.upper;
+  if (compareMetricValue(value, lower) < 0 ||
+      compareMetricValue(value, upper) > 0)
+    return evaluationError(descriptor.spelling +
+                           " is outside its closed decimal interval");
   return llvm::Error::success();
 }
 
@@ -518,18 +597,19 @@ llvm::Error validateMetricScopeAdmissibility(
             caseSignature.wholeCaseCycleBasis))
       return evaluationError("case signature '" + caseSignature.spelling +
                              "' requires a unique whole-case reference cycle "
-                             "for metric '" + toString(metric) + "'");
+                             "for metric '" +
+                             toString(metric) + "'");
     return llvm::Error::success();
   }
   llvm_unreachable("unknown ReferenceCycleRequirement");
 }
 
 llvm::Expected<std::optional<ReferenceCycleBasis>>
-validateMetricScopeAdmissibility(
-    MetricKind metric, ScopeFormRef form,
-    const EvaluationCase &evaluationCase,
-    const CaseArtifactResolution &resolution,
-    const ArtifactStore &artifactStore) {
+validateMetricScopeAdmissibility(MetricKind metric, ScopeFormRef form,
+                                 const EvaluationCase &evaluationCase,
+                                 const CaseArtifactResolution &resolution,
+                                 const ArtifactStore &artifactStore,
+                                 const BlobStore &blobStore) {
   const EvaluationCaseSignatureDescriptor *signature =
       evaluationCase.signature().descriptor();
   if (!signature)
@@ -544,8 +624,8 @@ validateMetricScopeAdmissibility(
     return std::nullopt;
   // ExactCaseUniqueReferenceCycle: the case-signature registry resolves the
   // basis once and the metric registry returns the validated basis.
-  auto basis =
-      resolveReferenceCycleBasis(evaluationCase, resolution, artifactStore);
+  auto basis = resolveReferenceCycleBasis(evaluationCase, resolution,
+                                          artifactStore, blobStore);
   if (!basis)
     return basis.takeError();
   return std::optional<ReferenceCycleBasis>{std::move(*basis)};
@@ -630,25 +710,22 @@ ObservationForm observationForm(const MetricObservationValue &observation) {
   return ObservationForm::NotApplicable;
 }
 
-llvm::Error validateMetricObservationValue(
-    MetricKind metric, UncertaintyKind uncertainty,
-    const MetricObservationValue &observation) {
+llvm::Error
+validateMetricObservationValue(MetricKind metric, UncertaintyKind uncertainty,
+                               const MetricObservationValue &observation) {
   const MetricDescriptor &descriptor = metricDescriptor(metric);
   const ObservationForm form = observationForm(observation);
   if (!descriptor.permitsObservationForm(form))
     return evaluationError(descriptor.spelling + " does not permit " +
                            toString(form) + " observations");
 
-  if (const auto *point =
-          std::get_if<PointObservation>(&observation))
+  if (const auto *point = std::get_if<PointObservation>(&observation))
     return validateValue(descriptor, point->value);
 
-  if (const auto *interval =
-          std::get_if<IntervalObservation>(&observation))
+  if (const auto *interval = std::get_if<IntervalObservation>(&observation))
     return validateOrderedValues(descriptor, interval->lower, interval->upper);
 
-  if (const auto *censored =
-          std::get_if<CensoredObservation>(&observation)) {
+  if (const auto *censored = std::get_if<CensoredObservation>(&observation)) {
     if (!descriptor.censoredReasonPolicy ||
         descriptor.censoredReasonPolicy->reason != censored->reason)
       return evaluationError(descriptor.spelling +

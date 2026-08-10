@@ -1,4 +1,5 @@
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
+#include "Evaluation/ProductionRegistry.h"
 
 #include "AnalyticModelSupport.h"
 #include "StructuredEvaluationInvocationCacheInternal.h"
@@ -20,14 +21,16 @@
 namespace loom::evaluation::models {
 namespace {
 
-constexpr EvaluationCaseKind kCaseKind(1);
-constexpr EvaluationModelKind kModelKind(3);
+constexpr BuiltinEvaluationCase kCase =
+    BuiltinEvaluationCase::CanonicalDataflowWithFabric;
+constexpr BuiltinEvaluationModel kModel =
+    BuiltinEvaluationModel::CanonicalDataflowFabricLowConfidence;
 constexpr CaseSubjectRoleRef kCanonicalDataflowRole(0);
 constexpr CaseSubjectRoleRef kFabricRole(1);
 
 EvaluationCaseSignatureRef caseSignatureRef() {
-  return llvm::cantFail(
-      EvaluationCaseSignatureRef::get(evaluationSchemaVersion(), kCaseKind));
+  return llvm::cantFail(EvaluationCaseSignatureRef::get(
+      evaluationSchemaVersion(), builtinEvaluationCaseKind(kCase)));
 }
 
 const ArtifactSchemaDescriptor *const kDataflowSchemas[] = {
@@ -41,7 +44,7 @@ const CaseSubjectRoleDescriptor kSubjectRoles[] = {
      nullptr},
 };
 const EvaluationCaseSignatureDescriptor kCaseSignature{
-    kCaseKind,
+    builtinEvaluationCaseKind(kCase),
     "canonical_dataflow_with_fabric",
     "One exact Canonical Dataflow Program evaluated against one exact Fabric.",
     kSubjectRoles,
@@ -68,7 +71,7 @@ const MetricCapability kMetricCapabilities[] = {
 const ModeledPhenomenon kModeledPhenomena[] = {
     ModeledPhenomenon::CanonicalDataflow, ModeledPhenomenon::SpatialResources};
 const EvaluationModelDescriptor kModelDescriptor{
-    kModelKind,
+    builtinEvaluationModelKind(kModel),
     "canonical_dataflow_fabric_low_confidence",
     "loom.canonical_dataflow_fabric.low_confidence.v2",
     caseSignatureRef(),
@@ -146,8 +149,7 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
 }
 
 const EvaluationModelProvider kProvider{
-    kModelDescriptor.reference(),
-    EvaluationModelInProcessProvider{&evaluate}};
+    kModelDescriptor.reference(), EvaluationModelInProcessProvider{&evaluate}};
 
 } // namespace
 
@@ -224,7 +226,7 @@ llvm::Expected<PreparedCanonicalDataflowFabricEvaluation>
 prepareCanonicalDataflowFabricEvaluation(
     const ArtifactRootReference &canonicalDataflow,
     const ArtifactRootReference &fabricReference, const ResolvedConfig &config,
-    const ArtifactStore &artifactStore) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   if (llvm::Error error = registerCanonicalDataflowFabricAnalyticModel())
     return std::move(error);
 
@@ -240,7 +242,7 @@ prepareCanonicalDataflowFabricEvaluation(
     return bindings.takeError();
   auto evaluationCase = EvaluationCase::get(
       caseSignatureRef(), std::move(*bindings), std::nullopt, std::nullopt, {},
-      *resolution, artifactStore);
+      *resolution, artifactStore, blobStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
   std::vector<MetricRequest> metrics;
@@ -259,7 +261,7 @@ prepareCanonicalDataflowFabricEvaluation(
     return modelBinding.takeError();
   auto request = EvaluationRequest::get(*evaluationCase, metrics, {},
                                         std::move(*modelBinding), 0,
-                                        *resolution, artifactStore);
+                                        *resolution, artifactStore, blobStore);
   if (!request)
     return request.takeError();
   auto published = publishEvaluationRequest(*request, artifactStore);

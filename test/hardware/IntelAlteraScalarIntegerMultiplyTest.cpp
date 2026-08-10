@@ -1,5 +1,5 @@
 #include "Hardware/RTL/Providers/IntelAlteraScalarIntegerMultiply.h"
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarIntegerMultiply.h"

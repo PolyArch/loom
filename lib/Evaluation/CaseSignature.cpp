@@ -1,4 +1,5 @@
 #include "Evaluation/Case.h"
+#include "Evaluation/ProductionRegistry.h"
 
 #include "CanonicalSupport.h"
 
@@ -6,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -17,11 +19,42 @@ namespace {
 
 using detail::evaluationError;
 
-constexpr SchemaVersion evaluationSchema{2, 0};
+constexpr SchemaVersion evaluationSchema20{2, 0};
+constexpr SchemaVersion evaluationSchema21{2, 1};
+constexpr std::uint32_t lastCaseKind20 =
+    builtinEvaluationCaseKind(
+        BuiltinEvaluationCase::CanonicalDataflowSourceFunctionalComparison)
+        .ordinal();
 
-std::vector<const EvaluationCaseSignatureDescriptor *> &caseSignatures() {
-  static std::vector<const EvaluationCaseSignatureDescriptor *> descriptors;
+bool isSupportedEvaluationSchema(SchemaVersion version) {
+  return version == evaluationSchema20 || version == evaluationSchema21;
+}
+
+bool schemaContainsCaseKind(SchemaVersion version,
+                            EvaluationCaseKind caseKind) {
+  return version == evaluationSchema21 ||
+         (version == evaluationSchema20 &&
+          caseKind.ordinal() <= lastCaseKind20);
+}
+
+struct CaseSignatureRegistryEntry {
+  SchemaVersion version;
+  const EvaluationCaseSignatureDescriptor *descriptor;
+};
+
+struct OwnedCaseSignatureView {
+  std::vector<ConditionApplicabilityPattern> permittedBaseConditions;
+  EvaluationCaseSignatureDescriptor descriptor;
+};
+
+std::vector<CaseSignatureRegistryEntry> &caseSignatures() {
+  static std::vector<CaseSignatureRegistryEntry> descriptors;
   return descriptors;
+}
+
+std::deque<OwnedCaseSignatureView> &ownedCaseSignatureViews() {
+  static std::deque<OwnedCaseSignatureView> views;
+  return views;
 }
 
 std::mutex &caseSignatureMutex() {
@@ -96,7 +129,7 @@ validateBasePatternSet(const EvaluationCaseSignatureDescriptor &descriptor) {
 
 } // namespace
 
-SchemaVersion evaluationSchemaVersion() { return evaluationSchema; }
+SchemaVersion evaluationSchemaVersion() { return evaluationSchema21; }
 
 const CaseSubjectRoleDescriptor *
 EvaluationCaseSignatureDescriptor::findSubjectRole(
@@ -110,21 +143,31 @@ EvaluationCaseSignatureDescriptor::findSubjectRole(
 llvm::Expected<EvaluationCaseSignatureRef>
 EvaluationCaseSignatureRef::get(SchemaVersion schemaVersion,
                                 EvaluationCaseKind caseKind) {
-  if (schemaVersion != evaluationSchema)
+  if (!isSupportedEvaluationSchema(schemaVersion))
     return evaluationError("unsupported evaluation schema version '" +
                            formatSchemaVersion(schemaVersion) + "'");
+  if (!schemaContainsCaseKind(schemaVersion, caseKind))
+    return evaluationError(
+        "evaluation schema version '" + formatSchemaVersion(schemaVersion) +
+        "' does not contain case kind " + std::to_string(caseKind.ordinal()));
   return EvaluationCaseSignatureRef(schemaVersion, caseKind);
 }
 
 const EvaluationCaseSignatureDescriptor *
 EvaluationCaseSignatureRef::descriptor() const {
-  return findEvaluationCaseSignature(caseKind_);
+  if (!schemaContainsCaseKind(schemaVersion_, caseKind_))
+    return nullptr;
+  return findEvaluationCaseSignature(schemaVersion_, caseKind_);
 }
 
 llvm::Error registerEvaluationCaseSignature(
     const EvaluationCaseSignatureDescriptor &descriptor) {
+  if (descriptor.registryVersion != evaluationSchemaVersion())
+    return evaluationError(
+        "authored case descriptors must use the current registry version");
   llvm::Expected<EvaluationCaseSignatureRef> signatureRef =
-      EvaluationCaseSignatureRef::get(evaluationSchema, descriptor.caseKind);
+      EvaluationCaseSignatureRef::get(evaluationSchemaVersion(),
+                                      descriptor.caseKind);
   if (!signatureRef)
     return signatureRef.takeError();
   if (descriptor.spelling.empty())
@@ -162,7 +205,10 @@ llvm::Error registerEvaluationCaseSignature(
     return error;
 
   std::lock_guard<std::mutex> lock(caseSignatureMutex());
-  for (const EvaluationCaseSignatureDescriptor *existing : caseSignatures()) {
+  for (const CaseSignatureRegistryEntry &entry : caseSignatures()) {
+    if (entry.version != evaluationSchemaVersion())
+      continue;
+    const EvaluationCaseSignatureDescriptor *existing = entry.descriptor;
     if (existing->caseKind == descriptor.caseKind) {
       if (existing == &descriptor)
         return llvm::Error::success();
@@ -175,23 +221,51 @@ llvm::Error registerEvaluationCaseSignature(
                              "signature '" +
                              descriptor.spelling + "'");
   }
-  caseSignatures().push_back(&descriptor);
+  caseSignatures().push_back({evaluationSchemaVersion(), &descriptor});
+
+  if (schemaContainsCaseKind(evaluationSchema20, descriptor.caseKind)) {
+    OwnedCaseSignatureView view{{}, descriptor};
+    view.permittedBaseConditions.reserve(
+        descriptor.permittedBaseConditions.size());
+    for (const ConditionApplicabilityPattern &pattern :
+         descriptor.permittedBaseConditions) {
+      ConditionApplicabilityPattern projected = pattern;
+      projected.targets.caseSignature =
+          llvm::cantFail(EvaluationCaseSignatureRef::get(evaluationSchema20,
+                                                         descriptor.caseKind));
+      view.permittedBaseConditions.push_back(std::move(projected));
+    }
+    view.descriptor = descriptor;
+    view.descriptor.registryVersion = evaluationSchema20;
+    view.descriptor.permittedBaseConditions = view.permittedBaseConditions;
+    ownedCaseSignatureViews().push_back(std::move(view));
+    caseSignatures().push_back(
+        {evaluationSchema20, &ownedCaseSignatureViews().back().descriptor});
+  }
   return llvm::Error::success();
 }
 
 const EvaluationCaseSignatureDescriptor *
 findEvaluationCaseSignature(EvaluationCaseKind caseKind) {
+  return findEvaluationCaseSignature(evaluationSchemaVersion(), caseKind);
+}
+
+const EvaluationCaseSignatureDescriptor *
+findEvaluationCaseSignature(SchemaVersion schemaVersion,
+                            EvaluationCaseKind caseKind) {
   std::lock_guard<std::mutex> lock(caseSignatureMutex());
-  for (const EvaluationCaseSignatureDescriptor *descriptor : caseSignatures())
-    if (descriptor->caseKind == caseKind)
-      return descriptor;
+  for (const CaseSignatureRegistryEntry &entry : caseSignatures())
+    if (entry.version == schemaVersion &&
+        entry.descriptor->caseKind == caseKind)
+      return entry.descriptor;
   return nullptr;
 }
 
 llvm::Expected<ReferenceCycleBasis>
 resolveReferenceCycleBasis(const EvaluationCase &evaluationCase,
                            const CaseArtifactResolution &resolution,
-                           const ArtifactStore &artifactStore) {
+                           const ArtifactStore &artifactStore,
+                           const BlobStore &blobStore) {
   const EvaluationCaseSignatureDescriptor *descriptor =
       evaluationCase.signature().descriptor();
   if (!descriptor)
@@ -206,7 +280,8 @@ resolveReferenceCycleBasis(const EvaluationCase &evaluationCase,
 
   const ExactSubjectCycle &exact =
       std::get<ExactSubjectCycle>(descriptor->wholeCaseCycleBasis);
-  auto target = exact.resolve(evaluationCase, resolution, artifactStore);
+  auto target =
+      exact.resolve(evaluationCase, resolution, artifactStore, blobStore);
   if (!target)
     return target.takeError();
   if (llvm::Error error = validateSubjectTargetRef(
@@ -296,14 +371,13 @@ bool CaseArtifactResolution::reaches(const Entry &entry,
                    dependency) != entry.dependencyClosure.end();
 }
 
-llvm::Expected<EvaluationCase>
-EvaluationCase::get(EvaluationCaseSignatureRef signature,
-                    EvaluationSubjectBindings bindings,
-                    std::optional<ArtifactRootReference> workload,
-                    std::optional<ArtifactRootReference> runtimeInput,
-                    llvm::ArrayRef<EvaluationCondition> baseConditions,
-                    const CaseArtifactResolution &resolution,
-                    const ArtifactStore &artifactStore) {
+llvm::Expected<EvaluationCase> EvaluationCase::get(
+    EvaluationCaseSignatureRef signature, EvaluationSubjectBindings bindings,
+    std::optional<ArtifactRootReference> workload,
+    std::optional<ArtifactRootReference> runtimeInput,
+    llvm::ArrayRef<EvaluationCondition> baseConditions,
+    const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   const EvaluationCaseSignatureDescriptor *descriptor = signature.descriptor();
   if (!descriptor)
     return evaluationError("unregistered evaluation case kind " +
@@ -349,19 +423,6 @@ EvaluationCase::get(EvaluationCaseSignatureRef signature,
           runtimeInput, resolution))
     return std::move(error);
 
-  for (const CaseSubjectRoleDescriptor &role : descriptor->subjectRoles) {
-    if (!role.verifyCrossRoleCompatibility)
-      continue;
-    for (const ArtifactRootReference &subject : bindings.subjects(role.role))
-      if (llvm::Error error =
-              role.verifyCrossRoleCompatibility(subject, bindings, resolution))
-        return std::move(error);
-  }
-  if (descriptor->verifyWorkloadCompatibility)
-    if (llvm::Error error = descriptor->verifyWorkloadCompatibility(
-            bindings, workload, runtimeInput, resolution))
-      return std::move(error);
-
   const CaseTargetContext context(*descriptor, signature, bindings, resolution,
                                   artifactStore);
   llvm::Expected<std::vector<EvaluationCondition>> canonicalConditions =
@@ -371,9 +432,27 @@ EvaluationCase::get(EvaluationCaseSignatureRef signature,
   if (!canonicalConditions)
     return canonicalConditions.takeError();
 
-  return EvaluationCase(signature, std::move(bindings), std::move(workload),
-                        std::move(runtimeInput),
-                        std::move(*canonicalConditions));
+  EvaluationCase evaluationCase(signature, std::move(bindings),
+                                std::move(workload), std::move(runtimeInput),
+                                std::move(*canonicalConditions));
+  for (const CaseSubjectRoleDescriptor &role : descriptor->subjectRoles) {
+    if (!role.verifyCrossRoleCompatibility)
+      continue;
+    for (const ArtifactRootReference &subject :
+         evaluationCase.subjectBindings().subjects(role.role))
+      if (llvm::Error error = role.verifyCrossRoleCompatibility(
+              subject, evaluationCase, evaluationCase.subjectBindings(),
+              resolution, artifactStore, blobStore))
+        return std::move(error);
+  }
+  if (descriptor->verifyWorkloadCompatibility)
+    if (llvm::Error error = descriptor->verifyWorkloadCompatibility(
+            evaluationCase, evaluationCase.subjectBindings(),
+            evaluationCase.workload(), evaluationCase.runtimeInput(),
+            resolution, artifactStore, blobStore))
+      return std::move(error);
+
+  return evaluationCase;
 }
 
 } // namespace loom::evaluation

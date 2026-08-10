@@ -196,15 +196,15 @@ classifyEvidence(const ArtifactRootReference &reference,
                  const ::loom::evaluation::CaseArtifactResolution &resolution,
                  const ArtifactRootReference &workload,
                  const ArtifactRootReference &runtimeInput,
-                 const ArtifactStore &store) {
+                 const ArtifactStore &store, const BlobStore &blobs) {
   auto requestReference =
       ::loom::evaluation::importEvaluationEvidenceRequestReference(reference,
                                                                    store);
   if (!requestReference)
     return requestReference.takeError();
 
-  auto request = ::loom::evaluation::importEvaluationRequest(*requestReference,
-                                                             resolution, store);
+  auto request = ::loom::evaluation::importEvaluationRequest(
+      *requestReference, resolution, store, blobs);
   if (!request)
     return request.takeError();
   if (request->modelBinding().descriptorRef() !=
@@ -227,7 +227,7 @@ classifyEvidence(const ArtifactRootReference &reference,
 
   const PreparedSpatialMapping &mapping = mappings[matchedMapping];
   auto evidence = ::loom::evaluation::importEvaluationEvidence(
-      reference, mapping.cgraCase.resolution, store);
+      reference, mapping.cgraCase.resolution, store, blobs);
   if (!evidence)
     return evidence.takeError();
   if (llvm::Error error = validateCgraRequest(
@@ -524,7 +524,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   for (const ArtifactRootReference &reference :
        inputs[EvidenceInput].artifacts) {
     auto classified = classifyEvidence(reference, mappings, *mergedResolution,
-                                       workload, runtimeInput, store);
+                                       workload, runtimeInput, store, blobs);
     if (!classified)
       return classified.takeError();
     evidence.push_back(std::move(*classified));

@@ -1,4 +1,5 @@
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
+#include "Evaluation/ProductionRegistry.h"
 
 #include "CanonicalSupport.h"
 
@@ -16,8 +17,10 @@
 namespace loom::evaluation::models {
 namespace {
 
-constexpr EvaluationCaseKind kCaseKind(5);
-constexpr EvaluationModelKind kModelKind(12);
+constexpr BuiltinEvaluationCase kCase =
+    BuiltinEvaluationCase::HardwareImplementationPhysical;
+constexpr BuiltinEvaluationModel kModel =
+    BuiltinEvaluationModel::CadenceVoltusStaticRail;
 constexpr CaseSubjectRoleRef kHardwareRole(0);
 constexpr ScopeFormRef kWholeCaseScope(0);
 
@@ -28,8 +31,8 @@ llvm::Error railError(const llvm::Twine &detail) {
 }
 
 EvaluationCaseSignatureRef caseSignatureRef() {
-  return llvm::cantFail(
-      EvaluationCaseSignatureRef::get(evaluationSchemaVersion(), kCaseKind));
+  return llvm::cantFail(EvaluationCaseSignatureRef::get(
+      evaluationSchemaVersion(), builtinEvaluationCaseKind(kCase)));
 }
 
 SubjectReferenceType hardwareRootType() {
@@ -68,7 +71,7 @@ const std::vector<ConditionApplicabilityPattern> kBaseConditionPatterns = {
 };
 
 const EvaluationCaseSignatureDescriptor kCaseSignature{
-    kCaseKind,
+    builtinEvaluationCaseKind(kCase),
     "hardware_implementation_physical",
     "One exact HardwareImplementation analyzed under exact physical operating "
     "conditions.",
@@ -249,7 +252,7 @@ const ResolvedModelConfigViewContract kConfigView{
     configSchemaBytes(), &projectConfig, &encodeConfig, &adoptConfig};
 
 const EvaluationModelDescriptor kModelDescriptor{
-    kModelKind,
+    builtinEvaluationModelKind(kModel),
     "cadence_voltus_static_rail",
     cadenceVoltusRailImplementationSemanticIdentity,
     caseSignatureRef(),
@@ -297,6 +300,11 @@ CaseSubjectRoleRef hardwareImplementationPhysicalSubjectRole() {
   return kHardwareRole;
 }
 
+llvm::ArrayRef<ConditionApplicabilityPattern>
+hardwareImplementationPhysicalBaseConditionPatterns() {
+  return kBaseConditionPatterns;
+}
+
 const RailAnalysisModelConfig &staticExplicitRailAnalysisModelConfig() {
   return kModelConfig;
 }
@@ -335,8 +343,8 @@ llvm::Error validateCadenceVoltusStaticRailProviderBinding(
 llvm::Expected<CompleteRailAnalysisConfiguration>
 projectCompleteRailAnalysisConfiguration(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
-    const ArtifactStore &artifactStore) {
-  RequestVerifier verifier(resolution, artifactStore);
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  RequestVerifier verifier(resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(request))
     return std::move(error);
   if (request.modelBinding().descriptorRef() != kModelDescriptor.reference())

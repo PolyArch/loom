@@ -2,8 +2,9 @@
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactStore.h"
-#include "Config/ResolvedConfig.h"
+#include "Common/BlobStore.h"
 #include "Common/ResolvedPnrPolicy.h"
+#include "Config/ResolvedConfig.h"
 #include "Evaluation/Metric.h"
 #include "Evaluation/ModelDescriptor.h"
 
@@ -138,21 +139,23 @@ const EvaluationModelDescriptor promotionModelDescriptor{
 
 PromotionEvidence makeRuntimeEvidence(const ArtifactRootReference &candidate,
                                       MetricObservationValue observation,
-                                      const ArtifactStore &store) {
+                                      const ArtifactStore &store,
+                                      const BlobStore &blobs) {
   CaseArtifactResolution resolution =
       take(CaseArtifactResolution::get({{candidate, {}}}));
   EvaluationSubjectBindings subjects = take(
       EvaluationSubjectBindings::get({{evidenceCandidateRole, {candidate}}}));
-  EvaluationCase evaluationCase = take(
-      EvaluationCase::get(evidenceSignatureRef(), std::move(subjects),
-                          std::nullopt, std::nullopt, {}, resolution, store));
+  EvaluationCase evaluationCase = take(EvaluationCase::get(
+      evidenceSignatureRef(), std::move(subjects), std::nullopt, std::nullopt,
+      {}, resolution, store, blobs));
   MetricRequest metric = take(MetricRequest::get(
       {MetricKind::Runtime, EvaluationScope{ScopeFormRef(0), {}}}, {},
       evaluationCase, resolution, store));
   ResolvedModelBinding model = take(ResolvedModelBinding::project(
       promotionModelDescriptor.reference(), {}, defaultResolvedConfig()));
-  EvaluationRequest request = take(EvaluationRequest::get(
-      evaluationCase, {metric}, {}, std::move(model), 0, resolution, store));
+  EvaluationRequest request = take(
+      EvaluationRequest::get(evaluationCase, {metric}, {}, std::move(model), 0,
+                             resolution, store, blobs));
   take(publishEvaluationRequest(request, store));
   EvaluationEvidence evidence = take(EvaluationEvidence::get(
       request, {},
@@ -160,7 +163,7 @@ PromotionEvidence makeRuntimeEvidence(const ArtifactRootReference &candidate,
                                       std::move(observation),
                                       {}}},
                         {}},
-      resolution, store));
+      resolution, store, blobs));
   return PromotionEvidence(std::move(request), std::move(evidence));
 }
 
@@ -254,6 +257,7 @@ void promotionDerivesObjectivesOnlyFromPointEvidence() {
           "loom-promotion-objective", storePath))
     fail(error.message());
   ArtifactStore store(storePath);
+  BlobStore blobs(storePath);
   const auto putCandidate = [&](std::uint8_t byte) {
     ArtifactIdentity identity = take(
         store.put(evidenceCandidateSchema,
@@ -277,9 +281,9 @@ void promotionDerivesObjectivesOnlyFromPointEvidence() {
   QualityGatePolicy gate = take(QualityGatePolicy::get({}));
 
   PromotionEvidence fastEvidence = makeRuntimeEvidence(
-      faster, PointObservation{take(DecimalValue::get(3, 0))}, store);
+      faster, PointObservation{take(DecimalValue::get(3, 0))}, store, blobs);
   PromotionEvidence slowEvidence = makeRuntimeEvidence(
-      slower, PointObservation{take(DecimalValue::get(8, 0))}, store);
+      slower, PointObservation{take(DecimalValue::get(8, 0))}, store, blobs);
   PromotionOutcome promoted = take(promoteCandidates(
       candidates, evidenceCandidateRole, {slowEvidence, fastEvidence}, gate,
       TopKSelection{0, 1}, &program, store));
@@ -292,7 +296,7 @@ void promotionDerivesObjectivesOnlyFromPointEvidence() {
       makeRuntimeEvidence(slower,
                           IntervalObservation{take(DecimalValue::get(7, 0)),
                                               take(DecimalValue::get(9, 0))},
-                          store);
+                          store, blobs);
   PromotionOutcome unavailable = take(promoteCandidates(
       candidates, evidenceCandidateRole, {fastEvidence, intervalEvidence}, gate,
       TopKSelection{0, 1}, &program, store));

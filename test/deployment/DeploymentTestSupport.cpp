@@ -7,6 +7,7 @@
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Deployment/DeploymentPipeline.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -32,6 +33,8 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -79,13 +82,50 @@ mlir::MLIRContext &context() {
     mlir::DialectRegistry registry;
     registry.insert<::dataflow::DataflowDialect, ::fabric::FabricDialect,
                     ::mapping::MappingDialect, mlir::arith::ArithDialect,
-                    mlir::func::FuncDialect>();
+                    mlir::func::FuncDialect, mlir::LLVM::LLVMDialect,
+                    mlir::memref::MemRefDialect>();
     auto *result =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     result->loadAllAvailableDialects();
     return result;
   }();
   return *instance;
+}
+
+CanonicalTypeBytes typeBytes(llvm::StringRef test, mlir::Type type) {
+  auto encoded = take(test, dataflow::encodeCanonicalType(type));
+  return CanonicalTypeBytes(encoded.bytes().begin(), encoded.bytes().end());
+}
+
+struct HostCatalog final {
+  std::vector<HostProgramEntry> entries;
+  std::vector<HostExternalInterface> interfaces;
+};
+
+HostCatalog systemArtifactHostCatalog(llvm::StringRef test) {
+  const CanonicalTypeBytes i32 =
+      typeBytes(test, mlir::IntegerType::get(&context(), 32));
+  const CanonicalTypeBytes i8 =
+      typeBytes(test, mlir::IntegerType::get(&context(), 8));
+  const CanonicalTypeBytes pointer =
+      typeBytes(test, mlir::LLVM::LLVMPointerType::get(&context()));
+  const CanonicalTypeBytes memory = typeBytes(
+      test, mlir::MemRefType::get({16}, mlir::IntegerType::get(&context(), 8)));
+  return {{{0, "loom_host_entry", {i32}, {i32}, {0, 1, 2, 3, 4, 5, 6}}},
+          {{0, HostExternalInterfaceKind::Value,
+            HostExternalInterfaceDirection::Input, pointer},
+           {1, HostExternalInterfaceKind::Stream,
+            HostExternalInterfaceDirection::Input, i8},
+           {2, HostExternalInterfaceKind::Memory,
+            HostExternalInterfaceDirection::InOut, memory},
+           {3, HostExternalInterfaceKind::Value,
+            HostExternalInterfaceDirection::Output, i32},
+           {4, HostExternalInterfaceKind::Stream,
+            HostExternalInterfaceDirection::Output, i8},
+           {5, HostExternalInterfaceKind::Memory,
+            HostExternalInterfaceDirection::InOut, memory},
+           {6, HostExternalInterfaceKind::Memory,
+            HostExternalInterfaceDirection::InOut, memory}}};
 }
 
 fabric::InstructionCoreMicroarchitecturalRealization
@@ -508,6 +548,7 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
     llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
     const TemporaryTree &tree, llvm::StringRef finalLinkedTriple,
     bool trustedIdentity, bool shareProgrammingEndpoint,
+    bool systemArtifactInterfaces,
     const runtime::RuntimeProviderDescriptor &runtimeProvider) {
   const auto module = buildModule(test, artifacts);
   const auto system = buildSystem(test, module, artifacts);
@@ -604,13 +645,18 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
                       {{dataflow.rootThreadLaunches().front().ref, 0}},
                       {}},
                      artifacts, blobs));
+  HostCatalog hostCatalog;
+  if (systemArtifactInterfaces)
+    hostCatalog = systemArtifactHostCatalog(test);
+  else
+    hostCatalog.entries = {{0, "loom_host_entry", {}, {}, {}}};
   const HostProgramLeaf host = take(
       test,
       finalizeHostProgramLeaf(
           HostProgramLeafDraft{hostTarget.reference(),
                                hostExecutable(test, hostTarget.binding(), tree),
-                               {{0, "loom_host_entry", {}, {}, {}}},
-                               {},
+                               std::move(hostCatalog.entries),
+                               std::move(hostCatalog.interfaces),
                                {}},
           artifacts, blobs));
   llvm::LLVMContext linkedContext;
@@ -632,7 +678,7 @@ tryBuildMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,
                           BlobStore &blobs, const TemporaryTree &tree,
                           llvm::StringRef finalLinkedTriple) {
   return tryBuildMinimalDeploymentImpl(
-      test, artifacts, blobs, tree, finalLinkedTriple, false, false,
+      test, artifacts, blobs, tree, finalLinkedTriple, false, false, false,
       runtime::inProcessRuntimeProviderDescriptor());
 }
 
@@ -644,21 +690,33 @@ FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
                                               llvm::StringRef()));
 }
 
+FinalizedDeployment buildSystemArtifactDeployment(llvm::StringRef test,
+                                                  ArtifactStore &artifacts,
+                                                  BlobStore &blobs,
+                                                  const TemporaryTree &tree) {
+  return take(test,
+              tryBuildMinimalDeploymentImpl(
+                  test, artifacts, blobs, tree, llvm::StringRef(), false, false,
+                  true, runtime::inProcessRuntimeProviderDescriptor()));
+}
+
 FinalizedDeployment buildTrustedIdentityDeployment(llvm::StringRef test,
                                                    ArtifactStore &artifacts,
                                                    BlobStore &blobs,
                                                    const TemporaryTree &tree) {
-  return take(test, tryBuildMinimalDeploymentImpl(
-                        test, artifacts, blobs, tree, llvm::StringRef(), true,
-                        false, runtime::inProcessRuntimeProviderDescriptor()));
+  return take(test,
+              tryBuildMinimalDeploymentImpl(
+                  test, artifacts, blobs, tree, llvm::StringRef(), true, false,
+                  false, runtime::inProcessRuntimeProviderDescriptor()));
 }
 
 FinalizedDeployment buildSharedProgrammingEndpointDeployment(
     llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
     const TemporaryTree &tree) {
-  return take(test, tryBuildMinimalDeploymentImpl(
-                        test, artifacts, blobs, tree, llvm::StringRef(), false,
-                        true, runtime::inProcessRuntimeProviderDescriptor()));
+  return take(test,
+              tryBuildMinimalDeploymentImpl(
+                  test, artifacts, blobs, tree, llvm::StringRef(), false, true,
+                  false, runtime::inProcessRuntimeProviderDescriptor()));
 }
 
 FinalizedDeployment buildRuntimeProviderDeployment(
@@ -667,7 +725,7 @@ FinalizedDeployment buildRuntimeProviderDeployment(
     const runtime::RuntimeProviderDescriptor &provider) {
   return take(test, tryBuildMinimalDeploymentImpl(test, artifacts, blobs, tree,
                                                   llvm::StringRef(), false,
-                                                  false, provider));
+                                                  false, false, provider));
 }
 
 } // namespace loom::deployment::test

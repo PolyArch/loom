@@ -5,6 +5,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <vector>
 
 namespace loom::mapping {
@@ -30,9 +31,23 @@ struct SystemExecutionContextProjection final {
   std::vector<SystemSpatialContextDomain> spatialDomains;
 };
 
+struct SelectedSystemSpatialContext final {
+  ArtifactRootReference spatialMapping;
+  SpatialExecutionContextKey context;
+};
+
 llvm::Expected<SystemExecutionContextProjection> projectSystemExecutionContexts(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const SystemExecutionBindingView &execution);
+
+/// Selects the one Spatial execution context for a concrete graph-launch
+/// coordinate. Launch-parameter symbols remain existential: if legal symbol
+/// valuations select different contexts, the point is ambiguous.
+llvm::Expected<SelectedSystemSpatialContext>
+selectSystemSpatialExecutionContext(
+    const SystemExecutionContextProjection &projection,
+    ::dataflow::RootedGraphLaunchRef graph,
+    llvm::ArrayRef<std::uint64_t> denseCoordinates);
 
 } // namespace loom::mapping
 

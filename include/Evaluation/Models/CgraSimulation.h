@@ -59,7 +59,8 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
                                 const ArtifactRootReference &workload,
                                 const ArtifactRootReference &runtimeInput,
                                 const ResolvedConfig &config,
-                                const ArtifactStore &artifactStore);
+                                const ArtifactStore &artifactStore,
+                                const BlobStore &blobStore);
 
 llvm::Expected<EvaluationEvidence>
 evaluateCgraSimulation(const PreparedCgraSimulationEvaluation &prepared,

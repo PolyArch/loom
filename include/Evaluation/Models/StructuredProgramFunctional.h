@@ -10,6 +10,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 struct ResolvedConfig;
 } // namespace loom
 
@@ -95,7 +96,8 @@ prepareStructuredProgramFunctionalEvaluation(
     const ::loom::ArtifactRootReference &workload,
     const ::loom::ArtifactRootReference &runtimeInput,
     const ::loom::ResolvedConfig &config,
-    const ::loom::ArtifactStore &artifactStore);
+    const ::loom::ArtifactStore &artifactStore,
+    const ::loom::BlobStore &blobStore);
 
 } // namespace loom::evaluation::models
 

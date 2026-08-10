@@ -3,7 +3,9 @@
 #include "SimulationWireInternal.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Deployment/Deployment.h"
 
 #include "llvm/Support/Error.h"
 
@@ -157,6 +159,47 @@ importStructuredProgramSimulationInputs(
     return runtimeInput.takeError();
   return ImportedStructuredProgramSimulationInputs{
       std::move(*structured), std::move(*workload), std::move(*runtimeInput)};
+}
+
+llvm::Expected<ImportedSystemSimulationInputs>
+importSystemSimulationInputs(const ArtifactRootReference &workloadReference,
+                             const ArtifactRootReference &runtimeInputReference,
+                             const ArtifactStore &store,
+                             const BlobStore &blobs) {
+  if (!hasSchema(workloadReference, simulationWorkloadSchema))
+    return invalid("foreign SimulationWorkload reference schema");
+  if (!hasSchema(runtimeInputReference, simulationRuntimeInputSchema))
+    return invalid("foreign SimulationRuntimeInput reference schema");
+
+  auto workloadBytes = store.get(workloadReference);
+  if (!workloadBytes)
+    return workloadBytes.takeError();
+  auto deploymentIdentity =
+      detail::systemWorkloadOwnerIdentity(workloadBytes->bytes());
+  if (!deploymentIdentity)
+    return deploymentIdentity.takeError();
+  ArtifactRootReference deploymentReference{
+      deployment::deploymentSchema.identity.str(),
+      deployment::deploymentSchema.version, *deploymentIdentity};
+  auto deployment =
+      deployment::importDeployment(deploymentReference, store, blobs);
+  if (!deployment)
+    return deployment.takeError();
+  auto workload = importSimulationWorkload(workloadBytes->bytes(), *deployment,
+                                           store, workloadReference.artifact);
+  if (!workload)
+    return workload.takeError();
+
+  auto runtimeBytes = store.get(runtimeInputReference);
+  if (!runtimeBytes)
+    return runtimeBytes.takeError();
+  auto runtimeInput = importSimulationRuntimeInput(
+      runtimeBytes->bytes(), *workload, *deployment, store,
+      runtimeInputReference.artifact);
+  if (!runtimeInput)
+    return runtimeInput.takeError();
+  return ImportedSystemSimulationInputs{
+      std::move(*deployment), std::move(*workload), std::move(*runtimeInput)};
 }
 
 } // namespace loom::sim

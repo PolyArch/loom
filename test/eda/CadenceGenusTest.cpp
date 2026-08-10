@@ -1,7 +1,7 @@
 #include "EDA/Adapters/Cadence/Genus.h"
 #include "EDA/Adapters/Cadence/Innovus.h"
 
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"

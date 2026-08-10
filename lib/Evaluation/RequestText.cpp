@@ -473,10 +473,9 @@ std::string serializeEvaluationRequest(const EvaluationRequest &request) {
   return output.str().str();
 }
 
-llvm::Expected<EvaluationRequest>
-parseEvaluationRequest(llvm::StringRef jsonText,
-                       const CaseArtifactResolution &resolution,
-                       const ArtifactStore &artifactStore) {
+llvm::Expected<EvaluationRequest> parseEvaluationRequest(
+    llvm::StringRef jsonText, const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   auto value = llvm::json::parse(jsonText);
   if (!value)
     return value.takeError();
@@ -530,7 +529,7 @@ parseEvaluationRequest(llvm::StringRef jsonText,
     return baseConditions.takeError();
   auto evaluationCase = EvaluationCase::get(
       descriptor->caseSignature, *subjectBindings, *workload, *runtimeInput,
-      *baseConditions, resolution, artifactStore);
+      *baseConditions, resolution, artifactStore, blobStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
   auto metrics =
@@ -548,7 +547,7 @@ parseEvaluationRequest(llvm::StringRef jsonText,
 
   auto request = EvaluationRequest::get(*evaluationCase, *metrics, *findings,
                                         std::move(*modelBinding), *replicate,
-                                        resolution, artifactStore);
+                                        resolution, artifactStore, blobStore);
   if (!request)
     return request.takeError();
   if (serializeEvaluationRequest(*request) != jsonText)

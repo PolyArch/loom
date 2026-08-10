@@ -215,11 +215,11 @@ llvm::Expected<EvidenceObligationTemplate>
 prepareCanonicalDataflowFabricAnalyticEvidenceObligationTemplate(
     const ArtifactRootReference &prototypeCandidate,
     const ArtifactRootReference &fabric, const ResolvedConfig &config,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   if (llvm::Error error = registerDataflowEvaluationPromotionAcquisition())
     return std::move(error);
   auto prepared = evaluation::models::prepareCanonicalDataflowFabricEvaluation(
-      prototypeCandidate, fabric, config, store);
+      prototypeCandidate, fabric, config, store, blobs);
   if (!prepared)
     return prepared.takeError();
   return EvidenceObligationTemplate::get(
@@ -234,13 +234,13 @@ prepareCanonicalDataflowFunctionalEvidenceObligationTemplate(
     const ArtifactRootReference &structuredParent,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   if (llvm::Error error = registerDataflowEvaluationPromotionAcquisition())
     return std::move(error);
   auto prepared =
       evaluation::models::prepareCanonicalDataflowFunctionalEvaluation(
           prototypeCandidate, structuredParent, workload, runtimeInput, config,
-          store);
+          store, blobs);
   if (!prepared)
     return prepared.takeError();
   return EvidenceObligationTemplate::get(

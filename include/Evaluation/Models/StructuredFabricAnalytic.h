@@ -16,6 +16,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 struct ResolvedConfig;
 } // namespace loom
 
@@ -80,7 +81,7 @@ private:
   prepareStructuredFabricEvaluation(
       const ArtifactRootReference &,
       const StructuredFabricAnalyticRequestContext &, const ResolvedConfig &,
-      const ArtifactStore &);
+      const ArtifactStore &, const BlobStore &);
 };
 
 /// Registers the exact low-fidelity StructuredProgram/Fabric analytic model.
@@ -118,7 +119,8 @@ prepareStructuredFabricEvaluation(
     const ::loom::ArtifactRootReference &workload,
     const ::loom::ArtifactRootReference &runtimeInput,
     const ::loom::ResolvedConfig &config,
-    const ::loom::ArtifactStore &artifactStore);
+    const ::loom::ArtifactStore &artifactStore,
+    const ::loom::BlobStore &blobStore);
 
 /// Constructs the same exact Request using roots already resolved for this
 /// invocation. A candidate outside the finite resolved set is rejected.
@@ -127,7 +129,8 @@ prepareStructuredFabricEvaluation(
     const ::loom::ArtifactRootReference &structuredProgram,
     const StructuredFabricAnalyticRequestContext &invocation,
     const ::loom::ResolvedConfig &config,
-    const ::loom::ArtifactStore &artifactStore);
+    const ::loom::ArtifactStore &artifactStore,
+    const ::loom::BlobStore &blobStore);
 
 /// Invocation-local typed input used to derive workload-aware metrics without
 /// adding a profile Artifact or copying source coverage into a candidate.

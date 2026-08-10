@@ -404,16 +404,15 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     }
     auto request = instantiateEvidenceObligation(
         *task.obligation, task.candidate, requestInputs,
-        resolved.replicateIndex, *resolved.resolution, store);
+        resolved.replicateIndex, *resolved.resolution, store, blobs);
     if (!request)
       return request.takeError();
     auto requestReference =
         evaluation::publishEvaluationRequest(*request, store);
     if (!requestReference)
       return requestReference.takeError();
-    auto result =
-        evaluation::evaluateRequest(*request, *resolved.resolution, store,
-                                    blobs);
+    auto result = evaluation::evaluateRequest(*request, *resolved.resolution,
+                                              store, blobs);
     if (!result)
       return result.takeError();
     evidence.emplace_back(std::move(*request), std::move(*result),

@@ -697,7 +697,7 @@ evaluateStructuredRuntime(const loom::ArtifactRootReference &structuredProgram,
   auto prepared =
       take(loom::evaluation::models::prepareStructuredFabricEvaluation(
           structuredProgram, fabric, workload, runtimeInput,
-          loom::defaultResolvedConfig(), store));
+          loom::defaultResolvedConfig(), store, blobs));
   auto evidence = take(loom::evaluation::evaluateRequest(
       prepared.request, prepared.resolution, store, blobs));
   return EvaluatedRuntime{metricResult(prepared.request, evidence,
@@ -713,7 +713,7 @@ EvaluatedFunctional evaluateStructuredFunctional(
   auto prepared = take(
       loom::evaluation::models::prepareStructuredProgramFunctionalEvaluation(
           structuredProgram, workload, runtimeInput,
-          loom::defaultResolvedConfig(), store));
+          loom::defaultResolvedConfig(), store, blobs));
   auto evidence = take(loom::evaluation::evaluateRequest(
       prepared.request, prepared.resolution, store, blobs));
   return {std::move(prepared.request), std::move(evidence),
@@ -743,7 +743,7 @@ evaluateCanonicalDataflowRuntime(const loom::ArtifactRootReference &program,
                                  const loom::BlobStore &blobs) {
   auto prepared =
       take(loom::evaluation::models::prepareCanonicalDataflowFabricEvaluation(
-          program, fabric, loom::defaultResolvedConfig(), store));
+          program, fabric, loom::defaultResolvedConfig(), store, blobs));
   auto evidence = take(loom::evaluation::evaluateRequest(
       prepared.request, prepared.resolution, store, blobs));
   return metricResult(prepared.request, evidence,
@@ -759,7 +759,7 @@ void verifyStagedOwnershipEvidence(
     const loom::ArtifactRootReference &fabric,
     const loom::ArtifactRootReference &workload,
     const loom::ArtifactRootReference &runtimeInput,
-    const loom::ArtifactStore &store) {
+    const loom::ArtifactStore &store, const loom::BlobStore &blobs) {
   std::map<loom::ArtifactRootReference,
            std::vector<loom::ArtifactRootReference>,
            decltype(&loom::artifactRootReferenceLess)>
@@ -805,11 +805,11 @@ void verifyStagedOwnershipEvidence(
   for (const loom::ArtifactRootReference &evidenceReference :
        selection.satisfiedEvidence) {
     const loom::evaluation::EvaluationEvidence evidence =
-        take(loom::evaluation::importEvaluationEvidence(evidenceReference,
-                                                        resolution, store));
+        take(loom::evaluation::importEvaluationEvidence(
+            evidenceReference, resolution, store, blobs));
     const loom::evaluation::EvaluationRequest request =
-        take(loom::evaluation::importEvaluationRequest(evidence.requestRef(),
-                                                       resolution, store));
+        take(loom::evaluation::importEvaluationRequest(
+            evidence.requestRef(), resolution, store, blobs));
     llvm::ArrayRef<loom::ArtifactRootReference> candidates =
         request.subjectBindings().subjects(
             loom::evaluation::CaseSubjectRoleRef(0));
@@ -1023,11 +1023,11 @@ void runEvaluationAnchor() {
       take(loom::evaluation::models::prepareStructuredFabricEvaluation(
           spatialRef, design.roots().front().reference(),
           inputs.workloadReference, inputs.runtimeInputReference,
-          loom::defaultResolvedConfig(), store));
+          loom::defaultResolvedConfig(), store, blobs));
   auto reusedSpatialEvaluation =
       take(loom::evaluation::models::prepareStructuredFabricEvaluation(
-          spatialRef, analyticInvocation, loom::defaultResolvedConfig(),
-          store));
+          spatialRef, analyticInvocation, loom::defaultResolvedConfig(), store,
+          blobs));
   if (loom::evaluation::evaluationRequestReference(
           strictSpatialEvaluation.request) !=
       loom::evaluation::evaluationRequestReference(
@@ -1038,7 +1038,7 @@ void runEvaluationAnchor() {
       take(loom::dse::prepareStructuredFabricAnalyticEvidenceObligationTemplate(
           baselineRef, design.roots().front().reference(),
           inputs.workloadReference, inputs.runtimeInputReference,
-          loom::defaultResolvedConfig(), store));
+          loom::defaultResolvedConfig(), store, blobs));
   auto acquisitionConfig =
       take(loom::dse::projectResolvedEvidenceObligationSetConfigView(
           {loom::dse::EvidenceObligationTemplateRef(0)}));
@@ -1072,9 +1072,10 @@ void runEvaluationAnchor() {
   for (const loom::ArtifactRootReference &evidenceRef :
        centralCompleted->resolve({0, 1})) {
     auto evidence = take(loom::evaluation::importEvaluationEvidence(
-        evidenceRef, analyticInvocation.caseResolution(), store));
+        evidenceRef, analyticInvocation.caseResolution(), store, blobs));
     auto request = take(loom::evaluation::importEvaluationRequest(
-        evidence.requestRef(), analyticInvocation.caseResolution(), store));
+        evidence.requestRef(), analyticInvocation.caseResolution(), store,
+        blobs));
     const auto candidateSubjects = request.subjectBindings().subjects(
         loom::evaluation::CaseSubjectRoleRef(0));
     const auto fabricSubjects = request.subjectBindings().subjects(
@@ -1088,7 +1089,7 @@ void runEvaluationAnchor() {
   auto functionalObligation = take(
       loom::dse::prepareStructuredProgramFunctionalEvidenceObligationTemplate(
           baselineRef, inputs.workloadReference, inputs.runtimeInputReference,
-          loom::defaultResolvedConfig(), store));
+          loom::defaultResolvedConfig(), store, blobs));
   auto functionalAcquisitionConfig =
       take(loom::dse::projectResolvedEvidenceObligationSetConfigView(
           {loom::dse::EvidenceObligationTemplateRef(0)}));
@@ -1167,12 +1168,12 @@ void runEvaluationAnchor() {
         loom::dse::
             prepareCanonicalDataflowFabricAnalyticEvidenceObligationTemplate(
                 dataflowRef, design.roots().front().reference(),
-                loom::defaultResolvedConfig(), store));
+                loom::defaultResolvedConfig(), store, blobs));
     auto dataflowFunctional = take(
         loom::dse::prepareCanonicalDataflowFunctionalEvidenceObligationTemplate(
             dataflowRef, spatialRef, inputs.workloadReference,
-            inputs.runtimeInputReference, loom::defaultResolvedConfig(),
-            store));
+            inputs.runtimeInputReference, loom::defaultResolvedConfig(), store,
+            blobs));
     std::vector<loom::dse::EvidenceObligationTemplate> dataflowObligations = {
         dataflowAnalytic, dataflowFunctional};
     auto dataflowAcquisitionConfig =
@@ -1549,7 +1550,7 @@ void runEvaluationAnchor() {
                                 {costOnlyProfitable, tinyRef}, {coldRef},
                                 design.roots().front().reference(),
                                 inputs.workloadReference,
-                                inputs.runtimeInputReference, store);
+                                inputs.runtimeInputReference, store, blobs);
   auto exploredView = take(
       exploredSelection->selected.front().compilation.canonicalDataflow.view());
   if (exploredView.actors().empty() ||

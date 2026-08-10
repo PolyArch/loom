@@ -1,4 +1,4 @@
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 #include "PortableProviderTestSupport.h"
 
 #include "Hardware/RTL/OperationLeaf.h"

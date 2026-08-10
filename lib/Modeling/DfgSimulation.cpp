@@ -1,4 +1,5 @@
 #include "Evaluation/Models/DfgSimulation.h"
+#include "Evaluation/ProductionRegistry.h"
 
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
@@ -20,15 +21,16 @@
 namespace loom::evaluation::models {
 namespace {
 
-constexpr EvaluationCaseKind kCaseKind(3);
-constexpr EvaluationModelKind kModelKind(5);
+constexpr BuiltinEvaluationCase kCase =
+    BuiltinEvaluationCase::CanonicalDataflowSimulation;
+constexpr BuiltinEvaluationModel kModel = BuiltinEvaluationModel::DfgSimulator;
 constexpr CaseSubjectRoleRef kCanonicalDataflowRole(0);
 constexpr ModelOutputSlotRef kExecutionOutputSlot(0);
 constexpr ScopeFormRef kWholeExactCaseScope(0);
 
 EvaluationCaseSignatureRef caseSignatureRef() {
-  return llvm::cantFail(
-      EvaluationCaseSignatureRef::get(evaluationSchemaVersion(), kCaseKind));
+  return llvm::cantFail(EvaluationCaseSignatureRef::get(
+      evaluationSchemaVersion(), builtinEvaluationCaseKind(kCase)));
 }
 
 const ArtifactSchemaDescriptor *const kDataflowSchemas[] = {
@@ -43,10 +45,11 @@ const CaseSubjectRoleDescriptor kSubjectRoles[] = {
      SubjectRoleCardinality::ExactlyOne, kDataflowSchemas, nullptr}};
 
 llvm::Error verifyWorkloadCompatibility(
-    const EvaluationSubjectBindings &bindings,
+    const EvaluationCase &, const EvaluationSubjectBindings &bindings,
     const std::optional<ArtifactRootReference> &workload,
     const std::optional<ArtifactRootReference> &runtimeInput,
-    const CaseArtifactResolution &resolution) {
+    const CaseArtifactResolution &resolution, const ArtifactStore &,
+    const BlobStore &) {
   const llvm::ArrayRef<ArtifactRootReference> subjects =
       bindings.subjects(kCanonicalDataflowRole);
   if (subjects.size() != 1 || !workload || !runtimeInput)
@@ -69,7 +72,7 @@ llvm::Error verifyWorkloadCompatibility(
 }
 
 const EvaluationCaseSignatureDescriptor kCaseSignature{
-    kCaseKind,
+    builtinEvaluationCaseKind(kCase),
     "canonical_dataflow_simulation",
     "One exact Canonical Dataflow Program executed with one exact Spatial "
     "workload and runtime input.",
@@ -133,7 +136,7 @@ const ResolvedModelConfigViewContract kConfigView{
     configSchemaBytes(), &projectConfig, &encodeConfig, &adoptConfig};
 
 const EvaluationModelDescriptor kModelDescriptor{
-    kModelKind,
+    builtinEvaluationModelKind(kModel),
     "dfg_simulator",
     "loom.dfg_simulator.abstract_cycle.v1",
     caseSignatureRef(),
@@ -222,8 +225,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithLimits(
       std::move(retired->observations),
       sim::SpatialProgressObservations{launch, retiredAt, retiredAt},
       {}};
-  auto finalized =
-      sim::finalizeSimulationExecution(execution, resolution, artifactStore);
+  auto finalized = sim::finalizeSimulationExecution(execution, resolution,
+                                                    artifactStore, blobStore);
   if (!finalized)
     return finalized.takeError();
   auto executionReference =
@@ -231,7 +234,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithLimits(
   if (!executionReference)
     return executionReference.takeError();
 
-  const auto &progress = finalized->progressObservations();
+  const auto &progress = finalized->spatialProgressObservations();
   const std::uint64_t cycleCount =
       progress.graphRetirementVisible->referenceCycle.numerator();
   std::vector<MetricResult> metrics;
@@ -254,14 +257,13 @@ llvm::Expected<EvaluationModelResult> evaluateWithLimits(
 llvm::Expected<EvaluationModelResult>
 evaluate(const EvaluationRequest &request,
          const CaseArtifactResolution &resolution,
-         const ArtifactStore &artifactStore,
-         const BlobStore &blobStore) {
+         const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   return evaluateWithLimits(request, resolution, artifactStore, blobStore,
                             DfgSimulationAttemptLimits{});
 }
 
-const EvaluationModelProvider kProvider{kModelDescriptor.reference(),
-                                        EvaluationModelInProcessProvider{&evaluate}};
+const EvaluationModelProvider kProvider{
+    kModelDescriptor.reference(), EvaluationModelInProcessProvider{&evaluate}};
 
 } // namespace
 
@@ -273,12 +275,11 @@ llvm::Error registerDfgSimulationModel() {
   return registerEvaluationModelProvider(kProvider);
 }
 
-llvm::Expected<PreparedDfgSimulationEvaluation>
-prepareDfgSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
-                               const ArtifactRootReference &workload,
-                               const ArtifactRootReference &runtimeInput,
-                               const ResolvedConfig &config,
-                               const ArtifactStore &artifactStore) {
+llvm::Expected<PreparedDfgSimulationEvaluation> prepareDfgSimulationEvaluation(
+    const ArtifactRootReference &canonicalDataflow,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   if (llvm::Error error = registerDfgSimulationModel())
     return std::move(error);
   auto inputs =
@@ -301,9 +302,9 @@ prepareDfgSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
       {{kCanonicalDataflowRole, {canonicalDataflow}}});
   if (!bindings)
     return bindings.takeError();
-  auto evaluationCase =
-      EvaluationCase::get(caseSignatureRef(), std::move(*bindings), workload,
-                          runtimeInput, {}, *resolution, artifactStore);
+  auto evaluationCase = EvaluationCase::get(
+      caseSignatureRef(), std::move(*bindings), workload, runtimeInput, {},
+      *resolution, artifactStore, blobStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
   auto cycleCount =
@@ -318,7 +319,7 @@ prepareDfgSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
     return modelBinding.takeError();
   auto request = EvaluationRequest::get(*evaluationCase, {*cycleCount}, {},
                                         std::move(*modelBinding), 0,
-                                        *resolution, artifactStore);
+                                        *resolution, artifactStore, blobStore);
   if (!request)
     return request.takeError();
   auto requestReference = publishEvaluationRequest(*request, artifactStore);
@@ -333,17 +334,17 @@ evaluateDfgSimulation(const PreparedDfgSimulationEvaluation &prepared,
                       DfgSimulationAttemptLimits limits,
                       const ArtifactStore &artifactStore,
                       const BlobStore &blobStore) {
-  RequestVerifier verifier(prepared.resolution, artifactStore);
+  RequestVerifier verifier(prepared.resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
   auto result = evaluateWithLimits(prepared.request, prepared.resolution,
-                                   artifactStore, blobStore,
-                                   std::move(limits));
+                                   artifactStore, blobStore, std::move(limits));
   if (!result)
     return result.takeError();
-  return EvaluationEvidence::get(
-      prepared.request, std::move(result->outputBindings),
-      std::move(result->outcome), prepared.resolution, artifactStore);
+  return EvaluationEvidence::get(prepared.request,
+                                 std::move(result->outputBindings),
+                                 std::move(result->outcome),
+                                 prepared.resolution, artifactStore, blobStore);
 }
 
 } // namespace loom::evaluation::models

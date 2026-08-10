@@ -4,6 +4,7 @@
 #include "Common/Artifact.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowStructuralRefs.h"
+#include "Deployment/Deployment.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 
 #include "llvm/ADT/APInt.h"
@@ -18,6 +19,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 } // namespace loom
 
 // The typed schema models of the loom.simulation_workload and
@@ -26,7 +28,7 @@ class ArtifactStore;
 // types and structural meanings are recovered from that exact owner and are
 // never copied here. Each family has one closed typed C++ model and one strict
 // canonical serializer/parser; the Common finalizer is the sole identity
-// authority. The System root remains fail-closed and is not representable.
+// authority.
 namespace loom::sim {
 
 /// The declared Artifact families framed by Common and hashed with SHA-256 v1.
@@ -207,7 +209,7 @@ struct SpatialObservableContract {
 /// logical coordinates of the root thread point, the total value-input
 /// classification, and the observable contract. Stream inputs and imported
 /// memory roots are always runtime-plane and appear only in the exact
-/// SimulationRuntimeInput. The System root is fail-closed and unrepresentable.
+/// SimulationRuntimeInput.
 struct SpatialSimulationWorkload {
   dataflow::RootedGraphLaunchRef launchRef;
   std::vector<std::uint64_t> denseCoordinates = {};
@@ -221,6 +223,42 @@ struct SpatialSimulationWorkload {
   dataflow::GraphLaunchDoneTransferRef completion() const {
     return dataflow::GraphLaunchDoneTransferRef{launchRef};
   }
+};
+
+//===----------------------------------------------------------------------===//
+// SystemSimulationWorkload
+//===----------------------------------------------------------------------===//
+
+using SystemValueInputSource =
+    std::variant<CanonicalValueSequence, RuntimeValueInput>;
+
+struct SystemExternalValueInputPlanEntry {
+  deployment::DeploymentExternalInterfaceRef interfaceRef;
+  SystemValueInputSource source;
+};
+
+struct SystemMemoryObservable {
+  deployment::DeploymentExternalInterfaceRef interfaceRef;
+  MemoryObservationForm form = MemoryObservationForm::FullState;
+};
+
+struct SystemObservableContract {
+  std::vector<std::uint64_t> valueResults = {};
+  std::vector<deployment::DeploymentExternalInterfaceRef> externalValueOutputs =
+      {};
+  std::vector<deployment::DeploymentExternalInterfaceRef>
+      externalStreamOutputs = {};
+  std::vector<SystemMemoryObservable> memories = {};
+};
+
+/// One finalized Deployment entry, its total program-value and external-value
+/// input classifications, and its exact selected observables. The entry
+/// reference is the sole Deployment identity carried by the workload.
+struct SystemSimulationWorkload {
+  deployment::DeploymentProgramEntryRef programEntryRef;
+  std::vector<SystemValueInputSource> valueInputPlan = {};
+  std::vector<SystemExternalValueInputPlanEntry> externalValueInputPlan = {};
+  SystemObservableContract observableContract = {};
 };
 
 //===----------------------------------------------------------------------===//
@@ -295,6 +333,54 @@ struct SpatialSimulationRuntimeInputDraft {
 };
 
 //===----------------------------------------------------------------------===//
+// SystemSimulationRuntimeInput
+//===----------------------------------------------------------------------===//
+
+struct SystemRuntimeEntryValue {
+  std::uint64_t valueArgumentOrdinal = 0;
+  CanonicalValueSequence value;
+};
+
+struct SystemRuntimeExternalValue {
+  deployment::DeploymentExternalInterfaceRef interfaceRef;
+  CanonicalValueSequence value;
+};
+
+struct SystemExternalStreamInput {
+  deployment::DeploymentExternalInterfaceRef interfaceRef;
+  CanonicalStreamSequence stream;
+};
+
+struct SystemMemoryInterfaceBindingEntry {
+  deployment::DeploymentExternalInterfaceRef interfaceRef;
+  RuntimeMemoryRootBinding binding;
+};
+
+struct SystemSimulationRuntimeInput {
+  ::loom::ArtifactIdentity workloadIdentity;
+  std::vector<SystemRuntimeEntryValue> runtimeEntryValues = {};
+  std::vector<SystemRuntimeExternalValue> runtimeExternalValues = {};
+  std::vector<SystemExternalStreamInput> externalStreamInputs = {};
+  std::vector<RuntimeMemoryObject> memoryObjects = {};
+  std::vector<SystemMemoryInterfaceBindingEntry> memoryInterfaceBindings = {};
+};
+
+struct SystemMemoryInterfaceBindingDraft {
+  deployment::DeploymentExternalInterfaceRef interfaceRef;
+  std::uint64_t authorObject = 0;
+  std::uint64_t byteOffset = 0;
+};
+
+struct SystemSimulationRuntimeInputDraft {
+  ::loom::ArtifactIdentity workloadIdentity;
+  std::vector<SystemRuntimeEntryValue> runtimeEntryValues = {};
+  std::vector<SystemRuntimeExternalValue> runtimeExternalValues = {};
+  std::vector<SystemExternalStreamInput> externalStreamInputs = {};
+  std::vector<RuntimeMemoryObject> memoryObjects = {};
+  std::vector<SystemMemoryInterfaceBindingDraft> memoryInterfaceBindings = {};
+};
+
+//===----------------------------------------------------------------------===//
 // Structured Program workload and runtime input
 //===----------------------------------------------------------------------===//
 
@@ -364,10 +450,10 @@ struct StructuredProgramSimulationRuntimeInputDraft {
 };
 
 using SimulationWorkloadModel =
-    std::variant<SpatialSimulationWorkload,
+    std::variant<SpatialSimulationWorkload, SystemSimulationWorkload,
                  StructuredProgramSimulationWorkload>;
 using SimulationRuntimeInputModel =
-    std::variant<SpatialSimulationRuntimeInput,
+    std::variant<SpatialSimulationRuntimeInput, SystemSimulationRuntimeInput,
                  StructuredProgramSimulationRuntimeInput>;
 
 //===----------------------------------------------------------------------===//
@@ -385,13 +471,18 @@ public:
 
   const ::loom::ArtifactIdentity &identity() const { return identity_; }
   SimulationWorkloadKind kind() const {
-    return std::holds_alternative<SpatialSimulationWorkload>(model_)
-               ? SimulationWorkloadKind::Spatial
-               : SimulationWorkloadKind::StructuredProgram;
+    if (std::holds_alternative<SpatialSimulationWorkload>(model_))
+      return SimulationWorkloadKind::Spatial;
+    if (std::holds_alternative<SystemSimulationWorkload>(model_))
+      return SimulationWorkloadKind::System;
+    return SimulationWorkloadKind::StructuredProgram;
   }
   const SimulationWorkloadModel &root() const { return model_; }
   const SpatialSimulationWorkload *spatial() const {
     return std::get_if<SpatialSimulationWorkload>(&model_);
+  }
+  const SystemSimulationWorkload *system() const {
+    return std::get_if<SystemSimulationWorkload>(&model_);
   }
   const StructuredProgramSimulationWorkload *structuredProgram() const {
     return std::get_if<StructuredProgramSimulationWorkload>(&model_);
@@ -425,6 +516,13 @@ private:
   importSimulationWorkload(llvm::ArrayRef<std::uint8_t>,
                            const frontend::StructuredProgramCandidateView &,
                            const ::loom::ArtifactIdentity &);
+  friend llvm::Expected<CanonicalSimulationWorkload>
+  finalizeSimulationWorkload(const SystemSimulationWorkload &,
+                             const deployment::FinalizedDeployment &,
+                             const ::loom::ArtifactStore &);
+  friend llvm::Expected<CanonicalSimulationWorkload> importSimulationWorkload(
+      llvm::ArrayRef<std::uint8_t>, const deployment::FinalizedDeployment &,
+      const ::loom::ArtifactStore &, const ::loom::ArtifactIdentity &);
 };
 
 class CanonicalSimulationRuntimeInput {
@@ -439,13 +537,18 @@ public:
 
   const ::loom::ArtifactIdentity &identity() const { return identity_; }
   SimulationWorkloadKind kind() const {
-    return std::holds_alternative<SpatialSimulationRuntimeInput>(model_)
-               ? SimulationWorkloadKind::Spatial
-               : SimulationWorkloadKind::StructuredProgram;
+    if (std::holds_alternative<SpatialSimulationRuntimeInput>(model_))
+      return SimulationWorkloadKind::Spatial;
+    if (std::holds_alternative<SystemSimulationRuntimeInput>(model_))
+      return SimulationWorkloadKind::System;
+    return SimulationWorkloadKind::StructuredProgram;
   }
   const SimulationRuntimeInputModel &root() const { return model_; }
   const SpatialSimulationRuntimeInput *spatial() const {
     return std::get_if<SpatialSimulationRuntimeInput>(&model_);
+  }
+  const SystemSimulationRuntimeInput *system() const {
+    return std::get_if<SystemSimulationRuntimeInput>(&model_);
   }
   const StructuredProgramSimulationRuntimeInput *structuredProgram() const {
     return std::get_if<StructuredProgramSimulationRuntimeInput>(&model_);
@@ -485,6 +588,17 @@ private:
                                const CanonicalSimulationWorkload &,
                                const frontend::StructuredProgramCandidateView &,
                                const ::loom::ArtifactIdentity &);
+  friend llvm::Expected<CanonicalSimulationRuntimeInput>
+  finalizeSimulationRuntimeInput(const SystemSimulationRuntimeInputDraft &,
+                                 const CanonicalSimulationWorkload &,
+                                 const deployment::FinalizedDeployment &,
+                                 const ::loom::ArtifactStore &);
+  friend llvm::Expected<CanonicalSimulationRuntimeInput>
+  importSimulationRuntimeInput(llvm::ArrayRef<std::uint8_t>,
+                               const CanonicalSimulationWorkload &,
+                               const deployment::FinalizedDeployment &,
+                               const ::loom::ArtifactStore &,
+                               const ::loom::ArtifactIdentity &);
 };
 
 struct ImportedStructuredProgramSimulationInputs {
@@ -495,6 +609,12 @@ struct ImportedStructuredProgramSimulationInputs {
 
 struct ImportedSpatialSimulationInputs {
   dataflow::CanonicalDataflowArtifact dataflow;
+  CanonicalSimulationWorkload workload;
+  CanonicalSimulationRuntimeInput runtimeInput;
+};
+
+struct ImportedSystemSimulationInputs {
+  deployment::FinalizedDeployment deployment;
   CanonicalSimulationWorkload workload;
   CanonicalSimulationRuntimeInput runtimeInput;
 };
@@ -524,6 +644,15 @@ importSpatialSimulationInputs(const ::loom::ArtifactRootReference &workload,
                               const ::loom::ArtifactRootReference &runtimeInput,
                               const ::loom::ArtifactStore &store);
 
+/// Strictly imports one stored System workload/runtime pair and its exact
+/// Deployment owner. Deployment remains responsible for closure and blob
+/// validation.
+llvm::Expected<ImportedSystemSimulationInputs>
+importSystemSimulationInputs(const ::loom::ArtifactRootReference &workload,
+                             const ::loom::ArtifactRootReference &runtimeInput,
+                             const ::loom::ArtifactStore &store,
+                             const ::loom::BlobStore &blobs);
+
 /// Failure-atomic finalization. Validates the complete spatial workload
 /// against the exact Dataflow owner view -- rooted-launch ownership, dense
 /// coordinate rank and static bounds, total Fixed/Runtime classification with
@@ -535,12 +664,25 @@ llvm::Expected<CanonicalSimulationWorkload> finalizeSimulationWorkload(
 
 /// Strict canonical parse. Rejects trailing bytes, malformed or truncated
 /// lengths, overflow, unknown variants, unsorted or duplicate keys, the
-/// fail-closed System root, and every semantic violation the finalizer
-/// rejects, then requires the recomputed identity to equal
-/// `expectedIdentity`.
+/// owner-mismatched root, and every semantic violation the finalizer rejects,
+/// then requires the recomputed identity to equal `expectedIdentity`.
 llvm::Expected<CanonicalSimulationWorkload>
 importSimulationWorkload(llvm::ArrayRef<std::uint8_t> canonicalBytes,
                          const dataflow::CanonicalDataflowProgramView &program,
+                         const ::loom::ArtifactIdentity &expectedIdentity);
+
+/// Failure-atomic finalization and strict import of one Deployment-owned
+/// System workload. Entry and external-interface catalogs, types, directions,
+/// and the target DataLayout are recovered from the exact owner.
+llvm::Expected<CanonicalSimulationWorkload>
+finalizeSimulationWorkload(const SystemSimulationWorkload &workload,
+                           const deployment::FinalizedDeployment &deployment,
+                           const ::loom::ArtifactStore &store);
+
+llvm::Expected<CanonicalSimulationWorkload>
+importSimulationWorkload(llvm::ArrayRef<std::uint8_t> canonicalBytes,
+                         const deployment::FinalizedDeployment &deployment,
+                         const ::loom::ArtifactStore &store,
                          const ::loom::ArtifactIdentity &expectedIdentity);
 
 /// Failure-atomic finalization of one source Structured Program workload.
@@ -550,8 +692,8 @@ llvm::Expected<CanonicalSimulationWorkload> finalizeSimulationWorkload(
     const StructuredProgramSimulationWorkload &workload,
     const frontend::StructuredProgramCandidateView &program);
 
-/// Strict import of the Structured Program root. Spatial and reserved System
-/// roots are rejected by this owner-specific overload.
+/// Strict import of the Structured Program root. Other roots are rejected by
+/// this owner-specific overload.
 llvm::Expected<CanonicalSimulationWorkload> importSimulationWorkload(
     llvm::ArrayRef<std::uint8_t> canonicalBytes,
     const frontend::StructuredProgramCandidateView &program,
@@ -577,6 +719,22 @@ llvm::Expected<CanonicalSimulationRuntimeInput> importSimulationRuntimeInput(
     const CanonicalSimulationWorkload &workload,
     const dataflow::CanonicalDataflowProgramView &program,
     const ::loom::ArtifactIdentity &expectedIdentity);
+
+/// Canonicalizes the System runtime complements and Deployment-interface
+/// memory bindings. Sharing one draft object slot is the only aliasing
+/// authority; persistent ordinals derive from sorted interface binding keys.
+llvm::Expected<CanonicalSimulationRuntimeInput> finalizeSimulationRuntimeInput(
+    const SystemSimulationRuntimeInputDraft &draft,
+    const CanonicalSimulationWorkload &workload,
+    const deployment::FinalizedDeployment &deployment,
+    const ::loom::ArtifactStore &store);
+
+llvm::Expected<CanonicalSimulationRuntimeInput>
+importSimulationRuntimeInput(llvm::ArrayRef<std::uint8_t> canonicalBytes,
+                             const CanonicalSimulationWorkload &workload,
+                             const deployment::FinalizedDeployment &deployment,
+                             const ::loom::ArtifactStore &store,
+                             const ::loom::ArtifactIdentity &expectedIdentity);
 
 /// Canonicalizes source runtime values and finite pointer-backed objects.
 /// Object ordinals derive from sorted pointer-binding keys; sharing one draft

@@ -1,6 +1,6 @@
 #include "Hardware/Implementation/HardwareImplementation.h"
 
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 
 #include "ADG/Builder.h"
 #include "ADG/MemoryLibrary.h"

@@ -292,7 +292,7 @@ void loom::test::exerciseCgraAdmission(
 
   auto preparedDfg = take(evaluation::models::prepareDfgSimulationEvaluation(
       dataflowReference, workloadReference, runtimeReference,
-      defaultResolvedConfig(), store));
+      defaultResolvedConfig(), store, blobs));
   auto dfgEvidence = take(evaluation::models::evaluateDfgSimulation(
       preparedDfg, {128, std::nullopt}, store, blobs));
   if (dfgEvidence.outcomeKind() != evaluation::EvidenceOutcomeKind::Completed ||
@@ -302,7 +302,8 @@ void loom::test::exerciseCgraAdmission(
 
   auto preparedCgra = take(evaluation::models::prepareCgraSimulationEvaluation(
       dataflowReference, fabricReference, spatialMappingReference,
-      workloadReference, runtimeReference, defaultResolvedConfig(), store));
+      workloadReference, runtimeReference, defaultResolvedConfig(), store,
+      blobs));
   auto cgraEvidence = take(evaluation::models::evaluateCgraSimulation(
       preparedCgra, {128, std::nullopt}, store, blobs));
   if (cgraEvidence.outcomeKind() !=
@@ -316,10 +317,10 @@ void loom::test::exerciseCgraAdmission(
           dfgEvidence.outputBindings().front().artifacts.front(),
           preparedDfg.resolution,
           cgraEvidence.outputBindings().front().artifacts.front(),
-          preparedCgra.resolution, defaultResolvedConfig(), store));
-  auto comparisonEvidence = take(
-      evaluation::models::evaluateSimulationComparison(comparison, store,
-                                                       blobs));
+          preparedCgra.resolution, defaultResolvedConfig(), store, blobs));
+  auto comparisonEvidence =
+      take(evaluation::models::evaluateSimulationComparison(comparison, store,
+                                                            blobs));
   const auto *completed =
       std::get_if<evaluation::CompletedEvidence>(&comparisonEvidence.outcome());
   if (!completed || completed->findingResults.size() != 1 ||
@@ -330,9 +331,9 @@ void loom::test::exerciseCgraAdmission(
   const ArtifactRootReference cgraExecutionReference =
       cgraEvidence.outputBindings().front().artifacts.front();
   auto importedCgra = take(sim::importSimulationExecution(
-      cgraExecutionReference, preparedCgra.resolution, store));
+      cgraExecutionReference, preparedCgra.resolution, store, blobs));
   sim::SpatialFunctionalObservations changed =
-      importedCgra.functionalObservations();
+      importedCgra.spatialFunctionalObservations();
   auto *changedValue =
       std::get_if<sim::PublishedValueResult>(&changed.valueResults.front());
   if (!changedValue)
@@ -342,17 +343,17 @@ void loom::test::exerciseCgraAdmission(
       importedCgra.request(),
       sim::RetiredExecution{},
       std::move(changed),
-      importedCgra.progressObservations(),
+      importedCgra.spatialProgressObservations(),
       {}};
   auto finalizedMismatch = take(sim::finalizeSimulationExecution(
-      mismatched, preparedCgra.resolution, store));
+      mismatched, preparedCgra.resolution, store, blobs));
   const ArtifactRootReference mismatchReference =
       take(sim::publishSimulationExecution(finalizedMismatch, store));
   auto mismatchComparison =
       take(evaluation::models::prepareSimulationComparisonEvaluation(
           dfgEvidence.outputBindings().front().artifacts.front(),
           preparedDfg.resolution, mismatchReference, preparedCgra.resolution,
-          defaultResolvedConfig(), store));
+          defaultResolvedConfig(), store, blobs));
   auto mismatchEvidence = take(evaluation::models::evaluateSimulationComparison(
       mismatchComparison, store, blobs));
   const auto *mismatchCompleted =

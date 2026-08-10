@@ -11,6 +11,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 struct ResolvedConfig;
 } // namespace loom
 
@@ -49,7 +50,8 @@ prepareCanonicalDataflowFabricEvaluation(
     const ::loom::ArtifactRootReference &canonicalDataflow,
     const ::loom::ArtifactRootReference &fabric,
     const ::loom::ResolvedConfig &config,
-    const ::loom::ArtifactStore &artifactStore);
+    const ::loom::ArtifactStore &artifactStore,
+    const ::loom::BlobStore &blobStore);
 
 } // namespace loom::evaluation::models
 

@@ -11,6 +11,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 struct ResolvedConfig;
 } // namespace loom
 
@@ -38,14 +39,14 @@ prepareStructuredFabricAnalyticEvidenceObligationTemplate(
     const ArtifactRootReference &prototypeCandidate,
     const ArtifactRootReference &fabric, const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
-    const ArtifactStore &store);
+    const ArtifactStore &store, const BlobStore &blobs);
 
 llvm::Expected<EvidenceObligationTemplate>
 prepareStructuredProgramFunctionalEvidenceObligationTemplate(
     const ArtifactRootReference &prototypeCandidate,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
-    const ArtifactStore &store);
+    const ArtifactStore &store, const BlobStore &blobs);
 
 } // namespace loom::dse
 

@@ -1,6 +1,5 @@
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelProvider.h"
-#include "Evaluation/OwnerError.h"
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactStore.h"
@@ -55,24 +54,6 @@ void expectErrorContains(const char *test, llvm::Expected<T> value,
           "unexpected error: " + message);
 }
 
-template <typename T>
-void expectSimulationExecutionOwnerUnavailable(const char *test,
-                                                llvm::Expected<T> value) {
-  if (value)
-    fail(test, "expected the SimulationExecution owner to be unavailable");
-  bool matched = false;
-  llvm::Error remaining = llvm::handleErrors(
-      value.takeError(),
-      [&](const EvaluationOwnerUnavailableError &failure) -> llvm::Error {
-        matched = failure.ownerIdentity() == "loom.simulation_execution" &&
-                  failure.ownerVersion() == SchemaVersion{1, 0};
-        return llvm::Error::success();
-      });
-  if (remaining)
-    fail(test, llvm::toString(std::move(remaining)));
-  require(test, matched, "wrong Evaluation owner-unavailable failure");
-}
-
 class TemporaryDirectory {
 public:
   explicit TemporaryDirectory(const char *test) {
@@ -98,11 +79,10 @@ CanonicalSemanticBytes subjectBytes() {
 }
 
 constexpr ArtifactSchemaDescriptor subjectSchema{"loom.test.evidence.subject",
-                                                  {1, 0}};
+                                                 {1, 0}};
 constexpr EvaluationCaseKind caseKind{41};
 constexpr FindingKind findingKind{42};
 constexpr EvaluationModelKind modelKind{43};
-constexpr FindingKind terminalFindingKind{44};
 
 struct TestFindingOccurrence {
   std::uint8_t value;
@@ -116,10 +96,9 @@ EvaluationCaseSignatureRef signatureRef() {
 CaseSubjectRoleRef subjectRole() { return CaseSubjectRoleRef(0); }
 
 ArtifactRootReference subjectArtifact() {
-  return ArtifactRootReference{subjectSchema.identity.str(),
-                               subjectSchema.version,
-                               finalizeArtifactIdentity(subjectSchema,
-                                                        subjectBytes())};
+  return ArtifactRootReference{
+      subjectSchema.identity.str(), subjectSchema.version,
+      finalizeArtifactIdentity(subjectSchema, subjectBytes())};
 }
 
 void ensureSubjectStored(const char *test, const ArtifactStore &store) {
@@ -138,7 +117,10 @@ const CaseSubjectRoleDescriptor subjectRoles[] = {
 };
 
 const ScopeFormDescriptor findingScopeForms[] = {
-    {ScopeFormRef(0), "the entire exact case", {}, WholeExactCaseScope{},
+    {ScopeFormRef(0),
+     "the entire exact case",
+     {},
+     WholeExactCaseScope{},
      nullptr},
 };
 
@@ -192,19 +174,11 @@ const FindingDescriptor findingDescriptor{
     "One typed finding used to verify persistent result totality.",
     findingScopeForms,
     {},
-    {{"loom.test.evidence.finding_occurrence", {1, 0}}, &encodeOccurrence,
-     &decodeOccurrence, &validateOccurrence},
+    {{"loom.test.evidence.finding_occurrence", {1, 0}},
+     &encodeOccurrence,
+     &decodeOccurrence,
+     &validateOccurrence},
     std::nullopt};
-
-const FindingDescriptor terminalFindingDescriptor{
-    terminalFindingKind,
-    "evidence_test_terminal_finding",
-    "One terminal finding whose occurrence requires SimulationExecution.",
-    findingScopeForms,
-    {},
-    {{"loom.test.evidence.terminal_occurrence", {1, 0}}, &encodeOccurrence,
-     &decodeOccurrence, &validateOccurrence},
-    FindingPayloadSchemaDescriptor{"loom.simulation_execution", {1, 0}}};
 
 const ScopeFormRef supportedFindingForms[] = {ScopeFormRef(0)};
 const ScopeFormRef supportedMetricForms[] = {ScopeFormRef(0)};
@@ -213,7 +187,6 @@ const MetricCapability metricCapabilities[] = {
 };
 const FindingCapability findingCapabilities[] = {
     {findingKind, supportedFindingForms, allFindingResultFormsMask()},
-    {terminalFindingKind, supportedFindingForms, allFindingResultFormsMask()},
 };
 
 struct EmptyModelConfigView {};
@@ -247,8 +220,8 @@ adoptEmptyModelConfig(llvm::ArrayRef<std::uint8_t> canonicalBytes,
 }
 
 const ResolvedModelConfigViewContract modelConfigView{
-    modelConfigSchemaBytes(), &projectEmptyModelConfig,
-    &encodeEmptyModelConfig, &adoptEmptyModelConfig};
+    modelConfigSchemaBytes(), &projectEmptyModelConfig, &encodeEmptyModelConfig,
+    &adoptEmptyModelConfig};
 
 const ModelOutputSlotDescriptor outputSlots[] = {
     {ModelOutputSlotRef(0),
@@ -376,7 +349,8 @@ evaluateTestModel(const EvaluationRequest &request,
   metrics.reserve(request.metricRequests().size());
   for (std::size_t index = 0; index < request.metricRequests().size(); ++index)
     metrics.push_back({UncertaintyKind::ExactWithinModel,
-                       PointObservation{IntegerValue(7)}, {}});
+                       PointObservation{IntegerValue(7)},
+                       {}});
 
   std::vector<FindingResult> findings(request.findingRequests().size(),
                                       FindingResult{AbsentFinding{}});
@@ -410,7 +384,8 @@ importTestModelValid(const EvaluationRequest &request,
   metrics.reserve(request.metricRequests().size());
   for (std::size_t index = 0; index < request.metricRequests().size(); ++index)
     metrics.push_back({UncertaintyKind::ExactWithinModel,
-                       PointObservation{IntegerValue(7)}, {}});
+                       PointObservation{IntegerValue(7)},
+                       {}});
   std::vector<FindingResult> findings(request.findingRequests().size(),
                                       FindingResult{AbsentFinding{}});
   return EvaluationModelResult{
@@ -426,20 +401,19 @@ importTestModelMalformed(const EvaluationRequest &,
   return EvaluationModelResult{{}, CompletedEvidence{{}, {}}};
 }
 
-llvm::Expected<EvaluationModelProviderPreparation>
-prepareTestModelAlternate(const EvaluationRequest &,
-                          const CaseArtifactResolution &,
-                          const ArtifactStore &, const BlobStore &,
-                          const external_tool::ExternalToolPreparationContext &) {
+llvm::Expected<EvaluationModelProviderPreparation> prepareTestModelAlternate(
+    const EvaluationRequest &, const CaseArtifactResolution &,
+    const ArtifactStore &, const BlobStore &,
+    const external_tool::ExternalToolPreparationContext &) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "test external prepare stub");
 }
 
 llvm::Expected<EvaluationModelProviderPreparation>
-prepareUnsupportedModel(
-    const EvaluationRequest &, const CaseArtifactResolution &,
-    const ArtifactStore &, const BlobStore &,
-    const external_tool::ExternalToolPreparationContext &) {
+prepareUnsupportedModel(const EvaluationRequest &,
+                        const CaseArtifactResolution &, const ArtifactStore &,
+                        const BlobStore &,
+                        const external_tool::ExternalToolPreparationContext &) {
   return UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable};
 }
 
@@ -477,8 +451,14 @@ EvaluationSubjectBindings subjectBindings(const char *test) {
 }
 
 CaseArtifactResolution caseResolution(const char *test) {
-  return takeExpected(
-      test, CaseArtifactResolution::get({{subjectArtifact(), {}}}));
+  return takeExpected(test,
+                      CaseArtifactResolution::get({{subjectArtifact(), {}}}));
+}
+
+const BlobStore &blobStore() {
+  static const BlobStore store(
+      "/nonexistent/loom-evaluation-evidence-test-blobs");
+  return store;
 }
 
 EvaluationRequest requestForFinding(const char *test,
@@ -487,19 +467,19 @@ EvaluationRequest requestForFinding(const char *test,
   ensureSubjectStored(test, store);
   const CaseArtifactResolution resolution = caseResolution(test);
   const EvaluationCase evaluationCase = takeExpected(
-      test, EvaluationCase::get(signatureRef(), subjectBindings(test),
-                                std::nullopt, std::nullopt, {}, resolution,
-                                store));
+      test,
+      EvaluationCase::get(signatureRef(), subjectBindings(test), std::nullopt,
+                          std::nullopt, {}, resolution, store, blobStore()));
   const FindingRequest finding = takeExpected(
       test, FindingRequest::get(
-                FindingQuery{kind, EvaluationScope{ScopeFormRef(0), {}}},
-                {}, evaluationCase, resolution, store));
+                FindingQuery{kind, EvaluationScope{ScopeFormRef(0), {}}}, {},
+                evaluationCase, resolution, store));
   const ResolvedModelBinding binding = takeExpected(
       test, ResolvedModelBinding::project(modelDescriptor.reference(), {},
                                           defaultResolvedConfig()));
-  return takeExpected(test,
-                      EvaluationRequest::get(evaluationCase, {}, {finding},
-                                             binding, 0, resolution, store));
+  return takeExpected(
+      test, EvaluationRequest::get(evaluationCase, {}, {finding}, binding, 0,
+                                   resolution, store, blobStore()));
 }
 
 EvaluationRequest requestForDescriptor(const char *test,
@@ -508,19 +488,18 @@ EvaluationRequest requestForDescriptor(const char *test,
   ensureSubjectStored(test, store);
   const CaseArtifactResolution resolution = caseResolution(test);
   const EvaluationCase evaluationCase = takeExpected(
-      test, EvaluationCase::get(signatureRef(), subjectBindings(test),
-                                std::nullopt, std::nullopt, {}, resolution,
-                                store));
+      test,
+      EvaluationCase::get(signatureRef(), subjectBindings(test), std::nullopt,
+                          std::nullopt, {}, resolution, store, blobStore()));
   const FindingRequest finding = takeExpected(
       test, FindingRequest::get(
                 FindingQuery{findingKind, EvaluationScope{ScopeFormRef(0), {}}},
                 {}, evaluationCase, resolution, store));
   const ResolvedModelBinding binding = takeExpected(
-      test, ResolvedModelBinding::project(model, {},
-                                          defaultResolvedConfig()));
+      test, ResolvedModelBinding::project(model, {}, defaultResolvedConfig()));
   return takeExpected(
       test, EvaluationRequest::get(evaluationCase, {}, {finding}, binding, 0,
-                                   resolution, store));
+                                   resolution, store, blobStore()));
 }
 
 EvaluationRequest request(const char *test, const ArtifactStore &store) {
@@ -532,26 +511,24 @@ EvaluationRequest metricAndFindingRequest(const char *test,
   ensureSubjectStored(test, store);
   const CaseArtifactResolution resolution = caseResolution(test);
   const EvaluationCase evaluationCase = takeExpected(
-      test, EvaluationCase::get(signatureRef(), subjectBindings(test),
-                                std::nullopt, std::nullopt, {}, resolution,
-                                store));
+      test,
+      EvaluationCase::get(signatureRef(), subjectBindings(test), std::nullopt,
+                          std::nullopt, {}, resolution, store, blobStore()));
   const MetricRequest metric = takeExpected(
-      test, MetricRequest::get(
-                MetricQuery{MetricKind::CycleCount,
-                            EvaluationScope{ScopeFormRef(0), {}}},
-                {}, evaluationCase, resolution, store));
+      test,
+      MetricRequest::get(MetricQuery{MetricKind::CycleCount,
+                                     EvaluationScope{ScopeFormRef(0), {}}},
+                         {}, evaluationCase, resolution, store));
   const FindingRequest finding = takeExpected(
       test, FindingRequest::get(
-                FindingQuery{findingKind,
-                             EvaluationScope{ScopeFormRef(0), {}}},
+                FindingQuery{findingKind, EvaluationScope{ScopeFormRef(0), {}}},
                 {}, evaluationCase, resolution, store));
   const ResolvedModelBinding binding = takeExpected(
       test, ResolvedModelBinding::project(modelDescriptor.reference(), {},
                                           defaultResolvedConfig()));
-  return takeExpected(test,
-                      EvaluationRequest::get(evaluationCase, {metric},
-                                             {finding}, binding, 0, resolution,
-                                             store));
+  return takeExpected(
+      test, EvaluationRequest::get(evaluationCase, {metric}, {finding}, binding,
+                                   0, resolution, store, blobStore()));
 }
 
 ArtifactRootReference putArtifact(const char *test, const ArtifactStore &store,
@@ -580,40 +557,40 @@ void completedEvidenceIsTotalAndCanonical() {
 
   const EvaluationEvidence evidence = takeExpected(
       __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {output}}},
-                    completedWith(absentFinding()),
-                    caseResolution(__func__), store));
+                    evaluationRequest, {{ModelOutputSlotRef(0), {output}}},
+                    completedWith(absentFinding()), caseResolution(__func__),
+                    store, blobStore()));
   require(__func__, evidence.outcomeKind() == EvidenceOutcomeKind::Completed,
           "completed Evidence changed outcome kind");
   const auto *completed = std::get_if<CompletedEvidence>(&evidence.outcome());
-  require(__func__, completed && completed->metricResults.empty() &&
-                        completed->findingResults.size() == 1,
+  require(__func__,
+          completed && completed->metricResults.empty() &&
+              completed->findingResults.size() == 1,
           "completed Evidence lost total result tables");
 
   const std::string canonical = serializeEvaluationEvidence(evidence);
-  require(__func__, !llvm::StringRef(canonical).contains("severity") &&
-                        !llvm::StringRef(canonical).contains("case_key") &&
-                        !llvm::StringRef(canonical).contains("model_key") &&
-                        !llvm::StringRef(canonical).contains(
-                            "metric_request_ordinal") &&
-                        !llvm::StringRef(canonical).contains(
-                            "finding_request_ordinal"),
+  require(__func__,
+          !llvm::StringRef(canonical).contains("severity") &&
+              !llvm::StringRef(canonical).contains("case_key") &&
+              !llvm::StringRef(canonical).contains("model_key") &&
+              !llvm::StringRef(canonical).contains("metric_request_ordinal") &&
+              !llvm::StringRef(canonical).contains("finding_request_ordinal"),
           "Evidence serialized a forbidden authority");
   const EvaluationEvidence parsed = takeExpected(
       __func__, parseEvaluationEvidence(canonical, caseResolution(__func__),
-                                        store));
+                                        store, blobStore()));
   require(__func__, serializeEvaluationEvidence(parsed) == canonical,
           "Evidence canonical roundtrip changed bytes");
-  require(__func__, evaluationEvidenceIdentity(parsed) ==
-                        evaluationEvidenceIdentity(evidence),
+  require(__func__,
+          evaluationEvidenceIdentity(parsed) ==
+              evaluationEvidenceIdentity(evidence),
           "Evidence canonical roundtrip changed identity");
 
   const ArtifactRootReference published =
       takeExpected(__func__, publishEvaluationEvidence(evidence, store));
   const EvaluationEvidence imported = takeExpected(
       __func__, importEvaluationEvidence(published, caseResolution(__func__),
-                                         store));
+                                         store, blobStore()));
   require(__func__, serializeEvaluationEvidence(imported) == canonical,
           "ArtifactStore import changed Evidence semantics");
 }
@@ -625,76 +602,75 @@ void completedEvidenceRejectsGapsAndInvalidFindings() {
   takeExpected(__func__, publishEvaluationRequest(evaluationRequest, store));
   const ArtifactRootReference output = putArtifact(__func__, store, 0x62);
 
+  expectErrorContains(__func__,
+                      EvaluationEvidence::get(
+                          evaluationRequest, {}, completedWith(absentFinding()),
+                          caseResolution(__func__), store, blobStore()),
+                      "not total over descriptor output slots");
   expectErrorContains(
       __func__,
-      EvaluationEvidence::get(evaluationRequest, {},
+      EvaluationEvidence::get(evaluationRequest, {{ModelOutputSlotRef(0), {}}},
                               completedWith(absentFinding()),
-                              caseResolution(__func__), store),
-      "not total over descriptor output slots");
-  expectErrorContains(
-      __func__, EvaluationEvidence::get(
-                    evaluationRequest, {{ModelOutputSlotRef(0), {}}},
-                    completedWith(absentFinding()),
-                    caseResolution(__func__), store),
+                              caseResolution(__func__), store, blobStore()),
       "declared cardinality");
   expectErrorContains(
-      __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {output}}}, CompletedEvidence{},
-                    caseResolution(__func__), store),
+      __func__,
+      EvaluationEvidence::get(
+          evaluationRequest, {{ModelOutputSlotRef(0), {output}}},
+          CompletedEvidence{}, caseResolution(__func__), store, blobStore()),
       "not total over finding requests");
   expectErrorContains(
       __func__,
       EvaluationEvidence::get(
           evaluationRequest, {{ModelOutputSlotRef(0), {output}}},
           CompletedEvidence{{}, {absentFinding(), absentFinding()}},
-          caseResolution(__func__), store),
+          caseResolution(__func__), store, blobStore()),
       "not total over finding requests");
 
-  MetricResult unsolicited{UncertaintyKind::ExactWithinModel,
-                           PointObservation{IntegerValue(7)}, {}};
-  expectErrorContains(
-      __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {output}}},
-                    CompletedEvidence{{unsolicited}, {absentFinding()}},
-                    caseResolution(__func__), store),
-      "not total over metric requests");
+  MetricResult unsolicited{
+      UncertaintyKind::ExactWithinModel, PointObservation{IntegerValue(7)}, {}};
+  expectErrorContains(__func__,
+                      EvaluationEvidence::get(
+                          evaluationRequest,
+                          {{ModelOutputSlotRef(0), {output}}},
+                          CompletedEvidence{{unsolicited}, {absentFinding()}},
+                          caseResolution(__func__), store, blobStore()),
+                      "not total over metric requests");
 
   FindingResult emptyPresent{PresentFinding{{}}};
   expectErrorContains(
-      __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {output}}},
-                    completedWith(std::move(emptyPresent)),
-                    caseResolution(__func__), store),
+      __func__,
+      EvaluationEvidence::get(evaluationRequest,
+                              {{ModelOutputSlotRef(0), {output}}},
+                              completedWith(std::move(emptyPresent)),
+                              caseResolution(__func__), store, blobStore()),
       "requires at least one occurrence");
-  FindingResult invalidPresent{PresentFinding{{
-      FindingOccurrence::get(TestFindingOccurrence{0xff})}}};
+  FindingResult invalidPresent{
+      PresentFinding{{FindingOccurrence::get(TestFindingOccurrence{0xff})}}};
   expectErrorContains(
-      __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {output}}},
-                    completedWith(std::move(invalidPresent)),
-                    caseResolution(__func__), store),
+      __func__,
+      EvaluationEvidence::get(evaluationRequest,
+                              {{ModelOutputSlotRef(0), {output}}},
+                              completedWith(std::move(invalidPresent)),
+                              caseResolution(__func__), store, blobStore()),
       "unexpected finding occurrence value");
 
-  FindingResult validPresent{PresentFinding{{
-      FindingOccurrence::get(TestFindingOccurrence{0x2a})}}};
+  FindingResult validPresent{
+      PresentFinding{{FindingOccurrence::get(TestFindingOccurrence{0x2a})}}};
   const EvaluationEvidence present = takeExpected(
       __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {output}}},
+                    evaluationRequest, {{ModelOutputSlotRef(0), {output}}},
                     completedWith(std::move(validPresent)),
-                    caseResolution(__func__), store));
+                    caseResolution(__func__), store, blobStore()));
   const std::string presentJson = serializeEvaluationEvidence(present);
-  require(__func__, llvm::StringRef(presentJson).contains("\"occurrences\":[\"2a\"]") &&
-                        !llvm::StringRef(presentJson).contains(
-                            "\"kind\":\"inline_payload\""),
-          "Evidence duplicated the Finding owner occurrence wire");
+  require(
+      __func__,
+      llvm::StringRef(presentJson).contains("\"occurrences\":[\"2a\"]") &&
+          !llvm::StringRef(presentJson).contains("\"kind\":\"inline_payload\""),
+      "Evidence duplicated the Finding owner occurrence wire");
   const EvaluationEvidence parsedPresent = takeExpected(
       __func__, parseEvaluationEvidence(presentJson, caseResolution(__func__),
-                                        store));
+                                        store, blobStore()));
   const auto &parsedCompleted =
       std::get<CompletedEvidence>(parsedPresent.outcome());
   const auto &parsedOccurrences =
@@ -710,17 +686,18 @@ void completedEvidenceRejectsGapsAndInvalidFindings() {
   require(__func__, occurrencePosition != std::string::npos,
           "could not locate the finding occurrence payload");
   noncanonicalJson.replace(occurrencePosition, 4, "\"2a00\"");
-  expectErrorContains(
-      __func__, parseEvaluationEvidence(noncanonicalJson,
-                                        caseResolution(__func__), store),
-      "not canonical");
+  expectErrorContains(__func__,
+                      parseEvaluationEvidence(noncanonicalJson,
+                                              caseResolution(__func__), store,
+                                              blobStore()),
+                      "not canonical");
   FindingResult notApplicable{
       NotApplicableFinding{NotApplicableReason::UndefinedForSubject}};
-  takeExpected(__func__, EvaluationEvidence::get(
-                             evaluationRequest,
-                             {{ModelOutputSlotRef(0), {output}}},
-                             completedWith(std::move(notApplicable)),
-                             caseResolution(__func__), store));
+  takeExpected(__func__,
+               EvaluationEvidence::get(
+                   evaluationRequest, {{ModelOutputSlotRef(0), {output}}},
+                   completedWith(std::move(notApplicable)),
+                   caseResolution(__func__), store, blobStore()));
 }
 
 void completedMetricResultsUseRequestOwnedSemantics() {
@@ -730,21 +707,20 @@ void completedMetricResultsUseRequestOwnedSemantics() {
       metricAndFindingRequest(__func__, store);
   takeExpected(__func__, publishEvaluationRequest(evaluationRequest, store));
   const ArtifactRootReference output = putArtifact(__func__, store, 0x66);
-  const MetricResult metric{UncertaintyKind::ExactWithinModel,
-                            PointObservation{IntegerValue(7)}, {}};
+  const MetricResult metric{
+      UncertaintyKind::ExactWithinModel, PointObservation{IntegerValue(7)}, {}};
   const EvaluationEvidence evidence = takeExpected(
       __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {output}}},
+                    evaluationRequest, {{ModelOutputSlotRef(0), {output}}},
                     CompletedEvidence{{metric}, {absentFinding()}},
-                    caseResolution(__func__), store));
+                    caseResolution(__func__), store, blobStore()));
   const std::string canonical = serializeEvaluationEvidence(evidence);
-  require(__func__, !llvm::StringRef(canonical).contains("cycle_count") &&
-                        !llvm::StringRef(canonical).contains("scope") &&
-                        !llvm::StringRef(canonical).contains("unit"),
-          "MetricResult copied Request or registry authority");
   require(__func__,
-          !llvm::StringRef(canonical).contains("evaluation.metric"),
+          !llvm::StringRef(canonical).contains("cycle_count") &&
+              !llvm::StringRef(canonical).contains("scope") &&
+              !llvm::StringRef(canonical).contains("unit"),
+          "MetricResult copied Request or registry authority");
+  require(__func__, !llvm::StringRef(canonical).contains("evaluation.metric"),
           "Evidence revived the standalone metric wire identity");
 
   // The nested point value round-trips through the Evidence artifact store.
@@ -752,20 +728,21 @@ void completedMetricResultsUseRequestOwnedSemantics() {
       takeExpected(__func__, publishEvaluationEvidence(evidence, store));
   const EvaluationEvidence imported = takeExpected(
       __func__, importEvaluationEvidence(published, caseResolution(__func__),
-                                         store));
+                                         store, blobStore()));
   require(__func__, serializeEvaluationEvidence(imported) == canonical,
           "nested metric value encoding did not round-trip");
 
   const MetricResult wrongValue{
       UncertaintyKind::ExactWithinModel,
-      PointObservation{takeExpected(__func__, DecimalValue::get(7, 0))}, {}};
-  expectErrorContains(
-      __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {output}}},
-                    CompletedEvidence{{wrongValue}, {absentFinding()}},
-                    caseResolution(__func__), store),
-      "cycle_count requires integer values");
+      PointObservation{takeExpected(__func__, DecimalValue::get(7, 0))},
+      {}};
+  expectErrorContains(__func__,
+                      EvaluationEvidence::get(
+                          evaluationRequest,
+                          {{ModelOutputSlotRef(0), {output}}},
+                          CompletedEvidence{{wrongValue}, {absentFinding()}},
+                          caseResolution(__func__), store, blobStore()),
+                      "cycle_count requires integer values");
 }
 
 void noncompletedEvidenceHasNoResultTables() {
@@ -776,37 +753,36 @@ void noncompletedEvidenceHasNoResultTables() {
   const ArtifactRootReference output = putArtifact(__func__, store, 0x63);
 
   const EvaluationEvidence unsupported = takeExpected(
-      __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {}}},
-                    UnsupportedEvidence{
-                        OutcomeReason::RuntimeCapabilityUnavailable},
-                    caseResolution(__func__), store));
+      __func__,
+      EvaluationEvidence::get(
+          evaluationRequest, {{ModelOutputSlotRef(0), {}}},
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable},
+          caseResolution(__func__), store, blobStore()));
   const std::string canonical = serializeEvaluationEvidence(unsupported);
   std::string withResults = canonical;
   const std::size_t position = withResults.rfind("}}");
   require(__func__, position != std::string::npos,
           "could not locate the outcome boundary");
   withResults.insert(position, ",\"metric_results\":[]");
-  expectErrorContains(
-      __func__, parseEvaluationEvidence(withResults, caseResolution(__func__),
-                                        store),
-      "unknown field 'metric_results'");
+  expectErrorContains(__func__,
+                      parseEvaluationEvidence(withResults,
+                                              caseResolution(__func__), store,
+                                              blobStore()),
+                      "unknown field 'metric_results'");
 
   expectErrorContains(
-      __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {output}}},
-                    UnsupportedEvidence{
-                        OutcomeReason::RuntimeCapabilityUnavailable},
-                    caseResolution(__func__), store),
+      __func__,
+      EvaluationEvidence::get(
+          evaluationRequest, {{ModelOutputSlotRef(0), {output}}},
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable},
+          caseResolution(__func__), store, blobStore()),
       "declared cardinality");
-  takeExpected(__func__, EvaluationEvidence::get(
-                             evaluationRequest,
-                             {{ModelOutputSlotRef(0), {output}}},
-                             CancelledOrTimeoutEvidence{
-                                 OutcomeReason::ExecutionLimitReached},
-                             caseResolution(__func__), store));
+  takeExpected(
+      __func__,
+      EvaluationEvidence::get(
+          evaluationRequest, {{ModelOutputSlotRef(0), {output}}},
+          CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached},
+          caseResolution(__func__), store, blobStore()));
 }
 
 void detailedBundleFieldIsUnknown() {
@@ -815,42 +791,26 @@ void detailedBundleFieldIsUnknown() {
   const EvaluationRequest evaluationRequest = request(__func__, store);
   takeExpected(__func__, publishEvaluationRequest(evaluationRequest, store));
   const EvaluationEvidence evidence = takeExpected(
-      __func__, EvaluationEvidence::get(
-                    evaluationRequest, {{ModelOutputSlotRef(0), {}}},
-                    UnsupportedEvidence{
-                        OutcomeReason::RuntimeCapabilityUnavailable},
-                    caseResolution(__func__), store));
+      __func__,
+      EvaluationEvidence::get(
+          evaluationRequest, {{ModelOutputSlotRef(0), {}}},
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable},
+          caseResolution(__func__), store, blobStore()));
   std::string withDetailedBundles = serializeEvaluationEvidence(evidence);
-  require(__func__,
-          !llvm::StringRef(withDetailedBundles).contains(
-              "detailed_bundle_refs"),
-          "canonical Evidence serialized detailed_bundle_refs");
+  require(
+      __func__,
+      !llvm::StringRef(withDetailedBundles).contains("detailed_bundle_refs"),
+      "canonical Evidence serialized detailed_bundle_refs");
   const std::string field = ",\"detailed_bundle_refs\":[]";
   const std::size_t rootEnd = withDetailedBundles.rfind('}');
   require(__func__, rootEnd != std::string::npos,
           "could not locate the Evidence root boundary");
   withDetailedBundles.insert(rootEnd, field);
-  expectErrorContains(
-      __func__, parseEvaluationEvidence(withDetailedBundles,
-                                        caseResolution(__func__), store),
-      "unknown field 'detailed_bundle_refs'");
-}
-
-void terminalFindingFailsClosedWithoutExecutionOwner() {
-  TemporaryDirectory directory(__func__);
-  const ArtifactStore store(directory.path());
-  const EvaluationRequest evaluationRequest =
-      requestForFinding(__func__, store, terminalFindingKind);
-  takeExpected(__func__, publishEvaluationRequest(evaluationRequest, store));
-  const ArtifactRootReference output = putArtifact(__func__, store, 0x66);
-  FindingResult present{PresentFinding{{
-      FindingOccurrence::get(TestFindingOccurrence{0x2a})}}};
-  expectSimulationExecutionOwnerUnavailable(
-      __func__, EvaluationEvidence::get(
-                    evaluationRequest,
-                    {{ModelOutputSlotRef(0), {output}}},
-                    completedWith(std::move(present)),
-                    caseResolution(__func__), store));
+  expectErrorContains(__func__,
+                      parseEvaluationEvidence(withDetailedBundles,
+                                              caseResolution(__func__), store,
+                                              blobStore()),
+                      "unknown field 'detailed_bundle_refs'");
 }
 
 void expectRegistrationRejected(const char *test, llvm::Error error,
@@ -867,16 +827,17 @@ void externalModelProviderFormAdmission() {
   auto legacyModel =
       EvaluationModelDescriptorRef::get(SchemaVersion{1, 0}, modelKind);
   if (legacyModel)
-    fail(__func__, "a registry-1.0 model descriptor reference was reinterpreted");
+    fail(__func__,
+         "a registry-1.0 model descriptor reference was reinterpreted");
   llvm::consumeError(legacyModel.takeError());
 
   // An external implementation cannot serve an in-process descriptor.
   expectRegistrationRejected(
       __func__,
-      registerEvaluationModelProvider(EvaluationModelProvider{
-          modelDescriptor.reference(),
-          EvaluationModelExternalPrepareImportProvider{&prepareTestModel,
-                                                       &importTestModel}}),
+      registerEvaluationModelProvider(
+          EvaluationModelProvider{modelDescriptor.reference(),
+                                  EvaluationModelExternalPrepareImportProvider{
+                                      &prepareTestModel, &importTestModel}}),
       "provider form");
 
   // An in-process implementation cannot serve an external descriptor, and
@@ -889,10 +850,10 @@ void externalModelProviderFormAdmission() {
       "provider form");
   expectRegistrationRejected(
       __func__,
-      registerEvaluationModelProvider(EvaluationModelProvider{
-          externalModelDescriptor.reference(),
-          EvaluationModelExternalPrepareImportProvider{&prepareTestModel,
-                                                       nullptr}}),
+      registerEvaluationModelProvider(
+          EvaluationModelProvider{externalModelDescriptor.reference(),
+                                  EvaluationModelExternalPrepareImportProvider{
+                                      &prepareTestModel, nullptr}}),
       "prepare and import");
 
   // The matching external form registers; a second provider is rejected.
@@ -924,19 +885,20 @@ void externalModelProviderFormAdmission() {
   const EvaluationRequest externalRequest = requestForDescriptor(
       __func__, store, providerlessExternalModelDescriptor.reference());
   takeExpected(__func__, publishEvaluationRequest(externalRequest, store));
-  auto facade = evaluateRequest(externalRequest, caseResolution(__func__),
-                                store, blobs);
+  auto facade =
+      evaluateRequest(externalRequest, caseResolution(__func__), store, blobs);
   if (facade)
     fail(__func__, "the in-process facade evaluated an external model");
   const std::string message = llvm::toString(facade.takeError());
-  require(__func__, llvm::StringRef(message).contains("external prepare/import"),
+  require(__func__,
+          llvm::StringRef(message).contains("external prepare/import"),
           "unexpected facade error: " + message);
 
   // The external facades reject the in-process form before any lookup.
   external_tool::ExternalToolPreparationContext context{
       loom::external_tool::defaultLocalToolConfig(), directory.path().str()};
-  const EvaluationRequest inProcessRequest = requestForDescriptor(
-      __func__, store, modelDescriptor.reference());
+  const EvaluationRequest inProcessRequest =
+      requestForDescriptor(__func__, store, modelDescriptor.reference());
   takeExpected(__func__, publishEvaluationRequest(inProcessRequest, store));
   auto wrongPrepare = prepareEvaluationModelInvocation(
       inProcessRequest, caseResolution(__func__), store, blobs, context);
@@ -958,30 +920,32 @@ void externalModelProviderFormAdmission() {
   takeExpected(__func__,
                publishEvaluationRequest(registeredExternalRequest, store));
   const external_tool::ExternalToolSemanticContract semanticContract =
-      takeExpected(__func__,
-                   deriveExternalToolSemanticContract(registeredExternalRequest));
+      takeExpected(__func__, deriveExternalToolSemanticContract(
+                                 registeredExternalRequest));
   require(__func__,
           semanticContract.providerIdentity ==
               externalModelDescriptor.implementationSemanticIdentity,
           "external semantic contract lost the model provider identity");
   const auto *requestClosure =
       std::get_if<ArtifactRootReference>(&semanticContract.semanticClosure);
-  require(__func__, requestClosure &&
-                        *requestClosure == evaluationRequestReference(
-                                               registeredExternalRequest),
-          "external semantic contract lost the exact EvaluationRequest");
   require(__func__,
-          semanticContract.resultImporterIdentity ==
-              "cab2d0e8f81b45f9ca0ef6afecd30d33b74b2900108a6904c2f912afeddc8223",
-          "external semantic contract changed the evaluator importer identity");
+          requestClosure && *requestClosure == evaluationRequestReference(
+                                                   registeredExternalRequest),
+          "external semantic contract lost the exact EvaluationRequest");
+  require(
+      __func__,
+      semanticContract.resultImporterIdentity ==
+          "2314b0c570d23766b4b4e9922a36e3e869bc89dd48ceadd68e0d80ffbb13a1a3",
+      "external semantic contract changed the evaluator importer identity");
   auto inProcessContract = deriveExternalToolSemanticContract(inProcessRequest);
   if (inProcessContract)
-    fail(__func__, "an in-process model acquired an external semantic contract");
+    fail(__func__,
+         "an in-process model acquired an external semantic contract");
   expectErrorContains(__func__, std::move(inProcessContract),
                       "ExternalPrepareImport");
-  auto prepared = prepareEvaluationModelInvocation(
-      registeredExternalRequest, caseResolution(__func__), store, blobs,
-      context);
+  auto prepared = prepareEvaluationModelInvocation(registeredExternalRequest,
+                                                   caseResolution(__func__),
+                                                   store, blobs, context);
   if (prepared)
     fail(__func__, "the external prepare facade returned a bundle from a stub");
   expectErrorContains(__func__, std::move(prepared),
@@ -1000,14 +964,13 @@ void externalModelProviderFormAdmission() {
       __func__, store, importingExternalModelDescriptor.reference());
   takeExpected(__func__, publishEvaluationRequest(importingRequest, store));
   const EvaluationEvidence importedEvidence = takeExpected(
-      __func__, importEvaluationModelInvocation(
-                    importingRequest, caseResolution(__func__),
-                    external_tool::PreparedExternalToolInvocation{"unused",
-                                                                  zeroDigest},
-                    store, blobs));
+      __func__,
+      importEvaluationModelInvocation(
+          importingRequest, caseResolution(__func__),
+          external_tool::PreparedExternalToolInvocation{"unused", zeroDigest},
+          store, blobs));
   require(__func__,
-          std::holds_alternative<CompletedEvidence>(
-              importedEvidence.outcome()),
+          std::holds_alternative<CompletedEvidence>(importedEvidence.outcome()),
           "external import did not return owner-validated Evidence");
 
   // A malformed provider result is rejected by the Evidence owner.
@@ -1038,9 +1001,9 @@ void providerAbsenceProducesTypedUnsupported() {
                                 store, blobs));
   const auto *unsupported =
       std::get_if<UnsupportedEvidence>(&evidence.outcome());
-  require(__func__, unsupported &&
-                        unsupported->reason ==
-                            OutcomeReason::RuntimeCapabilityUnavailable,
+  require(__func__,
+          unsupported && unsupported->reason ==
+                             OutcomeReason::RuntimeCapabilityUnavailable,
           "provider absence did not produce RuntimeCapabilityUnavailable");
 }
 
@@ -1058,21 +1021,22 @@ void externalPreparationFinalizesTypedUnsupported() {
   external_tool::ExternalToolPreparationContext context{
       external_tool::defaultLocalToolConfig(), directory.path().str()};
 
-  const EvaluationModelPreparation preparation = takeExpected(
-      __func__, prepareEvaluationModelInvocation(
-                    evaluationRequest, caseResolution(__func__), store, blobs,
-                    context));
+  const EvaluationModelPreparation preparation =
+      takeExpected(__func__, prepareEvaluationModelInvocation(
+                                 evaluationRequest, caseResolution(__func__),
+                                 store, blobs, context));
   const auto *evidence = std::get_if<EvaluationEvidence>(&preparation);
   require(__func__, evidence,
           "unsupported external preparation returned an invocation bundle");
   const auto *unsupported =
       std::get_if<UnsupportedEvidence>(&evidence->outcome());
-  require(__func__, unsupported &&
-                        unsupported->reason ==
-                            OutcomeReason::RuntimeCapabilityUnavailable,
+  require(__func__,
+          unsupported && unsupported->reason ==
+                             OutcomeReason::RuntimeCapabilityUnavailable,
           "external preparation did not preserve typed Unsupported");
-  require(__func__, evidence->outputBindings().size() == 1 &&
-                        evidence->outputBindings().front().artifacts.empty(),
+  require(__func__,
+          evidence->outputBindings().size() == 1 &&
+              evidence->outputBindings().front().artifacts.empty(),
           "Evaluation did not finalize dense empty output bindings");
 }
 
@@ -1091,13 +1055,13 @@ void providerDispatchUsesEvidenceOwner() {
       __func__, evaluateRequest(evaluationRequest, caseResolution(__func__),
                                 store, blobs));
   const auto *completed = std::get_if<CompletedEvidence>(&evidence.outcome());
-  require(__func__, completed && completed->metricResults.size() == 1 &&
-                        completed->findingResults.size() == 1,
+  require(__func__,
+          completed && completed->metricResults.size() == 1 &&
+              completed->findingResults.size() == 1,
           "provider result did not pass through the Evidence owner");
   const auto *point = std::get_if<PointObservation>(
       &completed->metricResults.front().observation);
-  require(__func__, point &&
-                        std::get<IntegerValue>(point->value).value() == 7,
+  require(__func__, point && std::get<IntegerValue>(point->value).value() == 7,
           "provider metric observation changed during Evidence finalization");
 }
 
@@ -1108,16 +1072,13 @@ int main() {
     fail("registration", llvm::toString(std::move(error)));
   if (llvm::Error error = registerFindingDescriptor(findingDescriptor))
     fail("registration", llvm::toString(std::move(error)));
-  if (llvm::Error error = registerFindingDescriptor(terminalFindingDescriptor))
-    fail("registration", llvm::toString(std::move(error)));
-  if (llvm::Error error =
-          registerEvaluationModelDescriptor(modelDescriptor))
+  if (llvm::Error error = registerEvaluationModelDescriptor(modelDescriptor))
     fail("registration", llvm::toString(std::move(error)));
   if (llvm::Error error =
           registerEvaluationModelDescriptor(externalModelDescriptor))
     fail("registration", llvm::toString(std::move(error)));
-  if (llvm::Error error =
-          registerEvaluationModelDescriptor(providerlessExternalModelDescriptor))
+  if (llvm::Error error = registerEvaluationModelDescriptor(
+          providerlessExternalModelDescriptor))
     fail("registration", llvm::toString(std::move(error)));
   if (llvm::Error error =
           registerEvaluationModelDescriptor(importingExternalModelDescriptor))
@@ -1125,8 +1086,8 @@ int main() {
   if (llvm::Error error =
           registerEvaluationModelDescriptor(malformedExternalModelDescriptor))
     fail("registration", llvm::toString(std::move(error)));
-  if (llvm::Error error = registerEvaluationModelDescriptor(
-          unsupportedExternalModelDescriptor))
+  if (llvm::Error error =
+          registerEvaluationModelDescriptor(unsupportedExternalModelDescriptor))
     fail("registration", llvm::toString(std::move(error)));
   if (llvm::Error error =
           registerEvaluationModelProvider(importingExternalProvider))
@@ -1148,6 +1109,5 @@ int main() {
   completedMetricResultsUseRequestOwnedSemantics();
   noncompletedEvidenceHasNoResultTables();
   detailedBundleFieldIsUnknown();
-  terminalFindingFailsClosedWithoutExecutionOwner();
   return 0;
 }

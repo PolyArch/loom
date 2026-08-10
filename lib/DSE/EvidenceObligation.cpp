@@ -621,7 +621,7 @@ llvm::Expected<EvaluationRequest> instantiateEvidenceObligation(
     const ArtifactRootReference &candidate,
     llvm::ArrayRef<EvidenceAcquisitionInputBinding> inputBindings,
     std::uint64_t replicateIndex, const CaseArtifactResolution &resolution,
-    const ArtifactStore &artifactStore) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   std::vector<EvidenceAcquisitionInputBinding> canonicalInputs(
       inputBindings.begin(), inputBindings.end());
   llvm::sort(canonicalInputs, [](const EvidenceAcquisitionInputBinding &lhs,
@@ -683,7 +683,7 @@ llvm::Expected<EvaluationRequest> instantiateEvidenceObligation(
   auto evaluationCase = EvaluationCase::get(
       model->caseSignature, std::move(*bindings), obligation.workload_,
       obligation.runtimeInput_, obligation.baseConditions_, resolution,
-      artifactStore);
+      artifactStore, blobStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
 
@@ -709,7 +709,7 @@ llvm::Expected<EvaluationRequest> instantiateEvidenceObligation(
   }
   return EvaluationRequest::get(*evaluationCase, metrics, findings,
                                 obligation.modelBinding_, replicateIndex,
-                                resolution, artifactStore);
+                                resolution, artifactStore, blobStore);
 }
 
 } // namespace loom::dse

@@ -192,12 +192,12 @@ prepareStructuredFabricAnalyticEvidenceObligationTemplate(
     const ArtifactRootReference &fabricReference,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   if (llvm::Error error = registerStructuredEvaluationPromotionAcquisition())
     return std::move(error);
   auto prepared = evaluation::models::prepareStructuredFabricEvaluation(
       prototypeCandidate, fabricReference, workload, runtimeInput, config,
-      store);
+      store, blobs);
   if (!prepared)
     return prepared.takeError();
   return EvidenceObligationTemplate::get(
@@ -211,12 +211,12 @@ prepareStructuredProgramFunctionalEvidenceObligationTemplate(
     const ArtifactRootReference &prototypeCandidate,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   if (llvm::Error error = registerStructuredEvaluationPromotionAcquisition())
     return std::move(error);
   auto prepared =
       evaluation::models::prepareStructuredProgramFunctionalEvaluation(
-          prototypeCandidate, workload, runtimeInput, config, store);
+          prototypeCandidate, workload, runtimeInput, config, store, blobs);
   if (!prepared)
     return prepared.takeError();
   return EvidenceObligationTemplate::get(prepared->request,

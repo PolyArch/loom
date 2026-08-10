@@ -4,6 +4,7 @@ add_library(LoomStructuredFabricAnalyticModel
   CanonicalDataflowFunctional.cpp
   CgraSimulation.cpp
   DfgSimulation.cpp
+  ProductionRegistry.cpp
   SimulationComparison.cpp
   StructuredEvaluationInvocationCache.cpp
   StructuredFabricAnalytic.cpp

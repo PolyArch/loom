@@ -1,7 +1,7 @@
 #ifndef LOOM_SIMULATOR_SPATIALOBSERVATIONCOMPARISON_H
 #define LOOM_SIMULATOR_SPATIALOBSERVATIONCOMPARISON_H
 
-#include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SimulationExecution.h"
 
 namespace loom::sim {
 
@@ -11,6 +11,12 @@ namespace loom::sim {
 bool haveExactlyEqualSpatialFunctionalObservations(
     const SpatialFunctionalObservations &reference,
     const SpatialFunctionalObservations &candidate);
+
+/// Exact comparison of two observations aligned by one canonical System
+/// observable contract, including every external boundary category.
+bool haveExactlyEqualSystemFunctionalObservations(
+    const SystemFunctionalObservations &reference,
+    const SystemFunctionalObservations &candidate);
 
 } // namespace loom::sim
 

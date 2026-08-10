@@ -46,7 +46,9 @@ target_link_libraries(LoomDeploymentTestSupport PUBLIC
   MLIRFabric
   MLIRFuncDialect
   MLIRIR
+  MLIRLLVMDialect
   MLIRMapping
+  MLIRMemRefDialect
   MLIRParser
   MLIRSupport
 )

@@ -1,12 +1,12 @@
 #include "Simulator/SimulationExecution.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Evaluation/ModelDescriptor.h"
 #include "Evaluation/Request.h"
-#include "Evaluation/StandardFindings.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -167,6 +167,7 @@ SpatialFunctionalObservations observations(ValueResultObservation result,
 constexpr EvaluationCaseKind caseKind{701};
 constexpr EvaluationModelKind modelKind{702};
 constexpr EvaluationModelKind retiredOnlyModelKind{703};
+constexpr FindingKind terminalFindingKind{704};
 constexpr CaseSubjectRoleRef candidateRole{0};
 
 EvaluationCaseSignatureRef signatureRef() {
@@ -184,10 +185,12 @@ const CaseSubjectRoleDescriptor roles[] = {{candidateRole, "canonical_dataflow",
                                             SubjectRoleCardinality::ExactlyOne,
                                             candidateSchemas, nullptr}};
 
-llvm::Error verifyWorkload(const EvaluationSubjectBindings &bindings,
+llvm::Error verifyWorkload(const EvaluationCase &,
+                           const EvaluationSubjectBindings &bindings,
                            const std::optional<ArtifactRootReference> &workload,
                            const std::optional<ArtifactRootReference> &runtime,
-                           const CaseArtifactResolution &resolution) {
+                           const CaseArtifactResolution &resolution,
+                           const ArtifactStore &, const BlobStore &) {
   if (!workload || !runtime)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "simulation test workload is not total");
@@ -218,6 +221,63 @@ const EvaluationCaseSignatureDescriptor signatureDescriptor{
     &verifyWorkload,
     AbstractCaseCycle{},
     {}};
+
+struct TestTerminalWitness {
+  std::uint32_t marker = 0;
+};
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeTerminalWitness(const OwnerValue &value) {
+  const auto *witness = value.getIf<TestTerminalWitness>();
+  if (!witness)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "wrong terminal witness type");
+  return std::vector<std::uint8_t>{
+      static_cast<std::uint8_t>(witness->marker >> 24),
+      static_cast<std::uint8_t>(witness->marker >> 16),
+      static_cast<std::uint8_t>(witness->marker >> 8),
+      static_cast<std::uint8_t>(witness->marker)};
+}
+
+llvm::Expected<OwnerValue>
+decodeTerminalWitness(llvm::ArrayRef<std::uint8_t> bytes) {
+  if (bytes.size() != 4)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "wrong terminal witness size");
+  const std::uint32_t marker = (static_cast<std::uint32_t>(bytes[0]) << 24) |
+                               (static_cast<std::uint32_t>(bytes[1]) << 16) |
+                               (static_cast<std::uint32_t>(bytes[2]) << 8) |
+                               static_cast<std::uint32_t>(bytes[3]);
+  return OwnerValue::get(TestTerminalWitness{marker});
+}
+
+llvm::Error validateTerminalWitness(const OwnerValue &value,
+                                    const FindingTerminalWitnessContext &) {
+  const auto *witness = value.getIf<TestTerminalWitness>();
+  if (!witness || witness->marker != 0x2a)
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "invalid terminal witness marker");
+  return llvm::Error::success();
+}
+
+const ScopeFormDescriptor terminalScopeForms[] = {
+    {ScopeFormRef(0),
+     "the exact simulator test case",
+     {},
+     WholeExactCaseScope{},
+     nullptr}};
+
+const FindingDescriptor terminalFindingDescriptor{
+    terminalFindingKind,
+    "simulation_execution_test_halt",
+    "A typed halt used to verify SimulationExecution witness ownership.",
+    terminalScopeForms,
+    {},
+    terminalWitnessRefOccurrenceCodec(),
+    FindingTerminalWitnessCodec{{"loom.test.simulation_execution.halt", {1, 0}},
+                                &encodeTerminalWitness,
+                                &decodeTerminalWitness,
+                                &validateTerminalWitness}};
 
 struct EmptyConfigView {};
 
@@ -258,8 +318,9 @@ const ModelOutputSlotDescriptor outputSlots[] = {
 const ModeledPhenomenon phenomena[] = {ModeledPhenomenon::CanonicalDataflow};
 const ScopeFormRef wholeCaseScopeForms[] = {ScopeFormRef(0)};
 const FindingCapability findingCapabilities[] = {
-    {standard_findings::FunctionalMismatch, wholeCaseScopeForms,
-     allFindingResultFormsMask()}};
+    {terminalFindingKind, wholeCaseScopeForms, allFindingResultFormsMask()}};
+const FindingQuery mandatoryTerminalFindings[] = {
+    {terminalFindingKind, EvaluationScope{ScopeFormRef(0), {}}}};
 const EvaluationModelDescriptor modelDescriptor{
     modelKind,
     "simulation_execution_test_model",
@@ -275,7 +336,7 @@ const EvaluationModelDescriptor modelDescriptor{
     EvaluationExecutionMethod::Simulation,
     {},
     DeterminismContract::Deterministic,
-    {},
+    mandatoryTerminalFindings,
     ProviderForm::InProcess};
 
 const ModelOutputSlotDescriptor retiredOnlyOutputSlots[] = {
@@ -301,7 +362,7 @@ const EvaluationModelDescriptor retiredOnlyModelDescriptor{
     EvaluationExecutionMethod::Simulation,
     {},
     DeterminismContract::Deterministic,
-    {},
+    mandatoryTerminalFindings,
     ProviderForm::InProcess};
 
 struct Inputs {
@@ -315,8 +376,9 @@ struct Inputs {
 
 Inputs
 prepareInputs(llvm::StringRef test, const ArtifactStore &store,
+              const BlobStore &blobs,
               const EvaluationModelDescriptor &descriptor = modelDescriptor) {
-  llvm::cantFail(standard_findings::registerStandardFindings());
+  llvm::cantFail(registerFindingDescriptor(terminalFindingDescriptor));
   llvm::cantFail(registerEvaluationCaseSignature(signatureDescriptor));
   llvm::cantFail(registerEvaluationModelDescriptor(descriptor));
 
@@ -364,19 +426,19 @@ prepareInputs(llvm::StringRef test, const ArtifactStore &store,
   EvaluationCase evaluationCase =
       take(test,
            EvaluationCase::get(signatureRef(), std::move(bindings), workloadRef,
-                               runtimeRef, {}, resolution, store));
+                               runtimeRef, {}, resolution, store, blobs));
   ResolvedModelBinding modelBinding =
       take(test, ResolvedModelBinding::project(descriptor.reference(), {},
                                                defaultResolvedConfig()));
   FindingRequest finding = take(
       test,
-      FindingRequest::get(FindingQuery{standard_findings::FunctionalMismatch,
+      FindingRequest::get(FindingQuery{terminalFindingKind,
                                        EvaluationScope{ScopeFormRef(0), {}}},
                           {}, evaluationCase, resolution, store));
   EvaluationRequest request =
       take(test, EvaluationRequest::get(evaluationCase, {}, {finding},
                                         std::move(modelBinding), 0, resolution,
-                                        store));
+                                        store, blobs));
   const ArtifactRootReference requestRef =
       take(test, publishEvaluationRequest(request, store));
   require(test, !view.actors().empty(), "fixture must contain an actor");
@@ -402,7 +464,8 @@ SpatialProgressObservations retiredProgress(llvm::StringRef test) {
 void retiredExecutionRoundTripsThroughItsExactRequest() {
   TemporaryDirectory directory(__func__);
   const ArtifactStore store(directory.path());
-  Inputs inputs = prepareInputs(__func__, store);
+  const BlobStore blobs(directory.path());
+  Inputs inputs = prepareInputs(__func__, store, blobs);
 
   SpatialSimulationExecution draft{
       inputs.requestRef,
@@ -410,12 +473,14 @@ void retiredExecutionRoundTripsThroughItsExactRequest() {
       observations(PublishedValueResult{value(16)}, true),
       retiredProgress(__func__),
       {}};
-  auto finalized = take(
-      __func__, finalizeSimulationExecution(draft, inputs.resolution, store));
+  auto finalized =
+      take(__func__,
+           finalizeSimulationExecution(draft, inputs.resolution, store, blobs));
   const ArtifactRootReference published =
       take(__func__, publishSimulationExecution(finalized, store));
-  auto imported = take(
-      __func__, importSimulationExecution(published, inputs.resolution, store));
+  auto imported =
+      take(__func__, importSimulationExecution(published, inputs.resolution,
+                                               store, blobs));
 
   require(__func__, imported.request() == inputs.requestRef,
           "execution changed its exact Request reference");
@@ -431,7 +496,8 @@ void retiredExecutionRoundTripsThroughItsExactRequest() {
 void terminalControlsRequiredCompletionFacts() {
   TemporaryDirectory directory(__func__);
   const ArtifactStore store(directory.path());
-  Inputs inputs = prepareInputs(__func__, store);
+  const BlobStore blobs(directory.path());
+  Inputs inputs = prepareInputs(__func__, store, blobs);
   const SpatialProgressObservations incomplete{
       SpatialEventCoordinate{ratio(__func__, 0), 0}, std::nullopt,
       SpatialEventCoordinate{ratio(__func__, 3), 0}};
@@ -443,7 +509,8 @@ void terminalControlsRequiredCompletionFacts() {
       incomplete,
       {}};
   expectErrorContains(
-      __func__, finalizeSimulationExecution(retired, inputs.resolution, store),
+      __func__,
+      finalizeSimulationExecution(retired, inputs.resolution, store, blobs),
       "Retired execution requires graph retirement");
 
   SpatialSimulationExecution stopped{
@@ -452,24 +519,52 @@ void terminalControlsRequiredCompletionFacts() {
       observations(NotPublishedValueResult{}, false),
       incomplete,
       {}};
-  auto finalized = take(
-      __func__, finalizeSimulationExecution(stopped, inputs.resolution, store));
+  auto finalized =
+      take(__func__, finalizeSimulationExecution(stopped, inputs.resolution,
+                                                 store, blobs));
   require(__func__,
           std::holds_alternative<StoppedByLimitExecution>(finalized.terminal()),
           "stopped execution changed terminal");
 
   stopped.terminal = HaltedExecution{
-      standard_findings::FunctionalMismatch,
-      OwnerValue::get(standard_findings::FunctionalMismatchOccurrence{})};
-  expectErrorContains(
-      __func__, finalizeSimulationExecution(stopped, inputs.resolution, store),
-      "Halted terminal has no registered terminal-witness owner");
+      terminalFindingKind, OwnerValue::get(TestTerminalWitness{0x2a})};
+  auto halted = take(__func__, finalizeSimulationExecution(
+                                   stopped, inputs.resolution, store, blobs));
+  const ArtifactRootReference executionRef =
+      take(__func__, publishSimulationExecution(halted, store));
+  auto imported =
+      take(__func__, importSimulationExecution(executionRef, inputs.resolution,
+                                               store, blobs));
+  require(__func__,
+          std::holds_alternative<HaltedExecution>(imported.terminal()),
+          "Halted execution did not round-trip");
+
+  EvaluationRequest request =
+      take(__func__, importEvaluationRequest(inputs.requestRef,
+                                             inputs.resolution, store, blobs));
+  FindingResult present{PresentFinding{
+      {FindingOccurrence::get(TerminalWitnessRef{ModelOutputSlotRef(0), 0})}}};
+  auto evidence = EvaluationEvidence::get(
+      request, {{ModelOutputSlotRef(0), {executionRef}}},
+      CompletedEvidence{{}, {std::move(present)}}, inputs.resolution, store,
+      blobs);
+  take(__func__, std::move(evidence));
+
+  FindingResult invalidPresent{PresentFinding{
+      {FindingOccurrence::get(TerminalWitnessRef{ModelOutputSlotRef(0), 1})}}};
+  expectErrorContains(__func__,
+                      EvaluationEvidence::get(
+                          request, {{ModelOutputSlotRef(0), {executionRef}}},
+                          CompletedEvidence{{}, {std::move(invalidPresent)}},
+                          inputs.resolution, store, blobs),
+                      "does not resolve an execution");
 }
 
 void actorActivityUsesTheRootedGraphInventory() {
   TemporaryDirectory directory(__func__);
   const ArtifactStore store(directory.path());
-  Inputs inputs = prepareInputs(__func__, store);
+  const BlobStore blobs(directory.path());
+  Inputs inputs = prepareInputs(__func__, store, blobs);
 
   SpatialSimulationExecution draft{
       inputs.requestRef,
@@ -479,21 +574,24 @@ void actorActivityUsesTheRootedGraphInventory() {
       {{ActivityWindow::LaunchToTerminal,
         ActivityCoverage::Partial,
         {{inputs.actor, {3, 3}}}}}};
-  auto finalized = take(
-      __func__, finalizeSimulationExecution(draft, inputs.resolution, store));
-  require(__func__, finalized.activitySummaries().size() == 1,
+  auto finalized =
+      take(__func__,
+           finalizeSimulationExecution(draft, inputs.resolution, store, blobs));
+  require(__func__, finalized.spatialActivitySummaries().size() == 1,
           "execution dropped its typed actor activity summary");
 
   draft.activitySummaries.front().transitions.front().counts = {2, 3};
   expectErrorContains(
-      __func__, finalizeSimulationExecution(draft, inputs.resolution, store),
+      __func__,
+      finalizeSimulationExecution(draft, inputs.resolution, store, blobs),
       "retired count exceeds committed count");
 }
 
 void memoryDiffHasOneCanonicalRunPartition() {
   TemporaryDirectory directory(__func__);
   const ArtifactStore store(directory.path());
-  Inputs inputs = prepareInputs(__func__, store);
+  const BlobStore blobs(directory.path());
+  Inputs inputs = prepareInputs(__func__, store, blobs);
 
   SpatialFunctionalObservations functional =
       observations(PublishedValueResult{value(16)}, true);
@@ -507,14 +605,17 @@ void memoryDiffHasOneCanonicalRunPartition() {
                                    retiredProgress(__func__),
                                    {}};
   expectErrorContains(
-      __func__, finalizeSimulationExecution(draft, inputs.resolution, store),
+      __func__,
+      finalizeSimulationExecution(draft, inputs.resolution, store, blobs),
       "overlap or are adjacent");
 }
 
 void modelControlsStoppedExecutionRetention() {
   TemporaryDirectory directory(__func__);
   const ArtifactStore store(directory.path());
-  Inputs inputs = prepareInputs(__func__, store, retiredOnlyModelDescriptor);
+  const BlobStore blobs(directory.path());
+  Inputs inputs =
+      prepareInputs(__func__, store, blobs, retiredOnlyModelDescriptor);
 
   SpatialSimulationExecution execution{
       inputs.requestRef,
@@ -523,13 +624,13 @@ void modelControlsStoppedExecutionRetention() {
       retiredProgress(__func__),
       {}};
   take(__func__,
-       finalizeSimulationExecution(execution, inputs.resolution, store));
+       finalizeSimulationExecution(execution, inputs.resolution, store, blobs));
 
   execution.terminal = StoppedByLimitExecution{};
   execution.progressObservations.graphRetirementVisible.reset();
   expectErrorContains(
       __func__,
-      finalizeSimulationExecution(execution, inputs.resolution, store),
+      finalizeSimulationExecution(execution, inputs.resolution, store, blobs),
       "does not retain StoppedByLimit execution");
 }
 

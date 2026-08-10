@@ -1,4 +1,4 @@
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/FloatCompareMinMax.h"
@@ -175,7 +175,7 @@ std::string fabricSource(FamilyKind family, FixtureKind kind) {
   const unsigned resultWidth = portWidth;
   const llvm::StringRef schemas =
       scalarSingleton || nnan ? "@arith.cmpf"
-      : vectorSingleton       ? "@arith.minimumf"
+      : vectorSingleton ? "@arith.minimumf"
                         : "@arith.cmpf, @arith.minimumf, @arith.maximumf, "
                           "@arith.minnumf, @arith.maxnumf";
   const llvm::StringRef formats =

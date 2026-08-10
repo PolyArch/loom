@@ -1,6 +1,6 @@
 #include "Hardware/RTL/CommonSkeleton.h"
 
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 #include "ConfigurationTransportTestSupport.h"
 
 #include "ADG/Builder.h"
@@ -87,7 +87,7 @@ makeMemoryModule(const loom::ArtifactStore &store, bool temporal) {
     inputs.push_back(take(spatial.input(ordinal)));
   auto outputs = take(spatial.addMemory(inputs, memory));
   std::vector<loom::adg::SpatialValue> moduleResults(outputs.values().begin(),
-                                                      outputs.values().end());
+                                                     outputs.values().end());
   moduleResults.push_back(take(spatial.input(memory.inputTypes().size())));
   if (llvm::Error error = spatial.close(moduleResults))
     fail(llvm::toString(std::move(error)));
@@ -104,22 +104,23 @@ makeInstructionCoreMicroarchitecture() {
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1}},
       ::fabric::oneCycleElasticOperationResourceContract()};
   loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
-                                                              1, 1, 2, 1};
-  return take(loom::fabric::InstructionCoreMicroarchitecturalRealization::
-                  createInOrder(std::move(common), pipeline));
+                                                             1, 1, 2, 1};
+  return take(
+      loom::fabric::InstructionCoreMicroarchitecturalRealization::createInOrder(
+          std::move(common), pipeline));
 }
 
-loom::fabric::FinalizedFabricRoot makeMemorySystem(
-    const loom::fabric::FinalizedFabricRoot &module,
-    const loom::ArtifactStore &store, bool attachManager) {
+loom::fabric::FinalizedFabricRoot
+makeMemorySystem(const loom::fabric::FinalizedFabricRoot &module,
+                 const loom::ArtifactStore &store, bool attachManager) {
   loom::adg::DesignBuilder design(store);
   auto system = take(design.createSystem("memory-hierarchy-system"));
   auto imported = take(system.importSpatialCore(module));
   auto architecture = take(loom::adg::getBuiltinInstructionCoreArchitecture());
   auto microarchitecture = makeInstructionCoreMicroarchitecture();
   auto host = take(system.addHostCore(architecture, microarchitecture));
-  auto core = take(
-      system.addAccCore(architecture, microarchitecture, imported));
+  auto core =
+      take(system.addAccCore(architecture, microarchitecture, imported));
 
   auto clock = take(system.createHardwareDomain());
   std::vector<loom::adg::HardwareDomainMember> clockMembers{
@@ -133,10 +134,9 @@ loom::fabric::FinalizedFabricRoot makeMemorySystem(
     auto indexWidths =
         take(::fabric::UnsignedDomain::fromCanonical({{32, 32}}));
     auto service = take(loom::adg::makeGeneral64SystemMemory(
-        {0,
-         4096,
-         loom::adg::MemoryAccessDomainParameters{
-             64, 128, 8, std::move(indexWidths)},
+        {0, 4096,
+         loom::adg::MemoryAccessDomainParameters{64, 128, 8,
+                                                 std::move(indexWidths)},
          32},
         std::move(rate)));
     auto memoryService = take(system.addMemoryService(service.contract));
@@ -147,7 +147,8 @@ loom::fabric::FinalizedFabricRoot makeMemorySystem(
       fail(llvm::toString(std::move(error)));
     auto bits128 = take(loom::adg::PortType::bits(128));
     auto transport = take(system.addTransportResource(
-        {{bits128}, {bits128},
+        {{bits128},
+         {bits128},
          ::fabric::oneCycleElasticOperationResourceContract()}));
     auto pattern = take(system.addTransferPattern(transport, 0, {0}, 0));
     auto requestCarrier = take(transport.input(0));
@@ -163,15 +164,16 @@ loom::fabric::FinalizedFabricRoot makeMemorySystem(
             *moduleTemplate, direction, ordinal};
         auto plane = module.view().moduleBoundaryEndpointPlane(boundary);
         require(plane.has_value(), "memory boundary has no endpoint plane");
-        count += *plane == loom::fabric::FabricSpatialAttachmentEndpointRef::
-                               Plane::Transport;
+        count +=
+            *plane ==
+            loom::fabric::FabricSpatialAttachmentEndpointRef::Plane::Transport;
       }
       return count;
     };
-    const std::size_t inputCount = transportCount(
-        loom::fabric::FabricPortDirection::Input);
-    const std::size_t outputCount = transportCount(
-        loom::fabric::FabricPortDirection::Output);
+    const std::size_t inputCount =
+        transportCount(loom::fabric::FabricPortDirection::Input);
+    const std::size_t outputCount =
+        transportCount(loom::fabric::FabricPortDirection::Output);
     require(inputCount != 0 && outputCount != 0,
             "memory fixture has no transport carrier boundary");
     auto managerRequest = take(core.spatialTransportOutput(outputCount - 1));
@@ -183,14 +185,14 @@ loom::fabric::FinalizedFabricRoot makeMemorySystem(
     auto provider = take(endpoint.memory());
     for (auto kind : {::dataflow::semantics::ServiceKind::MemoryRead,
                       ::dataflow::semantics::ServiceKind::MemoryWrite}) {
-      if (llvm::Error error = system.attachServiceLegCarriers(
-              manager, kind, 0, {managerRequest}))
+      if (llvm::Error error = system.attachServiceLegCarriers(manager, kind, 0,
+                                                              {managerRequest}))
         fail(llvm::toString(std::move(error)));
       if (llvm::Error error = system.attachServiceLegCarriers(
               manager, kind, 1, {managerResponse}))
         fail(llvm::toString(std::move(error)));
-      if (llvm::Error error = system.attachServiceLegCarriers(
-              provider, kind, 0, {requestCarrier}))
+      if (llvm::Error error = system.attachServiceLegCarriers(provider, kind, 0,
+                                                              {requestCarrier}))
         fail(llvm::toString(std::move(error)));
       if (llvm::Error error = system.attachServiceLegCarriers(
               provider, kind, 1, {responseCarrier}))
@@ -203,8 +205,7 @@ loom::fabric::FinalizedFabricRoot makeMemorySystem(
   }
   auto clockContract =
       take(loom::fabric::ClockDomainContractRecord::create(1'000, 0));
-  if (llvm::Error error =
-          clock.close(clockMembers, std::move(clockContract)))
+  if (llvm::Error error = clock.close(clockMembers, std::move(clockContract)))
     fail(llvm::toString(std::move(error)));
 
   auto reset = take(system.createHardwareDomain());
@@ -213,10 +214,10 @@ loom::fabric::FinalizedFabricRoot makeMemorySystem(
       loom::fabric::ResetTiming::Asynchronous,
       loom::fabric::ResetTiming::Asynchronous,
       loom::fabric::ResetInitialState::Asserted, std::nullopt, 0));
-  if (llvm::Error error = reset.close(
-          {host.domainMember(), core.instructionCoreDomainMember(),
-           core.spatialCoreDomainMember()},
-          std::move(resetContract)))
+  if (llvm::Error error =
+          reset.close({host.domainMember(), core.instructionCoreDomainMember(),
+                       core.spatialCoreDomainMember()},
+                      std::move(resetContract)))
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error = system.close())
     fail(llvm::toString(std::move(error)));
@@ -296,7 +297,8 @@ llvm::Expected<loom::fabric::FabricMemoryOperationRow> projectMemoryRow(
     const loom::fabric::FabricArtifactView &fabric,
     const loom::fabric::FabricMemoryConfigurationSchemaView &schema,
     loom::fabric::FabricOrdinal physicalPort, mlir::Operation *actor) {
-  auto actorProjection = dataflow::projectRegisteredActorSchemaProjection(actor);
+  auto actorProjection =
+      dataflow::projectRegisteredActorSchemaProjection(actor);
   if (!actorProjection)
     return actorProjection.takeError();
   auto access = dataflow::semantics::getCanonicalMemoryAccessView(actor);
@@ -305,9 +307,9 @@ llvm::Expected<loom::fabric::FabricMemoryOperationRow> projectMemoryRow(
   auto service = dataflow::semantics::CanonicalService::forActor(actor);
   if (!service)
     return service.takeError();
-  const auto *port = fabric.memoryOperationPort(
-      loom::fabric::FabricMemoryOperationPortRef{schema.memory(),
-                                                 physicalPort});
+  const auto *port =
+      fabric.memoryOperationPort(loom::fabric::FabricMemoryOperationPortRef{
+          schema.memory(), physicalPort});
   if (!port)
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "memory operation port does not resolve");
@@ -321,14 +323,16 @@ llvm::Expected<loom::fabric::FabricMemoryOperationRow> projectMemoryRow(
     std::vector<std::optional<loom::fabric::FabricMemoryRoleDestination>>
         destinations(schema.layout().roleCount);
     for (const auto &binding : capability.roleToEndpoint) {
-      const auto argument = llvm::find_if(
-          arguments, [&](const auto &value) { return value.role == binding.role; });
+      const auto argument = llvm::find_if(arguments, [&](const auto &value) {
+        return value.role == binding.role;
+      });
       if (argument != arguments.end())
         sources[static_cast<unsigned>(binding.role)] =
             loom::fabric::FabricMemoryExternalRoleSource{
                 binding.endpointOrdinal, llvm::APInt(tagWidth, 0)};
-      const auto result = llvm::find_if(
-          results, [&](const auto &value) { return value.role == binding.role; });
+      const auto result = llvm::find_if(results, [&](const auto &value) {
+        return value.role == binding.role;
+      });
       if (result != results.end())
         destinations[static_cast<unsigned>(binding.role)] =
             loom::fabric::FabricMemoryRoleDestination{
@@ -338,9 +342,9 @@ llvm::Expected<loom::fabric::FabricMemoryOperationRow> projectMemoryRow(
     }
     for (::fabric::UsePatternKey pattern : capability.admissibleUsePatterns) {
       auto row = schema.projectOperationRow(
-          physicalPort, capabilityOrdinal, pattern.ordinal(),
-          *actorProjection, std::optional<dataflow::semantics::CanonicalMemoryAccessView>(
-                                *access),
+          physicalPort, capabilityOrdinal, pattern.ordinal(), *actorProjection,
+          std::optional<dataflow::semantics::CanonicalMemoryAccessView>(
+              *access),
           0, sources, destinations,
           ::fabric::MemoryDispatchTarget(
               std::in_place_type<::fabric::LocalMemoryDispatchTarget>));
@@ -354,10 +358,10 @@ llvm::Expected<loom::fabric::FabricMemoryOperationRow> projectMemoryRow(
       "memory actor has no compatible physical operation row");
 }
 
-llvm::Expected<loom::CanonicalSemanticBytes> makeActiveMemoryConfiguration(
-    const loom::fabric::FabricArtifactView &fabric,
-    loom::fabric::FabricMemoryOccurrenceRef memory, bool temporal,
-    mlir::MLIRContext &actorContext) {
+llvm::Expected<loom::CanonicalSemanticBytes>
+makeActiveMemoryConfiguration(const loom::fabric::FabricArtifactView &fabric,
+                              loom::fabric::FabricMemoryOccurrenceRef memory,
+                              bool temporal, mlir::MLIRContext &actorContext) {
   auto schema = fabric.memoryConfigurationSchema(memory);
   if (!schema)
     return schema.takeError();
@@ -383,8 +387,8 @@ llvm::Expected<loom::CanonicalSemanticBytes> makeActiveMemoryConfiguration(
     active.operationRows[load->physicalPort] = std::move(*load);
     active.operationRows[store->physicalPort] = std::move(*store);
   }
-  return schema->encode(loom::fabric::FabricMemoryConfigurationValue{
-      std::move(active)});
+  return schema->encode(
+      loom::fabric::FabricMemoryConfigurationValue{std::move(active)});
 }
 
 struct MemoryConfigurationImage final {
@@ -397,10 +401,10 @@ MemoryConfigurationImage makeMemoryConfigurationImage(
     loom::fabric::SpatialCoreOccurrenceRef spatialCore,
     const loom::fabric::FabricMemoryConfigurationSchemaView &schema,
     const loom::CanonicalSemanticBytes &semantic) {
-  auto target = take(
-      loom::fabric::FabricModulePhysicalTargetRef::create(schema.field()));
-  auto physical = take(
-      loom::fabric::FabricPhysicalConfigurationFieldRef::create(
+  auto target =
+      take(loom::fabric::FabricModulePhysicalTargetRef::create(schema.field()));
+  auto physical =
+      take(loom::fabric::FabricPhysicalConfigurationFieldRef::create(
           loom::fabric::SpatialCoreInternalOccurrenceRef{spatialCore,
                                                          std::move(target)}));
   auto slot = take(loom::fabric::qualifyFabricConfigurationSlot(
@@ -416,15 +420,14 @@ MemoryConfigurationImage makeMemoryConfigurationImage(
   require(owner != nullptr, "memory field has no programming owner");
   const std::vector<loom::hardware::SemanticConfigurationValue> values = {
       {slot, std::vector<std::uint8_t>(semantic.bytes().begin(),
-                                      semantic.bytes().end())}};
+                                       semantic.bytes().end())}};
   return {take(loom::hardware::test::derivePortableConfigurationTarget(
               abi, spatialCore, owner->id)),
           take(abi.abi().encode(owner->id, values))};
 }
 
-void writeSpatialToolArtifacts(
-    const std::filesystem::path &output,
-    const MemoryConfigurationImage &configuration) {
+void writeSpatialToolArtifacts(const std::filesystem::path &output,
+                               const MemoryConfigurationImage &configuration) {
   std::ofstream testbench(output / "spatial_memory_testbench.sv");
   testbench << R"sv(
 module testbench;
@@ -658,9 +661,8 @@ select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
           "could not write Spatial memory synthesis script");
 }
 
-void writeTemporalToolArtifacts(
-    const std::filesystem::path &output,
-    const MemoryConfigurationImage &configuration) {
+void writeTemporalToolArtifacts(const std::filesystem::path &output,
+                                const MemoryConfigurationImage &configuration) {
   std::ofstream testbench(output / "temporal_memory_testbench.sv");
   testbench << R"sv(
 module testbench;
@@ -974,8 +976,8 @@ void verifySchedule(const loom::ArtifactStore &store,
   require(llvm::StringRef(rtl).contains("module loom_memory_") &&
               llvm::StringRef(rtl).contains("module loom_module"),
           "memory hierarchy did not export complete SystemVerilog");
-  std::ofstream(output / (temporal ? "temporal_memory.sv"
-                                   : "spatial_memory.sv"))
+  std::ofstream(output /
+                (temporal ? "temporal_memory.sv" : "spatial_memory.sv"))
       << rtl;
   if (temporal)
     writeTemporalToolArtifacts(output, configuration);

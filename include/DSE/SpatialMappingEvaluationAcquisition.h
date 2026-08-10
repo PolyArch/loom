@@ -11,6 +11,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 struct ResolvedConfig;
 } // namespace loom
 
@@ -41,7 +42,7 @@ prepareCgraSimulationEvidenceObligationTemplate(
     const ArtifactRootReference &prototypeSpatialMapping,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
-    const ArtifactStore &store);
+    const ArtifactStore &store, const BlobStore &blobs);
 
 } // namespace loom::dse
 

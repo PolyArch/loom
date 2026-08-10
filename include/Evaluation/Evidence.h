@@ -46,10 +46,11 @@ public:
                            FindingRequestOrdinal findingRequestOrdinal,
                            llvm::ArrayRef<ModelOutputBinding> outputBindings,
                            const CaseArtifactResolution &resolution,
-                           const ArtifactStore &artifactStore)
+                           const ArtifactStore &artifactStore,
+                           const BlobStore &blobStore)
       : request_(request), findingRequestOrdinal_(findingRequestOrdinal),
         outputBindings_(outputBindings), resolution_(resolution),
-        artifactStore_(artifactStore) {}
+        artifactStore_(artifactStore), blobStore_(blobStore) {}
 
   const EvaluationRequest &request() const { return request_; }
   FindingRequestOrdinal findingRequestOrdinal() const {
@@ -60,6 +61,7 @@ public:
   }
   const CaseArtifactResolution &resolution() const { return resolution_; }
   const ArtifactStore &artifactStore() const { return artifactStore_; }
+  const BlobStore &blobStore() const { return blobStore_; }
   const ArtifactRootReference *resolveOutput(ModelOutputSlotRef slot,
                                              std::uint64_t ordinal) const;
 
@@ -69,6 +71,7 @@ private:
   llvm::ArrayRef<ModelOutputBinding> outputBindings_;
   const CaseArtifactResolution &resolution_;
   const ArtifactStore &artifactStore_;
+  const BlobStore &blobStore_;
 };
 
 class FindingOccurrence {
@@ -168,7 +171,7 @@ public:
       std::vector<ModelOutputBinding> outputBindings,
       EvaluationEvidenceOutcome outcome,
       const CaseArtifactResolution &resolution,
-      const ArtifactStore &artifactStore);
+      const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
   const ArtifactRootReference &requestRef() const { return requestRef_; }
   llvm::ArrayRef<ModelOutputBinding> outputBindings() const {
@@ -195,10 +198,9 @@ private:
 CanonicalSemanticBytes
 canonicalEvaluationEvidenceBytes(const EvaluationEvidence &evidence);
 std::string serializeEvaluationEvidence(const EvaluationEvidence &evidence);
-llvm::Expected<EvaluationEvidence>
-parseEvaluationEvidence(llvm::StringRef json,
-                        const CaseArtifactResolution &resolution,
-                        const ArtifactStore &artifactStore);
+llvm::Expected<EvaluationEvidence> parseEvaluationEvidence(
+    llvm::StringRef json, const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
 ArtifactIdentity evaluationEvidenceIdentity(const EvaluationEvidence &evidence);
 ArtifactRootReference
 evaluationEvidenceReference(const EvaluationEvidence &evidence);
@@ -208,7 +210,8 @@ publishEvaluationEvidence(const EvaluationEvidence &evidence,
 llvm::Expected<EvaluationEvidence>
 importEvaluationEvidence(const ArtifactRootReference &reference,
                          const CaseArtifactResolution &resolution,
-                         const ArtifactStore &artifactStore);
+                         const ArtifactStore &artifactStore,
+                         const BlobStore &blobStore);
 
 /// Reads only the owner-framed Request reference needed to select the exact
 /// case resolution for a subsequent strict import. This projection validates

@@ -1,4 +1,5 @@
 #include "Evaluation/Models/CgraSimulation.h"
+#include "Evaluation/ProductionRegistry.h"
 
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
@@ -19,8 +20,8 @@
 namespace loom::evaluation::models {
 namespace {
 
-constexpr EvaluationCaseKind kCaseKind(7);
-constexpr EvaluationModelKind kModelKind(9);
+constexpr BuiltinEvaluationCase kCase = BuiltinEvaluationCase::CgraSimulation;
+constexpr BuiltinEvaluationModel kModel = BuiltinEvaluationModel::CgraSimulator;
 constexpr CaseSubjectRoleRef kProgramRole(0);
 constexpr CaseSubjectRoleRef kHardwareRole(1);
 constexpr CaseSubjectRoleRef kSpatialMappingRole(2);
@@ -28,8 +29,8 @@ constexpr ModelOutputSlotRef kExecutionOutputSlot(0);
 constexpr ScopeFormRef kWholeExactCaseScope(0);
 
 EvaluationCaseSignatureRef caseSignatureRef() {
-  return llvm::cantFail(
-      EvaluationCaseSignatureRef::get(evaluationSchemaVersion(), kCaseKind));
+  return llvm::cantFail(EvaluationCaseSignatureRef::get(
+      evaluationSchemaVersion(), builtinEvaluationCaseKind(kCase)));
 }
 
 SubjectReferenceType spatialMappingRootType() {
@@ -38,7 +39,8 @@ SubjectReferenceType spatialMappingRootType() {
 
 llvm::Expected<SubjectTargetRef>
 resolveReferenceCycle(const EvaluationCase &evaluationCase,
-                      const CaseArtifactResolution &, const ArtifactStore &) {
+                      const CaseArtifactResolution &, const ArtifactStore &,
+                      const BlobStore &) {
   const auto mappings =
       evaluationCase.subjectBindings().subjects(kSpatialMappingRole);
   if (mappings.size() != 1)
@@ -63,8 +65,10 @@ const ArtifactSchemaDescriptor *const kRuntimeInputSchemas[] = {
 
 llvm::Error
 verifyMappingCompatibility(const ArtifactRootReference &mapping,
+                           const EvaluationCase &,
                            const EvaluationSubjectBindings &bindings,
-                           const CaseArtifactResolution &resolution) {
+                           const CaseArtifactResolution &resolution,
+                           const ArtifactStore &, const BlobStore &) {
   const auto programs = bindings.subjects(kProgramRole);
   const auto hardware = bindings.subjects(kHardwareRole);
   const CaseArtifactResolution::Entry *entry = resolution.find(mapping);
@@ -87,10 +91,11 @@ const CaseSubjectRoleDescriptor kSubjectRoles[] = {
      kMappingSchemas, &verifyMappingCompatibility}};
 
 llvm::Error verifyWorkloadCompatibility(
-    const EvaluationSubjectBindings &bindings,
+    const EvaluationCase &, const EvaluationSubjectBindings &bindings,
     const std::optional<ArtifactRootReference> &workload,
     const std::optional<ArtifactRootReference> &runtimeInput,
-    const CaseArtifactResolution &resolution) {
+    const CaseArtifactResolution &resolution, const ArtifactStore &,
+    const BlobStore &) {
   const auto programs = bindings.subjects(kProgramRole);
   if (programs.size() != 1 || !workload || !runtimeInput)
     return llvm::createStringError(
@@ -112,7 +117,7 @@ llvm::Error verifyWorkloadCompatibility(
 }
 
 const EvaluationCaseSignatureDescriptor kCaseSignature{
-    kCaseKind,
+    builtinEvaluationCaseKind(kCase),
     "cgra_simulation",
     "One exact Canonical Dataflow Program executed on one exact Fabric and "
     "complete SpatialMapping.",
@@ -180,7 +185,7 @@ const ResolvedModelConfigViewContract kConfigView{
     configSchemaBytes(), &projectConfig, &encodeConfig, &adoptConfig};
 
 const EvaluationModelDescriptor kModelDescriptor{
-    kModelKind,
+    builtinEvaluationModelKind(kModel),
     "cgra_simulator",
     "loom.cgra_simulator.exact_mapping.v1",
     caseSignatureRef(),
@@ -276,8 +281,8 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
       std::move(outcome->retired->observations),
       std::move(outcome->retired->progress),
       {}};
-  auto finalized =
-      sim::finalizeSimulationExecution(model, resolution, artifactStore);
+  auto finalized = sim::finalizeSimulationExecution(model, resolution,
+                                                    artifactStore, blobStore);
   if (!finalized)
     return finalized.takeError();
   auto reference = sim::publishSimulationExecution(*finalized, artifactStore);
@@ -303,8 +308,7 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
 llvm::Expected<EvaluationModelResult>
 evaluate(const EvaluationRequest &request,
          const CaseArtifactResolution &resolution,
-         const ArtifactStore &artifactStore,
-         const BlobStore &blobStore) {
+         const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   const auto programs = request.subjectBindings().subjects(kProgramRole);
   const auto hardware = request.subjectBindings().subjects(kHardwareRole);
   const auto mappings = request.subjectBindings().subjects(kSpatialMappingRole);
@@ -326,8 +330,8 @@ evaluate(const EvaluationRequest &request,
                               blobStore);
 }
 
-const EvaluationModelProvider kProvider{kModelDescriptor.reference(),
-                                        EvaluationModelInProcessProvider{&evaluate}};
+const EvaluationModelProvider kProvider{
+    kModelDescriptor.reference(), EvaluationModelInProcessProvider{&evaluate}};
 
 } // namespace
 
@@ -399,7 +403,8 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
                                 const ArtifactRootReference &workload,
                                 const ArtifactRootReference &runtimeInput,
                                 const ResolvedConfig &config,
-                                const ArtifactStore &artifactStore) {
+                                const ArtifactStore &artifactStore,
+                                const BlobStore &blobStore) {
   if (llvm::Error error = registerCgraSimulationModel())
     return std::move(error);
   auto execution = sim::prepareCgraExecution(canonicalDataflow, fabric,
@@ -427,9 +432,9 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
                                       {kSpatialMappingRole, {spatialMapping}}});
   if (!bindings)
     return bindings.takeError();
-  auto evaluationCase =
-      EvaluationCase::get(caseSignatureRef(), std::move(*bindings), workload,
-                          runtimeInput, {}, *resolution, artifactStore);
+  auto evaluationCase = EvaluationCase::get(
+      caseSignatureRef(), std::move(*bindings), workload, runtimeInput, {},
+      *resolution, artifactStore, blobStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
   auto modelBinding =
@@ -444,7 +449,7 @@ prepareCgraSimulationEvaluation(const ArtifactRootReference &canonicalDataflow,
     return cycleCount.takeError();
   auto request = EvaluationRequest::get(*evaluationCase, {*cycleCount}, {},
                                         std::move(*modelBinding), 0,
-                                        *resolution, artifactStore);
+                                        *resolution, artifactStore, blobStore);
   if (!request)
     return request.takeError();
   auto published = publishEvaluationRequest(*request, artifactStore);
@@ -460,7 +465,7 @@ evaluateCgraSimulation(const PreparedCgraSimulationEvaluation &prepared,
                        CgraSimulationAttemptLimits limits,
                        const ArtifactStore &artifactStore,
                        const BlobStore &blobStore) {
-  RequestVerifier verifier(prepared.resolution, artifactStore);
+  RequestVerifier verifier(prepared.resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(prepared.request))
     return std::move(error);
   auto result = evaluateWithPrepared(prepared.request, prepared.resolution,
@@ -469,9 +474,10 @@ evaluateCgraSimulation(const PreparedCgraSimulationEvaluation &prepared,
                                      artifactStore, blobStore);
   if (!result)
     return result.takeError();
-  return EvaluationEvidence::get(
-      prepared.request, std::move(result->outputBindings),
-      std::move(result->outcome), prepared.resolution, artifactStore);
+  return EvaluationEvidence::get(prepared.request,
+                                 std::move(result->outputBindings),
+                                 std::move(result->outcome),
+                                 prepared.resolution, artifactStore, blobStore);
 }
 
 } // namespace loom::evaluation::models

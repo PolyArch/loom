@@ -3,11 +3,12 @@
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Evaluation/Evidence.h"
 #include "Evaluation/ModelDescriptor.h"
-#include "Evaluation/OwnerError.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -164,17 +165,48 @@ resolveSimulationOutputSlot(const evaluation::EvaluationRequest &request) {
   return executionSlot;
 }
 
-llvm::Error validateTerminal(const ExecutionTerminal &terminal) {
+llvm::Expected<std::vector<std::uint8_t>> canonicalTerminalWitness(
+    const HaltedExecution &halted,
+    const evaluation::FindingTerminalWitnessContext &context) {
+  const evaluation::FindingDescriptor *descriptor =
+      evaluation::findFindingDescriptor(halted.findingKind);
+  if (!descriptor || !descriptor->terminalWitnessCodec)
+    return detail::invalid("simulation execution: Halted terminal has no "
+                           "registered terminal-witness owner");
+  if (!halted.witness)
+    return detail::invalid(
+        "simulation execution: Halted terminal has no witness");
+  const evaluation::FindingTerminalWitnessCodec &codec =
+      *descriptor->terminalWitnessCodec;
+  if (llvm::Error error = codec.validate(halted.witness, context))
+    return std::move(error);
+  auto encoded = codec.encode(halted.witness);
+  if (!encoded)
+    return encoded.takeError();
+  auto adopted = codec.decode(*encoded);
+  if (!adopted)
+    return adopted.takeError();
+  if (!*adopted)
+    return detail::invalid(
+        "simulation execution: terminal witness decoder returned no value");
+  if (llvm::Error error = codec.validate(*adopted, context))
+    return std::move(error);
+  auto reencoded = codec.encode(*adopted);
+  if (!reencoded)
+    return reencoded.takeError();
+  if (*reencoded != *encoded)
+    return detail::invalid(
+        "simulation execution: terminal witness is not canonical");
+  return encoded;
+}
+
+llvm::Error
+validateTerminal(const ExecutionTerminal &terminal,
+                 const evaluation::FindingTerminalWitnessContext &context) {
   if (const auto *halted = std::get_if<HaltedExecution>(&terminal)) {
-    const evaluation::FindingDescriptor *descriptor =
-        evaluation::findFindingDescriptor(halted->findingKind);
-    if (!descriptor || !descriptor->terminalWitnessSchema)
-      return detail::invalid("simulation execution: Halted terminal has no "
-                             "registered terminal-witness owner");
-    if (!halted->witness)
-      return detail::invalid(
-          "simulation execution: Halted terminal has no witness");
-    return evaluation::requireFindingOccurrenceOwner(*descriptor);
+    auto canonical = canonicalTerminalWitness(*halted, context);
+    if (!canonical)
+      return canonical.takeError();
   }
   return llvm::Error::success();
 }
@@ -192,7 +224,10 @@ llvm::Error validateExecution(const SpatialSimulationExecution &execution,
             execution.progressObservations, context))
       return error;
   }
-  if (llvm::Error error = validateTerminal(execution.terminal))
+  const evaluation::FindingTerminalWitnessContext terminalContext(
+      context.request, *context.resolution, *context.artifactStore,
+      *context.blobStore);
+  if (llvm::Error error = validateTerminal(execution.terminal, terminalContext))
     return error;
   if (llvm::Error error =
           validateProgress(execution.progressObservations, execution.terminal))
@@ -207,17 +242,12 @@ encodeExecution(const SpatialSimulationExecution &execution,
   std::vector<std::uint8_t> bytes =
       encodeArtifactRootReference(execution.request);
   WireWriter writer;
-  if (std::holds_alternative<RetiredExecution>(execution.terminal)) {
-    writer.u32(0);
-  } else if (const auto *halted =
-                 std::get_if<HaltedExecution>(&execution.terminal)) {
-    writer.u32(1);
-    writer.u32(halted->findingKind.ordinal());
-    return detail::invalid(
-        "simulation execution: Halted witness encoder is unavailable");
-  } else {
-    writer.u32(2);
-  }
+  const evaluation::FindingTerminalWitnessContext terminalContext(
+      context.request, *context.resolution, *context.artifactStore,
+      *context.blobStore);
+  if (llvm::Error error = detail::encodeExecutionTerminal(
+          writer, execution.terminal, terminalContext))
+    return std::move(error);
   detail::encodeSpatialFunctionalObservations(
       writer, execution.functionalObservations, context);
   encodeProgress(writer, execution.progressObservations);
@@ -227,7 +257,9 @@ encodeExecution(const SpatialSimulationExecution &execution,
   return bytes;
 }
 
-llvm::Expected<ExecutionTerminal> decodeTerminal(WireReader &reader) {
+llvm::Expected<ExecutionTerminal>
+decodeTerminal(WireReader &reader,
+               const evaluation::FindingTerminalWitnessContext &context) {
   llvm::Expected<std::uint32_t> tag = reader.u32();
   if (!tag)
     return tag.takeError();
@@ -241,26 +273,55 @@ llvm::Expected<ExecutionTerminal> decodeTerminal(WireReader &reader) {
   llvm::Expected<std::uint32_t> kind = reader.u32();
   if (!kind)
     return kind.takeError();
+  llvm::Expected<std::uint64_t> byteCount = reader.u64();
+  if (!byteCount)
+    return byteCount.takeError();
+  if (*byteCount > std::numeric_limits<std::size_t>::max())
+    return detail::invalid(
+        "simulation execution: terminal witness is too large");
+  auto payload = reader.bytes(static_cast<std::size_t>(*byteCount));
+  if (!payload)
+    return payload.takeError();
+  const evaluation::FindingKind findingKind(*kind);
   const evaluation::FindingDescriptor *descriptor =
-      evaluation::findFindingDescriptor(evaluation::FindingKind(*kind));
-  if (!descriptor || !descriptor->terminalWitnessSchema)
+      evaluation::findFindingDescriptor(findingKind);
+  if (!descriptor || !descriptor->terminalWitnessCodec)
     return detail::invalid("simulation execution: unknown terminal finding");
-  return evaluation::requireFindingOccurrenceOwner(*descriptor);
+  const evaluation::FindingTerminalWitnessCodec &codec =
+      *descriptor->terminalWitnessCodec;
+  auto witness = codec.decode(*payload);
+  if (!witness)
+    return witness.takeError();
+  if (!*witness)
+    return detail::invalid(
+        "simulation execution: terminal witness decoder returned no value");
+  if (llvm::Error error = codec.validate(*witness, context))
+    return std::move(error);
+  auto canonical = codec.encode(*witness);
+  if (!canonical)
+    return canonical.takeError();
+  if (llvm::ArrayRef<std::uint8_t>(*canonical) != *payload)
+    return detail::invalid(
+        "simulation execution: terminal witness is not canonical");
+  return ExecutionTerminal{HaltedExecution{findingKind, std::move(*witness)}};
 }
 
 llvm::Expected<SpatialSimulationExecution>
 decodeExecution(llvm::ArrayRef<std::uint8_t> bytes,
                 const evaluation::CaseArtifactResolution &resolution,
-                const ArtifactStore &store) {
+                const ArtifactStore &store, const BlobStore &blobs) {
   auto requestPrefix = decodeArtifactRootReferencePrefix(bytes);
   if (!requestPrefix)
     return requestPrefix.takeError();
   auto context = detail::resolveSpatialExecutionContext(
-      requestPrefix->reference, resolution, store);
+      requestPrefix->reference, resolution, store, blobs);
   if (!context)
     return context.takeError();
   WireReader reader(bytes.drop_front(requestPrefix->byteCount));
-  auto terminal = decodeTerminal(reader);
+  const evaluation::FindingTerminalWitnessContext terminalContext(
+      context->request, *context->resolution, *context->artifactStore,
+      *context->blobStore);
+  auto terminal = decodeTerminal(reader, terminalContext);
   if (!terminal)
     return terminal.takeError();
   auto functional =
@@ -293,17 +354,60 @@ decodeExecution(llvm::ArrayRef<std::uint8_t> bytes,
 
 namespace detail {
 
+llvm::Expected<evaluation::ArtifactCollectionCardinality>
+resolveSimulationOutputCardinality(
+    const evaluation::EvaluationRequest &request) {
+  auto outputSlot = resolveSimulationOutputSlot(request);
+  if (!outputSlot)
+    return outputSlot.takeError();
+  return (*outputSlot)
+      ->cardinality(evaluation::EvidenceOutcomeKind::CancelledOrTimeout);
+}
+
+llvm::Error validateExecutionTerminal(
+    const ExecutionTerminal &terminal,
+    const evaluation::FindingTerminalWitnessContext &context) {
+  return validateTerminal(terminal, context);
+}
+
+llvm::Error encodeExecutionTerminal(
+    WireWriter &writer, const ExecutionTerminal &terminal,
+    const evaluation::FindingTerminalWitnessContext &context) {
+  if (std::holds_alternative<RetiredExecution>(terminal)) {
+    writer.u32(0);
+    return llvm::Error::success();
+  }
+  if (const auto *halted = std::get_if<HaltedExecution>(&terminal)) {
+    auto witness = canonicalTerminalWitness(*halted, context);
+    if (!witness)
+      return witness.takeError();
+    writer.u32(1);
+    writer.u32(halted->findingKind.ordinal());
+    writer.u64(witness->size());
+    writer.bytes(*witness);
+    return llvm::Error::success();
+  }
+  writer.u32(2);
+  return llvm::Error::success();
+}
+
+llvm::Expected<ExecutionTerminal> decodeExecutionTerminal(
+    WireReader &reader,
+    const evaluation::FindingTerminalWitnessContext &context) {
+  return decodeTerminal(reader, context);
+}
+
 llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
     const ArtifactRootReference &requestReference,
     const evaluation::CaseArtifactResolution &resolution,
-    const ArtifactStore &store) {
-  auto request =
-      evaluation::importEvaluationRequest(requestReference, resolution, store);
+    const ArtifactStore &store, const BlobStore &blobs) {
+  auto request = evaluation::importEvaluationRequest(requestReference,
+                                                     resolution, store, blobs);
   if (!request)
     return request.takeError();
-  auto outputSlot = resolveSimulationOutputSlot(*request);
-  if (!outputSlot)
-    return outputSlot.takeError();
+  auto stoppedCardinality = resolveSimulationOutputCardinality(*request);
+  if (!stoppedCardinality)
+    return stoppedCardinality.takeError();
   if (!request->workload() || !request->runtimeInput())
     return invalid("simulation execution: Request workload inputs are not "
                    "total");
@@ -318,21 +422,96 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
       resolveLaunchContext(*view, inputs->workload.spatial()->launchRef);
   if (!launch)
     return launch.takeError();
-  return SpatialExecutionContext{
-      std::move(*request), std::move(*inputs), std::move(*view),
-      std::move(*launch),
-      (*outputSlot)
-          ->cardinality(evaluation::EvidenceOutcomeKind::CancelledOrTimeout)};
+  return SpatialExecutionContext{std::move(*request),
+                                 std::move(*inputs),
+                                 std::move(*view),
+                                 std::move(*launch),
+                                 *stoppedCardinality,
+                                 &resolution,
+                                 &store,
+                                 &blobs};
+}
+
+llvm::Expected<SpatialSimulationExecution> decodeSpatialSimulationExecution(
+    llvm::ArrayRef<std::uint8_t> bytes,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  return decodeExecution(bytes, resolution, store, blobs);
 }
 
 } // namespace detail
 
+const evaluation::FindingOccurrenceCodec &terminalWitnessRefOccurrenceCodec() {
+  static const evaluation::FindingOccurrenceCodec codec{
+      {"loom.terminal_witness_ref", {1, 0}},
+      [](const evaluation::OwnerValue &occurrence)
+          -> llvm::Expected<std::vector<std::uint8_t>> {
+        const auto *reference = occurrence.getIf<TerminalWitnessRef>();
+        if (!reference)
+          return detail::invalid(
+              "terminal witness reference has the wrong owner type");
+        WireWriter writer;
+        writer.u32(reference->executionOutputSlot.ordinal());
+        writer.u64(reference->executionOutputOrdinal);
+        return writer.take();
+      },
+      [](llvm::ArrayRef<std::uint8_t> payload)
+          -> llvm::Expected<evaluation::OwnerValue> {
+        WireReader reader(payload);
+        auto slot = reader.u32();
+        if (!slot)
+          return slot.takeError();
+        auto ordinal = reader.u64();
+        if (!ordinal)
+          return ordinal.takeError();
+        if (!reader.atEnd())
+          return detail::invalid(
+              "terminal witness reference has trailing bytes");
+        return evaluation::OwnerValue::get(TerminalWitnessRef{
+            evaluation::ModelOutputSlotRef(*slot), *ordinal});
+      },
+      [](const evaluation::OwnerValue &occurrence,
+         const evaluation::FindingOccurrenceContext &context) -> llvm::Error {
+        const auto *reference = occurrence.getIf<TerminalWitnessRef>();
+        if (!reference)
+          return detail::invalid(
+              "terminal witness reference has the wrong owner type");
+        const ArtifactRootReference *executionReference = context.resolveOutput(
+            reference->executionOutputSlot, reference->executionOutputOrdinal);
+        if (!executionReference ||
+            executionReference->schemaIdentity !=
+                simulationExecutionSchema.identity ||
+            executionReference->schemaVersion !=
+                simulationExecutionSchema.version)
+          return detail::invalid(
+              "terminal witness reference does not resolve an execution");
+        auto execution = importSimulationExecution(
+            *executionReference, context.resolution(), context.artifactStore(),
+            context.blobStore());
+        if (!execution)
+          return execution.takeError();
+        if (execution->request() !=
+            evaluation::evaluationRequestReference(context.request()))
+          return detail::invalid(
+              "terminal witness execution has a foreign Request");
+        const auto *halted =
+            std::get_if<HaltedExecution>(&execution->terminal());
+        const evaluation::FindingRequest *request =
+            context.request().resolve(context.findingRequestOrdinal());
+        if (!halted || !request || halted->findingKind != request->query().kind)
+          return detail::invalid(
+              "terminal witness execution has a foreign finding kind");
+        return llvm::Error::success();
+      }};
+  return codec;
+}
+
 llvm::Expected<CanonicalSimulationExecution> finalizeSimulationExecution(
     const SpatialSimulationExecution &execution,
     const evaluation::CaseArtifactResolution &resolution,
-    const ArtifactStore &store) {
-  auto context = detail::resolveSpatialExecutionContext(execution.request,
-                                                        resolution, store);
+    const ArtifactStore &store, const BlobStore &blobs) {
+  auto context = detail::resolveSpatialExecutionContext(
+      execution.request, resolution, store, blobs);
   if (!context)
     return context.takeError();
   if (llvm::Error error = validateExecution(execution, *context))
@@ -360,33 +539,6 @@ publishSimulationExecution(const CanonicalSimulationExecution &execution,
   return ArtifactRootReference{simulationExecutionSchema.identity.str(),
                                simulationExecutionSchema.version,
                                std::move(*identity)};
-}
-
-llvm::Expected<CanonicalSimulationExecution>
-importSimulationExecution(const ArtifactRootReference &reference,
-                          const evaluation::CaseArtifactResolution &resolution,
-                          const ArtifactStore &store) {
-  if (reference.schemaIdentity != simulationExecutionSchema.identity ||
-      reference.schemaVersion != simulationExecutionSchema.version)
-    return detail::invalid("foreign SimulationExecution reference schema");
-  auto bytes = store.get(reference);
-  if (!bytes)
-    return bytes.takeError();
-  auto execution = decodeExecution(bytes->bytes(), resolution, store);
-  if (!execution)
-    return execution.takeError();
-  auto context = detail::resolveSpatialExecutionContext(execution->request,
-                                                        resolution, store);
-  if (!context)
-    return context.takeError();
-  CanonicalSemanticBytes canonical(
-      std::vector<std::uint8_t>(bytes->bytes().begin(), bytes->bytes().end()));
-  ArtifactIdentity identity =
-      finalizeArtifactIdentity(simulationExecutionSchema, canonical);
-  if (identity != reference.artifact)
-    return detail::invalid("stale SimulationExecution reference identity");
-  return CanonicalSimulationExecution(identity, std::move(*execution),
-                                      std::move(canonical));
 }
 
 llvm::Expected<ArtifactRootReference>

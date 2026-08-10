@@ -16,12 +16,49 @@ struct SpatialExecutionContext {
   dataflow::CanonicalDataflowProgramView dataflowView;
   ResolvedLaunchContext launch;
   evaluation::ArtifactCollectionCardinality stoppedExecutionCardinality;
+  const evaluation::CaseArtifactResolution *resolution = nullptr;
+  const ArtifactStore *artifactStore = nullptr;
+  const BlobStore *blobStore = nullptr;
 };
+
+struct SystemExecutionContext {
+  evaluation::EvaluationRequest request;
+  ImportedSystemSimulationInputs inputs;
+  ResolvedSystemContext system;
+  evaluation::ArtifactCollectionCardinality stoppedExecutionCardinality;
+  const evaluation::CaseArtifactResolution *resolution = nullptr;
+  const ArtifactStore *artifactStore = nullptr;
+  const BlobStore *blobStore = nullptr;
+};
+
+llvm::Expected<evaluation::ArtifactCollectionCardinality>
+resolveSimulationOutputCardinality(
+    const evaluation::EvaluationRequest &request);
+
+llvm::Error validateExecutionTerminal(
+    const ExecutionTerminal &terminal,
+    const evaluation::FindingTerminalWitnessContext &context);
+llvm::Error encodeExecutionTerminal(
+    WireWriter &writer, const ExecutionTerminal &terminal,
+    const evaluation::FindingTerminalWitnessContext &context);
+llvm::Expected<ExecutionTerminal> decodeExecutionTerminal(
+    WireReader &reader,
+    const evaluation::FindingTerminalWitnessContext &context);
 
 llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
     const ArtifactRootReference &request,
     const evaluation::CaseArtifactResolution &resolution,
-    const ArtifactStore &store);
+    const ArtifactStore &store, const BlobStore &blobs);
+
+llvm::Expected<SpatialSimulationExecution> decodeSpatialSimulationExecution(
+    llvm::ArrayRef<std::uint8_t> bytes,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &store, const BlobStore &blobs);
+
+llvm::Expected<SystemExecutionContext> resolveSystemExecutionContext(
+    const ArtifactRootReference &request,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &store, const BlobStore &blobs);
 
 llvm::Error validateSpatialFunctionalObservations(
     const SpatialFunctionalObservations &observations,

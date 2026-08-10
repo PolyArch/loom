@@ -28,7 +28,7 @@
 #include "Simulator/CGRASimulator.h"
 #include "Simulator/SimulationArtifacts.h"
 
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"

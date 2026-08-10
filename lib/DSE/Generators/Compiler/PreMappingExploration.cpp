@@ -353,12 +353,12 @@ exploreDataflowCandidates(const ArtifactRootReference &d0,
   }
   auto analytic =
       prepareCanonicalDataflowFabricAnalyticEvidenceObligationTemplate(
-          d0, fabric.reference(), config, store);
+          d0, fabric.reference(), config, store, blobs);
   if (!analytic)
     return analytic.takeError();
   auto functional =
       prepareCanonicalDataflowFunctionalEvidenceObligationTemplate(
-          d0, structuredParent, workload, runtimeInput, config, store);
+          d0, structuredParent, workload, runtimeInput, config, store, blobs);
   if (!functional)
     return functional.takeError();
   auto obligations =
@@ -506,13 +506,13 @@ exploreStructuredCompilationToPreMapping(
 
   auto analytic = prepareStructuredFabricAnalyticEvidenceObligationTemplate(
       *sourceReference, fabric.reference(), *workloadReference,
-      *runtimeInputReference, config, artifactStore);
+      *runtimeInputReference, config, artifactStore, blobStore);
   if (!analytic)
     return analytic.takeError();
   auto functional =
       prepareStructuredProgramFunctionalEvidenceObligationTemplate(
           *sourceReference, *workloadReference, *runtimeInputReference, config,
-          artifactStore);
+          artifactStore, blobStore);
   if (!functional)
     return functional.takeError();
   auto obligations =

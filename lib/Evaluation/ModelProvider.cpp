@@ -40,9 +40,8 @@ registerEvaluationModelProvider(const EvaluationModelProvider &provider) {
       provider.descriptor.descriptor();
   if (!descriptor)
     return invalid("provider references an unregistered model descriptor");
-  if (const auto *inProcess =
-          std::get_if<EvaluationModelInProcessProvider>(
-              &provider.implementation)) {
+  if (const auto *inProcess = std::get_if<EvaluationModelInProcessProvider>(
+          &provider.implementation)) {
     if (descriptor->providerForm != ProviderForm::InProcess)
       return invalid("provider form does not match the descriptor");
     if (!inProcess->evaluate)
@@ -77,8 +76,7 @@ deriveExternalToolSemanticContract(const EvaluationRequest &request) {
   if (!descriptor)
     return invalid("request references an unregistered model descriptor");
   if (descriptor->providerForm != ProviderForm::ExternalPrepareImport)
-    return invalid(
-        "external semantic contract requires ExternalPrepareImport");
+    return invalid("external semantic contract requires ExternalPrepareImport");
 
   std::vector<std::uint8_t> descriptorReference;
   descriptorReference.reserve(12);
@@ -100,12 +98,10 @@ deriveExternalToolSemanticContract(const EvaluationRequest &request) {
       evaluationRequestReference(request), std::move(*importer)};
 }
 
-llvm::Expected<EvaluationEvidence>
-evaluateRequest(const EvaluationRequest &request,
-                const CaseArtifactResolution &resolution,
-                const ArtifactStore &artifactStore,
-                const BlobStore &blobStore) {
-  RequestVerifier verifier(resolution, artifactStore);
+llvm::Expected<EvaluationEvidence> evaluateRequest(
+    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  RequestVerifier verifier(resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(request))
     return std::move(error);
 
@@ -132,7 +128,7 @@ evaluateRequest(const EvaluationRequest &request,
     return EvaluationEvidence::get(
         request, emptyOutputBindings(*descriptor),
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable},
-        resolution, artifactStore);
+        resolution, artifactStore, blobStore);
   }
 
   auto result = std::get<EvaluationModelInProcessProvider>(*implementation)
@@ -141,7 +137,7 @@ evaluateRequest(const EvaluationRequest &request,
     return result.takeError();
   return EvaluationEvidence::get(request, std::move(result->outputBindings),
                                  std::move(result->outcome), resolution,
-                                 artifactStore);
+                                 artifactStore, blobStore);
 }
 
 namespace {
@@ -157,12 +153,11 @@ lookupProviderImplementation(EvaluationModelDescriptorRef descriptor) {
 
 } // namespace
 
-llvm::Expected<EvaluationModelPreparation>
-prepareEvaluationModelInvocation(
+llvm::Expected<EvaluationModelPreparation> prepareEvaluationModelInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore,
     const external_tool::ExternalToolPreparationContext &context) {
-  RequestVerifier verifier(resolution, artifactStore);
+  RequestVerifier verifier(resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(request))
     return std::move(error);
   const EvaluationModelDescriptor *descriptor =
@@ -189,7 +184,7 @@ prepareEvaluationModelInvocation(
   auto evidence = EvaluationEvidence::get(
       request, emptyOutputBindings(*descriptor),
       std::get<UnsupportedEvidence>(std::move(*preparation)), resolution,
-      artifactStore);
+      artifactStore, blobStore);
   if (!evidence)
     return evidence.takeError();
   return EvaluationModelPreparation{std::move(*evidence)};
@@ -199,7 +194,7 @@ llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const external_tool::PreparedExternalToolInvocation &prepared,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
-  RequestVerifier verifier(resolution, artifactStore);
+  RequestVerifier verifier(resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(request))
     return std::move(error);
   const EvaluationModelDescriptor *descriptor =
@@ -212,15 +207,14 @@ llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
       lookupProviderImplementation(request.modelBinding().descriptorRef());
   if (!implementation)
     return invalid("external prepare/import model provider is unavailable");
-  auto result = std::get<EvaluationModelExternalPrepareImportProvider>(
-                    *implementation)
-                    .import(request, resolution, prepared, artifactStore,
-                            blobStore);
+  auto result =
+      std::get<EvaluationModelExternalPrepareImportProvider>(*implementation)
+          .import(request, resolution, prepared, artifactStore, blobStore);
   if (!result)
     return result.takeError();
   return EvaluationEvidence::get(request, std::move(result->outputBindings),
                                  std::move(result->outcome), resolution,
-                                 artifactStore);
+                                 artifactStore, blobStore);
 }
 
 } // namespace loom::evaluation

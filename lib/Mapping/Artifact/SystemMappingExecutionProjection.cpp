@@ -6,6 +6,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 
+#include <limits>
 #include <map>
 #include <string>
 #include <utility>
@@ -201,6 +202,62 @@ llvm::Expected<SystemExecutionContextProjection> projectSystemExecutionContexts(
     }
   }
   return result;
+}
+
+llvm::Expected<SelectedSystemSpatialContext>
+selectSystemSpatialExecutionContext(
+    const SystemExecutionContextProjection &projection,
+    ::dataflow::RootedGraphLaunchRef graph,
+    llvm::ArrayRef<std::uint64_t> denseCoordinates) {
+  std::map<std::string, SelectedSystemSpatialContext> selected;
+  bool foundGraph = false;
+  for (const SystemSpatialContextDomain &domain : projection.spatialDomains) {
+    if (domain.graph != graph)
+      continue;
+    foundGraph = true;
+    for (const SystemPresburgerCell &cell : domain.cells) {
+      if (cell.dimensionCount != denseCoordinates.size())
+        return invalid("launch coordinate rank does not match its domain");
+      SystemPresburgerCell point;
+      point.dimensionCount = cell.dimensionCount;
+      point.symbolCount = cell.symbolCount;
+      const std::size_t width = static_cast<std::size_t>(point.dimensionCount) +
+                                point.symbolCount + 1;
+      point.equalities.reserve(denseCoordinates.size());
+      for (std::size_t dimension = 0; dimension < denseCoordinates.size();
+           ++dimension) {
+        if (denseCoordinates[dimension] >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::int64_t>::max()))
+          return invalid("launch coordinate exceeds the signed Presburger "
+                         "domain");
+        std::vector<std::int64_t> equality(width, 0);
+        equality[dimension] = 1;
+        equality.back() =
+            -static_cast<std::int64_t>(denseCoordinates[dimension]);
+        point.equalities.push_back(std::move(equality));
+      }
+      auto overlap = intersectSystemPresburgerCells(cell, point);
+      if (!overlap)
+        return overlap.takeError();
+      if (!*overlap)
+        continue;
+      auto key = encodeExecutionContextKey(domain.context);
+      if (!key)
+        return key.takeError();
+      selected.try_emplace(
+          byteKey(*key),
+          SelectedSystemSpatialContext{domain.spatialMapping, domain.context});
+    }
+  }
+  if (!foundGraph)
+    return invalid("graph launch has no System execution binding");
+  if (selected.empty())
+    return invalid("launch coordinate selects no Spatial execution context");
+  if (selected.size() != 1)
+    return invalid("launch coordinate has an ambiguous Spatial execution "
+                   "context across legal symbol valuations");
+  return selected.begin()->second;
 }
 
 } // namespace loom::mapping

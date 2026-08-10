@@ -12,7 +12,7 @@
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 
 #include "ADG/Builder.h"
 

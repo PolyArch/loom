@@ -34,7 +34,8 @@
 
 namespace loom {
 class ArtifactStore;
-}
+class BlobStore;
+} // namespace loom
 
 namespace loom::evaluation {
 
@@ -393,7 +394,7 @@ struct ExactSubjectCycle {
   llvm::Expected<SubjectTargetRef> (*resolve)(
       const EvaluationCase &evaluationCase,
       const CaseArtifactResolution &resolution,
-      const ArtifactStore &artifactStore);
+      const ArtifactStore &artifactStore, const BlobStore &blobStore);
 };
 
 using WholeCaseCycleBasis =
@@ -412,8 +413,10 @@ struct CaseSubjectRoleDescriptor {
   /// signature. Null when the role imposes no cross-role relation.
   llvm::Error (*verifyCrossRoleCompatibility)(
       const ArtifactRootReference &subject,
+      const EvaluationCase &evaluationCase,
       const EvaluationSubjectBindings &bindings,
-      const CaseArtifactResolution &resolution);
+      const CaseArtifactResolution &resolution,
+      const ArtifactStore &artifactStore, const BlobStore &blobStore);
 };
 
 struct EvaluationCaseSignatureDescriptor {
@@ -429,16 +432,22 @@ struct EvaluationCaseSignatureDescriptor {
   /// subjects, owned by the signature. Null when the signature imposes no
   /// relation beyond the accepted schemas.
   llvm::Error (*verifyWorkloadCompatibility)(
+      const EvaluationCase &evaluationCase,
       const EvaluationSubjectBindings &bindings,
       const std::optional<ArtifactRootReference> &workload,
       const std::optional<ArtifactRootReference> &runtimeInput,
-      const CaseArtifactResolution &resolution);
+      const CaseArtifactResolution &resolution,
+      const ArtifactStore &artifactStore, const BlobStore &blobStore);
   /// Whether this exact case signature defines one semantic reference-cycle
   /// basis for whole-case cycle-count and clock-period queries.
   WholeCaseCycleBasis wholeCaseCycleBasis;
   /// The complete exact Base-condition patterns this signature permits. Every
   /// pattern's case signature must be this signature itself.
   llvm::ArrayRef<ConditionApplicabilityPattern> permittedBaseConditions;
+
+  /// The exact catalog version that owns this immutable descriptor view.
+  /// Compatible older views are mechanically derived by the registry.
+  SchemaVersion registryVersion = evaluationSchemaVersion();
 
   const CaseSubjectRoleDescriptor *
   findSubjectRole(CaseSubjectRoleRef role) const;
@@ -455,6 +464,9 @@ llvm::Error registerEvaluationCaseSignature(
 /// The registered descriptor for one case kind, or null.
 const EvaluationCaseSignatureDescriptor *
 findEvaluationCaseSignature(EvaluationCaseKind caseKind);
+const EvaluationCaseSignatureDescriptor *
+findEvaluationCaseSignature(SchemaVersion schemaVersion,
+                            EvaluationCaseKind caseKind);
 
 /// Resolves the exact signature-owned whole-case cycle basis. Absent basis,
 /// resolver failure, a foreign or noncanonical target, or a target of the
@@ -462,7 +474,8 @@ findEvaluationCaseSignature(EvaluationCaseKind caseKind);
 llvm::Expected<ReferenceCycleBasis>
 resolveReferenceCycleBasis(const EvaluationCase &evaluationCase,
                            const CaseArtifactResolution &resolution,
-                           const ArtifactStore &artifactStore);
+                           const ArtifactStore &artifactStore,
+                           const BlobStore &blobStore);
 
 //===----------------------------------------------------------------------===//
 // Evaluation scope
@@ -859,7 +872,7 @@ public:
       std::optional<ArtifactRootReference> runtimeInput,
       llvm::ArrayRef<EvaluationCondition> baseConditions,
       const CaseArtifactResolution &resolution,
-      const ArtifactStore &artifactStore);
+      const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
   EvaluationCaseSignatureRef signature() const { return signature_; }
   const EvaluationSubjectBindings &subjectBindings() const { return bindings_; }

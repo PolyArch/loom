@@ -2,7 +2,6 @@
 
 #include "CanonicalSupport.h"
 #include "Evaluation/CaseText.h"
-#include "Evaluation/OwnerError.h"
 #include "QueryText.h"
 
 #include "Common/ArtifactText.h"
@@ -61,10 +60,13 @@ llvm::Error registerFindingDescriptor(const FindingDescriptor &descriptor) {
       !descriptor.occurrenceCodec.validate)
     return evaluationError("finding '" + descriptor.spelling +
                            "' requires a complete occurrence codec");
-  if (descriptor.terminalWitnessSchema &&
-      descriptor.terminalWitnessSchema->identity.empty())
+  if (descriptor.terminalWitnessCodec &&
+      (descriptor.terminalWitnessCodec->witnessSchema.identity.empty() ||
+       !descriptor.terminalWitnessCodec->encode ||
+       !descriptor.terminalWitnessCodec->decode ||
+       !descriptor.terminalWitnessCodec->validate))
     return evaluationError("finding '" + descriptor.spelling +
-                           "' has an invalid terminal-witness schema");
+                           "' requires a complete terminal-witness codec");
 
   if (llvm::Error error = validateScopeFormDescriptors(descriptor.scopeForms))
     return error;
@@ -104,15 +106,6 @@ const FindingDescriptor *findFindingDescriptor(FindingKind kind) {
     if (descriptor->kind == kind)
       return descriptor;
   return nullptr;
-}
-
-llvm::Error requireFindingOccurrenceOwner(
-    const FindingDescriptor &descriptor) {
-  if (!descriptor.terminalWitnessSchema)
-    return llvm::Error::success();
-  return evaluationOwnerUnavailable(
-      descriptor.terminalWitnessSchema->identity,
-      descriptor.terminalWitnessSchema->version);
 }
 
 llvm::Expected<FindingKind> parseFindingKind(llvm::StringRef spelling) {

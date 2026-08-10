@@ -1,4 +1,5 @@
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
+#include "Evaluation/ProductionRegistry.h"
 
 #include "AnalyticModelSupport.h"
 #include "StructuredEvaluationInvocationCacheInternal.h"
@@ -35,14 +36,16 @@
 namespace loom::evaluation::models {
 namespace {
 
-constexpr EvaluationCaseKind kCaseKind(0);
-constexpr EvaluationModelKind kModelKind(2);
+constexpr BuiltinEvaluationCase kCase =
+    BuiltinEvaluationCase::StructuredProgramWithFabric;
+constexpr BuiltinEvaluationModel kModel =
+    BuiltinEvaluationModel::StructuredFabricLowConfidence;
 constexpr CaseSubjectRoleRef kStructuredProgramRole(0);
 constexpr CaseSubjectRoleRef kFabricRole(1);
 
 EvaluationCaseSignatureRef caseSignatureRef() {
-  return llvm::cantFail(
-      EvaluationCaseSignatureRef::get(evaluationSchemaVersion(), kCaseKind));
+  return llvm::cantFail(EvaluationCaseSignatureRef::get(
+      evaluationSchemaVersion(), builtinEvaluationCaseKind(kCase)));
 }
 
 const ArtifactSchemaDescriptor *const kStructuredSchemas[] = {
@@ -62,10 +65,11 @@ const CaseSubjectRoleDescriptor kSubjectRoles[] = {
 };
 
 llvm::Error verifyWorkloadCompatibility(
-    const EvaluationSubjectBindings &,
+    const EvaluationCase &, const EvaluationSubjectBindings &,
     const std::optional<ArtifactRootReference> &workload,
     const std::optional<ArtifactRootReference> &runtimeInput,
-    const CaseArtifactResolution &resolution) {
+    const CaseArtifactResolution &resolution, const ArtifactStore &,
+    const BlobStore &) {
   if (!workload || !runtimeInput)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
@@ -97,7 +101,7 @@ llvm::Error verifyWorkloadCompatibility(
 }
 
 const EvaluationCaseSignatureDescriptor kCaseSignature{
-    kCaseKind,
+    builtinEvaluationCaseKind(kCase),
     "structured_program_with_fabric",
     "One exact Structured Program evaluated against one exact Fabric.",
     kSubjectRoles,
@@ -124,7 +128,7 @@ const MetricCapability kMetricCapabilities[] = {
 const ModeledPhenomenon kModeledPhenomena[] = {
     ModeledPhenomenon::StructuredProgram, ModeledPhenomenon::SpatialResources};
 const EvaluationModelDescriptor kModelDescriptor{
-    kModelKind,
+    builtinEvaluationModelKind(kModel),
     "structured_fabric_low_confidence",
     "loom.structured_fabric.low_confidence.v2",
     caseSignatureRef(),
@@ -785,21 +789,22 @@ prepareStructuredFabricEvaluation(
     const ArtifactRootReference &fabricReference,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
-    const ArtifactStore &artifactStore) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   auto invocation = prepareStructuredFabricAnalyticInvocation(
       {structuredProgram}, fabricReference, workload, runtimeInput,
       artifactStore);
   if (!invocation)
     return invocation.takeError();
   return prepareStructuredFabricEvaluation(structuredProgram, *invocation,
-                                           config, artifactStore);
+                                           config, artifactStore, blobStore);
 }
 
 llvm::Expected<PreparedStructuredFabricEvaluation>
 prepareStructuredFabricEvaluation(
     const ArtifactRootReference &structuredProgram,
     const StructuredFabricAnalyticRequestContext &invocation,
-    const ResolvedConfig &config, const ArtifactStore &artifactStore) {
+    const ResolvedConfig &config, const ArtifactStore &artifactStore,
+    const BlobStore &blobStore) {
   if (llvm::Error error = registerStructuredFabricAnalyticModel())
     return std::move(error);
   if (!std::binary_search(invocation.candidates_.begin(),
@@ -820,9 +825,10 @@ prepareStructuredFabricEvaluation(
        {kFabricRole, {invocation.fabric_}}});
   if (!bindings)
     return bindings.takeError();
-  auto evaluationCase = EvaluationCase::get(
-      caseSignatureRef(), std::move(*bindings), invocation.workload_,
-      invocation.runtimeInput_, {}, invocation.resolution_, artifactStore);
+  auto evaluationCase =
+      EvaluationCase::get(caseSignatureRef(), std::move(*bindings),
+                          invocation.workload_, invocation.runtimeInput_, {},
+                          invocation.resolution_, artifactStore, blobStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
   std::vector<MetricRequest> metrics;
@@ -835,9 +841,9 @@ prepareStructuredFabricEvaluation(
       return metric.takeError();
     metrics.push_back(std::move(*metric));
   }
-  auto request = EvaluationRequest::get(*evaluationCase, metrics, {},
-                                        std::move(*modelBinding), 0,
-                                        invocation.resolution_, artifactStore);
+  auto request = EvaluationRequest::get(
+      *evaluationCase, metrics, {}, std::move(*modelBinding), 0,
+      invocation.resolution_, artifactStore, blobStore);
   if (!request)
     return request.takeError();
   auto published = publishEvaluationRequest(*request, artifactStore);

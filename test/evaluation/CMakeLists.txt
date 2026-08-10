@@ -44,3 +44,14 @@ target_link_libraries(loom-evaluation-physical-rail-analysis-test PRIVATE
   LoomImplementationPlatform
   LLVMSupport
 )
+
+add_executable(loom-evaluation-production-registry-test
+  ProductionRegistryTest.cpp
+)
+
+target_link_libraries(loom-evaluation-production-registry-test PRIVATE
+  LoomConfig
+  LoomEvaluation
+  LoomStructuredFabricAnalyticModel
+  LLVMSupport
+)

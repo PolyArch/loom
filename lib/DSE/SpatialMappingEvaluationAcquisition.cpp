@@ -203,13 +203,13 @@ prepareCgraSimulationEvidenceObligationTemplate(
     const ArtifactRootReference &prototypeSpatialMapping,
     const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const BlobStore &blobs) {
   if (llvm::Error error =
           registerSpatialMappingEvaluationPromotionAcquisition())
     return std::move(error);
   auto prepared = evaluation::models::prepareCgraSimulationEvaluation(
       prototypeDataflow, fabric, prototypeSpatialMapping, workload,
-      runtimeInput, config, store);
+      runtimeInput, config, store, blobs);
   if (!prepared)
     return prepared.takeError();
   return EvidenceObligationTemplate::get(

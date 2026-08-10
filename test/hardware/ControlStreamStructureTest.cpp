@@ -1,6 +1,6 @@
 #include "ADG/Builder.h"
 #include "ADG/Builtin.h"
-#include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationABITestSupport.h"
 #include "ConfigurationTransportTestSupport.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/OperationResourceContract.h"
@@ -193,10 +193,10 @@ makeRouteConfiguration(llvm::StringRef test,
     }
     const auto physical =
         qualifyConfigurationField(test, spatialCore, descriptor.reference);
-    const auto slot = take(
-        test, loom::fabric::qualifyFabricConfigurationSlot(
-                  physical,
-                  loom::fabric::FabricStaticConfigurationResidency{}));
+    const auto slot =
+        take(test,
+             loom::fabric::qualifyFabricConfigurationSlot(
+                 physical, loom::fabric::FabricStaticConfigurationResidency{}));
     const loom::hardware::ProgrammingUnit *fieldOwner = nullptr;
     for (const auto &unit : abi.abi().programmingUnits())
       for (const auto &field : unit.fields)
@@ -213,9 +213,8 @@ makeRouteConfiguration(llvm::StringRef test,
     else
       owner = fieldOwner;
     auto encoded = take(test, schema.encode(descriptor.reference, value));
-    values.push_back(
-        {slot, std::vector<std::uint8_t>(encoded.bytes().begin(),
-                                         encoded.bytes().end())});
+    values.push_back({slot, std::vector<std::uint8_t>(encoded.bytes().begin(),
+                                                      encoded.bytes().end())});
   }
   auto fuActivation =
       take(test, loom::hardware::test::deriveSpatialSingleTemplateFuActivation(

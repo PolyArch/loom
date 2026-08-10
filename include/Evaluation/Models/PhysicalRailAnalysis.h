@@ -72,13 +72,15 @@ llvm::Error registerCadenceVoltusStaticRailModel();
 EvaluationCaseSignatureRef hardwareImplementationPhysicalCaseSignatureRef();
 EvaluationModelDescriptorRef cadenceVoltusStaticRailModelDescriptorRef();
 CaseSubjectRoleRef hardwareImplementationPhysicalSubjectRole();
+llvm::ArrayRef<ConditionApplicabilityPattern>
+hardwareImplementationPhysicalBaseConditionPatterns();
 
 const RailAnalysisModelConfig &staticExplicitRailAnalysisModelConfig();
 
 llvm::Expected<CompleteRailAnalysisConfiguration>
 projectCompleteRailAnalysisConfiguration(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
-    const ArtifactStore &artifactStore);
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
 } // namespace loom::evaluation::models
 
