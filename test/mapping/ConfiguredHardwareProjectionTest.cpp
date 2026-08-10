@@ -1,4 +1,5 @@
 #include "ADG/Builder.h"
+#include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/IndexWidth.h"
 #include "Config/ResolvedConfig.h"
@@ -6,20 +7,27 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/OperationSchema.h"
+#include "Deployment/HardwareConfigurationImage.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialPnrGenerator.h"
+#include "PnR/System/SystemPnrGenerator.h"
+#include "PnR/System/SystemPnrSearchDomain.h"
 #include "Simulator/CGRAAdmission.h"
 #include "Simulator/CGRASimulator.h"
 #include "Simulator/SimulationArtifacts.h"
+
+#include "ConfigurationABI3TestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -41,6 +49,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -56,6 +65,15 @@ template <typename T> T take(llvm::Expected<T> value) {
   if (!value)
     fail(llvm::toString(value.takeError()));
   return std::move(*value);
+}
+
+template <typename T>
+void expectError(llvm::Expected<T> value, llvm::StringRef expected) {
+  if (value)
+    fail(("accepted invalid input; expected '" + expected + "'").str());
+  const std::string diagnostic = llvm::toString(value.takeError());
+  if (!llvm::StringRef(diagnostic).contains(expected))
+    fail("unexpected rejection: " + diagnostic);
 }
 
 void requireSuccess(llvm::Error error) {
@@ -302,6 +320,139 @@ buildFabric(const loom::ArtifactStore &store) {
   return std::move(finalized.roots().front());
 }
 
+::fabric::ResourceContract
+sharedTransportResourceContract(std::uint32_t residentRouteCapacity) {
+  ::fabric::ResourceContractDeclaration declaration;
+  declaration.states = {{::fabric::StateKey(0),
+                         {{::fabric::CapacityDimensionKey(0),
+                           ::fabric::CapacityUnits(residentRouteCapacity),
+                           ::fabric::CapacityUnits(0)}}}};
+  declaration.requesters = {::fabric::RequesterKey(0)};
+  declaration.eligibilityCount = 1;
+  declaration.eventCount = 2;
+  declaration.timingContracts = {{::fabric::TimingContractKey(0), {0, 1}}};
+  declaration.usePatterns = {
+      {::fabric::UsePatternKey(0),
+       ::fabric::RequesterKey(0),
+       ::fabric::EligibilityKey(0),
+       ::fabric::EventKey(0),
+       ::fabric::EventKey(1),
+       std::nullopt,
+       ::fabric::TimingContractKey(0),
+       {{::fabric::ClaimKey(0), ::fabric::StateKey(0),
+         ::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(1)}},
+       {{{::fabric::ClaimKey(0)}}}}};
+  return take(::fabric::ResourceContract::create(std::move(declaration)));
+}
+
+loom::fabric::InstructionCoreMicroarchitecturalRealization
+inOrderMicroarchitecture() {
+  loom::fabric::InstructionCoreCommonDeclaration common{
+      1,
+      {{loom::fabric::InstructionOperationClass::IntegerAlu, 1, 1, 1}},
+      ::fabric::oneCycleElasticOperationResourceContract()};
+  loom::fabric::InOrderMicroarchitectureDeclaration pipeline{1, 1, 1, 1,
+                                                             1, 1, 2, 1};
+  return take(
+      loom::fabric::InstructionCoreMicroarchitecturalRealization::createInOrder(
+          std::move(common), pipeline));
+}
+
+loom::fabric::FinalizedFabricRoot
+buildSystem(const loom::fabric::FinalizedFabricRoot &module,
+            llvm::ArrayRef<mlir::Type> messagePayloads,
+            const loom::ArtifactStore &store) {
+  using namespace loom::adg;
+
+  DesignBuilder design(store);
+  auto system = take(design.createSystem("configured-vector-system"));
+  const auto imported = take(system.importSpatialCore(module));
+  const auto architecture =
+      take(loom::adg::getBuiltinInstructionCoreArchitecture());
+  const auto microarchitecture = inOrderMicroarchitecture();
+  const auto host = take(system.addHostCore(architecture, microarchitecture));
+  const auto core =
+      take(system.addAccCore(architecture, microarchitecture, imported));
+
+  auto clock = take(system.createHardwareDomain());
+  const auto rate = take(system.createServiceRate(
+      clock, 1, 1, 1,
+      loom::fabric::ServiceProgress(
+          std::in_place_type<::fabric::FairEventual>)));
+  const auto messageDomain = take(
+      loom::fabric::MessageTransferCapabilityDomain::create(messagePayloads));
+  const auto initiateCapability =
+      take(loom::fabric::CanonicalServiceCapabilityRecord::create(
+          dataflow::semantics::ServiceKind::MessageTransfer,
+          loom::fabric::CanonicalServiceEndpointRole::Initiate, messageDomain,
+          rate));
+  const auto serveCapability =
+      take(loom::fabric::CanonicalServiceCapabilityRecord::create(
+          dataflow::semantics::ServiceKind::MessageTransfer,
+          loom::fabric::CanonicalServiceEndpointRole::Serve, messageDomain,
+          rate));
+  const auto initiateSet =
+      take(loom::fabric::CanonicalServiceCapabilitySet::create(
+          {initiateCapability}));
+  const auto serveSet = take(
+      loom::fabric::CanonicalServiceCapabilitySet::create({serveCapability}));
+  const auto carrier = take(PortType::bits(128));
+  const auto hostSource =
+      take(system.addServiceEndpoint(host, initiateSet, carrier));
+  const auto hostSink =
+      take(system.addServiceEndpoint(host, serveSet, carrier));
+  const auto coreSource =
+      take(system.addServiceEndpoint(core, initiateSet, carrier));
+  const auto coreSink =
+      take(system.addServiceEndpoint(core, serveSet, carrier));
+  const std::array sources{hostSource, coreSource};
+  const std::array sinks{hostSink, coreSink};
+
+  const auto transportContract = sharedTransportResourceContract(16);
+  const std::array<std::vector<std::uint32_t>, 3> patterns = {
+      std::vector<std::uint32_t>{0}, std::vector<std::uint32_t>{1},
+      std::vector<std::uint32_t>{0, 1}};
+  std::vector<SystemTransportResource> routers;
+  routers.reserve(2);
+  std::vector<HardwareDomainMember> clockMembers = {
+      host.domainMember(),
+      core.instructionCoreDomainMember(),
+      core.spatialCoreDomainMember(),
+      hostSource.domainMember(),
+      hostSink.domainMember(),
+      coreSource.domainMember(),
+      coreSink.domainMember()};
+  for (std::size_t ordinal = 0; ordinal != sources.size(); ++ordinal) {
+    routers.push_back(take(system.addTransportResource(
+        {{carrier, carrier}, {carrier, carrier}, transportContract})));
+    clockMembers.push_back(routers.back().domainMember());
+    for (std::size_t input = 0; input != 2; ++input)
+      for (const auto &outputs : patterns) {
+        const auto pattern =
+            take(system.addTransferPattern(routers.back(), input, outputs, 0));
+        clockMembers.push_back(pattern.domainMember());
+      }
+    requireSuccess(system.connect(take(sources[ordinal].transport()),
+                                  take(routers[ordinal].input(0))));
+    requireSuccess(system.connect(take(routers[ordinal].output(0)),
+                                  take(sinks[ordinal].transport())));
+  }
+  for (std::size_t ordinal = 0; ordinal != routers.size(); ++ordinal)
+    requireSuccess(
+        system.connect(take(routers[ordinal].output(1)),
+                       take(routers[(ordinal + 1) % routers.size()].input(1))));
+
+  requireSuccess(clock.close(
+      clockMembers,
+      take(loom::fabric::ClockDomainContractRecord::create(1'000, 0))));
+  requireSuccess(system.close());
+  auto finalized = take(std::move(design).finalize());
+  if (finalized.roots().size() != 1)
+    fail("System fixture did not publish exactly one root");
+  return take(loom::fabric::importEntireFabricRoot(
+      finalized.roots().front().reference(), store));
+}
+
 loom::mapping::FinalizedSpatialMappingConstraintSet
 buildConstraints(mlir::MLIRContext &context,
                  const dataflow::CanonicalDataflowProgramView &dataflow,
@@ -409,6 +560,189 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
   }
   if (topologyFieldCount != 1 || operationFieldCount != 2)
     fail("configured compute fields have the wrong semantic owners");
+
+  const std::array<mlir::Type, 4> messagePayloads = {
+      mlir::NoneType::get(&context),
+      mlir::VectorType::get({2}, mlir::IntegerType::get(&context, 8)),
+      mlir::VectorType::get({1}, mlir::IntegerType::get(&context, 8)),
+      mlir::VectorType::get({3}, mlir::IntegerType::get(&context, 8))};
+  const auto system = buildSystem(fabric, messagePayloads, store);
+  const auto occurrence = loom::fabric::SpatialCoreOccurrenceRef{
+      system.view().accCoreOccurrences().front()};
+  std::vector<loom::hardware::test::ConfigurationFieldEncodingOverride>
+      directOverrides;
+  for (const auto &selected : fields) {
+    auto relation =
+        take(fabric.view().semanticFieldRelation(selected.slot.field, context));
+    if (relation.kind() !=
+        loom::fabric::FabricSemanticFieldRelationKind::Direct)
+      continue;
+    if (!relation.directEncodedBitCount())
+      fail("direct Fabric relation has no encoded width");
+    const auto physicalSlot =
+        take(loom::fabric::FabricPhysicalConfigurationSlotRef::create(
+            loom::fabric::SpatialCoreInternalConfigurationSlotRef{
+                occurrence, selected.slot}));
+    directOverrides.push_back(
+        {loom::fabric::configurationField(physicalSlot),
+         loom::hardware::DirectBitsEncoding{*relation.directEncodedBitCount()},
+         std::vector<std::uint8_t>(selected.value.bytes().begin(),
+                                   selected.value.bytes().end())});
+  }
+  auto abiDraft = take(loom::hardware::test::makeCompleteConfigurationABIDraft(
+      system, directOverrides));
+  const auto abi = take(
+      loom::hardware::finalizeConfigurationABI(std::move(abiDraft), store));
+  if (abi.abi().programmingUnits().size() != 1)
+    fail("configuration image fixture did not derive one programming unit");
+  const auto image = take(loom::deployment::finalizeHardwareConfigurationImage(
+      {abi.reference(),
+       abi.abi().programmingUnits().front().id,
+       {loom::deployment::ConfigurationImageSourceKind::SpatialMapping,
+        spatial.reference()}},
+      store));
+  const auto reimported =
+      take(loom::deployment::importHardwareConfigurationImage(image.reference(),
+                                                              store));
+  if (reimported.reference() != image.reference() ||
+      reimported.image().payloadBitCount() !=
+          abi.abi().programmingUnits().front().payloadBitCount ||
+      !reimported.image().payload().equals(image.image().payload()))
+    fail("hardware configuration image did not round-trip exactly");
+
+  resolved.dse.systemPnr.temporaryViolations.admitted = {
+      loom::ResolvedPnrViolationKind::UnroutedObligation,
+      loom::ResolvedPnrViolationKind::CapacityOveruse};
+  resolved.dse.systemPnr.objectiveSelection = {0, 0, {}};
+  auto &systemSearch = resolved.dse.systemPnr.search;
+  systemSearch.initializer.seedAttemptCount = 1;
+  systemSearch.routing.negotiationIterationLimit = 8;
+  systemSearch.actionProposal = {0, 1, 0};
+  systemSearch.annealing.calibrationProposalCount = 1;
+  systemSearch.annealing.fallbackTemperature = 1;
+  systemSearch.annealing.minimumTemperature = 1;
+  systemSearch.annealing.coolingRatio = {1, 2};
+  systemSearch.annealing.proposalsPerLevelBase = 1;
+  systemSearch.annealing.proposalsPerMovableDecision = 0;
+  systemSearch.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
+  const auto systemView = take(loom::fabric::requireSystemRoot(system.view()));
+  std::vector<dataflow::RootThreadLaunchRef> rootThreads;
+  for (const auto &root : dataflow.rootThreadLaunches())
+    rootThreads.push_back(root.ref);
+  const auto systemConstraints =
+      take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
+          dataflow, systemView, rootThreads, store));
+  const auto partition =
+      take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
+          dataflow, systemConstraints.view().rootThreadLaunches()));
+  const auto systemConfig =
+      take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
+  const auto searchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      dataflow, systemView, systemConfig, systemConstraints, partition,
+      loom::pnr::SystemHierarchicalGraphSearchInput{{spatial.reference()}},
+      store));
+  auto generatedSystem = loom::pnr::generateSystemMappings(
+      {dataflow, systemView, searchDomain, systemConfig, systemConstraints,
+       store});
+  const auto *systemCandidates =
+      std::get_if<loom::pnr::GeneratedSystemMappings>(&generatedSystem);
+  if (!systemCandidates || systemCandidates->candidates.size() != 1) {
+    const std::string diagnostic = std::visit(
+        [](const auto &outcome) {
+          using Outcome = std::decay_t<decltype(outcome)>;
+          if constexpr (std::is_same_v<Outcome,
+                                       loom::pnr::GeneratedSystemMappings>)
+            return std::string("generated an unexpected candidate count");
+          else
+            return outcome.diagnostic;
+        },
+        generatedSystem);
+    fail("SystemMapping fixture did not produce one candidate: " + diagnostic);
+  }
+  const auto systemMapping = take(loom::mapping::importSystemMapping(
+      systemCandidates->candidates.front(), store));
+  const auto systemImage =
+      take(loom::deployment::finalizeHardwareConfigurationImage(
+          {abi.reference(),
+           abi.abi().programmingUnits().front().id,
+           {loom::deployment::ConfigurationImageSourceKind::SystemMapping,
+            systemMapping.reference()}},
+          store));
+  if (systemImage.reference() == image.reference() ||
+      !systemImage.image().payload().equals(image.image().payload()))
+    fail("SystemMapping source did not preserve the exact physical payload");
+
+  expectError(
+      loom::deployment::finalizeHardwareConfigurationImage(
+          {abi.reference(),
+           abi.abi().programmingUnits().front().id,
+           {loom::deployment::ConfigurationImageSourceKind::SystemMapping,
+            spatial.reference()}},
+          store),
+      "SystemMapping");
+
+  const auto decoded = take(abi.abi().decode(image.image().programmingUnitId(),
+                                             image.image().payload()));
+  const auto physical = take(loom::mapping::qualifyConfiguredHardwareProjection(
+      spatial, abi.abi().fabricSystem(), occurrence));
+  expectError(loom::mapping::qualifyConfiguredHardwareProjection(
+                  spatial, abi.abi().fabricSystem(),
+                  loom::fabric::SpatialCoreOccurrenceRef{
+                      loom::fabric::AccCoreOccurrenceRef(999)}),
+              "no imported Module");
+  for (const auto &selected : physical.fields()) {
+    const auto found = llvm::find_if(decoded, [&](const auto &value) {
+      return value.slot == selected.slot;
+    });
+    if (found == decoded.end() || !llvm::ArrayRef<std::uint8_t>(found->value)
+                                       .equals(selected.value.bytes()))
+      fail("configuration image changed a Mapping-owned semantic field");
+  }
+
+  std::vector<std::uint8_t> corrupted(image.canonicalBytes().bytes().begin(),
+                                      image.canonicalBytes().bytes().end());
+  if (corrupted.empty())
+    fail("configuration image canonical bytes are empty");
+  corrupted.back() ^= 1U;
+  const auto corruptedIdentity =
+      take(store.put(loom::deployment::hardwareConfigurationImageSchema,
+                     loom::CanonicalSemanticBytes(std::move(corrupted))));
+  expectError(
+      loom::deployment::importHardwareConfigurationImage(
+          {loom::deployment::hardwareConfigurationImageSchema.identity.str(),
+           loom::deployment::hardwareConfigurationImageSchema.version,
+           corruptedIdentity},
+          store),
+      "payload");
+
+  std::vector<std::uint8_t> noncanonical(image.canonicalBytes().bytes().begin(),
+                                         image.canonicalBytes().bytes().end());
+  if (noncanonical.size() < 4)
+    fail("configuration image canonical frame is truncated");
+  std::uint32_t headerSize =
+      (static_cast<std::uint32_t>(noncanonical[0]) << 24) |
+      (static_cast<std::uint32_t>(noncanonical[1]) << 16) |
+      (static_cast<std::uint32_t>(noncanonical[2]) << 8) |
+      static_cast<std::uint32_t>(noncanonical[3]);
+  if (headerSize == std::numeric_limits<std::uint32_t>::max())
+    fail("configuration image canonical header is too large");
+  ++headerSize;
+  noncanonical[0] = static_cast<std::uint8_t>(headerSize >> 24);
+  noncanonical[1] = static_cast<std::uint8_t>(headerSize >> 16);
+  noncanonical[2] = static_cast<std::uint8_t>(headerSize >> 8);
+  noncanonical[3] = static_cast<std::uint8_t>(headerSize);
+  noncanonical.insert(noncanonical.begin() + 4, ' ');
+  const auto noncanonicalIdentity =
+      take(store.put(loom::deployment::hardwareConfigurationImageSchema,
+                     loom::CanonicalSemanticBytes(std::move(noncanonical))));
+  expectError(
+      loom::deployment::importHardwareConfigurationImage(
+          {loom::deployment::hardwareConfigurationImageSchema.identity.str(),
+           loom::deployment::hardwareConfigurationImageSchema.version,
+           noncanonicalIdentity},
+          store),
+      "not canonical");
+
   const auto bindings = spatial.view().computeBindings();
   const auto realizations = tech.view().computeRealizations();
   const loom::mapping::TechComputeActorView *actorBinding = nullptr;

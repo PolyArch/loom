@@ -97,6 +97,7 @@ add_executable(loom-configured-hardware-projection-test
 
 target_include_directories(loom-configured-hardware-projection-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
+  ${LOOM_SOURCE_DIR}/test/hardware
 )
 
 target_include_directories(loom-spatial-mapping-artifact-test PRIVATE
@@ -282,6 +283,8 @@ target_link_libraries(loom-spatial-tag-continuity-index-test PRIVATE
 
 target_link_libraries(loom-configured-hardware-projection-test PRIVATE
   LoomADGBuilder
+  LoomDeployment
+  LoomHardwareConfigurationTestSupport
   LoomMappingArtifact
   LoomPnR
   LoomPnRCpSat

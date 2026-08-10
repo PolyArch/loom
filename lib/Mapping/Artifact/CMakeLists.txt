@@ -15,6 +15,7 @@ add_library(LoomMappingArtifact
   SpatialMappingMemoryImport.cpp
   SystemMappingConstraintSet.cpp
   SystemMappingConstraintSetBuilder.cpp
+  SystemConfiguredHardwareProjection.cpp
   SystemMappingArtifact.cpp
   SystemMappingCapacityVerification.cpp
   SystemMappingClosure.cpp

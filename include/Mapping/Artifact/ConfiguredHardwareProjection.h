@@ -10,10 +10,21 @@
 #include <utility>
 #include <vector>
 
+namespace loom {
+class ArtifactStore;
+}
+
+namespace loom::fabric {
+class FabricSystemRootView;
+}
+
 namespace loom::mapping {
+class FinalizedSpatialMapping;
+class FinalizedSystemMapping;
 namespace detail {
 struct ConfiguredHardwareProjectionViewAccess;
-}
+struct PhysicalConfiguredHardwareProjectionViewAccess;
+} // namespace detail
 
 struct ConfiguredHardwareFieldValueView final {
   ::loom::fabric::FabricConfigurationSlotRef slot;
@@ -38,6 +49,48 @@ private:
 
   friend struct detail::ConfiguredHardwareProjectionViewAccess;
 };
+
+struct PhysicalConfiguredHardwareFieldValueView final {
+  ::loom::fabric::FabricPhysicalConfigurationSlotRef slot;
+  CanonicalSemanticBytes value;
+};
+
+/// Occurrence-qualified, removable projection of configuration values already
+/// validated by the imported SpatialMapping set. This view only qualifies and
+/// joins Mapping-owned values; it never reprojects actor or route semantics.
+class PhysicalConfiguredHardwareProjectionView final {
+public:
+  llvm::ArrayRef<PhysicalConfiguredHardwareFieldValueView> fields() const {
+    return fields_;
+  }
+
+private:
+  explicit PhysicalConfiguredHardwareProjectionView(
+      std::vector<PhysicalConfiguredHardwareFieldValueView> fields)
+      : fields_(std::move(fields)) {}
+
+  std::vector<PhysicalConfiguredHardwareFieldValueView> fields_;
+
+  friend struct detail::PhysicalConfiguredHardwareProjectionViewAccess;
+  friend llvm::Expected<PhysicalConfiguredHardwareProjectionView>
+  qualifyConfiguredHardwareProjection(
+      const FinalizedSpatialMapping &,
+      const ::loom::fabric::FabricSystemRootView &,
+      ::loom::fabric::SpatialCoreOccurrenceRef);
+  friend llvm::Expected<PhysicalConfiguredHardwareProjectionView>
+  deriveConfiguredHardwareProjection(const FinalizedSystemMapping &,
+                                     const ArtifactStore &);
+};
+
+llvm::Expected<PhysicalConfiguredHardwareProjectionView>
+qualifyConfiguredHardwareProjection(
+    const FinalizedSpatialMapping &mapping,
+    const ::loom::fabric::FabricSystemRootView &system,
+    ::loom::fabric::SpatialCoreOccurrenceRef occurrence);
+
+llvm::Expected<PhysicalConfiguredHardwareProjectionView>
+deriveConfiguredHardwareProjection(const FinalizedSystemMapping &mapping,
+                                   const ArtifactStore &store);
 
 } // namespace loom::mapping
 
