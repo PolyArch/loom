@@ -36,6 +36,11 @@ FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
                                            BlobStore &blobs,
                                            const TemporaryTree &tree);
 
+llvm::Expected<FinalizedDeployment>
+tryBuildMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,
+                          BlobStore &blobs, const TemporaryTree &tree,
+                          llvm::StringRef finalLinkedTriple);
+
 } // namespace loom::deployment::test
 
 #endif // LOOM_TEST_DEPLOYMENT_DEPLOYMENTTESTSUPPORT_H

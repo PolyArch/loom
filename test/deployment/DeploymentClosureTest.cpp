@@ -69,9 +69,21 @@ void exactClosureRoundTripsAndRejectsStaleChild() {
               "stale derived runtime images");
 }
 
+void finalLinkedProgramMustMatchHostTarget() {
+  const llvm::StringRef test = __func__;
+  deployment::test::TemporaryTree tree(test);
+  ArtifactStore artifacts(tree.path("artifacts"));
+  BlobStore blobs(tree.path("blobs"));
+  expectError(test,
+              deployment::test::tryBuildMinimalDeployment(
+                  test, artifacts, blobs, tree, "x86_64-unknown-linux-gnu"),
+              "final linked module is incompatible with the host target");
+}
+
 } // namespace
 
 int main() {
   exactClosureRoundTripsAndRejectsStaleChild();
+  finalLinkedProgramMustMatchHostTarget();
   return 0;
 }

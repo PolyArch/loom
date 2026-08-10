@@ -7,6 +7,7 @@
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Deployment/DeploymentPipeline.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/FabricDialect.h"
@@ -394,6 +395,22 @@ std::vector<std::uint8_t> linkedExecutable(llvm::StringRef test,
                                    (*buffer)->getBuffer().bytes_end());
 }
 
+std::unique_ptr<llvm::Module> linkedModule(llvm::LLVMContext &llvmContext,
+                                           const CompilerTargetBinding &target,
+                                           llvm::StringRef stem,
+                                           llvm::StringRef entrySymbol) {
+  auto module = std::make_unique<llvm::Module>(stem, llvmContext);
+  module->setTargetTriple(llvm::Triple(target.targetTriple()));
+  module->setDataLayout(target.dataLayout());
+  llvm::Function *entry = llvm::Function::Create(
+      llvm::FunctionType::get(llvm::Type::getVoidTy(llvmContext), false),
+      llvm::GlobalValue::ExternalLinkage, entrySymbol, *module);
+  llvm::IRBuilder<> builder(
+      llvm::BasicBlock::Create(llvmContext, "entry", entry));
+  builder.CreateRetVoid();
+  return module;
+}
+
 std::vector<std::uint8_t> hostExecutable(llvm::StringRef test,
                                          const CompilerTargetBinding &target,
                                          const TemporaryTree &tree) {
@@ -470,10 +487,10 @@ void require(llvm::StringRef test, bool condition, llvm::StringRef message) {
     fail(test, message.str());
 }
 
-FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
-                                           ArtifactStore &artifacts,
-                                           BlobStore &blobs,
-                                           const TemporaryTree &tree) {
+llvm::Expected<FinalizedDeployment>
+tryBuildMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,
+                          BlobStore &blobs, const TemporaryTree &tree,
+                          llvm::StringRef finalLinkedTriple) {
   const auto module = buildModule(test, artifacts);
   const auto system = buildSystem(test, module, artifacts);
   auto dataflowArtifact = buildDataflow(test, artifacts);
@@ -538,14 +555,26 @@ FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
                                {},
                                {}},
           artifacts, blobs));
-  return take(test, buildDeployment(
-                        ExactDeploymentInputs{systemMapping.reference(),
-                                              host,
-                                              {instructionBinary.reference()},
-                                              {{implementation.reference(),
-                                                runtimeBinding.reference()}},
-                                              {}},
-                        artifacts, blobs));
+  llvm::LLVMContext linkedContext;
+  auto finalLinkedModule = linkedModule(linkedContext, hostTarget.binding(),
+                                        "linked-host", "loom_host_entry");
+  if (!finalLinkedTriple.empty())
+    finalLinkedModule->setTargetTriple(llvm::Triple(finalLinkedTriple));
+  return buildDeploymentFromLinkedProgram(
+      DeploymentPipelineInputs{
+          systemMapping.reference(),
+          host,
+          {instructionBinary.reference()},
+          {{implementation.reference(), runtimeBinding.reference()}}},
+      *finalLinkedModule, artifacts, blobs);
+}
+
+FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
+                                           ArtifactStore &artifacts,
+                                           BlobStore &blobs,
+                                           const TemporaryTree &tree) {
+  return take(test, tryBuildMinimalDeployment(test, artifacts, blobs, tree,
+                                              llvm::StringRef()));
 }
 
 } // namespace loom::deployment::test
