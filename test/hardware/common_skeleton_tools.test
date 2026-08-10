@@ -4,3 +4,4 @@
 # RUN: cd %t && verilator --binary --timing --Wall --Wno-fatal --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module testbench loom_module.sv testbench.sv --Mdir obj_dir
 # RUN: timeout 30s %t/obj_dir/Vtestbench
 # RUN: cd %t && yosys -q -s common_skeleton.ys
+# RUN: cd %t && yosys -q -p 'read_verilog -sv repeated_spatial_core_system.sv; hierarchy -check -top loom_system; check -assert; proc; synth -top loom_system; check -assert'

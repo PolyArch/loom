@@ -3,6 +3,8 @@
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
 #include "Hardware/RTL/Specialization.h"
+#include "Hardware/RTL/SystemImplementation.h"
+#include "Hardware/RTL/SystemSkeleton.h"
 
 #include "ConfigurationABI3TestSupport.h"
 #include "ConfigurationTransportTestSupport.h"
@@ -671,6 +673,42 @@ SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
     result.inactiveConfigurations.emplace_back(std::move(target),
                                                unit.inactiveImage);
   }
+
+  const std::filesystem::path blobRoot =
+      std::filesystem::path(directory.path().str()) / "system-blobs";
+  std::error_code filesystemError;
+  std::filesystem::create_directory(blobRoot, filesystemError);
+  if (filesystemError)
+    fail(test, "unable to create the System BlobStore: " +
+                   filesystemError.message());
+  loom::BlobStore blobs(blobRoot.string());
+  const auto implementation = take(
+      test,
+      loom::hardware::rtl::finalizePortableSystemHardwareImplementation(
+          context, fabric.abi, providers, externalContracts, store, blobs));
+  std::size_t dataInterfaces = 0;
+  std::size_t memoryInterfaces = 0;
+  for (const auto &interface : implementation.implementation().interfaces()) {
+    dataInterfaces +=
+        std::holds_alternative<loom::hardware::ImplementationDataInterfaceRef>(
+            interface.semanticRef);
+    memoryInterfaces += std::holds_alternative<
+        loom::hardware::ImplementationMemoryInterfaceRef>(
+        interface.semanticRef);
+  }
+  const auto system =
+      take(test, loom::fabric::requireSystemRoot(fabric.system.view()));
+  const std::size_t expectedData = llvm::count_if(
+      system.spatialAttachments(), [](const auto &attachment) {
+        return attachment.spatialEndpoint.transport() != nullptr;
+      });
+  const std::size_t expectedMemory = llvm::count_if(
+      system.spatialAttachments(), [](const auto &attachment) {
+        return attachment.spatialEndpoint.memory() != nullptr;
+      });
+  require(test,
+          dataInterfaces == expectedData && memoryInterfaces == expectedMemory,
+          "System HardwareImplementation omitted a spatial attachment");
   return result;
 }
 
@@ -795,6 +833,7 @@ TemporalToolArtifact temporalHierarchyBuildsStructuralSkeleton() {
 
 struct RepeatedSpatialCoreToolArtifact final {
   std::string systemVerilog;
+  std::string systemRootVerilog;
   loom::hardware::test::PortableConfigurationTarget target;
   std::vector<std::uint8_t> activeImage;
 };
@@ -891,8 +930,74 @@ repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
           referenceConfiguration.has_value() &&
               referenceSystemVerilog.has_value(),
           "repeated SpatialCore fixture produced no reusable definition");
-  return {std::move(*referenceSystemVerilog), referenceConfiguration->target,
-          referenceConfiguration->route};
+
+  const std::filesystem::path blobRoot =
+      std::filesystem::path(directory.path().str()) / "system-blobs";
+  std::error_code filesystemError;
+  std::filesystem::create_directory(blobRoot, filesystemError);
+  if (filesystemError)
+    fail(test, "unable to create the System BlobStore: " +
+                   filesystemError.message());
+  loom::BlobStore blobs(blobRoot.string());
+  mlir::MLIRContext systemContext;
+  systemContext.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
+                            circt::seq::SeqDialect, circt::sv::SVDialect>();
+  FabricOperationProviderRegistry systemProviders;
+  if (llvm::Error error =
+          loom::hardware::rtl::registerPortableScalarIntegerAddSubProvider(
+              systemProviders))
+    fail(test, llvm::toString(std::move(error)));
+  ExternalImplementationContractCatalog systemContracts;
+  auto systemSkeleton =
+      take(test, loom::hardware::rtl::buildPortableSystemRootCirctSkeleton(
+                     systemContext, fabric.abi, systemProviders,
+                     systemContracts));
+  require(test,
+          systemSkeleton.spatialDefinitionCount == 1 &&
+              systemSkeleton.spatialInstanceCount == 2,
+          "System hierarchy did not share the repeated SpatialCore definition");
+  auto systemRootVerilog =
+      take(test, loom::hardware::rtl::lowerAndExportSpecializedSystemVerilog(
+                     *systemSkeleton.module));
+  const auto implementation = take(
+      test,
+      loom::hardware::rtl::finalizePortableSystemHardwareImplementation(
+          systemContext, fabric.abi, systemProviders, systemContracts, store,
+          blobs));
+  require(test,
+          implementation.implementation().representationRoot().top ==
+              loom::hardware::RepresentationLocator{
+                  loom::hardware::RepresentationObjectKind::Module,
+                  "loom_system"},
+          "System HardwareImplementation changed its root module");
+  std::size_t clockInterfaces = 0;
+  std::size_t resetInterfaces = 0;
+  std::size_t configurationInterfaces = 0;
+  for (const auto &interface : implementation.implementation().interfaces()) {
+    clockInterfaces +=
+        std::holds_alternative<loom::hardware::ImplementationClockInterfaceRef>(
+            interface.semanticRef);
+    resetInterfaces +=
+        std::holds_alternative<loom::hardware::ImplementationResetInterfaceRef>(
+            interface.semanticRef);
+    configurationInterfaces += std::holds_alternative<
+        loom::hardware::ImplementationConfigurationInterfaceRef>(
+        interface.semanticRef);
+  }
+  require(test,
+          clockInterfaces == 1 && resetInterfaces == 1 &&
+              configurationInterfaces ==
+                  fabric.abi.abi().programmingUnits().size(),
+          "System HardwareImplementation lost a SpatialCore interface");
+  const auto imported =
+      take(test, loom::hardware::importHardwareImplementation(
+                     implementation.reference(), store, blobs));
+  require(test,
+          imported.canonicalBytes().bytes() ==
+              implementation.canonicalBytes().bytes(),
+          "System HardwareImplementation did not round-trip");
+  return {std::move(*referenceSystemVerilog), std::move(systemRootVerilog),
+          referenceConfiguration->target, referenceConfiguration->route};
 }
 
 void configurationAbiIncludesFuTopology() {
@@ -1472,6 +1577,8 @@ void writeRepeatedSpatialCoreToolArtifacts(
   std::filesystem::create_directories(root);
   std::ofstream(root / "repeated_spatial_core_module.sv")
       << artifact.systemVerilog;
+  std::ofstream(root / "repeated_spatial_core_system.sv")
+      << artifact.systemRootVerilog;
   std::ofstream testbench(root / "repeated_spatial_core_testbench.sv");
   testbench << R"sv(
 module repeated_spatial_core_testbench;

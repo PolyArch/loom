@@ -1,5 +1,6 @@
 # REQUIRES: circt, verilator
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-common-skeleton-test %t
+# RUN: cd %t && verilator --lint-only --Wall --Wno-fatal --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL --Wno-PINMISSING --top-module loom_system repeated_spatial_core_system.sv
 # RUN: cd %t && verilator --binary --timing --Wall --Wno-fatal --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL --Wno-PINMISSING -CFLAGS '-std=c++20' --top-module repeated_spatial_core_testbench repeated_spatial_core_module.sv repeated_spatial_core_testbench.sv --Mdir obj_repeated_spatial_core
 # RUN: timeout 30s %t/obj_repeated_spatial_core/Vrepeated_spatial_core_testbench
