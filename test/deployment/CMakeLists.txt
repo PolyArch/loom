@@ -25,6 +25,10 @@ add_library(LoomDeploymentTestSupport STATIC
   DeploymentTestSupport.cpp
 )
 
+target_include_directories(LoomDeploymentTestSupport PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+)
+
 target_link_libraries(LoomDeploymentTestSupport PUBLIC
   LoomADGBuilder
   LoomConfig
@@ -35,6 +39,7 @@ target_link_libraries(LoomDeploymentTestSupport PUBLIC
   LoomMappingArtifact
   LoomPnR
   LoomPnRGenerator
+  LoomRuntimeDeploymentLoader
   LoomRuntimePlatformBinding
   MLIRArithDialect
   MLIRDataflow

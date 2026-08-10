@@ -11,10 +11,13 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/FabricDialect.h"
+#include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/IR/ResourceContractRecord.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/InstructionCoreBinary.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
+#include "Hardware/Configuration/PackedConfigurationABI.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "Hardware/Implementation/ImplementationRepresentationRoot.h"
 #include "Hardware/Implementation/RepresentationFormat.h"
@@ -24,6 +27,7 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/System/SystemPnrGenerator.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
+#include "Runtime/InProcessPlatform.h"
 #include "Runtime/RuntimePlatformBinding.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -124,14 +128,43 @@ sharedTransportResourceContract(llvm::StringRef test,
 
 fabric::FinalizedFabricRoot buildModule(llvm::StringRef test,
                                         const ArtifactStore &artifacts) {
-  adg::DesignBuilder design(artifacts);
-  auto module =
-      take(test, design.createSpatialCore("deployment-empty", {}, {}));
-  requireSuccess(test, module.close({}));
-  auto finalized = take(test, std::move(design).finalize());
-  require(test, finalized.roots().size() == 1,
-          "module builder did not publish one root");
-  return std::move(finalized.roots().front());
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+    module {
+      fabric.module @configured(
+          %a: !fabric.bits<32>, %b: !fabric.bits<32>) -> !fabric.bits<32> {
+        %pe = fabric.pe [spatial]
+            (%pa = %a : !fabric.bits<32>, %pb = %b : !fabric.bits<32>)
+            -> !fabric.bits<32> {
+          %fu = fabric.fu
+              (%fa = %pa : !fabric.bits<32>, %fb = %pb : !fabric.bits<32>)
+              -> !fabric.bits<32> {
+            %value = fabric.op [@arith.addi, @arith.subi] (%fa, %fb)
+              {implementation_family =
+                 #fabric.implementation_family<ScalarIntegerAddSub>,
+               hw_params = {integer_widths = [32 : i32]}}
+              : (!fabric.bits<32>, !fabric.bits<32>) -> !fabric.bits<32>
+            fabric.yield %value : !fabric.bits<32>
+          }
+        }
+        fabric.yield %pe : !fabric.bits<32>
+      }
+    }
+  )mlir",
+                                                        &context());
+  require(test, static_cast<bool>(source), "cannot parse Fabric fixture");
+  const std::vector<std::uint8_t> contract =
+      take(test, ::fabric::encodeResourceContractRecord(
+                     ::fabric::oneCycleElasticOperationResourceContract()));
+  const std::vector<std::int8_t> signedContract(contract.begin(),
+                                                contract.end());
+  source->walk([&](::fabric::OpOp operation) {
+    operation->setAttr(::fabric::kResourceContractRecordAttrName,
+                       mlir::DenseI8ArrayAttr::get(&context(), signedContract));
+  });
+  ::fabric::ModuleOp root;
+  source->walk([&](::fabric::ModuleOp candidate) { root = candidate; });
+  require(test, static_cast<bool>(root), "Fabric fixture has no Module root");
+  return take(test, fabric::finalizeFabricRoot(root, artifacts));
 }
 
 fabric::FinalizedFabricRoot
@@ -417,32 +450,16 @@ std::vector<std::uint8_t> hostExecutable(llvm::StringRef test,
   return linkedExecutable(test, target, tree, "host", "loom_host_entry");
 }
 
-llvm::Error validateOneByte(llvm::ArrayRef<std::uint8_t> payload) {
-  if (payload.size() != 1)
-    return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                   "payload must contain one byte");
-  return llvm::Error::success();
-}
-
-const runtime::RuntimeProviderDescriptor &provider() {
-  static const runtime::RuntimeProviderEndpointKindDescriptor endpoints[] = {
-      {0, "identity", runtime::RuntimeEndpointClass::Identity,
-       runtime::RuntimeEndpointFlow::ImplementationToRuntime, false,
-       validateOneByte}};
-  static const runtime::RuntimeProviderDescriptor descriptor{
-      {"loom.runtime.deployment_test", SchemaVersion{1, 0}},
-      "loom.runtime.deployment_test.implementation.v1",
-      "loom.runtime.deployment_test.abi.v1",
-      endpoints,
-      true,
-      false,
-      false};
-  return descriptor;
-}
-
-hardware::ImplementationRepresentationRoot representation(llvm::StringRef test,
-                                                          BlobStore &blobs) {
-  const llvm::StringRef rtl = "module top(); endmodule\n";
+hardware::ImplementationRepresentationRoot
+representation(llvm::StringRef test, BlobStore &blobs,
+               std::size_t configurationPortCount) {
+  std::string rtl = "module top(";
+  for (std::size_t index = 0; index != configurationPortCount; ++index) {
+    if (index != 0)
+      rtl += ", ";
+    rtl += "input logic cfg_" + std::to_string(index);
+  }
+  rtl += "); endmodule\n";
   const BlobDigest source = take(
       test,
       blobs.put(llvm::ArrayRef<std::uint8_t>(
@@ -487,43 +504,84 @@ void require(llvm::StringRef test, bool condition, llvm::StringRef message) {
     fail(test, message.str());
 }
 
-llvm::Expected<FinalizedDeployment>
-tryBuildMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,
-                          BlobStore &blobs, const TemporaryTree &tree,
-                          llvm::StringRef finalLinkedTriple) {
+llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
+    llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
+    const TemporaryTree &tree, llvm::StringRef finalLinkedTriple,
+    bool trustedIdentity, bool shareProgrammingEndpoint,
+    const runtime::RuntimeProviderDescriptor &runtimeProvider) {
   const auto module = buildModule(test, artifacts);
   const auto system = buildSystem(test, module, artifacts);
   auto dataflowArtifact = buildDataflow(test, artifacts);
   auto dataflow = take(test, dataflowArtifact.view());
   const auto systemMapping =
       buildSystemMapping(test, dataflow, system, artifacts);
-  const auto abi =
-      take(test, hardware::finalizeConfigurationABI(
-                     hardware::ConfigurationABIDraft{system.reference(), {}},
-                     artifacts));
-  require(test, abi.abi().programmingUnits().empty(),
-          "empty module unexpectedly produced configuration units");
-  const auto implementation = take(
-      test,
-      hardware::finalizeHardwareImplementation(
-          hardware::HardwareImplementationDraft{system.reference(),
-                                                abi.reference(),
-                                                {},
-                                                representation(test, blobs),
-                                                std::nullopt,
-                                                {},
-                                                {},
-                                                {},
-                                                {}},
-          artifacts, blobs));
-  requireSuccess(test, runtime::registerRuntimeProvider(provider()));
+  auto abiDraft = take(
+      test, hardware::derivePackedConfigurationABIDraft(system, context()));
+  const auto abi = take(
+      test, hardware::finalizeConfigurationABI(std::move(abiDraft), artifacts));
+  require(test, abi.abi().programmingUnits().size() == 2,
+          "fixture did not produce one programming unit per SpatialCore");
+  std::vector<hardware::ImplementationInterface> interfaces;
+  interfaces.reserve(abi.abi().programmingUnits().size());
+  for (std::size_t index = 0; index != abi.abi().programmingUnits().size();
+       ++index) {
+    const hardware::ProgrammingUnit &unit = abi.abi().programmingUnits()[index];
+    interfaces.push_back(
+        {hardware::ImplementationConfigurationInterfaceRef{
+             hardware::ProgrammingUnitRef{abi.reference(), unit.id}},
+         {hardware::RepresentationObjectKind::Port,
+          "top.cfg_" + std::to_string(index)},
+         std::nullopt});
+  }
+  const auto implementation =
+      take(test, hardware::finalizeHardwareImplementation(
+                     hardware::HardwareImplementationDraft{
+                         system.reference(),
+                         abi.reference(),
+                         {},
+                         representation(test, blobs, interfaces.size()),
+                         std::nullopt,
+                         std::move(interfaces),
+                         {},
+                         {},
+                         {}},
+                     artifacts, blobs));
+  requireSuccess(test, runtime::registerRuntimeProvider(runtimeProvider));
+  std::vector<runtime::RuntimeProgrammingBinding> programmingBindings;
+  for (std::size_t index = 0;
+       index != implementation.implementation().interfaces().size(); ++index) {
+    const auto &interface = implementation.implementation().interfaces()[index];
+    const auto *configuration =
+        std::get_if<hardware::ImplementationConfigurationInterfaceRef>(
+            &interface.semanticRef);
+    require(test, configuration != nullptr,
+            "fixture implementation has a non-configuration interface");
+    programmingBindings.push_back(
+        {configuration->programmingUnit,
+         {implementation.reference().artifact,
+          hardware::HardwareImplementationInterfaceRef{index}},
+         runtime::inProcessRuntimeEndpoint(
+             runtime::RuntimeEndpointClass::Programming,
+             shareProgrammingEndpoint ? 0 : index)});
+  }
+  runtime::RuntimeIdentityVerification identityVerification =
+      runtime::HardwareReportedIdentity{runtime::inProcessRuntimeEndpoint(
+          runtime::RuntimeEndpointClass::Identity, 0)};
+  if (trustedIdentity) {
+    constexpr llvm::StringLiteral attestation =
+        "deployment trusted implementation";
+    identityVerification = runtime::TrustedImmutableIdentity{take(
+        test, blobs.put(llvm::ArrayRef<std::uint8_t>(
+                  reinterpret_cast<const std::uint8_t *>(attestation.data()),
+                  attestation.size())))};
+  }
   const auto runtimeBinding =
       take(test, runtime::finalizeRuntimePlatformBinding(
                      runtime::RuntimePlatformBindingDraft{
                          implementation.reference(),
-                         runtime::runtimeProviderDescriptorRef(provider()),
-                         runtime::HardwareReportedIdentity{{0, {0x42}}},
-                         {},
+                         runtime::runtimeProviderDescriptorRef(runtimeProvider),
+                         std::move(identityVerification),
+                         std::move(programmingBindings),
                          {},
                          {}},
                      artifacts, blobs));
@@ -569,12 +627,47 @@ tryBuildMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,
       *finalLinkedModule, artifacts, blobs);
 }
 
+llvm::Expected<FinalizedDeployment>
+tryBuildMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,
+                          BlobStore &blobs, const TemporaryTree &tree,
+                          llvm::StringRef finalLinkedTriple) {
+  return tryBuildMinimalDeploymentImpl(
+      test, artifacts, blobs, tree, finalLinkedTriple, false, false,
+      runtime::inProcessRuntimeProviderDescriptor());
+}
+
 FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
                                            ArtifactStore &artifacts,
                                            BlobStore &blobs,
                                            const TemporaryTree &tree) {
   return take(test, tryBuildMinimalDeployment(test, artifacts, blobs, tree,
                                               llvm::StringRef()));
+}
+
+FinalizedDeployment buildTrustedIdentityDeployment(llvm::StringRef test,
+                                                   ArtifactStore &artifacts,
+                                                   BlobStore &blobs,
+                                                   const TemporaryTree &tree) {
+  return take(test, tryBuildMinimalDeploymentImpl(
+                        test, artifacts, blobs, tree, llvm::StringRef(), true,
+                        false, runtime::inProcessRuntimeProviderDescriptor()));
+}
+
+FinalizedDeployment buildSharedProgrammingEndpointDeployment(
+    llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
+    const TemporaryTree &tree) {
+  return take(test, tryBuildMinimalDeploymentImpl(
+                        test, artifacts, blobs, tree, llvm::StringRef(), false,
+                        true, runtime::inProcessRuntimeProviderDescriptor()));
+}
+
+FinalizedDeployment buildRuntimeProviderDeployment(
+    llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
+    const TemporaryTree &tree,
+    const runtime::RuntimeProviderDescriptor &provider) {
+  return take(test, tryBuildMinimalDeploymentImpl(test, artifacts, blobs, tree,
+                                                  llvm::StringRef(), false,
+                                                  false, provider));
 }
 
 } // namespace loom::deployment::test

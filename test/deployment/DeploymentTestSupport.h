@@ -10,6 +10,9 @@
 namespace loom {
 class ArtifactStore;
 class BlobStore;
+namespace runtime {
+struct RuntimeProviderDescriptor;
+}
 } // namespace loom
 
 namespace loom::deployment::test {
@@ -35,6 +38,20 @@ FinalizedDeployment buildMinimalDeployment(llvm::StringRef test,
                                            ArtifactStore &artifacts,
                                            BlobStore &blobs,
                                            const TemporaryTree &tree);
+
+FinalizedDeployment buildTrustedIdentityDeployment(llvm::StringRef test,
+                                                   ArtifactStore &artifacts,
+                                                   BlobStore &blobs,
+                                                   const TemporaryTree &tree);
+
+FinalizedDeployment buildSharedProgrammingEndpointDeployment(
+    llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
+    const TemporaryTree &tree);
+
+FinalizedDeployment buildRuntimeProviderDeployment(
+    llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
+    const TemporaryTree &tree,
+    const runtime::RuntimeProviderDescriptor &provider);
 
 llvm::Expected<FinalizedDeployment>
 tryBuildMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,

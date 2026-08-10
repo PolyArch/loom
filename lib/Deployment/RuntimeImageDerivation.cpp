@@ -4,6 +4,7 @@
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowEventDerivation.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Deployment/HardwareConfigurationImage.h"
@@ -1101,17 +1102,6 @@ configurationImagesFor(fabric::AccCoreOccurrenceRef core,
   return result;
 }
 
-dataflow::CanonicalProducerTerminalRef
-graphBoundaryTerminal(dataflow::GraphLaunchBoundaryTransferRef transfer) {
-  return dataflow::GraphLaunchBoundarySourceRef{std::move(transfer)};
-}
-
-dataflow::EventFamilyKey
-producedEvent(dataflow::CanonicalProducerTerminalRef terminal) {
-  return dataflow::EventFamilyKey{dataflow::StaticTransferEventRef{
-      dataflow::ProducedTransferEventRef{std::move(terminal)}}};
-}
-
 std::vector<dataflow::CanonicalProducerTerminalRef>
 collectGraphDestinations(ReferenceEncoder &encoder,
                          const dataflow::CanonicalDataflowProgramView &view,
@@ -1252,12 +1242,10 @@ deriveSpatialLaunchImage(const ArtifactRootReference &systemMapping,
                   writeMemoryBoundaryBindings(json, encoder, spatial->view(),
                                               launch);
                   json.attributeEnd();
-                  const auto start = graphBoundaryTerminal(
-                      dataflow::GraphLaunchBoundaryTransferRef{
-                          dataflow::GraphLaunchStartTransferRef{launch}});
                   json.attributeObject("graph_start_activation_set_ref", [&] {
                     json.attributeBegin("event_family_key");
-                    writeEvent(json, encoder, producedEvent(start));
+                    writeEvent(json, encoder,
+                               dataflow::graphLaunchStartEventFamily(launch));
                     json.attributeEnd();
                     json.attributeBegin("execution_context_key");
                     writeContext(json, encoder, domain.context);

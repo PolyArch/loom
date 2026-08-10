@@ -12,3 +12,12 @@ target_link_libraries(loom-runtime-platform-binding-test PRIVATE
   MLIRParser
   LLVMSupport
 )
+
+add_executable(loom-runtime-deployment-loader-test
+  DeploymentLoaderTest.cpp
+)
+
+target_link_libraries(loom-runtime-deployment-loader-test PRIVATE
+  LoomDeploymentTestSupport
+  LoomRuntimeDeploymentLoader
+)

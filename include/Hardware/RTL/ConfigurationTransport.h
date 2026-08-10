@@ -4,6 +4,7 @@
 #include "Hardware/Configuration/ConfigurationABI.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -14,6 +15,8 @@ namespace loom::hardware::rtl {
 inline constexpr std::uint32_t portableConfigurationAddressWidth = 32;
 inline constexpr std::uint32_t portableConfigurationDataWidth = 32;
 inline constexpr std::uint32_t portableConfigurationByteCount = 4;
+inline constexpr llvm::StringLiteral portableConfigurationRuntimeAbiIdentity =
+    "loom.runtime.portable_axi_lite.v1";
 
 struct ConfigurationTransportUnitLayout final {
   ProgrammingUnitRef programmingUnit;
