@@ -37,6 +37,7 @@ public:
 
   static StaticMemoryImageLeaf
   staticMemory(ArtifactRootReference canonicalDataflow,
+               dataflow::RootedGraphLaunchRef rootedGraphLaunch,
                dataflow::LogicalMemoryRootRef logicalMemoryRoot,
                ArtifactRootReference layoutBinding, std::uint64_t sizeBytes,
                std::uint64_t alignmentBytes,

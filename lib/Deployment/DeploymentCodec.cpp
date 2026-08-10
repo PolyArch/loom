@@ -394,6 +394,12 @@ void writeStaticMemory(llvm::json::OStream &json,
   json.attributeObject("canonical_dataflow_ref", [&] {
     writeRootReference(json, memory.canonicalDataflow());
   });
+  auto launch = dataflow::encodeDataflowReference(
+      memory.canonicalDataflow().artifact, memory.rootedGraphLaunch());
+  if (!launch)
+    llvm_unreachable("validated rooted graph launch cannot fail encoding");
+  json.attribute("rooted_graph_launch_ref",
+                 formatArtifactLocalPayloadHex(*launch));
   auto root = dataflow::encodeDataflowReference(
       memory.canonicalDataflow().artifact, memory.logicalMemoryRoot());
   if (!root)
@@ -429,12 +435,14 @@ parseStaticMemory(const llvm::json::Object &object, std::size_t ordinal) {
       ("static_memory_images[" + llvm::Twine(ordinal) + "]").str();
   if (llvm::Error error = rejectUnknownFields(
           object, context,
-          {"canonical_dataflow_ref", "logical_memory_root_ref",
-           "layout_binding_ref", "size_bytes", "alignment_bytes", "permissions",
-           "initialized_chunks", "zero_fill_ranges"}))
+          {"canonical_dataflow_ref", "rooted_graph_launch_ref",
+           "logical_memory_root_ref", "layout_binding_ref", "size_bytes",
+           "alignment_bytes", "permissions", "initialized_chunks",
+           "zero_fill_ranges"}))
     return std::move(error);
   auto dataflow =
       parseRootReferenceField(object, "canonical_dataflow_ref", context);
+  auto launch = requireString(object, "rooted_graph_launch_ref", context);
   auto root = requireString(object, "logical_memory_root_ref", context);
   auto layout = parseRootReferenceField(object, "layout_binding_ref", context);
   auto size = requireUnsigned(object, "size_bytes", context);
@@ -444,6 +452,8 @@ parseStaticMemory(const llvm::json::Object &object, std::size_t ordinal) {
   auto zeroFill = requireArray(object, "zero_fill_ranges", context);
   if (!dataflow)
     return dataflow.takeError();
+  if (!launch)
+    return launch.takeError();
   if (!root)
     return root.takeError();
   if (!layout)
@@ -458,6 +468,14 @@ parseStaticMemory(const llvm::json::Object &object, std::size_t ordinal) {
     return chunks.takeError();
   if (!zeroFill)
     return zeroFill.takeError();
+  auto launchBytes = parseArtifactLocalPayloadHex(*launch);
+  if (!launchBytes)
+    return launchBytes.takeError();
+  auto rootedLaunch =
+      dataflow::decodeDataflowReference<dataflow::RootedGraphLaunchRef>(
+          *launchBytes, dataflow->artifact);
+  if (!rootedLaunch)
+    return rootedLaunch.takeError();
   auto rootBytes = parseArtifactLocalPayloadHex(*root);
   if (!rootBytes)
     return rootBytes.takeError();
@@ -518,8 +536,9 @@ parseStaticMemory(const llvm::json::Object &object, std::size_t ordinal) {
     parsedZeroFill.push_back({*offset, *count});
   }
   return DeploymentCodecAccess::staticMemory(
-      std::move(*dataflow), *logicalRoot, std::move(*layout), *size, *alignment,
-      *parsedPermissions, std::move(parsedChunks), std::move(parsedZeroFill));
+      std::move(*dataflow), *rootedLaunch, *logicalRoot, std::move(*layout),
+      *size, *alignment, *parsedPermissions, std::move(parsedChunks),
+      std::move(parsedZeroFill));
 }
 
 llvm::Expected<llvm::json::Value>
@@ -568,15 +587,16 @@ HostProgramLeaf DeploymentCodecAccess::hostProgram(
 
 StaticMemoryImageLeaf DeploymentCodecAccess::staticMemory(
     ArtifactRootReference canonicalDataflow,
+    dataflow::RootedGraphLaunchRef rootedGraphLaunch,
     dataflow::LogicalMemoryRootRef logicalMemoryRoot,
     ArtifactRootReference layoutBinding, std::uint64_t sizeBytes,
     std::uint64_t alignmentBytes, frontend::StaticMemoryPermissions permissions,
     std::vector<StaticMemoryInitializedChunk> initializedChunks,
     std::vector<StaticMemoryZeroFillRange> zeroFillRanges) {
   return StaticMemoryImageLeaf(
-      std::move(canonicalDataflow), logicalMemoryRoot, std::move(layoutBinding),
-      sizeBytes, alignmentBytes, permissions, std::move(initializedChunks),
-      std::move(zeroFillRanges));
+      std::move(canonicalDataflow), rootedGraphLaunch, logicalMemoryRoot,
+      std::move(layoutBinding), sizeBytes, alignmentBytes, permissions,
+      std::move(initializedChunks), std::move(zeroFillRanges));
 }
 
 InlineRuntimeImage

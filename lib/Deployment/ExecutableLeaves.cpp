@@ -49,16 +49,17 @@ public:
         registrationTableDigest, std::move(supportComponentOrdinals));
   }
 
-  static StaticMemoryImageLeaf staticMemory(
-      ArtifactRootReference canonicalDataflow,
-      dataflow::LogicalMemoryRootRef logicalMemoryRoot,
-      ArtifactRootReference layoutBinding, std::uint64_t sizeBytes,
-      std::uint64_t alignmentBytes,
-      frontend::StaticMemoryPermissions permissions,
-      std::vector<StaticMemoryInitializedChunk> initializedChunks,
-      std::vector<StaticMemoryZeroFillRange> zeroFillRanges) {
+  static StaticMemoryImageLeaf
+  staticMemory(ArtifactRootReference canonicalDataflow,
+               dataflow::RootedGraphLaunchRef rootedGraphLaunch,
+               dataflow::LogicalMemoryRootRef logicalMemoryRoot,
+               ArtifactRootReference layoutBinding, std::uint64_t sizeBytes,
+               std::uint64_t alignmentBytes,
+               frontend::StaticMemoryPermissions permissions,
+               std::vector<StaticMemoryInitializedChunk> initializedChunks,
+               std::vector<StaticMemoryZeroFillRange> zeroFillRanges) {
     return StaticMemoryImageLeaf(
-        std::move(canonicalDataflow), logicalMemoryRoot,
+        std::move(canonicalDataflow), rootedGraphLaunch, logicalMemoryRoot,
         std::move(layoutBinding), sizeBytes, alignmentBytes, permissions,
         std::move(initializedChunks), std::move(zeroFillRanges));
   }
@@ -547,13 +548,15 @@ llvm::Error validateHostProgramLeaf(const HostProgramLeaf &leaf,
   return validateHostExecutable(*bytes, target->binding(), *canonicalEntries);
 }
 
-llvm::Expected<StaticMemoryImageLeaf> buildStaticMemoryImageLeaf(
-    const ArtifactRootReference &canonicalDataflow,
-    dataflow::LogicalMemoryRootRef logicalMemoryRoot,
-    const ArtifactRootReference &layoutBinding,
-    const frontend::StaticGlobalMemoryCatalog &catalog,
-    std::uint64_t globalOrdinal, const ArtifactStore &artifacts,
-    const BlobStore &blobs) {
+llvm::Expected<StaticMemoryImageLeaf>
+buildStaticMemoryImageLeaf(const ArtifactRootReference &canonicalDataflow,
+                           dataflow::RootedGraphLaunchRef rootedGraphLaunch,
+                           dataflow::LogicalMemoryRootRef logicalMemoryRoot,
+                           const ArtifactRootReference &layoutBinding,
+                           const frontend::StaticGlobalMemoryCatalog &catalog,
+                           std::uint64_t globalOrdinal,
+                           const ArtifactStore &artifacts,
+                           const BlobStore &blobs) {
   auto target = importTarget(layoutBinding, artifacts);
   if (!target)
     return target.takeError();
@@ -583,9 +586,9 @@ llvm::Expected<StaticMemoryImageLeaf> buildStaticMemoryImageLeaf(
     chunks.push_back({0, global.sizeBytes, *digest});
   }
   StaticMemoryImageLeaf leaf = ExecutableLeafBuilder::staticMemory(
-      canonicalDataflow, logicalMemoryRoot, layoutBinding, global.sizeBytes,
-      global.alignmentBytes, global.permissions, std::move(chunks),
-      std::move(zeroFill));
+      canonicalDataflow, rootedGraphLaunch, logicalMemoryRoot, layoutBinding,
+      global.sizeBytes, global.alignmentBytes, global.permissions,
+      std::move(chunks), std::move(zeroFill));
   if (llvm::Error error =
           validateStaticMemoryImageLeaf(leaf, artifacts, blobs))
     return std::move(error);
@@ -625,6 +628,10 @@ llvm::Error validateStaticMemoryImageLeaf(const StaticMemoryImageLeaf &leaf,
   auto view = program->view();
   if (!view)
     return view.takeError();
+  auto memoryInputs = view->graphMemoryInputs(leaf.rootedGraphLaunch());
+  if (!memoryInputs)
+    return invalid("rooted graph launch is invalid: " +
+                   llvm::toString(memoryInputs.takeError()));
   if (leaf.logicalMemoryRoot().artifact !=
       leaf.canonicalDataflow().artifact)
     return invalid("logical memory root has a foreign Dataflow owner");
@@ -632,6 +639,17 @@ llvm::Error validateStaticMemoryImageLeaf(const StaticMemoryImageLeaf &leaf,
   if (!root)
     return invalid("logical memory root is invalid: " +
                    llvm::toString(root.takeError()));
+  const bool isSource = llvm::any_of(
+      *memoryInputs, [&](const dataflow::LogicalMemoryRootOrViewRef &input) {
+        if (const auto *inputRoot =
+                std::get_if<dataflow::LogicalMemoryRootRef>(&input))
+          return *inputRoot == leaf.logicalMemoryRoot();
+        return std::get<dataflow::LogicalMemoryViewRef>(input).root ==
+               leaf.logicalMemoryRoot();
+      });
+  if (!isSource)
+    return invalid("logical memory root is not a source of the rooted graph "
+                   "launch");
   auto extent = view->staticMemoryByteExtent(
       dataflow::LogicalMemoryRootOrViewRef{leaf.logicalMemoryRoot()});
   if (!extent)

@@ -4,6 +4,7 @@
 #include "Common/Artifact.h"
 #include "Common/BlobDigest.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
+#include "Dataflow/IR/DataflowStructuralRefs.h"
 #include "Frontend/Compilation/StaticGlobalMemory.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -148,6 +149,9 @@ public:
   const ArtifactRootReference &canonicalDataflow() const {
     return canonicalDataflow_;
   }
+  dataflow::RootedGraphLaunchRef rootedGraphLaunch() const {
+    return rootedGraphLaunch_;
+  }
   dataflow::LogicalMemoryRootRef logicalMemoryRoot() const {
     return logicalMemoryRoot_;
   }
@@ -167,6 +171,7 @@ public:
 private:
   StaticMemoryImageLeaf(
       ArtifactRootReference canonicalDataflow,
+      dataflow::RootedGraphLaunchRef rootedGraphLaunch,
       dataflow::LogicalMemoryRootRef logicalMemoryRoot,
       ArtifactRootReference layoutBinding, std::uint64_t sizeBytes,
       std::uint64_t alignmentBytes,
@@ -174,6 +179,7 @@ private:
       std::vector<StaticMemoryInitializedChunk> initializedChunks,
       std::vector<StaticMemoryZeroFillRange> zeroFillRanges)
       : canonicalDataflow_(std::move(canonicalDataflow)),
+        rootedGraphLaunch_(rootedGraphLaunch),
         logicalMemoryRoot_(logicalMemoryRoot),
         layoutBinding_(std::move(layoutBinding)), sizeBytes_(sizeBytes),
         alignmentBytes_(alignmentBytes), permissions_(permissions),
@@ -181,6 +187,7 @@ private:
         zeroFillRanges_(std::move(zeroFillRanges)) {}
 
   ArtifactRootReference canonicalDataflow_;
+  dataflow::RootedGraphLaunchRef rootedGraphLaunch_;
   dataflow::LogicalMemoryRootRef logicalMemoryRoot_;
   ArtifactRootReference layoutBinding_;
   std::uint64_t sizeBytes_;
@@ -202,13 +209,15 @@ llvm::Error validateHostProgramLeaf(const HostProgramLeaf &leaf,
                                     const ArtifactStore &artifacts,
                                     const BlobStore &blobs);
 
-llvm::Expected<StaticMemoryImageLeaf> buildStaticMemoryImageLeaf(
-    const ArtifactRootReference &canonicalDataflow,
-    dataflow::LogicalMemoryRootRef logicalMemoryRoot,
-    const ArtifactRootReference &layoutBinding,
-    const frontend::StaticGlobalMemoryCatalog &catalog,
-    std::uint64_t globalOrdinal, const ArtifactStore &artifacts,
-    const BlobStore &blobs);
+llvm::Expected<StaticMemoryImageLeaf>
+buildStaticMemoryImageLeaf(const ArtifactRootReference &canonicalDataflow,
+                           dataflow::RootedGraphLaunchRef rootedGraphLaunch,
+                           dataflow::LogicalMemoryRootRef logicalMemoryRoot,
+                           const ArtifactRootReference &layoutBinding,
+                           const frontend::StaticGlobalMemoryCatalog &catalog,
+                           std::uint64_t globalOrdinal,
+                           const ArtifactStore &artifacts,
+                           const BlobStore &blobs);
 
 llvm::Error validateStaticMemoryImageLeaf(const StaticMemoryImageLeaf &leaf,
                                           const ArtifactStore &artifacts,

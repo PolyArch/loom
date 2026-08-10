@@ -26,10 +26,10 @@ struct RootedLogicalMemorySource {
   std::optional<std::uint64_t> globalOrdinal;
 };
 
-/// Derives the total imported-memory source relation for one rooted graph
-/// launch from its thread memory formals and object-scoped memory-service
-/// acquisitions. This never guesses from a graph operand type or private
-/// symbol spelling in isolation.
+/// Derives the exact imported-memory source relation for one rooted graph
+/// launch from that launch's memory operands. This never broadens the relation
+/// to every root owned by the thread or guesses from a graph operand type or
+/// private symbol spelling in isolation.
 llvm::Expected<std::vector<RootedLogicalMemorySource>>
 deriveRootedLogicalMemorySources(
     const StaticGlobalMemoryCatalog &catalog,

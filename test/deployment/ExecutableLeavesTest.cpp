@@ -6,6 +6,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
+#include "Frontend/Compilation/StaticMemoryBinding.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -230,6 +231,7 @@ HostProgramLeafDraft hostDraft(llvm::StringRef test,
 
 struct DataflowFixture final {
   ArtifactRootReference reference;
+  dataflow::RootedGraphLaunchRef launch;
   dataflow::LogicalMemoryRootRef memory;
 };
 
@@ -266,10 +268,76 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   auto view = take(test, finalized.view());
   require(test, view.logicalMemoryRoots().size() == 1,
           "fixture did not expose one logical memory root");
+  std::vector<dataflow::RootedGraphLaunchRef> launches;
+  view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
+    launches.push_back(launch);
+  });
+  require(test, launches.size() == 1,
+          "fixture did not expose one rooted graph launch");
   const auto memory = view.logicalMemoryRoots().front().ref;
   auto reference = take(test, dataflow::publishCanonicalDataflow(finalized,
                                                                   artifacts));
-  return {std::move(reference), memory};
+  return {std::move(reference), launches.front(), memory};
+}
+
+void rootedMemorySourcesAreLaunchLocal() {
+  const llvm::StringRef test = __func__;
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @left(%ctrl: none, %mem: memref<4xi32>) -> ()
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    dataflow.graph.return values() streams() memories()
+        complete(%ctrl : none)
+  }
+  dataflow.graph private @right(%ctrl: none, %mem: memref<4xi32>) -> ()
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    dataflow.graph.return values() streams() memories()
+        complete(%ctrl : none)
+  }
+  dataflow.thread private @t domain(#dataflow.thread_domain<dense>)(
+      %left_mem: memref<4xi32>, %right_mem: memref<4xi32>) ctrl (%ctrl: none) {
+    %left_done = dataflow.graph.launch @left deps(%ctrl) values()
+        stream_inputs() memories(%left_mem) stream_outputs()
+        : (none, memref<4xi32>) -> none
+    %right_done = dataflow.graph.launch @right deps(%left_done) values()
+        stream_inputs() memories(%right_mem) stream_outputs()
+        : (none, memref<4xi32>) -> none
+    dataflow.thread.yield %right_done : none
+  }
+  func.func private @host(%left_mem: memref<4xi32>,
+                          %right_mem: memref<4xi32>) {
+    %token = dataflow.thread.launch @t(%left_mem, %right_mem)
+        : (memref<4xi32>, memref<4xi32>) -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context());
+  require(test, static_cast<bool>(module), "failed to parse Dataflow fixture");
+  auto finalized = take(test, dataflow::finalizeCanonicalDataflow(*module));
+  auto view = take(test, finalized.view());
+  std::vector<dataflow::RootedGraphLaunchRef> launches;
+  view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
+    launches.push_back(launch);
+  });
+  require(test, launches.size() == 2,
+          "fixture did not expose two rooted graph launches");
+
+  frontend::StaticGlobalMemoryCatalog emptyCatalog;
+  std::vector<dataflow::LogicalMemoryRootRef> roots;
+  for (dataflow::RootedGraphLaunchRef launch : launches) {
+    auto sources = take(test, frontend::deriveRootedLogicalMemorySources(
+                                  emptyCatalog, view, launch));
+    require(test, sources.size() == 1,
+            "rooted launch imported an unrelated logical memory root");
+    require(test, !sources.front().globalOrdinal,
+            "dynamic memory input acquired a static image");
+    roots.push_back(sources.front().root);
+  }
+  require(test, roots[0] != roots[1],
+          "distinct graph memory inputs collapsed to one logical root");
 }
 
 void hostLeafCanonicalizesAndBindsRegistration() {
@@ -356,6 +424,7 @@ catalog(const CompilerTargetBinding &target, std::vector<std::uint8_t> bytes) {
 
 void staticMemoryLeafUsesExactLogicalRoot() {
   const llvm::StringRef test = __func__;
+  rootedMemorySourcesAreLaunchLocal();
   TemporaryTree tree(test);
   ArtifactStore artifacts(tree.path("artifacts"));
   BlobStore blobs(tree.path("blobs"));
@@ -367,9 +436,11 @@ void staticMemoryLeafUsesExactLogicalRoot() {
                              {0, 1, 2, 3, 4, 5, 6, 7,
                               8, 9, 10, 11, 12, 13, 14, 15});
   StaticMemoryImageLeaf image = take(
-      test, buildStaticMemoryImageLeaf(
-                dataflow.reference, dataflow.memory, target.host.reference(),
-                initialized, 0, artifacts, blobs));
+      test, buildStaticMemoryImageLeaf(dataflow.reference, dataflow.launch,
+                                       dataflow.memory, target.host.reference(),
+                                       initialized, 0, artifacts, blobs));
+  require(test, image.rootedGraphLaunch() == dataflow.launch,
+          "static image lost its rooted graph launch");
   require(test, image.initializedChunks().size() == 1 &&
                     image.zeroFillRanges().empty() &&
                     image.sizeBytes() == 16 && image.alignmentBytes() == 16,
@@ -380,10 +451,10 @@ void staticMemoryLeafUsesExactLogicalRoot() {
           "initialized chunk does not reference exact LLVM bytes");
 
   auto zero = catalog(target.host.binding(), std::vector<std::uint8_t>(16, 0));
-  StaticMemoryImageLeaf zeroImage = take(
-      test, buildStaticMemoryImageLeaf(
-                dataflow.reference, dataflow.memory, target.host.reference(),
-                zero, 0, artifacts, blobs));
+  StaticMemoryImageLeaf zeroImage =
+      take(test, buildStaticMemoryImageLeaf(
+                     dataflow.reference, dataflow.launch, dataflow.memory,
+                     target.host.reference(), zero, 0, artifacts, blobs));
   require(test, zeroImage.initializedChunks().empty() &&
                     zeroImage.zeroFillRanges().size() == 1,
           "zero initializer was not represented as zero fill");
@@ -392,8 +463,8 @@ void staticMemoryLeafUsesExactLogicalRoot() {
   wrongLayout.dataLayout = "e-p:32:32";
   expectError(test,
               buildStaticMemoryImageLeaf(
-                  dataflow.reference, dataflow.memory, target.host.reference(),
-                  wrongLayout, 0, artifacts, blobs),
+                  dataflow.reference, dataflow.launch, dataflow.memory,
+                  target.host.reference(), wrongLayout, 0, artifacts, blobs),
               "DataLayout is not structurally compatible");
 
   auto wrongExtent = initialized;
@@ -401,17 +472,18 @@ void staticMemoryLeafUsesExactLogicalRoot() {
   wrongExtent.globals.front().bytes.resize(15);
   expectError(test,
               buildStaticMemoryImageLeaf(
-                  dataflow.reference, dataflow.memory, target.host.reference(),
-                  wrongExtent, 0, artifacts, blobs),
+                  dataflow.reference, dataflow.launch, dataflow.memory,
+                  target.host.reference(), wrongExtent, 0, artifacts, blobs),
               "logical memory extent");
 
   DataflowFixture wrongDataflow =
       publishMemoryProgram(test, artifacts, "e-p:32:32");
-  expectError(test,
-              buildStaticMemoryImageLeaf(
-                  wrongDataflow.reference, wrongDataflow.memory,
-                  target.host.reference(), initialized, 0, artifacts, blobs),
-              "DataLayout is not structurally compatible");
+  expectError(
+      test,
+      buildStaticMemoryImageLeaf(wrongDataflow.reference, wrongDataflow.launch,
+                                 wrongDataflow.memory, target.host.reference(),
+                                 initialized, 0, artifacts, blobs),
+      "DataLayout is not structurally compatible");
 }
 
 } // namespace

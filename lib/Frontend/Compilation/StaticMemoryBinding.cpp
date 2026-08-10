@@ -45,25 +45,41 @@ deriveRootedLogicalMemorySources(
   if (!launchOp || !threadOp)
     return invalid("root launch view does not resolve its thread relation");
 
+  auto memoryInputs = program.graphMemoryInputs(launch);
+  if (!memoryInputs)
+    return memoryInputs.takeError();
+  std::vector<dataflow::LogicalMemoryRootRef> roots;
+  roots.reserve(memoryInputs->size());
+  for (const dataflow::LogicalMemoryRootOrViewRef &input : *memoryInputs) {
+    if (const auto *root = std::get_if<dataflow::LogicalMemoryRootRef>(&input))
+      roots.push_back(*root);
+    else
+      roots.push_back(std::get<dataflow::LogicalMemoryViewRef>(input).root);
+  }
+  llvm::sort(roots, [](dataflow::LogicalMemoryRootRef lhs,
+                       dataflow::LogicalMemoryRootRef rhs) {
+    return lhs.entity.value() < rhs.entity.value();
+  });
+  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+
   std::vector<RootedLogicalMemorySource> sources;
-  for (const dataflow::CanonicalLogicalMemoryRootView &root :
-       program.logicalMemoryRoots()) {
+  sources.reserve(roots.size());
+  for (dataflow::LogicalMemoryRootRef rootRef : roots) {
+    auto root = program.resolve(rootRef);
+    if (!root)
+      return root.takeError();
     std::optional<unsigned> argument;
-    if (root.op == threadOp.getOperation() && root.formalArgIndex) {
-      argument = *root.formalArgIndex;
-    } else if (auto service =
-                   llvm::dyn_cast_or_null<dataflow::MemoryServiceOp>(root.op)) {
-      if (service->getParentOfType<dataflow::ThreadOp>() != threadOp)
-        continue;
+    if (root->op == threadOp.getOperation() && root->formalArgIndex) {
+      argument = *root->formalArgIndex;
+    } else if (auto service = llvm::dyn_cast_or_null<dataflow::MemoryServiceOp>(
+                   root->op)) {
       auto source = llvm::dyn_cast<mlir::BlockArgument>(service.getPointer());
       if (source && source.getOwner() == &threadOp.getBody().front() &&
           source.getArgNumber() < threadOp.getFunctionType().getNumInputs())
         argument = source.getArgNumber();
-    } else {
-      continue;
     }
 
-    RootedLogicalMemorySource source{root.ref, std::nullopt};
+    RootedLogicalMemorySource source{rootRef, std::nullopt};
     if (!argument) {
       sources.push_back(source);
       continue;

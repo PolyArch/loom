@@ -50,17 +50,20 @@ bool hardwareBindingLess(const DeploymentHardwareBinding &lhs,
 
 llvm::Expected<std::vector<std::uint8_t>>
 memoryKey(const StaticMemoryImageLeaf &memory) {
-  auto local = ::dataflow::encodeDataflowReference(
+  auto launch = ::dataflow::encodeDataflowReference(
+      memory.canonicalDataflow().artifact, memory.rootedGraphLaunch());
+  if (!launch)
+    return launch.takeError();
+  auto root = ::dataflow::encodeDataflowReference(
       memory.canonicalDataflow().artifact, memory.logicalMemoryRoot());
-  if (!local)
-    return local.takeError();
+  if (!root)
+    return root.takeError();
   std::vector<std::uint8_t> result;
   result.insert(result.end(),
                 memory.canonicalDataflow().artifact.bytes().begin(),
                 memory.canonicalDataflow().artifact.bytes().end());
-  result.insert(result.end(), local->begin(), local->end());
-  result.insert(result.end(), memory.layoutBinding().artifact.bytes().begin(),
-                memory.layoutBinding().artifact.bytes().end());
+  result.insert(result.end(), launch->begin(), launch->end());
+  result.insert(result.end(), root->begin(), root->end());
   return result;
 }
 
@@ -321,6 +324,14 @@ validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
     if (llvm::Error error =
             validateStaticMemoryImageLeaf(memory, artifacts, blobs))
       return error;
+    const bool selected = llvm::any_of(
+        systemMapping->view().executionBindings().graphBindings(),
+        [&](const mapping::SystemGraphExecutionBindingView &binding) {
+          return binding.key == memory.rootedGraphLaunch();
+        });
+    if (!selected)
+      return invalid("static memory image names an unselected rooted graph "
+                     "launch");
   }
 
   if (deployment.hardwareBindings.size() != 1)

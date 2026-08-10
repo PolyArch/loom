@@ -3,6 +3,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Frontend/Compilation/StaticGlobalMemory.h"
 #include "Frontend/Compilation/StaticMemoryBinding.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
@@ -28,9 +29,24 @@ llvm::Error invalid(const llvm::Twine &message) {
 }
 
 struct LogicalMemorySelection final {
+  dataflow::RootedGraphLaunchRef launch;
   dataflow::LogicalMemoryRootRef root;
   std::optional<std::uint64_t> globalOrdinal;
 };
+
+llvm::Expected<std::vector<std::uint8_t>>
+selectionKey(const ArtifactIdentity &owner,
+             dataflow::RootedGraphLaunchRef launch,
+             dataflow::LogicalMemoryRootRef root) {
+  auto launchBytes = dataflow::encodeDataflowReference(owner, launch);
+  if (!launchBytes)
+    return launchBytes.takeError();
+  auto rootBytes = dataflow::encodeDataflowReference(owner, root);
+  if (!rootBytes)
+    return rootBytes.takeError();
+  launchBytes->insert(launchBytes->end(), rootBytes->begin(), rootBytes->end());
+  return launchBytes;
+}
 
 llvm::Expected<std::vector<StaticMemoryImageLeaf>> deriveStaticMemoryImages(
     const ArtifactRootReference &systemMapping,
@@ -72,7 +88,7 @@ llvm::Expected<std::vector<StaticMemoryImageLeaf>> deriveStaticMemoryImages(
     return invalid("cannot project final linked static memory: " +
                    llvm::toString(catalog.takeError()));
 
-  std::map<std::uint64_t, LogicalMemorySelection> selections;
+  std::map<std::vector<std::uint8_t>, LogicalMemorySelection> selections;
   for (const mapping::SystemGraphExecutionBindingView &binding :
        systemMappingArtifact->view().executionBindings().graphBindings()) {
     auto sources = frontend::deriveRootedLogicalMemorySources(
@@ -87,14 +103,20 @@ llvm::Expected<std::vector<StaticMemoryImageLeaf>> deriveStaticMemoryImages(
                               frontend::StaticGlobalProvision::Image)
         imageOrdinal.reset();
 
-      const std::uint64_t key = source.root.entity.value();
+      auto key =
+          selectionKey(dataflowView->identity(), binding.key, source.root);
+      if (!key)
+        return invalid("cannot encode selected logical-memory source: " +
+                       llvm::toString(key.takeError()));
       auto [entry, inserted] = selections.try_emplace(
-          key, LogicalMemorySelection{source.root, imageOrdinal});
+          std::move(*key),
+          LogicalMemorySelection{binding.key, source.root, imageOrdinal});
       if (inserted)
         continue;
       if (entry->second.globalOrdinal != imageOrdinal)
         return invalid(
-            "one logical memory root has incompatible final-link sources");
+            "one rooted logical memory source has incompatible final-link "
+            "bindings");
     }
   }
 
@@ -105,8 +127,9 @@ llvm::Expected<std::vector<StaticMemoryImageLeaf>> deriveStaticMemoryImages(
     if (!selection.globalOrdinal)
       continue;
     auto image = buildStaticMemoryImageLeaf(
-        dataflowReference, selection.root, hostProgram.compilerTargetBinding(),
-        *catalog, *selection.globalOrdinal, artifacts, blobs);
+        dataflowReference, selection.launch, selection.root,
+        hostProgram.compilerTargetBinding(), *catalog, *selection.globalOrdinal,
+        artifacts, blobs);
     if (!image)
       return invalid("cannot build static logical-memory image: " +
                      llvm::toString(image.takeError()));

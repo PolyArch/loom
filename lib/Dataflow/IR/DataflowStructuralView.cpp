@@ -924,6 +924,31 @@ CanonicalDataflowProgramView::resolve(RootedGraphLaunchRef ref) const {
   return staticGraphLaunches_[*staticSlot].callee;
 }
 
+llvm::Expected<std::vector<LogicalMemoryRootOrViewRef>>
+CanonicalDataflowProgramView::graphMemoryInputs(
+    RootedGraphLaunchRef ref) const {
+  auto graph = resolve(ref);
+  if (!graph)
+    return graph.takeError();
+  auto launchView = resolve(ref.staticGraphLaunch);
+  if (!launchView)
+    return launchView.takeError();
+  auto launch = llvm::dyn_cast<GraphLaunchOp>(launchView->op);
+  if (!launch)
+    return invalid("canonical dataflow: static graph launch is not a "
+                   "dataflow.graph.launch");
+
+  std::vector<LogicalMemoryRootOrViewRef> result;
+  result.reserve(launch.getMemoryInputs().size());
+  for (mlir::Value input : launch.getMemoryInputs()) {
+    auto role = roleOfValue(input);
+    if (!role)
+      return role.takeError();
+    result.push_back(*role);
+  }
+  return result;
+}
+
 //===----------------------------------------------------------------------===//
 // Token-plane endpoints and the intra-graph software edge relation
 //===----------------------------------------------------------------------===//

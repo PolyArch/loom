@@ -229,6 +229,12 @@ public:
   /// definition reached from the root launch. Returns the launched graph.
   llvm::Expected<GraphRef> resolve(RootedGraphLaunchRef ref) const;
 
+  /// Resolve the exact logical memory roots or root-preserving views imported
+  /// by one rooted graph launch, in graph memory-input order. The rooted
+  /// context is validated even though the static launch owns the operand list.
+  llvm::Expected<std::vector<LogicalMemoryRootOrViewRef>>
+  graphMemoryInputs(RootedGraphLaunchRef ref) const;
+
   /// Validate a token-plane endpoint. Rejects an out-of-range ordinal and any
   /// memory-capability operand or result, which is never a token endpoint.
   llvm::Error validate(const CanonicalGraphProducerEndpointRef &endpoint) const;
