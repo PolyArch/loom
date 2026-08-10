@@ -450,8 +450,9 @@ struct ConfigurationImages final {
   std::vector<std::uint8_t> discard;
 };
 
-ConfigurationImages makeConfigurationImages(llvm::StringRef test,
-                                            const SystemFixture &fixture) {
+ConfigurationImages
+makeConfigurationImages(llvm::StringRef test, const SystemFixture &fixture,
+                        loom::fabric::SpatialCoreOccurrenceRef spatialCore) {
   const auto &module = fixture.module.view();
   require(test,
           module.peOccurrences().size() == 1 &&
@@ -489,8 +490,8 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
         discardValue = loom::fabric::FabricPeRoute{endpoint};
     }
 
-    const auto physical = qualifyConfigurationField(test, fixture.spatialCore,
-                                                    descriptor.reference);
+    const auto physical =
+        qualifyConfigurationField(test, spatialCore, descriptor.reference);
     const auto slot =
         take(test,
              loom::fabric::qualifyFabricConfigurationSlot(
@@ -524,7 +525,7 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
   }
   auto fuActivation =
       take(test, loom::hardware::test::deriveSpatialSingleTemplateFuActivation(
-                     module, fixture.abi, fixture.spatialCore, fu));
+                     module, fixture.abi, spatialCore, fu));
   const auto *fuOwner =
       fixture.abi.abi().findProgrammingUnit(fuActivation.unitId);
   require(test, fuOwner != nullptr, "FU activation has no programming owner");
@@ -538,7 +539,7 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
   require(test, owner != nullptr, "fixture has no programming unit");
   return ConfigurationImages{
       take(test, loom::hardware::test::derivePortableConfigurationTarget(
-                     fixture.abi, fixture.spatialCore, owner->id)),
+                     fixture.abi, spatialCore, owner->id)),
       owner->id,
       owner->payloadBitCount,
       take(test, fixture.abi.abi().encode(owner->id, {})),
@@ -792,7 +793,14 @@ TemporalToolArtifact temporalHierarchyBuildsStructuralSkeleton() {
       take(test, fabric.abi.abi().encode(owner->id, values))};
 }
 
-void repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
+struct RepeatedSpatialCoreToolArtifact final {
+  std::string systemVerilog;
+  loom::hardware::test::PortableConfigurationTarget target;
+  std::vector<std::uint8_t> activeImage;
+};
+
+RepeatedSpatialCoreToolArtifact
+repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   ArtifactStore store(directory.path());
@@ -804,8 +812,17 @@ void repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
       take(test, loom::fabric::requireSystemRoot(fabric.system.view()));
   require(test, system.artifact().accCoreOccurrences().size() == 2,
           "repeated Module did not produce two SpatialCores");
+  std::optional<loom::hardware::rtl::ConfigurationTransportLayout>
+      referenceLayout;
+  std::optional<ConfigurationImages> referenceConfiguration;
+  std::optional<std::string> referenceSystemVerilog;
   for (const auto core : system.artifact().accCoreOccurrences()) {
     const loom::fabric::SpatialCoreOccurrenceRef spatialCore{core};
+    const auto layout = take(
+        test, loom::hardware::rtl::derivePortableConfigurationTransportLayout(
+                  fabric.abi, spatialCore));
+    ConfigurationImages configuration =
+        makeConfigurationImages(test, fabric, spatialCore);
     mlir::MLIRContext context;
     context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                         circt::seq::SeqDialect, circt::sv::SVDialect>();
@@ -819,7 +836,63 @@ void repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
             skeleton.operationLeaves.front().occurrence.payload());
     require(test, internal.spatialCore == spatialCore,
             "one SpatialCore skeleton associated a foreign operation");
+    FabricOperationProviderRegistry providers;
+    if (llvm::Error error =
+            loom::hardware::rtl::registerPortableScalarIntegerAddSubProvider(
+                providers))
+      fail(test, llvm::toString(std::move(error)));
+    ExternalImplementationContractCatalog externalContracts;
+    auto conformance =
+        take(test, loom::hardware::test::specializeAndExportPortableProvider(
+                       std::move(skeleton), fabric.abi, providers,
+                       externalContracts));
+
+    if (!referenceLayout) {
+      referenceLayout = layout;
+      referenceConfiguration = std::move(configuration);
+      referenceSystemVerilog = std::move(conformance.systemVerilog);
+      continue;
+    }
+    require(test,
+            referenceLayout->byteSpan == layout.byteSpan &&
+                referenceLayout->units.size() == layout.units.size(),
+            "identical SpatialCore occurrences changed transport shape");
+    for (std::size_t index = 0; index < layout.units.size(); ++index) {
+      const auto &expected = referenceLayout->units[index];
+      const auto &actual = layout.units[index];
+      require(test,
+              expected.programmingUnit != actual.programmingUnit &&
+                  expected.payloadBitCount == actual.payloadBitCount &&
+                  expected.payloadByteCount == actual.payloadByteCount &&
+                  expected.payloadWordCount == actual.payloadWordCount &&
+                  expected.baseAddress == actual.baseAddress &&
+                  expected.commitAddress == actual.commitAddress &&
+                  expected.statusAddress == actual.statusAddress &&
+                  expected.inactiveImage == actual.inactiveImage,
+              "occurrence identity perturbed definition-local transport");
+    }
+    const auto &expectedTarget = referenceConfiguration->target;
+    const auto &actualTarget = configuration.target;
+    require(
+        test,
+        expectedTarget.unitId != actualTarget.unitId &&
+            expectedTarget.payloadBitCount == actualTarget.payloadBitCount &&
+            expectedTarget.payloadByteCount == actualTarget.payloadByteCount &&
+            expectedTarget.payloadWordCount == actualTarget.payloadWordCount &&
+            expectedTarget.baseAddress == actualTarget.baseAddress &&
+            expectedTarget.commitAddress == actualTarget.commitAddress &&
+            expectedTarget.statusAddress == actualTarget.statusAddress &&
+            referenceConfiguration->route == configuration.route,
+        "identical SpatialCore occurrences cannot share one multicast image");
+    require(test, *referenceSystemVerilog == conformance.systemVerilog,
+            "occurrence identity changed reusable SpatialCore RTL");
   }
+  require(test,
+          referenceConfiguration.has_value() &&
+              referenceSystemVerilog.has_value(),
+          "repeated SpatialCore fixture produced no reusable definition");
+  return {std::move(*referenceSystemVerilog), referenceConfiguration->target,
+          referenceConfiguration->route};
 }
 
 void configurationAbiIncludesFuTopology() {
@@ -1123,7 +1196,8 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
   ArtifactStore store(directory.path());
   SystemFixture fabric =
       makeSystemFixture(test, store, makeOperationFabric(test, store));
-  ConfigurationImages configuration = makeConfigurationImages(test, fabric);
+  ConfigurationImages configuration =
+      makeConfigurationImages(test, fabric, fabric.spatialCore);
 
   mlir::MLIRContext context;
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
@@ -1390,6 +1464,88 @@ synth -top loom_module
 check -assert
 select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
 )ys";
+}
+
+void writeRepeatedSpatialCoreToolArtifacts(
+    const std::filesystem::path &root,
+    const RepeatedSpatialCoreToolArtifact &artifact) {
+  std::filesystem::create_directories(root);
+  std::ofstream(root / "repeated_spatial_core_module.sv")
+      << artifact.systemVerilog;
+  std::ofstream testbench(root / "repeated_spatial_core_testbench.sv");
+  testbench << R"sv(
+module repeated_spatial_core_testbench;
+  logic clock;
+  logic reset;
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteSignalDeclarations();
+  testbench << R"sv(
+  logic cfg_awready_0, cfg_awready_1;
+  logic cfg_wready_0, cfg_wready_1;
+  logic [1:0] cfg_bresp_0, cfg_bresp_1;
+  logic cfg_bvalid_0, cfg_bvalid_1;
+  logic cfg_arready_0, cfg_arready_1;
+  logic [31:0] cfg_rdata_0, cfg_rdata_1;
+  logic [1:0] cfg_rresp_0, cfg_rresp_1;
+  logic cfg_rvalid_0, cfg_rvalid_1;
+
+  loom_module core_0(
+    .clock(clock), .reset(reset),
+    .cfg_awaddr(cfg_awaddr), .cfg_awvalid(cfg_awvalid),
+    .cfg_awready(cfg_awready_0), .cfg_wdata(cfg_wdata),
+    .cfg_wstrb(cfg_wstrb), .cfg_wvalid(cfg_wvalid),
+    .cfg_wready(cfg_wready_0), .cfg_bresp(cfg_bresp_0),
+    .cfg_bvalid(cfg_bvalid_0), .cfg_bready(cfg_bready),
+    .cfg_araddr(cfg_araddr), .cfg_arvalid(cfg_arvalid),
+    .cfg_arready(cfg_arready_0), .cfg_rdata(cfg_rdata_0),
+    .cfg_rresp(cfg_rresp_0), .cfg_rvalid(cfg_rvalid_0),
+    .cfg_rready(cfg_rready));
+  loom_module core_1(
+    .clock(clock), .reset(reset),
+    .cfg_awaddr(cfg_awaddr), .cfg_awvalid(cfg_awvalid),
+    .cfg_awready(cfg_awready_1), .cfg_wdata(cfg_wdata),
+    .cfg_wstrb(cfg_wstrb), .cfg_wvalid(cfg_wvalid),
+    .cfg_wready(cfg_wready_1), .cfg_bresp(cfg_bresp_1),
+    .cfg_bvalid(cfg_bvalid_1), .cfg_bready(cfg_bready),
+    .cfg_araddr(cfg_araddr), .cfg_arvalid(cfg_arvalid),
+    .cfg_arready(cfg_arready_1), .cfg_rdata(cfg_rdata_1),
+    .cfg_rresp(cfg_rresp_1), .cfg_rvalid(cfg_rvalid_1),
+    .cfg_rready(cfg_rready));
+
+  always_comb begin
+    cfg_awready = cfg_awready_0 & cfg_awready_1;
+    cfg_wready = cfg_wready_0 & cfg_wready_1;
+    cfg_bvalid = cfg_bvalid_0 & cfg_bvalid_1;
+    cfg_bresp = cfg_bresp_0 | cfg_bresp_1;
+    cfg_arready = cfg_arready_0 & cfg_arready_1;
+    cfg_rvalid = cfg_rvalid_0 & cfg_rvalid_1;
+    cfg_rresp = cfg_rresp_0 | cfg_rresp_1;
+    cfg_rdata = (cfg_rdata_0 === cfg_rdata_1) ? cfg_rdata_0 : 32'hx;
+  end
+
+  always #5 clock = ~clock;
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteDriverTasks();
+  testbench << loom::hardware::test::portableCycleWatchdog();
+  testbench << R"sv(
+
+  initial begin
+    clock = 0;
+    reset = 1;
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteInitialization();
+  testbench << R"sv(
+    repeat (2) @(posedge clock);
+    @(negedge clock);
+    reset = 0;
+)sv";
+  testbench << take("writeRepeatedSpatialCoreToolArtifacts",
+                    loom::hardware::test::portableAxiLiteProgramAndVerify(
+                        artifact.target, artifact.activeImage));
+  testbench << R"sv(    $finish;
+  end
+endmodule
+)sv";
 }
 
 void writeInternalToolArtifacts(const std::filesystem::path &root,
@@ -1697,7 +1853,8 @@ int main(int argc, char **argv) {
       spatialHierarchyBuildsStructuralSkeleton();
   const TemporalToolArtifact temporal =
       temporalHierarchyBuildsStructuralSkeleton();
-  repeatedSpatialCoreBuildsOccurrenceLocalSkeleton();
+  const RepeatedSpatialCoreToolArtifact repeated =
+      repeatedSpatialCoreBuildsOccurrenceLocalSkeleton();
   configurationAbiIncludesFuTopology();
   commonSkeletonRejectsUnresolvedOrUnboundLeaves();
   const std::string systemVerilog =
@@ -1707,6 +1864,7 @@ int main(int argc, char **argv) {
   if (argc == 2) {
     writeBoundaryToolArtifacts(argv[1], systemVerilog);
     writeSpatialHierarchyToolArtifacts(argv[1], spatial);
+    writeRepeatedSpatialCoreToolArtifacts(argv[1], repeated);
     writeInternalToolArtifacts(argv[1], internal);
     writeTemporalToolArtifacts(argv[1], temporal);
   }
