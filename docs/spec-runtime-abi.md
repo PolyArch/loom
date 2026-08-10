@@ -139,6 +139,14 @@ release, and capacity relations for one concrete event occurrence. Absolute
 start times, dynamic occurrence identities, runtime queues, and arbitration
 microstate remain transient runtime state.
 
+The image's canonical physical-capacity catalog is the compiled projection of
+the exact Fabric contracts and selected static route image. Runtime initializes
+each counter from `baseline_occupancy`, resolves activation-member claims by
+their image-local cell ordinals, and validates the referenced physical owner
+and UsePattern against the packaged Fabric closure. It does not renumber cells,
+recompute route reservations, or treat Fabric initial occupancy as the whole
+runtime baseline.
+
 Runtime may apply one owner-defined admission relation to both Thread Dispatch
 and Spatial Launch. Their launch and completion contracts remain distinct.
 

@@ -613,13 +613,29 @@ imported SpatialMapping set is empty.
 
 ```text
 AdmissionPayload {
+  capacity_cells[] keyed by PhysicalCapacityCellKey {
+    physical_owner : FabricPhysicalOccurrenceOwnerRef
+    state_ordinal
+    capacity_dimension_ordinal
+    capacity
+    baseline_occupancy
+  }
   rows[] keyed by EventFamilyKey {
     contexts[] keyed by ExecutionContextKey {
       parameter_relation : BindingRelation<AdmissionCaseOrdinal>
       cases[] keyed by AdmissionCaseOrdinal {
-        atomic_activation_set
+        atomic_activation_set[] keyed by ActivationMemberOrdinal {
+          physical_owner : FabricPhysicalOccurrenceOwnerRef
+          use_pattern_ordinal
+          parameters[]
+          sharing_assignments[]
+          capacity_claims[] {
+            capacity_cell_ordinal
+            amount
+          }
+        }
         release_rules[] {
-          activation_member_ref
+          activation_member_ordinal
           fabric_intrinsic_release : true
           causal_release? {
             all_of[] {
@@ -628,12 +644,39 @@ AdmissionPayload {
             }
           }
         }
-        capacity_indices[]
       }
     }
   }
 }
 ```
+
+`PhysicalCapacityCellKey` is the structural tuple of the exact
+occurrence-qualified physical owner, owner-local state ordinal, and
+owner-local capacity-dimension ordinal. `capacity_cells[]` contains exactly
+the cells reached by the selected `ResourceUse` patterns and selected route
+traversals in the verified SystemMapping closure. It is sorted by canonical
+physical-owner bytes, then unsigned state and dimension ordinal. `capacity`
+is the exact Fabric `ResourceContract` capacity. `baseline_occupancy` is the
+checked sum of that contract's initial occupancy and the deduplicated static
+claims of the selected route image. It cannot exceed `capacity`.
+
+An activation member identifies one exact occurrence-qualified Fabric
+`UsePattern`, carries the Mapping-selected typed parameter and sharing values,
+and lists that pattern's complete claims. A claim references the unique
+capacity-cell ordinal above and repeats only its exact integer amount. Members
+are sorted by canonical bytes and receive dense case-local ordinals after
+sorting. `release_rules[]` has exactly one row for every member, keyed by that
+ordinal. The referenced Fabric pattern remains the authority for requester,
+eligibility, acquire/release events, optional commit transition, timing, and
+claim schema; the image is a strictly rederived compiled copy, not another
+resource contract.
+
+The capacity catalog and activation-member ordinals are owned by the shared
+nonpersistent `SystemMappingClosureProjection`. Deployment serializes that
+projection and strict import rederives it. Runtime and simulators consume the
+compiled catalog and do not invent another dense index. Equal physical cells
+or activation members are interned only within their specified catalog; an
+ordinal has no meaning outside the enclosing AdmissionImage.
 
 The `ExecutionContextKey` in this payload is the same key owned by
 `docs/spec-mapping-identity.md`; Deployment does not define another context

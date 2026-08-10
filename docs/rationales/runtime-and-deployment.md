@@ -111,6 +111,16 @@ existing event keys. Admission preserves an original causal conjunction as an
 `AllOf` of those per-point `AnyOf` sets. This derives the needed runtime index
 without adding an endpoint-event identity to Deployment.
 
+Admission capacity uses one derived catalog rather than either rebuilding an
+index in every consumer or repeating complete physical keys in every case.
+The former would let Deployment, Runtime, and simulation disagree on dense
+ordinals; the latter would duplicate the same physical cell throughout the
+payload. The shared SystemMapping closure projection instead sorts exact
+occurrence-qualified Fabric cell keys once, folds selected static route claims
+into baseline occupancy, and lets activation members reference that local
+catalog. Fabric remains the sole capacity and UsePattern authority because
+strict import rederives every copied value and claim.
+
 ## Why There Are Two Launch Boundaries
 
 Host/runtime dispatches a `dataflow.thread` to an AccCore InstructionCore. That

@@ -399,6 +399,18 @@ cross-Spatial/System service paths and derives capacity, acquire, release, and
 wait-for closure. It has no ArtifactIdentity and is not a fourth Mapping
 profile, record family, proof object, or runtime image.
 
+The capacity part has one canonical `PhysicalCapacityCellKey` inventory over
+the cells reached by selected ResourceUses and route traversals. A key is the
+exact `FabricPhysicalOccurrenceOwnerRef`, owner-local state ordinal, and
+owner-local capacity-dimension ordinal. Each row projects the Fabric-owned
+capacity and checked baseline occupancy after selected static route claims.
+Each projected ResourceUse names its exact physical owner and owner-local
+UsePattern, typed values, complete cell claims, trigger alternatives, causal
+release conjunction, execution context, and relation domain. Ordering and
+dense ordinals are derived only after canonical physical-key or complete
+member-byte sorting. The verifier, Deployment, Runtime, and simulator consume
+this one removable view instead of rebuilding independent capacity indexes.
+
 Using that projection, the base verifier checks:
 
 * exact root-launch coverage and derivation of all reachable thread, graph,
