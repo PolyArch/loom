@@ -2434,7 +2434,8 @@ different provider.
 Hardware DSE begins from at least one exact seed: a finalized builtin Fabric,
 a user-supplied finalized Fabric, or one output of the template generator. It
 never begins from an empty mutable graph. Candidate-generator registry 2.0
-assigns these initial stable kinds without changing kinds 0 through 11:
+assigns these initial hardware and parameter-training kinds without changing
+kinds 0 through 11:
 
 | Generator kind | Stable spelling | Exact semantic output |
 | --- | --- | --- |
@@ -2443,8 +2444,10 @@ assigns these initial stable kinds without changing kinds 0 through 11:
 | 14 | `spatial_microarchitecture_rewrite` | finalized `fabric.module` children |
 | 15 | `system_composition_rewrite` | finalized `fabric.system` children |
 | 16 | `implementation_flow` | finalized `loom.hardware_implementation 3.0` children |
+| 17 | `fpa_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.fpa", 3.0, 0)` |
+| 18 | `system_runtime_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.system_runtime", 1.0, 0)` |
 
-They use five descriptor-owned typed configuration roots:
+The hardware kinds use five descriptor-owned typed configuration roots:
 
 ```text
 FabricTemplateConfig {
@@ -2476,6 +2479,20 @@ ImplementationFlowConfig {
   typed_flow_decisions
 }
 ```
+
+Kinds 17 and 18 are distinct `InProcess` descriptors because one trainer
+output slot must name exactly one parameter contract. They may share the same
+implementation library and descriptor-owned deterministic GBDT configuration
+schema, but neither descriptor accepts the other contract or carries a
+caller-authored contract selector. Each has three required Evidence input
+slots for Training, Validation, and HeldOut, one optional prior-bundle slot for
+its own exact contract, and one exactly-one bundle output slot. Its resolved
+configuration owns the seed, positive tree count, positive maximum depth,
+positive minimum Training rows per leaf, and canonical learning rate in
+`(0, 1]`. The implementation semantic identity owns the exact split search,
+equal-gain tie breaking, arithmetic, and multi-head fitting algorithm. Changing
+those semantics requires another exact descriptor reference; central DSE does
+not gain a trainer-algorithm enum.
 
 The template descriptor registry owns each parameter schema and expansion
 function. `FabricTemplateConfig` invokes that exact public ADG Builder path and

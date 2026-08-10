@@ -149,6 +149,14 @@ deduplication, and local work. The central controller owns lineage, scheduling,
 Evidence acquisition, promotion, Pareto selection, and deterministic replay.
 It does not define one generic mutable candidate or action language.
 
+Parameter training also needs exact generator identity. A single generic GBDT
+descriptor with a caller-selected contract would make one output slot change
+type at runtime and duplicate the parameter registry. The initial FPA and
+System Runtime trainers therefore have separate stable generator kinds and
+fixed output contracts while sharing an ordinary implementation library. A
+new algorithm or payload contract registers another descriptor instead of
+adding an algorithm switch to central DSE.
+
 The Dataflow rewrite default is larger than the unrelated Structured scope
 defaults because the normalized catalog includes reversible local rules and
 charges attempts before identity deduplication. Even a small graph can

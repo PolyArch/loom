@@ -190,6 +190,12 @@ algorithms register a different exact parameter contract; the shared DSE and
 Evaluation APIs do not expose a model-algorithm enum, tensor bag, or caller-
 defined feature vector.
 
+The initial in-process producer is candidate-generator kind 17,
+`fpa_gbdt_training`. Its output slot is fixed to this exact contract; the
+trainer cannot select another parameter owner from configuration. The
+corresponding System Runtime contract uses distinct kind 18 even though both
+descriptors reuse the same deterministic tree implementation library.
+
 The payload's support summary is the exact Training envelope. Every finalized
 numeric feature must lie in the inclusive Training minimum/maximum, and every
 categorical or presence feature must belong to the canonical set observed in
