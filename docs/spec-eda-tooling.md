@@ -529,6 +529,22 @@ predictor slot. Training provenance remains in `InvocationManifest`, and
 online updates never mutate a bundle or model binding used by an in-flight
 deterministic invocation.
 
+The initial FPA contract admits only exact Evaluation model kind 20,
+`openroad_routed_static_fpa`, as its ground-truth target. Its target key fixes
+the OpenROAD provider build, normalization contract, and fidelity. Routed-flow,
+library/platform, Fabric, and operating-condition facts remain typed model
+features. Evidence from another EDA provider or implementation fidelity remains
+valid for its own descriptor but cannot enter that parameter bundle. Supporting
+it requires another exact ground-truth model and parameter contract, or an
+explicit multi-source contract whose features own source identity.
+
+Ground-truth collection uses the central finite DSE plan and Journal. Every
+model-data sample's complete newly required dependency slice is limited to ten
+active minutes, and one complete Training/Validation/HeldOut collection is
+limited to twenty-three active hours. Uncached Mapping, RTL, implementation,
+and EDA prerequisites remain visible and charged in that plan. A timeout,
+incomplete attempt, or typed Unsupported outcome produces no training sample.
+
 ## Anchor Verification
 
 Stable tests cover semantic versus invocation binding, exact manifest
@@ -540,8 +556,9 @@ capability-obligation resolution without an ecosystem mode, output collection,
 typed failure classification, canonical parameter payload validation before
 Blob Store publication, producer/consumer parameter-contract matching, typed
 validation/held-out subject binding, pairwise sample-group isolation before
-training, held-out exclusion from ranking, and repository-local output ignore
-coverage. An executable without its driver/importer contract is not admitted as
-provider support. Vendor command lines, local module names, licenses, and
+training, exact provider/fidelity target-key matching, campaign execution-limit
+admission, held-out exclusion from ranking, and repository-local output ignore
+coverage. An executable without its driver/importer contract is not admitted
+as provider support. Vendor command lines, local module names, licenses, and
 report text are adapter behavior, not captured repository fixtures or global
 provider-by-platform-by-recipe fixture matrices.

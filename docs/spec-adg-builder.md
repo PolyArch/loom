@@ -1463,11 +1463,25 @@ Evaluation model. Those entry points are orchestration only:
 The Builder does not gain ownership of those outputs merely because a C++
 helper invokes their producer.
 
-Hardware DSE invokes the same Builder through typed `FabricTemplateConfig` or
-applies typed `FabricRewriteConfig` to an exact Fabric artifact. The central
-DSE plan owns orchestration and lineage; the Builder owns deterministic
-elaboration only. There is no generic hardware action language, mutable
-candidate graph, or DSE-only construction path.
+Hardware DSE invokes the same Builder through the typed
+`FabricTemplateConfig`, `SpatialTopologyRewriteConfig`,
+`SpatialMicroarchitectureRewriteConfig`, and
+`SystemCompositionRewriteConfig` owners defined by Evaluation and DSE. The
+template generator expands an exact registered Builder template. The two
+Spatial generators derive a fresh Module draft from one finalized parent; the
+System generator derives a fresh System draft from one finalized parent and an
+explicit finite Module candidate set. Every decision uses this public typed
+surface and the ordinary Fabric finalizer.
+
+Derivation is failure-atomic. A complete accepted child publishes one ordinary
+Fabric root and one descriptor-owned lineage contribution. A rejected draft
+publishes no child, cannot mutate its parent, and leaves no DSE-only Fabric
+form. A Module child is an intermediate hardware-design input; a releasable or
+system-mappable hardware candidate is one complete finalized `fabric.system`.
+The central DSE plan owns orchestration and lineage; the Builder owns
+deterministic elaboration only. There is no generic hardware action language,
+mutable candidate graph, caller-authored property bag, or DSE-only
+construction path.
 
 ## Conformance Anchors
 
@@ -1525,6 +1539,16 @@ The stable Builder anchors are deliberately small:
     close successfully; missing, duplicate, foreign, stale, or wrong-root
     handles fail closed; and the equivalent builtin expansion has the same
     finalized Fabric identity.
+19. Each topology and microarchitecture decision either finalizes one exact
+    Module child through the public Builder path or publishes nothing; parent
+    identity and content remain unchanged after both success and rejection.
+20. System composition can add, remove, and replace heterogeneous AccCore
+    occurrences while preserving ISA/ABI cohort, attachment, transport,
+    service, and occurrence-qualified resource invariants through ordinary
+    Fabric validation.
+21. Two generator paths that produce the same finalized Fabric converge on one
+    identity after finalization, while distinct decision lineage remains only
+    in InvocationManifest.
 
 These anchors test the public boundary and determinism. They do not require a
 fixture for every helper, topology, operation ordering, generated name, or

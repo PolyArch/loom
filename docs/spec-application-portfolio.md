@@ -133,6 +133,38 @@ storage. A publishable `ModelParameterBundle` may enter Git only under its
 existing disclosure contract and never carries source samples or attempt
 material.
 
+## Optimization Scope
+
+An optimization scope is the exact canonical set of selected manifest rows,
+named workload inputs, and runtime inputs bound as ordinary DSE plan inputs. It
+is not an Artifact, mode enum, target class, or mutable benchmark suite. A set
+containing one application naturally supports an application-specific design;
+a set selected from one coherent application domain supports a domain-specific
+design; the declared complete supported portfolio spanning application domains
+supports a general design. Those descriptions are human projections of the
+exact selected roots and never change candidate, Mapping, or Evidence identity.
+
+Every selected member independently passes its source-backed correctness
+oracle before contributing performance or physical quality. A release policy
+also owns an explicit per-member acceleration or typed-support gate; an
+aggregate mean, Pareto point, or favorable member cannot hide an unmapped,
+unsupported, incorrect, or regressed selected workload. Aggregate objectives
+rank only candidates that have already satisfied those member-local gates.
+
+Hardware optimization produces a complete `fabric.system`, not an unrelated
+set of SpatialCore Modules. For every released System, each selected AccCore
+occurrence must be the physical target of at least one accepted portfolio
+SystemMapping. This proves that occurrence inventory participates in the
+selected workload set instead of rewarding unused hardware. Several
+occurrences may share one Module identity, but their occurrence-qualified use,
+resources, and cost multiplicity remain distinct.
+
+Training, Validation, and HeldOut partitions for parameter calibration remain
+orthogonal to optimization scope and to the `smoke`, `validation`, and
+`scale_eda` execution selections. A workload may participate in a release
+scope without entering model fitting, and a calibration sample does not become
+an application conformance result merely because it used the same source.
+
 ## Portfolio Admission
 
 A later application may enter the portfolio only when it:
@@ -157,7 +189,12 @@ which files happen to exist.
 Stable tests validate manifest schema and uniqueness, source-root and Gitlink
 resolution, digest verification for cached inputs, deterministic inventory and
 selection derivation, exact binding to existing workload/input/oracle owners,
-and rejection of duplicated revisions or alternate runner inventories. At
-least one anchor traverses every cell of the Spatial-only/System-with-gem5 by
-DFG/CGRA/RTL execution matrix. Tests do not snapshot reports, require private
-EDA material, or duplicate application semantics in the harness.
+and rejection of duplicated revisions or alternate runner inventories. They
+also prove member-local correctness and acceleration gates, reject aggregate
+masking, and require every released AccCore occurrence to have at least one
+selected SystemMapping user. At least one anchor traverses every cell of the
+Spatial-only/System-with-gem5 by DFG/CGRA/RTL execution matrix. Reproducible
+release anchors cover one exact single-application set, one exact domain set,
+and the exact declared complete supported cross-domain set without introducing
+scope identities. Tests do not snapshot reports, require private EDA material,
+or duplicate application semantics in the harness.

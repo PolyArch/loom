@@ -81,7 +81,7 @@ derive HardwareImplementation -> evaluate that exact implementation
 ## Metrics
 
 Metric kinds, dimensions, canonical units, scopes, and observation forms are
-owned by Evaluation registry 2.0. The initial FPA prediction view covers
+owned by Evaluation registry 2.1. The initial FPA prediction view covers
 `LimitingClockFrequency`, `TotalArea`, `DynamicPower`, and `LeakagePower`.
 `MaximumVoltageDrop` is an ordinary shared physical MetricKind but is outside
 that initial parameter-bundle and calibration contract. Critical-path delay,
@@ -128,21 +128,23 @@ source and licensing disclosure rules, but the FPA schema does not grant them
 repository eligibility.
 
 The initial FPA parameter contract is exactly
-`ModelParameterContractRef("loom.fpa", 2.0, 0)`. Its prediction case signatures
-are `structured_program_with_fabric` and
-`canonical_dataflow_with_fabric`; its ground-truth signature is
-`hardware_implementation_physical`. It projects typed structural and condition
+`ModelParameterContractRef("loom.fpa", 3.0, 0)`. Its prediction case signatures
+are `structured_program_with_fabric`, `canonical_dataflow_with_fabric`, and
+`fabric_hardware_analysis`; its sole ground-truth model descriptor is
+`openroad_routed_static_fpa` over `hardware_implementation_physical`. It projects
+typed structural and condition
 features from those exact cases and returns one owner-typed
 `FpaMetricPredictionView 1.0` containing point predictions for
 `LimitingClockFrequency`, `TotalArea`, `DynamicPower`, and `LeakagePower`. Its
 payload codec, accepted case/condition domain, feature and prediction schemas,
-feature projector, inference kernel, prediction finalization, and sample-group
-projection are one registry entry shared by every trainer, predictor, and
+feature projector, inference kernel, prediction finalization, support region,
+ground-truth target key, and sample-group projection are one registry entry
+shared by every trainer, predictor, and
 calibration validator. A model input slot references this exact contract and
 never owns a copied coefficient layout or inference formula.
 
-Contract major 2 is required because its exact Evaluation registry refs and
-ground-truth feature projector admit `loom.hardware_implementation 3.0`.
+Contract major 3 adds the Fabric-only prediction case, exact
+ground-truth-model target relation, support-region outcome, and target key.
 `FpaMetricPredictionView 1.0` remains the output payload schema because its
 metric tuple and codec do not change; the versioned contract ref, not the
 payload shape, owns subject admission.
@@ -172,16 +174,46 @@ domain remain derived from those MetricKind descriptors rather than being
 copied into this view descriptor.
 
 The registered calibrated predictor descriptors are model kind 7 for the
-Structured Program/Fabric case and model kind 8 for the Canonical
-Dataflow/Fabric case. Each consumes exactly one matching bundle and one exact
+Structured Program/Fabric case, model kind 8 for the Canonical
+Dataflow/Fabric case, and model kind 14 for the Fabric-only case. Each consumes
+exactly one matching bundle and one exact
 ImplementationPlatform. The contract and platform are explicit model inputs;
 ambient codebase, tool installation, or an inferred technology target cannot
 select them.
 
+The initial kind-0 payload is a deterministic gradient-boosted decision-tree
+ensemble over a contract-owned typed tabular feature view, four metric heads,
+a support-region summary, and one nonempty ground-truth target key. Training
+may be external or in-process, but the canonical payload codec and inference
+kernel are registered here and inference is always in-process. Other
+algorithms register a different exact parameter contract; the shared DSE and
+Evaluation APIs do not expose a model-algorithm enum, tensor bag, or caller-
+defined feature vector.
+
+The payload's support summary is the exact Training envelope. Every finalized
+numeric feature must lie in the inclusive Training minimum/maximum, and every
+categorical or presence feature must belong to the canonical set observed in
+Training. Validation and HeldOut do not expand this envelope. Passing it is
+not a confidence bound or feasibility proof; it only prevents explicit
+marginal extrapolation, while calibration measures remaining error.
+
+The target key distinguishes the selected physical model, provider build,
+report normalization, and fidelity while excluding the individual circuit,
+implementation flow, library/platform cohort, operating-condition values,
+replicate, attempt, and host controls. Those excluded semantic inputs remain
+typed features. Every training and calibration Evidence member must derive the
+same key as the bundle. Mixing another provider or fidelity requires another
+contract that explicitly models source identity; equal MetricKinds are not
+enough. A valid feature view outside the payload's support region returns typed
+`Unsupported(RuntimeCapabilityUnavailable)` rather than a numeric
+extrapolation, and an Unsupported Validation or HeldOut case cannot satisfy a
+model-release gate.
+
 FPA calibration uses the `fpa_model_parameter_calibration` case with one
 bundle and a nonempty exact collection of completed EDA Evidence. Every member
-must retain a `hardware_implementation_physical` Request under conditions
-consumed by the contract and must contain one completed Point observation for
+must retain an `openroad_routed_static_fpa` Request under conditions consumed by
+the contract, derive the bundle's exact target key, and contain one completed
+Point observation for
 each of the four FPA metrics. Other valid Evidence forms remain usable
 elsewhere but are not samples for this four-output contract. Its
 sample-group key is derived from the pre-attempt architecture subject and
@@ -211,6 +243,11 @@ TotalArea
 DynamicPower
 LeakagePower
 ```
+
+The hardware-only model kind 13 over exact Fabric returns the same four
+physical metrics and no Runtime. Model kind 14 is its parameter-backed form.
+Dynamic power in either form requires an exact admitted activity assumption;
+the absence of software does not authorize a hidden toggle-rate default.
 
 Every result is a point observation with `UncertaintyKind::Unquantified`:
 the model supplies a point estimate but no quantified error bound. Values use
@@ -266,7 +303,8 @@ derivation from Evaluation, activity basis/window/coverage compatibility,
 missing-is-unknown behavior, exact projection lineage, unit-safe derived
 metrics, explicit missing/failed outcomes, one parameter contract shared by a
 predictor and independent validator, condition-sensitive feature projection,
-preservation of each ground-truth Evidence case pairing, rejection of
-non-Point calibration samples, and rejection of cross-partition sample-group
-leakage.
+preservation of each ground-truth Evidence case pairing, exact target-key
+separation across providers and fidelities, typed out-of-distribution
+rejection, rejection of non-Point calibration samples, and rejection of cross-
+partition sample-group leakage.
 Tests do not pin vendor log text or a tool-by-tool report matrix.

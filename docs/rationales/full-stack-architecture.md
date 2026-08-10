@@ -262,6 +262,41 @@ nondeterminism can produce several correct observations. Requiring every
 engine to satisfy the same independent typed oracle tests the application
 contract directly and avoids making one implementation the golden authority.
 
+## Why Workload Sets Define Optimization Scope
+
+Application-specific, domain-specific, and general acceleration differ by the
+workloads a design must serve, not by a switch in the optimizer. A scope enum
+would copy selection already fixed by exact workload and runtime-input roots,
+and its meaning would drift as manifests evolve. The exact selected set is
+therefore sufficient: one application, one coherent domain subset, or a cross-
+domain portfolio declared complete for the release naturally supports the
+corresponding application-specific, domain-specific, or general claim.
+
+Every member must retain its own correctness and acceleration gate. Allowing a
+mean score to hide one unsupported or regressed workload would optimize the
+benchmark aggregate rather than the declared scope. The same reasoning
+requires every released AccCore occurrence to have at least one selected
+SystemMapping user; otherwise unused hardware could improve an abstract
+capacity score while contributing nothing to the selected applications.
+
+## Why Hardware Optimization Covers The Complete System
+
+A SpatialCore Module is the right detailed RTL and EDA unit, but it is not the
+whole accelerator architecture. AccCore count and heterogeneity,
+InstructionCore realization, transport topology, memory, and services control
+software partitioning, cross-core communication, and total system quality.
+Optimizing Modules in isolation would freeze those choices outside the search
+and contradict Loom's multi-core machine model.
+
+The final hardware candidate is therefore a complete `fabric.system`, with
+Module rewrites retained as intermediate candidates. Detailed physical
+implementation remains limited to SpatialCore modules because that is the
+portable hardware boundary Loom currently owns. Analytic and learned models
+plus gem5 cover the other System components. Keeping each observation's exact
+model identity prevents those estimates from being mislabeled as synthesized
+or measured hardware while still letting System-level choices participate in
+joint optimization.
+
 ## Why Hardware Construction Closes First
 
 The ADG Builder-to-Fabric path has no software prerequisite, while useful

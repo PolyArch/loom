@@ -301,10 +301,11 @@ binding is smaller than either freezing future Evidence identities into the
 resolved configuration or inventing a calibration-specific plan node.
 
 The validator calls the bundle contract's pure feature and inference functions
-directly. The same contract names its prediction and ground-truth case
-signatures and consumes every result-affecting operating condition as a typed
-feature. It does not call another evaluator, hide a downstream Request, drop a
-condition, or duplicate predictor formulas. A selected bundle later enters a
+directly. The same contract names its prediction cases and exact ground-truth
+models, owns their target-key relation, and consumes every result-affecting
+operating condition as a typed feature. It does not call another evaluator,
+hide a downstream Request, drop a condition, or duplicate predictor formulas.
+A selected bundle later enters a
 predictor's ordinary model input slot only after exact contract compatibility
 succeeds. This keeps model consumption distinct from candidate evaluation
 without a parameter-specific Promotion path or candidate-to-Evidence map.
@@ -334,6 +335,108 @@ finite closed range without a hidden scale. Median and P90 are not separate
 semantic quantities from other quantiles, so they reuse the existing typed
 `Quantile` condition. This adds four physical-prediction error MetricKinds, not
 eight percentile-specific kinds or a generic metric-of-metric DSL.
+
+## Why Learned Targets And Support Are Contract Owned
+
+An Evaluation case identifies subjects and conditions, but it does not by
+itself identify which physical provider, flow, library cohort, normalization,
+or simulation fidelity supplied an observation. Pooling samples solely because
+they share a case and MetricKind would silently train one function against
+several different targets. Copying provider identity into every sample row
+would instead create a second dataset schema and let trainers disagree about
+which fields matter.
+
+The parameter contract therefore names exact ground-truth model descriptors
+and owns one derived target key embedded in its canonical payload. Provider
+semantics, normalization, and fidelity define that observation function;
+hardware, flow, library, and operating-condition variation remain typed
+features of the function. Trainers, validators, and predictors share the same
+projector and equality rule. A model that intentionally learns across sources
+can register another contract whose feature view explicitly contains source
+identity; the generic infrastructure does not guess that equivalence.
+
+The same owner decides whether a valid feature view lies inside the learned
+support region. Returning typed Unsupported is more honest than extrapolating
+a number with no evidence and smaller than storing confidence labels or
+diagnostic text in every bundle. Invalid input remains an error, while an OOD
+case remains a stable semantic capability boundary. This also explains why a
+predictor can rank and promote candidates but cannot prove infeasibility.
+
+## Why The Initial Learned Provider Is Tabular And Extensible
+
+Fabric structure, operating conditions, Mapping summaries, and system runtime
+inputs are naturally mixed numeric and categorical tabular features. A
+gradient-boosted tree ensemble provides deterministic CPU inference, explicit
+serialization, useful nonlinear interactions, and bounded training cost
+without introducing a tensor runtime into every Loom deployment. It is an
+initial owner choice, not a universal model taxonomy.
+
+The first physical target is one exact routed OpenROAD model. An open-source,
+scriptable provider makes the large collection reproducible and schedulable
+without weakening the requirement for real routed tool evidence. Commercial
+flows remain valid independent ground truth, but assigning them separate model
+descriptors prevents different algorithms, libraries, and report semantics
+from becoming accidental labels for one function.
+
+The versioned parameter-contract interface is the extension point. Another
+algorithm registers its own payload codec, feature view, support rule, target
+relation, and in-process inference kernel. Training may use an external
+program, but inference remains inside the provider boundary. A central
+algorithm enum or generic tensor payload would make DSE, rather than the model
+owner, interpret parameters and would turn every new algorithm into a schema
+change.
+
+## Why Hardware DSE Uses Typed Domain Generators
+
+Fabric already has precise typed owners for modules, occurrences,
+connections, capabilities, schedules, services, and Systems. A generic
+`HardwareAction` over node names and property bags would erase those
+distinctions and require a second verifier. Mutating one shared graph would
+also make parent identity, recovery, and lineage depend on execution order.
+
+Hardware search therefore starts from an exact finalized seed and uses typed
+template, topology, microarchitecture, System-composition, and implementation-
+flow generators. Each creates a fresh draft through the public Builder and
+publishes only after ordinary Fabric finalization. Module children are useful
+intermediate designs, but the optimization subject is a complete
+`fabric.system`: multi-core heterogeneity, transport, memory, services, and
+InstructionCore realization affect software partitioning and system quality
+even when detailed RTL remains scoped to SpatialCore modules.
+
+## Why Joint Search Uses Finite Alternating Batches
+
+Flattening a software frontier and a hardware frontier into a Cartesian
+product spends work on combinations that neither parent-local search selected.
+A mutable joint candidate or runtime loop would then make termination,
+deterministic work, recovery, and cache identity scheduler-dependent.
+
+Finite Generate and Promote nodes already express bounded exploration. The
+plan alternates software and hardware batches, evaluates parent-local children,
+and permits cross-pair reconsideration only through an explicit bounded
+frontier join. Every cost and use-def edge is visible before execution; there
+is no new workflow language or Journal-owned current best. Exact admission and
+sound bounds may reject impossible designs, while analytical and learned
+estimates only rank, promote, or choose which candidates receive expensive
+evidence.
+
+## Why Ground-Truth Collection Reuses Plans And Evidence
+
+A campaign is operationally large but semantically ordinary: a finite plan
+requests exact Evidence and partitions it for one parameter contract. A
+`DatasetArtifact` would duplicate Requests, conditions, providers, results, and
+sample lineage already owned by Evidence. A `CampaignArtifact` would duplicate
+the resolved plan and Journal. Reusing those owners keeps resume exact and
+lets every accepted sample remain independently auditable.
+
+The ten-minute sample and twenty-three-hour campaign bounds exist because
+ground-truth throughput is a project-critical resource, not because wall time
+changes model semantics. Shared uncached Mapping and implementation work must
+be visible and charged, otherwise a nominally fast campaign merely hides its
+cost in precomputation. A deterministic pilot from the same plan makes ETA
+actionable without discarding evidence. Live counts, percentiles, bottleneck,
+and ETA remain removable Journal projections, while graceful stop imports
+atomic completions and resumes missing WorkUnitKeys. Timeouts stay incomplete;
+they do not become negative training labels or infeasibility proofs.
 
 ## Why Derived Quantities Use Ordinary Metrics And Models
 

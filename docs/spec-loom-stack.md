@@ -157,6 +157,37 @@ The shared Evaluation and DSE contract is specified by
 [Evaluation and DSE](spec-dse-feedback.md). Metric definitions are owned by
 [Evaluation Metrics](spec-evaluation-metrics.md).
 
+## Joint Design Exploration
+
+The optimization subject is a complete software workload set together with one
+complete heterogeneous `fabric.system`. SpatialCore `fabric.module` candidates
+are valid intermediate hardware-design inputs, but they are not releasable
+System candidates by themselves. Hardware DSE may change Spatial topology and
+microarchitecture, AccCore occurrence count and type, Spatial attachments,
+InstructionCore realization selection, transport resources and connections,
+and system memory and service attachments. Software DSE may change compiler
+decisions, graph and thread partitioning, channel-versus-memory communication,
+and multicast structure. SystemMapping alone owns the realized physical
+AccCore targets, imported SpatialMappings, routes, services, multicast, and
+ResourceUse.
+
+Detailed portable RTL and EDA implementation remain scoped to each
+SpatialCore Module. InstructionCore, host, transport, and system-memory effects
+participate through exact analytic or parameter-backed Evaluation models and
+gem5-backed system execution. A report must label predicted and measured
+observations by their exact model descriptors; it cannot present a modeled
+non-Spatial component as synthesized or physically measured.
+
+Fast evaluation uses an explicit typed cascade: exact admission and sound
+bounds, analytic estimates, parameter-backed prediction, Mapping/PnR,
+functional or cycle simulation, then selected physical ground truth. Only
+exact admission or a sound bound may prove infeasibility. An estimate may
+rank, promote, or select samples but cannot reject a candidate as impossible.
+Software and hardware candidate batches alternate in a finite resolved DSE
+plan. Cross-pair evaluation occurs only through an explicit bounded frontier
+join; there is no implicit Cartesian product, mutable joint candidate, or
+runtime-owned best design.
+
 ## Compiler Pipeline
 
 The compiler pipeline has four semantic boundaries:
@@ -533,6 +564,26 @@ same compiler, Mapping, simulation, hardware, Evaluation, and failure
 contracts; it does not enlarge the operator inventory or make an application
 manifest into a program Artifact.
 
+Product validation advances through one workload ladder without creating a
+second workload authority:
+
+1. the manifest-derived operator corpus supplies broad protocol coverage;
+2. the ten source-backed workflows in
+   [End-To-End Conformance Anchors](spec-end-to-end-demonstrators.md) supply
+   bounded vertical-stack anchors;
+3. the five complete programs in
+   [Real Application Portfolio](spec-application-portfolio.md) supply sustained
+   multi-stage and heterogeneous-system use; and
+4. exact selected subsets of those owned workloads supply reproducible
+   application-specific and domain-specific release claims, while the declared
+   complete supported cross-domain set supplies the general release claim.
+
+The numbers in this ladder are derived from their named owners. A runner,
+dashboard, or plan cannot copy a competing inventory or treat a smoke subset
+as product membership. Each later rung reuses the same source, workload,
+Mapping, Deployment, Simulation, HardwareImplementation, Evaluation, and
+oracle contracts rather than gaining a shallower success definition.
+
 Missing capability is reported honestly as a typed unsupported or incomplete
 outcome. Scaffolds, empty artifacts, skipped work, generated wrappers, or
 inventory counts cannot stand in for completed semantics.
@@ -648,9 +699,11 @@ Artifact:
 
 ```text
 source revision and external pins
-+ application and input selection
-+ exact Fabric and ResolvedConfig
-+ selected model-parameter roots
++ exact application, workload, and runtime-input set
++ complete Fabric System and ResolvedConfig
++ selected software candidates, TechMappings, SpatialMappings, and SystemMappings
++ Deployment and ConfigurationABI roots
++ selected model-parameter roots and exact model bindings
 + tool and ImplementationPlatform identities
 + EvaluationEvidence and InvocationManifest references
 ```

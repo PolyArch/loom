@@ -275,17 +275,21 @@ model at any point in the stack. The initial production profiles are:
 | physical implementation analysis | HardwareImplementation |
 | system simulation | Deployment, Gem5 Simulation Binding |
 
-Evaluation registry schema 2.0 owns every case, model, MetricKind,
+Evaluation registry schema 2.1 owns every case, model, MetricKind,
 FindingKind, condition-kind, capability-enum, scope-form, and related registry
 ordinal. It registers these exact case signatures used by the pre-Mapping,
 DFG-simulation, FPA, and system-simulation flows described here:
 
-Registry 2.0 is a new exact descriptor namespace. No 1.0 case or model
-descriptor reference is reinterpreted to accept Fabric, ConfigurationABI, or
-HardwareImplementation 3.0. The `evaluation.request.1.0` and
+Registry 2.1 is a compatible extension of 2.0. It preserves every existing
+ordinal and descriptor meaning and appends the hardware-only, learned-system-
+runtime, and three gem5-backed execution descriptors below. An exact 2.0
+reference continues to select the 2.0 catalog and cannot name an appended
+kind; there is no version alias. No 1.0 case or model descriptor reference is
+reinterpreted to accept Fabric, ConfigurationABI, or HardwareImplementation
+3.0. The `evaluation.request.1.0` and
 `evaluation.evidence.1.0` root record shapes remain unchanged because they
 already carry exact versioned descriptor and Artifact references; newly
-constructed roots use registry-2.0 refs.
+constructed roots use registry-2.1 refs.
 
 | Case kind | Stable spelling | Ordered roles | Workload/runtime input |
 | --- | --- | --- | --- |
@@ -299,6 +303,8 @@ constructed roots use registry-2.0 refs.
 | 7 | `cgra_simulation` | `0: Canonical Dataflow Program`, `1: Fabric`, `2: SpatialMapping` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
 | 8 | `simulation_execution_comparison` | `0: reference SimulationExecution`, `1: candidate SimulationExecution` | both forbidden; each execution's exact Request closure must resolve the same workload and runtime input |
 | 9 | `canonical_dataflow_source_functional_comparison` | `0: Canonical Dataflow Program`, `1: selected Structured Program parent` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
+| 10 | `fabric_hardware_analysis` | `0: Fabric` | both forbidden |
+| 11 | `system_runtime_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with a System Runtime prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
 
 The matching initial model descriptors are:
 
@@ -315,13 +321,31 @@ The matching initial model descriptors are:
 | 10 | `simulation_execution_comparison` | 8 | deterministic comparison of compatible execution observations for the whole-case `functional_mismatch` finding |
 | 11 | `canonical_dataflow_source_functional` | 9 | deterministic Simulation comparison of one Canonical Dataflow candidate and its selected Structured parent against the workload-owned source, producing only the whole-case `functional_mismatch` finding |
 | 12 | `cadence_voltus_static_rail` | 5 | deterministic ToolMeasurement point observation of whole-case `MaximumVoltageDrop` using the shared static rail-analysis contract |
+| 13 | `fabric_low_confidence` | 10 | deterministic Analytic point estimates for limiting clock frequency, total area, dynamic power, and leakage power over exact hardware structure and admitted activity conditions |
+| 14 | `fabric_calibrated_fpa` | 10 | deterministic Analytic predictions for the same four FPA metrics using one exact FPA parameter bundle |
+| 15 | `system_runtime_model_parameter_calibration` | 11 | deterministic Analytic `RuntimePredictionError` quantiles over one exact System Runtime parameter bundle and one exact gem5-CGRA ground-truth Evidence set |
+| 16 | `gem5_cgra_system_runtime_predictor` | 6 | deterministic Analytic point prediction of whole-case Runtime using one exact System Runtime parameter bundle |
+| 17 | `gem5_system_dfg` | 6 | deterministic Simulation of the exact System workload with DFG SpatialCore participants and one `SimulationExecution` output |
+| 18 | `gem5_system_cgra` | 6 | deterministic Simulation of the exact System workload with mapped CGRA SpatialCore participants and one `SimulationExecution` output plus whole-case Runtime |
+| 19 | `gem5_system_rtl` | 6 | deterministic Simulation of the exact System workload with mapped RTL SpatialCore participants and one `SimulationExecution` output plus whole-case Runtime |
+| 20 | `openroad_routed_static_fpa` | 5 | OpenROAD ToolMeasurement point observations of limiting clock frequency, total area, dynamic power, and leakage power for one exact routed implementation target |
 
-Model kinds 2 and 3 consume the exact shared low-confidence config-view
+Model kinds 2, 3, and 13 consume the exact shared low-confidence config-view
 contract. Model kinds 4, 5, and 6 each consume a distinct zero-field config
 view because their semantics are fixed by their descriptor, case, and, for
 kind 6, the bundle's exact parameter contract. Model kinds 7 and 8 each have
 one `ExactlyOne` model-input slot for the exact initial FPA parameter contract
-and use a zero-field config view. Physical execution limits remain
+and use a zero-field config view. Model kind 14 consumes that same contract for
+the hardware-only case. Model kinds 15 and 16 consume the exact System Runtime
+parameter contract. Model kinds 17, 18, and 19 are separate descriptors rather
+than values of a bridge-private engine enum; none may fall back to another
+fidelity. Model kind 20 is the initial exact FPA ground-truth descriptor; its
+resolved config view names one OpenROAD provider build rather than treating all
+physical Evidence as interchangeable. The exact descriptor owns the routed
+static-analysis and report-normalization contract.
+Implementation flow, library cohort, Fabric structure, and operating conditions
+remain typed features. Another physical provider registers another exact model
+descriptor. Physical execution limits remain
 owner-attempt bindings and do not enter these views. Model kind 4 compares the
 candidate's selected whole-program native execution with the source execution
 owned by the exact workload/runtime pair. Exact Artifact identity is sufficient
@@ -355,6 +379,39 @@ Dataflow and selected Structured parent are both case subjects; neither is
 recovered from provider-local cache state. It has the same source-backed
 functional outcome boundary as model kind 4 and does not claim timing or
 physical observations.
+
+Model kinds 13 and 14 have no workload and cannot publish `Runtime`. Dynamic
+power requires an exact admitted Fabric-rooted activity condition; absence is
+typed `Unsupported`, never a default toggle rate. Model kind 16 predicts the
+runtime semantics of exact model kind 18 only. Model kinds 17 through 19 share
+the workload-independent `Gem5SimulationBinding` and the same bridge ABI, but
+the exact descriptor fixes the SpatialCore fidelity. The gem5 event queue is
+their sole whole-system time authority. DFG execution may publish functional
+observations without claiming CGRA or RTL timing; kind 18 is the initial
+learned-runtime ground-truth target, and kind 19 remains a distinct higher-cost
+fidelity.
+
+Model kind 20 consumes and requires the exact physical Base-condition patterns
+for `ProcessCorner`, `SupplyVoltage`, `Temperature`, and
+`RequiredClockPeriod`. Its DynamicPower request additionally requires exactly
+one `ActivityBinding`, either a complete compatible ExecutionActivity source
+or the registered two-target explicit assumption. The initial descriptor
+admits one global activity clock and no `RelativeClockSchedule`; multi-clock
+analysis requires another exact model descriptor. Its one HardwareImplementation
+must be a completed placed-and-routed closure whose exact Fabric and
+ImplementationPlatform remain reachable. A provider semantic/build identity,
+normalization contract, or fidelity change changes the descriptor-owned
+ground-truth target key described below.
+An analytical estimate, synthesis-only result, unmatched provider result, or
+different fidelity cannot enter this model's training population merely
+because it reports the same MetricKinds.
+
+Its resolved config-view schema 1.0 contains exactly one canonical nonempty
+`stable_provider_build_identity`. Machine-local executable, module, container,
+license, scratch, and concurrency choices remain execution bindings. The
+descriptor and build identity form the target-key provider portion; the exact
+HardwareImplementation, ImplementationPlatform, routed-flow and library facts,
+and Base conditions enter feature projection instead of the config view.
 
 Case kind 5 initially permits the following HardwareImplementation-rooted
 Base-condition patterns. Both positions of the explicit-assumption form name
@@ -431,13 +488,14 @@ whole-case metric. Supporting another method or activity basis requires
 another exact model descriptor and config-view contract, not a mutable
 invocation flag.
 
-Case kinds 0 and 1 admit the exact Fabric-anchored target patterns owned by
+Case kinds 0, 1, and 10 admit the exact Fabric-anchored target patterns owned by
 `ProcessCorner`, `SupplyVoltage`, `Temperature`, `RequiredClockPeriod`,
 `RelativeClockSchedule`, and `ActivityBinding`; their model-input closure must
 contain any referenced ImplementationPlatform. Case kind 5 admits the
 corresponding HardwareImplementation-anchored patterns and has no whole-case
 cycle basis. Each model declares the exact permitted subset it consumes,
-requires, or proves invariant. Case kind 6 is the single
+requires, or proves invariant. Case kinds 4 and 11 admit only their respective
+MetricRequest-local `Quantile` condition. Case kind 6 is the single
 shared system-simulation signature referenced by the Runtime ABI and Fabric
 System contracts. Its exact Deployment/Gem5-binding compatibility and System
 workload/runtime-input coupling are those owners' typed relations, not copied
@@ -539,7 +597,7 @@ FindingRequest {
 
 `MetricQuery` also uses `EvaluationScope`. Standalone query serialization is
 owned by `evaluation.metric_query 1.0` and `evaluation.finding_query 1.0`;
-those wire roots carry registry-2.0 references and do not own their ordinals.
+those wire roots carry registry-2.1 references and do not own their ordinals.
 The two request sets are independent,
 but their total cardinality must be nonzero. A finding-only Request is legal.
 The same query may appear with different request-specific conditions; only an
@@ -597,7 +655,7 @@ ProviderForm =
   | ExternalPrepareImport  // tag 1
 ```
 
-Evaluation registry schema 2.0 owns the following capability enums and retains
+Evaluation registry schema 2.1 owns the following capability enums and retains
 their stable zero-based `uint32` wire tags:
 
 ```text
@@ -2024,6 +2082,74 @@ checkpoint binds the exact run key, occurrence, plan node, WorkUnitKey, owner
 schema, and version. There is no generic Attempt Artifact or all-domain
 checkpoint payload.
 
+## Ground-Truth Collection Campaign
+
+A model-data collection campaign is an ordinary finite resolved DSE plan whose
+selected exact Requests are partitioned as Training, Validation, and HeldOut.
+The plan and ResolvedConfig own what will run; completed
+`EvaluationEvidence` roots own the usable observations; InvocationManifest and
+ExecutionJournal own provenance and recovery. There is no `CampaignArtifact`,
+`DatasetArtifact`, sample-row schema, mutable experiment database, or second
+work scheduler semantics.
+
+One model-data sample is usable only when one admitted ground-truth model
+produces completed Evidence that satisfies its parameter contract's exact
+model descriptor, target key, conditions, required Point observations, and
+sample-group partition. A timeout, cancellation, unsupported target, failed
+tool, invalid import, or incomplete prerequisite produces no sample and cannot
+be relabeled infeasible. Final signoff runs may use other exact model
+descriptors or longer execution limits, but their Evidence cannot enter a
+parameter bundle whose collection contract excludes them.
+
+The initial collection policy imposes two hard active-wall-time bounds:
+
+- for every Evidence root that would enter model data, active elapsed wall time
+  from dispatch of its earliest newly required uncached ancestor work unit to
+  terminal Evidence completion is at most 600 seconds; a shared ancestor's
+  interval applies to every dependent sample but is executed and charged only
+  once; and
+- one complete Training, Validation, and HeldOut collection invocation has a
+  campaign limit of at most 23 hours of active wall time.
+
+Shared uncached Mapping, RTL derivation, HardwareImplementation, and external
+tool prerequisites are explicit work units in the same plan and are charged
+once to that campaign before their outputs are reused. A precomputed Artifact
+or Evidence root is free only when it is an explicit selected preexisting
+input. A runner cannot hide prerequisite time in an unrecorded warmup or
+separate launch and still claim the campaign bound.
+
+Before admitting a large collection, the runner executes a deterministic
+prefix of the same resolved plan as a pilot. Its finalized outputs and Evidence
+remain ordinary resumable work; it is not a disposable benchmark with another
+configuration. From completed and censored pilot work, the operational policy
+derives conservative throughput and p90 remaining-time estimates. It refuses
+new dispatch when the current resource allocation cannot finish within the
+campaign limit, unless the user supplies a smaller explicit plan. The policy
+does not silently reduce samples, move cases across partitions, change a
+provider, or weaken a model target.
+
+The campaign runner coordinates through a caller- or site-owned scheduler that
+is resource-aware over declared CPU, memory, scratch, external-tool, and
+license capacities. These are operational claims, not semantic candidate
+properties, and do not give Loom ownership of an external process tree.
+Independent work units may run concurrently; one exclusive resource claim
+serializes only its actual users. Scheduling must preserve stable WorkUnitKeys
+and deterministic semantic work accounting regardless of completion order.
+
+While running, a removable projection reports completed, running, queued,
+failed, timed-out, and unsupported counts; recent throughput; p50 and p90
+per-kind durations; estimated completion time; and the currently limiting
+declared resource. Every value derives from the resolved plan, Journal, and
+owner attempt records. A JSONL stream or dashboard may persist this projection
+for operators but is not an Artifact, Evidence, or scheduling authority.
+
+A graceful stop admits no new work, allows explicitly selected in-flight work
+to reach an atomic owner boundary, imports every valid completion, flushes the
+Journal, and records the outer controller as `Incomplete`. Resume recomputes
+the same run key and continues only missing WorkUnitKeys. It neither discards
+the pilot nor creates new sample identities. Held-out quality gates, not a
+fixed universal sample count, decide whether a parameter bundle is releasable.
+
 ## Candidate Generators
 
 Candidate generation preserves domain semantics while using one central plan.
@@ -2278,17 +2404,43 @@ remain execution admission owned by the invocation environment. They do not
 enter the semantic generator binding and cannot trigger semantic fallback to a
 different provider.
 
-Hardware generation uses three descriptor-owned typed configuration roots:
+Hardware DSE begins from at least one exact seed: a finalized builtin Fabric,
+a user-supplied finalized Fabric, or one output of the template generator. It
+never begins from an empty mutable graph. Candidate-generator registry 2.0
+assigns these initial stable kinds without changing kinds 0 through 11:
+
+| Generator kind | Stable spelling | Exact semantic output |
+| --- | --- | --- |
+| 12 | `fabric_template` | one or more finalized `fabric.module` or `fabric.system` roots |
+| 13 | `spatial_topology_rewrite` | finalized `fabric.module` children |
+| 14 | `spatial_microarchitecture_rewrite` | finalized `fabric.module` children |
+| 15 | `system_composition_rewrite` | finalized `fabric.system` children |
+| 16 | `implementation_flow` | finalized `loom.hardware_implementation 3.0` children |
+
+They use five descriptor-owned typed configuration roots:
 
 ```text
 FabricTemplateConfig {
-  template_identity
-  template_version
-  typed_parameters
+  template_descriptor_ref
+  owner_typed_parameters
 }
 
-FabricRewriteConfig {
-  typed_structural_decisions
+SpatialTopologyRewriteConfig {
+  decision_domains:
+    canonical nonempty set<SpatialTopologyDecisionDomain>
+  max_children_per_parent: positive uint64
+}
+
+SpatialMicroarchitectureRewriteConfig {
+  decision_domains:
+    canonical nonempty set<SpatialMicroarchitectureDecisionDomain>
+  max_children_per_parent: positive uint64
+}
+
+SystemCompositionRewriteConfig {
+  decision_domains:
+    canonical nonempty set<SystemCompositionDecisionDomain>
+  max_children_per_parent: positive uint64
 }
 
 ImplementationFlowConfig {
@@ -2298,10 +2450,48 @@ ImplementationFlowConfig {
 }
 ```
 
-`FabricTemplateConfig` invokes the public ADG Builder expansion path and
-produces a Fabric Artifact. `FabricRewriteConfig` produces another exact Fabric
-Artifact because it changes architecture semantics or structure; its base
-Fabric is an explicit typed input slot.
+The template descriptor registry owns each parameter schema and expansion
+function. `FabricTemplateConfig` invokes that exact public ADG Builder path and
+produces a Fabric Artifact. A user Fabric remains an ordinary static plan input
+and does not acquire a synthetic template identity.
+
+Each decision-domain type below is a descriptor-owned closed union parallel to
+its decision union. One domain member fixes the exact target selector plus a
+finite canonical set of replacement prototypes/values or an inclusive bounded
+integer delta range, as applicable to that decision kind. Empty value sets,
+unbounded ranges, a target selector that resolves outside the exact parent, and
+two members with the same canonical domain key are invalid. There is no hidden
+default neighborhood. `max_children_per_parent` truncates the descriptor's
+canonical decision order before construction and is semantic work policy, not
+an execution limit.
+
+The topology generator consumes exactly one `fabric.module` parent. Its closed
+decision union is `AddOccurrence`, `RemoveOccurrence`,
+`ReplacePointConnection`, `AdjustParallelConnectionCount`, and
+`ChangeBoundaryInventory`. Each decision uses an exact typed PE, switch,
+memory, FIFO, or boundary prototype and exact Fabric local references; there is
+no generic node record. It changes connectivity, occurrence inventory, or
+module interface, but not an occurrence's internal implementation policy.
+
+The spatial-microarchitecture generator also consumes exactly one
+`fabric.module` parent. Its closed decision union is `ChangePeKind`,
+`ResizeInstructionStore`, `ChangeFuInventory`, `ChangeFuCapability`,
+`ChangeSwitchModeOrScheduleCapacity`, `ResizeMemory`,
+`ChangeMemoryOperationTable`, `ResizeFifo`, and
+`ChangeFifoBypassCapability`. The referenced Fabric owners define every typed
+parameter domain. The generator cannot create an operation capability, memory
+contract, scheduling rule, or bypass meaning outside those domains.
+
+The system-composition generator consumes one exact `fabric.system` parent and
+an explicit canonical set of admissible finalized Module candidates. Its
+closed decision union is `AddAccCore`, `RemoveAccCore`,
+`ReplaceSpatialAttachment`, `SelectInstructionCoreRealization`,
+`ChangeTransportResource`, `ChangeTransportConnection`, and
+`ChangeServiceOrMemoryAttachment`. It preserves the root-complete ISA/ABI
+cohort, domain, attachment, service, and transport invariants. Several AccCore
+occurrences may reference one exact Module while retaining distinct
+occurrence-qualified resources and cost multiplicity.
+
 `ImplementationFlowConfig` preserves Fabric semantics while producing an
 immutable HardwareImplementation. The exact Fabric or prior
 HardwareImplementation and optional ImplementationPlatform are descriptor-owned
@@ -2309,6 +2499,32 @@ typed input slots, not configuration fields. Each descriptor owns a closed
 schema for its typed parameter and decision records; there is no generic
 property bag, hardware action language, mutable candidate IR, or
 evaluator-owned rewrite.
+
+Kinds 13 through 15 apply one owner-typed decision at a time to a fresh Builder
+draft derived from one exact parent. The ordinary Builder and Fabric finalizer
+must accept the complete child before it is published or returned. A rejected
+draft produces no child and no lineage edge; it cannot partially mutate the
+parent or leave a DSE-only Fabric form. A completed child carries one
+`CandidateDecision` lineage contribution whose payload is owned by that exact
+generator descriptor. Identity deduplication occurs only after finalization.
+
+Module candidates are intermediate hardware design inputs. A joint
+software/hardware search promotes a complete `fabric.system` before system
+Mapping or release; a collection of unrelated Modules is not a System
+candidate. Software generators still own thread, graph, channel, memory, and
+compilation decisions, while SystemMapping alone owns physical AccCore targets,
+SpatialMapping imports, routes, services, multicast, and ResourceUse.
+
+The initial joint search is an explicit finite sequence of alternating
+`Generate` and `Promote` nodes. A hardware batch evaluates parent-local
+children against the selected software set; a software batch evaluates its
+children against a bounded selected System frontier. Only an explicit bounded
+frontier join may request cross-pair reevaluation. The plan never implicitly
+flattens two candidate sets into a Cartesian product, and there is no
+`JointCandidate`, mutable current design, or runtime loop. Exact workload
+Artifact sets are ordinary plan inputs: one application, a domain subset, and
+a cross-domain set naturally yield application-specific, domain-specific, and
+general designs without a scope-mode enum.
 
 Hardware generator and evaluator descriptors introduced by this contract
 accept or produce exact `loom.hardware_implementation 3.0` slots. A registry
@@ -2391,8 +2607,8 @@ ModelParameterContractDescriptor {
   semantic_definition
   prediction_case_signatures:
     canonical nonempty set<EvaluationCaseSignatureRef>
-  ground_truth_case_signatures:
-    canonical nonempty set<EvaluationCaseSignatureRef>
+  ground_truth_model_descriptors:
+    canonical nonempty set<EvaluationModelDescriptorRef>
   consumed_base_condition_patterns:
     total table<EvaluationCaseSignatureRef,
                 canonical set<ConditionApplicabilityPattern>>
@@ -2400,11 +2616,18 @@ ModelParameterContractDescriptor {
   prediction_decimal_finalization_contract
   adopt(canonical payload bytes) -> owner-typed immutable parameters
   encode(owner-typed immutable parameters) -> canonical payload bytes
+  parameter_ground_truth_target_key(owner-typed immutable parameters)
+    -> canonical nonempty byte string
   project_features(exact source case, CaseArtifactResolution,
                    ArtifactStore, BlobStore)
     -> owner-typed immutable feature view
   infer(owner-typed parameters, owner-typed feature view)
-    -> owner-typed immutable prediction view
+    -> ModelParameterInferenceOutcome
+  ground_truth_target_key(exact ground-truth EvaluationRequest,
+                          CaseArtifactResolution,
+                          ArtifactStore,
+                          BlobStore)
+    -> canonical nonempty byte string
   calibration_sample_group_key(
       exact ground-truth EvaluationEvidence,
       its exact EvaluationRequest,
@@ -2414,6 +2637,10 @@ ModelParameterContractDescriptor {
     -> canonical byte string
 }
 
+ModelParameterInferenceOutcome =
+    Prediction(owner-typed immutable prediction view)
+  | Unsupported
+
 ModelParameterBundle {
   parameter_contract_ref: ModelParameterContractRef
   payload_blob_digest: BlobDigest
@@ -2422,10 +2649,12 @@ ModelParameterBundle {
 
 The registry identity, version, and local kind use the same framing discipline
 as every other owner-local typed registry. A registered descriptor owns the
-parameter payload interpretation, accepted prediction/ground-truth case and
-condition domain, owner-typed feature and prediction schemas, feature
-projection, pure inference kernel, prediction finalization, and sample-group
-relation exactly once.
+parameter payload interpretation, accepted prediction cases, exact
+ground-truth models, condition domain, owner-typed feature and prediction
+schemas, feature projection, pure inference kernel, prediction finalization,
+ground-truth target relation, and sample-group relation exactly once. Its
+ground-truth case set is derived from the referenced model descriptors; it is
+not another registered field.
 Predictor models and calibration validators invoke that same descriptor;
 neither calls another evaluator or copies its formulas. Owner-typed parameters,
 feature views and predictions are ephemeral in-process values, not generic
@@ -2434,13 +2663,41 @@ persistent vectors, property bags, or raw-byte APIs.
 The complete contract-reference canonical key uses the shared owner-local
 registry reference framing with `owner_local_contract_kind` as its final
 field. Registry admission requires a known owner and local kind, nonempty
-prediction and ground-truth case sets, a total condition-pattern table over
-their union, nonempty prediction-schema descriptor bytes, and all typed
-operations above. Duplicate references or an
+prediction-case and ground-truth-model sets, a total condition-pattern table
+over the prediction cases and the ground-truth models' derived case set,
+nonempty prediction-schema descriptor bytes, and all typed operations above.
+Duplicate references or an
 owner whose registered descriptor changes under one exact version are
 incompatible registry errors. Sample-group keys compare by the returned
 contract-owned canonical bytes and are never persisted as another dataset
 identity.
+
+The owner-typed parameter payload embeds the contract-owned nonempty
+ground-truth target key. `parameter_ground_truth_target_key` recovers it
+without interpreting a trainer-private layout.
+`ground_truth_target_key` derives the corresponding key from an exact admitted
+ground-truth Request. It includes the exact model descriptor, provider
+semantic/build identity, normalization contract, and fidelity that define the
+observation function. It excludes subjects, implementation-flow choices,
+library and platform cohorts, operating-condition values, replicate indexes,
+attempts, and host execution controls; those result-affecting semantic facts
+must instead be consumed as typed features where applicable. Every trainer and
+calibration validator requires exact key equality for every sample. Pooling
+observations from another provider or fidelity therefore requires a distinct
+parameter contract whose feature view explicitly carries source-model identity;
+matching metric names or case shape cannot silently merge targets.
+An optional prior bundle must expose the same target key as every Training
+sample before it can initialize fitting.
+
+`infer` returns `Unsupported` when a structurally valid prediction case lies
+outside the admitted training-support region encoded by the exact parameters.
+The bundle stores no diagnostic string, confidence label, or mutable support
+state; the contract derives support from its canonical payload and feature
+view. An invalid case, malformed payload, or unavailable required owner remains
+an error rather than `Unsupported`. A predictor maps this outcome to typed
+`Unsupported(RuntimeCapabilityUnavailable)` Evidence and cannot extrapolate a
+numeric result. An Unsupported Validation or HeldOut case cannot satisfy
+promotion or release.
 
 The one shared bundle schema is `loom.model_parameter_bundle 1.0`; Common
 identity framing supplies that schema descriptor rather than copying it into
@@ -2478,10 +2735,10 @@ authorization, readiness, semantic work, and the calibration partition check
 below. The generic plan does not acquire a parameter-specific type-refinement
 DSL.
 
-The initial contract is
-`ModelParameterContractRef("loom.fpa", 2.0, 0)`. Its prediction case set is
-exactly case kinds 0 and 1, and its ground-truth case set is exactly case kind
-5. For all three signatures, its feature projector consumes every
+The initial FPA contract is
+`ModelParameterContractRef("loom.fpa", 3.0, 0)`. Its prediction case set is
+exactly case kinds 0, 1, and 10, and its ground-truth model set contains exactly
+model kind 20. For all four derived signatures, its feature projector consumes every
 result-affecting Base condition: process corner, supply voltage, temperature,
 activity binding, and any present required-clock or relative-clock condition.
 The architecture cases target the exact Fabric-owned domains; the physical
@@ -2495,7 +2752,7 @@ Its prediction-schema descriptor bytes are exactly the FPA owner's canonical
 prediction finalization uses 18 significant decimal digits and
 `RoundToNearestTiesToEven`.
 
-Model kinds 7 and 8 consume this contract in model-input slot 0 and one exact
+Model kinds 7, 8, and 14 consume this contract in model-input slot 0 and one exact
 ImplementationPlatform in model-input slot 1. The platform supplies the
 TechnologyCorner owner needed by architecture-case conditions; the exact
 HardwareImplementation case recovers the same platform through its exact
@@ -2505,11 +2762,64 @@ projection invalid. The contract never treats two operating
 conditions as one prediction question merely because their structural subject
 matches.
 
-The FPA contract major changes because its case-signature refs and physical
-feature projector now admit the registry-2.0
-`loom.hardware_implementation 3.0` subject. Its prediction payload schema may
-remain `FpaMetricPredictionView 1.0`; unchanged coefficient bytes do not permit
-an old contract ref to acquire the new subject validator.
+FPA contract major 3 adds the Fabric-only prediction case, exact
+ground-truth-model target relation, support-region outcome, and target-key
+payload requirement. Its prediction payload schema remains
+`FpaMetricPredictionView 1.0`; unchanged output fields do not permit an older
+contract ref to acquire those new admission and inference semantics.
+
+The first kind-0 payload is a deterministic gradient-boosted decision-tree
+ensemble over the contract-owned typed tabular feature view, support-region
+summary, ground-truth target key, and four metric heads. Training may run in a
+separate process or library, but authoring must encode the result through this
+contract and every predictor invokes the registered in-process inference
+kernel. A later linear, neural, or other algorithm uses another exact
+`ModelParameterContractRef` with its own payload and inference owner; central
+DSE does not acquire an algorithm enum or a generic tensor format.
+
+For both initial tree contracts, the support-region summary is the exact
+Training envelope: each numeric feature records the inclusive minimum and
+maximum observed after canonical feature finalization, and each categorical or
+presence feature records the canonical nonempty set observed in Training.
+Inference is supported only when every field lies in that envelope. Validation
+and HeldOut never expand it. This is a typed OOD guard, not a confidence bound
+or feasibility proof; correlations inside the marginal envelope remain an
+ordinary model limitation measured by calibration.
+
+The initial System Runtime contract is
+`ModelParameterContractRef("loom.system_runtime", 1.0, 0)`. Its sole prediction
+case is kind 6 and its sole ground-truth model is kind 18. Its typed feature
+view projects the exact Deployment, Gem5 Simulation Binding, System workload,
+runtime input, mapped software partitioning, complete Fabric System,
+SystemMapping, and admitted runtime conditions. Its prediction view contains
+one whole-case `Runtime` point. Its target key fixes the gem5-CGRA descriptor,
+gem5 provider build, Bridge ABI, timing contract, and fidelity; the modeled
+platform remains a typed feature. DFG and RTL observations belong to model
+kinds 17 and 19 and cannot enter this bundle. The first payload uses the same
+deterministic gradient-boosted tabular family and in-process inference boundary
+as the FPA contract, with a distinct owner codec, feature view, support region,
+and parameter identity.
+
+Its prediction-schema descriptor bytes are exactly
+`u64be(35) || bytes("loom.system_runtime.prediction_view") || u32be(1) ||
+u32be(0) || u64be(1) || u32be(MetricKind::Runtime)`. The Runtime value is a
+canonical DecimalValue in seconds finalized to 18 significant digits with
+`RoundToNearestTiesToEven`. The view is ephemeral and has no confidence,
+condition copy, generic metric map, or independent identity.
+
+The System Runtime sample-group key is derived from the exact source-backed
+System workload and runtime input before Deployment, Fabric, Mapping, gem5
+replicate, or attempt. All hardware and software candidate observations for
+one source/input pair therefore remain in one partition, preventing the same
+application input from appearing in Training and HeldOut under different
+hardware. Target-key equality separately keeps provider and fidelity fixed.
+
+Model kind 16 consumes the System Runtime bundle. Model kind 15 validates it
+through case kind 11 and `RuntimePredictionError`. Case kind 11 uses the same
+strict import, exact target-key equality, sample-group partitioning, and
+Validation/HeldOut rules defined below for FPA calibration, substituting the
+System Runtime contract, model kind 18, and one required completed Runtime
+Point observation.
 
 Validation and held-out evaluation use case kind 4. Its complete subject shape
 is:
@@ -2537,8 +2847,10 @@ projection and sample-group derivation.
 
 Admission requires byte equality between the bundle contract's prediction
 schema descriptor and the FPA-owned descriptor; requires every source Request
-to use one of that contract's exact ground-truth case signatures; and requires
-every source Base condition to match and be consumed by the contract's table.
+to use one of that contract's exact ground-truth model descriptors; requires
+its contract-derived ground-truth target key to equal the bundle payload's
+target key; and requires every source Base condition to match and be consumed
+by the contract's table.
 Each source Evidence must be `Completed` and contain exactly one
 `WholeExactCase` `Point` observation for each of
 `LimitingClockFrequency`, `TotalArea`, `DynamicPower`, and `LeakagePower`.
@@ -2552,9 +2864,10 @@ implementation, or condition collections into an accidental Cartesian
 product.
 
 The calibration model derives features from each imported source case, calls
-the contract-owned `infer`, compares predictions with the corresponding
-ground-truth observations, and returns the registered whole-case calibration
-error metrics. Its descriptor fixes 18 significant decimal digits and
+the contract-owned `infer`, rejects an `Unsupported` sample for calibration,
+compares each Prediction with the corresponding ground-truth observations, and
+returns the registered whole-case calibration error metrics. Its descriptor
+fixes 18 significant decimal digits and
 `RoundToNearestTiesToEven` for the selected error result. Its Evidence therefore
 describes one exact bundle over one exact Evidence collection. Ordinary
 Promotion binds each candidate bundle to case role 0, binds role 1 from the
@@ -2608,9 +2921,10 @@ The closed core has one owner for every semantic fact:
   optimization policy;
 - `PlanOutputRef` owns all typed plan use-def, while Generate and Promote own
   central candidate expansion, Evidence acquisition, and narrowing;
-- the model-parameter contract registry owns payload, feature, inference, and
-  calibration-group semantics; model slots and trainers reference exact
-  contracts, while `ModelParameterBundle` owns immutable parameter identity;
+- the model-parameter contract registry owns payload, feature, target,
+  support-region, inference, and calibration-group semantics; model slots and
+  trainers reference exact contracts, while `ModelParameterBundle` owns
+  immutable parameter identity;
 - owner policies own semantic work limits;
 - domain Artifacts and Evidence own formal semantic results;
 - InvocationManifest owns one immutable occurrence summary;
@@ -2649,6 +2963,14 @@ Only these stable semantic anchors belong at this boundary:
 - FPA calibration rejects a foreign source case, an unconsumed Base condition,
   or a source Evidence lacking any of the four required completed Point
   observations; two activity or PVT payloads produce distinct feature views.
+- FPA and System Runtime calibration reject an exact ground-truth model or
+  target key different from the bundle, and no shared case or MetricKind can
+  merge provider or fidelity targets implicitly.
+- A valid feature view outside a bundle's support region produces typed
+  Unsupported Evidence without a numeric prediction; invalid input remains an
+  error, and Unsupported Validation or HeldOut cannot satisfy release.
+- The System Runtime contract accepts gem5-CGRA ground truth only, predicts one
+  whole-case Runtime, and cannot consume DFG or RTL execution as an alias.
 - Any pairwise overlap among training, validation, and held-out sample-group
   keys is rejected before training; distinct Evidence identities for one
   leakage group do not evade the check, and a held-out obligation cannot feed
@@ -2677,9 +2999,17 @@ Only these stable semantic anchors belong at this boundary:
 - Metric Point, interval, censored, and NotApplicable observations and Finding
   states exercise definitely true, definitely false, and indeterminate CNF
   outcomes without a numeric gate-deviation projection.
-- Template, Fabric rewrite, and implementation-flow generators preserve their
-  distinct typed owners while the central plan composes and deduplicates their
-  ordinary Artifact outputs.
+- Template, topology, microarchitecture, System-composition, and
+  implementation-flow generators preserve their distinct typed owners while
+  the central plan composes and deduplicates ordinary finalized Artifact
+  outputs; a rejected draft publishes nothing and cannot mutate its parent.
+- A joint plan alternates finite parent-local software and hardware batches,
+  and only an explicit bounded frontier join may form cross-parent pairs; no
+  implicit Cartesian product or Journal-owned current best appears.
+- A collection pilot and resumed campaign retain identical WorkUnitKeys and
+  accepted Evidence; hidden prerequisite work, a sample dependency slice above
+  600 seconds of active elapsed wall time, a campaign limit above 23 hours, or
+  treating timeout as a sample is rejected by the initial collection policy.
 - Candidate Generator admission rejects a missing slot, wrong cardinality,
   incompatible contract, or unreadable Artifact/Blob closure before external
   `prepare` is entered.

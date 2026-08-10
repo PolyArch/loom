@@ -8,7 +8,7 @@ artifact or report schema.
 
 ## Ownership
 
-The exact Evaluation registry schema 2.0 owns every `MetricKind`,
+The exact Evaluation registry schema 2.1 owns every `MetricKind`,
 `FindingKind`, `EvaluationConditionKind`, case, model, scope-form, and related
 registry ordinal. Its typed Metric and Finding registries are the semantic
 source of truth for compilation analysis, Mapping guidance, simulation, RTL
@@ -247,11 +247,11 @@ MetricValueDomain =
 `ClosedDecimalInterval` is legal only for a `DecimalValue` metric; its bounds
 use the descriptor's canonical unit and satisfy `lower <= upper`. Registry
 admission and Evidence validation use this one domain value; a model cannot add
-a private bound check or widen it. The four prediction-error kinds use
+a private bound check or widen it. The five prediction-error kinds use
 `ClosedDecimalInterval[0,2]`.
 
 Every registered MetricKind has a nonempty scope-form table. Evaluation
-registry 2.0 gives each initial metric one owner-defined form at
+registry 2.1 gives each initial metric one owner-defined form at
 `ScopeFormRef(0)`:
 
 ```text
@@ -267,6 +267,7 @@ LimitingClockFrequencyPredictionError form 0: WholeExactCase
 TotalAreaPredictionError              form 0: WholeExactCase
 DynamicPowerPredictionError           form 0: WholeExactCase
 LeakagePowerPredictionError           form 0: WholeExactCase
+RuntimePredictionError                form 0: WholeExactCase
 ```
 
 `Runtime` and the five whole-case physical metrics cover the exact evaluated
@@ -277,7 +278,7 @@ locally. A later clock-domain-specific form uses an exact target pattern rather
 than changing form 0. An empty scope-form table, an unknown form ordinal, or a
 model capability naming a form not owned by the MetricKind is invalid.
 
-The Evaluation registry 2.0 requirements are exact: `CycleCount` form 0 and
+The Evaluation registry 2.1 requirements are exact: `CycleCount` form 0 and
 `ClockPeriod` form 0 use `ExactCaseUniqueReferenceCycle`; every other form 0
 uses `NotRequired`. These descriptor fields, not duplicated switches in model
 registration or Request validation, control admissibility.
@@ -294,6 +295,7 @@ LimitingClockFrequencyPredictionError : DecimalValue in [0,2], one
 TotalAreaPredictionError              : DecimalValue in [0,2], one
 DynamicPowerPredictionError           : DecimalValue in [0,2], one
 LeakagePowerPredictionError           : DecimalValue in [0,2], one
+RuntimePredictionError                : DecimalValue in [0,2], one
 ```
 
 `ClockPeriod` remains the duration of one exact reference cycle.
@@ -327,16 +329,18 @@ network or a physical subject requiring more than one supply or activity
 clock is unsupported by this model and cannot publish a whole-case
 `MaximumVoltageDrop` result through it.
 
-Each prediction-error descriptor owns one permitted-and-required
+Each physical prediction-error descriptor owns one permitted-and-required
 request-condition pattern: `Quantile` with the exact
 `fpa_model_parameter_calibration` case signature and an empty target tuple.
-Thus each request is admitted only for that case and contains exactly one
-`Quantile`: the required pattern provides at least one and Quantile's empty
-assignment key rejects a duplicate. It reports the nearest-rank quantile over
-the case's nonempty ground-truth Evidence role. Case admission has already
-required one completed Point observation for each of the four source physical
-metrics, so every sample has one exact observed value. For one predicted value
-`p` and observed value `o`, the per-sample symmetric relative error is:
+`RuntimePredictionError` owns the corresponding pattern for
+`system_runtime_model_parameter_calibration`. Thus each request is admitted
+only for its calibration case and contains exactly one `Quantile`: the required
+pattern provides at least one and Quantile's empty assignment key rejects a
+duplicate. It reports the nearest-rank quantile over the case's nonempty
+ground-truth Evidence role. Case admission has already required one completed
+Point observation for the applicable source metric, so every sample has one
+exact observed value. For one predicted value `p` and observed value `o`, the
+per-sample symmetric relative error is:
 
 ```text
 0                                      when p = 0 and o = 0
@@ -409,7 +413,7 @@ codec owned by Simulation Artifacts. The concrete witness instance is owned by
 the referenced `SimulationExecution`; Evidence never copies it. Nonterminal
 findings select their Finding-registry-owned inline occurrence codecs.
 
-Evaluation registry 2.0 reserves finding ordinal `0` for
+Evaluation registry 2.1 reserves finding ordinal `0` for
 `functional_mismatch`. Its only
 scope form is `WholeExactCase`, and its occurrence schema is
 `evaluation.functional_mismatch.1.0`. The occurrence is a zero-field typed
@@ -535,7 +539,7 @@ For a Base pattern stored by a case signature, the pattern's exact
 patterns retain the explicit signature because their registry owners can serve
 more than one case.
 
-Evaluation registry 2.0 has these condition kinds:
+Evaluation registry 2.1 has these condition kinds:
 
 ```text
 ProcessCorner {
@@ -610,7 +614,7 @@ must prove that its model accepts the selected payload kind, window, coverage,
 and exact source-to-target lineage. Missing targets in a partial summary are
 unknown and cannot be interpreted as zero or filled by a hidden default.
 
-Evaluation registry 2.0 contains the typed `ExecutionActivity` source form.
+Evaluation registry 2.1 contains the typed `ExecutionActivity` source form.
 Consuming it requires an activity-summary adopter for
 `loom.simulation_execution 1.0`, an ordinal resolver, same-Request validation,
 and exact source-to-target lineage validation. The SimulationExecution root,
@@ -626,7 +630,7 @@ transition density is nonnegative and is measured per selected clock. An
 assumption requiring richer activity must use an exact execution summary or be
 introduced later as a new typed condition, never as an opaque property bag.
 
-`Quantile` is request-specific and Metric-only in Evaluation registry 2.0. Its
+`Quantile` is request-specific and Metric-only in Evaluation registry 2.1. Its
 probability is in `[0,1]`. Sample aggregation uses nearest-rank semantics:
 after canonical sorting of a nonempty sample set, `q = 0` selects the first
 sample and otherwise selects zero-based index `ceil(q * N) - 1`. A different
@@ -638,7 +642,7 @@ MetricRequest condition set and is rejected in Base and FindingRequest
 condition sets before request canonicalization. Finding descriptors and models
 cannot widen that location set through their capability tables.
 
-The other six kinds are Base-only in Evaluation registry 2.0. Their assignment
+The other six kinds are Base-only in Evaluation registry 2.1. Their assignment
 keys are, respectively, target, power domain, thermal domain or root, clock
 domain, ordered clock pair, and activity target. `Quantile` has one empty
 assignment key within its containing request.
@@ -771,7 +775,7 @@ Metric, finding, scope, condition, Decimal, and result encodings are reusable
 value schemas inside `evaluation.request.1.0` and
 `evaluation.evidence.1.0`. Standalone query wires have their own exact roots:
 `evaluation.metric_query 1.0` and `evaluation.finding_query 1.0`. Those wire
-owners carry Evaluation registry 2.0 kind and scope-form references without
+owners carry Evaluation registry 2.1 kind and scope-form references without
 owning or renumbering the referenced registries. `ExactRatio` is the same
 canonical scalar wire wherever an exact typed reference-cycle coordinate or
 phase is required, including `SimulationExecution`; consumers must not
@@ -818,9 +822,9 @@ Stable tests cover:
   malformed-payload, and unresolved-corner rejection;
 * value-domain, interval, censored, and not-applicable validation;
 * deterministic query ordering and duplicate rejection;
-* symmetric prediction-error zero handling, exact pre-rounding order, fixed
-  nearest-rank median and P90, and rejection of a missing or duplicate Quantile
-  condition;
+* symmetric physical and runtime prediction-error zero handling, exact
+  pre-rounding order, fixed nearest-rank median and P90, calibration-case
+  separation, and rejection of a missing or duplicate Quantile condition;
 * activity-summary ordinal resolution, destination-target compatibility,
   missing-is-unknown behavior, and rejection of incompatible payload,
   coverage, or lineage, plus deterministic owner-unavailable rejection before
