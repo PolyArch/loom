@@ -62,7 +62,7 @@ private:
 llvm::Expected<ModuleRootCirctSkeleton>
 buildModuleRootCirctSkeleton(mlir::MLIRContext &context,
                              fabric::SpatialCoreOccurrenceRef spatialCore,
-                             const ConfigurationABI &configurationAbi);
+                             const FinalizedConfigurationABI &configurationAbi);
 
 llvm::Error verifyCommonCirctSkeleton(
     mlir::ModuleOp module, const ConfigurationABI &configurationAbi,

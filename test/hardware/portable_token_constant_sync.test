@@ -30,9 +30,12 @@
 # ZERO: output valid_output_0
 # ZERO-NOT: always @
 
-# SYSTEM: module loom_module
-# SYSTEM: input clock
-# SYSTEM: reset
-# SYSTEM: always @(posedge clock
+# SYSTEM-LABEL: module loom_operation_shell_
 # SYSTEM: result_valid_0_reg
 # SYSTEM: result_valid_1_reg
+# SYSTEM: always @(posedge clock
+# SYSTEM-LABEL: module loom_module
+# SYSTEM: input clock
+# SYSTEM: reset
+# SYSTEM: cfg_awaddr
+# SYSTEM: cfg_rdata

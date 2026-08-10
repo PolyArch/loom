@@ -1,6 +1,8 @@
 add_library(LoomHardwareRTL
   CirctConformance.cpp
   CommonSkeleton.cpp
+  ConfigurationTransport.cpp
+  Hierarchy/ConfigurationController.cpp
   Hierarchy/FuPe.cpp
   Hierarchy/ModuleHierarchy.cpp
   Hierarchy/OperationShell.cpp

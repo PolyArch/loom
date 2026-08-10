@@ -4,10 +4,10 @@
 # RUN: verilator --version | FileCheck %s --check-prefix=VERILATOR
 # RUN: yosys -V | FileCheck %s --check-prefix=YOSYS
 # RUN: cd %t/transport && verilator --binary --timing --Wall --Wno-fatal -CFLAGS '-std=c++20' --top-module atomic_transport_testbench atomic_transport_module.sv atomic_transport_testbench.sv --Mdir obj_dir
-# RUN: %t/transport/obj_dir/Vatomic_transport_testbench
+# RUN: timeout 30s %t/transport/obj_dir/Vatomic_transport_testbench
 # RUN: cd %t/transport && yosys -q -s atomic_transport.ys
 # RUN: cd %t/skeleton && verilator --binary --timing --Wall --Wno-fatal --Wno-UNUSEDSIGNAL -CFLAGS '-std=c++20' --top-module control_stream_testbench control_stream_module.sv control_stream_testbench.sv --Mdir obj_dir
-# RUN: %t/skeleton/obj_dir/Vcontrol_stream_testbench
+# RUN: timeout 30s %t/skeleton/obj_dir/Vcontrol_stream_testbench
 # RUN: cd %t/skeleton && yosys -q -s control_stream.ys
 
 # VERILATOR: Verilator 5.050

@@ -1,6 +1,7 @@
 #include "Components.h"
 
 #include "Fabric/IR/FabricOps.h"
+#include "Fabric/IR/ResourceContract.h"
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
 
 #include "circt/Dialect/Comb/CombOps.h"
@@ -9,9 +10,12 @@
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -33,50 +37,86 @@ const EndpointPlan *findEndpoint(llvm::ArrayRef<EndpointPlan> endpoints,
 
 void appendComponentPorts(mlir::OpBuilder &builder,
                           const ConfigurationABI &configurationAbi,
+                          const ConfigurationTransportLayout &transportLayout,
                           llvm::ArrayRef<EndpointPlan> endpoints,
                           llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs,
                           llvm::SmallVectorImpl<circt::hw::PortInfo> &outputs,
                           bool stateful = false) {
   if (stateful)
-    appendClockResetAndConfigurationPorts(builder, configurationAbi, inputs);
-  else
-    for (const ProgrammingUnit &unit : configurationAbi.programmingUnits())
+    appendClockResetAndConfigurationPorts(builder, configurationAbi,
+                                          transportLayout, inputs);
+  else {
+    for (auto [ordinal, transportUnit] :
+         llvm::enumerate(transportLayout.units)) {
+      const ProgrammingUnit *unit = configurationAbi.findProgrammingUnit(
+          transportUnit.programmingUnit.unitId);
+      if (!unit)
+        continue;
       inputs.push_back(circt::hw::PortInfo{
-          {builder.getStringAttr(configurationPortName(unit.id)),
-           builder.getIntegerType(static_cast<unsigned>(unit.payloadBitCount)),
+          {builder.getStringAttr(configurationPortName(ordinal)),
+           builder.getIntegerType(static_cast<unsigned>(unit->payloadBitCount)),
            circt::hw::ModulePort::Direction::Input}});
+    }
+  }
   for (const EndpointPlan &endpoint : endpoints)
     appendEndpointPorts(inputs, outputs, endpoint);
-}
-
-llvm::Expected<std::uint64_t>
-singleSelectedBit(llvm::ArrayRef<std::uint8_t> bytes, std::uint64_t bitCount) {
-  std::optional<std::uint64_t> selected;
-  for (std::uint64_t bit = 0; bit < bitCount; ++bit)
-    if (((bytes[static_cast<std::size_t>(bit / 8)] >> (bit % 8)) & 1U) != 0) {
-      if (selected)
-        return invalid("one traversal carrier selects multiple bits");
-      selected = bit;
-    }
-  if (!selected)
-    return invalid("one traversal carrier selects no bit");
-  return *selected;
 }
 
 struct SwitchRoute final {
   const EndpointPlan *input = nullptr;
   const EndpointPlan *output = nullptr;
+  fabric::FabricOrdinal inputOrdinal = 0;
+  fabric::FabricOrdinal outputOrdinal = 0;
   std::uint64_t configurationBit = 0;
 };
 
+struct SwitchArbitrationComponent final {
+  std::vector<unsigned> inputs;
+  std::vector<unsigned> outputs;
+  std::vector<unsigned> requesterOrder;
+  std::optional<unsigned> roundRobinResetPosition;
+};
+
+std::vector<unsigned> switchComponents(unsigned inputCount,
+                                       unsigned outputCount,
+                                       llvm::ArrayRef<SwitchRoute> routes) {
+  std::vector<unsigned> parent(inputCount + outputCount);
+  for (unsigned index = 0; index != parent.size(); ++index)
+    parent[index] = index;
+  const auto root = [&](unsigned value) {
+    while (parent[value] != value) {
+      parent[value] = parent[parent[value]];
+      value = parent[value];
+    }
+    return value;
+  };
+  for (const SwitchRoute &route : routes) {
+    unsigned input = static_cast<unsigned>(route.inputOrdinal);
+    unsigned output = inputCount + static_cast<unsigned>(route.outputOrdinal);
+    input = root(input);
+    output = root(output);
+    if (input != output)
+      parent[output] = input;
+  }
+  std::vector<unsigned> result(parent.size());
+  for (unsigned index = 0; index != parent.size(); ++index)
+    result[index] = root(index);
+  return result;
+}
+
+unsigned counterWidth(std::uint64_t bound);
+
 llvm::Expected<SwitchModule>
-buildSpatialSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
-                         fabric::SpatialCoreOccurrenceRef spatialCore,
-                         const fabric::FabricArtifactView &fabric,
-                         const ConfigurationABI &configurationAbi,
-                         fabric::FabricSwitchOccurrenceRef sw) {
-  if (fabric.switchSchedule(sw) != ::fabric::Schedule::Spatial)
-    return unsupported("Temporal switch hierarchy lowering is not implemented");
+buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
+                  fabric::SpatialCoreOccurrenceRef spatialCore,
+                  const fabric::FabricArtifactView &fabric,
+                  const ConfigurationABI &configurationAbi,
+                  const ConfigurationTransportLayout &transportLayout,
+                  const ClockResetPlan &clockReset,
+                  fabric::FabricSwitchOccurrenceRef sw) {
+  const std::optional<::fabric::Schedule> schedule = fabric.switchSchedule(sw);
+  if (!schedule)
+    return invalid("switch has no exact schedule");
   auto endpoints = deriveEndpointPlans(
       builder, fabric, fabric::FabricTransportEndpointOwnerRef::of(sw));
   if (!endpoints)
@@ -85,7 +125,8 @@ buildSpatialSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
       fabric::FabricConfigurationOwnerRef(
           fabric::FabricInventoryOwnerRef::of(sw)),
       0};
-  auto decoder = prepareFieldDecoder(spatialCore, field, configurationAbi);
+  auto decoder = prepareFieldDecoder(spatialCore, field, configurationAbi,
+                                     transportLayout);
   if (!decoder)
     return decoder.takeError();
   auto relation = fabric.semanticFieldRelation(
@@ -95,7 +136,7 @@ buildSpatialSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
     return relation.takeError();
   if (relation->kind() != fabric::FabricSemanticFieldRelationKind::Direct ||
       relation->directEncodedBitCount() != decoder->encodedBitCount)
-    return invalid("Spatial switch field is not its exact direct carrier");
+    return invalid("switch field is not its exact direct carrier");
 
   std::vector<SwitchRoute> routes;
   for (const fabric::FabricPhysicalTraversalView &traversal :
@@ -113,61 +154,309 @@ buildSpatialSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
         *endpoints, fabric::FabricPortDirection::Output, payload.output);
     if (!input || !output)
       return invalid("switch traversal names an absent endpoint");
-    auto semantic = fabric::encodeSpatialSwitchConfiguration(
-        fabric, field, {traversal.reference});
-    if (!semantic)
-      return semantic.takeError();
-    auto bit = singleSelectedBit(semantic->bytes(), decoder->encodedBitCount);
-    if (!bit)
-      return bit.takeError();
-    routes.push_back({input, output, *bit});
+    routes.push_back(
+        {input, output, payload.input, payload.output, std::uint64_t(0)});
   }
   if (routes.empty())
-    return invalid("Spatial switch has no admitted traversal");
+    return invalid("switch has no admitted traversal");
+  llvm::sort(routes, [](const SwitchRoute &lhs, const SwitchRoute &rhs) {
+    return std::tie(lhs.outputOrdinal, lhs.inputOrdinal) <
+           std::tie(rhs.outputOrdinal, rhs.inputOrdinal);
+  });
+  for (auto [ordinal, route] : llvm::enumerate(routes))
+    route.configurationBit = ordinal;
+
+  unsigned inputCount = 0;
+  unsigned outputCount = 0;
+  std::vector<const EndpointPlan *> inputEndpoints;
+  std::vector<const EndpointPlan *> outputEndpoints;
+  for (const EndpointPlan &endpoint : *endpoints) {
+    if (endpoint.direction == fabric::FabricPortDirection::Input)
+      inputCount = std::max(inputCount,
+                            static_cast<unsigned>(endpoint.localOrdinal + 1));
+    else
+      outputCount = std::max(outputCount,
+                             static_cast<unsigned>(endpoint.localOrdinal + 1));
+  }
+  inputEndpoints.resize(inputCount);
+  outputEndpoints.resize(outputCount);
+  for (const EndpointPlan &endpoint : *endpoints) {
+    auto &slot = endpoint.direction == fabric::FabricPortDirection::Input
+                     ? inputEndpoints[endpoint.localOrdinal]
+                     : outputEndpoints[endpoint.localOrdinal];
+    if (slot)
+      return invalid("switch endpoint ordinal is duplicated");
+    slot = &endpoint;
+  }
+  if (llvm::is_contained(inputEndpoints, nullptr) ||
+      llvm::is_contained(outputEndpoints, nullptr))
+    return invalid("switch endpoint domain is not dense");
+
+  const std::vector<unsigned> componentRoots =
+      switchComponents(inputCount, outputCount, routes);
+  std::map<unsigned, SwitchArbitrationComponent> componentsByRoot;
+  for (unsigned input = 0; input != inputCount; ++input)
+    componentsByRoot[componentRoots[input]].inputs.push_back(input);
+  for (unsigned output = 0; output != outputCount; ++output)
+    componentsByRoot[componentRoots[inputCount + output]].outputs.push_back(
+        output);
+
+  const ::fabric::ResourceContract *contract =
+      fabric.resourceContract(fabric::FabricInventoryOwnerRef::of(sw));
+  if (!contract)
+    return invalid("switch has no exact ResourceContract");
+  const std::optional<::fabric::GrantPolicyView> policy =
+      contract->grantPolicy();
+  std::vector<unsigned> fullOrder;
+  std::optional<unsigned> resetRequester;
+  bool roundRobin = false;
+  if (policy) {
+    if (const auto *fixed =
+            std::get_if<::fabric::FixedPriorityView>(&*policy)) {
+      for (::fabric::RequesterKey requester : fixed->requesterOrder())
+        fullOrder.push_back(requester.ordinal());
+    } else {
+      const auto &typed = std::get<::fabric::RoundRobinView>(*policy);
+      roundRobin = true;
+      for (::fabric::RequesterKey requester : typed.requesterCycle())
+        fullOrder.push_back(requester.ordinal());
+      resetRequester = typed.resetCursor().ordinal();
+    }
+  }
+  std::vector<SwitchArbitrationComponent> components;
+  components.reserve(componentsByRoot.size());
+  for (auto &[root, component] : componentsByRoot) {
+    (void)root;
+    if (policy) {
+      for (unsigned requester : fullOrder)
+        if (llvm::is_contained(component.inputs, requester))
+          component.requesterOrder.push_back(requester);
+      if (component.requesterOrder.size() != component.inputs.size())
+        return invalid("switch GrantPolicy omits a requester");
+      if (roundRobin) {
+        const auto reset = llvm::find(fullOrder, *resetRequester);
+        if (reset == fullOrder.end())
+          return invalid("switch reset requester is outside its policy");
+        const unsigned resetOrdinal =
+            static_cast<unsigned>(reset - fullOrder.begin());
+        unsigned bestDistance = std::numeric_limits<unsigned>::max();
+        unsigned bestPosition = 0;
+        for (auto [position, requester] :
+             llvm::enumerate(component.requesterOrder)) {
+          const auto found = llvm::find(fullOrder, requester);
+          const unsigned ordinal =
+              static_cast<unsigned>(found - fullOrder.begin());
+          const unsigned distance =
+              ordinal >= resetOrdinal
+                  ? ordinal - resetOrdinal
+                  : static_cast<unsigned>(fullOrder.size()) - resetOrdinal +
+                        ordinal;
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestPosition = static_cast<unsigned>(position);
+          }
+        }
+        component.roundRobinResetPosition = bestPosition;
+      }
+    } else {
+      component.requesterOrder = component.inputs;
+      if (*schedule == ::fabric::Schedule::Temporal &&
+          component.inputs.size() != 1)
+        return invalid("contending switch component has no GrantPolicy");
+    }
+    components.push_back(std::move(component));
+  }
+
+  std::uint64_t temporalEntryCount = 0;
+  std::uint64_t temporalTagWidth = 0;
+  std::uint64_t temporalEntryWidth = 0;
+  if (*schedule == ::fabric::Schedule::Temporal) {
+    temporalEntryCount = fabric.switchRouteTableSize(sw);
+    temporalTagWidth = inputEndpoints.front()->dataPath.tagWidthBits;
+    temporalEntryWidth = 1 + temporalTagWidth + routes.size();
+    if (temporalEntryCount == 0 || temporalTagWidth == 0 ||
+        temporalEntryCount > UINT64_MAX / temporalEntryWidth ||
+        temporalEntryCount * temporalEntryWidth != decoder->encodedBitCount)
+      return invalid("Temporal switch direct carrier has the wrong shape");
+  } else if (*schedule == ::fabric::Schedule::Spatial) {
+    if (routes.size() != decoder->encodedBitCount)
+      return invalid("Spatial switch direct carrier has the wrong shape");
+  } else {
+    return invalid("switch schedule is outside the closed domain");
+  }
 
   llvm::SmallVector<circt::hw::PortInfo, 16> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 16> outputs;
-  appendComponentPorts(builder, configurationAbi, *endpoints, inputs, outputs);
+  appendComponentPorts(builder, configurationAbi, transportLayout, *endpoints,
+                       inputs, outputs, roundRobin);
   std::optional<std::string> materializationError;
   auto module = circt::hw::HWModuleOp::create(
       builder, location,
-      builder.getStringAttr("loom_spatial_switch_" + std::to_string(sw.id())),
+      builder.getStringAttr("loom_fabric_switch_" + std::to_string(sw.id())),
       circt::hw::ModulePortInfo(inputs, outputs),
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
         mlir::Value fieldSignal =
             decodeFieldSignal(bodyBuilder, location, accessor, *decoder);
-        std::vector<mlir::Value> selected;
-        selected.reserve(routes.size());
-        for (const SwitchRoute &route : routes)
-          selected.push_back(selectedBit(bodyBuilder, location, fieldSignal,
-                                         route.configurationBit));
-
-        for (const EndpointPlan &inputEndpoint : *endpoints) {
-          if (inputEndpoint.direction != fabric::FabricPortDirection::Input)
-            continue;
-          llvm::SmallVector<mlir::Value> allSelectedReady;
-          llvm::SmallVector<mlir::Value> anySelected;
-          for (auto [index, route] : llvm::enumerate(routes)) {
-            if (route.input != &inputEndpoint)
-              continue;
-            anySelected.push_back(selected[index]);
-            allSelectedReady.push_back(circt::comb::OrOp::create(
-                bodyBuilder, location,
-                circt::comb::createOrFoldNot(bodyBuilder, location,
-                                             selected[index]),
-                accessor.getInput(route.output->ready.getName())));
+        std::vector<std::vector<mlir::Value>> requestedRoute(
+            inputCount,
+            std::vector<mlir::Value>(
+                outputCount, bitConstant(bodyBuilder, location, false)));
+        for (const SwitchRoute &route : routes) {
+          mlir::Value selected = bitConstant(bodyBuilder, location, false);
+          if (*schedule == ::fabric::Schedule::Spatial) {
+            selected = selectedBit(bodyBuilder, location, fieldSignal,
+                                   route.configurationBit);
+          } else {
+            for (std::uint64_t entry = 0; entry != temporalEntryCount;
+                 ++entry) {
+              const std::uint64_t base = entry * temporalEntryWidth;
+              mlir::Value valid =
+                  selectedBit(bodyBuilder, location, fieldSignal, base);
+              mlir::Value tag = circt::comb::ExtractOp::create(
+                  bodyBuilder, location, fieldSignal, base + 1,
+                  temporalTagWidth);
+              mlir::Value matches = circt::comb::ICmpOp::create(
+                  bodyBuilder, location, circt::comb::ICmpPredicate::eq, tag,
+                  accessor.getInput(route.input->tag->getName()), true);
+              mlir::Value crosspoint = selectedBit(
+                  bodyBuilder, location, fieldSignal,
+                  base + 1 + temporalTagWidth + route.configurationBit);
+              selected = circt::comb::OrOp::create(
+                  bodyBuilder, location, selected,
+                  andValues(bodyBuilder, location,
+                            {valid, matches, crosspoint}));
+            }
           }
-          accessor.setOutput(
-              inputEndpoint.ready.getName(),
-              andValues(bodyBuilder, location,
-                        {orValues(bodyBuilder, location, anySelected),
-                         andValues(bodyBuilder, location, allSelectedReady)}));
+          requestedRoute[route.inputOrdinal][route.outputOrdinal] = selected;
         }
 
-        for (const EndpointPlan &outputEndpoint : *endpoints) {
-          if (outputEndpoint.direction != fabric::FabricPortDirection::Output)
+        std::vector<mlir::Value> requested(inputCount);
+        for (unsigned input = 0; input != inputCount; ++input)
+          requested[input] = andValues(
+              bodyBuilder, location,
+              {accessor.getInput(inputEndpoints[input]->valid.getName()),
+               orValues(bodyBuilder, location, requestedRoute[input])});
+
+        std::vector<mlir::Value> selectedInput(
+            inputCount, bitConstant(bodyBuilder, location, false));
+        std::optional<circt::BackedgeBuilder> backedges;
+        if (roundRobin)
+          backedges.emplace(bodyBuilder, location);
+        for (const SwitchArbitrationComponent &component : components) {
+          const auto deriveSelection = [&](llvm::ArrayRef<unsigned> order) {
+            std::vector<mlir::Value> selected(
+                inputCount, bitConstant(bodyBuilder, location, false));
+            std::vector<mlir::Value> reserved(
+                outputCount, bitConstant(bodyBuilder, location, false));
+            for (unsigned input : order) {
+              llvm::SmallVector<mlir::Value> conflicts;
+              for (unsigned output : component.outputs)
+                conflicts.push_back(andValues(
+                    bodyBuilder, location,
+                    {requestedRoute[input][output], reserved[output]}));
+              selected[input] =
+                  andValues(bodyBuilder, location,
+                            {requested[input],
+                             circt::comb::createOrFoldNot(
+                                 bodyBuilder, location,
+                                 orValues(bodyBuilder, location, conflicts))});
+              for (unsigned output : component.outputs)
+                reserved[output] = circt::comb::OrOp::create(
+                    bodyBuilder, location, reserved[output],
+                    andValues(
+                        bodyBuilder, location,
+                        {selected[input], requestedRoute[input][output]}));
+            }
+            return selected;
+          };
+
+          if (!component.roundRobinResetPosition) {
+            std::vector<mlir::Value> selected =
+                deriveSelection(component.requesterOrder);
+            for (unsigned input : component.inputs)
+              selectedInput[input] = selected[input];
             continue;
+          }
+
+          const unsigned cursorWidth =
+              counterWidth(component.requesterOrder.size());
+          circt::Backedge cursorNext =
+              backedges->get(bodyBuilder.getIntegerType(cursorWidth));
+          mlir::Value cursor = createRegister(
+              bodyBuilder, location, cursorNext, accessor.getInput("clock"),
+              accessor.getInput("reset"),
+              llvm::APInt(cursorWidth, *component.roundRobinResetPosition),
+              "round_robin_cursor_" + std::to_string(component.inputs.front()) +
+                  "_reg",
+              clockReset.asynchronousReset);
+          mlir::Value nextCursor = cursor;
+          for (unsigned start = 0; start != component.requesterOrder.size();
+               ++start) {
+            std::vector<unsigned> order;
+            order.reserve(component.requesterOrder.size());
+            for (unsigned offset = 0; offset != component.requesterOrder.size();
+                 ++offset)
+              order.push_back(
+                  component.requesterOrder[(start + offset) %
+                                           component.requesterOrder.size()]);
+            std::vector<mlir::Value> selected = deriveSelection(order);
+            mlir::Value cursorIs = circt::comb::ICmpOp::create(
+                bodyBuilder, location, circt::comb::ICmpPredicate::eq, cursor,
+                circt::hw::ConstantOp::create(bodyBuilder, location,
+                                              llvm::APInt(cursorWidth, start)),
+                true);
+            mlir::Value candidateNext = circt::hw::ConstantOp::create(
+                bodyBuilder, location, llvm::APInt(cursorWidth, start));
+            for (unsigned offset = 0; offset != order.size(); ++offset) {
+              const unsigned input = order[offset];
+              selectedInput[input] = circt::comb::OrOp::create(
+                  bodyBuilder, location, selectedInput[input],
+                  andValues(bodyBuilder, location,
+                            {cursorIs, selected[input]}));
+              llvm::SmallVector<mlir::Value> allReady;
+              for (unsigned output : component.outputs)
+                allReady.push_back(circt::comb::OrOp::create(
+                    bodyBuilder, location,
+                    circt::comb::createOrFoldNot(bodyBuilder, location,
+                                                 requestedRoute[input][output]),
+                    accessor.getInput(
+                        outputEndpoints[output]->ready.getName())));
+              mlir::Value fire =
+                  andValues(bodyBuilder, location,
+                            {selected[input],
+                             andValues(bodyBuilder, location, allReady)});
+              const unsigned next = (start + offset + 1) % order.size();
+              candidateNext = circt::comb::MuxOp::create(
+                  bodyBuilder, location, fire,
+                  circt::hw::ConstantOp::create(bodyBuilder, location,
+                                                llvm::APInt(cursorWidth, next)),
+                  candidateNext, true);
+            }
+            nextCursor =
+                circt::comb::MuxOp::create(bodyBuilder, location, cursorIs,
+                                           candidateNext, nextCursor, true);
+          }
+          cursorNext.setValue(nextCursor);
+        }
+
+        for (unsigned input = 0; input != inputCount; ++input) {
+          llvm::SmallVector<mlir::Value> allReady;
+          for (unsigned output = 0; output != outputCount; ++output)
+            allReady.push_back(circt::comb::OrOp::create(
+                bodyBuilder, location,
+                circt::comb::createOrFoldNot(bodyBuilder, location,
+                                             requestedRoute[input][output]),
+                accessor.getInput(outputEndpoints[output]->ready.getName())));
+          accessor.setOutput(
+              inputEndpoints[input]->ready.getName(),
+              andValues(bodyBuilder, location,
+                        {selectedInput[input],
+                         andValues(bodyBuilder, location, allReady)}));
+        }
+
+        for (unsigned output = 0; output != outputCount; ++output) {
+          const EndpointPlan &outputEndpoint = *outputEndpoints[output];
           mlir::Value data =
               outputEndpoint.data
                   ? circt::hw::ConstantOp::create(
@@ -182,49 +471,49 @@ buildSpatialSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                         llvm::APInt(outputEndpoint.dataPath.tagWidthBits, 0))
                   : mlir::Value{};
           llvm::SmallVector<mlir::Value> validTerms;
-          for (auto [index, route] : llvm::enumerate(routes)) {
-            if (route.output != &outputEndpoint)
-              continue;
+          for (unsigned input = 0; input != inputCount; ++input) {
+            const EndpointPlan &inputEndpoint = *inputEndpoints[input];
+            mlir::Value selected = andValues(
+                bodyBuilder, location,
+                {selectedInput[input], requestedRoute[input][output]});
             llvm::SmallVector<mlir::Value> peerReady;
-            for (auto [peerIndex, peer] : llvm::enumerate(routes)) {
-              if (peer.input != route.input || peer.output == route.output)
+            for (unsigned peer = 0; peer != outputCount; ++peer) {
+              if (peer == output)
                 continue;
               peerReady.push_back(circt::comb::OrOp::create(
                   bodyBuilder, location,
                   circt::comb::createOrFoldNot(bodyBuilder, location,
-                                               selected[peerIndex]),
-                  accessor.getInput(peer.output->ready.getName())));
+                                               requestedRoute[input][peer]),
+                  accessor.getInput(outputEndpoints[peer]->ready.getName())));
             }
-            validTerms.push_back(
-                andValues(bodyBuilder, location,
-                          {selected[index],
-                           accessor.getInput(route.input->valid.getName()),
-                           andValues(bodyBuilder, location, peerReady)}));
+            validTerms.push_back(andValues(
+                bodyBuilder, location,
+                {selected, andValues(bodyBuilder, location, peerReady)}));
             auto adapted = adaptForwardTransportSignals(
-                bodyBuilder, location, route.input->dataPath,
+                bodyBuilder, location, inputEndpoint.dataPath,
                 outputEndpoint.dataPath,
                 ForwardTransportSignals{
-                    accessor.getInput(route.input->valid.getName()),
-                    route.input->data
+                    accessor.getInput(inputEndpoint.valid.getName()),
+                    inputEndpoint.data
                         ? std::optional<mlir::Value>{accessor.getInput(
-                              route.input->data->getName())}
+                              inputEndpoint.data->getName())}
                         : std::nullopt,
-                    route.input->tag
+                    inputEndpoint.tag
                         ? std::optional<mlir::Value>{accessor.getInput(
-                              route.input->tag->getName())}
+                              inputEndpoint.tag->getName())}
                         : std::nullopt});
             if (!adapted) {
               materializationError = llvm::toString(adapted.takeError());
+              if (backedges)
+                backedges->abandon();
               return;
             }
             if (outputEndpoint.data)
-              data = circt::comb::MuxOp::create(bodyBuilder, location,
-                                                selected[index],
+              data = circt::comb::MuxOp::create(bodyBuilder, location, selected,
                                                 *adapted->payload, data, true);
             if (outputEndpoint.tag)
-              tag = circt::comb::MuxOp::create(bodyBuilder, location,
-                                               selected[index], *adapted->tag,
-                                               tag, true);
+              tag = circt::comb::MuxOp::create(bodyBuilder, location, selected,
+                                               *adapted->tag, tag, true);
           }
           if (outputEndpoint.data)
             accessor.setOutput(outputEndpoint.data->getName(), data);
@@ -266,6 +555,7 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
                 fabric::SpatialCoreOccurrenceRef spatialCore,
                 const fabric::FabricArtifactView &fabric,
                 const ConfigurationABI &configurationAbi,
+                const ConfigurationTransportLayout &transportLayout,
                 const ClockResetPlan &clockReset,
                 fabric::FabricFifoOccurrenceRef fifo) {
   auto canonical = findCanonicalEntityOperation(fabric, fifo.id());
@@ -291,7 +581,8 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
       fabric::FabricConfigurationOwnerRef(
           fabric::FabricInventoryOwnerRef::of(fifo)),
       0};
-  auto prepared = prepareFiniteField(spatialCore, field, configurationAbi);
+  auto prepared =
+      prepareFiniteField(spatialCore, field, configurationAbi, transportLayout);
   if (!prepared)
     return prepared.takeError();
   auto bufferedSemantic = fabric::encodeFabricFifoConfiguration(
@@ -316,8 +607,8 @@ buildFifoModule(mlir::OpBuilder &builder, mlir::Location location,
 
   llvm::SmallVector<circt::hw::PortInfo, 16> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 16> outputs;
-  appendComponentPorts(builder, configurationAbi, *endpoints, inputs, outputs,
-                       true);
+  appendComponentPorts(builder, configurationAbi, transportLayout, *endpoints,
+                       inputs, outputs, true);
   std::optional<std::string> materializationError;
   auto module = circt::hw::HWModuleOp::create(
       builder, location,
@@ -530,6 +821,7 @@ buildBoundaryModule(mlir::OpBuilder &builder, mlir::Location location,
                     fabric::SpatialCoreOccurrenceRef spatialCore,
                     const fabric::FabricArtifactView &fabric,
                     const ConfigurationABI &configurationAbi,
+                    const ConfigurationTransportLayout &transportLayout,
                     fabric::FabricBoundaryOccurrenceRef boundary) {
   auto canonical = findCanonicalEntityOperation(fabric, boundary.id());
   if (!canonical)
@@ -537,45 +829,62 @@ buildBoundaryModule(mlir::OpBuilder &builder, mlir::Location location,
   auto operation = mlir::dyn_cast<::fabric::BoundaryOp>(*canonical);
   if (!operation)
     return invalid("boundary occurrence entity does not name fabric.boundary");
-  if (operation.getDirection() != ::fabric::BoundaryDirection::S2t ||
-      operation.getNumOperands() != 2 || operation.getNumResults() != 1)
-    return unsupported(
-        "hierarchical boundary lowering currently supports two-input s2t");
   auto endpoints = deriveEndpointPlans(
       builder, fabric, fabric::FabricTransportEndpointOwnerRef::of(boundary));
   if (!endpoints)
     return endpoints.takeError();
-  const EndpointPlan *dataInput =
-      findEndpoint(*endpoints, fabric::FabricPortDirection::Input, 0);
-  const EndpointPlan *tagInput =
-      findEndpoint(*endpoints, fabric::FabricPortDirection::Input, 1);
-  const EndpointPlan *output =
-      findEndpoint(*endpoints, fabric::FabricPortDirection::Output, 0);
-  if (!dataInput || !tagInput || !output || endpoints->size() != 3 ||
-      !output->tag || !tagInput->data)
-    return invalid("s2t boundary endpoint inventory is incomplete");
   const fabric::FabricSemanticConfigFieldRef field{
       fabric::FabricConfigurationOwnerRef(
           fabric::FabricInventoryOwnerRef::of(boundary)),
       0};
-  auto prepared = prepareFiniteField(spatialCore, field, configurationAbi);
-  if (!prepared)
-    return prepared.takeError();
   auto relation = fabric.semanticFieldRelation(
       field, *const_cast<mlir::Operation *>(fabric.canonicalOperation())
                   ->getContext());
   if (!relation)
     return relation.takeError();
-  if (relation->finiteDomain().size() != 2)
-    return invalid("two-input s2t boundary has the wrong finite domain");
-  auto activeCode =
-      physicalCode(*prepared->second, relation->finiteDomain().back().bytes());
-  if (!activeCode)
-    return activeCode.takeError();
+  std::optional<FieldDecoderPlan> decoder;
+  std::optional<llvm::APInt> finiteActiveCode;
+  if (relation->kind() == fabric::FabricSemanticFieldRelationKind::Finite) {
+    auto prepared = prepareFiniteField(spatialCore, field, configurationAbi,
+                                       transportLayout);
+    if (!prepared)
+      return prepared.takeError();
+    if (relation->finiteDomain().size() != 2)
+      return invalid("boundary activation field has the wrong finite domain");
+    auto active = physicalCode(*prepared->second,
+                               relation->finiteDomain().back().bytes());
+    if (!active)
+      return active.takeError();
+    decoder = std::move(prepared->first);
+    finiteActiveCode = std::move(*active);
+  } else if (relation->kind() ==
+             fabric::FabricSemanticFieldRelationKind::Direct) {
+    auto prepared = prepareFieldDecoder(spatialCore, field, configurationAbi,
+                                        transportLayout);
+    if (!prepared)
+      return prepared.takeError();
+    if (relation->directEncodedBitCount() != prepared->encodedBitCount)
+      return invalid("boundary field is not its exact direct carrier");
+    decoder = std::move(*prepared);
+  } else {
+    return invalid("boundary has no exact semantic configuration field");
+  }
+
+  const EndpointPlan *input =
+      findEndpoint(*endpoints, fabric::FabricPortDirection::Input, 0);
+  const EndpointPlan *secondInput =
+      findEndpoint(*endpoints, fabric::FabricPortDirection::Input, 1);
+  const EndpointPlan *output =
+      findEndpoint(*endpoints, fabric::FabricPortDirection::Output, 0);
+  const EndpointPlan *secondOutput =
+      findEndpoint(*endpoints, fabric::FabricPortDirection::Output, 1);
+  if (!input || !output)
+    return invalid("boundary endpoint inventory is incomplete");
 
   llvm::SmallVector<circt::hw::PortInfo, 16> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 16> outputs;
-  appendComponentPorts(builder, configurationAbi, *endpoints, inputs, outputs);
+  appendComponentPorts(builder, configurationAbi, transportLayout, *endpoints,
+                       inputs, outputs);
   auto module = circt::hw::HWModuleOp::create(
       builder, location,
       builder.getStringAttr("loom_fabric_boundary_" +
@@ -584,26 +893,147 @@ buildBoundaryModule(mlir::OpBuilder &builder, mlir::Location location,
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
         mlir::Value fieldSignal =
-            decodeFieldSignal(bodyBuilder, location, accessor, prepared->first);
+            decodeFieldSignal(bodyBuilder, location, accessor, *decoder);
         mlir::Value active =
-            matchesCode(bodyBuilder, location, fieldSignal, *activeCode);
-        mlir::Value dataValid = accessor.getInput(dataInput->valid.getName());
-        mlir::Value tagValid = accessor.getInput(tagInput->valid.getName());
-        mlir::Value outputReady = accessor.getInput(output->ready.getName());
-        if (output->data)
+            finiteActiveCode
+                ? matchesCode(bodyBuilder, location, fieldSignal,
+                              *finiteActiveCode)
+                : selectedBit(bodyBuilder, location, fieldSignal, 0);
+
+        switch (operation.getDirection()) {
+        case ::fabric::BoundaryDirection::S2t: {
+          if (!output->data || !output->tag || !input->data || secondOutput)
+            return;
           accessor.setOutput(output->data->getName(),
-                             accessor.getInput(dataInput->data->getName()));
-        accessor.setOutput(output->tag->getName(),
-                           accessor.getInput(tagInput->data->getName()));
-        accessor.setOutput(
-            output->valid.getName(),
-            andValues(bodyBuilder, location, {active, dataValid, tagValid}));
-        accessor.setOutput(
-            dataInput->ready.getName(),
-            andValues(bodyBuilder, location, {active, outputReady, tagValid}));
-        accessor.setOutput(
-            tagInput->ready.getName(),
-            andValues(bodyBuilder, location, {active, outputReady, dataValid}));
+                             accessor.getInput(input->data->getName()));
+          if (secondInput) {
+            if (!secondInput->data || secondInput->tag ||
+                endpoints->size() != 3)
+              return;
+            accessor.setOutput(output->tag->getName(),
+                               accessor.getInput(secondInput->data->getName()));
+            mlir::Value dataValid = accessor.getInput(input->valid.getName());
+            mlir::Value tagValid =
+                accessor.getInput(secondInput->valid.getName());
+            mlir::Value ready = accessor.getInput(output->ready.getName());
+            accessor.setOutput(output->valid.getName(),
+                               andValues(bodyBuilder, location,
+                                         {active, dataValid, tagValid}));
+            accessor.setOutput(
+                input->ready.getName(),
+                andValues(bodyBuilder, location, {active, ready, tagValid}));
+            accessor.setOutput(
+                secondInput->ready.getName(),
+                andValues(bodyBuilder, location, {active, ready, dataValid}));
+            break;
+          }
+          if (relation->kind() !=
+                  fabric::FabricSemanticFieldRelationKind::Direct ||
+              decoder->encodedBitCount != 1 + output->dataPath.tagWidthBits ||
+              endpoints->size() != 2)
+            return;
+          accessor.setOutput(
+              output->tag->getName(),
+              circt::comb::ExtractOp::create(bodyBuilder, location, fieldSignal,
+                                             1, output->dataPath.tagWidthBits));
+          accessor.setOutput(
+              output->valid.getName(),
+              andValues(bodyBuilder, location,
+                        {active, accessor.getInput(input->valid.getName())}));
+          accessor.setOutput(
+              input->ready.getName(),
+              andValues(bodyBuilder, location,
+                        {active, accessor.getInput(output->ready.getName())}));
+          break;
+        }
+        case ::fabric::BoundaryDirection::T2t: {
+          if (!input->data || !input->tag || !output->data || !output->tag ||
+              secondInput || secondOutput || endpoints->size() != 2)
+            return;
+          const std::uint64_t inputTagWidth = input->dataPath.tagWidthBits;
+          const std::uint64_t outputTagWidth = output->dataPath.tagWidthBits;
+          const std::uint64_t rowCount =
+              fabric.boundaryLookupTableSize(boundary);
+          const std::uint64_t rowWidth = 1 + inputTagWidth + outputTagWidth;
+          if (rowCount == 0 || rowCount > UINT64_MAX / rowWidth ||
+              rowCount * rowWidth != decoder->encodedBitCount)
+            return;
+          mlir::Value match = bitConstant(bodyBuilder, location, false);
+          mlir::Value remapped = circt::hw::ConstantOp::create(
+              bodyBuilder, location, llvm::APInt(outputTagWidth, 0));
+          for (std::uint64_t row = 0; row != rowCount; ++row) {
+            const std::uint64_t base = row * rowWidth;
+            mlir::Value valid =
+                selectedBit(bodyBuilder, location, fieldSignal, base);
+            mlir::Value sourceTag = circt::comb::ExtractOp::create(
+                bodyBuilder, location, fieldSignal, base + 1, inputTagWidth);
+            mlir::Value rowMatch = andValues(
+                bodyBuilder, location,
+                {valid, circt::comb::ICmpOp::create(
+                            bodyBuilder, location,
+                            circt::comb::ICmpPredicate::eq, sourceTag,
+                            accessor.getInput(input->tag->getName()), true)});
+            mlir::Value destinationTag = circt::comb::ExtractOp::create(
+                bodyBuilder, location, fieldSignal, base + 1 + inputTagWidth,
+                outputTagWidth);
+            remapped =
+                circt::comb::MuxOp::create(bodyBuilder, location, rowMatch,
+                                           destinationTag, remapped, true);
+            match = circt::comb::OrOp::create(bodyBuilder, location, match,
+                                              rowMatch);
+          }
+          accessor.setOutput(output->data->getName(),
+                             accessor.getInput(input->data->getName()));
+          accessor.setOutput(output->tag->getName(), remapped);
+          accessor.setOutput(
+              output->valid.getName(),
+              andValues(bodyBuilder, location,
+                        {match, accessor.getInput(input->valid.getName())}));
+          accessor.setOutput(
+              input->ready.getName(),
+              andValues(bodyBuilder, location,
+                        {match, accessor.getInput(output->ready.getName())}));
+          break;
+        }
+        case ::fabric::BoundaryDirection::T2s: {
+          if (!input->data || !input->tag || !output->data || secondInput)
+            return;
+          accessor.setOutput(output->data->getName(),
+                             accessor.getInput(input->data->getName()));
+          if (secondOutput) {
+            if (!secondOutput->data || secondOutput->tag ||
+                endpoints->size() != 3)
+              return;
+            accessor.setOutput(secondOutput->data->getName(),
+                               accessor.getInput(input->tag->getName()));
+            mlir::Value inputValid = accessor.getInput(input->valid.getName());
+            mlir::Value dataReady = accessor.getInput(output->ready.getName());
+            mlir::Value tagReady =
+                accessor.getInput(secondOutput->ready.getName());
+            accessor.setOutput(output->valid.getName(),
+                               andValues(bodyBuilder, location,
+                                         {active, inputValid, tagReady}));
+            accessor.setOutput(secondOutput->valid.getName(),
+                               andValues(bodyBuilder, location,
+                                         {active, inputValid, dataReady}));
+            accessor.setOutput(input->ready.getName(),
+                               andValues(bodyBuilder, location,
+                                         {active, dataReady, tagReady}));
+            break;
+          }
+          if (endpoints->size() != 2)
+            return;
+          accessor.setOutput(
+              output->valid.getName(),
+              andValues(bodyBuilder, location,
+                        {active, accessor.getInput(input->valid.getName())}));
+          accessor.setOutput(
+              input->ready.getName(),
+              andValues(bodyBuilder, location,
+                        {active, accessor.getInput(output->ready.getName())}));
+          break;
+        }
+        }
       });
   return BoundaryModule{boundary, module, std::move(*endpoints)};
 }
@@ -614,12 +1044,15 @@ llvm::Expected<std::vector<SwitchModule>>
 buildSwitchModules(mlir::OpBuilder &builder, mlir::Location location,
                    fabric::SpatialCoreOccurrenceRef spatialCore,
                    const fabric::FabricArtifactView &fabric,
-                   const ConfigurationABI &configurationAbi) {
+                   const ConfigurationABI &configurationAbi,
+                   const ConfigurationTransportLayout &transportLayout,
+                   const ClockResetPlan &clockReset) {
   std::vector<SwitchModule> result;
   result.reserve(fabric.switchOccurrences().size());
   for (fabric::FabricSwitchOccurrenceRef sw : fabric.switchOccurrences()) {
-    auto module = buildSpatialSwitchModule(builder, location, spatialCore,
-                                           fabric, configurationAbi, sw);
+    auto module =
+        buildSwitchModule(builder, location, spatialCore, fabric,
+                          configurationAbi, transportLayout, clockReset, sw);
     if (!module)
       return module.takeError();
     result.push_back(std::move(*module));
@@ -632,12 +1065,14 @@ buildFifoModules(mlir::OpBuilder &builder, mlir::Location location,
                  fabric::SpatialCoreOccurrenceRef spatialCore,
                  const fabric::FabricArtifactView &fabric,
                  const ConfigurationABI &configurationAbi,
+                 const ConfigurationTransportLayout &transportLayout,
                  const ClockResetPlan &clockReset) {
   std::vector<FifoModule> result;
   result.reserve(fabric.fifoOccurrences().size());
   for (fabric::FabricFifoOccurrenceRef fifo : fabric.fifoOccurrences()) {
-    auto module = buildFifoModule(builder, location, spatialCore, fabric,
-                                  configurationAbi, clockReset, fifo);
+    auto module =
+        buildFifoModule(builder, location, spatialCore, fabric,
+                        configurationAbi, transportLayout, clockReset, fifo);
     if (!module)
       return module.takeError();
     result.push_back(std::move(*module));
@@ -649,13 +1084,15 @@ llvm::Expected<std::vector<BoundaryModule>>
 buildBoundaryModules(mlir::OpBuilder &builder, mlir::Location location,
                      fabric::SpatialCoreOccurrenceRef spatialCore,
                      const fabric::FabricArtifactView &fabric,
-                     const ConfigurationABI &configurationAbi) {
+                     const ConfigurationABI &configurationAbi,
+                     const ConfigurationTransportLayout &transportLayout) {
   std::vector<BoundaryModule> result;
   result.reserve(fabric.boundaryOccurrences().size());
   for (fabric::FabricBoundaryOccurrenceRef boundary :
        fabric.boundaryOccurrences()) {
-    auto module = buildBoundaryModule(builder, location, spatialCore, fabric,
-                                      configurationAbi, boundary);
+    auto module =
+        buildBoundaryModule(builder, location, spatialCore, fabric,
+                            configurationAbi, transportLayout, boundary);
     if (!module)
       return module.takeError();
     result.push_back(std::move(*module));

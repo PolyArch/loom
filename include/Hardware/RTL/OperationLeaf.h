@@ -64,6 +64,13 @@ struct FabricOperationLeafInterface final {
 llvm::Expected<FabricOperationLeafInterface> deriveFabricOperationLeafInterface(
     const fabric::ResolvedFabricOpCapabilityView &capability);
 
+/// Verifies that the common structural shell can implement the exact
+/// Fabric-owned resource contract. Standalone providers intentionally perform
+/// their own admission so another well-formed contract remains typed
+/// Unsupported rather than becoming an invalid leaf interface.
+llvm::Error validateFabricOperationStructuralContract(
+    const fabric::ResolvedFabricOpCapabilityView &capability);
+
 /// Named fields in the structural owner's packed selected-context state. The
 /// operation schema remains the semantic owner of every transition; these
 /// names only make one capability-derived storage layout reusable by the

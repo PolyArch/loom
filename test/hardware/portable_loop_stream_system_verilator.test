@@ -2,4 +2,4 @@
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-portable-loop-stream-test %t
 # RUN: cd %t/artifacts && verilator --binary --timing --Wall --Wno-fatal -CFLAGS '-std=c++20' --top-module testbench loop_stream_system.sv testbench.sv --Mdir obj_dir
-# RUN: %t/artifacts/obj_dir/Vtestbench
+# RUN: timeout 30s %t/artifacts/obj_dir/Vtestbench

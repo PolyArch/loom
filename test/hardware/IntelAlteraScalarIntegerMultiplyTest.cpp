@@ -744,9 +744,8 @@ void exactOccurrenceMaterializesDeterministically(
   const loom::fabric::SpatialCoreOccurrenceRef spatialCore{
       systemView.artifact().accCoreOccurrences().front()};
   std::unique_ptr<mlir::MLIRContext> systemContext = makeCirctContext();
-  ModuleRootCirctSkeleton systemSkeleton =
-      take(test, buildModuleRootCirctSkeleton(*systemContext, spatialCore,
-                                              abi.abi()));
+  ModuleRootCirctSkeleton systemSkeleton = take(
+      test, buildModuleRootCirctSkeleton(*systemContext, spatialCore, abi));
   require(test, systemSkeleton.operationLeaves.size() == 1,
           "common skeleton changed its exact operation leaf count");
   const std::vector<FabricOperationRecipeBinding> systemRecipes = {

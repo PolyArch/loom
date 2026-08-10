@@ -10,7 +10,7 @@ namespace loom::hardware::rtl::hierarchy {
 
 llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
     mlir::MLIRContext &context, fabric::SpatialCoreOccurrenceRef spatialCore,
-    const ConfigurationABI &configurationAbi,
+    const FinalizedConfigurationABI &finalizedAbi,
     const fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<ModuleBoundaryTransportPortProjection> projections);
 

@@ -1,5 +1,6 @@
 #include "ADG/Builder.h"
 #include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationTransportTestSupport.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
@@ -71,8 +72,7 @@ struct AdapterMode final {
 };
 
 struct CommonConfiguration final {
-  std::string portName;
-  std::uint64_t bitCount = 0;
+  loom::hardware::test::PortableConfigurationTarget target;
   std::vector<std::uint8_t> image;
 };
 
@@ -499,6 +499,19 @@ makeCommonConfiguration(llvm::StringRef test, const FabricFixture &fixture,
                                          bytes.bytes().end())});
   }
 
+  auto fuActivation =
+      take(test, loom::hardware::test::deriveSpatialSingleTemplateFuActivation(
+                     module, abi, spatialCore, fu));
+  const ProgrammingUnit *fuOwner =
+      abi.abi().findProgrammingUnit(fuActivation.unitId);
+  require(test, fuOwner != nullptr, "FU activation has no programming unit");
+  if (owner)
+    require(test, owner->id == fuOwner->id,
+            "adapter fields span multiple programming units");
+  else
+    owner = fuOwner;
+  values.push_back(std::move(fuActivation.value));
+
   const auto &resolved = capability(test, fixture);
   auto relation =
       take(test, resolved.resolveSemanticFieldRelation(fabricContext()));
@@ -534,22 +547,9 @@ makeCommonConfiguration(llvm::StringRef test, const FabricFixture &fixture,
                           selected->semanticConfiguration->bytes().begin(),
                           selected->semanticConfiguration->bytes().end())});
   require(test, owner != nullptr, "adapter has no programming unit");
-  return {"configuration_" + std::to_string(owner->id), owner->payloadBitCount,
+  return {take(test, loom::hardware::test::derivePortableConfigurationTarget(
+                         abi, spatialCore, owner->id)),
           take(test, abi.abi().encode(owner->id, values))};
-}
-
-std::string bitLiteral(llvm::ArrayRef<std::uint8_t> bytes,
-                       std::uint64_t bitCount) {
-  std::string result;
-  result.reserve(static_cast<std::size_t>(bitCount));
-  for (std::uint64_t bit = bitCount; bit > 0; --bit) {
-    const std::uint64_t index = bit - 1;
-    result.push_back(
-        ((bytes[static_cast<std::size_t>(index / 8)] >> (index % 8)) & 1U) != 0
-            ? '1'
-            : '0');
-  }
-  return result;
 }
 
 std::string specializeCommonSkeleton(llvm::StringRef test,
@@ -562,8 +562,8 @@ std::string specializeCommonSkeleton(llvm::StringRef test,
   const loom::fabric::SpatialCoreOccurrenceRef spatialCore{
       system.artifact().accCoreOccurrences().front()};
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
-  auto skeleton = take(
-      test, buildModuleRootCirctSkeleton(*context, spatialCore, abi.abi()));
+  auto skeleton =
+      take(test, buildModuleRootCirctSkeleton(*context, spatialCore, abi));
   require(test,
           skeleton.operationLeaves.size() == 1 &&
               skeleton.operationLeaves.front().occurrence ==
@@ -935,8 +935,7 @@ commonParallelizeTestbench(const CommonConfiguration &configuration) {
   logic output_0_valid, output_1_valid, output_2_valid;
   logic output_0_ready, output_1_ready, output_2_ready;
 )sv";
-  output << "  logic [" << configuration.bitCount - 1 << ":0] "
-         << configuration.portName << ";\n\n";
+  output << loom::hardware::test::portableAxiLiteSignalDeclarations();
   output << R"sv(  loom_module dut(.*);
 
   task automatic send_item(input [7:0] item);
@@ -950,17 +949,26 @@ commonParallelizeTestbench(const CommonConfiguration &configuration) {
     end
   endtask
 
+)sv";
+  output << loom::hardware::test::portableAxiLiteDriverTasks();
+  output << loom::hardware::test::portableCycleWatchdog();
+  output << R"sv(
+
   initial begin
     clock = 0; reset = 1;
     input_0_data = 0; input_1_data = 0;
     input_0_valid = 0; input_1_valid = 0;
     output_0_ready = 1; output_1_ready = 1; output_2_ready = 1;
 )sv";
-  output << "    " << configuration.portName << " = " << configuration.bitCount
-         << "'b" << bitLiteral(configuration.image, configuration.bitCount)
-         << ";\n";
+  output << loom::hardware::test::portableAxiLiteInitialization();
   output << R"sv(    repeat (2) @(posedge clock);
     @(negedge clock); reset = 0;
+
+)sv";
+  output << take("commonParallelizeTestbench",
+                 loom::hardware::test::portableAxiLiteProgramAndVerify(
+                     configuration.target, configuration.image));
+  output << R"sv(
 
     send_item(8'haa); send_item(8'hbb);
     input_1_data = 0; input_1_valid = 1; #1;
@@ -1030,9 +1038,13 @@ std::string commonSerializeTestbench(const CommonConfiguration &configuration) {
   logic output_0_valid, output_1_valid;
   logic output_0_ready, output_1_ready;
 )sv";
-  output << "  logic [" << configuration.bitCount - 1 << ":0] "
-         << configuration.portName << ";\n\n";
+  output << loom::hardware::test::portableAxiLiteSignalDeclarations();
   output << R"sv(  loom_module dut(.*);
+
+)sv";
+  output << loom::hardware::test::portableAxiLiteDriverTasks();
+  output << loom::hardware::test::portableCycleWatchdog();
+  output << R"sv(
 
   initial begin
     clock = 0; reset = 1;
@@ -1040,11 +1052,15 @@ std::string commonSerializeTestbench(const CommonConfiguration &configuration) {
     input_0_valid = 0; input_1_valid = 0; input_2_valid = 0;
     output_0_ready = 1; output_1_ready = 1;
 )sv";
-  output << "    " << configuration.portName << " = " << configuration.bitCount
-         << "'b" << bitLiteral(configuration.image, configuration.bitCount)
-         << ";\n";
+  output << loom::hardware::test::portableAxiLiteInitialization();
   output << R"sv(    repeat (2) @(posedge clock);
     @(negedge clock); reset = 0;
+
+)sv";
+  output << take("commonSerializeTestbench",
+                 loom::hardware::test::portableAxiLiteProgramAndVerify(
+                     configuration.target, configuration.image));
+  output << R"sv(
 
     input_0_data = 32'h44332211; input_1_data = 32'ha;
     input_2_data = 32'h1;

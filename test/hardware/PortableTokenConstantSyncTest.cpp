@@ -1,5 +1,6 @@
 #include "ADG/Builder.h"
 #include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationTransportTestSupport.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
@@ -681,8 +682,7 @@ endmodule
 }
 
 struct SystemConfiguration final {
-  std::string portName;
-  std::uint64_t bitCount = 0;
+  loom::hardware::test::PortableConfigurationTarget target;
   std::vector<std::uint8_t> payload;
 };
 
@@ -719,7 +719,7 @@ qualifyField(llvm::StringRef test,
 SystemConfiguration
 makeSystemConfiguration(llvm::StringRef test, const FabricFixture &fixture,
                         loom::fabric::SpatialCoreOccurrenceRef spatialCore,
-                        const ConfigurationABI &abi) {
+                        const FinalizedConfigurationABI &abi) {
   const auto pe = fixture.module.view().peOccurrences().front();
   const auto fu = fixture.module.view().fuOccurrences().front();
   auto schema =
@@ -744,7 +744,7 @@ makeSystemConfiguration(llvm::StringRef test, const FabricFixture &fixture,
                   physical,
                   loom::fabric::FabricStaticConfigurationResidency{}));
     const ProgrammingUnit *fieldOwner = nullptr;
-    for (const ProgrammingUnit &unit : abi.programmingUnits())
+    for (const ProgrammingUnit &unit : abi.abi().programmingUnits())
       for (const ConfigurationFieldEncoding &field : unit.fields)
         if (field.slot == slot)
           fieldOwner = &unit;
@@ -759,23 +759,23 @@ makeSystemConfiguration(llvm::StringRef test, const FabricFixture &fixture,
         {slot, std::vector<std::uint8_t>(semantic.bytes().begin(),
                                          semantic.bytes().end())});
   }
+  auto fuActivation =
+      take(test, loom::hardware::test::deriveSpatialSingleTemplateFuActivation(
+                     fixture.module.view(), abi, spatialCore, fu));
+  const ProgrammingUnit *fuOwner =
+      abi.abi().findProgrammingUnit(fuActivation.unitId);
+  require(test, fuOwner != nullptr, "FU activation has no programming unit");
+  if (owner)
+    require(test, owner->id == fuOwner->id,
+            "route configuration spans programming units");
+  else
+    owner = fuOwner;
+  values.push_back(std::move(fuActivation.value));
   require(test, owner != nullptr, "route configuration has no owner");
-  return SystemConfiguration{"configuration_" + std::to_string(owner->id),
-                             owner->payloadBitCount,
-                             take(test, abi.encode(owner->id, values))};
-}
-
-std::string bitLiteral(llvm::ArrayRef<std::uint8_t> bytes,
-                       std::uint64_t bitCount) {
-  std::string result;
-  for (std::uint64_t bit = bitCount; bit > 0; --bit) {
-    const std::uint64_t index = bit - 1;
-    result.push_back(
-        ((bytes[static_cast<std::size_t>(index / 8)] >> (index % 8)) & 1U) != 0
-            ? '1'
-            : '0');
-  }
-  return result;
+  return SystemConfiguration{
+      take(test, loom::hardware::test::derivePortableConfigurationTarget(
+                     abi, spatialCore, owner->id)),
+      take(test, abi.abi().encode(owner->id, values))};
 }
 
 std::pair<std::string, SystemConfiguration>
@@ -788,8 +788,8 @@ specializeSystem(llvm::StringRef test, const FabricFixture &fixture,
   const loom::fabric::SpatialCoreOccurrenceRef spatialCore{
       systemView.artifact().accCoreOccurrences().front()};
   std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
-  auto skeleton = take(
-      test, buildModuleRootCirctSkeleton(*context, spatialCore, abi.abi()));
+  auto skeleton =
+      take(test, buildModuleRootCirctSkeleton(*context, spatialCore, abi));
   FabricOperationProviderRegistry registry;
   if (llvm::Error error = registerPortableTokenConstantSyncProviders(registry))
     fail(test, llvm::toString(std::move(error)));
@@ -798,7 +798,7 @@ specializeSystem(llvm::StringRef test, const FabricFixture &fixture,
       take(test, loom::hardware::test::specializeAndExportPortableProvider(
                      std::move(skeleton), abi, registry, externalContracts));
   return {std::move(conformance.systemVerilog),
-          makeSystemConfiguration(test, fixture, spatialCore, abi.abi())};
+          makeSystemConfiguration(test, fixture, spatialCore, abi)};
 }
 
 std::string systemTestbench(const SystemConfiguration &configuration) {
@@ -820,8 +820,7 @@ module system_testbench;
   logic       output_1_valid;
   logic       output_1_ready;
 )sv";
-  output << "  logic [" << configuration.bitCount - 1 << ":0] "
-         << configuration.portName << ";\n\n";
+  output << loom::hardware::test::portableAxiLiteSignalDeclarations();
   output << R"sv(  loom_module dut(.*);
 
   always #5 clock = ~clock;
@@ -831,19 +830,22 @@ module system_testbench;
       $fatal(1, "%s", message);
   endtask
 
+)sv";
+  output << loom::hardware::test::portableAxiLiteDriverTasks();
+  output << loom::hardware::test::portableCycleWatchdog();
+  output << R"sv(
+
   initial begin
     clock = 0;
     reset = 1;
     input_0_data = 8'h12;
     input_1_data = 8'h34;
-    input_0_valid = 1;
+    input_0_valid = 0;
     input_1_valid = 0;
     output_0_ready = 1;
     output_1_ready = 1;
 )sv";
-  output << "    " << configuration.portName << " = " << configuration.bitCount
-         << "'b" << bitLiteral(configuration.payload, configuration.bitCount)
-         << ";\n";
+  output << loom::hardware::test::portableAxiLiteInitialization();
   output << R"sv(    #1;
     check(!input_0_ready && !input_1_ready &&
               !output_0_valid && !output_1_valid,
@@ -851,6 +853,12 @@ module system_testbench;
     repeat (2) @(posedge clock);
     @(negedge clock);
     reset = 0;
+)sv";
+  output << take("systemTestbench",
+                 loom::hardware::test::portableAxiLiteProgramAndVerify(
+                     configuration.target, configuration.payload));
+  output << R"sv(
+    input_0_valid = 1;
     #1;
     check(!input_0_ready && input_1_ready &&
               !output_0_valid && !output_1_valid,
@@ -904,6 +912,14 @@ module system_testbench;
               !output_0_valid && !output_1_valid,
           "asynchronous reset did not clear the held tuple");
     reset = 0;
+    input_0_valid = 0;
+    input_1_valid = 0;
+)sv";
+  output << take("systemTestbench",
+                 loom::hardware::test::portableAxiLiteProgramAndVerify(
+                     configuration.target, configuration.payload));
+  output << R"sv(
+    input_0_valid = 1;
     input_1_valid = 0;
     output_0_ready = 1;
     output_1_ready = 1;
@@ -1112,7 +1128,9 @@ void emitArtifacts(const std::filesystem::path &root) {
   auto systemAgain = specializeSystem(test, systemFixture, systemAbi);
   require(test,
           system.first == systemAgain.first &&
-              system.second.portName == systemAgain.second.portName &&
+              system.second.target.unitId == systemAgain.second.target.unitId &&
+              system.second.target.baseAddress ==
+                  systemAgain.second.target.baseAddress &&
               system.second.payload == systemAgain.second.payload,
           "identical common skeleton inputs were not deterministic");
 

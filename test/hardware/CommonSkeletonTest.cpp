@@ -5,6 +5,7 @@
 #include "Hardware/RTL/Specialization.h"
 
 #include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationTransportTestSupport.h"
 #include "PortableProviderTestSupport.h"
 
 #include "ADG/Builder.h"
@@ -346,7 +347,7 @@ boundaryEndpoint(llvm::StringRef test,
 }
 
 struct ConfigurationImages final {
-  std::string portName;
+  loom::hardware::test::PortableConfigurationTarget target;
   loom::hardware::ProgrammingUnitId unitId = 0;
   std::uint64_t bitCount = 0;
   std::vector<std::uint8_t> inactive;
@@ -426,9 +427,23 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
         {slot, std::vector<std::uint8_t>(discardBytes.bytes().begin(),
                                          discardBytes.bytes().end())});
   }
+  auto fuActivation =
+      take(test, loom::hardware::test::deriveSpatialSingleTemplateFuActivation(
+                     module, fixture.abi, fixture.spatialCore, fu));
+  const auto *fuOwner =
+      fixture.abi.abi().findProgrammingUnit(fuActivation.unitId);
+  require(test, fuOwner != nullptr, "FU activation has no programming owner");
+  if (owner)
+    require(test, owner->id == fuOwner->id,
+            "fixture configuration spans programming units");
+  else
+    owner = fuOwner;
+  routeValues.push_back(fuActivation.value);
+  discardValues.push_back(std::move(fuActivation.value));
   require(test, owner != nullptr, "fixture has no programming unit");
   return ConfigurationImages{
-      "configuration_" + std::to_string(owner->id),
+      take(test, loom::hardware::test::derivePortableConfigurationTarget(
+                     fixture.abi, fixture.spatialCore, owner->id)),
       owner->id,
       owner->payloadBitCount,
       take(test, fixture.abi.abi().encode(owner->id, {})),
@@ -501,9 +516,8 @@ void spatialHierarchyBuildsStructuralSkeleton() {
   mlir::MLIRContext context;
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                       circt::seq::SeqDialect, circt::sv::SVDialect>();
-  auto skeleton =
-      take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                     context, fabric.spatialCore, fabric.abi.abi()));
+  auto skeleton = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                                 context, fabric.spatialCore, fabric.abi));
   require(test, skeleton.operationLeaves.size() == 1,
           "hierarchy skeleton omitted its physical operation");
   std::string text;
@@ -511,7 +525,7 @@ void spatialHierarchyBuildsStructuralSkeleton() {
   require(test,
           llvm::StringRef(text).contains("loom_spatial_pe_") &&
               llvm::StringRef(text).contains("loom_fabric_fu_") &&
-              llvm::StringRef(text).contains("loom_spatial_switch_") &&
+              llvm::StringRef(text).contains("loom_fabric_switch_") &&
               llvm::StringRef(text).contains("loom_fabric_fifo_") &&
               llvm::StringRef(text).contains("loom_fabric_boundary_"),
           "hierarchy skeleton flattened or omitted a Fabric resource owner");
@@ -536,7 +550,7 @@ void repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
                         circt::seq::SeqDialect, circt::sv::SVDialect>();
     auto skeleton =
         take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                       context, spatialCore, fabric.abi.abi()));
+                       context, spatialCore, fabric.abi));
     require(test, skeleton.operationLeaves.size() == 1,
             "one SpatialCore skeleton covered a foreign occurrence");
     const auto &internal =
@@ -797,9 +811,8 @@ std::string moduleBoundaryPassthroughBuildsDeterministicSkeleton() {
   mlir::MLIRContext firstContext;
   firstContext.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                            circt::seq::SeqDialect, circt::sv::SVDialect>();
-  auto first =
-      take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                     firstContext, fabric.spatialCore, fabric.abi.abi()));
+  auto first = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                              firstContext, fabric.spatialCore, fabric.abi));
   require(test, first.operationLeaves.empty(),
           "boundary-only skeleton invented an operation leaf");
   if (llvm::Error error = loom::hardware::rtl::verifyCommonCirctSkeleton(
@@ -809,9 +822,8 @@ std::string moduleBoundaryPassthroughBuildsDeterministicSkeleton() {
   mlir::MLIRContext secondContext;
   secondContext.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                             circt::seq::SeqDialect, circt::sv::SVDialect>();
-  auto second =
-      take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                     secondContext, fabric.spatialCore, fabric.abi.abi()));
+  auto second = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                               secondContext, fabric.spatialCore, fabric.abi));
   std::string firstText;
   std::string secondText;
   llvm::raw_string_ostream(firstText) << *first.module;
@@ -834,7 +846,7 @@ std::string moduleBoundaryPassthroughBuildsDeterministicSkeleton() {
                                          1000000}};
   expectError(test,
               loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                  secondContext, invalidSpatialCore, fabric.abi.abi()),
+                  secondContext, invalidSpatialCore, fabric.abi),
               "SpatialCore");
   return systemVerilog;
 }
@@ -855,9 +867,8 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
   mlir::MLIRContext context;
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                       circt::seq::SeqDialect, circt::sv::SVDialect>();
-  auto skeleton =
-      take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                     context, fabric.spatialCore, fabric.abi.abi()));
+  auto skeleton = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                                 context, fabric.spatialCore, fabric.abi));
   require(test, skeleton.operationLeaves.size() == 1,
           "internal operation skeleton did not expose one exact leaf");
   require(test,
@@ -880,8 +891,8 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
           rtl.contains("input_0_data") && rtl.contains("input_1_data") &&
               rtl.contains("output_0_data") && rtl.contains("clock") &&
               rtl.contains("reset") && rtl.contains("result_data_reg") &&
-              rtl.contains("result_valid_reg") &&
-              rtl.contains(configuration.portName),
+              rtl.contains("result_valid_reg") && rtl.contains("cfg_awaddr") &&
+              rtl.contains("cfg_rdata"),
           "internal operation RTL omitted its structural elastic slot");
 
   const std::filesystem::path blobRoot =
@@ -930,8 +941,7 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
        std::nullopt},
       {ImplementationConfigurationInterfaceRef{
            {fabric.abi.reference(), configuration.unitId}},
-       {RepresentationObjectKind::Port,
-        "loom_module." + configuration.portName},
+       {RepresentationObjectKind::Module, "loom_module"},
        std::nullopt}};
   auto format = take(
       test, loom::hardware::RepresentationFormatDescriptorRef::get(
@@ -949,7 +959,13 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
       std::move(representation),
       std::nullopt,
       std::move(interfaces),
-      {{{RepresentationObjectKind::Instance, "loom_module.operation"},
+      {{{RepresentationObjectKind::Instance,
+         "loom_module.pe_" +
+             std::to_string(fabric.module.view().peOccurrences().front().id()) +
+             ".fu_" +
+             std::to_string(fabric.module.view().fuOccurrences().front().id()) +
+             ".operation_" +
+             std::to_string(fabric.operations.front().localOccurrence.ordinal)},
         fabric.operations.front().physicalOccurrence}},
       {},
       {}};
@@ -975,26 +991,15 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
   return InternalToolArtifact{systemVerilog, std::move(configuration)};
 }
 
-std::string bitLiteral(llvm::ArrayRef<std::uint8_t> bytes,
-                       std::uint64_t bitCount) {
-  std::string result;
-  result.reserve(static_cast<std::size_t>(bitCount));
-  for (std::uint64_t bit = bitCount; bit > 0; --bit) {
-    const std::uint64_t index = bit - 1;
-    result.push_back(
-        ((bytes[static_cast<std::size_t>(index / 8)] >> (index % 8)) & 1U) != 0
-            ? '1'
-            : '0');
-  }
-  return result;
-}
-
 void writeBoundaryToolArtifacts(const std::filesystem::path &root,
                                 llvm::StringRef systemVerilog) {
   std::filesystem::create_directories(root);
   std::ofstream(root / "loom_module.sv") << systemVerilog.str();
-  std::ofstream(root / "testbench.sv") << R"sv(
+  std::ofstream testbench(root / "testbench.sv");
+  testbench << R"sv(
 module testbench;
+  logic        clock;
+  logic        reset;
   logic [31:0] input_0_data;
   logic        input_0_valid;
   logic [3:0]  input_1_data;
@@ -1010,9 +1015,18 @@ module testbench;
   logic        output_1_valid;
   integer      control;
 
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteSignalDeclarations();
+  testbench << R"sv(
+
   loom_module dut(.*);
 
   initial begin
+    clock = 0;
+    reset = 0;
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteInitialization();
+  testbench << R"sv(
     for (control = 0; control < 16; control = control + 1) begin
       input_0_data = 32'hcafe0000 ^ control;
       input_0_valid = control[3];
@@ -1038,10 +1052,10 @@ endmodule
 read_verilog -sv loom_module.sv
 hierarchy -check -top loom_module
 check -assert
-select -assert-none loom_module/t:$*ff* loom_module/t:$*latch* loom_module/t:$_*FF* loom_module/t:$_*LATCH* loom_module/t:$mem* loom_module/m:*
+select -assert-none loom_module/t:$*latch* loom_module/t:$_*LATCH* loom_module/t:$mem*
 synth -top loom_module
 check -assert
-select -assert-none loom_module/t:$*ff* loom_module/t:$*latch* loom_module/t:$_*FF* loom_module/t:$_*LATCH* loom_module/t:$mem* loom_module/m:*
+select -assert-none loom_module/t:$*latch* loom_module/t:$_*LATCH* loom_module/t:$mem*
 )ys";
 }
 
@@ -1064,8 +1078,8 @@ module internal_testbench;
   logic       output_0_valid;
   logic       output_0_ready;
 )sv";
-  testbench << "  logic [" << configuration.bitCount - 1 << ":0] "
-            << configuration.portName << ";\n\n";
+  testbench << loom::hardware::test::portableAxiLiteSignalDeclarations()
+            << "\n";
   testbench << "  loom_module dut(.*);\n\n";
   testbench << R"sv(  always #5 clock = ~clock;
 
@@ -1074,19 +1088,21 @@ module internal_testbench;
       $fatal(1, "%s", message);
   endtask
 
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteDriverTasks();
+  testbench << loom::hardware::test::portableCycleWatchdog();
+  testbench << R"sv(
+
   initial begin
     clock = 0;
     reset = 1;
     input_0_data = 8'h05;
     input_1_data = 8'h07;
-    input_0_valid = 1;
-    input_1_valid = 1;
+    input_0_valid = 0;
+    input_1_valid = 0;
     output_0_ready = 1;
 )sv";
-  testbench << "    " << configuration.portName << " = "
-            << configuration.bitCount << "'b"
-            << bitLiteral(configuration.inactive, configuration.bitCount)
-            << ";\n";
+  testbench << loom::hardware::test::portableAxiLiteInitialization();
   testbench << R"sv(    repeat (2) @(posedge clock);
     #1;
     reset = 0;
@@ -1095,19 +1111,22 @@ module internal_testbench;
           "Disabled PE consumed or published a token");
 
 )sv";
-  testbench << "    " << configuration.portName << " = "
-            << configuration.bitCount << "'b"
-            << bitLiteral(configuration.discard, configuration.bitCount)
-            << ";\n";
-  testbench << R"sv(    #1;
+  testbench << take("writeInternalToolArtifacts",
+                    loom::hardware::test::portableAxiLiteProgramAndVerify(
+                        configuration.target, configuration.discard));
+  testbench << R"sv(    input_0_valid = 1;
+    #1;
     check(input_0_ready && !input_1_ready && !output_0_valid,
           "Input Discard did not drain only its selected PE input");
 
+    input_0_valid = 0;
 )sv";
-  testbench << "    " << configuration.portName << " = "
-            << configuration.bitCount << "'b"
-            << bitLiteral(configuration.route, configuration.bitCount) << ";\n";
-  testbench << R"sv(    #1;
+  testbench << take("writeInternalToolArtifacts",
+                    loom::hardware::test::portableAxiLiteProgramAndVerify(
+                        configuration.target, configuration.route));
+  testbench << R"sv(    input_0_valid = 1;
+    input_1_valid = 1;
+    #1;
     check(input_0_ready && input_1_ready && !output_0_valid,
           "Routed operands were not accepted into an empty slot");
     @(posedge clock);
@@ -1149,7 +1168,7 @@ read_verilog -sv internal_module.sv
 hierarchy -check -top loom_module
 check -assert
 proc
-select -assert-count 2 loom_module/t:$adff
+select -assert-count 2 loom_operation_shell_0/t:$adff
 synth -top loom_module
 check -assert
 select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*

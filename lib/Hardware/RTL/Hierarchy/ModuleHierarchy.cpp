@@ -1,14 +1,17 @@
 #include "ModuleHierarchy.h"
 
 #include "Components.h"
+#include "ConfigurationController.h"
 #include "OperationShell.h"
 #include "Support.h"
 
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Hardware/RTL/ConfigurationTransport.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Seq/SeqTypes.h"
 #include "circt/Support/BackedgeBuilder.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -180,9 +183,14 @@ mlir::Value zero(mlir::OpBuilder &builder, mlir::Location location,
 
 llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
     mlir::MLIRContext &context, fabric::SpatialCoreOccurrenceRef spatialCore,
-    const ConfigurationABI &configurationAbi,
+    const FinalizedConfigurationABI &finalizedAbi,
     const fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<ModuleBoundaryTransportPortProjection> projections) {
+  const ConfigurationABI &configurationAbi = finalizedAbi.abi();
+  auto transportLayout =
+      derivePortableConfigurationTransportLayout(finalizedAbi, spatialCore);
+  if (!transportLayout)
+    return transportLayout.takeError();
   if (!fabric.memoryOccurrences().empty() ||
       !fabric.moduleBoundaryMemoryAttachments().empty())
     return unsupported(
@@ -205,31 +213,39 @@ llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
 
   std::vector<FabricOperationLeafAssociation> associations;
   auto operationShells = buildOperationShellModules(
-      builder, location, spatialCore, configurationAbi, *operations,
-      associations, *clockReset);
+      builder, location, spatialCore, configurationAbi, *transportLayout,
+      *operations, associations, *clockReset);
   if (!operationShells)
     return operationShells.takeError();
   auto fuModules =
       buildFuModules(builder, location, spatialCore, fabric, configurationAbi,
-                     *operationShells, *clockReset);
+                     *transportLayout, *operationShells, *clockReset);
   if (!fuModules)
     return fuModules.takeError();
-  auto peModules = buildPeModules(builder, location, spatialCore, fabric,
-                                  configurationAbi, *fuModules, *clockReset);
+  auto peModules =
+      buildPeModules(builder, location, spatialCore, fabric, configurationAbi,
+                     *transportLayout, *fuModules, *clockReset);
   if (!peModules)
     return peModules.takeError();
-  auto switchModules = buildSwitchModules(builder, location, spatialCore,
-                                          fabric, configurationAbi);
+  auto switchModules =
+      buildSwitchModules(builder, location, spatialCore, fabric,
+                         configurationAbi, *transportLayout, *clockReset);
   if (!switchModules)
     return switchModules.takeError();
-  auto fifoModules = buildFifoModules(builder, location, spatialCore, fabric,
-                                      configurationAbi, *clockReset);
+  auto fifoModules =
+      buildFifoModules(builder, location, spatialCore, fabric, configurationAbi,
+                       *transportLayout, *clockReset);
   if (!fifoModules)
     return fifoModules.takeError();
-  auto boundaryModules = buildBoundaryModules(builder, location, spatialCore,
-                                              fabric, configurationAbi);
+  auto boundaryModules =
+      buildBoundaryModules(builder, location, spatialCore, fabric,
+                           configurationAbi, *transportLayout);
   if (!boundaryModules)
     return boundaryModules.takeError();
+  auto configurationController = buildConfigurationControllerModule(
+      builder, location, configurationAbi, *transportLayout, *clockReset);
+  if (!configurationController)
+    return configurationController.takeError();
 
   std::vector<ComponentView> components;
   components.reserve(peModules->size() + switchModules->size() +
@@ -241,7 +257,14 @@ llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
 
   llvm::SmallVector<circt::hw::PortInfo, 32> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 32> outputs;
-  appendClockResetAndConfigurationPorts(builder, configurationAbi, inputs);
+  inputs.push_back(
+      circt::hw::PortInfo{{builder.getStringAttr("clock"),
+                           circt::seq::ClockType::get(builder.getContext()),
+                           circt::hw::ModulePort::Direction::Input}});
+  inputs.push_back(
+      circt::hw::PortInfo{{builder.getStringAttr("reset"), builder.getI1Type(),
+                           circt::hw::ModulePort::Direction::Input}});
+  appendAxiLiteConfigurationPorts(builder, inputs, outputs);
   for (const auto &projection : projections)
     appendBoundaryPorts(inputs, outputs, projection);
 
@@ -259,17 +282,36 @@ llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
         mlir::Value reset = accessor.getInput("reset");
         if (clockReset->activeLowReset)
           reset = circt::comb::createOrFoldNot(bodyBuilder, location, reset);
+        std::map<std::string, mlir::Value> controllerInputs;
+        controllerInputs.emplace("clock", accessor.getInput("clock"));
+        controllerInputs.emplace("reset", reset);
+        for (llvm::StringRef name : {"cfg_awaddr", "cfg_awvalid", "cfg_wdata",
+                                     "cfg_wstrb", "cfg_wvalid", "cfg_bready",
+                                     "cfg_araddr", "cfg_arvalid", "cfg_rready"})
+          controllerInputs.emplace(name.str(), accessor.getInput(name));
+        auto controller = instantiateModule(
+            bodyBuilder, location, configurationController->module,
+            "configuration_controller", controllerInputs);
+        if (!controller) {
+          fail(controller.takeError());
+          return;
+        }
+        for (llvm::StringRef name :
+             {"cfg_awready", "cfg_wready", "cfg_bresp", "cfg_bvalid",
+              "cfg_arready", "cfg_rdata", "cfg_rresp", "cfg_rvalid"})
+          accessor.setOutput(name, controller->at(name.str()));
         std::map<std::string, EndpointRuntime> runtime;
 
         for (const ComponentView &component : components) {
           std::map<std::string, mlir::Value> instanceInputs;
           instanceInputs.emplace("clock", accessor.getInput("clock"));
           instanceInputs.emplace("reset", reset);
-          for (const ProgrammingUnit &unit :
-               configurationAbi.programmingUnits())
+          for (auto [ordinal, unit] : llvm::enumerate(transportLayout->units)) {
+            (void)unit;
             instanceInputs.emplace(
-                configurationPortName(unit.id),
-                accessor.getInput(configurationPortName(unit.id)));
+                configurationPortName(ordinal),
+                controller->at(configurationPortName(ordinal)));
+          }
 
           std::vector<EndpointRuntime *> pendingRuntime;
           for (const EndpointPlan &endpoint : component.endpoints) {

@@ -29,6 +29,7 @@ buildFuModules(mlir::OpBuilder &builder, mlir::Location location,
                fabric::SpatialCoreOccurrenceRef spatialCore,
                const fabric::FabricArtifactView &fabric,
                const ConfigurationABI &configurationAbi,
+               const ConfigurationTransportLayout &transportLayout,
                llvm::ArrayRef<OperationShellModule> operationShells,
                const ClockResetPlan &clockReset);
 
@@ -37,6 +38,7 @@ buildPeModules(mlir::OpBuilder &builder, mlir::Location location,
                fabric::SpatialCoreOccurrenceRef spatialCore,
                const fabric::FabricArtifactView &fabric,
                const ConfigurationABI &configurationAbi,
+               const ConfigurationTransportLayout &transportLayout,
                llvm::ArrayRef<FuModule> fuModules,
                const ClockResetPlan &clockReset);
 
@@ -44,20 +46,24 @@ llvm::Expected<std::vector<SwitchModule>>
 buildSwitchModules(mlir::OpBuilder &builder, mlir::Location location,
                    fabric::SpatialCoreOccurrenceRef spatialCore,
                    const fabric::FabricArtifactView &fabric,
-                   const ConfigurationABI &configurationAbi);
+                   const ConfigurationABI &configurationAbi,
+                   const ConfigurationTransportLayout &transportLayout,
+                   const ClockResetPlan &clockReset);
 
 llvm::Expected<std::vector<FifoModule>>
 buildFifoModules(mlir::OpBuilder &builder, mlir::Location location,
                  fabric::SpatialCoreOccurrenceRef spatialCore,
                  const fabric::FabricArtifactView &fabric,
                  const ConfigurationABI &configurationAbi,
+                 const ConfigurationTransportLayout &transportLayout,
                  const ClockResetPlan &clockReset);
 
 llvm::Expected<std::vector<BoundaryModule>>
 buildBoundaryModules(mlir::OpBuilder &builder, mlir::Location location,
                      fabric::SpatialCoreOccurrenceRef spatialCore,
                      const fabric::FabricArtifactView &fabric,
-                     const ConfigurationABI &configurationAbi);
+                     const ConfigurationABI &configurationAbi,
+                     const ConfigurationTransportLayout &transportLayout);
 
 } // namespace loom::hardware::rtl::hierarchy
 

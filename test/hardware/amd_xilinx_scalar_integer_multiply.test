@@ -3,6 +3,7 @@
 # RUN: %loom-amd-xilinx-scalar-integer-multiply-test %t
 # RUN: FileCheck %s --check-prefix=WRAPPER < %t/exact/provider_artifacts/amd_xilinx_scalar_integer_multiply.sv
 # RUN: FileCheck %s --check-prefix=SYSTEM < %t/exact/provider_artifacts/amd_xilinx_scalar_integer_multiply_system.sv
+# RUN: FileCheck %s --check-prefix=SHELL < %t/exact/provider_artifacts/amd_xilinx_scalar_integer_multiply_system.sv
 
 # WRAPPER-LABEL: module amd_xilinx_multiply_0
 # WRAPPER: input [15:0] data_input_0
@@ -26,23 +27,27 @@
 # WRAPPER-NOT: always
 
 # SYSTEM-LABEL: module loom_module
-# SYSTEM: input {{ *}}clock
-# SYSTEM-NEXT: {{ *}}reset
-# SYSTEM: input [15:0] input_0_data
-# SYSTEM: input input_0_valid
-# SYSTEM: input [15:0] input_1_data
-# SYSTEM: input input_1_valid
-# SYSTEM: {{ *}}output_0_ready
-# SYSTEM: output {{ *}}input_0_ready
-# SYSTEM-NEXT: {{ *}}input_1_ready
-# SYSTEM: output [15:0] output_0_data
-# SYSTEM: output output_0_valid
-# SYSTEM: reg {{ *}}[15:0] result_data_reg
-# SYSTEM: reg {{ *}}result_valid_reg
-# SYSTEM: loom_fabric_operation_0 operation (
-# SYSTEM: .data_input_0
-# SYSTEM: .data_input_1
-# SYSTEM: .data_output_0
-# SYSTEM: always @(posedge clock or posedge reset)
-# SYSTEM: result_data_reg <= _operation_data_output_0
-# SYSTEM: result_valid_reg <=
+# SYSTEM-DAG: input {{ *}}clock
+# SYSTEM-DAG: {{^ *reset,}}
+# SYSTEM-DAG: input [15:0] input_0_data
+# SYSTEM-DAG: input input_0_valid
+# SYSTEM-DAG: input [15:0] input_1_data
+# SYSTEM-DAG: input input_1_valid
+# SYSTEM-DAG: {{^ *output_0_ready,}}
+# SYSTEM-DAG: {{^ *input_0_ready,}}
+# SYSTEM-DAG: {{^ *input_1_ready,}}
+# SYSTEM-DAG: output [15:0] output_0_data
+# SYSTEM-DAG: output output_0_valid
+# SYSTEM: loom_configuration_controller configuration_controller (
+# SYSTEM: loom_spatial_pe_{{[0-9]+}} pe_{{[0-9]+}} (
+
+# SHELL-LABEL: module loom_operation_shell_0
+# SHELL: reg {{ *}}[15:0] result_data_reg
+# SHELL: reg {{ *}}result_valid_reg
+# SHELL: loom_fabric_operation_0 operation (
+# SHELL: .data_input_0
+# SHELL: .data_input_1
+# SHELL: .data_output_0
+# SHELL: always @(posedge clock or posedge reset)
+# SHELL: result_data_reg <= _operation_data_output_0
+# SHELL: result_valid_reg <=

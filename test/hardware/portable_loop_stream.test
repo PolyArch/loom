@@ -14,13 +14,16 @@
 # LEAF: output state_write
 # LEAF-NOT: always_ff
 
-# SYSTEM-LABEL: module loom_module
-# SYSTEM: input clock
-# SYSTEM: reset,
+# SYSTEM-LABEL: module loom_operation_shell_
 # SYSTEM-NOT: result_data_reg
 # SYSTEM-NOT: result_valid_reg
 # SYSTEM: operation_state_reg
 # SYSTEM: always @(posedge clock or posedge reset)
+# SYSTEM-LABEL: module loom_module
+# SYSTEM: input clock
+# SYSTEM: reset,
+# SYSTEM: cfg_awaddr
+# SYSTEM: cfg_rdata
 
 # TB: stalled IV changed or retired
 # TB: close did not terminate the stream

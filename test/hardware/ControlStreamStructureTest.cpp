@@ -1,6 +1,7 @@
 #include "ADG/Builder.h"
 #include "ADG/Builtin.h"
 #include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationTransportTestSupport.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
@@ -160,8 +161,7 @@ loom::fabric::FabricPhysicalConfigurationFieldRef qualifyConfigurationField(
 }
 
 struct RouteConfiguration final {
-  std::string portName;
-  std::uint64_t bitCount = 0;
+  loom::hardware::test::PortableConfigurationTarget target;
   std::vector<std::uint8_t> payload;
 };
 
@@ -169,7 +169,7 @@ RouteConfiguration
 makeRouteConfiguration(llvm::StringRef test,
                        const loom::fabric::FinalizedFabricRoot &module,
                        loom::fabric::SpatialCoreOccurrenceRef spatialCore,
-                       const loom::hardware::ConfigurationABI &abi) {
+                       const loom::hardware::FinalizedConfigurationABI &abi) {
   require(test,
           module.view().peOccurrences().size() == 1 &&
               module.view().fuOccurrences().size() == 1,
@@ -198,7 +198,7 @@ makeRouteConfiguration(llvm::StringRef test,
                   physical,
                   loom::fabric::FabricStaticConfigurationResidency{}));
     const loom::hardware::ProgrammingUnit *fieldOwner = nullptr;
-    for (const auto &unit : abi.programmingUnits())
+    for (const auto &unit : abi.abi().programmingUnits())
       for (const auto &field : unit.fields)
         if (field.slot == slot) {
           require(test, fieldOwner == nullptr,
@@ -217,25 +217,24 @@ makeRouteConfiguration(llvm::StringRef test,
         {slot, std::vector<std::uint8_t>(encoded.bytes().begin(),
                                          encoded.bytes().end())});
   }
+  auto fuActivation =
+      take(test, loom::hardware::test::deriveSpatialSingleTemplateFuActivation(
+                     module.view(), abi, spatialCore, fu));
+  const auto *fuOwner = abi.abi().findProgrammingUnit(fuActivation.unitId);
+  if (!fuOwner)
+    fail(test, "FU activation has no programming unit");
+  if (owner)
+    require(test, owner->id == fuOwner->id,
+            "route configuration spans programming units");
+  else
+    owner = fuOwner;
+  values.push_back(std::move(fuActivation.value));
   if (!owner)
     fail(test, "route configuration has no programming unit");
-  return RouteConfiguration{"configuration_" + std::to_string(owner->id),
-                            owner->payloadBitCount,
-                            take(test, abi.encode(owner->id, values))};
-}
-
-std::string bitLiteral(llvm::ArrayRef<std::uint8_t> bytes,
-                       std::uint64_t bitCount) {
-  std::string result;
-  result.reserve(static_cast<std::size_t>(bitCount));
-  for (std::uint64_t bit = bitCount; bit > 0; --bit) {
-    const std::uint64_t index = bit - 1;
-    result.push_back(
-        ((bytes[static_cast<std::size_t>(index / 8)] >> (index % 8)) & 1U) != 0
-            ? '1'
-            : '0');
-  }
-  return result;
+  return RouteConfiguration{
+      take(test, loom::hardware::test::derivePortableConfigurationTarget(
+                     abi, spatialCore, owner->id)),
+      take(test, abi.abi().encode(owner->id, values))};
 }
 
 loom::fabric::FinalizedFabricRoot
@@ -494,7 +493,7 @@ void tokenSyncUsesOneDerivedHandshakeContract(
   const loom::fabric::SpatialCoreOccurrenceRef spatialCore{
       systemView.artifact().accCoreOccurrences().front()};
   auto skeleton = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                                 context, spatialCore, abi.abi()));
+                                 context, spatialCore, abi));
   require(test, skeleton.operationLeaves.size() == 1,
           "TokenSync did not traverse the CommonSkeleton operation path");
   circt::hw::InstanceOp operationInstance;
@@ -575,7 +574,7 @@ void orderedCardinalityUsesCommonContinuation(
   const loom::fabric::SpatialCoreOccurrenceRef spatialCore{
       systemView.artifact().accCoreOccurrences().front()};
   auto skeleton = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                                 context, spatialCore, abi.abi()));
+                                 context, spatialCore, abi));
   require(test, skeleton.operationLeaves.size() == 1,
           "Parallelize skeleton did not expose one operation leaf");
   circt::hw::InstanceOp operationInstance;
@@ -753,8 +752,7 @@ module control_stream_testbench;
   logic       output_0_valid;
   logic       output_0_ready;
 )sv";
-  testbench << "  logic [" << configuration.bitCount - 1 << ":0] "
-            << configuration.portName << ";\n\n";
+  testbench << loom::hardware::test::portableAxiLiteSignalDeclarations();
   testbench << R"sv(  loom_module dut(.*);
 
   always #5 clock = ~clock;
@@ -764,22 +762,29 @@ module control_stream_testbench;
       $fatal(1, "%s", message);
   endtask
 
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteDriverTasks();
+  testbench << loom::hardware::test::portableCycleWatchdog();
+  testbench << R"sv(
+
   initial begin
     clock = 0;
     reset = 1;
     input_0_data = 8'h01;
-    input_0_valid = 1;
+    input_0_valid = 0;
     input_1_data = 8'h3c;
     input_1_valid = 0;
     output_0_ready = 1;
 )sv";
-  testbench << "    " << configuration.portName << " = "
-            << configuration.bitCount << "'b"
-            << bitLiteral(configuration.payload, configuration.bitCount)
-            << ";\n";
+  testbench << loom::hardware::test::portableAxiLiteInitialization();
   testbench << R"sv(    repeat (2) @(posedge clock);
     @(negedge clock);
     reset = 0;
+)sv";
+  testbench << take(test, loom::hardware::test::portableAxiLiteProgramAndVerify(
+                              configuration.target, configuration.payload));
+  testbench << R"sv(
+    input_0_valid = 1;
     #1;
     check(!input_0_ready && !output_0_valid,
           "Incomplete Init consumed phase or published a result");
@@ -831,7 +836,13 @@ module control_stream_testbench;
     check(!input_0_ready && !input_1_ready && !output_0_valid,
           "Reset did not quiesce the token boundary");
     reset = 0;
+    input_1_valid = 0;
+)sv";
+  testbench << take(test, loom::hardware::test::portableAxiLiteProgramAndVerify(
+                              configuration.target, configuration.payload));
+  testbench << R"sv(
     input_1_data = 8'h55;
+    input_1_valid = 1;
     #1;
     check(input_1_ready && output_0_valid && output_0_data == 8'h55,
           "Reset did not restore the initial operation state");
@@ -848,7 +859,7 @@ read_verilog -sv control_stream_module.sv
 hierarchy -check -top loom_module
 check -assert
 proc
-select -assert-count 1 loom_module/t:$adff
+select -assert-count 1 loom_operation_shell_0/t:$adff
 select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
 synth -top loom_module
 check -assert
@@ -1036,11 +1047,11 @@ void commonSkeletonOwnsTransparentState(const std::filesystem::path &root) {
   context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
                       circt::seq::SeqDialect, circt::sv::SVDialect>();
   auto skeleton = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                                 context, spatialCore, abi.abi()));
+                                 context, spatialCore, abi));
   require(test, skeleton.operationLeaves.size() == 1,
           "LoopInvariant skeleton did not expose one operation leaf");
   const RouteConfiguration configuration =
-      makeRouteConfiguration(test, module, spatialCore, abi.abi());
+      makeRouteConfiguration(test, module, spatialCore, abi);
   loom::hardware::rtl::FabricOperationProviderRegistry providers;
   if (llvm::Error error =
           loom::hardware::rtl::registerPortableLoopInvariantProvider(providers))
@@ -1074,7 +1085,7 @@ void commonSkeletonOwnsTransparentState(const std::filesystem::path &root) {
       wrongView.artifact().accCoreOccurrences().front()};
   expectError(test,
               loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                  context, wrongSpatialCore, wrongAbi.abi()),
+                  context, wrongSpatialCore, wrongAbi),
               "resource contract");
 }
 

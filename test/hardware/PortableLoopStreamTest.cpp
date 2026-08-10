@@ -1,4 +1,5 @@
 #include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationTransportTestSupport.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
@@ -414,14 +415,13 @@ loom::fabric::FabricPhysicalConfigurationFieldRef qualifyConfigurationField(
 }
 
 struct ConfigurationImage final {
-  std::string portName;
-  std::uint64_t bitCount = 0;
+  loom::hardware::test::PortableConfigurationTarget target;
   std::vector<std::uint8_t> payload;
 };
 
-ConfigurationImage makeRouteConfiguration(llvm::StringRef test,
-                                          const FabricFixture &fixture,
-                                          const ConfigurationABI &abi) {
+ConfigurationImage
+makeRouteConfiguration(llvm::StringRef test, const FabricFixture &fixture,
+                       const FinalizedConfigurationABI &abi) {
   require(test,
           fixture.fabric.view().peOccurrences().size() == 1 &&
               fixture.fabric.view().fuOccurrences().size() == 1,
@@ -451,7 +451,7 @@ ConfigurationImage makeRouteConfiguration(llvm::StringRef test,
                   physical,
                   loom::fabric::FabricStaticConfigurationResidency{}));
     const ProgrammingUnit *fieldOwner = nullptr;
-    for (const ProgrammingUnit &unit : abi.programmingUnits())
+    for (const ProgrammingUnit &unit : abi.abi().programmingUnits())
       for (const ConfigurationFieldEncoding &field : unit.fields)
         if (field.slot == slot)
           fieldOwner = &unit;
@@ -467,24 +467,24 @@ ConfigurationImage makeRouteConfiguration(llvm::StringRef test,
         {slot, std::vector<std::uint8_t>(encoded.bytes().begin(),
                                          encoded.bytes().end())});
   }
+  auto fuActivation =
+      take(test, loom::hardware::test::deriveSpatialSingleTemplateFuActivation(
+                     fixture.fabric.view(), abi, fixture.spatialCore, fu));
+  const ProgrammingUnit *fuOwner =
+      abi.abi().findProgrammingUnit(fuActivation.unitId);
+  if (!fuOwner)
+    fail(test, "FU activation has no programming unit");
+  if (owner)
+    require(test, owner->id == fuOwner->id,
+            "route configuration spans programming units");
+  else
+    owner = fuOwner;
+  values.push_back(std::move(fuActivation.value));
   if (!owner)
     fail(test, "route configuration has no programming unit");
-  return {"configuration_" + std::to_string(owner->id), owner->payloadBitCount,
-          take(test, abi.encode(owner->id, values))};
-}
-
-std::string bitLiteral(llvm::ArrayRef<std::uint8_t> bytes,
-                       std::uint64_t bitCount) {
-  std::string result;
-  result.reserve(static_cast<std::size_t>(bitCount));
-  for (std::uint64_t bit = bitCount; bit > 0; --bit) {
-    const std::uint64_t index = bit - 1;
-    result.push_back(
-        ((bytes[static_cast<std::size_t>(index / 8)] >> (index % 8)) & 1U) != 0
-            ? '1'
-            : '0');
-  }
-  return result;
+  return {take(test, loom::hardware::test::derivePortableConfigurationTarget(
+                         abi, fixture.spatialCore, owner->id)),
+          take(test, abi.abi().encode(owner->id, values))};
 }
 
 void schemaCasesAndResourceContractAreAuthoritative() {
@@ -742,8 +742,7 @@ module testbench;
   logic       output_1_valid;
   logic       output_1_ready;
 )sv";
-  output << "  logic [" << configuration.bitCount - 1 << ":0] "
-         << configuration.portName << ";\n\n";
+  output << loom::hardware::test::portableAxiLiteSignalDeclarations();
   output << R"sv(  loom_module dut(.*);
 
   always #5 clock = ~clock;
@@ -752,27 +751,38 @@ module testbench;
     if (!condition) $fatal(1, "%s", message);
   endtask
 
+)sv";
+  output << loom::hardware::test::portableAxiLiteDriverTasks();
+  output << loom::hardware::test::portableCycleWatchdog();
+  output << R"sv(
+
   initial begin
     clock = 0;
     reset = 1;
     input_0_data = 8'h00;
     input_1_data = 8'h03;
     input_2_data = 8'h01;
-    input_0_valid = 1;
-    input_1_valid = 1;
-    input_2_valid = 1;
+    input_0_valid = 0;
+    input_1_valid = 0;
+    input_2_valid = 0;
     output_0_ready = 0;
     output_1_ready = 1;
 )sv";
-  output << "    " << configuration.portName << " = " << configuration.bitCount
-         << "'b" << bitLiteral(configuration.payload, configuration.bitCount)
-         << ";\n";
+  output << loom::hardware::test::portableAxiLiteInitialization();
   output << R"sv(    repeat (2) @(posedge clock);
     @(negedge clock);
     check(!input_0_ready && !input_1_ready && !input_2_ready &&
               !output_0_valid && !output_1_valid,
           "reset did not quiesce the stream boundary");
     reset = 0;
+)sv";
+  output << take("systemTestbenchText",
+                 loom::hardware::test::portableAxiLiteProgramAndVerify(
+                     configuration.target, configuration.payload));
+  output << R"sv(
+    input_0_valid = 1;
+    input_1_valid = 1;
+    input_2_valid = 1;
     #1;
     check(input_0_ready && input_1_ready && input_2_ready &&
               !output_0_valid && !output_1_valid,
@@ -847,12 +857,20 @@ module testbench;
           "replacement activation was not published at t+1");
 
     @(negedge clock);
+    input_0_valid = 0;
+    input_1_valid = 0;
+    input_2_valid = 0;
     reset = 1;
     #1;
     check(!input_0_ready && !input_1_ready && !input_2_ready &&
               !output_0_valid && !output_1_valid,
           "active reset did not quiesce the stream");
     reset = 0;
+)sv";
+  output << take("systemTestbenchText",
+                 loom::hardware::test::portableAxiLiteProgramAndVerify(
+                     configuration.target, configuration.payload));
+  output << R"sv(
     input_0_valid = 0;
     input_1_valid = 1;
     input_2_valid = 1;
@@ -934,9 +952,9 @@ void configuredLeafAndSystemArtifacts(const std::filesystem::path &root) {
   FinalizedConfigurationABI systemAbi =
       makeDefaultAbi(test, store, systemFixture);
   std::unique_ptr<mlir::MLIRContext> systemContext = makeCirctContext();
-  auto skeleton = take(
-      test, buildModuleRootCirctSkeleton(
-                *systemContext, systemFixture.spatialCore, systemAbi.abi()));
+  auto skeleton =
+      take(test, buildModuleRootCirctSkeleton(
+                     *systemContext, systemFixture.spatialCore, systemAbi));
   require(test, skeleton.operationLeaves.size() == 1,
           "CommonSkeleton did not expose one stream leaf");
   FabricOperationProviderRegistry registry;
@@ -955,7 +973,7 @@ void configuredLeafAndSystemArtifacts(const std::filesystem::path &root) {
                    .contains("result_valid_reg"),
           "managed stream timing did not remain in the shared state boundary");
   const ConfigurationImage configuration =
-      makeRouteConfiguration(test, systemFixture, systemAbi.abi());
+      makeRouteConfiguration(test, systemFixture, systemAbi);
   if (llvm::Error error = loom::hardware::test::writePortableProviderArtifacts(
           root / "artifacts",
           {{"loop_stream_leaf.sv", firstRtl},

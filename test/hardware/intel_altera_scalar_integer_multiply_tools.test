@@ -2,4 +2,4 @@
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-intel-altera-scalar-integer-multiply-test %t
 # RUN: cd %t/exact/provider_artifacts && env CXXFLAGS=-fcoroutines verilator --binary --timing -Wno-fatal --top-module testbench --Mdir verilator_obj intel_altera_scalar_integer_multiply.sv synthetic_lpm_mult.sv testbench.sv
-# RUN: %t/exact/provider_artifacts/verilator_obj/Vtestbench
+# RUN: timeout 30s %t/exact/provider_artifacts/verilator_obj/Vtestbench

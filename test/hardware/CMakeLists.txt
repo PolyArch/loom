@@ -121,6 +121,19 @@ if(NOT LOOM_HAVE_CIRCT)
 endif()
 
 if(LOOM_HAVE_CIRCT)
+  add_library(LoomConfigurationTransportTestSupport
+    ConfigurationTransportTestSupport.cpp
+  )
+
+  target_include_directories(LoomConfigurationTransportTestSupport PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+
+  target_link_libraries(LoomConfigurationTransportTestSupport PUBLIC
+    LoomHardwareRTL
+    LLVMSupport
+  )
+
   add_library(LoomPortableProviderTestSupport
     PortableProviderTestSupport.cpp
   )
@@ -166,6 +179,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-common-skeleton-test PRIVATE
+    LoomConfigurationTransportTestSupport
     LoomHardwareConfigurationTestSupport
     LoomPortableProviderTestSupport
     LoomADGBuilder
@@ -427,6 +441,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-fixed-vector-parallelize-serialize-test PRIVATE
+    LoomConfigurationTransportTestSupport
     LoomHardwareConfigurationTestSupport
     LoomPortableProviderTestSupport
     LoomADGBuilder
@@ -520,6 +535,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-loop-stream-test PRIVATE
+    LoomConfigurationTransportTestSupport
     LoomHardwareConfigurationTestSupport
     LoomPortableProviderTestSupport
     LoomADGBuilder
@@ -536,6 +552,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-token-constant-sync-test PRIVATE
+    LoomConfigurationTransportTestSupport
     LoomHardwareConfigurationTestSupport
     LoomPortableProviderTestSupport
     LoomADGBuilder
@@ -552,6 +569,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-portable-token-mux-demux-test PRIVATE
+    LoomConfigurationTransportTestSupport
     LoomHardwareConfigurationTestSupport
     LoomPortableProviderTestSupport
     LoomADGBuilder
@@ -579,6 +597,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   target_link_libraries(loom-control-stream-structure-test PRIVATE
+    LoomConfigurationTransportTestSupport
     LoomHardwareConfigurationTestSupport
     LoomPortableProviderTestSupport
     LoomADGBuilder

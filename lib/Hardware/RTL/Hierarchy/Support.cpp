@@ -28,8 +28,8 @@ llvm::Error unsupported(const llvm::Twine &message) {
       message.str());
 }
 
-std::string configurationPortName(ProgrammingUnitId id) {
-  return "configuration_" + std::to_string(id);
+std::string configurationPortName(std::size_t transportUnitOrdinal) {
+  return "configuration_" + std::to_string(transportUnitOrdinal);
 }
 
 std::string endpointKey(const fabric::FabricTransportEndpointRef &endpoint) {
@@ -54,7 +54,8 @@ namespace {
 
 llvm::Expected<FieldDecoderPlan>
 prepareFieldDecoder(const ConfigurationFieldEncoding &encoding,
-                    const ConfigurationABI &configurationAbi) {
+                    const ConfigurationABI &configurationAbi,
+                    const ConfigurationTransportLayout &transportLayout) {
   const ProgrammingUnit *owner = nullptr;
   for (const ProgrammingUnit &unit : configurationAbi.programmingUnits())
     for (const ConfigurationFieldEncoding &candidate : unit.fields)
@@ -66,6 +67,13 @@ prepareFieldDecoder(const ConfigurationFieldEncoding &encoding,
       }
   if (!owner)
     return invalid("configuration field has no programming owner");
+  const ConfigurationTransportUnitLayout *transportUnit =
+      transportLayout.find(owner->id);
+  if (!transportUnit)
+    return invalid("configuration field owner is absent from the local "
+                   "configuration transport");
+  const std::size_t transportUnitOrdinal =
+      static_cast<std::size_t>(transportUnit - transportLayout.units.data());
 
   const std::uint64_t width = encoding.encodedBitCount();
   if (width == 0 || width > mlir::IntegerType::kMaxWidth)
@@ -91,7 +99,8 @@ prepareFieldDecoder(const ConfigurationFieldEncoding &encoding,
   }
   if (llvm::is_contained(destinationBits, UINT64_MAX))
     return invalid("configuration destination slices do not cover the field");
-  return FieldDecoderPlan{owner, width, std::move(destinationBits)};
+  return FieldDecoderPlan{owner, transportUnitOrdinal, width,
+                          std::move(destinationBits)};
 }
 
 } // namespace
@@ -99,7 +108,8 @@ prepareFieldDecoder(const ConfigurationFieldEncoding &encoding,
 llvm::Expected<FieldDecoderPlan>
 prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
                     const fabric::FabricSemanticConfigFieldRef &field,
-                    const ConfigurationABI &configurationAbi) {
+                    const ConfigurationABI &configurationAbi,
+                    const ConfigurationTransportLayout &transportLayout) {
   auto physical = qualifyConfigurationField(spatialCore, field);
   if (!physical)
     return physical.takeError();
@@ -112,14 +122,16 @@ prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
   if (!encoding)
     return invalid("configuration field is absent from ConfigurationABI: " +
                    fabric::printFabricRef(*physical));
-  return prepareFieldDecoder(*encoding, configurationAbi);
+  return prepareFieldDecoder(*encoding, configurationAbi, transportLayout);
 }
 
 llvm::Expected<std::pair<FieldDecoderPlan, const FiniteCodebookEncoding *>>
 prepareFiniteField(fabric::SpatialCoreOccurrenceRef spatialCore,
                    const fabric::FabricSemanticConfigFieldRef &field,
-                   const ConfigurationABI &configurationAbi) {
-  auto decoder = prepareFieldDecoder(spatialCore, field, configurationAbi);
+                   const ConfigurationABI &configurationAbi,
+                   const ConfigurationTransportLayout &transportLayout) {
+  auto decoder = prepareFieldDecoder(spatialCore, field, configurationAbi,
+                                     transportLayout);
   if (!decoder)
     return decoder.takeError();
   auto physical = qualifyConfigurationField(spatialCore, field);
@@ -284,6 +296,7 @@ void appendEndpointPorts(llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs,
 
 void appendClockResetAndConfigurationPorts(
     mlir::OpBuilder &builder, const ConfigurationABI &configurationAbi,
+    const ConfigurationTransportLayout &transportLayout,
     llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs) {
   inputs.push_back(
       circt::hw::PortInfo{{builder.getStringAttr("clock"),
@@ -292,11 +305,15 @@ void appendClockResetAndConfigurationPorts(
   inputs.push_back(
       circt::hw::PortInfo{{builder.getStringAttr("reset"), builder.getI1Type(),
                            circt::hw::ModulePort::Direction::Input}});
-  for (const ProgrammingUnit &unit : configurationAbi.programmingUnits())
+  for (auto [ordinal, transportUnit] : llvm::enumerate(transportLayout.units)) {
+    const ProgrammingUnit *unit = configurationAbi.findProgrammingUnit(
+        transportUnit.programmingUnit.unitId);
+    assert(unit && "transport layout must reference an ABI unit");
     inputs.push_back(circt::hw::PortInfo{
-        {builder.getStringAttr(configurationPortName(unit.id)),
-         builder.getIntegerType(static_cast<unsigned>(unit.payloadBitCount)),
+        {builder.getStringAttr(configurationPortName(ordinal)),
+         builder.getIntegerType(static_cast<unsigned>(unit->payloadBitCount)),
          circt::hw::ModulePort::Direction::Input}});
+  }
 }
 
 mlir::Value bitConstant(mlir::OpBuilder &builder, mlir::Location location,
@@ -325,7 +342,7 @@ mlir::Value decodeFieldSignal(mlir::OpBuilder &builder, mlir::Location location,
                               circt::hw::HWModulePortAccessor &accessor,
                               const FieldDecoderPlan &decoder) {
   mlir::Value payload =
-      accessor.getInput(configurationPortName(decoder.unit->id));
+      accessor.getInput(configurationPortName(decoder.transportUnitOrdinal));
   llvm::SmallVector<mlir::Value> highToLow;
   highToLow.reserve(static_cast<std::size_t>(decoder.encodedBitCount));
   for (std::uint64_t source = decoder.encodedBitCount; source > 0; --source)

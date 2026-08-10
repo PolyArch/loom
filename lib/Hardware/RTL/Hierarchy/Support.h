@@ -3,6 +3,7 @@
 
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
+#include "Hardware/RTL/ConfigurationTransport.h"
 #include "Hardware/RTL/Transport.h"
 
 #include "circt/Dialect/HW/HWOps.h"
@@ -21,6 +22,7 @@ namespace loom::hardware::rtl::hierarchy {
 
 struct FieldDecoderPlan final {
   const ProgrammingUnit *unit = nullptr;
+  std::size_t transportUnitOrdinal = 0;
   std::uint64_t encodedBitCount = 0;
   std::vector<std::uint64_t> destinationBits;
 };
@@ -51,7 +53,7 @@ struct ChannelSignals final {
 llvm::Error invalid(const llvm::Twine &message);
 llvm::Error unsupported(const llvm::Twine &message);
 
-std::string configurationPortName(ProgrammingUnitId id);
+std::string configurationPortName(std::size_t transportUnitOrdinal);
 std::string endpointKey(const fabric::FabricTransportEndpointRef &endpoint);
 
 llvm::Expected<fabric::FabricPhysicalConfigurationFieldRef>
@@ -61,12 +63,14 @@ qualifyConfigurationField(fabric::SpatialCoreOccurrenceRef spatialCore,
 llvm::Expected<FieldDecoderPlan>
 prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
                     const fabric::FabricSemanticConfigFieldRef &field,
-                    const ConfigurationABI &configurationAbi);
+                    const ConfigurationABI &configurationAbi,
+                    const ConfigurationTransportLayout &transportLayout);
 
 llvm::Expected<std::pair<FieldDecoderPlan, const FiniteCodebookEncoding *>>
 prepareFiniteField(fabric::SpatialCoreOccurrenceRef spatialCore,
                    const fabric::FabricSemanticConfigFieldRef &field,
-                   const ConfigurationABI &configurationAbi);
+                   const ConfigurationABI &configurationAbi,
+                   const ConfigurationTransportLayout &transportLayout);
 
 llvm::Expected<llvm::APInt>
 physicalCode(const FiniteCodebookEncoding &codebook,
@@ -87,6 +91,7 @@ void appendEndpointPorts(llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs,
 
 void appendClockResetAndConfigurationPorts(
     mlir::OpBuilder &builder, const ConfigurationABI &configurationAbi,
+    const ConfigurationTransportLayout &transportLayout,
     llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs);
 
 mlir::Value bitConstant(mlir::OpBuilder &builder, mlir::Location location,

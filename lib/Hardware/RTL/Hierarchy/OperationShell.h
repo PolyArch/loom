@@ -16,6 +16,14 @@ namespace loom::hardware::rtl::hierarchy {
 
 struct ClockResetPlan;
 
+} // namespace loom::hardware::rtl::hierarchy
+
+namespace loom::hardware::rtl {
+struct ConfigurationTransportLayout;
+}
+
+namespace loom::hardware::rtl::hierarchy {
+
 struct OperationEndpointPlan final {
   fabric::FabricPortDirection direction = fabric::FabricPortDirection::Input;
   fabric::FabricOrdinal ordinal = 0;
@@ -35,6 +43,7 @@ llvm::Expected<std::vector<OperationShellModule>> buildOperationShellModules(
     mlir::OpBuilder &builder, mlir::Location location,
     fabric::SpatialCoreOccurrenceRef spatialCore,
     const ConfigurationABI &configurationAbi,
+    const ConfigurationTransportLayout &transportLayout,
     llvm::ArrayRef<ResolvedFabricPhysicalOperation> operations,
     std::vector<FabricOperationLeafAssociation> &associations,
     const ClockResetPlan &clockReset);

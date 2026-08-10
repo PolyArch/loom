@@ -1,5 +1,6 @@
 #include "ADG/Builder.h"
 #include "ConfigurationABI3TestSupport.h"
+#include "ConfigurationTransportTestSupport.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
@@ -407,9 +408,8 @@ std::string specializeLeaf(llvm::StringRef test, LeafSkeleton skeleton,
 
 std::string specializeSystem(llvm::StringRef test, mlir::MLIRContext &context,
                              const Fixture &fixture) {
-  auto skeleton =
-      take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
-                     context, fixture.spatialCore, fixture.abi.abi()));
+  auto skeleton = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                                 context, fixture.spatialCore, fixture.abi));
   require(test, skeleton.operationLeaves.size() == 1,
           "CommonSkeleton did not expose one token routing leaf");
   return specialize(test, std::move(skeleton), fixture);
@@ -469,8 +469,7 @@ void writeBit(std::vector<std::uint8_t> &bytes, std::uint64_t bit, bool value) {
 }
 
 struct ConfigurationImages final {
-  std::string portName;
-  std::uint64_t bitCount = 0;
+  loom::hardware::test::PortableConfigurationTarget transport;
   std::vector<std::uint8_t> target;
   std::vector<std::uint8_t> invalid;
 };
@@ -519,6 +518,19 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
                                          encoded.bytes().end())});
   }
 
+  auto fuActivation = take(
+      test, loom::hardware::test::deriveSpatialSingleTemplateFuActivation(
+                fixture.module.view(), fixture.abi, fixture.spatialCore, fu));
+  const ProgrammingUnit *fuOwner =
+      fixture.abi.abi().findProgrammingUnit(fuActivation.unitId);
+  require(test, fuOwner != nullptr, "FU activation has no programming owner");
+  if (owner)
+    require(test, owner->id == fuOwner->id,
+            "FU and PE configuration have different owners");
+  else
+    owner = fuOwner;
+  values.push_back(std::move(fuActivation.value));
+
   const auto &operation = fixture.operation();
   const auto ordinal =
       operation.capability->configurationFieldSchema.front().ordinal;
@@ -546,19 +558,9 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
       writeBit(invalid, slice.destinationBitOffset + bit,
                ((std::uint64_t{15} >> source) & 1U) != 0);
     }
-  return {"configuration_" + std::to_string(owner->id), owner->payloadBitCount,
+  return {take(test, loom::hardware::test::derivePortableConfigurationTarget(
+                         fixture.abi, fixture.spatialCore, owner->id)),
           std::move(target), std::move(invalid)};
-}
-
-std::string bitLiteral(llvm::ArrayRef<std::uint8_t> bytes,
-                       std::uint64_t bitCount) {
-  std::string result;
-  result.reserve(static_cast<std::size_t>(bitCount));
-  for (std::uint64_t bit = bitCount; bit > 0; --bit) {
-    const std::uint64_t index = bit - 1;
-    result.push_back(((bytes[index / 8] >> (index % 8)) & 1U) ? '1' : '0');
-  }
-  return result;
 }
 
 std::string leafTestbench() {
@@ -754,13 +756,16 @@ std::string muxSystemTestbench(const ConfigurationImages &configuration) {
   logic [31:0] output_0_data;
   logic output_0_valid, output_0_ready;
 )sv";
-  result += "  logic [" + std::to_string(configuration.bitCount - 1) + ":0] " +
-            configuration.portName + ";\n";
+  result += loom::hardware::test::portableAxiLiteSignalDeclarations();
   result += R"sv(  loom_module dut(.*);
   always #5 clock = ~clock;
   task automatic check(input bit condition, input string message);
     if (!condition) $fatal(1, "%s", message);
   endtask
+)sv";
+  result += loom::hardware::test::portableAxiLiteDriverTasks();
+  result += loom::hardware::test::portableCycleWatchdog();
+  result += R"sv(
   initial begin
     clock = 0; reset = 1;
     input_0_data = 0; input_0_valid = 0;
@@ -770,11 +775,14 @@ std::string muxSystemTestbench(const ConfigurationImages &configuration) {
     input_4_data = 8'h44; input_4_valid = 0;
     output_0_ready = 1;
 )sv";
-  result += "    " + configuration.portName + " = " +
-            std::to_string(configuration.bitCount) + "'b" +
-            bitLiteral(configuration.target, configuration.bitCount) + ";\n";
+  result += loom::hardware::test::portableAxiLiteInitialization();
   result += R"sv(    repeat (2) @(posedge clock);
     @(negedge clock); reset = 0;
+)sv";
+  result += take("muxSystemTestbench",
+                 loom::hardware::test::portableAxiLiteProgramAndVerify(
+                     configuration.transport, configuration.target));
+  result += R"sv(
     input_0_data = 1; input_0_valid = 1;
     input_3_data = 32'habcd003c; input_3_valid = 1;
     #1;
@@ -808,9 +816,9 @@ std::string muxSystemTestbench(const ConfigurationImages &configuration) {
           "mux shell reset did not quiesce the boundary");
     reset = 0;
 )sv";
-  result += "    " + configuration.portName + " = " +
-            std::to_string(configuration.bitCount) + "'b" +
-            bitLiteral(configuration.invalid, configuration.bitCount) + ";\n";
+  result += take("muxSystemTestbench",
+                 loom::hardware::test::portableAxiLiteProgramAndVerify(
+                     configuration.transport, configuration.invalid));
   result += R"sv(    input_0_data = 1; input_0_valid = 1;
     input_2_data = 32'h12340066; input_2_valid = 1; #1;
     check(input_0_ready && input_2_ready && !input_1_ready &&
@@ -837,13 +845,16 @@ std::string demuxSystemTestbench(const ConfigurationImages &configuration) {
   logic output_0_valid, output_1_valid, output_2_valid, output_3_valid;
   logic output_0_ready, output_1_ready, output_2_ready, output_3_ready;
 )sv";
-  result += "  logic [" + std::to_string(configuration.bitCount - 1) + ":0] " +
-            configuration.portName + ";\n";
+  result += loom::hardware::test::portableAxiLiteSignalDeclarations();
   result += R"sv(  loom_module dut(.*);
   always #5 clock = ~clock;
   task automatic check(input bit condition, input string message);
     if (!condition) $fatal(1, "%s", message);
   endtask
+)sv";
+  result += loom::hardware::test::portableAxiLiteDriverTasks();
+  result += loom::hardware::test::portableCycleWatchdog();
+  result += R"sv(
   initial begin
     clock = 0; reset = 1;
     input_0_data = 1; input_0_valid = 0;
@@ -851,11 +862,14 @@ std::string demuxSystemTestbench(const ConfigurationImages &configuration) {
     output_0_ready = 1; output_1_ready = 1;
     output_2_ready = 1; output_3_ready = 1;
 )sv";
-  result += "    " + configuration.portName + " = " +
-            std::to_string(configuration.bitCount) + "'b" +
-            bitLiteral(configuration.target, configuration.bitCount) + ";\n";
+  result += loom::hardware::test::portableAxiLiteInitialization();
   result += R"sv(    repeat (2) @(posedge clock);
     @(negedge clock); reset = 0;
+)sv";
+  result += take("demuxSystemTestbench",
+                 loom::hardware::test::portableAxiLiteProgramAndVerify(
+                     configuration.transport, configuration.target));
+  result += R"sv(
     input_0_valid = 1; input_1_valid = 1; #1;
     check(input_0_ready && input_1_ready && !output_0_valid &&
               !output_1_valid && !output_2_valid && !output_3_valid,
@@ -889,9 +903,9 @@ std::string demuxSystemTestbench(const ConfigurationImages &configuration) {
           "demux shell reset did not quiesce the boundary");
     reset = 0;
 )sv";
-  result += "    " + configuration.portName + " = " +
-            std::to_string(configuration.bitCount) + "'b" +
-            bitLiteral(configuration.invalid, configuration.bitCount) + ";\n";
+  result += take("demuxSystemTestbench",
+                 loom::hardware::test::portableAxiLiteProgramAndVerify(
+                     configuration.transport, configuration.invalid));
   result += R"sv(    input_0_data = 1; input_0_valid = 1;
     input_1_data = 32'h12340077; input_1_valid = 1; #1;
     check(input_0_ready && input_1_ready,

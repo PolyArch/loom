@@ -1,5 +1,7 @@
 #include "Hardware/RTL/OperationLeaf.h"
 
+#include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "mlir/IR/Builders.h"
@@ -100,6 +102,58 @@ requireControlShape(const fabric::ResolvedFabricOpCapabilityView &capability,
   return llvm::Error::success();
 }
 
+llvm::Expected<::fabric::ResourceContract> requiredResourceContract(
+    const fabric::ResolvedFabricOpCapabilityView &capability) {
+  using ::fabric::ImplementationFamilyId;
+  switch (capability.implementationFamily) {
+  case ImplementationFamilyId::FixedVectorParallelize:
+  case ImplementationFamilyId::FixedVectorSerialize: {
+    const auto *parameters = std::get_if<::fabric::FixedVectorAdapterParams>(
+        &capability.parameterizedCapability);
+    if (!parameters)
+      return invalid(
+          "ordered-cardinality operation has the wrong parameter schema");
+    auto laneCount = ::fabric::maximumFixedVectorAdapterLaneCount(*parameters);
+    if (!laneCount)
+      return laneCount.takeError();
+    const auto schema = capability.implementationFamily ==
+                                ImplementationFamilyId::FixedVectorParallelize
+                            ? ::dataflow::OperationSchemaId::DataflowParallelize
+                            : ::dataflow::OperationSchemaId::DataflowSerialize;
+    return ::fabric::createOrderedCardinalityOperationResourceContract(
+        schema, *laneCount);
+  }
+  case ImplementationFamilyId::LoopStream:
+    return ::fabric::loopStreamOperationResourceContract();
+  case ImplementationFamilyId::LoopCarry:
+    return ::fabric::loopCarryOperationResourceContract();
+  case ImplementationFamilyId::LoopInvariant:
+    return ::fabric::loopInvariantOperationResourceContract();
+  case ImplementationFamilyId::LoopGate:
+    return ::fabric::loopGateOperationResourceContract();
+  default:
+    return ::fabric::oneCycleElasticOperationResourceContract();
+  }
+}
+
+llvm::Error validateResourceContract(
+    const fabric::ResolvedFabricOpCapabilityView &capability) {
+  auto required = requiredResourceContract(capability);
+  if (!required)
+    return required.takeError();
+  auto actualBytes = ::fabric::encodeResourceContractRecord(
+      capability.resourceStateAndTimingContract);
+  if (!actualBytes)
+    return actualBytes.takeError();
+  auto requiredBytes = ::fabric::encodeResourceContractRecord(*required);
+  if (!requiredBytes)
+    return requiredBytes.takeError();
+  if (*actualBytes != *requiredBytes)
+    return invalid(
+        "operation resource contract does not match its structural protocol");
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Expected<FabricOperationLeafInterface> deriveFabricOperationLeafInterface(
@@ -190,6 +244,11 @@ llvm::Expected<FabricOperationLeafInterface> deriveFabricOperationLeafInterface(
                                               inputCount, outputCount))
     return std::move(error);
   return FabricOperationLeafInterface{protocol};
+}
+
+llvm::Error validateFabricOperationStructuralContract(
+    const fabric::ResolvedFabricOpCapabilityView &capability) {
+  return validateResourceContract(capability);
 }
 
 llvm::APInt encodeLoopCarryOperationLeafState(
