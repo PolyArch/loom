@@ -85,6 +85,14 @@ must resolve against exact subjects. Generic paths, whole-subject wildcards,
 and consumer-defined entity tuples were rejected because they erase owner type
 and permit stale or foreign references.
 
+A workload-running model may exist solely to publish one required typed output
+Artifact, such as a `SimulationExecution`. Requiring a metric or finding in
+that case would force a dummy normalized result that the model does not own.
+An empty query set is therefore admitted only when the descriptor already
+requires a nonempty Completed output binding. Models without such an output
+still require a metric or finding, so the exception adds no generic no-op
+evaluation path.
+
 ## Why Metrics, Findings, And Conditions Are Registries
 
 A central typed registry gives each metric and finding one unit, value form,
@@ -114,6 +122,17 @@ descriptor admission proves that the referenced case signature can supply the
 required basis; exact Request admission invokes the same rule for its case.
 Neither the Request nor an evaluator copies the requirement, resolver, or
 basis into a second registry.
+
+The exact case and cycle projections receive both Artifact and Blob stores.
+This keeps validation with the Artifact-family owner when a root's semantic
+closure includes logical payloads; treating the root bytes alone as sufficient
+would make Evaluation a competing partial importer.
+
+Terminal findings need two different codecs because they represent two
+different facts. The Finding owner encodes the typed witness stored inside the
+execution, while Simulation Artifacts encodes the output-relative reference
+stored in Evidence. Sharing raw bytes between those roles would either copy the
+witness into Evidence or make Evaluation interpret simulator-owned payloads.
 
 ## Why Fidelity Is Not One Ladder
 

@@ -118,7 +118,8 @@ EvaluationCaseSignatureDescriptor {
           | ExactSubjectCycle {
               accepted_reference_type: SubjectReferenceType
             }
-        resolve(exact EvaluationCase, CaseArtifactResolution, ArtifactStore)
+        resolve(exact EvaluationCase, CaseArtifactResolution,
+                ArtifactStore, BlobStore)
           -> ReferenceCycleBasis
       }
   permitted_base_conditions:
@@ -142,6 +143,11 @@ CaseSubjectRoleDescriptor {
       BlobStore)
 }
 ```
+
+Workload/runtime-input compatibility receives the same exact
+`EvaluationCase`, `CaseArtifactResolution`, `ArtifactStore`, and `BlobStore`.
+It may strict-import the orthogonal workload/runtime roots and their logical
+payloads, but it cannot duplicate either Artifact family's codec.
 
 The persistent registry reference is exactly
 `(Evaluation schema version, EvaluationCaseKind)`. It is not an Artifact
@@ -168,9 +174,11 @@ boolean capability flag. `AbstractCaseCycle` is legal only when the signature's
 semantics define one intrinsic tick, such as an abstract DFG cycle.
 `ExactSubjectCycle` must be a canonical `SubjectTargetRef` anchored in the exact
 case, resolve through its family-owned local-reference codec, and satisfy the
-signature's declared reference-cycle type. The resolved variant must match the
-descriptor's declared `source`. Resolution failure, a foreign anchor, a
-noncanonical local reference, or more than one possible result is invalid.
+signature's declared reference-cycle type. Its resolver receives both stores
+because the unique cycle may depend on a strict-imported logical payload such
+as Deployment. The resolved variant must match the descriptor's declared
+`source`. Resolution failure, a foreign anchor, a noncanonical local reference,
+or more than one possible result is invalid.
 `Absent` means that this case signature provides no reference-cycle basis.
 Only the Metric registry decides which scope forms require such a basis.
 The resolved basis is derived from the exact case and is not serialized as a
@@ -625,8 +633,12 @@ FindingRequest {
 `MetricQuery` also uses `EvaluationScope`. Standalone query serialization is
 owned by `evaluation.metric_query 1.0` and `evaluation.finding_query 1.0`;
 those wire roots carry registry-2.1 references and do not own their ordinals.
-The two request sets are independent,
-but their total cardinality must be nonzero. A finding-only Request is legal.
+The two request sets are independent. Their total cardinality must be nonzero
+unless the selected model descriptor declares at least one output slot whose
+`Completed` cardinality is `ExactlyOne` or `OneOrMore`. In that one case the
+required typed output Artifact is itself the requested semantic result, so an
+empty query set is canonical. A finding-only Request is legal. A descriptor
+with no required completed output cannot use an empty query set.
 The same query may appear with different request-specific conditions; only an
 exact duplicate request is invalid.
 

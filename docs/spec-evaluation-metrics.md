@@ -376,7 +376,7 @@ stable enum value and canonical spelling
 semantic definition
 owned EvaluationScope form descriptors
 exact FindingOccurrenceCodec selection
-optional typed terminal-witness instance schema
+optional complete FindingTerminalWitnessCodec
 ```
 
 The selected occurrence schema is a complete owner codec, not a byte validator:
@@ -393,7 +393,9 @@ FindingOccurrenceContext {
   exact EvaluationRequest
   FindingRequestOrdinal
   exact descriptor-owned output bindings of the containing Evidence
-  Artifact resolution and store access required by the occurrence owner
+  CaseArtifactResolution
+  ArtifactStore
+  BlobStore
 }
 ```
 
@@ -408,10 +410,32 @@ raw bytes alone are not a typed occurrence and are never exposed as a second
 semantic API.
 
 For an execution-terminal finding, the FindingKind descriptor owns the typed
-`Halted` witness-instance schema and selects the `TerminalWitnessRef` occurrence
-codec owned by Simulation Artifacts. The concrete witness instance is owned by
-the referenced `SimulationExecution`; Evidence never copies it. Nonterminal
-findings select their Finding-registry-owned inline occurrence codecs.
+`Halted` witness-instance codec and selects the `TerminalWitnessRef` occurrence
+codec owned by Simulation Artifacts:
+
+```text
+FindingTerminalWitnessCodec {
+  witness_schema_descriptor
+  encode(owner_typed_witness) -> canonical bytes
+  decode(canonical bytes) -> owner_typed_witness
+  validate(owner_typed_witness, FindingTerminalWitnessContext)
+}
+
+FindingTerminalWitnessContext {
+  exact EvaluationRequest
+  CaseArtifactResolution
+  ArtifactStore
+  BlobStore
+}
+```
+
+All four codec operations are required when the optional codec is present.
+Simulation Artifacts invokes that owner codec, validates the adopted value in
+the exact Request closure, re-encodes it, and requires byte equality. The
+concrete witness instance remains owned by the referenced
+`SimulationExecution`; Evidence never copies it. Nonterminal findings select
+their Finding-registry-owned inline occurrence codecs and have no terminal
+witness codec.
 
 Evaluation registry 2.1 reserves finding ordinal `0` for
 `functional_mismatch`. Its only

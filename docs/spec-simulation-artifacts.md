@@ -533,6 +533,17 @@ The `SimulationExecution` terminal is the sole owner of the concrete witness
 instance. There is no separate `terminal_observations` collection and
 Evaluation Evidence must not copy the witness.
 
+The terminal wire uses zero-based `u32be` discriminants. `Retired` is the
+single word `u32be(0)`. `Halted` is `u32be(1)`, followed by
+`u32be(finding_kind.ordinal)`, `u64be(witness_byte_count)`, and exactly that
+many canonical witness bytes from the registered
+`FindingTerminalWitnessCodec`. `StoppedByLimit` is the single word
+`u32be(2)`. A `Halted` decoder resolves the exact Finding descriptor, invokes
+its terminal-witness decoder and validator in the exact Request closure,
+re-encodes the adopted value, and requires byte equality. An unknown kind,
+missing or incomplete codec, noncanonical payload, count overflow, truncation,
+or trailing payload bytes is invalid.
+
 Evaluation maps these forms exactly:
 
 ```text
@@ -928,6 +939,13 @@ contains at most one summary for each `(ActivityWindow, payload kind)` pair and
 sorts by those zero-based enum discriminants. This order mechanically defines
 the `activity_summary_ordinal` used by Evaluation. Within each table, keys sort
 by their owner-defined canonical reference bytes.
+
+The schema-1.0 activity payloads and windows above are Spatial-only because
+their duration-bearing fields use the selected Spatial reference cycle.
+`SystemSimulationExecution.activity_summaries` is therefore required to be
+empty. A later System activity payload must name its gem5-tick or hardware
+clock-domain time basis explicitly; it cannot reinterpret these exact-ratio
+cycle integrals or copy raw gem5 statistics into this root.
 
 This specification is the semantic owner contract consumed by
 `ActivityBinding.ExecutionActivity`. The `loom.simulation_execution 1.0` root,

@@ -80,6 +80,12 @@ System + DFG to bring up target binaries, dispatch, NoC, caches, and external
 memory before detailed Spatial resources exist, without pretending that DFG
 timing is CGRA or RTL timing.
 
+Spatial activity residency uses an exact mapped reference-cycle basis, while
+System progress uses gem5 ticks. Those units are not interchangeable. The
+first System execution form therefore keeps its activity-summary array empty;
+a later System activity payload must own an explicit tick or hardware-clock
+time basis instead of reinterpreting the Spatial wire.
+
 Mapped RTL needs more exact input than mapped CGRA simulation. The RTL bytes,
 configuration ABI, and external bindings belong to HardwareImplementation,
 while the selected occurrence, SpatialMapping context, and complete
@@ -233,6 +239,12 @@ Deadlock witnesses belong only to Halted and resolve through typed model output
 slots. Unsupported capability or provider failure does not publish a
 placeholder execution. Output cardinality is validated against the Request so
 an adapter cannot omit or add observations.
+
+The Halted wire length-frames bytes produced by the exact Finding owner. This
+lets one closed terminal algebra carry different typed witness families without
+making Simulation Artifacts a union of every future diagnostic. Strict
+decode/validate/re-encode equality preserves canonical identity while the
+Evidence occurrence remains only an output-relative reference.
 
 ## Why Observations Are Typed And Positional
 
