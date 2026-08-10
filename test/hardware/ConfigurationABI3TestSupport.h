@@ -3,6 +3,7 @@
 
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
+#include "Hardware/Configuration/PackedConfigurationABI.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -16,11 +17,8 @@ class ArtifactStore;
 
 namespace loom::hardware::test {
 
-struct ConfigurationFieldEncodingOverride final {
-  fabric::FabricPhysicalConfigurationFieldRef field;
-  SemanticFieldEncoding semanticEncoding;
-  std::vector<std::uint8_t> inactiveValue;
-};
+using ConfigurationFieldEncodingOverride =
+    PackedConfigurationFieldEncodingOverride;
 
 llvm::Expected<fabric::FinalizedFabricRoot>
 makeSingleSpatialCoreSystem(const fabric::FinalizedFabricRoot &module,
