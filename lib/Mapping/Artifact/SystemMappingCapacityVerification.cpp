@@ -5,9 +5,9 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "ResourceCapacityVerification.h"
 #include "SpatialMappingCapacityVerification.h"
-#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -205,6 +205,20 @@ struct NamespaceMetadata final {
 };
 
 } // namespace
+
+llvm::Expected<::loom::fabric::FabricPhysicalOccurrenceOwnerRef>
+qualifySystemResourceOwner(
+    const ::loom::fabric::FabricInventoryOwnerRef &owner,
+    std::optional<::loom::fabric::SpatialCoreOccurrenceRef> spatialCore) {
+  if (!spatialCore)
+    return ::loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(owner);
+  auto target = projectModuleOwner(owner);
+  if (!target)
+    return target.takeError();
+  return ::loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(
+      ::loom::fabric::SpatialCoreInternalOccurrenceRef{*spatialCore,
+                                                       std::move(*target)});
+}
 
 llvm::Error verifySystemMappingCapacity(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,

@@ -392,9 +392,9 @@ llvm::Expected<FrozenResourceCapacityIndex> freezeResourceCapacityIndex(
   return result;
 }
 
-llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
+llvm::Expected<std::vector<std::uint64_t>>
+deriveResourceCapacityBaselineOccupancy(
     const FrozenResourceCapacityIndex &index,
-    llvm::ArrayRef<FrozenResourceCapacityUseSelection> resourceUses,
     llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals) {
   struct SelectedClaim final {
     std::size_t cell = 0;
@@ -428,6 +428,18 @@ llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
         return std::move(error);
     }
   }
+  return usage;
+}
+
+llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
+    const FrozenResourceCapacityIndex &index,
+    llvm::ArrayRef<FrozenResourceCapacityUseSelection> resourceUses,
+    llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals) {
+  auto baseline =
+      deriveResourceCapacityBaselineOccupancy(index, routeTraversals);
+  if (!baseline)
+    return baseline.takeError();
+  std::vector<std::uint64_t> usage = std::move(*baseline);
 
   std::vector<PeakUsage> peaks;
   peaks.reserve(index.cells().size());

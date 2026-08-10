@@ -14,6 +14,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingClosureProjection.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/Tech/TechMappingConfig.h"
@@ -661,6 +662,44 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
   }
   const auto systemMapping = take(loom::mapping::importSystemMapping(
       systemCandidates->candidates.front(), store));
+  const auto closure = take(loom::mapping::projectSystemMappingClosure(
+      dataflow, systemView, systemMapping.view(), store));
+  const auto replayedClosure = take(loom::mapping::projectSystemMappingClosure(
+      dataflow, systemView, systemMapping.view(), store));
+  if (closure.capacityCells.empty() || closure.resourceActivations.empty() ||
+      closure.capacityCells.size() != replayedClosure.capacityCells.size() ||
+      closure.resourceActivations.size() !=
+          replayedClosure.resourceActivations.size())
+    fail("SystemMapping closure projection is incomplete or unstable");
+  bool foundDirectOwner = false;
+  bool foundSpatialOwner = false;
+  for (const auto &[ordinal, cell] : llvm::enumerate(closure.capacityCells)) {
+    if (cell.baselineOccupancy > cell.capacity)
+      fail("closure projection published an over-capacity baseline");
+    foundDirectOwner |=
+        cell.physicalOwner.kind() ==
+        loom::fabric::FabricPhysicalOccurrenceOwnerKind::DirectSystemOwner;
+    foundSpatialOwner |=
+        cell.physicalOwner.kind() ==
+        loom::fabric::FabricPhysicalOccurrenceOwnerKind::SpatialCoreInternal;
+    const auto &replayed = replayedClosure.capacityCells[ordinal];
+    if (cell.physicalOwner != replayed.physicalOwner ||
+        cell.state != replayed.state || cell.dimension != replayed.dimension ||
+        cell.capacity != replayed.capacity ||
+        cell.baselineOccupancy != replayed.baselineOccupancy)
+      fail("closure projection changed canonical capacity-cell order");
+  }
+  if (!foundDirectOwner || !foundSpatialOwner)
+    fail("closure projection lost a physical owner namespace");
+  for (const auto &activation : closure.resourceActivations) {
+    if (activation.relationDomain.empty() ||
+        activation.triggerAlternatives.empty())
+      fail("closure projection published an incomplete activation member");
+    for (const auto &claim : activation.capacityClaims)
+      if (claim.capacityCellOrdinal >= closure.capacityCells.size() ||
+          claim.amount == 0)
+        fail("closure projection published a foreign capacity claim");
+  }
   const auto systemImage =
       take(loom::deployment::finalizeHardwareConfigurationImage(
           {abi.reference(),

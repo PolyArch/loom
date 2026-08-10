@@ -19,6 +19,7 @@ add_library(LoomMappingArtifact
   SystemMappingArtifact.cpp
   SystemMappingCapacityVerification.cpp
   SystemMappingClosure.cpp
+  SystemMappingClosureProjection.cpp
   SystemMappingConstraintAdmission.cpp
   SystemMappingExecutionProjection.cpp
   SystemMappingHandshakeVerification.cpp

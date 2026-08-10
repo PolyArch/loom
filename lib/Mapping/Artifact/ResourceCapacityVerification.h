@@ -152,6 +152,14 @@ llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
     llvm::ArrayRef<FrozenResourceCapacityUseSelection> resourceUses,
     llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals);
 
+/// Derives the exact reset occupancy after statically selected route claims.
+/// Route-local activation groups are deduplicated exactly as in capacity
+/// verification. The returned vector is indexed by `index.cells()`.
+llvm::Expected<std::vector<std::uint64_t>>
+deriveResourceCapacityBaselineOccupancy(
+    const FrozenResourceCapacityIndex &index,
+    llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals);
+
 llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
     llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
     llvm::ArrayRef<ResourceCapacityUseProjection> resourceUses,

@@ -6,9 +6,15 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <optional>
 #include <string>
 
 namespace loom::mapping::detail {
+
+llvm::Expected<::loom::fabric::FabricPhysicalOccurrenceOwnerRef>
+qualifySystemResourceOwner(
+    const ::loom::fabric::FabricInventoryOwnerRef &owner,
+    std::optional<::loom::fabric::SpatialCoreOccurrenceRef> spatialCore);
 
 llvm::Error verifySystemMappingCapacity(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
