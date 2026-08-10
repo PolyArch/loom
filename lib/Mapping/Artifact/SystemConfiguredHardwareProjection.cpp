@@ -6,7 +6,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
-#include "SystemMappingExecutionProjection.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
 #include "llvm/Support/Error.h"
 
@@ -118,14 +118,14 @@ deriveConfiguredHardwareProjection(const FinalizedSystemMapping &mapping,
   if (!dataflowView)
     return dataflowView.takeError();
 
-  auto contexts = detail::projectSystemExecutionContexts(
+  auto contexts = projectSystemExecutionContexts(
       *dataflowView, mapping.view().executionBindings());
   if (!contexts)
     return contexts.takeError();
 
   std::map<std::string, FinalizedSpatialMapping> imported;
   std::vector<PhysicalConfiguredHardwareFieldValueView> values;
-  for (const detail::SystemSpatialContextDomain &domain :
+  for (const SystemSpatialContextDomain &domain :
        contexts->spatialDomains) {
     const std::string mappingKey =
         byteKey(encodeArtifactRootReference(domain.spatialMapping));

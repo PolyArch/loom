@@ -1,4 +1,4 @@
-#include "SystemMappingExecutionProjection.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
 #include "Common/ArtifactLocalReference.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -10,7 +10,7 @@
 #include <string>
 #include <utility>
 
-namespace loom::mapping::detail {
+namespace loom::mapping {
 namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -203,4 +203,4 @@ llvm::Expected<SystemExecutionContextProjection> projectSystemExecutionContexts(
   return result;
 }
 
-} // namespace loom::mapping::detail
+} // namespace loom::mapping

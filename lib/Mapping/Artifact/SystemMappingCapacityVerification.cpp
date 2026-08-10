@@ -7,7 +7,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "ResourceCapacityVerification.h"
 #include "SpatialMappingCapacityVerification.h"
-#include "SystemMappingExecutionProjection.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
 #include "llvm/ADT/STLExtras.h"
 

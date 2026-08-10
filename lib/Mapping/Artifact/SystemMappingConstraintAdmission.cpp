@@ -1,6 +1,6 @@
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 
-#include "SystemMappingExecutionProjection.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
 #include "Common/ArtifactLocalReference.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -307,7 +307,7 @@ private:
   llvm::Error buildExecution() {
     const auto &execution = mapping_.executionBindings();
     auto contexts =
-        detail::projectSystemExecutionContexts(dataflow_, execution);
+        projectSystemExecutionContexts(dataflow_, execution);
     if (!contexts)
       return contexts.takeError();
     for (const auto &domain : contexts->instructionDomains) {

@@ -1,6 +1,6 @@
 #include "SystemMappingHandshakeVerification.h"
 
-#include "SystemMappingExecutionProjection.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
 #include "Common/ArtifactLocalReference.h"
 #include "Fabric/Identity/FabricHandshake.h"

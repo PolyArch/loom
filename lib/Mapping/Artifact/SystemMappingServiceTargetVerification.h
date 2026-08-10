@@ -2,7 +2,7 @@
 #define LOOM_LIB_MAPPING_ARTIFACT_SYSTEMMAPPINGSERVICETARGETVERIFICATION_H
 
 #include "Mapping/Artifact/SystemMappingArtifact.h"
-#include "SystemMappingExecutionProjection.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
 namespace loom::mapping::detail {
 
