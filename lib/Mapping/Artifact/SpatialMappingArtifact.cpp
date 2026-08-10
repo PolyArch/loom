@@ -1216,7 +1216,9 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
   }
 
   auto configuredHardware = detail::deriveConfiguredHardwareProjection(
-      dataflow, techMapping, fabric, computeBindings, routes);
+      dataflow, techMapping, fabric, computeBindings,
+      importedMemory->engineBindings, importedMemory->memoryBindings, routes,
+      uses, physicalTagSegments);
   if (!configuredHardware)
     return configuredHardware.takeError();
 

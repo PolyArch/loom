@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_HARDWARE_RTL_HIERARCHY_COMPONENTS_H
 #define LOOM_LIB_HARDWARE_RTL_HIERARCHY_COMPONENTS_H
 
+#include "MemoryService.h"
 #include "OperationShell.h"
 #include "Support.h"
 
@@ -27,7 +28,12 @@ using PeModule = ComponentModule<fabric::FabricPeOccurrenceRef>;
 using SwitchModule = ComponentModule<fabric::FabricSwitchOccurrenceRef>;
 using FifoModule = ComponentModule<fabric::FabricFifoOccurrenceRef>;
 using BoundaryModule = ComponentModule<fabric::FabricBoundaryOccurrenceRef>;
-using MemoryModule = ComponentModule<fabric::FabricMemoryOccurrenceRef>;
+struct MemoryModule final {
+  fabric::FabricMemoryOccurrenceRef reference;
+  circt::hw::HWModuleOp module;
+  std::vector<EndpointPlan> endpoints;
+  std::vector<MemoryEndpointPortPlan> memoryEndpoints;
+};
 
 llvm::Expected<std::vector<FuModule>>
 buildFuModules(mlir::OpBuilder &builder, mlir::Location location,
@@ -79,6 +85,15 @@ buildBoundaryModules(mlir::OpBuilder &builder, mlir::Location location,
                      const fabric::FabricArtifactView &fabric,
                      const ConfigurationABI &configurationAbi,
                      const ConfigurationTransportLayout &transportLayout);
+
+llvm::Expected<std::vector<MemoryModule>>
+buildMemoryModules(mlir::OpBuilder &builder, mlir::Location location,
+                   fabric::SpatialCoreOccurrenceRef spatialCore,
+                   const fabric::FabricArtifactView &fabric,
+                   const ConfigurationABI &configurationAbi,
+                   const ConfigurationTransportLayout &transportLayout,
+                   const ClockResetPlan &clockReset,
+                   const PortableMemoryServiceLayout &memoryServiceLayout);
 
 } // namespace loom::hardware::rtl::hierarchy
 

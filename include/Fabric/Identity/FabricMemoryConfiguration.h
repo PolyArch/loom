@@ -259,6 +259,17 @@ public:
   const FabricSemanticConfigFieldRef &field() const { return field_; }
   const FabricMemoryConfigurationLayout &layout() const { return layout_; }
 
+  llvm::Expected<FabricMemoryOperationRow> projectOperationRow(
+      FabricOrdinal physicalPort, FabricOrdinal capabilityAlternative,
+      FabricOrdinal usePattern,
+      const ::dataflow::CanonicalActorSchemaProjection &actor,
+      const std::optional<::dataflow::semantics::CanonicalMemoryAccessView>
+          &access,
+      std::uint64_t baseAddressBytes,
+      std::vector<std::optional<FabricMemoryRoleSource>> roleSources,
+      std::vector<std::optional<FabricMemoryRoleDestination>> roleDestinations,
+      ::fabric::MemoryDispatchTarget serviceTarget) const;
+
   llvm::Expected<CanonicalSemanticBytes>
   encode(const FabricMemoryConfigurationValue &value) const;
 

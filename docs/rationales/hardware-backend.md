@@ -247,6 +247,36 @@ no global data-width default. One outstanding request per endpoint removes a
 transaction-ID signal without removing semantic identity: the only live
 request is the singleton physical representation of that transient handle.
 
+Address form is retained because pointer payloads are already byte addresses
+while root-relative payloads require the configured base and element scaling;
+one cannot be inferred from the numeric payload of the other. Address space
+and request context are different: the current Mapping projection owns
+neither provider-match value. The initial mapped profile therefore implements
+range and prefix matching but rejects address-space and context matching,
+rather than duplicating the binding in a backend field, silently assuming
+zero, or reinterpreting a Mapping-local Physical Tag as transaction context.
+
+The same rule prevents the backend from collapsing distinct rooted uses. A
+single physical operation row has one service target and base translation, so
+the direct profile accepts several uses only when those two projected values
+are equal. Keeping the broader Mapping valid while rejecting this particular
+implementation selection preserves both semantic owners: Mapping still owns
+per-use choices, and Fabric still owns the bounded row shape.
+
+The portable array is a realization of `Storage`, not a generic memory-region
+emulator. Treating `Mmio` as storage would erase provider-visible behavior;
+truncating an out-of-range byte address would instead invent wraparound that
+Fabric never declared. The controller therefore admits only exact Storage
+capability requests and proves every active byte is inside one selected region
+before asserting ready. This keeps request legality with the Fabric service
+contract and leaves MMIO behavior with an explicit implementation binding.
+
+The active-lanes selector also remains explicit. An absent mask means every
+lane participates, while a present all-zero mask means no lane participates;
+zero-filling the inactive mask payload cannot encode both cases. This is the
+existing Runtime ABI `All | Bits` distinction projected into one physical bit,
+not a memory-local mask policy.
+
 This profile is intentionally not widened into a universal memory protocol.
 Atomics, fences, richer outstanding state, or another observable service
 contract select another implementation profile or remain typed Unsupported.

@@ -9,6 +9,7 @@
 #include "PortableProviderTestSupport.h"
 
 #include "ADG/Builder.h"
+#include "ADG/MemoryLibrary.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
@@ -262,9 +263,26 @@ FinalizedFabricRoot makeSpatialHierarchyFabric(llvm::StringRef test,
   const PortType bits2 = take(test, PortType::bits(2));
   const PortType bits8 = take(test, PortType::bits(8));
   const PortType tagged8x2 = take(test, PortType::taggedBits(8, 2));
-  auto spatial =
-      take(test, design.createSpatialCore("spatial-hierarchy",
-                                          {bits8, bits8, bits2}, {tagged8x2}));
+  auto indexWidths =
+      take(test, ::fabric::UnsignedDomain::fromCanonical({{32, 32}}));
+  LocalMemoryParameters memoryParameters;
+  memoryParameters.capacityBytes = 64;
+  memoryParameters.interface = {
+      MemoryAccessDomainParameters{128, std::nullopt, 4,
+                                   std::move(indexWidths)},
+      64, 128};
+  MemorySpec memory =
+      take(test, makeHybrid32LocalMemory(std::move(memoryParameters)));
+
+  std::vector<PortType> moduleInputs{bits8, bits8, bits2};
+  moduleInputs.insert(moduleInputs.end(), memory.inputTypes().begin(),
+                      memory.inputTypes().end());
+  std::vector<PortType> moduleOutputs{tagged8x2};
+  moduleOutputs.insert(moduleOutputs.end(), memory.outputTypes().begin(),
+                       memory.outputTypes().end());
+  auto spatial = take(test, design.createSpatialCore("spatial-hierarchy",
+                                                     std::move(moduleInputs),
+                                                     std::move(moduleOutputs)));
   auto routed = take(
       test, spatial.addSwitch(
                 {take(test, spatial.input(0)), take(test, spatial.input(1))},
@@ -303,7 +321,15 @@ FinalizedFabricRoot makeSpatialHierarchyFabric(llvm::StringRef test,
   auto boundary = take(
       test, spatial.addBoundary({fifo.value(), take(test, spatial.input(2))},
                                 BoundarySpec::s2t(bits8, bits2, tagged8x2)));
-  if (llvm::Error error = spatial.close({boundary.front()}))
+  std::vector<SpatialValue> memoryInputs;
+  for (std::size_t ordinal = 0; ordinal != memory.inputTypes().size();
+       ++ordinal)
+    memoryInputs.push_back(take(test, spatial.input(3 + ordinal)));
+  auto memoryResult = take(test, spatial.addMemory(memoryInputs, memory));
+  std::vector<SpatialValue> results{boundary.front()};
+  results.insert(results.end(), memoryResult.values().begin(),
+                 memoryResult.values().end());
+  if (llvm::Error error = spatial.close(results))
     fail(test, llvm::toString(std::move(error)));
   auto finalized = take(test, std::move(design).finalize());
   require(test, finalized.roots().size() == 1,
@@ -576,7 +602,14 @@ SystemFixture makeSystemFixture(llvm::StringRef test,
                        spatialCore, std::move(operations)};
 }
 
-void spatialHierarchyBuildsStructuralSkeleton() {
+struct SpatialToolArtifact final {
+  std::string systemVerilog;
+  std::vector<std::pair<loom::hardware::test::PortableConfigurationTarget,
+                        std::vector<std::uint8_t>>>
+      inactiveConfigurations;
+};
+
+SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   ArtifactStore store(directory.path());
@@ -597,8 +630,47 @@ void spatialHierarchyBuildsStructuralSkeleton() {
               llvm::StringRef(text).contains("loom_fabric_fu_") &&
               llvm::StringRef(text).contains("loom_fabric_switch_") &&
               llvm::StringRef(text).contains("loom_fabric_fifo_") &&
-              llvm::StringRef(text).contains("loom_fabric_boundary_"),
+              llvm::StringRef(text).contains("loom_fabric_boundary_") &&
+              llvm::StringRef(text).contains("loom_memory_"),
           "hierarchy skeleton flattened or omitted a Fabric resource owner");
+
+  FabricOperationProviderRegistry providers;
+  if (llvm::Error error =
+          loom::hardware::rtl::registerPortableScalarIntegerAddSubProvider(
+              providers))
+    fail(test, llvm::toString(std::move(error)));
+  ExternalImplementationContractCatalog externalContracts;
+  auto conformance = take(
+      test, loom::hardware::test::specializeAndExportPortableProvider(
+                std::move(skeleton), fabric.abi, providers, externalContracts));
+  const llvm::StringRef rtl(conformance.systemVerilog);
+  require(test,
+          rtl.contains("module loom_module") &&
+              rtl.contains("loom_spatial_pe_") &&
+              rtl.contains("loom_fabric_fu_") &&
+              rtl.contains("loom_fabric_switch_") &&
+              rtl.contains("loom_fabric_fifo_") &&
+              rtl.contains("loom_fabric_boundary_") &&
+              rtl.contains("loom_memory_") && rtl.contains("cfg_awaddr") &&
+              rtl.contains("cfg_rdata"),
+          "specialized hierarchy omitted a resource or configuration port");
+
+  const auto layout = take(
+      test, loom::hardware::rtl::derivePortableConfigurationTransportLayout(
+                fabric.abi, fabric.spatialCore));
+  require(test, !layout.units.empty(),
+          "complete hierarchy has no local programming unit");
+  SpatialToolArtifact result{std::move(conformance.systemVerilog), {}};
+  for (const auto &unit : layout.units) {
+    auto target = take(
+        test, loom::hardware::test::derivePortableConfigurationTarget(
+                  fabric.abi, fabric.spatialCore, unit.programmingUnit.unitId));
+    require(test, target.payloadByteCount == unit.inactiveImage.size(),
+            "configuration transport changed the ABI image extent");
+    result.inactiveConfigurations.emplace_back(std::move(target),
+                                               unit.inactiveImage);
+  }
+  return result;
 }
 
 struct TemporalToolArtifact final {
@@ -1248,6 +1320,78 @@ select -assert-none loom_module/t:$*latch* loom_module/t:$_*LATCH* loom_module/t
 )ys";
 }
 
+void writeSpatialHierarchyToolArtifacts(const std::filesystem::path &root,
+                                        const SpatialToolArtifact &artifact) {
+  std::filesystem::create_directories(root);
+  std::ofstream(root / "spatial_hierarchy_module.sv") << artifact.systemVerilog;
+  std::ofstream testbench(root / "spatial_hierarchy_testbench.sv");
+  testbench << R"sv(
+module spatial_hierarchy_testbench;
+  logic clock;
+  logic reset;
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteSignalDeclarations()
+            << "\n";
+  testbench << R"sv(  loom_module dut(
+    .clock(clock),
+    .reset(reset),
+    .cfg_awaddr(cfg_awaddr),
+    .cfg_awvalid(cfg_awvalid),
+    .cfg_awready(cfg_awready),
+    .cfg_wdata(cfg_wdata),
+    .cfg_wstrb(cfg_wstrb),
+    .cfg_wvalid(cfg_wvalid),
+    .cfg_wready(cfg_wready),
+    .cfg_bresp(cfg_bresp),
+    .cfg_bvalid(cfg_bvalid),
+    .cfg_bready(cfg_bready),
+    .cfg_araddr(cfg_araddr),
+    .cfg_arvalid(cfg_arvalid),
+    .cfg_arready(cfg_arready),
+    .cfg_rdata(cfg_rdata),
+    .cfg_rresp(cfg_rresp),
+    .cfg_rvalid(cfg_rvalid),
+    .cfg_rready(cfg_rready)
+  );
+
+  always #5 clock = ~clock;
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteDriverTasks();
+  testbench << loom::hardware::test::portableCycleWatchdog();
+  testbench << R"sv(
+
+  initial begin
+    clock = 0;
+    reset = 1;
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteInitialization();
+  testbench << R"sv(
+    repeat (2) @(posedge clock);
+    @(negedge clock);
+    reset = 0;
+)sv";
+  for (const auto &[target, image] : artifact.inactiveConfigurations)
+    testbench << take(
+        "writeSpatialHierarchyToolArtifacts",
+        loom::hardware::test::portableAxiLiteProgramAndVerify(target, image));
+  testbench << R"sv(    cfg_read(32'hfffffff0, cfg_readback, cfg_read_response);
+    if (cfg_read_response !== 2'b11)
+      $fatal(1, "unmapped configuration read did not return DECERR");
+    $finish;
+  end
+endmodule
+)sv";
+  std::ofstream(root / "spatial_hierarchy.ys") << R"ys(
+read_verilog -sv spatial_hierarchy_module.sv
+hierarchy -check -top loom_module
+check -assert
+proc
+synth -top loom_module
+check -assert
+select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
+)ys";
+}
+
 void writeInternalToolArtifacts(const std::filesystem::path &root,
                                 const InternalToolArtifact &artifact) {
   const ConfigurationImages &configuration = artifact.configuration;
@@ -1549,7 +1693,8 @@ select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
 int main(int argc, char **argv) {
   require("main", argc == 1 || argc == 2,
           "expected at most one output directory");
-  spatialHierarchyBuildsStructuralSkeleton();
+  const SpatialToolArtifact spatial =
+      spatialHierarchyBuildsStructuralSkeleton();
   const TemporalToolArtifact temporal =
       temporalHierarchyBuildsStructuralSkeleton();
   repeatedSpatialCoreBuildsOccurrenceLocalSkeleton();
@@ -1561,6 +1706,7 @@ int main(int argc, char **argv) {
       internalOperationBuildsStructuralSkeleton();
   if (argc == 2) {
     writeBoundaryToolArtifacts(argv[1], systemVerilog);
+    writeSpatialHierarchyToolArtifacts(argv[1], spatial);
     writeInternalToolArtifacts(argv[1], internal);
     writeTemporalToolArtifacts(argv[1], temporal);
   }

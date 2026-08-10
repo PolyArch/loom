@@ -1,0 +1,4 @@
+# REQUIRES: circt, yosys
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-memory-hierarchy-test %t
+# RUN: cd %t && yosys -q -s spatial_memory.ys

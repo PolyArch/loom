@@ -131,6 +131,206 @@ clauseCardinalities(const ::fabric::MemoryActorContractClause &clause) {
       clause);
 }
 
+template <typename T>
+std::optional<FabricOrdinal> valueOrdinal(llvm::ArrayRef<T> values,
+                                          const T &selected) {
+  const auto found = llvm::find(values, selected);
+  if (found == values.end())
+    return std::nullopt;
+  return static_cast<FabricOrdinal>(std::distance(values.begin(), found));
+}
+
+std::optional<FabricOrdinal> valueOrdinal(const std::vector<bool> &values,
+                                          bool selected) {
+  for (FabricOrdinal ordinal = 0; ordinal != values.size(); ++ordinal)
+    if (values[ordinal] == selected)
+      return ordinal;
+  return std::nullopt;
+}
+
+template <typename... T>
+std::optional<std::vector<FabricOrdinal>> selectedOrdinals(T... values) {
+  std::vector<std::optional<FabricOrdinal>> selected{values...};
+  if (llvm::any_of(selected,
+                   [](const auto &value) { return !value.has_value(); }))
+    return std::nullopt;
+  std::vector<FabricOrdinal> result;
+  result.reserve(selected.size());
+  for (const auto &value : selected)
+    result.push_back(*value);
+  return result;
+}
+
+std::optional<std::vector<FabricOrdinal>>
+clausePoint(const ::fabric::MemoryActorContractClause &clause,
+            const ::dataflow::MemoryContractPayload &payload) {
+  return std::visit(
+      [&](const auto &projection) -> std::optional<std::vector<FabricOrdinal>> {
+        using Projection = std::decay_t<decltype(projection)>;
+        if constexpr (std::is_same_v<Projection,
+                                     ::dataflow::PlainAccessProjection>) {
+          const auto *typed =
+              std::get_if<::fabric::LoadStorePlainContractClause>(&clause);
+          return typed ? selectedOrdinals(valueOrdinal(typed->volatileValues,
+                                                       projection.isVolatile))
+                       : std::nullopt;
+        } else if constexpr (std::is_same_v<
+                                 Projection,
+                                 ::dataflow::AtomicAccessProjection>) {
+          const auto *typed =
+              std::get_if<::fabric::LoadStoreAtomicContractClause>(&clause);
+          return typed ? selectedOrdinals(
+                             valueOrdinal(llvm::ArrayRef(typed->orderings),
+                                          projection.ordering),
+                             valueOrdinal(llvm::ArrayRef(typed->syncScopes),
+                                          projection.scope),
+                             valueOrdinal(
+                                 llvm::ArrayRef(typed->vectorGranularityValues),
+                                 projection.vectorGranularity),
+                             valueOrdinal(typed->volatileValues,
+                                          projection.isVolatile))
+                       : std::nullopt;
+        } else if constexpr (std::is_same_v<Projection,
+                                            ::dataflow::AtomicRmwProjection>) {
+          const auto *typed =
+              std::get_if<::fabric::AtomicRmwContractClause>(&clause);
+          return typed ? selectedOrdinals(
+                             valueOrdinal(llvm::ArrayRef(typed->rmwKinds),
+                                          projection.kind),
+                             valueOrdinal(llvm::ArrayRef(typed->orderings),
+                                          projection.access.ordering),
+                             valueOrdinal(llvm::ArrayRef(typed->syncScopes),
+                                          projection.access.scope),
+                             valueOrdinal(
+                                 llvm::ArrayRef(typed->vectorGranularityValues),
+                                 projection.access.vectorGranularity),
+                             valueOrdinal(typed->volatileValues,
+                                          projection.access.isVolatile))
+                       : std::nullopt;
+        } else if constexpr (std::is_same_v<
+                                 Projection,
+                                 ::dataflow::CompareExchangeProjection>) {
+          const auto *typed =
+              std::get_if<::fabric::CompareExchangeContractClause>(&clause);
+          return typed ? selectedOrdinals(
+                             valueOrdinal(llvm::ArrayRef(typed->orderingPairs),
+                                          ::fabric::CompareExchangeOrderingPair{
+                                              projection.successOrdering,
+                                              projection.failureOrdering}),
+                             valueOrdinal(llvm::ArrayRef(typed->syncScopes),
+                                          projection.scope),
+                             valueOrdinal(
+                                 llvm::ArrayRef(typed->vectorGranularityValues),
+                                 projection.vectorGranularity),
+                             valueOrdinal(typed->weakValues, projection.weak),
+                             valueOrdinal(typed->volatileValues,
+                                          projection.isVolatile))
+                       : std::nullopt;
+        } else {
+          static_assert(
+              std::is_same_v<Projection, ::dataflow::FenceProjection>);
+          const auto *typed =
+              std::get_if<::fabric::FenceContractClause>(&clause);
+          return typed ? selectedOrdinals(
+                             valueOrdinal(llvm::ArrayRef(typed->orderings),
+                                          projection.ordering),
+                             valueOrdinal(llvm::ArrayRef(typed->syncScopes),
+                                          projection.scope))
+                       : std::nullopt;
+        }
+      },
+      payload);
+}
+
+llvm::Expected<FabricMemoryActorContractSelection>
+projectActorContract(const ::fabric::MemoryActorContractDomain &domain,
+                     const ::dataflow::CanonicalActorSchemaProjection &actor) {
+  const auto *payload =
+      std::get_if<::dataflow::MemoryContractPayload>(&actor.payload);
+  if (actor.schema != domain.actorSchema() || !payload)
+    return rejected("actor does not belong to the selected memory domain");
+  std::optional<FabricMemoryActorContractSelection> result;
+  for (auto [clauseOrdinal, clause] : llvm::enumerate(domain.clauses())) {
+    auto point = clausePoint(clause, *payload);
+    if (!point)
+      continue;
+    if (result)
+      return rejected("actor contract has a non-unique domain point");
+    result = FabricMemoryActorContractSelection{
+        static_cast<FabricOrdinal>(clauseOrdinal), std::move(*point)};
+  }
+  if (!result)
+    return rejected("actor contract is outside the selected memory domain");
+  return std::move(*result);
+}
+
+llvm::Expected<FabricMemoryAccessSelection>
+projectAccess(const ::fabric::ParameterizedMemoryAccessDomain &domain,
+              const ::dataflow::semantics::CanonicalMemoryAccessView &access) {
+  std::optional<FabricOrdinal> classOrdinal;
+  const ::fabric::MemoryAccessClass *selectedClass = nullptr;
+  for (auto [ordinal, candidate] : llvm::enumerate(domain.accessClasses())) {
+    if (!candidate.contains(access))
+      continue;
+    if (selectedClass)
+      return rejected("memory access has a non-unique capability class");
+    classOrdinal = static_cast<FabricOrdinal>(ordinal);
+    selectedClass = &candidate;
+  }
+  if (!selectedClass)
+    return rejected("memory access is outside the selected capability");
+
+  ::fabric::InactiveLaneSemantics inactive =
+      ::fabric::InactiveLaneSemantics::NotApplicable;
+  if (access.maskForm() == ::dataflow::semantics::MemoryMaskForm::Dynamic)
+    inactive = access.operation() ==
+                       ::dataflow::semantics::MemoryAccessOperation::Store
+                   ? ::fabric::InactiveLaneSemantics::Suppress
+                   : ::fabric::InactiveLaneSemantics::SuppressAndZeroFill;
+  auto maskOrdinal =
+      valueOrdinal(selectedClass->maskInactivePairs(),
+                   ::fabric::MaskInactivePair{access.maskForm(), inactive});
+  const std::optional<std::uint64_t> alignment =
+      access.contract().atomic ? access.contract().sourceAlignmentBytes
+                               : std::optional<std::uint64_t>(1);
+  if (!maskOrdinal || !alignment)
+    return rejected("memory access has no exact mask or alignment point");
+
+  FabricOrdinal addressFormat = 0;
+  if (access.addressForm() ==
+      ::dataflow::semantics::MemoryAddressForm::PointerAddressed) {
+    const auto *formats = selectedClass->addressPointerFormats();
+    if (!formats || !access.geometry().pointerLayout)
+      return rejected("pointer access has no exact address format");
+    const ::fabric::PointerFormat expected{
+        access.geometry().pointerLayout->addressSpace,
+        access.geometry().pointerLayout->representationBits,
+        access.geometry().pointerLayout->addressBits,
+        access.geometry().pointerLayout->kind};
+    auto ordinal = valueOrdinal(formats->formats(), expected);
+    if (!ordinal)
+      return rejected("pointer access address format is not admitted");
+    addressFormat = *ordinal;
+  }
+
+  std::optional<FabricOrdinal> dataFormat;
+  if (access.geometry().dataPointerLayout) {
+    const auto &layout = *access.geometry().dataPointerLayout;
+    const ::fabric::PointerFormat expected{layout.addressSpace,
+                                           layout.representationBits,
+                                           layout.addressBits, layout.kind};
+    auto ordinal =
+        valueOrdinal(selectedClass->dataPointerFormats().formats(), expected);
+    if (!ordinal)
+      return rejected("pointer access data format is not admitted");
+    dataFormat = *ordinal;
+  }
+
+  return FabricMemoryAccessSelection{
+      *classOrdinal, access.elementBits(),     access.laneCount(), *maskOrdinal,
+      *alignment,    access.addressLaneBits(), addressFormat,      dataFormat};
+}
+
 const ::fabric::MemoryRoleEndpointBindingRecord *
 findRole(const ::fabric::MemoryCapabilityAlternativeRecord &capability,
          ::dataflow::semantics::ServiceValueRole role) {
@@ -500,6 +700,73 @@ FabricArtifactView::memoryConfigurationSchema(
   const FabricConfigurationOwnerRef owner(FabricInventoryOwnerRef::of(memory));
   return FabricMemoryConfigurationSchemaView(
       this, memory, FabricSemanticConfigFieldRef{owner, 0}, std::move(layout));
+}
+
+llvm::Expected<FabricMemoryOperationRow>
+FabricMemoryConfigurationSchemaView::projectOperationRow(
+    FabricOrdinal physicalPort, FabricOrdinal capabilityAlternative,
+    FabricOrdinal usePattern,
+    const ::dataflow::CanonicalActorSchemaProjection &actor,
+    const std::optional<::dataflow::semantics::CanonicalMemoryAccessView>
+        &access,
+    std::uint64_t baseAddressBytes,
+    std::vector<std::optional<FabricMemoryRoleSource>> roleSources,
+    std::vector<std::optional<FabricMemoryRoleDestination>> roleDestinations,
+    ::fabric::MemoryDispatchTarget serviceTarget) const {
+  if (physicalPort >= layout_.physicalPortCount)
+    return rejected("operation projection selects an invalid physical port");
+  const FabricMemoryOperationPortRef port{memory_, physicalPort};
+  const auto *portRecord = fabric_->memoryOperationPort(port);
+  if (!portRecord ||
+      capabilityAlternative >= portRecord->capabilityAlternatives().size())
+    return rejected("operation projection selects an invalid capability");
+  const auto &capability =
+      portRecord->capabilityAlternatives()[capabilityAlternative];
+  if (usePattern >= portRecord->resourceContract().usePatternCount() ||
+      !llvm::is_contained(capability.admissibleUsePatterns,
+                          ::fabric::UsePatternKey(usePattern)))
+    return rejected("operation projection selects an invalid use pattern");
+
+  auto actorContract =
+      projectActorContract(capability.actorContractDomain, actor);
+  if (!actorContract)
+    return actorContract.takeError();
+  std::optional<FabricMemoryAccessSelection> accessSelection;
+  if (capability.accessDomain.has_value() != access.has_value())
+    return rejected("operation projection has inconsistent access presence");
+  if (access) {
+    auto selected = projectAccess(*capability.accessDomain, *access);
+    if (!selected)
+      return selected.takeError();
+    accessSelection = std::move(*selected);
+  }
+
+  FabricMemoryOperationRow result{physicalPort,
+                                  capabilityAlternative,
+                                  usePattern,
+                                  std::move(*actorContract),
+                                  std::move(accessSelection),
+                                  baseAddressBytes,
+                                  std::move(roleSources),
+                                  std::move(roleDestinations),
+                                  std::move(serviceTarget)};
+
+  FabricMemoryActive active;
+  active.operationRows.resize(layout_.operationRows.size());
+  active.providerDecodeRows.resize(layout_.providerRows.size());
+  for (auto [ordinal, rows] : llvm::enumerate(layout_.providerRows))
+    active.providerDecodeRows[ordinal].resize(rows.size());
+  const FabricOrdinal rowOrdinal =
+      layout_.schedule == ::fabric::Schedule::Spatial
+          ? physicalPort
+          : std::numeric_limits<FabricOrdinal>::max();
+  if (rowOrdinal != std::numeric_limits<FabricOrdinal>::max()) {
+    active.operationRows[rowOrdinal] = result;
+    auto encoded = encode(FabricMemoryConfigurationValue{active});
+    if (!encoded)
+      return encoded.takeError();
+  }
+  return result;
 }
 
 llvm::Expected<CanonicalSemanticBytes>

@@ -21,6 +21,7 @@
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/UsePatternValue.h"
+#include "Fabric/Identity/FabricMemoryConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
@@ -1663,6 +1664,27 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
           engine.operations.front())
               .uses.size() != 2)
     fail("strict SpatialMapping round trip lost the rooted memory use");
+  const auto memorySchema =
+      take(fabric.view().memoryConfigurationSchema(engine.occurrence));
+  const loom::mapping::ConfiguredHardwareFieldValueView *memoryField = nullptr;
+  for (const auto &field : imported.view().configuredHardware().fields())
+    if (field.slot.field == memorySchema.field()) {
+      if (memoryField)
+        fail("configured hardware duplicated its memory field");
+      memoryField = &field;
+    }
+  if (!memoryField)
+    fail("configured hardware omitted its memory field");
+  const auto memoryConfiguration =
+      take(memorySchema.decode(memoryField->value.bytes()));
+  const auto *active =
+      std::get_if<loom::fabric::FabricMemoryActive>(&memoryConfiguration);
+  if (!active)
+    fail("mapped memory configuration became Disabled");
+  const std::size_t activeRows = llvm::count_if(
+      active->operationRows, [](const auto &row) { return row.has_value(); });
+  if (activeRows != 1)
+    fail("mapped memory configuration has the wrong active row count");
   const auto &operation =
       std::get<loom::mapping::SpatialAddressedMemoryOperationView>(
           engine.operations.front());
@@ -1686,10 +1708,19 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
             &operation.placement);
     if (!context || context->ordinal != 1)
       fail("Temporal memory placement lost its selected resident context");
+    if (context->ordinal >= active->operationRows.size() ||
+        !active->operationRows[context->ordinal])
+      fail("Temporal memory configuration selected the wrong resident row");
   } else if (!std::holds_alternative<
                  loom::fabric::FabricMemoryOperationPortRef>(
                  operation.placement)) {
     fail("Spatial memory placement gained a resident context");
+  } else {
+    const auto port = std::get<loom::fabric::FabricMemoryOperationPortRef>(
+        operation.placement);
+    if (port.ordinal >= active->operationRows.size() ||
+        !active->operationRows[port.ordinal])
+      fail("Spatial memory configuration selected the wrong operation row");
   }
   loom::test::exerciseCgraMemoryAdmission(dataflowReference, fabric.reference(),
                                           finalized.reference(), store);

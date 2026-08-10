@@ -132,7 +132,11 @@ deriveConfiguredHardwareProjection(
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> bindings,
-    llvm::ArrayRef<SpatialRouteTreeView> routes) {
+    llvm::ArrayRef<SpatialMemoryEngineBindingView> memoryEngines,
+    llvm::ArrayRef<SpatialMemoryBindingView> memoryBindings,
+    llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments) {
   if (bindings.size() != techMapping.computeRealizations().size())
     return invalid("configured hardware projection has incomplete bindings");
 
@@ -271,6 +275,14 @@ deriveConfiguredHardwareProjection(
       return value.takeError();
     fields.push_back({std::move(*slot), std::move(*value)});
   }
+
+  auto memoryFields = deriveConfiguredMemoryFields(
+      dataflow, techMapping, fabric, memoryEngines, memoryBindings, routes,
+      resourceUses, physicalTagSegments);
+  if (!memoryFields)
+    return memoryFields.takeError();
+  fields.insert(fields.end(), std::make_move_iterator(memoryFields->begin()),
+                std::make_move_iterator(memoryFields->end()));
   return canonicalizeConfiguredHardwareProjection(std::move(fields));
 }
 

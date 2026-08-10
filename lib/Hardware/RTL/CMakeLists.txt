@@ -4,6 +4,8 @@ add_library(LoomHardwareRTL
   ConfigurationTransport.cpp
   Hierarchy/ConfigurationController.cpp
   Hierarchy/FuPe.cpp
+  Hierarchy/Memory.cpp
+  Hierarchy/MemoryService.cpp
   Hierarchy/ModuleHierarchy.cpp
   Hierarchy/OperationShell.cpp
   Hierarchy/Routing.cpp
@@ -72,6 +74,7 @@ target_link_libraries(LoomHardwareRTL PUBLIC
   CIRCTExportVerilog
   CIRCTHW
   CIRCTSeq
+  CIRCTSeqTransforms
   CIRCTSeqToSV
   CIRCTSV
   CIRCTSupport

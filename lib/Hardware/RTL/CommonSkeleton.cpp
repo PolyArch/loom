@@ -10,6 +10,7 @@
 #include "circt/Conversion/ExportVerilog.h"
 #include "circt/Conversion/SeqToSV.h"
 #include "circt/Dialect/HW/HWOps.h"
+#include "circt/Dialect/Seq/SeqPasses.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
@@ -204,8 +205,12 @@ lowerAndExportSpecializedSystemVerilog(mlir::ModuleOp module) {
   loweringOptions.disableRegRandomization = true;
   mlir::PassManager pipeline(module.getContext());
   pipeline.addPass(circt::createLowerSeqToSVPass(loweringOptions));
+  circt::seq::HWMemSimImplOptions memoryOptions;
+  memoryOptions.disableMemRandomization = true;
+  memoryOptions.disableRegRandomization = true;
+  pipeline.addPass(circt::seq::createHWMemSimImpl(memoryOptions));
   if (mlir::failed(pipeline.run(module)))
-    return skeletonError("Seq-to-SV lowering failed");
+    return skeletonError("Seq and memory lowering failed");
   if (llvm::Error error = verifySpecializedCirctModule(module))
     return std::move(error);
 

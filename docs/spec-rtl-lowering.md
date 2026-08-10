@@ -553,18 +553,21 @@ implementation projection and therefore in `ModuleSpecializationKey`.
 The profile carries one complete Runtime ABI-owned logical request rather than
 inventing a beat protocol. Its request channel is ready/valid and contains the
 plain read/write selector, the complete address payload, write-data payload,
-dynamic lane mask, access-form selector, element width, flattened lane count,
-address-lane width, base address, and transient context. Its response channel
-is ready/valid and contains the complete read-data payload. Completion is the
-response transfer itself. A store ignores response data. Fields inactive for
-the selected request are zero. Zero-width payload fields are omitted rather
-than emitted as zero-width HDL vectors.
+dynamic lane mask, `All | Bits` active-lanes selector, access-form selector,
+address-form selector, element width, flattened lane count, address-lane width,
+base address, and transient context. Its response channel is ready/valid and
+contains the complete read-data payload. Completion is the response transfer
+itself. A store ignores response data. Fields inactive for the selected
+request are zero. Zero-width payload fields are omitted rather than emitted as
+zero-width HDL vectors.
 
 The address, data, and mask carrier widths are the maxima mechanically derived
 from the exact operation endpoints and local-service capabilities in one
 Module specialization. The access-form selector uses the closed encoding
 `Element(0) | Contiguous(1) | Indexed(2)`; the request-kind selector uses
-`Read(0) | Write(1)`. Element width, lane count, and base address are unsigned
+`Read(0) | Write(1)`; the address-form selector uses
+`RootRelative(0) | Pointer(1)`; the active-lanes selector uses
+`All(0) | Bits(1)`. Element width, lane count, and base address are unsigned
 64-bit values, address-lane width is unsigned 32-bit, and transient context is
 unsigned 64-bit. This profile admits one outstanding logical request per
 physical endpoint, so the Runtime ABI transaction handle has the singleton
@@ -577,6 +580,21 @@ attachments and fixed memory-service connections wire those two directions
 mechanically. Provider decode, constant base translation, response return, and
 backpressure remain inside the portable memory controller.
 
+The initial mapped provider decoder admits `Range` and `Prefix` match fields.
+`AddressSpace` and `Context` require exact values from owners that the current
+Mapping artifact does not project into a provider row, so this profile returns
+typed `Unsupported` instead of guessing either value or reinterpreting a
+Physical Tag as context. A later profile may consume those owner projections
+without changing Fabric provider-decode semantics.
+
+One physical operation row contains one base address and one service target.
+When a reusable actor has several rooted uses, this profile can project that
+row only if every use selects the same target and root-relative base
+translation. A Mapping with different per-use choices remains valid Mapping,
+but selecting this implementation profile for it is typed Unsupported; the
+backend cannot discard a use, choose one use as authoritative, or add an
+unowned runtime selector.
+
 The portable profile is available only when every reachable operation is a
 plain load or store and every selected access fits the derived carriers. A
 fence, atomic load/store, RMW, compare-exchange, wider service, or stronger
@@ -585,6 +603,17 @@ the common provider returns typed `Unsupported` instead of silently weakening
 it. AXI, TileLink, CXL, and custom profiles may translate the same Runtime ABI
 boundary, but they do not change its Mapping, retirement, or memory-consistency
 semantics.
+
+The profile implements only Local Memory Service regions whose exact behavior
+is `Storage`. An `Mmio` region requires an explicit implementation binding and
+is typed `Unsupported`; it is never realized by the portable storage array.
+Before a local request is accepted, its access form, address form, element
+width, flattened lane count, active-lanes form, address-lane width, and every
+active byte address must match one selected service capability and one of that
+capability's `Storage` regions. A nonmatching or out-of-range request remains
+backpressured and cannot alias through truncated SRAM address bits. Inactive
+lanes do not require an in-range address because they do not perform a memory
+access.
 
 Behavioral memory models and black boxes are legal only when Fabric or its
 implementation binding explicitly declares that realization. The

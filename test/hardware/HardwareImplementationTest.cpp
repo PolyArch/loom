@@ -240,13 +240,33 @@ MemoryFixture makeMemoryFixture(llvm::StringRef test,
 
   auto system = take(test, hardware::test::makeSpatialCoreSystem(
                                module, artifacts, spatialCoreCount));
-  auto abi =
-      take(test, finalizeConfigurationABI(
-                     ConfigurationABIDraft{system.reference(), {}}, artifacts));
   auto systemView = take(test, loom::fabric::requireSystemRoot(system.view()));
   require(test,
           systemView.artifact().accCoreOccurrences().size() == spatialCoreCount,
           "memory fixture System has the wrong accelerator core count");
+  auto schema = take(test, module.view().memoryConfigurationSchema(
+                               module.view().memoryOccurrences().front()));
+  std::vector<hardware::test::ConfigurationFieldEncodingOverride> overrides;
+  overrides.reserve(spatialCoreCount);
+  for (loom::fabric::AccCoreOccurrenceRef core :
+       systemView.artifact().accCoreOccurrences()) {
+    auto target = take(
+        test,
+        loom::fabric::FabricModulePhysicalTargetRef::create(schema.field()));
+    auto field =
+        take(test, loom::fabric::FabricPhysicalConfigurationFieldRef::create(
+                       loom::fabric::SpatialCoreInternalOccurrenceRef{
+                           loom::fabric::SpatialCoreOccurrenceRef{core},
+                           std::move(target)}));
+    overrides.push_back(
+        {std::move(field), DirectBitsEncoding{schema.layout().carrierBitCount},
+         std::vector<std::uint8_t>((schema.layout().carrierBitCount + 7) / 8,
+                                   0)});
+  }
+  auto abiDraft = take(test, hardware::test::makeCompleteConfigurationABIDraft(
+                                 system, overrides));
+  auto abi =
+      take(test, finalizeConfigurationABI(std::move(abiDraft), artifacts));
   const loom::fabric::SpatialCoreOccurrenceRef spatialCore{
       systemView.artifact().accCoreOccurrences().back()};
   auto localMemory =

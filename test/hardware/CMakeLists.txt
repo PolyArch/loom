@@ -189,6 +189,21 @@ if(LOOM_HAVE_CIRCT)
     LLVMSupport
   )
 
+  add_executable(loom-memory-hierarchy-test
+    MemoryHierarchyTest.cpp
+  )
+
+  target_link_libraries(loom-memory-hierarchy-test PRIVATE
+    LoomConfigurationTransportTestSupport
+    LoomHardwareConfigurationTestSupport
+    LoomADGBuilder
+    LoomHardwareRTL
+    MLIRDataflow
+    MLIRFabric
+    MLIRParser
+    LLVMSupport
+  )
+
   add_executable(loom-specialization-test
     SpecializationTest.cpp
   )

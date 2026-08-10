@@ -22,7 +22,22 @@ deriveConfiguredHardwareProjection(
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> bindings,
-    llvm::ArrayRef<SpatialRouteTreeView> routes);
+    llvm::ArrayRef<SpatialMemoryEngineBindingView> memoryEngines,
+    llvm::ArrayRef<SpatialMemoryBindingView> memoryBindings,
+    llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments);
+
+llvm::Expected<std::vector<ConfiguredHardwareFieldValueView>>
+deriveConfiguredMemoryFields(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialMemoryEngineBindingView> memoryEngines,
+    llvm::ArrayRef<SpatialMemoryBindingView> memoryBindings,
+    llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments);
 
 } // namespace loom::mapping::detail
 
