@@ -20,3 +20,48 @@ target_link_libraries(loom-deployment-executable-leaves-test PRIVATE
 target_compile_definitions(loom-deployment-executable-leaves-test PRIVATE
   LOOM_TEST_LLD_PATH="${LLVM_TOOLS_BINARY_DIR}/ld.lld"
 )
+
+add_library(LoomDeploymentTestSupport STATIC
+  DeploymentTestSupport.cpp
+)
+
+target_link_libraries(LoomDeploymentTestSupport PUBLIC
+  LoomADGBuilder
+  LoomConfig
+  LoomDeployment
+  LoomFrontendExecutable
+  LoomHardwareConfiguration
+  LoomHardwareImplementation
+  LoomMappingArtifact
+  LoomPnR
+  LoomPnRGenerator
+  LoomRuntimePlatformBinding
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRFabric
+  MLIRFuncDialect
+  MLIRIR
+  MLIRMapping
+  MLIRParser
+  MLIRSupport
+)
+
+target_compile_definitions(LoomDeploymentTestSupport PRIVATE
+  LOOM_TEST_LLD_PATH="${LLVM_TOOLS_BINARY_DIR}/ld.lld"
+)
+
+add_executable(loom-deployment-closure-test
+  DeploymentClosureTest.cpp
+)
+
+target_link_libraries(loom-deployment-closure-test PRIVATE
+  LoomDeploymentTestSupport
+)
+
+add_executable(loom-deployment-package-test
+  DeploymentPackageTest.cpp
+)
+
+target_link_libraries(loom-deployment-package-test PRIVATE
+  LoomDeploymentTestSupport
+)

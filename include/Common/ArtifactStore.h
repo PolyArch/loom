@@ -6,7 +6,9 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace loom {
 
@@ -26,6 +28,12 @@ public:
   /// Resolves the schema framing carried by one exact root reference.
   llvm::Expected<CanonicalSemanticBytes>
   get(const ArtifactRootReference &reference) const;
+
+  /// Returns the exact validated identity preimage stored under reference.
+  /// This is the transport form used by content-addressed package projections;
+  /// callers do not reconstruct schema framing around canonical semantic bytes.
+  llvm::Expected<std::vector<std::uint8_t>>
+  getStoredObject(const ArtifactRootReference &reference) const;
 
 private:
   llvm::Expected<CanonicalSemanticBytes>

@@ -87,6 +87,8 @@ set(LOOM_TEST_DEPENDS
   loom-dataflow-graph-definition-rewrite-test
   loom-dataflow-vector-decomposition-rewrite-test
   loom-deployment-executable-leaves-test
+  loom-deployment-closure-test
+  loom-deployment-package-test
   loom-dataflow-canonical-artifact-test
   loom-dataflow-channel-create-test
   loom-dataflow-canonical-reference-test

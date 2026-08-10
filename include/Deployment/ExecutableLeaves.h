@@ -20,6 +20,10 @@ class BlobStore;
 
 namespace loom::deployment {
 
+namespace detail {
+class DeploymentCodecAccess;
+}
+
 using CanonicalTypeBytes = std::vector<std::uint8_t>;
 
 enum class HostExternalInterfaceKind : std::uint32_t {
@@ -113,6 +117,7 @@ private:
   std::vector<std::uint64_t> supportComponentOrdinals_;
 
   friend class ExecutableLeafBuilder;
+  friend class detail::DeploymentCodecAccess;
 };
 
 struct StaticMemoryInitializedChunk final {
@@ -185,6 +190,7 @@ private:
   std::vector<StaticMemoryZeroFillRange> zeroFillRanges_;
 
   friend class ExecutableLeafBuilder;
+  friend class detail::DeploymentCodecAccess;
 };
 
 llvm::Expected<HostProgramLeaf>

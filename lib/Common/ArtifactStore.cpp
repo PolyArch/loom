@@ -329,6 +329,50 @@ ArtifactStore::get(const ArtifactRootReference &reference) const {
                   reference.artifact);
 }
 
+llvm::Expected<std::vector<std::uint8_t>>
+ArtifactStore::getStoredObject(const ArtifactRootReference &reference) const {
+  auto directoryOrError = openStoreDirectory(root_);
+  if (!directoryOrError)
+    return directoryOrError.takeError();
+  int directory = *directoryOrError;
+  llvm::scope_exit closeDirectory([&] {
+    if (directory != -1)
+      llvm::consumeError(closeFile(directory, "store directory"));
+  });
+
+  const std::string objectName = formatArtifactIdentityHex(reference.artifact);
+  auto fileOrError = openStoredObject(directory, objectName);
+  if (!fileOrError)
+    return fileOrError.takeError();
+  int file = *fileOrError;
+  llvm::scope_exit closeObject([&] {
+    if (file != -1)
+      llvm::consumeError(closeFile(file, "stored object"));
+  });
+
+  auto object =
+      readOpenedObject(file, "stored object", "artifact_store_corruption");
+  if (!object)
+    return object.takeError();
+  auto parsed =
+      validateStoredObject(*object, "stored object", reference.artifact,
+                           "artifact_store_corruption");
+  if (!parsed)
+    return parsed.takeError();
+  if (parsed->schemaIdentity != reference.schemaIdentity ||
+      parsed->schemaVersion != reference.schemaVersion)
+    return storeError("artifact_schema_mismatch",
+                      "stored object schema does not match exact reference");
+
+  if (llvm::Error error = closeFile(file, "stored object"))
+    return error;
+  closeObject.release();
+  if (llvm::Error error = closeFile(directory, "store directory"))
+    return error;
+  closeDirectory.release();
+  return std::move(object->preimage);
+}
+
 llvm::Expected<CanonicalSemanticBytes>
 ArtifactStore::getExact(llvm::StringRef schemaIdentity,
                         SchemaVersion schemaVersion,

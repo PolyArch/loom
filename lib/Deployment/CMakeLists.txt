@@ -1,6 +1,10 @@
 add_library(LoomDeployment
+  Deployment.cpp
+  DeploymentCodec.cpp
   ExecutableLeaves.cpp
   HardwareConfigurationImage.cpp
+  Package.cpp
+  RuntimeImageDerivation.cpp
 )
 
 target_include_directories(LoomDeployment PUBLIC
@@ -12,7 +16,10 @@ target_link_libraries(LoomDeployment PUBLIC
   LoomFrontendCompilation
   LoomFrontendExecutable
   LoomHardwareConfiguration
+  LoomHardwareImplementation
+  LoomImplementationPlatform
   LoomMappingArtifact
+  LoomRuntimePlatformBinding
   MLIRDataflow
   MLIRLLVMDialect
   LLVM
