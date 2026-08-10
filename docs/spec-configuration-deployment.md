@@ -630,13 +630,22 @@ The `ExecutionContextKey` in this payload is the same key owned by
 `docs/spec-mapping-identity.md`; Deployment does not define another context
 tuple or context identity.
 
-Each `EventFamilyKey` is exactly the Dataflow-owned
-`Produced(CanonicalProducerTerminalRef)` or
-`Consumed(CanonicalSinkTerminalRef)` structural event. The exact Dataflow
-program mechanically derives that key's `EventLogicalProjection`; the
-projection is not copied into the row key or stored as a second schema field.
-The keys denote static event families, never dynamic event occurrences,
-static event IDs, concrete coordinate or parameter values, or absolute time.
+Each `EventFamilyKey` is exactly the complete Dataflow-owned closed union:
+
+```text
+EventFamilyKey =
+    Transfer(Produced(CanonicalProducerTerminalRef)
+           | Consumed(CanonicalSinkTerminalRef))
+  | ActorTransition(ContextualActorTransitionEventRef)
+```
+
+The exact Dataflow program mechanically derives that key's
+`EventLogicalProjection`; the projection is not copied into the row key or
+stored as a second schema field. The keys denote static event families, never
+dynamic event occurrences, static event IDs, concrete coordinate or parameter
+values, or absolute time. In particular, a System memory or fence
+`ResourceUse` retains its exact rooted actor-issue transition rather than
+inventing a transfer terminal.
 The relation uses the same closed partition/lookup algebra as Mapping over the
 typed slots in the derived projection and, for DynamicWork, the separately
 owned stable-item projection. It selects a canonical child-local case. Its
@@ -648,12 +657,13 @@ by canonical semantic bytes; relations are then rewritten to that derived
 ordinal. It is not an EntityId or an independent selection authority.
 
 The Deployment canonical JSON writer renders each row key as the exact typed
-`Produced` or `Consumed` variant plus its terminal reference, and renders each
-relation variable as the exact `EventLogicalInputSlot` variant plus ordinal.
-It orders rows and variables by the Dataflow-owned comparison wires. The
-importer rederives the complete projection from the exact Dataflow artifact and
-rejects disagreement. No projection digest, copied type, native index, symbol
-path, JSON field order, or parallel binary Deployment schema becomes another
+`Transfer.Produced`, `Transfer.Consumed`, or `ActorTransition` variant plus its
+terminal or contextual actor-transition reference, and renders each relation
+variable as the exact `EventLogicalInputSlot` variant plus ordinal. It orders
+rows and variables by the Dataflow-owned comparison wires. The importer
+rederives the complete projection from the exact Dataflow artifact and rejects
+disagreement. No projection digest, copied type, native index, symbol path,
+JSON field order, or parallel binary Deployment schema becomes another
 authority.
 
 Contexts, target cases, and admission cases are sorted by canonical key

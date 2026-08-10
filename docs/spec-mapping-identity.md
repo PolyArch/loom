@@ -281,9 +281,12 @@ The Mapping profiles also use these confirmed structural owners:
 * a ServicePlan element is identified by the exact
   `ServicePlanElementRef` above and does not receive an EntityId.
 
-`EventFamilyKey` is the Dataflow-owned typed alias of one exact
-`StaticTransferEventRef`; it has no Mapping-owned fields and no static-event
-`EntityId`. The exact program mechanically derives its
+`EventFamilyKey` is the Dataflow-owned closed union of one exact
+`StaticTransferEventRef` or one rooted
+`ContextualActorTransitionEventRef`; it has no Mapping-owned fields and no
+static-event `EntityId`. The latter resolves the exact
+OperationSchema-owned actor transition through its rooted graph-launch
+context. The exact program mechanically derives the key's
 `EventLogicalProjection` as the canonical ordered coordinate and launch-
 parameter input schema. That projection is not serialized inside the key and
 cannot be selected or rewritten by Mapping. Mapping imports the Dataflow-owned

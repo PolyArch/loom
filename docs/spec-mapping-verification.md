@@ -401,9 +401,10 @@ Using that projection, the base verifier checks:
 * exact root-launch coverage and derivation of all reachable thread, graph,
   channel, memory, and external obligations;
 * exact resolution of every `EventFamilyKey` as one Dataflow-owned
-  `StaticTransferEventRef`, mechanical derivation of its canonical
-  `EventLogicalProjection`, and rejection of copied, foreign, duplicate,
-  wrong-kind, out-of-range, or noncanonical event input slots;
+  `StaticTransferEventRef | ContextualActorTransitionEventRef`, mechanical
+  derivation of its canonical `EventLogicalProjection`, and rejection of
+  copied, foreign, duplicate, wrong-kind, out-of-range, or noncanonical event
+  input slots;
 * exactly one ThreadExecutionBinding per root launch and one
   GraphExecutionBinding per reachable static graph launch in each root
   context, keyed by the Dataflow-owned `RootedGraphLaunchRef`;

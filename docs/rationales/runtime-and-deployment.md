@@ -96,6 +96,13 @@ package, swap a binary, select similar hardware, or synthesize a missing
 mapping. Failed or ambiguous programming enters failure recovery and quarantine
 rather than pretending the old or partial configuration is usable.
 
+Admission reuses the complete Dataflow-owned `EventFamilyKey`. Boundary and
+channel activity uses the existing produced or consumed transfer variants;
+memory and fence service occupancy uses the rooted actor-transition variant
+whose commit is the OperationSchema-owned issue event. Narrowing this child to
+transfer terminals would either lose a legal Mapping use or manufacture a fake
+terminal and a second event authority.
+
 ## Why There Are Two Launch Boundaries
 
 Host/runtime dispatches a `dataflow.thread` to an AccCore InstructionCore. That
