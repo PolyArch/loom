@@ -365,7 +365,7 @@ those services.
 The manifest schema owned by this section is:
 
 ```text
-loom.external_tool_invocation 2.1
+loom.external_tool_invocation 2.2
 
 SemanticInvocationClosure =
     CandidateGenerator {
@@ -419,7 +419,10 @@ typed 2.0 closure.
 
 Manifest 2.1 compatibly adds `external_file_trees`; the 2.0 form remains
 importable and denotes an empty tree-input list. A 2.0 manifest cannot contain
-the new field. Bundle finalization is failure-atomic. A complete bundle contains:
+the new field. Manifest 2.2 compatibly adds `tool_produced_executables`; the
+2.0 and 2.1 forms remain importable and denote an empty produced-executable
+list. An older manifest cannot contain the new field. Bundle finalization is
+failure-atomic. A complete bundle contains:
 
 ```text
 tool-invocation.json
@@ -448,7 +451,10 @@ outputs/...
   marker, and stable-line selector used to reproduce that result;
 - the module initialization path, requested activation, and exact loaded
   module closure when used;
-- commands as token arrays, not shell fragments;
+- commands as token arrays, not shell fragments, whose executable is either
+  the frozen tool or one exact listed tool-produced executable;
+- canonical `work/`-relative tool-produced executable paths, when a compiler
+  must generate a program that a later command executes;
 - required inherited environment-variable names, never their values;
 - declared driver, input, output, raw-report, and completion-record paths; and
 - the exact semantic-descriptor-derived result importer identity.
@@ -541,6 +547,18 @@ Each concurrent work unit receives an independent finalized bundle and work
 directory. Make, Ninja, Slurm, a shell, a container orchestrator, or another
 caller may execute bundles in parallel. No bundle depends on mutable process
 environment left by another bundle.
+
+Every command before a tool-produced executable uses the exact frozen tool
+binding. A listed produced path is canonical, relative, strictly below
+`work/`, and absent from materialized inputs and declared outputs. The shared
+launcher removes every listed path before entering the tool. Immediately
+before a later command may execute one, the path must be a newly created
+ordinary executable file and not a symbolic link. The manifest freezes the
+path and argument vector; the generating tool remains the sole executable
+authority. An arbitrary host executable, bundled shell fragment, previously
+built simulator, or output-directory program is never admitted by this form.
+This form exists for compile-then-run tools such as Verilator; a tool that can
+complete its work directly uses only frozen-tool commands.
 
 The completion record is nonsemantic attempt state and is written atomically.
 It distinguishes launch or activation failure, tool exit, missing declared
@@ -648,6 +666,10 @@ Stable tests cover:
 - independent tool/runtime selection plus rejected incompatible composition;
 - shell-safe projection of adversarial paths, arguments, and module names;
 - deterministic byte-identical manifests and scripts from identical inputs;
+- compile-then-run bundles accepting only fresh manifest-listed `work/`
+  executables produced after a frozen-tool command, with stale, absolute,
+  escaping, materialized, declared-output, non-executable, and symlink paths
+  rejected;
 - exact HardwareImplementation bytes and top derived from its representation
   root, with raw-source, top-name, and prior-workdir substitution rejected;
 - independent parallel bundles with no shared mutable environment;

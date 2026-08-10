@@ -646,6 +646,16 @@ tool-specific drivers reviewable and lets the same material run under a local
 shell, Make, Ninja, Slurm, or site orchestration without changing compiler
 semantics.
 
+Some external simulators are compilers: the frozen tool first produces a
+work-directory executable and only that executable can run the modeled
+hierarchy. Treating the produced program as another discovered tool would add
+a false binding authority, while allowing arbitrary later commands would lose
+the bundle's executable closure. The manifest therefore names only fresh
+tool-produced executables under `work/`; the launcher removes stale instances
+and verifies the newly produced path before execution. This is the smallest
+distinction that supports compile-then-run without turning ExternalTool into a
+general shell workflow language.
+
 Separating prepare from import is the smallest lifecycle that supports that
 execution boundary. The exact descriptor and semantic closure derive the
 bundle and importer identity; callers cannot name them independently. An
