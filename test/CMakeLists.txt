@@ -34,6 +34,7 @@ endfunction()
 add_subdirectory(common)
 add_subdirectory(adg)
 add_subdirectory(dataflow)
+add_subdirectory(deployment)
 add_subdirectory(dse)
 add_subdirectory(evaluation)
 add_subdirectory(external_tool)
@@ -85,6 +86,7 @@ set(LOOM_TEST_DEPENDS
   loom-dataflow-fanout-rewrite-test
   loom-dataflow-graph-definition-rewrite-test
   loom-dataflow-vector-decomposition-rewrite-test
+  loom-deployment-executable-leaves-test
   loom-dataflow-canonical-artifact-test
   loom-dataflow-channel-create-test
   loom-dataflow-canonical-reference-test

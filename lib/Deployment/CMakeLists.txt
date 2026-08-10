@@ -1,4 +1,5 @@
 add_library(LoomDeployment
+  ExecutableLeaves.cpp
   HardwareConfigurationImage.cpp
 )
 
@@ -8,7 +9,11 @@ target_include_directories(LoomDeployment PUBLIC
 
 target_link_libraries(LoomDeployment PUBLIC
   LoomCommon
+  LoomFrontendCompilation
+  LoomFrontendExecutable
   LoomHardwareConfiguration
   LoomMappingArtifact
-  LLVMSupport
+  MLIRDataflow
+  MLIRLLVMDialect
+  LLVM
 )

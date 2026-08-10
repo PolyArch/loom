@@ -4,6 +4,7 @@ add_mlir_library(LoomFrontendExecutable
   CompilerTargetCodegen.cpp
   CompilerTargetCohort.cpp
   CompilerTargetMachine.cpp
+  ExecutableElf.cpp
   InstructionCoreBinary.cpp
   InstructionCoreBinaryCodec.cpp
   InstructionCoreElf.cpp
