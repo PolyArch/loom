@@ -901,6 +901,15 @@ otherwise legal overlap and charge resources for programs that never issue an
 external access. A future external-access workflow must first define its own
 invocation event domain; SystemMapping cannot manufacture one.
 
+Imported Spatial uses retain graph-local producer and consumer endpoint event
+families. An endpoint can participate in several mutually exclusive
+OperationSchema handshake cases, so rebasing it by selecting one transition or
+conjoining all transitions changes behavior. The Canonical Dataflow Program
+instead derives the complete alternative set of existing rooted transition or
+boundary events. System verification and admission preserve each original
+release conjunction as an `AllOf` of per-endpoint `AnyOf` sets, adding no
+Mapping-local event catalog.
+
 Service ResourceUse points at the natural key of an existing ServicePlan
 child. The selected Fabric use-pattern reference records the only additional
 choice. Persisting a capability ordinal would duplicate a match that can be

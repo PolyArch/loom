@@ -103,6 +103,14 @@ whose commit is the OperationSchema-owned issue event. Narrowing this child to
 transfer terminals would either lose a legal Mapping use or manufacture a fake
 terminal and a second event authority.
 
+SpatialMapping also names graph-local endpoint events. One endpoint may be
+produced or consumed by several mutually exclusive actor transition cases, so
+choosing one case loses behavior while requiring all cases can never complete.
+Dataflow therefore projects the endpoint to a canonical alternative set of its
+existing event keys. Admission preserves an original causal conjunction as an
+`AllOf` of those per-point `AnyOf` sets. This derives the needed runtime index
+without adding an endpoint-event identity to Deployment.
+
 ## Why There Are Two Launch Boundaries
 
 Host/runtime dispatches a `dataflow.thread` to an AccCore InstructionCore. That

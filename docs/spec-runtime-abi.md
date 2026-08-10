@@ -142,6 +142,13 @@ microstate remain transient runtime state.
 Runtime may apply one owner-defined admission relation to both Thread Dispatch
 and Spatial Launch. Their launch and completion contracts remain distinct.
 
+For an imported Spatial endpoint event, runtime matches any member of the
+Dataflow-derived rooted endpoint alternative set. One matched trigger performs
+one atomic acquisition. A causal release completes only after every original
+release point has observed any one member of its own alternative set. Runtime
+must not wait for every mutually exclusive actor transition and must not treat
+one alternative as a second acquisition.
+
 ## Admission
 
 For one concrete event occurrence, runtime first checks explicit dependencies,

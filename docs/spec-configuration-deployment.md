@@ -618,7 +618,16 @@ AdmissionPayload {
       parameter_relation : BindingRelation<AdmissionCaseOrdinal>
       cases[] keyed by AdmissionCaseOrdinal {
         atomic_activation_set
-        release_rules[]
+        release_rules[] {
+          activation_member_ref
+          fabric_intrinsic_release : true
+          causal_release? {
+            all_of[] {
+              alternatives[] : EventFamilyKey
+              guaranteed_offset?
+            }
+          }
+        }
         capacity_indices[]
       }
     }
@@ -646,6 +655,18 @@ dynamic event occurrences, static event IDs, concrete coordinate or parameter
 values, or absolute time. In particular, a System memory or fence
 `ResourceUse` retains its exact rooted actor-issue transition rather than
 inventing a transfer terminal.
+
+An imported Spatial endpoint trigger is indexed under every member of the
+Dataflow-owned `RootedGraphEndpointEventProjection` for its exact rooted graph
+launch. Those rows are alternatives for one original trigger, not independent
+simultaneous acquisitions. Each original Spatial causal release point becomes
+one `causal_all_of` member whose `alternatives[]` is that same nonempty
+projection; the original Spatial `AllOf` therefore remains
+`AllOf(AnyOf(point_0), AnyOf(point_1), ...)`. A direct System event point has a
+singleton alternatives array. Empty alternatives, flattening alternatives
+into the conjunction, or replacing a completion-frontier token with graph-wide
+done is invalid.
+
 The relation uses the same closed partition/lookup algebra as Mapping over the
 typed slots in the derived projection and, for DynamicWork, the separately
 owned stable-item projection. It selects a canonical child-local case. Its
@@ -834,8 +855,10 @@ Tests protect only stable boundaries:
 * Deployment derives runtime-image child stable keys and canonical ordering
   from exact Mapping structural keys and relations;
 * admission rows use exactly one Dataflow-owned `EventFamilyKey` per static
-  event, and projection-slot ordering, wire roundtrip, empty projection, and
-  foreign or noncanonical slot rejection match the exact Dataflow owner;
+  event alternative, endpoint alternatives preserve disjunction inside the
+  original release conjunction, and projection-slot ordering, wire roundtrip,
+  empty projection, and foreign or noncanonical slot rejection match the exact
+  Dataflow owner;
 * heterogeneous Thread and Graph binding ranges produce exact target-case
   tables without a singular duplicate selection field;
 * Deployment accepts exactly its required configuration-image/runtime-image

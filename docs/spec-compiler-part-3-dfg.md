@@ -2586,6 +2586,40 @@ EventLogicalProjection(EventFamilyKey) =
   canonical sorted unique array<EventLogicalInputSlot>
 ```
 
+A graph-local endpoint event has one Dataflow-owned rooted projection into
+that same event-family domain:
+
+```text
+RootedGraphEndpointEventProjection(
+  RootedGraphLaunchRef,
+  Produced(CanonicalGraphProducerEndpointRef)
+    | Consumed(CanonicalGraphConsumerEndpointRef)
+) -> canonical nonempty set<EventFamilyKey>
+```
+
+For `Produced(ActorTokenResultRef)`, the set contains exactly the rooted
+`ActorTransition` cases whose OperationSchema-owned `activeResults` contains
+that result ordinal. For `Consumed(ActorTokenOperandRef)`, it contains exactly
+the rooted cases whose `consumedInputs` contains that operand ordinal. This is
+an alternatives set: occurrence of any member is occurrence of the original
+endpoint event. Several cases producing or consuming one port do not become an
+`AllOf` relation.
+
+A graph start or value-input ingress maps to the consumed exact graph-launch
+boundary terminal. A stream-input ingress maps to the consumed exact channel
+consumer terminal. A value-output egress maps to the produced exact graph-
+launch result terminal, and a stream-output egress maps to the produced exact
+channel producer terminal. A completion-frontier egress maps recursively
+through its unique canonical graph producer because one frontier token is not
+the graph-wide done event. The recursive projection must terminate at an
+ingress or actor result in the acyclic SSA definition relation; malformed,
+empty, foreign, or duplicate results are rejected.
+
+This projection is a removable view of the Canonical Dataflow Program and its
+OperationSchema projections. It has no EntityId, persistent record, digest, or
+Mapping/Deployment override. Consumers use the existing `EventFamilyKey`
+comparison wire for its sorted unique result.
+
 There is no static-event `EntityId`, and the projection is not a field of the
 key. Every terminal and contextual actor transition resolves through the exact
 program to one rooted logical event domain. The transition ordinal resolves

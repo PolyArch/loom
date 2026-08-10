@@ -390,10 +390,13 @@ SystemMappingClosureProjection =
   Derive(D, F, M, ExactSpatialMappingSet(M))
 ```
 
-The projection occurrence-qualifies imported Spatial resource uses, rebases
-their event families into each graph-launch context, composes complete
-cross-Spatial/System service paths, and derives capacity, acquire, release,
-and wait-for closure. It has no ArtifactIdentity and is not a fourth Mapping
+The projection occurrence-qualifies imported Spatial resource uses and rebases
+their event families into each graph-launch context through Dataflow's unique
+`RootedGraphEndpointEventProjection`. One Spatial trigger endpoint expands to
+alternative System event rows; one Spatial `AllOf` release remains an `AllOf`
+of per-point `AnyOf` alternative sets. The projection then composes complete
+cross-Spatial/System service paths and derives capacity, acquire, release, and
+wait-for closure. It has no ArtifactIdentity and is not a fourth Mapping
 profile, record family, proof object, or runtime image.
 
 Using that projection, the base verifier checks:
@@ -405,6 +408,9 @@ Using that projection, the base verifier checks:
   derivation of its canonical `EventLogicalProjection`, and rejection of
   copied, foreign, duplicate, wrong-kind, out-of-range, or noncanonical event
   input slots;
+* exact nonempty endpoint-event alternative projection for every imported
+  Spatial trigger and release, preserving trigger disjunction and the original
+  release conjunction without inventing a Mapping-local aggregate event;
 * exactly one ThreadExecutionBinding per root launch and one
   GraphExecutionBinding per reachable static graph launch in each root
   context, keyed by the Dataflow-owned `RootedGraphLaunchRef`;
