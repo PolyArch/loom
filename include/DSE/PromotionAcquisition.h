@@ -237,12 +237,35 @@ struct PromotionAcquisitionTaskDomain final {
   llvm::ArrayRef<EvidenceObligationTemplateRef> evidenceObligations;
 };
 
+struct PromotionEvidenceExecutionTask final {
+  ArtifactRootReference candidate;
+  EvidenceObligationTemplateRef obligationTemplate;
+  evaluation::EvaluationRequest request;
+  std::shared_ptr<const evaluation::CaseArtifactResolution> resolution;
+};
+
+using PromotionEvidenceExecutionResult =
+    std::variant<evaluation::EvaluationEvidence,
+                 PromotionAcquisitionIncompleteReason>;
+
+/// Typed execution boundary for a canonical batch of already instantiated
+/// Requests. Request construction and Evidence use remain acquisition-owned;
+/// an executor supplies only exact provider outcomes in positional order.
+class PromotionEvidenceExecutor {
+public:
+  virtual ~PromotionEvidenceExecutor() = default;
+
+  virtual llvm::Expected<std::vector<PromotionEvidenceExecutionResult>>
+  execute(llvm::ArrayRef<PromotionEvidenceExecutionTask> tasks,
+          const ArtifactStore &store, const BlobStore &blobs) = 0;
+};
+
 llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings,
     const ResolvedPromotionAcquisitionBinding &binding,
     llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligationTemplates,
     PromotionAcquisitionTaskDomain taskDomain, const ArtifactStore &store,
-    const BlobStore &blobs);
+    const BlobStore &blobs, PromotionEvidenceExecutor *executor = nullptr);
 
 } // namespace loom::dse
 

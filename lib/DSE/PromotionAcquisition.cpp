@@ -87,6 +87,25 @@ bool validCardinality(PlanValueCardinality cardinality) {
          static_cast<std::uint32_t>(PlanValueCardinality::FiniteSet);
 }
 
+class InProcessPromotionEvidenceExecutor final
+    : public PromotionEvidenceExecutor {
+public:
+  llvm::Expected<std::vector<PromotionEvidenceExecutionResult>>
+  execute(llvm::ArrayRef<PromotionEvidenceExecutionTask> tasks,
+          const ArtifactStore &store, const BlobStore &blobs) override {
+    std::vector<PromotionEvidenceExecutionResult> results;
+    results.reserve(tasks.size());
+    for (const PromotionEvidenceExecutionTask &task : tasks) {
+      auto evidence = evaluation::evaluateRequest(
+          task.request, *task.resolution, store, blobs);
+      if (!evidence)
+        return evidence.takeError();
+      results.emplace_back(std::move(*evidence));
+    }
+    return results;
+  }
+};
+
 llvm::Error
 validateDescriptor(const PromotionAcquisitionDescriptor &descriptor) {
   if (!isCanonicalAscii(descriptor.spelling) ||
@@ -263,7 +282,7 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     const ResolvedPromotionAcquisitionBinding &binding,
     llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligationTemplates,
     PromotionAcquisitionTaskDomain taskDomain, const ArtifactStore &store,
-    const BlobStore &blobs) {
+    const BlobStore &blobs, PromotionEvidenceExecutor *executor) {
   const PromotionAcquisitionDescriptor *descriptor =
       binding.descriptorRef().descriptor();
   if (!descriptor)
@@ -387,8 +406,8 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
       std::get<CompletedPromotionAcquisitionResolution>(*resolution);
   if (completed.tasks.size() != tasks.size())
     return invalid("provider did not resolve every acquisition task");
-  std::vector<PromotionEvidence> evidence;
-  evidence.reserve(tasks.size());
+  std::vector<PromotionEvidenceExecutionTask> executionTasks;
+  executionTasks.reserve(tasks.size());
   for (std::size_t index = 0; index < tasks.size(); ++index) {
     const PromotionEvidenceAcquisitionTask &task = tasks[index];
     ResolvedPromotionEvidenceAcquisitionTask &resolved = completed.tasks[index];
@@ -411,12 +430,33 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
         evaluation::publishEvaluationRequest(*request, store);
     if (!requestReference)
       return requestReference.takeError();
-    auto result = evaluation::evaluateRequest(*request, *resolved.resolution,
-                                              store, blobs);
-    if (!result)
-      return result.takeError();
-    evidence.emplace_back(std::move(*request), std::move(*result),
-                          task.obligationTemplate.ordinal());
+    executionTasks.push_back(
+        {task.candidate, task.obligationTemplate, std::move(*request),
+         resolved.resolution});
+  }
+
+  InProcessPromotionEvidenceExecutor inProcess;
+  PromotionEvidenceExecutor &selectedExecutor =
+      executor ? *executor : static_cast<PromotionEvidenceExecutor &>(inProcess);
+  auto executionResults = selectedExecutor.execute(executionTasks, store, blobs);
+  if (!executionResults)
+    return executionResults.takeError();
+  if (executionResults->size() != executionTasks.size())
+    return invalid("Evidence executor returned the wrong result count");
+
+  std::vector<PromotionEvidence> evidence;
+  evidence.reserve(executionTasks.size());
+  for (std::size_t index = 0; index != executionTasks.size(); ++index) {
+    PromotionEvidenceExecutionTask &task = executionTasks[index];
+    PromotionEvidenceExecutionResult &result = (*executionResults)[index];
+    if (auto *incomplete =
+            std::get_if<PromotionAcquisitionIncompleteReason>(&result))
+      return PromotionAcquisitionOutcome{IncompletePromotionAcquisition{
+          *incomplete, std::move(evidence)}};
+    evidence.emplace_back(
+        std::move(task.request),
+        std::get<evaluation::EvaluationEvidence>(std::move(result)),
+        task.obligationTemplate.ordinal());
   }
   return PromotionAcquisitionOutcome{
       CompletedPromotionAcquisition{std::move(evidence)}};

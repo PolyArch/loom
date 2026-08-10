@@ -26,11 +26,17 @@ target_link_libraries(LoomDSECandidateGenerator PUBLIC
 )
 
 add_library(LoomDSEPolicy
+  ../CampaignRunner.cpp
   ../EvidenceObligation.cpp
+  ../ExecutionJournal.cpp
   ../Plan.cpp
+  ../PlanExecutor.cpp
+  ../OperationalProjection.cpp
   ../Promotion.cpp
   ../PromotionAcquisition.cpp
   ../ResolvedConfigView.cpp
+  ../RunKey.cpp
+  ../SiteScheduler.cpp
 )
 
 target_include_directories(LoomDSEPolicy PUBLIC

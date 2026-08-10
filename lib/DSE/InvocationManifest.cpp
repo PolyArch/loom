@@ -1021,15 +1021,6 @@ DseProducerSemanticBuildIdentity::get(llvm::StringRef spelling) {
   return DseProducerSemanticBuildIdentity(spelling.str());
 }
 
-llvm::Expected<DseRunKey>
-DseRunKey::fromBytes(llvm::ArrayRef<std::uint8_t> bytes) {
-  if (bytes.size() != byteSize)
-    return invalid("DSE run key requires exactly 32 bytes");
-  Storage storage;
-  std::copy(bytes.begin(), bytes.end(), storage.begin());
-  return DseRunKey(storage);
-}
-
 llvm::Expected<DseRunClosure>
 DseRunClosure::get(DseProducerSemanticBuildIdentity producer,
                    llvm::ArrayRef<ArtifactRootReference> semanticInputs,

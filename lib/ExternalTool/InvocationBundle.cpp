@@ -110,6 +110,25 @@ llvm::StringRef bindingSourceName(ToolBindingSource source) {
   llvm_unreachable("unknown tool binding source");
 }
 
+llvm::StringRef runtimeKindName(InvocationRuntimeKind kind) {
+  switch (kind) {
+  case InvocationRuntimeKind::Host:
+    return "host";
+  case InvocationRuntimeKind::PolyArchContainer:
+    return "polyarch_container";
+  }
+  llvm_unreachable("unknown invocation runtime kind");
+}
+
+llvm::Expected<InvocationRuntimeKind>
+parseRuntimeKind(llvm::StringRef spelling) {
+  if (spelling == runtimeKindName(InvocationRuntimeKind::Host))
+    return InvocationRuntimeKind::Host;
+  if (spelling == runtimeKindName(InvocationRuntimeKind::PolyArchContainer))
+    return InvocationRuntimeKind::PolyArchContainer;
+  return bundleError("runtime binding kind is unknown");
+}
+
 std::optional<InvocationCompletionStatus>
 parseCompletionStatus(llvm::StringRef spelling) {
   if (spelling == "success")
@@ -656,7 +675,10 @@ parseRuntimeBinding(const llvm::json::Object &object,
       parseStringArray(object, "rejected_compositions", "runtime binding");
   if (!rejected)
     return rejected.takeError();
-  if (*kind == "host") {
+  auto parsedKind = parseRuntimeKind(*kind);
+  if (!parsedKind)
+    return parsedKind.takeError();
+  if (*parsedKind == InvocationRuntimeKind::Host) {
     if (llvm::Error error = rejectUnknownFields(
             object, "runtime binding", {"kind", "rejected_compositions"}))
       return std::move(error);
@@ -665,8 +687,6 @@ parseRuntimeBinding(const llvm::json::Object &object,
     runtime.rejectedCompositions = std::move(*rejected);
     return runtime;
   }
-  if (*kind != "polyarch_container")
-    return bundleError("runtime binding kind is unknown");
   if (llvm::Error error = rejectUnknownFields(
           object, "runtime binding",
           {"kind", "os", "container_binding", "container_version_probe",
@@ -691,7 +711,7 @@ parseRuntimeBinding(const llvm::json::Object &object,
     return probe.takeError();
   containerVersionProbe = std::move(*probe);
   InvocationRuntimeBinding runtime;
-  runtime.kind = InvocationRuntimeKind::PolyArchContainer;
+  runtime.kind = *parsedKind;
   runtime.polyArchContainer = std::move(*binding);
   runtime.os = os->str();
   runtime.rejectedCompositions = std::move(*rejected);
@@ -1317,6 +1337,68 @@ BlobDigest contentDigest(llvm::StringRef contents) {
       llvm::ArrayRef<std::uint8_t>(bytes, contents.size()));
 }
 
+llvm::Expected<BlobDigest> deriveExternalToolExecutionBindingDigest(
+    const ResolvedToolBinding &tool, const InvocationRuntimeBinding &runtime) {
+  if (llvm::Error error = validateBinding(tool, "tool binding"))
+    return std::move(error);
+  if (static_cast<unsigned>(runtime.kind) >
+      static_cast<unsigned>(InvocationRuntimeKind::PolyArchContainer))
+    return bundleError("runtime binding kind is unknown");
+  if (runtime.kind == InvocationRuntimeKind::Host) {
+    if (runtime.polyArchContainer || runtime.os)
+      return bundleError("host runtime may not contain a container binding");
+  } else {
+    if (!runtime.polyArchContainer || !runtime.os || runtime.os->empty() ||
+        containsNull(*runtime.os))
+      return bundleError(
+          "PolyArch/container runtime requires a binding and OS");
+    if (llvm::Error error =
+            validateBinding(*runtime.polyArchContainer, "container binding"))
+      return std::move(error);
+    if (runtime.polyArchContainer->toolKey != "polyarch_container")
+      return bundleError("container binding has the wrong logical tool key");
+    if (tool.moduleInit && runtime.polyArchContainer->moduleInit &&
+        tool.moduleInit != runtime.polyArchContainer->moduleInit)
+      return bundleError(
+          "tool and container bindings use different module initializers");
+  }
+  for (const std::string &rejection : runtime.rejectedCompositions)
+    if (rejection.empty() || containsNull(rejection))
+      return bundleError("runtime rejection provenance is invalid");
+  llvm::SmallString<1024> storage;
+  llvm::raw_svector_ostream output(storage);
+  llvm::json::OStream json(output, 0);
+  json.object([&] {
+    json.attribute("schema", "loom.external_tool_execution_binding");
+    json.attribute("version", "1.0");
+    json.attributeBegin("tool_binding");
+    writeBinding(json, tool);
+    json.attributeEnd();
+    json.attributeObject("runtime_binding", [&] {
+      json.attribute("kind", runtimeKindName(runtime.kind));
+      if (runtime.kind == InvocationRuntimeKind::PolyArchContainer) {
+        json.attribute("os", *runtime.os);
+        json.attributeBegin("container_binding");
+        writeBinding(json, *runtime.polyArchContainer);
+        json.attributeEnd();
+      }
+    });
+  });
+  return contentDigest(output.str());
+}
+
+llvm::Expected<BlobDigest> deriveExternalToolExecutionBindingDigest(
+    const PreparedExternalToolInvocation &prepared) {
+  auto bundle = openPreparedBundle(prepared);
+  if (!bundle)
+    return bundle.takeError();
+  auto manifest = parseManifest(bundle->manifestBytes);
+  if (!manifest)
+    return manifest.takeError();
+  return deriveExternalToolExecutionBindingDigest(manifest->tool,
+                                                  manifest->runtime);
+}
+
 llvm::Expected<std::string> deriveExternalToolResultImporterIdentity(
     llvm::ArrayRef<std::uint8_t> semanticDescriptorReferenceBytes,
     ProviderForm providerForm) {
@@ -1387,10 +1469,8 @@ std::string serializeManifest(const InvocationManifestData &manifest,
     writeVersionProbe(json, manifest.toolVersionProbe);
     json.attributeEnd();
     json.attributeObject("runtime_binding", [&] {
-      if (manifest.runtime.kind == InvocationRuntimeKind::Host) {
-        json.attribute("kind", "host");
-      } else {
-        json.attribute("kind", "polyarch_container");
+      json.attribute("kind", runtimeKindName(manifest.runtime.kind));
+      if (manifest.runtime.kind == InvocationRuntimeKind::PolyArchContainer) {
         json.attribute("os", *manifest.runtime.os);
         json.attributeBegin("container_binding");
         writeBinding(json, *manifest.runtime.polyArchContainer);

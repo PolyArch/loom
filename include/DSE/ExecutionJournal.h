@@ -1,0 +1,188 @@
+#ifndef LOOM_DSE_EXECUTIONJOURNAL_H
+#define LOOM_DSE_EXECUTIONJOURNAL_H
+
+#include "Common/Artifact.h"
+#include "DSE/InvocationManifest.h"
+#include "ExternalTool/InvocationBundle.h"
+
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace loom::dse {
+
+class ResolvedDseConfigView;
+namespace detail {
+class ExecutionJournalAccess;
+}
+
+/// Exact owner-local work descriptor used only to derive recoverable work
+/// keys. The referenced owner registry remains the authority for the kind.
+class WorkUnitDescriptorRef final {
+public:
+  static llvm::Expected<WorkUnitDescriptorRef>
+  get(llvm::StringRef ownerRegistryIdentity, SchemaVersion ownerRegistryVersion,
+      std::uint32_t ownerLocalKind);
+
+  llvm::StringRef ownerRegistryIdentity() const {
+    return ownerRegistryIdentity_;
+  }
+  SchemaVersion ownerRegistryVersion() const { return ownerRegistryVersion_; }
+  std::uint32_t ownerLocalKind() const { return ownerLocalKind_; }
+
+  friend bool operator==(const WorkUnitDescriptorRef &lhs,
+                         const WorkUnitDescriptorRef &rhs) {
+    return lhs.ownerRegistryIdentity_ == rhs.ownerRegistryIdentity_ &&
+           lhs.ownerRegistryVersion_ == rhs.ownerRegistryVersion_ &&
+           lhs.ownerLocalKind_ == rhs.ownerLocalKind_;
+  }
+  friend bool operator<(const WorkUnitDescriptorRef &lhs,
+                        const WorkUnitDescriptorRef &rhs);
+
+private:
+  WorkUnitDescriptorRef(std::string ownerRegistryIdentity,
+                        SchemaVersion ownerRegistryVersion,
+                        std::uint32_t ownerLocalKind)
+      : ownerRegistryIdentity_(std::move(ownerRegistryIdentity)),
+        ownerRegistryVersion_(ownerRegistryVersion),
+        ownerLocalKind_(ownerLocalKind) {}
+
+  std::string ownerRegistryIdentity_;
+  SchemaVersion ownerRegistryVersion_;
+  std::uint32_t ownerLocalKind_ = 0;
+};
+
+/// Stable recovery identity. Attempt, checkpoint, dispatch, and completion
+/// order are deliberately absent.
+class WorkUnitKey final {
+public:
+  static llvm::Expected<WorkUnitKey> get(std::uint64_t planNodeOrdinal,
+                                         WorkUnitDescriptorRef descriptor,
+                                         std::uint64_t stableOrdinal);
+
+  std::uint64_t planNodeOrdinal() const { return planNodeOrdinal_; }
+  const WorkUnitDescriptorRef &descriptor() const { return descriptor_; }
+  std::uint64_t stableOrdinal() const { return stableOrdinal_; }
+
+  friend bool operator==(const WorkUnitKey &lhs, const WorkUnitKey &rhs) {
+    return lhs.planNodeOrdinal_ == rhs.planNodeOrdinal_ &&
+           lhs.descriptor_ == rhs.descriptor_ &&
+           lhs.stableOrdinal_ == rhs.stableOrdinal_;
+  }
+  friend bool operator<(const WorkUnitKey &lhs, const WorkUnitKey &rhs);
+
+private:
+  WorkUnitKey(std::uint64_t planNodeOrdinal, WorkUnitDescriptorRef descriptor,
+              std::uint64_t stableOrdinal)
+      : planNodeOrdinal_(planNodeOrdinal), descriptor_(std::move(descriptor)),
+        stableOrdinal_(stableOrdinal) {}
+
+  std::uint64_t planNodeOrdinal_ = 0;
+  WorkUnitDescriptorRef descriptor_;
+  std::uint64_t stableOrdinal_ = 0;
+};
+
+enum class JournalWorkUnitStatus : std::uint32_t {
+  Queued = 0,
+  Running = 1,
+  Prepared = 2,
+  Completed = 3,
+  Failed = 4,
+  TimedOut = 5,
+  Unsupported = 6,
+};
+
+struct JournalActiveWallInterval final {
+  std::uint64_t beginUnixTimeNanoseconds = 0;
+  std::uint64_t endUnixTimeNanoseconds = 0;
+
+  friend bool operator==(const JournalActiveWallInterval &lhs,
+                         const JournalActiveWallInterval &rhs) {
+    return lhs.beginUnixTimeNanoseconds == rhs.beginUnixTimeNanoseconds &&
+           lhs.endUnixTimeNanoseconds == rhs.endUnixTimeNanoseconds;
+  }
+};
+
+struct JournalWorkUnitRecord final {
+  WorkUnitKey key;
+  JournalWorkUnitStatus status = JournalWorkUnitStatus::Queued;
+  std::vector<JournalActiveWallInterval> activeWallIntervals;
+  std::uint64_t activeAttemptStartUnixTimeNanoseconds = 0;
+  std::uint64_t terminalUnixTimeNanoseconds = 0;
+  std::vector<ArtifactRootReference> finalizedOutputs;
+  std::optional<external_tool::PreparedExternalToolInvocation>
+      preparedInvocation;
+
+  std::uint64_t activeWallTimeNanoseconds() const;
+};
+
+/// Mutable, nonsemantic recovery state stored as one atomic canonical
+/// snapshot in a caller-owned run directory.
+class ExecutionJournal final {
+public:
+  static llvm::Expected<ExecutionJournal>
+  open(llvm::StringRef localRunRoot, const DseRunClosure &closure,
+       const ResolvedDseConfigView &view);
+
+  const DseRunKey &runKey() const;
+  const ComponentViewDigest &resolvedDseConfigViewDigest() const;
+  llvm::StringRef localRunRoot() const;
+
+  llvm::Expected<std::vector<JournalWorkUnitRecord>> workUnits() const;
+  llvm::Expected<std::optional<JournalWorkUnitRecord>>
+  find(const WorkUnitKey &key) const;
+
+  llvm::Error queue(const WorkUnitKey &key);
+  llvm::Error markRunning(const WorkUnitKey &key);
+  llvm::Error
+  recordPrepared(const WorkUnitKey &key,
+                 const external_tool::PreparedExternalToolInvocation &prepared,
+                 std::uint64_t activeWallTimeNanoseconds = 0,
+                 std::uint64_t observedUnixTimeNanoseconds = 0);
+  llvm::Error beginPreparedExecution(const WorkUnitKey &key);
+  llvm::Error
+  recordPreparedExecutionInterval(const WorkUnitKey &key,
+                                  std::uint64_t activeWallTimeNanoseconds,
+                                  std::uint64_t observedUnixTimeNanoseconds);
+  llvm::Error
+  markTerminal(const WorkUnitKey &key, JournalWorkUnitStatus status,
+               std::uint64_t activeWallTimeNanoseconds,
+               std::uint64_t terminalUnixTimeNanoseconds,
+               llvm::ArrayRef<ArtifactRootReference> finalizedOutputs = {});
+
+  llvm::Error requestGracefulStop();
+  llvm::Error beginResume();
+  bool gracefulStopRequested() const;
+  llvm::Error flush() const;
+
+private:
+  /// Retains a validated Generate report only for the lifetime of this open
+  /// journal. It is deliberately absent from the canonical snapshot because
+  /// InvocationManifest is the sole persistent owner of Generate reports.
+  llvm::Error rememberTransientGenerateResult(
+      const WorkUnitKey &key, const CandidateGeneratorProviderResult &result);
+  llvm::Expected<std::optional<CandidateGeneratorProviderResult>>
+  findTransientGenerateResult(const WorkUnitKey &key) const;
+
+  struct State;
+  explicit ExecutionJournal(std::shared_ptr<State> state)
+      : state_(std::move(state)) {}
+
+  std::shared_ptr<State> state_;
+
+  friend class detail::ExecutionJournalAccess;
+};
+
+llvm::Expected<ExecutionJournal>
+openExecutionJournal(llvm::StringRef localRunRoot, const DseRunClosure &closure,
+                     const ResolvedDseConfigView &view);
+
+} // namespace loom::dse
+
+#endif // LOOM_DSE_EXECUTIONJOURNAL_H

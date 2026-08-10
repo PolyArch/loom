@@ -1,6 +1,7 @@
 #include "DSE/Plan.h"
 
 #include "Common/ArtifactLocalReference.h"
+#include "DSE/PlanExecutor.h"
 #include "DSE/ResolvedConfigView.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -328,7 +329,7 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
     llvm::ArrayRef<EvidenceObligationTemplate> evidenceObligations,
     const QualityGatePolicy &qualityGate, const ObjectiveProgram &objectives,
     const TopKSelection &selection, const ArtifactStore &store,
-    const BlobStore &blobs) {
+    const BlobStore &blobs, PromotionEvidenceExecutor *executor) {
   std::vector<std::uint32_t> objectiveOrdinals;
   objectiveOrdinals.reserve(promote.objectiveObligations().size());
   for (EvidenceObligationTemplateRef ref : promote.objectiveObligations())
@@ -337,7 +338,7 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
   auto objectiveAcquisition = invokePromotionAcquisition(
       inputs, promote.acquisitionBinding(), evidenceObligations,
       {candidateSet.candidates(), promote.objectiveObligations()}, store,
-      blobs);
+      blobs, executor);
   if (!objectiveAcquisition)
     return objectiveAcquisition.takeError();
   if (auto *incomplete =
@@ -400,7 +401,7 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
     if (!deferredObligations.empty()) {
       auto acquired = invokePromotionAcquisition(
           inputs, promote.acquisitionBinding(), evidenceObligations,
-          {candidateDomain, deferredObligations}, store, blobs);
+          {candidateDomain, deferredObligations}, store, blobs, executor);
       if (!acquired)
         return acquired.takeError();
       deferred = std::move(*acquired);
@@ -963,8 +964,10 @@ llvm::StringRef toString(const DsePlanIncompleteReason &reason) {
 }
 
 llvm::Expected<DsePlanExecutionOutcome>
-executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
-               const BlobStore &blobs) {
+detail::executeDsePlanWithWorkExecutor(const ResolvedDseConfigView &view,
+                                       const ArtifactStore &store,
+                                       const BlobStore &blobs,
+                                       detail::DsePlanWorkExecutor *executor) {
   const ResolvedDsePlan &plan = view.plan();
   CompletedDsePlanExecution completed =
       DsePlanExecutionBuilder::createCompleted(view.digest());
@@ -972,6 +975,84 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
   for (std::size_t nodeIndex = 0; nodeIndex < plan.nodes().size();
        ++nodeIndex) {
     const ResolvedDsePlanNode &node = plan.nodes()[nodeIndex];
+    if (executor && std::holds_alternative<ResolvedGeneratePlanNode>(node)) {
+      std::vector<detail::DseGenerateExecutionTask> tasks;
+      for (std::size_t candidateIndex = nodeIndex;
+           candidateIndex < plan.nodes().size(); ++candidateIndex) {
+        const auto *candidate = std::get_if<ResolvedGeneratePlanNode>(
+            &plan.nodes()[candidateIndex]);
+        if (!candidate)
+          break;
+        const bool dependsOnCurrentFrontier = llvm::any_of(
+            candidate->inputBindings(), [&](const PlanInputBinding &binding) {
+              const auto *output = std::get_if<PlanOutputRef>(&binding);
+              return output && output->producerNodeOrdinal >= nodeIndex;
+            });
+        if (dependsOnCurrentFrontier)
+          break;
+
+        std::vector<CandidateGeneratorInputBinding> inputs;
+        inputs.reserve(candidate->inputBindings().size());
+        for (std::size_t inputIndex = 0;
+             inputIndex < candidate->inputBindings().size(); ++inputIndex) {
+          auto artifacts = resolveRuntimeInput(
+              candidate->inputBindings()[inputIndex], completed);
+          if (!artifacts)
+            return artifacts.takeError();
+          inputs.push_back({CandidateGeneratorInputSlotRef(
+                                static_cast<std::uint32_t>(inputIndex)),
+                            std::move(*artifacts)});
+        }
+        auto binding = ResolvedCandidateGeneratorBinding::get(
+            candidate->descriptorRef(), candidate->canonicalConfigBytes(),
+            candidate->configDigest());
+        if (!binding)
+          return binding.takeError();
+        tasks.push_back({static_cast<std::uint64_t>(candidateIndex),
+                         std::move(inputs), std::move(*binding)});
+      }
+      if (tasks.empty())
+        return invalid("Generate frontier did not contain its first node");
+      auto results = executor->executeGenerateBatch(tasks, store, blobs);
+      if (!results)
+        return results.takeError();
+      if (results->size() != tasks.size())
+        return invalid("Generate frontier result width changed");
+      for (std::size_t taskIndex = 0; taskIndex != tasks.size(); ++taskIndex) {
+        detail::DseGenerateExecutionTask &task = tasks[taskIndex];
+        CandidateGeneratorProviderResult &result = (*results)[taskIndex];
+        if (auto *incomplete =
+                std::get_if<IncompleteCandidateGeneratorResult>(
+                    &result.outcome)) {
+          GenerateInvocationRecord invocationRecord{
+              task.planNodeOrdinal, std::move(task.inputs),
+              std::move(task.binding),
+              std::move(incomplete->retainedOutputBindings),
+              std::move(incomplete->lineageEdges)};
+          GenerateInvocationWorkSummary workSummary{
+              task.planNodeOrdinal, std::move(result.workSummary)};
+          return DsePlanExecutionOutcome{
+              DsePlanExecutionBuilder::incompleteGenerate(
+                  task.planNodeOrdinal, incomplete->reason,
+                  std::move(completed), std::move(invocationRecord),
+                  std::move(workSummary))};
+        }
+        auto &generated =
+            std::get<CompletedCandidateGeneratorResult>(result.outcome);
+        GenerateInvocationRecord invocationRecord{
+            task.planNodeOrdinal, std::move(task.inputs),
+            std::move(task.binding), std::move(generated.outputBindings),
+            std::move(generated.lineageEdges)};
+        GenerateInvocationWorkSummary workSummary{
+            task.planNodeOrdinal, std::move(result.workSummary)};
+        if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
+                completed, std::move(invocationRecord),
+                std::move(workSummary)))
+          return std::move(error);
+      }
+      nodeIndex += tasks.size() - 1;
+      continue;
+    }
     if (const auto *generate = std::get_if<ResolvedGeneratePlanNode>(&node)) {
       std::vector<CandidateGeneratorInputBinding> inputs;
       inputs.reserve(generate->inputBindings().size());
@@ -990,7 +1071,12 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
           generate->configDigest());
       if (!binding)
         return binding.takeError();
-      auto result = invokeCandidateGenerator(inputs, *binding, store, blobs);
+      auto result = executor
+                        ? executor->executeGenerate(
+                              static_cast<std::uint64_t>(nodeIndex), inputs,
+                              *binding, store, blobs)
+                        : invokeCandidateGenerator(inputs, *binding, store,
+                                                   blobs);
       if (!result)
         return result.takeError();
       if (auto *incomplete =
@@ -1057,6 +1143,18 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
         plan.resolve(promote.qualityGateRef());
     if (!qualityGate)
       return invalid("resolved Promote node lost its quality gate");
+    if (executor) {
+      if (llvm::Error error = executor->beginPromotion(
+              static_cast<std::uint64_t>(nodeIndex), candidateSet->candidates(),
+              promote.acquisitionBinding().evidenceObligations()))
+        return std::move(error);
+      if (executor->shouldStopBeforeDispatch())
+        return DsePlanExecutionOutcome{
+            DsePlanExecutionBuilder::incompletePromote(
+                static_cast<std::uint64_t>(nodeIndex),
+                IncompleteSelectionReason::MissingEvidence,
+                std::move(completed), {{}, {}})};
+    }
 
     if (const auto *topK = std::get_if<TopKSelection>(&promote.selection());
         topK && !promote.objectiveObligations().empty()) {
@@ -1065,7 +1163,8 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
       auto staged =
           executeStagedTopK(promote, *descriptor, inputs, *candidateSet,
                             view.evidenceObligationTemplates(), *qualityGate,
-                            *plan.objectiveProgram(), *topK, store, blobs);
+                            *plan.objectiveProgram(), *topK, store, blobs,
+                            executor);
       if (!staged)
         return staged.takeError();
       if (auto *incomplete = std::get_if<IncompleteStagedTopK>(&*staged))
@@ -1085,7 +1184,7 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
         view.evidenceObligationTemplates(),
         {candidateSet->candidates(),
          promote.acquisitionBinding().evidenceObligations()},
-        store, blobs);
+        store, blobs, executor);
     if (!acquisition)
       return acquisition.takeError();
     if (auto *incomplete =
@@ -1119,6 +1218,12 @@ executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
     }
   }
   return DsePlanExecutionOutcome{std::move(completed)};
+}
+
+llvm::Expected<DsePlanExecutionOutcome>
+executeDsePlan(const ResolvedDseConfigView &view, const ArtifactStore &store,
+               const BlobStore &blobs) {
+  return detail::executeDsePlanWithWorkExecutor(view, store, blobs, nullptr);
 }
 
 } // namespace loom::dse

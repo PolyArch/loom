@@ -240,6 +240,18 @@ finalizeExternalToolInvocationBundle(
 llvm::Expected<int> executeExternalToolInvocationBundle(
     const PreparedExternalToolInvocation &prepared);
 
+/// Mechanically derives the execution-resource identity of one exact resolved
+/// tool and runtime binding. Invocation inputs, outputs, paths, and attempt
+/// identity are excluded so independent users of the same binding contend on
+/// the same scheduler capacity.
+llvm::Expected<BlobDigest> deriveExternalToolExecutionBindingDigest(
+    const ResolvedToolBinding &tool, const InvocationRuntimeBinding &runtime);
+
+/// Verifies one prepared manifest and derives its exact execution-resource
+/// identity through the same binding codec.
+llvm::Expected<BlobDigest> deriveExternalToolExecutionBindingDigest(
+    const PreparedExternalToolInvocation &prepared);
+
 /// Diagnostic reader for the completion record of one prepared invocation:
 /// the prepared manifest is verified through the shared integrity helper and
 /// the record is parsed from the same open bundle root. It is a raw

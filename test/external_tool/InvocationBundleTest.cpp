@@ -193,6 +193,42 @@ importExpectation(const ExternalToolInvocationBundleSpec &spec) {
   return expectation;
 }
 
+void executionResourceBindingIsExact(const std::filesystem::path &root,
+                                     const std::filesystem::path &tool) {
+  ExternalToolInvocationBundleSpec spec =
+      baseSpec(tool, "outputs/resource-result.txt");
+  const loom::BlobDigest host = take(
+      __func__, deriveExternalToolExecutionBindingDigest(spec.tool,
+                                                         spec.runtime));
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(
+                    (root / "resource-binding").string(), spec));
+  require(__func__,
+          take(__func__, deriveExternalToolExecutionBindingDigest(prepared)) ==
+              host,
+          "prepared and resolved binding projections differ");
+
+  InvocationRuntimeBinding provenanceOnly = spec.runtime;
+  provenanceOnly.rejectedCompositions = {"unselected alternative"};
+  require(__func__,
+          take(__func__, deriveExternalToolExecutionBindingDigest(
+                             spec.tool, provenanceOnly)) == host,
+          "rejected fallback provenance changed the execution resource");
+
+  ResolvedToolBinding changedTool = spec.tool;
+  changedTool.version = "Fake EDA 2.0";
+  require(__func__,
+          take(__func__, deriveExternalToolExecutionBindingDigest(
+                             changedTool, spec.runtime)) != host,
+          "a changed exact tool binding retained the same resource key");
+
+  InvocationRuntimeBinding invalid = spec.runtime;
+  invalid.kind = static_cast<InvocationRuntimeKind>(99);
+  requireFailureContains(
+      __func__, deriveExternalToolExecutionBindingDigest(spec.tool, invalid),
+      "runtime binding kind");
+}
+
 void deterministicHostBundleExecutes(const std::filesystem::path &root,
                                      const std::filesystem::path &tool) {
   const std::filesystem::path first = root / "bundle-a";
@@ -1360,6 +1396,7 @@ int main(int argc, char **argv) {
           ::setenv("LOOM_BUNDLE_TEST_LICENSE", "license-secret-value", 1) == 0,
           "could not set test environment");
   resultImporterIdentityUsesCanonicalFraming();
+  executionResourceBindingIsExact(root, tool);
   deterministicHostBundleExecutes(root, tool);
   containerBundleExecutes(root, tool, container);
   externalFileIsRevalidated(root, tool);

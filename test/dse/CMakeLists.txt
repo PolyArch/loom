@@ -14,6 +14,24 @@ add_executable(loom-dse-plan-test
   PlanTest.cpp
 )
 
+add_executable(loom-dse-execution-journal-test
+  ExecutionJournalTest.cpp
+)
+
+add_executable(loom-dse-plan-executor-test
+  PlanExecutionTestSupport.cpp
+  PlanExecutorTest.cpp
+)
+
+add_executable(loom-dse-site-scheduler-test
+  SiteSchedulerTest.cpp
+)
+
+add_executable(loom-dse-campaign-runner-test
+  CampaignRunnerTest.cpp
+  PlanExecutionTestSupport.cpp
+)
+
 add_executable(loom-dse-invocation-manifest-test
   InvocationManifestTest.cpp
 )
@@ -63,6 +81,26 @@ target_link_libraries(loom-dse-production-candidate-generator-registration-test 
 )
 
 target_link_libraries(loom-dse-plan-test PRIVATE
+  LoomDSE
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-execution-journal-test PRIVATE
+  LoomDSE
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-plan-executor-test PRIVATE
+  LoomDSE
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-site-scheduler-test PRIVATE
+  LoomDSE
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-campaign-runner-test PRIVATE
   LoomDSE
   LLVMSupport
 )
