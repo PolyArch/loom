@@ -62,6 +62,11 @@ template <typename T> bool isRejected(llvm::Expected<T> value) {
   llvm::consumeError(value.takeError());
   return true;
 }
+template <typename T> T take(const char *test, llvm::Expected<T> value) {
+  if (!value)
+    fail(test, llvm::toString(value.takeError()));
+  return std::move(*value);
+}
 bool errored(llvm::Error error) {
   bool failed = static_cast<bool>(error);
   llvm::consumeError(std::move(error));
@@ -638,9 +643,11 @@ void rootedLaunchTokenEdge() {
 module {
   dataflow.graph private @g(%ctrl: none, %x: i32, %mem: memref<4xi32>) -> i32 attributes {input_segments = array<i32: 1, 0, 1>, result_segments = array<i32: 1, 0, 0>} {
     %y = arith.addi %x, %x : i32
+    %selector = arith.cmpi eq, %x, %y : i32
+    %selected = dataflow.mux %selector, %x, %y : (i1, i32, i32) -> i32
     %idx = arith.constant 0 : index
     %data, %done = dataflow.load %mem[%idx] %ctrl : memref<4xi32>
-    %r:2 = dataflow.sync %done, %y : (none, i32) -> (none, i32)
+    %r:2 = dataflow.sync %done, %selected : (none, i32) -> (none, i32)
     dataflow.graph.return values(%r#1 : i32) streams() memories() complete(%r#0 : none)
   }
   dataflow.thread private @t domain(#dataflow.thread_domain<dense>)(%x: i32, %mem: memref<4xi32>) ctrl (%ctrl: none) {
@@ -685,25 +692,26 @@ module {
 
   // Token endpoints and the software edge relation.
   ActorRef add = actorByName(test, view, "arith.addi").ref;
+  ActorRef mux = actorByName(test, view, "dataflow.mux").ref;
   ActorRef sync = actorByName(test, view, "dataflow.sync").ref;
   llvm::Expected<llvm::ArrayRef<CanonicalGraphConsumerEndpointRef>> consumers =
       view.graphConsumers(
           CanonicalGraphProducerEndpointRef{ActorTokenResultRef{add, 0}});
   require(test, static_cast<bool>(consumers) && !consumers->empty(),
           "the adder's result has consumers");
-  bool feedsSync = false;
+  bool feedsMux = false;
   for (const CanonicalGraphConsumerEndpointRef &c : *consumers)
     if (const auto *o = std::get_if<ActorTokenOperandRef>(&c))
-      feedsSync |= o->actor.entity == sync.entity;
-  require(test, feedsSync, "the adder feeds the synchronizer");
+      feedsMux |= o->actor.entity == mux.entity;
+  require(test, feedsMux, "the adder feeds the selector");
   llvm::Expected<CanonicalGraphProducerEndpointRef> producer =
       view.graphProducer(
           CanonicalGraphConsumerEndpointRef{ActorTokenOperandRef{sync, 1}});
   require(test,
           producer && std::holds_alternative<ActorTokenResultRef>(*producer) &&
               std::get<ActorTokenResultRef>(*producer).actor.entity ==
-                  add.entity,
-          "the sync data input is produced by the adder");
+                  mux.entity,
+          "the sync data input is produced by the selector");
   // Token endpoints reject a memory-capability operand, a wrong-kind actor, and
   // an out-of-range ordinal.
   ActorRef load = actorByName(test, view, "dataflow.load").ref;
@@ -721,6 +729,84 @@ module {
           errored(view.validate(CanonicalGraphConsumerEndpointRef{
               ActorTokenOperandRef{sync, 4096}})),
           "an out-of-range actor operand is rejected");
+
+  // Rooted endpoint events reuse exact transfer terminals and actor handshake
+  // cases. The mux result is produced by either selected-lane case, while one
+  // data operand is consumed only by its own lane case.
+  RootedGraphLaunchRef rooted{r0, sg};
+  GraphRef graph = take(test, view.resolve(rooted));
+  auto startEvents = take(
+      test, view.projectRootedGraphEndpointEventFamilies(
+                rooted, CanonicalGraphProducerEndpointRef{
+                            GraphIngressTokenRef{GraphStartTokenRef{graph}}}));
+  EventFamilyKey expectedStart =
+      StaticTransferEventRef{ConsumedTransferEventRef{
+          GraphLaunchBoundarySinkRef{GraphLaunchBoundaryTransferRef{
+              GraphLaunchStartTransferRef{rooted}}}}};
+  require(test, startEvents == std::vector<EventFamilyKey>{expectedStart},
+          "graph start projects to the consumed launch boundary");
+
+  auto inputEvents = take(
+      test, view.projectRootedGraphEndpointEventFamilies(
+                rooted, CanonicalGraphProducerEndpointRef{GraphIngressTokenRef{
+                            GraphValueInputTokenRef{graph, 0}}}));
+  EventFamilyKey expectedInput =
+      StaticTransferEventRef{ConsumedTransferEventRef{
+          GraphLaunchBoundarySinkRef{GraphLaunchBoundaryTransferRef{
+              GraphLaunchValueInputTransferRef{rooted, 0}}}}};
+  require(test, inputEvents == std::vector<EventFamilyKey>{expectedInput},
+          "graph value input projects to the consumed launch boundary");
+
+  auto muxResultEvents =
+      take(test, view.projectRootedGraphEndpointEventFamilies(
+                     rooted, CanonicalGraphProducerEndpointRef{
+                                 ActorTokenResultRef{mux, 0}}));
+  require(
+      test,
+      muxResultEvents ==
+          std::vector<EventFamilyKey>{ContextualActorTransitionEventRef{
+                                          ContextualActorRef{rooted, mux}, 0},
+                                      ContextualActorTransitionEventRef{
+                                          ContextualActorRef{rooted, mux}, 1}},
+      "a mux result projects to both mutually exclusive producer cases");
+
+  auto selectorEvents =
+      take(test, view.projectRootedGraphEndpointEventFamilies(
+                     rooted, CanonicalGraphConsumerEndpointRef{
+                                 ActorTokenOperandRef{mux, 0}}));
+  require(test, selectorEvents == muxResultEvents,
+          "the mux selector is consumed by both transition cases");
+  auto firstLaneEvents =
+      take(test, view.projectRootedGraphEndpointEventFamilies(
+                     rooted, CanonicalGraphConsumerEndpointRef{
+                                 ActorTokenOperandRef{mux, 1}}));
+  require(test,
+          firstLaneEvents ==
+              std::vector<EventFamilyKey>{ContextualActorTransitionEventRef{
+                  ContextualActorRef{rooted, mux}, 0}},
+          "one mux data lane projects only to its selected transition case");
+
+  auto valueOutputEvents = take(
+      test, view.projectRootedGraphEndpointEventFamilies(
+                rooted, CanonicalGraphConsumerEndpointRef{GraphEgressTokenRef{
+                            GraphValueOutputTokenRef{graph, 0}}}));
+  EventFamilyKey expectedOutput =
+      StaticTransferEventRef{ProducedTransferEventRef{
+          GraphLaunchBoundarySourceRef{GraphLaunchBoundaryTransferRef{
+              GraphLaunchValueResultTransferRef{rooted, 0}}}}};
+  require(test,
+          valueOutputEvents == std::vector<EventFamilyKey>{expectedOutput},
+          "graph value output projects to the produced launch boundary");
+
+  auto completionEvents = take(
+      test, view.projectRootedGraphEndpointEventFamilies(
+                rooted, CanonicalGraphConsumerEndpointRef{GraphEgressTokenRef{
+                            GraphCompletionFrontierTokenRef{graph, 0}}}));
+  require(test,
+          completionEvents ==
+              std::vector<EventFamilyKey>{ContextualActorTransitionEventRef{
+                  ContextualActorRef{rooted, sync}, 0}},
+          "one completion frontier follows its producer instead of graph done");
 }
 
 // (e) source_map channel multicast, terminals, events, and foreign rejection
@@ -730,27 +816,42 @@ module {
 const char *multicastProgram() {
   return R"mlir(
 module {
-  dataflow.graph private @gc(%start: none, %input: i32) -> () attributes {input_segments = array<i32: 0, 1, 0>, result_segments = array<i32: 0, 0, 0>} {
-    dataflow.graph.return %start : none
+  dataflow.graph private @gc(%start: none, %input: i32) -> i32 attributes {input_segments = array<i32: 0, 1, 0>, result_segments = array<i32: 0, 1, 0>} {
+    %init = dataflow.constant %start {const_value = 0 : i32} : i32
+    %limit = dataflow.constant %start {const_value = 8 : i32} : i32
+    %step = dataflow.constant %start {const_value = 1 : i32} : i32
+    %item, %phase = dataflow.stream %init, %limit, %step
+        step add while slt : i32
+    %units = dataflow.invariant %phase, %start : none
+    %close:2 = dataflow.demux %phase, %units
+        : (i1, none) -> (none, none)
+    dataflow.graph.return values() streams(%item : i32) memories()
+        complete(%close#0 : none)
   }
   dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(%ch: !dataflow.channel<i32>) ctrl (%c: none) {
     %v = arith.constant 7 : i32
     dataflow.channel.send %ch, %v : !dataflow.channel<i32>
     dataflow.thread.yield
   }
-  dataflow.thread private @streamconsumer domain(#dataflow.thread_domain<dense>)(%ch: !dataflow.channel<i32>) ctrl (%ctrl: none) {
-    %done = dataflow.graph.launch @gc deps(%ctrl) values() stream_inputs(%ch source_map affine_map<() -> ()>) memories() stream_outputs() : (none, !dataflow.channel<i32>) -> none
+  dataflow.thread private @streamconsumer domain(#dataflow.thread_domain<dense>)(%ch: !dataflow.channel<i32>, %out: !dataflow.channel<i32>) ctrl (%ctrl: none) {
+    %done = dataflow.graph.launch @gc deps(%ctrl) values() stream_inputs(%ch source_map affine_map<() -> ()>) memories() stream_outputs(%out) : (none, !dataflow.channel<i32>, !dataflow.channel<i32>) -> none
     dataflow.thread.yield %done : none
   }
   dataflow.thread private @directconsumer domain(#dataflow.thread_domain<dense>)(%ch: !dataflow.channel<i32>) ctrl (%c: none) {
     %m = dataflow.channel.receive %ch : !dataflow.channel<i32>
     dataflow.thread.yield
   }
+  dataflow.thread private @relayconsumer domain(#dataflow.thread_domain<dense>)(%ch: !dataflow.channel<i32>) ctrl (%c: none) {
+    %m = dataflow.channel.receive %ch : !dataflow.channel<i32>
+    dataflow.thread.yield
+  }
   func.func private @host() {
     %ch = dataflow.channel.create : !dataflow.channel<i32>
+    %out = dataflow.channel.create : !dataflow.channel<i32>
     %p = dataflow.thread.launch @producer(%ch) : (!dataflow.channel<i32>) -> !dataflow.thread_token
-    %c1 = dataflow.thread.launch @streamconsumer(%ch) : (!dataflow.channel<i32>) -> !dataflow.thread_token
+    %c1 = dataflow.thread.launch @streamconsumer(%ch, %out) : (!dataflow.channel<i32>, !dataflow.channel<i32>) -> !dataflow.thread_token
     %c2 = dataflow.thread.launch @directconsumer(%ch) : (!dataflow.channel<i32>) -> !dataflow.thread_token
+    %c3 = dataflow.thread.launch @relayconsumer(%out) : (!dataflow.channel<i32>) -> !dataflow.thread_token
     return
   }
 }
@@ -831,6 +932,41 @@ void channelMulticastTerminals() {
       0}};
   require(test, isRejected(view.channelConsumers(foreign)),
           "a foreign-artifact channel producer is rejected");
+
+  StaticGraphLaunchRef staticLaunch = view.staticGraphLaunches().front().ref;
+  std::optional<RootedGraphLaunchRef> rooted;
+  for (const CanonicalRootThreadLaunchView &root : view.rootThreadLaunches()) {
+    RootedGraphLaunchRef candidate{root.ref, staticLaunch};
+    auto graph = view.resolve(candidate);
+    if (graph)
+      rooted = candidate;
+    else
+      llvm::consumeError(graph.takeError());
+  }
+  require(test, rooted.has_value(), "the stream relay has one rooted launch");
+  GraphRef graph = take(test, view.resolve(*rooted));
+  auto streamInputEvents = take(
+      test, view.projectRootedGraphEndpointEventFamilies(
+                *rooted, CanonicalGraphProducerEndpointRef{GraphIngressTokenRef{
+                             GraphStreamInputTokenRef{graph, 0}}}));
+  EventFamilyKey expectedStreamInput = StaticTransferEventRef{
+      ConsumedTransferEventRef{ChannelConsumerTerminalRef{
+          ChannelConsumerRef{GraphStreamInputConsumerRef{*rooted, 0}}}}};
+  require(test,
+          streamInputEvents == std::vector<EventFamilyKey>{expectedStreamInput},
+          "graph stream input projects to the consumed channel terminal");
+
+  auto streamOutputEvents = take(
+      test, view.projectRootedGraphEndpointEventFamilies(
+                *rooted, CanonicalGraphConsumerEndpointRef{GraphEgressTokenRef{
+                             GraphStreamOutputTokenRef{graph, 0}}}));
+  EventFamilyKey expectedStreamOutput = StaticTransferEventRef{
+      ProducedTransferEventRef{ChannelProducerTerminalRef{
+          ChannelProducerRef{GraphStreamOutputProducerRef{*rooted, 0}}}}};
+  require(test,
+          streamOutputEvents ==
+              std::vector<EventFamilyKey>{expectedStreamOutput},
+          "graph stream output projects to the produced channel terminal");
 }
 
 // (f) Logical-memory view, exposure, and service members

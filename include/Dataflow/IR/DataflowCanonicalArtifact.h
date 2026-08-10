@@ -248,6 +248,20 @@ public:
   /// range into the prebuilt edge inventory). Both sides are token-plane only.
   llvm::Expected<CanonicalGraphProducerEndpointRef>
   graphProducer(const CanonicalGraphConsumerEndpointRef &consumer) const;
+
+  /// Rebase one graph-local endpoint event into the exact rooted launch. An
+  /// actor port may participate in multiple mutually exclusive handshake
+  /// cases, so the result is a canonical nonempty alternatives set rather
+  /// than one synthesized aggregate event.
+  llvm::Expected<std::vector<EventFamilyKey>>
+  projectRootedGraphEndpointEventFamilies(
+      RootedGraphLaunchRef launch,
+      const CanonicalGraphProducerEndpointRef &producer) const;
+  llvm::Expected<std::vector<EventFamilyKey>>
+  projectRootedGraphEndpointEventFamilies(
+      RootedGraphLaunchRef launch,
+      const CanonicalGraphConsumerEndpointRef &consumer) const;
+
   llvm::Expected<ActivityDefinedness>
   activityDefinedness(const CanonicalGraphProducerEndpointRef &producer) const;
   llvm::Expected<llvm::ArrayRef<CanonicalGraphConsumerEndpointRef>>

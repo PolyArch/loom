@@ -18,6 +18,7 @@
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Dataflow/IR/DataflowInterfaces.h"
@@ -1242,6 +1243,163 @@ CanonicalDataflowProgramView::graphProducer(
   return CanonicalGraphProducerEndpointRef{ActorTokenResultRef{
       ActorRef{identity_, ActorId(actorId->second)},
       static_cast<StructuralOrdinal>(cast<OpResult>(value).getResultNumber())}};
+}
+
+namespace {
+
+llvm::Expected<std::vector<EventFamilyKey>>
+canonicalEndpointEvents(const CanonicalDataflowProgramView &view,
+                        std::vector<EventFamilyKey> events) {
+  if (events.empty())
+    return invalid(
+        "canonical dataflow: rooted endpoint event projection is empty");
+
+  std::vector<std::pair<std::vector<std::uint8_t>, EventFamilyKey>> keyed;
+  keyed.reserve(events.size());
+  for (EventFamilyKey &event : events) {
+    if (llvm::Error error = view.validate(event))
+      return std::move(error);
+    auto bytes = encodeDataflowReference(view.identity(), event);
+    if (!bytes)
+      return bytes.takeError();
+    keyed.emplace_back(std::move(*bytes), std::move(event));
+  }
+  llvm::sort(keyed, [](const auto &lhs, const auto &rhs) {
+    return lhs.first < rhs.first;
+  });
+  for (auto pair : llvm::zip(keyed, llvm::drop_begin(keyed)))
+    if (std::get<0>(pair).first == std::get<1>(pair).first)
+      return invalid(
+          "canonical dataflow: rooted endpoint event projection has a "
+          "duplicate event");
+
+  events.clear();
+  events.reserve(keyed.size());
+  for (auto &entry : keyed)
+    events.push_back(std::move(entry.second));
+  return events;
+}
+
+} // namespace
+
+llvm::Expected<std::vector<EventFamilyKey>>
+CanonicalDataflowProgramView::projectRootedGraphEndpointEventFamilies(
+    RootedGraphLaunchRef launch,
+    const CanonicalGraphProducerEndpointRef &producer) const {
+  auto launchedGraph = resolve(launch);
+  if (!launchedGraph)
+    return launchedGraph.takeError();
+  if (llvm::Error error = validate(producer))
+    return std::move(error);
+
+  std::vector<EventFamilyKey> events;
+  if (const auto *result = std::get_if<ActorTokenResultRef>(&producer)) {
+    auto actor = resolve(result->actor);
+    if (!actor)
+      return actor.takeError();
+    if (actor->graph != *launchedGraph)
+      return invalid("canonical dataflow: rooted producer endpoint belongs to "
+                     "a different graph");
+    auto projection = projectRegisteredActorSchemaProjection(actor->op);
+    if (!projection)
+      return projection.takeError();
+    auto cases = semantics::projectActorHandshakeCases(
+        projection->schema, actor->op->getNumOperands(),
+        actor->op->getNumResults());
+    if (!cases)
+      return cases.takeError();
+    for (const semantics::ActorHandshakeCase &candidate : *cases)
+      if (llvm::is_contained(candidate.activeResults, result->ordinal))
+        events.emplace_back(ContextualActorTransitionEventRef{
+            ContextualActorRef{launch, result->actor}, candidate.ordinal});
+    return canonicalEndpointEvents(*this, std::move(events));
+  }
+
+  const GraphIngressTokenRef &ingress =
+      std::get<GraphIngressTokenRef>(producer);
+  GraphRef ingressGraph =
+      std::visit([](const auto &endpoint) { return endpoint.graph; }, ingress);
+  if (ingressGraph != *launchedGraph)
+    return invalid("canonical dataflow: rooted producer endpoint belongs to a "
+                   "different graph");
+  std::visit(
+      Overloaded{
+          [&](const GraphStartTokenRef &) {
+            events.emplace_back(StaticTransferEventRef{ConsumedTransferEventRef{
+                GraphLaunchBoundarySinkRef{GraphLaunchBoundaryTransferRef{
+                    GraphLaunchStartTransferRef{launch}}}}});
+          },
+          [&](const GraphValueInputTokenRef &input) {
+            events.emplace_back(StaticTransferEventRef{ConsumedTransferEventRef{
+                GraphLaunchBoundarySinkRef{GraphLaunchBoundaryTransferRef{
+                    GraphLaunchValueInputTransferRef{launch,
+                                                     input.ordinal}}}}});
+          },
+          [&](const GraphStreamInputTokenRef &input) {
+            events.emplace_back(StaticTransferEventRef{ConsumedTransferEventRef{
+                ChannelConsumerTerminalRef{ChannelConsumerRef{
+                    GraphStreamInputConsumerRef{launch, input.ordinal}}}}});
+          }},
+      ingress);
+  return canonicalEndpointEvents(*this, std::move(events));
+}
+
+llvm::Expected<std::vector<EventFamilyKey>>
+CanonicalDataflowProgramView::projectRootedGraphEndpointEventFamilies(
+    RootedGraphLaunchRef launch,
+    const CanonicalGraphConsumerEndpointRef &consumer) const {
+  auto launchedGraph = resolve(launch);
+  if (!launchedGraph)
+    return launchedGraph.takeError();
+  if (llvm::Error error = validate(consumer))
+    return std::move(error);
+
+  std::vector<EventFamilyKey> events;
+  if (const auto *operand = std::get_if<ActorTokenOperandRef>(&consumer)) {
+    auto actor = resolve(operand->actor);
+    if (!actor)
+      return actor.takeError();
+    if (actor->graph != *launchedGraph)
+      return invalid("canonical dataflow: rooted consumer endpoint belongs to "
+                     "a different graph");
+    auto projection = projectRegisteredActorSchemaProjection(actor->op);
+    if (!projection)
+      return projection.takeError();
+    auto cases = semantics::projectActorHandshakeCases(
+        projection->schema, actor->op->getNumOperands(),
+        actor->op->getNumResults());
+    if (!cases)
+      return cases.takeError();
+    for (const semantics::ActorHandshakeCase &candidate : *cases)
+      if (llvm::is_contained(candidate.consumedInputs, operand->ordinal))
+        events.emplace_back(ContextualActorTransitionEventRef{
+            ContextualActorRef{launch, operand->actor}, candidate.ordinal});
+    return canonicalEndpointEvents(*this, std::move(events));
+  }
+
+  const GraphEgressTokenRef &egress = std::get<GraphEgressTokenRef>(consumer);
+  GraphRef egressGraph =
+      std::visit([](const auto &endpoint) { return endpoint.graph; }, egress);
+  if (egressGraph != *launchedGraph)
+    return invalid("canonical dataflow: rooted consumer endpoint belongs to a "
+                   "different graph");
+  if (const auto *output = std::get_if<GraphValueOutputTokenRef>(&egress)) {
+    events.emplace_back(StaticTransferEventRef{ProducedTransferEventRef{
+        GraphLaunchBoundarySourceRef{GraphLaunchBoundaryTransferRef{
+            GraphLaunchValueResultTransferRef{launch, output->ordinal}}}}});
+    return canonicalEndpointEvents(*this, std::move(events));
+  }
+  if (const auto *output = std::get_if<GraphStreamOutputTokenRef>(&egress)) {
+    events.emplace_back(StaticTransferEventRef{
+        ProducedTransferEventRef{ChannelProducerTerminalRef{ChannelProducerRef{
+            GraphStreamOutputProducerRef{launch, output->ordinal}}}}});
+    return canonicalEndpointEvents(*this, std::move(events));
+  }
+
+  auto producer = graphProducer(consumer);
+  if (!producer)
+    return producer.takeError();
+  return projectRootedGraphEndpointEventFamilies(launch, *producer);
 }
 
 //===----------------------------------------------------------------------===//
