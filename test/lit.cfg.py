@@ -210,6 +210,18 @@ llvm_config.add_tool_substitutions(tools, tool_dirs)
 # substitution is substring-based, so match their complete placeholders.
 _loom_cc_dir = os.path.join(config.loom_obj_root, "bin")
 config.substitutions.insert(
+    0,
+    (
+        "%loom-runtime-platform-binding-test\\b",
+        os.path.join(
+            config.loom_obj_root,
+            "test",
+            "runtime",
+            "loom-runtime-platform-binding-test",
+        ),
+    ),
+)
+config.substitutions.insert(
     0, ("%loom-c\\+\\+", os.path.join(_loom_cc_dir, "loom-c++")))
 config.substitutions.insert(
     1, ("%loom-cc\\b", os.path.join(_loom_cc_dir, "loom-cc")))

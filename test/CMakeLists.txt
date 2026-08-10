@@ -45,6 +45,7 @@ add_subdirectory(pnr)
 add_subdirectory(fabric)
 add_subdirectory(simulator)
 add_subdirectory(hardware)
+add_subdirectory(runtime)
 
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
@@ -214,6 +215,7 @@ set(LOOM_TEST_DEPENDS
   loom-pnr-spatial-action-proposal-test
   loom-pnr-cp-sat-exact-protocol-test
   loom-relocatable-payload-test
+  loom-runtime-platform-binding-test
   loom-simulator-atomic-order-test
   loom-simulator-cgra-event-queue-test
   loom-simulator-cgra-compute-runtime-test
