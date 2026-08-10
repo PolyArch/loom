@@ -660,7 +660,7 @@ buildSpatialPeModule(mlir::OpBuilder &builder, mlir::Location location,
                      llvm::ArrayRef<FuModule> fuModules,
                      fabric::FabricPeOccurrenceRef pe) {
   if (fabric.peSchedule(pe) != ::fabric::Schedule::Spatial)
-    return unsupported("Temporal PE hierarchy lowering is not implemented");
+    return invalid("Spatial PE lowering received a non-Spatial PE");
   auto endpoints = deriveEndpointPlans(
       builder, fabric, fabric::FabricTransportEndpointOwnerRef::of(pe));
   if (!endpoints)
