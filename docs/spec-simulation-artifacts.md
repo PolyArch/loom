@@ -575,8 +575,9 @@ TerminalWitnessRef {
 Simulation Artifacts owns this occurrence payload codec. Its canonical bytes
 are exactly `u32be(execution_output_slot_ref.ordinal)` followed by
 `u64be(execution_output_ordinal)`. The terminal FindingKind descriptors
-reference this codec through their `FindingOccurrenceCodec`; they do not copy
-or reinterpret the fields. The containing Evidence result's
+reference this codec through their `FindingOccurrenceCodec`; the codec schema
+descriptor is exactly `loom.terminal_witness_ref 1.0`. They do not copy or
+reinterpret the fields. The containing Evidence result's
 `FindingRequestOrdinal` recovers the FindingKind, so the payload carries no kind
 tag, Request reference, direct SimulationExecution reference, or witness
 ordinal.
