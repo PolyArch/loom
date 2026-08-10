@@ -230,6 +230,30 @@ payloads are equal. A provider may encode that exact endpoint set as a bitmask
 when hardware supports multicast, while unicast providers retain identical
 portable semantics.
 
+## Why The Portable Memory Profile Carries Logical Requests
+
+The reusable Module skeleton needs a real memory boundary for simulation,
+portable synthesis, and composition, but Fabric deliberately does not choose
+AXI, TileLink, CXL, or another system protocol. Leaving that boundary
+unimplemented would make a complete `fabric.module` impossible to lower;
+guessing AXI from `memref` would make the backend a second architecture owner.
+
+The smallest closed implementation choice is therefore one explicitly
+selected ready/valid profile that carries the existing Runtime ABI logical
+plain load/store request and response. It preserves one actor request and one
+retirement while allowing a later adapter to choose beats, packets, or vendor
+IP. Widths are derived from the exact Module capability closure, so there is
+no global data-width default. One outstanding request per endpoint removes a
+transaction-ID signal without removing semantic identity: the only live
+request is the singleton physical representation of that transient handle.
+
+This profile is intentionally not widened into a universal memory protocol.
+Atomics, fences, richer outstanding state, or another observable service
+contract select another implementation profile or remain typed Unsupported.
+That boundary keeps the current portable controller complete for its declared
+domain and prevents speculative protocol machinery from becoming permanent
+architecture.
+
 ## Why Ordered Cardinality Uses One Shared Claim Boundary
 
 `parallelize` and `serialize` are unusual because one logical firing can

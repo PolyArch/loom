@@ -542,6 +542,50 @@ interfaces. Their AXI, TileLink, CXL, or custom physical pinout is selected by
 the exact HardwareImplementation and is not inferred from the `fabric.mem`
 operation-channel schedule.
 
+### Common Portable Spatial Service Profile
+
+The common target-independent skeleton provides one explicitly selected
+portable profile for the current plain load/store service domain. It is not a
+Fabric default and it is not inferred from a `memref`. A candidate that selects
+this profile includes that selection in its definition-rebased memory
+implementation projection and therefore in `ModuleSpecializationKey`.
+
+The profile carries one complete Runtime ABI-owned logical request rather than
+inventing a beat protocol. Its request channel is ready/valid and contains the
+plain read/write selector, the complete address payload, write-data payload,
+dynamic lane mask, access-form selector, element width, flattened lane count,
+address-lane width, base address, and transient context. Its response channel
+is ready/valid and contains the complete read-data payload. Completion is the
+response transfer itself. A store ignores response data. Fields inactive for
+the selected request are zero. Zero-width payload fields are omitted rather
+than emitted as zero-width HDL vectors.
+
+The address, data, and mask carrier widths are the maxima mechanically derived
+from the exact operation endpoints and local-service capabilities in one
+Module specialization. The access-form selector uses the closed encoding
+`Element(0) | Contiguous(1) | Indexed(2)`; the request-kind selector uses
+`Read(0) | Write(1)`. Element width, lane count, and base address are unsigned
+64-bit values, address-lane width is unsigned 32-bit, and transient context is
+unsigned 64-bit. This profile admits one outstanding logical request per
+physical endpoint, so the Runtime ABI transaction handle has the singleton
+physical encoding and no HDL signal. These encodings belong only to this
+implementation profile and do not become Fabric or Runtime semantic owners.
+
+A manager endpoint emits the request and accepts the response. A subordinate
+endpoint accepts the request and emits the response. Module-boundary memory
+attachments and fixed memory-service connections wire those two directions
+mechanically. Provider decode, constant base translation, response return, and
+backpressure remain inside the portable memory controller.
+
+The portable profile is available only when every reachable operation is a
+plain load or store and every selected access fits the derived carriers. A
+fence, atomic load/store, RMW, compare-exchange, wider service, or stronger
+outstanding-request contract requires another exact implementation profile;
+the common provider returns typed `Unsupported` instead of silently weakening
+it. AXI, TileLink, CXL, and custom profiles may translate the same Runtime ABI
+boundary, but they do not change its Mapping, retirement, or memory-consistency
+semantics.
+
 Behavioral memory models and black boxes are legal only when Fabric or its
 implementation binding explicitly declares that realization. The
 `HardwareImplementation` records their contracts and unresolved external
