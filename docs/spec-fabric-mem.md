@@ -1458,6 +1458,23 @@ InternalConnectionRecord {
 }
 ```
 
+The match atom widths are schema-owned rather than occurrence-authored:
+
+```text
+Range        = { base: uint64, size: positive uint64 }
+Prefix       = { value: uint64, prefix_length: unsigned[0, 64] }
+AddressSpace = uint32
+Context      = uint64
+```
+
+`Prefix.prefix_length` therefore occupies seven semantic carrier bits. Range
+and Prefix operate on the same unsigned 64-bit service-address domain used by
+memory regions and binding offsets. Context is an implementation-visible
+64-bit request-context code, not a Dataflow reference or Physical Tag. A
+service requiring a wider address, structured context, hashing, or any other
+predicate uses an explicit typed service transform; it cannot reinterpret one
+of these atoms or add an occurrence-local width convention.
+
 The operation-port array follows the canonical port inventory. Its nested
 array follows that port's canonical capability-alternative inventory, so
 source identity is structural and is never repeated as an ID. The subordinate
@@ -1482,10 +1499,12 @@ therefore does not transport or compare the external Physical Tag. The
 relation is eligibility only; Mapping owns the selected sink-to-source edges.
 
 The persistent wire uses `u64be` counts and ordinals and `u32be` closed-union
-tags. Array positions own operation-port, capability-alternative, and
-subordinate source identity. Strict import decodes, validates against the
-exact occurrence, re-encodes, and requires byte equality; reordered target
-sets or internal connections are noncanonical.
+tags. Match-field widths are fixed by the schema above and therefore need no
+duplicated width payload in the connectivity record. Array positions own
+operation-port, capability-alternative, and subordinate source identity.
+Strict import decodes, validates against the exact occurrence, re-encodes, and
+requires byte equality; reordered target sets or internal connections are
+noncanonical.
 
 An operation row carries its derived `service_target_sel`. A subordinate
 endpoint that exposes several logical memories uses bounded provider decode

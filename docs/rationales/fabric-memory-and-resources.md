@@ -109,6 +109,10 @@ uses the same physical service targets and response tracking. A bounded set of
 match fields and an optional constant base offset cover the direct hardware
 case. Hashing, translation, cache, or coherence remain explicit service
 transforms instead of growing a predicate language inside `fabric.mem`.
+The closed match atoms use one schema-wide 64-bit address/context domain and a
+32-bit address-space domain. Keeping those widths in the schema avoids both an
+occurrence-level width knob and a backend default while retaining an explicit
+typed-transform path for services outside that bounded direct case.
 
 Local and System memory services share one exact service-capability record
 because actor admission, regions, physical beats, resource use, and progress
