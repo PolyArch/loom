@@ -1,5 +1,6 @@
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
 
+#include "Fabric/Identity/FabricMemoryConfiguration.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefImport.h"
@@ -218,6 +219,26 @@ FabricArtifactView::semanticFieldRelation(
       return rejected("FU occurrence has no capability template");
     return FabricSemanticFieldRelation(FabricSemanticFieldRelationKind::Finite,
                                        std::move(domain), 0);
+  }
+
+  if (owner.kind() == FabricInventoryOwnerKind::MemoryOccurrence) {
+    if (field.ordinal != 0)
+      return rejected("memory configuration field ordinal is not zero");
+    const auto memory = std::get<FabricMemoryOccurrenceRef>(owner.payload);
+    auto schema = memoryConfigurationSchema(memory);
+    if (!schema)
+      return schema.takeError();
+    const std::uint64_t width = schema->layout().carrierBitCount;
+    auto shared = std::make_shared<FabricMemoryConfigurationSchemaView>(
+        std::move(*schema));
+    return FabricSemanticFieldRelation(
+        FabricSemanticFieldRelationKind::Direct, {}, width,
+        [shared](llvm::ArrayRef<std::uint8_t> value) -> llvm::Error {
+          auto decoded = shared->decode(value);
+          if (!decoded)
+            return decoded.takeError();
+          return llvm::Error::success();
+        });
   }
 
   if (owner.kind() == FabricInventoryOwnerKind::FifoOccurrence) {

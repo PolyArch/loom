@@ -65,6 +65,7 @@ struct FabricMemoryOperationPortViewData {
 
 struct FabricLocalMemoryServiceViewData {
   FabricNestedOwnerViewData owner;
+  std::uint64_t capacityBytes = 0;
   ::fabric::MemoryServiceContractRecord record;
 };
 

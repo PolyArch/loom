@@ -63,6 +63,14 @@ FabricArtifactView::localMemoryService(FabricMemoryOccurrenceRef memory) const {
              : nullptr;
 }
 
+std::uint64_t FabricArtifactView::localMemoryServiceCapacityBytes(
+    FabricMemoryOccurrenceRef memory) const {
+  const detail::FabricEntityViewData *record = storage_->entity(memory);
+  return record && record->localMemoryService
+             ? record->localMemoryService->capacityBytes
+             : 0;
+}
+
 std::optional<FabricMemoryEndpointRole> FabricArtifactView::memoryEndpointRole(
     const FabricMemoryEndpointRef &endpoint) const {
   const detail::FabricMemoryEndpointViewData *record =

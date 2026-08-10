@@ -141,6 +141,7 @@ tools = [
     "loom-fabric-memory-port-transaction-test",
     "loom-fabric-memory-operation-port-test",
     "loom-fabric-memory-role-bindings-test",
+    "loom-fabric-memory-configuration-test",
     "loom-fabric-memory-consistency-contract-test",
     "loom-fabric-physical-identity-test",
     "loom-fabric-system-physical-identity-test",

@@ -148,8 +148,8 @@ llvm::Error populateFabricMemoryView(::fabric::MemOp memory,
     owner.inventoryCounts[static_cast<std::size_t>(
         FabricInventoryKind::MemoryServiceRegion)] = service->regions().size();
     owner.resourceContract = service->resourceContract();
-    entity.localMemoryService =
-        FabricLocalMemoryServiceViewData{std::move(owner), std::move(*service)};
+    entity.localMemoryService = FabricLocalMemoryServiceViewData{
+        std::move(owner), local.getCapacityBytes(), std::move(*service)};
   }
 
   auto derived = deriveFabricMemoryEngineTemplate(memory);

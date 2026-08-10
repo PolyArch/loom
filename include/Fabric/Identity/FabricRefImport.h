@@ -9,6 +9,7 @@
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/ResourceContract.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
+#include "Fabric/Identity/FabricMemoryConfiguration.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefs.h"
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
@@ -445,6 +446,11 @@ public:
   const ::fabric::MemoryServiceContractRecord *
   localMemoryService(FabricMemoryOccurrenceRef memory) const;
 
+  /// Exact byte capacity owned by the occurrence's Local Memory Service.
+  /// An occurrence without a local service has zero capacity.
+  std::uint64_t
+  localMemoryServiceCapacityBytes(FabricMemoryOccurrenceRef memory) const;
+
   /// The role the owner's inventory declares for this memory endpoint.
   std::optional<FabricMemoryEndpointRole>
   memoryEndpointRole(const FabricMemoryEndpointRef &endpoint) const;
@@ -603,6 +609,10 @@ public:
   memoryResidentContextCount(FabricMemoryOccurrenceRef memory) const;
   const ::fabric::MemoryConnectivityContractRecord *
   memoryConnectivity(FabricMemoryOccurrenceRef memory) const;
+
+  /// Complete bounded direct-carrier schema of one memory occurrence.
+  llvm::Expected<FabricMemoryConfigurationSchemaView>
+  memoryConfigurationSchema(FabricMemoryOccurrenceRef memory) const;
 
   /// Whether the fully elaborated Fabric contains the one unique directed
   /// fixed connection between exactly these endpoints.

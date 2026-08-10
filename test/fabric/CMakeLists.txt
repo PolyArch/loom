@@ -58,6 +58,10 @@ add_executable(loom-fabric-memory-role-bindings-test
   MemoryRoleBindingsTest.cpp
 )
 
+add_executable(loom-fabric-memory-configuration-test
+  FabricMemoryConfigurationTest.cpp
+)
+
 add_executable(loom-fabric-boundary-transfer-test
   BoundaryTransferTest.cpp
 )
@@ -182,6 +186,14 @@ target_link_libraries(loom-fabric-memory-role-bindings-test PRIVATE
   MLIRIR
   MLIRParser
   MLIRSupport
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-memory-configuration-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFabricArtifact
+  MLIRIR
   LLVMSupport
 )
 

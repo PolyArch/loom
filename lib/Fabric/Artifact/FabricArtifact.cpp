@@ -309,6 +309,8 @@ llvm::Expected<FabricArtifactView> buildModuleView(
       if (found != labeling.memoryEngineTemplateIdByOccurrence.end())
         entity.memoryEngineTemplate =
             FabricMemoryEngineTemplateRef(found->second);
+      entity.owner.inventoryCounts[static_cast<std::size_t>(
+          FabricInventoryKind::SemanticConfigField)] = 1;
     }
     if (carrier.kind == FabricEntityKind::FabricFifoOccurrence)
       entity.owner.inventoryCounts[static_cast<std::size_t>(

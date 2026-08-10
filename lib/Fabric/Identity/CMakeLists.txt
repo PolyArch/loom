@@ -12,6 +12,7 @@ add_mlir_library(LoomFabricIdentity
   FabricOpCapabilityView.cpp
   FabricPeConfiguration.cpp
   FabricTemporalPeConfiguration.cpp
+  FabricMemoryConfiguration.cpp
   FabricSemanticFieldRelation.cpp
   FabricPhysicalTagProjection.cpp
   FabricFuCapabilityTemplate.cpp
