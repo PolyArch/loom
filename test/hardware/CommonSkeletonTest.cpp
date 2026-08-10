@@ -19,6 +19,7 @@
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricPeConfiguration.h"
+#include "Fabric/Identity/FabricTemporalPeConfiguration.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 
 #include "circt/Dialect/Comb/CombDialect.h"
@@ -310,6 +311,58 @@ FinalizedFabricRoot makeSpatialHierarchyFabric(llvm::StringRef test,
   return std::move(finalized.roots().front());
 }
 
+FinalizedFabricRoot makeTemporalHierarchyFabric(llvm::StringRef test,
+                                                const ArtifactStore &store) {
+  using namespace loom::adg;
+  DesignBuilder design(store);
+  const PortType bits8 = take(test, PortType::bits(8));
+  const PortType tagged8x2 = take(test, PortType::taggedBits(8, 2));
+  auto spatial =
+      take(test, design.createSpatialCore("temporal-hierarchy",
+                                          {tagged8x2, tagged8x2}, {tagged8x2}));
+  auto pe = take(
+      test,
+      spatial.addPe(
+          {take(test, spatial.input(0)), take(test, spatial.input(1))},
+          PeSpec::temporal(
+              {bits8, bits8}, {tagged8x2},
+              TemporalPeParameters{2, FuConfigurationMode::PerInstruction,
+                                   ::fabric::OperandBufferMode::PerInputPort, 2,
+                                   TemporalRegisterFifoParameters{1, 2, 2}})));
+  auto fu =
+      take(test, pe.addFu({take(test, pe.input(0)), take(test, pe.input(1))},
+                          FuSpec{{bits8, bits8}, {bits8}}));
+  const auto width =
+      llvm::find_if(::fabric::integerWidthDomain, [](auto candidate) {
+        return ::fabric::getBitWidth(candidate) == 8;
+      });
+  require(test, width != ::fabric::integerWidthDomain.end(),
+          "integer width catalog omitted i8");
+  auto operation = take(
+      test, fu.addOperation(
+                {take(test, fu.input(0)), take(test, fu.input(1))},
+                OperationCapabilitySpec{
+                    ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                    ::fabric::ScalarIntegerParams{
+                        ::fabric::IntegerWidthSet::get({*width})},
+                    {::dataflow::OperationSchemaId::ArithAddI},
+                    {bits8},
+                    ::fabric::oneCycleElasticOperationResourceContract()}));
+  if (llvm::Error error =
+          fu.addCapabilityTemplate(FuCapabilityTemplateSpec{{operation}, {}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = fu.close({take(test, operation.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = pe.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = spatial.close({take(test, pe.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  auto finalized = take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == 1,
+          "temporal hierarchy fixture did not finalize one Module");
+  return std::move(finalized.roots().front());
+}
+
 struct SystemFixture final {
   FinalizedFabricRoot module;
   FinalizedFabricRoot system;
@@ -326,6 +379,22 @@ loom::fabric::FabricPhysicalConfigurationFieldRef qualifyConfigurationField(
   return take(test, loom::fabric::FabricPhysicalConfigurationFieldRef::create(
                         loom::fabric::SpatialCoreInternalOccurrenceRef{
                             spatialCore, std::move(target)}));
+}
+
+const loom::hardware::ProgrammingUnit *findProgrammingOwner(
+    llvm::StringRef test, const loom::hardware::ConfigurationABI &abi,
+    const loom::fabric::FabricPhysicalConfigurationSlotRef &slot) {
+  const loom::hardware::ProgrammingUnit *result = nullptr;
+  for (const auto &unit : abi.programmingUnits())
+    for (const auto &field : unit.fields)
+      if (field.slot == slot) {
+        require(test, result == nullptr,
+                "configuration field has duplicate programming owners");
+        result = &unit;
+      }
+  require(test, result != nullptr,
+          "configuration field has no programming owner");
+  return result;
 }
 
 const loom::fabric::FabricTransportEndpointRef &
@@ -494,6 +563,7 @@ SystemFixture makeSystemFixture(llvm::StringRef test,
   addDirectOverrides(module.view().switchOccurrences());
   addDirectOverrides(module.view().boundaryOccurrences());
   addDirectOverrides(module.view().memoryOccurrences());
+  addDirectOverrides(module.view().peOccurrences());
   auto abiDraft =
       take(test, loom::hardware::test::makeCompleteConfigurationABIDraft(
                      system, overrides));
@@ -529,6 +599,125 @@ void spatialHierarchyBuildsStructuralSkeleton() {
               llvm::StringRef(text).contains("loom_fabric_fifo_") &&
               llvm::StringRef(text).contains("loom_fabric_boundary_"),
           "hierarchy skeleton flattened or omitted a Fabric resource owner");
+}
+
+struct TemporalToolArtifact final {
+  std::string systemVerilog;
+  loom::hardware::test::PortableConfigurationTarget target;
+  std::vector<std::uint8_t> activeImage;
+};
+
+TemporalToolArtifact temporalHierarchyBuildsStructuralSkeleton() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  SystemFixture fabric =
+      makeSystemFixture(test, store, makeTemporalHierarchyFabric(test, store));
+
+  mlir::MLIRContext context;
+  context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
+                      circt::seq::SeqDialect, circt::sv::SVDialect>();
+  auto skeleton = take(test, loom::hardware::rtl::buildModuleRootCirctSkeleton(
+                                 context, fabric.spatialCore, fabric.abi));
+  require(test, skeleton.operationLeaves.size() == 1,
+          "temporal hierarchy omitted its physical operation");
+  FabricOperationProviderRegistry providers;
+  if (llvm::Error error =
+          loom::hardware::rtl::registerPortableScalarIntegerAddSubProvider(
+              providers))
+    fail(test, llvm::toString(std::move(error)));
+  ExternalImplementationContractCatalog externalContracts;
+  auto conformance = take(
+      test, loom::hardware::test::specializeAndExportPortableProvider(
+                std::move(skeleton), fabric.abi, providers, externalContracts));
+  const llvm::StringRef rtl(conformance.systemVerilog);
+  require(test,
+          rtl.contains("loom_temporal_pe_") && rtl.contains("operand_pool") &&
+              rtl.contains("register_fifo") &&
+              rtl.contains("output_0_context") &&
+              rtl.contains("result_context_reg"),
+          "temporal hierarchy omitted context-local scheduling or storage");
+
+  const auto &module = fabric.module.view();
+  require(test,
+          module.peOccurrences().size() == 1 &&
+              module.fuOccurrences().size() == 1 &&
+              fabric.operations.size() == 1,
+          "temporal hierarchy fixture changed its PE/FU/operation shape");
+  const auto pe = module.peOccurrences().front();
+  const auto fu = module.fuOccurrences().front();
+  auto schema = take(test, module.temporalPeConfigurationSchema(pe));
+  require(test,
+          schema.layout().contextCount == 2 &&
+              schema.layout().inputPortCount == 2 &&
+              schema.layout().outputPortCount == 1,
+          "temporal hierarchy fixture changed its direct-carrier shape");
+
+  const auto routeInput = [&](std::uint32_t port) {
+    return loom::fabric::FabricTemporalPeOperandSelection{
+        loom::fabric::FabricTemporalPeSelectorKind::Route,
+        loom::fabric::FabricTemporalPeSelectorTarget{
+            loom::fabric::FabricTemporalPePortTarget{port}},
+        llvm::APInt(schema.layout().tagWidthBits, 1)};
+  };
+  loom::fabric::FabricTemporalPeResultSelection routeOutput{
+      loom::fabric::FabricTemporalPeSelectorKind::Route,
+      loom::fabric::FabricTemporalPeSelectorTarget{
+          loom::fabric::FabricTemporalPePortTarget{0}},
+      llvm::APInt(schema.layout().tagWidthBits, 2)};
+  loom::fabric::FabricTemporalPeActive active;
+  active.rows.resize(schema.layout().contextCount);
+  active.rows.front() = loom::fabric::FabricTemporalPeInstructionEntry{
+      fu, {routeInput(0), routeInput(1)}, {routeOutput}};
+  auto peSemantic = take(test, schema.encode(active));
+
+  std::vector<loom::hardware::SemanticConfigurationValue> values;
+  const auto pePhysical =
+      qualifyConfigurationField(test, fabric.spatialCore, schema.field());
+  const auto peSlot =
+      take(test,
+           loom::fabric::qualifyFabricConfigurationSlot(
+               pePhysical, loom::fabric::FabricStaticConfigurationResidency{}));
+  const loom::hardware::ProgrammingUnit *owner =
+      findProgrammingOwner(test, fabric.abi.abi(), peSlot);
+  values.push_back(
+      {peSlot, std::vector<std::uint8_t>(peSemantic.bytes().begin(),
+                                         peSemantic.bytes().end())});
+
+  const loom::fabric::FabricSemanticConfigFieldRef fuField{
+      loom::fabric::FabricConfigurationOwnerRef(
+          loom::fabric::FabricInventoryOwnerRef::of(fu)),
+      0};
+  const auto definition = module.fuTemplateOf(fu);
+  require(test, definition.has_value(), "temporal FU has no definition");
+  const auto templates = module.fuCapabilityTemplates(*definition);
+  require(test, templates.size() == 1,
+          "temporal FU fixture changed its capability-template domain");
+  auto fuSemantic = take(
+      test, loom::fabric::encodeFabricFuConfiguration(
+                module, fuField,
+                loom::fabric::FabricFuCapabilityTemplateRef{*definition, 0}));
+  const auto fuPhysical =
+      qualifyConfigurationField(test, fabric.spatialCore, fuField);
+  const auto fuSlot =
+      take(test, loom::fabric::qualifyFabricConfigurationSlot(
+                     fuPhysical, loom::fabric::InstructionContextRef{pe, 0}));
+  const auto *fuOwner = findProgrammingOwner(test, fabric.abi.abi(), fuSlot);
+  require(test, fuOwner->id == owner->id,
+          "temporal PE and FU fields span programming units");
+  values.push_back(
+      {fuSlot, std::vector<std::uint8_t>(fuSemantic.bytes().begin(),
+                                         fuSemantic.bytes().end())});
+  require(
+      test,
+      fabric.operations.front().capability->configurationFieldSchema.empty(),
+      "fixed add fixture unexpectedly requires operation configuration");
+
+  return TemporalToolArtifact{
+      std::move(conformance.systemVerilog),
+      take(test, loom::hardware::test::derivePortableConfigurationTarget(
+                     fabric.abi, fabric.spatialCore, owner->id)),
+      take(test, fabric.abi.abi().encode(owner->id, values))};
 }
 
 void repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
@@ -1175,12 +1364,194 @@ select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
 )ys";
 }
 
+void writeTemporalToolArtifacts(const std::filesystem::path &root,
+                                const TemporalToolArtifact &artifact) {
+  std::ofstream(root / "temporal_module.sv") << artifact.systemVerilog;
+  std::ofstream testbench(root / "temporal_testbench.sv");
+  testbench << R"sv(
+module temporal_testbench;
+  logic       clock;
+  logic       reset;
+  logic [7:0] input_0_data;
+  logic [1:0] input_0_tag;
+  logic       input_0_valid;
+  logic       input_0_ready;
+  logic [7:0] input_1_data;
+  logic [1:0] input_1_tag;
+  logic       input_1_valid;
+  logic       input_1_ready;
+  logic [7:0] output_0_data;
+  logic [1:0] output_0_tag;
+  logic       output_0_valid;
+  logic       output_0_ready;
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteSignalDeclarations()
+            << "\n";
+  testbench << R"sv(
+  loom_module dut(.*);
+  always #5 clock = ~clock;
+
+  task automatic check(bit condition, string message);
+    if (!condition)
+      $fatal(1, "%s", message);
+  endtask
+
+  task automatic send_input_0(input logic [7:0] data);
+    integer wait_cycles;
+    begin
+      @(negedge clock);
+      input_0_data = data;
+      input_0_tag = 2'd1;
+      input_0_valid = 1;
+      wait_cycles = 0;
+      do begin
+        @(posedge clock);
+        wait_cycles = wait_cycles + 1;
+        if (wait_cycles == 32 && !input_0_ready)
+          $fatal(1, "Temporal input 0 handshake timed out");
+      end while (!input_0_ready);
+      @(negedge clock);
+      input_0_valid = 0;
+    end
+  endtask
+
+  task automatic send_input_1(input logic [7:0] data);
+    integer wait_cycles;
+    begin
+      @(negedge clock);
+      input_1_data = data;
+      input_1_tag = 2'd1;
+      input_1_valid = 1;
+      wait_cycles = 0;
+      do begin
+        @(posedge clock);
+        wait_cycles = wait_cycles + 1;
+        if (wait_cycles == 32 && !input_1_ready)
+          $fatal(1, "Temporal input 1 handshake timed out");
+      end while (!input_1_ready);
+      @(negedge clock);
+      input_1_valid = 0;
+    end
+  endtask
+
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteDriverTasks();
+  testbench << loom::hardware::test::portableCycleWatchdog();
+  testbench << R"sv(
+
+  initial begin
+    clock = 0;
+    reset = 1;
+    input_0_data = 0;
+    input_0_tag = 0;
+    input_0_valid = 0;
+    input_1_data = 0;
+    input_1_tag = 0;
+    input_1_valid = 0;
+    output_0_ready = 0;
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteInitialization();
+  testbench << R"sv(    repeat (2) @(posedge clock);
+    #1 reset = 0;
+    #1;
+    check(!input_0_ready && !input_1_ready && !output_0_valid,
+          "Disabled Temporal PE exchanged a token");
+
+)sv";
+  testbench << take("writeTemporalToolArtifacts",
+                    loom::hardware::test::portableAxiLiteProgramAndVerify(
+                        artifact.target, artifact.activeImage));
+  testbench << R"sv(    input_0_tag = 2'd3;
+    input_0_valid = 1;
+    #1;
+    check(!input_0_ready,
+          "Temporal PE accepted a tag without an active instruction row");
+    input_0_valid = 0;
+
+    send_input_0(8'd5);
+    repeat (2) begin
+      @(posedge clock);
+      #1;
+      check(!output_0_valid,
+            "Temporal operation fired before its independent input arrived");
+    end
+    send_input_1(8'd7);
+    while (!output_0_valid)
+      @(posedge clock);
+    #1;
+    check(output_0_data == 8'd12 && output_0_tag == 2'd2,
+          "Temporal operation produced the wrong data or configured tag");
+    repeat (3) begin
+      @(posedge clock);
+      #1;
+      check(output_0_valid && output_0_data == 8'd12 &&
+                output_0_tag == 2'd2,
+            "Stalled Temporal result was not stable");
+    end
+    output_0_ready = 1;
+    @(posedge clock);
+    #1;
+    check(!output_0_valid, "Consumed Temporal result remained valid");
+
+    fork
+      begin : producer
+        integer index;
+        for (index = 0; index < 4; index = index + 1) begin
+          @(negedge clock);
+          input_0_data = 8'(10 + index);
+          input_1_data = 8'(20 + index);
+          input_0_tag = 2'd1;
+          input_1_tag = 2'd1;
+          input_0_valid = 1;
+          input_1_valid = 1;
+          @(posedge clock);
+          #1;
+          check(input_0_ready && input_1_ready,
+                "Temporal operand buffers did not sustain one pair per cycle");
+        end
+        @(negedge clock);
+        input_0_valid = 0;
+        input_1_valid = 0;
+      end
+      begin : consumer
+        integer index;
+        while (!output_0_valid) begin
+          @(posedge clock);
+          #1;
+        end
+        for (index = 0; index < 4; index = index + 1) begin
+          check(output_0_valid && output_0_data == 8'(30 + 2 * index) &&
+                    output_0_tag == 2'd2,
+                "Temporal PE did not publish one ordered result per cycle");
+          @(posedge clock);
+          #1;
+        end
+      end
+    join
+    check(!output_0_valid, "Temporal result stream did not terminate");
+    $finish;
+  end
+endmodule
+)sv";
+  std::ofstream(root / "temporal_skeleton.ys") << R"ys(
+read_verilog -sv temporal_module.sv
+hierarchy -check -top loom_module
+check -assert
+proc
+synth -top loom_module
+check -assert
+select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
+)ys";
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
   require("main", argc == 1 || argc == 2,
           "expected at most one output directory");
   spatialHierarchyBuildsStructuralSkeleton();
+  const TemporalToolArtifact temporal =
+      temporalHierarchyBuildsStructuralSkeleton();
   repeatedSpatialCoreBuildsOccurrenceLocalSkeleton();
   configurationAbiIncludesFuTopology();
   commonSkeletonRejectsUnresolvedOrUnboundLeaves();
@@ -1191,6 +1562,7 @@ int main(int argc, char **argv) {
   if (argc == 2) {
     writeBoundaryToolArtifacts(argv[1], systemVerilog);
     writeInternalToolArtifacts(argv[1], internal);
+    writeTemporalToolArtifacts(argv[1], temporal);
   }
   return 0;
 }

@@ -29,6 +29,7 @@ struct OperationEndpointPlan final {
   fabric::FabricOrdinal ordinal = 0;
   std::uint32_t payloadWidthBits = 0;
   std::optional<circt::hw::PortInfo> data;
+  std::optional<circt::hw::PortInfo> context;
   circt::hw::PortInfo valid;
   circt::hw::PortInfo ready;
 };
@@ -42,6 +43,7 @@ struct OperationShellModule final {
 llvm::Expected<std::vector<OperationShellModule>> buildOperationShellModules(
     mlir::OpBuilder &builder, mlir::Location location,
     fabric::SpatialCoreOccurrenceRef spatialCore,
+    const fabric::FabricArtifactView &fabric,
     const ConfigurationABI &configurationAbi,
     const ConfigurationTransportLayout &transportLayout,
     llvm::ArrayRef<ResolvedFabricPhysicalOperation> operations,

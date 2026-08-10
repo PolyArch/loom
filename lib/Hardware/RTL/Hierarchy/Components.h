@@ -17,7 +17,12 @@ template <typename Reference> struct ComponentModule final {
   std::vector<EndpointPlan> endpoints;
 };
 
-using FuModule = ComponentModule<fabric::FabricFuOccurrenceRef>;
+struct FuModule final {
+  fabric::FabricFuOccurrenceRef reference;
+  circt::hw::HWModuleOp module;
+  std::vector<EndpointPlan> endpoints;
+  std::optional<unsigned> contextWidthBits;
+};
 using PeModule = ComponentModule<fabric::FabricPeOccurrenceRef>;
 using SwitchModule = ComponentModule<fabric::FabricSwitchOccurrenceRef>;
 using FifoModule = ComponentModule<fabric::FabricFifoOccurrenceRef>;
@@ -41,6 +46,16 @@ buildPeModules(mlir::OpBuilder &builder, mlir::Location location,
                const ConfigurationTransportLayout &transportLayout,
                llvm::ArrayRef<FuModule> fuModules,
                const ClockResetPlan &clockReset);
+
+llvm::Expected<PeModule>
+buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
+                      fabric::SpatialCoreOccurrenceRef spatialCore,
+                      const fabric::FabricArtifactView &fabric,
+                      const ConfigurationABI &configurationAbi,
+                      const ConfigurationTransportLayout &transportLayout,
+                      llvm::ArrayRef<FuModule> fuModules,
+                      const ClockResetPlan &clockReset,
+                      fabric::FabricPeOccurrenceRef pe);
 
 llvm::Expected<std::vector<SwitchModule>>
 buildSwitchModules(mlir::OpBuilder &builder, mlir::Location location,

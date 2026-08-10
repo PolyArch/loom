@@ -8,6 +8,7 @@ add_library(LoomHardwareRTL
   Hierarchy/OperationShell.cpp
   Hierarchy/Routing.cpp
   Hierarchy/Support.cpp
+  Hierarchy/TemporalPe.cpp
   OperationLeaf.cpp
   PhysicalOperation.cpp
   PortableProviders.cpp

@@ -119,8 +119,27 @@ FabricArtifactView::semanticFieldRelation(
 
   const FabricInventoryOwnerRef &owner = field.owner.catalog();
   if (owner.kind() == FabricInventoryOwnerKind::PeOccurrence) {
-    auto schema = spatialPeConfigurationSchema(
-        std::get<FabricPeOccurrenceRef>(owner.payload));
+    const FabricPeOccurrenceRef pe =
+        std::get<FabricPeOccurrenceRef>(owner.payload);
+    if (peSchedule(pe) == ::fabric::Schedule::Temporal) {
+      if (field.ordinal != 0)
+        return rejected("Temporal PE field ordinal is not zero");
+      auto schema = temporalPeConfigurationSchema(pe);
+      if (!schema)
+        return schema.takeError();
+      const std::uint64_t width = schema->layout().carrierBitCount;
+      auto shared = std::make_shared<FabricTemporalPeConfigurationSchemaView>(
+          std::move(*schema));
+      return FabricSemanticFieldRelation(
+          FabricSemanticFieldRelationKind::Direct, {}, width,
+          [shared](llvm::ArrayRef<std::uint8_t> value) -> llvm::Error {
+            auto decoded = shared->decode(value);
+            if (!decoded)
+              return decoded.takeError();
+            return llvm::Error::success();
+          });
+    }
+    auto schema = spatialPeConfigurationSchema(pe);
     if (!schema)
       return schema.takeError();
     auto values = schema->finiteDomain(field);

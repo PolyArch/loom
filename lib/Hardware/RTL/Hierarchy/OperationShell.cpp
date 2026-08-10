@@ -9,6 +9,7 @@
 #include "circt/Support/BackedgeBuilder.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <map>
@@ -20,7 +21,8 @@ namespace {
 
 llvm::Expected<std::vector<OperationEndpointPlan>> deriveOperationEndpoints(
     mlir::OpBuilder &builder,
-    const fabric::ResolvedFabricOpCapabilityView &capability) {
+    const fabric::ResolvedFabricOpCapabilityView &capability,
+    std::optional<unsigned> contextWidth) {
   std::vector<const fabric::ResolvedFabricOpPhysicalPortView *> ports;
   ports.reserve(capability.physicalPorts.size());
   for (const auto &port : capability.physicalPorts)
@@ -60,8 +62,13 @@ llvm::Expected<std::vector<OperationEndpointPlan>> deriveOperationEndpoints(
     if (port->payloadWidthBits != 0)
       data = makePort("_data", builder.getIntegerType(port->payloadWidthBits),
                       forward);
+    std::optional<circt::hw::PortInfo> context;
+    if (contextWidth)
+      context =
+          makePort("_context", builder.getIntegerType(*contextWidth), forward);
     result.push_back({port->reference.direction, port->reference.ordinal,
                       port->payloadWidthBits, std::move(data),
+                      std::move(context),
                       makePort("_valid", builder.getI1Type(), forward),
                       makePort("_ready", builder.getI1Type(), backward)});
   }
@@ -76,13 +83,39 @@ void appendOperationPorts(llvm::SmallVectorImpl<circt::hw::PortInfo> &inputs,
   };
   if (endpoint.data)
     append(*endpoint.data);
+  if (endpoint.context)
+    append(*endpoint.context);
   append(endpoint.valid);
   append(endpoint.ready);
+}
+
+mlir::Value contextEquals(mlir::OpBuilder &builder, mlir::Location location,
+                          mlir::Value context, std::uint64_t ordinal) {
+  const unsigned width =
+      mlir::cast<mlir::IntegerType>(context.getType()).getWidth();
+  mlir::Value expected = circt::hw::ConstantOp::create(
+      builder, location, llvm::APInt(width, ordinal));
+  return circt::comb::ICmpOp::create(builder, location,
+                                     circt::comb::ICmpPredicate::eq, context,
+                                     expected, true);
+}
+
+mlir::Value selectContextValue(mlir::OpBuilder &builder,
+                               mlir::Location location, mlir::Value context,
+                               llvm::ArrayRef<mlir::Value> values) {
+  assert(!values.empty() && "context selection requires a value domain");
+  mlir::Value selected = values.front();
+  for (std::uint64_t ordinal = 1; ordinal < values.size(); ++ordinal)
+    selected = circt::comb::MuxOp::create(
+        builder, location, contextEquals(builder, location, context, ordinal),
+        values[ordinal], selected, true);
+  return selected;
 }
 
 llvm::Expected<OperationShellModule>
 buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
                     fabric::SpatialCoreOccurrenceRef spatialCore,
+                    const fabric::FabricArtifactView &fabric,
                     const ConfigurationABI &configurationAbi,
                     const ConfigurationTransportLayout &transportLayout,
                     const ResolvedFabricPhysicalOperation &operation,
@@ -99,7 +132,21 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
       deriveFabricOperationLeafStateLayout(*operation.capability);
   if (!stateLayout)
     return stateLayout.takeError();
-  auto endpoints = deriveOperationEndpoints(builder, *operation.capability);
+  const auto parentPe = fabric.parentPeOf(operation.localOccurrence.fu);
+  if (!parentPe)
+    return invalid("operation shell has no parent PE");
+  const bool temporal =
+      fabric.peSchedule(*parentPe) == ::fabric::Schedule::Temporal;
+  const std::uint64_t contextCount =
+      temporal ? fabric.peResidentContextCount(*parentPe) : 1;
+  if (contextCount == 0 || contextCount > UINT32_MAX)
+    return invalid("operation shell context domain is outside u32");
+  const std::optional<unsigned> contextWidth =
+      temporal ? std::optional<unsigned>(
+                     std::max(1U, llvm::Log2_64_Ceil(contextCount)))
+               : std::nullopt;
+  auto endpoints =
+      deriveOperationEndpoints(builder, *operation.capability, contextWidth);
   if (!endpoints)
     return endpoints.takeError();
   auto leafPorts =
@@ -116,23 +163,37 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
       *leafPorts);
   associations.push_back({leaf, operation.physicalOccurrence});
 
-  std::vector<std::pair<fabric::FabricOrdinal, FieldDecoderPlan>>
-      configurationFields;
+  struct ConfigurationFieldPlan final {
+    fabric::FabricOrdinal ordinal = 0;
+    std::vector<FieldDecoderPlan> contexts;
+  };
+  std::vector<ConfigurationFieldPlan> configurationFields;
   for (const fabric::FabricSemanticConfigFieldRef &templateField :
        operation.capability->configurationFieldSchema) {
     const fabric::FabricSemanticConfigFieldRef occurrenceField{
         fabric::FabricConfigurationOwnerRef(
             fabric::FabricInventoryOwnerRef::of(operation.localOccurrence)),
         templateField.ordinal};
-    auto decoder = prepareFieldDecoder(spatialCore, occurrenceField,
-                                       configurationAbi, transportLayout);
-    if (!decoder)
-      return decoder.takeError();
-    configurationFields.emplace_back(templateField.ordinal,
-                                     std::move(*decoder));
+    auto residencies = fabric.configurationResidencies(occurrenceField);
+    if (!residencies)
+      return residencies.takeError();
+    ConfigurationFieldPlan plan;
+    plan.ordinal = templateField.ordinal;
+    plan.contexts.reserve(residencies->size());
+    for (const auto &residency : *residencies) {
+      auto decoder =
+          prepareFieldDecoder(spatialCore, occurrenceField, residency,
+                              configurationAbi, transportLayout);
+      if (!decoder)
+        return decoder.takeError();
+      plan.contexts.push_back(std::move(*decoder));
+    }
+    if (plan.contexts.size() != 1 && plan.contexts.size() != contextCount)
+      return invalid("operation configuration residency is incomplete");
+    configurationFields.push_back(std::move(plan));
   }
   llvm::sort(configurationFields, [](const auto &lhs, const auto &rhs) {
-    return lhs.first < rhs.first;
+    return lhs.ordinal < rhs.ordinal;
   });
 
   llvm::SmallVector<circt::hw::PortInfo, 16> inputs;
@@ -167,15 +228,41 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
         mlir::Value enabled = circt::comb::createOrFoldNot(
             bodyBuilder, location, accessor.getInput("reset"));
 
-        circt::Backedge stateNext;
-        mlir::Value stateRegister;
-        if (*stateLayout) {
-          stateNext = backedges.get(
-              bodyBuilder.getIntegerType((*stateLayout)->encodedBitCount()));
-          stateRegister = createRegister(
-              bodyBuilder, location, stateNext, accessor.getInput("clock"),
-              accessor.getInput("reset"), (*stateLayout)->resetValue(),
-              "operation_state_reg", clockReset.asynchronousReset);
+        mlir::Value inputContext;
+        mlir::Value contextsAgree = bitConstant(bodyBuilder, location, true);
+        mlir::Value contextInRange = bitConstant(bodyBuilder, location, true);
+        if (temporal) {
+          inputContext =
+              accessor.getInput(inputEndpoints.front()->context->getName());
+          for (const OperationEndpointPlan *endpoint : inputEndpoints) {
+            mlir::Value equal = circt::comb::ICmpOp::create(
+                bodyBuilder, location, circt::comb::ICmpPredicate::eq,
+                inputContext, accessor.getInput(endpoint->context->getName()),
+                true);
+            contextsAgree =
+                andValues(bodyBuilder, location, {contextsAgree, equal});
+          }
+          if (!llvm::isPowerOf2_64(contextCount)) {
+            mlir::Value bound = circt::hw::ConstantOp::create(
+                bodyBuilder, location,
+                llvm::APInt(*contextWidth, contextCount));
+            contextInRange = circt::comb::ICmpOp::create(
+                bodyBuilder, location, circt::comb::ICmpPredicate::ult,
+                inputContext, bound, true);
+          }
+        }
+
+        const bool hasResultStorage = !interface->hasDirectTokenPublication();
+        circt::Backedge resultContextNext;
+        mlir::Value resultContext;
+        if (temporal && hasResultStorage) {
+          resultContextNext =
+              backedges.get(bodyBuilder.getIntegerType(*contextWidth));
+          resultContext = createRegister(
+              bodyBuilder, location, resultContextNext,
+              accessor.getInput("clock"), accessor.getInput("reset"),
+              llvm::APInt(*contextWidth, 0), "result_context_reg",
+              clockReset.asynchronousReset);
         }
 
         circt::Backedge continuationNext;
@@ -189,13 +276,47 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
               clockReset.asynchronousReset);
         }
 
+        mlir::Value executionContext = inputContext;
+        if (temporal && interface->hasOrderedProductionGroups())
+          executionContext =
+              circt::comb::MuxOp::create(bodyBuilder, location, continuation,
+                                         resultContext, inputContext, true);
+        mlir::Value executionContextValid =
+            andValues(bodyBuilder, location, {contextsAgree, contextInRange});
+        if (interface->hasOrderedProductionGroups())
+          executionContextValid = orValues(
+              bodyBuilder, location, {continuation, executionContextValid});
+
+        std::vector<circt::Backedge> stateNext;
+        std::vector<mlir::Value> stateRegisters;
+        mlir::Value selectedState;
+        if (*stateLayout) {
+          const std::uint64_t bankCount = temporal ? contextCount : 1;
+          stateNext.resize(bankCount);
+          stateRegisters.resize(bankCount);
+          for (std::uint64_t context = 0; context < bankCount; ++context) {
+            stateNext[context] = backedges.get(
+                bodyBuilder.getIntegerType((*stateLayout)->encodedBitCount()));
+            stateRegisters[context] = createRegister(
+                bodyBuilder, location, stateNext[context],
+                accessor.getInput("clock"), accessor.getInput("reset"),
+                (*stateLayout)->resetValue(),
+                temporal ? "operation_state_" + std::to_string(context) + "_reg"
+                         : "operation_state_reg",
+                clockReset.asynchronousReset);
+          }
+          selectedState =
+              temporal ? selectContextValue(bodyBuilder, location,
+                                            executionContext, stateRegisters)
+                       : stateRegisters.front();
+        }
+
         std::vector<circt::Backedge> dataNext(outputEndpoints.size());
         std::vector<mlir::Value> dataRegisters(outputEndpoints.size());
         std::vector<circt::Backedge> resultValidNext;
         std::vector<mlir::Value> resultValid;
         circt::Backedge tupleValidNext;
         mlir::Value tupleValid;
-        const bool hasResultStorage = !interface->hasDirectTokenPublication();
         if (hasResultStorage) {
           for (auto [ordinal, endpoint] : llvm::enumerate(outputEndpoints)) {
             if (endpoint->payloadWidthBits == 0)
@@ -264,6 +385,8 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
                                    {leafTransitionEnabled,
                                     circt::comb::createOrFoldNot(
                                         bodyBuilder, location, continuation)});
+        acceptsInput = andValues(bodyBuilder, location,
+                                 {acceptsInput, executionContextValid});
 
         std::map<std::string, mlir::Value> leafInput;
         for (const OperationEndpointPlan *endpoint : inputEndpoints) {
@@ -288,13 +411,20 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
                 "ready_output_" + std::to_string(endpoint->ordinal), ready);
           }
         if (*stateLayout)
-          leafInput.emplace("state_current", stateRegister);
+          leafInput.emplace("state_current", selectedState);
         if (interface->hasOrderedProductionGroups())
           leafInput.emplace("continuation_current", continuation);
-        for (const auto &[ordinal, decoder] : configurationFields)
-          leafInput.emplace(
-              "config_" + std::to_string(ordinal),
-              decodeFieldSignal(bodyBuilder, location, accessor, decoder));
+        for (const ConfigurationFieldPlan &field : configurationFields) {
+          llvm::SmallVector<mlir::Value, 4> values;
+          for (const FieldDecoderPlan &decoder : field.contexts)
+            values.push_back(
+                decodeFieldSignal(bodyBuilder, location, accessor, decoder));
+          leafInput.emplace("config_" + std::to_string(field.ordinal),
+                            values.size() == 1
+                                ? values.front()
+                                : selectContextValue(bodyBuilder, location,
+                                                     executionContext, values));
+        }
         llvm::SmallVector<mlir::Value> leafOperands;
         for (const circt::hw::PortInfo &port : *leafPorts) {
           if (port.isOutput())
@@ -321,21 +451,32 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
         if (*stateLayout) {
           mlir::Value write =
               andValues(bodyBuilder, location,
-                        {leafTransitionEnabled, leafOutput.at("state_write")});
-          stateNext.setValue(circt::comb::MuxOp::create(
-              bodyBuilder, location, write, leafOutput.at("state_next"),
-              stateRegister, true));
+                        {leafTransitionEnabled, executionContextValid,
+                         leafOutput.at("state_write")});
+          for (std::uint64_t context = 0; context < stateNext.size();
+               ++context) {
+            mlir::Value selected =
+                temporal ? contextEquals(bodyBuilder, location,
+                                         executionContext, context)
+                         : bitConstant(bodyBuilder, location, true);
+            stateNext[context].setValue(circt::comb::MuxOp::create(
+                bodyBuilder, location,
+                andValues(bodyBuilder, location, {write, selected}),
+                leafOutput.at("state_next"), stateRegisters[context], true));
+          }
         }
 
         llvm::SmallVector<mlir::Value, 4> publishedValid;
         std::vector<mlir::Value> publishedData(outputEndpoints.size());
         llvm::SmallVector<mlir::Value, 4> operationInputReady;
+        mlir::Value contextCapture = bitConstant(bodyBuilder, location, false);
         if (interface->protocol == FabricOperationLeafProtocol::Combinational) {
           llvm::SmallVector<mlir::Value, 4> inputValids;
           for (const OperationEndpointPlan *endpoint : inputEndpoints)
             inputValids.push_back(accessor.getInput(endpoint->valid.getName()));
           mlir::Value capacity =
-              andValues(bodyBuilder, location, {enabled, slotAvailable});
+              andValues(bodyBuilder, location,
+                        {enabled, slotAvailable, executionContextValid});
           auto ready = deriveAtomicInputReadiness(bodyBuilder, location,
                                                   inputValids, capacity);
           if (!ready) {
@@ -347,6 +488,7 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
           mlir::Value accept = andValues(
               bodyBuilder, location,
               {capacity, andValues(bodyBuilder, location, inputValids)});
+          contextCapture = accept;
           mlir::Value retain = andValues(
               bodyBuilder, location,
               {tupleValid, circt::comb::createOrFoldNot(bodyBuilder, location,
@@ -373,6 +515,7 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
               andValues(bodyBuilder, location,
                         {leafTransitionEnabled,
                          orValues(bodyBuilder, location, producedValid)});
+          contextCapture = capture;
           if (interface->hasOrderedProductionGroups()) {
             mlir::Value capturedNonFinal =
                 andValues(bodyBuilder, location,
@@ -415,20 +558,27 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
                                          std::to_string(endpoint->ordinal))}));
         } else {
           for (auto [ordinal, endpoint] : llvm::enumerate(outputEndpoints)) {
-            publishedValid.push_back(andValues(
-                bodyBuilder, location,
-                {enabled, leafOutput.at("valid_output_" +
-                                        std::to_string(endpoint->ordinal))}));
+            publishedValid.push_back(
+                andValues(bodyBuilder, location,
+                          {enabled, executionContextValid,
+                           leafOutput.at("valid_output_" +
+                                         std::to_string(endpoint->ordinal))}));
             if (endpoint->data)
               publishedData[ordinal] = leafOutput.at(
                   "data_output_" + std::to_string(endpoint->ordinal));
           }
           for (const OperationEndpointPlan *endpoint : inputEndpoints)
-            operationInputReady.push_back(andValues(
-                bodyBuilder, location,
-                {enabled, leafOutput.at("ready_input_" +
-                                        std::to_string(endpoint->ordinal))}));
+            operationInputReady.push_back(
+                andValues(bodyBuilder, location,
+                          {enabled, executionContextValid,
+                           leafOutput.at("ready_input_" +
+                                         std::to_string(endpoint->ordinal))}));
         }
+
+        if (temporal && hasResultStorage)
+          resultContextNext.setValue(circt::comb::MuxOp::create(
+              bodyBuilder, location, contextCapture, executionContext,
+              resultContext, true));
 
         for (auto [ordinal, endpoint] : llvm::enumerate(inputEndpoints))
           accessor.setOutput(endpoint->ready.getName(),
@@ -439,6 +589,10 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
           if (endpoint->data)
             accessor.setOutput(endpoint->data->getName(),
                                publishedData[ordinal]);
+          if (endpoint->context)
+            accessor.setOutput(endpoint->context->getName(),
+                               hasResultStorage ? resultContext
+                                                : executionContext);
         }
       });
   if (materializationError)
@@ -451,6 +605,7 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
 llvm::Expected<std::vector<OperationShellModule>> buildOperationShellModules(
     mlir::OpBuilder &builder, mlir::Location location,
     fabric::SpatialCoreOccurrenceRef spatialCore,
+    const fabric::FabricArtifactView &fabric,
     const ConfigurationABI &configurationAbi,
     const ConfigurationTransportLayout &transportLayout,
     llvm::ArrayRef<ResolvedFabricPhysicalOperation> operations,
@@ -460,8 +615,8 @@ llvm::Expected<std::vector<OperationShellModule>> buildOperationShellModules(
   result.reserve(operations.size());
   for (auto [index, operation] : llvm::enumerate(operations)) {
     auto shell = buildOperationShell(
-        builder, location, spatialCore, configurationAbi, transportLayout,
-        operation, index, associations, clockReset);
+        builder, location, spatialCore, fabric, configurationAbi,
+        transportLayout, operation, index, associations, clockReset);
     if (!shell)
       return shell.takeError();
     result.push_back(std::move(*shell));

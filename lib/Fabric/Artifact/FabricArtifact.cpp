@@ -268,6 +268,10 @@ llvm::Expected<FabricArtifactView> buildModuleView(
         if (!count || *count <= 0)
           return invalid("a temporal PE occurrence has no resident contexts");
         contextCount = static_cast<std::uint64_t>(*count);
+        entity.peOperandBufferMode = pe.getOperandBufferMode();
+        entity.peOperandBufferSize = pe.getOperandBufferSize();
+        entity.peRegisterFifoDepth = pe.getRegFifoDepth().value_or(0);
+        entity.peRegisterFifoPorts = pe.getRegFifoPorts().value_or(1);
       } else if (pe.getSchedule() != ::fabric::Schedule::Spatial)
         return invalid("a PE occurrence has an unknown schedule");
       entity.owner.inventoryCounts[static_cast<std::size_t>(

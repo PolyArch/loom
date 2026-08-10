@@ -8,6 +8,7 @@
 #include "circt/Dialect/Comb/CombOps.h"
 #include "circt/Support/BackedgeBuilder.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <map>
 #include <optional>
@@ -109,6 +110,36 @@ mlir::Value zeroData(mlir::OpBuilder &builder, mlir::Location location,
                                        llvm::APInt(width, 0));
 }
 
+std::string contextPortName(const EndpointPlan &endpoint) {
+  return (endpoint.direction == fabric::FabricPortDirection::Input
+              ? "input_"
+              : "output_") +
+         std::to_string(endpoint.localOrdinal) + "_context";
+}
+
+mlir::Value contextEquals(mlir::OpBuilder &builder, mlir::Location location,
+                          mlir::Value context, std::uint64_t ordinal) {
+  const unsigned width =
+      mlir::cast<mlir::IntegerType>(context.getType()).getWidth();
+  return circt::comb::ICmpOp::create(
+      builder, location, circt::comb::ICmpPredicate::eq, context,
+      circt::hw::ConstantOp::create(builder, location,
+                                    llvm::APInt(width, ordinal)),
+      true);
+}
+
+mlir::Value selectContextValue(mlir::OpBuilder &builder,
+                               mlir::Location location, mlir::Value context,
+                               llvm::ArrayRef<mlir::Value> values) {
+  assert(!values.empty() && "context selection requires a value domain");
+  mlir::Value selected = values.front();
+  for (std::uint64_t ordinal = 1; ordinal < values.size(); ++ordinal)
+    selected = circt::comb::MuxOp::create(
+        builder, location, contextEquals(builder, location, context, ordinal),
+        values[ordinal], selected, true);
+  return selected;
+}
+
 llvm::Expected<FuModule>
 buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
               fabric::SpatialCoreOccurrenceRef spatialCore,
@@ -132,13 +163,38 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
       fabric::FabricConfigurationOwnerRef(
           fabric::FabricInventoryOwnerRef::of(fu)),
       0};
-  auto prepared =
-      prepareFiniteField(spatialCore, field, configurationAbi, transportLayout);
-  if (!prepared)
-    return prepared.takeError();
+  const auto parentPe = fabric.parentPeOf(fu);
+  if (!parentPe)
+    return invalid("FU occurrence has no parent PE");
+  const bool temporal =
+      fabric.peSchedule(*parentPe) == ::fabric::Schedule::Temporal;
+  const std::uint64_t contextCount =
+      temporal ? fabric.peResidentContextCount(*parentPe) : 1;
+  if (contextCount == 0 || contextCount > UINT32_MAX)
+    return invalid("FU context domain is outside u32");
+  const std::optional<unsigned> contextWidth =
+      temporal ? std::optional<unsigned>(
+                     std::max(1U, llvm::Log2_64_Ceil(contextCount)))
+               : std::nullopt;
+
+  auto residencies = fabric.configurationResidencies(field);
+  if (!residencies)
+    return residencies.takeError();
+  if (residencies->size() != 1 && residencies->size() != contextCount)
+    return invalid("FU configuration residency is incomplete");
+  std::vector<std::pair<FieldDecoderPlan, const FiniteCodebookEncoding *>>
+      prepared;
+  prepared.reserve(residencies->size());
+  for (const auto &residency : *residencies) {
+    auto entry = prepareFiniteField(spatialCore, field, residency,
+                                    configurationAbi, transportLayout);
+    if (!entry)
+      return entry.takeError();
+    prepared.push_back(std::move(*entry));
+  }
 
   struct TemplatePlan final {
-    llvm::APInt activeCode;
+    std::vector<llvm::APInt> activeCodes;
     std::vector<fabric::FabricFuCapabilityTemplateEdge> edges;
   };
   std::vector<TemplatePlan> templatePlans;
@@ -149,9 +205,14 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
         fabric::FabricFuCapabilityTemplateRef{*definition, ordinal});
     if (!semantic)
       return semantic.takeError();
-    auto activeCode = physicalCode(*prepared->second, semantic->bytes());
-    if (!activeCode)
-      return activeCode.takeError();
+    std::vector<llvm::APInt> activeCodes;
+    activeCodes.reserve(prepared.size());
+    for (const auto &entry : prepared) {
+      auto activeCode = physicalCode(*entry.second, semantic->bytes());
+      if (!activeCode)
+        return activeCode.takeError();
+      activeCodes.push_back(std::move(*activeCode));
+    }
     auto edges = fabric::projectFabricFuCapabilityTemplateTerminalEdges(record);
     if (!edges)
       return edges.takeError();
@@ -161,7 +222,7 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
         return invalid(
             "one FU capability template drives a terminal more than once");
     templatePlans.push_back(
-        TemplatePlan{std::move(*activeCode), std::move(*edges)});
+        TemplatePlan{std::move(activeCodes), std::move(*edges)});
   }
 
   std::vector<const OperationShellModule *> operations;
@@ -215,6 +276,16 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
                                         transportLayout, inputs);
   for (const EndpointPlan &endpoint : *endpoints)
     appendEndpointPorts(inputs, outputs, endpoint);
+  if (contextWidth)
+    for (const EndpointPlan &endpoint : *endpoints) {
+      circt::hw::PortInfo port{
+          {builder.getStringAttr(contextPortName(endpoint)),
+           builder.getIntegerType(*contextWidth),
+           endpoint.direction == fabric::FabricPortDirection::Input
+               ? circt::hw::ModulePort::Direction::Input
+               : circt::hw::ModulePort::Direction::Output}};
+      (port.isOutput() ? outputs : inputs).push_back(port);
+    }
   std::optional<std::string> materializationError;
   auto module = circt::hw::HWModuleOp::create(
       builder, location,
@@ -222,21 +293,21 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
       circt::hw::ModulePortInfo(inputs, outputs),
       [&](mlir::OpBuilder &bodyBuilder,
           circt::hw::HWModulePortAccessor &accessor) {
-        mlir::Value fieldSignal =
-            decodeFieldSignal(bodyBuilder, location, accessor, prepared->first);
-        std::vector<mlir::Value> active;
-        active.reserve(templatePlans.size());
-        for (const TemplatePlan &plan : templatePlans)
-          active.push_back(
-              matchesCode(bodyBuilder, location, fieldSignal, plan.activeCode));
+        std::vector<mlir::Value> fieldSignals;
+        fieldSignals.reserve(prepared.size());
+        for (const auto &entry : prepared)
+          fieldSignals.push_back(
+              decodeFieldSignal(bodyBuilder, location, accessor, entry.first));
 
         circt::BackedgeBuilder backedges(bodyBuilder, location);
         std::map<std::string, circt::Backedge> dataInput;
         std::map<std::string, circt::Backedge> validInput;
         std::map<std::string, circt::Backedge> readyInput;
+        std::map<std::string, circt::Backedge> contextInput;
         std::map<std::string, mlir::Value> dataOutput;
         std::map<std::string, mlir::Value> validOutput;
         std::map<std::string, mlir::Value> readyOutput;
+        std::map<std::string, mlir::Value> contextOutput;
         for (const OperationShellModule *operation : operations) {
           std::map<std::string, mlir::Value> instanceInputs;
           addCommonInstanceInputs(accessor, configurationAbi, transportLayout,
@@ -257,6 +328,12 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
               auto edge = backedges.get(bodyBuilder.getI1Type());
               instanceInputs.emplace(endpoint.valid.getName().str(), edge);
               validInput.emplace(key, std::move(edge));
+              if (endpoint.context) {
+                auto contextEdge = backedges.get(endpoint.context->type);
+                instanceInputs.emplace(endpoint.context->getName().str(),
+                                       contextEdge);
+                contextInput.emplace(key, std::move(contextEdge));
+              }
             } else {
               auto edge = backedges.get(bodyBuilder.getI1Type());
               instanceInputs.emplace(endpoint.ready.getName().str(), edge);
@@ -289,6 +366,9 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
                     key, instance->at(endpoint.data->getName().str()));
               validOutput.emplace(key,
                                   instance->at(endpoint.valid.getName().str()));
+              if (endpoint.context)
+                contextOutput.emplace(
+                    key, instance->at(endpoint.context->getName().str()));
             }
           }
         }
@@ -302,6 +382,7 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
           mlir::Value sourceValid;
           mlir::Value destinationReady;
           std::optional<mlir::Value> data;
+          std::optional<mlir::Value> context;
         };
         std::vector<RouteRuntime> routes;
         const auto terminalType = [&](const auto &terminal)
@@ -324,7 +405,8 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
                                         resolved->second->payloadWidthBits, 0};
         };
         const auto sourceSignals = [&](const auto &terminal)
-            -> llvm::Expected<ForwardTransportSignals> {
+            -> llvm::Expected<std::pair<ForwardTransportSignals,
+                                        std::optional<mlir::Value>>> {
           const std::string key = fuTemplateEndpointKey(terminal);
           if (terminal.kind() ==
               fabric::FabricFuCapabilityTemplateEndpointKind::BoundaryPort) {
@@ -335,25 +417,36 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
             if (!endpoint ||
                 endpoint->direction != fabric::FabricPortDirection::Input)
               return invalid("FU route source is not an input terminal");
-            return ForwardTransportSignals{
-                accessor.getInput(endpoint->valid.getName()),
-                endpoint->data ? std::optional<mlir::Value>{accessor.getInput(
-                                     endpoint->data->getName())}
-                               : std::nullopt,
-                endpoint->tag ? std::optional<mlir::Value>{accessor.getInput(
-                                    endpoint->tag->getName())}
-                              : std::nullopt};
+            return std::make_pair(
+                ForwardTransportSignals{
+                    accessor.getInput(endpoint->valid.getName()),
+                    endpoint->data
+                        ? std::optional<mlir::Value>{accessor.getInput(
+                              endpoint->data->getName())}
+                        : std::nullopt,
+                    endpoint->tag
+                        ? std::optional<mlir::Value>{accessor.getInput(
+                              endpoint->tag->getName())}
+                        : std::nullopt},
+                contextWidth ? std::optional<mlir::Value>{accessor.getInput(
+                                   contextPortName(*endpoint))}
+                             : std::nullopt);
           }
           const auto valid = validOutput.find(key);
           if (valid == validOutput.end())
             return invalid("FU route source operation signal is absent");
           const auto data = dataOutput.find(key);
-          return ForwardTransportSignals{
-              valid->second,
-              data == dataOutput.end()
+          const auto context = contextOutput.find(key);
+          return std::make_pair(
+              ForwardTransportSignals{
+                  valid->second,
+                  data == dataOutput.end()
+                      ? std::nullopt
+                      : std::optional<mlir::Value>{data->second},
+                  std::nullopt},
+              context == contextOutput.end()
                   ? std::nullopt
-                  : std::optional<mlir::Value>{data->second},
-              std::nullopt};
+                  : std::optional<mlir::Value>{context->second});
         };
         const auto destinationReady =
             [&](const auto &terminal) -> llvm::Expected<mlir::Value> {
@@ -391,18 +484,28 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
               backedges.abandon();
               return;
             }
-            auto adapted = adaptForwardTransportSignals(
-                bodyBuilder, location, *sourceType, *destinationType, *source);
+            auto adapted =
+                adaptForwardTransportSignals(bodyBuilder, location, *sourceType,
+                                             *destinationType, source->first);
             if (!adapted) {
               materializationError = llvm::toString(adapted.takeError());
               backedges.abandon();
               return;
             }
+            std::vector<mlir::Value> contextActives;
+            contextActives.reserve(prepared.size());
+            for (auto [context, fieldSignal] : llvm::enumerate(fieldSignals))
+              contextActives.push_back(matchesCode(bodyBuilder, location,
+                                                   fieldSignal,
+                                                   plan.activeCodes[context]));
+            mlir::Value active = contextActives.front();
+            if (source->second && contextActives.size() > 1)
+              active = selectContextValue(bodyBuilder, location,
+                                          *source->second, contextActives);
             routes.push_back(RouteRuntime{
                 templateOrdinal, &edge, fuTemplateEndpointKey(edge.source),
-                fuTemplateEndpointKey(edge.destination),
-                active[templateOrdinal], source->valid, *ready,
-                adapted->payload});
+                fuTemplateEndpointKey(edge.destination), active,
+                source->first.valid, *ready, adapted->payload, source->second});
           }
 
         const auto sourceReady = [&](llvm::StringRef sourceKey) {
@@ -410,14 +513,18 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
           for (std::size_t templateOrdinal = 0;
                templateOrdinal < templatePlans.size(); ++templateOrdinal) {
             llvm::SmallVector<mlir::Value> destinations;
+            mlir::Value routeActive;
             for (const RouteRuntime &route : routes)
               if (route.templateOrdinal == templateOrdinal &&
-                  route.sourceKey == sourceKey)
+                  route.sourceKey == sourceKey) {
                 destinations.push_back(route.destinationReady);
+                if (!routeActive)
+                  routeActive = route.active;
+              }
             if (!destinations.empty())
               alternatives.push_back(
                   andValues(bodyBuilder, location,
-                            {active[templateOrdinal],
+                            {routeActive,
                              andValues(bodyBuilder, location, destinations)}));
           }
           return orValues(bodyBuilder, location, alternatives);
@@ -442,6 +549,9 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
                                 ? zeroData(bodyBuilder, location,
                                            endpoint.dataPath.tagWidthBits)
                                 : mlir::Value{};
+          mlir::Value context =
+              contextWidth ? zeroData(bodyBuilder, location, *contextWidth)
+                           : mlir::Value{};
           for (const RouteRuntime &route : routes) {
             if (route.destinationKey != key)
               continue;
@@ -458,11 +568,17 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
             if (endpoint.data && route.data)
               data = circt::comb::MuxOp::create(
                   bodyBuilder, location, route.active, *route.data, data, true);
+            if (contextWidth && route.context)
+              context = circt::comb::MuxOp::create(bodyBuilder, location,
+                                                   route.active, *route.context,
+                                                   context, true);
           }
           if (endpoint.data)
             accessor.setOutput(endpoint.data->getName(), data);
           if (endpoint.tag)
             accessor.setOutput(endpoint.tag->getName(), tag);
+          if (contextWidth)
+            accessor.setOutput(contextPortName(endpoint), context);
           accessor.setOutput(endpoint.valid.getName(),
                              orValues(bodyBuilder, location, validTerms));
         }
@@ -484,6 +600,10 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
                 endpoint.data
                     ? zeroData(bodyBuilder, location, endpoint.payloadWidthBits)
                     : mlir::Value{};
+            mlir::Value context =
+                endpoint.context
+                    ? zeroData(bodyBuilder, location, *contextWidth)
+                    : mlir::Value{};
             for (const RouteRuntime &route : routes) {
               if (route.destinationKey != key)
                 continue;
@@ -501,16 +621,22 @@ buildFuModule(mlir::OpBuilder &builder, mlir::Location location,
                 data = circt::comb::MuxOp::create(bodyBuilder, location,
                                                   route.active, *route.data,
                                                   data, true);
+              if (endpoint.context && route.context)
+                context = circt::comb::MuxOp::create(
+                    bodyBuilder, location, route.active, *route.context,
+                    context, true);
             }
             if (endpoint.data)
               dataInput.at(key).setValue(data);
+            if (endpoint.context)
+              contextInput.at(key).setValue(context);
             validInput.at(key).setValue(
                 orValues(bodyBuilder, location, validTerms));
           }
       });
   if (materializationError)
     return invalid(*materializationError);
-  return FuModule{fu, module, std::move(*endpoints)};
+  return FuModule{fu, module, std::move(*endpoints), contextWidth};
 }
 
 struct InputSelectorRuntime final {
@@ -899,13 +1025,19 @@ buildPeModules(mlir::OpBuilder &builder, mlir::Location location,
                const fabric::FabricArtifactView &fabric,
                const ConfigurationABI &configurationAbi,
                const ConfigurationTransportLayout &transportLayout,
-               llvm::ArrayRef<FuModule> fuModules, const ClockResetPlan &) {
+               llvm::ArrayRef<FuModule> fuModules,
+               const ClockResetPlan &clockReset) {
   std::vector<PeModule> result;
   result.reserve(fabric.peOccurrences().size());
   for (fabric::FabricPeOccurrenceRef pe : fabric.peOccurrences()) {
     auto module =
-        buildSpatialPeModule(builder, location, spatialCore, fabric,
-                             configurationAbi, transportLayout, fuModules, pe);
+        fabric.peSchedule(pe) == ::fabric::Schedule::Temporal
+            ? buildTemporalPeModule(builder, location, spatialCore, fabric,
+                                    configurationAbi, transportLayout,
+                                    fuModules, clockReset, pe)
+            : buildSpatialPeModule(builder, location, spatialCore, fabric,
+                                   configurationAbi, transportLayout, fuModules,
+                                   pe);
     if (!module)
       return module.takeError();
     result.push_back(std::move(*module));

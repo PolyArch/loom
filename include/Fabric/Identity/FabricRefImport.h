@@ -12,6 +12,7 @@
 #include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefs.h"
 #include "Fabric/Identity/FabricSemanticFieldRelation.h"
+#include "Fabric/Identity/FabricTemporalPeConfiguration.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -522,6 +523,16 @@ public:
   /// inventories and carries no persistent payload of its own.
   llvm::Expected<FabricSpatialPeConfigurationSchemaView>
   spatialPeConfigurationSchema(FabricPeOccurrenceRef occurrence) const;
+
+  /// The complete bounded direct-carrier schema of one Temporal PE.
+  llvm::Expected<FabricTemporalPeConfigurationSchemaView>
+  temporalPeConfigurationSchema(FabricPeOccurrenceRef occurrence) const;
+
+  std::optional<::fabric::OperandBufferMode>
+  peOperandBufferMode(FabricPeOccurrenceRef occurrence) const;
+  std::uint32_t peOperandBufferSize(FabricPeOccurrenceRef occurrence) const;
+  std::uint32_t peRegisterFifoDepth(FabricPeOccurrenceRef occurrence) const;
+  std::uint32_t peRegisterFifoPorts(FabricPeOccurrenceRef occurrence) const;
 
   /// Project one direction-local FU occurrence port to the owner's canonical
   /// transport inventory, whose ordinals place all inputs before all outputs.

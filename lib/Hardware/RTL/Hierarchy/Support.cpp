@@ -110,11 +110,21 @@ prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
                     const fabric::FabricSemanticConfigFieldRef &field,
                     const ConfigurationABI &configurationAbi,
                     const ConfigurationTransportLayout &transportLayout) {
+  return prepareFieldDecoder(spatialCore, field,
+                             fabric::FabricStaticConfigurationResidency{},
+                             configurationAbi, transportLayout);
+}
+
+llvm::Expected<FieldDecoderPlan>
+prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
+                    const fabric::FabricSemanticConfigFieldRef &field,
+                    const fabric::FabricConfigurationResidency &residency,
+                    const ConfigurationABI &configurationAbi,
+                    const ConfigurationTransportLayout &transportLayout) {
   auto physical = qualifyConfigurationField(spatialCore, field);
   if (!physical)
     return physical.takeError();
-  auto slot = fabric::qualifyFabricConfigurationSlot(
-      *physical, fabric::FabricStaticConfigurationResidency{});
+  auto slot = fabric::qualifyFabricConfigurationSlot(*physical, residency);
   if (!slot)
     return slot.takeError();
   const ConfigurationFieldEncoding *encoding =
@@ -130,15 +140,25 @@ prepareFiniteField(fabric::SpatialCoreOccurrenceRef spatialCore,
                    const fabric::FabricSemanticConfigFieldRef &field,
                    const ConfigurationABI &configurationAbi,
                    const ConfigurationTransportLayout &transportLayout) {
-  auto decoder = prepareFieldDecoder(spatialCore, field, configurationAbi,
-                                     transportLayout);
+  return prepareFiniteField(spatialCore, field,
+                            fabric::FabricStaticConfigurationResidency{},
+                            configurationAbi, transportLayout);
+}
+
+llvm::Expected<std::pair<FieldDecoderPlan, const FiniteCodebookEncoding *>>
+prepareFiniteField(fabric::SpatialCoreOccurrenceRef spatialCore,
+                   const fabric::FabricSemanticConfigFieldRef &field,
+                   const fabric::FabricConfigurationResidency &residency,
+                   const ConfigurationABI &configurationAbi,
+                   const ConfigurationTransportLayout &transportLayout) {
+  auto decoder = prepareFieldDecoder(spatialCore, field, residency,
+                                     configurationAbi, transportLayout);
   if (!decoder)
     return decoder.takeError();
   auto physical = qualifyConfigurationField(spatialCore, field);
   if (!physical)
     return physical.takeError();
-  auto slot = fabric::qualifyFabricConfigurationSlot(
-      *physical, fabric::FabricStaticConfigurationResidency{});
+  auto slot = fabric::qualifyFabricConfigurationSlot(*physical, residency);
   if (!slot)
     return slot.takeError();
   const ConfigurationFieldEncoding *encoding =

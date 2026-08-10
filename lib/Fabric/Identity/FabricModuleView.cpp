@@ -110,6 +110,34 @@ FabricArtifactView::peFuConfigurationStorageMode(
   return record ? record->peFuConfigurationStorageMode : std::nullopt;
 }
 
+std::optional<::fabric::OperandBufferMode>
+FabricArtifactView::peOperandBufferMode(
+    FabricPeOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record ? record->peOperandBufferMode : std::nullopt;
+}
+
+std::uint32_t FabricArtifactView::peOperandBufferSize(
+    FabricPeOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record && record->peOperandBufferSize ? *record->peOperandBufferSize
+                                               : 0;
+}
+
+std::uint32_t FabricArtifactView::peRegisterFifoDepth(
+    FabricPeOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record && record->peRegisterFifoDepth ? *record->peRegisterFifoDepth
+                                               : 0;
+}
+
+std::uint32_t FabricArtifactView::peRegisterFifoPorts(
+    FabricPeOccurrenceRef occurrence) const {
+  const detail::FabricEntityViewData *record = storage_->entity(occurrence);
+  return record && record->peRegisterFifoPorts ? *record->peRegisterFifoPorts
+                                               : 0;
+}
+
 std::optional<::fabric::Schedule>
 FabricArtifactView::switchSchedule(FabricSwitchOccurrenceRef occurrence) const {
   const detail::FabricEntityViewData *record = storage_->entity(occurrence);

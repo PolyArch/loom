@@ -66,9 +66,23 @@ prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
                     const ConfigurationABI &configurationAbi,
                     const ConfigurationTransportLayout &transportLayout);
 
+llvm::Expected<FieldDecoderPlan>
+prepareFieldDecoder(fabric::SpatialCoreOccurrenceRef spatialCore,
+                    const fabric::FabricSemanticConfigFieldRef &field,
+                    const fabric::FabricConfigurationResidency &residency,
+                    const ConfigurationABI &configurationAbi,
+                    const ConfigurationTransportLayout &transportLayout);
+
 llvm::Expected<std::pair<FieldDecoderPlan, const FiniteCodebookEncoding *>>
 prepareFiniteField(fabric::SpatialCoreOccurrenceRef spatialCore,
                    const fabric::FabricSemanticConfigFieldRef &field,
+                   const ConfigurationABI &configurationAbi,
+                   const ConfigurationTransportLayout &transportLayout);
+
+llvm::Expected<std::pair<FieldDecoderPlan, const FiniteCodebookEncoding *>>
+prepareFiniteField(fabric::SpatialCoreOccurrenceRef spatialCore,
+                   const fabric::FabricSemanticConfigFieldRef &field,
+                   const fabric::FabricConfigurationResidency &residency,
                    const ConfigurationABI &configurationAbi,
                    const ConfigurationTransportLayout &transportLayout);
 

@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/IR/FabricEnums.h"
 #include "Fabric/IR/MemoryConnectivityContract.h"
 #include "Fabric/IR/MemoryOperationPort.h"
 #include "Fabric/IR/MemoryServiceContract.h"
@@ -94,6 +95,10 @@ struct FabricEntityViewData {
   std::optional<std::uint64_t> switchRouteTableSize;
   std::optional<std::uint64_t> boundaryLookupTableSize;
   std::optional<FabricFuConfigurationStorageMode> peFuConfigurationStorageMode;
+  std::optional<::fabric::OperandBufferMode> peOperandBufferMode;
+  std::optional<std::uint32_t> peOperandBufferSize;
+  std::optional<std::uint32_t> peRegisterFifoDepth;
+  std::optional<std::uint32_t> peRegisterFifoPorts;
   std::optional<FabricPeOccurrenceRef> parentPe;
   std::optional<FabricFuTemplateRef> fuTemplate;
   std::optional<FabricMemoryEngineTemplateRef> memoryEngineTemplate;

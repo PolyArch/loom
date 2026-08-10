@@ -213,8 +213,8 @@ llvm::Expected<ModuleRootCirctSkeleton> buildModuleHierarchySkeleton(
 
   std::vector<FabricOperationLeafAssociation> associations;
   auto operationShells = buildOperationShellModules(
-      builder, location, spatialCore, configurationAbi, *transportLayout,
-      *operations, associations, *clockReset);
+      builder, location, spatialCore, fabric, configurationAbi,
+      *transportLayout, *operations, associations, *clockReset);
   if (!operationShells)
     return operationShells.takeError();
   auto fuModules =

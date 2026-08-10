@@ -488,6 +488,8 @@ FabricArtifactView::inventorySize(const FabricInventoryOwnerRef &owner,
       owner.kind() == FabricInventoryOwnerKind::PeOccurrence) {
     const FabricPeOccurrenceRef pe =
         std::get<FabricPeOccurrenceRef>(owner.payload);
+    if (peSchedule(pe) == ::fabric::Schedule::Temporal)
+      return 1;
     auto schema = spatialPeConfigurationSchema(pe);
     if (!schema) {
       llvm::consumeError(schema.takeError());
