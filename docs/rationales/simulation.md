@@ -80,6 +80,16 @@ System + DFG to bring up target binaries, dispatch, NoC, caches, and external
 memory before detailed Spatial resources exist, without pretending that DFG
 timing is CGRA or RTL timing.
 
+Mapped RTL needs more exact input than mapped CGRA simulation. The RTL bytes,
+configuration ABI, and external bindings belong to HardwareImplementation,
+while the selected occurrence, SpatialMapping context, and complete
+configuration image belong to Deployment. A dedicated mapped-RTL case binds
+those two owners and a Spatial workload. Reusing the CGRA case would hide the
+implementation in a model input; treating the Deployment as a System workload
+would execute a different environment. The dedicated case therefore adds no
+engine field or execution subtype: Deployment supplies only the exact launch
+closure, and the Spatial workload still owns the execution boundary.
+
 The HostCore can be understood as the cluster's additional stored-program
 engine, but not as an AccCore: it has no SpatialCore and no `dataflow.thread`
 identity. Requiring one compatible RISC-V ISA/ABI cohort for the HostCore and

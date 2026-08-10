@@ -383,6 +383,13 @@ material until their exact Artifact owner is defined. Mapped RTL execution
 produces SimulationExecution only when it actually runs the Deployment and
 observes the requested values, streams, memories, and completion behavior.
 
+The initial Spatial-only RTL path is the registered
+`mapped_rtl_simulation` case and `mapped_rtl_simulator` model. Deployment is
+present only to select the exact SpatialCore occurrence, Mapping,
+HardwareConfigurationImage, and ABI closure; the environment remains Spatial-only
+because no processor, system transport, cache, or external-memory behavior is
+executed.
+
 RTL and EDA providers materialize independently executable bundles containing
 exact inputs, generated drivers, frozen local tool/runtime bindings, declared
 outputs, and an importer. Loom may invoke the generated top-level script, but

@@ -308,6 +308,18 @@ Mapped RTL and gate-netlist execution use the ordinary Spatial
 model descriptor selects the HDL engine and the exact Request selects the
 workload; an adapter does not add an external-HDL execution kind.
 
+The initial mapped RTL provider is Evaluation model kind 21,
+`mapped_rtl_simulator`, over case kind 12. Its exact subjects are one
+HardwareImplementation and one Deployment whose Spatial Launch relation
+selects that implementation, one SpatialMapping context, and the complete
+configuration-image set for the exact Spatial workload. Its resolved config
+view owns the stable HDL simulator build identity; executable paths, module
+activation, scratch location, and wall-time limits remain invocation bindings.
+The provider accepts an `Rtl` representation root and publishes the ordinary
+Spatial `SimulationExecution` plus exact integral CycleCount. Gate-netlist
+execution requires another exact model descriptor rather than an implicit
+fidelity switch or fallback under kind 21.
+
 Rail analysis reports the provider-neutral whole-case
 `MaximumVoltageDrop` MetricKind in volts. Voltus and any other static or
 dynamic rail provider normalize their native node observations to that same

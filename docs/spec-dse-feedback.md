@@ -272,6 +272,7 @@ model at any point in the stack. The initial production profiles are:
 | hardware-aware Dataflow analysis | Canonical Dataflow Program, Fabric |
 | hardware-only analysis | Fabric |
 | mapped or CGRA analysis | Canonical Dataflow Program, Fabric, Mapping |
+| mapped RTL simulation | HardwareImplementation, Deployment |
 | physical implementation analysis | HardwareImplementation |
 | system simulation | Deployment, Gem5 Simulation Binding |
 
@@ -282,7 +283,7 @@ DFG-simulation, FPA, and system-simulation flows described here:
 
 Registry 2.1 is a compatible extension of 2.0. It preserves every existing
 ordinal and descriptor meaning and appends the hardware-only, learned-system-
-runtime, and three gem5-backed execution descriptors below. An exact 2.0
+runtime, mapped-RTL, and three gem5-backed execution descriptors below. An exact 2.0
 reference continues to select the 2.0 catalog and cannot name an appended
 kind; there is no version alias. No 1.0 case or model descriptor reference is
 reinterpreted to accept Fabric, ConfigurationABI, or HardwareImplementation
@@ -305,6 +306,7 @@ constructed roots use registry-2.1 refs.
 | 9 | `canonical_dataflow_source_functional_comparison` | `0: Canonical Dataflow Program`, `1: selected Structured Program parent` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
 | 10 | `fabric_hardware_analysis` | `0: Fabric` | both forbidden |
 | 11 | `system_runtime_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with a System Runtime prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
+| 12 | `mapped_rtl_simulation` | `0: exact loom.hardware_implementation 3.0`, `1: Deployment` | both required; the workload and runtime input are Spatial roots, and the Deployment resolves their exact Dataflow launch to one selected Spatial execution context implemented by role 0 |
 
 The matching initial model descriptors are:
 
@@ -329,6 +331,7 @@ The matching initial model descriptors are:
 | 18 | `gem5_system_cgra` | 6 | deterministic Simulation of the exact System workload with mapped CGRA SpatialCore participants and one `SimulationExecution` output plus whole-case Runtime |
 | 19 | `gem5_system_rtl` | 6 | deterministic Simulation of the exact System workload with mapped RTL SpatialCore participants and one `SimulationExecution` output plus whole-case Runtime |
 | 20 | `openroad_routed_static_fpa` | 5 | OpenROAD ToolMeasurement point observations of limiting clock frequency, total area, dynamic power, and leakage power for one exact routed implementation target |
+| 21 | `mapped_rtl_simulator` | 12 | deterministic external Simulation of the exact Spatial workload on one mapped RTL implementation, with one `SimulationExecution` output and exact whole-case CycleCount |
 
 Model kinds 2, 3, and 13 consume the exact shared low-confidence config-view
 contract. Model kinds 4, 5, and 6 each consume a distinct zero-field config
@@ -343,6 +346,12 @@ fidelity. Model kind 20 is the initial exact FPA ground-truth descriptor; its
 resolved config view names one OpenROAD provider build rather than treating all
 physical Evidence as interchangeable. The exact descriptor owns the routed
 static-analysis and report-normalization contract.
+Model kind 21 is an `ExternalPrepareImport` descriptor whose resolved config
+view names one exact HDL simulator build. It admits only a target-independent
+or platform-specialized `Rtl` representation root whose complete
+HardwareImplementation is selected by the exact Deployment. A GateNetlist or
+another HDL fidelity requires another descriptor rather than being silently
+reinterpreted under kind 21.
 Implementation flow, library cohort, Fabric structure, and operating conditions
 remain typed features. Another physical provider registers another exact model
 descriptor. Physical execution limits remain
@@ -379,6 +388,20 @@ Dataflow and selected Structured parent are both case subjects; neither is
 recovered from provider-local cache state. It has the same source-backed
 functional outcome boundary as model kind 4 and does not claim timing or
 physical observations.
+
+Model kind 21 uses case kind 12's Deployment-owned Spatial launch and
+configuration closure. The Deployment must reference role 0, and its exact
+Spatial Launch relation must resolve the workload's rooted launch and dense
+coordinates to one `SpatialExecutionContextKey`, one SpatialMapping, and the
+complete required HardwareConfigurationImage set. The implementation's Fabric
+and ConfigurationABI must equal that Deployment closure. The provider executes
+only the selected SpatialCore boundary; HostCore, InstructionCore, NoC, cache,
+and external-memory execution remain inactive, so this remains a Spatial-only
+environment. The case derives its unique reference cycle from the selected
+SpatialMapping context. A nonintegral retirement coordinate makes CycleCount
+unavailable rather than rounded. The external importer finalizes the ordinary
+Spatial `SimulationExecution`; it cannot add an RTL execution subtype, infer a
+configuration, choose another occurrence, or fall back to CGRA simulation.
 
 Model kinds 13 and 14 have no workload and cannot publish `Runtime`. Dynamic
 power requires an exact admitted Fabric-rooted activity condition; absence is
@@ -500,6 +523,10 @@ shared system-simulation signature referenced by the Runtime ABI and Fabric
 System contracts. Its exact Deployment/Gem5-binding compatibility and System
 workload/runtime-input coupling are those owners' typed relations, not copied
 fields in Evaluation.
+Case kind 12 is the corresponding Spatial-only external-HDL signature. Its
+HardwareImplementation/Deployment compatibility, unique mapped launch context,
+and Spatial workload/runtime-input coupling are likewise verified through
+those owners rather than copied into Evaluation.
 
 This table does not introduce a second case-kind enum or a generic optional
 subject bag. Every real model registers one exact

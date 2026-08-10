@@ -129,6 +129,14 @@ is expressed per observation, not as a global `L1/L2/L3` label. Promotion
 policy requests the evidence it needs rather than assuming every candidate
 must traverse one fixed ladder.
 
+The mapped RTL descriptor uses its own case signature because neither the
+CGRA subject closure nor the System-simulation closure asks the same exact
+question. HardwareImplementation owns the RTL state, Deployment owns the
+occurrence-qualified Mapping and configuration closure, and a Spatial workload
+owns the standalone launch. Binding those owners once is smaller than copying
+configuration facts into Evaluation, smuggling HardwareImplementation through a
+model-input slot, or adding an RTL discriminator to SimulationExecution.
+
 ## Why DSE Uses Typed Use-Def
 
 The central plan is an SSA-like DAG of typed producer outputs and consumer
