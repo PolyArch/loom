@@ -16,6 +16,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
@@ -87,9 +88,9 @@ struct ChannelPlan final {
   mlir::memref::AllocOp allocation;
   mlir::memref::DeallocOp deallocation;
   EndpointPlan producer;
-  EndpointPlan consumer;
+  llvm::SmallVector<EndpointPlan, 4> consumers;
   dataflow::ThreadWaitOp producerWait;
-  dataflow::ThreadWaitOp consumerWait;
+  llvm::SmallVector<dataflow::ThreadWaitOp, 4> consumerWaits;
 };
 
 struct SourceAllocationShape final {
@@ -122,9 +123,9 @@ struct SourceChannelPlan final {
   llvm::SmallVector<mlir::Operation *, 2> lifetimeMarkers;
   SourceAllocationShape shape;
   SourceEndpointPlan producer;
-  SourceEndpointPlan consumer;
+  llvm::SmallVector<SourceEndpointPlan, 4> consumers;
   dataflow::ThreadWaitOp producerWait;
-  dataflow::ThreadWaitOp consumerWait;
+  llvm::SmallVector<dataflow::ThreadWaitOp, 4> consumerWaits;
 };
 
 bool isAllowedStructure(mlir::Operation *operation);
@@ -596,6 +597,50 @@ bool hasOnlyPureOperationsBetween(mlir::Operation *first,
   return true;
 }
 
+template <typename Plan>
+std::optional<mlir::Value> launchOperand(const Plan &plan, unsigned ordinal) {
+  dataflow::ThreadLaunchOp launch = plan.launch;
+  if (ordinal >= launch.getBodyOperands().size())
+    return std::nullopt;
+  return launch.getBodyOperands()[ordinal];
+}
+
+template <typename Plan>
+bool haveIndependentRemainingEffects(const Plan &lhs, const Plan &rhs) {
+  auto areDistinct = [&](unsigned lhsOrdinal, unsigned rhsOrdinal) {
+    std::optional<mlir::Value> lhsRoot = launchOperand(lhs, lhsOrdinal);
+    std::optional<mlir::Value> rhsRoot = launchOperand(rhs, rhsOrdinal);
+    return lhsRoot && rhsRoot &&
+           areKnownDistinctMemoryRoots(*lhsRoot, *rhsRoot);
+  };
+  for (unsigned write : lhs.writeOrdinals) {
+    for (unsigned read : rhs.readOrdinals)
+      if (!areDistinct(write, read))
+        return false;
+    for (unsigned otherWrite : rhs.writeOrdinals)
+      if (!areDistinct(write, otherWrite))
+        return false;
+  }
+  for (unsigned read : lhs.readOrdinals)
+    for (unsigned write : rhs.writeOrdinals)
+      if (!areDistinct(read, write))
+        return false;
+  return true;
+}
+
+template <typename Plan>
+bool haveIndependentFanoutEffects(const Plan &producer,
+                                  llvm::ArrayRef<Plan> consumers) {
+  for (const Plan &consumer : consumers)
+    if (!haveIndependentRemainingEffects(producer, consumer))
+      return false;
+  for (std::size_t left = 0; left < consumers.size(); ++left)
+    for (std::size_t right = left + 1; right < consumers.size(); ++right)
+      if (!haveIndependentRemainingEffects(consumers[left], consumers[right]))
+        return false;
+  return true;
+}
+
 std::optional<ChannelPlan> analyzeChannel(mlir::memref::AllocOp allocation) {
   mlir::MemRefType type = allocation.getType();
   if (!type.hasStaticShape() || !type.getLayout().isIdentity() ||
@@ -610,7 +655,7 @@ std::optional<ChannelPlan> analyzeChannel(mlir::memref::AllocOp allocation) {
     return std::nullopt;
 
   mlir::memref::DeallocOp deallocation;
-  llvm::SmallVector<std::pair<dataflow::ThreadLaunchOp, unsigned>, 2> launches;
+  llvm::SmallVector<std::pair<dataflow::ThreadLaunchOp, unsigned>, 4> launches;
   for (mlir::OpOperand &use : allocation.getResult().getUses()) {
     if (auto dealloc =
             llvm::dyn_cast<mlir::memref::DeallocOp>(use.getOwner())) {
@@ -626,58 +671,73 @@ std::optional<ChannelPlan> analyzeChannel(mlir::memref::AllocOp allocation) {
       return std::nullopt;
     launches.emplace_back(launch, *ordinal);
   }
-  if (!deallocation || launches.size() != 2 ||
-      launches.front().first == launches.back().first)
+  if (!deallocation || launches.size() < 2)
+    return std::nullopt;
+  mlir::Block *block = allocation->getBlock();
+  llvm::SmallPtrSet<mlir::Operation *, 8> uniqueLaunches;
+  for (auto [launch, ordinal] : launches) {
+    (void)ordinal;
+    if (launch->getBlock() != block ||
+        !uniqueLaunches.insert(launch.getOperation()).second)
+      return std::nullopt;
+  }
+  llvm::sort(launches, [](auto lhs, auto rhs) {
+    return lhs.first->isBeforeInBlock(rhs.first);
+  });
+
+  std::optional<EndpointPlan> producer;
+  llvm::SmallVector<EndpointPlan, 4> consumers;
+  for (auto [launch, ordinal] : launches) {
+    auto endpoint = analyzeEndpoint(launch, ordinal, type);
+    if (!endpoint || !launch.getAsyncDependencies().empty())
+      return std::nullopt;
+    if (endpoint->kind == EndpointKind::Producer) {
+      if (producer)
+        return std::nullopt;
+      producer = std::move(*endpoint);
+    } else {
+      consumers.push_back(std::move(*endpoint));
+    }
+  }
+  if (!producer || consumers.empty() ||
+      launches.front().first != producer->launch)
     return std::nullopt;
 
-  auto first = analyzeEndpoint(launches[0].first, launches[0].second, type);
-  auto second = analyzeEndpoint(launches[1].first, launches[1].second, type);
-  if (!first || !second || first->kind == second->kind)
-    return std::nullopt;
-  EndpointPlan producer =
-      first->kind == EndpointKind::Producer ? *first : *second;
-  EndpointPlan consumer =
-      first->kind == EndpointKind::Consumer ? *first : *second;
-  if (!producer.launch.getAsyncDependencies().empty() ||
-      !consumer.launch.getAsyncDependencies().empty())
-    return std::nullopt;
   std::optional<dataflow::ThreadWaitOp> producerWait =
-      uniqueWait(producer.launch);
-  std::optional<dataflow::ThreadWaitOp> consumerWait =
-      uniqueWait(consumer.launch);
-  mlir::Block *block = allocation->getBlock();
-  if (!producerWait || !consumerWait || producer.launch->getBlock() != block ||
-      consumer.launch->getBlock() != block ||
-      (*producerWait)->getBlock() != block ||
-      (*consumerWait)->getBlock() != block ||
+      uniqueWait(producer->launch);
+  if (!producerWait || (*producerWait)->getBlock() != block ||
       deallocation->getBlock() != block ||
-      !allocation->isBeforeInBlock(producer.launch) ||
-      !producer.launch->isBeforeInBlock(*producerWait) ||
-      !(*producerWait)->isBeforeInBlock(consumer.launch) ||
-      !consumer.launch->isBeforeInBlock(*consumerWait) ||
-      !(*consumerWait)->isBeforeInBlock(deallocation) ||
-      !hasOnlyPureOperationsBetween(*producerWait, consumer.launch))
+      !allocation->isBeforeInBlock(producer->launch) ||
+      !producer->launch->isBeforeInBlock(*producerWait))
+    return std::nullopt;
+
+  llvm::SmallVector<dataflow::ThreadWaitOp, 4> consumerWaits;
+  mlir::Operation *previousWait = producerWait->getOperation();
+  for (const EndpointPlan &consumer : consumers) {
+    std::optional<dataflow::ThreadWaitOp> wait = uniqueWait(consumer.launch);
+    if (!wait || (*wait)->getBlock() != block ||
+        !previousWait->isBeforeInBlock(consumer.launch) ||
+        !consumer.launch->isBeforeInBlock(*wait) ||
+        !hasOnlyPureOperationsBetween(previousWait, consumer.launch))
+      return std::nullopt;
+    consumerWaits.push_back(*wait);
+    previousWait = wait->getOperation();
+  }
+  if (!previousWait->isBeforeInBlock(deallocation))
     return std::nullopt;
 
   mlir::DominanceInfo dominance(block->getParentOp());
-  if (llvm::any_of(consumer.launch->getOperands(), [&](mlir::Value operand) {
-        return !dominance.dominates(operand, producerWait->getOperation());
-      }))
-    return std::nullopt;
-
-  for (unsigned producerRead : producer.readOrdinals) {
-    if (producerRead >= producer.launch.getBodyOperands().size())
+  for (const EndpointPlan &consumer : consumers)
+    if (llvm::any_of(consumer.launch->getOperands(), [&](mlir::Value operand) {
+          return !dominance.dominates(operand, producerWait->getOperation());
+        }))
       return std::nullopt;
-    for (unsigned consumerWrite : consumer.writeOrdinals) {
-      if (consumerWrite >= consumer.launch.getBodyOperands().size() ||
-          !areKnownDistinctMemoryRoots(
-              producer.launch.getBodyOperands()[producerRead],
-              consumer.launch.getBodyOperands()[consumerWrite]))
-        return std::nullopt;
-    }
-  }
-  return ChannelPlan{allocation, deallocation,  producer,
-                     consumer,   *producerWait, *consumerWait};
+  if (!haveIndependentFanoutEffects(*producer,
+                                    llvm::ArrayRef<EndpointPlan>(consumers)))
+    return std::nullopt;
+  return ChannelPlan{allocation,           deallocation,
+                     std::move(*producer), std::move(consumers),
+                     *producerWait,        std::move(consumerWaits)};
 }
 
 std::optional<SourceChannelPlan>
@@ -691,7 +751,7 @@ analyzeSourceChannel(mlir::LLVM::AllocaOp allocation) {
 
   mlir::LLVM::LifetimeStartOp lifetimeStart;
   mlir::LLVM::LifetimeEndOp lifetimeEnd;
-  llvm::SmallVector<std::pair<dataflow::ThreadLaunchOp, unsigned>, 2> launches;
+  llvm::SmallVector<std::pair<dataflow::ThreadLaunchOp, unsigned>, 4> launches;
   for (mlir::OpOperand &use : allocation.getRes().getUses()) {
     if (auto start =
             llvm::dyn_cast<mlir::LLVM::LifetimeStartOp>(use.getOwner())) {
@@ -714,68 +774,86 @@ analyzeSourceChannel(mlir::LLVM::AllocaOp allocation) {
     launches.emplace_back(launch, *ordinal);
   }
   if (static_cast<bool>(lifetimeStart) != static_cast<bool>(lifetimeEnd) ||
-      launches.size() != 2 || launches.front().first == launches.back().first)
+      launches.size() < 2)
+    return std::nullopt;
+  mlir::Block *block = allocation->getBlock();
+  llvm::SmallPtrSet<mlir::Operation *, 8> uniqueLaunches;
+  for (auto [launch, ordinal] : launches) {
+    (void)ordinal;
+    if (launch->getBlock() != block ||
+        !uniqueLaunches.insert(launch.getOperation()).second)
+      return std::nullopt;
+  }
+  llvm::sort(launches, [](auto lhs, auto rhs) {
+    return lhs.first->isBeforeInBlock(rhs.first);
+  });
+
+  std::optional<SourceEndpointPlan> producer;
+  llvm::SmallVector<SourceEndpointPlan, 4> consumers;
+  for (auto [launch, ordinal] : launches) {
+    auto endpoint = analyzeSourceEndpoint(launch, ordinal, *shape,
+                                          allocation.getRes().getType());
+    if (!endpoint || !launch.getAsyncDependencies().empty())
+      return std::nullopt;
+    if (endpoint->kind == EndpointKind::Producer) {
+      if (producer)
+        return std::nullopt;
+      producer = std::move(*endpoint);
+    } else {
+      consumers.push_back(std::move(*endpoint));
+    }
+  }
+  if (!producer || consumers.empty() ||
+      launches.front().first != producer->launch)
     return std::nullopt;
 
-  auto first = analyzeSourceEndpoint(launches[0].first, launches[0].second,
-                                     *shape, allocation.getRes().getType());
-  auto second = analyzeSourceEndpoint(launches[1].first, launches[1].second,
-                                      *shape, allocation.getRes().getType());
-  if (!first || !second || first->kind == second->kind)
-    return std::nullopt;
-  SourceEndpointPlan producer =
-      first->kind == EndpointKind::Producer ? *first : *second;
-  SourceEndpointPlan consumer =
-      first->kind == EndpointKind::Consumer ? *first : *second;
-  if (!producer.launch.getAsyncDependencies().empty() ||
-      !consumer.launch.getAsyncDependencies().empty())
-    return std::nullopt;
   std::optional<dataflow::ThreadWaitOp> producerWait =
-      uniqueWait(producer.launch);
-  std::optional<dataflow::ThreadWaitOp> consumerWait =
-      uniqueWait(consumer.launch);
-  mlir::Block *block = allocation->getBlock();
-  if (!producerWait || !consumerWait || producer.launch->getBlock() != block ||
-      consumer.launch->getBlock() != block ||
-      (*producerWait)->getBlock() != block ||
-      (*consumerWait)->getBlock() != block ||
+      uniqueWait(producer->launch);
+  if (!producerWait || (*producerWait)->getBlock() != block ||
       (lifetimeStart && lifetimeStart->getBlock() != block) ||
       (lifetimeEnd && lifetimeEnd->getBlock() != block) ||
-      !allocation->isBeforeInBlock(producer.launch) ||
+      !allocation->isBeforeInBlock(producer->launch) ||
       (lifetimeStart && (!allocation->isBeforeInBlock(lifetimeStart) ||
-                         !lifetimeStart->isBeforeInBlock(producer.launch))) ||
-      !producer.launch->isBeforeInBlock(*producerWait) ||
-      !(*producerWait)->isBeforeInBlock(consumer.launch) ||
-      !consumer.launch->isBeforeInBlock(*consumerWait) ||
-      (lifetimeEnd && !(*consumerWait)->isBeforeInBlock(lifetimeEnd)) ||
-      !hasOnlyPureOperationsBetween(*producerWait, consumer.launch))
+                         !lifetimeStart->isBeforeInBlock(producer->launch))) ||
+      !producer->launch->isBeforeInBlock(*producerWait))
+    return std::nullopt;
+
+  llvm::SmallVector<dataflow::ThreadWaitOp, 4> consumerWaits;
+  mlir::Operation *previousWait = producerWait->getOperation();
+  for (const SourceEndpointPlan &consumer : consumers) {
+    std::optional<dataflow::ThreadWaitOp> wait = uniqueWait(consumer.launch);
+    if (!wait || (*wait)->getBlock() != block ||
+        !previousWait->isBeforeInBlock(consumer.launch) ||
+        !consumer.launch->isBeforeInBlock(*wait) ||
+        !hasOnlyPureOperationsBetween(previousWait, consumer.launch))
+      return std::nullopt;
+    consumerWaits.push_back(*wait);
+    previousWait = wait->getOperation();
+  }
+  if (lifetimeEnd && !previousWait->isBeforeInBlock(lifetimeEnd))
     return std::nullopt;
 
   mlir::DominanceInfo dominance(block->getParentOp());
-  if (llvm::any_of(consumer.launch->getOperands(), [&](mlir::Value operand) {
-        return !dominance.dominates(operand, producerWait->getOperation());
-      }))
-    return std::nullopt;
-  for (unsigned producerRead : producer.readOrdinals) {
-    if (producerRead >= producer.launch.getBodyOperands().size())
+  for (const SourceEndpointPlan &consumer : consumers)
+    if (llvm::any_of(consumer.launch->getOperands(), [&](mlir::Value operand) {
+          return !dominance.dominates(operand, producerWait->getOperation());
+        }))
       return std::nullopt;
-    for (unsigned consumerWrite : consumer.writeOrdinals) {
-      if (consumerWrite >= consumer.launch.getBodyOperands().size() ||
-          !areKnownDistinctMemoryRoots(
-              producer.launch.getBodyOperands()[producerRead],
-              consumer.launch.getBodyOperands()[consumerWrite]))
-        return std::nullopt;
-    }
-  }
+  if (!haveIndependentFanoutEffects(
+          *producer, llvm::ArrayRef<SourceEndpointPlan>(consumers)))
+    return std::nullopt;
   llvm::SmallVector<mlir::Operation *, 2> lifetimeMarkers;
   if (lifetimeStart)
     lifetimeMarkers.push_back(lifetimeStart);
   if (lifetimeEnd)
     lifetimeMarkers.push_back(lifetimeEnd);
-  return SourceChannelPlan{
-      allocation,          std::move(lifetimeMarkers), *shape,
-      std::move(producer), std::move(consumer),        *producerWait,
-      *consumerWait};
+  return SourceChannelPlan{allocation,
+                           std::move(lifetimeMarkers),
+                           *shape,
+                           std::move(*producer),
+                           std::move(consumers),
+                           *producerWait,
+                           std::move(consumerWaits)};
 }
 
 std::string freshThreadName(mlir::ModuleOp module, llvm::StringRef base,
@@ -994,29 +1072,31 @@ bool areKnownDistinctMemoryRoots(mlir::Value lhs, mlir::Value rhs) {
   return (lhsGlobal && rhsAlloc) || (lhsAlloc && rhsGlobal);
 }
 
-bool canPromoteSpscBufferToChannel(mlir::memref::AllocOp allocation) {
+bool canPromoteOrderedBufferToChannel(mlir::memref::AllocOp allocation) {
   return analyzeChannel(allocation).has_value();
 }
 
-bool canPromoteSpscBufferToChannel(mlir::LLVM::AllocaOp allocation) {
+bool canPromoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation) {
   return analyzeSourceChannel(allocation).has_value();
 }
 
-llvm::Error promoteSpscBufferToChannel(mlir::memref::AllocOp allocation) {
+llvm::Error promoteOrderedBufferToChannel(mlir::memref::AllocOp allocation) {
   std::optional<ChannelPlan> analyzed = analyzeChannel(allocation);
   if (!analyzed)
-    return invalid(
-        "selected allocation is not an exact promotable SPSC buffer");
+    return invalid("selected allocation is not an exact promotable ordered "
+                   "producer-consumer buffer");
   ChannelPlan plan = *analyzed;
   mlir::MemRefType allocationType = allocation.getType();
   auto producer = specializeIfShared(plan.producer, allocationType);
   if (!producer)
     return producer.takeError();
   plan.producer = *producer;
-  auto consumer = specializeIfShared(plan.consumer, allocationType);
-  if (!consumer)
-    return consumer.takeError();
-  plan.consumer = *consumer;
+  for (EndpointPlan &consumer : plan.consumers) {
+    auto specialized = specializeIfShared(consumer, allocationType);
+    if (!specialized)
+      return specialized.takeError();
+    consumer = std::move(*specialized);
+  }
 
   mlir::Type channelType = dataflow::ChannelType::get(
       allocation.getContext(), allocationType.getElementType());
@@ -1025,13 +1105,15 @@ llvm::Error promoteSpscBufferToChannel(mlir::memref::AllocOp allocation) {
                                                    channelType);
   if (llvm::Error error = rewriteEndpoint(plan.producer, channelType))
     return error;
-  if (llvm::Error error = rewriteEndpoint(plan.consumer, channelType))
-    return error;
+  for (EndpointPlan &consumer : plan.consumers)
+    if (llvm::Error error = rewriteEndpoint(consumer, channelType))
+      return error;
   plan.producer.launch->setOperand(plan.producer.formalOrdinal,
                                    channel.getChannel());
-  plan.consumer.launch->setOperand(plan.consumer.formalOrdinal,
-                                   channel.getChannel());
-  plan.consumer.launch->moveBefore(plan.producerWait);
+  for (EndpointPlan &consumer : plan.consumers) {
+    consumer.launch->setOperand(consumer.formalOrdinal, channel.getChannel());
+    consumer.launch->moveBefore(plan.producerWait);
+  }
   plan.deallocation.erase();
   if (!allocation.getResult().use_empty())
     return invalid("promoted allocation retained an unproved use");
@@ -1039,11 +1121,11 @@ llvm::Error promoteSpscBufferToChannel(mlir::memref::AllocOp allocation) {
   return llvm::Error::success();
 }
 
-llvm::Error promoteSpscBufferToChannel(mlir::LLVM::AllocaOp allocation) {
+llvm::Error promoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation) {
   std::optional<SourceChannelPlan> analyzed = analyzeSourceChannel(allocation);
   if (!analyzed)
-    return invalid(
-        "selected source allocation is not an exact promotable SPSC buffer");
+    return invalid("selected source allocation is not an exact promotable "
+                   "ordered producer-consumer buffer");
   SourceChannelPlan plan = *analyzed;
   mlir::Type pointerType = allocation.getRes().getType();
   auto producer =
@@ -1051,11 +1133,13 @@ llvm::Error promoteSpscBufferToChannel(mlir::LLVM::AllocaOp allocation) {
   if (!producer)
     return producer.takeError();
   plan.producer = *producer;
-  auto consumer =
-      specializeSourceIfShared(plan.consumer, plan.shape, pointerType);
-  if (!consumer)
-    return consumer.takeError();
-  plan.consumer = *consumer;
+  for (SourceEndpointPlan &consumer : plan.consumers) {
+    auto specialized =
+        specializeSourceIfShared(consumer, plan.shape, pointerType);
+    if (!specialized)
+      return specialized.takeError();
+    consumer = std::move(*specialized);
+  }
 
   mlir::Type channelType = dataflow::ChannelType::get(allocation.getContext(),
                                                       plan.shape.elementType);
@@ -1064,13 +1148,15 @@ llvm::Error promoteSpscBufferToChannel(mlir::LLVM::AllocaOp allocation) {
                                                    channelType);
   if (llvm::Error error = rewriteSourceEndpoint(plan.producer, channelType))
     return error;
-  if (llvm::Error error = rewriteSourceEndpoint(plan.consumer, channelType))
-    return error;
+  for (SourceEndpointPlan &consumer : plan.consumers)
+    if (llvm::Error error = rewriteSourceEndpoint(consumer, channelType))
+      return error;
   plan.producer.launch->setOperand(plan.producer.formalOrdinal,
                                    channel.getChannel());
-  plan.consumer.launch->setOperand(plan.consumer.formalOrdinal,
-                                   channel.getChannel());
-  plan.consumer.launch->moveBefore(plan.producerWait);
+  for (SourceEndpointPlan &consumer : plan.consumers) {
+    consumer.launch->setOperand(consumer.formalOrdinal, channel.getChannel());
+    consumer.launch->moveBefore(plan.producerWait);
+  }
   for (mlir::Operation *marker : plan.lifetimeMarkers)
     marker->erase();
   if (!allocation.getRes().use_empty())

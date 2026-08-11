@@ -40,7 +40,7 @@ namespace loom::frontend {
 namespace {
 
 constexpr llvm::StringLiteral decisionSchema =
-    "loom.structured_memory_communication.decision.2.0";
+    "loom.structured_memory_communication.decision.3.0";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -970,7 +970,7 @@ structuredMemoryCommunicationDecisionKind(
         if constexpr (std::is_same_v<T, PipelineStagedLoopDecision>)
           return StructuredMemoryCommunicationDecisionKind::PipelineStagedLoop;
         return StructuredMemoryCommunicationDecisionKind::
-            PromoteSpscBufferToChannel;
+            PromoteOrderedBufferToChannel;
       },
       decision);
 }
@@ -1023,7 +1023,7 @@ adoptStructuredMemoryCommunicationDecision(
     return rawKind.takeError();
   if (*rawKind >
       static_cast<std::uint32_t>(StructuredMemoryCommunicationDecisionKind::
-                                     PromoteSpscBufferToChannel))
+                                     PromoteOrderedBufferToChannel))
     return invalid("decision payload has an unknown kind");
   auto anchor = takeEntityRef(remaining);
   if (!anchor)
@@ -1052,10 +1052,10 @@ adoptStructuredMemoryCommunicationDecision(
       return invalid("pipeline anchor is not an operation");
     decision = PipelineStagedLoopDecision{*anchor};
     break;
-  case StructuredMemoryCommunicationDecisionKind::PromoteSpscBufferToChannel:
+  case StructuredMemoryCommunicationDecisionKind::PromoteOrderedBufferToChannel:
     if (anchor->kind != StructuredEntityKind::Value)
       return invalid("channel-promotion anchor is not a value");
-    decision = PromoteSpscBufferToChannelDecision{*anchor};
+    decision = PromoteOrderedBufferToChannelDecision{*anchor};
     break;
   }
   if (!remaining.empty())
@@ -1124,11 +1124,11 @@ enumerateStructuredMemoryCommunicationDecisions(
             std::move(decisions), inspectedMemoryScopes};
       ++inspectedMemoryScopes;
       auto found = valueReferences.find(alloca.getRes());
-      if (detail::canPromoteSpscBufferToChannel(alloca)) {
+      if (detail::canPromoteOrderedBufferToChannel(alloca)) {
         if (found == valueReferences.end())
           return invalid("source allocation has no canonical value reference");
         decisions.emplace_back(
-            PromoteSpscBufferToChannelDecision{found->second});
+            PromoteOrderedBufferToChannelDecision{found->second});
       }
       continue;
     }
@@ -1145,7 +1145,7 @@ enumerateStructuredMemoryCommunicationDecisions(
     if (!order)
       return order.takeError();
     auto found = valueReferences.find(alloc.getResult());
-    if ((*order || detail::canPromoteSpscBufferToChannel(alloc)) &&
+    if ((*order || detail::canPromoteOrderedBufferToChannel(alloc)) &&
         found == valueReferences.end())
       return invalid("local allocation has no canonical value reference");
     if (*order) {
@@ -1160,8 +1160,9 @@ enumerateStructuredMemoryCommunicationDecisions(
             PermuteLocalBufferLayoutDecision{found->second, position});
       }
     }
-    if (detail::canPromoteSpscBufferToChannel(alloc))
-      decisions.emplace_back(PromoteSpscBufferToChannelDecision{found->second});
+    if (detail::canPromoteOrderedBufferToChannel(alloc))
+      decisions.emplace_back(
+          PromoteOrderedBufferToChannelDecision{found->second});
   }
   return StructuredMemoryCommunicationDecisionDomain{std::move(decisions),
                                                      inspectedMemoryScopes};
@@ -1202,7 +1203,8 @@ materializeStructuredMemoryCommunicationDecision(
     if (llvm::Error error = materializePipelineLoop(loop))
       return std::move(error);
   } else if (const auto *channel =
-                 std::get_if<PromoteSpscBufferToChannelDecision>(&decision)) {
+                 std::get_if<PromoteOrderedBufferToChannelDecision>(
+                     &decision)) {
     mlir::Value allocation;
     auto resolved =
         cloneAndResolveChannelAllocation(parent, channel->anchor, allocation);
@@ -1210,10 +1212,10 @@ materializeStructuredMemoryCommunicationDecision(
       return resolved.takeError();
     clone = std::move(*resolved);
     if (auto alloc = allocation.getDefiningOp<mlir::memref::AllocOp>()) {
-      if (llvm::Error error = detail::promoteSpscBufferToChannel(alloc))
+      if (llvm::Error error = detail::promoteOrderedBufferToChannel(alloc))
         return std::move(error);
     } else if (auto alloca = allocation.getDefiningOp<mlir::LLVM::AllocaOp>()) {
-      if (llvm::Error error = detail::promoteSpscBufferToChannel(alloca))
+      if (llvm::Error error = detail::promoteOrderedBufferToChannel(alloca))
         return std::move(error);
     } else {
       return invalid("channel allocation changed representation in the clone");

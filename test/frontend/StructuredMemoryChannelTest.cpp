@@ -58,6 +58,7 @@ mlir::MLIRContext &context() {
 
 struct FixtureOptions final {
   bool twoConsumers = false;
+  bool independentConsumers = false;
   bool partialConsumer = false;
   bool reorderedConsumer = false;
   bool visibleBeforeReceive = false;
@@ -86,6 +87,7 @@ module attributes {dlti.dl_spec = #layout} {
   memref.global constant @channel_source : memref<4xi32> =
       dense<[1, 3, 5, 7]>
   memref.global @channel_target : memref<4xi32> = dense<0>
+  memref.global @channel_target_2 : memref<4xi32> = dense<0>
 
   dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
       %source: memref<4xi32>, %temporary: memref<4xi32>)
@@ -142,6 +144,7 @@ module attributes {dlti.dl_spec = #layout} {
   func.func @entry() {
     %source = memref.get_global @channel_source : memref<4xi32>
     %target = memref.get_global @channel_target : memref<4xi32>
+    %target2 = memref.get_global @channel_target_2 : memref<4xi32>
     %early = arith.constant 0 : i32
     %temporary = memref.alloc() : memref<4xi32>
     %producer = dataflow.thread.launch @producer(%source, %temporary) :
@@ -156,12 +159,15 @@ module attributes {dlti.dl_spec = #layout} {
         (memref<4xi32>, memref<4xi32>, i32) -> !dataflow.thread_token
     dataflow.thread.wait %consumer : !dataflow.thread_token
 )mlir";
-  if (options.twoConsumers)
+  if (options.twoConsumers || options.independentConsumers) {
     source += R"mlir(
-    %consumer_again = dataflow.thread.launch @consumer(%temporary, %target, %early) :
+    %consumer_again = dataflow.thread.launch @consumer(%temporary, )mlir";
+    source += options.independentConsumers ? "%target2" : "%target";
+    source += R"mlir(, %early) :
         (memref<4xi32>, memref<4xi32>, i32) -> !dataflow.thread_token
     dataflow.thread.wait %consumer_again : !dataflow.thread_token
 )mlir";
+  }
   source += "    memref.dealloc %temporary : memref<4xi32>\n";
   if (options.sharedDefinitions)
     source += R"mlir(
@@ -337,7 +343,7 @@ channelDecisions(const loom::frontend::StructuredProgramCandidate &candidate) {
   for (const auto &decision : domain.decisions)
     if (loom::frontend::structuredMemoryCommunicationDecisionKind(decision) ==
         loom::frontend::StructuredMemoryCommunicationDecisionKind::
-            PromoteSpscBufferToChannel)
+            PromoteOrderedBufferToChannel)
       result.push_back(decision);
   return result;
 }
@@ -348,11 +354,11 @@ std::size_t countThreads(mlir::ModuleOp module) {
   return count;
 }
 
-void exactSpscMaterializesAndSimulates() {
+void exactOrderedChannelMaterializesAndSimulates() {
   auto parent = parseProgram();
   auto decisions = channelDecisions(parent);
   if (decisions.size() != 1)
-    fail("one exact SPSC buffer did not expose one channel decision");
+    fail("one exact ordered buffer did not expose one channel decision");
   auto encoded =
       take(loom::frontend::encodeStructuredMemoryCommunicationDecision(
           decisions.front()));
@@ -360,7 +366,7 @@ void exactSpscMaterializesAndSimulates() {
       encoded[3] != 3 ||
       !(take(loom::frontend::adoptStructuredMemoryCommunicationDecision(
             encoded)) == decisions.front()))
-    fail("channel decision did not use the parameter-free 2.0 wire");
+    fail("channel decision did not use the parameter-free 3.0 wire");
 
   auto selected =
       take(loom::frontend::materializeStructuredMemoryCommunicationDecision(
@@ -378,7 +384,7 @@ void exactSpscMaterializesAndSimulates() {
   selected.structuredProgram.module().walk(
       [&](mlir::memref::AllocOp) { ++allocations; });
   if (creates != 1 || sends != 1 || receives != 1 || allocations != 0)
-    fail("SPSC promotion did not replace the exact temporary closure");
+    fail("ordered promotion did not replace the exact temporary closure");
 
   dataflow::ThreadLaunchOp producer;
   dataflow::ThreadLaunchOp consumer;
@@ -454,6 +460,50 @@ void exactSpscMaterializesAndSimulates() {
     fail("consumer DFG changed the promoted memory observables");
 }
 
+void orderedFanoutMaterializesOneMulticastChannel() {
+  auto parent = parseProgram({.independentConsumers = true});
+  auto decisions = channelDecisions(parent);
+  if (decisions.size() != 1)
+    fail("one ordered fanout buffer did not expose one channel decision");
+  auto selected =
+      take(loom::frontend::materializeStructuredMemoryCommunicationDecision(
+          parent, decisions.front()));
+
+  std::size_t creates = 0;
+  std::size_t sends = 0;
+  std::size_t receives = 0;
+  dataflow::ChannelCreateOp channel;
+  selected.structuredProgram.module().walk(
+      [&](dataflow::ChannelCreateOp candidate) {
+        ++creates;
+        channel = candidate;
+      });
+  selected.structuredProgram.module().walk(
+      [&](dataflow::ChannelSendOp) { ++sends; });
+  selected.structuredProgram.module().walk(
+      [&](dataflow::ChannelReceiveOp) { ++receives; });
+  if (creates != 1 || sends != 1 || receives != 2 || !channel ||
+      std::distance(channel.getChannel().use_begin(),
+                    channel.getChannel().use_end()) != 3)
+    fail("ordered fanout did not materialize one multicast channel");
+
+  auto d0 = take(loom::lowering::lowerStructuredProgramToCanonicalDataflow(
+      selected.structuredProgram));
+  auto view = take(d0.view());
+  std::optional<dataflow::ChannelProducerRef> producer;
+  view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef rooted) {
+    dataflow::GraphRef graphRef = take(view.resolve(rooted));
+    auto graph =
+        llvm::dyn_cast<dataflow::GraphOp>(take(view.resolve(graphRef)).op);
+    if (!graph)
+      fail("rooted graph reference did not resolve to dataflow.graph");
+    if (graph.getResultSegmentSizes()[1] == 1)
+      producer = dataflow::GraphStreamOutputProducerRef{rooted, 0};
+  });
+  if (!producer || take(view.channelConsumers(*producer)).size() != 2)
+    fail("canonical Dataflow did not derive both multicast consumers");
+}
+
 void exactSourceAllocaMaterializesTheSameChannelDecision() {
   auto parent = parseSourceAllocaProgram();
   auto decisions = channelDecisions(parent);
@@ -524,7 +574,7 @@ void sharedDefinitionsSpecializeOnlySelectedLaunches() {
   auto parent = parseProgram({.sharedDefinitions = true});
   auto decisions = channelDecisions(parent);
   if (decisions.size() != 2)
-    fail("two independent SPSC buffers did not expose two decisions");
+    fail("two independent ordered buffers did not expose two decisions");
   auto selected =
       take(loom::frontend::materializeStructuredMemoryCommunicationDecision(
           parent, decisions.front()));
@@ -542,7 +592,8 @@ void sharedDefinitionsSpecializeOnlySelectedLaunches() {
 } // namespace
 
 int main() {
-  exactSpscMaterializesAndSimulates();
+  exactOrderedChannelMaterializesAndSimulates();
+  orderedFanoutMaterializesOneMulticastChannel();
   exactSourceAllocaMaterializesTheSameChannelDecision();
   rejectsUnprovedSourceAllocas();
   rejectsUnprovedCommunication();

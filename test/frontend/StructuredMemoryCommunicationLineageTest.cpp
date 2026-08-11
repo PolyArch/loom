@@ -339,7 +339,7 @@ void catalogLineageIsClosed(llvm::StringRef directory) {
   requireKinds(stage, {Kind::StageConstantGlobal});
   requireKinds(layout, {Kind::PermuteLocalBufferLayout});
   requireKinds(pipeline, {Kind::PipelineStagedLoop});
-  requireKinds(channel, {Kind::PromoteSpscBufferToChannel});
+  requireKinds(channel, {Kind::PromoteOrderedBufferToChannel});
   auto layoutDomain =
       take(loom::frontend::enumerateStructuredMemoryCommunicationDecisions(
           layout, 64));
@@ -491,21 +491,24 @@ void catalogLineageIsClosed(llvm::StringRef directory) {
 
   if (loom::dse::structuredMemoryCommunicationCandidateGeneratorDescriptor()
           .implementationSemanticIdentity !=
-      "loom.compiler.structured_memory_communication.generator.v2")
-    fail("memory generator does not expose the v2 semantic identity");
-  static constexpr llvm::StringLiteral legacyConfigSchema =
-      "loom.structured_memory_communication_generator.config.1.0";
-  auto legacyDigest = take(loom::computeComponentViewDigest(
-      {reinterpret_cast<const std::uint8_t *>(legacyConfigSchema.data()),
-       legacyConfigSchema.size()},
-      config.canonicalViewBytes()));
-  auto legacy = loom::dse::ResolvedCandidateGeneratorBinding::get(
-      loom::dse::structuredMemoryCommunicationCandidateGeneratorDescriptor()
-          .reference(),
-      config.canonicalViewBytes(), legacyDigest);
-  if (legacy)
-    fail("registry v2 reinterpreted a legacy generator config binding");
-  llvm::consumeError(legacy.takeError());
+      "loom.compiler.structured_memory_communication.generator.v3")
+    fail("memory generator does not expose the v3 semantic identity");
+  static constexpr std::array<llvm::StringLiteral, 2> legacyConfigSchemas = {
+      "loom.structured_memory_communication_generator.config.1.0",
+      "loom.structured_memory_communication_generator.config.2.0"};
+  for (llvm::StringLiteral legacyConfigSchema : legacyConfigSchemas) {
+    auto legacyDigest = take(loom::computeComponentViewDigest(
+        {reinterpret_cast<const std::uint8_t *>(legacyConfigSchema.data()),
+         legacyConfigSchema.size()},
+        config.canonicalViewBytes()));
+    auto legacy = loom::dse::ResolvedCandidateGeneratorBinding::get(
+        loom::dse::structuredMemoryCommunicationCandidateGeneratorDescriptor()
+            .reference(),
+        config.canonicalViewBytes(), legacyDigest);
+    if (legacy)
+      fail("registry v3 reinterpreted a legacy generator config binding");
+    llvm::consumeError(legacy.takeError());
+  }
 }
 
 } // namespace

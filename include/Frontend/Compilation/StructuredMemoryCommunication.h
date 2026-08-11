@@ -16,7 +16,7 @@ enum class StructuredMemoryCommunicationDecisionKind : std::uint32_t {
   StageConstantGlobal = 0,
   PermuteLocalBufferLayout = 1,
   PipelineStagedLoop = 2,
-  PromoteSpscBufferToChannel = 3,
+  PromoteOrderedBufferToChannel = 3,
 };
 
 struct StageConstantGlobalDecision final {
@@ -48,11 +48,11 @@ struct PipelineStagedLoopDecision final {
   }
 };
 
-struct PromoteSpscBufferToChannelDecision final {
+struct PromoteOrderedBufferToChannelDecision final {
   StructuredEntityRef anchor;
 
-  friend bool operator==(const PromoteSpscBufferToChannelDecision &lhs,
-                         const PromoteSpscBufferToChannelDecision &rhs) {
+  friend bool operator==(const PromoteOrderedBufferToChannelDecision &lhs,
+                         const PromoteOrderedBufferToChannelDecision &rhs) {
     return lhs.anchor == rhs.anchor;
   }
 };
@@ -60,7 +60,7 @@ struct PromoteSpscBufferToChannelDecision final {
 using StructuredMemoryCommunicationDecision =
     std::variant<StageConstantGlobalDecision, PermuteLocalBufferLayoutDecision,
                  PipelineStagedLoopDecision,
-                 PromoteSpscBufferToChannelDecision>;
+                 PromoteOrderedBufferToChannelDecision>;
 
 inline bool operator!=(const StructuredMemoryCommunicationDecision &lhs,
                        const StructuredMemoryCommunicationDecision &rhs) {

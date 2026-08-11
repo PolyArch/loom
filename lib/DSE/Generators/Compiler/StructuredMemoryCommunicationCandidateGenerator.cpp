@@ -22,7 +22,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.structured_memory_communication_generator.config.2.0";
+    "loom.structured_memory_communication_generator.config.3.0";
 
 enum InputSlot : std::uint32_t {
   StructuredProgramsInput,
@@ -130,7 +130,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredMemoryCommunicationCandidateGeneratorKind,
     "compiler.structured_memory_communication",
-    "loom.compiler.structured_memory_communication.generator.v2",
+    "loom.compiler.structured_memory_communication.generator.v3",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},

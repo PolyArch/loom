@@ -11,11 +11,11 @@ namespace loom::frontend::detail {
 
 bool areKnownDistinctMemoryRoots(mlir::Value lhs, mlir::Value rhs);
 
-bool canPromoteSpscBufferToChannel(mlir::memref::AllocOp allocation);
-bool canPromoteSpscBufferToChannel(mlir::LLVM::AllocaOp allocation);
+bool canPromoteOrderedBufferToChannel(mlir::memref::AllocOp allocation);
+bool canPromoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation);
 
-llvm::Error promoteSpscBufferToChannel(mlir::memref::AllocOp allocation);
-llvm::Error promoteSpscBufferToChannel(mlir::LLVM::AllocaOp allocation);
+llvm::Error promoteOrderedBufferToChannel(mlir::memref::AllocOp allocation);
+llvm::Error promoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation);
 
 } // namespace loom::frontend::detail
 

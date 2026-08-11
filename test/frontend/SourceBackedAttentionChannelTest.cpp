@@ -95,7 +95,7 @@ promoteUniqueChannel(const loom::frontend::StructuredProgramCandidate &parent) {
   for (const auto &decision : domain.decisions) {
     if (loom::frontend::structuredMemoryCommunicationDecisionKind(decision) !=
         loom::frontend::StructuredMemoryCommunicationDecisionKind::
-            PromoteSpscBufferToChannel) {
+            PromoteOrderedBufferToChannel) {
       continue;
     }
     if (selected)
