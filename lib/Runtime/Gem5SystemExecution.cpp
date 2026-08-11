@@ -18,6 +18,7 @@
 #include "ExternalTool/RuntimeBinding.h"
 #include "ExternalTool/ShellProbe.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/InstructionCoreBinary.h"
 #include "Mapping/Artifact/MappingArtifact.h"
@@ -76,8 +77,6 @@ constexpr CaseSubjectRoleRef kDeploymentRole(0);
 constexpr CaseSubjectRoleRef kBindingRole(1);
 constexpr ModelOutputSlotRef kExecutionOutput(0);
 constexpr llvm::StringLiteral kSystemResultPath = "outputs/system-result.json";
-constexpr llvm::StringLiteral kBridgeResultPath =
-    "outputs/spatial-bridge-0.result";
 constexpr llvm::StringLiteral kMemoryResultPath =
     "outputs/system-memory.result";
 constexpr llvm::StringLiteral kProjectionPath =
@@ -89,7 +88,6 @@ constexpr llvm::StringLiteral kCgraEnginePath = "drivers/loom-gem5-cgra-engine";
 constexpr llvm::StringLiteral kBridgeHeaderPath = "drivers/Gem5BridgeWire.h";
 constexpr llvm::StringLiteral kPackageObjectPath = "inputs/package/objects";
 constexpr llvm::StringLiteral kHostElfPath = "inputs/host.elf";
-constexpr llvm::StringLiteral kSpatialLaunchPath = "inputs/spatial-launch.bin";
 constexpr llvm::StringLiteral kThreadDispatchPath =
     "inputs/thread-dispatch.bin";
 constexpr llvm::StringLiteral kAdmissionPath = "inputs/admission.bin";
@@ -140,17 +138,23 @@ struct ReadinessIdentity final {
   ExternalFileFingerprint binaryFingerprint;
 };
 
-struct Gem5SystemFacts final {
-  Gem5SystemEngine engine;
-  ArtifactRootReference deployment;
-  ArtifactRootReference binding;
-  ArtifactRootReference dataflow;
+struct Gem5SpatialLaunchProjection final {
   ArtifactRootReference fabric;
   ArtifactRootReference spatialMapping;
   ArtifactRootReference hardwareImplementation;
   ArtifactRootReference spatialWorkload;
   ArtifactRootReference spatialRuntimeInput;
   std::vector<std::uint8_t> launchPayload;
+  Gem5DispatchTarget dispatchTarget;
+  Gem5SpatialBridgeParameters bridge;
+};
+
+struct Gem5SystemFacts final {
+  Gem5SystemEngine engine;
+  ArtifactRootReference deployment;
+  ArtifactRootReference binding;
+  ArtifactRootReference dataflow;
+  std::vector<Gem5SpatialLaunchProjection> spatialLaunches;
   std::vector<MaterializedBundleFile> semanticInputs;
   std::vector<Gem5ProcessorProjection> processors;
   std::string hostEntrySymbol;
@@ -163,8 +167,6 @@ struct Gem5SystemFacts final {
   std::uint64_t dispatchAddress = 0;
   std::uint64_t stackBase = 0;
   std::uint64_t stackStride = 0;
-  std::vector<Gem5DispatchTarget> dispatchTargets;
-  Gem5SpatialBridgeParameters bridge;
   Gem5SimpleMemoryParameters memory;
 };
 
@@ -383,6 +385,18 @@ std::string instructionImagePath(std::size_t ordinal) {
   return "inputs/instruction-" + std::to_string(ordinal) + ".elf";
 }
 
+std::string spatialLaunchPath(std::size_t ordinal) {
+  return "inputs/spatial-launch-" + std::to_string(ordinal) + ".bin";
+}
+
+std::string spatialBridgeSocketPath(std::size_t ordinal) {
+  return "outputs/spatial-bridge-" + std::to_string(ordinal) + ".sock";
+}
+
+std::string spatialBridgeResultPath(std::size_t ordinal) {
+  return "outputs/spatial-bridge-" + std::to_string(ordinal) + ".result";
+}
+
 llvm::Expected<Gem5SystemFactsOrUnsupported>
 deriveFacts(const EvaluationRequest &request,
             const CaseArtifactResolution &resolution,
@@ -440,66 +454,96 @@ deriveFacts(const EvaluationRequest &request,
       *dataflowView, systemMapping->view().executionBindings());
   if (!contexts)
     return contexts.takeError();
-  if (contexts->spatialDomains.size() != 1)
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-  const dataflow::RootedGraphLaunchRef graph =
-      contexts->spatialDomains.front().graph;
-  auto rootDomain = dataflowView->projectWholeRootedGraphLogicalDomain(graph);
-  if (!rootDomain)
-    return rootDomain.takeError();
-  if (!*rootDomain || (*rootDomain)->coordinateRank != 0)
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-  auto launch = dataflowView->resolve(graph.staticGraphLaunch);
-  if (!launch)
-    return launch.takeError();
-  auto launchOp = llvm::dyn_cast<dataflow::GraphLaunchOp>(launch->op);
-  if (!launchOp || !launchOp.getValueInputs().empty() ||
-      !launchOp.getStreamInputs().empty() ||
-      !launchOp.getMemoryInputs().empty())
+  if (contexts->spatialDomains.empty())
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
-  auto selection = deployment::resolveDeploymentSpatialLaunchSelection(
-      systemInputs->deployment, graph, {}, artifacts);
-  if (!selection)
-    return selection.takeError();
-  auto spatialMapping =
-      mapping::importSpatialMapping(selection->spatialMapping, artifacts);
-  if (!spatialMapping)
-    return spatialMapping.takeError();
-  ArtifactRootReference spatialFabricReference{
-      fabric::fabricArtifactSchema.identity.str(),
-      fabric::fabricArtifactSchema.version,
-      spatialMapping->view().fabricIdentity()};
+  struct PendingSpatialLaunch final {
+    dataflow::RootedGraphLaunchRef graph;
+    fabric::AccCoreOccurrenceRef accCore;
+    ArtifactRootReference fabric;
+    ArtifactRootReference spatialMapping;
+    ArtifactRootReference hardwareImplementation;
+    ArtifactRootReference spatialWorkload;
+    ArtifactRootReference spatialRuntimeInput;
+  };
+  std::vector<PendingSpatialLaunch> pendingLaunches;
+  pendingLaunches.reserve(contexts->spatialDomains.size());
+  std::set<std::vector<std::uint8_t>> selectedAccCores;
+  for (const mapping::SystemSpatialContextDomain &domain :
+       contexts->spatialDomains) {
+    auto rootDomain =
+        dataflowView->projectWholeRootedGraphLogicalDomain(domain.graph);
+    if (!rootDomain)
+      return rootDomain.takeError();
+    if (!*rootDomain || (*rootDomain)->coordinateRank != 0)
+      return Gem5SystemFactsOrUnsupported{
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+    auto launch = dataflowView->resolve(domain.graph.staticGraphLaunch);
+    if (!launch)
+      return launch.takeError();
+    auto launchOp = llvm::dyn_cast<dataflow::GraphLaunchOp>(launch->op);
+    if (!launchOp || !launchOp.getValueInputs().empty() ||
+        !launchOp.getStreamInputs().empty() ||
+        !launchOp.getMemoryInputs().empty())
+      return Gem5SystemFactsOrUnsupported{
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
-  sim::SpatialSimulationWorkload spatialWorkloadDraft{graph};
-  auto spatialWorkload =
-      sim::finalizeSimulationWorkload(spatialWorkloadDraft, *dataflowView);
-  if (!spatialWorkload)
-    return spatialWorkload.takeError();
-  auto workloadReference =
-      sim::publishSimulationWorkload(*spatialWorkload, artifacts);
-  if (!workloadReference)
-    return workloadReference.takeError();
-  sim::SpatialSimulationRuntimeInputDraft spatialRuntimeDraft{
-      spatialWorkload->identity()};
-  auto spatialRuntime = sim::finalizeSimulationRuntimeInput(
-      spatialRuntimeDraft, *spatialWorkload, *dataflowView);
-  if (!spatialRuntime)
-    return spatialRuntime.takeError();
-  auto runtimeReference =
-      sim::publishSimulationRuntimeInput(*spatialRuntime, artifacts);
-  if (!runtimeReference)
-    return runtimeReference.takeError();
+    auto selection = deployment::resolveDeploymentSpatialLaunchSelection(
+        systemInputs->deployment, domain.graph, {}, artifacts);
+    if (!selection)
+      return selection.takeError();
+    const std::vector<std::uint8_t> coreKey = fabric::canonicalFabricBytes(
+        fabric::SpatialCoreOccurrenceRef{selection->context.accCore});
+    if (!selectedAccCores.insert(coreKey).second)
+      return Gem5SystemFactsOrUnsupported{
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+    auto spatialMapping =
+        mapping::importSpatialMapping(selection->spatialMapping, artifacts);
+    if (!spatialMapping)
+      return spatialMapping.takeError();
+    ArtifactRootReference spatialFabricReference{
+        fabric::fabricArtifactSchema.identity.str(),
+        fabric::fabricArtifactSchema.version,
+        spatialMapping->view().fabricIdentity()};
+
+    sim::SpatialSimulationWorkload spatialWorkloadDraft{domain.graph};
+    auto spatialWorkload =
+        sim::finalizeSimulationWorkload(spatialWorkloadDraft, *dataflowView);
+    if (!spatialWorkload)
+      return spatialWorkload.takeError();
+    auto workloadReference =
+        sim::publishSimulationWorkload(*spatialWorkload, artifacts);
+    if (!workloadReference)
+      return workloadReference.takeError();
+    sim::SpatialSimulationRuntimeInputDraft spatialRuntimeDraft{
+        spatialWorkload->identity()};
+    auto spatialRuntime = sim::finalizeSimulationRuntimeInput(
+        spatialRuntimeDraft, *spatialWorkload, *dataflowView);
+    if (!spatialRuntime)
+      return spatialRuntime.takeError();
+    auto runtimeReference =
+        sim::publishSimulationRuntimeInput(*spatialRuntime, artifacts);
+    if (!runtimeReference)
+      return runtimeReference.takeError();
+    pendingLaunches.push_back(
+        {domain.graph, selection->context.accCore,
+         std::move(spatialFabricReference), selection->spatialMapping,
+         selection->hardwareImplementation, std::move(*workloadReference),
+         std::move(*runtimeReference)});
+  }
+  if (selectedEngine(request) == Gem5SystemEngine::Rtl &&
+      pendingLaunches.size() != 1)
+    return Gem5SystemFactsOrUnsupported{
+        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
   std::vector<Gem5ProcessorProjection> processors;
-  std::optional<Gem5SpatialBridgeParameters> bridge;
+  std::vector<
+      std::pair<fabric::AccCoreOccurrenceRef, Gem5SpatialBridgeParameters>>
+      bridges;
   std::optional<Gem5SimpleMemoryParameters> memory;
   std::set<std::vector<std::uint8_t>> seenProcessors;
   std::set<std::vector<std::uint8_t>> seenMemories;
-  std::size_t bridgeRows = 0;
   for (const Gem5Correspondence &row : binding->binding().correspondences()) {
     if (const auto *processor =
             std::get_if<Gem5ProcessorCorrespondence>(&row)) {
@@ -519,7 +563,6 @@ deriveFacts(const EvaluationRequest &request,
     }
     if (const auto *spatial =
             std::get_if<Gem5SpatialBridgeCorrespondence>(&row)) {
-      ++bridgeRows;
       if (spatial->bridgeEndpoint.object.contract !=
           gem5ModelContractDescriptorRef(gem5SpatialBridgeModel()))
         return Gem5SystemFactsOrUnsupported{
@@ -528,10 +571,7 @@ deriveFacts(const EvaluationRequest &request,
           spatial->bridgeEndpoint.object.payload);
       if (!parameters)
         return parameters.takeError();
-      if (bridge && !(*bridge == *parameters))
-        return Gem5SystemFactsOrUnsupported{
-            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-      bridge = *parameters;
+      bridges.push_back({spatial->spatialCore.core, *parameters});
       continue;
     }
     if (const auto *service =
@@ -558,7 +598,7 @@ deriveFacts(const EvaluationRequest &request,
         return Gem5SystemFactsOrUnsupported{
             UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
   }
-  if (processors.empty() || !bridge || !memory || bridgeRows != 1)
+  if (processors.empty() || bridges.empty() || !memory)
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
   llvm::sort(processors, [](const auto &lhs, const auto &rhs) {
@@ -576,28 +616,18 @@ deriveFacts(const EvaluationRequest &request,
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
   const Gem5ProcessorProjection *hostProcessor = nullptr;
-  const Gem5ProcessorProjection *instructionProcessor = nullptr;
   for (const Gem5ProcessorProjection &processor : processors) {
     if (std::holds_alternative<fabric::HostCoreOccurrenceRef>(
             processor.processor)) {
       if (hostProcessor)
         return invalid("gem5 binding contains more than one HostCore CPU");
       hostProcessor = &processor;
-      continue;
-    }
-    const auto context =
-        std::get<fabric::InstructionCoreContextRef>(processor.processor);
-    if (context.core == selection->context.accCore) {
-      if (instructionProcessor)
-        return invalid("gem5 binding repeats the selected InstructionCore");
-      instructionProcessor = &processor;
     }
   }
-  if (!hostProcessor || !instructionProcessor)
+  if (!hostProcessor)
     return Gem5SystemFactsOrUnsupported{
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
   const std::uint64_t hostCpuId = hostProcessor->parameters.cpuId;
-  const std::uint64_t instructionCpuId = instructionProcessor->parameters.cpuId;
   const auto *systemWorkload = systemInputs->workload.system();
   if (!systemWorkload)
     return invalid("imported System workload lost its typed payload");
@@ -605,28 +635,34 @@ deriveFacts(const EvaluationRequest &request,
       systemInputs->deployment, systemWorkload->programEntryRef);
   if (!hostEntry)
     return hostEntry.takeError();
-  auto selectedInstruction = selectInstructionEntry(
-      systemInputs->deployment, graph.rootThreadLaunch,
-      selection->context.accCore, systemMapping->view().fabricIdentity(),
-      artifacts, blobs);
-  if (!selectedInstruction)
-    return selectedInstruction.takeError();
 
   auto memoryEndValue =
       checkedAdd(memory->baseAddress, memory->sizeBytes, "gem5 memory");
-  auto bridgeEndValue =
-      checkedAdd(bridge->pioAddress, bridge->pioSize, "Spatial Bridge");
-  if (!memoryEndValue || !bridgeEndValue)
-    return llvm::joinErrors(
-        memoryEndValue ? llvm::Error::success() : memoryEndValue.takeError(),
-        bridgeEndValue ? llvm::Error::success() : bridgeEndValue.takeError());
+  if (!memoryEndValue)
+    return memoryEndValue.takeError();
   const std::uint64_t memoryEnd = *memoryEndValue;
-  const std::uint64_t bridgeEnd = *bridgeEndValue;
-  if (memory->baseAddress < bridgeEnd && bridge->pioAddress < memoryEnd)
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+  std::uint64_t maximumBridgeEnd = 0;
+  std::vector<std::pair<std::uint64_t, std::uint64_t>> bridgeRanges;
+  bridgeRanges.reserve(bridges.size());
+  for (const auto &[core, bridge] : bridges) {
+    (void)core;
+    auto bridgeEndValue =
+        checkedAdd(bridge.pioAddress, bridge.pioSize, "Spatial Bridge");
+    if (!bridgeEndValue)
+      return bridgeEndValue.takeError();
+    if (memory->baseAddress < *bridgeEndValue && bridge.pioAddress < memoryEnd)
+      return Gem5SystemFactsOrUnsupported{
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+    bridgeRanges.push_back({bridge.pioAddress, *bridgeEndValue});
+    maximumBridgeEnd = std::max(maximumBridgeEnd, *bridgeEndValue);
+  }
+  llvm::sort(bridgeRanges);
+  for (std::size_t ordinal = 1; ordinal != bridgeRanges.size(); ++ordinal)
+    if (bridgeRanges[ordinal].first < bridgeRanges[ordinal - 1].second)
+      return Gem5SystemFactsOrUnsupported{
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
   auto dispatchAddressValue =
-      alignUp(bridgeEnd, kGem5PageBytes, "Thread Dispatch");
+      alignUp(maximumBridgeEnd, kGem5PageBytes, "Thread Dispatch");
   if (!dispatchAddressValue)
     return dispatchAddressValue.takeError();
   const std::uint64_t dispatchAddress = *dispatchAddressValue;
@@ -642,12 +678,14 @@ deriveFacts(const EvaluationRequest &request,
       materializeDeploymentPackage(systemInputs->deployment, artifacts, blobs);
   if (!semanticInputs)
     return semanticInputs.takeError();
-  if (llvm::Error error =
-          appendStoredObject(*semanticInputs, *workloadReference, artifacts))
-    return std::move(error);
-  if (llvm::Error error =
-          appendStoredObject(*semanticInputs, *runtimeReference, artifacts))
-    return std::move(error);
+  for (const PendingSpatialLaunch &launch : pendingLaunches) {
+    if (llvm::Error error = appendStoredObject(
+            *semanticInputs, launch.spatialWorkload, artifacts))
+      return std::move(error);
+    if (llvm::Error error = appendStoredObject(
+            *semanticInputs, launch.spatialRuntimeInput, artifacts))
+      return std::move(error);
+  }
   auto hostElf = blobs.get(deployment.hostProgram().programBlob());
   if (!hostElf)
     return hostElf.takeError();
@@ -675,9 +713,10 @@ deriveFacts(const EvaluationRequest &request,
       deployment.threadDispatchImage().canonicalBytes().bytes();
   const auto &admissionBytes =
       deployment.admissionImage().canonicalBytes().bytes();
-  semanticInputs->push_back({kSpatialLaunchPath.str(),
-                             bytesToString(launchBytes),
-                             systemInputs->deployment.reference(), false});
+  for (std::size_t ordinal = 0; ordinal != pendingLaunches.size(); ++ordinal)
+    semanticInputs->push_back({spatialLaunchPath(ordinal),
+                               bytesToString(launchBytes),
+                               systemInputs->deployment.reference(), false});
   semanticInputs->push_back({kThreadDispatchPath.str(),
                              bytesToString(threadBytes),
                              systemInputs->deployment.reference(), false});
@@ -715,15 +754,66 @@ deriveFacts(const EvaluationRequest &request,
       placeRuntimeImage(kThreadDispatchPath, threadBytes.size());
   auto admissionAddress =
       placeRuntimeImage(kAdmissionPath, admissionBytes.size());
-  auto launchAddress =
-      placeRuntimeImage(kSpatialLaunchPath, launchBytes.size());
-  if (!threadAddress || !admissionAddress || !launchAddress)
-    return llvm::joinErrors(
-        threadAddress ? llvm::Error::success() : threadAddress.takeError(),
-        llvm::joinErrors(admissionAddress ? llvm::Error::success()
-                                          : admissionAddress.takeError(),
-                         launchAddress ? llvm::Error::success()
-                                       : launchAddress.takeError()));
+  if (!threadAddress || !admissionAddress)
+    return llvm::joinErrors(threadAddress ? llvm::Error::success()
+                                          : threadAddress.takeError(),
+                            admissionAddress ? llvm::Error::success()
+                                             : admissionAddress.takeError());
+  std::vector<std::uint64_t> launchAddresses;
+  launchAddresses.reserve(pendingLaunches.size());
+  for (std::size_t ordinal = 0; ordinal != pendingLaunches.size(); ++ordinal) {
+    auto address =
+        placeRuntimeImage(spatialLaunchPath(ordinal), launchBytes.size());
+    if (!address)
+      return address.takeError();
+    launchAddresses.push_back(*address);
+  }
+
+  std::vector<Gem5SpatialLaunchProjection> spatialLaunches;
+  spatialLaunches.reserve(pendingLaunches.size());
+  for (const auto indexed : llvm::enumerate(pendingLaunches)) {
+    const PendingSpatialLaunch &pending = indexed.value();
+    const Gem5ProcessorProjection *instructionProcessor = nullptr;
+    for (const Gem5ProcessorProjection &processor : processors) {
+      const auto *context =
+          std::get_if<fabric::InstructionCoreContextRef>(&processor.processor);
+      if (!context || context->core != pending.accCore)
+        continue;
+      if (instructionProcessor)
+        return invalid("gem5 binding repeats a selected InstructionCore");
+      instructionProcessor = &processor;
+    }
+    const Gem5SpatialBridgeParameters *selectedBridge = nullptr;
+    for (const auto &[core, bridge] : bridges) {
+      if (core != pending.accCore)
+        continue;
+      if (selectedBridge)
+        return Gem5SystemFactsOrUnsupported{
+            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+      selectedBridge = &bridge;
+    }
+    if (!instructionProcessor || !selectedBridge)
+      return Gem5SystemFactsOrUnsupported{
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+    auto instruction = selectInstructionEntry(
+        systemInputs->deployment, pending.graph.rootThreadLaunch,
+        pending.accCore, systemMapping->view().fabricIdentity(), artifacts,
+        blobs);
+    if (!instruction)
+      return instruction.takeError();
+    Gem5DispatchTarget dispatch{instructionProcessor->parameters.cpuId,
+                                instruction->imageOrdinal,
+                                "__loom_thread_entry_" +
+                                    std::to_string(instruction->entryOrdinal),
+                                selectedBridge->pioAddress,
+                                launchAddresses[indexed.index()],
+                                static_cast<std::uint64_t>(launchBytes.size())};
+    spatialLaunches.push_back(
+        {pending.fabric, pending.spatialMapping, pending.hardwareImplementation,
+         pending.spatialWorkload, pending.spatialRuntimeInput,
+         std::vector<std::uint8_t>(launchBytes.begin(), launchBytes.end()),
+         std::move(dispatch), *selectedBridge});
+  }
 
   const sim::SystemSimulationRuntimeInput &systemRuntime =
       *systemInputs->runtimeInput.system();
@@ -749,7 +839,7 @@ deriveFacts(const EvaluationRequest &request,
     for (const sim::SemanticMemoryByte &byte : object.initialBytes)
       contents.push_back(static_cast<char>(byte.value));
     semanticInputs->push_back(
-        {path, std::move(contents), *runtimeReference, false});
+        {path, std::move(contents), *request.runtimeInput(), false});
   }
 
   std::vector<std::uint8_t> memoryTable{'L', 'G', 'M', 'I'};
@@ -797,8 +887,8 @@ deriveFacts(const EvaluationRequest &request,
       return address.takeError();
     memoryTableAddress = *address;
     semanticInputs->push_back({kMemoryTablePath.str(),
-                               bytesToString(memoryTable), *runtimeReference,
-                               false});
+                               bytesToString(memoryTable),
+                               *request.runtimeInput(), false});
   }
 
   std::vector<Gem5MemoryObservationProjection> memoryObservations;
@@ -846,35 +936,14 @@ deriveFacts(const EvaluationRequest &request,
   });
 
   return Gem5SystemFactsOrUnsupported{Gem5SystemFacts{
-      selectedEngine(request),
-      systemInputs->deployment.reference(),
-      binding->reference(),
-      std::move(dataflowReference),
-      std::move(spatialFabricReference),
-      selection->spatialMapping,
-      selection->hardwareImplementation,
-      std::move(*workloadReference),
-      std::move(*runtimeReference),
-      std::vector<std::uint8_t>(launchBytes.begin(), launchBytes.end()),
-      std::move(*semanticInputs),
-      std::move(processors),
-      (*hostEntry)->abiSymbol,
-      hostCpuId,
-      std::move(instructionImages),
-      std::move(runtimeImages),
-      memoryTableAddress,
-      systemRuntime.memoryInterfaceBindings.size(),
-      std::move(memoryObservations),
-      dispatchAddress,
-      stackBase,
-      kGem5StackBytes,
-      {{instructionCpuId, selectedInstruction->imageOrdinal,
-        "__loom_thread_entry_" +
-            std::to_string(selectedInstruction->entryOrdinal),
-        bridge->pioAddress, *launchAddress,
-        static_cast<std::uint64_t>(launchBytes.size())}},
-      *bridge,
-      *memory}};
+      selectedEngine(request), systemInputs->deployment.reference(),
+      binding->reference(), std::move(dataflowReference),
+      std::move(spatialLaunches), std::move(*semanticInputs),
+      std::move(processors), (*hostEntry)->abiSymbol, hostCpuId,
+      std::move(instructionImages), std::move(runtimeImages),
+      memoryTableAddress, systemRuntime.memoryInterfaceBindings.size(),
+      std::move(memoryObservations), dispatchAddress, stackBase,
+      kGem5StackBytes, *memory}};
 }
 
 llvm::Expected<std::filesystem::path>
@@ -956,8 +1025,9 @@ verifyReadiness(const Gem5SystemFacts &facts,
       binaryContents->size()));
   if (formatBlobDigestHex(digest) != *binarySha)
     return invalid("resolved gem5 executable differs from its readiness stamp");
-  if (facts.launchPayload.size() > facts.bridge.maximumMessageBytes)
-    return invalid("Deployment launch image exceeds the bridge message limit");
+  for (const Gem5SpatialLaunchProjection &launch : facts.spatialLaunches)
+    if (launch.launchPayload.size() > launch.bridge.maximumMessageBytes)
+      return invalid("Deployment launch image exceeds a bridge message limit");
   auto fingerprint = parseExternalFileFingerprint(*binarySha);
   if (!fingerprint)
     return fingerprint.takeError();
@@ -1030,7 +1100,9 @@ std::string renderProjection(const Gem5SystemFacts &facts,
       json.attribute("stack_base", facts.stackBase);
       json.attribute("stack_stride", facts.stackStride);
       json.attributeArray("targets", [&] {
-        for (const Gem5DispatchTarget &target : facts.dispatchTargets)
+        for (const Gem5SpatialLaunchProjection &launch :
+             facts.spatialLaunches) {
+          const Gem5DispatchTarget &target = launch.dispatchTarget;
           json.object([&] {
             json.attribute("cpu_id", target.cpuId);
             json.attribute("image_ordinal", target.imageOrdinal);
@@ -1039,6 +1111,7 @@ std::string renderProjection(const Gem5SystemFacts &facts,
             json.attribute("launch_address", target.launchAddress);
             json.attribute("launch_size", target.launchSize);
           });
+        }
       });
     });
     json.attributeArray("processors", [&] {
@@ -1047,45 +1120,51 @@ std::string renderProjection(const Gem5SystemFacts &facts,
             [&] { json.attribute("cpu_id", processor.parameters.cpuId); });
     });
     json.attributeArray("bridges", [&] {
-      json.object([&] {
-        json.attribute("pio_address", facts.bridge.pioAddress);
-        json.attribute("pio_size", facts.bridge.pioSize);
-        json.attribute("pio_latency",
-                       std::to_string(facts.bridge.pioLatencyTicks) + "ps");
-        json.attribute("engine_socket", "outputs/spatial-bridge-0.sock");
-        json.attributeArray("engine_command", [&] {
-          if (facts.engine == Gem5SystemEngine::Rtl)
-            return;
-          json.value(engine);
-          json.value("--artifact-store");
-          json.value(kPackageObjectPath);
-          json.value("--socket");
-          json.value("outputs/spatial-bridge-0.sock");
-          json.value("--expected-launch");
-          json.value(kSpatialLaunchPath);
-          json.value("--workload");
-          json.value(formatArtifactIdentityHex(facts.spatialWorkload.artifact));
-          json.value("--runtime-input");
-          json.value(
-              formatArtifactIdentityHex(facts.spatialRuntimeInput.artifact));
-          json.value("--dataflow");
-          json.value(formatArtifactIdentityHex(facts.dataflow.artifact));
-          json.value("--maximum-work");
-          json.value(std::to_string(kMaximumSpatialWork));
-          json.value("--ticks-per-cycle");
-          json.value(std::to_string(ticksPerCycle));
-          if (facts.engine == Gem5SystemEngine::Cgra) {
-            json.value("--fabric");
-            json.value(formatArtifactIdentityHex(facts.fabric.artifact));
-            json.value("--spatial-mapping");
+      for (const auto indexed : llvm::enumerate(facts.spatialLaunches)) {
+        const Gem5SpatialLaunchProjection &launch = indexed.value();
+        const std::string socket = spatialBridgeSocketPath(indexed.index());
+        json.object([&] {
+          json.attribute("pio_address", launch.bridge.pioAddress);
+          json.attribute("pio_size", launch.bridge.pioSize);
+          json.attribute("pio_latency",
+                         std::to_string(launch.bridge.pioLatencyTicks) + "ps");
+          json.attribute("engine_socket", socket);
+          json.attributeArray("engine_command", [&] {
+            if (facts.engine == Gem5SystemEngine::Rtl)
+              return;
+            json.value(engine);
+            json.value("--artifact-store");
+            json.value(kPackageObjectPath);
+            json.value("--socket");
+            json.value(socket);
+            json.value("--expected-launch");
+            json.value(spatialLaunchPath(indexed.index()));
+            json.value("--workload");
             json.value(
-                formatArtifactIdentityHex(facts.spatialMapping.artifact));
-          }
+                formatArtifactIdentityHex(launch.spatialWorkload.artifact));
+            json.value("--runtime-input");
+            json.value(
+                formatArtifactIdentityHex(launch.spatialRuntimeInput.artifact));
+            json.value("--dataflow");
+            json.value(formatArtifactIdentityHex(facts.dataflow.artifact));
+            json.value("--maximum-work");
+            json.value(std::to_string(kMaximumSpatialWork));
+            json.value("--ticks-per-cycle");
+            json.value(std::to_string(ticksPerCycle));
+            if (facts.engine == Gem5SystemEngine::Cgra) {
+              json.value("--fabric");
+              json.value(formatArtifactIdentityHex(launch.fabric.artifact));
+              json.value("--spatial-mapping");
+              json.value(
+                  formatArtifactIdentityHex(launch.spatialMapping.artifact));
+            }
+          });
+          json.attribute("result_path",
+                         spatialBridgeResultPath(indexed.index()));
+          json.attribute("maximum_message_bytes",
+                         launch.bridge.maximumMessageBytes);
         });
-        json.attribute("result_path", kBridgeResultPath);
-        json.attribute("maximum_message_bytes",
-                       facts.bridge.maximumMessageBytes);
-      });
+      }
     });
     json.attribute("maximum_ticks", kMaximumGem5Ticks);
   });
@@ -1120,11 +1199,14 @@ ExternalToolInvocationImportExpectation makeExpectation(
     expectation.externalInputs.push_back(
         {"gem5_binary", std::move(*gem5Binary)});
   expectation.declaredOutputs = {kSystemResultPath.str(),
-                                 kBridgeResultPath.str(),
                                  kMemoryResultPath.str()};
+  for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
+       ++ordinal)
+    expectation.declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
   if (facts.engine == Gem5SystemEngine::Rtl)
     expectation.declaredOutputs.push_back(
         eda::open_source::mappedRtlResultPath.str());
+  llvm::sort(expectation.declaredOutputs);
   return expectation;
 }
 
@@ -1144,13 +1226,16 @@ mappedRtlClosure(const EvaluationRequest &request, const Gem5SystemFacts &facts,
     return invalid("gem5 RTL Request has no HDL simulator binding");
   if (llvm::Error error = models::validateMappedRtlSimulatorBinding(*binding))
     return std::move(error);
+  if (facts.spatialLaunches.size() != 1)
+    return invalid("gem5 RTL closure requires one Spatial launch");
+  const Gem5SpatialLaunchProjection &launch = facts.spatialLaunches.front();
   return eda::open_source::MappedRtlExecutionClosure{
       *binding,
       contract,
-      facts.hardwareImplementation,
+      launch.hardwareImplementation,
       facts.deployment,
-      facts.spatialWorkload,
-      facts.spatialRuntimeInput};
+      launch.spatialWorkload,
+      launch.spatialRuntimeInput};
 }
 
 EvaluationModelResult terminalResult(EvaluationEvidenceOutcome outcome) {
@@ -1423,9 +1508,9 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
     std::vector<std::string> engineCommand{
         eda::open_source::mappedRtlSimulatorExecutablePath.str(),
         "--socket",
-        "outputs/spatial-bridge-0.sock",
+        spatialBridgeSocketPath(0),
         "--expected-launch",
-        kSpatialLaunchPath.str(),
+        spatialLaunchPath(0),
         "--mapped-result",
         eda::open_source::mappedRtlResultPath.str(),
         "--ticks-per-cycle",
@@ -1453,12 +1538,13 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
           eda::open_source::mappedRtlBridgedVerilatorDriverPath.str()},
          std::move(engineCommand)},
         std::move(options->inheritedEnvironment),
-        {kSystemResultPath.str(), kBridgeResultPath.str(),
+        {kSystemResultPath.str(), spatialBridgeResultPath(0),
          kMemoryResultPath.str(), eda::open_source::mappedRtlResultPath.str()},
         std::move(files),
         {gem5ExternalFile},
         {},
         {eda::open_source::mappedRtlSimulatorExecutablePath.str()}};
+    llvm::sort(specification.declaredOutputs);
     llvm::sort(specification.files, [](const auto &lhs, const auto &rhs) {
       return lhs.relativePath < rhs.relativePath;
     });
@@ -1495,20 +1581,23 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
                        : kCgraEnginePath.str(),
                    std::move(*engine), std::nullopt, true});
 
-  ExternalToolInvocationBundleSpec specification{std::move(*contract),
-                                                 std::move(*gem5Tool),
-                                                 gem5ToolProvider.versionProbe,
-                                                 std::move(*runtime),
-                                                 container.versionProbe,
-                                                 {},
-                                                 inherited,
-                                                 {kSystemResultPath.str(),
-                                                  kBridgeResultPath.str(),
-                                                  kMemoryResultPath.str()},
-                                                 std::move(files),
-                                                 {gem5ExternalFile},
-                                                 {},
-                                                 {}};
+  ExternalToolInvocationBundleSpec specification{
+      std::move(*contract),
+      std::move(*gem5Tool),
+      gem5ToolProvider.versionProbe,
+      std::move(*runtime),
+      container.versionProbe,
+      {},
+      inherited,
+      {kSystemResultPath.str(), kMemoryResultPath.str()},
+      std::move(files),
+      {gem5ExternalFile},
+      {},
+      {}};
+  for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
+       ++ordinal)
+    specification.declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
+  llvm::sort(specification.declaredOutputs);
   specification.commands = {{specification.tool.executable, "-d",
                              "outputs/gem5", kConfigurationScriptPath.str(),
                              "--projection", kProjectionPath.str(), "--result",
@@ -1579,68 +1668,74 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
   if (!llvm::StringRef(systemResult->cause).contains("m5_exit"))
     return terminalResult(
         CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
-  auto bridgeText =
-      readExternalToolInvocationDeclaredOutput(imported, kBridgeResultPath);
-  if (!bridgeText)
-    return bridgeText.takeError();
-  std::vector<std::uint8_t> bridgeBytes(bridgeText->begin(), bridgeText->end());
-  Gem5BridgeResult bridgeResult;
-  std::string bridgeDiagnostic;
-  if (!decodeGem5BridgeResult(bridgeBytes, bridgeResult, bridgeDiagnostic))
-    return invalid("bridge result is invalid: " + bridgeDiagnostic);
-  if (bridgeResult.status > 1 || bridgeResult.sequence != 0 ||
-      bridgeResult.completionTick < systemResult->entryTick ||
-      bridgeResult.completionTick > systemResult->exitTick)
-    return invalid("bridge completion is inconsistent with gem5 time");
-  std::optional<sim::SpatialEngineBoundaryResult> spatialResult;
-  if (facts.engine == Gem5SystemEngine::Rtl) {
-    if (!rtlClosure)
-      return invalid("gem5 RTL import lost its exact mapped RTL closure");
-    auto mappedText = readExternalToolInvocationDeclaredOutput(
-        imported, eda::open_source::mappedRtlResultPath);
-    if (!mappedText)
-      return mappedText.takeError();
-    const llvm::ArrayRef<std::uint8_t> mappedBytes(
-        reinterpret_cast<const std::uint8_t *>(mappedText->data()),
-        mappedText->size());
-    if (mappedBytes != llvm::ArrayRef<std::uint8_t>(bridgeResult.result))
-      return invalid("bridge payload differs from the mapped RTL result");
-    auto mappedResult =
-        eda::open_source::parseMappedRtlSimulationResult(*mappedText);
-    if (!mappedResult)
-      return mappedResult.takeError();
-    if (mappedResult->terminal ==
-        eda::open_source::MappedRtlTerminalStatus::StoppedByLimit) {
-      if (bridgeResult.status != 1)
+  for (const auto indexed : llvm::enumerate(facts.spatialLaunches)) {
+    const Gem5SpatialLaunchProjection &launch = indexed.value();
+    auto bridgeText = readExternalToolInvocationDeclaredOutput(
+        imported, spatialBridgeResultPath(indexed.index()));
+    if (!bridgeText)
+      return bridgeText.takeError();
+    std::vector<std::uint8_t> bridgeBytes(bridgeText->begin(),
+                                          bridgeText->end());
+    Gem5BridgeResult bridgeResult;
+    std::string bridgeDiagnostic;
+    if (!decodeGem5BridgeResult(bridgeBytes, bridgeResult, bridgeDiagnostic))
+      return invalid("bridge result is invalid: " + bridgeDiagnostic);
+    if (bridgeResult.status > 1 || bridgeResult.sequence != 0 ||
+        bridgeResult.completionTick < systemResult->entryTick ||
+        bridgeResult.completionTick > systemResult->exitTick)
+      return invalid("bridge completion is inconsistent with gem5 time");
+
+    std::optional<sim::SpatialEngineBoundaryResult> spatialResult;
+    if (facts.engine == Gem5SystemEngine::Rtl) {
+      if (!rtlClosure || indexed.index() != 0)
+        return invalid("gem5 RTL import lost its exact mapped RTL closure");
+      auto mappedText = readExternalToolInvocationDeclaredOutput(
+          imported, eda::open_source::mappedRtlResultPath);
+      if (!mappedText)
+        return mappedText.takeError();
+      const llvm::ArrayRef<std::uint8_t> mappedBytes(
+          reinterpret_cast<const std::uint8_t *>(mappedText->data()),
+          mappedText->size());
+      if (mappedBytes != llvm::ArrayRef<std::uint8_t>(bridgeResult.result))
+        return invalid("bridge payload differs from the mapped RTL result");
+      auto mappedResult =
+          eda::open_source::parseMappedRtlSimulationResult(*mappedText);
+      if (!mappedResult)
+        return mappedResult.takeError();
+      if (mappedResult->terminal ==
+          eda::open_source::MappedRtlTerminalStatus::StoppedByLimit) {
+        if (bridgeResult.status != 1)
+          return invalid("bridge status disagrees with the RTL terminal");
+        return terminalResult(
+            CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
+      }
+      if (bridgeResult.status != 0)
         return invalid("bridge status disagrees with the RTL terminal");
+      auto boundary =
+          eda::open_source::projectMappedRtlSpatialEngineBoundaryResult(
+              *rtlClosure, *mappedResult, artifacts, blobs);
+      if (!boundary)
+        return boundary.takeError();
+      spatialResult = std::move(*boundary);
+    } else {
+      auto boundary = sim::decodeSpatialEngineBoundaryResult(
+          bridgeResult.result, launch.spatialWorkload,
+          launch.spatialRuntimeInput, artifacts);
+      if (!boundary)
+        return boundary.takeError();
+      const std::uint32_t expectedStatus =
+          std::holds_alternative<sim::RetiredExecution>(boundary->terminal)
+              ? 0U
+              : 1U;
+      if (bridgeResult.status != expectedStatus)
+        return invalid("bridge status disagrees with the Spatial terminal");
+      spatialResult = std::move(*boundary);
+    }
+    if (!spatialResult ||
+        !std::holds_alternative<sim::RetiredExecution>(spatialResult->terminal))
       return terminalResult(
           CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
-    }
-    if (bridgeResult.status != 0)
-      return invalid("bridge status disagrees with the RTL terminal");
-    auto boundary =
-        eda::open_source::projectMappedRtlSpatialEngineBoundaryResult(
-            *rtlClosure, *mappedResult, artifacts, blobs);
-    if (!boundary)
-      return boundary.takeError();
-    spatialResult = std::move(*boundary);
-  } else {
-    auto boundary = sim::decodeSpatialEngineBoundaryResult(
-        bridgeResult.result, facts.spatialWorkload, facts.spatialRuntimeInput,
-        artifacts);
-    if (!boundary)
-      return boundary.takeError();
-    const std::uint32_t expectedStatus =
-        std::holds_alternative<sim::RetiredExecution>(boundary->terminal) ? 0U
-                                                                          : 1U;
-    if (bridgeResult.status != expectedStatus)
-      return invalid("bridge status disagrees with the Spatial terminal");
-    spatialResult = std::move(*boundary);
   }
-  if (!spatialResult ||
-      !std::holds_alternative<sim::RetiredExecution>(spatialResult->terminal))
-    return terminalResult(
-        CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
 
   auto memoryText =
       readExternalToolInvocationDeclaredOutput(imported, kMemoryResultPath);

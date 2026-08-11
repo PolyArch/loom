@@ -41,11 +41,13 @@ INSTRUCTION_LOAD_ADDRESS = 0x80100000
 MEMORY_BASE = 0x80000000
 MEMORY_SIZE = 0x04000000
 LAUNCH_ADDRESS = 0x82000000
+SECOND_LAUNCH_ADDRESS = 0x82004000
 EXTERNAL_VALUE_ADDRESS = 0x82001000
 SYSTEM_MEMORY_ADDRESS = 0x82002000
 MEMORY_TABLE_ADDRESS = 0x82003000
 BRIDGE_ADDRESS = 0x10000000
-DISPATCH_ADDRESS = 0x10001000
+SECOND_BRIDGE_ADDRESS = 0x10001000
+DISPATCH_ADDRESS = 0x10002000
 STACK_BASE = 0x83F00000
 STACK_STRIDE = 0x00010000
 EXPECTED_VALUE = 0x1122334455667788
@@ -63,6 +65,9 @@ loom_host_entry:
   mv s0, a0
   mv s1, a2
   mv s2, a3
+  mv s3, a1
+  li t0, 2
+  bne s3, t0, 3f
   li t0, 1
   bne s2, t0, 3f
   lw t0, 0(s1)
@@ -82,7 +87,12 @@ loom_host_entry:
   ld t0, 24(s1)
   li t1, {EXPECTED_SYSTEM_MEMORY}
   sd t1, 0(t0)
-  sw zero, 0(s0)
+  li s4, 0
+4:
+  bgeu s4, s3, 5f
+  li t0, 2
+  sw t0, 8(s0)
+  sw s4, 0(s0)
   sw zero, 4(s0)
   li t0, 1
   fence iorw, iorw
@@ -94,6 +104,9 @@ loom_host_entry:
   andi t1, t0, 2
   beqz t1, 1b
   fence iorw, iorw
+  addi s4, s4, 1
+  j 4b
+5:
   li t2, {EXTERNAL_VALUE_ADDRESS}
   ld t3, 0(t2)
   li t4, {EXPECTED_VALUE}
@@ -334,20 +347,29 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         instruction_source = root / "instruction.S"
         host_image = root / "host.elf"
         instruction_image = root / "instruction.elf"
-        launch_path = root / "spatial-launch.bin"
+        launch_paths = [
+            root / f"spatial-launch-{ordinal}.bin" for ordinal in range(2)
+        ]
         memory_object_path = root / "system-memory.bin"
         memory_table_path = root / "system-memory-table.bin"
         memory_observation_path = root / "system-memory.result"
-        socket_path = root / "spatial-bridge.sock"
-        bridge_result_path = root / "spatial-result.bin"
+        socket_paths = [
+            root / f"spatial-bridge-{ordinal}.sock" for ordinal in range(2)
+        ]
+        bridge_result_paths = [
+            root / f"spatial-result-{ordinal}.bin" for ordinal in range(2)
+        ]
         system_result_path = root / "system-result.json"
-        engine_trace_path = root / "engine-trace.json"
+        engine_trace_paths = [
+            root / f"engine-trace-{ordinal}.json" for ordinal in range(2)
+        ]
         projection_path = root / "projection.json"
         gem5_log_path = root / "gem5.log"
 
         host_source.write_text(HOST_SOURCE, encoding="ascii")
         instruction_source.write_text(INSTRUCTION_SOURCE, encoding="ascii")
-        launch_path.write_bytes(EXPECTED_LAUNCH)
+        for launch_path in launch_paths:
+            launch_path.write_bytes(EXPECTED_LAUNCH)
         memory_object_path.write_bytes(INITIAL_SYSTEM_MEMORY)
         memory_table_path.write_bytes(
             struct.pack(
@@ -379,16 +401,19 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             False,
         )
 
-        engine_command = [
-            sys.executable,
-            str(pathlib.Path(__file__).resolve()),
-            "--engine",
-            "--socket",
-            str(socket_path),
-            "--expected-launch",
-            str(launch_path),
-            "--trace",
-            str(engine_trace_path),
+        engine_commands = [
+            [
+                sys.executable,
+                str(pathlib.Path(__file__).resolve()),
+                "--engine",
+                "--socket",
+                str(socket_paths[ordinal]),
+                "--expected-launch",
+                str(launch_paths[ordinal]),
+                "--trace",
+                str(engine_trace_paths[ordinal]),
+            ]
+            for ordinal in range(2)
         ]
         projection = {
             "schema": "loom.gem5_system_projection.2",
@@ -402,7 +427,8 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             },
             "instruction_images": [str(instruction_image)],
             "runtime_images": [
-                {"path": str(launch_path), "address": LAUNCH_ADDRESS},
+                {"path": str(launch_paths[0]), "address": LAUNCH_ADDRESS},
+                {"path": str(launch_paths[1]), "address": SECOND_LAUNCH_ADDRESS},
                 {"path": str(memory_object_path), "address": SYSTEM_MEMORY_ADDRESS},
                 {"path": str(memory_table_path), "address": MEMORY_TABLE_ADDRESS},
             ],
@@ -430,20 +456,37 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                         "bridge_address": BRIDGE_ADDRESS,
                         "launch_address": LAUNCH_ADDRESS,
                         "launch_size": len(EXPECTED_LAUNCH),
-                    }
+                    },
+                    {
+                        "cpu_id": 2,
+                        "image_ordinal": 0,
+                        "entry_symbol": "__loom_thread_entry_0",
+                        "bridge_address": SECOND_BRIDGE_ADDRESS,
+                        "launch_address": SECOND_LAUNCH_ADDRESS,
+                        "launch_size": len(EXPECTED_LAUNCH),
+                    },
                 ],
             },
-            "processors": [{"cpu_id": 0}, {"cpu_id": 1}],
+            "processors": [{"cpu_id": 0}, {"cpu_id": 1}, {"cpu_id": 2}],
             "bridges": [
                 {
                     "pio_address": BRIDGE_ADDRESS,
                     "pio_size": 4096,
                     "pio_latency": "10ns",
-                    "engine_socket": str(socket_path),
-                    "engine_command": engine_command,
-                    "result_path": str(bridge_result_path),
+                    "engine_socket": str(socket_paths[0]),
+                    "engine_command": engine_commands[0],
+                    "result_path": str(bridge_result_paths[0]),
                     "maximum_message_bytes": 1048576,
-                }
+                },
+                {
+                    "pio_address": SECOND_BRIDGE_ADDRESS,
+                    "pio_size": 4096,
+                    "pio_latency": "10ns",
+                    "engine_socket": str(socket_paths[1]),
+                    "engine_command": engine_commands[1],
+                    "result_path": str(bridge_result_paths[1]),
+                    "maximum_message_bytes": 1048576,
+                },
             ],
             "maximum_ticks": 100000000,
         }
@@ -478,16 +521,25 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             raise RuntimeError("gem5 system result has the wrong schema")
         if "m5_exit instruction encountered" not in system_result["cause"]:
             raise RuntimeError(f"guest did not retire normally: {system_result['cause']}")
-        status, completion_tick, sequence, result = decode_bridge_result(
-            bridge_result_path
-        )
-        if status != 0 or sequence != 0 or result != EXPECTED_RESULT:
-            raise RuntimeError("Spatial bridge result differs from the engine completion")
-        if not (0 < completion_tick <= system_result["exit_tick"]):
-            raise RuntimeError("Spatial completion is outside the gem5 execution interval")
-        trace = json.loads(engine_trace_path.read_text(encoding="utf-8"))
-        if trace["memory_value"] != EXPECTED_VALUE:
-            raise RuntimeError("engine trace omitted the exact external-memory value")
+        completion_ticks = []
+        for bridge_result_path, engine_trace_path in zip(
+            bridge_result_paths, engine_trace_paths, strict=True
+        ):
+            status, completion_tick, sequence, result = decode_bridge_result(
+                bridge_result_path
+            )
+            if status != 0 or sequence != 0 or result != EXPECTED_RESULT:
+                raise RuntimeError(
+                    "Spatial bridge result differs from the engine completion"
+                )
+            if not (0 < completion_tick <= system_result["exit_tick"]):
+                raise RuntimeError(
+                    "Spatial completion is outside the gem5 execution interval"
+                )
+            completion_ticks.append(completion_tick)
+            trace = json.loads(engine_trace_path.read_text(encoding="utf-8"))
+            if trace["memory_value"] != EXPECTED_VALUE:
+                raise RuntimeError("engine trace omitted the exact external-memory value")
         expected_memory = EXPECTED_SYSTEM_MEMORY.to_bytes(8, byteorder="little")
         expected_observation = (
             b"LGM1"
@@ -503,7 +555,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         print(
             json.dumps(
                 {
-                    "bridge_completion_tick": completion_tick,
+                    "bridge_completion_ticks": completion_ticks,
                     "cause": system_result["cause"],
                     "exit_tick": system_result["exit_tick"],
                     "memory_value": EXPECTED_VALUE,
