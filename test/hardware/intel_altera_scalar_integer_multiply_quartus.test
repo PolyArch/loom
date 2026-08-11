@@ -7,6 +7,7 @@
 # RUN: cd %t/exact/provider_artifacts && quartus_fit loom_intel_altera_lpm_mult --read_settings_files=on --write_settings_files=off > quartus_fit.log 2>&1
 # RUN: cd %t/exact/provider_artifacts && quartus_sta loom_intel_altera_lpm_mult > quartus_sta.log 2>&1
 # RUN: cd %t/exact/provider_artifacts && quartus_asm loom_intel_altera_lpm_mult --read_settings_files=on > quartus_asm.log 2>&1
-# RUN: test -s %t/exact/provider_artifacts/output_files/loom_intel_altera_lpm_mult.sof
+# RUN: FileCheck %s --check-prefix=ASM --input-file=%t/exact/provider_artifacts/output_files/loom_intel_altera_lpm_mult.asm.rpt
 
 # DSP: Implemented 1 DSP elements
+# ASM: ; Assembler Status      ; Successful

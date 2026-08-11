@@ -15,6 +15,11 @@ config.suffixes = [".mlir", ".test"]
 # concurrency so lit's worker pool does not oversubscribe those inner jobs.
 lit_config.parallelism_groups["system-execution"] = 2
 
+# Hardware tools and scale Mapping tests launch nested workers and carry large
+# resident sets. Keep enough independent work in flight for this host without
+# letting lit's outer worker pool oversubscribe those inner workloads.
+lit_config.parallelism_groups["resource-intensive"] = 6
+
 if getattr(config, "loom_have_circt", False):
     config.available_features.add("circt")
 
