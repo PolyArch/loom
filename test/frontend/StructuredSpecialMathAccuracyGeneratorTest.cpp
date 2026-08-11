@@ -556,6 +556,7 @@ void exactFabricPruningRetainsOnlyReachableLineage() {
           parent, *max2));
   auto admitted = loom::frontend::finalizeSpatialOwnershipCandidate(
       {std::move(selected.structuredProgram),
+       std::nullopt,
        {},
        std::move(selected.sourceProvenance)},
       partialFabric);

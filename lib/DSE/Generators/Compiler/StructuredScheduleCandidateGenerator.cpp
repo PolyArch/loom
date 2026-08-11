@@ -213,10 +213,18 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
       return invalid("schedule-decision accounting overflows u64");
     decisionAttempts += decisions->decisions.size();
     outputs.reserve(outputs.size() + decisions->decisions.size());
+    std::optional<frontend::StructuredEntityRef> trackedSpatialRegion;
+    if (invocation) {
+      auto tracked = detail::StructuredOwnershipInvocationAccess::
+          ownedSpatialRegion(*invocation, reference);
+      if (!tracked)
+        return tracked.takeError();
+      trackedSpatialRegion = *tracked;
+    }
     for (const frontend::StructuredScheduleDecision &decision :
          decisions->decisions) {
-      auto child =
-          frontend::materializeStructuredScheduleDecision(*parent, decision);
+      auto child = frontend::materializeStructuredScheduleDecision(
+          *parent, decision, trackedSpatialRegion);
       if (!child)
         return child.takeError();
       std::optional<lowering::ProjectedCanonicalDataflow> projected;

@@ -3,6 +3,7 @@
 #include "Dataflow/IR/OperationSchema.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
+#include "Frontend/IR/LoomOps.h"
 #include "Frontend/Raising/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -144,7 +145,9 @@ aggregateUnrollCapacity(mlir::scf::ForOp loop,
 llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>>
 cloneAndResolveLoop(const StructuredProgramCandidate &parent,
                     const StructuredEntityRef &reference,
-                    mlir::scf::ForOp &clonedLoop) {
+                    std::optional<StructuredEntityRef> trackedSpatialRegion,
+                    mlir::scf::ForOp &clonedLoop,
+                    mlir::Operation *&clonedSpatialRegion) {
   if (reference.kind != StructuredEntityKind::Operation)
     return invalid("schedule decision does not reference an operation");
   auto view = parent.view();
@@ -164,6 +167,17 @@ cloneAndResolveLoop(const StructuredProgramCandidate &parent,
       mapping.lookupOrNull(sourceLoop.getOperation()));
   if (!clonedLoop)
     return invalid("selected loop was not mapped into the private clone");
+  if (trackedSpatialRegion) {
+    auto spatialEntity = view->resolve(*trackedSpatialRegion);
+    if (!spatialEntity)
+      return spatialEntity.takeError();
+    if (!llvm::isa_and_nonnull<loom::SpatialRegionOp>(
+            spatialEntity->operation))
+      return invalid("tracked operation is not a Spatial region");
+    clonedSpatialRegion = mapping.lookupOrNull(spatialEntity->operation);
+    if (!clonedSpatialRegion)
+      return invalid("tracked Spatial region was not mapped into the clone");
+  }
   return clone;
 }
 
@@ -363,12 +377,15 @@ enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
 llvm::Expected<MaterializedStructuredScheduleCandidate>
 materializeStructuredScheduleDecision(
     const StructuredProgramCandidate &parent,
-    const StructuredScheduleDecision &decision) {
+    const StructuredScheduleDecision &decision,
+    std::optional<StructuredEntityRef> trackedSpatialRegion) {
   auto encoded = encodeStructuredScheduleDecision(decision);
   if (!encoded)
     return encoded.takeError();
   mlir::scf::ForOp loop;
-  auto clone = cloneAndResolveLoop(parent, decision.loop, loop);
+  mlir::Operation *clonedSpatialRegion = nullptr;
+  auto clone = cloneAndResolveLoop(parent, decision.loop, trackedSpatialRegion,
+                                   loop, clonedSpatialRegion);
   if (!clone)
     return clone.takeError();
 
@@ -400,11 +417,21 @@ materializeStructuredScheduleDecision(
   }
   if (mlir::failed(mlir::verify(**clone)))
     return invalid("materialized schedule candidate does not verify");
-  auto finalized = finalizeStructuredProgramWithTrackedBlocks(clone->get(), {});
+  auto finalized = finalizeStructuredProgramWithTrackedEntities(
+      clone->get(), {},
+      clonedSpatialRegion ? llvm::ArrayRef(&clonedSpatialRegion, 1)
+                          : llvm::ArrayRef<mlir::Operation *>{});
   if (!finalized)
     return finalized.takeError();
+  if (finalized->trackedOperations.size() !=
+      static_cast<std::size_t>(clonedSpatialRegion != nullptr))
+    return invalid("tracked Spatial region projection changed cardinality");
   return MaterializedStructuredScheduleCandidate{
-      std::move(finalized->artifact), std::move(finalized->sourceProvenance)};
+      std::move(finalized->artifact),
+      finalized->trackedOperations.empty()
+          ? std::nullopt
+          : std::optional(finalized->trackedOperations.front()),
+      std::move(finalized->sourceProvenance)};
 }
 
 } // namespace loom::frontend

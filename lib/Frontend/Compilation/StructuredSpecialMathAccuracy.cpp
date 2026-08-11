@@ -78,6 +78,7 @@ selectedAccuracy(mlir::Operation *operation, bool approximationPermitted) {
 struct MaterializedAccuracyProjection final {
   StructuredProgramCandidate structuredProgram;
   std::vector<StructuredEntityRef> trackedBlocks;
+  std::optional<StructuredEntityRef> trackedSpatialRegion;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
@@ -85,6 +86,7 @@ llvm::Expected<MaterializedAccuracyProjection> materializeDecision(
     const StructuredProgramCandidate &parent,
     const StructuredSpecialMathAccuracyDecision &decision,
     llvm::ArrayRef<StructuredEntityRef> trackedBlockReferences,
+    std::optional<StructuredEntityRef> trackedSpatialRegion,
     llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
   auto domain = enumerateStructuredSpecialMathAccuracyDecisions(parent);
   if (!domain)
@@ -102,6 +104,20 @@ llvm::Expected<MaterializedAccuracyProjection> materializeDecision(
   mlir::IRMapping mapping;
   mlir::OwningOpRef<mlir::ModuleOp> clone(
       llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
+  mlir::Operation *trackedSpatialOperation = nullptr;
+  if (trackedSpatialRegion) {
+    if (trackedSpatialRegion->parent != parent.identity() ||
+        trackedSpatialRegion->kind != StructuredEntityKind::Operation)
+      return invalid("tracked Spatial region has the wrong Structured owner");
+    auto entity = parentView->resolve(*trackedSpatialRegion);
+    if (!entity)
+      return entity.takeError();
+    if (!llvm::isa_and_nonnull<loom::SpatialRegionOp>(entity->operation))
+      return invalid("tracked operation is not a Spatial region");
+    trackedSpatialOperation = mapping.lookupOrNull(entity->operation);
+    if (!trackedSpatialOperation)
+      return invalid("tracked Spatial region was not cloned");
+  }
   mlir::Operation *mappedOperation = mapping.lookupOrNull(selected->operation);
   if (!mappedOperation)
     return invalid("selected operation was not cloned");
@@ -159,12 +175,21 @@ llvm::Expected<MaterializedAccuracyProjection> materializeDecision(
 
   if (mlir::failed(mlir::verify(*clone)))
     return invalid("materialized special-math candidate does not verify");
-  auto finalized =
-      finalizeStructuredProgramWithTrackedBlocks(clone.get(), trackedBlocks);
+  auto finalized = finalizeStructuredProgramWithTrackedEntities(
+      clone.get(), trackedBlocks,
+      trackedSpatialOperation ? llvm::ArrayRef(&trackedSpatialOperation, 1)
+                              : llvm::ArrayRef<mlir::Operation *>{});
   if (!finalized)
     return finalized.takeError();
+  if (finalized->trackedOperations.size() !=
+      static_cast<std::size_t>(trackedSpatialOperation != nullptr))
+    return invalid("tracked Spatial region projection changed cardinality");
   return MaterializedAccuracyProjection{std::move(finalized->artifact),
                                         std::move(finalized->trackedBlocks),
+                                        finalized->trackedOperations.empty()
+                                            ? std::nullopt
+                                            : std::optional(
+                                                  finalized->trackedOperations.front()),
                                         std::move(finalized->sourceProvenance)};
 }
 
@@ -258,7 +283,8 @@ llvm::Expected<MaterializedStructuredSpecialMathCandidate>
 materializeStructuredSpecialMathAccuracyDecision(
     const StructuredProgramCandidate &parent,
     const StructuredSpecialMathAccuracyDecision &decision) {
-  auto materialized = materializeDecision(parent, decision, {}, {});
+  auto materialized =
+      materializeDecision(parent, decision, {}, std::nullopt, {});
   if (!materialized)
     return materialized.takeError();
   return MaterializedStructuredSpecialMathCandidate{
@@ -276,7 +302,8 @@ materializeStructuredSpecialMathAccuracyDecision(
        parent.blockActivityLineage)
     trackedBlocks.push_back(lineage.childBlock);
   auto child = materializeDecision(parent.structuredProgram, decision,
-                                   trackedBlocks, parent.sourceProvenance);
+                                   trackedBlocks, parent.ownedSpatialRegion,
+                                   parent.sourceProvenance);
   if (!child)
     return child.takeError();
   if (child->trackedBlocks.size() != parent.blockActivityLineage.size())
@@ -287,7 +314,8 @@ materializeStructuredSpecialMathAccuracyDecision(
        llvm::zip_equal(child->trackedBlocks, parent.blockActivityLineage))
     childLineage.push_back({childBlock, parentLineage.parentBlock});
   return MaterializedStructuredOwnershipCandidate{
-      std::move(child->structuredProgram), std::move(childLineage),
+      std::move(child->structuredProgram),
+      std::move(child->trackedSpatialRegion), std::move(childLineage),
       std::move(child->sourceProvenance)};
 }
 

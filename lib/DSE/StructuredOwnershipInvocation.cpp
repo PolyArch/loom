@@ -234,6 +234,7 @@ class StructuredOwnershipInvocation::Impl final {
 public:
   struct FinalCandidateState final {
     frontend::StructuredProgramCandidate structuredProgram;
+    std::optional<frontend::StructuredEntityRef> ownedSpatialRegion;
     std::vector<frontend::StructuredBlockActivityLineage> blockActivityLineage;
     std::vector<frontend::StructuredOperationSourceProvenance> sourceProvenance;
     lowering::ProjectedCanonicalDataflow projected;
@@ -510,7 +511,7 @@ StructuredOwnershipInvocation::materializeSelectedCandidate(
     if (!dataflow)
       return dataflow.takeError();
     materialized.emplace(frontend::MaterializedOwnershipCandidate{
-        std::move(*structured), std::move(*dataflow), {}, {}, {}});
+        std::move(*structured), std::move(*dataflow), {}, std::nullopt, {}, {}});
   } else {
     auto found = impl_->materialized.find(candidate);
     if (found == impl_->materialized.end())
@@ -523,6 +524,7 @@ StructuredOwnershipInvocation::materializeSelectedCandidate(
     materialized.emplace(frontend::MaterializedOwnershipCandidate{
         std::move(found->second.structuredProgram), std::move(*dataflow),
         std::move(found->second.spatialGraphs),
+        std::move(found->second.ownedSpatialRegion),
         std::move(found->second.blockActivityLineage),
         std::move(found->second.sourceProvenance)});
     impl_->materialized.erase(found);
@@ -617,8 +619,8 @@ StructuredOwnershipInvocation::materializeSelectedDataflowCandidate(
     return selectedDataflow.takeError();
   frontend::MaterializedOwnershipCandidate materialized{
       std::move(*selectedStructured), std::move(*selectedDataflow),
-      found->second.spatialGraphs, found->second.blockActivityLineage,
-      found->second.sourceProvenance};
+      found->second.spatialGraphs, found->second.ownedSpatialRegion,
+      found->second.blockActivityLineage, found->second.sourceProvenance};
 
   auto lineage = impl_->resolveLineage(structuredParent);
   if (!lineage)
@@ -828,8 +830,28 @@ detail::StructuredOwnershipInvocationAccess::clonePreClosureCandidate(
   if (!clone)
     return clone.takeError();
   return frontend::MaterializedStructuredOwnershipCandidate{
-      std::move(*clone), found->second.blockActivityLineage,
+      std::move(*clone), found->second.ownedSpatialRegion,
+      found->second.blockActivityLineage,
       found->second.sourceProvenance};
+}
+
+llvm::Expected<std::optional<frontend::StructuredEntityRef>>
+detail::StructuredOwnershipInvocationAccess::ownedSpatialRegion(
+    const StructuredOwnershipInvocation &invocation,
+    const ArtifactRootReference &reference) {
+  const StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
+  if (!impl.generationRecorded)
+    return invalid("Spatial projection lookup precedes Ownership generation");
+  auto final = impl.finalCandidates.find(reference);
+  if (final != impl.finalCandidates.end())
+    return final->second.ownedSpatialRegion;
+  auto structured = impl.structuredCandidates.find(reference);
+  if (structured != impl.structuredCandidates.end())
+    return structured->second.ownedSpatialRegion;
+  auto materialized = impl.materialized.find(reference);
+  if (materialized != impl.materialized.end())
+    return materialized->second.ownedSpatialRegion;
+  return invalid("Structured candidate has no bound Spatial projection");
 }
 
 llvm::Error
@@ -879,6 +901,7 @@ detail::StructuredOwnershipInvocationAccess::recordScheduleCandidate(
     impl.finalCandidates.try_emplace(
         child, StructuredOwnershipInvocation::Impl::FinalCandidateState{
                    std::move(candidate.structuredProgram),
+                   std::move(candidate.trackedSpatialRegion),
                    {},
                    std::move(candidate.sourceProvenance),
                    std::move(projected)});
@@ -940,6 +963,7 @@ detail::StructuredOwnershipInvocationAccess::recordMemoryCommunicationCandidate(
     impl.finalCandidates.try_emplace(
         child, StructuredOwnershipInvocation::Impl::FinalCandidateState{
                    std::move(candidate.structuredProgram),
+                   std::move(candidate.trackedSpatialRegion),
                    {},
                    std::move(candidate.sourceProvenance),
                    std::move(projected)});
@@ -1118,6 +1142,7 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::
         child,
         StructuredOwnershipInvocation::Impl::FinalCandidateState{
             std::move(candidate.structuredProgram),
+            std::move(candidate.ownedSpatialRegion),
             std::move(candidate.blockActivityLineage),
             std::move(candidate.sourceProvenance), std::move(projected)});
   } else if (found->second.structuredProgram.canonicalBytes().bytes() !=
@@ -1201,6 +1226,7 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
     materialized.emplace(frontend::MaterializedOwnershipCandidate{
         std::move(state.structuredProgram), std::move(state.projected.artifact),
         std::move(state.projected.spatialGraphs),
+        std::move(state.ownedSpatialRegion),
         std::move(state.blockActivityLineage),
         std::move(state.sourceProvenance)});
   } else {
@@ -1238,9 +1264,9 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
                 candidate,
                 {*impl.workloadReference, *impl.runtimeInputReference,
                  impl.sourceProgram, derivation.scope, derivation.decision,
-                 executionShapeDecisions, found->second, impl.workload,
-                 impl.runtimeInput, *impl.sourceObservations,
-                 impl.functionalReplayLimits},
+                executionShapeDecisions, found->second, impl.workload,
+                impl.runtimeInput, *impl.sourceObservations,
+                impl.functionalReplayLimits},
                 store))
       return error;
   }
@@ -1304,6 +1330,7 @@ detail::StructuredOwnershipInvocationAccess::primeDataflowFunctionalReplay(
   frontend::MaterializedOwnershipCandidate candidate{
       std::move(*structured), std::move(*dataflow),
       parentState->second.spatialGraphs,
+      parentState->second.ownedSpatialRegion,
       parentState->second.blockActivityLineage,
       parentState->second.sourceProvenance};
   std::vector<frontend::StructuredExecutionShapeDecision>

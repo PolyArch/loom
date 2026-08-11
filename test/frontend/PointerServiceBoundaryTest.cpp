@@ -163,6 +163,7 @@ loom::frontend::MaterializedOwnershipCandidate lowerPointerAddressedCandidate(
   return loom::frontend::MaterializedOwnershipCandidate{
       std::move(structured.structuredProgram), std::move(projected.artifact),
       std::move(projected.spatialGraphs),
+      std::move(structured.ownedSpatialRegion),
       std::move(structured.blockActivityLineage),
       std::move(structured.sourceProvenance)};
 }

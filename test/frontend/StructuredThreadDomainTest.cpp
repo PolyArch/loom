@@ -381,6 +381,7 @@ void requireThreadDomainChoice(
           std::move(nonRetiring.structuredProgram),
           std::move(nonRetiringDataflow),
           {},
+          std::nullopt,
           {},
           {}};
       auto nonRetiringReplay = take(loom::sim::validateSourceBackedDfgReplay(
@@ -408,7 +409,7 @@ void requireThreadDomainChoice(
         auto dataflow = take(
             loom::lowering::lowerStructuredProgramToCanonicalDataflow(program));
         return loom::frontend::MaterializedOwnershipCandidate{
-            std::move(program), std::move(dataflow), {}, {}, {}};
+            std::move(program), std::move(dataflow), {}, std::nullopt, {}, {}};
       };
 
       auto shortened = withExtent(7);
@@ -465,7 +466,8 @@ void requireThreadDomainChoice(
           take(loom::lowering::lowerStructuredProgramToCanonicalDataflow(
               repeatedProgram));
       loom::frontend::MaterializedOwnershipCandidate repeated{
-          std::move(repeatedProgram), std::move(repeatedDataflow), {}, {}, {}};
+          std::move(repeatedProgram), std::move(repeatedDataflow), {},
+          std::nullopt, {}, {}};
       auto repeatedMismatch = take(loom::sim::validateSourceBackedDfgReplay(
           source, {selected}, threadDecision, {}, repeated, workload, input,
           {1, 1, 1024 * 1024}));

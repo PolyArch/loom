@@ -881,6 +881,7 @@ struct CanonicalizedClone {
   OwningOpRef<ModuleOp> module;
   CanonicalEntityProjection entityProjection;
   std::vector<std::uint64_t> trackedBlockOrdinals;
+  std::vector<std::uint64_t> trackedOperationOrdinals;
   std::vector<std::vector<std::string>> operationSourceFiles;
 };
 
@@ -940,7 +941,8 @@ std::vector<std::string> sourceFiles(Location location) {
 }
 
 llvm::Expected<CanonicalizedClone>
-canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks) {
+canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks,
+                  ArrayRef<Operation *> trackedOperations) {
   IRMapping mapping;
   auto clone = OwningOpRef<ModuleOp>(cast<ModuleOp>(source->clone(mapping)));
   SmallVector<Block *> tracked;
@@ -958,6 +960,23 @@ canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks) {
     if (!mapped)
       return invalid("tracked block was not cloned");
     tracked.push_back(mapped);
+  }
+  SmallVector<Operation *> trackedOps;
+  trackedOps.reserve(trackedOperations.size());
+  DenseSet<Operation *> seenOperations;
+  for (Operation *operation : trackedOperations) {
+    ModuleOp module = operation ? operation->getParentOfType<ModuleOp>()
+                                : ModuleOp{};
+    if (!operation ||
+        (operation != source.getOperation() && module != source))
+      return invalid(
+          "tracked operation has the wrong Structured Program owner");
+    if (!seenOperations.insert(operation).second)
+      return invalid("tracked operation is duplicated");
+    Operation *mapped = mapping.lookupOrNull(operation);
+    if (!mapped)
+      return invalid("tracked operation was not cloned");
+    trackedOps.push_back(mapped);
   }
   if (failed(verify(*clone)))
     return invalid("candidate does not verify before canonicalization");
@@ -1016,8 +1035,28 @@ canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks) {
       return invalid("tracked block is absent from canonical labeling");
     trackedOrdinals.push_back(lexicalToCanonical[lexicalOrdinal->second]);
   }
+  DenseMap<Operation *, std::uint64_t> lexicalOperationOrdinals;
+  for (auto item :
+       llvm::enumerate(lexical[kindIndex(StructuredEntityKind::Operation)]))
+    lexicalOperationOrdinals.try_emplace(item.value().operation, item.index());
+  std::vector<std::uint64_t> lexicalOperationToCanonical(
+      canonicalOperations.size());
+  for (auto item : llvm::enumerate(canonicalOperations))
+    lexicalOperationToCanonical[item.value()] = item.index();
+  std::vector<std::uint64_t> trackedOperationOrdinals;
+  trackedOperationOrdinals.reserve(trackedOps.size());
+  for (Operation *operation : trackedOps) {
+    auto lexicalOrdinal = lexicalOperationOrdinals.find(operation);
+    if (lexicalOrdinal == lexicalOperationOrdinals.end())
+      return invalid("tracked operation was removed during canonicalization");
+    if (lexicalOrdinal->second >= lexicalOperationToCanonical.size())
+      return invalid("tracked operation is absent from canonical labeling");
+    trackedOperationOrdinals.push_back(
+        lexicalOperationToCanonical[lexicalOrdinal->second]);
+  }
   return CanonicalizedClone{std::move(clone), std::move(*entityProjection),
                             std::move(trackedOrdinals),
+                            std::move(trackedOperationOrdinals),
                             std::move(operationSourceFiles)};
 }
 
@@ -1086,7 +1125,15 @@ finalizeStructuredProgram(ModuleOp source) {
 llvm::Expected<FinalizedStructuredProgramProjection>
 finalizeStructuredProgramWithTrackedBlocks(ModuleOp source,
                                            ArrayRef<Block *> trackedBlocks) {
-  auto clone = canonicalizeClone(source, trackedBlocks);
+  return finalizeStructuredProgramWithTrackedEntities(source, trackedBlocks,
+                                                      {});
+}
+
+llvm::Expected<FinalizedStructuredProgramProjection>
+finalizeStructuredProgramWithTrackedEntities(
+    ModuleOp source, ArrayRef<Block *> trackedBlocks,
+    ArrayRef<Operation *> trackedOperations) {
+  auto clone = canonicalizeClone(source, trackedBlocks, trackedOperations);
   if (!clone)
     return clone.takeError();
   auto canonical =
@@ -1113,6 +1160,11 @@ finalizeStructuredProgramWithTrackedBlocks(ModuleOp source,
   for (std::uint64_t ordinal : clone->trackedBlockOrdinals)
     trackedReferences.push_back(
         {identity, StructuredEntityKind::Block, ordinal});
+  std::vector<StructuredEntityRef> trackedOperationReferences;
+  trackedOperationReferences.reserve(clone->trackedOperationOrdinals.size());
+  for (std::uint64_t ordinal : clone->trackedOperationOrdinals)
+    trackedOperationReferences.push_back(
+        {identity, StructuredEntityKind::Operation, ordinal});
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
   for (auto item : llvm::enumerate(clone->operationSourceFiles)) {
     if (item.value().empty())
@@ -1125,7 +1177,8 @@ finalizeStructuredProgramWithTrackedBlocks(ModuleOp source,
       StructuredProgramCandidate(identity, std::move(semantic),
                                  std::move(canonical->context),
                                  std::move(canonical->module), std::move(view)),
-      std::move(trackedReferences), std::move(sourceProvenance)};
+      std::move(trackedReferences), std::move(trackedOperationReferences),
+      std::move(sourceProvenance)};
 }
 
 llvm::Expected<StructuredProgramCandidate>

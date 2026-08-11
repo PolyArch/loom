@@ -130,7 +130,8 @@ cloneCandidate(
   if (!clone)
     return clone.takeError();
   return frontend::MaterializedStructuredOwnershipCandidate{
-      std::move(*clone), candidate.blockActivityLineage,
+      std::move(*clone), candidate.ownedSpatialRegion,
+      candidate.blockActivityLineage,
       candidate.sourceProvenance};
 }
 
@@ -144,7 +145,7 @@ cloneRoot(StructuredOwnershipInvocation *invocation,
   if (!imported)
     return imported.takeError();
   return frontend::MaterializedStructuredOwnershipCandidate{
-      std::move(*imported), {}, {}};
+      std::move(*imported), std::nullopt, {}, {}};
 }
 
 llvm::Expected<std::optional<frontend::MaterializedOwnershipCandidate>>

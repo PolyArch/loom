@@ -52,7 +52,13 @@ struct MemoryTargetPlan final {
 };
 
 struct NativeExecutionContext final {
+  struct LogicalChannel final {
+    std::vector<std::vector<std::uint8_t>> messages;
+    std::vector<std::uint64_t> receiverCursors;
+  };
+
   std::vector<AlignedByteStorage> objects;
+  std::vector<LogicalChannel> logicalChannels;
   std::optional<detail::LaneShape> returnShape;
   std::uint64_t returnByteCount = 0;
   bool littleEndian = true;
@@ -64,6 +70,17 @@ struct NativeExecutionContext final {
   std::vector<frontend::StructuredEntityRef> profileBlocks;
   std::vector<std::uint64_t> blockActivationCounts;
   std::optional<std::string> error;
+};
+
+struct NativeChannelCallbackNames final {
+  std::string create;
+  std::string send;
+  std::string receive;
+};
+
+struct SelectedWholeProgramProjection final {
+  std::optional<std::string> invalidThreadExtent;
+  std::optional<NativeChannelCallbackNames> channels;
 };
 
 struct WorkloadCaptureCallbackNames final {
@@ -92,7 +109,7 @@ buildObservations(const StructuredProgramSimulationWorkload &workload,
                   llvm::ArrayRef<MemoryTargetPlan> plans,
                   const NativeExecutionContext &capture);
 
-llvm::Expected<std::optional<std::string>>
+llvm::Expected<SelectedWholeProgramProjection>
 projectSelectedWholeProgram(mlir::ModuleOp module);
 
 llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(

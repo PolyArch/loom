@@ -808,7 +808,7 @@ void finalLoweringInvariantIsNotCandidatePruning() {
       store, loom::adg::BuiltinTargetPreset::Small));
 
   loom::frontend::MaterializedStructuredOwnershipCandidate bypassedPreflight{
-      makeBrokenFinalLoweringProgram(), {}, {}};
+      makeBrokenFinalLoweringProgram(), std::nullopt, {}, {}};
   auto rejected = loom::frontend::finalizeSpatialOwnershipCandidate(
       std::move(bypassedPreflight), design.roots().front());
   if (rejected)

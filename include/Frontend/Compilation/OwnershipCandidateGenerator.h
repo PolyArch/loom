@@ -36,6 +36,7 @@ struct StructuredBlockActivityLineage final {
 /// later compiler generators have resolved every Dataflow-facing choice.
 struct MaterializedStructuredOwnershipCandidate final {
   StructuredProgramCandidate structuredProgram;
+  std::optional<StructuredEntityRef> ownedSpatialRegion;
   std::vector<StructuredBlockActivityLineage> blockActivityLineage;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
@@ -47,6 +48,7 @@ struct MaterializedOwnershipCandidate final {
   StructuredProgramCandidate structuredProgram;
   dataflow::CanonicalDataflowArtifact canonicalDataflow;
   std::vector<lowering::StructuredSpatialGraphProjection> spatialGraphs;
+  std::optional<StructuredEntityRef> ownedSpatialRegion;
   std::vector<StructuredBlockActivityLineage> blockActivityLineage;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
@@ -291,6 +293,10 @@ struct PreparedSpatialOwnershipSelection final {
   /// source domains compute these in widened integer arithmetic before the
   /// selected forall; no source bound is copied into the thread-domain ABI.
   std::optional<std::vector<mlir::Value>> threadExtents;
+  /// The one Spatial ownership carrier created by this atomic decision.
+  /// Finalization converts it to a parent-local typed reference; it is
+  /// removable lineage and never enters Structured Program identity.
+  mlir::Operation *materializedSpatialRegion = nullptr;
   /// Total one-generation block correspondence after cloning the parent.
   /// Ownership materialization extends it for generated thread and Spatial
   /// blocks and for nested regions cloned into the selected boundary.

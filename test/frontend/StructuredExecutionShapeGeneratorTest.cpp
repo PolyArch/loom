@@ -407,7 +407,7 @@ module {
     lineage.push_back({block, block});
   const auto expectedParents = lineage;
   loom::frontend::MaterializedStructuredOwnershipCandidate parent{
-      std::move(projected.artifact), std::move(lineage),
+      std::move(projected.artifact), std::nullopt, std::move(lineage),
       std::move(projected.sourceProvenance)};
   auto child = take(loom::frontend::materializeStructuredExecutionShapeDecision(
       std::move(parent), {loom::raising::FMulAddExecutionShape::Fused}));

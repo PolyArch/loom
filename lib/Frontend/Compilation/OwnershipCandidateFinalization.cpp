@@ -69,6 +69,7 @@ finalizeSpatialOwnershipCandidate(
   return MaterializedOwnershipCandidate{
       std::move(candidate.structuredProgram), std::move(projected->artifact),
       std::move(projected->spatialGraphs),
+      std::move(candidate.ownedSpatialRegion),
       std::move(candidate.blockActivityLineage),
       std::move(candidate.sourceProvenance)};
 }

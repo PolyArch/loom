@@ -7,6 +7,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -75,6 +76,7 @@ const StructuredEntityRef &structuredMemoryCommunicationDecisionAnchor(
 
 struct MaterializedStructuredMemoryCommunicationCandidate final {
   StructuredProgramCandidate structuredProgram;
+  std::optional<StructuredEntityRef> trackedSpatialRegion;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
@@ -99,7 +101,8 @@ enumerateStructuredMemoryCommunicationDecisions(
 llvm::Expected<MaterializedStructuredMemoryCommunicationCandidate>
 materializeStructuredMemoryCommunicationDecision(
     const StructuredProgramCandidate &parent,
-    const StructuredMemoryCommunicationDecision &decision);
+    const StructuredMemoryCommunicationDecision &decision,
+    std::optional<StructuredEntityRef> trackedSpatialRegion = std::nullopt);
 
 } // namespace loom::frontend
 

@@ -208,10 +208,18 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       return invalid("memory-decision accounting overflows u64");
     decisionAttempts += decisions->decisions.size();
     outputs.reserve(outputs.size() + decisions->decisions.size());
+    std::optional<frontend::StructuredEntityRef> trackedSpatialRegion;
+    if (invocation) {
+      auto tracked = detail::StructuredOwnershipInvocationAccess::
+          ownedSpatialRegion(*invocation, reference);
+      if (!tracked)
+        return tracked.takeError();
+      trackedSpatialRegion = *tracked;
+    }
     for (const frontend::StructuredMemoryCommunicationDecision &decision :
          decisions->decisions) {
       auto child = frontend::materializeStructuredMemoryCommunicationDecision(
-          *parent, decision);
+          *parent, decision, trackedSpatialRegion);
       if (!child)
         return child.takeError();
       auto projected =

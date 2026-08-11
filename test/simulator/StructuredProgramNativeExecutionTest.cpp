@@ -413,6 +413,103 @@ void selectedOwnershipCarriersExecuteAsWholeProgram() {
           "selected candidate execution invented a source coverage profile");
 }
 
+void orderedLogicalChannelsMulticastCompleteSequences() {
+  const char *test = __func__;
+  if (llvm::InitializeNativeTarget() ||
+      llvm::InitializeNativeTargetAsmPrinter())
+    fail(test, "cannot initialize the native target");
+  auto target = take(test, llvm::orc::JITTargetMachineBuilder::detectHost());
+  llvm::DataLayout layout = take(test, target.getDefaultDataLayoutForTarget());
+
+  auto parse = [&](llvm::StringRef text, llvm::StringRef description) {
+    auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context());
+    if (!module)
+      fail(test, ("cannot parse the " + description).str());
+    module->getOperation()->setAttr(
+        "llvm.target_triple",
+        mlir::StringAttr::get(&context(), "riscv64-unknown-unknown-elf"));
+    module->getOperation()->setAttr(
+        "llvm.data_layout",
+        mlir::StringAttr::get(&context(), layout.getStringRepresentation()));
+    return take(test, loom::frontend::finalizeStructuredProgram(module.get()));
+  };
+
+  auto source = parse(R"mlir(
+module {
+  llvm.func @kernel() -> i32 {
+    %expected = llvm.mlir.constant(36 : i32) : i32
+    llvm.return %expected : i32
+  }
+}
+)mlir",
+                      "logical-channel source program");
+  auto selected = parse(R"mlir(
+module {
+  dataflow.thread private @producer domain(#dataflow.thread_domain<dense>)(
+      %channel: !dataflow.channel<i32>, %message: i32) ctrl (%ctrl: none) {
+    dataflow.channel.send %channel, %message : !dataflow.channel<i32>
+    dataflow.thread.yield
+  }
+
+  dataflow.thread private @consumer domain(#dataflow.thread_domain<dense>)(
+      %channel: !dataflow.channel<i32>, %output: !llvm.ptr)
+      ctrl (%ctrl: none) {
+    %first = dataflow.channel.receive %channel : !dataflow.channel<i32>
+    %second = dataflow.channel.receive %channel : !dataflow.channel<i32>
+    %sum = llvm.add %first, %second : i32
+    llvm.store %sum, %output : i32, !llvm.ptr
+    dataflow.thread.yield
+  }
+
+  llvm.func @kernel() -> i32 {
+    %one = llvm.mlir.constant(1 : i64) : i64
+    %left = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
+    %right = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
+    %channel = dataflow.channel.create : !dataflow.channel<i32>
+    %seven = llvm.mlir.constant(7 : i32) : i32
+    %eleven = llvm.mlir.constant(11 : i32) : i32
+    %producer0 = dataflow.thread.launch @producer(%channel, %seven)
+        : (!dataflow.channel<i32>, i32) -> !dataflow.thread_token
+    dataflow.thread.wait %producer0 : !dataflow.thread_token
+    %producer1 = dataflow.thread.launch @producer(%channel, %eleven)
+        : (!dataflow.channel<i32>, i32) -> !dataflow.thread_token
+    dataflow.thread.wait %producer1 : !dataflow.thread_token
+    %consumer0 = dataflow.thread.launch @consumer(%channel, %left)
+        : (!dataflow.channel<i32>, !llvm.ptr) -> !dataflow.thread_token
+    dataflow.thread.wait %consumer0 : !dataflow.thread_token
+    %consumer1 = dataflow.thread.launch @consumer(%channel, %right)
+        : (!dataflow.channel<i32>, !llvm.ptr) -> !dataflow.thread_token
+    dataflow.thread.wait %consumer1 : !dataflow.thread_token
+    %left_value = llvm.load %left : !llvm.ptr -> i32
+    %right_value = llvm.load %right : !llvm.ptr -> i32
+    %result = llvm.add %left_value, %right_value : i32
+    llvm.return %result : i32
+  }
+}
+)mlir",
+                        "logical-channel selected program");
+
+  auto sourceView = take(test, source.view());
+  loom::sim::StructuredProgramSimulationWorkload workloadDraft{
+      entryRef(test, sourceView)};
+  workloadDraft.observableContract.returnValue = true;
+  auto workload = take(test, loom::sim::finalizeSimulationWorkload(
+                                 workloadDraft, sourceView));
+  loom::sim::StructuredProgramSimulationRuntimeInputDraft inputDraft{
+      workload.identity()};
+  auto input = take(test, loom::sim::finalizeSimulationRuntimeInput(
+                              inputDraft, workload, sourceView));
+
+  const auto reference = take(test, loom::sim::executeNativeStructuredProgram(
+                                        source, workload, input));
+  const auto candidate =
+      take(test, loom::sim::executeSelectedStructuredProgram(
+                     selected, source, workload, input));
+  require(test,
+          loom::sim::haveEquivalentFunctionalObservations(reference, candidate),
+          "ordered multicast changed whole-program observations");
+}
+
 void forallAggregationRegionsAreNotProfileBlocks() {
   const char *test = __func__;
   SourceProgram source = sourceProgram(test);
@@ -970,6 +1067,7 @@ int main() {
   nonDefinedInputsFailClosed();
   typedCosineUsesCanonicalNativeSemantics();
   selectedOwnershipCarriersExecuteAsWholeProgram();
+  orderedLogicalChannelsMulticastCompleteSequences();
   forallAggregationRegionsAreNotProfileBlocks();
   storedPointerPayloadExecutesThroughNativeObjectRegistry();
   denseThreadDomainsPreserveWholeProgramSemantics();

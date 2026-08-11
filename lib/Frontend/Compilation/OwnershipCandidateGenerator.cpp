@@ -371,6 +371,7 @@ llvm::Error materializeThread(PreparedSpatialOwnershipSelection &prepared,
   if (!boundary)
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   boundary.takeError());
+  prepared.materializedSpatialRegion = boundary->spatial.getOperation();
 
   mlir::OpBuilder builder(context);
   mlir::IRMapping mapping;
@@ -788,6 +789,7 @@ llvm::Error materializePreparedForallThreadDomain(
   if (!boundary)
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   boundary.takeError());
+  prepared.materializedSpatialRegion = boundary->spatial.getOperation();
 
   mlir::IRMapping mapping;
   const std::size_t sourceBindingCount = prepared.sourceBlocks.size();
@@ -884,6 +886,7 @@ materializePreparedOperation(PreparedSpatialOwnershipSelection &prepared,
   if (!boundary)
     return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
                   boundary.takeError());
+  prepared.materializedSpatialRegion = boundary->spatial.getOperation();
 
   mlir::IRMapping mapping;
   const std::size_t sourceBindingCount = prepared.sourceBlocks.size();
@@ -1076,6 +1079,8 @@ llvm::Expected<MaterializedStructuredOwnershipCandidate>
 finalizeStructuredOwnershipCandidate(
     PreparedSpatialOwnershipSelection &prepared) {
   mlir::ModuleOp module = prepared.module.get();
+  if (!prepared.materializedSpatialRegion)
+    return invalid("ownership decision created no Spatial carrier");
   if (mlir::failed(mlir::verify(module)))
     return invalid("materialized Structured Program does not verify");
 
@@ -1096,8 +1101,8 @@ finalizeStructuredOwnershipCandidate(
     trackedBlocks.push_back(binding.candidateBlock);
     parentBlocks.push_back(binding.parentBlock);
   }
-  auto structured =
-      finalizeStructuredProgramWithTrackedBlocks(module, trackedBlocks);
+  auto structured = finalizeStructuredProgramWithTrackedEntities(
+      module, trackedBlocks, {prepared.materializedSpatialRegion});
   if (!structured)
     return structured.takeError();
   if (structured->trackedBlocks.size() != parentBlocks.size())
@@ -1108,6 +1113,8 @@ finalizeStructuredOwnershipCandidate(
   if (structured->trackedBlocks.size() !=
       structuredView->entities(StructuredEntityKind::Block).size())
     return invalid("finalized block activity lineage is not total");
+  if (structured->trackedOperations.size() != 1)
+    return invalid("finalized ownership carrier projection is not singular");
   std::vector<StructuredBlockActivityLineage> blockActivityLineage;
   if (!prepared.requiresExactActivityObservations) {
     blockActivityLineage.reserve(parentBlocks.size());
@@ -1116,7 +1123,8 @@ finalizeStructuredOwnershipCandidate(
       blockActivityLineage.push_back({child, parent});
   }
   return MaterializedStructuredOwnershipCandidate{
-      std::move(structured->artifact), std::move(blockActivityLineage),
+      std::move(structured->artifact), structured->trackedOperations.front(),
+      std::move(blockActivityLineage),
       std::move(structured->sourceProvenance)};
 }
 
@@ -1694,6 +1702,7 @@ prepareSpatialOwnershipSelection(
       std::move(liveOuts),
       std::move(sourceInductions),
       std::move(threadExtents),
+      nullptr,
       std::move(selection->sourceBlocks),
       decision.directCallInlining.has_value()};
 }

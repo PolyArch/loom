@@ -110,6 +110,10 @@ private:
   friend llvm::Expected<FinalizedStructuredProgramProjection>
       finalizeStructuredProgramWithTrackedBlocks(mlir::ModuleOp,
                                                  llvm::ArrayRef<mlir::Block *>);
+  friend llvm::Expected<FinalizedStructuredProgramProjection>
+      finalizeStructuredProgramWithTrackedEntities(
+          mlir::ModuleOp, llvm::ArrayRef<mlir::Block *>,
+          llvm::ArrayRef<mlir::Operation *>);
 };
 
 /// A complete immutable S0/Sn snapshot. The family owns one canonical MLIR
@@ -152,6 +156,10 @@ private:
   friend llvm::Expected<FinalizedStructuredProgramProjection>
       finalizeStructuredProgramWithTrackedBlocks(mlir::ModuleOp,
                                                  llvm::ArrayRef<mlir::Block *>);
+  friend llvm::Expected<FinalizedStructuredProgramProjection>
+      finalizeStructuredProgramWithTrackedEntities(
+          mlir::ModuleOp, llvm::ArrayRef<mlir::Block *>,
+          llvm::ArrayRef<mlir::Operation *>);
   friend llvm::Expected<StructuredProgramCandidate>
   importStructuredProgram(const ArtifactIdentity &,
                           const CanonicalSemanticBytes &);
@@ -166,6 +174,7 @@ private:
 struct FinalizedStructuredProgramProjection final {
   StructuredProgramCandidate artifact;
   std::vector<StructuredEntityRef> trackedBlocks;
+  std::vector<StructuredEntityRef> trackedOperations;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
@@ -180,6 +189,14 @@ finalizeStructuredProgram(mlir::ModuleOp source);
 llvm::Expected<FinalizedStructuredProgramProjection>
 finalizeStructuredProgramWithTrackedBlocks(
     mlir::ModuleOp source, llvm::ArrayRef<mlir::Block *> trackedBlocks);
+
+/// Finalizes one program while carrying ordered live block and operation
+/// projections through canonical labeling. These references are removable
+/// transformation lineage and do not enter Artifact identity.
+llvm::Expected<FinalizedStructuredProgramProjection>
+finalizeStructuredProgramWithTrackedEntities(
+    mlir::ModuleOp source, llvm::ArrayRef<mlir::Block *> trackedBlocks,
+    llvm::ArrayRef<mlir::Operation *> trackedOperations);
 
 /// Strictly imports one exact family payload. The supplied identity must match
 /// the Common identity of the canonical semantic bytes, and re-encoding must

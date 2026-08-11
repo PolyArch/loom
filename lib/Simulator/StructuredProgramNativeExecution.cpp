@@ -54,6 +54,7 @@ using native_detail::buildObservations;
 using native_detail::instrumentBlockActivations;
 using native_detail::instrumentWorkloadBackedCapture;
 using native_detail::MemoryTargetPlan;
+using native_detail::NativeChannelCallbackNames;
 using native_detail::NativeExecutionContext;
 using native_detail::projectSelectedWholeProgram;
 using native_detail::uniqueMlirSymbolName;
@@ -157,6 +158,57 @@ void recordExecutionError(llvm::StringRef message) {
 
 void nativeInvalidLogicalThreadExtent() {
   recordExecutionError("logical thread extent is negative");
+}
+
+std::uint64_t nativeLogicalChannelCreate(std::uint64_t receiverCount) {
+  if (!activeExecution || receiverCount == 0 ||
+      receiverCount > std::numeric_limits<std::size_t>::max()) {
+    recordExecutionError("logical channel create has an invalid receiver count");
+    return 0;
+  }
+  NativeExecutionContext::LogicalChannel channel;
+  channel.receiverCursors.resize(static_cast<std::size_t>(receiverCount));
+  activeExecution->logicalChannels.push_back(std::move(channel));
+  return activeExecution->logicalChannels.size();
+}
+
+void nativeLogicalChannelSend(std::uint64_t handle, const void *base,
+                              std::uint64_t byteCount) {
+  if (!activeExecution || handle == 0 ||
+      handle > activeExecution->logicalChannels.size() || !base ||
+      byteCount == 0 || byteCount > std::numeric_limits<std::size_t>::max()) {
+    recordExecutionError("logical channel send has an invalid payload");
+    return;
+  }
+  auto &channel = activeExecution->logicalChannels[handle - 1];
+  std::vector<std::uint8_t> message(static_cast<std::size_t>(byteCount));
+  std::memcpy(message.data(), base, message.size());
+  channel.messages.push_back(std::move(message));
+}
+
+void nativeLogicalChannelReceive(std::uint64_t handle,
+                                 std::uint64_t receiverOrdinal, void *base,
+                                 std::uint64_t byteCount) {
+  if (!activeExecution || handle == 0 ||
+      handle > activeExecution->logicalChannels.size() || !base ||
+      byteCount == 0 || byteCount > std::numeric_limits<std::size_t>::max()) {
+    recordExecutionError("logical channel receive has an invalid payload");
+    return;
+  }
+  auto &channel = activeExecution->logicalChannels[handle - 1];
+  if (receiverOrdinal >= channel.receiverCursors.size()) {
+    recordExecutionError("logical channel receive has an invalid endpoint");
+    return;
+  }
+  std::uint64_t &cursor = channel.receiverCursors[receiverOrdinal];
+  if (cursor >= channel.messages.size() ||
+      channel.messages[cursor].size() != byteCount) {
+    recordExecutionError("logical channel receive has no matching message");
+    return;
+  }
+  std::memcpy(base, channel.messages[cursor].data(),
+              channel.messages[cursor].size());
+  ++cursor;
 }
 
 void *nativeRuntimeObject(std::uint64_t ordinal) {
@@ -1046,6 +1098,7 @@ struct CallbackNames {
   std::optional<std::string> returnValue;
   std::optional<std::string> globalBefore;
   std::optional<std::string> globalAfter;
+  std::optional<NativeChannelCallbackNames> channels;
 };
 
 llvm::Expected<CallbackNames> instrumentExecution(
@@ -1303,6 +1356,17 @@ llvm::Error runInstrumentedExecution(
     callbacks[jit->mangleAndIntern(*names.blockActivation)] = {
         llvm::orc::ExecutorAddr::fromPtr(&nativeBlockActivation),
         llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  if (names.channels) {
+    callbacks[jit->mangleAndIntern(names.channels->create)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&nativeLogicalChannelCreate),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+    callbacks[jit->mangleAndIntern(names.channels->send)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&nativeLogicalChannelSend),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+    callbacks[jit->mangleAndIntern(names.channels->receive)] = {
+        llvm::orc::ExecutorAddr::fromPtr(&nativeLogicalChannelReceive),
+        llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+  }
   if (names.returnValue)
     callbacks[jit->mangleAndIntern(*names.returnValue)] = {
         llvm::orc::ExecutorAddr::fromPtr(&nativeReturnValue),
@@ -1382,6 +1446,12 @@ llvm::Error runInstrumentedExecution(
                             "cannot deinitialize the Structured program");
   if (capture.error)
     return executionFailed(*capture.error);
+  for (const NativeExecutionContext::LogicalChannel &channel :
+       capture.logicalChannels)
+    for (std::uint64_t cursor : channel.receiverCursors)
+      if (cursor != channel.messages.size())
+        return executionFailed(
+            "logical channel endpoint did not consume its complete sequence");
   if (workloadCapture) {
     if (workloadCapture->error) {
       const std::error_code code = workloadCapture->errorCode.value_or(
@@ -1466,12 +1536,13 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
       return callback.takeError();
     blockActivation = std::move(*callback);
   }
-  std::optional<std::string> invalidThreadExtent;
+  std::optional<native_detail::SelectedWholeProgramProjection>
+      ownershipProjection;
   if (projectOwnership) {
     auto projection = projectSelectedWholeProgram(*module);
     if (!projection)
       return projection.takeError();
-    invalidThreadExtent = std::move(*projection);
+    ownershipProjection.emplace(std::move(*projection));
   }
   auto native = detail::lowerStructuredModuleToLlvm(std::move(module));
   if (!native)
@@ -1500,7 +1571,11 @@ llvm::Expected<NativeProgramExecutionResult> executePreparedProgramModule(
         if (llvm::Error error =
                 detail::prepareDeterministicMathOracle(module, *targetJit))
           return error;
-        callbackNames.invalidThreadExtent = std::move(invalidThreadExtent);
+        if (ownershipProjection) {
+          callbackNames.invalidThreadExtent =
+              std::move(ownershipProjection->invalidThreadExtent);
+          callbackNames.channels = std::move(ownershipProjection->channels);
+        }
         callbackNames.blockActivation = std::move(blockActivation);
         if (capturePlan) {
           auto prepared = prepareWorkloadCaptureContext(

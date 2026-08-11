@@ -16,6 +16,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -389,24 +390,51 @@ struct SelectedActivationCapture final {
 llvm::Expected<SelectedActivationCapture> deriveSelectedActivationCapture(
     const frontend::MaterializedOwnershipCandidate &candidate,
     dataflow::RootedGraphLaunchRef launch, std::uint64_t expectedRank) {
-  mlir::OwningOpRef<mlir::ModuleOp> module(llvm::cast<mlir::ModuleOp>(
-      candidate.structuredProgram.module()->clone()));
   dataflow::ThreadOp thread;
   loom::SpatialRegionOp spatial;
-  bool duplicateThread = false;
-  bool duplicateSpatial = false;
-  module->walk([&](mlir::Operation *operation) {
-    if (auto value = llvm::dyn_cast<dataflow::ThreadOp>(operation)) {
-      duplicateThread |= static_cast<bool>(thread);
-      thread = value;
-    }
-    if (auto value = llvm::dyn_cast<loom::SpatialRegionOp>(operation)) {
-      duplicateSpatial |= static_cast<bool>(spatial);
-      spatial = value;
-    }
-  });
-  if (!thread || !spatial || duplicateThread || duplicateSpatial)
-    return invalid("selected candidate has no unique thread/spatial carrier");
+  mlir::OwningOpRef<mlir::ModuleOp> module;
+  if (candidate.ownedSpatialRegion) {
+    auto view = candidate.structuredProgram.view();
+    if (!view)
+      return view.takeError();
+    auto entity = view->resolve(*candidate.ownedSpatialRegion);
+    if (!entity)
+      return entity.takeError();
+    auto sourceSpatial =
+        llvm::dyn_cast_or_null<loom::SpatialRegionOp>(entity->operation);
+    if (!sourceSpatial)
+      return invalid("owned Spatial projection does not resolve to a region");
+    auto sourceThread = sourceSpatial->getParentOfType<dataflow::ThreadOp>();
+    if (!sourceThread)
+      return invalid("owned Spatial region has no thread carrier");
+    mlir::IRMapping mapping;
+    module = mlir::OwningOpRef<mlir::ModuleOp>(llvm::cast<mlir::ModuleOp>(
+        candidate.structuredProgram.module()->clone(mapping)));
+    spatial = llvm::dyn_cast_or_null<loom::SpatialRegionOp>(
+        mapping.lookupOrNull(sourceSpatial.getOperation()));
+    thread = llvm::dyn_cast_or_null<dataflow::ThreadOp>(
+        mapping.lookupOrNull(sourceThread.getOperation()));
+    if (!thread || !spatial)
+      return invalid("owned Spatial carrier was not mapped into the clone");
+  } else {
+    module = mlir::OwningOpRef<mlir::ModuleOp>(llvm::cast<mlir::ModuleOp>(
+        candidate.structuredProgram.module()->clone()));
+    bool duplicateThread = false;
+    bool duplicateSpatial = false;
+    module->walk([&](mlir::Operation *operation) {
+      if (auto value = llvm::dyn_cast<dataflow::ThreadOp>(operation)) {
+        duplicateThread |= static_cast<bool>(thread);
+        thread = value;
+      }
+      if (auto value = llvm::dyn_cast<loom::SpatialRegionOp>(operation)) {
+        duplicateSpatial |= static_cast<bool>(spatial);
+        spatial = value;
+      }
+    });
+    if (!thread || !spatial || duplicateThread || duplicateSpatial)
+      return invalid(
+          "unprojected candidate has no unique thread/spatial carrier");
+  }
   if (thread.getBody().empty())
     return invalid("selected thread has no body");
   const std::uint64_t inputCount = thread.getFunctionType().getNumInputs();
@@ -424,6 +452,40 @@ llvm::Expected<SelectedActivationCapture> deriveSelectedActivationCapture(
     plan.denseCoordinates.push_back({dimension, coordinate, *byteCount});
   }
   return SelectedActivationCapture{std::move(module), spatial, std::move(plan)};
+}
+
+llvm::Expected<dataflow::RootedGraphLaunchRef> selectOwnedRootedLaunch(
+    const frontend::MaterializedOwnershipCandidate &candidate,
+    const dataflow::CanonicalDataflowProgramView &view) {
+  std::optional<dataflow::StaticGraphLaunchRef> selectedStaticLaunch;
+  if (candidate.ownedSpatialRegion) {
+    for (const lowering::StructuredSpatialGraphProjection &projection :
+         candidate.spatialGraphs) {
+      if (projection.spatialRegion != *candidate.ownedSpatialRegion)
+        continue;
+      if (selectedStaticLaunch)
+        return invalid("owned Spatial region has duplicate graph projections");
+      selectedStaticLaunch = projection.staticGraphLaunch;
+    }
+    if (!selectedStaticLaunch)
+      return invalid("owned Spatial region has no graph projection");
+  }
+
+  std::optional<dataflow::RootedGraphLaunchRef> selected;
+  bool duplicate = false;
+  view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
+    if (selectedStaticLaunch &&
+        launch.staticGraphLaunch != *selectedStaticLaunch)
+      return;
+    duplicate |= selected.has_value();
+    selected = launch;
+  });
+  if (!selected)
+    return invalid("ownership candidate has no matching rooted graph launch");
+  if (duplicate)
+    return unsupported(
+        "owned graph projection reaches multiple rooted graph launches");
+  return *selected;
 }
 
 RuntimeMemoryObject
@@ -650,28 +712,21 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
   auto view = candidate.canonicalDataflow.view();
   if (!view)
     return view.takeError();
-  std::vector<dataflow::RootedGraphLaunchRef> launches;
-  view->forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
-    launches.push_back(launch);
-  });
-  if (launches.size() != 1)
-    return launches.empty()
-               ? invalid("ownership candidate has no rooted graph launch")
-               : unsupported(
-                     "one ownership candidate has multiple rooted launches");
-  auto preparedDfg =
-      prepareDfgExecution(candidate.canonicalDataflow, launches.front());
+  auto launch = selectOwnedRootedLaunch(candidate, *view);
+  if (!launch)
+    return launch.takeError();
+  auto preparedDfg = prepareDfgExecution(candidate.canonicalDataflow, *launch);
   if (!preparedDfg)
     return preparedDfg.takeError();
-  auto launchContext = detail::resolveLaunchContext(*view, launches.front());
+  auto launchContext = detail::resolveLaunchContext(*view, *launch);
   if (!launchContext)
     return launchContext.takeError();
 
-  auto plan = deriveCapturePlan(*view, launches.front(), *prepared);
+  auto plan = deriveCapturePlan(*view, *launch, *prepared);
   if (!plan)
     return plan.takeError();
   auto selected = deriveSelectedActivationCapture(
-      candidate, launches.front(), plan->denseCoordinates.size());
+      candidate, *launch, plan->denseCoordinates.size());
   if (!selected)
     return selected.takeError();
 

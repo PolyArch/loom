@@ -7,6 +7,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace loom::frontend {
@@ -36,6 +37,7 @@ struct StructuredScheduleDecision final {
 
 struct MaterializedStructuredScheduleCandidate final {
   StructuredProgramCandidate structuredProgram;
+  std::optional<StructuredEntityRef> trackedSpatialRegion;
   std::vector<StructuredOperationSourceProvenance> sourceProvenance;
 };
 
@@ -63,7 +65,8 @@ enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
 llvm::Expected<MaterializedStructuredScheduleCandidate>
 materializeStructuredScheduleDecision(
     const StructuredProgramCandidate &parent,
-    const StructuredScheduleDecision &decision);
+    const StructuredScheduleDecision &decision,
+    std::optional<StructuredEntityRef> trackedSpatialRegion = std::nullopt);
 
 } // namespace loom::frontend
 

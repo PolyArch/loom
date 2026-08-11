@@ -94,6 +94,10 @@ public:
   clonePreClosureCandidate(StructuredOwnershipInvocation &invocation,
                            const ArtifactRootReference &reference);
 
+  static llvm::Expected<std::optional<frontend::StructuredEntityRef>>
+  ownedSpatialRegion(const StructuredOwnershipInvocation &invocation,
+                     const ArtifactRootReference &reference);
+
   static llvm::Error recordScheduleCandidate(
       StructuredOwnershipInvocation &invocation,
       const ArtifactRootReference &parent, const ArtifactRootReference &child,

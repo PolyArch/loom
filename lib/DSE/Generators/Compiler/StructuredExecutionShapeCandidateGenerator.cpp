@@ -133,7 +133,7 @@ cloneParentState(StructuredOwnershipInvocation *invocation,
   if (!clone)
     return clone.takeError();
   return frontend::MaterializedStructuredOwnershipCandidate{
-      std::move(*clone), {}, {}};
+      std::move(*clone), std::nullopt, {}, {}};
 }
 
 llvm::Expected<CandidateGeneratorProviderResult>
