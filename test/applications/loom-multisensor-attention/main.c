@@ -45,13 +45,13 @@ fuse_attention(const float query[TOKEN_COUNT][FEATURE_LANE_COUNT],
   float probabilities[TOKEN_COUNT];
 
   for (uint32_t row = 0; row < TOKEN_COUNT; ++row) {
-    float maximum = -INFINITY;
+    float maximum = 0.0f;
     for (uint32_t column = 0; column < TOKEN_COUNT; ++column) {
       float dot = 0.0f;
       for (uint32_t lane = 0; lane < FEATURE_LANE_COUNT; ++lane)
         dot += query[row][lane] * key_value[column][lane];
       scores[column] = dot * 0.5f;
-      if (scores[column] > maximum)
+      if (column == 0 || scores[column] > maximum)
         maximum = scores[column];
     }
 
