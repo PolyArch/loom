@@ -2323,7 +2323,11 @@ disjoint constraints are applied.
 
 Before dependent decisions become active, one exact preference refinement may
 replace the baseline choices of independent compute roots. The refinement uses
-this closed protocol:
+this closed protocol. Its circular tie origin is local choice ordinal zero for
+seed attempt zero and the root's diversified baseline choice for every later
+attempt. The canonical attempt therefore cannot inherit an incidental
+permutation from hard-relation propagation, while diversified attempts retain
+their deterministic variation.
 
 1. a compute root participating in any constraint-owned relation retains its
    baseline choice;
@@ -2343,7 +2347,7 @@ this closed protocol:
    admitted attachment endpoints without selecting the boundary root. An
    unreachable incidence ranks after every finite distance but does not remove
    the choice. If there is no active anchor, or scores remain equal, use
-   circular canonical choice order beginning at that root's baseline choice;
+   circular canonical choice order beginning at the attempt's tie origin;
 5. any attachment root participating in a constraint-owned relation retains
    its baseline choice. Process every other occurrence-relative
    `PortAttachment` root in canonical demand order and every other
@@ -2352,7 +2356,7 @@ this closed protocol:
    by the already selected realization placement; a graph-boundary root uses
    its existing legal attachment domain. Choose an exact physical endpoint
    with the least current selected-attachment count. Ties use circular
-   canonical choice order beginning at that root's baseline choice;
+   canonical choice order beginning at the attempt's tie origin;
 6. invoke the same root relation solver once with the preferred compute and
    attachment roots fixed, so placement compatibility and every hard
    attachment relation are re-established by their existing owner; and

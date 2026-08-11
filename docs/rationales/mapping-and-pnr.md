@@ -781,6 +781,14 @@ routing ownership. The locality refinement instead composes the two existing
 facts needed for a useful seed: exact resident-context identity and exact
 frozen connectivity.
 
+The hard relation solver's baseline assignment is a feasibility witness, not a
+physical ranking. In the canonical restart, using each baseline ordinal as the
+locality tie origin would let propagation order permute otherwise equal
+contexts and change routing work. Canonical preference therefore begins at
+owner-local ordinal zero. Later restarts begin at their diversified baseline,
+so variation remains deterministic and isolated to the declared initializer
+stream.
+
 Attachment roots expose the same issue one level below placement. If two
 inputs or outputs of `dataflow.sync`, `dataflow.mux`, `dataflow.demux`, or
 another variadic operation both take the first occurrence-relative attachment,
