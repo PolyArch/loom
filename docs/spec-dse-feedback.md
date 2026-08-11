@@ -2464,7 +2464,7 @@ kinds 0 through 11:
 | 13 | `spatial_topology_rewrite` | finalized `fabric.module` children |
 | 14 | `spatial_microarchitecture_rewrite` | finalized `fabric.module` children |
 | 15 | `system_composition_rewrite` | finalized `fabric.system` children |
-| 16 | `implementation_flow` | finalized `loom.hardware_implementation 3.0` children |
+| 16 | `portable_system_rtl` | finalized architecture-only portable RTL `loom.hardware_implementation 3.0` children |
 | 17 | `fpa_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.fpa", 3.0, 0)` |
 | 18 | `system_runtime_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.system_runtime", 1.0, 0)` |
 
@@ -2494,12 +2494,13 @@ SystemCompositionRewriteConfig {
   max_children_per_parent: positive uint64
 }
 
-ImplementationFlowConfig {
-  provider_bindings[]
-  occurrence_recipe_bindings[]
-  typed_flow_decisions
-}
 ```
+
+Kind 16 has one empty canonical resolved-config view. Its exact descriptor
+fixes the portable operation-provider catalog and the packed ConfigurationABI
+derivation. It consumes finalized `fabric.system` candidates and produces one
+architecture-only portable RTL HardwareImplementation per supported System.
+No provider selector or downstream flow decision is repeated in this view.
 
 Kinds 17 and 18 are distinct `InProcess` descriptors because one trainer
 output slot must name exactly one parameter contract. They may share the same
@@ -2557,13 +2558,21 @@ cohort, domain, attachment, service, and transport invariants. Several AccCore
 occurrences may reference one exact Module while retaining distinct
 occurrence-qualified resources and cost multiplicity.
 
-`ImplementationFlowConfig` preserves Fabric semantics while producing an
-immutable HardwareImplementation. The exact Fabric or prior
-HardwareImplementation and optional ImplementationPlatform are descriptor-owned
-typed input slots, not configuration fields. Each descriptor owns a closed
-schema for its typed parameter and decision records; there is no generic
-property bag, hardware action language, mutable candidate IR, or
-evaluator-owned rewrite.
+The portable-System-RTL generator preserves Fabric semantics while producing
+an immutable first HardwareImplementation. It derives the packed
+ConfigurationABI from each exact System and uses the Hardware-owned portable
+operation-provider catalog fixed by its descriptor. Unsupported operation or
+structure coverage is a typed incomplete outcome and never selects a native
+provider implicitly.
+
+Gate-netlist, placed, routed, extracted, FPGA, and native-provider transitions
+remain owned by their existing provider-specific Candidate Generator
+descriptors. Their exact prior HardwareImplementation, optional
+ImplementationPlatform, provider binding, recipes, and flow decisions stay in
+those descriptors and resolved configuration views. A DSE plan composes these
+ordinary generators through explicit use-def edges. A generic implementation-
+flow wrapper would duplicate provider form, configuration, preparation,
+import, and work ownership, so none exists.
 
 Kinds 13 through 15 apply one owner-typed decision at a time to a fresh Builder
 draft derived from one exact parent. The ordinary Builder and Fabric finalizer

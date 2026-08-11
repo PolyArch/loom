@@ -430,10 +430,14 @@ distinctions and require a second verifier. Mutating one shared graph would
 also make parent identity, recovery, and lineage depend on execution order.
 
 Hardware search therefore starts from an exact finalized seed and uses typed
-template, topology, microarchitecture, System-composition, and implementation-
-flow generators. Each creates a fresh draft through the public Builder and
-publishes only after ordinary Fabric finalization. Module children are useful
-intermediate designs, but the optimization subject is a complete
+template, topology, microarchitecture, and System-composition generators.
+These create fresh drafts through the public Builder and publish only after
+ordinary Fabric finalization. One Hardware-owned generator then performs the
+pure portable-System-RTL derivation. Provider-specific generators already own
+all later gate, physical, FPGA, and native implementation transitions; an
+additional generic implementation-flow wrapper would create competing
+provider and work authorities. Module children are useful intermediate
+designs, but the optimization subject is a complete
 `fabric.system`: multi-core heterogeneity, transport, memory, services, and
 InstructionCore realization affect software partitioning and system quality
 even when detailed RTL remains scoped to SpatialCore modules.
