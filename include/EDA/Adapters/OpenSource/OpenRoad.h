@@ -87,6 +87,11 @@ struct OpenRoadPlacedConfig final {
   }
 };
 
+llvm::Error validateOpenRoadPlacementParameters(
+    const OpenRoadPlacementParameters &parameters);
+
+std::string openRoadExternalFileInputSlot(const OpenRoadExternalFile &file);
+
 llvm::ArrayRef<std::uint8_t> openRoadPlacedConfigSchemaDescriptorBytes();
 
 llvm::Expected<std::vector<std::uint8_t>>
@@ -123,6 +128,14 @@ struct OpenRoadResolvedExecution final {
   external_tool::InvocationRuntimeBinding runtime;
   external_tool::ToolVersionProbe containerVersionProbe;
 };
+
+llvm::Expected<OpenRoadResolvedExecution> resolveOpenRoadExecution(
+    llvm::StringRef providerBuild,
+    const external_tool::ExternalToolPreparationContext &context);
+
+llvm::Error
+validateOpenRoadResolvedExecution(const OpenRoadResolvedExecution &execution,
+                                  llvm::StringRef providerBuild);
 
 llvm::Expected<external_tool::PreparedExternalToolInvocation>
 prepareOpenRoadPlacedInvocation(

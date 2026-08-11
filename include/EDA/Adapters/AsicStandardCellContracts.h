@@ -17,10 +17,21 @@ inline constexpr llvm::StringLiteral
         "synopsys.design_compiler.standard_cell_library";
 inline constexpr llvm::StringLiteral openSourceYosysStandardCellContractRef =
     "open_source.yosys.standard_cell_library";
+inline constexpr llvm::StringLiteral openRoadTechnologyLefInputSlot =
+    "technology_lef";
+inline constexpr llvm::StringLiteral openRoadCellLefInputSlot =
+    "cell_lef.cells";
+inline constexpr llvm::StringLiteral openRoadLibertyInputSlot =
+    "liberty.timing";
+inline constexpr llvm::StringLiteral openRoadRoutedStandardCellContractRef =
+    "open_source.openroad.routed_standard_cell_library";
 
 llvm::Error addAsicStandardCellContract(
     hardware::ExternalImplementationContractCatalog &catalog,
     llvm::StringRef contractRef);
+
+llvm::Error addOpenRoadRoutedStandardCellContract(
+    hardware::ExternalImplementationContractCatalog &catalog);
 
 llvm::Expected<hardware::ExternalImplementationContractCatalog>
 makeKnownAsicStandardCellContractCatalog();

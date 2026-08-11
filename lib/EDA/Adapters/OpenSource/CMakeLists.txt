@@ -4,6 +4,8 @@ add_library(LoomEDAOpenSource
   MappedRtlSimulationHarness.cpp
   MappedRtlSimulationResult.cpp
   OpenRoad.cpp
+  OpenRoadRouted.cpp
+  OpenRoadStaticFpa.cpp
   Verilator.cpp
   Yosys.cpp
   YosysGateNetlist.cpp

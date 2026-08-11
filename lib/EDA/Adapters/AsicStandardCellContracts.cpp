@@ -17,6 +17,22 @@ llvm::Error addAsicStandardCellContract(
                                      nullptr});
 }
 
+llvm::Error addOpenRoadRoutedStandardCellContract(
+    hardware::ExternalImplementationContractCatalog &catalog) {
+  using namespace hardware;
+  return catalog.add(ExternalImplementationContract{
+      openRoadRoutedStandardCellContractRef.str(),
+      {{openRoadTechnologyLefInputSlot.str(),
+        {ExternalDependencyKind::ExplicitFile}},
+       {openRoadCellLefInputSlot.str(), {ExternalDependencyKind::ExplicitFile}},
+       {openRoadLibertyInputSlot.str(),
+        {ExternalDependencyKind::ExplicitFile}}},
+      {RepresentationRootVariant::AsicPhysical},
+      true,
+      false,
+      nullptr});
+}
+
 llvm::Expected<hardware::ExternalImplementationContractCatalog>
 makeKnownAsicStandardCellContractCatalog() {
   hardware::ExternalImplementationContractCatalog catalog;
@@ -26,6 +42,8 @@ makeKnownAsicStandardCellContractCatalog() {
         llvm::StringRef(openSourceYosysStandardCellContractRef)})
     if (llvm::Error error = addAsicStandardCellContract(catalog, contractRef))
       return std::move(error);
+  if (llvm::Error error = addOpenRoadRoutedStandardCellContract(catalog))
+    return std::move(error);
   return catalog;
 }
 

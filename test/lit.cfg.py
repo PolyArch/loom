@@ -112,6 +112,8 @@ tools = [
     "loom-dse-invocation-manifest-test",
     "loom-dse-model-parameter-training-test",
     "loom-mapped-rtl-simulation-test",
+    "loom-openroad-routed-test",
+    "loom-openroad-static-fpa-test",
     "loom-evaluation-production-registry-test",
     "loom-dfg-sim",
     "loom-dfg-run",

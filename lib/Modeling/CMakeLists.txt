@@ -8,6 +8,7 @@ add_library(LoomStructuredFabricAnalyticModel
   FixedTabularGbdt.cpp
   FpaParameterContract.cpp
   MappedRtlSimulation.cpp
+  OpenRoadStaticFpa.cpp
   ProductionRegistry.cpp
   SimulationComparison.cpp
   StructuredEvaluationInvocationCache.cpp

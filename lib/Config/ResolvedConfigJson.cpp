@@ -334,6 +334,13 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
          llvm::json::Object{{"stable_hdl_simulator_build_identity",
                              binding.stableHdlSimulatorBuildIdentity}}});
   }
+  if (config.evaluation.openRoadStaticFpa) {
+    const auto &binding = *config.evaluation.openRoadStaticFpa;
+    evaluation.insert(
+        {"openroad_routed_static_fpa",
+         llvm::json::Object{{"stable_provider_build_identity",
+                             binding.stableProviderBuildIdentity}}});
+  }
   return llvm::json::Object{
       {"hardware_target",
        llvm::json::Object{

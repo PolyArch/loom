@@ -1,0 +1,3 @@
+# REQUIRES: openroad-2026-08-06
+# RUN: rm -rf %t
+# RUN: timeout 600s bash -c 'source /etc/profile.d/modules.sh && module load openroad/2026.08.06-b9a38929e342 && %loom-openroad-routed-test --real-smoke %t "$(command -v openroad)" "$(openroad -version)" /mnt/nas0/eda.libs/saed32/EDK_08_2025/lib/oa/saed32_sram_lp_dual_oa/new/newtech.lef /mnt/nas0/eda.libs/saed32/EDK_08_2025/lib/stdcell_rvt/lef/saed32nm_rvt_1p9m.lef /mnt/nas0/eda.libs/saed32/EDK_08_2025/lib/stdcell_rvt/db_nldm/saed32rvt_tt1p05v25c.lib'

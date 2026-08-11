@@ -11,6 +11,7 @@
 #include "Evaluation/Models/DfgSimulation.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/Models/MappedRtlSimulation.h"
+#include "Evaluation/Models/OpenRoadStaticFpa.h"
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
 #include "Evaluation/Models/SimulationComparison.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
@@ -402,49 +403,6 @@ const ResolvedModelConfigViewContract &emptyConfig() {
   return contract;
 }
 
-template <BuiltinEvaluationModel Model> struct ProviderBuildConfig {
-  std::string stableBuildIdentity;
-};
-
-template <BuiltinEvaluationModel Model>
-llvm::Expected<OwnerValue> projectProviderBuild(const ResolvedConfig &) {
-  return llvm::createStringError(
-      std::make_error_code(std::errc::not_supported),
-      "provider build binding is unavailable in ResolvedConfig");
-}
-
-template <BuiltinEvaluationModel Model>
-llvm::Expected<std::vector<std::uint8_t>>
-encodeProviderBuild(const OwnerValue &value) {
-  const auto *config = value.getIf<ProviderBuildConfig<Model>>();
-  if (!config || config->stableBuildIdentity.empty())
-    return invalid("provider build config is missing its stable identity");
-  return std::vector<std::uint8_t>(config->stableBuildIdentity.begin(),
-                                   config->stableBuildIdentity.end());
-}
-
-template <BuiltinEvaluationModel Model>
-llvm::Expected<OwnerValue>
-adoptProviderBuild(llvm::ArrayRef<std::uint8_t> bytes,
-                   const ComponentViewDigest &) {
-  if (bytes.empty())
-    return invalid("provider build config is empty");
-  std::string identity(bytes.begin(), bytes.end());
-  if (!llvm::all_of(identity, [](unsigned char character) {
-        return character >= 0x21 && character <= 0x7e;
-      }))
-    return invalid("provider build identity is not canonical ASCII");
-  return OwnerValue::get(ProviderBuildConfig<Model>{std::move(identity)});
-}
-
-template <BuiltinEvaluationModel Model>
-const ResolvedModelConfigViewContract &providerBuildConfig() {
-  static const ResolvedModelConfigViewContract contract{
-      emptyConfigSchema<Model>(), &projectProviderBuild<Model>,
-      &encodeProviderBuild<Model>, &adoptProviderBuild<Model>};
-  return contract;
-}
-
 const ScopeFormRef kWholeCaseScopes[] = {kWholeCase};
 constexpr std::uint8_t kPoint = observationFormMask(ObservationForm::Point);
 const MetricCapability kFpaMetrics[] = {
@@ -650,7 +608,7 @@ llvm::ArrayRef<EvaluationModelDescriptor> builtinModelDescriptors() {
        {},
        {},
        {},
-       providerBuildConfig<BuiltinEvaluationModel::OpenRoadRoutedStaticFpa>(),
+       models::openRoadStaticFpaConfigViewContract(),
        kHardwarePhenomena,
        EvaluationExecutionMethod::ToolMeasurement,
        {},
