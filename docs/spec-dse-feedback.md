@@ -2468,7 +2468,7 @@ kinds 0 through 11:
 | 17 | `fpa_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.fpa", 3.0, 0)` |
 | 18 | `system_runtime_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.system_runtime", 1.0, 0)` |
 | 19 | `joint_dataflow_frontier` | finalized Canonical Dataflow children produced for an explicit bounded Dataflow/System frontier |
-| 20 | `joint_mapping_frontier` | finalized TechMapping, SpatialMapping, and SystemMapping roots plus the exact successfully mapped Dataflow and System input roots |
+| 20 | `joint_mapping_frontier` | finalized System children, TechMapping, SpatialMapping, and SystemMapping roots plus the exact successfully mapped Dataflow and System roots |
 
 The hardware and frontier kinds use the following descriptor-owned typed
 configuration roots:
@@ -2507,7 +2507,8 @@ JointDataflowFrontierConfig {
 }
 
 JointMappingFrontierConfig {
-  frontier: BoundedFrontierPolicy
+  composition_frontier: BoundedFrontierPolicy
+  mapping_frontier: BoundedFrontierPolicy
   tech_mapping: exact resolved TechMappingConfigView
   spatial_pnr: exact resolved SpatialPnrConfigView
   system_pnr: exact resolved SystemPnrConfigView
@@ -2606,15 +2607,15 @@ parent or leave a DSE-only Fabric form. A completed child carries one
 `CandidateDecision` lineage contribution whose payload is owned by that exact
 generator descriptor. Identity deduplication occurs only after finalization.
 
-Kinds 19 and 20 are the only built-in cross-frontier adapters. Both index the
-canonical Dataflow and System input sets and visit pairs by increasing
-`dataflow_ordinal + system_ordinal`, then by increasing Dataflow ordinal. The
-visited domain is the prefix of that order with at most `maximum_pairs`
-members. They compute each next pair directly and never materialize either the
-complete Cartesian product or a persistent pair object. An empty input set
-therefore completes with empty outputs. Reaching `maximum_pairs` completes the
-declared finite domain; it is not an incomplete search or a claim of global
-optimality.
+Kinds 19 and 20 are the only built-in cross-frontier adapters. A two-frontier
+join indexes both canonical input sets and visits pairs by increasing
+`left_ordinal + right_ordinal`, then by increasing left ordinal. The visited
+domain is the prefix of that order with at most `maximum_pairs` members. The
+adapter computes each next pair directly and never materializes either the
+complete Cartesian product or a persistent pair object. An empty required
+input set therefore completes with empty outputs. Reaching `maximum_pairs`
+completes the declared finite domain; it is not an incomplete search or a
+claim of global optimality.
 
 Kind 19 invokes the exact registered Dataflow rewrite generator separately for
 each visited pair and returns its ordinary Canonical Dataflow children. The
@@ -2623,16 +2624,23 @@ lineage payloads, and local work. Convergent children deduplicate by normal
 Dataflow identity. The adapter adds only explicit pair-attempt accounting and
 cannot define another rewrite rule or Fabric-capability predicate.
 
-Kind 20 invokes the exact root-complete TechMapping, Spatial PnR, and System PnR
-generators in that order for every visited pair. It returns every finalized
-stage Artifact, and returns a Dataflow or System input root in its pass-through
-output exactly when at least one complete SystemMapping for that pair was
-produced. A proven-infeasible stage contributes no SystemMapping for that pair
-and does not invalidate other pairs. A typed incomplete stage stops at that
-pair and retains only complete stage Artifacts already returned by the nested
-owners. Invalid or internal owner failure aborts the Generate invocation.
-Nested work catalogs are projected with stage-qualified names; their meanings
-and counts remain derived from the registered owner descriptors.
+Kind 20 first forms a bounded System/Module composition frontier. For each
+visited pair it visits the System's canonical AccCore occurrences and, when an
+occurrence has a SpatialCore attachment different from the candidate Module,
+constructs the exact kind-15 `ReplaceSpatialAttachment` decision. The ordinary
+System-composition generator alone validates and materializes that child. The
+mapping frontier then contains the input Systems and every completed child.
+The adapter invokes the exact root-complete TechMapping, Spatial PnR, and
+System PnR generators in that order for each visited Dataflow/System mapping
+pair. It returns every finalized stage Artifact, and returns a Dataflow or
+System root in its pass-through output exactly when at least one complete
+SystemMapping for that pair was produced. A proven-infeasible stage contributes
+no SystemMapping for that pair and does not invalidate other pairs. A typed
+incomplete stage stops at that pair and retains only complete stage Artifacts
+already returned by the nested owners. Invalid or internal owner failure
+aborts the Generate invocation. Nested work catalogs are projected with
+stage-qualified names; their meanings and counts remain derived from the
+registered owner descriptors.
 
 Neither adapter creates a `JointCandidate`, changes Mapping legality, ranks a
 candidate, acquires Evidence, or owns a mutable frontier. Their input bindings,

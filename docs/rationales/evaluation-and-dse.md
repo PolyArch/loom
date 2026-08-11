@@ -461,9 +461,10 @@ evidence.
 
 The frontier join is expressed by two narrow Candidate Generator adapters. One
 reuses the Dataflow rewrite owner over a bounded Dataflow/System pair prefix;
-the other reuses the three root-complete Mapping owners and returns their
-ordinary Artifacts. This split preserves the real software-generation and
-Mapping boundaries while allowing a later Promote node to narrow either
+the other reuses System composition for a bounded System/Module prefix and the
+three root-complete Mapping owners for the resulting bounded Dataflow/System
+prefix. This split preserves the real software-generation, hardware-action,
+and Mapping boundaries while allowing a later Promote node to narrow either
 frontier. A single generic joint-action generator would absorb compiler,
 Mapping, hardware, and Evaluation semantics. A persistent pair Artifact would
 add identity without an independently observable fact. Dynamically adding
