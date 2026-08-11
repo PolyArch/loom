@@ -353,11 +353,32 @@ void exerciseManifestAndAdmission(llvm::StringRef temporaryPath) {
       "not canonical and unique");
 }
 
+void exerciseRepositoryManifest(llvm::StringRef manifestPath,
+                                llvm::StringRef repositoryRoot) {
+  ApplicationManifest manifest = take(loadApplicationManifest(manifestPath));
+  const std::vector<std::string> smoke =
+      selectApplicationIdentities(manifest, ExecutionSelection::Smoke);
+  if (smoke != std::vector<std::string>{"loom-multisensor-attention"})
+    fail("repository manifest changed the admitted smoke inventory");
+
+  auto outcomes =
+      take(admitApplicationSources(manifest, smoke, repositoryRoot));
+  if (outcomes.size() != 1)
+    fail("repository manifest source admission changed cardinality");
+  const auto *admitted =
+      std::get_if<AdmittedApplicationSource>(&outcomes.front());
+  if (!admitted ||
+      admitted->applicationIdentity != "loom-multisensor-attention" ||
+      !std::filesystem::path(admitted->sourceRoot).is_absolute())
+    fail("repository multisensor attention source was not admitted");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
-  if (argc != 2)
-    fail("expected one temporary directory argument");
+  if (argc != 4)
+    fail("expected <temporary-directory> <manifest> <repository-root>");
   exerciseManifestAndAdmission(argv[1]);
+  exerciseRepositoryManifest(argv[2], argv[3]);
   return 0;
 }

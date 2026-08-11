@@ -1,0 +1,46 @@
+{
+  "schema": "loom.application_portfolio",
+  "version": "1.0",
+  "applications": [
+    {
+      "identity": "loom-multisensor-attention",
+      "source": {
+        "kind": "repository",
+        "root": "test/applications/loom-multisensor-attention"
+      },
+      "build": {
+        "entry": "main.c",
+        "language": "c",
+        "sources": [
+          "main.c"
+        ],
+        "compiler_options": [
+          "-O1",
+          "-ffp-contract=off",
+          "-fno-math-errno"
+        ],
+        "link_options": [
+          "-lm"
+        ]
+      },
+      "cached_inputs": [],
+      "inputs": [
+        {
+          "name": "smoke",
+          "workload": "loom-multisensor-attention-smoke",
+          "runtime_input": "loom-multisensor-attention-smoke-input",
+          "cached_inputs": [],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/loom-multisensor-attention/expected-smoke.txt"
+          }
+        }
+      ],
+      "selections": [
+        "smoke",
+        "validation",
+        "scale_eda"
+      ]
+    }
+  ]
+}

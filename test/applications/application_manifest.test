@@ -1,1 +1,4 @@
-# RUN: %loom-application-manifest-test %t
+# RUN: %loom-application-manifest-test %t %S/manifest.json %S/../..
+# RUN: %loom-cc -std=c11 -O1 -ffp-contract=off -fno-math-errno \
+# RUN:   %S/loom-multisensor-attention/main.c -lm -o %t.attention
+# RUN: %t.attention | diff -u %S/loom-multisensor-attention/expected-smoke.txt -
