@@ -10,8 +10,26 @@ config.name = "LOOM"
 config.test_format = lit.formats.ShTest()
 config.suffixes = [".mlir", ".test"]
 
+# System execution tests remain independently schedulable, but each launches
+# substantial nested compiler, PnR, and simulation work. Bound their aggregate
+# concurrency so lit's worker pool does not oversubscribe those inner jobs.
+lit_config.parallelism_groups["system-execution"] = 2
+
 if getattr(config, "loom_have_circt", False):
     config.available_features.add("circt")
+
+gem5_readiness_path = os.path.join(
+    config.loom_obj_root, "gem5", "loom-gem5-readiness.json")
+try:
+    with open(gem5_readiness_path, encoding="utf-8") as readiness_file:
+        gem5_readiness = json.load(readiness_file)
+    gem5_binary = gem5_readiness.get("binary")
+    if isinstance(gem5_binary, str) and os.path.isabs(gem5_binary):
+        gem5_directory = os.path.dirname(gem5_binary)
+        config.environment["PATH"] = os.pathsep.join(
+            [gem5_directory, config.environment["PATH"]])
+except (OSError, json.JSONDecodeError):
+    pass
 
 catalog_executable = os.path.join(
     config.loom_obj_root, "bin", "loom-backend-tool-catalog")
@@ -79,6 +97,7 @@ tool_dirs = [
     os.path.join(config.loom_obj_root, "test", "frontend"),
     os.path.join(config.loom_obj_root, "test", "mapping"),
     os.path.join(config.loom_obj_root, "test", "simulator"),
+    os.path.join(config.loom_obj_root, "test", "system"),
     os.path.join(config.loom_obj_root, "bin"),
     config.llvm_tools_dir,
 ]
@@ -204,6 +223,8 @@ tools = [
     "loom-structured-memory-communication-lineage-test",
     "loom-structured-memory-channel-test",
     "loom-source-backed-attention-channel-test",
+    "loom-system-execution-matrix-test",
+    "loom-heterogeneous-system-anchor-test",
     "loom-structured-memory-layout-test",
     "loom-structured-memory-pipeline-test",
     "loom-structured-execution-shape-generator-test",
@@ -215,6 +236,13 @@ tools = [
     "mlir-translate",
 ]
 llvm_config.add_tool_substitutions(tools, tool_dirs)
+
+config.substitutions.append(
+    (
+        "%loom-gem5-readiness",
+        gem5_readiness_path,
+    )
+)
 
 # Loom driver tools share name prefixes with other substitutions. Lit's
 # substitution is substring-based, so match their complete placeholders.
@@ -252,6 +280,18 @@ config.substitutions.insert(
             "test",
             "runtime",
             "loom-runtime-gem5-bridge-test",
+        ),
+    ),
+)
+config.substitutions.insert(
+    0,
+    (
+        "%loom-runtime-gem5-spatial-channel-test\\b",
+        os.path.join(
+            config.loom_obj_root,
+            "test",
+            "runtime",
+            "loom-runtime-gem5-spatial-channel-test",
         ),
     ),
 )

@@ -652,9 +652,12 @@ hierarchy. Treating the produced program as another discovered tool would add
 a false binding authority, while allowing arbitrary later commands would lose
 the bundle's executable closure. The manifest therefore names only fresh
 tool-produced executables under `work/`; the launcher removes stale instances
-and verifies the newly produced path before execution. This is the smallest
-distinction that supports compile-then-run without turning ExternalTool into a
-general shell workflow language.
+and verifies each newly produced path before execution. A generated controller
+may receive other listed generated executables as exact arguments when one
+modeled simulator requires cooperating processes. Keeping those child paths in
+the same manifest and checking them against the controller's semantic input
+preserves one executable closure without making ExternalTool a process
+supervisor or a general shell workflow language.
 
 Separating prepare from import is the smallest lifecycle that supports that
 execution boundary. The exact descriptor and semantic closure derive the

@@ -416,7 +416,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             for ordinal in range(2)
         ]
         projection = {
-            "schema": "loom.gem5_system_projection.2",
+            "schema": "loom.gem5_system_projection.3",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
             "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns"},
@@ -467,7 +467,23 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     },
                 ],
             },
-            "processors": [{"cpu_id": 0}, {"cpu_id": 1}, {"cpu_id": 2}],
+            "processors": [
+                {
+                    "cpu_id": cpu_id,
+                    "model": "timing_simple",
+                    "num_threads": 1,
+                    "execution_units": [
+                        {
+                            "operation_class": 0,
+                            "count": 1,
+                            "latency_cycles": 1,
+                            "initiation_interval": 1,
+                        }
+                    ],
+                    "pipeline": {},
+                }
+                for cpu_id in range(3)
+            ],
             "bridges": [
                 {
                     "pio_address": BRIDGE_ADDRESS,

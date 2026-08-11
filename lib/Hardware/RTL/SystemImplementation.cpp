@@ -17,7 +17,8 @@ finalizePortableSystemHardwareImplementation(
     const FinalizedConfigurationABI &configurationAbi,
     const FabricOperationProviderRegistry &providers,
     const ExternalImplementationContractCatalog &externalContracts,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    llvm::ArrayRef<ArtifactRootReference> interconnectImplementations) {
   auto skeleton = buildPortableSystemRootCirctSkeleton(
       context, configurationAbi, providers, externalContracts);
   if (!skeleton)
@@ -44,7 +45,8 @@ finalizePortableSystemHardwareImplementation(
   return finalizeHardwareImplementation(
       HardwareImplementationDraft{configurationAbi.abi().fabric(),
                                   configurationAbi.reference(),
-                                  {},
+                                  {interconnectImplementations.begin(),
+                                   interconnectImplementations.end()},
                                   std::move(*representation),
                                   std::nullopt,
                                   std::move(skeleton->interfaces),

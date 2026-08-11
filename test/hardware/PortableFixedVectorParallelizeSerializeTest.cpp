@@ -976,10 +976,10 @@ commonParallelizeTestbench(const CommonConfiguration &configuration) {
     output_1_ready = 0;
     @(posedge clock); #1;
     input_1_valid = 0;
-    if (output_0_valid || !output_1_valid || output_2_valid ||
+    if (!output_0_valid || !output_1_valid || !output_2_valid ||
         output_0_data !== 32'h0000bbaa || output_1_data !== 32'h3 ||
         output_2_data !== 32'h1)
-      $fatal(1, "common parallelize lost its held payload group");
+      $fatal(1, "common parallelize did not capture its complete payload group");
 
     input_0_data = 32'hcc; input_1_data = 32'h1;
     input_0_valid = 1; input_1_valid = 1;
@@ -1009,7 +1009,7 @@ commonParallelizeTestbench(const CommonConfiguration &configuration) {
     output_1_ready = 0;
     @(posedge clock); #1;
     input_1_valid = 0;
-    if (output_0_valid || !output_1_valid || output_2_valid)
+    if (!output_0_valid || !output_1_valid || !output_2_valid)
       $fatal(1, "common parallelize did not enter reset drain");
     @(negedge clock); reset = 1; #1;
     if (output_0_valid || output_1_valid || output_2_valid ||
@@ -1069,10 +1069,10 @@ std::string commonSerializeTestbench(const CommonConfiguration &configuration) {
     output_1_ready = 0;
     @(posedge clock); #1;
     input_0_data = 32'hdeadbeef; input_1_data = 0;
-    if (output_0_valid || !output_1_valid || output_0_data !== 32'h22 ||
+    if (!output_0_valid || !output_1_valid || output_0_data !== 32'h22 ||
         output_1_data !== 32'h1 || input_0_ready || input_1_ready ||
         input_2_ready)
-      $fatal(1, "common serialize lost its first held lane");
+      $fatal(1, "common serialize did not capture its first complete group");
     repeat (2) begin
       @(posedge clock); #1;
       if (output_0_valid || !output_1_valid || output_0_data !== 32'h22 ||
@@ -1082,10 +1082,10 @@ std::string commonSerializeTestbench(const CommonConfiguration &configuration) {
 
     output_0_ready = 1; output_1_ready = 1;
     @(posedge clock); #1; output_1_ready = 0; #1;
-    if (output_0_valid || !output_1_valid || output_0_data !== 32'h44 ||
+    if (!output_0_valid || !output_1_valid || output_0_data !== 32'h44 ||
         output_1_data !== 32'h1 || input_0_ready || input_1_ready ||
         input_2_ready)
-      $fatal(1, "common serialize lost its final sparse lane");
+      $fatal(1, "common serialize did not capture its final sparse group");
     output_0_ready = 1; output_1_ready = 1; #1;
     if (!input_0_ready || !input_1_ready || !input_2_ready)
       $fatal(1, "common serialize final handoff blocked replacement");
@@ -1099,7 +1099,7 @@ std::string commonSerializeTestbench(const CommonConfiguration &configuration) {
     input_0_valid = 1; input_1_valid = 1; input_2_valid = 1; #1;
     output_1_ready = 0; #1;
     @(posedge clock); #1;
-    if (output_0_valid || !output_1_valid)
+    if (!output_0_valid || !output_1_valid)
       $fatal(1, "common serialize did not enter reset drain");
     @(negedge clock); reset = 1; #1;
     if (output_0_valid || output_1_valid || input_0_ready ||

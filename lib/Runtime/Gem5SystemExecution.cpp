@@ -1,5 +1,7 @@
 #include "Runtime/Gem5SystemExecution.h"
 
+#include "Gem5SystemExecutionInternal.h"
+
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
@@ -10,6 +12,7 @@
 #include "Deployment/DeploymentSpatialLaunchSelection.h"
 #include "Deployment/Package.h"
 #include "EDA/Adapters/OpenSource/MappedRtlExecution.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/Models/MappedRtlSimulationConfig.h"
 #include "Evaluation/ProductionRegistry.h"
@@ -18,6 +21,7 @@
 #include "ExternalTool/RuntimeBinding.h"
 #include "ExternalTool/ShellProbe.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/InstructionCoreBinary.h"
@@ -27,6 +31,8 @@
 #include "Runtime/Gem5BridgeWire.h"
 #include "Runtime/Gem5BuiltinModels.h"
 #include "Runtime/Gem5SimulationBinding.h"
+#include "Runtime/Gem5SpatialChannel.h"
+#include "Runtime/Gem5SpatialChannelPlan.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
 
@@ -38,11 +44,16 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "mlir/IR/Matchers.h"
+
 #include <algorithm>
+#include <array>
+#include <cassert>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -66,123 +77,16 @@
 #ifndef LOOM_GEM5_BRIDGE_HEADER_PATH
 #error "LOOM_GEM5_BRIDGE_HEADER_PATH is required"
 #endif
+#ifndef LOOM_GEM5_CHANNEL_PLAN_HEADER_PATH
+#error "LOOM_GEM5_CHANNEL_PLAN_HEADER_PATH is required"
+#endif
 
 namespace loom::runtime {
+using namespace gem5_system;
 namespace {
 
 using namespace evaluation;
 using namespace external_tool;
-
-constexpr CaseSubjectRoleRef kDeploymentRole(0);
-constexpr CaseSubjectRoleRef kBindingRole(1);
-constexpr ModelOutputSlotRef kExecutionOutput(0);
-constexpr llvm::StringLiteral kSystemResultPath = "outputs/system-result.json";
-constexpr llvm::StringLiteral kMemoryResultPath =
-    "outputs/system-memory.result";
-constexpr llvm::StringLiteral kProjectionPath =
-    "drivers/gem5-system-projection.json";
-constexpr llvm::StringLiteral kConfigurationScriptPath =
-    "drivers/configure_loom_system.py";
-constexpr llvm::StringLiteral kDfgEnginePath = "drivers/loom-gem5-dfg-engine";
-constexpr llvm::StringLiteral kCgraEnginePath = "drivers/loom-gem5-cgra-engine";
-constexpr llvm::StringLiteral kBridgeHeaderPath = "drivers/Gem5BridgeWire.h";
-constexpr llvm::StringLiteral kPackageObjectPath = "inputs/package/objects";
-constexpr llvm::StringLiteral kHostElfPath = "inputs/host.elf";
-constexpr llvm::StringLiteral kThreadDispatchPath =
-    "inputs/thread-dispatch.bin";
-constexpr llvm::StringLiteral kAdmissionPath = "inputs/admission.bin";
-constexpr llvm::StringLiteral kMemoryTablePath =
-    "inputs/system-memory-table.bin";
-constexpr std::uint64_t kMaximumGem5Ticks = 10'000'000;
-constexpr std::uint64_t kMaximumSpatialWork = 1'000'000;
-constexpr std::uint64_t kGem5PageBytes = 4096;
-constexpr std::uint64_t kGem5StackBytes = 64 * 1024;
-constexpr std::uint64_t kThreadDispatchApertureBytes = 4096;
-
-enum class Gem5SystemEngine { Dfg, Cgra, Rtl };
-
-struct Gem5ProcessorProjection final {
-  Gem5ProcessorFabricRef processor;
-  Gem5RiscvTimingCpuParameters parameters;
-};
-
-struct Gem5InstructionImage final {
-  ArtifactRootReference reference;
-  std::string path;
-};
-
-struct Gem5RuntimeImage final {
-  std::string path;
-  std::uint64_t address = 0;
-};
-
-struct Gem5DispatchTarget final {
-  std::uint64_t cpuId = 0;
-  std::uint64_t imageOrdinal = 0;
-  std::string entrySymbol;
-  std::uint64_t bridgeAddress = 0;
-  std::uint64_t launchAddress = 0;
-  std::uint64_t launchSize = 0;
-};
-
-struct Gem5MemoryObservationProjection final {
-  std::uint64_t objectOrdinal = 0;
-  std::uint64_t objectByteOffset = 0;
-  std::uint64_t address = 0;
-  std::uint64_t size = 0;
-  sim::MemoryObservationForm form = sim::MemoryObservationForm::FullState;
-};
-
-struct ReadinessIdentity final {
-  std::string binarySha256;
-  ExternalFileFingerprint binaryFingerprint;
-};
-
-struct Gem5SpatialLaunchProjection final {
-  ArtifactRootReference fabric;
-  ArtifactRootReference spatialMapping;
-  ArtifactRootReference hardwareImplementation;
-  ArtifactRootReference spatialWorkload;
-  ArtifactRootReference spatialRuntimeInput;
-  std::vector<std::uint8_t> launchPayload;
-  Gem5DispatchTarget dispatchTarget;
-  Gem5SpatialBridgeParameters bridge;
-};
-
-struct Gem5SystemFacts final {
-  Gem5SystemEngine engine;
-  ArtifactRootReference deployment;
-  ArtifactRootReference binding;
-  ArtifactRootReference dataflow;
-  std::vector<Gem5SpatialLaunchProjection> spatialLaunches;
-  std::vector<MaterializedBundleFile> semanticInputs;
-  std::vector<Gem5ProcessorProjection> processors;
-  std::string hostEntrySymbol;
-  std::uint64_t hostCpuId = 0;
-  std::vector<Gem5InstructionImage> instructionImages;
-  std::vector<Gem5RuntimeImage> runtimeImages;
-  std::uint64_t memoryInterfaceTableAddress = 0;
-  std::uint64_t memoryInterfaceTableEntries = 0;
-  std::vector<Gem5MemoryObservationProjection> memoryObservations;
-  std::uint64_t dispatchAddress = 0;
-  std::uint64_t stackBase = 0;
-  std::uint64_t stackStride = 0;
-  Gem5SimpleMemoryParameters memory;
-};
-
-using Gem5SystemFactsOrUnsupported =
-    std::variant<Gem5SystemFacts, UnsupportedEvidence>;
-
-llvm::Error invalid(const llvm::Twine &message) {
-  return llvm::createStringError(
-      std::make_error_code(std::errc::invalid_argument),
-      "gem5_system_execution_invalid: " + message);
-}
-
-std::string bytesToString(llvm::ArrayRef<std::uint8_t> bytes) {
-  return std::string(reinterpret_cast<const char *>(bytes.data()),
-                     bytes.size());
-}
 
 llvm::Expected<std::string> readFile(llvm::StringRef path) {
   auto buffer = llvm::MemoryBuffer::getFile(path, false, false);
@@ -190,760 +94,6 @@ llvm::Expected<std::string> readFile(llvm::StringRef path) {
     return invalid("cannot read '" + path +
                    "': " + buffer.getError().message());
   return (*buffer)->getBuffer().str();
-}
-
-Gem5SystemEngine selectedEngine(const EvaluationRequest &request) {
-  const EvaluationModelKind kind =
-      request.modelBinding().descriptorRef().modelKind();
-  if (kind == builtinEvaluationModelKind(BuiltinEvaluationModel::Gem5SystemDfg))
-    return Gem5SystemEngine::Dfg;
-  if (kind ==
-      builtinEvaluationModelKind(BuiltinEvaluationModel::Gem5SystemCgra))
-    return Gem5SystemEngine::Cgra;
-  return Gem5SystemEngine::Rtl;
-}
-
-llvm::Expected<std::pair<ArtifactRootReference, ArtifactRootReference>>
-systemSubjects(const EvaluationRequest &request) {
-  const auto deployments = request.subjectBindings().subjects(kDeploymentRole);
-  const auto bindings = request.subjectBindings().subjects(kBindingRole);
-  if (deployments.size() != 1 || bindings.size() != 1)
-    return invalid("Request does not bind one Deployment and one gem5 binding");
-  return std::pair(deployments.front(), bindings.front());
-}
-
-bool supportsSystemMemorySurface(
-    const sim::ImportedSystemSimulationInputs &inputs) {
-  const sim::SystemSimulationWorkload &workload = *inputs.workload.system();
-  const sim::SystemSimulationRuntimeInput &runtime =
-      *inputs.runtimeInput.system();
-  return workload.valueInputPlan.empty() &&
-         workload.externalValueInputPlan.empty() &&
-         workload.observableContract.valueResults.empty() &&
-         workload.observableContract.externalValueOutputs.empty() &&
-         workload.observableContract.externalStreamOutputs.empty() &&
-         runtime.runtimeEntryValues.empty() &&
-         runtime.runtimeExternalValues.empty() &&
-         runtime.externalStreamInputs.empty();
-}
-
-void appendGuestU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
-  for (unsigned byte = 0; byte != 4; ++byte)
-    bytes.push_back(static_cast<std::uint8_t>(value >> (byte * 8)));
-}
-
-void appendGuestU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
-  for (unsigned byte = 0; byte != 8; ++byte)
-    bytes.push_back(static_cast<std::uint8_t>(value >> (byte * 8)));
-}
-
-const sim::SystemMemoryInterfaceBindingEntry *
-findMemoryBinding(const sim::SystemSimulationRuntimeInput &runtime,
-                  const deployment::DeploymentExternalInterfaceRef &reference) {
-  auto found = std::lower_bound(
-      runtime.memoryInterfaceBindings.begin(),
-      runtime.memoryInterfaceBindings.end(), reference,
-      [](const sim::SystemMemoryInterfaceBindingEntry &entry,
-         const deployment::DeploymentExternalInterfaceRef &target) {
-        return deployment::deploymentExternalInterfaceRefLess(
-            entry.interfaceRef, target);
-      });
-  if (found == runtime.memoryInterfaceBindings.end() ||
-      !(found->interfaceRef == reference))
-    return nullptr;
-  return &*found;
-}
-
-llvm::Expected<std::vector<MaterializedBundleFile>>
-materializeDeploymentPackage(const deployment::FinalizedDeployment &deployment,
-                             const ArtifactStore &artifacts,
-                             const BlobStore &blobs) {
-  llvm::SmallString<256> root;
-  if (std::error_code error = llvm::sys::fs::createUniqueDirectory(
-          "loom-gem5-deployment-package-%%%%%%", root))
-    return invalid("cannot create Deployment package staging directory: " +
-                   error.message());
-  const std::filesystem::path staging(root.str().str());
-  llvm::scope_exit cleanup([&] { std::filesystem::remove_all(staging); });
-  const std::filesystem::path package = staging / "package";
-  if (llvm::Error error = deployment::publishDeploymentPackage(
-          deployment, package.string(), artifacts, blobs))
-    return std::move(error);
-
-  std::vector<std::filesystem::path> paths;
-  std::error_code error;
-  for (std::filesystem::recursive_directory_iterator iterator(package, error),
-       end;
-       !error && iterator != end; iterator.increment(error)) {
-    const auto status = iterator->symlink_status(error);
-    if (error)
-      break;
-    if (std::filesystem::is_symlink(status) ||
-        (!std::filesystem::is_directory(status) &&
-         !std::filesystem::is_regular_file(status)))
-      return invalid("Deployment package contains a non-ordinary entry");
-    if (std::filesystem::is_regular_file(status))
-      paths.push_back(iterator->path());
-  }
-  if (error)
-    return invalid("cannot enumerate Deployment package: " + error.message());
-  llvm::sort(paths);
-
-  std::vector<MaterializedBundleFile> files;
-  files.reserve(paths.size());
-  for (const std::filesystem::path &path : paths) {
-    auto contents = readFile(path.string());
-    if (!contents)
-      return contents.takeError();
-    files.push_back(
-        {"inputs/package/" + path.lexically_relative(package).generic_string(),
-         std::move(*contents), deployment.reference(), false});
-  }
-  return files;
-}
-
-llvm::Error appendStoredObject(std::vector<MaterializedBundleFile> &files,
-                               const ArtifactRootReference &reference,
-                               const ArtifactStore &artifacts) {
-  const std::string path =
-      "inputs/package/objects/" + formatArtifactIdentityHex(reference.artifact);
-  if (llvm::any_of(files, [&](const MaterializedBundleFile &file) {
-        return file.relativePath == path;
-      }))
-    return llvm::Error::success();
-  auto object = artifacts.getStoredObject(reference);
-  if (!object)
-    return object.takeError();
-  files.push_back({path, bytesToString(*object), reference, false});
-  return llvm::Error::success();
-}
-
-llvm::Expected<std::uint64_t> checkedAdd(std::uint64_t lhs, std::uint64_t rhs,
-                                         llvm::StringRef role) {
-  if (rhs > std::numeric_limits<std::uint64_t>::max() - lhs)
-    return invalid(role + " address range overflows uint64");
-  return lhs + rhs;
-}
-
-llvm::Expected<std::uint64_t>
-alignUp(std::uint64_t value, std::uint64_t alignment, llvm::StringRef role) {
-  if (alignment == 0 || (alignment & (alignment - 1)) != 0)
-    return invalid(role + " alignment is not a power of two");
-  const std::uint64_t mask = alignment - 1;
-  if (value > std::numeric_limits<std::uint64_t>::max() - mask)
-    return invalid(role + " alignment overflows uint64");
-  return (value + mask) & ~mask;
-}
-
-struct SelectedInstructionEntry final {
-  std::size_t imageOrdinal = 0;
-  std::uint64_t entryOrdinal = 0;
-};
-
-llvm::Expected<SelectedInstructionEntry>
-selectInstructionEntry(const deployment::FinalizedDeployment &deployment,
-                       dataflow::RootThreadLaunchRef root,
-                       fabric::AccCoreOccurrenceRef accCore,
-                       const ArtifactIdentity &fabricIdentity,
-                       const ArtifactStore &artifacts, const BlobStore &blobs) {
-  std::optional<SelectedInstructionEntry> selected;
-  for (const auto indexed :
-       llvm::enumerate(deployment.deployment().instructionCoreBinaries())) {
-    auto binary =
-        importInstructionCoreBinary(indexed.value(), artifacts, blobs);
-    if (!binary)
-      return binary.takeError();
-    auto entry = binary->binary().threadEntry(root);
-    if (!entry) {
-      llvm::consumeError(entry.takeError());
-      continue;
-    }
-    auto target = importCompilerTargetBinding(
-        binary->binary().compilerTargetBinding(), artifacts);
-    if (!target)
-      return target.takeError();
-    const CompilerProcessorArchitectureRef processor =
-        CompilerProcessorArchitectureRef::instruction(
-            {fabricIdentity, fabric::InstructionCoreContextRef{accCore}});
-    if (llvm::Error error = requireCompilerTargetCompatibility(
-            target->binding(), processor, artifacts)) {
-      llvm::consumeError(std::move(error));
-      continue;
-    }
-    if (selected)
-      return invalid("more than one InstructionCore binary supports the "
-                     "selected thread target");
-    selected = SelectedInstructionEntry{indexed.index(), *entry};
-  }
-  if (!selected)
-    return invalid("no InstructionCore binary supports the selected thread "
-                   "target");
-  return *selected;
-}
-
-std::string instructionImagePath(std::size_t ordinal) {
-  return "inputs/instruction-" + std::to_string(ordinal) + ".elf";
-}
-
-std::string spatialLaunchPath(std::size_t ordinal) {
-  return "inputs/spatial-launch-" + std::to_string(ordinal) + ".bin";
-}
-
-std::string spatialBridgeSocketPath(std::size_t ordinal) {
-  return "outputs/spatial-bridge-" + std::to_string(ordinal) + ".sock";
-}
-
-std::string spatialBridgeResultPath(std::size_t ordinal) {
-  return "outputs/spatial-bridge-" + std::to_string(ordinal) + ".result";
-}
-
-llvm::Expected<Gem5SystemFactsOrUnsupported>
-deriveFacts(const EvaluationRequest &request,
-            const CaseArtifactResolution &resolution,
-            const ArtifactStore &artifacts, const BlobStore &blobs) {
-  (void)resolution;
-  auto subjects = systemSubjects(request);
-  if (!subjects)
-    return subjects.takeError();
-  if (!request.workload() || !request.runtimeInput())
-    return invalid("System Request has no workload/runtime pair");
-  auto systemInputs = sim::importSystemSimulationInputs(
-      *request.workload(), *request.runtimeInput(), artifacts, blobs);
-  if (!systemInputs)
-    return systemInputs.takeError();
-  if (systemInputs->deployment.reference() != subjects->first)
-    return invalid("System workload names a foreign Deployment");
-  auto binding = importGem5SimulationBinding(subjects->second, artifacts);
-  if (!binding)
-    return binding.takeError();
-  if (binding->binding().fabric().artifact !=
-      systemInputs->deployment.deployment().systemMapping().artifact) {
-    auto mapping = mapping::importSystemMapping(
-        systemInputs->deployment.deployment().systemMapping(), artifacts);
-    if (!mapping)
-      return mapping.takeError();
-    if (mapping->view().fabricIdentity() !=
-        binding->binding().fabric().artifact)
-      return invalid("gem5 binding and Deployment name different Fabric roots");
-  }
-  if (!supportsSystemMemorySurface(*systemInputs))
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-
-  const deployment::Deployment &deployment =
-      systemInputs->deployment.deployment();
-  if (!deployment.spatialLaunchImage())
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-  auto systemMapping =
-      mapping::importSystemMapping(deployment.systemMapping(), artifacts);
-  if (!systemMapping)
-    return systemMapping.takeError();
-  ArtifactRootReference dataflowReference{
-      dataflow::canonicalDataflowSchema.identity.str(),
-      dataflow::canonicalDataflowSchema.version,
-      systemMapping->view().dataflowIdentity()};
-  auto dataflow =
-      dataflow::importCanonicalDataflow(dataflowReference, artifacts);
-  if (!dataflow)
-    return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  auto contexts = mapping::projectSystemExecutionContexts(
-      *dataflowView, systemMapping->view().executionBindings());
-  if (!contexts)
-    return contexts.takeError();
-  if (contexts->spatialDomains.empty())
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-
-  struct PendingSpatialLaunch final {
-    dataflow::RootedGraphLaunchRef graph;
-    fabric::AccCoreOccurrenceRef accCore;
-    ArtifactRootReference fabric;
-    ArtifactRootReference spatialMapping;
-    ArtifactRootReference hardwareImplementation;
-    ArtifactRootReference spatialWorkload;
-    ArtifactRootReference spatialRuntimeInput;
-  };
-  std::vector<PendingSpatialLaunch> pendingLaunches;
-  pendingLaunches.reserve(contexts->spatialDomains.size());
-  std::set<std::vector<std::uint8_t>> selectedAccCores;
-  for (const mapping::SystemSpatialContextDomain &domain :
-       contexts->spatialDomains) {
-    auto rootDomain =
-        dataflowView->projectWholeRootedGraphLogicalDomain(domain.graph);
-    if (!rootDomain)
-      return rootDomain.takeError();
-    if (!*rootDomain || (*rootDomain)->coordinateRank != 0)
-      return Gem5SystemFactsOrUnsupported{
-          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    auto launch = dataflowView->resolve(domain.graph.staticGraphLaunch);
-    if (!launch)
-      return launch.takeError();
-    auto launchOp = llvm::dyn_cast<dataflow::GraphLaunchOp>(launch->op);
-    if (!launchOp || !launchOp.getValueInputs().empty() ||
-        !launchOp.getStreamInputs().empty() ||
-        !launchOp.getMemoryInputs().empty())
-      return Gem5SystemFactsOrUnsupported{
-          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-
-    auto selection = deployment::resolveDeploymentSpatialLaunchSelection(
-        systemInputs->deployment, domain.graph, {}, artifacts);
-    if (!selection)
-      return selection.takeError();
-    const std::vector<std::uint8_t> coreKey = fabric::canonicalFabricBytes(
-        fabric::SpatialCoreOccurrenceRef{selection->context.accCore});
-    if (!selectedAccCores.insert(coreKey).second)
-      return Gem5SystemFactsOrUnsupported{
-          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    auto spatialMapping =
-        mapping::importSpatialMapping(selection->spatialMapping, artifacts);
-    if (!spatialMapping)
-      return spatialMapping.takeError();
-    ArtifactRootReference spatialFabricReference{
-        fabric::fabricArtifactSchema.identity.str(),
-        fabric::fabricArtifactSchema.version,
-        spatialMapping->view().fabricIdentity()};
-
-    sim::SpatialSimulationWorkload spatialWorkloadDraft{domain.graph};
-    auto spatialWorkload =
-        sim::finalizeSimulationWorkload(spatialWorkloadDraft, *dataflowView);
-    if (!spatialWorkload)
-      return spatialWorkload.takeError();
-    auto workloadReference =
-        sim::publishSimulationWorkload(*spatialWorkload, artifacts);
-    if (!workloadReference)
-      return workloadReference.takeError();
-    sim::SpatialSimulationRuntimeInputDraft spatialRuntimeDraft{
-        spatialWorkload->identity()};
-    auto spatialRuntime = sim::finalizeSimulationRuntimeInput(
-        spatialRuntimeDraft, *spatialWorkload, *dataflowView);
-    if (!spatialRuntime)
-      return spatialRuntime.takeError();
-    auto runtimeReference =
-        sim::publishSimulationRuntimeInput(*spatialRuntime, artifacts);
-    if (!runtimeReference)
-      return runtimeReference.takeError();
-    pendingLaunches.push_back(
-        {domain.graph, selection->context.accCore,
-         std::move(spatialFabricReference), selection->spatialMapping,
-         selection->hardwareImplementation, std::move(*workloadReference),
-         std::move(*runtimeReference)});
-  }
-  if (selectedEngine(request) == Gem5SystemEngine::Rtl &&
-      pendingLaunches.size() != 1)
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-
-  std::vector<Gem5ProcessorProjection> processors;
-  std::vector<
-      std::pair<fabric::AccCoreOccurrenceRef, Gem5SpatialBridgeParameters>>
-      bridges;
-  std::optional<Gem5SimpleMemoryParameters> memory;
-  std::set<std::vector<std::uint8_t>> seenProcessors;
-  std::set<std::vector<std::uint8_t>> seenMemories;
-  for (const Gem5Correspondence &row : binding->binding().correspondences()) {
-    if (const auto *processor =
-            std::get_if<Gem5ProcessorCorrespondence>(&row)) {
-      if (processor->simObject.contract !=
-          gem5ModelContractDescriptorRef(gem5RiscvTimingCpuModel()))
-        return Gem5SystemFactsOrUnsupported{
-            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-      if (!seenProcessors.insert(processor->simObject.payload).second)
-        return Gem5SystemFactsOrUnsupported{
-            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-      auto parameters =
-          decodeGem5RiscvTimingCpuParameters(processor->simObject.payload);
-      if (!parameters)
-        return parameters.takeError();
-      processors.push_back({processor->processor, *parameters});
-      continue;
-    }
-    if (const auto *spatial =
-            std::get_if<Gem5SpatialBridgeCorrespondence>(&row)) {
-      if (spatial->bridgeEndpoint.object.contract !=
-          gem5ModelContractDescriptorRef(gem5SpatialBridgeModel()))
-        return Gem5SystemFactsOrUnsupported{
-            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-      auto parameters = decodeGem5SpatialBridgeParameters(
-          spatial->bridgeEndpoint.object.payload);
-      if (!parameters)
-        return parameters.takeError();
-      bridges.push_back({spatial->spatialCore.core, *parameters});
-      continue;
-    }
-    if (const auto *service =
-            std::get_if<Gem5MemoryOrServiceCorrespondence>(&row)) {
-      if (service->simObject.contract !=
-          gem5ModelContractDescriptorRef(gem5SimpleMemoryModel()))
-        return Gem5SystemFactsOrUnsupported{
-            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-      if (seenMemories.insert(service->simObject.payload).second) {
-        auto parameters =
-            decodeGem5SimpleMemoryParameters(service->simObject.payload);
-        if (!parameters)
-          return parameters.takeError();
-        if (memory && !(*memory == *parameters))
-          return Gem5SystemFactsOrUnsupported{
-              UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-        memory = *parameters;
-      }
-      continue;
-    }
-    if (const auto *transport = std::get_if<Gem5TransportCorrespondence>(&row))
-      if (transport->simObject.contract !=
-          gem5ModelContractDescriptorRef(gem5SystemXBarModel()))
-        return Gem5SystemFactsOrUnsupported{
-            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-  }
-  if (processors.empty() || bridges.empty() || !memory)
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-  llvm::sort(processors, [](const auto &lhs, const auto &rhs) {
-    return lhs.parameters.cpuId < rhs.parameters.cpuId;
-  });
-  if (std::adjacent_find(processors.begin(), processors.end(),
-                         [](const auto &lhs, const auto &rhs) {
-                           return lhs.parameters.cpuId == rhs.parameters.cpuId;
-                         }) != processors.end() ||
-      llvm::any_of(processors, [&](const auto &processor) {
-        return processor.parameters.clockPeriodTicks !=
-               processors.front().parameters.clockPeriodTicks;
-      }))
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-
-  const Gem5ProcessorProjection *hostProcessor = nullptr;
-  for (const Gem5ProcessorProjection &processor : processors) {
-    if (std::holds_alternative<fabric::HostCoreOccurrenceRef>(
-            processor.processor)) {
-      if (hostProcessor)
-        return invalid("gem5 binding contains more than one HostCore CPU");
-      hostProcessor = &processor;
-    }
-  }
-  if (!hostProcessor)
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-  const std::uint64_t hostCpuId = hostProcessor->parameters.cpuId;
-  const auto *systemWorkload = systemInputs->workload.system();
-  if (!systemWorkload)
-    return invalid("imported System workload lost its typed payload");
-  auto hostEntry = deployment::resolveDeploymentProgramEntry(
-      systemInputs->deployment, systemWorkload->programEntryRef);
-  if (!hostEntry)
-    return hostEntry.takeError();
-
-  auto memoryEndValue =
-      checkedAdd(memory->baseAddress, memory->sizeBytes, "gem5 memory");
-  if (!memoryEndValue)
-    return memoryEndValue.takeError();
-  const std::uint64_t memoryEnd = *memoryEndValue;
-  std::uint64_t maximumBridgeEnd = 0;
-  std::vector<std::pair<std::uint64_t, std::uint64_t>> bridgeRanges;
-  bridgeRanges.reserve(bridges.size());
-  for (const auto &[core, bridge] : bridges) {
-    (void)core;
-    auto bridgeEndValue =
-        checkedAdd(bridge.pioAddress, bridge.pioSize, "Spatial Bridge");
-    if (!bridgeEndValue)
-      return bridgeEndValue.takeError();
-    if (memory->baseAddress < *bridgeEndValue && bridge.pioAddress < memoryEnd)
-      return Gem5SystemFactsOrUnsupported{
-          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    bridgeRanges.push_back({bridge.pioAddress, *bridgeEndValue});
-    maximumBridgeEnd = std::max(maximumBridgeEnd, *bridgeEndValue);
-  }
-  llvm::sort(bridgeRanges);
-  for (std::size_t ordinal = 1; ordinal != bridgeRanges.size(); ++ordinal)
-    if (bridgeRanges[ordinal].first < bridgeRanges[ordinal - 1].second)
-      return Gem5SystemFactsOrUnsupported{
-          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-  auto dispatchAddressValue =
-      alignUp(maximumBridgeEnd, kGem5PageBytes, "Thread Dispatch");
-  if (!dispatchAddressValue)
-    return dispatchAddressValue.takeError();
-  const std::uint64_t dispatchAddress = *dispatchAddressValue;
-  auto dispatchEndValue = checkedAdd(
-      dispatchAddress, kThreadDispatchApertureBytes, "Thread Dispatch");
-  if (!dispatchEndValue)
-    return dispatchEndValue.takeError();
-  if (memory->baseAddress < *dispatchEndValue && dispatchAddress < memoryEnd)
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-
-  auto semanticInputs =
-      materializeDeploymentPackage(systemInputs->deployment, artifacts, blobs);
-  if (!semanticInputs)
-    return semanticInputs.takeError();
-  for (const PendingSpatialLaunch &launch : pendingLaunches) {
-    if (llvm::Error error = appendStoredObject(
-            *semanticInputs, launch.spatialWorkload, artifacts))
-      return std::move(error);
-    if (llvm::Error error = appendStoredObject(
-            *semanticInputs, launch.spatialRuntimeInput, artifacts))
-      return std::move(error);
-  }
-  auto hostElf = blobs.get(deployment.hostProgram().programBlob());
-  if (!hostElf)
-    return hostElf.takeError();
-  semanticInputs->push_back({kHostElfPath.str(), bytesToString(*hostElf),
-                             systemInputs->deployment.reference(), true});
-  std::vector<Gem5InstructionImage> instructionImages;
-  instructionImages.reserve(deployment.instructionCoreBinaries().size());
-  for (const auto indexed :
-       llvm::enumerate(deployment.instructionCoreBinaries())) {
-    auto binary =
-        importInstructionCoreBinary(indexed.value(), artifacts, blobs);
-    if (!binary)
-      return binary.takeError();
-    auto bytes = blobs.get(binary->binary().codeBlob());
-    if (!bytes)
-      return bytes.takeError();
-    const std::string path = instructionImagePath(indexed.index());
-    semanticInputs->push_back(
-        {path, bytesToString(*bytes), indexed.value(), true});
-    instructionImages.push_back({indexed.value(), path});
-  }
-  const auto &launchBytes =
-      deployment.spatialLaunchImage()->canonicalBytes().bytes();
-  const auto &threadBytes =
-      deployment.threadDispatchImage().canonicalBytes().bytes();
-  const auto &admissionBytes =
-      deployment.admissionImage().canonicalBytes().bytes();
-  for (std::size_t ordinal = 0; ordinal != pendingLaunches.size(); ++ordinal)
-    semanticInputs->push_back({spatialLaunchPath(ordinal),
-                               bytesToString(launchBytes),
-                               systemInputs->deployment.reference(), false});
-  semanticInputs->push_back({kThreadDispatchPath.str(),
-                             bytesToString(threadBytes),
-                             systemInputs->deployment.reference(), false});
-  semanticInputs->push_back({kAdmissionPath.str(),
-                             bytesToString(admissionBytes),
-                             systemInputs->deployment.reference(), false});
-
-  auto midpointValue = checkedAdd(memory->baseAddress, memory->sizeBytes / 2,
-                                  "gem5 runtime image arena");
-  if (!midpointValue)
-    return midpointValue.takeError();
-  auto cursorValue =
-      alignUp(*midpointValue, kGem5PageBytes, "gem5 runtime image arena");
-  if (!cursorValue)
-    return cursorValue.takeError();
-  std::uint64_t cursor = *cursorValue;
-  std::vector<Gem5RuntimeImage> runtimeImages;
-  auto placeRuntimeImage =
-      [&](llvm::StringRef path,
-          std::uint64_t size) -> llvm::Expected<std::uint64_t> {
-    if (size == 0)
-      return invalid("gem5 runtime image is empty");
-    const std::uint64_t address = cursor;
-    auto end = checkedAdd(cursor, size, "gem5 runtime image");
-    if (!end)
-      return end.takeError();
-    auto aligned = alignUp(*end, kGem5PageBytes, "gem5 runtime image");
-    if (!aligned)
-      return aligned.takeError();
-    cursor = *aligned;
-    runtimeImages.push_back({path.str(), address});
-    return address;
-  };
-  auto threadAddress =
-      placeRuntimeImage(kThreadDispatchPath, threadBytes.size());
-  auto admissionAddress =
-      placeRuntimeImage(kAdmissionPath, admissionBytes.size());
-  if (!threadAddress || !admissionAddress)
-    return llvm::joinErrors(threadAddress ? llvm::Error::success()
-                                          : threadAddress.takeError(),
-                            admissionAddress ? llvm::Error::success()
-                                             : admissionAddress.takeError());
-  std::vector<std::uint64_t> launchAddresses;
-  launchAddresses.reserve(pendingLaunches.size());
-  for (std::size_t ordinal = 0; ordinal != pendingLaunches.size(); ++ordinal) {
-    auto address =
-        placeRuntimeImage(spatialLaunchPath(ordinal), launchBytes.size());
-    if (!address)
-      return address.takeError();
-    launchAddresses.push_back(*address);
-  }
-
-  std::vector<Gem5SpatialLaunchProjection> spatialLaunches;
-  spatialLaunches.reserve(pendingLaunches.size());
-  for (const auto indexed : llvm::enumerate(pendingLaunches)) {
-    const PendingSpatialLaunch &pending = indexed.value();
-    const Gem5ProcessorProjection *instructionProcessor = nullptr;
-    for (const Gem5ProcessorProjection &processor : processors) {
-      const auto *context =
-          std::get_if<fabric::InstructionCoreContextRef>(&processor.processor);
-      if (!context || context->core != pending.accCore)
-        continue;
-      if (instructionProcessor)
-        return invalid("gem5 binding repeats a selected InstructionCore");
-      instructionProcessor = &processor;
-    }
-    const Gem5SpatialBridgeParameters *selectedBridge = nullptr;
-    for (const auto &[core, bridge] : bridges) {
-      if (core != pending.accCore)
-        continue;
-      if (selectedBridge)
-        return Gem5SystemFactsOrUnsupported{
-            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-      selectedBridge = &bridge;
-    }
-    if (!instructionProcessor || !selectedBridge)
-      return Gem5SystemFactsOrUnsupported{
-          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    auto instruction = selectInstructionEntry(
-        systemInputs->deployment, pending.graph.rootThreadLaunch,
-        pending.accCore, systemMapping->view().fabricIdentity(), artifacts,
-        blobs);
-    if (!instruction)
-      return instruction.takeError();
-    Gem5DispatchTarget dispatch{instructionProcessor->parameters.cpuId,
-                                instruction->imageOrdinal,
-                                "__loom_thread_entry_" +
-                                    std::to_string(instruction->entryOrdinal),
-                                selectedBridge->pioAddress,
-                                launchAddresses[indexed.index()],
-                                static_cast<std::uint64_t>(launchBytes.size())};
-    spatialLaunches.push_back(
-        {pending.fabric, pending.spatialMapping, pending.hardwareImplementation,
-         pending.spatialWorkload, pending.spatialRuntimeInput,
-         std::vector<std::uint8_t>(launchBytes.begin(), launchBytes.end()),
-         std::move(dispatch), *selectedBridge});
-  }
-
-  const sim::SystemSimulationRuntimeInput &systemRuntime =
-      *systemInputs->runtimeInput.system();
-  std::vector<std::uint64_t> memoryObjectAddresses;
-  memoryObjectAddresses.reserve(systemRuntime.memoryObjects.size());
-  for (const auto indexed : llvm::enumerate(systemRuntime.memoryObjects)) {
-    const sim::RuntimeMemoryObject &object = indexed.value();
-    if (!object.pointerValues.empty() ||
-        llvm::any_of(object.initialBytes,
-                     [](const sim::SemanticMemoryByte &byte) {
-                       return byte.state != sim::SemanticState::Defined;
-                     }))
-      return Gem5SystemFactsOrUnsupported{
-          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    const std::string path = "inputs/system-memory-object-" +
-                             std::to_string(indexed.index()) + ".bin";
-    auto address = placeRuntimeImage(path, object.initialBytes.size());
-    if (!address)
-      return address.takeError();
-    memoryObjectAddresses.push_back(*address);
-    std::string contents;
-    contents.reserve(object.initialBytes.size());
-    for (const sim::SemanticMemoryByte &byte : object.initialBytes)
-      contents.push_back(static_cast<char>(byte.value));
-    semanticInputs->push_back(
-        {path, std::move(contents), *request.runtimeInput(), false});
-  }
-
-  std::vector<std::uint8_t> memoryTable{'L', 'G', 'M', 'I'};
-  appendGuestU32(memoryTable, 1);
-  appendGuestU64(memoryTable, systemRuntime.memoryInterfaceBindings.size());
-  for (const sim::SystemMemoryInterfaceBindingEntry &bindingEntry :
-       systemRuntime.memoryInterfaceBindings) {
-    if (bindingEntry.binding.objectOrdinal >= memoryObjectAddresses.size())
-      return invalid("System memory binding names an absent object");
-    const sim::RuntimeMemoryObject &object =
-        systemRuntime.memoryObjects[bindingEntry.binding.objectOrdinal];
-    if (bindingEntry.binding.byteOffset >= object.initialBytes.size())
-      return invalid("System memory binding offset is out of range");
-    auto interface = deployment::resolveDeploymentExternalInterface(
-        systemInputs->deployment, bindingEntry.interfaceRef);
-    if (!interface)
-      return interface.takeError();
-    if ((*interface)->kind != deployment::HostExternalInterfaceKind::Memory)
-      return invalid("System memory table contains a non-memory interface");
-    std::uint32_t permissions = 0;
-    if ((*interface)->direction !=
-        deployment::HostExternalInterfaceDirection::Output)
-      permissions |= 1;
-    if ((*interface)->direction !=
-        deployment::HostExternalInterfaceDirection::Input)
-      permissions |= 2;
-    auto address =
-        checkedAdd(memoryObjectAddresses[bindingEntry.binding.objectOrdinal],
-                   bindingEntry.binding.byteOffset, "System memory interface");
-    if (!address)
-      return address.takeError();
-    appendGuestU64(memoryTable,
-                   bindingEntry.interfaceRef.externalInterfaceOrdinal);
-    appendGuestU64(memoryTable, *address);
-    appendGuestU64(memoryTable, object.initialBytes.size() -
-                                    bindingEntry.binding.byteOffset);
-    appendGuestU32(memoryTable, permissions);
-    appendGuestU32(memoryTable, 0);
-  }
-
-  std::uint64_t memoryTableAddress = 0;
-  if (!systemRuntime.memoryInterfaceBindings.empty()) {
-    auto address = placeRuntimeImage(kMemoryTablePath, memoryTable.size());
-    if (!address)
-      return address.takeError();
-    memoryTableAddress = *address;
-    semanticInputs->push_back({kMemoryTablePath.str(),
-                               bytesToString(memoryTable),
-                               *request.runtimeInput(), false});
-  }
-
-  std::vector<Gem5MemoryObservationProjection> memoryObservations;
-  memoryObservations.reserve(
-      systemWorkload->observableContract.memories.size());
-  for (const sim::SystemMemoryObservable &observable :
-       systemWorkload->observableContract.memories) {
-    const sim::SystemMemoryInterfaceBindingEntry *bindingEntry =
-        findMemoryBinding(systemRuntime, observable.interfaceRef);
-    if (!bindingEntry ||
-        bindingEntry->binding.objectOrdinal >= memoryObjectAddresses.size())
-      return invalid("System memory observable has no runtime binding");
-    const sim::RuntimeMemoryObject &object =
-        systemRuntime.memoryObjects[bindingEntry->binding.objectOrdinal];
-    auto address = checkedAdd(
-        memoryObjectAddresses[bindingEntry->binding.objectOrdinal],
-        bindingEntry->binding.byteOffset, "System memory observation");
-    if (!address)
-      return address.takeError();
-    memoryObservations.push_back(
-        {bindingEntry->binding.objectOrdinal, bindingEntry->binding.byteOffset,
-         *address,
-         object.initialBytes.size() - bindingEntry->binding.byteOffset,
-         observable.form});
-  }
-
-  const std::uint64_t stackBase = cursor;
-  std::uint64_t maximumCpuId = 0;
-  for (const Gem5ProcessorProjection &processor : processors)
-    maximumCpuId = std::max(maximumCpuId, processor.parameters.cpuId);
-  auto stackCount = checkedAdd(maximumCpuId, 1, "gem5 stack count");
-  if (!stackCount ||
-      *stackCount > std::numeric_limits<std::uint64_t>::max() / kGem5StackBytes)
-    return invalid("gem5 stack arena size overflows uint64");
-  auto stackEnd =
-      checkedAdd(stackBase, *stackCount * kGem5StackBytes, "gem5 stack arena");
-  if (!stackEnd)
-    return stackEnd.takeError();
-  if (*stackEnd > memoryEnd)
-    return Gem5SystemFactsOrUnsupported{
-        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-
-  llvm::sort(*semanticInputs, [](const auto &lhs, const auto &rhs) {
-    return lhs.relativePath < rhs.relativePath;
-  });
-
-  return Gem5SystemFactsOrUnsupported{Gem5SystemFacts{
-      selectedEngine(request), systemInputs->deployment.reference(),
-      binding->reference(), std::move(dataflowReference),
-      std::move(spatialLaunches), std::move(*semanticInputs),
-      std::move(processors), (*hostEntry)->abiSymbol, hostCpuId,
-      std::move(instructionImages), std::move(runtimeImages),
-      memoryTableAddress, systemRuntime.memoryInterfaceBindings.size(),
-      std::move(memoryObservations), dispatchAddress, stackBase,
-      kGem5StackBytes, *memory}};
 }
 
 llvm::Expected<std::filesystem::path>
@@ -1017,20 +167,17 @@ verifyReadiness(const Gem5SystemFacts &facts,
   const std::filesystem::path recordedBinary(binary->str());
   if (recordedBinary != resolvedTool || !versionProbe->contains(tool.version))
     return invalid("gem5 readiness does not describe the resolved executable");
-  auto binaryContents = readFile(tool.executable);
-  if (!binaryContents)
-    return binaryContents.takeError();
-  const BlobDigest digest = computeBlobDigest(llvm::ArrayRef<std::uint8_t>(
-      reinterpret_cast<const std::uint8_t *>(binaryContents->data()),
-      binaryContents->size()));
-  if (formatBlobDigestHex(digest) != *binarySha)
+  auto fingerprint = parseExternalFileFingerprint(*binarySha);
+  if (!fingerprint)
+    return fingerprint.takeError();
+  auto observed = fingerprintExternalFile(tool.executable);
+  if (!observed)
+    return observed.takeError();
+  if (*observed != *fingerprint)
     return invalid("resolved gem5 executable differs from its readiness stamp");
   for (const Gem5SpatialLaunchProjection &launch : facts.spatialLaunches)
     if (launch.launchPayload.size() > launch.bridge.maximumMessageBytes)
       return invalid("Deployment launch image exceeds a bridge message limit");
-  auto fingerprint = parseExternalFileFingerprint(*binarySha);
-  if (!fingerprint)
-    return fingerprint.takeError();
   return ReadinessIdentity{binarySha->str(), std::move(*fingerprint)};
 }
 
@@ -1054,7 +201,7 @@ std::string renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.2");
+    json.attribute("schema", "loom.gem5_system_projection.3");
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
@@ -1115,9 +262,50 @@ std::string renderProjection(const Gem5SystemFacts &facts,
       });
     });
     json.attributeArray("processors", [&] {
-      for (const Gem5ProcessorProjection &processor : facts.processors)
-        json.object(
-            [&] { json.attribute("cpu_id", processor.parameters.cpuId); });
+      for (const Gem5ProcessorProjection &processor : facts.processors) {
+        json.object([&] {
+          json.attribute("cpu_id", processor.parameters.cpuId);
+          json.attribute("model",
+                         processor.model == Gem5ProcessorModelKind::TimingSimple
+                             ? "timing_simple"
+                             : "o3");
+          json.attribute("num_threads", processor.hardwareThreadCount);
+          json.attributeArray("execution_units", [&] {
+            for (const fabric::ExecutionUnitRecord &unit :
+                 processor.executionUnits)
+              json.object([&] {
+                json.attribute("operation_class",
+                               static_cast<std::uint32_t>(unit.operationClass));
+                json.attribute("count", unit.count);
+                json.attribute("latency_cycles", unit.latencyCycles);
+                json.attribute("initiation_interval", unit.initiationInterval);
+              });
+          });
+          json.attributeObject("pipeline", [&] {
+            if (!processor.outOfOrder)
+              return;
+            const auto &pipeline = *processor.outOfOrder;
+            json.attribute("fetch_width", pipeline.fetchWidth);
+            json.attribute("decode_width", pipeline.decodeWidth);
+            json.attribute("rename_width", pipeline.renameWidth);
+            json.attribute("dispatch_width", pipeline.dispatchWidth);
+            json.attribute("issue_width", pipeline.issueWidth);
+            json.attribute("writeback_width", pipeline.writebackWidth);
+            json.attribute("commit_width", pipeline.commitWidth);
+            json.attribute("reorder_buffer_entries",
+                           pipeline.reorderBufferEntries);
+            json.attribute("issue_queue_entries", pipeline.issueQueueEntries);
+            json.attribute("load_queue_entries", pipeline.loadQueueEntries);
+            json.attribute("store_queue_entries", pipeline.storeQueueEntries);
+            json.attribute("physical_integer_registers",
+                           pipeline.physicalIntegerRegisters);
+            json.attribute("physical_float_registers",
+                           pipeline.physicalFloatRegisters);
+            json.attribute("physical_vector_registers",
+                           pipeline.physicalVectorRegisters);
+          });
+        });
+      }
     });
     json.attributeArray("bridges", [&] {
       for (const auto indexed : llvm::enumerate(facts.spatialLaunches)) {
@@ -1145,6 +333,8 @@ std::string renderProjection(const Gem5SystemFacts &facts,
             json.value("--runtime-input");
             json.value(
                 formatArtifactIdentityHex(launch.spatialRuntimeInput.artifact));
+            json.value("--channel-projection");
+            json.value(launch.channelProjectionPath);
             json.value("--dataflow");
             json.value(formatArtifactIdentityHex(facts.dataflow.artifact));
             json.value("--maximum-work");
@@ -1204,8 +394,9 @@ ExternalToolInvocationImportExpectation makeExpectation(
        ++ordinal)
     expectation.declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
   if (facts.engine == Gem5SystemEngine::Rtl)
-    expectation.declaredOutputs.push_back(
-        eda::open_source::mappedRtlResultPath.str());
+    for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
+         ++ordinal)
+      expectation.declaredOutputs.push_back(mappedRtlLaunchResultPath(ordinal));
   llvm::sort(expectation.declaredOutputs);
   return expectation;
 }
@@ -1218,6 +409,7 @@ gem5BinaryFingerprint(const FinalizedGem5SimulationBinding &binding) {
 
 llvm::Expected<eda::open_source::MappedRtlExecutionClosure>
 mappedRtlClosure(const EvaluationRequest &request, const Gem5SystemFacts &facts,
+                 const Gem5SpatialLaunchProjection &launch,
                  const ExternalToolSemanticContract &contract) {
   const auto *binding = request.modelBinding()
                             .resolvedModelConfig()
@@ -1226,9 +418,6 @@ mappedRtlClosure(const EvaluationRequest &request, const Gem5SystemFacts &facts,
     return invalid("gem5 RTL Request has no HDL simulator binding");
   if (llvm::Error error = models::validateMappedRtlSimulatorBinding(*binding))
     return std::move(error);
-  if (facts.spatialLaunches.size() != 1)
-    return invalid("gem5 RTL closure requires one Spatial launch");
-  const Gem5SpatialLaunchProjection &launch = facts.spatialLaunches.front();
   return eda::open_source::MappedRtlExecutionClosure{
       *binding,
       contract,
@@ -1441,9 +630,6 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
                    std::nullopt, false});
 
   if (facts.engine == Gem5SystemEngine::Rtl) {
-    auto closure = mappedRtlClosure(request, facts, *contract);
-    if (!closure)
-      return closure.takeError();
     auto options = eda::open_source::resolveMappedRtlExecutionAttemptOptions(
         context.localConfig);
     if (!options)
@@ -1457,10 +643,6 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
         captureToolEnvironment(verilatorToolProvider.binding), verilatorProbe);
     if (!verilatorTool)
       return verilatorTool.takeError();
-    if (verilatorTool->version !=
-        closure->simulatorBinding.stableHdlSimulatorBuildIdentity)
-      return invalid(
-          "resolved Verilator build differs from the gem5 RTL binding");
     const std::string verilatorExecutable = verilatorTool->executable;
     auto runtime = resolveInvocationRuntime(
         *verilatorTool, context.localConfig, container.binding,
@@ -1476,74 +658,136 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
         });
     if (!runtime)
       return runtime.takeError();
-    auto projection =
-        eda::open_source::deriveMappedRtlExecutionBundleProjection(
-            *closure, options->cycleLimit, options->buildJobs, artifacts,
-            blobs);
-    if (!projection)
-      return projection.takeError();
-    if (const auto *unsupported =
-            std::get_if<UnsupportedEvidence>(&*projection))
-      return EvaluationModelProviderPreparation{*unsupported};
-    auto rtl = std::get<eda::open_source::MappedRtlExecutionBundleProjection>(
-        std::move(*projection));
     auto engineSource = readFile(LOOM_GEM5_RTL_ENGINE_SOURCE_PATH);
     auto bridgeHeader = readFile(LOOM_GEM5_BRIDGE_HEADER_PATH);
-    if (!engineSource || !bridgeHeader)
-      return llvm::joinErrors(
-          engineSource ? llvm::Error::success() : engineSource.takeError(),
-          bridgeHeader ? llvm::Error::success() : bridgeHeader.takeError());
-    files.push_back({eda::open_source::mappedRtlTestbenchPath.str(),
-                     std::move(rtl.testbench), std::nullopt, false});
-    files.push_back(
-        {eda::open_source::mappedRtlBridgedVerilatorDriverPath.str(),
-         std::move(rtl.bridgedVerilatorDriver), std::nullopt, false});
-    files.push_back({eda::open_source::mappedRtlBridgeEngineSourcePath.str(),
-                     std::move(*engineSource), std::nullopt, false});
-    files.push_back({kBridgeHeaderPath.str(), std::move(*bridgeHeader),
+    auto channelPlanHeader = readFile(LOOM_GEM5_CHANNEL_PLAN_HEADER_PATH);
+    if (!engineSource)
+      return engineSource.takeError();
+    if (!bridgeHeader)
+      return bridgeHeader.takeError();
+    if (!channelPlanHeader)
+      return channelPlanHeader.takeError();
+
+    std::vector<std::vector<std::string>> commands;
+    std::vector<std::string> executables;
+    std::vector<std::string> resultPaths;
+    std::vector<std::vector<std::string>> engineCommands;
+    commands.reserve(facts.spatialLaunches.size() + 1);
+    executables.reserve(facts.spatialLaunches.size());
+    resultPaths.reserve(facts.spatialLaunches.size());
+    engineCommands.reserve(facts.spatialLaunches.size());
+    for (const auto indexed : llvm::enumerate(facts.spatialLaunches)) {
+      const Gem5SpatialLaunchProjection &launch = indexed.value();
+      auto closure = mappedRtlClosure(request, facts, launch, *contract);
+      if (!closure)
+        return closure.takeError();
+      if (verilatorTool->version !=
+          closure->simulatorBinding.stableHdlSimulatorBuildIdentity)
+        return invalid(
+            "resolved Verilator build differs from the gem5 RTL binding");
+      const std::string prefix = mappedRtlLaunchPrefix(indexed.index());
+      auto projection =
+          eda::open_source::deriveMappedRtlExecutionBundleProjection(
+              *closure, options->cycleLimit, options->buildJobs, artifacts,
+              blobs, prefix);
+      if (!projection)
+        return projection.takeError();
+      if (const auto *unsupported =
+              std::get_if<UnsupportedEvidence>(&*projection))
+        return EvaluationModelProviderPreparation{*unsupported};
+      auto rtl = std::get<eda::open_source::MappedRtlExecutionBundleProjection>(
+          std::move(*projection));
+      files.push_back(
+          {rtl.testbenchPath, std::move(rtl.testbench), std::nullopt, false});
+      files.push_back({rtl.bridgedVerilatorDriverPath,
+                       std::move(rtl.bridgedVerilatorDriver), std::nullopt,
+                       false});
+      files.push_back(
+          {rtl.bridgeEngineSourcePath, *engineSource, std::nullopt, false});
+      const std::filesystem::path engineDirectory =
+          std::filesystem::path(rtl.bridgeEngineSourcePath).parent_path();
+      files.push_back(
+          {(engineDirectory /
+            std::filesystem::path(kBridgeHeaderPath.str()).filename())
+               .generic_string(),
+           *bridgeHeader, std::nullopt, false});
+      files.push_back(
+          {(engineDirectory /
+            std::filesystem::path(kChannelPlanHeaderPath.str()).filename())
+               .generic_string(),
+           *channelPlanHeader, std::nullopt, false});
+      files.insert(files.end(),
+                   std::make_move_iterator(rtl.semanticInputs.begin()),
+                   std::make_move_iterator(rtl.semanticInputs.end()));
+      commands.push_back(
+          {verilatorExecutable, "-f", rtl.bridgedVerilatorDriverPath});
+      executables.push_back(rtl.simulatorExecutablePath);
+      resultPaths.push_back(rtl.resultPath);
+      std::vector<std::string> engineCommand{
+          rtl.simulatorExecutablePath,
+          "--socket",
+          spatialBridgeSocketPath(indexed.index()),
+          "--expected-launch",
+          spatialLaunchPath(indexed.index()),
+          "--mapped-result",
+          rtl.resultPath,
+          "--channel-plan",
+          launch.channelEnginePlanPath,
+          "--ticks-per-cycle",
+          std::to_string(facts.processors.front().parameters.clockPeriodTicks)};
+      if (indexed.index() != 0)
+        engineCommand.push_back("--peer");
+      if (options->debugVerbosity != 0)
+        engineCommand.push_back("+LOOM_DEBUG_VERBOSE=" +
+                                std::to_string(options->debugVerbosity));
+      engineCommands.push_back(std::move(engineCommand));
+    }
+
+    std::string peerManifest = "loom.gem5_rtl_peers 1.0\n";
+    for (std::size_t ordinal = 1; ordinal != engineCommands.size(); ++ordinal) {
+      for (std::size_t argument = 0; argument != engineCommands[ordinal].size();
+           ++argument) {
+        if (argument != 0)
+          peerManifest.push_back('\t');
+        peerManifest += engineCommands[ordinal][argument];
+      }
+      peerManifest.push_back('\n');
+    }
+    peerManifest += "end\n";
+    files.push_back({kRtlPeerManifestPath.str(), std::move(peerManifest),
                      std::nullopt, false});
-    files.insert(files.end(),
-                 std::make_move_iterator(rtl.semanticInputs.begin()),
-                 std::make_move_iterator(rtl.semanticInputs.end()));
-    std::vector<std::string> engineCommand{
-        eda::open_source::mappedRtlSimulatorExecutablePath.str(),
-        "--socket",
-        spatialBridgeSocketPath(0),
-        "--expected-launch",
-        spatialLaunchPath(0),
-        "--mapped-result",
-        eda::open_source::mappedRtlResultPath.str(),
-        "--ticks-per-cycle",
-        std::to_string(facts.processors.front().parameters.clockPeriodTicks),
-        "--gem5",
-        gem5Executable,
-        "--gem5-output",
-        "outputs/gem5",
-        "--gem5-config",
-        kConfigurationScriptPath.str(),
-        "--projection",
-        kProjectionPath.str(),
-        "--system-result",
-        kSystemResultPath.str()};
-    if (options->debugVerbosity != 0)
-      engineCommand.push_back("+LOOM_DEBUG_VERBOSE=" +
-                              std::to_string(options->debugVerbosity));
+    std::vector<std::string> primaryCommand = std::move(engineCommands.front());
+    primaryCommand.insert(primaryCommand.end(),
+                          {"--peer-manifest", kRtlPeerManifestPath.str()});
+    for (std::size_t ordinal = 1; ordinal != executables.size(); ++ordinal)
+      primaryCommand.insert(primaryCommand.end(),
+                            {"--peer-executable", executables[ordinal]});
+    primaryCommand.insert(
+        primaryCommand.end(),
+        {"--gem5", gem5Executable, "--gem5-output", "outputs/gem5",
+         "--gem5-config", kConfigurationScriptPath.str(), "--projection",
+         kProjectionPath.str(), "--system-result", kSystemResultPath.str()});
+    commands.push_back(std::move(primaryCommand));
+    std::vector<std::string> declaredOutputs{kSystemResultPath.str(),
+                                             kMemoryResultPath.str()};
+    for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
+         ++ordinal) {
+      declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
+      declaredOutputs.push_back(resultPaths[ordinal]);
+    }
     ExternalToolInvocationBundleSpec specification{
         std::move(*contract),
         std::move(*verilatorTool),
         verilatorToolProvider.versionProbe,
         std::move(*runtime),
         container.versionProbe,
-        {{verilatorExecutable, "-f",
-          eda::open_source::mappedRtlBridgedVerilatorDriverPath.str()},
-         std::move(engineCommand)},
+        std::move(commands),
         std::move(options->inheritedEnvironment),
-        {kSystemResultPath.str(), spatialBridgeResultPath(0),
-         kMemoryResultPath.str(), eda::open_source::mappedRtlResultPath.str()},
+        std::move(declaredOutputs),
         std::move(files),
         {gem5ExternalFile},
         {},
-        {eda::open_source::mappedRtlSimulatorExecutablePath.str()}};
+        std::move(executables)};
     llvm::sort(specification.declaredOutputs);
     llvm::sort(specification.files, [](const auto &lhs, const auto &rhs) {
       return lhs.relativePath < rhs.relativePath;
@@ -1633,18 +877,26 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
   if (!fingerprint)
     return fingerprint.takeError();
   std::vector<ExternalToolInvocationSemanticInput> mappedRtlInputs;
-  std::optional<eda::open_source::MappedRtlExecutionClosure> rtlClosure;
+  std::vector<eda::open_source::MappedRtlExecutionClosure> rtlClosures;
   if (facts.engine == Gem5SystemEngine::Rtl) {
-    auto closure = mappedRtlClosure(request, facts, *contract);
-    if (!closure)
-      return closure.takeError();
-    auto expectation =
-        eda::open_source::deriveMappedRtlExecutionImportExpectation(
-            *closure, artifacts, blobs);
-    if (!expectation)
-      return expectation.takeError();
-    mappedRtlInputs = std::move(expectation->semanticInputs);
-    rtlClosure = std::move(*closure);
+    rtlClosures.reserve(facts.spatialLaunches.size());
+    for (const auto indexed : llvm::enumerate(facts.spatialLaunches)) {
+      auto closure =
+          mappedRtlClosure(request, facts, indexed.value(), *contract);
+      if (!closure)
+        return closure.takeError();
+      auto expectation =
+          eda::open_source::deriveMappedRtlExecutionImportExpectation(
+              *closure, artifacts, blobs,
+              mappedRtlLaunchPrefix(indexed.index()));
+      if (!expectation)
+        return expectation.takeError();
+      mappedRtlInputs.insert(
+          mappedRtlInputs.end(),
+          std::make_move_iterator(expectation->semanticInputs.begin()),
+          std::make_move_iterator(expectation->semanticInputs.end()));
+      rtlClosures.push_back(std::move(*closure));
+    }
   }
   auto attempt = importExternalToolInvocationAttempt(
       prepared,
@@ -1687,10 +939,10 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
 
     std::optional<sim::SpatialEngineBoundaryResult> spatialResult;
     if (facts.engine == Gem5SystemEngine::Rtl) {
-      if (!rtlClosure || indexed.index() != 0)
+      if (indexed.index() >= rtlClosures.size())
         return invalid("gem5 RTL import lost its exact mapped RTL closure");
       auto mappedText = readExternalToolInvocationDeclaredOutput(
-          imported, eda::open_source::mappedRtlResultPath);
+          imported, mappedRtlLaunchResultPath(indexed.index()));
       if (!mappedText)
         return mappedText.takeError();
       const llvm::ArrayRef<std::uint8_t> mappedBytes(
@@ -1713,7 +965,7 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
         return invalid("bridge status disagrees with the RTL terminal");
       auto boundary =
           eda::open_source::projectMappedRtlSpatialEngineBoundaryResult(
-              *rtlClosure, *mappedResult, artifacts, blobs);
+              rtlClosures[indexed.index()], *mappedResult, artifacts, blobs);
       if (!boundary)
         return boundary.takeError();
       spatialResult = std::move(*boundary);
@@ -1746,11 +998,12 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
     return snapshots.takeError();
   if (!request.workload() || !request.runtimeInput())
     return invalid("System Request lost its workload/runtime pair");
-  auto systemInputs = sim::importSystemSimulationInputs(
+  auto systemInputs = importCachedSystemInputs(
       *request.workload(), *request.runtimeInput(), artifacts, blobs);
   if (!systemInputs)
     return systemInputs.takeError();
-  auto functional = projectSystemObservations(facts, *systemInputs, *snapshots);
+  auto functional =
+      projectSystemObservations(facts, **systemInputs, *snapshots);
   if (!functional)
     return functional.takeError();
 

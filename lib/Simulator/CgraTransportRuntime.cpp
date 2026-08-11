@@ -99,6 +99,7 @@ struct BindingBuilder final {
   std::map<TraversalStepKey,
            std::map<RefBytes, ::loom::fabric::FabricPhysicalTraversalRef>>
       traversalTargets;
+  bool discard = false;
 };
 
 struct PhysicalUseSlice final {
@@ -226,14 +227,31 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
       return std::move(error);
 
   std::map<RefBytes, BindingBuilder> builders;
+  for (const ::dataflow::ActorTokenResultRef &result :
+       plan.transport.discardedResults) {
+    auto actor = dataflow.resolve(result.actor);
+    if (!actor)
+      return actor.takeError();
+    if (actor->graph != graph)
+      continue;
+    auto key = dataflowBytes(dataflow, result);
+    if (!key)
+      return key.takeError();
+    if (!builders
+             .try_emplace(*key,
+                          BindingBuilder{result, {}, {}, {}, {}, true})
+             .second)
+      return invalid("CGRA discarded result is duplicated");
+  }
   const auto addSink = [&](const auto &transfer,
                            const auto &sink) -> llvm::Error {
     auto key = dataflowBytes(dataflow, transfer.producer);
     if (!key)
       return key.takeError();
     auto [position, inserted] = builders.try_emplace(
-        *key, BindingBuilder{transfer.producer, {}, {}, {}, {}});
-    (void)inserted;
+        *key, BindingBuilder{transfer.producer, {}, {}, {}, {}, false});
+    if (!inserted && position->second.discard)
+      return invalid("CGRA discarded result has a transfer sink");
     position->second.sinks.push_back(sink);
     return llvm::Error::success();
   };
@@ -257,8 +275,9 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     if (!key)
       return key.takeError();
     auto [position, inserted] = builders.try_emplace(
-        *key, BindingBuilder{route.producer, {}, {}, {}, {}});
-    (void)inserted;
+        *key, BindingBuilder{route.producer, {}, {}, {}, {}, false});
+    if (!inserted && position->second.discard)
+      return invalid("CGRA discarded result has a RouteTree");
     BindingBuilder &builder = position->second;
     if (route.nodeOffset > plan.transport.routeNodes.size() ||
         route.nodeCount > plan.transport.routeNodes.size() - route.nodeOffset ||
@@ -575,7 +594,7 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
                         traversalNodeOffset, traversalNodeCount,
                         traversalTerminalCount,
                         static_cast<std::uint32_t>(consumedPhysicalUseCount),
-                        semanticActorOrdinal, 0, false});
+                        semanticActorOrdinal, 0, builder.discard, false});
   }
 
   std::vector<StorageBinding> storages;
@@ -1324,9 +1343,10 @@ void CgraTransportRuntime::publish(std::uint64_t slot,
       state_->observedOutputs[sink.observation].push_back(inFlight.token);
     }
   }
-  frame.publications.push_back({binding.producer, inFlight.occurrenceOrdinal,
-                                inFlight.producerSequenceOrdinal,
-                                std::move(inFlight.token)});
+  if (!binding.discard)
+    frame.publications.push_back({binding.producer, inFlight.occurrenceOrdinal,
+                                  inFlight.producerSequenceOrdinal,
+                                  std::move(inFlight.token)});
   inFlight.published = true;
   if (auto completion = maybeRelease(slot))
     frame.completions.push_back(*completion);

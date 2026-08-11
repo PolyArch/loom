@@ -13,9 +13,14 @@ import time
 import m5
 from m5.objects import (
     AddrRange,
+    FUPool,
+    FUDesc,
+    IQUnit,
     LoomRiscvDeploymentWorkload,
     LoomSpatialBridge,
     LoomThreadDispatch,
+    OpDesc,
+    RiscvO3CPU,
     RiscvSystem,
     RiscvTimingSimpleCPU,
     Root,
@@ -26,7 +31,32 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.2"
+CONFIG_SCHEMA = "loom.gem5_system_projection.3"
+
+PROCESSOR_FIELDS = {
+    "cpu_id",
+    "model",
+    "num_threads",
+    "execution_units",
+    "pipeline",
+}
+
+O3_PIPELINE_FIELDS = {
+    "fetch_width",
+    "decode_width",
+    "rename_width",
+    "dispatch_width",
+    "issue_width",
+    "writeback_width",
+    "commit_width",
+    "reorder_buffer_entries",
+    "issue_queue_entries",
+    "load_queue_entries",
+    "store_queue_entries",
+    "physical_integer_registers",
+    "physical_float_registers",
+    "physical_vector_registers",
+}
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -159,6 +189,86 @@ def finish_engines(processes: list[subprocess.Popen]) -> None:
             raise RuntimeError(f"Spatial engine exited with status {status}")
 
 
+def build_o3_execution_units(records: list[dict]) -> FUPool:
+    units = []
+    for ordinal, record in enumerate(records):
+        require_keys(
+            record,
+            {"operation_class", "count", "latency_cycles", "initiation_interval"},
+            f"execution unit {ordinal}",
+        )
+        operation_class = record["operation_class"]
+        if operation_class == 0:
+            op_classes = ["IntAlu"]
+        elif operation_class == 4:
+            op_classes = ["MemRead", "MemWrite"]
+        else:
+            raise ValueError("O3 processor has an unsupported execution-unit class")
+        latency = record["latency_cycles"]
+        interval = record["initiation_interval"]
+        if not all(
+            isinstance(value, int) and value > 0
+            for value in (record["count"], latency, interval)
+        ):
+            raise ValueError("O3 execution-unit parameters must be positive")
+        if interval not in (1, latency):
+            raise ValueError("O3 execution-unit initiation interval is unsupported")
+        operations = [
+            OpDesc(opClass=op_class, opLat=latency, pipelined=interval == 1)
+            for op_class in op_classes
+        ]
+        units.append(FUDesc(opList=operations, count=record["count"]))
+    if not units:
+        raise ValueError("O3 processor requires execution units")
+    return FUPool(FUList=units)
+
+
+def build_processor(processor: dict, ordinal: int):
+    require_keys(processor, PROCESSOR_FIELDS, f"processor {ordinal}")
+    cpu_id = processor["cpu_id"]
+    num_threads = processor["num_threads"]
+    if not isinstance(cpu_id, int) or cpu_id < 0:
+        raise ValueError(f"processor {ordinal} cpu_id is invalid")
+    if not isinstance(num_threads, int) or num_threads <= 0:
+        raise ValueError(f"processor {ordinal} num_threads is invalid")
+    if not isinstance(processor["execution_units"], list):
+        raise ValueError(f"processor {ordinal} execution units are invalid")
+    pipeline = processor["pipeline"]
+    if not isinstance(pipeline, dict):
+        raise ValueError(f"processor {ordinal} pipeline is invalid")
+    if processor["model"] == "timing_simple":
+        if num_threads != 1 or pipeline:
+            raise ValueError("TimingSimpleCPU requires one in-order thread")
+        return RiscvTimingSimpleCPU(cpu_id=cpu_id, numThreads=num_threads)
+    if processor["model"] != "o3":
+        raise ValueError(f"processor {ordinal} model is unsupported")
+    require_keys(pipeline, O3_PIPELINE_FIELDS, f"processor {ordinal} O3 pipeline")
+    if not all(isinstance(value, int) and value > 0 for value in pipeline.values()):
+        raise ValueError(f"processor {ordinal} O3 pipeline fields must be positive")
+    instruction_queue = IQUnit(
+        numEntries=pipeline["issue_queue_entries"],
+        fuPool=build_o3_execution_units(processor["execution_units"]),
+    )
+    return RiscvO3CPU(
+        cpu_id=cpu_id,
+        numThreads=num_threads,
+        fetchWidth=pipeline["fetch_width"],
+        decodeWidth=pipeline["decode_width"],
+        renameWidth=pipeline["rename_width"],
+        dispatchWidth=pipeline["dispatch_width"],
+        issueWidth=pipeline["issue_width"],
+        wbWidth=pipeline["writeback_width"],
+        commitWidth=pipeline["commit_width"],
+        numROBEntries=pipeline["reorder_buffer_entries"],
+        instQueues=[instruction_queue],
+        LQEntries=pipeline["load_queue_entries"],
+        SQEntries=pipeline["store_queue_entries"],
+        numPhysIntRegs=pipeline["physical_integer_registers"],
+        numPhysFloatRegs=pipeline["physical_float_registers"],
+        numPhysVecRegs=pipeline["physical_vector_registers"],
+    )
+
+
 def build_system(projection: dict) -> RiscvSystem:
     memory = projection["memory"]
     require_keys(memory, {"base", "size", "latency"}, "memory")
@@ -267,8 +377,7 @@ def build_system(projection: dict) -> RiscvSystem:
 
     processors = []
     for ordinal, processor in enumerate(projection["processors"]):
-        require_keys(processor, {"cpu_id"}, f"processor {ordinal}")
-        cpu = RiscvTimingSimpleCPU(cpu_id=processor["cpu_id"])
+        cpu = build_processor(processor, ordinal)
         cpu.createInterruptController()
         cpu.createThreads()
         cpu.icache_port = system.membus.cpu_side_ports

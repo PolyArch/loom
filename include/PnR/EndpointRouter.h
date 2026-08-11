@@ -69,6 +69,15 @@ struct EndpointRouteSearchRequest final {
   /// Enables exact worker-local heuristic reuse. The owner must increment the
   /// revision whenever any lower-bound arc cost changes in place.
   std::optional<std::uint64_t> lowerBoundCostRevision;
+  /// Empty means that no traversal class is mandatory. Otherwise the selected
+  /// path must contain at least one traversal named by this dense mask. The
+  /// search carries this one monotonic predicate as a two-state product graph;
+  /// it does not change the routing topology or traversal costs.
+  llvm::ArrayRef<std::uint64_t> requiredTraversalBits;
+  /// A constrained branch search may begin at any node of an existing route
+  /// tree, but may not leave one source and re-enter another source: doing so
+  /// would satisfy a path predicate before the branch's actual divergence.
+  bool forbidSourceReentry = false;
 };
 
 struct EndpointRouteSearchResult final {
@@ -120,7 +129,10 @@ private:
   void beginTargetGeneration();
   void beginSourceGeneration();
   RouteCost heuristic(PnrIndex endpoint) const;
-  RouteCost distance(PnrIndex endpoint) const;
+  RouteCost distance(PnrIndex searchState) const;
+  PnrIndex searchState(PnrIndex endpoint, bool requirementMet) const;
+  PnrIndex searchEndpoint(PnrIndex searchState) const;
+  bool searchRequirementMet(PnrIndex searchState) const;
   bool isTarget(PnrIndex endpoint) const;
   bool isSource(PnrIndex endpoint) const;
   PnrIndex targetPreferenceRank(PnrIndex endpoint) const;
@@ -144,16 +156,16 @@ private:
 
   std::uint64_t
   heuristicCacheKeyHash(const EndpointRouteSearchRequest &request) const;
-  bool heuristicCacheKeyEquals(
-      const HeuristicCacheEntry &entry,
-      const EndpointRouteSearchRequest &request,
-      std::uint64_t keyHash, std::size_t slot) const;
+  bool heuristicCacheKeyEquals(const HeuristicCacheEntry &entry,
+                               const EndpointRouteSearchRequest &request,
+                               std::uint64_t keyHash, std::size_t slot) const;
 
   EndpointRoutingGraphView graph_;
   std::vector<RouteCost> heuristics_;
   std::vector<RouteCost> distances_;
   std::vector<RouteCost> priorities_;
   std::vector<PnrIndex> predecessorArcs_;
+  std::vector<PnrIndex> predecessorStates_;
   std::vector<std::uint64_t> heuristicEpochs_;
   std::vector<std::uint64_t> distanceEpochs_;
   std::vector<std::uint64_t> targetEpochs_;

@@ -74,8 +74,9 @@ private:
 
   llvm::Error collectSourceFrontier(const RouteTreeState &tree,
                                     PnrIndex unroutedSource);
-  llvm::Error collectTargetFrontier(const SpatialCandidateState &candidate,
-                                    PnrIndex logicalNet, PnrIndex sinkCount);
+  llvm::Expected<bool>
+  collectTargetFrontier(const SpatialCandidateState &candidate,
+                        PnrIndex logicalNet, PnrIndex sinkCount);
   llvm::Error addPathClaims(const FrozenSpatialRoutingGraph &routing,
                             llvm::ArrayRef<PnrIndex> forwardArcs);
   llvm::Error collectCurrentClaims(const RouteTreeState &tree);
@@ -96,6 +97,7 @@ private:
   std::vector<PnrIndex> targetObligationByEndpoint_;
   std::vector<std::uint8_t> unresolvedSinks_;
   std::vector<std::uint64_t> prospectiveClaimBits_;
+  std::vector<std::uint64_t> bufferedTraversalBits_;
   std::vector<std::uint64_t> endpointMarks_;
   std::vector<PnrIndex> subtreeWorklist_;
   std::uint64_t endpointMarkEpoch_ = 0;

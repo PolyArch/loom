@@ -36,6 +36,7 @@ add_mlir_library(LoomPnR
   SpatialPnrMemoryIndex.cpp
   SpatialPnrPortIndex.cpp
   SpatialPnrProblem.cpp
+  SpatialProgressAnalysis.cpp
   SpatialPnrResourceIndex.cpp
   SpatialPnrTagContinuityIndex.cpp
   SpatialPnrTransferIndex.cpp

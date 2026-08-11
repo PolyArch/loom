@@ -446,6 +446,21 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
         {transfer.producer, transfer.graph, sinkOffset, *sinkCount});
   }
 
+  for (const ::dataflow::CanonicalActorView &actor : dataflow.actors()) {
+    if (!coveredGraphs.count(actor.graph.entity.value()))
+      continue;
+    for (std::uint64_t ordinal = 0; ordinal != actor.op->getNumResults();
+         ++ordinal) {
+      const ::dataflow::ActorTokenResultRef resultRef{actor.ref, ordinal};
+      auto consumers = dataflow.graphConsumers(
+          ::dataflow::CanonicalGraphProducerEndpointRef(resultRef));
+      if (!consumers)
+        return consumers.takeError();
+      if (consumers->empty())
+        result.discardedResults.push_back(resultRef);
+    }
+  }
+
   result.producedUses.reserve(producedUses.size());
   for (auto &[key, use] : producedUses) {
     if (!transferProducers.count(key))

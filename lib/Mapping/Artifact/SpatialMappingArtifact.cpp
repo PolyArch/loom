@@ -1222,7 +1222,8 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
   if (!configuredHardware)
     return configuredHardware.takeError();
 
-  auto progress = deriveMappingProgressClosure(dataflow, techMapping.covers());
+  auto progress =
+      deriveSpatialMappingProgressClosure(dataflow, techMapping, routes);
   if (!progress)
     return progress.takeError();
   switch (progress->kind) {

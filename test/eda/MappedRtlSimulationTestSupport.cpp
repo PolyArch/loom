@@ -14,10 +14,11 @@
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Evaluation/Models/MappedRtlSimulation.h"
 #include "Evaluation/ProductionRegistry.h"
+#include "Fabric/Artifact/InterconnectImplementation.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/OperationResourceContract.h"
-#include "Fabric/Identity/FabricRefImport.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricRefImport.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Hardware/RTL/PortableProviders.h"
 #include "Hardware/RTL/SystemImplementation.h"
@@ -162,8 +163,8 @@ mlir::MLIRContext makeDataflowContext() {
   mlir::DialectRegistry registry;
   registry.insert<::dataflow::DataflowDialect, ::mapping::MappingDialect,
                   mlir::arith::ArithDialect, ::fabric::FabricDialect,
-                  mlir::DLTIDialect,
-                  mlir::func::FuncDialect, mlir::LLVM::LLVMDialect>();
+                  mlir::DLTIDialect, mlir::func::FuncDialect,
+                  mlir::LLVM::LLVMDialect>();
   return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
 }
 
@@ -273,8 +274,7 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
   constexpr std::size_t firstMemoryOutputCount = 2;
 
   auto indexWidths =
-      take(test,
-           ::fabric::UnsignedDomain::fromCanonical({{32, 32}, {64, 64}}));
+      take(test, ::fabric::UnsignedDomain::fromCanonical({{32, 32}, {64, 64}}));
   adg::ManagerMemoryParameters memoryParameters;
   memoryParameters.interface = {
       adg::MemoryAccessDomainParameters{128, std::nullopt, 4,
@@ -296,38 +296,37 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
                                            std::move(moduleOutputs)));
   const std::vector<adg::PortType> boundaryBank(boundaryBankWidth, payload);
   auto network = take(
-      test, spatial.addMeshSwitchNetwork(
-                take(test, adg::MeshSwitchNetworkSpec::spatial(
-                               5, 4, 2, payload,
-                               {{0, 0, boundaryBank, boundaryBank},
-                                {0, 3, boundaryBank, boundaryBank},
-                                {4, 0, boundaryBank, boundaryBank},
-                                {4, 3, boundaryBank, boundaryBank},
-                                {4, 1, temporalMeshInputPorts,
-                                 temporalInjectionPorts},
-                                {1, 0, syncPorts, syncPorts},
-                                {1, 1, syncPorts, syncPorts},
-                                {1, 2, syncPorts, syncPorts},
-                                {1, 3, syncPorts, syncPorts},
-                                {2, 2, syncPorts, syncPorts},
-                                {2, 0, demuxInputPorts, demuxOutputPorts},
-                                {2, 3, demuxInputPorts, demuxOutputPorts},
-                                {2, 1, constantPorts, constantPorts},
-                                {3, 1, demuxInputPorts, constantPorts},
-                                {3, 0,
-                                 std::vector<adg::PortType>(
-                                     firstMemoryInputCount, payload),
-                                 std::vector<adg::PortType>(
-                                     firstMemoryOutputCount, payload)},
-                                {3, 3,
-                                 std::vector<adg::PortType>(
-                                     memory.inputTypes().size() - 1 -
-                                         firstMemoryInputCount,
-                                     payload),
-                                 std::vector<adg::PortType>(
-                                     memory.outputTypes().size() -
-                                         firstMemoryOutputCount,
-                                     payload)}}))));
+      test,
+      spatial.addMeshSwitchNetwork(take(
+          test,
+          adg::MeshSwitchNetworkSpec::spatial(
+              5, 4, 2, payload,
+              {{0, 0, boundaryBank, boundaryBank},
+               {0, 3, boundaryBank, boundaryBank},
+               {4, 0, boundaryBank, boundaryBank},
+               {4, 3, boundaryBank, boundaryBank},
+               {4, 1, temporalMeshInputPorts, temporalInjectionPorts},
+               {1, 0, syncPorts, syncPorts},
+               {1, 1, syncPorts, syncPorts},
+               {1, 2, syncPorts, syncPorts},
+               {1, 3, syncPorts, syncPorts},
+               {2, 2, syncPorts, syncPorts},
+               {2, 0, demuxInputPorts, demuxOutputPorts},
+               {2, 3, demuxInputPorts, demuxOutputPorts},
+               {2, 1, constantPorts, constantPorts},
+               {3, 1, demuxInputPorts, constantPorts},
+               {3, 0,
+                std::vector<adg::PortType>(firstMemoryInputCount, payload),
+                std::vector<adg::PortType>(firstMemoryOutputCount, payload)},
+               {3, 3,
+                std::vector<adg::PortType>(memory.inputTypes().size() - 1 -
+                                               firstMemoryInputCount,
+                                           payload),
+                std::vector<adg::PortType>(memory.outputTypes().size() -
+                                               firstMemoryOutputCount,
+                                           payload)},
+               {3, 2, constantPorts, constantPorts},
+               {0, 1, constantPorts, constantPorts}}))));
   std::array<adg::MeshCellAttachment, 5> boundaryAttachments = {
       take(test, network.attachment(0)), take(test, network.attachment(1)),
       take(test, network.attachment(2)), take(test, network.attachment(3)),
@@ -336,8 +335,8 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
     std::vector<adg::SpatialValue> inputs;
     inputs.reserve(boundaryBankWidth);
     for (std::size_t ordinal = 0; ordinal != boundaryBankWidth; ++ordinal)
-      inputs.push_back(take(
-          test, spatial.input(bank * boundaryBankWidth + ordinal)));
+      inputs.push_back(
+          take(test, spatial.input(bank * boundaryBankWidth + ordinal)));
     requireSuccess(test, boundaryAttachments[bank].connectOutputs(inputs));
   }
 
@@ -351,18 +350,17 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
     fuInputs.reserve(syncPorts.size());
     for (std::size_t ordinal = 0; ordinal != syncPorts.size(); ++ordinal)
       fuInputs.push_back(take(test, fu.input(ordinal)));
-    auto operation =
-        take(test,
-             fu.addOperation(
-                 fuInputs,
-                 adg::OperationCapabilitySpec{
-                     ::fabric::ImplementationFamilyId::TokenSync,
-                     ::fabric::RoutedTokenParams{
-                         payloadWidth,
-                         static_cast<std::uint32_t>(syncPorts.size())},
-                     {::dataflow::OperationSchemaId::DataflowSync},
-                     syncPorts,
-                     ::fabric::oneCycleElasticOperationResourceContract()}));
+    auto operation = take(
+        test,
+        fu.addOperation(
+            fuInputs,
+            adg::OperationCapabilitySpec{
+                ::fabric::ImplementationFamilyId::TokenSync,
+                ::fabric::RoutedTokenParams{
+                    payloadWidth, static_cast<std::uint32_t>(syncPorts.size())},
+                {::dataflow::OperationSchemaId::DataflowSync},
+                syncPorts,
+                ::fabric::oneCycleElasticOperationResourceContract()}));
     requireSuccess(test, fu.addCapabilityTemplate(
                              adg::FuCapabilityTemplateSpec{{operation}, {}}));
     std::vector<adg::FuValue> outputs;
@@ -374,9 +372,9 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
 
   for (std::size_t peOrdinal = 0; peOrdinal != 5; ++peOrdinal) {
     auto attachment = take(test, network.attachment(5 + peOrdinal));
-    auto pe = take(
-        test, spatial.addPe(attachment.inputs(),
-                            adg::PeSpec::spatial(syncPorts, syncPorts)));
+    auto pe =
+        take(test, spatial.addPe(attachment.inputs(),
+                                 adg::PeSpec::spatial(syncPorts, syncPorts)));
     addSyncFu(pe);
     requireSuccess(test, pe.close());
     std::vector<adg::SpatialValue> outputs;
@@ -389,26 +387,25 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
   for (std::size_t peOrdinal = 0; peOrdinal != 2; ++peOrdinal) {
     auto demuxAttachment = take(test, network.attachment(10 + peOrdinal));
     auto demuxPe = take(
-        test, spatial.addPe(
-                  demuxAttachment.inputs(),
-                  adg::PeSpec::spatial(demuxInputPorts, demuxOutputPorts)));
-    std::vector<adg::PeValue> demuxPeInputs{
-        take(test, demuxPe.input(0)), take(test, demuxPe.input(1))};
-    auto demuxFu = take(
-        test, demuxPe.addFu(demuxPeInputs,
-                            adg::FuSpec{demuxInputPorts, demuxOutputPorts}));
-    auto demux = take(
         test,
-        demuxFu.addOperation(
-            {take(test, demuxFu.input(0)), take(test, demuxFu.input(1))},
-            adg::OperationCapabilitySpec{
-                ::fabric::ImplementationFamilyId::TokenDemux,
-                ::fabric::RoutedTokenParams{payloadWidth,
-                                            static_cast<std::uint32_t>(
-                                                demuxOutputPorts.size())},
-                {::dataflow::OperationSchemaId::DataflowDemux},
-                demuxOutputPorts,
-                ::fabric::oneCycleElasticOperationResourceContract()}));
+        spatial.addPe(demuxAttachment.inputs(),
+                      adg::PeSpec::spatial(demuxInputPorts, demuxOutputPorts)));
+    std::vector<adg::PeValue> demuxPeInputs{take(test, demuxPe.input(0)),
+                                            take(test, demuxPe.input(1))};
+    auto demuxFu =
+        take(test, demuxPe.addFu(demuxPeInputs, adg::FuSpec{demuxInputPorts,
+                                                            demuxOutputPorts}));
+    auto demux = take(
+        test, demuxFu.addOperation(
+                  {take(test, demuxFu.input(0)), take(test, demuxFu.input(1))},
+                  adg::OperationCapabilitySpec{
+                      ::fabric::ImplementationFamilyId::TokenDemux,
+                      ::fabric::RoutedTokenParams{
+                          payloadWidth,
+                          static_cast<std::uint32_t>(demuxOutputPorts.size())},
+                      {::dataflow::OperationSchemaId::DataflowDemux},
+                      demuxOutputPorts,
+                      ::fabric::oneCycleElasticOperationResourceContract()}));
     requireSuccess(test, demuxFu.addCapabilityTemplate(
                              adg::FuCapabilityTemplateSpec{{demux}, {}}));
     std::vector<adg::FuValue> demuxOutputs;
@@ -422,107 +419,108 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
     requireSuccess(test, demuxAttachment.connectOutputs(demuxPeOutputs));
   }
 
-  auto constantAttachment = take(test, network.attachment(12));
-  auto constantPe = take(
-      test, spatial.addPe(
-                constantAttachment.inputs(),
-                adg::PeSpec::spatial(constantPorts, constantPorts)));
-  auto constantFu = take(
-      test, constantPe.addFu({take(test, constantPe.input(0))},
-                             adg::FuSpec{constantPorts, constantPorts}));
-  auto constant = take(
-      test,
-      constantFu.addOperation(
-          {take(test, constantFu.input(0))},
-          adg::OperationCapabilitySpec{
-              ::fabric::ImplementationFamilyId::TokenConstant,
-              ::fabric::PayloadCapacityParams{payloadWidth},
-              {::dataflow::OperationSchemaId::DataflowConstant}, constantPorts,
-              ::fabric::oneCycleElasticOperationResourceContract()}));
-  requireSuccess(test, constantFu.addCapabilityTemplate(
-                           adg::FuCapabilityTemplateSpec{{constant}, {}}));
-  requireSuccess(test,
-                 constantFu.close({take(test, constant.output(0))}));
-  requireSuccess(test, constantPe.close());
-  requireSuccess(test, constantAttachment.connectOutputs(
-                           {take(test, constantPe.output(0))}));
+  const auto addConstantPe = [&](std::size_t attachmentOrdinal) {
+    auto attachment = take(test, network.attachment(attachmentOrdinal));
+    auto pe =
+        take(test,
+             spatial.addPe(attachment.inputs(),
+                           adg::PeSpec::spatial(constantPorts, constantPorts)));
+    auto fu = take(test, pe.addFu({take(test, pe.input(0))},
+                                  adg::FuSpec{constantPorts, constantPorts}));
+    auto operation = take(
+        test, fu.addOperation(
+                  {take(test, fu.input(0))},
+                  adg::OperationCapabilitySpec{
+                      ::fabric::ImplementationFamilyId::TokenConstant,
+                      ::fabric::PayloadCapacityParams{payloadWidth},
+                      {::dataflow::OperationSchemaId::DataflowConstant},
+                      constantPorts,
+                      ::fabric::oneCycleElasticOperationResourceContract()}));
+    requireSuccess(test, fu.addCapabilityTemplate(
+                             adg::FuCapabilityTemplateSpec{{operation}, {}}));
+    requireSuccess(test, fu.close({take(test, operation.output(0))}));
+    requireSuccess(test, pe.close());
+    requireSuccess(test, attachment.connectOutputs({take(test, pe.output(0))}));
+  };
+  addConstantPe(12);
+  addConstantPe(16);
+  addConstantPe(17);
 
   auto spatialAddAttachment = take(test, network.attachment(13));
-  auto spatialAddPe = take(
-      test, spatial.addPe(
-                spatialAddAttachment.inputs(),
-                adg::PeSpec::spatial(demuxInputPorts, constantPorts)));
-  std::vector<adg::PeValue> spatialAddInputs{
-      take(test, spatialAddPe.input(0)), take(test, spatialAddPe.input(1))};
+  auto spatialAddPe =
+      take(test,
+           spatial.addPe(spatialAddAttachment.inputs(),
+                         adg::PeSpec::spatial(demuxInputPorts, constantPorts)));
+  std::vector<adg::PeValue> spatialAddInputs{take(test, spatialAddPe.input(0)),
+                                             take(test, spatialAddPe.input(1))};
   auto spatialAddFu = take(
-      test, spatialAddPe.addFu(
-                spatialAddInputs, adg::FuSpec{demuxInputPorts, constantPorts}));
-  auto spatialAdd = take(
-      test,
-      spatialAddFu.addOperation(
-          {take(test, spatialAddFu.input(0)),
-           take(test, spatialAddFu.input(1))},
-          adg::OperationCapabilitySpec{
-              ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
-              ::fabric::ScalarIntegerParams{::fabric::IntegerWidthSet::get(
-                  {::fabric::IntegerWidth::I32})},
-              {::dataflow::OperationSchemaId::ArithAddI}, constantPorts,
-              ::fabric::oneCycleElasticOperationResourceContract()}));
+      test, spatialAddPe.addFu(spatialAddInputs,
+                               adg::FuSpec{demuxInputPorts, constantPorts}));
+  auto spatialAdd =
+      take(test,
+           spatialAddFu.addOperation(
+               {take(test, spatialAddFu.input(0)),
+                take(test, spatialAddFu.input(1))},
+               adg::OperationCapabilitySpec{
+                   ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                   ::fabric::ScalarIntegerParams{::fabric::IntegerWidthSet::get(
+                       {::fabric::IntegerWidth::I32})},
+                   {::dataflow::OperationSchemaId::ArithAddI},
+                   constantPorts,
+                   ::fabric::oneCycleElasticOperationResourceContract()}));
   requireSuccess(test, spatialAddFu.addCapabilityTemplate(
                            adg::FuCapabilityTemplateSpec{{spatialAdd}, {}}));
-  requireSuccess(test, spatialAddFu.close(
-                           {take(test, spatialAdd.output(0))}));
+  requireSuccess(test, spatialAddFu.close({take(test, spatialAdd.output(0))}));
   requireSuccess(test, spatialAddPe.close());
   requireSuccess(test, spatialAddAttachment.connectOutputs(
                            {take(test, spatialAddPe.output(0))}));
 
   const std::size_t temporalPayloadInput = directNetworkInputCount;
   auto temporalInputFifo = take(
-      test,
-      spatial.addFifo(take(test, spatial.input(temporalPayloadInput)),
-                      adg::FifoSpec{payload, 2, true}));
-  auto temporalInputFork = take(
-      test, spatial.addSwitch(
-                {temporalInputFifo.value()},
-                adg::SwitchSpec::spatial(constantPorts,
-                                         temporalForkOutputs, {{0}, {0}})));
+      test, spatial.addFifo(take(test, spatial.input(temporalPayloadInput)),
+                            adg::FifoSpec{payload, 2, true}));
+  auto temporalInputFork =
+      take(test, spatial.addSwitch({temporalInputFifo.value()},
+                                   adg::SwitchSpec::spatial(constantPorts,
+                                                            temporalForkOutputs,
+                                                            {{0}, {0}})));
   std::vector<adg::SpatialValue> temporalInputs;
   temporalInputs.reserve(temporalMeshInputPorts.size());
   for (std::size_t ordinal = 0; ordinal != temporalMeshInputPorts.size();
        ++ordinal) {
     auto spatialToTemporal = take(
-        test,
-        spatial.addBoundary(
-            {boundaryAttachments[4].inputs()[ordinal]},
-            adg::BoundarySpec::s2tWithConfiguredTag(payload, taggedPayload)));
+        test, spatial.addBoundary({boundaryAttachments[4].inputs()[ordinal]},
+                                  adg::BoundarySpec::s2tWithConfiguredTag(
+                                      payload, taggedPayload)));
     temporalInputs.push_back(spatialToTemporal.front());
   }
   const std::vector<adg::PortType> temporalInputTypes(2, payload);
   const std::vector<adg::PortType> temporalOutputTypes(2, taggedPayload);
   auto temporalPe = take(
-      test, spatial.addPe(
-                temporalInputs,
-                adg::PeSpec::temporal(
-                    temporalInputTypes, temporalOutputTypes,
-                    adg::TemporalPeParameters{
-                        4, adg::FuConfigurationMode::PerInstruction,
-                        ::fabric::OperandBufferMode::PerInstruction, 4,
-                        adg::TemporalRegisterFifoParameters{2, 4, 2}})));
-  std::vector<adg::PeValue> addInputs{
-      take(test, temporalPe.input(0)), take(test, temporalPe.input(1))};
-  auto addFu = take(test, temporalPe.addFu(
-                              addInputs,
-                              adg::FuSpec{demuxInputPorts, {payload}}));
-  auto add = take(
       test,
-      addFu.addOperation(
-          {take(test, addFu.input(0)), take(test, addFu.input(1))},
-          adg::OperationCapabilitySpec{
-              ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
-              ::fabric::ScalarIntegerParams{::fabric::IntegerWidthSet::get(
-                  {::fabric::IntegerWidth::I32})},
-              {::dataflow::OperationSchemaId::ArithAddI}, {payload},
-              ::fabric::oneCycleElasticOperationResourceContract()}));
+      spatial.addPe(temporalInputs,
+                    adg::PeSpec::temporal(
+                        temporalInputTypes, temporalOutputTypes,
+                        adg::TemporalPeParameters{
+                            4, adg::FuConfigurationMode::PerInstruction,
+                            ::fabric::OperandBufferMode::PerInstruction, 4,
+                            adg::TemporalRegisterFifoParameters{2, 4, 2}})));
+  std::vector<adg::PeValue> addInputs{take(test, temporalPe.input(0)),
+                                      take(test, temporalPe.input(1))};
+  auto addFu =
+      take(test, temporalPe.addFu(addInputs,
+                                  adg::FuSpec{demuxInputPorts, {payload}}));
+  auto add =
+      take(test,
+           addFu.addOperation(
+               {take(test, addFu.input(0)), take(test, addFu.input(1))},
+               adg::OperationCapabilitySpec{
+                   ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                   ::fabric::ScalarIntegerParams{::fabric::IntegerWidthSet::get(
+                       {::fabric::IntegerWidth::I32})},
+                   {::dataflow::OperationSchemaId::ArithAddI},
+                   {payload},
+                   ::fabric::oneCycleElasticOperationResourceContract()}));
   requireSuccess(test, addFu.addCapabilityTemplate(
                            adg::FuCapabilityTemplateSpec{{add}, {}}));
   requireSuccess(test, addFu.close({take(test, add.output(0))}));
@@ -531,15 +529,14 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
   std::vector<adg::SpatialValue> temporalTagOutputs;
   for (std::size_t ordinal = 0; ordinal != temporalOutputTypes.size();
        ++ordinal) {
-    auto temporalToSpatial = take(
-        test,
-        spatial.addBoundary({take(test, temporalPe.output(ordinal))},
-                            adg::BoundarySpec::t2s(taggedPayload,
-                                                  {payload, tag})));
+    auto temporalToSpatial =
+        take(test, spatial.addBoundary(
+                       {take(test, temporalPe.output(ordinal))},
+                       adg::BoundarySpec::t2s(taggedPayload, {payload, tag})));
     if (ordinal == 0) {
-      auto temporalOutputFifo = take(
-          test, spatial.addFifo(temporalToSpatial[0],
-                                adg::FifoSpec{payload, 2, false}));
+      auto temporalOutputFifo =
+          take(test, spatial.addFifo(temporalToSpatial[0],
+                                     adg::FifoSpec{payload, 2, false}));
       temporalPayloadOutputs.push_back(temporalOutputFifo.value());
     } else {
       temporalPayloadOutputs.push_back(temporalToSpatial[0]);
@@ -554,9 +551,9 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
   auto secondMemoryAttachment = take(test, network.attachment(15));
   std::vector<adg::SpatialValue> memoryInputs;
   memoryInputs.reserve(memory.inputTypes().size());
-  memoryInputs.push_back(
-      take(test, spatial.input(temporalPayloadInput + 1)));
-  memoryInputs.insert(memoryInputs.end(), firstMemoryAttachment.inputs().begin(),
+  memoryInputs.push_back(take(test, spatial.input(temporalPayloadInput + 1)));
+  memoryInputs.insert(memoryInputs.end(),
+                      firstMemoryAttachment.inputs().begin(),
                       firstMemoryAttachment.inputs().end());
   memoryInputs.insert(memoryInputs.end(),
                       secondMemoryAttachment.inputs().begin(),
@@ -565,20 +562,16 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
   std::vector<adg::SpatialValue> routedMemoryOutputs;
   routedMemoryOutputs.reserve(memoryOutputs.values().size());
   for (const adg::SpatialValue output : memoryOutputs.values()) {
-    auto fifo = take(test, spatial.addFifo(
-                               output, adg::FifoSpec{payload, 2, true}));
+    auto fifo =
+        take(test, spatial.addFifo(output, adg::FifoSpec{payload, 2, true}));
     routedMemoryOutputs.push_back(fifo.value());
   }
-  requireSuccess(
-      test,
-      firstMemoryAttachment.connectOutputs(
-          llvm::ArrayRef(routedMemoryOutputs)
-              .take_front(firstMemoryOutputCount)));
-  requireSuccess(
-      test,
-      secondMemoryAttachment.connectOutputs(
-          llvm::ArrayRef(routedMemoryOutputs)
-              .drop_front(firstMemoryOutputCount)));
+  requireSuccess(test, firstMemoryAttachment.connectOutputs(
+                           llvm::ArrayRef(routedMemoryOutputs)
+                               .take_front(firstMemoryOutputCount)));
+  requireSuccess(test, secondMemoryAttachment.connectOutputs(
+                           llvm::ArrayRef(routedMemoryOutputs)
+                               .drop_front(firstMemoryOutputCount)));
 
   std::vector<adg::SpatialValue> outputs;
   for (std::size_t bank = 0; bank != 4; ++bank)
@@ -612,12 +605,10 @@ buildSpatialCore(llvm::StringRef test, ArtifactStore &artifacts,
 fabric::FinalizedFabricRoot
 buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
             llvm::ArrayRef<mlir::Type> messagePayloads,
-            ArtifactStore &artifacts, MappedRtlFixtureTopology topology) {
-  return deployment::test::buildMappedSpatialSystem(test, module,
-                                                    messagePayloads, artifacts,
-                                                    topology ==
-                                                        MappedRtlFixtureTopology::
-                                                            HeterogeneousPortable);
+            ArtifactStore &artifacts,
+            deployment::test::MappedSpatialSystemSpec spec) {
+  return deployment::test::buildMappedSpatialSystem(
+      test, module, messagePayloads, artifacts, spec);
 }
 
 pnr::ResolvedPnrConfigView spatialConfig(llvm::StringRef test) {
@@ -655,11 +646,11 @@ ArtifactRootReference generateTechMapping(llvm::StringRef test,
 }
 
 ArtifactRootReference
-generateSpatialMapping(llvm::StringRef test,
-                       mlir::MLIRContext &context,
+generateSpatialMapping(llvm::StringRef test, mlir::MLIRContext &context,
                        const ArtifactRootReference &techMapping,
                        const ArtifactRootReference &fabric,
-                       ArtifactStore &artifacts, const BlobStore &blobs) {
+                       ArtifactStore &artifacts, const BlobStore &blobs,
+                       MappedRtlRouteCoverage routeCoverage) {
   auto inputs =
       take(test, dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
                      {techMapping}, fabric));
@@ -670,23 +661,38 @@ generateSpatialMapping(llvm::StringRef test,
       test, dse::invokeCandidateGenerator(inputs, binding, artifacts, blobs));
   const auto *completed =
       std::get_if<dse::CompletedCandidateGeneratorResult>(&outcome.outcome);
-  deployment::test::require(
-      test,
-      completed && completed->outputBindings.size() == 1 &&
-          !completed->outputBindings.front().artifacts.empty(),
-      "SpatialMapping fixture did not publish a candidate");
+  if (!completed || completed->outputBindings.size() != 1 ||
+      completed->outputBindings.front().artifacts.empty()) {
+    std::string diagnostic =
+        completed ? "completed_without_candidate" : "incomplete";
+    if (const auto *incomplete =
+            std::get_if<dse::IncompleteCandidateGeneratorResult>(
+                &outcome.outcome))
+      diagnostic +=
+          " reason=" +
+          std::to_string(static_cast<std::uint32_t>(incomplete->reason));
+    for (const dse::CandidateGeneratorWorkUnitSummary &summary :
+         outcome.workSummary)
+      diagnostic += " work[" + std::to_string(summary.unit.ordinal()) +
+                    "]=" + std::to_string(summary.consumed) + "/" +
+                    std::to_string(summary.planned);
+    deployment::test::fail(
+        test,
+        "SpatialMapping fixture did not publish a candidate: " + diagnostic);
+  }
   const ArtifactRootReference initial =
       completed->outputBindings.front().artifacts.front();
   auto initialMapping =
       take(test, mapping::importSpatialMapping(initial, artifacts));
+  if (routeCoverage == MappedRtlRouteCoverage::AnyLegal)
+    return initial;
   const auto containsBypass = [](const mapping::SpatialMappingView &mapping) {
     const auto isBypass = [](const auto &traversal) {
       if (!traversal)
         return false;
       const auto *fifo =
           std::get_if<fabric::FabricFifoTraversalPayload>(&traversal->payload);
-      return fifo &&
-             fifo->mode == fabric::FabricFifoTraversalMode::Bypass;
+      return fifo && fifo->mode == fabric::FabricFifoTraversalMode::Bypass;
     };
     for (const mapping::SpatialRouteTreeView &route : mapping.routeTrees()) {
       if (isBypass(route.localTraversal))
@@ -828,31 +834,30 @@ generateSpatialMapping(llvm::StringRef test,
           "module {\n  mapping.constraints.spatial dataflow(" +
           identityAttr(dataflowView.identity()) + ") tech_mapping(" +
           identityAttr(tech.view().identity()) + ") fabric(" +
-          identityAttr(fabricRoot.view().identity()) +
-          ") {\n" + attachmentClauses +
+          identityAttr(fabricRoot.view().identity()) + ") {\n" +
+          attachmentClauses +
           "    mapping.constraint.domain_restriction "
           "projection(net_selected_physical_traversals) subject(" +
-          producerAttr(route.logicalNet) + ") admissible_domain(" +
-          domainText + ")\n  }\n}\n";
+          producerAttr(route.logicalNet) + ") admissible_domain(" + domainText +
+          ")\n  }\n}\n";
       auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
       deployment::test::require(test, static_cast<bool>(module),
                                 "cannot parse bypass MappingConstraintSet");
       auto roots = module->getOps<::mapping::ConstraintsSpatialOp>();
-      auto constraints = take(
-          test, mapping::finalizeSpatialMappingConstraintSet(
-                    *roots.begin(), dataflowView, tech.view(), fabricRoot.view(),
-                    artifacts));
-      auto constrainedInputs = take(
-          test, dse::bindSpatialPnrCandidateGeneratorInputs(
-                    dataflowReference, techMapping, fabric,
-                    constraints.reference()));
+      auto constraints =
+          take(test, mapping::finalizeSpatialMappingConstraintSet(
+                         *roots.begin(), dataflowView, tech.view(),
+                         fabricRoot.view(), artifacts));
+      auto constrainedInputs =
+          take(test, dse::bindSpatialPnrCandidateGeneratorInputs(
+                         dataflowReference, techMapping, fabric,
+                         constraints.reference()));
       auto constrainedBinding = take(
-          test, dse::resolveSpatialPnrCandidateGeneratorBinding(
-                    spatialConfig(test)));
+          test,
+          dse::resolveSpatialPnrCandidateGeneratorBinding(spatialConfig(test)));
       auto constrainedOutcome = take(
-          test, dse::invokeCandidateGenerator(constrainedInputs,
-                                              constrainedBinding, artifacts,
-                                              blobs));
+          test, dse::invokeCandidateGenerator(
+                    constrainedInputs, constrainedBinding, artifacts, blobs));
       const auto *constrained =
           std::get_if<dse::CompletedCandidateGeneratorResult>(
               &constrainedOutcome.outcome);
@@ -902,19 +907,16 @@ publishSpatialInputs(llvm::StringRef test,
       {0, {1, {sim::SemanticLane::defined(llvm::APInt(32, 7))}}},
       {1, {1, {sim::SemanticLane::defined(llvm::APInt(32, 5))}}},
       {2, {1, {sim::SemanticLane::defined(llvm::APInt(64, 0))}}},
-      {3,
-       {1, {sim::SemanticLane::defined(llvm::APInt(32, 0x44332211))}}}};
+      {3, {1, {sim::SemanticLane::defined(llvm::APInt(32, 0x44332211))}}}};
   sim::CanonicalStreamSequence stream0;
-  stream0.values = {
-      1, {sim::SemanticLane::defined(llvm::APInt(32, 0x21))}};
+  stream0.values = {1, {sim::SemanticLane::defined(llvm::APInt(32, 0x21))}};
   stream0.termination = sim::StreamTermination::ClosedAfterLast;
   sim::CanonicalStreamSequence stream1;
-  stream1.values = {
-      1, {sim::SemanticLane::defined(llvm::APInt(32, 0x31))}};
+  stream1.values = {1, {sim::SemanticLane::defined(llvm::APInt(32, 0x31))}};
   stream1.termination = sim::StreamTermination::ClosedAfterLast;
   runtimeDraft.runtimeStreams = {std::move(stream0), std::move(stream1)};
-  runtimeDraft.memoryObjects = {sim::RuntimeMemoryObject(
-      std::vector<sim::SemanticMemoryByte>(
+  runtimeDraft.memoryObjects = {
+      sim::RuntimeMemoryObject(std::vector<sim::SemanticMemoryByte>(
           16, sim::SemanticMemoryByte{sim::SemanticState::Defined, 0}))};
   runtimeDraft.memoryRootBindings = {{memoryRoot, 0, 0}};
   auto runtime = take(
@@ -928,7 +930,8 @@ buildImplementation(llvm::StringRef test,
                     const fabric::FinalizedFabricRoot &module,
                     const fabric::FinalizedFabricRoot &system,
                     mlir::MLIRContext &relationContext,
-                    ArtifactStore &artifacts, BlobStore &blobs) {
+                    ArtifactStore &artifacts, BlobStore &blobs,
+                    llvm::ArrayRef<ArtifactRootReference> interconnects) {
   const auto inventoryOwner = [](const auto &owner) {
     return std::visit(
         [](const auto &value) -> fabric::FabricInventoryOwnerRef {
@@ -989,7 +992,8 @@ buildImplementation(llvm::StringRef test,
                  hardware::rtl::registerPortableOperationProviders(providers));
   hardware::ExternalImplementationContractCatalog contracts;
   return take(test, hardware::rtl::finalizePortableSystemHardwareImplementation(
-                        context, abi, providers, contracts, artifacts, blobs));
+                        context, abi, providers, contracts, artifacts, blobs,
+                        interconnects));
 }
 
 evaluation::CaseArtifactResolution
@@ -1019,6 +1023,44 @@ buildResolution(llvm::StringRef test, const ArtifactRootReference &dataflow,
 
 } // namespace
 
+MappedSpatialHardwareFixture buildMappedSpatialHardwareFixture(
+    llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
+    mlir::MLIRContext &context, ArtifactStore &artifacts, BlobStore &blobs,
+    deployment::test::MappedSpatialSystemSpec systemSpec,
+    MappedRtlFixtureTopology topology, MappedRtlRouteCoverage routeCoverage,
+    MappedSystemInterconnect interconnectKind) {
+  const ArtifactRootReference dataflowReference =
+      take(test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
+  auto module = buildSpatialCore(test, artifacts, topology);
+  const ArtifactRootReference techMapping = generateTechMapping(
+      test, dataflowReference, module.reference(), artifacts, blobs);
+  const ArtifactRootReference spatialMappingReference =
+      generateSpatialMapping(test, context, techMapping, module.reference(),
+                             artifacts, blobs, routeCoverage);
+  auto spatialMapping = take(
+      test, mapping::importSpatialMapping(spatialMappingReference, artifacts));
+  const std::array<mlir::Type, 3> messagePayloads{
+      mlir::NoneType::get(&context), mlir::IntegerType::get(&context, 32),
+      mlir::IndexType::get(&context)};
+  auto system =
+      buildSystem(test, module, messagePayloads, artifacts, systemSpec);
+  std::optional<ArtifactRootReference> interconnect;
+  if (interconnectKind == MappedSystemInterconnect::Gem5EventTransport)
+    interconnect = take(
+        test, fabric::finalizeGem5EventInterconnectImplementation(
+                  system.reference(), artifacts))
+                       .reference();
+  const llvm::ArrayRef<ArtifactRootReference> interconnects =
+      interconnect ? llvm::ArrayRef<ArtifactRootReference>(*interconnect)
+                   : llvm::ArrayRef<ArtifactRootReference>();
+  auto implementation =
+      buildImplementation(test, module, system, context, artifacts, blobs,
+                          interconnects);
+  return {std::move(module), techMapping, std::move(spatialMapping),
+          std::move(system), std::move(interconnect),
+          std::move(implementation)};
+}
+
 MappedRtlRequestFixture
 buildMappedRtlRequestFixture(llvm::StringRef test,
                              llvm::StringRef stableSimulatorBuildIdentity,
@@ -1028,37 +1070,31 @@ buildMappedRtlRequestFixture(llvm::StringRef test,
   requireSuccess(test, evaluation::models::registerMappedRtlSimulationModel());
   mlir::MLIRContext dataflowContext = makeDataflowContext();
   auto dataflow = buildDataflow(test, dataflowContext);
+  auto hardware = buildMappedSpatialHardwareFixture(
+      test, dataflow, dataflowContext, artifacts, blobs,
+      deployment::test::MappedSpatialSystemSpec{
+          2, false,
+          topology == MappedRtlFixtureTopology::HeterogeneousPortable},
+      topology);
   const ArtifactRootReference dataflowReference =
       take(test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
-  auto module = buildSpatialCore(test, artifacts, topology);
-  const ArtifactRootReference techMapping = generateTechMapping(
-      test, dataflowReference, module.reference(), artifacts, blobs);
-  const ArtifactRootReference spatialMapping = generateSpatialMapping(
-      test, dataflowContext, techMapping, module.reference(), artifacts,
-      blobs);
-  auto finalizedSpatialMapping =
-      take(test, mapping::importSpatialMapping(spatialMapping, artifacts));
-  const std::array<mlir::Type, 3> messagePayloads{
-      mlir::NoneType::get(&dataflowContext),
-      mlir::IntegerType::get(&dataflowContext, 32),
-      mlir::IndexType::get(&dataflowContext)};
-  auto system = buildSystem(test, module, messagePayloads, artifacts, topology);
-  auto implementation = buildImplementation(test, module, system,
-                                            dataflowContext, artifacts, blobs);
+  const ArtifactRootReference spatialMapping =
+      hardware.spatialMapping.reference();
   auto deployment = deployment::test::buildMappedSpatialDeployment(
-      test, dataflow, system, finalizedSpatialMapping, implementation,
-      artifacts, blobs, tree);
+      test, dataflow, hardware.system, hardware.spatialMapping,
+      hardware.implementation, artifacts, blobs, tree);
   const auto [workload, runtimeInput] =
       publishSpatialInputs(test, dataflow, artifacts);
-  auto resolution = buildResolution(test, dataflowReference, module, system,
-                                    techMapping, spatialMapping, implementation,
+  auto resolution = buildResolution(test, dataflowReference, hardware.module,
+                                    hardware.system, hardware.techMapping,
+                                    spatialMapping, hardware.implementation,
                                     deployment, workload, runtimeInput);
 
   auto subjects = take(
       test,
       evaluation::EvaluationSubjectBindings::get(
           {{evaluation::models::mappedRtlHardwareImplementationSubjectRole(),
-            {implementation.reference()}},
+            {hardware.implementation.reference()}},
            {evaluation::models::mappedRtlDeploymentSubjectRole(),
             {deployment.reference()}}}));
   auto evaluationCase =
@@ -1090,12 +1126,12 @@ buildMappedRtlRequestFixture(llvm::StringRef test,
       "request publication changed its identity");
   return {std::move(request),
           std::move(resolution),
-          std::move(implementation),
+          std::move(hardware.implementation),
           std::move(deployment),
           workload,
           runtimeInput,
-          module.reference(),
-          techMapping,
+          hardware.module.reference(),
+          hardware.techMapping,
           spatialMapping};
 }
 

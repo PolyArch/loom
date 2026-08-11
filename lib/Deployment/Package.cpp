@@ -45,11 +45,6 @@
 namespace loom::deployment {
 namespace {
 
-struct PackageClosure final {
-  std::vector<ArtifactRootReference> artifacts;
-  std::vector<BlobDigest> blobs;
-};
-
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "deployment_package_invalid: " + message);
@@ -60,6 +55,11 @@ llvm::Error ioError(const llvm::Twine &message) {
                                  "deployment_package_io: " + message);
 }
 
+struct DerivedPackageClosure final {
+  std::vector<ArtifactRootReference> artifacts;
+  std::vector<BlobDigest> blobs;
+};
+
 bool blobLess(const BlobDigest &lhs, const BlobDigest &rhs) {
   return lhs.bytes() < rhs.bytes();
 }
@@ -69,15 +69,12 @@ public:
   ClosureBuilder(const ArtifactStore &artifacts, const BlobStore &blobs)
       : artifacts_(artifacts), blobs_(blobs) {}
 
-  llvm::Expected<PackageClosure> derive(const FinalizedDeployment &deployment) {
-    auto imported =
-        importDeployment(deployment.reference(), artifacts_, blobs_);
-    if (!imported)
-      return imported.takeError();
-    if (llvm::Error error = addArtifact(imported->reference()))
+  llvm::Expected<DerivedPackageClosure>
+  derive(const FinalizedDeployment &deployment) {
+    if (llvm::Error error = addArtifact(deployment.reference()))
       return error;
 
-    const Deployment &root = imported->deployment();
+    const Deployment &root = deployment.deployment();
     if (llvm::Error error = addSystemMapping(root.systemMapping()))
       return error;
     if (llvm::Error error =
@@ -110,36 +107,37 @@ public:
           return error;
     }
 
-    llvm::sort(closure_.artifacts, artifactRootReferenceLess);
-    llvm::sort(closure_.blobs, blobLess);
-    return std::move(closure_);
+    llvm::sort(artifactsInClosure_, artifactRootReferenceLess);
+    llvm::sort(blobsInClosure_, blobLess);
+    return DerivedPackageClosure{std::move(artifactsInClosure_),
+                                 std::move(blobsInClosure_)};
   }
 
 private:
   llvm::Error addArtifact(const ArtifactRootReference &reference) {
-    auto exact = llvm::find(closure_.artifacts, reference);
-    if (exact != closure_.artifacts.end())
+    auto exact = llvm::find(artifactsInClosure_, reference);
+    if (exact != artifactsInClosure_.end())
       return llvm::Error::success();
     auto colliding = llvm::find_if(
-        closure_.artifacts, [&](const ArtifactRootReference &existing) {
+        artifactsInClosure_, [&](const ArtifactRootReference &existing) {
           return existing.artifact == reference.artifact;
         });
-    if (colliding != closure_.artifacts.end())
+    if (colliding != artifactsInClosure_.end())
       return invalid("one ArtifactIdentity is framed by two schema roots");
     auto object = artifacts_.getStoredObject(reference);
     if (!object)
       return object.takeError();
-    closure_.artifacts.push_back(reference);
+    artifactsInClosure_.push_back(reference);
     return llvm::Error::success();
   }
 
   llvm::Error addBlob(const BlobDigest &digest) {
-    if (llvm::is_contained(closure_.blobs, digest))
+    if (llvm::is_contained(blobsInClosure_, digest))
       return llvm::Error::success();
     auto bytes = blobs_.get(digest);
     if (!bytes)
       return bytes.takeError();
-    closure_.blobs.push_back(digest);
+    blobsInClosure_.push_back(digest);
     return llvm::Error::success();
   }
 
@@ -299,7 +297,8 @@ private:
 
   const ArtifactStore &artifacts_;
   const BlobStore &blobs_;
-  PackageClosure closure_;
+  std::vector<ArtifactRootReference> artifactsInClosure_;
+  std::vector<BlobDigest> blobsInClosure_;
 };
 
 llvm::Error writeFile(llvm::StringRef path,
@@ -361,7 +360,7 @@ llvm::Error validateNames(llvm::StringRef directory,
 
 llvm::Error validateStaging(llvm::StringRef staging,
                             const ArtifactRootReference &root,
-                            const PackageClosure &expected) {
+                            const DeploymentPackageClosure &expected) {
   const std::string objects = childPath(staging, "objects");
   const std::string blobs = childPath(staging, "blobs");
   ArtifactStore artifactStore(objects);
@@ -371,22 +370,23 @@ llvm::Error validateStaging(llvm::StringRef staging,
     return invalid("staging package cannot import its root: " +
                    llvm::toString(deployment.takeError()));
   ClosureBuilder builder(artifactStore, blobStore);
-  auto actual = builder.derive(*deployment);
+  auto actual = deriveDeploymentPackageClosure(*deployment, artifactStore,
+                                                blobStore);
   if (!actual)
     return actual.takeError();
-  if (actual->artifacts != expected.artifacts ||
-      actual->blobs != expected.blobs)
+  if (actual->artifacts() != expected.artifacts() ||
+      actual->blobs() != expected.blobs())
     return invalid("staging package closure differs after empty-store import");
 
   std::vector<std::string> artifactNames;
-  artifactNames.reserve(expected.artifacts.size());
-  for (const ArtifactRootReference &reference : expected.artifacts)
+  artifactNames.reserve(expected.artifacts().size());
+  for (const ArtifactRootReference &reference : expected.artifacts())
     artifactNames.push_back(formatArtifactIdentityHex(reference.artifact));
   if (llvm::Error error = validateNames(objects, std::move(artifactNames)))
     return error;
   std::vector<std::string> blobNames;
-  blobNames.reserve(expected.blobs.size());
-  for (const BlobDigest &digest : expected.blobs)
+  blobNames.reserve(expected.blobs().size());
+  for (const BlobDigest &digest : expected.blobs())
     blobNames.push_back(formatBlobDigestHex(digest));
   return validateNames(blobs, std::move(blobNames));
 }
@@ -411,14 +411,26 @@ llvm::Error publishNoReplace(llvm::StringRef staging,
 
 } // namespace
 
+llvm::Expected<DeploymentPackageClosure>
+deriveDeploymentPackageClosure(const FinalizedDeployment &deployment,
+                               const ArtifactStore &artifacts,
+                               const BlobStore &blobs) {
+  ClosureBuilder builder(artifacts, blobs);
+  auto closure = builder.derive(deployment);
+  if (!closure)
+    return closure.takeError();
+  return DeploymentPackageClosure(std::move(closure->artifacts),
+                                  std::move(closure->blobs));
+}
+
 llvm::Error publishDeploymentPackage(const FinalizedDeployment &deployment,
                                      llvm::StringRef outputPath,
                                      const ArtifactStore &artifacts,
                                      const BlobStore &blobs) {
   if (outputPath.empty())
     return invalid("deployment package output path is empty");
-  ClosureBuilder builder(artifacts, blobs);
-  auto closure = builder.derive(deployment);
+  auto closure =
+      deriveDeploymentPackageClosure(deployment, artifacts, blobs);
   if (!closure)
     return closure.takeError();
 
@@ -455,7 +467,7 @@ llvm::Error publishDeploymentPackage(const FinalizedDeployment &deployment,
       formatArtifactIdentityHex(deployment.reference().artifact);
   if (llvm::Error error = writeFile(childPath(staging, "root"), rootText))
     return error;
-  for (const ArtifactRootReference &reference : closure->artifacts) {
+  for (const ArtifactRootReference &reference : closure->artifacts()) {
     auto bytes = artifacts.getStoredObject(reference);
     if (!bytes)
       return bytes.takeError();
@@ -464,7 +476,7 @@ llvm::Error publishDeploymentPackage(const FinalizedDeployment &deployment,
             *bytes))
       return error;
   }
-  for (const BlobDigest &digest : closure->blobs) {
+  for (const BlobDigest &digest : closure->blobs()) {
     auto bytes = blobs.get(digest);
     if (!bytes)
       return bytes.takeError();

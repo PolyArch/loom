@@ -378,29 +378,44 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
   script += "{\n";
   for (const std::vector<std::string> &command : manifest.commands) {
     script += "  if (( loom_status == 0 )); then\n";
-    if (std::find(manifest.toolProducedExecutables.begin(),
+    const bool generatedController =
+        std::find(manifest.toolProducedExecutables.begin(),
                   manifest.toolProducedExecutables.end(),
-                  command.front()) != manifest.toolProducedExecutables.end()) {
-      script += "    if [[ -L " + shellQuote(command.front()) + " ]]; then\n";
-      script +=
-          "      loom_publish_completion " +
-          shellQuote(completionStatusSpelling(
-              InvocationCompletionStatus::BundleContentMismatch)) +
-          " " +
-          exitCodeText(InvocationLauncherExitCode::BundleContentMismatch) +
-          "\n";
-      script +=
-          "      exit " +
-          exitCodeText(InvocationLauncherExitCode::BundleContentMismatch) +
-          "\n";
-      script += "    elif [[ ! -f " + shellQuote(command.front()) +
-                " || ! -x " + shellQuote(command.front()) + " ]]; then\n";
-      script +=
-          "      loom_status=" +
-          exitCodeText(
-              InvocationLauncherExitCode::ToolProducedExecutableUnavailable) +
-          "\n";
-      script += "    else\n";
+                  command.front()) != manifest.toolProducedExecutables.end();
+    if (generatedController) {
+      std::vector<std::string> referencedExecutables{command.front()};
+      for (auto argument = std::next(command.begin());
+           argument != command.end(); ++argument)
+        if (std::find(manifest.toolProducedExecutables.begin(),
+                      manifest.toolProducedExecutables.end(),
+                      *argument) != manifest.toolProducedExecutables.end() &&
+            std::find(referencedExecutables.begin(),
+                      referencedExecutables.end(),
+                      *argument) == referencedExecutables.end())
+          referencedExecutables.push_back(*argument);
+      for (const std::string &executable : referencedExecutables) {
+        script += "    if [[ -L " + shellQuote(executable) + " ]]; then\n";
+        script +=
+            "      loom_publish_completion " +
+            shellQuote(completionStatusSpelling(
+                InvocationCompletionStatus::BundleContentMismatch)) +
+            " " +
+            exitCodeText(InvocationLauncherExitCode::BundleContentMismatch) +
+            "\n";
+        script +=
+            "      exit " +
+            exitCodeText(InvocationLauncherExitCode::BundleContentMismatch) +
+            "\n";
+        script += "    elif [[ ! -f " + shellQuote(executable) + " || ! -x " +
+                  shellQuote(executable) + " ]]; then\n";
+        script +=
+            "      loom_status=" +
+            exitCodeText(
+                InvocationLauncherExitCode::ToolProducedExecutableUnavailable) +
+            "\n";
+        script += "    fi\n";
+      }
+      script += "    if (( loom_status == 0 )); then\n";
       script +=
           "      " + renderCommand(command, manifest) + " || loom_status=$?\n";
       script += "    fi\n";

@@ -1,0 +1,2 @@
+# REQUIRES: verilator
+# RUN: loom-system-execution-matrix-test spatial-rtl

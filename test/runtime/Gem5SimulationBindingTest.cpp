@@ -5,8 +5,8 @@
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/Artifact/FabricArtifact.h"
-#include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Artifact/InterconnectImplementation.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/OperationResourceContract.h"
@@ -207,16 +207,9 @@ loom::fabric::FinalizedFabricRoot makeModule(llvm::StringRef test,
 ArtifactRootReference makeInterconnect(
     llvm::StringRef test, const ArtifactRootReference &system,
     const ArtifactStore &store) {
-  const loom::fabric::FabricDirectDependency dependency{
-      loom::fabric::FabricDependencyRole::RefinedSystem, system};
-  const auto bytes = take(
-      test, loom::fabric::encodeFabricArtifactEnvelope(
-                loom::fabric::FabricRootKind::InterconnectImplementation,
-                {dependency}, {}));
-  const auto identity =
-      take(test, store.put(loom::fabric::fabricArtifactSchema, bytes));
-  return {loom::fabric::fabricArtifactSchema.identity.str(),
-          loom::fabric::fabricArtifactSchema.version, identity};
+  return take(test, loom::fabric::finalizeGem5EventInterconnectImplementation(
+                        system, store))
+      .reference();
 }
 
 Gem5SimObjectRef object(const Gem5ModelContractDescriptor &descriptor,

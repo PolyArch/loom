@@ -300,6 +300,9 @@ validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
         return bundleError(
             "tool-produced executable has no preceding frozen-tool command");
       referencedProducedExecutables.insert(command.front());
+      for (llvm::StringRef argument : llvm::drop_begin(command))
+        if (producedExecutables.count(argument.str()))
+          referencedProducedExecutables.insert(argument.str());
     } else {
       return bundleError(
           "each command must begin with the frozen tool executable or one "
@@ -311,7 +314,8 @@ validateSpecification(const ExternalToolInvocationBundleSpec &specification) {
   }
   if (referencedProducedExecutables != producedExecutables)
     return bundleError(
-        "every tool-produced executable must be used by a command");
+        "every tool-produced executable must be used directly or named by a "
+        "generated controller command");
 
   std::set<std::string> environmentNames;
   for (const std::string &name : specification.inheritEnvironment)
@@ -1664,8 +1668,9 @@ finalizeExternalToolInvocationBundle(
     std::filesystem::create_directories((*staging / executable).parent_path(),
                                         directoryError);
     if (directoryError)
-      return bundleError("could not create tool-produced executable directory: " +
-                         directoryError.message());
+      return bundleError(
+          "could not create tool-produced executable directory: " +
+          directoryError.message());
   }
 
   for (const MaterializedBundleFile &file : specification.files)

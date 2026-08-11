@@ -767,6 +767,85 @@ def Fabric_SystemSpatialAttachmentOp
   let hasVerifier = 1;
 }
 
+def Fabric_InterconnectImplementationOp
+    : Fabric_Op<"interconnect_implementation",
+                [IsolatedFromAbove, SingleBlock, NoTerminator, Symbol]> {
+  let summary = "typed concrete refinement of one Fabric System interconnect";
+  let description = [{
+    One content-addressed InterconnectImplementation root. The closed protocol
+    schema selects the only legal operation catalog in `implementation`; the
+    `refinements` region contains the complete architecture-to-protocol
+    relation. The exact refined System remains an artifact-envelope dependency
+    and is deliberately not duplicated as an operation attribute.
+  }];
+
+  let arguments = (ins SymbolNameAttr:$sym_name,
+      Fabric_InterconnectProtocolSchemaAttr:$protocol_schema);
+  let regions = (region SizedRegion<1>:$implementation,
+                         SizedRegion<1>:$refinements);
+
+  let assemblyFormat = [{
+    $sym_name `schema` `=` $protocol_schema attr-dict-with-keyword
+    `implementation` $implementation `refinements` $refinements
+  }];
+  let hasVerifier = 1;
+}
+
+def Fabric_InterconnectGem5EventEndpointOp
+    : Fabric_Op<"interconnect.gem5_event.endpoint",
+                [HasParent<"::fabric::InterconnectImplementationOp">]> {
+  let summary = "one typed gem5 event-transport protocol endpoint";
+  let arguments = (ins I64Attr:$ordinal,
+      Fabric_InterconnectEndpointDirectionAttr:$direction);
+  let assemblyFormat = "$ordinal $direction attr-dict";
+  let hasVerifier = 1;
+}
+
+def Fabric_InterconnectGem5EventResourceOp
+    : Fabric_Op<"interconnect.gem5_event.resource",
+                [HasParent<"::fabric::InterconnectImplementationOp">]> {
+  let summary = "one typed gem5 event-transport resource state";
+  let arguments = (ins I64Attr:$ordinal);
+  let assemblyFormat = "$ordinal attr-dict";
+  let hasVerifier = 1;
+}
+
+def Fabric_InterconnectGem5EventTransferOp
+    : Fabric_Op<"interconnect.gem5_event.transfer",
+                [HasParent<"::fabric::InterconnectImplementationOp">]> {
+  let summary = "one typed gem5 event-transport transfer";
+  let arguments = (ins I64Attr:$ordinal, I64Attr:$ingress,
+      DenseI64ArrayAttr:$egresses, DenseI64ArrayAttr:$resources);
+  let assemblyFormat = [{
+    $ordinal `ingress` `=` $ingress `egresses` `=` $egresses
+    `resources` `=` $resources attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
+def Fabric_InterconnectGem5EventConfigurationFieldOp
+    : Fabric_Op<"interconnect.gem5_event.configuration_field",
+                [HasParent<"::fabric::InterconnectImplementationOp">]> {
+  let summary = "one typed gem5 event-transport configuration field";
+  let arguments = (ins I64Attr:$ordinal);
+  let assemblyFormat = "$ordinal attr-dict";
+  let hasVerifier = 1;
+}
+
+def Fabric_InterconnectRefinementOp
+    : Fabric_Op<"interconnect.refinement",
+                [HasParent<"::fabric::InterconnectImplementationOp">]> {
+  let summary = "one closed architecture-to-protocol refinement record";
+  let arguments = (ins Fabric_InterconnectRefinementKindAttr:$kind,
+      DenseI8ArrayAttr:$architecture_ref,
+      DenseI64ArrayAttr:$protocol_refs);
+  let assemblyFormat = [{
+    $kind `architecture` `=` $architecture_ref
+    `protocol` `=` $protocol_refs attr-dict
+  }];
+  let hasVerifier = 1;
+}
+
 def Fabric_YieldOp : Fabric_Op<"yield", [Terminator, Pure]> {
   let summary =
       "terminator of a fabric.fu, named fabric.pe, or fabric.module region";

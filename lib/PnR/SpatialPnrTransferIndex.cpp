@@ -1,11 +1,18 @@
 #include "SpatialPnrTransferIndex.h"
 
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "PnR/PnrIndex.h"
 
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <optional>
+#include <vector>
 
 using namespace loom;
 using namespace loom::mapping;
@@ -21,6 +28,9 @@ constexpr PnrCapacityContext sinkOffsetContext{frozenArtifact, "logical_nets",
                                                PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext sinkCountContext{
     frozenArtifact, "logical_net_sinks", "logical_net_sinks",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext progressDependencyContext{
+    frozenArtifact, "logical_net_sinks", "progress_dependencies",
     PnrCapacityMeasure::Count};
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -38,7 +48,8 @@ llvm::Expected<PnrIndex> checked(PnrCapacityContext context,
 class loom::pnr::FrozenSpatialTransferIndexBuilder final {
 public:
   static llvm::Expected<FrozenSpatialTransferIndex>
-  build(const TechMappingView &techMapping) {
+  build(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+        const TechMappingView &techMapping) {
     FrozenSpatialTransferIndex result;
     const auto nets = techMapping.residualLogicalNets();
     if (llvm::Error error =
@@ -65,12 +76,69 @@ public:
         return sinkCount.takeError();
       result.logicalNets_.push_back({net.producer, *sinkOffset, *sinkCount});
     }
+    if (llvm::Error error =
+            buildProgressDependencies(dataflow, techMapping, result))
+      return std::move(error);
     return result;
+  }
+
+private:
+  static llvm::Error buildProgressDependencies(
+      const ::dataflow::CanonicalDataflowProgramView &dataflow,
+      const TechMappingView &techMapping, FrozenSpatialTransferIndex &result) {
+    auto projected = ::loom::mapping::deriveSpatialRouteProgressDependencies(
+        dataflow, techMapping);
+    if (!projected)
+      return projected.takeError();
+    std::vector<std::vector<std::vector<PnrIndex>>> dependencies;
+    dependencies.reserve(result.logicalNets_.size());
+    for (const FrozenSpatialLogicalNet &net : result.logicalNets_)
+      dependencies.emplace_back(net.sinkCount);
+    for (const auto &dependency : *projected) {
+      if (dependency.logicalNetOrdinal >= dependencies.size() ||
+          dependency.dependentSinkOrdinal >=
+              dependencies[dependency.logicalNetOrdinal].size())
+        return invalid("progress dependency is outside the frozen net index");
+      auto prerequisite = checked(progressDependencyContext,
+                                  dependency.prerequisiteSinkOrdinal);
+      if (!prerequisite)
+        return prerequisite.takeError();
+      dependencies[dependency.logicalNetOrdinal]
+                  [dependency.dependentSinkOrdinal]
+                      .push_back(*prerequisite);
+    }
+    result.sinkProgressDependencyOffsets_.clear();
+    result.sinkProgressDependencies_.clear();
+    result.sinkProgressDependencyOffsets_.reserve(
+        result.logicalNetSinks_.size() + 1);
+    result.sinkProgressDependencyOffsets_.push_back(0);
+    for (const auto [netOrdinal, net] : llvm::enumerate(result.logicalNets_)) {
+      for (PnrIndex dependent = 0; dependent < net.sinkCount; ++dependent) {
+        auto &sinkDependencies = dependencies[netOrdinal][dependent];
+        llvm::sort(sinkDependencies);
+        sinkDependencies.erase(
+            std::unique(sinkDependencies.begin(), sinkDependencies.end()),
+            sinkDependencies.end());
+        result.sinkProgressDependencies_.insert(
+            result.sinkProgressDependencies_.end(), sinkDependencies.begin(),
+            sinkDependencies.end());
+        auto end = checked(progressDependencyContext,
+                           result.sinkProgressDependencies_.size());
+        if (!end)
+          return end.takeError();
+        result.sinkProgressDependencyOffsets_.push_back(*end);
+      }
+    }
+    if (result.sinkProgressDependencyOffsets_.size() !=
+        result.logicalNetSinks_.size() + 1)
+      return invalid("progress dependency CSR has the wrong shape");
+    return llvm::Error::success();
   }
 };
 
 llvm::Expected<FrozenSpatialTransferIndex>
 loom::pnr::detail::buildFrozenSpatialTransferIndex(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping) {
-  return FrozenSpatialTransferIndexBuilder::build(techMapping);
+  return FrozenSpatialTransferIndexBuilder::build(dataflow, techMapping);
 }

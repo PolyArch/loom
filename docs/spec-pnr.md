@@ -1997,13 +1997,22 @@ diagnostic authority.
 The initial exact Spatial provider proves absence of a closed wait set when
 the Canonical Dataflow actor-dependency relation is acyclic, selected
 combinational handshake closure is acyclic, every required `ResourceUse` is
-present, and every selected Fabric contract supplies its validated atomic
-progress guarantee. Topological induction then establishes that some enabled
-actor can retire under fair execution. A feedback cycle is not itself a
-deadlock witness; until a supported typed token, finite-buffer, and initial
-occupancy analysis proves or refutes that cyclic case, Mapping returns
-`Incomplete(proof_not_established)`. The actor projection and topological
-proof are linear in the canonical actor and dependency counts and are rebuilt
+present, every selected Fabric contract supplies its validated atomic progress
+guarantee, and selected routes preserve that induction. In particular, when
+one residual logical net is atomically multicast to two actor operands and the
+prerequisite sink actor can causally reach the dependent sink actor, the
+dependent route branch must traverse a `fabric.fifo[buffered]` after it
+diverges from the prerequisite branch. A Buffered FIFO on their shared prefix
+does not release the atomic fork. A bypass traversal supplies no progress
+boundary. These route dependencies are one identity-free Mapping-owned
+projection consumed by both PnR and final verification; neither consumer may
+reconstruct a private reachability rule. With these conditions, topological
+induction establishes that some enabled actor can retire under fair execution.
+A feedback cycle is not itself a deadlock witness; until a supported typed
+token, finite-buffer, and initial occupancy analysis proves or refutes that
+cyclic case, Mapping returns `Incomplete(proof_not_established)`. The actor
+basis is linear in its canonical inventory; route dependency reachability is
+evaluated only for sinks of residual multicasts. Both projections are rebuilt
 independently by final verification.
 
 Physical Tag is local to Fabric-owned interpretation domains. A selected value

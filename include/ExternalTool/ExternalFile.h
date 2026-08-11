@@ -52,6 +52,11 @@ struct ResolvedExternalFileTree final {
   std::vector<ExternalFileTreeMember> members;
 };
 
+/// Computes the exact SHA-256 of one canonical ordinary file while rejecting
+/// symlinks and concurrent replacement or mutation.
+llvm::Expected<ExternalFileFingerprint>
+fingerprintExternalFile(llvm::StringRef path);
+
 llvm::Error validateExternalFileTreeRequirement(
     const ExternalFileTreeRequirement &requirement);
 

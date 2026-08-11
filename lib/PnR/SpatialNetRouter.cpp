@@ -1,5 +1,6 @@
 #include "PnR/SpatialNetRouter.h"
 
+#include "SpatialProgressAnalysis.h"
 #include "SpatialRouteConstraintModel.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -65,6 +66,16 @@ SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   unresolvedSinks_.assign(maximumSinkCount, 0);
   prospectiveClaimBits_.assign(
       (problem.routing().routeClaims().size() + 63) / 64, 0);
+  bufferedTraversalBits_.assign(
+      (problem.routing().traversals().size() + 63) / 64, 0);
+  for (auto [traversal, record] :
+       llvm::enumerate(problem.routing().traversals())) {
+    const auto *fifo = std::get_if<::loom::fabric::FabricFifoTraversalPayload>(
+        &record.reference.payload);
+    if (fifo && fifo->mode == ::loom::fabric::FabricFifoTraversalMode::Buffered)
+      bufferedTraversalBits_[traversal / 64] |= std::uint64_t{1}
+                                                << (traversal % 64);
+  }
   endpointMarks_.assign(endpointCount, 0);
   subtreeWorklist_.clear();
   subtreeWorklist_.reserve(endpointCount);
@@ -129,33 +140,46 @@ SpatialNetRouterScratch::collectSourceFrontier(const RouteTreeState &tree,
   return llvm::Error::success();
 }
 
-llvm::Error SpatialNetRouterScratch::collectTargetFrontier(
+llvm::Expected<bool> SpatialNetRouterScratch::collectTargetFrontier(
     const SpatialCandidateState &candidate, PnrIndex logicalNet,
     PnrIndex sinkCount) {
   targetCandidates_.clear();
   targetEndpoints_.clear();
   targetPreferenceRanks_.clear();
+  std::optional<PnrIndex> selectedSink;
+  bool requiresBufferedTraversal = false;
   for (PnrIndex sink = 0; sink < sinkCount; ++sink) {
     if (!unresolvedSinks_[sink])
       continue;
-    targetCandidates_.push_back(
-        {candidate.logicalNetSinkEndpoint(logicalNet, sink), sink});
-  }
-  llvm::sort(targetCandidates_,
-             [](const TargetCandidate &lhs, const TargetCandidate &rhs) {
-               return std::tie(lhs.endpoint, lhs.sinkObligation) <
-                      std::tie(rhs.endpoint, rhs.sinkObligation);
-             });
-  for (const TargetCandidate &target : targetCandidates_) {
-    if (!targetEndpoints_.empty() && targetEndpoints_.back() == target.endpoint)
+    auto prerequisites =
+        spatialSinkProgressDependencies(candidate.problem(), logicalNet, sink);
+    if (!prerequisites)
+      return prerequisites.takeError();
+    bool ready = true;
+    for (PnrIndex prerequisite : *prerequisites) {
+      if (prerequisite >= sinkCount)
+        return netRouterError("sink progress prerequisite is out of range");
+      if (unresolvedSinks_[prerequisite]) {
+        ready = false;
+        break;
+      }
+    }
+    if (!ready)
       continue;
-    targetEndpoints_.push_back(target.endpoint);
-    targetPreferenceRanks_.push_back(target.sinkObligation);
-    targetObligationByEndpoint_[target.endpoint] = target.sinkObligation;
+    selectedSink = sink;
+    requiresBufferedTraversal = !prerequisites->empty();
+    break;
   }
-  if (targetEndpoints_.empty())
-    return netRouterError("unresolved sink count has no target endpoint");
-  return llvm::Error::success();
+  if (!selectedSink)
+    return netRouterError(
+        "unresolved sink dependencies contain no routable frontier");
+  const PnrIndex endpoint =
+      candidate.logicalNetSinkEndpoint(logicalNet, *selectedSink);
+  targetCandidates_.push_back({endpoint, *selectedSink});
+  targetEndpoints_.push_back(endpoint);
+  targetPreferenceRanks_.push_back(*selectedSink);
+  targetObligationByEndpoint_[endpoint] = *selectedSink;
+  return requiresBufferedTraversal;
 }
 
 llvm::Error
@@ -361,6 +385,29 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
           candidate.logicalNetSinkEndpoint(logicalNet, sink);
       if (target != source && !tree.findNode(target))
         continue;
+      auto prerequisites = spatialSinkProgressDependencies(candidate.problem(),
+                                                           logicalNet, sink);
+      if (!prerequisites)
+        return prerequisites.takeError();
+      bool progressSatisfied = true;
+      for (PnrIndex prerequisite : *prerequisites) {
+        if (prerequisite >= net.sinkCount)
+          return netRouterError("sink progress prerequisite is out of range");
+        if (unresolvedSinks_[prerequisite]) {
+          progressSatisfied = false;
+          break;
+        }
+        auto satisfied = spatialRouteProgressDependencySatisfied(
+            candidate, logicalNet, prerequisite, sink);
+        if (!satisfied)
+          return satisfied.takeError();
+        if (!*satisfied) {
+          progressSatisfied = false;
+          break;
+        }
+      }
+      if (!progressSatisfied)
+        continue;
       if (llvm::Error error =
               move.attachRoutePath(logicalNet, target, {}, sink))
         return std::move(error);
@@ -372,15 +419,27 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
 
     if (llvm::Error error = collectSourceFrontier(tree, source))
       return std::move(error);
-    if (llvm::Error error =
-            collectTargetFrontier(candidate, logicalNet, net.sinkCount))
-      return std::move(error);
+    auto requiresBufferedTraversal =
+        collectTargetFrontier(candidate, logicalNet, net.sinkCount);
+    if (!requiresBufferedTraversal)
+      return requiresBufferedTraversal.takeError();
+    if (*requiresBufferedTraversal &&
+        llvm::all_of(bufferedTraversalBits_,
+                     [](std::uint64_t word) { return word == 0; }))
+      return unreachable(
+          "a causal multicast branch requires buffered ingress, but the "
+          "Fabric exposes no buffered FIFO traversal");
+    const llvm::ArrayRef<std::uint64_t> requiredTraversals =
+        *requiresBufferedTraversal
+            ? llvm::ArrayRef<std::uint64_t>(bufferedTraversalBits_)
+            : llvm::ArrayRef<std::uint64_t>();
     auto result = endpointSearch_.search(
         {sourceEndpoints_, sourceReplicationGroups_, targetEndpoints_,
          targetPreferenceRanks_, costs.lowerBoundArcCosts(),
          costs.currentArcCosts(), candidate.logicalNetPayloadWidth(logicalNet),
          0, endpointExpansionLimit, *eligibleTraversals,
-         costs.lowerBoundCostRevision()});
+         costs.lowerBoundCostRevision(), requiredTraversals,
+         *requiresBufferedTraversal});
     if (!result)
       return result.takeError();
 
@@ -395,6 +454,21 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
     }
     const llvm::ArrayRef<PnrIndex> branch =
         result->forwardArcs.drop_front(pathBegin);
+    if (*requiresBufferedTraversal) {
+      bool branchBuffered = false;
+      for (PnrIndex arc : branch) {
+        if (arc >= routing.routingArcs().size())
+          return netRouterError("selected branch arc is out of range");
+        const PnrIndex traversal = routing.routingArcs()[arc].traversal;
+        branchBuffered |= traversal / 64 < bufferedTraversalBits_.size() &&
+                          (bufferedTraversalBits_[traversal / 64] &
+                           (std::uint64_t{1} << (traversal % 64))) != 0;
+      }
+      if (!branchBuffered)
+        return netRouterError(
+            "causal multicast branch lost its buffered traversal after "
+            "route-tree attachment");
+    }
     RouteCost branchCost = 0;
     for (PnrIndex arc : branch) {
       auto next = accumulateRouteCost(branchCost, costs.currentArcCosts()[arc]);
@@ -433,7 +507,8 @@ std::size_t SpatialNetRouterScratch::retainedStorageBytes() const {
          retainedBytes(targetPreferenceRanks_) +
          retainedBytes(targetObligationByEndpoint_) +
          retainedBytes(unresolvedSinks_) +
-         retainedBytes(prospectiveClaimBits_) + retainedBytes(endpointMarks_) +
+         retainedBytes(prospectiveClaimBits_) +
+         retainedBytes(bufferedTraversalBits_) + retainedBytes(endpointMarks_) +
          retainedBytes(subtreeWorklist_) +
          routeConstraints_->retainedStorageBytes();
 }

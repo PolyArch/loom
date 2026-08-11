@@ -36,6 +36,12 @@ struct MappedRtlExecutionClosure final {
 
 struct MappedRtlExecutionBundleProjection final {
   std::vector<external_tool::MaterializedBundleFile> semanticInputs;
+  std::string testbenchPath;
+  std::string standaloneVerilatorDriverPath;
+  std::string bridgedVerilatorDriverPath;
+  std::string bridgeEngineSourcePath;
+  std::string simulatorExecutablePath;
+  std::string resultPath;
   std::string testbench;
   std::string standaloneVerilatorDriver;
   std::string bridgedVerilatorDriver;
@@ -63,12 +69,12 @@ llvm::Expected<MappedRtlExecutionProjectionOrUnsupported>
 deriveMappedRtlExecutionBundleProjection(
     const MappedRtlExecutionClosure &closure, std::uint64_t cycleLimit,
     std::uint64_t buildJobs, const ArtifactStore &artifacts,
-    const BlobStore &blobs);
+    const BlobStore &blobs, llvm::StringRef pathPrefix = {});
 
 llvm::Expected<external_tool::ExternalToolInvocationImportExpectation>
 deriveMappedRtlExecutionImportExpectation(
     const MappedRtlExecutionClosure &closure, const ArtifactStore &artifacts,
-    const BlobStore &blobs);
+    const BlobStore &blobs, llvm::StringRef pathPrefix = {});
 
 /// Projects a strict retired RTL result into the shared Spatial engine
 /// boundary. Stopped-by-limit classification remains with the descriptor.

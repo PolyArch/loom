@@ -175,20 +175,25 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
 
   graph_ = graph;
   heuristics_.assign(endpointCount, 0);
-  distances_.assign(endpointCount, 0);
-  priorities_.assign(endpointCount, 0);
-  predecessorArcs_.assign(endpointCount, invalidIndex);
+  if (endpointCount > std::numeric_limits<std::size_t>::max() / 2 ||
+      graph.endpointCount > std::numeric_limits<PnrIndex>::max() / 2)
+    return invalid("endpoint count cannot form the required-state product");
+  const std::size_t searchStateCount = endpointCount * 2;
+  distances_.assign(searchStateCount, 0);
+  priorities_.assign(searchStateCount, 0);
+  predecessorArcs_.assign(searchStateCount, invalidIndex);
+  predecessorStates_.assign(searchStateCount, invalidIndex);
   heuristicEpochs_.assign(endpointCount, 0);
-  distanceEpochs_.assign(endpointCount, 0);
+  distanceEpochs_.assign(searchStateCount, 0);
   targetEpochs_.assign(endpointCount, 0);
   sourceEpochs_.assign(endpointCount, 0);
   targetPreferenceRanks_.assign(endpointCount, 0);
   sourceReplicationGroups_.assign(endpointCount, getInvalidPnrIndex());
   heap_.clear();
-  heap_.reserve(endpointCount);
-  heapPositions_.assign(endpointCount, invalidIndex);
+  heap_.reserve(searchStateCount);
+  heapPositions_.assign(searchStateCount, invalidIndex);
   path_.clear();
-  path_.reserve(endpointCount);
+  path_.reserve(searchStateCount);
   heuristicCache_.clear();
   heuristicCacheTargets_.clear();
   heuristicCacheEligibility_.clear();
@@ -199,19 +204,18 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   const bool cacheShapeFits =
       endpointCount != 0 &&
       endpointCount <=
-          heuristicCacheByteBudget /
-              (sizeof(RouteCost) + sizeof(PnrIndex)) &&
-      traversalWordCount <=
-          heuristicCacheByteBudget / sizeof(std::uint64_t);
+          heuristicCacheByteBudget / (sizeof(RouteCost) + sizeof(PnrIndex)) &&
+      traversalWordCount <= heuristicCacheByteBudget / sizeof(std::uint64_t);
   if (cacheShapeFits) {
     const std::size_t maximumKeyBytes =
         endpointCount * sizeof(PnrIndex) +
         traversalWordCount * sizeof(std::uint64_t);
     const std::size_t estimatedEntryBytes =
         endpointCount * sizeof(RouteCost) + maximumKeyBytes;
-    const std::size_t entryCount = std::min(
-        maximumHeuristicCacheEntryCount,
-        heuristicCacheByteBudget / std::max<std::size_t>(estimatedEntryBytes, 1));
+    const std::size_t entryCount =
+        std::min(maximumHeuristicCacheEntryCount,
+                 heuristicCacheByteBudget /
+                     std::max<std::size_t>(estimatedEntryBytes, 1));
     const bool targetStorageFits =
         entryCount <= std::numeric_limits<std::size_t>::max() /
                           std::max<std::size_t>(endpointCount, 1);
@@ -252,8 +256,10 @@ bool EndpointRouteSearchScratch::heapLess(PnrIndex lhs, PnrIndex rhs) const {
   }
   if (priorities_[lhs] != priorities_[rhs])
     return priorities_[lhs] < priorities_[rhs];
-  if (heuristics_[lhs] != heuristics_[rhs])
-    return heuristics_[lhs] < heuristics_[rhs];
+  const PnrIndex lhsEndpoint = searchEndpoint(lhs);
+  const PnrIndex rhsEndpoint = searchEndpoint(rhs);
+  if (heuristic(lhsEndpoint) != heuristic(rhsEndpoint))
+    return heuristic(lhsEndpoint) < heuristic(rhsEndpoint);
   return lhs < rhs;
 }
 
@@ -344,10 +350,28 @@ RouteCost EndpointRouteSearchScratch::heuristic(PnrIndex endpoint) const {
   return heuristics_[endpoint];
 }
 
-RouteCost EndpointRouteSearchScratch::distance(PnrIndex endpoint) const {
-  if (distanceEpochs_[endpoint] != searchGeneration_)
+RouteCost EndpointRouteSearchScratch::distance(PnrIndex state) const {
+  if (distanceEpochs_[state] != searchGeneration_)
     return routeCostInfinity;
-  return distances_[endpoint];
+  return distances_[state];
+}
+
+PnrIndex EndpointRouteSearchScratch::searchState(PnrIndex endpoint,
+                                                 bool requirementMet) const {
+  assert(endpoint < graph_.endpointCount);
+  return endpoint + (requirementMet ? graph_.endpointCount : 0);
+}
+
+PnrIndex EndpointRouteSearchScratch::searchEndpoint(PnrIndex state) const {
+  assert(graph_.endpointCount != 0 &&
+         state < graph_.endpointCount * static_cast<PnrIndex>(2));
+  return state < graph_.endpointCount ? state : state - graph_.endpointCount;
+}
+
+bool EndpointRouteSearchScratch::searchRequirementMet(PnrIndex state) const {
+  assert(graph_.endpointCount != 0 &&
+         state < graph_.endpointCount * static_cast<PnrIndex>(2));
+  return state >= graph_.endpointCount;
 }
 
 bool EndpointRouteSearchScratch::isTarget(PnrIndex endpoint) const {
@@ -440,14 +464,13 @@ std::uint64_t EndpointRouteSearchScratch::heuristicCacheKeyHash(
 }
 
 bool EndpointRouteSearchScratch::heuristicCacheKeyEquals(
-    const HeuristicCacheEntry &entry,
-    const EndpointRouteSearchRequest &request, std::uint64_t keyHash,
-    std::size_t slot) const {
+    const HeuristicCacheEntry &entry, const EndpointRouteSearchRequest &request,
+    std::uint64_t keyHash, std::size_t slot) const {
   const std::size_t endpointCount =
       static_cast<std::size_t>(graph_.endpointCount);
-  const auto targets = llvm::ArrayRef(heuristicCacheTargets_)
-                           .slice(slot * endpointCount,
-                                  entry.targetEndpointCount);
+  const auto targets =
+      llvm::ArrayRef(heuristicCacheTargets_)
+          .slice(slot * endpointCount, entry.targetEndpointCount);
   const auto eligibility = llvm::ArrayRef(heuristicCacheEligibility_)
                                .slice(slot * heuristicCacheTraversalWordCount_,
                                       entry.eligibleTraversalWordCount);
@@ -501,9 +524,7 @@ void EndpointRouteSearchScratch::storeCachedHeuristic(
   llvm::copy(request.eligibleTraversalBits,
              heuristicCacheEligibility_.begin() +
                  slot * heuristicCacheTraversalWordCount_);
-  RouteCost *distances =
-      heuristicCacheDistances_.data() +
-      slot * endpointCount;
+  RouteCost *distances = heuristicCacheDistances_.data() + slot * endpointCount;
   for (PnrIndex endpoint = 0; endpoint != graph_.endpointCount; ++endpoint)
     distances[endpoint] = heuristic(endpoint);
   entry.populated = true;
@@ -532,6 +553,9 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   if (!request.eligibleTraversalBits.empty() &&
       request.eligibleTraversalBits.size() != traversalWords)
     return invalid("eligible traversal mask has the wrong width");
+  if (!request.requiredTraversalBits.empty() &&
+      request.requiredTraversalBits.size() != traversalWords)
+    return invalid("required traversal mask has the wrong width");
   if (!request.eligibleTraversalBits.empty() &&
       graph_.traversalReplicationGroups.size() % 64 != 0) {
     const std::uint64_t paddingMask = ~(
@@ -539,6 +563,21 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
         1);
     if ((request.eligibleTraversalBits.back() & paddingMask) != 0)
       return invalid("eligible traversal mask has nonzero padding");
+  }
+  if (!request.requiredTraversalBits.empty() &&
+      graph_.traversalReplicationGroups.size() % 64 != 0) {
+    const std::uint64_t paddingMask = ~(
+        (std::uint64_t{1} << (graph_.traversalReplicationGroups.size() % 64)) -
+        1);
+    if ((request.requiredTraversalBits.back() & paddingMask) != 0)
+      return invalid("required traversal mask has nonzero padding");
+  }
+  if (!request.requiredTraversalBits.empty()) {
+    bool hasRequiredTraversal = false;
+    for (std::uint64_t word : request.requiredTraversalBits)
+      hasRequiredTraversal |= word != 0;
+    if (!hasRequiredTraversal)
+      return invalid("required traversal mask names no traversal");
   }
   if (request.endpointExpansionLimit == 0)
     return invalid("endpoint expansion limit must be positive");
@@ -580,38 +619,44 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
     const RouteCost lowerBound = heuristic(source);
     if (lowerBound == routeCostInfinity)
       continue;
-    distances_[source] = 0;
-    priorities_[source] = lowerBound;
-    predecessorArcs_[source] = invalidIndex;
-    distanceEpochs_[source] = searchGeneration_;
-    insertOrDecrease(source);
+    const PnrIndex state = searchState(source, false);
+    distances_[state] = 0;
+    priorities_[state] = lowerBound;
+    predecessorArcs_[state] = invalidIndex;
+    predecessorStates_[state] = invalidIndex;
+    distanceEpochs_[state] = searchGeneration_;
+    insertOrDecrease(state);
   }
 
-  PnrIndex bestTarget = invalidIndex;
+  PnrIndex bestTargetState = invalidIndex;
   RouteCost bestCost = routeCostInfinity;
   std::uint64_t expansions = 0;
   while (!heap_.empty()) {
     const PnrIndex next = peekMinimum();
-    if (bestTarget != invalidIndex && priorities_[next] > bestCost)
+    if (bestTargetState != invalidIndex && priorities_[next] > bestCost)
       break;
     if (expansions == request.endpointExpansionLimit)
       return failure(
           EndpointRouteSearchFailureKind::WorkLimit,
           "endpoint expansion limit reached before optimality proof");
-    const PnrIndex endpoint = popMinimum();
+    const PnrIndex state = popMinimum();
+    const PnrIndex endpoint = searchEndpoint(state);
     if (endpointExpansionCount_ == std::numeric_limits<std::uint64_t>::max())
       return overflow("cumulative endpoint expansion count overflows u64");
     ++expansions;
     ++endpointExpansionCount_;
-    const RouteCost endpointDistance = distances_[endpoint];
-    if (isTarget(endpoint)) {
+    const RouteCost endpointDistance = distances_[state];
+    const bool requirementMet = searchRequirementMet(state);
+    if (isTarget(endpoint) &&
+        (request.requiredTraversalBits.empty() || requirementMet)) {
       if (endpointDistance < bestCost ||
           (endpointDistance == bestCost &&
-           (bestTarget == invalidIndex ||
+           (bestTargetState == invalidIndex ||
             std::make_tuple(targetPreferenceRank(endpoint), endpoint) <
-                std::make_tuple(targetPreferenceRank(bestTarget),
-                                bestTarget)))) {
-        bestTarget = endpoint;
+                std::make_tuple(
+                    targetPreferenceRank(searchEndpoint(bestTargetState)),
+                    searchEndpoint(bestTargetState))))) {
+        bestTargetState = state;
         bestCost = endpointDistance;
       }
       continue;
@@ -623,6 +668,9 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
       if (!arcEligible(arc, request, true))
         continue;
       const PnrIndex successor = graph_.arcs[arc].target;
+      if (request.forbidSourceReentry && isSource(successor) &&
+          successor != endpoint)
+        continue;
       const RouteCost successorHeuristic = heuristic(successor);
       if (successorHeuristic == routeCostInfinity)
         continue;
@@ -630,21 +678,30 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
           endpointDistance, request.currentArcCosts[arc], "forward distance");
       if (!candidateDistance)
         return candidateDistance.takeError();
-      if (*candidateDistance >= distance(successor))
+      const PnrIndex traversal = graph_.arcs[arc].traversal;
+      const bool selectsRequired =
+          !request.requiredTraversalBits.empty() &&
+          traversal / 64 < request.requiredTraversalBits.size() &&
+          (request.requiredTraversalBits[traversal / 64] &
+           (std::uint64_t{1} << (traversal % 64))) != 0;
+      const PnrIndex successorState =
+          searchState(successor, requirementMet || selectsRequired);
+      if (*candidateDistance >= distance(successorState))
         continue;
       auto candidatePriority = addFiniteCost(
           *candidateDistance, successorHeuristic, "A-star priority");
       if (!candidatePriority)
         return candidatePriority.takeError();
-      distances_[successor] = *candidateDistance;
-      priorities_[successor] = *candidatePriority;
-      predecessorArcs_[successor] = arc;
-      distanceEpochs_[successor] = searchGeneration_;
-      insertOrDecrease(successor);
+      distances_[successorState] = *candidateDistance;
+      priorities_[successorState] = *candidatePriority;
+      predecessorArcs_[successorState] = arc;
+      predecessorStates_[successorState] = state;
+      distanceEpochs_[successorState] = searchGeneration_;
+      insertOrDecrease(successorState);
     }
   }
 
-  if (bestTarget == invalidIndex)
+  if (bestTargetState == invalidIndex)
     return failure(
         EndpointRouteSearchFailureKind::Unreachable,
         "no eligible route connects the endpoint sets (source_count=",
@@ -654,16 +711,20 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
         ", first_target=", request.targetEndpoints.front(), ")");
 
   path_.clear();
-  PnrIndex endpoint = bestTarget;
-  while (!isSource(endpoint)) {
-    const PnrIndex arc = predecessorArcs_[endpoint];
+  PnrIndex state = bestTargetState;
+  while (predecessorStates_[state] != invalidIndex) {
+    const PnrIndex arc = predecessorArcs_[state];
     if (arc == invalidIndex)
       return invalid("predecessor chain does not reach a source endpoint");
     path_.push_back(arc);
-    endpoint = graph_.arcSources[arc];
+    state = predecessorStates_[state];
   }
+  const PnrIndex source = searchEndpoint(state);
+  const PnrIndex target = searchEndpoint(bestTargetState);
+  if (!isSource(source))
+    return invalid("predecessor chain terminates outside the source set");
   std::reverse(path_.begin(), path_.end());
-  return EndpointRouteSearchResult{endpoint, bestTarget, bestCost, path_};
+  return EndpointRouteSearchResult{source, target, bestCost, path_};
 }
 
 std::size_t EndpointRouteSearchScratch::retainedStorageBytes() const {
@@ -676,6 +737,7 @@ std::size_t EndpointRouteSearchScratch::retainedStorageBytes() const {
          distances_.capacity() * sizeof(RouteCost) +
          priorities_.capacity() * sizeof(RouteCost) +
          predecessorArcs_.capacity() * sizeof(PnrIndex) +
+         predecessorStates_.capacity() * sizeof(PnrIndex) +
          heuristicEpochs_.capacity() * sizeof(std::uint64_t) +
          distanceEpochs_.capacity() * sizeof(std::uint64_t) +
          targetEpochs_.capacity() * sizeof(std::uint64_t) +

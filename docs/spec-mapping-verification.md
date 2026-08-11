@@ -519,8 +519,12 @@ Using that projection, the base verifier checks:
   configuration continuity;
 * atomic activation and release closure over all selected and imported uses;
   and
-* progress and deadlock closure using the confirmed Fabric guarantees and
-  existing Dataflow causal events.
+* progress and deadlock closure using the confirmed Fabric guarantees,
+  existing Dataflow causal events, and exact selected routes, including a
+  post-divergence Buffered FIFO on every dependent branch of an atomic
+  multicast whose prerequisite sink can causally reach that dependent sink.
+  A FIFO on the shared route prefix and a bypass traversal do not satisfy this
+  condition.
 
 All verifier modules consume the same closure projection. They cannot build
 independent interpretations that disagree about imported use qualification,

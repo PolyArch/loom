@@ -24,6 +24,7 @@
 #include "FabricCapabilityProjection.h"
 #include "FabricFuCapabilityDerivation.h"
 #include "FabricMemoryEngineTemplate.h"
+#include "FabricInterconnectImplementationInternal.h"
 #include "FabricModuleBoundaryTransport.h"
 #include "FabricModuleCanonicalPayload.h"
 #include "FabricModuleDomainMaterialization.h"
@@ -78,12 +79,6 @@ constexpr llvm::StringLiteral systemEntityIdAttrName("entity_id");
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "fabric_artifact_invalid: " + message);
-}
-
-llvm::Error ownerUnavailable(const llvm::Twine &message) {
-  return llvm::createStringError(
-      llvm::inconvertibleErrorCode(),
-      "fabric_artifact_owner_contract_unavailable: " + message);
 }
 
 std::vector<std::uint8_t> handshakeSignalKey(const HandshakeSignalRef &signal) {
@@ -1539,8 +1534,12 @@ strictImport(const ArtifactRootReference &reference,
       return strictImportSystem(reference, canonicalBytes, std::move(*decoded),
                                 store);
     case FabricRootKind::InterconnectImplementation:
-      return llvm::Expected<StrictImportResult>(ownerUnavailable(
-          "InterconnectImplementation strict import provider is unavailable"));
+      if (auto view = detail::strictImportInterconnectImplementation(
+              reference, *decoded, store))
+        return llvm::Expected<StrictImportResult>(StrictImportResult{
+            std::move(*decoded), std::move(*view), {}, {}});
+      else
+        return llvm::Expected<StrictImportResult>(view.takeError());
     }
     llvm_unreachable("closed Fabric root kind");
   }();

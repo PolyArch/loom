@@ -260,4 +260,91 @@ selectSystemSpatialExecutionContext(
   return selected.begin()->second;
 }
 
+llvm::Expected<std::uint64_t> selectSystemServicePlanOrdinal(
+    const SystemServiceRealizationView &realization,
+    const ServicePlanSelectionAnchor &anchor,
+    const ExecutionContextKey &context,
+    llvm::ArrayRef<SystemPresburgerCell> contextDomain,
+    llvm::ArrayRef<std::uint64_t> denseCoordinates) {
+  const SystemServicePlanSelectionView *selection = nullptr;
+  for (const SystemServicePlanSelectionView &candidate :
+       realization.selections) {
+    if (!(candidate.key.anchor == anchor) ||
+        !(candidate.key.context == context))
+      continue;
+    if (selection)
+      return invalid("service plan selection key is duplicated");
+    selection = &candidate;
+  }
+  if (!selection)
+    return invalid("service plan selection key is absent");
+  if (contextDomain.empty())
+    return invalid("service plan selection context domain is empty");
+
+  std::vector<SystemPresburgerCell> explicitCells;
+  for (const auto &clause : selection->clauses)
+    explicitCells.insert(explicitCells.end(), clause.cells.begin(),
+                         clause.cells.end());
+  std::vector<SystemPresburgerCell> defaultCells;
+  if (selection->defaultPlanOrdinal) {
+    auto complement = splitSystemPresburgerSet(contextDomain, explicitCells);
+    if (!complement)
+      return complement.takeError();
+    defaultCells = std::move(complement->outside);
+  }
+
+  std::set<std::uint64_t> selected;
+  const auto intersectsPoint =
+      [&](const SystemPresburgerCell &cell) -> llvm::Expected<bool> {
+    if (cell.dimensionCount != denseCoordinates.size())
+      return invalid("service plan coordinate rank does not match its domain");
+    SystemPresburgerCell point;
+    point.dimensionCount = cell.dimensionCount;
+    point.symbolCount = cell.symbolCount;
+    const std::size_t width =
+        static_cast<std::size_t>(point.dimensionCount) + point.symbolCount + 1;
+    for (std::size_t dimension = 0; dimension < denseCoordinates.size();
+         ++dimension) {
+      if (denseCoordinates[dimension] >
+          static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+        return invalid("service plan coordinate exceeds the signed "
+                       "Presburger domain");
+      std::vector<std::int64_t> equality(width, 0);
+      equality[dimension] = 1;
+      equality.back() = -static_cast<std::int64_t>(denseCoordinates[dimension]);
+      point.equalities.push_back(std::move(equality));
+    }
+    auto overlap = intersectSystemPresburgerCells(cell, point);
+    if (!overlap)
+      return overlap.takeError();
+    return overlap->has_value();
+  };
+  for (const auto &clause : selection->clauses)
+    for (const SystemPresburgerCell &cell : clause.cells) {
+      auto intersects = intersectsPoint(cell);
+      if (!intersects)
+        return intersects.takeError();
+      if (*intersects)
+        selected.insert(clause.target);
+    }
+  if (selection->defaultPlanOrdinal)
+    for (const SystemPresburgerCell &cell : defaultCells) {
+      auto intersects = intersectsPoint(cell);
+      if (!intersects)
+        return intersects.takeError();
+      if (*intersects)
+        selected.insert(*selection->defaultPlanOrdinal);
+    }
+  if (selected.empty())
+    return invalid("logical point selects no service plan");
+  if (selected.size() != 1)
+    return invalid("logical point has an ambiguous service plan across legal "
+                   "symbol valuations");
+  const std::uint64_t ordinal = *selected.begin();
+  if (!llvm::any_of(realization.plans,
+                    [&](const auto &plan) { return plan.ordinal == ordinal; }))
+    return invalid("selected service plan is absent");
+  return ordinal;
+}
+
 } // namespace loom::mapping

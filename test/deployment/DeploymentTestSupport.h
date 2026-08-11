@@ -2,6 +2,7 @@
 #define LOOM_TEST_DEPLOYMENT_DEPLOYMENTTESTSUPPORT_H
 
 #include "Deployment/Deployment.h"
+#include "Deployment/ExecutableLeaves.h"
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -13,6 +14,7 @@
 #include "mlir/IR/Types.h"
 
 #include <string>
+#include <vector>
 
 namespace loom {
 class ArtifactStore;
@@ -23,6 +25,20 @@ struct RuntimeProviderDescriptor;
 } // namespace loom
 
 namespace loom::deployment::test {
+
+struct MappedSpatialSystemSpec final {
+  std::uint32_t accCoreCount = 2;
+  bool alternateInstructionMicroarchitectures = false;
+  bool attachSystemMemory = false;
+};
+
+struct MappedSystemExecutablePrograms final {
+  std::vector<std::uint8_t> hostProgramBytes;
+  std::vector<HostProgramEntry> hostEntries;
+  std::vector<HostExternalInterface> hostInterfaces;
+  std::vector<std::uint8_t> instructionProgramBytes;
+  std::string instructionEntrySymbol = "__loom_thread_entry_0";
+};
 
 class TemporaryTree final {
 public:
@@ -72,10 +88,30 @@ FinalizedDeployment buildMappedSpatialDeployment(
     const hardware::FinalizedHardwareImplementation &implementation,
     ArtifactStore &artifacts, BlobStore &blobs, const TemporaryTree &tree);
 
+mapping::FinalizedSystemMapping buildMappedSystemMapping(
+    llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
+    const fabric::FinalizedFabricRoot &system,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+    ArtifactStore &artifacts,
+    llvm::ArrayRef<fabric::AccCoreOccurrenceRef> rootThreadTargets = {});
+
+FinalizedDeployment buildMappedSystemDeployment(
+    llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
+    const fabric::FinalizedFabricRoot &system,
+    const mapping::FinalizedSystemMapping &systemMapping,
+    const hardware::FinalizedHardwareImplementation &implementation,
+    MappedSystemExecutablePrograms programs, ArtifactStore &artifacts,
+    BlobStore &blobs, const TemporaryTree &tree);
+
 fabric::FinalizedFabricRoot buildMappedSpatialSystem(
     llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
     llvm::ArrayRef<mlir::Type> messagePayloads, const ArtifactStore &artifacts,
     bool attachSystemMemory);
+
+fabric::FinalizedFabricRoot buildMappedSpatialSystem(
+    llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
+    llvm::ArrayRef<mlir::Type> messagePayloads, const ArtifactStore &artifacts,
+    MappedSpatialSystemSpec spec);
 
 llvm::Expected<FinalizedDeployment>
 tryBuildMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,

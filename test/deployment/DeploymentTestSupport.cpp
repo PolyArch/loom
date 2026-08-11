@@ -8,6 +8,7 @@
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Deployment/DeploymentPipeline.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -16,6 +17,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/InstructionCoreBinary.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
@@ -25,6 +27,7 @@
 #include "Hardware/Implementation/RepresentationFormat.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/IR/MappingAttrs.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/System/SystemPnrGenerator.h"
@@ -36,6 +39,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/Parser/Parser.h"
@@ -141,6 +145,21 @@ microarchitecture(llvm::StringRef test) {
                 std::move(common), pipeline));
 }
 
+fabric::InstructionCoreMicroarchitecturalRealization
+outOfOrderMicroarchitecture(llvm::StringRef test) {
+  fabric::InstructionCoreCommonDeclaration common{
+      1,
+      {{fabric::InstructionOperationClass::IntegerAlu, 2, 1, 1},
+       {fabric::InstructionOperationClass::LoadStore, 2, 2, 1}},
+      ::fabric::oneCycleElasticOperationResourceContract()};
+  fabric::OutOfOrderMicroarchitectureDeclaration pipeline{
+      2, 2, 2, 2, 2, 2, 2, 32, 16, 8, 8, 64, 64, 64};
+  return take(
+      test,
+      fabric::InstructionCoreMicroarchitecturalRealization::createOutOfOrder(
+          std::move(common), pipeline));
+}
+
 ::fabric::ResourceContract
 sharedTransportResourceContract(llvm::StringRef test,
                                 std::uint32_t residentRouteCapacity) {
@@ -212,18 +231,25 @@ fabric::FinalizedFabricRoot
 buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
             const ArtifactStore &artifacts,
             llvm::ArrayRef<mlir::Type> messagePayloads = {},
-            bool attachSystemMemory = false) {
+            MappedSpatialSystemSpec spec = {}) {
+  require(test, spec.accCoreCount != 0,
+          "mapped System requires at least one AccCore");
   adg::DesignBuilder design(artifacts);
   auto system = take(test, design.createSystem("deployment-system"));
   auto imported = take(test, system.importSpatialCore(module));
   const auto architecture =
       take(test, adg::getBuiltinInstructionCoreArchitecture());
-  const auto micro = microarchitecture(test);
-  auto host = take(test, system.addHostCore(architecture, micro));
+  const auto inOrder = microarchitecture(test);
+  const auto outOfOrder = outOfOrderMicroarchitecture(test);
+  auto host = take(test, system.addHostCore(architecture, inOrder));
   std::vector<adg::AccCore> cores;
-  for (std::uint64_t ordinal = 0; ordinal != 2; ++ordinal) {
-    cores.push_back(
-        take(test, system.addAccCore(architecture, micro, imported)));
+  for (std::uint64_t ordinal = 0; ordinal != spec.accCoreCount; ++ordinal) {
+    const auto &microarchitecture =
+        spec.alternateInstructionMicroarchitectures && ordinal % 2 != 0
+            ? outOfOrder
+            : inOrder;
+    cores.push_back(take(
+        test, system.addAccCore(architecture, microarchitecture, imported)));
   }
 
   auto clock = take(test, system.createHardwareDomain());
@@ -308,19 +334,17 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
             take(test, routers[ordinal].output(1)),
             take(test, routers[(ordinal + 1) % routers.size()].input(1))));
 
-  if (attachSystemMemory) {
-    auto indexWidths =
-        take(test,
-             ::fabric::UnsignedDomain::fromCanonical({{32, 32}, {64, 64}}));
-    auto memory = take(
-        test, adg::makeHybrid32SystemMemory(
-                  {0, 4096,
-                   adg::MemoryAccessDomainParameters{
-                       128, std::nullopt, 4, std::move(indexWidths)},
-                   128},
-                  rate));
-    auto memoryService =
-        take(test, system.addMemoryService(memory.contract));
+  if (spec.attachSystemMemory) {
+    auto indexWidths = take(
+        test, ::fabric::UnsignedDomain::fromCanonical({{32, 32}, {64, 64}}));
+    auto memory =
+        take(test, adg::makeHybrid32SystemMemory(
+                       {0, 4096,
+                        adg::MemoryAccessDomainParameters{
+                            128, std::nullopt, 4, std::move(indexWidths)},
+                        128},
+                       rate));
+    auto memoryService = take(test, system.addMemoryService(memory.contract));
     auto memoryEndpoint = take(
         test, system.addServiceEndpoint(memoryService, memory.capabilities));
     clockMembers.push_back(memoryService.domainMember());
@@ -331,31 +355,33 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
             "mapped memory fixture is not a Module root");
     const auto widestTransportOrdinal =
         [&](fabric::FabricPortDirection direction) {
-      std::optional<std::pair<std::size_t, std::uint32_t>> widest;
-      std::size_t transportOrdinal = 0;
-      const std::uint64_t boundaryCount =
-          module.view().moduleBoundaryEndpointCount(*moduleTemplate, direction);
-      for (std::uint64_t ordinal = 0; ordinal != boundaryCount; ++ordinal) {
-        const fabric::FabricModuleBoundaryEndpointRef boundary{
-            *moduleTemplate, direction, ordinal};
-        const auto plane = module.view().moduleBoundaryEndpointPlane(boundary);
-        require(test, plane.has_value(),
-                "mapped memory boundary has no endpoint plane");
-        if (*plane != fabric::FabricSpatialAttachmentEndpointRef::Plane::
-                          Transport)
-          continue;
-        const auto dataPath =
-            module.view().moduleBoundaryEndpointDataPath(boundary);
-        require(test, dataPath.has_value(),
-                "mapped memory transport boundary has no data path");
-        if (!widest || dataPath->payloadWidthBits > widest->second)
-          widest = std::pair{transportOrdinal, dataPath->payloadWidthBits};
-        ++transportOrdinal;
-      }
-      require(test, widest.has_value(),
-              "mapped memory fixture has no service-leg carrier");
-      return widest->first;
-    };
+          std::optional<std::pair<std::size_t, std::uint32_t>> widest;
+          std::size_t transportOrdinal = 0;
+          const std::uint64_t boundaryCount =
+              module.view().moduleBoundaryEndpointCount(*moduleTemplate,
+                                                        direction);
+          for (std::uint64_t ordinal = 0; ordinal != boundaryCount; ++ordinal) {
+            const fabric::FabricModuleBoundaryEndpointRef boundary{
+                *moduleTemplate, direction, ordinal};
+            const auto plane =
+                module.view().moduleBoundaryEndpointPlane(boundary);
+            require(test, plane.has_value(),
+                    "mapped memory boundary has no endpoint plane");
+            if (*plane !=
+                fabric::FabricSpatialAttachmentEndpointRef::Plane::Transport)
+              continue;
+            const auto dataPath =
+                module.view().moduleBoundaryEndpointDataPath(boundary);
+            require(test, dataPath.has_value(),
+                    "mapped memory transport boundary has no data path");
+            if (!widest || dataPath->payloadWidthBits > widest->second)
+              widest = std::pair{transportOrdinal, dataPath->payloadWidthBits};
+            ++transportOrdinal;
+          }
+          require(test, widest.has_value(),
+                  "mapped memory fixture has no service-leg carrier");
+          return widest->first;
+        };
     const std::size_t responseOrdinal =
         widestTransportOrdinal(fabric::FabricPortDirection::Input);
     const std::size_t requestOrdinal =
@@ -365,11 +391,10 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
     std::vector<adg::SystemTransportEndpoint> providerResponses;
     for (const adg::AccCore &core : cores) {
       auto manager = take(test, core.spatialMemoryManager(0));
-      requireSuccess(test,
-                     system.attachSpatialMemory(manager, memoryEndpoint));
-      auto transport = take(
-          test, system.addTransportResource(
-                    {{carrier}, {carrier}, transportContract}));
+      requireSuccess(test, system.attachSpatialMemory(manager, memoryEndpoint));
+      auto transport =
+          take(test, system.addTransportResource(
+                         {{carrier}, {carrier}, transportContract}));
       auto pattern =
           take(test, system.addTransferPattern(transport, 0, {0}, 0));
       clockMembers.push_back(transport.domainMember());
@@ -393,10 +418,10 @@ buildSystem(llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
     auto subordinate = take(test, memoryEndpoint.memory());
     for (auto kind : {dataflow::semantics::ServiceKind::MemoryRead,
                       dataflow::semantics::ServiceKind::MemoryWrite}) {
-      requireSuccess(test, system.attachServiceLegCarriers(
-                               subordinate, kind, 0, providerRequests));
-      requireSuccess(test, system.attachServiceLegCarriers(
-                               subordinate, kind, 1, providerResponses));
+      requireSuccess(test, system.attachServiceLegCarriers(subordinate, kind, 0,
+                                                           providerRequests));
+      requireSuccess(test, system.attachServiceLegCarriers(subordinate, kind, 1,
+                                                           providerResponses));
     }
   }
 
@@ -448,22 +473,79 @@ module {
   return dataflow;
 }
 
-mapping::FinalizedSystemMapping
-buildSystemMapping(llvm::StringRef test,
-                   const dataflow::CanonicalDataflowProgramView &dataflow,
-                   const fabric::FinalizedFabricRoot &system,
-                   ArtifactStore &artifacts,
-                   llvm::ArrayRef<ArtifactRootReference> spatialMappings = {}) {
+mapping::FinalizedSystemMapping buildSystemMapping(
+    llvm::StringRef test,
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const fabric::FinalizedFabricRoot &system, ArtifactStore &artifacts,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappings = {},
+    llvm::ArrayRef<fabric::AccCoreOccurrenceRef> rootThreadTargets = {}) {
   auto systemView = take(test, fabric::requireSystemRoot(system.view()));
-  require(test, dataflow.rootThreadLaunches().size() == 1,
-          "Dataflow fixture did not produce one root thread launch");
+  require(test, !dataflow.rootThreadLaunches().empty(),
+          "Dataflow fixture did not produce a root thread launch");
   require(test, !systemView.artifact().accCoreOccurrences().empty(),
           "System fixture has no AccCore occurrence");
-  const dataflow::RootThreadLaunchRef rootThread =
-      dataflow.rootThreadLaunches().front().ref;
-  auto constraints =
-      take(test, mapping::finalizeEmptySystemMappingConstraintSet(
-                     dataflow, systemView, {rootThread}, artifacts));
+  std::vector<dataflow::RootThreadLaunchRef> rootThreads;
+  rootThreads.reserve(dataflow.rootThreadLaunches().size());
+  for (const dataflow::CanonicalRootThreadLaunchView &root :
+       dataflow.rootThreadLaunches())
+    rootThreads.push_back(root.ref);
+  mapping::FinalizedSystemMappingConstraintSet constraints = [&] {
+    if (rootThreadTargets.empty())
+      return take(test, mapping::finalizeEmptySystemMappingConstraintSet(
+                            dataflow, systemView, rootThreads, artifacts));
+    require(test, rootThreadTargets.size() == rootThreads.size(),
+            "root thread target count does not match the root launch set");
+    mlir::MLIRContext constraintContext;
+    constraintContext.loadDialect<::mapping::MappingDialect>();
+    mlir::OpBuilder builder(&constraintContext);
+    auto module = mlir::ModuleOp::create(builder.getUnknownLoc());
+    builder.setInsertionPointToStart(module.getBody());
+    const auto bytesAttr = [&](llvm::ArrayRef<std::uint8_t> bytes) {
+      std::vector<std::int8_t> signedBytes;
+      signedBytes.reserve(bytes.size());
+      for (std::uint8_t byte : bytes)
+        signedBytes.push_back(static_cast<std::int8_t>(byte));
+      return mlir::DenseI8ArrayAttr::get(&constraintContext, signedBytes);
+    };
+    std::vector<mlir::Attribute> rootAttrs;
+    rootAttrs.reserve(rootThreads.size());
+    for (const auto root : rootThreads)
+      rootAttrs.push_back(::mapping::RootThreadLaunchRefAttr::get(
+          &constraintContext,
+          bytesAttr(take(test, dataflow::encodeDataflowReference(
+                                   dataflow.identity(), root)))));
+    auto root = ::mapping::ConstraintsSystemOp::create(
+        builder, builder.getUnknownLoc(),
+        ::mapping::ArtifactIdentityAttr::get(
+            &constraintContext, bytesAttr(dataflow.identity().bytes())),
+        ::mapping::ArtifactIdentityAttr::get(
+            &constraintContext,
+            bytesAttr(systemView.artifact().identity().bytes())),
+        builder.getArrayAttr(rootAttrs), builder.getArrayAttr({}));
+    root.getBody().emplaceBlock();
+    builder.setInsertionPointToEnd(&root.getBody().front());
+    for (const auto [rootAttr, core] :
+         llvm::zip_equal(rootAttrs, rootThreadTargets)) {
+      mlir::OperationState restriction(
+          builder.getUnknownLoc(),
+          ::mapping::ConstraintDomainRestrictionOp::getOperationName());
+      restriction.addAttribute(
+          "projection",
+          ::mapping::SystemConstraintProjectionKeyAttr::get(
+              &constraintContext,
+              static_cast<std::uint32_t>(
+                  ::mapping::SystemConstraintProjection::ThreadTargetAccCore)));
+      restriction.addAttribute("subject", rootAttr);
+      restriction.addAttribute(
+          "admissible_domain",
+          builder.getArrayAttr({::mapping::FabricAccCoreOccurrenceRefAttr::get(
+              &constraintContext,
+              bytesAttr(fabric::canonicalFabricBytes(core)))}));
+      builder.create(restriction);
+    }
+    return take(test, mapping::finalizeSystemMappingConstraintSet(
+                          root, dataflow, systemView, artifacts));
+  }();
   const auto partition =
       take(test, pnr::projectWholeDomainPresburgerPartitionPlan(
                      dataflow, constraints.view().rootThreadLaunches()));
@@ -785,11 +867,39 @@ FinalizedDeployment buildMappedSpatialDeployment(
     const hardware::FinalizedHardwareImplementation &implementation,
     ArtifactStore &artifacts, BlobStore &blobs, const TemporaryTree &tree) {
   auto dataflow = take(test, dataflowArtifact.view());
+  const auto systemMapping = buildSystemMapping(
+      test, dataflow, system, artifacts, {spatialMapping.reference()});
+  return buildMappedSystemDeployment(test, dataflowArtifact, system,
+                                     systemMapping, implementation, {},
+                                     artifacts, blobs, tree);
+}
+
+mapping::FinalizedSystemMapping buildMappedSystemMapping(
+    llvm::StringRef test,
+    const dataflow::CanonicalDataflowArtifact &dataflowArtifact,
+    const fabric::FinalizedFabricRoot &system,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+    ArtifactStore &artifacts,
+    llvm::ArrayRef<fabric::AccCoreOccurrenceRef> rootThreadTargets) {
+  auto dataflow = take(test, dataflowArtifact.view());
+  return buildSystemMapping(test, dataflow, system, artifacts, spatialMappings,
+                            rootThreadTargets);
+}
+
+FinalizedDeployment buildMappedSystemDeployment(
+    llvm::StringRef test,
+    const dataflow::CanonicalDataflowArtifact &dataflowArtifact,
+    const fabric::FinalizedFabricRoot &system,
+    const mapping::FinalizedSystemMapping &systemMapping,
+    const hardware::FinalizedHardwareImplementation &implementation,
+    MappedSystemExecutablePrograms programs, ArtifactStore &artifacts,
+    BlobStore &blobs, const TemporaryTree &tree) {
+  auto dataflow = take(test, dataflowArtifact.view());
+  require(test, !dataflow.rootThreadLaunches().empty(),
+          "mapped fixture did not contain a root thread launch");
   const ArtifactRootReference dataflowReference{
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version, dataflow.identity()};
-  const auto systemMapping = buildSystemMapping(
-      test, dataflow, system, artifacts, {spatialMapping.reference()});
 
   const runtime::RuntimeProviderDescriptor &provider =
       runtime::inProcessRuntimeProviderDescriptor();
@@ -850,48 +960,67 @@ FinalizedDeployment buildMappedSpatialDeployment(
   auto hostTarget = take(
       test, importCompilerTargetBinding(targets.host().reference(), artifacts));
   const auto &instructionTarget = targets.instructionGroups().front().binding();
-  require(test, dataflow.rootThreadLaunches().size() == 1,
-          "mapped fixture did not contain one root thread launch");
+  if (programs.instructionProgramBytes.empty())
+    programs.instructionProgramBytes =
+        linkedExecutable(test, instructionTarget.binding(), tree, "instruction",
+                         programs.instructionEntrySymbol);
+  std::vector<ThreadEntryBinding> threadEntries;
+  threadEntries.reserve(dataflow.rootThreadLaunches().size());
+  for (const dataflow::CanonicalRootThreadLaunchView &root :
+       dataflow.rootThreadLaunches())
+    threadEntries.push_back({root.ref, 0});
   const auto instructionBinary =
       take(test, finalizeInstructionCoreBinary(
                      {dataflowReference,
                       instructionTarget.reference(),
-                      linkedExecutable(test, instructionTarget.binding(), tree,
-                                       "instruction", "__loom_thread_entry_0"),
-                      {{dataflow.rootThreadLaunches().front().ref, 0}},
+                      std::move(programs.instructionProgramBytes),
+                      std::move(threadEntries),
                       {}},
                      artifacts, blobs));
-  const HostProgramLeaf host = take(
-      test,
-      finalizeHostProgramLeaf(
-          HostProgramLeafDraft{hostTarget.reference(),
-                               hostExecutable(test, hostTarget.binding(), tree),
-                               {{0, "loom_host_entry", {}, {}, {}}},
-                               {},
-                               {}},
-          artifacts, blobs));
+  if (programs.hostProgramBytes.empty())
+    programs.hostProgramBytes =
+        hostExecutable(test, hostTarget.binding(), tree);
+  if (programs.hostEntries.empty())
+    programs.hostEntries = {{0, "loom_host_entry", {}, {}, {}}};
+  require(test, programs.hostEntries.size() == 1,
+          "mapped fixture requires one host program entry");
+  const std::string hostEntrySymbol = programs.hostEntries.front().abiSymbol;
+  const HostProgramLeaf host =
+      take(test, finalizeHostProgramLeaf(
+                     HostProgramLeafDraft{hostTarget.reference(),
+                                          std::move(programs.hostProgramBytes),
+                                          std::move(programs.hostEntries),
+                                          std::move(programs.hostInterfaces),
+                                          {}},
+                     artifacts, blobs));
   llvm::LLVMContext linkedContext;
   auto finalLinkedModule = linkedModule(linkedContext, hostTarget.binding(),
-                                        "linked-host", "loom_host_entry");
-  auto deployment = take(
-      test, buildDeploymentFromLinkedProgram(
-                DeploymentPipelineInputs{
-                    systemMapping.reference(),
-                    host,
-                    {instructionBinary.reference()},
-                    {{implementation.reference(), runtimeBinding.reference()}}},
-                *finalLinkedModule, artifacts, blobs));
+                                        "linked-host", hostEntrySymbol);
+  auto deployment =
+      take(test, buildDeploymentFromLinkedProgram(
+                     DeploymentPipelineInputs{systemMapping.reference(),
+                                              host,
+                                              {instructionBinary.reference()},
+                                              {{implementation.reference(),
+                                                runtimeBinding.reference()}}},
+                     *finalLinkedModule, artifacts, blobs));
   return deployment;
 }
 
-fabric::FinalizedFabricRoot
-buildMappedSpatialSystem(llvm::StringRef test,
-                         const fabric::FinalizedFabricRoot &module,
-                         llvm::ArrayRef<mlir::Type> messagePayloads,
-                         const ArtifactStore &artifacts,
-                         bool attachSystemMemory) {
-  return buildSystem(test, module, artifacts, messagePayloads,
-                     attachSystemMemory);
+fabric::FinalizedFabricRoot buildMappedSpatialSystem(
+    llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
+    llvm::ArrayRef<mlir::Type> messagePayloads, const ArtifactStore &artifacts,
+    bool attachSystemMemory) {
+  return buildMappedSpatialSystem(
+      test, module, messagePayloads, artifacts,
+      MappedSpatialSystemSpec{2, false, attachSystemMemory});
+}
+
+fabric::FinalizedFabricRoot buildMappedSpatialSystem(
+    llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
+    llvm::ArrayRef<mlir::Type> messagePayloads, const ArtifactStore &artifacts,
+    MappedSpatialSystemSpec spec) {
+  return buildSystem(test, module, artifacts, messagePayloads, spec);
 }
 
 llvm::Expected<FinalizedDeployment>

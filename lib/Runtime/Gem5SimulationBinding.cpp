@@ -2,8 +2,8 @@
 
 #include "Common/ArtifactStore.h"
 #include "Fabric/Artifact/FabricArtifact.h"
-#include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Artifact/InterconnectImplementation.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Runtime/Gem5BridgeABI.h"
 
@@ -435,22 +435,26 @@ canonicalize(Gem5SimulationBindingDraft draft,
           fabric::fabricArtifactSchema.version)
     return invalid(
         "InterconnectImplementation reference has the wrong schema descriptor");
-  auto interconnectBytes = artifacts.get(draft.interconnectImplementation);
-  if (!interconnectBytes)
-    return interconnectBytes.takeError();
-  auto interconnect = fabric::decodeFabricArtifactEnvelope(
-      interconnectBytes->bytes());
+  auto interconnect = fabric::importEntireFabricRoot(
+      draft.interconnectImplementation, artifacts);
   if (!interconnect)
     return interconnect.takeError();
-  if (interconnect->rootKind !=
+  if (interconnect->view().rootKind() !=
       fabric::FabricRootKind::InterconnectImplementation)
     return invalid("interconnect reference has the wrong Fabric root kind");
-  if (interconnect->dependencies.size() != 1 ||
-      interconnect->dependencies.front().role !=
+  if (interconnect->directDependencies().size() != 1 ||
+      interconnect->directDependencies().front().role !=
           fabric::FabricDependencyRole::RefinedSystem ||
-      interconnect->dependencies.front().root != draft.fabric)
+      interconnect->directDependencies().front().root != draft.fabric)
     return invalid("InterconnectImplementation does not refine the exact "
                    "bound Fabric System");
+  auto interconnectSchema = fabric::interconnectProtocolSchema(*interconnect);
+  if (!interconnectSchema)
+    return interconnectSchema.takeError();
+  if (*interconnectSchema !=
+      ::fabric::InterconnectProtocolSchema::Gem5EventTransportV1)
+    return invalid("InterconnectImplementation protocol is unsupported by "
+                   "the gem5 binding");
 
   if (llvm::Error error = validateBuildIdentity(draft.gem5BuildIdentity))
     return std::move(error);

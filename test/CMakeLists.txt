@@ -47,6 +47,7 @@ add_subdirectory(fabric)
 add_subdirectory(simulator)
 add_subdirectory(hardware)
 add_subdirectory(runtime)
+add_subdirectory(system)
 
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
@@ -223,7 +224,10 @@ set(LOOM_TEST_DEPENDS
   loom-runtime-platform-binding-test
   loom-runtime-gem5-bridge-test
   loom-runtime-gem5-simulation-binding-test
+  loom-runtime-gem5-spatial-channel-test
   loom-runtime-deployment-loader-test
+  loom-system-execution-matrix-test
+  loom-heterogeneous-system-anchor-test
   loom-simulator-atomic-order-test
   loom-simulator-cgra-event-queue-test
   loom-simulator-cgra-compute-runtime-test

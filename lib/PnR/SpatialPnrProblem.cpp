@@ -322,7 +322,8 @@ public:
                                                          fabric, *realizations);
     if (!memory)
       return memory.takeError();
-    auto transfers = detail::buildFrozenSpatialTransferIndex(techMapping);
+    auto transfers =
+        detail::buildFrozenSpatialTransferIndex(dataflow, techMapping);
     if (!transfers)
       return transfers.takeError();
     auto resources = detail::buildFrozenSpatialResourceIndex(fabric);
@@ -1176,8 +1177,7 @@ private:
                 placementCountContext, result.computePlacements_.size(), 1))
           return error;
         result.computePlacements_.push_back({*realizationIndex, fu, *parent,
-                                             *schedule,
-                                             *contextOffset,
+                                             *schedule, *contextOffset,
                                              *frozenContextCount});
       }
       const std::size_t placementCountValue =

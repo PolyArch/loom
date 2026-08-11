@@ -7,6 +7,7 @@
 namespace loom::pnr::detail {
 
 llvm::Expected<FrozenSpatialTransferIndex> buildFrozenSpatialTransferIndex(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::TechMappingView &techMapping);
 
 } // namespace loom::pnr::detail

@@ -14,6 +14,7 @@ foreach(engine IN ITEMS dfg cgra)
   target_link_libraries(${target} PRIVATE
     LoomCommon
     LoomMappingArtifact
+    LoomRuntimePlatformBinding
     LoomSimulator
     MLIRDataflow
     LLVMSupport

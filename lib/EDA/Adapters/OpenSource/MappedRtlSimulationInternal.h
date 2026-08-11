@@ -54,6 +54,7 @@ struct InputTokenStream final {
   TransportPort port;
   std::uint64_t tokenCount = 0;
   std::vector<llvm::APInt> tokens;
+  std::optional<std::uint64_t> runtimeStreamOrdinal;
 };
 
 struct OutputTokenStream final {
@@ -120,29 +121,33 @@ struct MappedRtlInvocationFacts final {
 using MappedRtlFactsOrUnsupported =
     std::variant<MappedRtlInvocationFacts, evaluation::UnsupportedEvidence>;
 
-llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
-    const MappedRtlExecutionClosure &closure,
-    const ArtifactStore &artifacts, const BlobStore &blobs);
+llvm::Expected<MappedRtlFactsOrUnsupported>
+deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
+                               const ArtifactStore &artifacts,
+                               const BlobStore &blobs);
 
 llvm::Expected<external_tool::ExternalToolInvocationImportExpectation>
-deriveMappedRtlImportExpectation(
-    const MappedRtlExecutionClosure &closure,
-    const ArtifactStore &artifacts, const BlobStore &blobs);
+deriveMappedRtlImportExpectation(const MappedRtlExecutionClosure &closure,
+                                 const ArtifactStore &artifacts,
+                                 const BlobStore &blobs);
 
-llvm::Expected<MappedRtlObservationFacts> deriveMappedRtlObservationFacts(
-    const MappedRtlExecutionClosure &closure,
-    const ArtifactStore &artifacts, const BlobStore &blobs);
-
-llvm::Expected<std::string>
-renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts);
+llvm::Expected<MappedRtlObservationFacts>
+deriveMappedRtlObservationFacts(const MappedRtlExecutionClosure &closure,
+                                const ArtifactStore &artifacts,
+                                const BlobStore &blobs);
 
 llvm::Expected<std::string>
-renderMappedRtlVerilatorDriver(const MappedRtlInvocationFacts &facts,
-                               std::uint64_t buildJobs);
+renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
+                         llvm::StringRef resultPath);
 
-llvm::Expected<std::string>
-renderMappedRtlBridgedVerilatorDriver(const MappedRtlInvocationFacts &facts,
-                                      std::uint64_t buildJobs);
+llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
+    const MappedRtlInvocationFacts &facts, std::uint64_t buildJobs,
+    llvm::StringRef testbenchPath, llvm::StringRef simulatorExecutablePath);
+
+llvm::Expected<std::string> renderMappedRtlBridgedVerilatorDriver(
+    const MappedRtlInvocationFacts &facts, std::uint64_t buildJobs,
+    llvm::StringRef testbenchPath, llvm::StringRef bridgeEngineSourcePath,
+    llvm::StringRef simulatorExecutablePath);
 
 llvm::Expected<sim::SpatialFunctionalObservations>
 projectMappedRtlFunctionalObservations(const MappedRtlObservationFacts &facts,

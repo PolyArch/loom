@@ -49,6 +49,17 @@ selectSystemSpatialExecutionContext(
     ::dataflow::RootedGraphLaunchRef graph,
     llvm::ArrayRef<std::uint64_t> denseCoordinates);
 
+/// Resolves one already verified ServicePlanSelection at a concrete logical
+/// point. Launch-parameter symbols remain existential, matching execution
+/// context selection: a point that can select different plans for legal
+/// symbol valuations is rejected as ambiguous.
+llvm::Expected<std::uint64_t> selectSystemServicePlanOrdinal(
+    const SystemServiceRealizationView &realization,
+    const ServicePlanSelectionAnchor &anchor,
+    const ExecutionContextKey &context,
+    llvm::ArrayRef<SystemPresburgerCell> contextDomain,
+    llvm::ArrayRef<std::uint64_t> denseCoordinates);
+
 } // namespace loom::mapping
 
 #endif // LOOM_MAPPING_ARTIFACT_SYSTEMMAPPINGEXECUTIONPROJECTION_H

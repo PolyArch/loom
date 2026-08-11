@@ -22,6 +22,15 @@ target_link_libraries(loom-runtime-gem5-bridge-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-runtime-gem5-spatial-channel-test
+  Gem5SpatialChannelTest.cpp
+)
+
+target_link_libraries(loom-runtime-gem5-spatial-channel-test PRIVATE
+  LoomRuntimePlatformBinding
+  LLVMSupport
+)
+
 add_executable(loom-runtime-gem5-simulation-binding-test
   Gem5SimulationBindingTest.cpp
 )

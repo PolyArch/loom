@@ -1369,6 +1369,34 @@ CanonicalDataflowProgramView::projectRootedGraphEndpointEventFamilies(
   return canonicalEndpointEvents(*this, std::move(events));
 }
 
+llvm::Expected<GraphRef> CanonicalDataflowProgramView::graphOf(
+    const CanonicalGraphProducerEndpointRef &endpoint) const {
+  if (llvm::Error error = validate(endpoint))
+    return std::move(error);
+  if (const auto *result = std::get_if<ActorTokenResultRef>(&endpoint)) {
+    auto actor = resolve(result->actor);
+    if (!actor)
+      return actor.takeError();
+    return actor->graph;
+  }
+  return std::visit([](const auto &ingress) { return ingress.graph; },
+                    std::get<GraphIngressTokenRef>(endpoint));
+}
+
+llvm::Expected<GraphRef> CanonicalDataflowProgramView::graphOf(
+    const CanonicalGraphConsumerEndpointRef &endpoint) const {
+  if (llvm::Error error = validate(endpoint))
+    return std::move(error);
+  if (const auto *operand = std::get_if<ActorTokenOperandRef>(&endpoint)) {
+    auto actor = resolve(operand->actor);
+    if (!actor)
+      return actor.takeError();
+    return actor->graph;
+  }
+  return std::visit([](const auto &egress) { return egress.graph; },
+                    std::get<GraphEgressTokenRef>(endpoint));
+}
+
 llvm::Expected<std::vector<EventFamilyKey>>
 CanonicalDataflowProgramView::projectRootedGraphEndpointEventFamilies(
     RootedGraphLaunchRef launch,

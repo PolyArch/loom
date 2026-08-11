@@ -4,6 +4,7 @@
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "Hardware/RTL/Specialization.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 namespace mlir {
@@ -25,7 +26,8 @@ finalizePortableSystemHardwareImplementation(
     const FinalizedConfigurationABI &configurationAbi,
     const FabricOperationProviderRegistry &providers,
     const ExternalImplementationContractCatalog &externalContracts,
-    const ArtifactStore &artifacts, const BlobStore &blobs);
+    const ArtifactStore &artifacts, const BlobStore &blobs,
+    llvm::ArrayRef<ArtifactRootReference> interconnectImplementations = {});
 
 } // namespace loom::hardware::rtl
 

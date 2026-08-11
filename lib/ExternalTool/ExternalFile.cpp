@@ -5,7 +5,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/SHA256.h"
+
+#include <openssl/evp.h>
 
 #include <algorithm>
 #include <array>
@@ -68,6 +69,19 @@ public:
 
 private:
   DIR *value_;
+};
+
+class DigestContext final {
+public:
+  DigestContext() : value_(EVP_MD_CTX_new()) {}
+  DigestContext(const DigestContext &) = delete;
+  DigestContext &operator=(const DigestContext &) = delete;
+  ~DigestContext() { EVP_MD_CTX_free(value_); }
+
+  EVP_MD_CTX *get() const { return value_; }
+
+private:
+  EVP_MD_CTX *value_;
 };
 
 struct IndexedFile final {
@@ -168,7 +182,9 @@ fingerprintOpenFile(int descriptor, llvm::StringRef context) {
   if (!S_ISREG(before.st_mode))
     return invalid(context + " is not an ordinary file");
 
-  llvm::SHA256 hash;
+  DigestContext hash;
+  if (!hash.get() || EVP_DigestInit_ex(hash.get(), EVP_sha256(), nullptr) != 1)
+    return invalid("could not initialize the SHA-256 provider");
   std::array<std::uint8_t, 64 * 1024> buffer{};
   while (true) {
     const ssize_t count = ::read(descriptor, buffer.data(), buffer.size());
@@ -179,8 +195,9 @@ fingerprintOpenFile(int descriptor, llvm::StringRef context) {
         continue;
       return systemError("could not read " + context);
     }
-    hash.update(llvm::ArrayRef<std::uint8_t>(buffer.data(),
-                                             static_cast<std::size_t>(count)));
+    if (EVP_DigestUpdate(hash.get(), buffer.data(),
+                         static_cast<std::size_t>(count)) != 1)
+      return invalid("could not update the SHA-256 digest");
   }
 
   struct stat after{};
@@ -188,14 +205,12 @@ fingerprintOpenFile(int descriptor, llvm::StringRef context) {
     return systemError("could not re-inspect " + context);
   if (!sameObservedFile(before, after))
     return invalid(context + " changed while it was read");
-  return ExternalFileFingerprint::fromBytes(hash.final());
-}
-
-llvm::Expected<ExternalFileFingerprint> fingerprintFile(llvm::StringRef path) {
-  auto file = openOrdinaryFile(path);
-  if (!file)
-    return file.takeError();
-  return fingerprintOpenFile(file->get(), "external file");
+  ExternalFileFingerprint::Storage digest{};
+  unsigned digestSize = 0;
+  if (EVP_DigestFinal_ex(hash.get(), digest.data(), &digestSize) != 1 ||
+      digestSize != digest.size())
+    return invalid("could not finalize the SHA-256 digest");
+  return ExternalFileFingerprint::fromBytes(digest);
 }
 
 llvm::Error readFileTree(int directory, llvm::StringRef prefix,
@@ -330,6 +345,14 @@ llvm::Error validateProviderSlot(llvm::StringRef slot) {
 
 } // namespace
 
+llvm::Expected<ExternalFileFingerprint>
+fingerprintExternalFile(llvm::StringRef path) {
+  auto file = openOrdinaryFile(path);
+  if (!file)
+    return file.takeError();
+  return fingerprintOpenFile(file->get(), "external file");
+}
+
 llvm::Error validateExternalFileTreeRequirement(
     const ExternalFileTreeRequirement &requirement) {
   if (llvm::Error error = validateProviderSlot(requirement.providerInputSlot))
@@ -360,7 +383,7 @@ resolveExternalFiles(llvm::ArrayRef<ExternalFileRequirement> requirements,
     const std::string canonicalPath = path.string();
     if (!paths.insert(canonicalPath).second)
       return invalid("external file map contains a duplicate canonical path");
-    auto fingerprint = fingerprintFile(canonicalPath);
+    auto fingerprint = fingerprintExternalFile(canonicalPath);
     if (!fingerprint)
       return fingerprint.takeError();
     index[fingerprint->bytes()].push_back(

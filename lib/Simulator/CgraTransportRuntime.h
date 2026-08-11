@@ -97,6 +97,7 @@ private:
     std::uint32_t consumedPhysicalUseCount = 0;
     std::optional<std::uint64_t> semanticActorOrdinal;
     std::uint64_t nextProducerSequenceOrdinal = 0;
+    bool discard = false;
     bool active = false;
   };
 

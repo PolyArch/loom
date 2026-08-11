@@ -606,13 +606,21 @@ legality. Permanent closed waits remain a separate progress proof because a
 design can respect every capacity and still deadlock.
 
 For progress, an acyclic canonical actor dependency graph gives a small exact
-base case: after selected handshake closure and Fabric atomic progress are
-verified, topological induction always exposes a next actor under fair
-execution. Extending that proof to feedback requires typed initial tokens,
-finite-buffer occupancy, and wait-for relations. Treating every cycle as a
-deadlock would reject ordinary streaming loops, while treating it as safe
-would hide real closed waits. Failing closed for unsupported cyclic proofs
-therefore preserves one progress authority without inventing either answer.
+basis, but it is not sufficient by itself. An atomic multicast can feed both a
+prerequisite actor and a causally downstream actor. If the downstream branch
+cannot accept until the prerequisite retires, requiring both branches to
+accept the multicast at once forms a closed wait even though the actor graph
+and selected combinational handshake graph are acyclic. A Buffered FIFO after
+the route divergence lets the atomic fork retire into storage; buffering the
+shared prefix does not. Mapping therefore owns one derived sink-dependency
+projection and applies it both during PnR and final verification. After that
+route closure and Fabric atomic progress are verified, topological induction
+always exposes a next actor under fair execution. Extending the proof to
+feedback requires typed initial tokens, finite-buffer occupancy, and wait-for
+relations. Treating every cycle as a deadlock would reject ordinary streaming
+loops, while treating it as safe would hide real closed waits. Failing closed
+for unsupported cyclic proofs therefore preserves one progress authority
+without inventing either answer.
 
 The earlier eight-entry objective registry was removed rather than retained as
 aliases. Aliases would allow central DSE to weight one physical counterexample

@@ -1069,24 +1069,45 @@ void writeMemoryBoundaryBindings(llvm::json::OStream &json,
   });
 }
 
-llvm::Expected<std::vector<ArtifactRootReference>>
-configurationImagesFor(fabric::AccCoreOccurrenceRef core,
-                       llvm::ArrayRef<ArtifactRootReference> imageReferences,
-                       const ArtifactStore &artifacts) {
-  std::vector<ArtifactRootReference> result;
+struct ConfigurationImageCatalogEntry final {
+  ArtifactRootReference reference;
+  std::vector<fabric::AccCoreOccurrenceRef> accCores;
+};
+
+llvm::Expected<std::vector<ConfigurationImageCatalogEntry>>
+buildConfigurationImageCatalog(
+    llvm::ArrayRef<ArtifactRootReference> imageReferences,
+    const ArtifactStore &artifacts) {
+  std::vector<hardware::FinalizedConfigurationABI> importedAbis;
+  std::vector<ConfigurationImageCatalogEntry> catalog;
+  importedAbis.reserve(imageReferences.size());
+  catalog.reserve(imageReferences.size());
+
   for (const ArtifactRootReference &reference : imageReferences) {
     auto image = importHardwareConfigurationImage(reference, artifacts);
     if (!image)
       return image.takeError();
-    auto abi = hardware::importConfigurationABI(
-        image->image().configurationAbi(), artifacts);
-    if (!abi)
-      return abi.takeError();
+
+    const ArtifactRootReference &abiReference =
+        image->image().configurationAbi();
+    auto abi = llvm::find_if(importedAbis, [&](const auto &candidate) {
+      return candidate.reference() == abiReference;
+    });
+    if (abi == importedAbis.end()) {
+      auto imported =
+          hardware::importConfigurationABI(abiReference, artifacts);
+      if (!imported)
+        return imported.takeError();
+      importedAbis.push_back(std::move(*imported));
+      abi = std::prev(importedAbis.end());
+    }
+
     const hardware::ProgrammingUnit *unit =
         abi->abi().findProgrammingUnit(image->image().programmingUnitId());
     if (!unit)
       return invalid("configuration image names a missing programming unit");
-    bool matches = false;
+
+    ConfigurationImageCatalogEntry entry{reference, {}};
     for (const fabric::FabricPhysicalOccurrenceOwnerRef &owner :
          unit->exactFabricResourceClosure) {
       if (owner.kind() !=
@@ -1094,11 +1115,21 @@ configurationImagesFor(fabric::AccCoreOccurrenceRef core,
         continue;
       const auto &internal =
           std::get<fabric::SpatialCoreInternalOccurrenceRef>(owner.payload());
-      matches |= internal.spatialCore.core == core;
+      if (!llvm::is_contained(entry.accCores, internal.spatialCore.core))
+        entry.accCores.push_back(internal.spatialCore.core);
     }
-    if (matches)
-      result.push_back(reference);
+    catalog.push_back(std::move(entry));
   }
+  return catalog;
+}
+
+std::vector<ArtifactRootReference> configurationImagesFor(
+    fabric::AccCoreOccurrenceRef core,
+    llvm::ArrayRef<ConfigurationImageCatalogEntry> catalog) {
+  std::vector<ArtifactRootReference> result;
+  for (const ConfigurationImageCatalogEntry &entry : catalog)
+    if (llvm::is_contained(entry.accCores, core))
+      result.push_back(entry.reference);
   return result;
 }
 
@@ -1149,6 +1180,10 @@ deriveSpatialLaunchImage(const ArtifactRootReference &systemMapping,
                          ReferenceEncoder &encoder) {
   if (closure.executionContexts.spatialDomains.empty())
     return invalid("cannot derive an empty SpatialLaunchImage");
+  auto imageCatalog =
+      buildConfigurationImageCatalog(imageReferences, artifacts);
+  if (!imageCatalog)
+    return imageCatalog.takeError();
 
   llvm::SmallString<32768> storage;
   llvm::raw_svector_ostream output(storage);
@@ -1212,18 +1247,14 @@ deriveSpatialLaunchImage(const ArtifactRootReference &systemMapping,
                   encoder.recordError(spatial.takeError());
                   continue;
                 }
-                auto images = configurationImagesFor(
-                    domain.context.accCore, imageReferences, artifacts);
-                if (!images) {
-                  encoder.recordError(images.takeError());
-                  continue;
-                }
+                const auto images = configurationImagesFor(
+                    domain.context.accCore, *imageCatalog);
                 json.object([&] {
                   json.attributeBegin("execution_context_key");
                   writeContext(json, encoder, domain.context);
                   json.attributeEnd();
                   json.attributeArray("required_configuration_image_refs", [&] {
-                    for (const ArtifactRootReference &reference : *images)
+                    for (const ArtifactRootReference &reference : images)
                       json.object([&] { writeRootReference(json, reference); });
                   });
                   json.attributeBegin("value_boundary_bindings");

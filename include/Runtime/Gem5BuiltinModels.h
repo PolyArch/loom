@@ -10,12 +10,12 @@
 
 namespace loom::runtime {
 
-struct Gem5RiscvTimingCpuParameters final {
+struct Gem5RiscvCpuParameters final {
   std::uint64_t cpuId = 0;
   std::uint64_t clockPeriodTicks = 0;
 
-  friend bool operator==(Gem5RiscvTimingCpuParameters lhs,
-                         Gem5RiscvTimingCpuParameters rhs) {
+  friend bool operator==(Gem5RiscvCpuParameters lhs,
+                         Gem5RiscvCpuParameters rhs) {
     return lhs.cpuId == rhs.cpuId &&
            lhs.clockPeriodTicks == rhs.clockPeriodTicks;
   }
@@ -49,6 +49,7 @@ struct Gem5SimpleMemoryParameters final {
 };
 
 const Gem5ModelContractDescriptor &gem5RiscvTimingCpuModel();
+const Gem5ModelContractDescriptor &gem5RiscvO3CpuModel();
 const Gem5ModelContractDescriptor &gem5SpatialBridgeModel();
 const Gem5ModelContractDescriptor &gem5SimpleMemoryModel();
 const Gem5ModelContractDescriptor &gem5SystemXBarModel();
@@ -57,9 +58,9 @@ const Gem5ModelContractDescriptor &gem5ExternalEndpointModel();
 llvm::Error registerBuiltinGem5ModelContracts();
 
 std::vector<std::uint8_t>
-encodeGem5RiscvTimingCpuParameters(Gem5RiscvTimingCpuParameters parameters);
-llvm::Expected<Gem5RiscvTimingCpuParameters>
-decodeGem5RiscvTimingCpuParameters(llvm::ArrayRef<std::uint8_t> bytes);
+encodeGem5RiscvCpuParameters(Gem5RiscvCpuParameters parameters);
+llvm::Expected<Gem5RiscvCpuParameters>
+decodeGem5RiscvCpuParameters(llvm::ArrayRef<std::uint8_t> bytes);
 
 std::vector<std::uint8_t>
 encodeGem5SpatialBridgeParameters(Gem5SpatialBridgeParameters parameters);

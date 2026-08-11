@@ -25,8 +25,7 @@ void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
   bytes.push_back(static_cast<std::uint8_t>(value));
 }
 
-std::uint64_t readU64(llvm::ArrayRef<std::uint8_t> bytes,
-                      std::size_t offset) {
+std::uint64_t readU64(llvm::ArrayRef<std::uint8_t> bytes, std::size_t offset) {
   std::uint64_t value = 0;
   for (unsigned index = 0; index < 8; ++index)
     value = (value << 8) | bytes[offset + index];
@@ -39,7 +38,7 @@ llvm::Error validateEmpty(llvm::ArrayRef<std::uint8_t> bytes) {
 }
 
 llvm::Error validateCpu(llvm::ArrayRef<std::uint8_t> bytes) {
-  auto parameters = decodeGem5RiscvTimingCpuParameters(bytes);
+  auto parameters = decodeGem5RiscvCpuParameters(bytes);
   return parameters ? llvm::Error::success() : parameters.takeError();
 }
 
@@ -53,7 +52,7 @@ llvm::Error validateMemory(llvm::ArrayRef<std::uint8_t> bytes) {
   return parameters ? llvm::Error::success() : parameters.takeError();
 }
 
-llvm::Error validateCpuCompatibility(
+llvm::Error validateRiscvMachineCompatibility(
     llvm::ArrayRef<std::uint8_t> payload,
     const fabric::InstructionCoreArchitecturalContract &architecture,
     const fabric::InstructionCoreMicroarchitecturalRealization
@@ -64,14 +63,59 @@ llvm::Error validateCpuCompatibility(
       architecture.endianness() != fabric::InstructionEndianness::Little ||
       !llvm::is_contained(architecture.privilegeModes(),
                           fabric::PrivilegeMode::Machine) ||
+      microarchitecture.hardwareThreadCount() == 0)
+    return invalid(
+        "processor requires little-endian RV64 machine hardware threads");
+  return llvm::Error::success();
+}
+
+llvm::Error validateTimingCpuCompatibility(
+    llvm::ArrayRef<std::uint8_t> payload,
+    const fabric::InstructionCoreArchitecturalContract &architecture,
+    const fabric::InstructionCoreMicroarchitecturalRealization
+        &microarchitecture) {
+  if (llvm::Error error = validateRiscvMachineCompatibility(
+          payload, architecture, microarchitecture))
+    return error;
+  if (!microarchitecture.inOrder() ||
       microarchitecture.hardwareThreadCount() != 1)
-    return invalid("TimingSimpleCPU requires one little-endian RV64 machine "
-                   "hardware thread");
+    return invalid("TimingSimpleCPU requires one in-order hardware thread");
+  return llvm::Error::success();
+}
+
+llvm::Error validateO3CpuCompatibility(
+    llvm::ArrayRef<std::uint8_t> payload,
+    const fabric::InstructionCoreArchitecturalContract &architecture,
+    const fabric::InstructionCoreMicroarchitecturalRealization
+        &microarchitecture) {
+  if (llvm::Error error = validateRiscvMachineCompatibility(
+          payload, architecture, microarchitecture))
+    return error;
+  if (!microarchitecture.outOfOrder() ||
+      microarchitecture.hardwareThreadCount() != 1)
+    return invalid("O3CPU requires one out-of-order hardware thread");
+  constexpr std::uint32_t architecturalRegisterCount = 32;
+  const auto &pipeline = *microarchitecture.outOfOrder();
+  if (pipeline.physicalIntegerRegisters <= architecturalRegisterCount ||
+      pipeline.physicalFloatRegisters <= architecturalRegisterCount ||
+      pipeline.physicalVectorRegisters <= architecturalRegisterCount)
+    return invalid("O3CPU requires physical register files larger than the "
+                   "architectural register files");
+  for (const fabric::ExecutionUnitRecord &unit :
+       microarchitecture.executionUnits()) {
+    if (unit.operationClass != fabric::InstructionOperationClass::IntegerAlu &&
+        unit.operationClass != fabric::InstructionOperationClass::LoadStore)
+      return invalid("O3CPU does not model one Fabric execution-unit class");
+    if (unit.initiationInterval != 1 &&
+        unit.initiationInterval != unit.latencyCycles)
+      return invalid("O3CPU cannot represent the execution-unit initiation "
+                     "interval");
+  }
   return llvm::Error::success();
 }
 
 const Gem5ModelPortKindDescriptor kBridgePorts[] = {
-    {0, "spatial_boundary", Gem5ModelPortClass::SpatialBoundary, false,
+    {0, "spatial_boundary", Gem5ModelPortClass::SpatialBoundary, true,
      &validateEmpty}};
 const Gem5ModelPortKindDescriptor kMemoryPorts[] = {
     {0, "memory_or_service", Gem5ModelPortClass::MemoryOrService, true,
@@ -92,7 +136,20 @@ const Gem5ModelContractDescriptor &gem5RiscvTimingCpuModel() {
       Gem5ModelObjectClass::Processor,
       false,
       &validateCpu,
-      &validateCpuCompatibility,
+      &validateTimingCpuCompatibility,
+      {}};
+  return descriptor;
+}
+
+const Gem5ModelContractDescriptor &gem5RiscvO3CpuModel() {
+  static const Gem5ModelContractDescriptor descriptor{
+      {"loom.gem5.riscv_o3_cpu", {1, 0}},
+      "loom.gem5.riscv_o3_cpu.v1",
+      "RiscvO3CPU",
+      Gem5ModelObjectClass::Processor,
+      false,
+      &validateCpu,
+      &validateO3CpuCompatibility,
       {}};
   return descriptor;
 }
@@ -103,7 +160,7 @@ const Gem5ModelContractDescriptor &gem5SpatialBridgeModel() {
       "loom.gem5.spatial_bridge.v1",
       "LoomSpatialBridge",
       Gem5ModelObjectClass::SpatialBridge,
-      false,
+      true,
       &validateBridge,
       nullptr,
       kBridgePorts};
@@ -150,10 +207,10 @@ const Gem5ModelContractDescriptor &gem5ExternalEndpointModel() {
 }
 
 llvm::Error registerBuiltinGem5ModelContracts() {
-  const std::array<const Gem5ModelContractDescriptor *, 5> descriptors{
-      &gem5RiscvTimingCpuModel(), &gem5SpatialBridgeModel(),
-      &gem5SimpleMemoryModel(), &gem5SystemXBarModel(),
-      &gem5ExternalEndpointModel()};
+  const std::array<const Gem5ModelContractDescriptor *, 6> descriptors{
+      &gem5RiscvTimingCpuModel(), &gem5RiscvO3CpuModel(),
+      &gem5SpatialBridgeModel(),  &gem5SimpleMemoryModel(),
+      &gem5SystemXBarModel(),     &gem5ExternalEndpointModel()};
   for (const Gem5ModelContractDescriptor *descriptor : descriptors)
     if (llvm::Error error = registerGem5ModelContract(*descriptor))
       return error;
@@ -161,7 +218,7 @@ llvm::Error registerBuiltinGem5ModelContracts() {
 }
 
 std::vector<std::uint8_t>
-encodeGem5RiscvTimingCpuParameters(Gem5RiscvTimingCpuParameters parameters) {
+encodeGem5RiscvCpuParameters(Gem5RiscvCpuParameters parameters) {
   std::vector<std::uint8_t> bytes;
   bytes.reserve(16);
   appendU64(bytes, parameters.cpuId);
@@ -169,13 +226,13 @@ encodeGem5RiscvTimingCpuParameters(Gem5RiscvTimingCpuParameters parameters) {
   return bytes;
 }
 
-llvm::Expected<Gem5RiscvTimingCpuParameters>
-decodeGem5RiscvTimingCpuParameters(llvm::ArrayRef<std::uint8_t> bytes) {
+llvm::Expected<Gem5RiscvCpuParameters>
+decodeGem5RiscvCpuParameters(llvm::ArrayRef<std::uint8_t> bytes) {
   if (bytes.size() != 16)
-    return invalid("TimingSimpleCPU payload must contain two u64 fields");
-  Gem5RiscvTimingCpuParameters result{readU64(bytes, 0), readU64(bytes, 8)};
+    return invalid("RISC-V CPU payload must contain two u64 fields");
+  Gem5RiscvCpuParameters result{readU64(bytes, 0), readU64(bytes, 8)};
   if (result.clockPeriodTicks == 0)
-    return invalid("TimingSimpleCPU clock period must be positive");
+    return invalid("RISC-V CPU clock period must be positive");
   return result;
 }
 

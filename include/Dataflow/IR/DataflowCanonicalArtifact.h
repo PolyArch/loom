@@ -240,6 +240,14 @@ public:
   llvm::Error validate(const CanonicalGraphProducerEndpointRef &endpoint) const;
   llvm::Error validate(const CanonicalGraphConsumerEndpointRef &endpoint) const;
 
+  /// Resolve the graph that owns one already canonical token endpoint. This
+  /// is the sole endpoint-membership projection; consumers do not inspect the
+  /// closed endpoint variants or reconstruct actor membership.
+  llvm::Expected<GraphRef>
+  graphOf(const CanonicalGraphProducerEndpointRef &endpoint) const;
+  llvm::Expected<GraphRef>
+  graphOf(const CanonicalGraphConsumerEndpointRef &endpoint) const;
+
   /// Resolve the exact semantic token type owned by a graph endpoint. The
   /// returned MLIR type borrows the imported canonical program and is a
   /// read-only projection, not a second type catalog.

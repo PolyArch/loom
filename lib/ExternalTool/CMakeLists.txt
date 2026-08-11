@@ -1,3 +1,5 @@
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+
 add_mlir_library(LoomExternalTool
   Binding.cpp
   ExternalFile.cpp
@@ -14,4 +16,5 @@ add_mlir_library(LoomExternalTool
   LINK_LIBS PUBLIC
   LoomCommon
   LLVMSupport
+  OpenSSL::Crypto
 )

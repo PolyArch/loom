@@ -8,6 +8,8 @@
 #include "PnR/System/SystemCandidateState.h"
 #include "PnR/System/SystemServiceRouter.h"
 
+#include "SpatialProgressAnalysis.h"
+
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
@@ -131,7 +133,7 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
   case ResolvedPnrViolationKind::HardProgressViolation:
     switch (candidate.problem().progressClosure().kind) {
     case ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet:
-      return 0;
+      return spatialCandidateClosedWaitCount(candidate);
     case ::loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet:
       return 1;
     case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:

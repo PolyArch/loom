@@ -452,7 +452,9 @@ outputs/...
 - the module initialization path, requested activation, and exact loaded
   module closure when used;
 - commands as token arrays, not shell fragments, whose executable is either
-  the frozen tool or one exact listed tool-produced executable;
+  the frozen tool or one exact listed tool-produced executable; a generated
+  controller command may additionally name other listed produced executables
+  as exact argument tokens;
 - canonical `work/`-relative tool-produced executable paths, when a compiler
   must generate a program that a later command executes;
 - required inherited environment-variable names, never their values;
@@ -552,13 +554,19 @@ Every command before a tool-produced executable uses the exact frozen tool
 binding. A listed produced path is canonical, relative, strictly below
 `work/`, and absent from materialized inputs and declared outputs. The shared
 launcher removes every listed path before entering the tool. Immediately
-before a later command may execute one, the path must be a newly created
-ordinary executable file and not a symbolic link. The manifest freezes the
-path and argument vector; the generating tool remains the sole executable
-authority. An arbitrary host executable, bundled shell fragment, previously
-built simulator, or output-directory program is never admitted by this form.
-This form exists for compile-then-run tools such as Verilator; a tool that can
-complete its work directly uses only frozen-tool commands.
+before a later command may execute one directly, or before a listed generated
+controller may receive another listed executable as an exact argument token,
+every referenced path must be a newly created ordinary executable file and not
+a symbolic link. The manifest freezes every path and the complete controller
+argument vector; provider logic must reject any controller-child set that
+differs from its semantic input. The controller remains provider logic for one
+cooperative simulator closure, not a second bundle launcher or a general
+process scheduler. An arbitrary host executable, bundled shell fragment,
+manifest-hidden child path, previously built simulator, or output-directory
+program is never admitted by this form. This form exists for compile-then-run
+tools such as Verilator, including one modeled hierarchy implemented by
+cooperating generated processes; a tool that can complete its work directly
+uses only frozen-tool commands.
 
 The completion record is nonsemantic attempt state and is written atomically.
 It distinguishes launch or activation failure, tool exit, missing declared

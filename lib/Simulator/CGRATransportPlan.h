@@ -122,6 +122,7 @@ struct CgraTransportPlan final {
   std::vector<CgraRouteSinkPlan> routeSinks;
   std::vector<CgraLocalTransferPlan> localTransfers;
   std::vector<CgraLocalTransferSinkPlan> localTransferSinks;
+  std::vector<::dataflow::ActorTokenResultRef> discardedResults;
   std::vector<CgraProducedPhysicalUsePlan> producedUses;
   std::vector<CgraConsumedPhysicalUsePlan> consumedUses;
   std::vector<std::uint64_t> endpointPhysicalUses;

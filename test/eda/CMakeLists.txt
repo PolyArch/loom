@@ -27,12 +27,15 @@ target_link_libraries(loom-verilator-functional-test PRIVATE
   LLVMSupport
 )
 
-add_executable(loom-mapped-rtl-simulation-test
-  MappedRtlSimulationTest.cpp
+add_library(LoomMappedRtlSimulationTestSupport STATIC
   MappedRtlSimulationTestSupport.cpp
 )
 
-target_link_libraries(loom-mapped-rtl-simulation-test PRIVATE
+target_include_directories(LoomMappedRtlSimulationTestSupport PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+)
+
+target_link_libraries(LoomMappedRtlSimulationTestSupport PUBLIC
   LoomDeploymentTestSupport
   LoomDSE
   LoomDSEMappingGenerator
@@ -48,6 +51,14 @@ target_link_libraries(loom-mapped-rtl-simulation-test PRIVATE
   MLIRIR
   MLIRParser
   LLVMSupport
+)
+
+add_executable(loom-mapped-rtl-simulation-test
+  MappedRtlSimulationTest.cpp
+)
+
+target_link_libraries(loom-mapped-rtl-simulation-test PRIVATE
+  LoomMappedRtlSimulationTestSupport
 )
 
 add_executable(loom-openroad-placed-test

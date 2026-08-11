@@ -1,0 +1,1452 @@
+#include "ExecutionMatrixTestSupport.h"
+
+#include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
+#include "Common/MappingDebugLog.h"
+#include "Config/ResolvedConfig.h"
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowDialect.h"
+#include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
+#include "Deployment/Deployment.h"
+#include "EDA/Adapters/OpenSource/MappedRtlSimulation.h"
+#include "Evaluation/ModelProvider.h"
+#include "Evaluation/Models/CgraSimulation.h"
+#include "Evaluation/Models/DfgSimulation.h"
+#include "Evaluation/Models/MappedRtlSimulation.h"
+#include "Evaluation/ProductionRegistry.h"
+#include "ExternalTool/InvocationBundle.h"
+#include "ExternalTool/LocalConfig.h"
+#include "ExternalTool/Provider.h"
+#include "ExternalTool/ShellProbe.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/IR/FabricDialect.h"
+#include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricRefText.h"
+#include "Hardware/Implementation/HardwareImplementation.h"
+#include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
+#include "Mapping/Artifact/SystemMappingIdentity.h"
+#include "Mapping/IR/MappingDialect.h"
+#include "Runtime/Gem5BridgeABI.h"
+#include "Runtime/Gem5BuiltinModels.h"
+#include "Runtime/Gem5SimulationBinding.h"
+#include "Simulator/SimulationArtifacts.h"
+#include "Simulator/SimulationExecution.h"
+
+#include "DeploymentTestSupport.h"
+#include "MappedRtlSimulationTestSupport.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/MLIRContext.h"
+#include "mlir/Parser/Parser.h"
+
+#include "llvm/ADT/APInt.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/JSON.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/Program.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <sys/resource.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <future>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace loom::system_test {
+namespace {
+
+using deployment::test::fail;
+using deployment::test::require;
+
+template <typename T> T take(llvm::StringRef test, llvm::Expected<T> value) {
+  if (!value)
+    fail(test, llvm::toString(value.takeError()));
+  return std::move(*value);
+}
+
+void requireSuccess(llvm::StringRef test, llvm::Error error) {
+  if (error)
+    fail(test, llvm::toString(std::move(error)));
+}
+
+std::unique_ptr<mlir::MLIRContext> makeContext() {
+  mlir::DialectRegistry registry;
+  registry.insert<::dataflow::DataflowDialect, ::fabric::FabricDialect,
+                  ::mapping::MappingDialect, mlir::arith::ArithDialect,
+                  mlir::DLTIDialect, mlir::func::FuncDialect,
+                  mlir::LLVM::LLVMDialect, mlir::memref::MemRefDialect>();
+  return std::make_unique<mlir::MLIRContext>(
+      registry, mlir::MLIRContext::Threading::DISABLED);
+}
+
+dataflow::CanonicalDataflowArtifact
+buildCanonicalApplication(llvm::StringRef test, mlir::MLIRContext &context) {
+  auto source = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @project(%start: none) -> i32
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 0, 1, 0>} {
+    %value = dataflow.constant %start {const_value = 7 : i32} : i32
+    %retired:2 = dataflow.sync %start, %value
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values() streams(%retired#1 : i32) memories()
+        complete(%retired#0 : none)
+  }
+  dataflow.graph private @attention(%start: none, %input: i32) -> ()
+      attributes {input_segments = array<i32: 0, 1, 0>,
+                  result_segments = array<i32: 0, 0, 0>} {
+    %select = dataflow.constant %start {const_value = false} : i1
+    %lane:2 = dataflow.demux %select, %input
+        : (i1, i32) -> (i32, i32)
+    %retired:2 = dataflow.sync %start, %lane#0
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values() streams() memories()
+        complete(%retired#0 : none)
+  }
+  dataflow.graph private @project_peer(%start: none) -> i32
+      attributes {input_segments = array<i32: 0, 0, 0>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %value = dataflow.constant %start {const_value = 11 : i32} : i32
+    %retired:2 = dataflow.sync %start, %value
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%retired#1 : i32) streams() memories()
+        complete(%retired#0 : none)
+  }
+  dataflow.thread private @a_project domain(#dataflow.thread_domain<dense>)(
+      %channel: !dataflow.channel<i32>) ctrl (%ctrl: none) {
+    %done = dataflow.graph.launch @project deps(%ctrl) values()
+        stream_inputs() memories() stream_outputs(%channel)
+        : (none, !dataflow.channel<i32>) -> none
+    dataflow.thread.yield %done : none
+  }
+  dataflow.thread private @b_attention domain(#dataflow.thread_domain<dense>)(
+      %channel: !dataflow.channel<i32>) ctrl (%ctrl: none) {
+    %done = dataflow.graph.launch @attention deps(%ctrl) values()
+        stream_inputs(%channel source_map affine_map<() -> ()>) memories()
+        stream_outputs() : (none, !dataflow.channel<i32>) -> none
+    dataflow.thread.yield %done : none
+  }
+  dataflow.thread private @c_stats domain(#dataflow.thread_domain<dense>)(
+      %channel: !dataflow.channel<i32>) ctrl (%ctrl: none) {
+    %done = dataflow.graph.launch @attention deps(%ctrl) values()
+        stream_inputs(%channel source_map affine_map<() -> ()>) memories()
+        stream_outputs() : (none, !dataflow.channel<i32>) -> none
+    dataflow.thread.yield %done : none
+  }
+  dataflow.thread private @d_project_peer
+      domain(#dataflow.thread_domain<dense>)() ctrl (%ctrl: none) {
+    %value, %done = dataflow.graph.launch @project_peer deps(%ctrl) values()
+        stream_inputs() memories() stream_outputs()
+        : (none) -> (i32, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host() {
+    %channel = dataflow.channel.create : !dataflow.channel<i32>
+    %project = dataflow.thread.launch @a_project(%channel)
+        : (!dataflow.channel<i32>) -> !dataflow.thread_token
+    %attention = dataflow.thread.launch @b_attention(%channel)
+        : (!dataflow.channel<i32>) -> !dataflow.thread_token
+    %stats = dataflow.thread.launch @c_stats(%channel)
+        : (!dataflow.channel<i32>) -> !dataflow.thread_token
+    %peer = dataflow.thread.launch @d_project_peer()
+        : () -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  require(test, static_cast<bool>(source),
+          "cannot parse the execution-matrix Dataflow program");
+  return take(test, dataflow::finalizeCanonicalDataflow(*source));
+}
+
+dataflow::RootedGraphLaunchRef
+projectLaunch(llvm::StringRef test,
+              const dataflow::CanonicalDataflowProgramView &view) {
+  std::optional<dataflow::RootedGraphLaunchRef> result;
+  view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
+    const auto graphRef = take(test, view.resolve(launch));
+    const auto graph = take(test, view.resolve(graphRef));
+    const auto resultSegments =
+        llvm::cast<dataflow::GraphOp>(graph.op).getResultSegmentSizes();
+    if (resultSegments[1] != 1)
+      return;
+    require(test, !result.has_value(),
+            "more than one rooted graph has a stream output");
+    result = launch;
+  });
+  require(test, result.has_value(),
+          "no rooted graph has the project stream output");
+  return *result;
+}
+
+std::pair<ArtifactRootReference, ArtifactRootReference>
+publishSpatialInputs(llvm::StringRef test,
+                     const dataflow::CanonicalDataflowArtifact &dataflow,
+                     ArtifactStore &artifacts) {
+  const auto view = take(test, dataflow.view());
+  sim::SpatialSimulationWorkload workloadDraft{projectLaunch(test, view)};
+  workloadDraft.observableContract.streamOutputs = {0};
+  auto workload =
+      take(test, sim::finalizeSimulationWorkload(workloadDraft, view));
+  sim::SpatialSimulationRuntimeInputDraft runtimeDraft{workload.identity()};
+  auto runtime = take(
+      test, sim::finalizeSimulationRuntimeInput(runtimeDraft, workload, view));
+  return {take(test, sim::publishSimulationWorkload(workload, artifacts)),
+          take(test, sim::publishSimulationRuntimeInput(runtime, artifacts))};
+}
+
+void writeText(llvm::StringRef test, llvm::StringRef path,
+               llvm::StringRef text) {
+  std::error_code error;
+  llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
+  if (error)
+    fail(test, error.message());
+  output << text;
+  output.close();
+  if (output.has_error())
+    fail(test, "cannot write guest source");
+}
+
+std::vector<std::uint8_t>
+compileGuest(llvm::StringRef test, const deployment::test::TemporaryTree &tree,
+             llvm::StringRef stem, llvm::StringRef source,
+             std::uint64_t loadAddress, llvm::StringRef entrySymbol,
+             bool includeM5Ops) {
+  const std::string sourcePath = tree.path((stem + ".S").str());
+  const std::string scriptPath = tree.path((stem + ".ld").str());
+  const std::string imagePath = tree.path((stem + ".elf").str());
+  writeText(test, sourcePath, source);
+  const std::string script = "OUTPUT_ARCH(riscv)\nENTRY(" + entrySymbol.str() +
+                             ")\nSECTIONS\n{\n" + "  . = 0x" +
+                             llvm::utohexstr(loadAddress) + ";\n" +
+                             "  .text : { *(.text .text.*) }\n" +
+                             "  .rodata : { *(.rodata .rodata.*) }\n" +
+                             "  .data : { *(.data .data.*) }\n" +
+                             "  .bss : { *(.bss .bss.* COMMON) }\n}\n";
+  writeText(test, scriptPath, script);
+  llvm::SmallVector<llvm::StringRef, 24> arguments{
+      LOOM_TEST_CLANG_PATH, "--target=riscv64-unknown-elf",
+      "-march=rv64gc",      "-mabi=lp64d",
+      "-nostdlib",          "-static",
+      "-fuse-ld=lld"};
+  const std::string linker = "-Wl,-T," + scriptPath;
+  arguments.push_back(linker);
+  arguments.append({"-Wl,--build-id=none", "-Wl,--no-relax",
+                    "-Wl,-z,max-page-size=4096", "-I",
+                    LOOM_TEST_GEM5_M5_INCLUDE, sourcePath});
+  if (includeM5Ops)
+    arguments.push_back(LOOM_TEST_GEM5_M5OP_SOURCE);
+  arguments.append({"-o", imagePath});
+  std::string error;
+  bool failed = false;
+  const int status =
+      llvm::sys::ExecuteAndWait(LOOM_TEST_CLANG_PATH, arguments, std::nullopt,
+                                {}, 60, 2048, &error, &failed);
+  require(test, !failed && status == 0,
+          "clang could not build the RISC-V guest: " + error);
+  auto buffer = llvm::MemoryBuffer::getFile(imagePath, false, false);
+  if (!buffer)
+    fail(test, buffer.getError().message());
+  return {(*buffer)->getBuffer().bytes_begin(),
+          (*buffer)->getBuffer().bytes_end()};
+}
+
+constexpr std::uint64_t kHostLoadAddress = 0x80000000;
+constexpr std::uint64_t kInstructionLoadAddress = 0x80100000;
+
+llvm::StringRef hostProgramSource() {
+  return R"asm(
+.section .text,"ax",@progbits
+.align 2
+.globl loom_host_entry
+.type loom_host_entry,@function
+loom_host_entry:
+  mv s0, a0
+  mv s1, a2
+  mv s2, a3
+  mv s3, a1
+  li t0, 4
+  bne s3, t0, 3f
+  li t0, 1
+  bne s2, t0, 3f
+  lw t0, 0(s1)
+  li t1, 0x494d474c
+  bne t0, t1, 3f
+  lw t0, 4(s1)
+  li t1, 1
+  bne t0, t1, 3f
+  ld t0, 8(s1)
+  bne t0, t1, 3f
+  li s4, 0
+4:
+  bgeu s4, s3, 5f
+  li t0, 2
+  sw t0, 8(s0)
+  sw s4, 0(s0)
+  sw zero, 4(s0)
+  li t0, 1
+  fence iorw, iorw
+  sw t0, 8(s0)
+1:
+  lw t0, 12(s0)
+  andi t1, t0, 4
+  bnez t1, 3f
+  andi t1, t0, 2
+  beqz t1, 1b
+  fence iorw, iorw
+  addi s4, s4, 1
+  j 4b
+5:
+  ld t0, 24(s1)
+  li t1, 7
+  sw t1, 0(t0)
+  li a0, 0
+  call m5_exit
+2:
+  wfi
+  j 2b
+3:
+  li a0, 0
+  li a1, 1
+  call m5_fail
+  j 2b
+.size loom_host_entry, .-loom_host_entry
+)asm";
+}
+
+llvm::StringRef instructionProgramSource() {
+  return R"asm(
+.section .text,"ax",@progbits
+.align 2
+.globl __loom_thread_entry_0
+.type __loom_thread_entry_0,@function
+__loom_thread_entry_0:
+  srli t0, a1, 32
+  sw a1, 20(a0)
+  sw t0, 24(a0)
+  sw a2, 28(a0)
+  li t0, 1
+  fence iorw, iorw
+  sw t0, 4(a0)
+1:
+  lw t0, 0(a0)
+  andi t1, t0, 4
+  bnez t1, 3f
+  andi t1, t0, 2
+  beqz t1, 1b
+  fence iorw, iorw
+  li t0, 1
+  sw t0, 16(a3)
+2:
+  wfi
+  j 2b
+3:
+  j 3b
+.size __loom_thread_entry_0, .-__loom_thread_entry_0
+)asm";
+}
+
+deployment::CanonicalTypeBytes memoryInterfaceType(llvm::StringRef test,
+                                                   mlir::MLIRContext &context) {
+  auto encoded = take(test, dataflow::encodeCanonicalType(mlir::MemRefType::get(
+                                {16}, mlir::IntegerType::get(&context, 8))));
+  return {encoded.bytes().begin(), encoded.bytes().end()};
+}
+
+struct PublishedSystemInputs final {
+  sim::CanonicalSimulationWorkload workload;
+  sim::CanonicalSimulationRuntimeInput runtimeInput;
+  ArtifactRootReference workloadReference;
+  ArtifactRootReference runtimeInputReference;
+};
+
+PublishedSystemInputs
+publishSystemInputs(llvm::StringRef test,
+                    const deployment::FinalizedDeployment &deployment,
+                    ArtifactStore &artifacts) {
+  const deployment::DeploymentExternalInterfaceRef memoryInterface{
+      deployment.reference().artifact, 0};
+  sim::SystemSimulationWorkload workloadDraft{
+      {deployment.reference().artifact, 0}};
+  workloadDraft.observableContract.memories = {
+      {memoryInterface, sim::MemoryObservationForm::FullState}};
+  auto workload = take(test, sim::finalizeSimulationWorkload(
+                                 workloadDraft, deployment, artifacts));
+  sim::SystemSimulationRuntimeInputDraft runtimeDraft{workload.identity()};
+  runtimeDraft.memoryObjects = {
+      sim::RuntimeMemoryObject(std::vector<sim::SemanticMemoryByte>(
+          16, {sim::SemanticState::Defined, 0}))};
+  runtimeDraft.memoryInterfaceBindings = {{memoryInterface, 0, 0}};
+  auto runtime = take(test, sim::finalizeSimulationRuntimeInput(
+                                runtimeDraft, workload, deployment, artifacts));
+  ArtifactRootReference workloadReference =
+      take(test, sim::publishSimulationWorkload(workload, artifacts));
+  ArtifactRootReference runtimeInputReference =
+      take(test, sim::publishSimulationRuntimeInput(runtime, artifacts));
+  return {std::move(workload), std::move(runtime), std::move(workloadReference),
+          std::move(runtimeInputReference)};
+}
+
+std::optional<fabric::SpatialCoreOccurrenceRef>
+spatialCoreOf(const fabric::FabricSpatialAttachmentEndpointRef &endpoint) {
+  if (const auto *transport = endpoint.transport()) {
+    if (transport->owner.kind() !=
+        fabric::FabricTransportEndpointOwnerKind::SpatialCoreOccurrence)
+      return std::nullopt;
+    return std::get<fabric::SpatialCoreOccurrenceRef>(transport->owner.payload);
+  }
+  const auto *memory = endpoint.memory();
+  if (!memory ||
+      memory->owner.kind() !=
+          fabric::FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
+    return std::nullopt;
+  return std::get<fabric::SpatialCoreOccurrenceRef>(memory->owner.payload);
+}
+
+runtime::Gem5SimObjectRef
+gem5Object(const runtime::Gem5ModelContractDescriptor &descriptor,
+           std::vector<std::uint8_t> payload) {
+  return {runtime::gem5ModelContractDescriptorRef(descriptor),
+          std::move(payload)};
+}
+
+runtime::Gem5SimPortRef gem5Port(runtime::Gem5SimObjectRef object) {
+  return {std::move(object), 0, {}};
+}
+
+const runtime::Gem5ModelContractDescriptor &
+processorModel(llvm::StringRef test,
+               const fabric::InstructionCoreMicroarchitecturalRealization
+                   *microarchitecture) {
+  require(test, microarchitecture != nullptr,
+          "System processor has no microarchitectural realization");
+  if (microarchitecture->inOrder())
+    return runtime::gem5RiscvTimingCpuModel();
+  require(test, microarchitecture->outOfOrder() != nullptr,
+          "System processor has an unsupported realization");
+  return runtime::gem5RiscvO3CpuModel();
+}
+
+runtime::FinalizedGem5SimulationBinding buildGem5Binding(
+    llvm::StringRef test, const fabric::FinalizedFabricRoot &system,
+    const ArtifactRootReference &interconnect,
+    runtime::Gem5BuildIdentity buildIdentity, const ArtifactStore &artifacts) {
+  requireSuccess(test, runtime::registerBuiltinGem5ModelContracts());
+  const auto view = take(test, fabric::requireSystemRoot(system.view()));
+  runtime::Gem5SimulationBindingDraft draft{system.reference(),
+                                            interconnect,
+                                            std::move(buildIdentity),
+                                            runtime::gem5BridgeAbiIdentity,
+                                            {}};
+  std::uint64_t cpuId = 0;
+  for (const fabric::HostCoreOccurrenceRef core :
+       view.artifact().hostCoreOccurrences()) {
+    draft.correspondences.push_back(runtime::Gem5ProcessorCorrespondence{
+        runtime::Gem5ProcessorFabricRef(core),
+        gem5Object(
+            processorModel(test, view.instructionCoreMicroarchitecture(core)),
+            runtime::encodeGem5RiscvCpuParameters({cpuId++, 1000}))});
+  }
+  for (const fabric::AccCoreOccurrenceRef core :
+       view.artifact().accCoreOccurrences()) {
+    draft.correspondences.push_back(runtime::Gem5ProcessorCorrespondence{
+        runtime::Gem5ProcessorFabricRef(
+            fabric::InstructionCoreContextRef{core}),
+        gem5Object(
+            processorModel(test, view.instructionCoreMicroarchitecture(
+                                     fabric::InstructionCoreContextRef{core})),
+            runtime::encodeGem5RiscvCpuParameters({cpuId++, 1000}))});
+  }
+
+  std::map<std::vector<std::uint8_t>, runtime::Gem5SimObjectRef> bridgeObjects;
+  for (const fabric::FabricSpatialAttachmentRecordView &attachment :
+       view.spatialAttachments()) {
+    const auto spatialCore = spatialCoreOf(attachment.spatialEndpoint);
+    require(test, spatialCore.has_value(),
+            "System attachment has no SpatialCore owner");
+    const std::vector<std::uint8_t> coreKey =
+        fabric::canonicalFabricBytes(*spatialCore);
+    auto [object, inserted] = bridgeObjects.try_emplace(coreKey);
+    if (inserted) {
+      const std::uint64_t bridgeOrdinal = bridgeObjects.size() - 1;
+      object->second = gem5Object(
+          runtime::gem5SpatialBridgeModel(),
+          runtime::encodeGem5SpatialBridgeParameters(
+              {0x10000000 + bridgeOrdinal * 0x10000, 0x1000, 10000, 1 << 20}));
+    }
+    draft.correspondences.push_back(runtime::Gem5SpatialBridgeCorrespondence{
+        *spatialCore, attachment.spatialEndpoint, gem5Port(object->second)});
+  }
+
+  const auto memoryObject =
+      gem5Object(runtime::gem5SimpleMemoryModel(),
+                 runtime::encodeGem5SimpleMemoryParameters(
+                     {kHostLoadAddress, 0x20000000, 20000}));
+  for (const fabric::SystemMemoryServiceRef service :
+       view.artifact().systemMemoryServices())
+    draft.correspondences.push_back(runtime::Gem5MemoryOrServiceCorrespondence{
+        runtime::Gem5MemoryOrServiceFabricRef(service), memoryObject,
+        gem5Port(memoryObject)});
+  for (const fabric::SystemServiceEndpointRef endpoint :
+       view.artifact().systemServiceEndpoints())
+    draft.correspondences.push_back(runtime::Gem5MemoryOrServiceCorrespondence{
+        runtime::Gem5MemoryOrServiceFabricRef(endpoint), memoryObject,
+        gem5Port(memoryObject)});
+
+  const auto transportObject = gem5Object(runtime::gem5SystemXBarModel(), {});
+  for (const fabric::SystemTransportResourceRef resource :
+       view.transportResources())
+    draft.correspondences.push_back(runtime::Gem5TransportCorrespondence{
+        runtime::Gem5TransportFabricRef(resource), transportObject,
+        gem5Port(transportObject)});
+  for (const fabric::FabricTransportEndpointRef &endpoint :
+       view.artifact().transportEndpoints()) {
+    const auto kind = endpoint.owner.kind();
+    if (kind !=
+            fabric::FabricTransportEndpointOwnerKind::SystemServiceEndpoint &&
+        kind !=
+            fabric::FabricTransportEndpointOwnerKind::SystemTransportResource)
+      continue;
+    draft.correspondences.push_back(runtime::Gem5TransportCorrespondence{
+        runtime::Gem5TransportFabricRef(endpoint), transportObject,
+        gem5Port(transportObject)});
+  }
+  const auto externalObject =
+      gem5Object(runtime::gem5ExternalEndpointModel(), {});
+  for (const fabric::ExternalBoundaryRef boundary :
+       view.artifact().externalBoundaries())
+    draft.correspondences.push_back(runtime::Gem5ExternalEndpointCorrespondence{
+        boundary, externalObject, gem5Port(externalObject)});
+  return take(test, runtime::finalizeGem5SimulationBinding(std::move(draft),
+                                                           artifacts));
+}
+
+runtime::Gem5BuildIdentity structuralGem5Identity() {
+  return {"https://gem5.googlesource.com/public/gem5",
+          "0123456789abcdef0123456789abcdef01234567",
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"};
+}
+
+struct Gem5Readiness final {
+  runtime::Gem5BuildIdentity buildIdentity;
+  std::string binary;
+  std::string path;
+};
+
+Gem5Readiness readGem5Readiness(llvm::StringRef test,
+                                llvm::StringRef readinessPath) {
+  require(test, !readinessPath.empty(), "gem5 readiness path is required");
+  std::error_code error;
+  const std::filesystem::path path =
+      std::filesystem::weakly_canonical(readinessPath.str(), error);
+  require(test, !error && path.is_absolute(),
+          "gem5 readiness path is not canonical");
+  auto buffer = llvm::MemoryBuffer::getFile(path.string(), false, false);
+  if (!buffer)
+    fail(test, buffer.getError().message());
+  auto value = llvm::json::parse((*buffer)->getBuffer());
+  if (!value)
+    fail(test, llvm::toString(value.takeError()));
+  const llvm::json::Object *object = value->getAsObject();
+  require(test, object != nullptr, "gem5 readiness is not an object");
+  const auto repository = object->getString("gem5_repository_identity");
+  const auto commit = object->getString("gem5_full_commit_identity");
+  const auto configuration = object->getString("build_configuration_digest");
+  const auto binaryFingerprint = object->getString("binary_sha256");
+  const auto binary = object->getString("binary");
+  require(test,
+          repository && commit && configuration && binaryFingerprint && binary,
+          "gem5 readiness omits an identity field");
+  return {{repository->str(), commit->str(), configuration->str(),
+           binaryFingerprint->str()},
+          binary->str(),
+          path.string()};
+}
+
+struct SharedFixture final {
+  std::unique_ptr<mlir::MLIRContext> context;
+  dataflow::CanonicalDataflowArtifact dataflow;
+  ArtifactRootReference dataflowReference;
+  eda::test::MappedSpatialHardwareFixture hardware;
+  ArtifactRootReference interconnect;
+  hardware::FinalizedHardwareImplementation implementation;
+  mapping::FinalizedSystemMapping systemMapping;
+  deployment::FinalizedDeployment deployment;
+  ArtifactRootReference spatialWorkload;
+  ArtifactRootReference spatialRuntimeInput;
+  PublishedSystemInputs systemInputs;
+};
+
+void traceSpatialFixture(llvm::StringRef test, const SharedFixture &fixture,
+                         const ArtifactStore &artifacts) {
+  if (!mapping_debug::enabled(mapping_debug::Level::Detail))
+    return;
+
+  const auto dataflow = take(test, fixture.dataflow.view());
+  const auto tech =
+      take(test,
+           mapping::importTechMapping(fixture.hardware.techMapping, artifacts));
+  const auto &spatial = fixture.hardware.spatialMapping.view();
+  for (const dataflow::CanonicalActorView &actor : dataflow.actors())
+    llvm::errs() << "[loom][system-fixture][actor] actor="
+                 << actor.ref.entity.value()
+                 << " graph=" << actor.graph.entity.value()
+                 << " op=" << actor.op->getName().getStringRef() << '\n';
+  for (const mapping::TechComputeRealizationView &realization :
+       tech.view().computeRealizations()) {
+    llvm::errs() << "[loom][system-fixture][realization] id="
+                 << realization.entityId << " actors=";
+    for (const auto [ordinal, actor] : llvm::enumerate(realization.actors)) {
+      if (ordinal)
+        llvm::errs() << ',';
+      llvm::errs() << actor.actor.entity.value();
+    }
+    llvm::errs() << '\n';
+  }
+  for (const mapping::SpatialComputeBindingView &binding :
+       spatial.computeBindings())
+    llvm::errs() << "[loom][system-fixture][binding] realization="
+                 << binding.realization
+                 << " occurrence=" << fabric::printFabricRef(binding.occurrence)
+                 << '\n';
+
+  const auto printProducer =
+      [](llvm::raw_ostream &os,
+         const dataflow::CanonicalGraphProducerEndpointRef &producer) {
+        std::visit(
+            [&](const auto &endpoint) {
+              using Endpoint = std::decay_t<decltype(endpoint)>;
+              if constexpr (std::is_same_v<Endpoint,
+                                           dataflow::ActorTokenResultRef>)
+                os << "actor_result:" << endpoint.actor.entity.value() << ':'
+                   << endpoint.ordinal;
+              else
+                os << "graph_ingress:"
+                   << std::visit(
+                          [](const auto &ingress) {
+                            return ingress.graph.entity.value();
+                          },
+                          endpoint);
+            },
+            producer);
+      };
+  const auto printConsumer =
+      [](llvm::raw_ostream &os,
+         const dataflow::CanonicalGraphConsumerEndpointRef &consumer) {
+        std::visit(
+            [&](const auto &endpoint) {
+              using Endpoint = std::decay_t<decltype(endpoint)>;
+              if constexpr (std::is_same_v<Endpoint,
+                                           dataflow::ActorTokenOperandRef>)
+                os << "actor_operand:" << endpoint.actor.entity.value() << ':'
+                   << endpoint.ordinal;
+              else
+                os << "graph_egress:"
+                   << std::visit(
+                          [](const auto &egress) {
+                            return egress.graph.entity.value();
+                          },
+                          endpoint);
+            },
+            consumer);
+      };
+  for (const auto [ordinal, route] : llvm::enumerate(spatial.routeTrees())) {
+    llvm::errs() << "[loom][system-fixture][route] ordinal=" << ordinal
+                 << " producer=";
+    printProducer(llvm::errs(), route.logicalNet);
+    llvm::errs() << " root=" << fabric::printFabricRef(route.rootEndpoint)
+                 << " sinks=";
+    for (const auto [sinkOrdinal, sink] : llvm::enumerate(route.sinks)) {
+      if (sinkOrdinal)
+        llvm::errs() << ',';
+      printConsumer(llvm::errs(), sink.sink);
+    }
+    llvm::errs() << '\n';
+    for (const mapping::SpatialRouteNodeView &node : route.nodes) {
+      llvm::errs() << "[loom][system-fixture][route-node] route=" << ordinal
+                   << " node=" << node.ordinal << " parent=";
+      if (node.parentOrdinal)
+        llvm::errs() << *node.parentOrdinal;
+      else
+        llvm::errs() << "root";
+      llvm::errs() << " endpoint=" << fabric::printFabricRef(node.endpoint)
+                   << '\n';
+    }
+    for (const auto [sinkOrdinal, sink] : llvm::enumerate(route.sinks))
+      llvm::errs() << "[loom][system-fixture][route-sink] route=" << ordinal
+                   << " sink=" << sinkOrdinal << " node=" << sink.nodeOrdinal
+                   << '\n';
+  }
+}
+
+SharedFixture buildSharedFixture(llvm::StringRef test, ArtifactStore &artifacts,
+                                 BlobStore &blobs,
+                                 const deployment::test::TemporaryTree &tree) {
+  auto context = makeContext();
+  auto dataflow = buildCanonicalApplication(test, *context);
+  const ArtifactRootReference dataflowReference =
+      take(test, dataflow::publishCanonicalDataflow(dataflow, artifacts));
+  auto hardware = eda::test::buildMappedSpatialHardwareFixture(
+      test, dataflow, *context, artifacts, blobs,
+      deployment::test::MappedSpatialSystemSpec{4, true, true},
+      eda::test::MappedRtlFixtureTopology::HeterogeneousPortable,
+      eda::test::MappedRtlRouteCoverage::AnyLegal,
+      eda::test::MappedSystemInterconnect::Gem5EventTransport);
+  require(test, hardware.interconnect.has_value(),
+          "System fixture omitted its typed interconnect implementation");
+  const ArtifactRootReference interconnect = *hardware.interconnect;
+  auto implementation = hardware.implementation;
+  const auto systemView =
+      take(test, fabric::requireSystemRoot(hardware.system.view()));
+  const auto cores = systemView.artifact().accCoreOccurrences();
+  const auto dataflowView = take(test, dataflow.view());
+  require(test, cores.size() == dataflowView.rootThreadLaunches().size(),
+          "anchor core count does not match its root launch count");
+  auto systemMapping = deployment::test::buildMappedSystemMapping(
+      test, dataflow, hardware.system, {hardware.spatialMapping.reference()},
+      artifacts, cores);
+
+  deployment::test::MappedSystemExecutablePrograms programs;
+  programs.hostProgramBytes =
+      compileGuest(test, tree, "system-host", hostProgramSource(),
+                   kHostLoadAddress, "loom_host_entry", true);
+  programs.instructionProgramBytes =
+      compileGuest(test, tree, "spatial-dispatch", instructionProgramSource(),
+                   kInstructionLoadAddress, "__loom_thread_entry_0", false);
+  programs.hostEntries = {{0, "loom_host_entry", {}, {}, {0}}};
+  programs.hostInterfaces = {{0, deployment::HostExternalInterfaceKind::Memory,
+                              deployment::HostExternalInterfaceDirection::InOut,
+                              memoryInterfaceType(test, *context)}};
+  auto deployment = deployment::test::buildMappedSystemDeployment(
+      test, dataflow, hardware.system, systemMapping, implementation,
+      std::move(programs), artifacts, blobs, tree);
+  const auto [spatialWorkload, spatialRuntimeInput] =
+      publishSpatialInputs(test, dataflow, artifacts);
+  auto systemInputs = publishSystemInputs(test, deployment, artifacts);
+  return {std::move(context),
+          std::move(dataflow),
+          dataflowReference,
+          std::move(hardware),
+          interconnect,
+          std::move(implementation),
+          std::move(systemMapping),
+          std::move(deployment),
+          spatialWorkload,
+          spatialRuntimeInput,
+          std::move(systemInputs)};
+}
+
+evaluation::CaseArtifactResolution
+buildResolution(llvm::StringRef test, const SharedFixture &fixture,
+                const std::optional<ArtifactRootReference> &gem5Binding,
+                const ArtifactRootReference &workload,
+                const ArtifactRootReference &runtimeInput,
+                bool systemWorkload) {
+  std::vector<evaluation::CaseArtifactResolution::Entry> entries{
+      {fixture.dataflowReference, {}},
+      {fixture.hardware.module.reference(), {}},
+      {fixture.hardware.system.reference(),
+       {fixture.hardware.module.reference()}},
+      {fixture.hardware.techMapping,
+       {fixture.dataflowReference, fixture.hardware.module.reference()}},
+      {fixture.hardware.spatialMapping.reference(),
+       {fixture.dataflowReference, fixture.hardware.module.reference(),
+        fixture.hardware.techMapping}},
+      {fixture.systemMapping.reference(),
+       {fixture.dataflowReference, fixture.hardware.system.reference(),
+        fixture.hardware.spatialMapping.reference()}},
+      {fixture.interconnect, {fixture.hardware.system.reference()}},
+      {fixture.implementation.reference(),
+       {fixture.hardware.system.reference(), fixture.interconnect}},
+      {fixture.deployment.reference(),
+       {fixture.dataflowReference, fixture.systemMapping.reference(),
+        fixture.hardware.spatialMapping.reference(),
+        fixture.implementation.reference()}},
+  };
+  if (gem5Binding)
+    entries.push_back(
+        {*gem5Binding,
+         {fixture.hardware.system.reference(), fixture.interconnect}});
+  entries.push_back({workload,
+                     {systemWorkload ? fixture.deployment.reference()
+                                     : fixture.dataflowReference}});
+  entries.push_back({runtimeInput,
+                     {systemWorkload ? fixture.deployment.reference()
+                                     : fixture.dataflowReference,
+                      workload}});
+  return take(test, evaluation::CaseArtifactResolution::get(entries));
+}
+
+evaluation::EvaluationRequest
+buildMappedRtlRequest(llvm::StringRef test, const SharedFixture &fixture,
+                      llvm::StringRef verilatorIdentity,
+                      const evaluation::CaseArtifactResolution &resolution,
+                      const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto subjects = take(
+      test,
+      evaluation::EvaluationSubjectBindings::get(
+          {{evaluation::models::mappedRtlHardwareImplementationSubjectRole(),
+            {fixture.implementation.reference()}},
+           {evaluation::models::mappedRtlDeploymentSubjectRole(),
+            {fixture.deployment.reference()}}}));
+  auto evaluationCase = take(
+      test, evaluation::EvaluationCase::get(
+                evaluation::mappedRtlSimulationCaseSignatureRef(),
+                std::move(subjects), fixture.spatialWorkload,
+                fixture.spatialRuntimeInput, {}, resolution, artifacts, blobs));
+  auto cycleCount = take(
+      test, evaluation::MetricRequest::get(
+                {evaluation::MetricKind::CycleCount,
+                 evaluation::EvaluationScope{evaluation::ScopeFormRef(0), {}}},
+                {}, evaluationCase, resolution, artifacts));
+  ResolvedConfig config = defaultResolvedConfig();
+  config.evaluation.mappedRtlSimulator =
+      evaluation::models::MappedRtlSimulatorBinding{verilatorIdentity.str()};
+  auto model =
+      take(test, evaluation::ResolvedModelBinding::project(
+                     evaluation::models::mappedRtlSimulatorModelDescriptorRef(),
+                     {}, config));
+  auto request =
+      take(test, evaluation::EvaluationRequest::get(
+                     evaluationCase, {cycleCount}, {}, std::move(model), 0,
+                     resolution, artifacts, blobs));
+  (void)take(test, evaluation::publishEvaluationRequest(request, artifacts));
+  return request;
+}
+
+evaluation::EvaluationRequest
+buildSystemRequest(llvm::StringRef test, ExecutionMatrixCell cell,
+                   const SharedFixture &fixture,
+                   const runtime::FinalizedGem5SimulationBinding &gem5Binding,
+                   llvm::StringRef verilatorIdentity,
+                   const evaluation::CaseArtifactResolution &resolution,
+                   const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto subjects = take(test, evaluation::EvaluationSubjectBindings::get(
+                                 {{evaluation::CaseSubjectRoleRef(0),
+                                   {fixture.deployment.reference()}},
+                                  {evaluation::CaseSubjectRoleRef(1),
+                                   {gem5Binding.reference()}}}));
+  auto evaluationCase = take(
+      test, evaluation::EvaluationCase::get(
+                evaluation::systemSimulationCaseSignatureRef(),
+                std::move(subjects), fixture.systemInputs.workloadReference,
+                fixture.systemInputs.runtimeInputReference, {}, resolution,
+                artifacts, blobs));
+  const evaluation::BuiltinEvaluationModel modelKind =
+      cell == ExecutionMatrixCell::SystemDfg
+          ? evaluation::BuiltinEvaluationModel::Gem5SystemDfg
+      : cell == ExecutionMatrixCell::SystemCgra
+          ? evaluation::BuiltinEvaluationModel::Gem5SystemCgra
+          : evaluation::BuiltinEvaluationModel::Gem5SystemRtl;
+  std::vector<evaluation::MetricRequest> metrics;
+  if (cell != ExecutionMatrixCell::SystemDfg)
+    metrics.push_back(
+        take(test,
+             evaluation::MetricRequest::get(
+                 {evaluation::MetricKind::Runtime,
+                  evaluation::EvaluationScope{evaluation::ScopeFormRef(0), {}}},
+                 {}, evaluationCase, resolution, artifacts)));
+  ResolvedConfig config = defaultResolvedConfig();
+  if (cell == ExecutionMatrixCell::SystemRtl)
+    config.evaluation.mappedRtlSimulator =
+        evaluation::models::MappedRtlSimulatorBinding{verilatorIdentity.str()};
+  auto descriptor =
+      take(test, evaluation::builtinEvaluationModelDescriptorRef(modelKind));
+  auto model = take(
+      test, evaluation::ResolvedModelBinding::project(descriptor, {}, config));
+  auto request =
+      take(test, evaluation::EvaluationRequest::get(
+                     evaluationCase, std::move(metrics), {}, std::move(model),
+                     0, resolution, artifacts, blobs));
+  (void)take(test, evaluation::publishEvaluationRequest(request, artifacts));
+  return request;
+}
+
+struct ToolBinding final {
+  external_tool::LocalToolConfig local;
+  external_tool::ResolvedToolBinding resolved;
+};
+
+ToolBinding
+resolveHostTool(llvm::StringRef test,
+                const external_tool::ExternalToolProviderDescriptor &provider,
+                const deployment::test::TemporaryTree &tree) {
+  external_tool::LocalToolConfig local;
+  local.runtimePolicy = external_tool::RuntimePolicy::Host;
+  const std::filesystem::path probePath =
+      tree.path(provider.binding.key + "-probe");
+  std::filesystem::create_directories(probePath);
+  external_tool::ShellToolBindingProbe probe(probePath.string(),
+                                             provider.versionProbe);
+  auto resolved =
+      take(test,
+           external_tool::resolveToolBinding(
+               provider.binding, local,
+               external_tool::captureToolEnvironment(provider.binding), probe));
+  local.tools[provider.binding.key].binding.executable = resolved.executable;
+  return {std::move(local), std::move(resolved)};
+}
+
+struct CompletedRun final {
+  evaluation::EvaluationEvidence evidence;
+  ArtifactRootReference evidenceReference;
+  sim::CanonicalSimulationExecution execution;
+};
+
+CompletedRun
+importCompleted(llvm::StringRef test, evaluation::EvaluationEvidence evidence,
+                const evaluation::CaseArtifactResolution &resolution,
+                const ArtifactStore &artifacts, const BlobStore &blobs) {
+  if (evidence.outcomeKind() != evaluation::EvidenceOutcomeKind::Completed) {
+    std::string diagnostic = evaluation::toString(evidence.outcomeKind()).str();
+    std::visit(
+        [&](const auto &outcome) {
+          using Outcome = std::decay_t<decltype(outcome)>;
+          if constexpr (!std::is_same_v<Outcome, evaluation::CompletedEvidence>)
+            diagnostic += ": " + evaluation::toString(outcome.reason).str();
+        },
+        evidence.outcome());
+    fail(test, "execution published " + diagnostic);
+  }
+  require(test,
+          evidence.outputBindings().size() == 1 &&
+              evidence.outputBindings().front().artifacts.size() == 1,
+          "execution did not publish one SimulationExecution");
+  auto execution =
+      take(test, sim::importSimulationExecution(
+                     evidence.outputBindings().front().artifacts.front(),
+                     resolution, artifacts, blobs));
+  require(test, execution.request() == evidence.requestRef(),
+          "SimulationExecution is not coupled to its exact Evidence Request");
+  require(test,
+          std::holds_alternative<sim::RetiredExecution>(execution.terminal()),
+          "execution did not retire normally");
+  ArtifactRootReference evidenceReference =
+      evaluation::evaluationEvidenceReference(evidence);
+  return {std::move(evidence), std::move(evidenceReference),
+          std::move(execution)};
+}
+
+void requireSpatialOracle(llvm::StringRef test,
+                          const sim::CanonicalSimulationExecution &execution) {
+  const auto *spatial = execution.spatial();
+  require(test, spatial != nullptr,
+          "Spatial matrix cell published a System execution");
+  require(test, spatial->functionalObservations.streamOutputs.size() == 1,
+          "project stream observation is not total");
+  const sim::CanonicalStreamSequence &stream =
+      spatial->functionalObservations.streamOutputs.front();
+  require(test,
+          stream.values.tokenCount == 1 && stream.values.lanes.size() == 1 &&
+              stream.values.lanes.front().state ==
+                  sim::SemanticState::Defined &&
+              stream.values.lanes.front().bits.getZExtValue() == 7 &&
+              stream.termination == sim::StreamTermination::ClosedAfterLast,
+          "Spatial execution differs from the independent stream oracle");
+  require(test,
+          spatial->progressObservations.graphRetirementVisible.has_value(),
+          "Spatial execution has no graph-retirement observation");
+}
+
+void requireSystemOracle(llvm::StringRef test,
+                         const sim::CanonicalSimulationExecution &execution) {
+  const auto *system = execution.system();
+  require(test, system != nullptr,
+          "System matrix cell published a Spatial execution");
+  require(test, system->functionalObservations.memories.size() == 1,
+          "System memory observation is not total");
+  const auto *memory = std::get_if<sim::FullMemoryObservation>(
+      &system->functionalObservations.memories.front());
+  require(test,
+          memory && memory->bytes.size() == 16 &&
+              memory->bytes.front().state == sim::SemanticState::Defined &&
+              memory->bytes.front().value == 7,
+          "System execution differs from the independent memory oracle");
+  require(test,
+          system->progressObservations.programExitVisible.has_value() &&
+              system->progressObservations.programExitVisible->gem5Tick >=
+                  system->progressObservations.programEntryAccepted.gem5Tick,
+          "System execution has no valid gem5 progress interval");
+}
+
+CompletedRun
+runExternal(llvm::StringRef test, const evaluation::EvaluationRequest &request,
+            const evaluation::CaseArtifactResolution &resolution,
+            external_tool::LocalToolConfig local, llvm::StringRef bundlePath,
+            const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto preparation =
+      take(test, evaluation::prepareEvaluationModelInvocation(
+                     request, resolution, artifacts, blobs,
+                     external_tool::ExternalToolPreparationContext{
+                         std::move(local), bundlePath.str()}));
+  const auto *prepared =
+      std::get_if<external_tool::PreparedExternalToolInvocation>(&preparation);
+  require(test, prepared != nullptr,
+          "available external provider returned terminal Evidence at prepare");
+  const int status =
+      take(test, external_tool::executeExternalToolInvocationBundle(*prepared));
+  if (status != 0) {
+    const std::filesystem::path stderrPath =
+        std::filesystem::path(prepared->bundleRoot) / "outputs/stderr.log";
+    auto buffer =
+        llvm::MemoryBuffer::getFile(stderrPath.string(), false, false);
+    const std::string diagnostic =
+        buffer ? (*buffer)->getBuffer().str() : std::string();
+    fail(test, "external matrix cell exited with " + std::to_string(status) +
+                   ": " + diagnostic);
+  }
+  auto evidence =
+      take(test, evaluation::importEvaluationModelInvocation(
+                     request, resolution, *prepared, artifacts, blobs));
+  (void)take(test, evaluation::publishEvaluationEvidence(evidence, artifacts));
+  return importCompleted(test, std::move(evidence), resolution, artifacts,
+                         blobs);
+}
+
+CompletedRun runSpatialCell(llvm::StringRef test, ExecutionMatrixCell cell,
+                            const SharedFixture &fixture,
+                            ArtifactStore &artifacts, BlobStore &blobs,
+                            const deployment::test::TemporaryTree &tree) {
+  if (cell == ExecutionMatrixCell::SpatialDfg) {
+    auto prepared =
+        take(test, evaluation::models::prepareDfgSimulationEvaluation(
+                       fixture.dataflowReference, fixture.spatialWorkload,
+                       fixture.spatialRuntimeInput, defaultResolvedConfig(),
+                       artifacts, blobs));
+    auto evidence =
+        take(test, evaluation::models::evaluateDfgSimulation(
+                       prepared, {100000, std::nullopt}, artifacts, blobs));
+    (void)take(test,
+               evaluation::publishEvaluationEvidence(evidence, artifacts));
+    return importCompleted(test, std::move(evidence), prepared.resolution,
+                           artifacts, blobs);
+  }
+  if (cell == ExecutionMatrixCell::SpatialCgra) {
+    auto prepared =
+        take(test,
+             evaluation::models::prepareCgraSimulationEvaluation(
+                 fixture.dataflowReference, fixture.hardware.module.reference(),
+                 fixture.hardware.spatialMapping.reference(),
+                 fixture.spatialWorkload, fixture.spatialRuntimeInput,
+                 defaultResolvedConfig(), artifacts, blobs));
+    auto evidence =
+        take(test, evaluation::models::evaluateCgraSimulation(
+                       prepared, {100000, std::nullopt}, artifacts, blobs));
+    (void)take(test,
+               evaluation::publishEvaluationEvidence(evidence, artifacts));
+    return importCompleted(test, std::move(evidence), prepared.resolution,
+                           artifacts, blobs);
+  }
+
+  ToolBinding verilator =
+      resolveHostTool(test, external_tool::verilatorProvider(), tree);
+  auto resolution =
+      buildResolution(test, fixture, std::nullopt, fixture.spatialWorkload,
+                      fixture.spatialRuntimeInput, false);
+  auto request = buildMappedRtlRequest(
+      test, fixture, verilator.resolved.version, resolution, artifacts, blobs);
+  verilator.local.tools[external_tool::verilatorProvider().binding.key]
+      .providerOptions["max_cycles"] = 128;
+  return runExternal(test, request, resolution, std::move(verilator.local),
+                     tree.path("spatial-rtl-bundle"), artifacts, blobs);
+}
+
+CompletedRun runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
+                           const SharedFixture &fixture,
+                           const Gem5Readiness &readiness,
+                           ArtifactStore &artifacts, BlobStore &blobs,
+                           const deployment::test::TemporaryTree &tree) {
+  auto gem5Binding =
+      buildGem5Binding(test, fixture.hardware.system, fixture.interconnect,
+                       readiness.buildIdentity, artifacts);
+  std::string verilatorIdentity;
+  std::optional<ToolBinding> verilator;
+  if (cell == ExecutionMatrixCell::SystemRtl) {
+    verilator.emplace(
+        resolveHostTool(test, external_tool::verilatorProvider(), tree));
+    verilatorIdentity = verilator->resolved.version;
+  }
+  auto resolution =
+      buildResolution(test, fixture, gem5Binding.reference(),
+                      fixture.systemInputs.workloadReference,
+                      fixture.systemInputs.runtimeInputReference, true);
+  auto request =
+      buildSystemRequest(test, cell, fixture, gem5Binding, verilatorIdentity,
+                         resolution, artifacts, blobs);
+  external_tool::LocalToolConfig local;
+  local.runtimePolicy = external_tool::RuntimePolicy::Host;
+  auto &gem5 = local.tools[external_tool::gem5Provider().binding.key];
+  gem5.binding.executable = readiness.binary;
+  gem5.providerOptions["readiness"] = readiness.path;
+  if (verilator) {
+    local.tools[external_tool::verilatorProvider().binding.key] = std::move(
+        verilator->local.tools[external_tool::verilatorProvider().binding.key]);
+    local.tools[external_tool::verilatorProvider().binding.key]
+        .providerOptions["max_cycles"] = 128;
+  }
+  return runExternal(test, request, resolution, std::move(local),
+                     tree.path("system-bundle"), artifacts, blobs);
+}
+
+std::uint64_t
+deterministicWork(const sim::CanonicalSimulationExecution &execution) {
+  if (const auto *spatial = execution.spatial())
+    return spatial->progressObservations.terminalObserved.referenceCycle
+        .numerator();
+  return execution.system()->progressObservations.terminalObserved.gem5Tick;
+}
+
+std::uint64_t timevalMicros(const timeval &value) {
+  return static_cast<std::uint64_t>(value.tv_sec) * 1000000 + value.tv_usec;
+}
+
+const char *cellName(ExecutionMatrixCell cell) {
+  switch (cell) {
+  case ExecutionMatrixCell::SpatialDfg:
+    return "spatial-dfg";
+  case ExecutionMatrixCell::SpatialCgra:
+    return "spatial-cgra";
+  case ExecutionMatrixCell::SpatialRtl:
+    return "spatial-rtl";
+  case ExecutionMatrixCell::SystemDfg:
+    return "system-dfg";
+  case ExecutionMatrixCell::SystemCgra:
+    return "system-cgra";
+  case ExecutionMatrixCell::SystemRtl:
+    return "system-rtl";
+  }
+  llvm_unreachable("closed execution matrix cell");
+}
+
+void recordRunStatistics(ExecutionMatrixCell cell,
+                         const sim::CanonicalSimulationExecution &execution,
+                         std::chrono::steady_clock::duration activeWall,
+                         const rusage &before, const rusage &after) {
+  const auto wallMicros =
+      std::chrono::duration_cast<std::chrono::microseconds>(activeWall).count();
+  const std::uint64_t cpuMicros =
+      timevalMicros(after.ru_utime) + timevalMicros(after.ru_stime) -
+      timevalMicros(before.ru_utime) - timevalMicros(before.ru_stime);
+  llvm::outs() << "execution-matrix cell=" << cellName(cell)
+               << " deterministic_work=" << deterministicWork(execution)
+               << " active_wall_us=" << wallMicros << " cpu_us=" << cpuMicros
+               << " peak_rss_kib=" << after.ru_maxrss << '\n';
+}
+
+struct ReplaySignature final {
+  std::vector<ArtifactRootReference> roots;
+  std::vector<std::uint8_t> executionBytes;
+  std::uint64_t work = 0;
+};
+
+ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixCell cell,
+                                           llvm::StringRef readinessPath,
+                                           llvm::StringRef treeName,
+                                           bool emitStatistics) {
+  const llvm::StringRef test = cellName(cell);
+  deployment::test::TemporaryTree tree(treeName);
+  ArtifactStore artifacts(tree.path("artifacts"));
+  BlobStore blobs(tree.path("blobs"));
+
+  const auto setupStart = std::chrono::steady_clock::now();
+  SharedFixture fixture = buildSharedFixture(test, artifacts, blobs, tree);
+  traceSpatialFixture(test, fixture, artifacts);
+  const auto setupEnd = std::chrono::steady_clock::now();
+  if (emitStatistics)
+    llvm::outs() << "execution-matrix cell=" << cellName(cell)
+                 << " setup_wall_us="
+                 << std::chrono::duration_cast<std::chrono::microseconds>(
+                        setupEnd - setupStart)
+                        .count()
+                 << '\n';
+
+  rusage before{};
+  rusage after{};
+  if (emitStatistics)
+    require(test, getrusage(RUSAGE_CHILDREN, &before) == 0,
+            "cannot sample child resource use");
+  const auto activeStart = std::chrono::steady_clock::now();
+  CompletedRun completed = [&] {
+    if (cell == ExecutionMatrixCell::SpatialDfg ||
+        cell == ExecutionMatrixCell::SpatialCgra ||
+        cell == ExecutionMatrixCell::SpatialRtl)
+      return runSpatialCell(test, cell, fixture, artifacts, blobs, tree);
+    const Gem5Readiness readiness = readGem5Readiness(test, readinessPath);
+    return runSystemCell(test, cell, fixture, readiness, artifacts, blobs,
+                         tree);
+  }();
+  const auto activeEnd = std::chrono::steady_clock::now();
+  if (emitStatistics)
+    require(test, getrusage(RUSAGE_CHILDREN, &after) == 0,
+            "cannot sample child resource use");
+  if (completed.execution.spatial())
+    requireSpatialOracle(test, completed.execution);
+  else
+    requireSystemOracle(test, completed.execution);
+  if (emitStatistics)
+    recordRunStatistics(cell, completed.execution, activeEnd - activeStart,
+                        before, after);
+
+  std::vector<ArtifactRootReference> roots{
+      fixture.dataflowReference,
+      fixture.hardware.module.reference(),
+      fixture.hardware.system.reference(),
+      fixture.hardware.techMapping,
+      fixture.hardware.spatialMapping.reference(),
+      fixture.systemMapping.reference(),
+      fixture.interconnect,
+      fixture.implementation.reference(),
+      fixture.deployment.reference(),
+  };
+  if (cell == ExecutionMatrixCell::SpatialDfg ||
+      cell == ExecutionMatrixCell::SpatialCgra ||
+      cell == ExecutionMatrixCell::SpatialRtl) {
+    roots.push_back(fixture.spatialWorkload);
+    roots.push_back(fixture.spatialRuntimeInput);
+  } else {
+    roots.push_back(fixture.systemInputs.workloadReference);
+    roots.push_back(fixture.systemInputs.runtimeInputReference);
+  }
+  roots.push_back(completed.evidence.requestRef());
+  roots.push_back(completed.evidenceReference);
+  roots.push_back(
+      completed.evidence.outputBindings().front().artifacts.front());
+  const auto bytes = completed.execution.canonicalBytes().bytes();
+  return {std::move(roots),
+          {bytes.begin(), bytes.end()},
+          deterministicWork(completed.execution)};
+}
+
+} // namespace
+
+llvm::Expected<ExecutionMatrixCell>
+parseExecutionMatrixCell(llvm::StringRef spelling) {
+  if (spelling == "spatial-dfg")
+    return ExecutionMatrixCell::SpatialDfg;
+  if (spelling == "spatial-cgra")
+    return ExecutionMatrixCell::SpatialCgra;
+  if (spelling == "spatial-rtl")
+    return ExecutionMatrixCell::SpatialRtl;
+  if (spelling == "system-dfg")
+    return ExecutionMatrixCell::SystemDfg;
+  if (spelling == "system-cgra")
+    return ExecutionMatrixCell::SystemCgra;
+  if (spelling == "system-rtl")
+    return ExecutionMatrixCell::SystemRtl;
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "unknown execution matrix cell '%s'",
+                                 spelling.str().c_str());
+}
+
+void runExecutionMatrixCell(ExecutionMatrixCell cell,
+                            llvm::StringRef gem5ReadinessPath) {
+  requireSuccess(cellName(cell),
+                 evaluation::registerProductionEvaluationRegistry());
+  requireSuccess(cellName(cell),
+                 eda::open_source::registerMappedRtlSimulationProvider());
+  (void)runExecutionMatrixCellOnce(
+      cell, gem5ReadinessPath,
+      ("execution-matrix-" + llvm::StringRef(cellName(cell))).str(), true);
+}
+
+void verifyDeterministicSystemReplay(llvm::StringRef gem5ReadinessPath) {
+  constexpr std::size_t replayCount = 3;
+  const llvm::StringRef test = "deterministic-system-replay";
+  requireSuccess(test, evaluation::registerProductionEvaluationRegistry());
+  requireSuccess(test, eda::open_source::registerMappedRtlSimulationProvider());
+  std::array<std::future<ReplaySignature>, replayCount> pending;
+  for (std::size_t replay = 0; replay < replayCount; ++replay) {
+    pending[replay] = std::async(std::launch::async, [=] {
+      return runExecutionMatrixCellOnce(
+          ExecutionMatrixCell::SystemCgra, gem5ReadinessPath,
+          test.str() + "-" + std::to_string(replay), false);
+    });
+  }
+  std::optional<ReplaySignature> expected;
+  for (std::size_t replay = 0; replay < replayCount; ++replay) {
+    ReplaySignature observed = pending[replay].get();
+    if (!expected) {
+      expected = std::move(observed);
+      continue;
+    }
+    require(test, observed.roots == expected->roots,
+            "artifact or Evidence roots changed across clean replay");
+    require(test, observed.work == expected->work,
+            "deterministic work changed across clean replay");
+    require(test, observed.executionBytes == expected->executionBytes,
+            "normalized SimulationExecution changed across clean replay");
+  }
+  llvm::outs() << "execution-matrix deterministic_replays=" << replayCount
+               << " roots=" << expected->roots.size()
+               << " deterministic_work=" << expected->work << '\n';
+}
+
+void verifyHeterogeneousSystemAnchor() {
+  const llvm::StringRef test = "heterogeneous-system-anchor";
+  requireSuccess(test, evaluation::registerProductionEvaluationRegistry());
+  deployment::test::TemporaryTree tree(test);
+  ArtifactStore artifacts(tree.path("artifacts"));
+  BlobStore blobs(tree.path("blobs"));
+  SharedFixture fixture = buildSharedFixture(test, artifacts, blobs, tree);
+
+  const auto dataflow = take(test, fixture.dataflow.view());
+  require(test,
+          dataflow.rootThreadLaunches().size() == 4 &&
+              dataflow.staticGraphLaunches().size() == 4 &&
+              dataflow.actors().size() >= 7,
+          "canonical anchor does not contain four nonempty graph launches");
+
+  const fabric::FabricArtifactView &module = fixture.hardware.module.view();
+  require(test,
+          module.peOccurrences().size() >= 4 &&
+              module.switchOccurrences().size() > 1 &&
+              !module.memoryOccurrences().empty() &&
+              !module.fifoOccurrences().empty() &&
+              !module.boundaryOccurrences().empty(),
+          "SpatialCore anchor omits a required distributed hierarchy class");
+
+  const auto system =
+      take(test, fabric::requireSystemRoot(fixture.hardware.system.view()));
+  require(test, system.artifact().accCoreOccurrences().size() == 4,
+          "System anchor does not contain four AccCore occurrences");
+  std::size_t inOrder = 0;
+  std::size_t outOfOrder = 0;
+  for (const fabric::AccCoreOccurrenceRef core :
+       system.artifact().accCoreOccurrences()) {
+    const auto *realization = system.instructionCoreMicroarchitecture(
+        fabric::InstructionCoreContextRef{core});
+    require(test, realization != nullptr,
+            "AccCore has no InstructionCore realization");
+    if (realization->kind() == fabric::InstructionCoreRealizationKind::InOrder)
+      ++inOrder;
+    else
+      ++outOfOrder;
+  }
+  require(test, inOrder == 2 && outOfOrder == 2,
+          "System anchor does not retain heterogeneous and repeated cores");
+  require(test,
+          !system.artifact().systemMemoryServices().empty() &&
+              system.transportResources().size() >= 5 &&
+              system.artifact().pointConnections().size() >= 10,
+          "System anchor omits external memory or finite ring transport");
+
+  auto contexts = take(
+      test, mapping::projectSystemExecutionContexts(
+                dataflow, fixture.systemMapping.view().executionBindings()));
+  std::set<std::vector<std::uint8_t>> usedCores;
+  for (const mapping::SystemSpatialContextDomain &domain :
+       contexts.spatialDomains)
+    usedCores.insert(fabric::canonicalFabricBytes(
+        fabric::SpatialCoreOccurrenceRef{domain.context.accCore}));
+  require(test,
+          usedCores.size() == system.artifact().accCoreOccurrences().size(),
+          "at least one released AccCore is unused by the SystemMapping");
+
+  auto obligations = take(test, mapping::projectSystemServiceObligations(
+                                    dataflow, fixture.systemMapping.view()
+                                                  .executionBindings()
+                                                  .rootThreadLaunches()));
+  bool hasMulticast = false;
+  for (const mapping::SystemServiceObligationProjection &obligation :
+       obligations)
+    hasMulticast |= obligation.sinks.size() >= 2;
+  require(test, hasMulticast,
+          "SystemMapping does not preserve the shared channel multicast");
+  require(test,
+          fixture.systemInputs.workload.system()
+                      ->observableContract.memories.size() == 1 &&
+              fixture.systemInputs.runtimeInput.system()
+                      ->memoryInterfaceBindings.size() == 1,
+          "System anchor has no terminal memory observable");
+  require(test,
+          fixture.implementation.implementation()
+                      .interconnectImplementations()
+                      .size() == 1 &&
+              fixture.implementation.implementation()
+                      .interconnectImplementations()
+                      .front() == fixture.interconnect,
+          "HardwareImplementation does not catalog the exact System "
+          "interconnect sibling");
+
+  const auto tech =
+      take(test,
+           mapping::importTechMapping(fixture.hardware.techMapping, artifacts));
+  auto progress =
+      take(test, mapping::deriveSpatialMappingProgressClosure(
+                     dataflow, tech.view(),
+                     fixture.hardware.spatialMapping.view().routeTrees()));
+  require(test,
+          progress.kind ==
+              mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet,
+          "selected routes do not close the canonical progress proof");
+  std::vector<mapping::SpatialRouteTreeView> unbufferedRoutes(
+      fixture.hardware.spatialMapping.view().routeTrees().begin(),
+      fixture.hardware.spatialMapping.view().routeTrees().end());
+  bool removedProgressBoundary = false;
+  auto bypassBuffered = [&](auto &traversal) {
+    if (!traversal)
+      return;
+    const auto *fifo =
+        std::get_if<fabric::FabricFifoTraversalPayload>(&traversal->payload);
+    if (!fifo || fifo->mode != fabric::FabricFifoTraversalMode::Buffered)
+      return;
+    traversal = fabric::FabricPhysicalTraversalRef::fifoTraversal(
+        fifo->owner, fabric::FabricFifoTraversalMode::Bypass);
+    removedProgressBoundary = true;
+  };
+  for (mapping::SpatialRouteTreeView &route : unbufferedRoutes) {
+    bypassBuffered(route.localTraversal);
+    for (mapping::SpatialRouteNodeView &node : route.nodes)
+      bypassBuffered(node.incomingTraversal);
+    for (mapping::SpatialRouteSinkView &sink : route.sinks)
+      bypassBuffered(sink.localTraversal);
+  }
+  require(test, removedProgressBoundary,
+          "canonical anchor has no Buffered FIFO progress boundary");
+  auto closedWait = take(test, mapping::deriveSpatialMappingProgressClosure(
+                                   dataflow, tech.view(), unbufferedRoutes));
+  require(test,
+          closedWait.kind ==
+              mapping::MappingProgressClosureKind::ProvenClosedWaitSet,
+          "route verifier accepted the unbuffered atomic multicast");
+
+  const auto binding =
+      buildGem5Binding(test, fixture.hardware.system, fixture.interconnect,
+                       structuralGem5Identity(), artifacts);
+  require(test, !binding.binding().correspondences().empty(),
+          "gem5 binding does not cover the heterogeneous System");
+  llvm::outs() << "heterogeneous-system-anchor roots=4 acc_cores=4"
+               << " spatial_pes=" << module.peOccurrences().size()
+               << " switches=" << module.switchOccurrences().size()
+               << " transport_resources=" << system.transportResources().size()
+               << " service_realizations="
+               << fixture.systemMapping.view().serviceRealizations().size()
+               << '\n';
+}
+
+} // namespace loom::system_test

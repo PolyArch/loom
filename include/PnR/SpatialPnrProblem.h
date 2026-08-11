@@ -413,12 +413,24 @@ public:
   llvm::ArrayRef<FrozenSpatialTerminalBinding> logicalNetSinkBindings() const {
     return logicalNetSinkBindings_;
   }
+  /// CSR keyed by the global logical-net sink ordinal. Each value is a
+  /// sink-local prerequisite ordinal of the same multicast net. A dependent
+  /// sink must not backpressure that prerequisite through an unbuffered atomic
+  /// replication branch.
+  llvm::ArrayRef<PnrIndex> sinkProgressDependencyOffsets() const {
+    return sinkProgressDependencyOffsets_;
+  }
+  llvm::ArrayRef<PnrIndex> sinkProgressDependencies() const {
+    return sinkProgressDependencies_;
+  }
 
 private:
   std::vector<FrozenSpatialLogicalNet> logicalNets_;
   std::vector<::dataflow::CanonicalGraphConsumerEndpointRef> logicalNetSinks_;
   std::vector<FrozenSpatialTerminalBinding> logicalNetSourceBindings_;
   std::vector<FrozenSpatialTerminalBinding> logicalNetSinkBindings_;
+  std::vector<PnrIndex> sinkProgressDependencyOffsets_;
+  std::vector<PnrIndex> sinkProgressDependencies_;
 
   friend class FrozenSpatialTransferIndexBuilder;
   friend class FrozenSpatialPortIndexBuilder;

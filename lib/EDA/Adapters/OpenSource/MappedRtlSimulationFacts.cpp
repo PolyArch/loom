@@ -1,7 +1,7 @@
 #include "MappedRtlSimulationInternal.h"
 
-#include "Common/ArtifactText.h"
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowOps.h"
@@ -34,22 +34,21 @@ using namespace external_tool;
 using namespace hardware;
 
 template <typename Value, typename Loader>
-llvm::Expected<std::shared_ptr<const Value>> importCachedOne(
-    const ArtifactRootReference &reference, const ArtifactStore &artifacts,
-    const BlobStore *blobs, Loader &&loader) {
+llvm::Expected<std::shared_ptr<const Value>>
+importCachedOne(const ArtifactRootReference &reference,
+                const ArtifactStore &artifacts, const BlobStore *blobs,
+                Loader &&loader) {
   const std::array<ArtifactRootReference, 1> references{reference};
-  return evaluation::importCachedArtifact<Value>(
-      artifacts, blobs, references, std::forward<Loader>(loader));
+  return evaluation::importCachedArtifact<Value>(artifacts, blobs, references,
+                                                 std::forward<Loader>(loader));
 }
 
 llvm::Expected<std::shared_ptr<const sim::ImportedSpatialSimulationInputs>>
 importCachedSpatialInputs(const ArtifactRootReference &workload,
                           const ArtifactRootReference &runtimeInput,
                           const ArtifactStore &artifacts) {
-  const std::array<ArtifactRootReference, 2> references{workload,
-                                                       runtimeInput};
-  return evaluation::importCachedArtifact<
-      sim::ImportedSpatialSimulationInputs>(
+  const std::array<ArtifactRootReference, 2> references{workload, runtimeInput};
+  return evaluation::importCachedArtifact<sim::ImportedSpatialSimulationInputs>(
       artifacts, nullptr, references, [&]() {
         return sim::importSpatialSimulationInputs(workload, runtimeInput,
                                                   artifacts);
@@ -170,8 +169,7 @@ llvm::Expected<TransportPort> deriveTransportPort(
       dataPath->payloadWidthBits < semanticPayloadWidth)
     return invalid("mapped graph boundary has an unsupported data path");
   if ((dataPath->kind == ::fabric::DataPathKind::Bits) != !physicalTag ||
-      (physicalTag &&
-       physicalTag->getBitWidth() != dataPath->tagWidthBits))
+      (physicalTag && physicalTag->getBitWidth() != dataPath->tagWidthBits))
     return invalid("mapped graph boundary Physical Tag is inconsistent");
   auto interface =
       findDataInterface(implementation, systemAttachment.spatialEndpoint);
@@ -386,8 +384,7 @@ llvm::Expected<MemoryBoundaryPort> deriveMemoryBoundaryPort(
       elementWidth->bitWidth !=
           hardware::rtl::portableMemoryElementWidthFieldWidth ||
       laneCount->direction != output ||
-      laneCount->bitWidth !=
-          hardware::rtl::portableMemoryLaneCountFieldWidth ||
+      laneCount->bitWidth != hardware::rtl::portableMemoryLaneCountFieldWidth ||
       addressLaneWidth->direction != output ||
       addressLaneWidth->bitWidth !=
           hardware::rtl::portableMemoryAddressLaneWidthFieldWidth ||
@@ -1020,9 +1017,9 @@ materializeMappedRtlSemanticInputs(
         deployment::importHardwareConfigurationImage(reference, artifacts);
     if (!image)
       return image.takeError();
-    const std::string path =
-        "inputs/semantic/configuration-images/" +
-        formatArtifactIdentityHex(reference.artifact) + ".json";
+    const std::string path = "inputs/semantic/configuration-images/" +
+                             formatArtifactIdentityHex(reference.artifact) +
+                             ".json";
     if (llvm::Error error = addSemanticInput(semanticInputs, path, reference,
                                              image->canonicalBytes().bytes()))
       return std::move(error);
@@ -1072,17 +1069,18 @@ ExternalToolInvocationImportExpectation makeMappedRtlImportExpectation(
 
 } // namespace
 
-llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
-    const MappedRtlExecutionClosure &closure,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
+llvm::Expected<MappedRtlFactsOrUnsupported>
+deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
+                               const ArtifactStore &artifacts,
+                               const BlobStore &blobs) {
   if (llvm::Error error = evaluation::models::validateMappedRtlSimulatorBinding(
           closure.simulatorBinding))
     return std::move(error);
 
   auto implementation = importCachedOne<FinalizedHardwareImplementation>(
       closure.hardwareImplementation, artifacts, &blobs, [&]() {
-        return importHardwareImplementation(closure.hardwareImplementation, artifacts,
-                                            blobs);
+        return importHardwareImplementation(closure.hardwareImplementation,
+                                            artifacts, blobs);
       });
   if (!implementation)
     return implementation.takeError();
@@ -1227,7 +1225,7 @@ llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
         if (classified->kind == IngressKind::Start) {
           if (start)
             return invalid("graph start has multiple mapped input ports");
-          start = InputTokenStream{std::move(*port), 1, {}};
+          start = InputTokenStream{std::move(*port), 1, {}, std::nullopt};
         } else if (classified->kind == IngressKind::Value) {
           if (values[classified->ordinal])
             return invalid("graph value input has multiple mapped ports");
@@ -1239,8 +1237,9 @@ llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
                                      shapes->valueInputs[classified->ordinal]);
           if (!tokens)
             return tokens.takeError();
-          values[classified->ordinal] = InputTokenStream{
-              std::move(*port), (*sequence)->tokenCount, std::move(*tokens)};
+          values[classified->ordinal] =
+              InputTokenStream{std::move(*port), (*sequence)->tokenCount,
+                               std::move(*tokens), std::nullopt};
         } else {
           if (streams[classified->ordinal])
             return invalid("graph stream input has multiple mapped ports");
@@ -1249,8 +1248,9 @@ llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
                                      shapes->streamInputs[classified->ordinal]);
           if (!tokens)
             return tokens.takeError();
-          streams[classified->ordinal] = InputTokenStream{
-              std::move(*port), sequence.values.tokenCount, std::move(*tokens)};
+          streams[classified->ordinal] =
+              InputTokenStream{std::move(*port), sequence.values.tokenCount,
+                               std::move(*tokens), classified->ordinal};
         }
       }
     }
@@ -1408,9 +1408,10 @@ struct MappedRtlLaunchClosure final {
   std::shared_ptr<const mapping::FinalizedSpatialMapping> mapping;
 };
 
-llvm::Expected<MappedRtlLaunchClosure> importMappedRtlLaunchClosure(
-    const MappedRtlExecutionClosure &closure, const ArtifactStore &artifacts,
-    const BlobStore &blobs) {
+llvm::Expected<MappedRtlLaunchClosure>
+importMappedRtlLaunchClosure(const MappedRtlExecutionClosure &closure,
+                             const ArtifactStore &artifacts,
+                             const BlobStore &blobs) {
   auto deployment = importCachedOne<deployment::FinalizedDeployment>(
       closure.deployment, artifacts, &blobs, [&]() {
         return deployment::importDeployment(closure.deployment, artifacts,
@@ -1442,7 +1443,7 @@ llvm::Expected<MappedRtlLaunchClosure> importMappedRtlLaunchClosure(
       (*mapping)->view().dataflowIdentity() != (*inputs)->dataflow.identity())
     return invalid("Deployment selection names a foreign SpatialMapping");
   return MappedRtlLaunchClosure{std::move(*deployment), std::move(*inputs),
-                               std::move(*selection), std::move(*mapping)};
+                                std::move(*selection), std::move(*mapping)};
 }
 
 } // namespace
@@ -1453,13 +1454,12 @@ deriveMappedRtlImportExpectation(
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   auto implementation = importCachedOne<FinalizedHardwareImplementation>(
       requestClosure.hardwareImplementation, artifacts, &blobs, [&]() {
-        return importHardwareImplementation(requestClosure.hardwareImplementation,
-                                            artifacts, blobs);
+        return importHardwareImplementation(
+            requestClosure.hardwareImplementation, artifacts, blobs);
       });
   if (!implementation)
     return implementation.takeError();
-  auto closure =
-      importMappedRtlLaunchClosure(requestClosure, artifacts, blobs);
+  auto closure = importMappedRtlLaunchClosure(requestClosure, artifacts, blobs);
   if (!closure)
     return closure.takeError();
   if (closure->selection.hardwareImplementation !=
@@ -1488,11 +1488,11 @@ deriveMappedRtlImportExpectation(
                                         *semanticInputs);
 }
 
-llvm::Expected<MappedRtlObservationFacts> deriveMappedRtlObservationFacts(
-    const MappedRtlExecutionClosure &requestClosure,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto closure =
-      importMappedRtlLaunchClosure(requestClosure, artifacts, blobs);
+llvm::Expected<MappedRtlObservationFacts>
+deriveMappedRtlObservationFacts(const MappedRtlExecutionClosure &requestClosure,
+                                const ArtifactStore &artifacts,
+                                const BlobStore &blobs) {
+  auto closure = importMappedRtlLaunchClosure(requestClosure, artifacts, blobs);
   if (!closure)
     return closure.takeError();
   const auto *workload = closure->inputs->workload.spatial();
@@ -1518,8 +1518,8 @@ llvm::Expected<MappedRtlObservationFacts> deriveMappedRtlObservationFacts(
   if (!*observations)
     return invalid("prepared invocation is no longer supported");
   return MappedRtlObservationFacts{std::move(closure->inputs),
-                                  std::move(**images),
-                                  std::move(**observations)};
+                                   std::move(**images),
+                                   std::move(**observations)};
 }
 
 } // namespace loom::eda::open_source::detail

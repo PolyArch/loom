@@ -68,6 +68,11 @@ llvm::Error invalid(const llvm::Twine &message) {
       llvm::Twine("production_evaluation_registry_invalid: ") + message);
 }
 
+llvm::Expected<std::shared_ptr<const deployment::FinalizedDeployment>>
+importCachedDeployment(const ArtifactRootReference &reference,
+                       const ArtifactStore &artifacts,
+                       const BlobStore &blobs);
+
 EvaluationCaseSignatureRef caseRef(BuiltinEvaluationCase evaluationCase) {
   return llvm::cantFail(EvaluationCaseSignatureRef::get(
       evaluationSchemaVersion(), builtinEvaluationCaseKind(evaluationCase)));
@@ -100,14 +105,14 @@ llvm::Error verifyGem5Binding(const ArtifactRootReference &subject,
   if (deployments.size() != 1)
     return invalid("gem5 binding compatibility requires one Deployment");
   auto deployment =
-      deployment::importDeployment(deployments.front(), artifacts, blobs);
+      importCachedDeployment(deployments.front(), artifacts, blobs);
   if (!deployment)
     return deployment.takeError();
   auto gem5 = runtime::importGem5SimulationBinding(subject, artifacts);
   if (!gem5)
     return gem5.takeError();
   auto systemMapping = mapping::importSystemMapping(
-      deployment->deployment().systemMapping(), artifacts);
+      (*deployment)->deployment().systemMapping(), artifacts);
   if (!systemMapping)
     return systemMapping.takeError();
   if (systemMapping->view().fabricIdentity() != gem5->binding().fabric().artifact)
@@ -115,7 +120,7 @@ llvm::Error verifyGem5Binding(const ArtifactRootReference &subject,
 
   bool ownsInterconnect = false;
   for (const deployment::DeploymentHardwareBinding &binding :
-       deployment->deployment().hardwareBindings()) {
+       (*deployment)->deployment().hardwareBindings()) {
     auto implementation = hardware::importHardwareImplementation(
         binding.hardwareImplementation, artifacts, blobs);
     if (!implementation)

@@ -41,4 +41,36 @@ def Fabric_OperandBufferModeAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
+def Fabric_InterconnectProtocolSchemaAttr
+    : I32EnumAttr<"InterconnectProtocolSchema",
+        "closed interconnect implementation protocol schema",
+        [
+          I32EnumAttrCase<"Gem5EventTransportV1", 0,
+                          "gem5_event_transport_v1">
+        ]> {
+  let cppNamespace = "::fabric";
+}
+
+def Fabric_InterconnectEndpointDirectionAttr
+    : I32EnumAttr<"InterconnectEndpointDirection",
+        "direction of one protocol endpoint",
+        [
+          I32EnumAttrCase<"Ingress", 0, "ingress">,
+          I32EnumAttrCase<"Egress", 1, "egress">
+        ]> {
+  let cppNamespace = "::fabric";
+}
+
+def Fabric_InterconnectRefinementKindAttr
+    : I32EnumAttr<"InterconnectRefinementKind",
+        "closed architecture-to-protocol refinement relation",
+        [
+          I32EnumAttrCase<"Endpoint", 0, "endpoint">,
+          I32EnumAttrCase<"ResourceState", 1, "resource_state">,
+          I32EnumAttrCase<"TransferPattern", 2, "transfer_pattern">,
+          I32EnumAttrCase<"Configuration", 3, "configuration">
+        ]> {
+  let cppNamespace = "::fabric";
+}
+
 #endif // FABRIC_ENUMS_TD

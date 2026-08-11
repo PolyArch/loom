@@ -107,7 +107,9 @@ request(const Fixture &fixture, llvm::ArrayRef<PnrIndex> sources,
           0,
           expansionLimit,
           {},
-          lowerBoundCostRevision};
+          lowerBoundCostRevision,
+          {},
+          false};
 }
 
 void arbitraryTopologyAndCanonicalTieBreak() {
@@ -178,6 +180,32 @@ void widthFilteringAndWorkLimit() {
     fail(__func__, "work-limited route did not report consumed expansion");
 }
 
+void requiredTraversalProductState() {
+  Fixture fixture;
+  EndpointRouteSearchScratch scratch;
+  requireSuccess(__func__, scratch.prepare(fixture.graph()));
+  const std::array<PnrIndex, 1> sources{{0}};
+  const std::array<PnrIndex, 1> sourceGroups{{Fixture::noReplicationGroup}};
+  const std::array<PnrIndex, 1> targets{{4}};
+  const std::array<PnrIndex, 1> targetRanks{{0}};
+  const std::array<std::uint64_t, 1> required{{std::uint64_t{1} << 4}};
+  const std::array<PnrIndex, 3> expected{{1, 4, 6}};
+
+  auto constrained =
+      request(fixture, sources, sourceGroups, targets, targetRanks, 1, 64);
+  constrained.requiredTraversalBits = required;
+  const auto result = take(__func__, scratch.search(constrained));
+  requirePath(__func__, result, 0, 4, 3, expected);
+
+  const std::array<std::uint64_t, 1> excludesRequired{{
+      ((std::uint64_t{1} << fixture.arcs.size()) - 1) &
+          ~(std::uint64_t{1} << 4),
+  }};
+  constrained.eligibleTraversalBits = excludesRequired;
+  expectFailure(__func__, scratch.search(constrained),
+                EndpointRouteSearchFailureKind::Unreachable);
+}
+
 void checkedCostAndAdmissibility() {
   Fixture fixture;
   EndpointRouteSearchScratch scratch;
@@ -212,8 +240,8 @@ void exactHeuristicCacheInvalidation() {
   const std::array<PnrIndex, 1> targetRanks{{0}};
   const std::array<PnrIndex, 3> initialPath{{1, 3, 5}};
 
-  auto cachedRequest = request(fixture, sources, sourceGroups, targets,
-                               targetRanks, 1, 64, 0);
+  auto cachedRequest =
+      request(fixture, sources, sourceGroups, targets, targetRanks, 1, 64, 0);
   requirePath(__func__, take(__func__, scratch.search(cachedRequest)), 0, 4, 3,
               initialPath);
   if (scratch.heuristicBuildCount() != 1 ||
@@ -230,10 +258,10 @@ void exactHeuristicCacheInvalidation() {
   fixture.lowerCosts[3] = 20;
   fixture.currentCosts[3] = 20;
   const std::array<PnrIndex, 3> revisedPath{{1, 4, 6}};
-  auto revisedRequest = request(fixture, sources, sourceGroups, targets,
-                                targetRanks, 1, 64, 1);
-  requirePath(__func__, take(__func__, scratch.search(revisedRequest)), 0, 4,
-              3, revisedPath);
+  auto revisedRequest =
+      request(fixture, sources, sourceGroups, targets, targetRanks, 1, 64, 1);
+  requirePath(__func__, take(__func__, scratch.search(revisedRequest)), 0, 4, 3,
+              revisedPath);
   if (scratch.heuristicBuildCount() != 2 ||
       scratch.heuristicCacheHitCount() != 1)
     fail(__func__, "cost revision reused a stale exact heuristic");
@@ -244,6 +272,7 @@ void exactHeuristicCacheInvalidation() {
 int main() {
   arbitraryTopologyAndCanonicalTieBreak();
   widthFilteringAndWorkLimit();
+  requiredTraversalProductState();
   checkedCostAndAdmissibility();
   exactHeuristicCacheInvalidation();
   return 0;

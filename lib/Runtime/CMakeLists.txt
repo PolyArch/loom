@@ -3,6 +3,7 @@ add_library(LoomRuntimePlatformBinding
   Gem5BuiltinModels.cpp
   Gem5SimulationBinding.cpp
   Gem5SimulationBindingCodec.cpp
+  Gem5SpatialChannel.cpp
   RuntimePlatformBinding.cpp
   RuntimeProvider.cpp
 )
@@ -43,6 +44,7 @@ target_link_libraries(LoomRuntimeDeploymentLoader PUBLIC
 
 add_library(LoomGem5SystemExecution
   Gem5SystemExecution.cpp
+  Gem5SystemExecutionFacts.cpp
 )
 
 target_include_directories(LoomGem5SystemExecution PUBLIC
@@ -55,6 +57,7 @@ target_compile_definitions(LoomGem5SystemExecution PRIVATE
   LOOM_GEM5_CGRA_ENGINE_PATH="$<TARGET_FILE:loom-gem5-cgra-engine>"
   LOOM_GEM5_RTL_ENGINE_SOURCE_PATH="${LOOM_SOURCE_DIR}/runtime/gem5/loom_gem5_rtl_engine.cpp"
   LOOM_GEM5_BRIDGE_HEADER_PATH="${LOOM_SOURCE_DIR}/include/Runtime/Gem5BridgeWire.h"
+  LOOM_GEM5_CHANNEL_PLAN_HEADER_PATH="${LOOM_SOURCE_DIR}/include/Runtime/Gem5SpatialChannelPlan.h"
 )
 
 add_dependencies(LoomGem5SystemExecution

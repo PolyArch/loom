@@ -63,10 +63,8 @@ std::uint8_t imageStrobe(llvm::ArrayRef<std::uint8_t> image,
       word * hardware::rtl::portableConfigurationByteCount;
   if (first >= image.size())
     return 0;
-  const unsigned count =
-      static_cast<unsigned>(std::min<std::uint64_t>(
-          hardware::rtl::portableConfigurationByteCount,
-          image.size() - first));
+  const unsigned count = static_cast<unsigned>(std::min<std::uint64_t>(
+      hardware::rtl::portableConfigurationByteCount, image.size() - first));
   return static_cast<std::uint8_t>((1U << count) - 1U);
 }
 
@@ -100,8 +98,8 @@ void renderPhysicalTagAssertion(llvm::raw_ostream &output,
     return;
   output << "  always_ff @(posedge " << clock << ")\n"
          << "    if (loom_resets_released && " << port.prefix << "_valid && "
-         << port.prefix << "_ready && " << port.prefix << "_tag !== "
-         << port.physicalTag->getBitWidth() << "'h"
+         << port.prefix << "_ready && " << port.prefix
+         << "_tag !== " << port.physicalTag->getBitWidth() << "'h"
          << hexBits(*port.physicalTag) << ") $fatal(1, \"mapped "
          << observationKind << " " << ordinal
          << " carried the wrong Physical Tag\");\n";
@@ -285,9 +283,9 @@ void renderMemoryService(llvm::raw_ostream &output,
            << " * " << port.prefix << "_request_address_lane_width) : 0);\n"
            << "            if (" << port.prefix
            << "_request_address_lane_width < " << kMaximumMemoryAddressWidth
-           << ") loom_memory_lane_address_"
-           << ordinal << " = loom_memory_lane_address_" << ordinal
-           << " & ((" << kMaximumMemoryAddressWidth << "'h1 << " << port.prefix
+           << ") loom_memory_lane_address_" << ordinal
+           << " = loom_memory_lane_address_" << ordinal << " & (("
+           << kMaximumMemoryAddressWidth << "'h1 << " << port.prefix
            << "_request_address_lane_width) - 1);\n"
            << "            if (" << port.prefix
            << "_request_address_form == 0) loom_memory_byte_address_" << ordinal
@@ -366,8 +364,7 @@ void renderInputCounters(llvm::raw_ostream &output,
 
 void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
                              std::size_t ordinal, llvm::StringRef clock) {
-  output << "  task automatic loom_cfg_write_" << ordinal
-         << "(input logic ["
+  output << "  task automatic loom_cfg_write_" << ordinal << "(input logic ["
          << hardware::rtl::portableConfigurationAddressWidth - 1
          << ":0] address, input logic ["
          << hardware::rtl::portableConfigurationDataWidth - 1
@@ -413,8 +410,7 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << "_bresp !== 2'b00) $fatal(1, \"AXI4-Lite write failed\");\n"
          << "    end\n"
          << "  endtask\n"
-         << "  task automatic loom_cfg_read_" << ordinal
-         << "(input logic ["
+         << "  task automatic loom_cfg_read_" << ordinal << "(input logic ["
          << hardware::rtl::portableConfigurationAddressWidth - 1
          << ":0] address, output logic ["
          << hardware::rtl::portableConfigurationDataWidth - 1
@@ -453,9 +449,9 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
   for (std::uint64_t word = 0; word != program.layout.payloadWordCount;
        ++word) {
     const std::uint32_t address =
-        program.layout.baseAddress + static_cast<std::uint32_t>(
-                                         word * hardware::rtl::
-                                                    portableConfigurationByteCount);
+        program.layout.baseAddress +
+        static_cast<std::uint32_t>(
+            word * hardware::rtl::portableConfigurationByteCount);
     output << "    loom_cfg_write_" << taskOrdinal << "("
            << hardware::rtl::portableConfigurationAddressWidth << "'h"
            << llvm::format_hex_no_prefix(
@@ -482,9 +478,9 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
   for (std::uint64_t word = 0; word != program.layout.payloadWordCount;
        ++word) {
     const std::uint32_t address =
-        program.layout.baseAddress + static_cast<std::uint32_t>(
-                                         word * hardware::rtl::
-                                                    portableConfigurationByteCount);
+        program.layout.baseAddress +
+        static_cast<std::uint32_t>(
+            word * hardware::rtl::portableConfigurationByteCount);
     output << "    loom_cfg_read_" << taskOrdinal << "("
            << hardware::rtl::portableConfigurationAddressWidth << "'h"
            << llvm::format_hex_no_prefix(
@@ -515,35 +511,34 @@ void renderConfigurationProgram(llvm::raw_ostream &output,
 }
 
 void renderResultWriter(llvm::raw_ostream &output,
-                        const MappedRtlInvocationFacts &facts) {
-  output
-      << "  task automatic loom_write_result(input bit stopped);\n"
-      << "    integer result_file;\n"
-      << "    integer token_ordinal;\n"
-      << "    begin\n"
-      << "      result_file = $fopen(\"" << mappedRtlResultPath
-      << "\", \"w\");\n"
-      << "      if (result_file == 0) $fatal(1, \"could not open mapped RTL "
-         "result\");\n"
-      << "      $fwrite(result_file, \"" << mappedRtlResultSchema << " "
-      << mappedRtlResultVersion << "\\n\");\n"
-      << "      if (stopped) $fwrite(result_file, \"terminal "
-      << mappedRtlTerminalStatusSpelling(
-             MappedRtlTerminalStatus::StoppedByLimit)
-      << "\\n\");\n"
-      << "      else $fwrite(result_file, \"terminal "
-      << mappedRtlTerminalStatusSpelling(MappedRtlTerminalStatus::Retired)
-      << "\\n\");\n"
-      << "      $fwrite(result_file, \"launch_cycle %0d\\n\", "
-         "loom_launch_cycle);\n"
-      << "      if (stopped) $fwrite(result_file, "
-         "\"retirement_cycle absent\\n\");\n"
-      << "      else $fwrite(result_file, \"retirement_cycle %0d\\n\", "
-         "loom_retirement_cycle);\n"
-      << "      $fwrite(result_file, \"terminal_cycle %0d\\n\", "
-         "loom_cycle);\n"
-      << "      $fwrite(result_file, \"value_results "
-      << facts.valueResults.size() << "\\n\");\n";
+                        const MappedRtlInvocationFacts &facts,
+                        llvm::StringRef resultPath) {
+  output << "  task automatic loom_write_result(input bit stopped);\n"
+         << "    integer result_file;\n"
+         << "    integer token_ordinal;\n"
+         << "    begin\n"
+         << "      result_file = $fopen(\"" << resultPath << "\", \"w\");\n"
+         << "      if (result_file == 0) $fatal(1, \"could not open mapped RTL "
+            "result\");\n"
+         << "      $fwrite(result_file, \"" << mappedRtlResultSchema << " "
+         << mappedRtlResultVersion << "\\n\");\n"
+         << "      if (stopped) $fwrite(result_file, \"terminal "
+         << mappedRtlTerminalStatusSpelling(
+                MappedRtlTerminalStatus::StoppedByLimit)
+         << "\\n\");\n"
+         << "      else $fwrite(result_file, \"terminal "
+         << mappedRtlTerminalStatusSpelling(MappedRtlTerminalStatus::Retired)
+         << "\\n\");\n"
+         << "      $fwrite(result_file, \"launch_cycle %0d\\n\", "
+            "loom_launch_cycle);\n"
+         << "      if (stopped) $fwrite(result_file, "
+            "\"retirement_cycle absent\\n\");\n"
+         << "      else $fwrite(result_file, \"retirement_cycle %0d\\n\", "
+            "loom_retirement_cycle);\n"
+         << "      $fwrite(result_file, \"terminal_cycle %0d\\n\", "
+            "loom_cycle);\n"
+         << "      $fwrite(result_file, \"value_results "
+         << facts.valueResults.size() << "\\n\");\n";
   for (const auto &[ordinal, value] : llvm::enumerate(facts.valueResults)) {
     output << "      if (loom_value_result_" << ordinal
            << ".size() == 0) $fwrite(result_file, \"value " << ordinal
@@ -563,8 +558,8 @@ void renderResultWriter(llvm::raw_ostream &output,
     output << "      $fwrite(result_file, \"stream " << ordinal << " "
            << mappedRtlStreamTerminationSpelling(
                   sim::StreamTermination::ClosedAfterLast)
-           << " " << stream.tokenBitWidth
-           << " %0d\", loom_stream_output_" << ordinal << ".size());\n"
+           << " " << stream.tokenBitWidth << " %0d\", loom_stream_output_"
+           << ordinal << ".size());\n"
            << "      for (token_ordinal = 0; token_ordinal < "
               "loom_stream_output_"
            << ordinal << ".size(); token_ordinal = token_ordinal + 1)\n"
@@ -600,7 +595,8 @@ void renderResultWriter(llvm::raw_ostream &output,
 } // namespace
 
 llvm::Expected<std::string>
-renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts) {
+renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
+                         llvm::StringRef resultPath) {
   if (facts.top.empty())
     return invalid("RTL top name is absent");
   if (facts.selectedClock.empty())
@@ -664,8 +660,7 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts) {
          << "  longint unsigned loom_retirement_cycle;\n"
          << "  logic [" << hardware::rtl::portableConfigurationDataWidth - 1
          << ":0] loom_cfg_readback;\n"
-         << "  logic [" << kAxiResponseWidth - 1
-         << ":0] loom_cfg_response;\n"
+         << "  logic [" << kAxiResponseWidth - 1 << ":0] loom_cfg_response;\n"
          << "  integer loom_debug_verbose;\n";
   output << "  assign loom_engine_retired = loom_retired;\n"
          << "  assign loom_engine_launch_cycle = loom_launch_cycle;\n"
@@ -677,6 +672,17 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts) {
   for (const auto &[ordinal, stream] : llvm::enumerate(facts.streamOutputs))
     output << "  logic [" << stream.tokenBitWidth - 1
            << ":0] loom_stream_output_" << ordinal << " [$];\n";
+  for (const InputTokenStream &input : facts.streamInputs) {
+    const std::uint64_t ordinal = *input.runtimeStreamOrdinal;
+    output << "  logic loom_runtime_stream_enabled_" << ordinal << ";\n"
+           << "  logic [" << input.port.payloadBitWidth - 1
+           << ":0] loom_runtime_stream_token_" << ordinal << ";\n"
+           << "  logic [" << input.port.payloadBitWidth - 1
+           << ":0] loom_runtime_stream_" << ordinal << " [$];\n"
+           << "  string loom_runtime_stream_path_" << ordinal << ";\n"
+           << "  integer loom_runtime_stream_file_" << ordinal << ";\n"
+           << "  integer loom_runtime_stream_scan_" << ordinal << ";\n";
+  }
   renderMemoryDeclarations(output, facts, *projectedMemoryExtent);
 
   output << "  " << facts.top << " dut (\n";
@@ -694,6 +700,30 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts) {
          << "    loom_resets_released = 0;\n"
          << "    if (!$value$plusargs(\"LOOM_DEBUG_VERBOSE=%d\", "
             "loom_debug_verbose)) loom_debug_verbose = 0;\n";
+  for (const InputTokenStream &input : facts.streamInputs) {
+    const std::uint64_t ordinal = *input.runtimeStreamOrdinal;
+    output << "    loom_runtime_stream_enabled_" << ordinal << " = 0;\n"
+           << "    if ($value$plusargs(\"LOOM_STREAM_INPUT_" << ordinal
+           << "=%s\", loom_runtime_stream_path_" << ordinal << ")) begin\n"
+           << "      loom_runtime_stream_file_" << ordinal
+           << " = $fopen(loom_runtime_stream_path_" << ordinal << ", \"r\");\n"
+           << "      if (loom_runtime_stream_file_" << ordinal
+           << " == 0) $fatal(1, \"could not open runtime stream input\");\n"
+           << "      while (!$feof(loom_runtime_stream_file_" << ordinal
+           << ")) begin\n"
+           << "        loom_runtime_stream_scan_" << ordinal
+           << " = $fscanf(loom_runtime_stream_file_" << ordinal
+           << ", \"%b\\n\", loom_runtime_stream_token_" << ordinal << ");\n"
+           << "        if (loom_runtime_stream_scan_" << ordinal
+           << " == 1) loom_runtime_stream_" << ordinal
+           << ".push_back(loom_runtime_stream_token_" << ordinal << ");\n"
+           << "        else if (!$feof(loom_runtime_stream_file_" << ordinal
+           << ")) $fatal(1, \"runtime stream input is malformed\");\n"
+           << "      end\n"
+           << "      $fclose(loom_runtime_stream_file_" << ordinal << ");\n"
+           << "      loom_runtime_stream_enabled_" << ordinal << " = 1;\n"
+           << "    end\n";
+  }
   renderMemoryInitialization(output, facts, *projectedMemoryExtent);
   for (const RtlPort &port : facts.rootPorts) {
     if (port.direction == hardware::RepresentationSignalDirection::Output ||
@@ -741,10 +771,23 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts) {
     const std::string index = "loom_input_index_" + std::to_string(ordinal);
     output << "  longint unsigned " << index << ";\n";
     output << "  always_comb begin\n"
-           << "    " << input->port.prefix << "_valid = loom_inputs_enabled && "
-           << index << " < " << input->tokenCount << ";\n";
+           << "    " << input->port.prefix
+           << "_valid = loom_inputs_enabled && ";
+    if (input->runtimeStreamOrdinal)
+      output << index << " < (loom_runtime_stream_enabled_"
+             << *input->runtimeStreamOrdinal << " ? loom_runtime_stream_"
+             << *input->runtimeStreamOrdinal
+             << ".size() : " << input->tokenCount << ");\n";
+    else
+      output << index << " < " << input->tokenCount << ";\n";
     if (input->port.payloadBitWidth != 0) {
       output << "    " << input->port.prefix << "_data = '0;\n";
+      if (input->runtimeStreamOrdinal)
+        output << "    if (loom_runtime_stream_enabled_"
+               << *input->runtimeStreamOrdinal << ") " << input->port.prefix
+               << "_data = loom_runtime_stream_" << *input->runtimeStreamOrdinal
+               << "[" << index << "];\n"
+               << "    else begin\n";
       if (!input->tokens.empty()) {
         output << "    case (" << index << ")\n";
         for (const auto &[tokenOrdinal, token] :
@@ -757,10 +800,12 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts) {
         output << "      default: ;\n"
                << "    endcase\n";
       }
+      if (input->runtimeStreamOrdinal)
+        output << "    end\n";
     }
     if (input->port.physicalTag)
-      output << "    " << input->port.prefix << "_tag = "
-             << input->port.physicalTag->getBitWidth() << "'h"
+      output << "    " << input->port.prefix
+             << "_tag = " << input->port.physicalTag->getBitWidth() << "'h"
              << hexBits(*input->port.physicalTag) << ";\n";
     output << "  end\n";
   }
@@ -849,14 +894,14 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts) {
          << "      end\n"
          << "    end\n"
          << "  end\n";
-  renderResultWriter(output, facts);
+  renderResultWriter(output, facts, resultPath);
   output << "endmodule\n";
   return text;
 }
 
-llvm::Expected<std::string>
-renderMappedRtlVerilatorDriver(const MappedRtlInvocationFacts &facts,
-                               std::uint64_t buildJobs) {
+llvm::Expected<std::string> renderMappedRtlVerilatorDriver(
+    const MappedRtlInvocationFacts &facts, std::uint64_t buildJobs,
+    llvm::StringRef testbenchPath, llvm::StringRef simulatorExecutablePath) {
   if (facts.rtlPaths.empty())
     return invalid("Verilator driver has no RTL sources");
   if (buildJobs == 0)
@@ -864,8 +909,9 @@ renderMappedRtlVerilatorDriver(const MappedRtlInvocationFacts &facts,
   std::string text;
   llvm::raw_string_ostream output(text);
   const std::filesystem::path simulatorExecutable(
-      mappedRtlSimulatorExecutablePath.str());
-  output << "--binary\n--build-jobs\n" << buildJobs
+      simulatorExecutablePath.str());
+  output << "--binary\n--build-jobs\n"
+         << buildJobs
          << "\n--timing\n--Wall\n--Wno-fatal\n"
             "--Wno-DECLFILENAME\n--Wno-UNUSEDSIGNAL\n--Wno-PINMISSING\n"
             "--Wno-TIMESCALEMOD\n"
@@ -875,13 +921,14 @@ renderMappedRtlVerilatorDriver(const MappedRtlInvocationFacts &facts,
          << simulatorExecutable.filename().generic_string() << "\n";
   for (const std::string &path : facts.rtlPaths)
     output << path << "\n";
-  output << mappedRtlTestbenchPath << "\n";
+  output << testbenchPath << "\n";
   return text;
 }
 
-llvm::Expected<std::string>
-renderMappedRtlBridgedVerilatorDriver(const MappedRtlInvocationFacts &facts,
-                                      std::uint64_t buildJobs) {
+llvm::Expected<std::string> renderMappedRtlBridgedVerilatorDriver(
+    const MappedRtlInvocationFacts &facts, std::uint64_t buildJobs,
+    llvm::StringRef testbenchPath, llvm::StringRef bridgeEngineSourcePath,
+    llvm::StringRef simulatorExecutablePath) {
   if (facts.rtlPaths.empty())
     return invalid("Verilator driver has no RTL sources");
   if (buildJobs == 0)
@@ -889,8 +936,9 @@ renderMappedRtlBridgedVerilatorDriver(const MappedRtlInvocationFacts &facts,
   std::string text;
   llvm::raw_string_ostream output(text);
   const std::filesystem::path simulatorExecutable(
-      mappedRtlSimulatorExecutablePath.str());
-  output << "--cc\n--exe\n--build\n--build-jobs\n" << buildJobs
+      simulatorExecutablePath.str());
+  output << "--cc\n--exe\n--build\n--build-jobs\n"
+         << buildJobs
          << "\n--timing\n--Wall\n--Wno-fatal\n"
             "--Wno-DECLFILENAME\n--Wno-UNUSEDSIGNAL\n--Wno-PINMISSING\n"
             "--Wno-TIMESCALEMOD\n"
@@ -900,8 +948,7 @@ renderMappedRtlBridgedVerilatorDriver(const MappedRtlInvocationFacts &facts,
          << simulatorExecutable.filename().generic_string() << "\n";
   for (const std::string &path : facts.rtlPaths)
     output << path << "\n";
-  output << mappedRtlTestbenchPath << "\n"
-         << mappedRtlBridgeEngineSourcePath << "\n";
+  output << testbenchPath << "\n" << bridgeEngineSourcePath << "\n";
   return text;
 }
 

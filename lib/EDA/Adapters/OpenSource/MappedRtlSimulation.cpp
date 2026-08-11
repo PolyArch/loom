@@ -108,10 +108,12 @@ deriveExecutionClosure(const EvaluationRequest &request) {
   auto contract = deriveExternalToolSemanticContract(request);
   if (!contract)
     return contract.takeError();
-  return MappedRtlExecutionClosure{
-      configuration->providerBinding, std::move(*contract),
-      implementations.front(), deployments.front(), *request.workload(),
-      *request.runtimeInput()};
+  return MappedRtlExecutionClosure{configuration->providerBinding,
+                                   std::move(*contract),
+                                   implementations.front(),
+                                   deployments.front(),
+                                   *request.workload(),
+                                   *request.runtimeInput()};
 }
 
 llvm::Expected<EvaluationModelProviderPreparation>
@@ -165,23 +167,20 @@ prepareProvider(const EvaluationRequest &request,
       *closure, options->cycleLimit, options->buildJobs, artifacts, blobs);
   if (!projection)
     return projection.takeError();
-  if (const auto *unsupported =
-          std::get_if<UnsupportedEvidence>(&*projection))
+  if (const auto *unsupported = std::get_if<UnsupportedEvidence>(&*projection))
     return EvaluationModelProviderPreparation{*unsupported};
-  auto bundle = std::get<MappedRtlExecutionBundleProjection>(
-      std::move(*projection));
+  auto bundle =
+      std::get<MappedRtlExecutionBundleProjection>(std::move(*projection));
   std::vector<MaterializedBundleFile> files{
-      {mappedRtlTestbenchPath.str(), std::move(bundle.testbench), std::nullopt,
-       false},
-      {mappedRtlVerilatorDriverPath.str(),
+      {bundle.testbenchPath, std::move(bundle.testbench), std::nullopt, false},
+      {bundle.standaloneVerilatorDriverPath,
        std::move(bundle.standaloneVerilatorDriver), std::nullopt, false}};
   files.insert(files.end(),
                std::make_move_iterator(bundle.semanticInputs.begin()),
                std::make_move_iterator(bundle.semanticInputs.end()));
 
   const std::string executable = tool->executable;
-  std::vector<std::string> simulationCommand{
-      mappedRtlSimulatorExecutablePath.str()};
+  std::vector<std::string> simulationCommand{bundle.simulatorExecutablePath};
   if (options->debugVerbosity != 0)
     simulationCommand.push_back("+LOOM_DEBUG_VERBOSE=" +
                                 std::to_string(options->debugVerbosity));
@@ -191,14 +190,14 @@ prepareProvider(const EvaluationRequest &request,
       toolProvider.versionProbe,
       std::move(*runtime),
       containerProvider.versionProbe,
-      {{executable, "-f", mappedRtlVerilatorDriverPath.str()},
+      {{executable, "-f", bundle.standaloneVerilatorDriverPath},
        std::move(simulationCommand)},
       std::move(inheritEnvironment),
-      {mappedRtlResultPath.str()},
+      {bundle.resultPath},
       std::move(files),
       {},
       {},
-      {mappedRtlSimulatorExecutablePath.str()}};
+      {bundle.simulatorExecutablePath}};
   auto prepared = finalizeExternalToolInvocationBundle(
       context.bundleDestination, specification);
   if (!prepared)
@@ -214,12 +213,11 @@ importProvider(const EvaluationRequest &request,
   auto closure = deriveExecutionClosure(request);
   if (!closure)
     return closure.takeError();
-  auto expectation = deriveMappedRtlExecutionImportExpectation(
-      *closure, artifacts, blobs);
+  auto expectation =
+      deriveMappedRtlExecutionImportExpectation(*closure, artifacts, blobs);
   if (!expectation)
     return expectation.takeError();
-  auto attempt = importExternalToolInvocationAttempt(
-      prepared, *expectation);
+  auto attempt = importExternalToolInvocationAttempt(prepared, *expectation);
   if (!attempt)
     return attempt.takeError();
   if (std::holds_alternative<IncompleteExternalToolInvocationAttempt>(*attempt))
@@ -232,8 +230,8 @@ importProvider(const EvaluationRequest &request,
       std::get<ImportedExternalToolInvocationBundle>(std::move(*attempt));
   if (llvm::Error error = rejectUndeclaredOutputs(prepared.bundleRoot))
     return std::move(error);
-  auto resultBytes = readExternalToolInvocationDeclaredOutput(
-      imported, mappedRtlResultPath);
+  auto resultBytes =
+      readExternalToolInvocationDeclaredOutput(imported, mappedRtlResultPath);
   if (!resultBytes)
     return resultBytes.takeError();
   auto result = parseMappedRtlSimulationResult(*resultBytes);
@@ -253,14 +251,13 @@ importProvider(const EvaluationRequest &request,
     return terminalResult(
         ExecutionFailedEvidence{OutcomeReason::AdapterFailure});
 
-  auto boundary = projectMappedRtlSpatialEngineBoundaryResult(
-      *closure, *result, artifacts, blobs);
+  auto boundary = projectMappedRtlSpatialEngineBoundaryResult(*closure, *result,
+                                                              artifacts, blobs);
   if (!boundary)
     return boundary.takeError();
 
   sim::SpatialSimulationExecution execution{
-      evaluationRequestReference(request),
-      std::move(boundary->terminal),
+      evaluationRequestReference(request), std::move(boundary->terminal),
       std::move(boundary->functionalObservations),
       std::move(boundary->progressObservations),
       std::move(boundary->activitySummaries)};

@@ -16,6 +16,7 @@ add_mlir_library(LoomFabricArtifact
   FabricClockResetValidation.cpp
   FabricCapabilityProjection.cpp
   FabricFuCapabilityDerivation.cpp
+  FabricInterconnectImplementation.cpp
   FabricMemoryEngineTemplate.cpp
   FabricMemoryServiceClosure.cpp
   FabricModuleCanonicalPayload.cpp

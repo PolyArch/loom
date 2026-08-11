@@ -1072,7 +1072,9 @@ void artifactRoundTripAndReferenceValidation() {
          0,
          262144,
          {},
-         {}});
+         {},
+         {},
+         false});
     if (!prefix) {
       llvm::consumeError(prefix.takeError());
       continue;
@@ -1090,7 +1092,9 @@ void artifactRoundTripAndReferenceValidation() {
          0,
          262144,
          {},
-         {}});
+         {},
+         {},
+         false});
     if (!suffix) {
       llvm::consumeError(suffix.takeError());
       continue;

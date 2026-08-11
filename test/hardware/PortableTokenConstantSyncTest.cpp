@@ -880,9 +880,9 @@ module system_testbench;
     output_1_ready = 0;
     #1;
     check(!input_0_ready && !input_1_ready &&
-              !output_0_valid && output_1_valid &&
+              output_0_valid && output_1_valid &&
               output_0_data == 8'h12 && output_1_data == 8'h34,
-          "backpressure exposed a partial tuple or changed held payload");
+          "backpressure changed the captured tuple before a handoff edge");
     @(posedge clock);
     #1;
     check(!input_0_ready && !input_1_ready &&
@@ -894,7 +894,7 @@ module system_testbench;
     output_1_ready = 1;
     #1;
     check(input_0_ready && input_1_ready &&
-              output_0_valid && output_1_valid,
+              !output_0_valid && output_1_valid,
           "released tuple did not admit a bubble-free replacement");
     @(posedge clock);
     #1;

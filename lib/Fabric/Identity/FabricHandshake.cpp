@@ -2,6 +2,7 @@
 
 #include "FabricHandshakeInternal.h"
 
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
@@ -12,7 +13,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <list>
 #include <map>
+#include <mutex>
 #include <set>
 #include <tuple>
 #include <type_traits>
@@ -89,6 +92,53 @@ std::vector<std::uint8_t> ownerKey(const FabricHandshakeOwner &owner) {
       },
       owner.payload());
   return key;
+}
+
+using HandshakeOwnerKey = std::vector<std::uint8_t>;
+
+std::optional<FabricHandshakeOwner>
+ownerOfTraversal(const FabricPhysicalTraversalRef &traversal);
+
+class HandshakeTraversalIndex final {
+public:
+  explicit HandshakeTraversalIndex(const FabricArtifactView &view) {
+    for (const FabricPhysicalTraversalView &traversal :
+         view.physicalTraversals()) {
+      const auto owner = ownerOfTraversal(traversal.reference);
+      if (owner)
+        byOwner_[ownerKey(*owner)].push_back(&traversal);
+    }
+  }
+
+  llvm::ArrayRef<const FabricPhysicalTraversalView *>
+  forOwner(const FabricHandshakeOwner &owner) const {
+    const auto found = byOwner_.find(ownerKey(owner));
+    if (found == byOwner_.end())
+      return {};
+    return found->second;
+  }
+
+private:
+  std::map<HandshakeOwnerKey,
+           std::vector<const FabricPhysicalTraversalView *>>
+      byOwner_;
+};
+
+constexpr std::size_t kHandshakeOwnerModelCacheCapacity = 8;
+
+struct CachedHandshakeOwnerModels final {
+  ArtifactIdentity fabricIdentity;
+  std::vector<HandshakeOwnerModel> models;
+};
+
+std::list<CachedHandshakeOwnerModels> &handshakeOwnerModelCache() {
+  static std::list<CachedHandshakeOwnerModels> cache;
+  return cache;
+}
+
+std::mutex &handshakeOwnerModelCacheMutex() {
+  static std::mutex mutex;
+  return mutex;
 }
 
 std::vector<std::uint8_t>
@@ -565,6 +615,7 @@ void addDirectTraversal(detail::HandshakeOwnerModelBuilder &builder,
 llvm::Expected<HandshakeOwnerModel>
 compilePointModel(const FabricArtifactView &view,
                   const FabricPointConnectionPayload &connection) {
+  (void)view;
   detail::HandshakeOwnerModelBuilder builder(
       FabricHandshakeOwner::pointConnection(connection));
   const FabricPhysicalTraversalRef traversal =
@@ -579,10 +630,12 @@ compilePointModel(const FabricArtifactView &view,
 }
 
 llvm::Expected<HandshakeOwnerModel>
-compilePeModel(const FabricArtifactView &view, FabricPeOccurrenceRef owner) {
+compilePeModel(FabricPeOccurrenceRef owner,
+               llvm::ArrayRef<const FabricPhysicalTraversalView *>
+                   traversals) {
   detail::HandshakeOwnerModelBuilder builder(FabricHandshakeOwner::pe(owner));
-  for (const FabricPhysicalTraversalView &traversal :
-       view.physicalTraversals()) {
+  for (const FabricPhysicalTraversalView *traversalPointer : traversals) {
+    const FabricPhysicalTraversalView &traversal = *traversalPointer;
     auto traversalOwner = ownerOfTraversal(traversal.reference);
     if (!traversalOwner || *traversalOwner != FabricHandshakeOwner::pe(owner))
       continue;
@@ -709,8 +762,9 @@ compileMemoryModel(const FabricArtifactView &view,
 }
 
 llvm::Expected<HandshakeOwnerModel>
-compileSwitchModel(const FabricArtifactView &view,
-                   FabricSwitchOccurrenceRef owner) {
+compileSwitchModel(FabricSwitchOccurrenceRef owner,
+                   llvm::ArrayRef<const FabricPhysicalTraversalView *>
+                       traversals) {
   struct Row final {
     FabricOrdinal output = 0;
     FabricPhysicalTraversalRef reference;
@@ -718,8 +772,8 @@ compileSwitchModel(const FabricArtifactView &view,
     FabricTransportEndpointRef destination;
   };
   std::map<FabricOrdinal, std::vector<Row>> byInput;
-  for (const FabricPhysicalTraversalView &traversal :
-       view.physicalTraversals()) {
+  for (const FabricPhysicalTraversalView *traversalPointer : traversals) {
+    const FabricPhysicalTraversalView &traversal = *traversalPointer;
     if (traversal.reference.kind() !=
         FabricPhysicalTraversalKind::SwitchTraversal)
       continue;
@@ -783,11 +837,12 @@ compileSwitchModel(const FabricArtifactView &view,
 }
 
 llvm::Expected<HandshakeOwnerModel>
-compileFifoModel(const FabricArtifactView &view,
-                 FabricFifoOccurrenceRef owner) {
+compileFifoModel(FabricFifoOccurrenceRef owner,
+                 llvm::ArrayRef<const FabricPhysicalTraversalView *>
+                     traversals) {
   detail::HandshakeOwnerModelBuilder builder(FabricHandshakeOwner::fifo(owner));
-  for (const FabricPhysicalTraversalView &traversal :
-       view.physicalTraversals()) {
+  for (const FabricPhysicalTraversalView *traversalPointer : traversals) {
+    const FabricPhysicalTraversalView &traversal = *traversalPointer;
     if (traversal.reference.kind() !=
         FabricPhysicalTraversalKind::FifoTraversal)
       continue;
@@ -808,7 +863,9 @@ compileFifoModel(const FabricArtifactView &view,
 
 llvm::Expected<HandshakeOwnerModel>
 compileBoundaryModel(const FabricArtifactView &view,
-                     FabricBoundaryOccurrenceRef owner) {
+                     FabricBoundaryOccurrenceRef owner,
+                     llvm::ArrayRef<const FabricPhysicalTraversalView *>
+                         traversals) {
   detail::HandshakeOwnerModelBuilder builder(
       FabricHandshakeOwner::boundary(owner));
   const auto endpointOwner = FabricTransportEndpointOwnerRef::of(owner);
@@ -817,8 +874,8 @@ compileBoundaryModel(const FabricArtifactView &view,
   const auto outputs =
       directionalEndpoints(view, endpointOwner, FabricPortDirection::Output);
   std::vector<FabricPhysicalTraversalRef> witnesses;
-  for (const FabricPhysicalTraversalRef &traversal :
-       view.admittedTraversals()) {
+  for (const FabricPhysicalTraversalView *traversalView : traversals) {
+    const FabricPhysicalTraversalRef &traversal = traversalView->reference;
     if (traversal.kind() != FabricPhysicalTraversalKind::BoundaryTraversal)
       continue;
     if (std::get<FabricBoundaryTraversalPayload>(traversal.payload).owner ==
@@ -877,16 +934,39 @@ compileBoundaryModel(const FabricArtifactView &view,
 
 llvm::Expected<HandshakeOwnerModel>
 compileTransferPatternModel(const FabricArtifactView &view,
-                            FabricTransferPatternRef owner) {
+                            FabricTransferPatternRef owner,
+                            llvm::ArrayRef<const FabricPhysicalTraversalView *>
+                                traversals) {
+  auto system = requireSystemRoot(view);
+  if (!system)
+    return system.takeError();
+  const SystemTransferPatternRecord *record = system->transferPattern(owner);
+  if (!record)
+    return invalid("transfer pattern does not resolve in the System root");
+  const ::fabric::ResourceContract *contract =
+      view.resourceContract(record->usePattern().owner.catalog());
+  if (!contract || record->usePattern().ordinal >= contract->usePatternCount())
+    return invalid("transfer pattern has no exact resource use contract");
+  const ::fabric::UsePattern use = contract->usePattern(
+      ::fabric::UsePatternKey(record->usePattern().ordinal));
+  const auto eventOrder = contract->eventOrder(use.timingAndProgress);
+  if (use.acquire.ordinal() >= eventOrder.size() ||
+      use.release.ordinal() >= eventOrder.size())
+    return invalid("transfer pattern has an invalid event order");
+  const ClockCrossingContractRecord *crossing =
+      system->clockCrossing(owner.resource);
+  const bool registered =
+      (crossing && crossing->transferPattern() == owner) ||
+      eventOrder[use.acquire.ordinal()] != eventOrder[use.release.ordinal()];
+
   std::vector<const FabricPhysicalTraversalView *> legs;
-  for (const FabricPhysicalTraversalView &traversal :
-       view.physicalTraversals()) {
-    if (traversal.reference.kind() !=
+  for (const FabricPhysicalTraversalView *traversal : traversals) {
+    if (traversal->reference.kind() !=
         FabricPhysicalTraversalKind::SystemTransferPatternLeg)
       continue;
-    if (std::get<FabricTransferPatternLegPayload>(traversal.reference.payload)
+    if (std::get<FabricTransferPatternLegPayload>(traversal->reference.payload)
             .owner == owner)
-      legs.push_back(&traversal);
+      legs.push_back(traversal);
   }
   llvm::sort(legs, [](const auto *lhs, const auto *rhs) {
     return std::get<FabricTransferPatternLegPayload>(lhs->reference.payload)
@@ -903,6 +983,10 @@ compileTransferPatternModel(const FabricArtifactView &view,
   witnesses.reserve(legs.size());
   for (const auto *leg : legs)
     witnesses.push_back(leg->reference);
+  if (registered) {
+    builder.addFragment(allTraversalsSelector(witnesses), {});
+    return builder.finish();
+  }
   std::vector<std::uint32_t> prefix(legs.size() + 1);
   std::vector<std::uint32_t> suffix(legs.size() + 1);
   for (std::size_t position = 0; position <= legs.size(); ++position) {
@@ -945,6 +1029,19 @@ compileTransferPatternModel(const FabricArtifactView &view,
 
 llvm::Expected<std::vector<HandshakeOwnerModel>>
 compileHandshakeOwnerModels(const FabricArtifactView &view) {
+  {
+    std::lock_guard<std::mutex> lock(handshakeOwnerModelCacheMutex());
+    auto &cache = handshakeOwnerModelCache();
+    auto found = llvm::find_if(cache, [&](const CachedHandshakeOwnerModels &row) {
+      return row.fabricIdentity == view.identity();
+    });
+    if (found != cache.end()) {
+      std::vector<HandshakeOwnerModel> models = found->models;
+      cache.splice(cache.begin(), cache, found);
+      return models;
+    }
+  }
+  const HandshakeTraversalIndex traversalIndex(view);
   std::vector<HandshakeOwnerModel> models;
   models.reserve(view.pointConnections().size() + view.peOccurrences().size() +
                  view.fuOccurrences().size() + view.memoryOccurrences().size() +
@@ -959,7 +1056,8 @@ compileHandshakeOwnerModels(const FabricArtifactView &view) {
     models.push_back(std::move(*model));
   }
   for (FabricPeOccurrenceRef owner : view.peOccurrences()) {
-    auto model = compilePeModel(view, owner);
+    auto model = compilePeModel(
+        owner, traversalIndex.forOwner(FabricHandshakeOwner::pe(owner)));
     if (!model)
       return model.takeError();
     if (!model->fragments().empty())
@@ -980,19 +1078,24 @@ compileHandshakeOwnerModels(const FabricArtifactView &view) {
     models.push_back(std::move(*model));
   }
   for (FabricSwitchOccurrenceRef owner : view.switchOccurrences()) {
-    auto model = compileSwitchModel(view, owner);
+    auto model = compileSwitchModel(
+        owner,
+        traversalIndex.forOwner(FabricHandshakeOwner::switchResource(owner)));
     if (!model)
       return model.takeError();
     models.push_back(std::move(*model));
   }
   for (FabricFifoOccurrenceRef owner : view.fifoOccurrences()) {
-    auto model = compileFifoModel(view, owner);
+    auto model = compileFifoModel(
+        owner, traversalIndex.forOwner(FabricHandshakeOwner::fifo(owner)));
     if (!model)
       return model.takeError();
     models.push_back(std::move(*model));
   }
   for (FabricBoundaryOccurrenceRef owner : view.boundaryOccurrences()) {
-    auto model = compileBoundaryModel(view, owner);
+    auto model = compileBoundaryModel(
+        view, owner,
+        traversalIndex.forOwner(FabricHandshakeOwner::boundary(owner)));
     if (!model)
       return model.takeError();
     models.push_back(std::move(*model));
@@ -1008,10 +1111,19 @@ compileHandshakeOwnerModels(const FabricArtifactView &view) {
         std::get<FabricTransferPatternLegPayload>(traversal.payload).owner;
     if (!transferPatterns.insert(canonicalFabricBytes(owner)).second)
       continue;
-    auto model = compileTransferPatternModel(view, owner);
+    auto model = compileTransferPatternModel(
+        view, owner,
+        traversalIndex.forOwner(FabricHandshakeOwner::transferPattern(owner)));
     if (!model)
       return model.takeError();
     models.push_back(std::move(*model));
+  }
+  {
+    std::lock_guard<std::mutex> lock(handshakeOwnerModelCacheMutex());
+    auto &cache = handshakeOwnerModelCache();
+    cache.push_front(CachedHandshakeOwnerModels{view.identity(), models});
+    if (cache.size() > kHandshakeOwnerModelCacheCapacity)
+      cache.pop_back();
   }
   return models;
 }
@@ -1466,8 +1578,7 @@ resolveSelectedHandshakeGraph(const FabricArtifactView &view,
               model.fragmentContributionOrdinals()[fragment.contributionOffset +
                                                    index]);
       }
-    } else if (model.owner().kind() ==
-               FabricHandshakeOwnerKind::FuOccurrence) {
+    } else if (model.owner().kind() == FabricHandshakeOwnerKind::FuOccurrence) {
       for (const FabricFuHandshakeSelection &fuSelection :
            selected->second.fuCapabilities) {
         FabricHandshakeSelection local;

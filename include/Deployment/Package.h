@@ -3,8 +3,13 @@
 
 #include "Deployment/Deployment.h"
 
+#include "Common/BlobDigest.h"
+
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
+
+#include <vector>
 
 namespace loom {
 class ArtifactStore;
@@ -12,6 +17,36 @@ class BlobStore;
 } // namespace loom
 
 namespace loom::deployment {
+
+/// The exact content-addressed object closure required to import one
+/// Deployment from an otherwise empty ArtifactStore and BlobStore.
+class DeploymentPackageClosure final {
+public:
+  llvm::ArrayRef<ArtifactRootReference> artifacts() const {
+    return artifacts_;
+  }
+  llvm::ArrayRef<BlobDigest> blobs() const { return blobs_; }
+
+private:
+  DeploymentPackageClosure(std::vector<ArtifactRootReference> artifacts,
+                           std::vector<BlobDigest> blobs)
+      : artifacts_(std::move(artifacts)), blobs_(std::move(blobs)) {}
+
+  std::vector<ArtifactRootReference> artifacts_;
+  std::vector<BlobDigest> blobs_;
+
+  friend llvm::Expected<DeploymentPackageClosure>
+  deriveDeploymentPackageClosure(const FinalizedDeployment &,
+                                 const ArtifactStore &, const BlobStore &);
+};
+
+/// Strictly derives the package closure from an already imported Deployment.
+/// The result is a projection only: every member remains owned by its
+/// content-addressed store and no package-path identity is introduced.
+llvm::Expected<DeploymentPackageClosure>
+deriveDeploymentPackageClosure(const FinalizedDeployment &deployment,
+                               const ArtifactStore &artifacts,
+                               const BlobStore &blobs);
 
 /// Publishes the exact Deployment execution closure as a content-addressed
 /// directory. The output path is an invocation binding and never contributes
