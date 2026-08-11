@@ -44,6 +44,10 @@ add_executable(loom-dse-campaign-runner-test
   PlanExecutionTestSupport.cpp
 )
 
+add_executable(loom-dse-ground-truth-campaign-integration-test
+  GroundTruthCampaignIntegrationTest.cpp
+)
+
 add_executable(loom-dse-invocation-manifest-test
   InvocationManifestTest.cpp
 )
@@ -147,6 +151,11 @@ target_link_libraries(loom-dse-site-scheduler-test PRIVATE
 
 target_link_libraries(loom-dse-campaign-runner-test PRIVATE
   LoomDSE
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-ground-truth-campaign-integration-test PRIVATE
+  LoomDSEModelingGenerator
   LLVMSupport
 )
 

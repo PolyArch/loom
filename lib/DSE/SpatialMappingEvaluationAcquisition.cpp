@@ -77,7 +77,7 @@ llvm::Expected<PromotionAcquisitionResolutionOutcome>
 resolveCases(const ResolvedPromotionAcquisitionBinding &,
              llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings,
              llvm::ArrayRef<PromotionEvidenceAcquisitionTask> tasks,
-             const ArtifactStore &store) {
+             const ArtifactStore &store, const BlobStore &) {
   const ArtifactRootReference &fabric = singleInput(inputBindings, FabricInput);
   const ArtifactRootReference &workload =
       singleInput(inputBindings, WorkloadInput);

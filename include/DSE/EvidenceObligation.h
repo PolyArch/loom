@@ -84,6 +84,22 @@ public:
       std::optional<CalibrationPartitionRole> calibrationPartitionRole =
           std::nullopt);
 
+  /// Authors a template whose dynamic subject roles do not yet have concrete
+  /// Artifacts. All fixed fields remain descriptor-owned and are validated by
+  /// the same canonical template contract as the prototype-based form.
+  static llvm::Expected<EvidenceObligationTemplate>
+  get(evaluation::ResolvedModelBinding modelBinding,
+      std::vector<evaluation::CaseRoleBinding> fixedSubjectBindings,
+      std::optional<ArtifactRootReference> workload,
+      std::optional<ArtifactRootReference> runtimeInput,
+      std::vector<evaluation::EvaluationCondition> baseConditions,
+      std::vector<MetricRequestTemplate> metricRequests,
+      std::vector<FindingRequestTemplate> findingRequests,
+      evaluation::CaseSubjectRoleRef candidateRole,
+      std::vector<InputSubjectBinding> inputSubjectBindings,
+      std::optional<CalibrationPartitionRole> calibrationPartitionRole =
+          std::nullopt);
+
   evaluation::CaseSubjectRoleRef candidateRole() const {
     return candidateRole_;
   }

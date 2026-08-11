@@ -1091,6 +1091,67 @@ llvm::Error registerSystemRuntimeModelParameterContract() {
   return registerModelParameterContract(descriptor());
 }
 
+llvm::Expected<CaseArtifactResolution>
+resolveSystemRuntimeCalibrationCaseArtifactResolution(
+    const ArtifactRootReference &parameterBundle,
+    llvm::ArrayRef<ArtifactRootReference> evidence,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  auto bundle =
+      importModelParameterBundle(parameterBundle, artifactStore, blobStore);
+  if (!bundle)
+    return bundle.takeError();
+  if (!bundle->parametersIf<SystemRuntimeGbdtParameters>())
+    return invalid("calibration parameter bundle has a foreign payload");
+  if (evidence.empty())
+    return invalid("calibration Evidence collection is empty");
+
+  std::vector<ArtifactRootReference> canonicalEvidence(evidence.begin(),
+                                                       evidence.end());
+  llvm::sort(canonicalEvidence, artifactRootReferenceLess);
+  if (std::adjacent_find(canonicalEvidence.begin(), canonicalEvidence.end()) !=
+      canonicalEvidence.end())
+    return invalid("calibration Evidence collection contains a duplicate");
+
+  std::map<ArtifactRootReference, std::vector<ArtifactRootReference>,
+           decltype(&artifactRootReferenceLess)>
+      entries(&artifactRootReferenceLess);
+  const auto merge = [&](const ArtifactRootReference &owner,
+                         llvm::ArrayRef<ArtifactRootReference> dependencies) {
+    std::vector<ArtifactRootReference> &closure = entries[owner];
+    closure.insert(closure.end(), dependencies.begin(), dependencies.end());
+    llvm::sort(closure, artifactRootReferenceLess);
+    closure.erase(std::unique(closure.begin(), closure.end()), closure.end());
+  };
+  entries.emplace(parameterBundle, std::vector<ArtifactRootReference>{});
+  for (const ArtifactRootReference &evidenceReference : canonicalEvidence) {
+    auto requestReference = importEvaluationEvidenceRequestReference(
+        evidenceReference, artifactStore);
+    if (!requestReference)
+      return requestReference.takeError();
+    auto source =
+        resolveGroundTruthRequest(*requestReference, artifactStore, blobStore);
+    if (!source)
+      return source.takeError();
+    std::vector<ArtifactRootReference> requestClosure;
+    for (const CaseArtifactResolution::Entry &entry : source->entries()) {
+      requestClosure.push_back(entry.artifact);
+      requestClosure.insert(requestClosure.end(),
+                            entry.dependencyClosure.begin(),
+                            entry.dependencyClosure.end());
+      merge(entry.artifact, entry.dependencyClosure);
+    }
+    merge(*requestReference, requestClosure);
+    requestClosure.push_back(*requestReference);
+    merge(evidenceReference, requestClosure);
+  }
+
+  std::vector<CaseArtifactResolution::Entry> resolved;
+  resolved.reserve(entries.size());
+  for (auto &[artifact, closure] : entries)
+    resolved.push_back({artifact, std::move(closure)});
+  return CaseArtifactResolution::get(std::move(resolved));
+}
+
 llvm::Expected<SystemRuntimeTrainingSample>
 importSystemRuntimeTrainingEvidenceSample(
     const ArtifactRootReference &evidenceReference,
@@ -1103,11 +1164,24 @@ importSystemRuntimeTrainingEvidenceSample(
       resolveGroundTruthRequest(*requestReference, artifactStore, blobStore);
   if (!resolution)
     return resolution.takeError();
-  auto request = importEvaluationRequest(*requestReference, *resolution,
+  return importSystemRuntimeTrainingEvidenceSample(
+      evidenceReference, *resolution, artifactStore, blobStore);
+}
+
+llvm::Expected<SystemRuntimeTrainingSample>
+importSystemRuntimeTrainingEvidenceSample(
+    const ArtifactRootReference &evidenceReference,
+    const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  auto requestReference = importEvaluationEvidenceRequestReference(
+      evidenceReference, artifactStore);
+  if (!requestReference)
+    return requestReference.takeError();
+  auto request = importEvaluationRequest(*requestReference, resolution,
                                          artifactStore, blobStore);
   if (!request)
     return request.takeError();
-  auto evidence = importEvaluationEvidence(evidenceReference, *resolution,
+  auto evidence = importEvaluationEvidence(evidenceReference, resolution,
                                            artifactStore, blobStore);
   if (!evidence)
     return evidence.takeError();
@@ -1115,18 +1189,18 @@ importSystemRuntimeTrainingEvidenceSample(
   if (!runtime)
     return runtime.takeError();
   auto evaluationCase =
-      requestCase(*request, *resolution, artifactStore, blobStore);
+      requestCase(*request, resolution, artifactStore, blobStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
-  auto features = projectFeatureView(*evaluationCase, *resolution,
-                                     artifactStore, blobStore);
+  auto features =
+      projectFeatureView(*evaluationCase, resolution, artifactStore, blobStore);
   if (!features)
     return features.takeError();
-  auto key = targetKey(*request, *resolution, artifactStore, blobStore);
+  auto key = targetKey(*request, resolution, artifactStore, blobStore);
   if (!key)
     return key.takeError();
   auto group =
-      sourceInputKey(*evaluationCase, *resolution, artifactStore, blobStore);
+      sourceInputKey(*evaluationCase, resolution, artifactStore, blobStore);
   if (!group)
     return group.takeError();
   return SystemRuntimeTrainingSample{std::move(*features), *runtime,

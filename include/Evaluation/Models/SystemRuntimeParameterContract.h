@@ -138,9 +138,21 @@ llvm::ArrayRef<std::uint8_t> systemRuntimePredictionViewSchemaDescriptorBytes();
 
 llvm::Error registerSystemRuntimeModelParameterContract();
 
+llvm::Expected<CaseArtifactResolution>
+resolveSystemRuntimeCalibrationCaseArtifactResolution(
+    const ArtifactRootReference &parameterBundle,
+    llvm::ArrayRef<ArtifactRootReference> evidence,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
+
 llvm::Expected<SystemRuntimeTrainingSample>
 importSystemRuntimeTrainingEvidenceSample(
     const ArtifactRootReference &evidenceReference,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
+
+llvm::Expected<SystemRuntimeTrainingSample>
+importSystemRuntimeTrainingEvidenceSample(
+    const ArtifactRootReference &evidenceReference,
+    const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
 llvm::Expected<SystemRuntimeGbdtParameters> trainSystemRuntimeGbdtParameters(

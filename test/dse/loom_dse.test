@@ -1,0 +1,12 @@
+# RUN: rm -rf %t && mkdir -p %t/artifacts %t/blobs %t/run
+# RUN: loom-config-test --resolved-json > %t/config.json
+# RUN: loom-dse --config %t/config.json --artifact-store %t/artifacts \
+# RUN:   --blob-store %t/blobs --run-root %t/run \
+# RUN:   --producer-build loom.test.dse-cli.v1 --workers 1 --site-cpu 1 \
+# RUN:   --ground-truth-campaign --pilot-dispatches 1 \
+# RUN:   --minimum-pilot-observations 1 --progress-interval-ms 25 \
+# RUN:   --progress-jsonl - 2> %t/result | FileCheck %s --check-prefix=PROGRESS
+# RUN: FileCheck %s --check-prefix=RESULT < %t/result
+
+# PROGRESS: "status":{"completed":0,"failed":0,"prepared":0,"queued":0,"running":0,"timed_out":0,"unsupported":0}
+# RESULT: campaign_result=completed

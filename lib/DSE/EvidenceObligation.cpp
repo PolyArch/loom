@@ -595,6 +595,41 @@ llvm::Expected<EvidenceObligationTemplate> EvidenceObligationTemplate::get(
       std::move(*bytes));
 }
 
+llvm::Expected<EvidenceObligationTemplate> EvidenceObligationTemplate::get(
+    ResolvedModelBinding modelBinding,
+    std::vector<CaseRoleBinding> fixedSubjectBindings,
+    std::optional<ArtifactRootReference> workload,
+    std::optional<ArtifactRootReference> runtimeInput,
+    std::vector<EvaluationCondition> baseConditions,
+    std::vector<MetricRequestTemplate> metricRequests,
+    std::vector<FindingRequestTemplate> findingRequests,
+    CaseSubjectRoleRef candidateRole,
+    std::vector<InputSubjectBinding> inputSubjectBindings,
+    std::optional<CalibrationPartitionRole> calibrationPartitionRole) {
+  TemplateParts parts{std::move(modelBinding),
+                      std::move(fixedSubjectBindings),
+                      std::move(workload),
+                      std::move(runtimeInput),
+                      std::move(baseConditions),
+                      std::move(metricRequests),
+                      std::move(findingRequests),
+                      candidateRole,
+                      std::move(inputSubjectBindings),
+                      calibrationPartitionRole};
+  if (llvm::Error error = validateParts(parts))
+    return std::move(error);
+  auto bytes = encodeParts(parts);
+  if (!bytes)
+    return bytes.takeError();
+  return EvidenceObligationTemplate(
+      std::move(parts.modelBinding), std::move(parts.fixedSubjectBindings),
+      std::move(parts.workload), std::move(parts.runtimeInput),
+      std::move(parts.baseConditions), std::move(parts.metricRequests),
+      std::move(parts.findingRequests), parts.candidateRole,
+      std::move(parts.inputSubjectBindings), parts.calibrationPartitionRole,
+      std::move(*bytes));
+}
+
 llvm::Expected<EvidenceObligationTemplate>
 adoptEvidenceObligationTemplate(llvm::ArrayRef<std::uint8_t> bytes) {
   auto parts = decodeParts(bytes);

@@ -1,5 +1,6 @@
 add_library(LoomStructuredFabricAnalyticModel
   AnalyticModelSupport.cpp
+  CalibratedFpa.cpp
   CanonicalDataflowFabricAnalytic.cpp
   CanonicalDataflowFunctional.cpp
   CgraSimulation.cpp
@@ -7,16 +8,19 @@ add_library(LoomStructuredFabricAnalyticModel
   DfgSimulation.cpp
   FixedTabularGbdt.cpp
   FpaParameterContract.cpp
+  FabricLowConfidence.cpp
   Gem5SystemCgra.cpp
   Gem5SystemDfg.cpp
   Gem5SystemRtl.cpp
   MappedRtlSimulation.cpp
   ProductionRegistry.cpp
+  PredictionCalibration.cpp
   SimulationComparison.cpp
   StructuredEvaluationInvocationCache.cpp
   StructuredFabricAnalytic.cpp
   StructuredProgramFunctional.cpp
   SystemRuntimeParameterContract.cpp
+  SystemRuntimePredictor.cpp
 )
 
 target_include_directories(LoomStructuredFabricAnalyticModel PUBLIC

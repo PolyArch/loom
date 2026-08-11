@@ -125,8 +125,20 @@ llvm::ArrayRef<std::uint8_t> fpaMetricPredictionViewSchemaDescriptorBytes();
 
 llvm::Error registerFpaModelParameterContract();
 
+llvm::Expected<CaseArtifactResolution>
+resolveFpaCalibrationCaseArtifactResolution(
+    const ArtifactRootReference &parameterBundle,
+    llvm::ArrayRef<ArtifactRootReference> evidence,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
+
 llvm::Expected<FpaTrainingEvidenceSample>
 importFpaTrainingEvidenceSample(const ArtifactRootReference &evidence,
+                                const ArtifactStore &artifactStore,
+                                const BlobStore &blobStore);
+
+llvm::Expected<FpaTrainingEvidenceSample>
+importFpaTrainingEvidenceSample(const ArtifactRootReference &evidence,
+                                const CaseArtifactResolution &resolution,
                                 const ArtifactStore &artifactStore,
                                 const BlobStore &blobStore);
 

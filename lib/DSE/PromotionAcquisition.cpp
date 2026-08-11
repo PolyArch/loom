@@ -409,7 +409,7 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     return PromotionAcquisitionOutcome{IncompletePromotionAcquisition{
         PromotionAcquisitionIncompleteReason::ProviderUnavailable, {}}};
 
-  auto resolution = resolve(binding, providerInputs, tasks, store);
+  auto resolution = resolve(binding, providerInputs, tasks, store, blobs);
   if (!resolution)
     return resolution.takeError();
   if (auto *incomplete =

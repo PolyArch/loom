@@ -263,7 +263,7 @@ llvm::Expected<PromotionAcquisitionResolutionOutcome>
 resolveCases(const ResolvedPromotionAcquisitionBinding &binding,
              llvm::ArrayRef<PromotionAcquisitionInputBinding>,
              llvm::ArrayRef<PromotionEvidenceAcquisitionTask> tasks,
-             const ArtifactStore &store) {
+             const ArtifactStore &store, const BlobStore &) {
   std::vector<ResolvedPromotionEvidenceAcquisitionTask> resolved;
   resolved.reserve(tasks.size());
   for (const PromotionEvidenceAcquisitionTask &task : tasks) {

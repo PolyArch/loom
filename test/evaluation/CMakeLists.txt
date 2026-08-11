@@ -55,3 +55,17 @@ target_link_libraries(loom-evaluation-production-registry-test PRIVATE
   LoomStructuredFabricAnalyticModel
   LLVMSupport
 )
+
+add_executable(loom-evaluation-fabric-fast-evaluation-test
+  FabricFastEvaluationTest.cpp
+)
+
+target_link_libraries(loom-evaluation-fabric-fast-evaluation-test PRIVATE
+  LoomADGBuilder
+  LoomFabricArtifact
+  LoomStructuredFabricAnalyticModel
+  MLIRDataflow
+  MLIRLoom
+  MLIRParser
+  LLVMSupport
+)

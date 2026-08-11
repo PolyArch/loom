@@ -9,6 +9,7 @@
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 
@@ -84,6 +85,15 @@ llvm::Error add(std::uint64_t &target, std::uint64_t amount,
   return llvm::Error::success();
 }
 
+llvm::Error addScaled(std::uint64_t &target, std::uint64_t amount,
+                      std::uint64_t multiplicity, llvm::StringRef field) {
+  const std::optional<std::uint64_t> scaled =
+      llvm::checkedMulUnsigned(amount, multiplicity);
+  if (!scaled)
+    return invalid(field + " multiplicity overflows uint64");
+  return add(target, *scaled, field);
+}
+
 llvm::Expected<std::int64_t> checkedFeature(std::uint64_t value,
                                             llvm::StringRef field) {
   constexpr std::uint64_t limit = std::uint64_t{1} << 40;
@@ -129,90 +139,133 @@ std::pair<T, T> extrema(llvm::ArrayRef<T> values, Compare compare) {
 }
 
 llvm::Error summarizeView(const fabric::FabricArtifactView &view,
+                          std::uint64_t multiplicity,
                           FpaFabricStructureFeatureView &summary) {
   for (fabric::FabricEntityId id = 0;; ++id) {
     const std::optional<fabric::FabricEntityKind> kind = view.entityKind(id);
     if (!kind)
       break;
-    if (llvm::Error error = add(summary.entityCount, 1, "entity count"))
+    if (llvm::Error error =
+            addScaled(summary.entityCount, 1, multiplicity, "entity count"))
       return error;
     if (*kind == fabric::FabricEntityKind::SystemTransportResource) {
-      if (llvm::Error error = add(summary.systemTransportResourceCount, 1,
-                                  "System transport resource count"))
+      if (llvm::Error error =
+              addScaled(summary.systemTransportResourceCount, 1, multiplicity,
+                        "System transport resource count"))
         return error;
     } else if (*kind == fabric::FabricEntityKind::HardwareDomain) {
-      if (llvm::Error error =
-              add(summary.hardwareDomainCount, 1, "hardware domain count"))
+      if (llvm::Error error = addScaled(summary.hardwareDomainCount, 1,
+                                        multiplicity, "hardware domain count"))
         return error;
     }
   }
   if (llvm::Error error =
-          add(summary.peOccurrenceCount, view.peOccurrences().size(),
-              "PE occurrence count"))
+          addScaled(summary.peOccurrenceCount, view.peOccurrences().size(),
+                    multiplicity, "PE occurrence count"))
     return error;
   if (llvm::Error error =
-          add(summary.fuOccurrenceCount, view.fuOccurrences().size(),
-              "FU occurrence count"))
+          addScaled(summary.fuOccurrenceCount, view.fuOccurrences().size(),
+                    multiplicity, "FU occurrence count"))
     return error;
-  for (fabric::FabricFuTemplateRef definition : view.fuTemplates())
+  for (fabric::FabricFuOccurrenceRef occurrence : view.fuOccurrences()) {
+    const auto definition = view.fuTemplateOf(occurrence);
+    if (!definition)
+      return invalid("FU occurrence has no template");
     if (llvm::Error error =
-            add(summary.operationCapabilityCount,
-                view.resolvedFabricOpCapabilities(definition).size(),
-                "operation capability count"))
+            addScaled(summary.operationCapabilityCount,
+                      view.resolvedFabricOpCapabilities(*definition).size(),
+                      multiplicity, "operation capability count"))
       return error;
-  if (llvm::Error error =
-          add(summary.memoryOccurrenceCount, view.memoryOccurrences().size(),
-              "memory occurrence count"))
+  }
+  if (llvm::Error error = addScaled(summary.memoryOccurrenceCount,
+                                    view.memoryOccurrences().size(),
+                                    multiplicity, "memory occurrence count"))
     return error;
   for (fabric::FabricMemoryOccurrenceRef memory : view.memoryOccurrences())
-    if (llvm::Error error = add(summary.memoryOperationPortCount,
-                                view.memoryOperationPorts(memory).size(),
-                                "memory operation port count"))
+    if (llvm::Error error =
+            addScaled(summary.memoryOperationPortCount,
+                      view.memoryOperationPorts(memory).size(), multiplicity,
+                      "memory operation port count"))
       return error;
-  if (llvm::Error error =
-          add(summary.switchOccurrenceCount, view.switchOccurrences().size(),
-              "switch occurrence count"))
+  if (llvm::Error error = addScaled(summary.switchOccurrenceCount,
+                                    view.switchOccurrences().size(),
+                                    multiplicity, "switch occurrence count"))
     return error;
   if (llvm::Error error =
-          add(summary.fifoOccurrenceCount, view.fifoOccurrences().size(),
-              "FIFO occurrence count"))
+          addScaled(summary.fifoOccurrenceCount, view.fifoOccurrences().size(),
+                    multiplicity, "FIFO occurrence count"))
     return error;
-  if (llvm::Error error =
-          add(summary.boundaryOccurrenceCount,
-              view.boundaryOccurrences().size(), "boundary occurrence count"))
+  if (llvm::Error error = addScaled(summary.boundaryOccurrenceCount,
+                                    view.boundaryOccurrences().size(),
+                                    multiplicity, "boundary occurrence count"))
     return error;
-  if (llvm::Error error =
-          add(summary.hostCoreOccurrenceCount,
-              view.hostCoreOccurrences().size(), "host-core occurrence count"))
+  if (llvm::Error error = addScaled(summary.hostCoreOccurrenceCount,
+                                    view.hostCoreOccurrences().size(),
+                                    multiplicity, "host-core occurrence count"))
     return error;
-  if (llvm::Error error =
-          add(summary.accCoreOccurrenceCount, view.accCoreOccurrences().size(),
-              "accelerator-core occurrence count"))
+  if (llvm::Error error = addScaled(
+          summary.accCoreOccurrenceCount, view.accCoreOccurrences().size(),
+          multiplicity, "accelerator-core occurrence count"))
     return error;
-  if (llvm::Error error = add(summary.systemMemoryServiceCount,
-                              view.systemMemoryServices().size(),
-                              "System memory-service count"))
+  if (llvm::Error error = addScaled(
+          summary.systemMemoryServiceCount, view.systemMemoryServices().size(),
+          multiplicity, "System memory-service count"))
     return error;
-  if (llvm::Error error =
-          add(summary.transportEndpointCount, view.transportEndpoints().size(),
-              "transport endpoint count"))
+  if (llvm::Error error = addScaled(summary.transportEndpointCount,
+                                    view.transportEndpoints().size(),
+                                    multiplicity, "transport endpoint count"))
     return error;
-  if (llvm::Error error =
-          add(summary.pointConnectionCount, view.pointConnections().size(),
-              "point connection count"))
+  if (llvm::Error error = addScaled(summary.pointConnectionCount,
+                                    view.pointConnections().size(),
+                                    multiplicity, "point connection count"))
     return error;
-  return add(summary.admittedTraversalCount, view.admittedTraversals().size(),
-             "admitted traversal count");
+  return addScaled(summary.admittedTraversalCount,
+                   view.admittedTraversals().size(), multiplicity,
+                   "admitted traversal count");
 }
 
 llvm::Expected<FpaFabricStructureFeatureView>
 summarizeFabric(const fabric::FinalizedFabricRoot &root) {
   FpaFabricStructureFeatureView summary;
-  if (llvm::Error error = summarizeView(root.view(), summary))
+  if (llvm::Error error = summarizeView(root.view(), 1, summary))
     return std::move(error);
   summary.importedModuleCount = root.view().importedModules().size();
-  for (const fabric::FabricArtifactView &module : root.view().importedModules())
-    if (llvm::Error error = summarizeView(module, summary))
+  if (root.view().rootKind() != fabric::FabricRootKind::System) {
+    for (const fabric::FabricArtifactView &module :
+         root.view().importedModules())
+      if (llvm::Error error = summarizeView(module, 1, summary))
+        return std::move(error);
+    return summary;
+  }
+
+  auto system = fabric::requireSystemRoot(root.view());
+  if (!system)
+    return system.takeError();
+  std::vector<std::uint64_t> multiplicities(
+      root.view().importedModules().size(), 0);
+  std::set<std::pair<std::uint64_t, fabric::FabricEntityId>> seen;
+  for (const fabric::FabricSpatialAttachmentRecordView &attachment :
+       system->spatialAttachments()) {
+    const fabric::SpatialCoreOccurrenceRef *spatial = nullptr;
+    if (const auto *endpoint = attachment.spatialEndpoint.transport())
+      spatial = std::get_if<fabric::SpatialCoreOccurrenceRef>(
+          &endpoint->owner.payload);
+    else if (const auto *endpoint = attachment.spatialEndpoint.memory())
+      spatial = std::get_if<fabric::SpatialCoreOccurrenceRef>(
+          &endpoint->owner.payload);
+    if (!spatial ||
+        attachment.moduleEndpoint.dependencyOrdinal >= multiplicities.size())
+      return invalid("System has a malformed Spatial attachment");
+    if (seen.emplace(attachment.moduleEndpoint.dependencyOrdinal,
+                     spatial->core.id())
+            .second)
+      ++multiplicities[attachment.moduleEndpoint.dependencyOrdinal];
+  }
+  for (std::size_t ordinal = 0; ordinal != root.view().importedModules().size();
+       ++ordinal)
+    if (llvm::Error error =
+            summarizeView(root.view().importedModules()[ordinal],
+                          multiplicities[ordinal], summary))
       return std::move(error);
   return summary;
 }
@@ -858,6 +911,67 @@ llvm::Error registerFpaModelParameterContract() {
   return registerModelParameterContract(descriptor());
 }
 
+llvm::Expected<CaseArtifactResolution>
+resolveFpaCalibrationCaseArtifactResolution(
+    const ArtifactRootReference &parameterBundle,
+    llvm::ArrayRef<ArtifactRootReference> evidence,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  auto bundle =
+      importModelParameterBundle(parameterBundle, artifactStore, blobStore);
+  if (!bundle)
+    return bundle.takeError();
+  if (!bundle->parametersIf<FpaGbdtParameters>())
+    return invalid("calibration parameter bundle has a foreign payload");
+  if (evidence.empty())
+    return invalid("calibration Evidence collection is empty");
+
+  std::vector<ArtifactRootReference> canonicalEvidence(evidence.begin(),
+                                                       evidence.end());
+  llvm::sort(canonicalEvidence, artifactRootReferenceLess);
+  if (std::adjacent_find(canonicalEvidence.begin(), canonicalEvidence.end()) !=
+      canonicalEvidence.end())
+    return invalid("calibration Evidence collection contains a duplicate");
+
+  std::map<ArtifactRootReference, std::vector<ArtifactRootReference>,
+           decltype(&artifactRootReferenceLess)>
+      entries(&artifactRootReferenceLess);
+  const auto merge = [&](const ArtifactRootReference &owner,
+                         llvm::ArrayRef<ArtifactRootReference> dependencies) {
+    std::vector<ArtifactRootReference> &closure = entries[owner];
+    closure.insert(closure.end(), dependencies.begin(), dependencies.end());
+    llvm::sort(closure, artifactRootReferenceLess);
+    closure.erase(std::unique(closure.begin(), closure.end()), closure.end());
+  };
+  entries.emplace(parameterBundle, std::vector<ArtifactRootReference>{});
+  for (const ArtifactRootReference &evidenceReference : canonicalEvidence) {
+    auto requestReference = importEvaluationEvidenceRequestReference(
+        evidenceReference, artifactStore);
+    if (!requestReference)
+      return requestReference.takeError();
+    auto source =
+        resolveGroundTruthRequest(*requestReference, artifactStore, blobStore);
+    if (!source)
+      return source.takeError();
+    std::vector<ArtifactRootReference> requestClosure;
+    for (const CaseArtifactResolution::Entry &entry : source->entries()) {
+      requestClosure.push_back(entry.artifact);
+      requestClosure.insert(requestClosure.end(),
+                            entry.dependencyClosure.begin(),
+                            entry.dependencyClosure.end());
+      merge(entry.artifact, entry.dependencyClosure);
+    }
+    merge(*requestReference, requestClosure);
+    requestClosure.push_back(*requestReference);
+    merge(evidenceReference, requestClosure);
+  }
+
+  std::vector<CaseArtifactResolution::Entry> resolved;
+  resolved.reserve(entries.size());
+  for (auto &[artifact, closure] : entries)
+    resolved.push_back({artifact, std::move(closure)});
+  return CaseArtifactResolution::get(std::move(resolved));
+}
+
 llvm::Expected<FpaTrainingEvidenceSample>
 importFpaTrainingEvidenceSample(const ArtifactRootReference &evidenceReference,
                                 const ArtifactStore &artifactStore,
@@ -870,11 +984,24 @@ importFpaTrainingEvidenceSample(const ArtifactRootReference &evidenceReference,
       resolveGroundTruthRequest(*requestReference, artifactStore, blobStore);
   if (!resolution)
     return resolution.takeError();
-  auto request = importEvaluationRequest(*requestReference, *resolution,
+  return importFpaTrainingEvidenceSample(evidenceReference, *resolution,
+                                         artifactStore, blobStore);
+}
+
+llvm::Expected<FpaTrainingEvidenceSample>
+importFpaTrainingEvidenceSample(const ArtifactRootReference &evidenceReference,
+                                const CaseArtifactResolution &resolution,
+                                const ArtifactStore &artifactStore,
+                                const BlobStore &blobStore) {
+  auto requestReference = importEvaluationEvidenceRequestReference(
+      evidenceReference, artifactStore);
+  if (!requestReference)
+    return requestReference.takeError();
+  auto request = importEvaluationRequest(*requestReference, resolution,
                                          artifactStore, blobStore);
   if (!request)
     return request.takeError();
-  auto evidence = importEvaluationEvidence(evidenceReference, *resolution,
+  auto evidence = importEvaluationEvidence(evidenceReference, resolution,
                                            artifactStore, blobStore);
   if (!evidence)
     return evidence.takeError();
@@ -882,18 +1009,18 @@ importFpaTrainingEvidenceSample(const ArtifactRootReference &evidenceReference,
   if (!observation)
     return observation.takeError();
   auto evaluationCase =
-      requestCase(*request, *resolution, artifactStore, blobStore);
+      requestCase(*request, resolution, artifactStore, blobStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
-  auto features = projectFeatureView(*evaluationCase, *resolution,
-                                     artifactStore, blobStore);
+  auto features =
+      projectFeatureView(*evaluationCase, resolution, artifactStore, blobStore);
   if (!features)
     return features.takeError();
-  auto key = targetKey(*request, *resolution, artifactStore, blobStore);
+  auto key = targetKey(*request, resolution, artifactStore, blobStore);
   if (!key)
     return key.takeError();
   auto group =
-      sampleGroup(*evidence, *request, *resolution, artifactStore, blobStore);
+      sampleGroup(*evidence, *request, resolution, artifactStore, blobStore);
   if (!group)
     return group.takeError();
   return FpaTrainingEvidenceSample{std::move(*features), *observation,

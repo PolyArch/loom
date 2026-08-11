@@ -671,6 +671,38 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
       *dynamicPower, std::max<std::uint64_t>(physical->leakageMicrowatts, 1)};
 }
 
+llvm::Expected<LowConfidenceMetricSet> estimateLowConfidenceFabricMetrics(
+    const fabric::FinalizedFabricRoot &fabricRoot,
+    std::uint64_t activityPartsPer1024) {
+  auto physical = summarizeFabric(fabricRoot);
+  if (!physical)
+    return physical.takeError();
+  if (physical->criticalDelayPicoseconds == 0)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "low_confidence_model_invalid: zero critical delay");
+  const std::uint64_t frequency =
+      kPicosecondsPerSecond / physical->criticalDelayPicoseconds;
+  if (frequency == 0)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "low_confidence_model_invalid: critical delay exceeds one second");
+
+  const std::uint64_t area =
+      std::max<std::uint64_t>(physical->areaSquareMicrometers, 1);
+  const unsigned __int128 scaled =
+      static_cast<unsigned __int128>(area) * activityPartsPer1024;
+  const unsigned __int128 rounded =
+      (scaled + 1023) / static_cast<unsigned __int128>(1024);
+  if (rounded > std::numeric_limits<std::uint64_t>::max())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "low_confidence_model_overflow: hardware dynamic power estimate");
+  return LowConfidenceMetricSet{
+      0, frequency, area, static_cast<std::uint64_t>(rounded),
+      std::max<std::uint64_t>(physical->leakageMicrowatts, 1)};
+}
+
 llvm::Expected<std::optional<AnalyticWorkloadEstimate>>
 projectCanonicalDataflowWorkloadImpl(
     const ::dataflow::CanonicalDataflowProgramView &program,

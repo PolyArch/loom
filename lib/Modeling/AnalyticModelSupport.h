@@ -73,6 +73,14 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
                              AnalyticWorkloadEstimate workload,
                              const fabric::FinalizedFabricRoot &fabricRoot);
 
+/// Estimates hardware-only physical metrics from the same complete Fabric
+/// inventory and coefficient table used by the software-aware models.
+/// `activityPartsPer1024` is a descriptor-owned projection of explicit
+/// activity assumptions; callers must not supply an implicit default.
+llvm::Expected<LowConfidenceMetricSet> estimateLowConfidenceFabricMetrics(
+    const fabric::FinalizedFabricRoot &fabricRoot,
+    std::uint64_t activityPartsPer1024);
+
 llvm::Expected<std::optional<AnalyticWorkloadEstimate>>
 projectCanonicalDataflowWorkload(
     const ::dataflow::CanonicalDataflowProgramView &program,

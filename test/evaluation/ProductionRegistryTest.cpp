@@ -5,6 +5,9 @@
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Metric.h"
+#include "Evaluation/Models/FpaParameterContract.h"
+#include "Evaluation/Models/PredictionCalibration.h"
+#include "Evaluation/Models/SystemRuntimeParameterContract.h"
 #include "Evaluation/Request.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Simulator/SimulationExecution.h"
@@ -288,17 +291,35 @@ void appendedMetricsAndModelSlotsMatchTheCatalog() {
           lowConfidenceFabricModel->inputSlots.empty() &&
           calibratedFabricModel->inputSlots.size() == 1 &&
           calibratedFabricModel->inputSlots.front().modelParameterContract &&
-          runtimeCalibrationModel->inputSlots.size() == 1 &&
-          runtimeCalibrationModel->inputSlots.front().modelParameterContract &&
+          runtimeCalibrationModel->inputSlots.empty() &&
           systemRuntimePredictor->inputSlots.front().modelParameterContract ==
-              runtimeCalibrationModel->inputSlots.front()
-                  .modelParameterContract,
+              models::systemRuntimeModelParameterContractRef(),
       "production parameter slots do not reference their exact contracts");
-  require(
-      test,
-      calibratedFabricModel->inputSlots.front().modelParameterContract !=
-          runtimeCalibrationModel->inputSlots.front().modelParameterContract,
-      "FPA and System Runtime parameter contracts were conflated");
+  require(test,
+          calibratedFabricModel->inputSlots.front().modelParameterContract !=
+              systemRuntimePredictor->inputSlots.front().modelParameterContract,
+          "FPA and System Runtime parameter contracts were conflated");
+
+  const std::array parameterBackedFpaModels = {
+      BuiltinEvaluationModel::StructuredFabricCalibratedFpa,
+      BuiltinEvaluationModel::CanonicalDataflowFabricCalibratedFpa,
+      BuiltinEvaluationModel::FabricCalibratedFpa};
+  for (BuiltinEvaluationModel model : parameterBackedFpaModels) {
+    const auto reference =
+        take(test, builtinEvaluationModelDescriptorRef(model));
+    require(
+        test,
+        reference.descriptor()->providerForm == ProviderForm::InProcess &&
+            reference.descriptor()->inputSlots.size() == 1 &&
+            reference.descriptor()->inputSlots.front().modelParameterContract ==
+                models::fpaModelParameterContractRef(),
+        "parameter-backed FPA descriptor is incomplete");
+  }
+  const auto fpaCalibration =
+      take(test, builtinEvaluationModelDescriptorRef(
+                     BuiltinEvaluationModel::FpaModelParameterCalibration));
+  require(test, fpaCalibration.descriptor()->inputSlots.empty(),
+          "FPA calibration duplicated its candidate subject as a model input");
 
   const std::array gem5ExecutionModels = {
       BuiltinEvaluationModel::Gem5SystemDfg,
@@ -320,6 +341,36 @@ void appendedMetricsAndModelSlotsMatchTheCatalog() {
   }
 }
 
+void calibrationArithmeticIsExactAndDeterministic() {
+  const llvm::StringRef test = __func__;
+  const auto decimal = [&](std::int64_t coefficient,
+                           std::int64_t exponent = 0) {
+    return take(test, DecimalValue::get(coefficient, exponent));
+  };
+  const DecimalValue zero = decimal(0);
+  const DecimalValue two = decimal(2);
+  require(test,
+          take(test, models::calculateSymmetricRelativePredictionError(
+                         zero, zero)) == zero,
+          "zero prediction and observation did not produce zero error");
+  require(test,
+          take(test, models::calculateSymmetricRelativePredictionError(
+                         decimal(1), zero)) == two,
+          "one-sided zero did not produce the maximum symmetric error");
+  require(test,
+          take(test, models::calculateSymmetricRelativePredictionError(
+                         decimal(100), decimal(80))) ==
+              decimal(222222222222222222LL, -18),
+          "symmetric relative error was not finalized to 18 digits");
+
+  const std::array values = {decimal(3, -1), decimal(1, -1), decimal(2, -1)};
+  const ExactRatio median = take(test, ExactRatio::get(1, 2));
+  require(test,
+          take(test, models::selectNearestRankPredictionError(
+                         values, median)) == decimal(2, -1),
+          "nearest-rank median selected the wrong sample");
+}
+
 } // namespace
 
 int main() {
@@ -327,5 +378,6 @@ int main() {
   exactRegistryVersionsRemainDistinct();
   legacyRequestRoundTripsWithoutVersionReinterpretation();
   appendedMetricsAndModelSlotsMatchTheCatalog();
+  calibrationArithmeticIsExactAndDeterministic();
   return EXIT_SUCCESS;
 }

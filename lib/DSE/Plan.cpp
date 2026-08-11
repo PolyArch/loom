@@ -713,6 +713,13 @@ llvm::Expected<ResolvedDsePlan> ResolvedDsePlan::get(
         evidencePartitionRole(*acquisitionBinding, evidenceObligationTemplates);
     if (!evidencePartition)
       return evidencePartition.takeError();
+    const bool heldOut =
+        *evidencePartition == CalibrationPartitionRole::HeldOut;
+    const bool modelRelease =
+        definition.purpose == PromotePurpose::ModelRelease;
+    if (heldOut != modelRelease)
+      return invalid("held-out Evidence is permitted only in a terminal "
+                     "ModelRelease Promote node");
     std::vector<std::uint32_t> objectiveOrdinals;
     collectSelectionObligations(definition.selection, objectiveCatalogs,
                                 objectiveOrdinals);

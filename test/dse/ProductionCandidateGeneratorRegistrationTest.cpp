@@ -2,6 +2,7 @@
 #include "DSE/DataflowRewriteCandidateGenerator.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
 #include "DSE/MappingCandidateGenerator.h"
+#include "DSE/ModelParameterCalibrationAcquisition.h"
 #include "DSE/ModelParameterTrainingCandidateGenerator.h"
 #include "DSE/PortableSystemRtlCandidateGenerator.h"
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
@@ -70,6 +71,8 @@ int main() {
   requireSuccess(loom::dse::registerFpaGbdtTrainingCandidateGenerator());
   requireSuccess(
       loom::dse::registerSystemRuntimeGbdtTrainingCandidateGenerator());
+  requireSuccess(
+      loom::dse::registerModelParameterCalibrationPromotionAcquisitions());
 
   requireRegistered(CandidateGeneratorKind(0),
                     loom::dse::spatialPnrCandidateGeneratorDescriptor());

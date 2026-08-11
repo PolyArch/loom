@@ -99,6 +99,7 @@ set(LOOM_TEST_DEPENDS
   loom-dataflow-service-schema-test
   loom-dse-candidate-generator-test
   loom-dse-model-parameter-training-test
+  loom-dse-ground-truth-campaign-integration-test
   loom-dse-production-candidate-generator-registration-test
   loom-dse-portable-system-rtl-generator-test
   loom-dse-evidence-obligation-test
@@ -111,12 +112,14 @@ set(LOOM_TEST_DEPENDS
   loom-root-complete-spatial-pnr-generator-test
   loom-dfg-sim
   loom-dfg-run
+  loom-dse
   loom-pre-mapping
   loom-tech-map
   loom-evaluation-case-test
   loom-evaluation-evidence-test
   loom-evaluation-metric-test
   loom-evaluation-physical-rail-analysis-test
+  loom-evaluation-fabric-fast-evaluation-test
   loom-external-tool-local-config-test
   loom-external-tool-external-file-test
   loom-external-tool-binding-test
