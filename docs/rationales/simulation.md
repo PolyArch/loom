@@ -103,7 +103,12 @@ authority to every external provider. A precompiled RTL-engine Artifact was
 also rejected because it would duplicate the exact HardwareImplementation,
 Deployment, and simulator-build closure. Instead, the frozen HDL compiler
 creates the invocation-local engine, while the independently owned gem5 binary
-is an external file whose content is checked before that engine launches it.
+is an external file whose content is checked against the
+Gem5SimulationBinding-owned fingerprint before that engine launches it. The
+fingerprint belongs to persistent build identity because strict import has no
+machine-local configuration and cannot otherwise reconstruct the expected
+external input. The readiness file proves local availability only; letting it
+author the fingerprint would make attempt state a competing semantic owner.
 This is the smallest composition that preserves both build identities and one
 System time authority.
 

@@ -476,6 +476,7 @@ Gem5SimulationBinding {
     repository_identity
     full_commit_identity
     build_configuration_digest
+    binary_fingerprint
   }
   bridge_abi_identity
   correspondences[] : Gem5Correspondence
@@ -507,6 +508,11 @@ Gem5Correspondence =
       sim_port_ref
     }
 ```
+
+`binary_fingerprint` is the exact SHA-256 of the executable produced by that
+source and build-configuration identity. It is semantic build identity, not a
+machine-local path. A readiness record proves that one local executable has
+that fingerprint; it cannot supply or replace the binding-owned value.
 
 The correspondence table is total over every modeled Fabric occurrence and
 boundary and canonically ordered by typed Fabric reference. A SimObject or port
