@@ -671,13 +671,20 @@ The exact cut and the no-progress work bound answer different questions. The
 cut proves that one fixed-terminal routing subproblem cannot close. The
 no-progress bound proves nothing about future iterations; it only prevents an
 explicitly bounded search from repeatedly spending the dominant all-net route
-work without improving the Mapping-owned selected rank. Reusing
+work without improving the Mapping-owned selected rank.
+
+Comparing only against the historical best gives useful patience, but a short
+regression can be necessary before negotiated routing improves again. A second
+exact comparison against the immediately previous rank captures that local
+direction without inventing another score. The trailing sign window keeps a
+net-improving recovery alive and stops flat, worsening, or balanced oscillating
+search only after the best-rank patience is also exhausted. Reusing
 `SelectedObjectiveClosure` avoids a second convergence score, while excluding
-candidate-key tie breaks prevents equal-quality route churn from resetting the
-bound. Returning `NoProgress` as work exhaustion preserves the distinction
-between search incompleteness and infeasibility, and still lets a non-final
-Action consume the retained temporary iterate through the existing repair
-algebra.
+candidate-key tie breaks prevents equal-quality route churn from resetting
+either signal. Returning `NoProgress` as work exhaustion preserves the
+distinction between search incompleteness and infeasibility, and still lets a
+non-final Action consume the retained temporary iterate through the existing
+repair algebra.
 
 The complete dynamic-cost baseline is derived once from the complete route
 overlay at an iteration boundary. Candidate-local changes reuse Fabric's raw

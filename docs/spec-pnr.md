@@ -1797,24 +1797,38 @@ private prices. Equal rank retains the earlier canonical iterate. Work
 exhaustion is not infeasibility.
 
 Every complete non-closed iteration also participates in the explicit
-`no_progress_iteration_limit` work bound. The first such iteration establishes
-the retained best selected rank and a zero consecutive-no-progress count. A
+no-progress work bound. The first such iteration establishes the retained best
+selected rank, the previous rank, and a zero iterations-since-best count. A
 later iteration resets that count to zero only when
 `SelectedObjectiveClosure` ranks its objective vector strictly before the
-retained best vector; otherwise it increments the count. This comparison uses
-the selected total ordering without a candidate-key tie break. A physically
-different route at equal rank is therefore not progress. A* cost, negotiated
-prices, route signatures, elapsed time, epsilon comparisons, and private
-conflict counts are never progress authorities.
+retained best vector; otherwise it increments the count. Independently, its
+rank relative to the immediately previous iteration contributes one exact
+`Improved | Equal | Regressed` transition to a fixed trailing window. Both
+comparisons use the selected total ordering without a candidate-key tie break.
+A physically different route at equal rank is therefore `Equal`. A* cost,
+negotiated prices, route signatures, elapsed time, epsilon comparisons, and
+private conflict counts are never progress authorities.
 
-Reaching `no_progress_iteration_limit` is typed `NoProgress` work exhaustion,
-not convergence, success, or proof of infeasibility. An exact fixed-terminal
-capacity-cut certificate takes precedence when both are available from the
-same completed iteration. Exhausting either the no-progress bound or the
-absolute `negotiation_iteration_limit` returns the best admissible temporary
-iterate only for a non-final Action; otherwise it returns typed non-closure and
-rolls back. Final global closure never returns a temporary iterate. There is no
-hidden stagnation threshold or route-signature cycle detector.
+No-progress exhaustion occurs only when all of these conditions hold:
+
+```text
+iterations_since_best >= no_progress_iteration_limit
+trailing_transition_count == no_progress_trend_window
+trailing_improved_count <= trailing_regressed_count
+```
+
+Both limits are positive, and `no_progress_trend_window <=
+no_progress_iteration_limit`. A net-improving recent trend therefore keeps
+search alive even while it recovers from an earlier regression; flat,
+regressing, and balanced oscillating windows become typed `NoProgress` work
+exhaustion after the explicit patience. This outcome is not convergence,
+success, or proof of infeasibility. An exact fixed-terminal capacity-cut
+certificate takes precedence when both are available from the same completed
+iteration. Exhausting either the no-progress bound or the absolute
+`negotiation_iteration_limit` returns the best admissible temporary iterate
+only for a non-final Action; otherwise it returns typed non-closure and rolls
+back. Final global closure never returns a temporary iterate. There is no
+hidden threshold or route-signature cycle detector.
 
 After a complete non-closed iteration, Negotiated Routing may also derive an
 exact fixed-terminal capacity-cut certificate. For one overused physical
@@ -2036,8 +2050,8 @@ selection remain SystemMapping decisions.
 Spatial and System PnR have distinct component-view descriptors:
 
 ```text
-loom.spatial_pnr.config.3.0
-loom.system_pnr.config.3.0
+loom.spatial_pnr.config.4.0
+loom.system_pnr.config.4.0
 ```
 
 They use the same field types and codecs but project the independently selected
@@ -2159,6 +2173,7 @@ SearchPolicy {
     endpoint_expansion_limit: positive uint64
     negotiation_iteration_limit: positive uint64
     no_progress_iteration_limit: positive uint64
+    no_progress_trend_window: positive uint64
     negotiation_policy: RoutingNegotiationPolicy
     route_guidance_binding: optional<ResolvedPnrEvaluationBindingRef>
   }
