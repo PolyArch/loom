@@ -9,6 +9,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <optional>
 #include <string>
@@ -35,6 +36,7 @@ void SpatialPathFinderClosureFailure::log(llvm::raw_ostream &stream) const {
 std::error_code SpatialPathFinderClosureFailure::convertToErrorCode() const {
   switch (kind_) {
   case Kind::NonClosure:
+  case Kind::NoProgress:
     return std::make_error_code(std::errc::resource_unavailable_try_again);
   case Kind::FixedTerminalCapacityCut:
     return std::make_error_code(std::errc::address_not_available);
@@ -45,6 +47,12 @@ std::error_code SpatialPathFinderClosureFailure::convertToErrorCode() const {
 }
 
 namespace {
+
+enum class RankTrendTransition : std::uint8_t {
+  Equal,
+  Improved,
+  Regressed,
+};
 
 llvm::Error pathFinderError(const llvm::Twine &message) {
   return llvm::make_error<llvm::StringError>(
@@ -63,16 +71,6 @@ llvm::Error rollbackIteration(SpatialMoveTransaction &move,
   if (llvm::Error reset = costs.resetFromCandidate())
     return llvm::joinErrors(std::move(failure), std::move(reset));
   return failure;
-}
-
-bool traversalClaimsCapacity(const FrozenSpatialRoutingGraph &routing,
-                             PnrIndex traversal, PnrIndex capacity) {
-  const FrozenSpatialTraversal &record = routing.traversals()[traversal];
-  for (PnrIndex claim : routing.traversalClaimKeys().slice(
-           record.routeClaimOffset, record.routeClaimCount))
-    if (routing.routeClaims()[claim].capacityDimension == capacity)
-      return true;
-  return false;
 }
 
 std::optional<PnrIndex>
@@ -154,11 +152,16 @@ llvm::Error SpatialPathFinderRouterScratch::prepare(
   cutForcedNets_.reserve(logicalNetCount);
   cutCertificateForcedNets_.clear();
   cutCertificateForcedNets_.reserve(logicalNetCount);
+  cutPayloadWidths_.clear();
+  cutPayloadWidths_.reserve(logicalNetCount);
+  cutMinimumClaims_.clear();
+  cutMinimumClaims_.reserve(logicalNetCount);
   cutTouchedClaims_.clear();
   cutTouchedClaims_.reserve(routeClaimCount);
   cutNetClaimRefcounts_.assign(routeClaimCount, 0);
   cutClaimSelectionCounts_.assign(routeClaimCount, 0);
   cutClaimTraversalRefcounts_.assign(routeClaimCount, 0);
+  rankTrendTransitions_.clear();
   projectionEpoch_ = 0;
   negotiationIterationCount_ = 0;
   preparedProblem_ = &problem;
@@ -294,8 +297,7 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
   CapacityConflictAnalysis analysis;
   cutCertificateForcedNets_.clear();
 
-  std::vector<PnrIndex> conflictCapacities;
-  conflictCapacities.reserve(resources.capacityDimensions().size());
+  std::optional<PnrIndex> selectedConflictCapacity;
   for (PnrIndex capacity = 0; capacity < resources.capacityDimensions().size();
        ++capacity) {
     const std::uint64_t usage = costs.workingCapacityUsageRaw(capacity);
@@ -304,18 +306,27 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
     if (analysis.conflictCount == std::numeric_limits<std::uint64_t>::max())
       return pathFinderError("capacity conflict count overflows u64");
     ++analysis.conflictCount;
-    conflictCapacities.push_back(capacity);
+    if (!selectedConflictCapacity ||
+        usage < costs.workingCapacityUsageRaw(*selectedConflictCapacity) ||
+        (usage == costs.workingCapacityUsageRaw(*selectedConflictCapacity) &&
+         capacity < *selectedConflictCapacity))
+      selectedConflictCapacity = capacity;
   }
-  llvm::sort(conflictCapacities, [&](PnrIndex lhs, PnrIndex rhs) {
-    const std::uint64_t lhsUsage = costs.workingCapacityUsageRaw(lhs);
-    const std::uint64_t rhsUsage = costs.workingCapacityUsageRaw(rhs);
-    return lhsUsage != rhsUsage ? lhsUsage < rhsUsage : lhs < rhs;
-  });
+  if (!selectedConflictCapacity)
+    return analysis;
 
+  const std::array<PnrIndex, 1> conflictCapacities{*selectedConflictCapacity};
   for (PnrIndex capacity : conflictCapacities) {
     const std::uint64_t usage = costs.workingCapacityUsageRaw(capacity);
     const auto &capacityRecord = resources.capacityDimensions()[capacity];
     const std::uint64_t physicalCapacity = capacityRecord.capacity;
+    const auto capacityClaimOffsets = routing.capacityRouteClaimOffsets();
+    const auto capacityClaims = routing.capacityRouteClaims();
+    if (capacity + 1 >= capacityClaimOffsets.size())
+      return pathFinderError("capacity-to-claim incidence is out of range");
+    const auto activeCapacityClaims = capacityClaims.slice(
+        capacityClaimOffsets[capacity],
+        capacityClaimOffsets[capacity + 1] - capacityClaimOffsets[capacity]);
 
     std::fill(cutClaimSelectionCounts_.begin(), cutClaimSelectionCounts_.end(),
               0);
@@ -326,7 +337,6 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
     cutContributingNets_.clear();
     cutForcedNets_.clear();
     std::uint64_t derivedUsage = capacityRecord.initialOccupancy;
-
     for (PnrIndex logicalNet = 0;
          logicalNet < problem.transfers().logicalNets().size(); ++logicalNet) {
       cutTouchedClaims_.clear();
@@ -341,15 +351,9 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
         const PnrIndex traversal = arcs[node.parentArc].traversal;
         if (traversal >= routing.traversals().size())
           return pathFinderError("capacity analysis traversal is out of range");
-        if (!traversalClaimsCapacity(routing, traversal, capacity))
-          continue;
-        if (emitDecisions) {
-          cutSeenTraversals_[traversal] = 1;
-          cutSeenEndpoints_[arcSources[node.parentArc]] = 1;
-          cutSeenEndpoints_[arcs[node.parentArc].target] = 1;
-        }
         const FrozenSpatialTraversal &traversalRecord =
             routing.traversals()[traversal];
+        bool traversalContributes = false;
         for (PnrIndex claim : routing.traversalClaimKeys().slice(
                  traversalRecord.routeClaimOffset,
                  traversalRecord.routeClaimCount)) {
@@ -361,8 +365,13 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
           if (claimRecord.capacityDimension != capacity ||
               claimRecord.amount == 0)
             continue;
+          traversalContributes = true;
           if (cutNetClaimRefcounts_[claim] == 0) {
             cutTouchedClaims_.push_back(claim);
+            if (cutClaimSelectionCounts_[claim] ==
+                std::numeric_limits<PnrIndex>::max())
+              return pathFinderError(
+                  "route-tree claim selection count overflows PnrIndex");
             ++cutClaimSelectionCounts_[claim];
             if (claimRecord.amount >
                 std::numeric_limits<std::uint64_t>::max() - derivedUsage)
@@ -374,6 +383,11 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
             return pathFinderError(
                 "route-tree claim traversal refcount overflows PnrIndex");
           ++cutNetClaimRefcounts_[claim];
+        }
+        if (emitDecisions && traversalContributes) {
+          cutSeenTraversals_[traversal] = 1;
+          cutSeenEndpoints_[arcSources[node.parentArc]] = 1;
+          cutSeenEndpoints_[arcs[node.parentArc].target] = 1;
         }
       }
       if (cutTouchedClaims_.empty())
@@ -391,15 +405,15 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
     }
     if (derivedUsage != usage)
       return pathFinderError(
-          "working capacity usage disagrees with the active RouteTrees");
+          "working capacity usage disagrees with the active RouteTrees at " +
+          llvm::Twine(capacity) + ": working=" + llvm::Twine(usage) +
+          " projected=" + llvm::Twine(derivedUsage));
 
     std::fill(cutBlockedTraversals_.begin(), cutBlockedTraversals_.end(), 0);
-    const auto capacityClaimOffsets = routing.capacityRouteClaimOffsets();
-    const auto capacityClaims = routing.capacityRouteClaims();
     const auto claimTraversalOffsets = routing.routeClaimTraversalOffsets();
     const auto claimTraversals = routing.routeClaimTraversals();
-    if (capacity + 1 >= capacityClaimOffsets.size())
-      return pathFinderError("capacity-to-claim incidence is out of range");
+    const auto traversalArcOffsets = routing.traversalArcOffsets();
+    const auto traversalArcs = routing.traversalArcs();
     for (PnrIndex entry = capacityClaimOffsets[capacity];
          entry < capacityClaimOffsets[capacity + 1]; ++entry) {
       if (entry >= capacityClaims.size())
@@ -420,45 +434,59 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
       }
     }
 
+    cutPayloadWidths_.clear();
+    cutMinimumClaims_.clear();
+    const auto minimumClaimForPayload =
+        [&](std::uint32_t payloadWidth) -> llvm::Expected<std::uint64_t> {
+      for (std::size_t index = 0; index < cutPayloadWidths_.size(); ++index)
+        if (cutPayloadWidths_[index] == payloadWidth)
+          return cutMinimumClaims_[index];
+      std::uint64_t minimumClaim = std::numeric_limits<std::uint64_t>::max();
+      for (PnrIndex claim : activeCapacityClaims) {
+        if (claim + 1 >= claimTraversalOffsets.size())
+          return pathFinderError(
+              "claim-to-traversal incidence is out of range");
+        bool payloadCompatible = false;
+        for (PnrIndex traversalEntry = claimTraversalOffsets[claim];
+             traversalEntry < claimTraversalOffsets[claim + 1] &&
+             !payloadCompatible;
+             ++traversalEntry) {
+          if (traversalEntry >= claimTraversals.size())
+            return pathFinderError("claim traversal entry is out of range");
+          const PnrIndex traversal = claimTraversals[traversalEntry];
+          if (traversal + 1 >= traversalArcOffsets.size())
+            return pathFinderError(
+                "traversal-to-arc incidence is out of range");
+          for (PnrIndex arcEntry = traversalArcOffsets[traversal];
+               arcEntry < traversalArcOffsets[traversal + 1]; ++arcEntry) {
+            if (arcEntry >= traversalArcs.size() ||
+                traversalArcs[arcEntry] >= arcs.size())
+              return pathFinderError("traversal arc entry is out of range");
+            if (arcs[traversalArcs[arcEntry]].payloadCapacityBits >=
+                payloadWidth) {
+              payloadCompatible = true;
+              break;
+            }
+          }
+        }
+        const std::uint64_t amount = routing.routeClaims()[claim].amount;
+        if (payloadCompatible && amount != 0)
+          minimumClaim = std::min(minimumClaim, amount);
+      }
+      cutPayloadWidths_.push_back(payloadWidth);
+      cutMinimumClaims_.push_back(minimumClaim);
+      return minimumClaim;
+    };
+
     std::uint64_t mandatoryUsage = capacityRecord.initialOccupancy;
     std::uint64_t forcedNetCount = 0;
     for (PnrIndex logicalNet : cutContributingNets_) {
       const std::uint32_t payloadWidth =
           candidate.logicalNetPayloadWidth(logicalNet);
-      std::uint64_t minimumClaim = std::numeric_limits<std::uint64_t>::max();
-      for (PnrIndex traversal = 0; traversal < cutBlockedTraversals_.size();
-           ++traversal) {
-        if (!cutBlockedTraversals_[traversal])
-          continue;
-        bool payloadCompatible = false;
-        const auto traversalArcOffsets = routing.traversalArcOffsets();
-        const auto traversalArcs = routing.traversalArcs();
-        if (traversal + 1 >= traversalArcOffsets.size())
-          return pathFinderError("traversal-to-arc incidence is out of range");
-        for (PnrIndex arcEntry = traversalArcOffsets[traversal];
-             arcEntry < traversalArcOffsets[traversal + 1]; ++arcEntry) {
-          if (arcEntry >= traversalArcs.size() ||
-              traversalArcs[arcEntry] >= arcs.size())
-            return pathFinderError("traversal arc entry is out of range");
-          if (arcs[traversalArcs[arcEntry]].payloadCapacityBits >=
-              payloadWidth) {
-            payloadCompatible = true;
-            break;
-          }
-        }
-        if (!payloadCompatible)
-          continue;
-        const FrozenSpatialTraversal &record = routing.traversals()[traversal];
-        for (PnrIndex claim : routing.traversalClaimKeys().slice(
-                 record.routeClaimOffset, record.routeClaimCount)) {
-          const FrozenSpatialRouteClaim &claimRecord =
-              routing.routeClaims()[claim];
-          if (claimRecord.capacityDimension == capacity &&
-              claimRecord.amount != 0)
-            minimumClaim =
-                std::min<std::uint64_t>(minimumClaim, claimRecord.amount);
-        }
-      }
+      auto minimumClaimValue = minimumClaimForPayload(payloadWidth);
+      if (!minimumClaimValue)
+        return minimumClaimValue.takeError();
+      const std::uint64_t minimumClaim = *minimumClaimValue;
 
       std::fill(cutReachableEndpoints_.begin(), cutReachableEndpoints_.end(),
                 0);
@@ -548,6 +576,8 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
               fields["separating_cut"] = separatingCut;
             });
       }
+      if (mandatoryUsage > physicalCapacity)
+        break;
     }
 
     const bool certificate = mandatoryUsage > physicalCapacity;
@@ -687,7 +717,7 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
             fields["certificate"] = certificate;
           });
     }
-    if (certificate && !emitDetails)
+    if (certificate)
       break;
   }
   return analysis;
@@ -843,8 +873,18 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     return pathFinderError("scratch is not prepared for the candidate freeze");
   if (!costs.isBoundTo(candidate))
     return pathFinderError("route costs are bound to another candidate");
-  if (limits.endpointExpansionLimit == 0 || limits.iterationLimit == 0)
+  if (limits.endpointExpansionLimit == 0 || limits.iterationLimit == 0 ||
+      limits.noProgressIterationLimit == 0 || limits.noProgressTrendWindow == 0)
     return pathFinderError("routing work limits must be positive");
+  if (limits.noProgressTrendWindow > limits.noProgressIterationLimit ||
+      limits.noProgressIterationLimit > limits.iterationLimit)
+    return pathFinderError("routing no-progress limits are not canonical");
+  if (limits.noProgressTrendWindow > std::numeric_limits<std::size_t>::max())
+    return pathFinderError("routing trend window exceeds host size_t");
+  const std::size_t trendWindow =
+      static_cast<std::size_t>(limits.noProgressTrendWindow);
+  if (rankTrendTransitions_.size() < trendWindow)
+    rankTrendTransitions_.resize(trendWindow);
   if (!evaluationPriorities.empty() &&
       evaluationPriorities.size() !=
           candidate.problem().transfers().logicalNets().size())
@@ -869,7 +909,14 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       llvm::is_contained(
           candidate.problem().config().policy().temporaryViolations.admitted,
           ResolvedPnrViolationKind::CapacityOveruse);
-  std::optional<dse::ObjectiveVector> bestObjective;
+  std::optional<dse::ObjectiveVector> bestRankObjective;
+  std::optional<dse::ObjectiveVector> previousRankObjective;
+  std::optional<dse::ObjectiveVector> bestTemporaryObjective;
+  std::uint64_t consecutiveNoProgressIterations = 0;
+  std::size_t trendHead = 0;
+  std::size_t trendCount = 0;
+  std::uint64_t trendImprovedCount = 0;
+  std::uint64_t trendRegressedCount = 0;
   const std::uint64_t initialEndpointExpansions =
       netRouter_.endpointExpansionCount();
   loom::mapping_debug::MappingRunStatistics debugStatistics;
@@ -967,6 +1014,75 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     }
     const std::uint64_t capacityConflicts = conflictAnalysis.conflictCount;
     debugStatistics.capacityConflicts += capacityConflicts;
+    bool selectedRankImproved = false;
+    if (hasCapacityOveruse) {
+      auto objective =
+          candidate.problem().objectiveProgram().evaluate(candidate);
+      if (!objective)
+        return objective.takeError();
+      selectedRankImproved = !bestRankObjective;
+      if (bestRankObjective) {
+        auto comparison =
+            candidate.problem().objectiveProgram().compareSelectedRank(
+                *objective, {}, *bestRankObjective, {});
+        if (!comparison)
+          return comparison.takeError();
+        selectedRankImproved = *comparison < 0;
+      }
+      if (selectedRankImproved) {
+        bestRankObjective = *objective;
+        consecutiveNoProgressIterations = 0;
+      } else {
+        ++consecutiveNoProgressIterations;
+      }
+
+      if (previousRankObjective) {
+        auto comparison =
+            candidate.problem().objectiveProgram().compareSelectedRank(
+                *objective, {}, *previousRankObjective, {});
+        if (!comparison)
+          return comparison.takeError();
+        const RankTrendTransition transition =
+            *comparison < 0   ? RankTrendTransition::Improved
+            : *comparison > 0 ? RankTrendTransition::Regressed
+                              : RankTrendTransition::Equal;
+        if (trendCount == trendWindow) {
+          const auto evicted = static_cast<RankTrendTransition>(
+              rankTrendTransitions_[trendHead]);
+          trendImprovedCount -=
+              evicted == RankTrendTransition::Improved ? 1 : 0;
+          trendRegressedCount -=
+              evicted == RankTrendTransition::Regressed ? 1 : 0;
+        } else {
+          ++trendCount;
+        }
+        rankTrendTransitions_[trendHead] =
+            static_cast<std::uint8_t>(transition);
+        trendHead = (trendHead + 1) % trendWindow;
+        trendImprovedCount +=
+            transition == RankTrendTransition::Improved ? 1 : 0;
+        trendRegressedCount +=
+            transition == RankTrendTransition::Regressed ? 1 : 0;
+      }
+      previousRankObjective = *objective;
+
+      if (admitsTemporaryCapacity) {
+        bool replace = !bestTemporaryObjective;
+        if (bestTemporaryObjective) {
+          auto comparison =
+              candidate.problem().objectiveProgram().compareSelectedRank(
+                  *objective, {}, *bestTemporaryObjective, {});
+          if (!comparison)
+            return comparison.takeError();
+          replace = *comparison < 0;
+        }
+        if (replace) {
+          if (llvm::Error error = captureCurrentRoutes(candidate))
+            return std::move(error);
+          bestTemporaryObjective = std::move(*objective);
+        }
+      }
+    }
     loom::mapping_debug::emit(
         loom::mapping_debug::Level::Decision,
         loom::mapping_debug::Stage::SpatialPnr,
@@ -981,32 +1097,21 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           fields["capacity_conflict_events_omitted"] =
               capacityConflicts - conflictAnalysis.diagnosticConflictCount;
           fields["capacity_closed"] = !hasCapacityOveruse;
+          fields["selected_rank_improved"] = selectedRankImproved;
+          fields["consecutive_no_progress_iterations"] =
+              consecutiveNoProgressIterations;
+          fields["no_progress_iteration_limit"] =
+              limits.noProgressIterationLimit;
+          fields["no_progress_trend_window"] = limits.noProgressTrendWindow;
+          fields["rank_trend_transition_count"] = trendCount;
+          fields["rank_trend_improved_count"] = trendImprovedCount;
+          fields["rank_trend_regressed_count"] = trendRegressedCount;
           fields["a_star_expansions"] =
               netRouter_.endpointExpansionCount() - initialEndpointExpansions;
         });
     if (!hasCapacityOveruse) {
       emitStatistics("closed");
       return SpatialPathFinderClosureResult{completedIterations, true};
-    }
-    if (admitsTemporaryCapacity) {
-      auto objective =
-          candidate.problem().objectiveProgram().evaluate(candidate);
-      if (!objective)
-        return objective.takeError();
-      bool replace = !bestObjective;
-      if (bestObjective) {
-        auto comparison =
-            candidate.problem().objectiveProgram().compareSelectedRank(
-                *objective, {}, *bestObjective, {});
-        if (!comparison)
-          return comparison.takeError();
-        replace = *comparison < 0;
-      }
-      if (replace) {
-        if (llvm::Error error = captureCurrentRoutes(candidate))
-          return std::move(error);
-        bestObjective = std::move(*objective);
-      }
     }
     if (conflictAnalysis.hasCertificate()) {
       loom::mapping_debug::emit(
@@ -1020,9 +1125,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
             fields["capacity_ref"] = conflictAnalysis.certificateCapacity;
             fields["mandatory_usage"] = conflictAnalysis.mandatoryUsage;
             fields["capacity"] = conflictAnalysis.physicalCapacity;
-            fields["temporary_return"] = bestObjective.has_value();
+            fields["temporary_return"] = bestTemporaryObjective.has_value();
           });
-      if (bestObjective) {
+      if (bestTemporaryObjective) {
         if (llvm::Error error = restoreCapturedRoutes(move, candidate, costs))
           return std::move(error);
         emitStatistics("fixed_terminal_cut_temporary");
@@ -1040,8 +1145,40 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           conflictAnalysis.certificateCapacity, conflictAnalysis.mandatoryUsage,
           conflictAnalysis.physicalCapacity, cutCertificateForcedNets_);
     }
+    if (consecutiveNoProgressIterations >= limits.noProgressIterationLimit &&
+        trendCount == trendWindow &&
+        trendImprovedCount <= trendRegressedCount) {
+      loom::mapping_debug::emit(
+          loom::mapping_debug::Level::Decision,
+          loom::mapping_debug::Stage::SpatialPnr,
+          loom::mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["iteration"] = iteration;
+            fields["session_iteration"] = sessionIteration;
+            fields["operation"] = "selected_rank_no_progress";
+            fields["consecutive_no_progress_iterations"] =
+                consecutiveNoProgressIterations;
+            fields["no_progress_iteration_limit"] =
+                limits.noProgressIterationLimit;
+            fields["no_progress_trend_window"] = limits.noProgressTrendWindow;
+            fields["rank_trend_improved_count"] = trendImprovedCount;
+            fields["rank_trend_regressed_count"] = trendRegressedCount;
+            fields["temporary_return"] = bestTemporaryObjective.has_value();
+          });
+      if (bestTemporaryObjective) {
+        if (llvm::Error error = restoreCapturedRoutes(move, candidate, costs))
+          return std::move(error);
+        emitStatistics("no_progress_temporary");
+        return SpatialPathFinderClosureResult{completedIterations, false};
+      }
+      emitStatistics("no_progress");
+      return llvm::make_error<SpatialPathFinderClosureFailure>(
+          SpatialPathFinderClosureFailure::Kind::NoProgress,
+          "Spatial PathFinder exhausted its selected-rank no-progress limit "
+          "before capacity closure");
+    }
     if (completedIterations == limits.iterationLimit) {
-      if (bestObjective) {
+      if (bestTemporaryObjective) {
         if (llvm::Error error = restoreCapturedRoutes(move, candidate, costs))
           return std::move(error);
         emitStatistics("temporary_capacity");
@@ -1133,6 +1270,8 @@ std::size_t SpatialPathFinderRouterScratch::retainedStorageBytes() const {
          retainedBytes(cutWorklist_) + retainedBytes(cutContributingNets_) +
          retainedBytes(cutForcedNets_) +
          retainedBytes(cutCertificateForcedNets_) +
+         retainedBytes(cutPayloadWidths_) + retainedBytes(cutMinimumClaims_) +
+         retainedBytes(rankTrendTransitions_) +
          retainedBytes(cutTouchedClaims_) +
          retainedBytes(cutNetClaimRefcounts_) +
          retainedBytes(cutClaimSelectionCounts_) +

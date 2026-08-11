@@ -17,6 +17,8 @@ namespace loom::pnr {
 struct SpatialPathFinderRoutingLimits final {
   std::uint64_t endpointExpansionLimit = 0;
   std::uint64_t iterationLimit = 0;
+  std::uint64_t noProgressIterationLimit = 0;
+  std::uint64_t noProgressTrendWindow = 0;
 };
 
 enum class SpatialRoutingClosureRequirement : std::uint8_t {
@@ -34,6 +36,7 @@ class SpatialPathFinderClosureFailure final
 public:
   enum class Kind {
     NonClosure,
+    NoProgress,
     FixedTerminalCapacityCut,
     SelectedCombinationalHandshakeCycle,
   };
@@ -122,6 +125,12 @@ public:
   std::uint64_t endpointExpansionCount() const {
     return netRouter_.endpointExpansionCount();
   }
+  std::uint64_t heuristicCacheHitCount() const {
+    return netRouter_.heuristicCacheHitCount();
+  }
+  std::uint64_t heuristicBuildCount() const {
+    return netRouter_.heuristicBuildCount();
+  }
   std::uint64_t negotiationIterationCount() const {
     return negotiationIterationCount_;
   }
@@ -189,6 +198,9 @@ private:
   std::vector<PnrIndex> cutContributingNets_;
   std::vector<PnrIndex> cutForcedNets_;
   std::vector<PnrIndex> cutCertificateForcedNets_;
+  std::vector<std::uint32_t> cutPayloadWidths_;
+  std::vector<std::uint64_t> cutMinimumClaims_;
+  std::vector<std::uint8_t> rankTrendTransitions_;
   std::vector<PnrIndex> cutTouchedClaims_;
   std::vector<PnrIndex> cutNetClaimRefcounts_;
   std::vector<PnrIndex> cutClaimSelectionCounts_;

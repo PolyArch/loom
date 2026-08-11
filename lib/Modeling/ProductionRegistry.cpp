@@ -2,6 +2,7 @@
 
 #include "Deployment/Deployment.h"
 #include "Deployment/DeploymentSpatialLaunchSelection.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelParameterBundle.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
@@ -9,6 +10,7 @@
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/DfgSimulation.h"
 #include "Evaluation/Models/FpaParameterContract.h"
+#include "Evaluation/Models/MappedRtlSimulation.h"
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
 #include "Evaluation/Models/SimulationComparison.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
@@ -31,6 +33,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -120,6 +123,29 @@ bool reaches(const CaseArtifactResolution &resolution,
   return entry && CaseArtifactResolution::reaches(*entry, dependency);
 }
 
+llvm::Expected<std::shared_ptr<const deployment::FinalizedDeployment>>
+importCachedDeployment(const ArtifactRootReference &reference,
+                       const ArtifactStore &artifacts,
+                       const BlobStore &blobs) {
+  const std::array<ArtifactRootReference, 1> references{reference};
+  return importCachedArtifact<deployment::FinalizedDeployment>(
+      artifacts, &blobs, references, [&] {
+        return deployment::importDeployment(reference, artifacts, blobs);
+      });
+}
+
+llvm::Expected<std::shared_ptr<const sim::ImportedSpatialSimulationInputs>>
+importCachedSpatialInputs(const ArtifactRootReference &workload,
+                          const ArtifactRootReference &runtimeInput,
+                          const ArtifactStore &artifacts) {
+  const std::array<ArtifactRootReference, 2> references{workload, runtimeInput};
+  return importCachedArtifact<sim::ImportedSpatialSimulationInputs>(
+      artifacts, nullptr, references, [&] {
+        return sim::importSpatialSimulationInputs(workload, runtimeInput,
+                                                  artifacts);
+      });
+}
+
 llvm::Error
 verifySystemWorkload(const EvaluationCase &,
                      const EvaluationSubjectBindings &bindings,
@@ -156,23 +182,22 @@ llvm::Error verifyMappedRtlWorkload(
     return invalid("Spatial runtime input does not reach its workload");
 
   auto deployment =
-      deployment::importDeployment(deployments.front(), artifacts, blobs);
+      importCachedDeployment(deployments.front(), artifacts, blobs);
   if (!deployment)
     return deployment.takeError();
-  auto inputs =
-      sim::importSpatialSimulationInputs(*workload, *runtimeInput, artifacts);
+  auto inputs = importCachedSpatialInputs(*workload, *runtimeInput, artifacts);
   if (!inputs)
     return inputs.takeError();
-  const sim::SpatialSimulationWorkload *spatial = inputs->workload.spatial();
+  const sim::SpatialSimulationWorkload *spatial = (*inputs)->workload.spatial();
   if (!spatial)
     return invalid("mapped RTL case requires a Spatial workload");
   auto selection = deployment::resolveDeploymentSpatialLaunchSelection(
-      *deployment, spatial->launchRef, spatial->denseCoordinates, artifacts);
+      **deployment, spatial->launchRef, spatial->denseCoordinates, artifacts);
   if (!selection)
     return selection.takeError();
   if (selection->hardwareImplementation != implementations.front())
     return invalid("Deployment selects a foreign HardwareImplementation");
-  if (selection->dataflow.artifact != inputs->dataflow.identity())
+  if (selection->dataflow.artifact != (*inputs)->dataflow.identity())
     return invalid("Deployment and Spatial workload select different "
                    "Dataflow owners");
   (void)evaluationCase;
@@ -190,22 +215,23 @@ resolveMappedRtlCycle(const EvaluationCase &evaluationCase,
       !evaluationCase.workload() || !evaluationCase.runtimeInput())
     return invalid("mapped RTL reference cycle requires total case inputs");
   auto deployment =
-      deployment::importDeployment(deployments.front(), artifacts, blobs);
+      importCachedDeployment(deployments.front(), artifacts, blobs);
   if (!deployment)
     return deployment.takeError();
-  auto inputs = sim::importSpatialSimulationInputs(
-      *evaluationCase.workload(), *evaluationCase.runtimeInput(), artifacts);
+  auto inputs = importCachedSpatialInputs(*evaluationCase.workload(),
+                                          *evaluationCase.runtimeInput(),
+                                          artifacts);
   if (!inputs)
     return inputs.takeError();
-  const sim::SpatialSimulationWorkload *spatial = inputs->workload.spatial();
+  const sim::SpatialSimulationWorkload *spatial = (*inputs)->workload.spatial();
   if (!spatial)
     return invalid("mapped RTL reference cycle requires a Spatial workload");
   auto selection = deployment::resolveDeploymentSpatialLaunchSelection(
-      *deployment, spatial->launchRef, spatial->denseCoordinates, artifacts);
+      **deployment, spatial->launchRef, spatial->denseCoordinates, artifacts);
   if (!selection)
     return selection.takeError();
   if (selection->hardwareImplementation != implementations.front() ||
-      selection->dataflow.artifact != inputs->dataflow.identity())
+      selection->dataflow.artifact != (*inputs)->dataflow.identity())
     return invalid("mapped RTL reference cycle has foreign selected owners");
   return SubjectTargetRef{kRole1, deployments.front(),
                           selection->spatialMapping};
@@ -461,12 +487,12 @@ const std::vector<ModelConditionCapability> &openRoadConditionCapabilities() {
 }
 
 llvm::ArrayRef<ModelConditionCapability> runtimeErrorConditions() {
-  static const std::array<ModelConditionCapability, 1> conditions = {{
+  static const std::array<ModelConditionCapability, 1> capabilities = {{
       {metricDescriptor(MetricKind::RuntimePredictionError)
            .requiredRequestConditionPatterns.front(),
        ConditionDisposition::Required},
   }};
-  return conditions;
+  return capabilities;
 }
 
 const ModelInputSlotDescriptor kFpaParameterInputs[] = {
@@ -640,7 +666,7 @@ llvm::ArrayRef<EvaluationModelDescriptor> builtinModelDescriptors() {
        {},
        {},
        kExecutionOutputs,
-       providerBuildConfig<BuiltinEvaluationModel::MappedRtlSimulator>(),
+       models::mappedRtlSimulationConfigViewContract(),
        kRtlPhenomena,
        EvaluationExecutionMethod::Simulation,
        {},

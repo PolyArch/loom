@@ -4,6 +4,7 @@
 #include "Common/Artifact.h"
 #include "Fabric/Identity/FabricRefs.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
@@ -16,6 +17,19 @@
 namespace loom::fabric {
 
 class FabricArtifactView;
+
+struct FabricBoundaryTagRewrite final {
+  llvm::APInt inputTag;
+  llvm::APInt outputTag;
+};
+
+/// The active payload of one boundary configuration. Absence at the codec
+/// boundary denotes Disabled. Empty active payload is legal only for a
+/// token-written or tag-removing boundary.
+struct FabricBoundaryConfiguration final {
+  std::optional<llvm::APInt> configuredTag;
+  std::vector<FabricBoundaryTagRewrite> tagRewrites;
+};
 
 enum class FabricSemanticFieldRelationKind : std::uint8_t {
   None,
@@ -71,6 +85,10 @@ llvm::Expected<CanonicalSemanticBytes> encodeFabricFifoConfiguration(
 llvm::Expected<CanonicalSemanticBytes> encodeSpatialSwitchConfiguration(
     const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
     llvm::ArrayRef<FabricPhysicalTraversalRef> selectedTraversals);
+
+llvm::Expected<CanonicalSemanticBytes> encodeFabricBoundaryConfiguration(
+    const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
+    std::optional<FabricBoundaryConfiguration> activeConfiguration);
 
 } // namespace loom::fabric
 

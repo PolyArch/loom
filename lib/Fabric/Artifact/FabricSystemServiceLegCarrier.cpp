@@ -332,8 +332,13 @@ llvm::Error loom::fabric::detail::validateSystemServiceLegCarrierAttachments(
       if (fabric.transportEndpointDirection(carrier) != expectedDirection)
         return invalid("service-leg carrier has the wrong direction");
       const auto dataPath = fabric.transportEndpointDataPath(carrier);
-      if (!dataPath || dataPath->payloadWidthBits < *requiredPayloadBits)
-        return invalid("service-leg carrier payload is too narrow");
+      if (!dataPath)
+        return invalid("service-leg carrier has no data path");
+      if (dataPath->payloadWidthBits < *requiredPayloadBits)
+        return invalid(llvm::Twine("service-leg carrier payload is too narrow: width ") +
+                       llvm::Twine(dataPath->payloadWidthBits) +
+                       " is below the required " +
+                       llvm::Twine(*requiredPayloadBits));
     }
     if (!actual.insert(attachmentKey(record)).second)
       return invalid("service-leg attachment relation repeats one key");

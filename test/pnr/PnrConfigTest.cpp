@@ -58,12 +58,12 @@ void projectionAndAdoptionAreDomainTyped() {
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               spatial.schemaDescriptorBytes().data()),
                           spatial.schemaDescriptorBytes().size()) ==
-              "loom.spatial_pnr.config.2.0",
+              "loom.spatial_pnr.config.4.0",
           "Spatial PnR view has the wrong schema descriptor");
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               system.schemaDescriptorBytes().data()),
                           system.schemaDescriptorBytes().size()) ==
-              "loom.system_pnr.config.2.0",
+              "loom.system_pnr.config.4.0",
           "System PnR view has the wrong schema descriptor");
   require(spatial.digest() != system.digest(),
           "domain-distinct views have the same digest");
@@ -125,6 +125,8 @@ void workBudgetIsDerivedFromTheSelectedPolicy() {
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
   config.dse.spatialPnr.search.initializer.seedAttemptCount = 7;
   config.dse.spatialPnr.search.routing.endpointExpansionLimit = 123;
+  config.dse.spatialPnr.search.routing.noProgressIterationLimit = 17;
+  config.dse.spatialPnr.search.routing.noProgressTrendWindow = 5;
   config.dse.spatialPnr.search.exactRepair.maxSolverCalls = 456;
   const loom::pnr::ResolvedPnrConfigView view =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(config));
@@ -141,6 +143,10 @@ void workBudgetIsDerivedFromTheSelectedPolicy() {
           "seed-attempt budget was not derived");
   require(find(loom::pnr::PnrWorkUnit::EndpointExpansion) == 123,
           "endpoint-expansion budget was not derived");
+  require(find(loom::pnr::PnrWorkUnit::ConsecutiveNoProgressIteration) == 17,
+          "no-progress budget was not derived");
+  require(find(loom::pnr::PnrWorkUnit::NoProgressTrendTransition) == 5,
+          "no-progress trend window was not derived");
   require(find(loom::pnr::PnrWorkUnit::ExactRepairSolverCall) == 456,
           "exact-repair budget was not derived");
 }

@@ -2,6 +2,8 @@
 
 #include "Support.h"
 
+#include "Hardware/RTL/MemoryServiceTransport.h"
+
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Fabric/IR/MemoryCapabilityDomains.h"
 #include "Fabric/IR/MemoryServiceContract.h"
@@ -128,16 +130,24 @@ MemoryServicePortPlan makePorts(mlir::OpBuilder &builder, std::string name,
       port("_request_mask", builder.getIntegerType(layout.maskWidthBits),
            requestDirection),
       port("_request_active_lanes_kind", bit, requestDirection),
-      port("_request_access_form", builder.getIntegerType(2), requestDirection),
+      port("_request_access_form",
+           builder.getIntegerType(portableMemoryAccessFormWidth),
+           requestDirection),
       port("_request_address_form", bit, requestDirection),
-      port("_request_element_width", builder.getIntegerType(64),
+      port("_request_element_width",
+           builder.getIntegerType(portableMemoryElementWidthFieldWidth),
            requestDirection),
-      port("_request_lane_count", builder.getIntegerType(64), requestDirection),
-      port("_request_address_lane_width", builder.getIntegerType(32),
+      port("_request_lane_count",
+           builder.getIntegerType(portableMemoryLaneCountFieldWidth),
            requestDirection),
-      port("_request_base_address", builder.getIntegerType(64),
+      port("_request_address_lane_width",
+           builder.getIntegerType(portableMemoryAddressLaneWidthFieldWidth),
            requestDirection),
-      port("_request_context", builder.getIntegerType(64), requestDirection),
+      port("_request_base_address",
+           builder.getIntegerType(portableMemoryBaseAddressFieldWidth),
+           requestDirection),
+      port("_request_context", builder.getIntegerType(portableMemoryContextFieldWidth),
+           requestDirection),
       port("_request_valid", bit, requestDirection),
       port("_request_ready", bit, opposite(requestDirection)),
       port("_response_data", builder.getIntegerType(layout.dataWidthBits),

@@ -1719,6 +1719,27 @@ void moduleDomainMembersFollowCanonicalTopology() {
   require(test, system.directDependencies().size() == 1,
           "builtin System did not publish one Module dependency");
 
+  FinalizedFabricRoot reimportedSystem = take(
+      test, loom::fabric::importEntireFabricRoot(system.reference(), store));
+  require(test,
+          reimportedSystem.reference().artifact ==
+                  system.reference().artifact &&
+              reimportedSystem.view().rootKind() ==
+                  loom::fabric::FabricRootKind::System,
+          "repeated strict import changed a cached System root");
+
+  TemporaryDirectory incompleteDirectory("incomplete cached System import");
+  ArtifactStore incompleteStore(incompleteDirectory.path());
+  ArtifactIdentity copiedIdentity =
+      take(test, incompleteStore.put(loom::fabric::fabricArtifactSchema,
+                                     system.canonicalBytes()));
+  require(test, copiedIdentity == system.reference().artifact,
+          "copying canonical System bytes changed identity");
+  expectRejected(
+      test,
+      loom::fabric::importEntireFabricRoot(system.reference(), incompleteStore),
+      "artifact_store_missing");
+
   FinalizedFabricRoot module =
       take(test, loom::fabric::importEntireFabricRoot(
                      system.directDependencies().front().root, store));

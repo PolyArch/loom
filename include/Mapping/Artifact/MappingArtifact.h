@@ -12,6 +12,7 @@
 #include "Mapping/IR/MappingSchema.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -538,6 +539,14 @@ private:
   ConfiguredHardwareProjectionView configuredHardware_;
   ::loom::fabric::FabricHandshakeSelection handshakeSelection_;
 };
+
+/// Resolves the exact Physical Tag assigned to one RouteTree node. Untagged
+/// nodes return the canonical one-bit zero sentinel; callers must inspect the
+/// Fabric data path before treating the value as a physical signal.
+llvm::Expected<llvm::APInt> resolveSpatialPhysicalTag(
+    const SpatialMappingView &mapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    std::uint64_t routeTreeOrdinal, std::uint64_t nodeOrdinal);
 
 class FinalizedSpatialMapping final {
 public:

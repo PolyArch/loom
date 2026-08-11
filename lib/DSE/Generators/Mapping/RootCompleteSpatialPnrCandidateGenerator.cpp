@@ -210,7 +210,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     ::loom::pnr::SpatialPnrGenerationOutcome outcome =
         ::loom::pnr::generateSpatialMappings({dataflow, tech->view(),
                                               fabric->view(), *config,
-                                              constraints->view(), store});
+                                              constraints->view(), store,
+                                              defaultCandidateWorkerCount()});
     const auto invocationWorkSummary = std::visit(
         [](const auto &value) {
           return spatialPnrCandidateGeneratorWorkSummary(value.accounting);

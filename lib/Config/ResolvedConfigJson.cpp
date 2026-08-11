@@ -140,6 +140,10 @@ llvm::json::Object pnrPolicyJson(const loom::ResolvedPnrPolicyConfig &policy) {
                  search.routing.endpointExpansionLimit},
                 {"negotiation_iteration_limit",
                  search.routing.negotiationIterationLimit},
+                {"no_progress_iteration_limit",
+                 search.routing.noProgressIterationLimit},
+                {"no_progress_trend_window",
+                 search.routing.noProgressTrendWindow},
                 {"negotiation_policy",
                  routingNegotiationJson(search.routing.negotiation)},
                 {"route_guidance_binding",
@@ -313,16 +317,22 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
           {"sha256", loom::formatExternalFileFingerprint(member.fingerprint)}});
     }
     llvm::json::Array entrypoints;
-    for (const std::string &entrypoint :
-         binding.powerGridLibraryEntrypoints)
+    for (const std::string &entrypoint : binding.powerGridLibraryEntrypoints)
       entrypoints.push_back(entrypoint);
-    evaluation.insert({"cadence_voltus_static_rail",
-                       llvm::json::Object{{"stable_provider_build_identity",
-                                           binding.stableProviderBuildIdentity},
-                                          {"power_grid_library_members",
-                                           std::move(members)},
-                                          {"power_grid_library_entrypoints",
-                                           std::move(entrypoints)}}});
+    evaluation.insert(
+        {"cadence_voltus_static_rail",
+         llvm::json::Object{
+             {"stable_provider_build_identity",
+              binding.stableProviderBuildIdentity},
+             {"power_grid_library_members", std::move(members)},
+             {"power_grid_library_entrypoints", std::move(entrypoints)}}});
+  }
+  if (config.evaluation.mappedRtlSimulator) {
+    const auto &binding = *config.evaluation.mappedRtlSimulator;
+    evaluation.insert(
+        {"mapped_rtl_simulator",
+         llvm::json::Object{{"stable_hdl_simulator_build_identity",
+                             binding.stableHdlSimulatorBuildIdentity}}});
   }
   return llvm::json::Object{
       {"hardware_target",

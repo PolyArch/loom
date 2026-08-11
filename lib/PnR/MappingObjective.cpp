@@ -144,6 +144,20 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
   llvm_unreachable("unknown Mapping violation kind");
 }
 
+llvm::Expected<bool> loom::pnr::spatialMappingViolationsAreZero(
+    const SpatialCandidateState &candidate) {
+  for (std::uint32_t ordinal = 0; ordinal != resolvedPnrViolationKindCount;
+       ++ordinal) {
+    auto value = spatialMappingViolationValue(
+        candidate, static_cast<ResolvedPnrViolationKind>(ordinal));
+    if (!value)
+      return value.takeError();
+    if (*value != 0)
+      return false;
+  }
+  return true;
+}
+
 std::uint64_t
 loom::pnr::spatialMappingMeasureValue(const SpatialCandidateState &candidate,
                                       MappingMeasureKind kind) {

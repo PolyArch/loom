@@ -41,6 +41,36 @@ std::vector<std::uint8_t> signalKey(const HandshakeSignalRef &signal) {
   return key;
 }
 
+struct KeyedHandshakeArc final {
+  std::vector<std::uint8_t> sourceKey;
+  std::vector<std::uint8_t> destinationKey;
+  HandshakeDependencyArc arc;
+};
+
+std::vector<KeyedHandshakeArc>
+keyHandshakeArcs(llvm::ArrayRef<HandshakeDependencyArc> arcs) {
+  std::vector<KeyedHandshakeArc> keyed;
+  keyed.reserve(arcs.size());
+  for (const HandshakeDependencyArc &arc : arcs)
+    keyed.push_back({signalKey(arc.source), signalKey(arc.destination), arc});
+  llvm::sort(keyed, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.sourceKey, lhs.destinationKey) <
+           std::tie(rhs.sourceKey, rhs.destinationKey);
+  });
+  return keyed;
+}
+
+void sortHandshakeArcs(std::vector<HandshakeDependencyArc> &arcs,
+                       bool deduplicate) {
+  std::vector<KeyedHandshakeArc> keyed = keyHandshakeArcs(arcs);
+  arcs.clear();
+  arcs.reserve(keyed.size());
+  for (KeyedHandshakeArc &entry : keyed)
+    arcs.push_back(std::move(entry.arc));
+  if (deduplicate)
+    arcs.erase(std::unique(arcs.begin(), arcs.end()), arcs.end());
+}
+
 std::vector<std::uint8_t> ownerKey(const FabricHandshakeOwner &owner) {
   std::vector<std::uint8_t> key{static_cast<std::uint8_t>(owner.kind())};
   std::visit(
@@ -1339,16 +1369,7 @@ deriveUnconditionalHandshakeDependencyArcs(const FabricArtifactView &view) {
       }
   }
 
-  auto key = [](const HandshakeDependencyArc &arc) {
-    std::vector<std::uint8_t> bytes = signalKey(arc.source);
-    const std::vector<std::uint8_t> destination = signalKey(arc.destination);
-    bytes.insert(bytes.end(), destination.begin(), destination.end());
-    return bytes;
-  };
-  llvm::sort(result, [&](const auto &lhs, const auto &rhs) {
-    return key(lhs) < key(rhs);
-  });
-  result.erase(std::unique(result.begin(), result.end()), result.end());
+  sortHandshakeArcs(result, true);
   return result;
 }
 
@@ -1383,8 +1404,6 @@ resolveSelectedHandshakeGraph(const FabricArtifactView &view,
   for (const FabricFuHandshakeSelection &selected : selection.fuCapabilities) {
     auto &local = ownerSelections[ownerKey(
         FabricHandshakeOwner::fu(selected.occurrence()))];
-    if (!local.fuCapabilities.empty())
-      return invalid("selected FU capability relation repeats one occurrence");
     local.fuCapabilities.push_back(selected);
   }
   std::set<std::vector<std::uint8_t>> memorySelections;
@@ -1447,6 +1466,22 @@ resolveSelectedHandshakeGraph(const FabricArtifactView &view,
               model.fragmentContributionOrdinals()[fragment.contributionOffset +
                                                    index]);
       }
+    } else if (model.owner().kind() ==
+               FabricHandshakeOwnerKind::FuOccurrence) {
+      for (const FabricFuHandshakeSelection &fuSelection :
+           selected->second.fuCapabilities) {
+        FabricHandshakeSelection local;
+        local.traversals = selected->second.traversals;
+        local.fuCapabilities.push_back(fuSelection);
+        auto active = resolveSelectedHandshake(model, local);
+        if (!active)
+          return active.takeError();
+        activeArcs.insert(activeArcs.end(), active->arcOrdinals().begin(),
+                          active->arcOrdinals().end());
+      }
+      llvm::sort(activeArcs);
+      activeArcs.erase(std::unique(activeArcs.begin(), activeArcs.end()),
+                       activeArcs.end());
     } else {
       static const FabricHandshakeSelection empty;
       auto active = resolveSelectedHandshake(
@@ -1569,13 +1604,7 @@ deriveSelectedHandshakeReachability(
         result.push_back({terminals[source], terminals[destination]});
   }
 
-  llvm::sort(result, [&](const auto &lhs, const auto &rhs) {
-    const auto lhsSource = signalKey(lhs.source);
-    const auto rhsSource = signalKey(rhs.source);
-    if (lhsSource != rhsSource)
-      return lhsSource < rhsSource;
-    return signalKey(lhs.destination) < signalKey(rhs.destination);
-  });
+  sortHandshakeArcs(result, false);
   return result;
 }
 

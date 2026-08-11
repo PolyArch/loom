@@ -70,6 +70,8 @@ using ResolvedRoutingNegotiationPolicy =
 struct ResolvedPnrRoutingPolicy final {
   std::uint64_t endpointExpansionLimit;
   std::uint64_t negotiationIterationLimit;
+  std::uint64_t noProgressIterationLimit;
+  std::uint64_t noProgressTrendWindow;
   ResolvedRoutingNegotiationPolicy negotiation;
   std::optional<std::uint32_t> routeGuidanceBinding;
 };

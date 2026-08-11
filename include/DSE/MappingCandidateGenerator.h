@@ -48,7 +48,7 @@ spatialPnrCandidateGeneratorWorkSummary(
 ::loom::pnr::SpatialPnrGenerationOutcome invokeSpatialPnrCandidateGenerator(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store);
+    const ArtifactStore &store, std::uint32_t candidateWorkerCount = 1);
 
 } // namespace loom::dse
 

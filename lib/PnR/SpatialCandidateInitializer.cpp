@@ -523,6 +523,9 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
                           return bindings.relationIsConstraint(relation);
                         });
   };
+  const auto preferenceOrigin = [&](PnrIndex baselineChoice) {
+    return attemptOrdinal == 0 ? PnrIndex{0} : baselineChoice;
+  };
 
   for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
        ++realization) {
@@ -578,9 +581,10 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
     std::uint64_t selectedCount = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t selectedDistance = std::numeric_limits<std::uint64_t>::max();
     bool selectedUnreachable = true;
+    const PnrIndex origin = preferenceOrigin(baselineChoice);
     for (std::size_t rank = 0; rank != choices.size(); ++rank) {
       const PnrIndex local = static_cast<PnrIndex>(
-          (static_cast<std::size_t>(baselineChoice) + rank) % choices.size());
+          (static_cast<std::size_t>(origin) + rank) % choices.size());
       auto key = contextKey(choices[local]);
       if (!key)
         return key.takeError();
@@ -715,9 +719,10 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
     auto selectedScore = std::make_tuple(
         std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(), choices.size());
+    const PnrIndex origin = preferenceOrigin(baselineChoice);
     for (std::size_t rank = 0; rank < choices.size(); ++rank) {
       const PnrIndex local = static_cast<PnrIndex>(
-          (static_cast<std::size_t>(baselineChoice) + rank) % choices.size());
+          (static_cast<std::size_t>(origin) + rank) % choices.size());
       const PnrIndex option = choices[local];
       if (option >= attachmentOptions.size())
         return initializerError(
@@ -867,8 +872,8 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
             attachmentOptions[option].endpoint >= hopDistances.size())
           return initializerError(
               "attachment preference boundary option is out of range");
-        const std::uint32_t distance =
-            hopDistances[attachmentOptions[option].endpoint];
+        const PnrIndex endpoint = attachmentOptions[option].endpoint;
+        const std::uint32_t distance = hopDistances[endpoint];
         if (distance == unreachable) {
           ++unreachableCounts[local];
           continue;
@@ -887,9 +892,10 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
         std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(), choices.size());
+    const PnrIndex origin = preferenceOrigin(baselineChoice);
     for (std::size_t rank = 0; rank < choices.size(); ++rank) {
       const PnrIndex local = static_cast<PnrIndex>(
-          (static_cast<std::size_t>(baselineChoice) + rank) % choices.size());
+          (static_cast<std::size_t>(origin) + rank) % choices.size());
       const PnrIndex option = choices[local];
       if (option >= attachmentOptions.size())
         return initializerError(

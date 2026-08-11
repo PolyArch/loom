@@ -154,6 +154,12 @@ BoundarySpec BoundarySpec::s2t(const PortType &dataInput,
       ::fabric::BoundaryDirection::S2t, {dataInput, tagInput}, {taggedOutput}};
 }
 
+BoundarySpec
+BoundarySpec::s2tWithConfiguredTag(const PortType &dataInput,
+                                   const PortType &taggedOutput) {
+  return {::fabric::BoundaryDirection::S2t, {dataInput}, {taggedOutput}};
+}
+
 BoundarySpec BoundarySpec::t2s(const PortType &taggedInput,
                                llvm::ArrayRef<PortType> outputs) {
   return {::fabric::BoundaryDirection::T2s,

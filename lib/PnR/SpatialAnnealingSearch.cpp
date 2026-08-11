@@ -1,7 +1,9 @@
 #include "PnR/SpatialAnnealingSearch.h"
 
 #include "Common/MappingDebugLog.h"
+#include "PnR/MappingObjective.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <limits>
@@ -14,6 +16,48 @@ using namespace loom;
 using namespace loom::pnr;
 
 namespace {
+
+enum class SpatialSearchScope : std::uint8_t {
+  Calibration,
+  Annealing,
+};
+
+enum class SpatialActionOutcome : std::uint8_t {
+  TransitionFailure,
+  Discarded,
+  Accepted,
+  Rejected,
+  SemanticNoop,
+  CachedInactive,
+};
+
+llvm::StringRef spelling(SpatialSearchScope scope) {
+  switch (scope) {
+  case SpatialSearchScope::Calibration:
+    return "calibration";
+  case SpatialSearchScope::Annealing:
+    return "annealing";
+  }
+  llvm_unreachable("unknown Spatial search scope");
+}
+
+llvm::StringRef spelling(SpatialActionOutcome outcome) {
+  switch (outcome) {
+  case SpatialActionOutcome::TransitionFailure:
+    return "transition_failure";
+  case SpatialActionOutcome::Discarded:
+    return "discarded";
+  case SpatialActionOutcome::Accepted:
+    return "accepted";
+  case SpatialActionOutcome::Rejected:
+    return "rejected";
+  case SpatialActionOutcome::SemanticNoop:
+    return "semantic_noop";
+  case SpatialActionOutcome::CachedInactive:
+    return "cached_inactive";
+  }
+  llvm_unreachable("unknown Spatial Action outcome");
+}
 
 llvm::Error searchError(const llvm::Twine &message) {
   return llvm::createStringError(
@@ -212,26 +256,26 @@ llvm::StringRef differenceSign(dse::ObjectiveDifferenceSign sign) {
 
 void emitSpatialActionEvent(
     loom::mapping_debug::Event event, const SpatialMappingAction &action,
-    llvm::StringRef scope, std::uint64_t seedAttemptOrdinal,
+    SpatialSearchScope scope, std::uint64_t seedAttemptOrdinal,
     std::uint64_t proposalSlot,
     std::optional<std::uint64_t> temperatureLevel,
     std::optional<std::uint64_t> temperature,
     const SpatialCandidateState *candidate = nullptr,
-    llvm::StringRef outcome = {},
+    std::optional<SpatialActionOutcome> outcome = std::nullopt,
     std::optional<dse::ObjectiveSignedDifference> difference = std::nullopt) {
   loom::mapping_debug::emit(
       loom::mapping_debug::Level::Decision,
       loom::mapping_debug::Stage::SpatialPnr, event,
       [&](llvm::json::Object &fields) {
-        fields["search_scope"] = scope;
+        fields["search_scope"] = spelling(scope);
         fields["seed_attempt"] = seedAttemptOrdinal;
         fields["proposal_slot"] = proposalSlot;
         if (temperatureLevel)
           fields["temperature_level"] = *temperatureLevel;
         if (temperature)
           fields["temperature"] = *temperature;
-        if (!outcome.empty())
-          fields["outcome"] = outcome;
+        if (outcome)
+          fields["outcome"] = spelling(*outcome);
         encodeSpatialAction(fields, action);
         if (candidate)
           encodeSpatialActionEndpoints(fields, *candidate, action);
@@ -280,14 +324,57 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
   positiveCalibrationDeltas_.clear();
   positiveCalibrationDeltas_.reserve(
       static_cast<std::size_t>(annealing.calibrationProposalCount));
+  inactiveActionKeys_.clear();
+
+  const auto actionIsInactive = [&](const SpatialActionKey &key) {
+    return llvm::binary_search(inactiveActionKeys_, key);
+  };
+  const auto rememberInactiveAction = [&](const SpatialActionKey &key) {
+    const auto insertion = llvm::lower_bound(inactiveActionKeys_, key);
+    if (insertion == inactiveActionKeys_.end() || !(*insertion == key))
+      inactiveActionKeys_.insert(insertion, key);
+  };
+  const auto reserveInactiveActionCapacity = [&]() -> llvm::Error {
+    const SpatialActionProposalDomain domain = actionDomain_.view();
+    std::size_t count = domain.realizationChoices.size();
+    if (domain.transportChoices.size() >
+        inactiveActionKeys_.max_size() - count)
+      return searchError("inactive Action cache capacity exceeds host size_t");
+    count += domain.transportChoices.size();
+    if (domain.resourceChoices.size() > inactiveActionKeys_.max_size() - count)
+      return searchError("inactive Action cache capacity exceeds host size_t");
+    count += domain.resourceChoices.size();
+    if (inactiveActionKeys_.capacity() < count)
+      inactiveActionKeys_.reserve(count);
+    return llvm::Error::success();
+  };
 
   SpatialAnnealingStatistics statistics;
+  auto exactClosure = spatialMappingViolationsAreZero(candidate);
+  if (!exactClosure)
+    return exactClosure.takeError();
+  if (*exactClosure) {
+    statistics.exactClosureReached = true;
+    loom::mapping_debug::emit(
+        loom::mapping_debug::Level::Summary,
+        loom::mapping_debug::Stage::SpatialPnr,
+        loom::mapping_debug::Event::Statistics,
+        [&](llvm::json::Object &fields) {
+          fields["operation"] = "annealing_termination";
+          fields["seed_attempt"] = seedAttemptOrdinal;
+          fields["reason"] = "exact_closure_on_entry";
+          fields["proposal_slots"] = 0;
+        });
+    return statistics;
+  }
   statistics.calibrationProposalSlots = annealing.calibrationProposalCount;
   DeterministicPnrRandomStream calibrationStream =
       DeterministicPnrRandomStream::create(policy.determinism.masterSeed,
                                            seedAttemptOrdinal,
                                            PnrRandomStreamPurpose::Calibration);
   if (llvm::Error error = actionDomain_.rebuild(candidate))
+    return std::move(error);
+  if (llvm::Error error = reserveInactiveActionCapacity())
     return std::move(error);
   for (std::uint64_t slot = 0; slot < annealing.calibrationProposalCount;
        ++slot) {
@@ -297,9 +384,23 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
       return action.takeError();
     if (!*action)
       continue;
+    const SpatialActionKey actionKey = spatialActionKey(**action);
     emitSpatialActionEvent(loom::mapping_debug::Event::ActionProposal,
-                           **action, "calibration", seedAttemptOrdinal, slot,
+                           **action, SpatialSearchScope::Calibration,
+                           seedAttemptOrdinal, slot,
                            std::nullopt, std::nullopt, &candidate);
+    if (actionIsInactive(actionKey)) {
+      if (llvm::Error error =
+              addCount(statistics.cachedInactiveActionCount, 1,
+                       "cached inactive Action"))
+        return std::move(error);
+      emitSpatialActionEvent(
+          loom::mapping_debug::Event::ActionOutcome, **action,
+          SpatialSearchScope::Calibration, seedAttemptOrdinal, slot,
+          std::nullopt, std::nullopt, nullptr,
+          SpatialActionOutcome::CachedInactive);
+      continue;
+    }
 
     auto probe = actionExecutor_.probe(candidate, **action);
     if (!probe) {
@@ -308,14 +409,17 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
         return consumed.takeError();
       if (!*consumed)
         return searchError("Action failure had no failure classification");
+      rememberInactiveAction(actionKey);
       if (llvm::Error error =
               addCount(statistics.calibrationTransitionFailureCount, 1,
                        "calibration transition failure"))
         return std::move(error);
       emitSpatialActionEvent(loom::mapping_debug::Event::ActionOutcome,
-                             **action, "calibration", seedAttemptOrdinal,
+                             **action, SpatialSearchScope::Calibration,
+                             seedAttemptOrdinal,
                              slot, std::nullopt, std::nullopt,
-                             nullptr, "transition_failure");
+                             nullptr,
+                             SpatialActionOutcome::TransitionFailure);
       continue;
     }
     if (llvm::Error error =
@@ -323,15 +427,31 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
       return std::move(error);
     const dse::ObjectiveSignedDifference difference =
         probe->energyDifference();
+    if (probe->isSemanticNoop()) {
+      rememberInactiveAction(actionKey);
+      if (llvm::Error error =
+              addCount(statistics.semanticNoopActionCount, 1,
+                       "semantic no-op Action"))
+        return std::move(error);
+      if (llvm::Error error = probe->discard())
+        return std::move(error);
+      emitSpatialActionEvent(
+          loom::mapping_debug::Event::ActionOutcome, **action,
+          SpatialSearchScope::Calibration, seedAttemptOrdinal, slot,
+          std::nullopt, std::nullopt, nullptr,
+          SpatialActionOutcome::SemanticNoop, difference);
+      continue;
+    }
     if (difference.sign ==
         dse::ObjectiveDifferenceSign::Positive)
       positiveCalibrationDeltas_.push_back(difference.magnitude);
     if (llvm::Error error = probe->discard())
       return std::move(error);
     emitSpatialActionEvent(loom::mapping_debug::Event::ActionOutcome,
-                           **action, "calibration", seedAttemptOrdinal, slot,
-                           std::nullopt, std::nullopt, nullptr, "discarded",
-                           difference);
+                           **action, SpatialSearchScope::Calibration,
+                           seedAttemptOrdinal, slot, std::nullopt,
+                           std::nullopt, nullptr,
+                           SpatialActionOutcome::Discarded, difference);
   }
 
   auto initialTemperature =
@@ -343,6 +463,26 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
       AnnealingTemperatureSchedule::create(annealing, *initialTemperature);
   if (!schedule)
     return schedule.takeError();
+
+  loom::mapping_debug::emit(
+      loom::mapping_debug::Level::Summary,
+      loom::mapping_debug::Stage::SpatialPnr,
+      loom::mapping_debug::Event::Statistics,
+      [&](llvm::json::Object &fields) {
+        fields["operation"] = "annealing_policy";
+        fields["seed_attempt"] = seedAttemptOrdinal;
+        fields["initial_temperature"] = statistics.initialTemperature;
+        fields["minimum_temperature"] = annealing.minimumTemperature;
+        fields["cooling_numerator"] = annealing.coolingRatio.numerator;
+        fields["cooling_denominator"] = annealing.coolingRatio.denominator;
+        fields["calibration_slots"] =
+            statistics.calibrationProposalSlots;
+        fields["calibration_probes"] = statistics.calibrationProbeCount;
+        fields["semantic_noop_actions"] =
+            statistics.semanticNoopActionCount;
+        fields["cached_inactive_actions"] =
+            statistics.cachedInactiveActionCount;
+      });
 
   DeterministicPnrRandomStream proposalStream =
       DeterministicPnrRandomStream::create(
@@ -356,6 +496,18 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
     if (llvm::Error error = actionDomain_.rebuild(candidate))
       return std::move(error);
     bool domainCurrent = true;
+    const std::uint64_t levelProbeBegin = statistics.annealingProbeCount;
+    const std::uint64_t levelAcceptedBegin = statistics.acceptedActionCount;
+    const std::uint64_t levelRejectedBegin = statistics.rejectedActionCount;
+    const std::uint64_t levelNoopBegin = statistics.semanticNoopActionCount;
+    const std::uint64_t levelCachedBegin =
+        statistics.cachedInactiveActionCount;
+    const std::uint64_t levelFailureBegin =
+        statistics.annealingTransitionFailureCount;
+    const std::uint64_t levelHeuristicHitBegin =
+        actionExecutor_.heuristicCacheHitCount();
+    const std::uint64_t levelHeuristicBuildBegin =
+        actionExecutor_.heuristicBuildCount();
     const std::uint64_t movableDecisionCount =
         actionDomain_.movableDecisionCount();
     auto proposalCount =
@@ -404,12 +556,25 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
         return action.takeError();
       if (!*action)
         continue;
+      const SpatialActionKey actionKey = spatialActionKey(**action);
       const std::uint64_t temperatureLevel =
           statistics.temperatureLevelCount - 1;
       emitSpatialActionEvent(loom::mapping_debug::Event::ActionProposal,
-                             **action, "annealing", seedAttemptOrdinal, slot,
-                             temperatureLevel, schedule->temperature(),
-                             &candidate);
+                             **action, SpatialSearchScope::Annealing,
+                             seedAttemptOrdinal, slot, temperatureLevel,
+                             schedule->temperature(), &candidate);
+      if (actionIsInactive(actionKey)) {
+        if (llvm::Error error =
+                addCount(statistics.cachedInactiveActionCount, 1,
+                         "cached inactive Action"))
+          return std::move(error);
+        emitSpatialActionEvent(
+            loom::mapping_debug::Event::ActionOutcome, **action,
+            SpatialSearchScope::Annealing, seedAttemptOrdinal, slot,
+            temperatureLevel, schedule->temperature(), nullptr,
+            SpatialActionOutcome::CachedInactive);
+        continue;
+      }
 
       auto probe = actionExecutor_.probe(candidate, **action);
       if (!probe) {
@@ -418,14 +583,17 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
           return consumed.takeError();
         if (!*consumed)
           return searchError("Action failure had no failure classification");
+        rememberInactiveAction(actionKey);
         if (llvm::Error error =
                 addCount(statistics.annealingTransitionFailureCount, 1,
                          "annealing transition failure"))
           return std::move(error);
         emitSpatialActionEvent(loom::mapping_debug::Event::ActionOutcome,
-                               **action, "annealing", seedAttemptOrdinal,
+                               **action, SpatialSearchScope::Annealing,
+                               seedAttemptOrdinal,
                                slot, temperatureLevel, schedule->temperature(),
-                               nullptr, "transition_failure");
+                               nullptr,
+                               SpatialActionOutcome::TransitionFailure);
         continue;
       }
       if (llvm::Error error =
@@ -433,6 +601,21 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
         return std::move(error);
       const dse::ObjectiveSignedDifference difference =
           probe->energyDifference();
+      if (probe->isSemanticNoop()) {
+        rememberInactiveAction(actionKey);
+        if (llvm::Error error =
+                addCount(statistics.semanticNoopActionCount, 1,
+                         "semantic no-op Action"))
+          return std::move(error);
+        if (llvm::Error error = probe->discard())
+          return std::move(error);
+        emitSpatialActionEvent(
+            loom::mapping_debug::Event::ActionOutcome, **action,
+            SpatialSearchScope::Annealing, seedAttemptOrdinal, slot,
+            temperatureLevel, schedule->temperature(), nullptr,
+            SpatialActionOutcome::SemanticNoop, difference);
+        continue;
+      }
       auto resolution =
           probe->resolve(schedule->temperature(), acceptanceStream);
       if (!resolution)
@@ -444,17 +627,87 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
               count, 1,
               resolution->accepted ? "accepted Action" : "rejected Action"))
         return std::move(error);
-      if (resolution->accepted)
+      if (resolution->accepted) {
         domainCurrent = false;
+        inactiveActionKeys_.clear();
+      }
       emitSpatialActionEvent(
-          loom::mapping_debug::Event::ActionOutcome, **action, "annealing",
-          seedAttemptOrdinal, slot, temperatureLevel, schedule->temperature(),
-          nullptr, resolution->accepted ? "accepted" : "rejected",
+          loom::mapping_debug::Event::ActionOutcome, **action,
+          SpatialSearchScope::Annealing, seedAttemptOrdinal, slot,
+          temperatureLevel, schedule->temperature(), nullptr,
+          resolution->accepted ? SpatialActionOutcome::Accepted
+                               : SpatialActionOutcome::Rejected,
           difference);
+      if (resolution->accepted) {
+        exactClosure = spatialMappingViolationsAreZero(candidate);
+        if (!exactClosure)
+          return exactClosure.takeError();
+        if (*exactClosure) {
+          statistics.exactClosureReached = true;
+          break;
+        }
+      }
     }
+    loom::mapping_debug::emit(
+        loom::mapping_debug::Level::Summary,
+        loom::mapping_debug::Stage::SpatialPnr,
+        loom::mapping_debug::Event::Statistics,
+        [&](llvm::json::Object &fields) {
+          llvm::json::Array violationValues;
+          for (std::uint32_t ordinal = 0;
+               ordinal != resolvedPnrViolationKindCount; ++ordinal) {
+            auto value = spatialMappingViolationValue(
+                candidate, static_cast<ResolvedPnrViolationKind>(ordinal));
+            if (!value) {
+              llvm::consumeError(value.takeError());
+              violationValues.push_back(nullptr);
+            } else {
+              violationValues.push_back(*value);
+            }
+          }
+          llvm::json::Array objectiveCodes;
+          for (std::uint64_t code : actionExecutor_.currentObjective().codes())
+            objectiveCodes.push_back(code);
+          const SpatialActionProposalDomain domain = actionDomain_.view();
+          fields["operation"] = "annealing_level";
+          fields["seed_attempt"] = seedAttemptOrdinal;
+          fields["temperature_level"] =
+              statistics.temperatureLevelCount - 1;
+          fields["temperature"] = schedule->temperature();
+          fields["proposal_slots"] = *proposalCount;
+          fields["probes"] =
+              statistics.annealingProbeCount - levelProbeBegin;
+          fields["accepted_actions"] =
+              statistics.acceptedActionCount - levelAcceptedBegin;
+          fields["rejected_actions"] =
+              statistics.rejectedActionCount - levelRejectedBegin;
+          fields["semantic_noop_actions"] =
+              statistics.semanticNoopActionCount - levelNoopBegin;
+          fields["cached_inactive_actions"] =
+              statistics.cachedInactiveActionCount - levelCachedBegin;
+          fields["transition_failures"] =
+              statistics.annealingTransitionFailureCount - levelFailureBegin;
+          fields["heuristic_cache_hits"] =
+              actionExecutor_.heuristicCacheHitCount() -
+              levelHeuristicHitBegin;
+          fields["heuristic_builds"] =
+              actionExecutor_.heuristicBuildCount() -
+              levelHeuristicBuildBegin;
+          fields["inactive_cache_size"] = inactiveActionKeys_.size();
+          fields["movable_decisions"] = movableDecisionCount;
+          fields["realization_choices"] = domain.realizationChoices.size();
+          fields["routing_choices"] = domain.transportChoices.size();
+          fields["resource_choices"] = domain.resourceChoices.size();
+          fields["violation_values"] = std::move(violationValues);
+          fields["objective_codes"] = std::move(objectiveCodes);
+          fields["exact_closure"] = statistics.exactClosureReached;
+        });
+    if (statistics.exactClosureReached)
+      break;
   } while (schedule->advanceAfterCompletedLevel());
 
-  if (statistics.minimumTemperatureLevelCount != 1)
+  if (!statistics.exactClosureReached &&
+      statistics.minimumTemperatureLevelCount != 1)
     return searchError(
         "annealing schedule did not execute one minimum-temperature level");
   if (llvm::Error error = candidate.verify())
@@ -468,5 +721,6 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
 std::size_t SpatialAnnealingSearchScratch::retainedStorageBytes() const {
   return actionDomain_.retainedStorageBytes() +
          actionExecutor_.retainedStorageBytes() +
-         retainedBytes(positiveCalibrationDeltas_);
+         retainedBytes(positiveCalibrationDeltas_) +
+         retainedBytes(inactiveActionKeys_);
 }

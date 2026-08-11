@@ -31,8 +31,8 @@ struct ResolvedPnrConfigViewAccess final {
 
 namespace {
 
-constexpr llvm::StringLiteral spatialDescriptor = "loom.spatial_pnr.config.2.0";
-constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.2.0";
+constexpr llvm::StringLiteral spatialDescriptor = "loom.spatial_pnr.config.4.0";
+constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.4.0";
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -179,6 +179,8 @@ void encodePolicy(Encoder &encoder, const ResolvedPnrPolicyConfig &policy) {
   encoder.u64(search.actionProposal.resourceAllocationWeight);
   encoder.u64(search.routing.endpointExpansionLimit);
   encoder.u64(search.routing.negotiationIterationLimit);
+  encoder.u64(search.routing.noProgressIterationLimit);
+  encoder.u64(search.routing.noProgressTrendWindow);
   encodeNegotiation(encoder, search.routing.negotiation);
   encoder.u32(search.routing.routeGuidanceBinding ? 1 : 0);
   if (search.routing.routeGuidanceBinding)
@@ -371,6 +373,8 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
   auto resource = decoder.u64();
   auto endpointLimit = decoder.u64();
   auto negotiationLimit = decoder.u64();
+  auto noProgressLimit = decoder.u64();
+  auto noProgressTrendWindow = decoder.u64();
   if (!seeds)
     return seeds.takeError();
   if (!assignments)
@@ -385,6 +389,10 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
     return endpointLimit.takeError();
   if (!negotiationLimit)
     return negotiationLimit.takeError();
+  if (!noProgressLimit)
+    return noProgressLimit.takeError();
+  if (!noProgressTrendWindow)
+    return noProgressTrendWindow.takeError();
   auto negotiation = decodeNegotiation(decoder);
   if (!negotiation)
     return negotiation.takeError();
@@ -484,6 +492,7 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
       {ResolvedPnrInitializerPolicy{*seeds, *assignments},
        ResolvedPnrActionProposalPolicy{*realization, *transport, *resource},
        ResolvedPnrRoutingPolicy{*endpointLimit, *negotiationLimit,
+                                *noProgressLimit, *noProgressTrendWindow,
                                 std::move(*negotiation), guidance},
        ResolvedPnrAnnealingPolicy{*calibration, *quantile, *acceptance,
                                   *fallback, *minimum, *cooling, *levelBase,
@@ -851,6 +860,10 @@ deriveDeterministicWorkBudgetView(const ResolvedPnrConfigView &view) {
       {PnrWorkUnit::EndpointExpansion, search.routing.endpointExpansionLimit},
       {PnrWorkUnit::NegotiationIteration,
        search.routing.negotiationIterationLimit},
+      {PnrWorkUnit::ConsecutiveNoProgressIteration,
+       search.routing.noProgressIterationLimit},
+      {PnrWorkUnit::NoProgressTrendTransition,
+       search.routing.noProgressTrendWindow},
       {PnrWorkUnit::CalibrationProposal,
        search.annealing.calibrationProposalCount},
       {PnrWorkUnit::ProposalPerLevelBase,

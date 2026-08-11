@@ -927,6 +927,57 @@ SpatialMoveTransaction::touchedRouteTraversals() const {
   return scratch_->touchedTraversals_;
 }
 
+bool SpatialMoveTransaction::hasSemanticChange() const {
+  assert(scratch_ && closed_ && "move semantic comparison requires close");
+  for (const SpatialCandidateScratch::DecisionDelta &delta :
+       scratch_->decisionDeltas_) {
+    switch (delta.kind) {
+    case SpatialCandidateScratch::DecisionKind::ComputeBinding: {
+      const auto current = state_->computeBindings_[delta.index];
+      if (current.placement != delta.oldValue0 ||
+          current.instructionContext != delta.oldValue1)
+        return true;
+      break;
+    }
+    case SpatialCandidateScratch::DecisionKind::MemoryBinding:
+      if (state_->memoryBindings_[delta.index].placement != delta.oldValue0)
+        return true;
+      break;
+    case SpatialCandidateScratch::DecisionKind::PortAttachment:
+      if (state_->portAttachments_[delta.index] != delta.oldValue0)
+        return true;
+      break;
+    case SpatialCandidateScratch::DecisionKind::GraphBoundaryAttachment:
+      if (state_->graphBoundaryAttachments_[delta.index] != delta.oldValue0)
+        return true;
+      break;
+    case SpatialCandidateScratch::DecisionKind::MemoryOperationPlan:
+      if (state_->memoryOperationPlans_[delta.index] != delta.oldValue0)
+        return true;
+      break;
+    case SpatialCandidateScratch::DecisionKind::LogicalMemoryBinding: {
+      const auto current = state_->logicalMemoryBindings_[delta.index];
+      if (current.target != delta.oldValue0 ||
+          current.physicalOffsetBytes != delta.oldWideValue)
+        return true;
+      break;
+    }
+    case SpatialCandidateScratch::DecisionKind::MemoryUseDispatch:
+      if (state_->memoryUseDispatches_[delta.index] != delta.oldValue0)
+        return true;
+      break;
+    case SpatialCandidateScratch::DecisionKind::MemoryExposure:
+      if (state_->memoryExposureSelections_[delta.index] != delta.oldValue0)
+        return true;
+      break;
+    }
+  }
+  for (PnrIndex logicalNet : scratch_->touchedRoutes_)
+    if (scratch_->routeTransactions_[logicalNet]->hasSemanticChange())
+      return true;
+  return false;
+}
+
 llvm::Error SpatialMoveTransaction::commit() {
   if (!scratch_)
     return candidateError("move is no longer active");

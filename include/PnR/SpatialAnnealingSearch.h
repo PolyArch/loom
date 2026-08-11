@@ -15,6 +15,7 @@
 namespace loom::pnr {
 
 struct SpatialAnnealingStatistics final {
+  bool exactClosureReached = false;
   std::uint64_t initialTemperature = 0;
   std::uint64_t calibrationProposalSlots = 0;
   std::uint64_t calibrationProbeCount = 0;
@@ -27,13 +28,16 @@ struct SpatialAnnealingStatistics final {
   std::uint64_t annealingProbeCount = 0;
   std::uint64_t acceptedActionCount = 0;
   std::uint64_t rejectedActionCount = 0;
+  std::uint64_t semanticNoopActionCount = 0;
+  std::uint64_t cachedInactiveActionCount = 0;
   std::uint64_t annealingTransitionFailureCount = 0;
   std::uint64_t endpointExpansions = 0;
   std::uint64_t negotiationIterations = 0;
 
   friend bool operator==(const SpatialAnnealingStatistics &lhs,
                          const SpatialAnnealingStatistics &rhs) {
-    return lhs.initialTemperature == rhs.initialTemperature &&
+    return lhs.exactClosureReached == rhs.exactClosureReached &&
+           lhs.initialTemperature == rhs.initialTemperature &&
            lhs.calibrationProposalSlots == rhs.calibrationProposalSlots &&
            lhs.calibrationProbeCount == rhs.calibrationProbeCount &&
            lhs.calibrationTransitionFailureCount ==
@@ -48,6 +52,8 @@ struct SpatialAnnealingStatistics final {
            lhs.annealingProbeCount == rhs.annealingProbeCount &&
            lhs.acceptedActionCount == rhs.acceptedActionCount &&
            lhs.rejectedActionCount == rhs.rejectedActionCount &&
+           lhs.semanticNoopActionCount == rhs.semanticNoopActionCount &&
+           lhs.cachedInactiveActionCount == rhs.cachedInactiveActionCount &&
            lhs.annealingTransitionFailureCount ==
                rhs.annealingTransitionFailureCount &&
            lhs.endpointExpansions == rhs.endpointExpansions &&
@@ -71,6 +77,7 @@ private:
   SpatialActionDomainScratch actionDomain_;
   SpatialActionExecutorScratch actionExecutor_;
   std::vector<dse::ObjectiveWideValue> positiveCalibrationDeltas_;
+  std::vector<SpatialActionKey> inactiveActionKeys_;
 };
 
 } // namespace loom::pnr

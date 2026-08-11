@@ -313,8 +313,13 @@ WorkflowProblem buildProblem(
     const ArtifactRootReference &spatialMapping, const ArtifactStore &store,
     bool admitTemporary = true) {
   ResolvedConfig resolved = base;
-  resolved.dse.systemPnr.search.routing.negotiationIterationLimit =
-      iterationLimit;
+  auto &routing = resolved.dse.systemPnr.search.routing;
+  routing.negotiationIterationLimit = iterationLimit;
+  routing.noProgressIterationLimit =
+      std::min(routing.noProgressIterationLimit, iterationLimit);
+  routing.noProgressTrendWindow =
+      std::min(routing.noProgressTrendWindow,
+               routing.noProgressIterationLimit);
   resolved.dse.systemPnr.temporaryViolations.admitted.clear();
   if (admitTemporary)
     resolved.dse.systemPnr.temporaryViolations.admitted = {

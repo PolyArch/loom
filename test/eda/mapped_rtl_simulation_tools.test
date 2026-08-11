@@ -1,0 +1,2 @@
+# REQUIRES: verilator
+# RUN: timeout 90s %loom-mapped-rtl-simulation-test --real-verilator

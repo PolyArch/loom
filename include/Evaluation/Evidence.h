@@ -17,6 +17,10 @@
 
 namespace loom::evaluation {
 
+namespace detail {
+class EvaluationEvidenceBuilder;
+}
+
 enum class OutcomeReason : std::uint8_t {
   RuntimeCapabilityUnavailable,
   ToolFailure,
@@ -193,6 +197,8 @@ private:
   ArtifactRootReference requestRef_;
   std::vector<ModelOutputBinding> outputBindings_;
   EvaluationEvidenceOutcome outcome_;
+
+  friend class detail::EvaluationEvidenceBuilder;
 };
 
 CanonicalSemanticBytes

@@ -4,9 +4,11 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Evaluation/Evidence.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/ModelDescriptor.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <system_error>
@@ -42,6 +44,31 @@ namespace {
 
 using detail::WireReader;
 using detail::WireWriter;
+
+llvm::Expected<std::shared_ptr<const evaluation::EvaluationRequest>>
+importCachedRequest(
+    const ArtifactRootReference &reference,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  const std::array<ArtifactRootReference, 1> references{reference};
+  return evaluation::importCachedArtifact<evaluation::EvaluationRequest>(
+      store, &blobs, references, [&]() {
+        return evaluation::importEvaluationRequest(reference, resolution,
+                                                   store, blobs);
+      });
+}
+
+llvm::Expected<std::shared_ptr<const ImportedSpatialSimulationInputs>>
+importCachedSpatialInputs(const ArtifactRootReference &workload,
+                          const ArtifactRootReference &runtimeInput,
+                          const ArtifactStore &store) {
+  const std::array<ArtifactRootReference, 2> references{workload,
+                                                       runtimeInput};
+  return evaluation::importCachedArtifact<ImportedSpatialSimulationInputs>(
+      store, nullptr, references, [&]() {
+        return importSpatialSimulationInputs(workload, runtimeInput, store);
+      });
+}
 
 llvm::Error validateProgress(const SpatialProgressObservations &progress,
                              const ExecutionTerminal &terminal) {
@@ -225,7 +252,7 @@ llvm::Error validateExecution(const SpatialSimulationExecution &execution,
       return error;
   }
   const evaluation::FindingTerminalWitnessContext terminalContext(
-      context.request, *context.resolution, *context.artifactStore,
+      *context.request, *context.resolution, *context.artifactStore,
       *context.blobStore);
   if (llvm::Error error = validateTerminal(execution.terminal, terminalContext))
     return error;
@@ -243,7 +270,7 @@ encodeExecution(const SpatialSimulationExecution &execution,
       encodeArtifactRootReference(execution.request);
   WireWriter writer;
   const evaluation::FindingTerminalWitnessContext terminalContext(
-      context.request, *context.resolution, *context.artifactStore,
+      *context.request, *context.resolution, *context.artifactStore,
       *context.blobStore);
   if (llvm::Error error = detail::encodeExecutionTerminal(
           writer, execution.terminal, terminalContext))
@@ -319,7 +346,7 @@ decodeExecution(llvm::ArrayRef<std::uint8_t> bytes,
     return context.takeError();
   WireReader reader(bytes.drop_front(requestPrefix->byteCount));
   const evaluation::FindingTerminalWitnessContext terminalContext(
-      context->request, *context->resolution, *context->artifactStore,
+      *context->request, *context->resolution, *context->artifactStore,
       *context->blobStore);
   auto terminal = decodeTerminal(reader, terminalContext);
   if (!terminal)
@@ -401,25 +428,25 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
     const ArtifactRootReference &requestReference,
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &store, const BlobStore &blobs) {
-  auto request = evaluation::importEvaluationRequest(requestReference,
-                                                     resolution, store, blobs);
+  auto request = importCachedRequest(requestReference, resolution, store,
+                                     blobs);
   if (!request)
     return request.takeError();
-  auto stoppedCardinality = resolveSimulationOutputCardinality(*request);
+  auto stoppedCardinality = resolveSimulationOutputCardinality(**request);
   if (!stoppedCardinality)
     return stoppedCardinality.takeError();
-  if (!request->workload() || !request->runtimeInput())
+  if (!(*request)->workload() || !(*request)->runtimeInput())
     return invalid("simulation execution: Request workload inputs are not "
                    "total");
-  auto inputs = importSpatialSimulationInputs(*request->workload(),
-                                              *request->runtimeInput(), store);
+  auto inputs = importCachedSpatialInputs(*(*request)->workload(),
+                                          *(*request)->runtimeInput(), store);
   if (!inputs)
     return inputs.takeError();
-  auto view = inputs->dataflow.view();
+  auto view = (*inputs)->dataflow.view();
   if (!view)
     return view.takeError();
   auto launch =
-      resolveLaunchContext(*view, inputs->workload.spatial()->launchRef);
+      resolveLaunchContext(*view, (*inputs)->workload.spatial()->launchRef);
   if (!launch)
     return launch.takeError();
   return SpatialExecutionContext{std::move(*request),

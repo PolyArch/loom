@@ -610,45 +610,51 @@ llvm::Expected<PortType> channelPort(std::uint32_t width,
 
 namespace {
 
-llvm::Expected<MemorySpec> makeLocalMemory(LocalMemoryParameters parameters,
-                                           CatalogMemoryDomain domain) {
-  if (parameters.capacityBytes == 0)
+llvm::Expected<MemorySpec>
+makeMemoryEngine(MemoryInterfaceParameters interface,
+                 std::optional<TemporalMemoryParameters> temporal,
+                 std::optional<std::uint64_t> localCapacityBytes,
+                 bool managerEndpoint, CatalogMemoryDomain domain) {
+  if (!localCapacityBytes && !managerEndpoint)
+    return invalid("memory engine requires a dispatch target");
+  if (localCapacityBytes && *localCapacityBytes == 0)
     return invalid("local memory capacity must be positive");
-  if (parameters.capacityBytes > (std::uint64_t(1) << 32))
+  if (localCapacityBytes &&
+      *localCapacityBytes > (std::uint64_t(1) << 32))
     return invalid("local memory exceeds its 32-bit address capacity");
   const std::uint32_t requiredDataWidth =
       domain == CatalogMemoryDomain::General64 ? 64 : 32;
-  if (parameters.interface.accessDomain.dataPayloadBits < requiredDataWidth)
-    return invalid("local memory data endpoint cannot carry its scalar floor");
-  if (parameters.interface.scalarAddressPayloadBits < 32)
-    return invalid("local memory scalar address endpoint is narrower than i32");
-  if (parameters.interface.accessDomain.maskPayloadBits == 0)
-    return invalid("local memory mask endpoint must be positive");
-  if (parameters.interface.serviceBeatWidthBits == 0)
-    return invalid("local memory service beat width must be positive");
-  if (parameters.interface.accessDomain.indexedAddressPayloadBits &&
-      *parameters.interface.accessDomain.indexedAddressPayloadBits == 0)
-    return invalid("local memory indexed address endpoint must be positive");
+  if (interface.accessDomain.dataPayloadBits < requiredDataWidth)
+    return invalid("memory engine data endpoint cannot carry its scalar floor");
+  if (interface.scalarAddressPayloadBits < 32)
+    return invalid("memory engine scalar address endpoint is narrower than i32");
+  if (interface.accessDomain.maskPayloadBits == 0)
+    return invalid("memory engine mask endpoint must be positive");
+  if (interface.serviceBeatWidthBits == 0)
+    return invalid("memory engine service beat width must be positive");
+  if (interface.accessDomain.indexedAddressPayloadBits &&
+      *interface.accessDomain.indexedAddressPayloadBits == 0)
+    return invalid("memory engine indexed address endpoint must be positive");
   if (domain == CatalogMemoryDomain::Hybrid32 &&
-      parameters.interface.accessDomain.indexedAddressPayloadBits)
+      interface.accessDomain.indexedAddressPayloadBits)
     return invalid("Hybrid32 memory has no indexed address endpoint");
   std::optional<std::uint32_t> tagWidth;
   std::optional<std::uint64_t> residentContexts;
   ::fabric::Schedule schedule = ::fabric::Schedule::Spatial;
-  if (parameters.temporal) {
-    if (parameters.temporal->tagWidth == 0)
-      return invalid("temporal local memory requires a positive tag width");
-    if (parameters.temporal->residentContextCount == 0)
+  if (temporal) {
+    if (temporal->tagWidth == 0)
+      return invalid("temporal memory engine requires a positive tag width");
+    if (temporal->residentContextCount == 0)
       return invalid(
-          "temporal local memory requires positive resident contexts");
+          "temporal memory engine requires positive resident contexts");
     schedule = ::fabric::Schedule::Temporal;
-    tagWidth = parameters.temporal->tagWidth;
-    residentContexts = parameters.temporal->residentContextCount;
+    tagWidth = temporal->tagWidth;
+    residentContexts = temporal->residentContextCount;
   }
 
   std::vector<PortType> inputs;
   std::vector<std::uint32_t> managerOrdinals;
-  if (parameters.managerEndpoint) {
+  if (managerEndpoint) {
     auto byte = PortType::bits(8);
     if (!byte)
       return byte.takeError();
@@ -658,7 +664,7 @@ llvm::Expected<MemorySpec> makeLocalMemory(LocalMemoryParameters parameters,
     inputs.push_back(std::move(*manager));
     managerOrdinals.push_back(0);
   }
-  const MemoryEndpointLayout layout = endpointLayout(parameters.interface);
+  const MemoryEndpointLayout layout = endpointLayout(interface);
   for (std::uint32_t width : layout.inputWidths) {
     auto type = channelPort(width, tagWidth);
     if (!type)
@@ -678,19 +684,23 @@ llvm::Expected<MemorySpec> makeLocalMemory(LocalMemoryParameters parameters,
   std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts;
   for (bool reads : {true, false}) {
     auto port = operationPort(context, schedule, endpoints, layout, reads,
-                              domain, parameters.interface.accessDomain);
+                              domain, interface.accessDomain);
     if (!port)
       return port.takeError();
     operationPorts.push_back(std::move(*port));
   }
-  auto serviceContract = localServiceContract(context, parameters.capacityBytes,
-                                              domain, parameters.interface);
-  if (!serviceContract)
-    return serviceContract.takeError();
-  auto service = LocalMemoryServiceSpec::create(parameters.capacityBytes,
-                                                *serviceContract);
-  if (!service)
-    return service.takeError();
+  std::optional<LocalMemoryServiceSpec> service;
+  if (localCapacityBytes) {
+    auto serviceContract = localServiceContract(
+        context, *localCapacityBytes, domain, interface);
+    if (!serviceContract)
+      return serviceContract.takeError();
+    auto local =
+        LocalMemoryServiceSpec::create(*localCapacityBytes, *serviceContract);
+    if (!local)
+      return local.takeError();
+    service = std::move(*local);
+  }
 
   ::fabric::MemoryConnectivityDeclaration connectivityDeclaration;
   for (std::size_t port = 0; port != operationPorts.size(); ++port) {
@@ -698,9 +708,10 @@ llvm::Expected<MemorySpec> makeLocalMemory(LocalMemoryParameters parameters,
     dispatch.capabilityTargetDomains.resize(
         operationPorts[port].capabilityAlternatives.size());
     for (auto &targets : dispatch.capabilityTargetDomains) {
-      targets.push_back(::fabric::MemoryDispatchTarget(
-          std::in_place_type<::fabric::LocalMemoryDispatchTarget>));
-      if (parameters.managerEndpoint)
+      if (localCapacityBytes)
+        targets.push_back(::fabric::MemoryDispatchTarget(
+            std::in_place_type<::fabric::LocalMemoryDispatchTarget>));
+      if (managerEndpoint)
         targets.push_back(::fabric::MemoryDispatchTarget(
             std::in_place_type<::fabric::ManagerMemoryDispatchTarget>,
             ::fabric::ManagerMemoryDispatchTarget{0}));
@@ -720,7 +731,22 @@ llvm::Expected<MemorySpec> makeLocalMemory(LocalMemoryParameters parameters,
     engine = MemoryEngineSpec::spatial(std::move(operationPorts));
   return MemorySpec::create(std::move(inputs), std::move(outputs),
                             std::move(managerOrdinals), {}, std::move(engine),
-                            std::move(*service), std::move(*connectivity));
+                            std::move(service), std::move(*connectivity));
+}
+
+llvm::Expected<MemorySpec> makeLocalMemory(LocalMemoryParameters parameters,
+                                           CatalogMemoryDomain domain) {
+  return makeMemoryEngine(
+      std::move(parameters.interface), std::move(parameters.temporal),
+      parameters.capacityBytes, parameters.managerEndpoint, domain);
+}
+
+llvm::Expected<MemorySpec>
+makeManagerMemory(ManagerMemoryParameters parameters,
+                  CatalogMemoryDomain domain) {
+  return makeMemoryEngine(std::move(parameters.interface),
+                          std::move(parameters.temporal), std::nullopt, true,
+                          domain);
 }
 
 llvm::Expected<SystemMemorySpec>
@@ -835,6 +861,18 @@ makeHybrid32LocalMemory(LocalMemoryParameters parameters) {
 llvm::Expected<MemorySpec>
 makeGeneral64LocalMemory(LocalMemoryParameters parameters) {
   return makeLocalMemory(std::move(parameters), CatalogMemoryDomain::General64);
+}
+
+llvm::Expected<MemorySpec>
+makeHybrid32ManagerMemory(ManagerMemoryParameters parameters) {
+  return makeManagerMemory(std::move(parameters),
+                           CatalogMemoryDomain::Hybrid32);
+}
+
+llvm::Expected<MemorySpec>
+makeGeneral64ManagerMemory(ManagerMemoryParameters parameters) {
+  return makeManagerMemory(std::move(parameters),
+                           CatalogMemoryDomain::General64);
 }
 
 llvm::Expected<SystemMemorySpec>

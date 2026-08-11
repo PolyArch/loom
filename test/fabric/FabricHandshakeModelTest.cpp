@@ -1126,10 +1126,14 @@ void fuSelectionUsesExactActorPortCorrespondence() {
                   node(test, *model, {input1, HandshakeSignalKind::Ready})),
           "selected sync inputs are not one atomic rendezvous");
   require(test,
-          hasPath(*model, activation,
-                  node(test, *model, {output0, HandshakeSignalKind::Ready}),
-                  node(test, *model, {output1, HandshakeSignalKind::Valid})),
-          "selected sync results are not one atomic publication");
+          !hasPath(*model, activation,
+                   node(test, *model, {output0, HandshakeSignalKind::Ready}),
+                   node(test, *model, {output1, HandshakeSignalKind::Valid})) &&
+              !hasPath(
+                  *model, activation,
+                  node(test, *model, {output1, HandshakeSignalKind::Ready}),
+                  node(test, *model, {output0, HandshakeSignalKind::Valid})),
+          "registered sync result valid depends on peer backpressure");
   require(test,
           !hasPath(*model, activation,
                    node(test, *model, {input0, HandshakeSignalKind::Valid}),

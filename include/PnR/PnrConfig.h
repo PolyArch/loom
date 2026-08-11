@@ -26,6 +26,8 @@ enum class PnrWorkUnit : std::uint32_t {
   AssignmentAttemptPerSeed,
   EndpointExpansion,
   NegotiationIteration,
+  ConsecutiveNoProgressIteration,
+  NoProgressTrendTransition,
   CalibrationProposal,
   ProposalPerLevelBase,
   ProposalPerMovableDecision,

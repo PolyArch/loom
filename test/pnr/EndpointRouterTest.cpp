@@ -95,7 +95,8 @@ EndpointRouteSearchRequest
 request(const Fixture &fixture, llvm::ArrayRef<PnrIndex> sources,
         llvm::ArrayRef<PnrIndex> sourceGroups, llvm::ArrayRef<PnrIndex> targets,
         llvm::ArrayRef<PnrIndex> targetRanks, std::uint32_t payloadWidth,
-        std::uint64_t expansionLimit) {
+        std::uint64_t expansionLimit,
+        std::optional<std::uint64_t> lowerBoundCostRevision = std::nullopt) {
   return {sources,
           sourceGroups,
           targets,
@@ -105,7 +106,8 @@ request(const Fixture &fixture, llvm::ArrayRef<PnrIndex> sources,
           payloadWidth,
           0,
           expansionLimit,
-          {}};
+          {},
+          lowerBoundCostRevision};
 }
 
 void arbitraryTopologyAndCanonicalTieBreak() {
@@ -200,11 +202,49 @@ void checkedCostAndAdmissibility() {
                 EndpointRouteSearchFailureKind::ArithmeticOverflow);
 }
 
+void exactHeuristicCacheInvalidation() {
+  Fixture fixture;
+  EndpointRouteSearchScratch scratch;
+  requireSuccess(__func__, scratch.prepare(fixture.graph()));
+  const std::array<PnrIndex, 1> sources{{0}};
+  const std::array<PnrIndex, 1> sourceGroups{{Fixture::noReplicationGroup}};
+  const std::array<PnrIndex, 1> targets{{4}};
+  const std::array<PnrIndex, 1> targetRanks{{0}};
+  const std::array<PnrIndex, 3> initialPath{{1, 3, 5}};
+
+  auto cachedRequest = request(fixture, sources, sourceGroups, targets,
+                               targetRanks, 1, 64, 0);
+  requirePath(__func__, take(__func__, scratch.search(cachedRequest)), 0, 4, 3,
+              initialPath);
+  if (scratch.heuristicBuildCount() != 1 ||
+      scratch.heuristicCacheHitCount() != 0)
+    fail(__func__, "cold exact heuristic query did not build once");
+  const std::size_t warmStorage = scratch.retainedStorageBytes();
+  requirePath(__func__, take(__func__, scratch.search(cachedRequest)), 0, 4, 3,
+              initialPath);
+  if (scratch.heuristicBuildCount() != 1 ||
+      scratch.heuristicCacheHitCount() != 1 ||
+      scratch.retainedStorageBytes() != warmStorage)
+    fail(__func__, "warm exact heuristic query did not reuse stable storage");
+
+  fixture.lowerCosts[3] = 20;
+  fixture.currentCosts[3] = 20;
+  const std::array<PnrIndex, 3> revisedPath{{1, 4, 6}};
+  auto revisedRequest = request(fixture, sources, sourceGroups, targets,
+                                targetRanks, 1, 64, 1);
+  requirePath(__func__, take(__func__, scratch.search(revisedRequest)), 0, 4,
+              3, revisedPath);
+  if (scratch.heuristicBuildCount() != 2 ||
+      scratch.heuristicCacheHitCount() != 1)
+    fail(__func__, "cost revision reused a stale exact heuristic");
+}
+
 } // namespace
 
 int main() {
   arbitraryTopologyAndCanonicalTieBreak();
   widthFilteringAndWorkLimit();
   checkedCostAndAdmissibility();
+  exactHeuristicCacheInvalidation();
   return 0;
 }

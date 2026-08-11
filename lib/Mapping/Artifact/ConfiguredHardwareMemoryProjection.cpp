@@ -39,8 +39,8 @@ std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
                      bytes.size());
 }
 
-const TechMemoryRealizationView *
-findRealization(const TechMappingView &mapping, std::uint64_t entity) {
+const TechMemoryRealizationView *findRealization(const TechMappingView &mapping,
+                                                 std::uint64_t entity) {
   const TechMemoryRealizationView *result = nullptr;
   for (const TechMemoryRealizationView &candidate :
        mapping.memoryRealizations()) {
@@ -84,8 +84,7 @@ llvm::Expected<std::vector<::loom::fabric::ManagerEndpointRef>>
 managerInventory(const ::loom::fabric::FabricArtifactView &fabric,
                  ::loom::fabric::FabricMemoryOccurrenceRef memory) {
   std::vector<::loom::fabric::ManagerEndpointRef> result;
-  const auto owner =
-      ::loom::fabric::FabricMemoryEndpointOwnerRef::of(memory);
+  const auto owner = ::loom::fabric::FabricMemoryEndpointOwnerRef::of(memory);
   for (::loom::fabric::FabricOrdinal ordinal = 0;
        ordinal != fabric.memoryEndpointCount(owner); ++ordinal) {
     const ::loom::fabric::FabricMemoryEndpointRef endpoint{owner, ordinal};
@@ -102,8 +101,7 @@ llvm::Expected<std::vector<::loom::fabric::SubordinateEndpointRef>>
 subordinateInventory(const ::loom::fabric::FabricArtifactView &fabric,
                      ::loom::fabric::FabricMemoryOccurrenceRef memory) {
   std::vector<::loom::fabric::SubordinateEndpointRef> result;
-  const auto owner =
-      ::loom::fabric::FabricMemoryEndpointOwnerRef::of(memory);
+  const auto owner = ::loom::fabric::FabricMemoryEndpointOwnerRef::of(memory);
   for (::loom::fabric::FabricOrdinal ordinal = 0;
        ordinal != fabric.memoryEndpointCount(owner); ++ordinal) {
     const ::loom::fabric::FabricMemoryEndpointRef endpoint{owner, ordinal};
@@ -116,18 +114,17 @@ subordinateInventory(const ::loom::fabric::FabricArtifactView &fabric,
   return result;
 }
 
-llvm::Expected<::fabric::MemoryDispatchTarget> dispatchTarget(
-    const ::loom::fabric::FabricArtifactView &fabric,
-    ::loom::fabric::FabricMemoryOccurrenceRef memory,
-    const SpatialMemoryDispatchTargetView &target) {
+llvm::Expected<::fabric::MemoryDispatchTarget>
+dispatchTarget(const ::loom::fabric::FabricArtifactView &fabric,
+               ::loom::fabric::FabricMemoryOccurrenceRef memory,
+               const SpatialMemoryDispatchTargetView &target) {
   if (std::holds_alternative<::loom::fabric::LocalMemoryServiceRef>(target))
     return ::fabric::MemoryDispatchTarget(
         std::in_place_type<::fabric::LocalMemoryDispatchTarget>);
   auto managers = managerInventory(fabric, memory);
   if (!managers)
     return managers.takeError();
-  const auto &selected =
-      std::get<::loom::fabric::ManagerEndpointRef>(target);
+  const auto &selected = std::get<::loom::fabric::ManagerEndpointRef>(target);
   const auto found = llvm::find(*managers, selected);
   if (found == managers->end())
     return invalid("memory dispatch selects a foreign manager endpoint");
@@ -137,17 +134,16 @@ llvm::Expected<::fabric::MemoryDispatchTarget> dispatchTarget(
           static_cast<std::uint64_t>(std::distance(managers->begin(), found))});
 }
 
-llvm::Expected<::fabric::MemoryDispatchTarget> consistencyTarget(
-    const ::loom::fabric::FabricArtifactView &fabric,
-    ::loom::fabric::FabricMemoryOccurrenceRef memory,
-    const SpatialMemoryConsistencyTargetView &target) {
+llvm::Expected<::fabric::MemoryDispatchTarget>
+consistencyTarget(const ::loom::fabric::FabricArtifactView &fabric,
+                  ::loom::fabric::FabricMemoryOccurrenceRef memory,
+                  const SpatialMemoryConsistencyTargetView &target) {
   if (const auto *manager =
           std::get_if<::loom::fabric::ManagerEndpointRef>(&target))
     return dispatchTarget(
         fabric, memory,
         SpatialMemoryDispatchTargetView(
-            std::in_place_type<::loom::fabric::ManagerEndpointRef>,
-            *manager));
+            std::in_place_type<::loom::fabric::ManagerEndpointRef>, *manager));
   if (!fabric.declaresLocalMemoryService(memory))
     return invalid("local consistency target has no local memory service");
   return ::fabric::MemoryDispatchTarget(
@@ -161,9 +157,9 @@ std::uint64_t logicalIntervalBegin(const SpatialMemoryBindingView &binding) {
   return 0;
 }
 
-llvm::Expected<std::uint64_t> logicalIntervalSize(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    const SpatialMemoryBindingView &binding) {
+llvm::Expected<std::uint64_t>
+logicalIntervalSize(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                    const SpatialMemoryBindingView &binding) {
   if (const auto *range =
           std::get_if<SpatialMemoryByteRangeView>(&binding.interval))
     return range->sizeBytes;
@@ -184,11 +180,11 @@ std::uint64_t localBaseOffset(const SpatialMemoryBindingView &binding) {
 }
 
 llvm::Expected<std::pair<::fabric::MemoryDispatchTarget, std::uint64_t>>
-operationUseProjection(
-    const ::loom::fabric::FabricArtifactView &fabric,
-    ::loom::fabric::FabricMemoryOccurrenceRef memory,
-    llvm::ArrayRef<SpatialMemoryBindingView> bindings,
-    const SpatialAddressedMemoryUseView &use, bool rootRelative) {
+operationUseProjection(const ::loom::fabric::FabricArtifactView &fabric,
+                       ::loom::fabric::FabricMemoryOccurrenceRef memory,
+                       llvm::ArrayRef<SpatialMemoryBindingView> bindings,
+                       const SpatialAddressedMemoryUseView &use,
+                       bool rootRelative) {
   auto target = dispatchTarget(fabric, memory, use.dispatch);
   if (!target)
     return target.takeError();
@@ -205,11 +201,11 @@ bool sameTarget(const ::fabric::MemoryDispatchTarget &lhs,
 }
 
 llvm::Expected<std::pair<::fabric::MemoryDispatchTarget, std::uint64_t>>
-deriveRowTarget(
-    const ::loom::fabric::FabricArtifactView &fabric,
-    ::loom::fabric::FabricMemoryOccurrenceRef memory,
-    llvm::ArrayRef<SpatialMemoryBindingView> bindings,
-    const SpatialMemoryOperationView &operation, bool rootRelative) {
+deriveRowTarget(const ::loom::fabric::FabricArtifactView &fabric,
+                ::loom::fabric::FabricMemoryOccurrenceRef memory,
+                llvm::ArrayRef<SpatialMemoryBindingView> bindings,
+                const SpatialMemoryOperationView &operation,
+                bool rootRelative) {
   std::optional<std::pair<::fabric::MemoryDispatchTarget, std::uint64_t>>
       selected;
   llvm::Error error = llvm::Error::success();
@@ -219,16 +215,15 @@ deriveRowTarget(
         for (const auto &use : typed.uses) {
           llvm::Expected<
               std::pair<::fabric::MemoryDispatchTarget, std::uint64_t>>
-              projected = [&]() -> llvm::Expected<
+              projected = [&]()
+              -> llvm::Expected<
                   std::pair<::fabric::MemoryDispatchTarget, std::uint64_t>> {
-            if constexpr (std::is_same_v<
-                              Operation,
-                              SpatialAddressedMemoryOperationView>) {
+            if constexpr (std::is_same_v<Operation,
+                                         SpatialAddressedMemoryOperationView>) {
               return operationUseProjection(fabric, memory, bindings, use,
                                             rootRelative);
             } else {
-              auto target =
-                  consistencyTarget(fabric, memory, use.consistency);
+              auto target = consistencyTarget(fabric, memory, use.consistency);
               if (!target)
                 return target.takeError();
               return std::make_pair(std::move(*target), 0);
@@ -238,9 +233,8 @@ deriveRowTarget(
             error = projected.takeError();
             return;
           }
-          if (selected &&
-              (!sameTarget(selected->first, projected->first) ||
-               selected->second != projected->second)) {
+          if (selected && (!sameTarget(selected->first, projected->first) ||
+                           selected->second != projected->second)) {
             error = invalid(
                 "one memory operation placement requires different rooted-use "
                 "service targets or base addresses");
@@ -280,10 +274,10 @@ llvm::Expected<::loom::fabric::FabricOrdinal> connectionOrdinal(
   return *result;
 }
 
-llvm::Expected<const SpatialRouteTreeView *> findProducerRoute(
-    llvm::ArrayRef<SpatialRouteTreeView> routes,
-    const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
-    std::uint64_t &ordinal) {
+llvm::Expected<const SpatialRouteTreeView *>
+findProducerRoute(llvm::ArrayRef<SpatialRouteTreeView> routes,
+                  const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
+                  std::uint64_t &ordinal) {
   const SpatialRouteTreeView *result = nullptr;
   for (auto [candidateOrdinal, candidate] : llvm::enumerate(routes)) {
     if (candidate.logicalNet != producer)
@@ -297,10 +291,9 @@ llvm::Expected<const SpatialRouteTreeView *> findProducerRoute(
 }
 
 llvm::Expected<std::pair<const SpatialRouteTreeView *, std::uint64_t>>
-findConsumerRoute(
-    llvm::ArrayRef<SpatialRouteTreeView> routes,
-    const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer,
-    std::uint64_t &routeOrdinal) {
+findConsumerRoute(llvm::ArrayRef<SpatialRouteTreeView> routes,
+                  const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer,
+                  std::uint64_t &routeOrdinal) {
   std::optional<std::pair<const SpatialRouteTreeView *, std::uint64_t>> result;
   for (auto [candidateOrdinal, route] : llvm::enumerate(routes)) {
     for (const SpatialRouteSinkView &sink : route.sinks) {
@@ -317,44 +310,6 @@ findConsumerRoute(
   return *result;
 }
 
-llvm::Expected<llvm::APInt> tagAt(
-    const ::loom::fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<SpatialRouteTreeView> routes,
-    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
-    llvm::ArrayRef<SpatialPhysicalTagSegmentView> segments,
-    std::uint64_t routeOrdinal, std::uint64_t nodeOrdinal) {
-  if (routeOrdinal >= routes.size() ||
-      nodeOrdinal >= routes[routeOrdinal].nodes.size())
-    return invalid("Physical Tag query is outside its RouteTree");
-  const auto endpoint = routes[routeOrdinal].nodes[nodeOrdinal].endpoint;
-  auto path = fabric.transportEndpointDataPath(endpoint);
-  if (!path)
-    return invalid("Physical Tag endpoint has no data-path projection");
-  if (path->tagWidthBits == 0)
-    return llvm::APInt(1, 0);
-
-  const SpatialPhysicalTagSegmentView *selected = nullptr;
-  for (const SpatialPhysicalTagSegmentView &segment : segments) {
-    if (segment.routeTreeOrdinal != routeOrdinal ||
-        !llvm::is_contained(segment.nodeOrdinals, nodeOrdinal))
-      continue;
-    if (selected)
-      return invalid("RouteTree node belongs to multiple Physical Tag segments");
-    selected = &segment;
-  }
-  if (!selected || selected->resourceUseOrdinal >= resourceUses.size())
-    return invalid("tagged RouteTree node has no Physical Tag assignment");
-  const auto &assignments =
-      resourceUses[selected->resourceUseOrdinal].sharingAssignments;
-  if (assignments.size() != 1)
-    return invalid("Physical Tag assignment has the wrong value shape");
-  const auto *tag =
-      std::get_if<::fabric::PhysicalTagPatternValue>(&assignments.front());
-  if (!tag || tag->value.getBitWidth() != path->tagWidthBits)
-    return invalid("Physical Tag value has the wrong width");
-  return tag->value;
-}
-
 llvm::Expected<::loom::fabric::FabricMemoryExternalRoleSource>
 externalInputSource(
     const ::loom::fabric::FabricArtifactView &fabric,
@@ -369,12 +324,12 @@ externalInputSource(
     return selected.takeError();
   if (selected->first->nodes[selected->second].endpoint != expectedEndpoint)
     return invalid("memory input route selects the wrong occurrence endpoint");
-  auto tag = tagAt(fabric, routes, resourceUses, segments, routeOrdinal,
-                   selected->second);
+  auto tag = resolveConfiguredHardwarePhysicalTag(
+      fabric, routes, resourceUses, segments, routeOrdinal, selected->second);
   if (!tag)
     return tag.takeError();
-  return ::loom::fabric::FabricMemoryExternalRoleSource{expectedEndpoint.ordinal,
-                                                        std::move(*tag)};
+  return ::loom::fabric::FabricMemoryExternalRoleSource{
+      expectedEndpoint.ordinal, std::move(*tag)};
 }
 
 llvm::Expected<::loom::fabric::FabricMemoryExternalRoleSource>
@@ -393,20 +348,20 @@ externalOutputDestination(
     return invalid("externally exposed memory result has no RouteTree");
   if ((*route)->rootEndpoint != expectedEndpoint)
     return invalid("memory output route selects the wrong occurrence endpoint");
-  auto tag = tagAt(fabric, routes, resourceUses, segments, routeOrdinal, 0);
+  auto tag = resolveConfiguredHardwarePhysicalTag(fabric, routes, resourceUses,
+                                                  segments, routeOrdinal, 0);
   if (!tag)
     return tag.takeError();
-  return ::loom::fabric::FabricMemoryExternalRoleSource{expectedEndpoint.ordinal,
-                                                        std::move(*tag)};
+  return ::loom::fabric::FabricMemoryExternalRoleSource{
+      expectedEndpoint.ordinal, std::move(*tag)};
 }
 
-llvm::Expected<::loom::fabric::FabricOrdinal> selectedUsePattern(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    const ::loom::fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
-    std::uint64_t realization,
-    ::dataflow::ActorRef actor,
-    ::loom::fabric::FabricMemoryOperationPortRef port) {
+llvm::Expected<::loom::fabric::FabricOrdinal>
+selectedUsePattern(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                   const ::loom::fabric::FabricArtifactView &fabric,
+                   llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+                   std::uint64_t realization, ::dataflow::ActorRef actor,
+                   ::loom::fabric::FabricMemoryOperationPortRef port) {
   auto trigger = deriveSpatialMemoryIssueEvent(dataflow, actor);
   if (!trigger)
     return trigger.takeError();
@@ -438,19 +393,20 @@ struct RoleProjection final {
       destinations;
 };
 
-llvm::Expected<RoleProjection> deriveRoles(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    const ::loom::fabric::FabricArtifactView &fabric,
-    const TechMemoryRealizationView &realization,
-    const TechMemoryActorView &actor,
-    llvm::ArrayRef<SpatialRouteTreeView> routes,
-    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
-    llvm::ArrayRef<SpatialPhysicalTagSegmentView> tagSegments,
-    ::loom::fabric::FabricMemoryOccurrenceRef memory) {
+llvm::Expected<RoleProjection>
+deriveRoles(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+            const ::loom::fabric::FabricArtifactView &fabric,
+            const TechMemoryRealizationView &realization,
+            const TechMemoryActorView &actor,
+            llvm::ArrayRef<SpatialRouteTreeView> routes,
+            llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+            llvm::ArrayRef<SpatialPhysicalTagSegmentView> tagSegments,
+            ::loom::fabric::FabricMemoryOccurrenceRef memory) {
   auto resolved = dataflow.resolve(actor.actor);
   if (!resolved)
     return resolved.takeError();
-  auto service = ::dataflow::semantics::CanonicalService::forActor(resolved->op);
+  auto service =
+      ::dataflow::semantics::CanonicalService::forActor(resolved->op);
   if (!service)
     return service.takeError();
   if (actor.operandPorts.size() != service->arguments().size() ||
@@ -468,9 +424,8 @@ llvm::Expected<RoleProjection> deriveRoles(
       return operand.takeError();
     const ::dataflow::CanonicalGraphConsumerEndpointRef consumer(
         ::dataflow::ActorTokenOperandRef{
-            actor.actor,
-            static_cast<::dataflow::StructuralOrdinal>(
-                (*operand)->getOperandNumber())});
+            actor.actor, static_cast<::dataflow::StructuralOrdinal>(
+                             (*operand)->getOperandNumber())});
     const TechMemoryInternalEdgeView *internal = nullptr;
     for (const TechMemoryInternalEdgeView &edge : realization.internalEdges) {
       if (edge.consumer != consumer)
@@ -493,8 +448,7 @@ llvm::Expected<RoleProjection> deriveRoles(
             endpointOwner, actor.operandPorts[ordinal].ordinal});
     if (!external)
       return external.takeError();
-    result.sources[static_cast<unsigned>(argument.role)] =
-        std::move(*external);
+    result.sources[static_cast<unsigned>(argument.role)] = std::move(*external);
   }
 
   for (auto [ordinal, output] : llvm::enumerate(service->results())) {
@@ -503,9 +457,8 @@ llvm::Expected<RoleProjection> deriveRoles(
       return value.takeError();
     const ::dataflow::CanonicalGraphProducerEndpointRef producer(
         ::dataflow::ActorTokenResultRef{
-            actor.actor,
-            static_cast<::dataflow::StructuralOrdinal>(
-                value->getResultNumber())});
+            actor.actor, static_cast<::dataflow::StructuralOrdinal>(
+                             value->getResultNumber())});
     ::loom::fabric::FabricMemoryRoleDestination destination;
     for (const TechMemoryInternalEdgeView &edge : realization.internalEdges) {
       if (edge.producer != producer)
@@ -547,9 +500,9 @@ struct MemoryConfigurationBuilder final {
   bool selected = false;
 };
 
-llvm::Expected<MemoryConfigurationBuilder> makeBuilder(
-    const ::loom::fabric::FabricArtifactView &fabric,
-    ::loom::fabric::FabricMemoryOccurrenceRef memory) {
+llvm::Expected<MemoryConfigurationBuilder>
+makeBuilder(const ::loom::fabric::FabricArtifactView &fabric,
+            ::loom::fabric::FabricMemoryOccurrenceRef memory) {
   auto schema = fabric.memoryConfigurationSchema(memory);
   if (!schema)
     return schema.takeError();
@@ -562,19 +515,19 @@ llvm::Expected<MemoryConfigurationBuilder> makeBuilder(
                                     false};
 }
 
-llvm::Expected<std::uint64_t> operationRowOrdinal(
-    const SpatialMemoryOperationPlacementView &placement) {
-  if (const auto *port = std::get_if<
-          ::loom::fabric::FabricMemoryOperationPortRef>(&placement))
+llvm::Expected<std::uint64_t>
+operationRowOrdinal(const SpatialMemoryOperationPlacementView &placement) {
+  if (const auto *port =
+          std::get_if<::loom::fabric::FabricMemoryOperationPortRef>(&placement))
     return port->ordinal;
   return std::get<::loom::fabric::FabricMemoryOperationContextRef>(placement)
       .ordinal;
 }
 
-::loom::fabric::FabricMemoryOperationPortRef operationPort(
-    const SpatialMemoryOperationPlacementView &placement) {
-  if (const auto *port = std::get_if<
-          ::loom::fabric::FabricMemoryOperationPortRef>(&placement))
+::loom::fabric::FabricMemoryOperationPortRef
+operationPort(const SpatialMemoryOperationPlacementView &placement) {
+  if (const auto *port =
+          std::get_if<::loom::fabric::FabricMemoryOperationPortRef>(&placement))
     return *port;
   return std::get<::loom::fabric::FabricMemoryOperationContextRef>(placement)
       .port;
@@ -657,23 +610,23 @@ llvm::Error addEngineConfiguration(
   return llvm::Error::success();
 }
 
-llvm::Expected<::loom::fabric::FabricMemoryProviderMatch> prefixMatch(
-    std::uint64_t base, std::uint64_t size) {
+llvm::Expected<::loom::fabric::FabricMemoryProviderMatch>
+prefixMatch(std::uint64_t base, std::uint64_t size) {
   if (!llvm::isPowerOf2_64(size) || base % size != 0)
-    return invalid("provider Prefix cannot exactly represent its binding range");
+    return invalid(
+        "provider Prefix cannot exactly represent its binding range");
   const unsigned suffix = llvm::Log2_64(size);
   return ::loom::fabric::FabricMemoryPrefixMatch{
       base, static_cast<std::uint8_t>(64 - suffix)};
 }
 
 llvm::Expected<::loom::fabric::FabricMemoryProviderDecodeRow>
-providerRow(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    const ::loom::fabric::FabricArtifactView &fabric,
-    ::loom::fabric::FabricMemoryOccurrenceRef memory,
-    const SpatialMemoryBindingView &binding,
-    const SpatialExposureEntryView &exposure,
-    const ::fabric::MemorySubordinateDispatchDeclaration &declaration) {
+providerRow(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+            const ::loom::fabric::FabricArtifactView &fabric,
+            ::loom::fabric::FabricMemoryOccurrenceRef memory,
+            const SpatialMemoryBindingView &binding,
+            const SpatialExposureEntryView &exposure,
+            const ::fabric::MemorySubordinateDispatchDeclaration &declaration) {
   ::loom::fabric::FabricMemoryProviderDecodeRow result;
   const std::uint64_t begin = logicalIntervalBegin(binding);
   std::optional<std::uint64_t> size;
@@ -777,17 +730,15 @@ deriveConfiguredMemoryFields(
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses,
     llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments) {
-  std::map<std::string,
-           std::pair<::loom::fabric::FabricMemoryOccurrenceRef,
-                     MemoryConfigurationBuilder>>
+  std::map<std::string, std::pair<::loom::fabric::FabricMemoryOccurrenceRef,
+                                  MemoryConfigurationBuilder>>
       builders;
   for (const auto memory : fabric.memoryOccurrences()) {
     auto builder = makeBuilder(fabric, memory);
     if (!builder)
       return builder.takeError();
-    builders.emplace(
-        byteKey(::loom::fabric::canonicalFabricBytes(memory)),
-        std::make_pair(memory, std::move(*builder)));
+    builders.emplace(byteKey(::loom::fabric::canonicalFabricBytes(memory)),
+                     std::make_pair(memory, std::move(*builder)));
   }
 
   for (const SpatialMemoryEngineBindingView &engine : memoryEngines) {
@@ -803,8 +754,7 @@ deriveConfiguredMemoryFields(
   for (auto &[key, entry] : builders) {
     (void)key;
     if (llvm::Error error = addProviderConfigurations(
-            dataflow, fabric, memoryBindings, entry.first,
-            entry.second))
+            dataflow, fabric, memoryBindings, entry.first, entry.second))
       return std::move(error);
   }
 
@@ -826,10 +776,9 @@ deriveConfiguredMemoryFields(
     if (residencies->size() != 1 ||
         !llvm::is_contained(*residencies, staticResidency))
       return invalid("memory configuration field is not uniquely static");
-    fields.push_back(
-        {::loom::fabric::FabricConfigurationSlotRef{builder.schema.field(),
-                                                    staticResidency},
-         std::move(*value)});
+    fields.push_back({::loom::fabric::FabricConfigurationSlotRef{
+                          builder.schema.field(), staticResidency},
+                      std::move(*value)});
   }
   return fields;
 }

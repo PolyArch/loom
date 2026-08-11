@@ -1,0 +1,3 @@
+# RUN: %loom-spatial-pnr-scale-test irregular-feasible | FileCheck %s
+
+# CHECK: spatial_pnr_scale kind=irregular_feasible actors=481

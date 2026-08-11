@@ -56,6 +56,16 @@ struct RouteTreeTraversalDelta final {
   PnrIndex added = 0;
 };
 
+struct RouteTreeSemanticNode final {
+  PnrIndex endpoint = getInvalidPnrIndex();
+  PnrIndex parentArc = getInvalidPnrIndex();
+
+  friend bool operator<(const RouteTreeSemanticNode &lhs,
+                        const RouteTreeSemanticNode &rhs) {
+    return lhs.endpoint < rhs.endpoint;
+  }
+};
+
 class RouteTreeState;
 class RouteTreeTransaction;
 using FrozenSpatialRoutingGraphHandle =
@@ -75,8 +85,9 @@ public:
   operator=(RouteTreeTransactionScratch &&) = delete;
   ~RouteTreeTransactionScratch();
 
-  // Counts retained lookup entry storage, excluding allocator metadata.
-  std::size_t retainedLookupRollbackStorageBytes() const;
+  // Counts retained rollback and semantic-comparison storage, excluding
+  // allocator metadata.
+  std::size_t retainedRollbackStorageBytes() const;
 
 private:
   enum class DeltaKind {
@@ -110,6 +121,8 @@ private:
   std::vector<PnrIndex> worklist_;
   std::vector<std::uint64_t> pathMarks_;
   std::vector<detail::RouteTreeLookupEntry> lookupBaseline_;
+  std::vector<PnrIndex> initialSemanticEndpoints_;
+  std::vector<RouteTreeSemanticNode> initialSemanticNodes_;
   bool lookupBaselineActive_ = false;
   std::uint64_t pathGeneration_ = 0;
   RouteTreeTransaction *activeTransaction_ = nullptr;
@@ -216,6 +229,7 @@ public:
   llvm::Expected<const RouteTreeState *> preparedState() const;
   bool initiallyRouted() const { return initialActiveNodeCount_ != 0; }
   bool proposedRouted() const { return state_ && state_->isRouted(); }
+  bool hasSemanticChange() const;
   llvm::Error verify() const;
   llvm::Error commit();
   void rollback() noexcept;

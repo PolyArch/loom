@@ -51,6 +51,7 @@ public:
   llvm::ArrayRef<RouteCost> lowerBoundArcCosts() const {
     return lowerBoundArcCosts_;
   }
+  std::uint64_t lowerBoundCostRevision() const { return 0; }
   llvm::ArrayRef<RouteCost> currentArcCosts() const { return currentArcCosts_; }
   std::size_t retainedStorageBytes() const;
 

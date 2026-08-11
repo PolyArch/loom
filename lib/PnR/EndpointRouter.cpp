@@ -50,6 +50,23 @@ EndpointRoutingGraphView loom::pnr::endpointRoutingGraphView(
 namespace {
 
 constexpr PnrIndex invalidIndex = std::numeric_limits<PnrIndex>::max();
+constexpr std::size_t heuristicCacheByteBudget = 16 * 1024 * 1024;
+constexpr std::size_t maximumHeuristicCacheEntryCount = 1024;
+constexpr std::uint64_t hashOffsetBasis = UINT64_C(14695981039346656037);
+constexpr std::uint64_t hashPrime = UINT64_C(1099511628211);
+
+void hashWord(std::uint64_t &hash, std::uint64_t value) {
+  for (unsigned byte = 0; byte != 8; ++byte) {
+    hash ^= value & UINT64_C(0xff);
+    hash *= hashPrime;
+    value >>= 8;
+  }
+}
+
+void saturatingIncrement(std::uint64_t &value) {
+  if (value != std::numeric_limits<std::uint64_t>::max())
+    ++value;
+}
 
 template <typename... Parts> std::string renderMessage(Parts &&...parts) {
   std::string message;
@@ -172,11 +189,51 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   heapPositions_.assign(endpointCount, invalidIndex);
   path_.clear();
   path_.reserve(endpointCount);
+  heuristicCache_.clear();
+  heuristicCacheTargets_.clear();
+  heuristicCacheEligibility_.clear();
+  heuristicCacheDistances_.clear();
+  const std::size_t traversalWordCount =
+      graph.traversalReplicationGroups.size() / 64 +
+      (graph.traversalReplicationGroups.size() % 64 != 0);
+  const bool cacheShapeFits =
+      endpointCount != 0 &&
+      endpointCount <=
+          heuristicCacheByteBudget /
+              (sizeof(RouteCost) + sizeof(PnrIndex)) &&
+      traversalWordCount <=
+          heuristicCacheByteBudget / sizeof(std::uint64_t);
+  if (cacheShapeFits) {
+    const std::size_t maximumKeyBytes =
+        endpointCount * sizeof(PnrIndex) +
+        traversalWordCount * sizeof(std::uint64_t);
+    const std::size_t estimatedEntryBytes =
+        endpointCount * sizeof(RouteCost) + maximumKeyBytes;
+    const std::size_t entryCount = std::min(
+        maximumHeuristicCacheEntryCount,
+        heuristicCacheByteBudget / std::max<std::size_t>(estimatedEntryBytes, 1));
+    const bool targetStorageFits =
+        entryCount <= std::numeric_limits<std::size_t>::max() /
+                          std::max<std::size_t>(endpointCount, 1);
+    const bool eligibilityStorageFits =
+        entryCount <= std::numeric_limits<std::size_t>::max() /
+                          std::max<std::size_t>(traversalWordCount, 1);
+    if (targetStorageFits && eligibilityStorageFits) {
+      heuristicCache_.resize(entryCount);
+      heuristicCacheTargets_.resize(entryCount * endpointCount);
+      heuristicCacheEligibility_.resize(entryCount * traversalWordCount);
+      heuristicCacheDistances_.resize(entryCount * endpointCount);
+    }
+  }
+  heuristicCacheTraversalWordCount_ = traversalWordCount;
+  activeCachedHeuristics_ = nullptr;
   heuristicGeneration_ = 0;
   searchGeneration_ = 0;
   targetGeneration_ = 0;
   sourceGeneration_ = 0;
   endpointExpansionCount_ = 0;
+  heuristicCacheHitCount_ = 0;
+  heuristicBuildCount_ = 0;
   prepared_ = true;
   return llvm::Error::success();
 }
@@ -280,6 +337,8 @@ void EndpointRouteSearchScratch::beginSourceGeneration() {
 }
 
 RouteCost EndpointRouteSearchScratch::heuristic(PnrIndex endpoint) const {
+  if (activeCachedHeuristics_)
+    return activeCachedHeuristics_[endpoint];
   if (heuristicEpochs_[endpoint] != heuristicGeneration_)
     return routeCostInfinity;
   return heuristics_[endpoint];
@@ -328,6 +387,8 @@ bool EndpointRouteSearchScratch::arcEligible(
 
 llvm::Error EndpointRouteSearchScratch::buildHeuristic(
     const EndpointRouteSearchRequest &request) {
+  activeCachedHeuristics_ = nullptr;
+  saturatingIncrement(heuristicBuildCount_);
   resetHeap();
   heapMode_ = HeapMode::ReverseDistance;
   beginHeuristicGeneration();
@@ -360,6 +421,92 @@ llvm::Error EndpointRouteSearchScratch::buildHeuristic(
     }
   }
   return llvm::Error::success();
+}
+
+std::uint64_t EndpointRouteSearchScratch::heuristicCacheKeyHash(
+    const EndpointRouteSearchRequest &request) const {
+  assert(request.lowerBoundCostRevision);
+  std::uint64_t hash = hashOffsetBasis;
+  hashWord(hash, *request.lowerBoundCostRevision);
+  hashWord(hash, request.requiredPayloadWidthBits);
+  hashWord(hash, request.requiredTagWidthBits);
+  hashWord(hash, request.targetEndpoints.size());
+  for (PnrIndex endpoint : request.targetEndpoints)
+    hashWord(hash, endpoint);
+  hashWord(hash, request.eligibleTraversalBits.size());
+  for (std::uint64_t word : request.eligibleTraversalBits)
+    hashWord(hash, word);
+  return hash;
+}
+
+bool EndpointRouteSearchScratch::heuristicCacheKeyEquals(
+    const HeuristicCacheEntry &entry,
+    const EndpointRouteSearchRequest &request, std::uint64_t keyHash,
+    std::size_t slot) const {
+  const std::size_t endpointCount =
+      static_cast<std::size_t>(graph_.endpointCount);
+  const auto targets = llvm::ArrayRef(heuristicCacheTargets_)
+                           .slice(slot * endpointCount,
+                                  entry.targetEndpointCount);
+  const auto eligibility = llvm::ArrayRef(heuristicCacheEligibility_)
+                               .slice(slot * heuristicCacheTraversalWordCount_,
+                                      entry.eligibleTraversalWordCount);
+  return entry.populated && entry.keyHash == keyHash &&
+         entry.lowerBoundCostData == request.lowerBoundArcCosts.data() &&
+         entry.lowerBoundCostSize == request.lowerBoundArcCosts.size() &&
+         entry.lowerBoundCostRevision == *request.lowerBoundCostRevision &&
+         entry.requiredPayloadWidthBits == request.requiredPayloadWidthBits &&
+         entry.requiredTagWidthBits == request.requiredTagWidthBits &&
+         targets == request.targetEndpoints &&
+         eligibility == request.eligibleTraversalBits;
+}
+
+bool EndpointRouteSearchScratch::loadCachedHeuristic(
+    const EndpointRouteSearchRequest &request) {
+  activeCachedHeuristics_ = nullptr;
+  if (!request.lowerBoundCostRevision || heuristicCache_.empty())
+    return false;
+  const std::uint64_t keyHash = heuristicCacheKeyHash(request);
+  const std::size_t slot = keyHash % heuristicCache_.size();
+  HeuristicCacheEntry &entry = heuristicCache_[slot];
+  if (!heuristicCacheKeyEquals(entry, request, keyHash, slot))
+    return false;
+  activeCachedHeuristics_ =
+      heuristicCacheDistances_.data() +
+      slot * static_cast<std::size_t>(graph_.endpointCount);
+  saturatingIncrement(heuristicCacheHitCount_);
+  return true;
+}
+
+void EndpointRouteSearchScratch::storeCachedHeuristic(
+    const EndpointRouteSearchRequest &request) {
+  if (!request.lowerBoundCostRevision || heuristicCache_.empty())
+    return;
+  const std::uint64_t keyHash = heuristicCacheKeyHash(request);
+  const std::size_t slot = keyHash % heuristicCache_.size();
+  HeuristicCacheEntry &entry = heuristicCache_[slot];
+  entry.populated = false;
+  entry.lowerBoundCostData = request.lowerBoundArcCosts.data();
+  entry.lowerBoundCostSize = request.lowerBoundArcCosts.size();
+  entry.lowerBoundCostRevision = *request.lowerBoundCostRevision;
+  entry.keyHash = keyHash;
+  entry.requiredPayloadWidthBits = request.requiredPayloadWidthBits;
+  entry.requiredTagWidthBits = request.requiredTagWidthBits;
+  entry.targetEndpointCount = request.targetEndpoints.size();
+  entry.eligibleTraversalWordCount = request.eligibleTraversalBits.size();
+  const std::size_t endpointCount =
+      static_cast<std::size_t>(graph_.endpointCount);
+  llvm::copy(request.targetEndpoints,
+             heuristicCacheTargets_.begin() + slot * endpointCount);
+  llvm::copy(request.eligibleTraversalBits,
+             heuristicCacheEligibility_.begin() +
+                 slot * heuristicCacheTraversalWordCount_);
+  RouteCost *distances =
+      heuristicCacheDistances_.data() +
+      slot * endpointCount;
+  for (PnrIndex endpoint = 0; endpoint != graph_.endpointCount; ++endpoint)
+    distances[endpoint] = heuristic(endpoint);
+  entry.populated = true;
 }
 
 llvm::Expected<EndpointRouteSearchResult>
@@ -416,8 +563,11 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
     targetEpochs_[target] = targetGeneration_;
     targetPreferenceRanks_[target] = rank;
   }
-  if (llvm::Error error = buildHeuristic(request))
-    return std::move(error);
+  if (!loadCachedHeuristic(request)) {
+    if (llvm::Error error = buildHeuristic(request))
+      return std::move(error);
+    storeCachedHeuristic(request);
+  }
 
   resetHeap();
   heapMode_ = HeapMode::ForwardAStar;
@@ -517,7 +667,12 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
 }
 
 std::size_t EndpointRouteSearchScratch::retainedStorageBytes() const {
-  return heuristics_.capacity() * sizeof(RouteCost) +
+  std::size_t cacheBytes =
+      heuristicCache_.capacity() * sizeof(HeuristicCacheEntry) +
+      heuristicCacheTargets_.capacity() * sizeof(PnrIndex) +
+      heuristicCacheEligibility_.capacity() * sizeof(std::uint64_t) +
+      heuristicCacheDistances_.capacity() * sizeof(RouteCost);
+  return cacheBytes + heuristics_.capacity() * sizeof(RouteCost) +
          distances_.capacity() * sizeof(RouteCost) +
          priorities_.capacity() * sizeof(RouteCost) +
          predecessorArcs_.capacity() * sizeof(PnrIndex) +

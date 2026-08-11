@@ -51,14 +51,18 @@ RouteTreeTransactionScratch::~RouteTreeTransactionScratch() {
 }
 
 std::size_t
-RouteTreeTransactionScratch::retainedLookupRollbackStorageBytes() const {
-  return lookupBaseline_.capacity() * sizeof(detail::RouteTreeLookupEntry);
+RouteTreeTransactionScratch::retainedRollbackStorageBytes() const {
+  return lookupBaseline_.capacity() * sizeof(detail::RouteTreeLookupEntry) +
+         initialSemanticEndpoints_.capacity() * sizeof(PnrIndex) +
+         initialSemanticNodes_.capacity() * sizeof(RouteTreeSemanticNode);
 }
 
 void RouteTreeTransactionScratch::resetTransaction() {
   deltas_.clear();
   traversalDeltas_.clear();
   worklist_.clear();
+  initialSemanticEndpoints_.clear();
+  initialSemanticNodes_.clear();
   lookupBaselineActive_ = false;
 }
 
@@ -548,6 +552,15 @@ RouteTreeTransaction::RouteTreeTransaction(RouteTreeStateHandle state,
       initialBoundSinkObligationCount_(state_->boundSinkObligationCount_),
       initialAttachedSinkObligationCount_(
           state_->attachedSinkObligationCount_) {
+  scratch.initialSemanticEndpoints_.reserve(1 + state_->sinkBindings_.size());
+  scratch.initialSemanticEndpoints_.push_back(state_->sourceEndpoint_);
+  for (const RouteTreeState::SinkBinding &binding : state_->sinkBindings_)
+    scratch.initialSemanticEndpoints_.push_back(binding.endpoint);
+  scratch.initialSemanticNodes_.reserve(state_->activeNodeCount_);
+  for (const RouteTreeNode &node : state_->nodes_)
+    if (node.isActive())
+      scratch.initialSemanticNodes_.push_back({node.endpoint, node.parentArc});
+  llvm::sort(scratch.initialSemanticNodes_);
   state_->activeTransaction_ = this;
   scratch.activeTransaction_ = this;
 }
@@ -1129,6 +1142,29 @@ RouteTreeTransaction::preparedState() const {
     if (llvm::Error error = state_->verifyState())
       return error;
   return state_.get();
+}
+
+bool RouteTreeTransaction::hasSemanticChange() const {
+  assert(state_ && prepared_ && "route semantic comparison requires prepare");
+  if (scratch_->initialSemanticEndpoints_.size() !=
+          state_->sinkBindings_.size() + 1 ||
+      scratch_->initialSemanticEndpoints_.front() != state_->sourceEndpoint_ ||
+      scratch_->initialSemanticNodes_.size() != state_->activeNodeCount_)
+    return true;
+  for (std::size_t sink = 0; sink < state_->sinkBindings_.size(); ++sink)
+    if (scratch_->initialSemanticEndpoints_[sink + 1] !=
+        state_->sinkBindings_[sink].endpoint)
+      return true;
+  for (const RouteTreeNode &node : state_->nodes_) {
+    if (!node.isActive())
+      continue;
+    const RouteTreeSemanticNode key{node.endpoint, node.parentArc};
+    const auto found = llvm::lower_bound(scratch_->initialSemanticNodes_, key);
+    if (found == scratch_->initialSemanticNodes_.end() ||
+        found->endpoint != key.endpoint || found->parentArc != key.parentArc)
+      return true;
+  }
+  return false;
 }
 
 llvm::Error RouteTreeTransaction::commit() {

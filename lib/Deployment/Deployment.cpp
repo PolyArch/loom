@@ -420,6 +420,31 @@ bool sameBytes(const CanonicalSemanticBytes &lhs,
   return lhs.bytes().equals(rhs.bytes());
 }
 
+llvm::Expected<FinalizedDeployment> finishFinalizedDeployment(
+    detail::ParsedDeployment parsed, detail::DerivedRuntimeImages images,
+    const ArtifactStore &artifacts) {
+  auto canonical = detail::serializeDeployment(parsed, images);
+  if (!canonical)
+    return canonical.takeError();
+  auto strict = detail::parseDeployment(canonical->bytes());
+  if (!strict)
+    return strict.takeError();
+  auto roundTrip = detail::serializeDeployment(*strict, images);
+  if (!roundTrip)
+    return roundTrip.takeError();
+  if (!sameBytes(*canonical, *roundTrip))
+    return invalid("finalized Deployment did not round-trip canonically");
+  auto identity = artifacts.put(deploymentSchema, *canonical);
+  if (!identity)
+    return identity.takeError();
+  ArtifactRootReference reference{deploymentSchema.identity.str(),
+                                  deploymentSchema.version, *identity};
+  Deployment deployment =
+      detail::materializeDeployment(std::move(*strict), std::move(images));
+  return detail::DeploymentCodecAccess::finalized(
+      std::move(reference), std::move(*canonical), std::move(deployment));
+}
+
 } // namespace
 
 namespace detail {
@@ -483,27 +508,8 @@ finalizeDeployment(DeploymentDraft draft, const ArtifactStore &artifacts,
     return invalid("spatial_launch_image is not the exact derived child");
   if (!sameBytes(authoredAdmission, expected->admission))
     return invalid("admission_image is not the exact derived child");
-  auto canonical = detail::serializeDeployment(*parsed, *expected);
-  if (!canonical)
-    return canonical.takeError();
-  auto strict = detail::parseDeployment(canonical->bytes());
-  if (!strict)
-    return strict.takeError();
-  auto strictImages =
-      detail::validateDeploymentClosure(*strict, artifacts, blobs);
-  if (!strictImages)
-    return strictImages.takeError();
-  auto roundTrip = detail::serializeDeployment(*strict, *strictImages);
-  if (!roundTrip)
-    return roundTrip.takeError();
-  if (!sameBytes(*canonical, *roundTrip))
-    return invalid("finalized Deployment did not round-trip canonically");
-  auto identity = artifacts.put(deploymentSchema, *canonical);
-  if (!identity)
-    return identity.takeError();
-  return importDeployment(
-      {deploymentSchema.identity.str(), deploymentSchema.version, *identity},
-      artifacts, blobs);
+  return finishFinalizedDeployment(std::move(*parsed), std::move(*expected),
+                                   artifacts);
 }
 
 llvm::Expected<FinalizedDeployment>
@@ -575,14 +581,39 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
       blobs);
   if (!runtimeImages)
     return runtimeImages.takeError();
-  return finalizeDeployment(
-      DeploymentDraft{
-          std::move(inputs.systemMapping), std::move(inputs.hostProgram),
-          std::move(inputs.instructionCoreBinaries),
-          std::move(inputs.hardwareBindings), std::move(images),
-          std::move(inputs.staticMemoryImages), runtimeImages->threadDispatch,
-          runtimeImages->spatialLaunch, runtimeImages->admission},
-      artifacts, blobs);
+  auto thread =
+      parseInlineBytes(runtimeImages->threadDispatch, threadDispatchImageSchema);
+  auto admission =
+      parseInlineBytes(runtimeImages->admission, admissionImageSchema);
+  if (!thread)
+    return thread.takeError();
+  if (!admission)
+    return admission.takeError();
+  std::optional<llvm::json::Value> spatial;
+  if (runtimeImages->spatialLaunch) {
+    auto value = parseInlineBytes(*runtimeImages->spatialLaunch,
+                                  spatialLaunchImageSchema);
+    if (!value)
+      return value.takeError();
+    spatial = std::move(*value);
+  }
+  detail::ParsedDeployment parsed{
+      std::move(inputs.systemMapping),
+      std::move(inputs.hostProgram),
+      std::move(inputs.instructionCoreBinaries),
+      std::move(inputs.hardwareBindings),
+      std::move(images),
+      std::move(inputs.staticMemoryImages),
+      std::move(*thread),
+      std::move(spatial),
+      std::move(*admission)};
+  if (llvm::Error error = requireCanonicalTopLevel(parsed, artifacts))
+    return error;
+  if (llvm::Error error =
+          validateExecutableAndHardwareClosure(parsed, artifacts, blobs))
+    return error;
+  return finishFinalizedDeployment(std::move(parsed),
+                                   std::move(*runtimeImages), artifacts);
 }
 
 } // namespace loom::deployment

@@ -165,6 +165,10 @@ IncrementalTopologicalScratch::prepare(IncrementalTopologicalGraphView graph) {
   touchedArcs_.reserve(arcs);
   oldArcActive_.reserve(arcs);
   cycleWitness_.reserve(nodes + 1);
+  cycleSearchStates_.assign(nodes, 0);
+  cycleSearchParents_.resize(nodes);
+  cycleSearchCursors_.resize(nodes);
+  cycleSearchStack_.reserve(nodes);
   transactionEpoch_ = 0;
   searchEpoch_ = 0;
   resetTransaction();
@@ -178,7 +182,10 @@ std::size_t IncrementalTopologicalScratch::retainedStorageBytes() const {
          retainedBytes(backwardWorklist_) + retainedBytes(reorderBuffer_) +
          retainedBytes(touchedRanks_) + retainedBytes(oldRankNodes_) +
          retainedBytes(touchedArcs_) + retainedBytes(oldArcActive_) +
-         retainedBytes(cycleWitness_);
+         retainedBytes(cycleWitness_) + retainedBytes(cycleSearchStates_) +
+         retainedBytes(cycleSearchParents_) +
+         retainedBytes(cycleSearchCursors_) +
+         retainedBytes(cycleSearchStack_);
 }
 
 void IncrementalTopologicalScratch::beginTransaction() {
@@ -367,6 +374,83 @@ llvm::Error IncrementalTopologicalTransaction::removeArc(PnrIndex arcOrdinal) {
   return llvm::Error::success();
 }
 
+llvm::Expected<bool> IncrementalTopologicalTransaction::applyArcChanges(
+    llvm::ArrayRef<PnrIndex> removals,
+    llvm::ArrayRef<PnrIndex> insertions) {
+  if (!scratch_)
+    return topologyError("transaction is no longer active");
+  if (hasCycle_)
+    return topologyError("transaction already contains a directed cycle");
+
+  const auto validate = [&](llvm::ArrayRef<PnrIndex> arcs,
+                            bool expectedActive) -> llvm::Error {
+    PnrIndex previous = 0;
+    bool hasPrevious = false;
+    for (PnrIndex arc : arcs) {
+      if (arc >= order_->graph_.arcs.size())
+        return topologyError("changed arc is out of range");
+      if (hasPrevious && arc <= previous)
+        return topologyError("changed arcs are not unique canonical IDs");
+      if (order_->isArcActive(arc) != expectedActive)
+        return topologyError(expectedActive ? "removed arc is not active"
+                                            : "inserted arc is already active");
+      previous = arc;
+      hasPrevious = true;
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error error = validate(removals, true))
+    return std::move(error);
+  if (llvm::Error error = validate(insertions, false))
+    return std::move(error);
+
+  const std::size_t changedCount = removals.size() + insertions.size();
+  if (changedCount == 0)
+    return true;
+  const std::size_t nodeCount = order_->graph_.nodeCount;
+  const std::size_t arcCount = order_->graph_.arcs.size();
+  const std::size_t graphWork =
+      nodeCount > std::numeric_limits<std::size_t>::max() - arcCount
+          ? std::numeric_limits<std::size_t>::max()
+          : nodeCount + arcCount;
+  const bool rebuildOnce = changedCount > graphWork / changedCount;
+  if (!rebuildOnce) {
+    for (PnrIndex arc : removals)
+      if (llvm::Error error = removeArc(arc))
+        return std::move(error);
+    for (PnrIndex arc : insertions) {
+      auto inserted = insertArc(arc);
+      if (!inserted)
+        return inserted.takeError();
+      if (!*inserted)
+        return false;
+    }
+    return true;
+  }
+
+  for (PnrIndex arc : removals) {
+    recordArc(arc);
+    order_->setArcActive(arc, false);
+  }
+  for (PnrIndex arc : insertions) {
+    recordArc(arc);
+    order_->setArcActive(arc, true);
+  }
+  auto rebuilt = buildCanonicalOrder(order_->graph_, order_->activeArcBits_);
+  if (!rebuilt) {
+    llvm::consumeError(rebuilt.takeError());
+    buildCycleWitness();
+    hasCycle_ = true;
+    return false;
+  }
+  for (PnrIndex rank = 0; rank < order_->graph_.nodeCount; ++rank)
+    if (order_->order_[rank] != rebuilt->first[rank])
+      recordRank(rank);
+  order_->order_ = std::move(rebuilt->first);
+  order_->ranks_ = std::move(rebuilt->second);
+  return true;
+}
+
 llvm::Expected<bool>
 IncrementalTopologicalTransaction::repairAfterInsertion(PnrIndex arcOrdinal) {
   const auto graph = order_->graph_;
@@ -471,6 +555,61 @@ IncrementalTopologicalTransaction::repairAfterInsertion(PnrIndex arcOrdinal) {
   if (order_->ranks_[inserted.source] >= order_->ranks_[inserted.destination])
     return topologyError("bounded reorder did not orient the inserted arc");
   return true;
+}
+
+void IncrementalTopologicalTransaction::buildCycleWitness() {
+  const auto graph = order_->graph_;
+  std::fill(scratch_->cycleSearchStates_.begin(),
+            scratch_->cycleSearchStates_.end(), 0);
+  scratch_->cycleSearchStack_.clear();
+  scratch_->cycleWitness_.clear();
+  for (PnrIndex root = 0; root < graph.nodeCount; ++root) {
+    if (scratch_->cycleSearchStates_[root] != 0)
+      continue;
+    scratch_->cycleSearchStates_[root] = 1;
+    scratch_->cycleSearchParents_[root] = getInvalidPnrIndex();
+    scratch_->cycleSearchCursors_[root] = graph.adjacencyOffsets[root];
+    scratch_->cycleSearchStack_.push_back(root);
+    while (!scratch_->cycleSearchStack_.empty()) {
+      const PnrIndex node = scratch_->cycleSearchStack_.back();
+      PnrIndex &cursor = scratch_->cycleSearchCursors_[node];
+      const PnrIndex end = graph.adjacencyOffsets[node + 1];
+      while (cursor < end && !order_->isArcActive(cursor))
+        ++cursor;
+      if (cursor == end) {
+        scratch_->cycleSearchStates_[node] = 2;
+        scratch_->cycleSearchStack_.pop_back();
+        continue;
+      }
+      const PnrIndex arc = cursor++;
+      const PnrIndex destination = graph.arcs[arc].destination;
+      if (scratch_->cycleSearchStates_[destination] == 0) {
+        scratch_->cycleSearchStates_[destination] = 1;
+        scratch_->cycleSearchParents_[destination] = arc;
+        scratch_->cycleSearchCursors_[destination] =
+            graph.adjacencyOffsets[destination];
+        scratch_->cycleSearchStack_.push_back(destination);
+        continue;
+      }
+      if (scratch_->cycleSearchStates_[destination] != 1)
+        continue;
+      scratch_->cycleWitness_.push_back(arc);
+      PnrIndex ancestor = node;
+      while (ancestor != destination) {
+        const PnrIndex parentArc = scratch_->cycleSearchParents_[ancestor];
+        assert(parentArc != getInvalidPnrIndex());
+        scratch_->cycleWitness_.push_back(parentArc);
+        ancestor = graph.arcs[parentArc].source;
+      }
+      llvm::sort(scratch_->cycleWitness_);
+      scratch_->cycleWitness_.erase(
+          std::unique(scratch_->cycleWitness_.begin(),
+                      scratch_->cycleWitness_.end()),
+          scratch_->cycleWitness_.end());
+      return;
+    }
+  }
+  llvm_unreachable("failed to recover a cycle from a cyclic active graph");
 }
 
 llvm::ArrayRef<PnrIndex>

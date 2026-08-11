@@ -922,6 +922,18 @@ expandBuiltinSystemImpl(DesignBuilder &design,
   }
   if (llvm::Error error = clock->close(clockMembers, *clockContract))
     return std::move(error);
+  auto reset = system->createHardwareDomain();
+  if (!reset)
+    return reset.takeError();
+  auto resetContract = loom::fabric::ResetDomainContractRecord::create(
+      loom::fabric::ResetPolarity::ActiveHigh,
+      loom::fabric::ResetTiming::Asynchronous,
+      loom::fabric::ResetTiming::Asynchronous,
+      loom::fabric::ResetInitialState::Asserted, std::nullopt, 0);
+  if (!resetContract)
+    return resetContract.takeError();
+  if (llvm::Error error = reset->close(clockMembers, *resetContract))
+    return std::move(error);
   return std::move(*system);
 }
 

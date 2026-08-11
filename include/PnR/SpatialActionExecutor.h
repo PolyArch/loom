@@ -79,6 +79,7 @@ public:
   dse::ObjectiveSignedDifference energyDifference() const {
     return energyDifference_;
   }
+  bool isSemanticNoop() const { return !semanticChange_; }
 
   llvm::Error commit();
   llvm::Error discard();
@@ -91,13 +92,14 @@ private:
                      SpatialMoveTransaction move,
                      dse::ObjectiveVector objective,
                      dse::ObjectiveSignedDifference energyDifference,
-                     bool globalRouting);
+                     bool globalRouting, bool semanticChange);
 
   SpatialActionExecutorScratch *owner_ = nullptr;
   SpatialMoveTransaction move_;
   dse::ObjectiveVector objective_;
   dse::ObjectiveSignedDifference energyDifference_;
   bool globalRouting_ = false;
+  bool semanticChange_ = true;
 
   friend class SpatialActionExecutorScratch;
 };
@@ -124,6 +126,12 @@ public:
   const dse::ObjectiveVector &currentObjective() const;
   std::uint64_t endpointExpansionCount() const {
     return router_.endpointExpansionCount();
+  }
+  std::uint64_t heuristicCacheHitCount() const {
+    return router_.heuristicCacheHitCount();
+  }
+  std::uint64_t heuristicBuildCount() const {
+    return router_.heuristicBuildCount();
   }
   std::uint64_t negotiationIterationCount() const {
     return router_.negotiationIterationCount();

@@ -1,0 +1,1 @@
+# RUN: timeout 60s %loom-mapped-rtl-simulation-test --request-fixture

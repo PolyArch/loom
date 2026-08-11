@@ -13,6 +13,9 @@
 namespace loom {
 namespace {
 
+constexpr std::uint64_t builtinNoProgressIterationLimit = 8;
+constexpr std::uint64_t builtinNoProgressTrendWindow = 4;
+
 struct BuiltinLimits final {
   std::uint32_t seeds;
   std::uint64_t assignments;
@@ -173,6 +176,7 @@ ResolvedPnrPolicyConfig resolvedBuiltinPnrPolicy(ResolvedProfilePreset preset) {
            ResolvedPnrActionProposalPolicy{1, 3, 2},
            ResolvedPnrRoutingPolicy{
                limits.endpointExpansions, limits.negotiations,
+               builtinNoProgressIterationLimit, builtinNoProgressTrendWindow,
                ResolvedPathFinderPolicy{
                    ResolvedPathFinderPriceKernel::Multiplicative, 1,
                    ResolvedExactRatio{3, 2}, 1},
@@ -424,8 +428,13 @@ validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
 
   const ResolvedPnrRoutingPolicy &routing = policy.search.routing;
   if (routing.endpointExpansionLimit == 0 ||
-      routing.negotiationIterationLimit == 0)
+      routing.negotiationIterationLimit == 0 ||
+      routing.noProgressIterationLimit == 0 ||
+      routing.noProgressTrendWindow == 0)
     return invalid("routing work limits must be positive");
+  if (routing.noProgressTrendWindow > routing.noProgressIterationLimit ||
+      routing.noProgressIterationLimit > routing.negotiationIterationLimit)
+    return invalid("routing no-progress limits are not canonical");
   if (const auto *pathFinder =
           std::get_if<ResolvedPathFinderPolicy>(&routing.negotiation)) {
     if (llvm::Error error = validateResolvedPathFinderPolicy(*pathFinder))

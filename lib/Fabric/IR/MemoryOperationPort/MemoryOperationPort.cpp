@@ -301,7 +301,9 @@ llvm::Error validateSubwordRelation(
         return invalid("Exact read semantics disagree with endpoint width");
       if (semantics == ReadSubwordSemantics::ZeroExtend &&
           widths->second > endpoint->payloadWidth)
-        return invalid("ZeroExtend read payload exceeds endpoint width");
+        return invalid(
+            "ZeroExtend read payload width " + llvm::Twine(widths->second) +
+            " exceeds endpoint width " + llvm::Twine(endpoint->payloadWidth));
     }
     return llvm::Error::success();
   };

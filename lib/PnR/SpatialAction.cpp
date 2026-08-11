@@ -202,6 +202,87 @@ struct LiveKindRecord final {
 
 } // namespace
 
+SpatialActionKey
+loom::pnr::spatialActionKey(const SpatialMappingAction &action) {
+  return std::visit(
+      [](const auto &category) -> SpatialActionKey {
+        using Category = std::decay_t<decltype(category)>;
+        if constexpr (std::is_same_v<Category,
+                                     SpatialRealizationBindingAction>) {
+          return std::visit(
+              [](const auto &choice) -> SpatialActionKey {
+                using Choice = std::decay_t<decltype(choice)>;
+                if constexpr (std::is_same_v<Choice,
+                                             SpatialComputeBindingAction>)
+                  return {{0, 0, choice.realization, choice.placement,
+                           choice.instructionContext, 0}};
+                else
+                  return {{0, 1, choice.realization, choice.placement, 0, 0}};
+              },
+              category);
+        } else if constexpr (std::is_same_v<Category,
+                                            SpatialTransportRoutingAction>) {
+          return std::visit(
+              [](const auto &choice) -> SpatialActionKey {
+                using Choice = std::decay_t<decltype(choice)>;
+                if constexpr (std::is_same_v<Choice,
+                                             SpatialWholeNetRoutingAction>)
+                  return {{1, 0, choice.logicalNet, 0, 0, 0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialSingleSinkRoutingAction>)
+                  return {{1, 1, choice.logicalNet, choice.sinkObligation, 0,
+                           0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialRootedSubtreeRoutingAction>)
+                  return {{1, 2, choice.logicalNet, choice.rootEndpoint, 0,
+                           0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialWitnessRegionRoutingAction>)
+                  return {{1, 3,
+                           static_cast<std::uint64_t>(choice.witnessKind),
+                           choice.witnessOrdinal, 0, 0}};
+                else
+                  return {{1, 4, 0, 0, 0, 0}};
+              },
+              category);
+        } else {
+          return std::visit(
+              [](const auto &choice) -> SpatialActionKey {
+                using Choice = std::decay_t<decltype(choice)>;
+                if constexpr (std::is_same_v<Choice,
+                                             SpatialPortAttachmentAction>)
+                  return {{2, 0, choice.demand, choice.attachmentOption, 0, 0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialGraphBoundaryAttachmentAction>)
+                  return {{2, 1, choice.boundary, choice.attachmentOption, 0,
+                           0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialMemoryOperationPlanAction>)
+                  return {{2, 2, choice.actor, choice.plan, 0, 0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialLogicalMemoryBindingAction>)
+                  return {{2, 3, choice.binding, choice.target,
+                           choice.physicalOffsetBytes, 0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialMemoryUseDispatchAction>)
+                  return {{2, 4, choice.use, choice.dispatchOption, 0, 0}};
+                else
+                  return {{2, 5, choice.exposure, choice.exposureOption, 0,
+                           0}};
+              },
+              category);
+        }
+      },
+      action);
+}
+
 llvm::Error loom::pnr::validateCanonicalSpatialActionBatch(
     llvm::ArrayRef<SpatialMappingAction> actions) {
   if (actions.empty())

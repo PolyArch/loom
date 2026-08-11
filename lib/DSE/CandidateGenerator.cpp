@@ -14,9 +14,21 @@
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace loom::dse {
+
+std::uint32_t defaultCandidateWorkerCount() {
+  constexpr std::uint32_t reservedHostThreads = 4;
+  constexpr std::uint32_t maximumWorkerCount = 120;
+  const unsigned hardware = std::thread::hardware_concurrency();
+  if (hardware <= reservedHostThreads)
+    return 1;
+  return std::min<std::uint32_t>(hardware - reservedHostThreads,
+                                 maximumWorkerCount);
+}
+
 namespace {
 
 std::vector<const CandidateGeneratorDescriptor *> &descriptors() {

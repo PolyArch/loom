@@ -206,7 +206,7 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
            ? memoryConstraintScratch_->retainedStorageBytes()
            : 0);
   for (const auto &scratch : routeScratch_)
-    bytes += scratch->retainedLookupRollbackStorageBytes();
+    bytes += scratch->retainedRollbackStorageBytes();
   bytes +=
       retainedBytes(computeJournalMarks_) + retainedBytes(memoryJournalMarks_) +
       retainedBytes(portJournalMarks_) + retainedBytes(boundaryJournalMarks_) +

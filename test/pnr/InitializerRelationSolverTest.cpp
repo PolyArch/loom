@@ -126,6 +126,72 @@ void workLimitDoesNotBecomeInfeasibility() {
     fail("bounded initializer classified work exhaustion as infeasibility");
 }
 
+void allDifferentCardinalityProvesInfeasibilityBeforeSearch() {
+  InitializerRelationModel model =
+      makeModel({2, 2, 2}, {{InitializerRelationKind::Disjoint,
+                             {{0, {0, 1}}, {1, {0, 1}}, {2, {0, 1}}}}});
+  InitializerRelationSolver solver(model);
+
+  auto canonical = solver.solveCanonical(/*assignmentLimit=*/1);
+  if (canonical)
+    fail("all-different cardinality contradiction produced an assignment");
+  bool observedCanonicalProof = false;
+  llvm::handleAllErrors(
+      canonical.takeError(),
+      [&](const InitializerRelationSolveFailure &error) {
+        observedCanonicalProof =
+            error.kind() ==
+            InitializerRelationSolveFailureKind::ProvenInfeasible;
+      });
+  if (!observedCanonicalProof || solver.assignmentAttempts() != 0)
+    fail("all-different cardinality proof entered canonical DFS");
+
+  auto fixed = solver.solveCanonicalWithFixedChoices(
+      /*assignmentLimit=*/1,
+      {loom::pnr::getInvalidPnrIndex(), loom::pnr::getInvalidPnrIndex(),
+       loom::pnr::getInvalidPnrIndex()});
+  if (fixed)
+    fail("fixed-root solve ignored global all-different infeasibility");
+  bool observedFixedProof = false;
+  llvm::handleAllErrors(
+      fixed.takeError(), [&](const InitializerRelationSolveFailure &error) {
+        observedFixedProof =
+            error.kind() ==
+            InitializerRelationSolveFailureKind::ProvenInfeasible;
+      });
+  if (!observedFixedProof || solver.assignmentAttempts() != 0)
+    fail("all-different cardinality proof entered fixed-root DFS");
+}
+
+void repeatedChoicesDoNotCreateResidentContexts() {
+  InitializerRelationModel model =
+      makeModel({3, 2}, {{InitializerRelationKind::Disjoint,
+                         {{0, {0, 0, 1}}, {1, {0, 1}}}}});
+  InitializerRelationSolver solver(model);
+  const auto result = take(solver.solveCanonical(/*assignmentLimit=*/8));
+  if (llvm::Error error = model.verifyChoices(result.choices))
+    fail("repeated context choices produced an invalid assignment: " +
+         llvm::toString(std::move(error)));
+  const auto members = model.members(model.relations().front());
+  if (model.projectedValue(members[0], result.choices[0]) ==
+      model.projectedValue(members[1], result.choices[1]))
+    fail("multiple FU choices manufactured another resident context");
+
+  auto aliased = solver.solveCanonicalWithFixedChoices(
+      /*assignmentLimit=*/8, {0, 0});
+  if (aliased)
+    fail("fixed choices placed two realizations in one resident context");
+  bool observedFixedRootFailure = false;
+  llvm::handleAllErrors(
+      aliased.takeError(), [&](const InitializerRelationSolveFailure &error) {
+        observedFixedRootFailure =
+            error.kind() ==
+            InitializerRelationSolveFailureKind::FixedRootInfeasible;
+      });
+  if (!observedFixedRootFailure)
+    fail("resident context alias changed failure classification");
+}
+
 void fixedRootFailureIsNotGlobalInfeasibility() {
   llvm::Error failure = llvm::make_error<InitializerRelationSolveFailure>(
       InitializerRelationSolveFailureKind::FixedRootInfeasible,
@@ -272,6 +338,8 @@ int main() {
   canonicalSearchBacktracksWithoutCopyingState();
   completeAssignmentValidationBacktracks();
   workLimitDoesNotBecomeInfeasibility();
+  allDifferentCardinalityProvesInfeasibilityBeforeSearch();
+  repeatedChoicesDoNotCreateResidentContexts();
   fixedRootFailureIsNotGlobalInfeasibility();
   fixedChoicesConstrainTheSharedRelationModel();
   sparseDomainsReusePreparedStorage();

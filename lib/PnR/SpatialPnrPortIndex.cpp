@@ -635,6 +635,7 @@ public:
           return contextCount.takeError();
         realizations.computePlacements_.push_back(
             {*realizationIndex, placement.fu, placement.parentPe,
+             placement.schedule,
              *newContextOffset, *contextCount});
         for (auto [demandOrdinal, demand] : llvm::enumerate(ownerDemands))
           demands[demand].domains.push_back(

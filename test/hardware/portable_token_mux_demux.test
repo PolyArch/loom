@@ -3,8 +3,8 @@
 # RUN: %loom-portable-token-mux-demux-test %t
 # RUN: FileCheck %s --check-prefix=MUX < %t/leaf/token_mux.sv
 # RUN: FileCheck %s --check-prefix=DEMUX < %t/leaf/token_demux.sv
-# RUN: FileCheck %s --check-prefix=SYSTEM < %t/mux_system/token_mux_system.sv
-# RUN: FileCheck %s --check-prefix=SYSTEM < %t/demux_system/token_demux_system.sv
+# RUN: FileCheck %s --check-prefix=SYSTEM-MUX < %t/mux_system/token_mux_system.sv
+# RUN: FileCheck %s --check-prefix=SYSTEM-DEMUX < %t/demux_system/token_demux_system.sv
 
 # MUX-LABEL: module token_mux
 # MUX: input [31:0] data_input_0
@@ -25,10 +25,21 @@
 # DEMUX: valid_output_0
 # DEMUX: valid_output_3
 
-# SYSTEM-LABEL: module loom_operation_shell_
-# SYSTEM: result_valid_0_reg
-# SYSTEM-LABEL: module loom_module
-# SYSTEM: input clock
-# SYSTEM: reset
-# SYSTEM: cfg_awaddr
-# SYSTEM: cfg_rdata
+# SYSTEM-MUX-LABEL: module loom_operation_shell_
+# SYSTEM-MUX: result_valid_reg
+# SYSTEM-MUX-LABEL: module loom_module
+# SYSTEM-MUX: input clock
+# SYSTEM-MUX: reset
+# SYSTEM-MUX: cfg_awaddr
+# SYSTEM-MUX: cfg_rdata
+
+# SYSTEM-DEMUX-LABEL: module loom_operation_shell_
+# SYSTEM-DEMUX: result_valid_0_reg
+# SYSTEM-DEMUX: result_valid_1_reg
+# SYSTEM-DEMUX: result_valid_2_reg
+# SYSTEM-DEMUX: result_valid_3_reg
+# SYSTEM-DEMUX-LABEL: module loom_module
+# SYSTEM-DEMUX: input clock
+# SYSTEM-DEMUX: reset
+# SYSTEM-DEMUX: cfg_awaddr
+# SYSTEM-DEMUX: cfg_rdata

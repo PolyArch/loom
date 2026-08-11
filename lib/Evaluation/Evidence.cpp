@@ -1,6 +1,9 @@
 #include "Evaluation/Evidence.h"
 
+#include "Evaluation/ArtifactImportCache.h"
+
 #include "CanonicalSupport.h"
+#include "EvidenceInternal.h"
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactLocalReference.h"
@@ -322,12 +325,24 @@ llvm::Expected<EvaluationEvidence> EvaluationEvidence::get(
     std::vector<ModelOutputBinding> outputBindings,
     EvaluationEvidenceOutcome outcome, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  ArtifactImportCacheScope cacheScope;
+  RequestVerifier verifier(resolution, artifactStore, blobStore);
+  if (llvm::Error error = verifier.verify(request))
+    return std::move(error);
+  return detail::EvaluationEvidenceBuilder::getForVerifiedRequest(
+      request, std::move(outputBindings), std::move(outcome), resolution,
+      artifactStore, blobStore);
+}
+
+llvm::Expected<EvaluationEvidence>
+detail::EvaluationEvidenceBuilder::getForVerifiedRequest(
+    const EvaluationRequest &request,
+    std::vector<ModelOutputBinding> outputBindings,
+    EvaluationEvidenceOutcome outcome, const CaseArtifactResolution &resolution,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
   const ArtifactRootReference requestRef = evaluationRequestReference(request);
   if (llvm::Error error = requireAvailable(
           requestRef, "EvaluationRequest reference", artifactStore))
-    return std::move(error);
-  RequestVerifier verifier(resolution, artifactStore, blobStore);
-  if (llvm::Error error = verifier.verify(request))
     return std::move(error);
   const EvaluationModelDescriptor *descriptor =
       resolveEvaluationModelDescriptor(request);

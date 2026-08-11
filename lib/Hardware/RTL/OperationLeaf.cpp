@@ -3,6 +3,7 @@
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricRefText.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -524,7 +525,9 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
     const ConfigurationFieldEncoding *encoding =
         configurationAbi.findOperationField(occurrence, field.ordinal);
     if (!encoding)
-      return invalid("configuration field is absent from ConfigurationABI");
+      return invalid("configuration field is absent from ConfigurationABI: " +
+                     fabric::printFabricRef(occurrence) + " / " +
+                     fabric::printFabricRef(field));
     const std::uint64_t width = encoding->encodedBitCount();
     if (width == 0)
       return invalid("configuration field has zero encoded width");

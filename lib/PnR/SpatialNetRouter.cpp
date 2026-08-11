@@ -379,7 +379,8 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
         {sourceEndpoints_, sourceReplicationGroups_, targetEndpoints_,
          targetPreferenceRanks_, costs.lowerBoundArcCosts(),
          costs.currentArcCosts(), candidate.logicalNetPayloadWidth(logicalNet),
-         0, endpointExpansionLimit, *eligibleTraversals});
+         0, endpointExpansionLimit, *eligibleTraversals,
+         costs.lowerBoundCostRevision()});
     if (!result)
       return result.takeError();
 

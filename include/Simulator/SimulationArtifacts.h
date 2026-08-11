@@ -166,6 +166,36 @@ struct SpatialFunctionalObservations {
   std::vector<MemoryObservationPayload> memories;
 };
 
+/// Transient semantic lane geometry derived from one exact Dataflow boundary
+/// type. It is shared by workload validation and external execution harnesses;
+/// no copy enters an Artifact.
+struct SpatialSimulationValueShape final {
+  std::uint64_t lanesPerToken = 0;
+  std::uint32_t laneBitWidth = 0;
+};
+
+struct SpatialSimulationBoundaryShapes final {
+  std::vector<SpatialSimulationValueShape> valueInputs;
+  std::vector<SpatialSimulationValueShape> streamInputs;
+  std::vector<SpatialSimulationValueShape> valueResults;
+  std::vector<SpatialSimulationValueShape> streamOutputs;
+};
+
+llvm::Expected<SpatialSimulationBoundaryShapes>
+projectSpatialSimulationBoundaryShapes(
+    const dataflow::CanonicalDataflowProgramView &program,
+    dataflow::RootedGraphLaunchRef launch);
+
+/// Packs or unpacks one Defined, non-pointer token with the exact low-lane-
+/// first transport ordering used by the Dataflow and CGRA simulators.
+llvm::Expected<llvm::APInt>
+packDefinedSpatialSimulationToken(const CanonicalValueSequence &sequence,
+                                  SpatialSimulationValueShape shape,
+                                  std::uint64_t tokenOrdinal);
+llvm::Expected<std::vector<SemanticLane>>
+unpackDefinedSpatialSimulationToken(const llvm::APInt &bits,
+                                    SpatialSimulationValueShape shape);
+
 //===----------------------------------------------------------------------===//
 // SpatialSimulationWorkload
 //===----------------------------------------------------------------------===//

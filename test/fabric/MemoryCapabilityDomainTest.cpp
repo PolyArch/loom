@@ -395,6 +395,28 @@ void checkReducedAccessRelation() {
   require("canonical relation", imported.accessClasses().size() == 1,
           "strict import changed a canonical relation");
 
+  MemoryAccessClass wide = accessClass(
+      MemoryAccessForm::Contiguous,
+      take("wide width set",
+           UnsignedDomain::fromCanonical({UnsignedInterval{8, 8},
+                                          UnsignedInterval{16, 16},
+                                          UnsignedInterval{32, 64}})),
+      take("wide lane set",
+           UnsignedDomain::fromCanonical({UnsignedInterval{1, 32}})));
+  ParameterizedMemoryAccessDomain wideImported =
+      take("wide canonical relation",
+           ParameterizedMemoryAccessDomain::fromCanonical({wide}));
+  require("wide canonical relation", wideImported.accessClasses().size() == 1,
+          "strict import expanded one canonical product row");
+  const MemoryAccessClass &wideRow = wideImported.accessClasses().front();
+  require("wide canonical relation",
+          wideRow.accessForm() == wide.accessForm() &&
+              wideRow.elementWidths().intervals() ==
+                  wide.elementWidths().intervals() &&
+              wideRow.flattenedLaneCounts().intervals() ==
+                  wide.flattenedLaneCounts().intervals(),
+          "strict import changed one canonical product row");
+
   MemoryAccessClass width32Lanes12 = accessClass(
       MemoryAccessForm::Contiguous, singleton(32),
       take("lane set",

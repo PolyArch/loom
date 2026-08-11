@@ -476,6 +476,8 @@ struct BoundarySpec final {
 
   static BoundarySpec s2t(const PortType &dataInput, const PortType &tagInput,
                           const PortType &taggedOutput);
+  static BoundarySpec s2tWithConfiguredTag(const PortType &dataInput,
+                                           const PortType &taggedOutput);
   static BoundarySpec t2s(const PortType &taggedInput,
                           llvm::ArrayRef<PortType> outputs);
 };

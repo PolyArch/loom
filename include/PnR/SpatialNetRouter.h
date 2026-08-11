@@ -53,6 +53,12 @@ public:
   std::uint64_t endpointExpansionCount() const {
     return endpointSearch_.endpointExpansionCount();
   }
+  std::uint64_t heuristicCacheHitCount() const {
+    return endpointSearch_.heuristicCacheHitCount();
+  }
+  std::uint64_t heuristicBuildCount() const {
+    return endpointSearch_.heuristicBuildCount();
+  }
   std::size_t retainedStorageBytes() const;
 
 private:

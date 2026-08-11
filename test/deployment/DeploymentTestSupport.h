@@ -3,7 +3,14 @@
 
 #include "Deployment/Deployment.h"
 
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Hardware/Implementation/HardwareImplementation.h"
+#include "Mapping/Artifact/MappingArtifact.h"
+
 #include "llvm/ADT/StringRef.h"
+
+#include "mlir/IR/Types.h"
 
 #include <string>
 
@@ -57,6 +64,18 @@ FinalizedDeployment buildRuntimeProviderDeployment(
     llvm::StringRef test, ArtifactStore &artifacts, BlobStore &blobs,
     const TemporaryTree &tree,
     const runtime::RuntimeProviderDescriptor &provider);
+
+FinalizedDeployment buildMappedSpatialDeployment(
+    llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
+    const fabric::FinalizedFabricRoot &system,
+    const mapping::FinalizedSpatialMapping &spatialMapping,
+    const hardware::FinalizedHardwareImplementation &implementation,
+    ArtifactStore &artifacts, BlobStore &blobs, const TemporaryTree &tree);
+
+fabric::FinalizedFabricRoot buildMappedSpatialSystem(
+    llvm::StringRef test, const fabric::FinalizedFabricRoot &module,
+    llvm::ArrayRef<mlir::Type> messagePayloads, const ArtifactStore &artifacts,
+    bool attachSystemMemory);
 
 llvm::Expected<FinalizedDeployment>
 tryBuildMinimalDeployment(llvm::StringRef test, ArtifactStore &artifacts,

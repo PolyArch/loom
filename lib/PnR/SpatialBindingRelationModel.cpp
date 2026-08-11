@@ -580,6 +580,50 @@ SpatialBindingRelationModel::create(
 
   std::vector<InitializerRelationInput> relationInputs;
   std::vector<std::uint8_t> constraintRelations;
+  if (computeDecisionCount > 1) {
+    const auto contexts = realizations.computeInstructionContexts();
+    std::vector<PnrIndex> contextValues(contexts.size());
+    std::map<ProjectionKey, PnrIndex> valueByContext;
+    for (auto [ordinal, context] : llvm::enumerate(contexts)) {
+      const ProjectionKey key = canonicalFabricBytes(context);
+      auto found = valueByContext.find(key);
+      if (found == valueByContext.end()) {
+        if (valueByContext.size() == getPnrIndexMax())
+          return invalid(Projection::ComputeInstructionContext,
+                         "resident context relation overflows PnrIndex");
+        found = valueByContext
+                    .try_emplace(key,
+                                 static_cast<PnrIndex>(valueByContext.size()))
+                    .first;
+      }
+      contextValues[ordinal] = found->second;
+    }
+
+    InitializerRelationInput residentContexts;
+    residentContexts.kind = InitializerRelationKind::Disjoint;
+    residentContexts.members.reserve(computeDecisionCount);
+    for (PnrIndex realization = 0; realization < computeDecisionCount;
+         ++realization) {
+      InitializerRelationMemberInput member;
+      member.decision = realization;
+      const auto choices =
+          llvm::ArrayRef(computeChoices)
+              .slice(computeChoiceOffsets[realization],
+                     computeChoiceOffsets[realization + 1] -
+                         computeChoiceOffsets[realization]);
+      member.projectedValues.reserve(choices.size());
+      for (const SpatialComputeBindingChoice &choice : choices) {
+        if (choice.instructionContext >= contextValues.size())
+          return invalid(Projection::ComputeInstructionContext,
+                         "compute choice names a foreign resident context");
+        member.projectedValues.push_back(
+            contextValues[choice.instructionContext]);
+      }
+      residentContexts.members.push_back(std::move(member));
+    }
+    relationInputs.push_back(std::move(residentContexts));
+    constraintRelations.push_back(0);
+  }
   std::optional<Projection> deferredProjection;
   for (std::size_t projectionOrdinal = 0;
        projectionOrdinal != FrozenConstraintIndex::projectionCount;

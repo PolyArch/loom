@@ -10,6 +10,7 @@
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
@@ -540,26 +541,66 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
       spatialCandidates->candidates.front(), store));
 
   const auto fields = spatial.view().configuredHardware().fields();
-  if (fields.size() != 3)
-    fail("complete Mapping did not derive the FU topology and operation "
+  const auto projectedComputeBindings = spatial.view().computeBindings();
+  if (projectedComputeBindings.size() != 1)
+    fail("configured projection fixture has the wrong binding count");
+  const auto selectedPe =
+      fabric.view().parentPeOf(projectedComputeBindings.front().occurrence);
+  if (!selectedPe)
+    fail("configured projection fixture FU has no parent PE");
+  const auto peSchema =
+      take(fabric.view().spatialPeConfigurationSchema(*selectedPe));
+  std::size_t selectedPeFieldCount = 0;
+  for (const auto &field : peSchema.fields())
+    if (!field.port ||
+        field.port->fu == projectedComputeBindings.front().occurrence)
+      ++selectedPeFieldCount;
+  if (fields.size() != selectedPeFieldCount + 3)
+    fail("complete Mapping did not derive the PE, FU topology, and operation "
          "fields");
+  std::size_t peFieldCount = 0;
   std::size_t topologyFieldCount = 0;
   std::size_t operationFieldCount = 0;
+  std::size_t peRouteCount = 0;
   for (const auto &field : fields) {
     const auto &owner = field.slot.field.owner.catalog();
-    if (owner.kind() == loom::fabric::FabricInventoryOwnerKind::FuOccurrence) {
+    if (owner.kind() == loom::fabric::FabricInventoryOwnerKind::PeOccurrence) {
+      ++peFieldCount;
+      const auto descriptor =
+          llvm::find_if(peSchema.fields(), [&](const auto &candidate) {
+            return candidate.reference == field.slot.field;
+          });
+      if (descriptor == peSchema.fields().end())
+        fail("configured PE field is absent from its Fabric schema");
+      const auto value =
+          take(peSchema.decode(field.slot.field, field.value.bytes()));
+      if (descriptor->kind ==
+          loom::fabric::FabricPeConfigurationFieldKind::Activation) {
+        const auto *active = std::get_if<loom::fabric::FabricPeActive>(&value);
+        if (!active ||
+            active->fu != projectedComputeBindings.front().occurrence)
+          fail("configured PE activation selected the wrong FU");
+      } else if (std::holds_alternative<loom::fabric::FabricPeRoute>(value)) {
+        ++peRouteCount;
+      } else if (!std::holds_alternative<loom::fabric::FabricPeDisconnected>(
+                     value)) {
+        fail("configured PE selector has an unexpected semantic value");
+      }
+    } else if (owner.kind() ==
+               loom::fabric::FabricInventoryOwnerKind::FuOccurrence) {
       ++topologyFieldCount;
     } else if (owner.kind() ==
                loom::fabric::FabricInventoryOwnerKind::FuOccurrenceNode) {
       ++operationFieldCount;
     } else {
-      fail("configured compute field has a non-FU occurrence owner");
+      fail("configured compute field has an unexpected owner");
     }
     auto relation =
         take(fabric.view().semanticFieldRelation(field.slot.field, context));
     requireSuccess(relation.validateSemanticValue(field.value.bytes()));
   }
-  if (topologyFieldCount != 1 || operationFieldCount != 2)
+  if (peFieldCount != selectedPeFieldCount || peRouteCount == 0 ||
+      topologyFieldCount != 1 || operationFieldCount != 2)
     fail("configured compute fields have the wrong semantic owners");
 
   const std::array<mlir::Type, 4> messagePayloads = {
@@ -782,7 +823,6 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
           store),
       "not canonical");
 
-  const auto bindings = spatial.view().computeBindings();
   const auto realizations = tech.view().computeRealizations();
   const loom::mapping::TechComputeActorView *actorBinding = nullptr;
   mlir::Operation *shuffleActor = nullptr;
@@ -805,7 +845,7 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
   if (!actorBinding)
     fail("configured projection fixture has no shuffle actor");
   const loom::mapping::SpatialComputeBindingView *binding = nullptr;
-  for (const auto &candidate : bindings) {
+  for (const auto &candidate : projectedComputeBindings) {
     if (candidate.realization == shuffleRealization) {
       if (binding)
         fail("configured projection fixture has duplicate spatial bindings");

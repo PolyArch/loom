@@ -5,6 +5,7 @@
 #include "Common/Artifact.h"
 #include "Common/ResolvedPnrPolicy.h"
 #include "DSE/ResolvedConfigView.h"
+#include "Evaluation/Models/MappedRtlSimulationConfig.h"
 #include "Evaluation/Models/PhysicalRailAnalysisConfig.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -63,6 +64,8 @@ struct ResolvedDseConfig {
 struct ResolvedEvaluationConfig final {
   std::optional<evaluation::models::CadenceVoltusStaticRailProviderBinding>
       cadenceVoltusStaticRail;
+  std::optional<evaluation::models::MappedRtlSimulatorBinding>
+      mappedRtlSimulator;
 };
 
 struct ResolvedConfig {

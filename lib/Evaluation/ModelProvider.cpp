@@ -1,5 +1,8 @@
 #include "Evaluation/ModelProvider.h"
 
+#include "Evaluation/ArtifactImportCache.h"
+#include "EvidenceInternal.h"
+
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -101,6 +104,7 @@ deriveExternalToolSemanticContract(const EvaluationRequest &request) {
 llvm::Expected<EvaluationEvidence> evaluateRequest(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  ArtifactImportCacheScope cacheScope;
   RequestVerifier verifier(resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(request))
     return std::move(error);
@@ -125,7 +129,7 @@ llvm::Expected<EvaluationEvidence> evaluateRequest(
       }
   }
   if (!implementation) {
-    return EvaluationEvidence::get(
+    return detail::EvaluationEvidenceBuilder::getForVerifiedRequest(
         request, emptyOutputBindings(*descriptor),
         UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable},
         resolution, artifactStore, blobStore);
@@ -135,9 +139,9 @@ llvm::Expected<EvaluationEvidence> evaluateRequest(
                     .evaluate(request, resolution, artifactStore, blobStore);
   if (!result)
     return result.takeError();
-  return EvaluationEvidence::get(request, std::move(result->outputBindings),
-                                 std::move(result->outcome), resolution,
-                                 artifactStore, blobStore);
+  return detail::EvaluationEvidenceBuilder::getForVerifiedRequest(
+      request, std::move(result->outputBindings), std::move(result->outcome),
+      resolution, artifactStore, blobStore);
 }
 
 namespace {
@@ -157,6 +161,7 @@ llvm::Expected<EvaluationModelPreparation> prepareEvaluationModelInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore,
     const external_tool::ExternalToolPreparationContext &context) {
+  ArtifactImportCacheScope cacheScope;
   RequestVerifier verifier(resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(request))
     return std::move(error);
@@ -181,7 +186,7 @@ llvm::Expected<EvaluationModelPreparation> prepareEvaluationModelInvocation(
               &*preparation))
     return EvaluationModelPreparation{std::move(*prepared)};
 
-  auto evidence = EvaluationEvidence::get(
+  auto evidence = detail::EvaluationEvidenceBuilder::getForVerifiedRequest(
       request, emptyOutputBindings(*descriptor),
       std::get<UnsupportedEvidence>(std::move(*preparation)), resolution,
       artifactStore, blobStore);
@@ -194,6 +199,7 @@ llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const external_tool::PreparedExternalToolInvocation &prepared,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  ArtifactImportCacheScope cacheScope;
   RequestVerifier verifier(resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(request))
     return std::move(error);
@@ -212,9 +218,9 @@ llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
           .import(request, resolution, prepared, artifactStore, blobStore);
   if (!result)
     return result.takeError();
-  return EvaluationEvidence::get(request, std::move(result->outputBindings),
-                                 std::move(result->outcome), resolution,
-                                 artifactStore, blobStore);
+  return detail::EvaluationEvidenceBuilder::getForVerifiedRequest(
+      request, std::move(result->outputBindings), std::move(result->outcome),
+      resolution, artifactStore, blobStore);
 }
 
 } // namespace loom::evaluation

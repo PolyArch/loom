@@ -8,11 +8,13 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Request.h"
 
+#include <memory>
+
 namespace loom::sim::detail {
 
 struct SpatialExecutionContext {
-  evaluation::EvaluationRequest request;
-  ImportedSpatialSimulationInputs inputs;
+  std::shared_ptr<const evaluation::EvaluationRequest> request;
+  std::shared_ptr<const ImportedSpatialSimulationInputs> inputs;
   dataflow::CanonicalDataflowProgramView dataflowView;
   ResolvedLaunchContext launch;
   evaluation::ArtifactCollectionCardinality stoppedExecutionCardinality;
@@ -22,8 +24,8 @@ struct SpatialExecutionContext {
 };
 
 struct SystemExecutionContext {
-  evaluation::EvaluationRequest request;
-  ImportedSystemSimulationInputs inputs;
+  std::shared_ptr<const evaluation::EvaluationRequest> request;
+  std::shared_ptr<const ImportedSystemSimulationInputs> inputs;
   ResolvedSystemContext system;
   evaluation::ArtifactCollectionCardinality stoppedExecutionCardinality;
   const evaluation::CaseArtifactResolution *resolution = nullptr;

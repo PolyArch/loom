@@ -59,6 +59,10 @@ private:
   std::vector<PnrIndex> touchedArcs_;
   std::vector<std::uint8_t> oldArcActive_;
   std::vector<PnrIndex> cycleWitness_;
+  std::vector<std::uint8_t> cycleSearchStates_;
+  std::vector<PnrIndex> cycleSearchParents_;
+  std::vector<PnrIndex> cycleSearchCursors_;
+  std::vector<PnrIndex> cycleSearchStack_;
   std::uint64_t transactionEpoch_ = 0;
   std::uint64_t searchEpoch_ = 0;
   IncrementalTopologicalTransaction *activeTransaction_ = nullptr;
@@ -128,6 +132,8 @@ public:
 
   llvm::Expected<bool> insertArc(PnrIndex arc);
   llvm::Error removeArc(PnrIndex arc);
+  llvm::Expected<bool> applyArcChanges(llvm::ArrayRef<PnrIndex> removals,
+                                       llvm::ArrayRef<PnrIndex> insertions);
   llvm::ArrayRef<PnrIndex> cycleWitness() const;
   llvm::Error commit();
   void rollback() noexcept;
@@ -139,6 +145,7 @@ private:
   void recordArc(PnrIndex arc);
   void recordRank(PnrIndex rank);
   llvm::Expected<bool> repairAfterInsertion(PnrIndex arc);
+  void buildCycleWitness();
   void finish();
 
   IncrementalTopologicalOrderHandle order_;

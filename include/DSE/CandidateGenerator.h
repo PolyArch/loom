@@ -25,6 +25,10 @@ class ArtifactStore;
 
 namespace loom::dse {
 
+/// Host-local execution capacity for independent candidate work. Providers
+/// may cap this further by the number of canonical work slots.
+std::uint32_t defaultCandidateWorkerCount();
+
 inline constexpr ArtifactSchemaDescriptor candidateGeneratorDescriptorSchema{
     "loom.candidate_generator_descriptor", SchemaVersion{2, 0}};
 

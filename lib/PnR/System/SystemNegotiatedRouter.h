@@ -15,6 +15,7 @@ namespace loom::pnr::detail {
 enum class SystemRoutingClosureFailureKind : std::uint8_t {
   FixedTerminalCapacityCut,
   NonClosure,
+  NoProgress,
 };
 
 enum class SystemRoutingClosureRequirement : std::uint8_t {

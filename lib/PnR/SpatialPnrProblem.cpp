@@ -1140,6 +1140,10 @@ private:
             fabric.parentPeOf(fu);
         if (!parent)
           return invalid("a Fabric FU occurrence has no parent PE relation");
+        const std::optional<::fabric::Schedule> schedule =
+            fabric.peSchedule(*parent);
+        if (!schedule)
+          return invalid("a Fabric PE occurrence has no scheduling contract");
         if (!domainContains(peDomain, *parent))
           continue;
         auto contextOffset = checked(contextOffsetContext,
@@ -1172,6 +1176,7 @@ private:
                 placementCountContext, result.computePlacements_.size(), 1))
           return error;
         result.computePlacements_.push_back({*realizationIndex, fu, *parent,
+                                             *schedule,
                                              *contextOffset,
                                              *frozenContextCount});
       }

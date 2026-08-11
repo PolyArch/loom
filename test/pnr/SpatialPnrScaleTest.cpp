@@ -348,6 +348,8 @@ loom::pnr::ResolvedPnrConfigView scalePnrConfig() {
   search.actionProposal = {1, 1, 0};
   search.routing.endpointExpansionLimit = UINT64_C(8000000);
   search.routing.negotiationIterationLimit = 64;
+  search.routing.noProgressIterationLimit = 8;
+  search.routing.noProgressTrendWindow = 4;
   search.annealing.calibrationProposalCount = 1;
   search.annealing.fallbackTemperature = 1;
   search.annealing.minimumTemperature = 1;
@@ -458,43 +460,30 @@ void regularMeshProducesTypedOutcome() {
                         constraints.view(), store, outcome);
   const auto *generated =
       std::get_if<loom::pnr::GeneratedSpatialMappings>(&outcome);
-  const loom::pnr::SpatialPnrGenerationAccounting *accounting = nullptr;
-  if (generated) {
-    if (generated->candidates.empty() ||
-        generated->termination !=
-            loom::pnr::SpatialPnrGenerationTermination::FixedAttemptsCompleted)
-      fail("regular finite-degree mesh produced no completed Mapping");
-    for (const auto &reference : generated->candidates) {
-      auto mapping =
-          take(loom::mapping::importSpatialMapping(reference, store));
-      auto inspection = take(loom::mapping::inspectSpatialMapping(
-          dataflow, tech.view(), fabric.view(), mapping.view()));
-      if (inspection.summary.selectedActorCount != actorCount ||
-          inspection.summary.computeRealizationCount != actorCount ||
-          inspection.summary.routeTreeCount == 0)
-        fail("regular scale Mapping inspection lost physical work");
-    }
-    accounting = &generated->accounting;
-  } else {
-    const auto *incomplete =
-        std::get_if<loom::pnr::IncompleteSpatialPnrGeneration>(&outcome);
-    if (!incomplete ||
-        incomplete->reason !=
-            loom::pnr::IncompleteSpatialPnrGenerationReason::NoPreparedSeed)
-      fail("regular finite-degree mesh lost its exact typed outcome: " +
-           spatialOutcomeDiagnostic(outcome));
-    accounting = &incomplete->accounting;
+  if (!generated || generated->candidates.empty() ||
+      generated->termination !=
+          loom::pnr::SpatialPnrGenerationTermination::FixedAttemptsCompleted)
+    fail("regular finite-degree mesh produced no completed Mapping: " +
+         spatialOutcomeDiagnostic(outcome));
+  for (const auto &reference : generated->candidates) {
+    auto mapping = take(loom::mapping::importSpatialMapping(reference, store));
+    auto inspection = take(loom::mapping::inspectSpatialMapping(
+        dataflow, tech.view(), fabric.view(), mapping.view()));
+    if (inspection.summary.selectedActorCount != actorCount ||
+        inspection.summary.computeRealizationCount != actorCount ||
+        inspection.summary.routeTreeCount == 0)
+      fail("regular scale Mapping inspection lost physical work");
   }
   const std::uint64_t totalWallNanoseconds =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - caseStart)
           .count();
-  if (totalWallNanoseconds >= UINT64_C(180) * UINT64_C(1000000000))
-    fail("regular scale Mapping exceeded its three-minute budget");
+  if (totalWallNanoseconds >= UINT64_C(90) * UINT64_C(1000000000))
+    fail("regular scale Mapping exceeded its ninety-second budget");
   if (observation.peakResidentBytes >= UINT64_C(8) * 1024 * 1024 * 1024)
     fail("regular scale Spatial PnR exceeded its 8 GiB resident budget");
   printObservation("regular", actorCount, observation, totalWallNanoseconds,
-                   *accounting);
+                   generated->accounting);
 }
 
 void techMappingCompletesWithinBudget() {
@@ -511,7 +500,7 @@ void techMappingCompletesWithinBudget() {
     fail("scale TechMapping did not retain singleton actor rows");
 }
 
-void irregularMeshHasNoPreparedSeed() {
+void irregularMeshProvesResidentContextPigeonhole() {
   constexpr std::size_t actorCount = 1009;
   const auto caseStart = std::chrono::steady_clock::now();
   TemporaryDirectory directory;
@@ -532,23 +521,80 @@ void irregularMeshHasNoPreparedSeed() {
   const ScaleObservation observation =
       observeSpatialPnr(dataflow, tech.view(), fabric.view(), config,
                         constraints.view(), store, outcome);
-  const auto *incomplete =
-      std::get_if<loom::pnr::IncompleteSpatialPnrGeneration>(&outcome);
-  if (!incomplete ||
-      incomplete->reason !=
-          loom::pnr::IncompleteSpatialPnrGenerationReason::NoPreparedSeed)
-    fail("irregular capacity pressure changed typed outcome: " +
+  const auto *proof =
+      std::get_if<loom::pnr::ProvenInfeasibleSpatialMapping>(&outcome);
+  if (!proof)
+    fail("resident context pigeonhole changed typed outcome: " +
          spatialOutcomeDiagnostic(outcome));
+  if (proof->accounting.preparedSeeds != 0 ||
+      proof->accounting.initializerAssignmentAttempts != 0 ||
+      proof->accounting.endpointExpansionSlots != 0 ||
+      proof->accounting.negotiationIterationSlots != 0 ||
+      proof->accounting.annealingBaseProposalSlots != 0 ||
+      proof->accounting.annealingMovableProposalSlots != 0 ||
+      proof->accounting.exactRepairInvocations != 0 ||
+      proof->accounting.finalClosureAttempts != 0 ||
+      proof->accounting.publicationSlots != 0)
+    fail("resident context pigeonhole consumed search or routing work");
   const std::uint64_t totalWallNanoseconds =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - caseStart)
           .count();
-  if (totalWallNanoseconds >= UINT64_C(180) * UINT64_C(1000000000))
-    fail("irregular scale Mapping exceeded its three-minute budget");
+  if (totalWallNanoseconds >= UINT64_C(90) * UINT64_C(1000000000))
+    fail("irregular scale Mapping exceeded its ninety-second budget");
   if (observation.peakResidentBytes >= UINT64_C(8) * 1024 * 1024 * 1024)
     fail("irregular scale Spatial PnR exceeded its 8 GiB resident budget");
-  printObservation("irregular", actorCount, observation, totalWallNanoseconds,
-                   incomplete->accounting);
+  printObservation("irregular_infeasible", actorCount, observation,
+                   totalWallNanoseconds, proof->accounting);
+}
+
+void irregularMeshProducesTypedOutcome() {
+  constexpr std::size_t actorCount = 481;
+  const auto caseStart = std::chrono::steady_clock::now();
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto dataflowArtifact = buildSyncChain(context, actorCount);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  auto fabric = buildBoundedMeshFabric(store, 9, 14, 2, 4);
+  auto tech = generateTechMapping(dataflow, fabric.view(), store);
+  if (tech.view().computeRealizations().size() != actorCount)
+    fail("feasible irregular TechMapping did not retain singleton actor rows");
+  auto constraints =
+      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+          dataflow, tech.view(), fabric.view(), store));
+  auto config = scalePnrConfig();
+  loom::pnr::SpatialPnrGenerationOutcome outcome;
+  const ScaleObservation observation =
+      observeSpatialPnr(dataflow, tech.view(), fabric.view(), config,
+                        constraints.view(), store, outcome);
+  const auto *generated =
+      std::get_if<loom::pnr::GeneratedSpatialMappings>(&outcome);
+  if (!generated || generated->candidates.empty() ||
+      generated->termination !=
+          loom::pnr::SpatialPnrGenerationTermination::FixedAttemptsCompleted)
+    fail("feasible irregular mesh produced no completed Mapping: " +
+         spatialOutcomeDiagnostic(outcome));
+  for (const auto &reference : generated->candidates) {
+    auto mapping = take(loom::mapping::importSpatialMapping(reference, store));
+    auto inspection = take(loom::mapping::inspectSpatialMapping(
+        dataflow, tech.view(), fabric.view(), mapping.view()));
+    if (inspection.summary.selectedActorCount != actorCount ||
+        inspection.summary.computeRealizationCount != actorCount ||
+        inspection.summary.routeTreeCount == 0)
+      fail("feasible irregular Mapping inspection lost physical work");
+  }
+  const std::uint64_t totalWallNanoseconds =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - caseStart)
+          .count();
+  if (totalWallNanoseconds >= UINT64_C(90) * UINT64_C(1000000000))
+    fail("feasible irregular Mapping exceeded its ninety-second budget");
+  if (observation.peakResidentBytes >= UINT64_C(8) * 1024 * 1024 * 1024)
+    fail("feasible irregular Spatial PnR exceeded its 8 GiB resident budget");
+  printObservation("irregular_feasible", actorCount, observation,
+                   totalWallNanoseconds, generated->accounting);
 }
 
 } // namespace
@@ -562,7 +608,9 @@ int main(int argc, char **argv) {
   else if (name == "regular")
     regularMeshProducesTypedOutcome();
   else if (name == "irregular")
-    irregularMeshHasNoPreparedSeed();
+    irregularMeshProvesResidentContextPigeonhole();
+  else if (name == "irregular-feasible")
+    irregularMeshProducesTypedOutcome();
   else
     fail("unknown test case: " + name);
   return EXIT_SUCCESS;

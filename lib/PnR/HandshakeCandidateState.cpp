@@ -24,6 +24,8 @@ namespace loom::pnr::detail {
 struct HandshakeCandidateScratchStorage final {
   IncrementalTopologicalScratch topologyScratch;
   std::optional<IncrementalTopologicalTransaction> topologyTransaction;
+  std::vector<PnrIndex> removedArcs;
+  std::vector<PnrIndex> insertedArcs;
 };
 
 } // namespace loom::pnr::detail
@@ -79,6 +81,8 @@ HandshakeCandidateScratch::prepare(const FrozenSpatialHandshakeIndex &index) {
   arcDeltas_.reserve(index.arcs().size());
   traversalDeltas_.reserve(index.traversalFragmentOffsets().size() - 1);
   groupDeltas_.reserve(index.allTraversalGroups().size());
+  storage_->removedArcs.reserve(index.arcs().size());
+  storage_->insertedArcs.reserve(index.arcs().size());
   transactionEpoch_ = 0;
   resetTransaction();
   return llvm::Error::success();
@@ -91,7 +95,8 @@ std::size_t HandshakeCandidateScratch::retainedStorageBytes() const {
          retainedBytes(traversalJournalMarks_) +
          retainedBytes(groupJournalMarks_) + retainedBytes(fragmentDeltas_) +
          retainedBytes(arcDeltas_) + retainedBytes(traversalDeltas_) +
-         retainedBytes(groupDeltas_);
+         retainedBytes(groupDeltas_) + retainedBytes(storage_->removedArcs) +
+         retainedBytes(storage_->insertedArcs);
 }
 
 void HandshakeCandidateScratch::beginTransaction() {
@@ -110,6 +115,8 @@ void HandshakeCandidateScratch::resetTransaction() {
   arcDeltas_.clear();
   traversalDeltas_.clear();
   groupDeltas_.clear();
+  storage_->removedArcs.clear();
+  storage_->insertedArcs.clear();
 }
 
 llvm::Expected<HandshakeCandidateStateHandle>
@@ -484,19 +491,18 @@ llvm::Expected<bool> HandshakeCandidateTransaction::close() {
   auto &topologyTransaction = *scratch_->storage_->topologyTransaction;
   for (const auto &delta : scratch_->arcDeltas_)
     if (delta.oldValue != 0 && state_->arcRefcounts_[delta.index] == 0)
-      if (llvm::Error error = topologyTransaction.removeArc(delta.index))
-        return std::move(error);
-  for (const auto &delta : scratch_->arcDeltas_) {
-    if (delta.oldValue != 0 || state_->arcRefcounts_[delta.index] == 0)
-      continue;
-    auto inserted = topologyTransaction.insertArc(delta.index);
-    if (!inserted)
-      return inserted.takeError();
-    if (!*inserted) {
-      cycle_ = true;
-      closed_ = true;
-      return false;
-    }
+      scratch_->storage_->removedArcs.push_back(delta.index);
+  for (const auto &delta : scratch_->arcDeltas_)
+    if (delta.oldValue == 0 && state_->arcRefcounts_[delta.index] != 0)
+      scratch_->storage_->insertedArcs.push_back(delta.index);
+  auto changed = topologyTransaction.applyArcChanges(
+      scratch_->storage_->removedArcs, scratch_->storage_->insertedArcs);
+  if (!changed)
+    return changed.takeError();
+  if (!*changed) {
+    cycle_ = true;
+    closed_ = true;
+    return false;
   }
   closed_ = true;
   return true;

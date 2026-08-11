@@ -969,3 +969,71 @@ deriveCanonicalObjectOrdinals(
 }
 
 } // namespace loom::sim::detail
+
+namespace loom::sim {
+
+llvm::Expected<SpatialSimulationBoundaryShapes>
+projectSpatialSimulationBoundaryShapes(
+    const dataflow::CanonicalDataflowProgramView &program,
+    dataflow::RootedGraphLaunchRef launch) {
+  auto context = detail::resolveLaunchContext(program, launch);
+  if (!context)
+    return context.takeError();
+  const auto project = [](llvm::ArrayRef<detail::LaneShape> source) {
+    std::vector<SpatialSimulationValueShape> result;
+    result.reserve(source.size());
+    for (const detail::LaneShape &shape : source)
+      result.push_back({shape.lanesPerToken, shape.laneBitWidth});
+    return result;
+  };
+  return SpatialSimulationBoundaryShapes{project(context->valueInputShapes),
+                                         project(context->streamInputShapes),
+                                         project(context->valueResultShapes),
+                                         project(context->streamOutputShapes)};
+}
+
+llvm::Expected<llvm::APInt>
+packDefinedSpatialSimulationToken(const CanonicalValueSequence &sequence,
+                                  SpatialSimulationValueShape shape,
+                                  std::uint64_t tokenOrdinal) {
+  if (shape.lanesPerToken == 0 || shape.laneBitWidth == 0 ||
+      shape.lanesPerToken >
+          std::numeric_limits<unsigned>::max() / shape.laneBitWidth)
+    return detail::invalid("simulation transport lane geometry is invalid");
+  if (tokenOrdinal >= sequence.tokenCount ||
+      sequence.lanes.size() != sequence.tokenCount * shape.lanesPerToken)
+    return detail::invalid("simulation transport token is out of range");
+  const unsigned bitWidth =
+      static_cast<unsigned>(shape.lanesPerToken * shape.laneBitWidth);
+  llvm::APInt packed(bitWidth, 0);
+  const std::uint64_t first = tokenOrdinal * shape.lanesPerToken;
+  for (std::uint64_t laneOrdinal = 0; laneOrdinal < shape.lanesPerToken;
+       ++laneOrdinal) {
+    const SemanticLane &lane = sequence.lanes[first + laneOrdinal];
+    if (lane.state != SemanticState::Defined || lane.pointerTarget ||
+        lane.bits.getBitWidth() != shape.laneBitWidth)
+      return detail::invalid(
+          "RTL transport requires a Defined non-pointer lane");
+    packed.insertBits(lane.bits, laneOrdinal * shape.laneBitWidth);
+  }
+  return packed;
+}
+
+llvm::Expected<std::vector<SemanticLane>>
+unpackDefinedSpatialSimulationToken(const llvm::APInt &bits,
+                                    SpatialSimulationValueShape shape) {
+  if (shape.lanesPerToken == 0 || shape.laneBitWidth == 0 ||
+      shape.lanesPerToken >
+          std::numeric_limits<unsigned>::max() / shape.laneBitWidth ||
+      bits.getBitWidth() != shape.lanesPerToken * shape.laneBitWidth)
+    return detail::invalid("RTL observation lane geometry is invalid");
+  std::vector<SemanticLane> lanes;
+  lanes.reserve(shape.lanesPerToken);
+  for (std::uint64_t laneOrdinal = 0; laneOrdinal < shape.lanesPerToken;
+       ++laneOrdinal)
+    lanes.push_back(SemanticLane::defined(bits.extractBits(
+        shape.laneBitWidth, laneOrdinal * shape.laneBitWidth)));
+  return lanes;
+}
+
+} // namespace loom::sim

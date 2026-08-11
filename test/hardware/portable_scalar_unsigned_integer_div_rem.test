@@ -14,7 +14,9 @@
 # DIV8: data_input_1,
 # DIV8: output [12:0] data_output_0
 # DIV8: wire [[ZERO:[_A-Za-z0-9]+]] = data_input_1[7:0] == 8'h0
-# DIV8: {5'h0, [[ZERO]] ? 8'h0 : data_input_0[7:0] / ([[ZERO]] ? 8'h1 : data_input_1[7:0])}
+# DIV8: wire [7:0] [[SAFE:[_A-Za-z0-9]+]] = [[ZERO]] ? 8'h1 : data_input_1[7:0]
+# DIV8: wire [7:0] [[QUOTIENT:[_A-Za-z0-9]+]] = data_input_0[7:0] / [[SAFE]]
+# DIV8: {5'h0, [[ZERO]] ? 8'h0 : [[QUOTIENT]]}
 # DIV8-NOT: config_
 # DIV8-NOT: %
 
@@ -24,7 +26,8 @@
 # REM8: output [12:0] data_output_0
 # REM8: wire [[ZERO:[_A-Za-z0-9]+]] = data_input_1[7:0] == 8'h0
 # REM8: wire [7:0] [[SAFE:[_A-Za-z0-9]+]] = [[ZERO]] ? 8'h1 : data_input_1[7:0]
-# REM8: {5'h0, [[ZERO]] ? 8'h0 : data_input_0[7:0] - data_input_0[7:0] / [[SAFE]] * [[SAFE]]}
+# REM8: wire [7:0] [[QUOTIENT:[_A-Za-z0-9]+]] = data_input_0[7:0] / [[SAFE]]
+# REM8: {5'h0, [[ZERO]] ? 8'h0 : data_input_0[7:0] - [[QUOTIENT]] * [[SAFE]]}
 # REM8-NOT: config_
 # REM8-NOT: %
 
@@ -33,7 +36,9 @@
 # DUAL8: wire [[ZERO:[_A-Za-z0-9]+]] = data_input_1[7:0] == 8'h0
 # DUAL8: wire [7:0] [[SAFE:[_A-Za-z0-9]+]] = [[ZERO]] ? 8'h1 : data_input_1[7:0]
 # DUAL8: wire [7:0] [[QUOTIENT:[_A-Za-z0-9]+]] = data_input_0[7:0] / [[SAFE]]
-# DUAL8: {5'h0, [[ZERO]] ? 8'h0 : config_0 == 2'h2 ? [[QUOTIENT]] : data_input_0[7:0] - [[QUOTIENT]] * [[SAFE]]}
+# DUAL8: config_0 == 2'h2
+# DUAL8: ? {5'h0, [[ZERO]] ? 8'h0 : [[QUOTIENT]]}
+# DUAL8: : {5'h0, [[ZERO]] ? 8'h0 : data_input_0[7:0] - [[QUOTIENT]] * [[SAFE]]}
 # DUAL8-NOT: %
 
 # DUAL8Q-LABEL: module scalar_unsigned_div_rem_8_padded_inactive_quotient(
@@ -41,7 +46,9 @@
 # DUAL8Q: wire [[ZERO:[_A-Za-z0-9]+]] = data_input_1[7:0] == 8'h0
 # DUAL8Q: wire [7:0] [[SAFE:[_A-Za-z0-9]+]] = [[ZERO]] ? 8'h1 : data_input_1[7:0]
 # DUAL8Q: wire [7:0] [[QUOTIENT:[_A-Za-z0-9]+]] = data_input_0[7:0] / [[SAFE]]
-# DUAL8Q: {5'h0, [[ZERO]] ? 8'h0 : config_0 == 2'h1 ? data_input_0[7:0] - [[QUOTIENT]] * [[SAFE]] : [[QUOTIENT]]}
+# DUAL8Q: config_0 == 2'h1
+# DUAL8Q: ? {5'h0, [[ZERO]] ? 8'h0 : data_input_0[7:0] - [[QUOTIENT]] * [[SAFE]]}
+# DUAL8Q: : {5'h0, [[ZERO]] ? 8'h0 : [[QUOTIENT]]}
 # DUAL8Q-NOT: %
 
 # DUAL64-LABEL: module scalar_unsigned_div_rem_64(
@@ -49,7 +56,9 @@
 # DUAL64: input [1:0] config_0
 # DUAL64: wire [63:0] [[SAFE:[_A-Za-z0-9]+]] = {{[_A-Za-z0-9]+}} ? 64'h1 : data_input_1
 # DUAL64: wire [63:0] [[QUOTIENT:[_A-Za-z0-9]+]] = data_input_0 / [[SAFE]]
-# DUAL64: config_0 == 2'h2 ? [[QUOTIENT]] : data_input_0 - [[QUOTIENT]] * [[SAFE]]
+# DUAL64: config_0 == 2'h2
+# DUAL64: ? ({{[_A-Za-z0-9]+}} ? 64'h0 : [[QUOTIENT]])
+# DUAL64: : {{[_A-Za-z0-9]+}} ? 64'h0 : data_input_0 - [[QUOTIENT]] * [[SAFE]]
 # DUAL64-NOT: %
 
 # TB: 8-bit unsigned division oracle mismatch

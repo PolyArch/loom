@@ -1071,6 +1071,7 @@ void artifactRoundTripAndReferenceValidation() {
          spatialCandidate->logicalNetPayloadWidth(*routedNet),
          0,
          262144,
+         {},
          {}});
     if (!prefix) {
       llvm::consumeError(prefix.takeError());
@@ -1088,6 +1089,7 @@ void artifactRoundTripAndReferenceValidation() {
          spatialCandidate->logicalNetPayloadWidth(*routedNet),
          0,
          262144,
+         {},
          {}});
     if (!suffix) {
       llvm::consumeError(suffix.takeError());
@@ -1339,8 +1341,9 @@ void artifactRoundTripAndReferenceValidation() {
 
   loom::pnr::SpatialPathFinderRouterScratch negotiatedRouter;
   requireSuccess(negotiatedRouter.prepare(*frozen));
-  auto failedIteration = negotiatedRouter.routeToClosure(
-      *routedCandidate, routedCandidateScratch, routedCostState, {1, 1}, {});
+  auto failedIteration =
+      negotiatedRouter.routeToClosure(*routedCandidate, routedCandidateScratch,
+                                      routedCostState, {1, 1, 1, 1}, {});
   if (failedIteration)
     fail("bounded PathFinder iteration unexpectedly reached closure");
   llvm::consumeError(failedIteration.takeError());

@@ -119,7 +119,10 @@ AttemptFailure classifyAttemptFailure(llvm::Error error) {
       },
       [&](const SpatialPathFinderClosureFailure &failure) {
         result.kind =
-            failure.kind() == SpatialPathFinderClosureFailure::Kind::NonClosure
+            failure.kind() ==
+                        SpatialPathFinderClosureFailure::Kind::NonClosure ||
+                    failure.kind() ==
+                        SpatialPathFinderClosureFailure::Kind::NoProgress
                 ? AttemptFailureKind::SemanticLimit
                 : AttemptFailureKind::Rejected;
         result.diagnostic = errorMessage(failure);
@@ -386,31 +389,33 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
               "bounded exact repair left atomic CapacityOveruse unresolved"};
   }
 
-  accounting.finalClosureAttempts = 1;
-  llvm::Error closureError = finalClosure.run(*seed->candidate);
-  if (llvm::Error error = checkedAdd(finalClosure.endpointExpansionCount(),
-                                     accounting.endpointExpansionSlots,
-                                     "final-closure endpoint expansions"))
-    return restartInternal(
-        InternalSpatialPnrGenerationReason::AccountingOverflow,
-        std::move(accounting), std::move(error));
-  if (llvm::Error error = checkedAdd(finalClosure.negotiationIterationCount(),
-                                     accounting.negotiationIterationSlots,
-                                     "final-closure negotiation iterations"))
-    return restartInternal(
-        InternalSpatialPnrGenerationReason::AccountingOverflow,
-        std::move(accounting), std::move(error));
-  if (closureError) {
-    AttemptFailure failure = classifyAttemptFailure(std::move(closureError));
-    if (failure.kind == AttemptFailureKind::Internal)
-      return restartInternal(InternalSpatialPnrGenerationReason::FinalClosure,
-                             std::move(accounting), failure.diagnostic);
-    return {SpatialRestartDisposition::Incomplete,
-            std::move(accounting),
-            nullptr,
-            failure.kind == AttemptFailureKind::SemanticLimit,
-            InternalSpatialPnrGenerationReason::FinalClosure,
-            std::move(failure.diagnostic)};
+  if (!annealed->exactClosureReached) {
+    accounting.finalClosureAttempts = 1;
+    llvm::Error closureError = finalClosure.run(*seed->candidate);
+    if (llvm::Error error = checkedAdd(finalClosure.endpointExpansionCount(),
+                                       accounting.endpointExpansionSlots,
+                                       "final-closure endpoint expansions"))
+      return restartInternal(
+          InternalSpatialPnrGenerationReason::AccountingOverflow,
+          std::move(accounting), std::move(error));
+    if (llvm::Error error = checkedAdd(finalClosure.negotiationIterationCount(),
+                                       accounting.negotiationIterationSlots,
+                                       "final-closure negotiation iterations"))
+      return restartInternal(
+          InternalSpatialPnrGenerationReason::AccountingOverflow,
+          std::move(accounting), std::move(error));
+    if (closureError) {
+      AttemptFailure failure = classifyAttemptFailure(std::move(closureError));
+      if (failure.kind == AttemptFailureKind::Internal)
+        return restartInternal(InternalSpatialPnrGenerationReason::FinalClosure,
+                               std::move(accounting), failure.diagnostic);
+      return {SpatialRestartDisposition::Incomplete,
+              std::move(accounting),
+              nullptr,
+              failure.kind == AttemptFailureKind::SemanticLimit,
+              InternalSpatialPnrGenerationReason::FinalClosure,
+              std::move(failure.diagnostic)};
+    }
   }
 
   if (llvm::Error error = seed->candidate->verify())

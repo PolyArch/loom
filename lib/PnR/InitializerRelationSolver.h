@@ -156,6 +156,32 @@ private:
     PnrIndex valueCount = 0;
   };
 
+  struct AllDifferentRelationSupport final {
+    std::size_t memberOffset = 0;
+    PnrIndex memberCount = 0;
+    std::size_t forcedDecisionCountOffset = 0;
+    std::size_t valueOccurrenceOffset = 0;
+    PnrIndex valueCount = 0;
+  };
+
+  struct AllDifferentMemberSupport final {
+    PnrIndex decision = 0;
+    std::size_t choiceValueOffset = 0;
+    std::size_t activeChoiceCountOffset = 0;
+    PnrIndex activeValueCount = 0;
+    PnrIndex soleActiveValue = getInvalidPnrIndex();
+  };
+
+  struct AllDifferentChoiceOccurrence final {
+    std::size_t member = 0;
+    PnrIndex localChoice = 0;
+  };
+
+  struct AllDifferentForcedValue final {
+    PnrIndex relation = 0;
+    PnrIndex value = 0;
+  };
+
   struct RemovedChoice final {
     PnrIndex decision = 0;
     PnrIndex localChoice = 0;
@@ -173,14 +199,18 @@ private:
   void enqueueDecisionRelations(PnrIndex decision);
   void updateBinaryEqualSupport(PnrIndex decision, PnrIndex localChoice,
                                 bool add);
+  void updateAllDifferentSupport(PnrIndex decision, PnrIndex localChoice,
+                                 bool add);
+  void enqueueAllDifferentForcedValue(PnrIndex relation, PnrIndex value);
+  bool propagateAllDifferentValue(PnrIndex relation, PnrIndex value);
   bool removeChoice(PnrIndex decision, PnrIndex localChoice);
   bool choiceActive(PnrIndex decision, PnrIndex localChoice) const;
   bool relationChoiceSupported(PnrIndex relation, PnrIndex decision,
                                PnrIndex localChoice) const;
   bool equalChoiceSupported(PnrIndex relation, PnrIndex decision,
                             PnrIndex localChoice) const;
-  bool disjointChoiceSupported(const InitializerRelationRecord &relation,
-                               PnrIndex decision, PnrIndex localChoice) const;
+  bool disjointChoiceSupported(PnrIndex relation, PnrIndex decision,
+                               PnrIndex localChoice) const;
   bool activeRelationSatisfied(const InitializerRelationRecord &relation) const;
   bool propagate();
   llvm::Expected<SearchResult>
@@ -209,6 +239,15 @@ private:
   std::vector<BinaryEqualSupport> binaryEqualSupports_;
   std::vector<PnrIndex> binaryEqualChoiceValues_;
   std::vector<PnrIndex> binaryEqualActiveCounts_;
+  std::vector<AllDifferentRelationSupport> allDifferentSupports_;
+  std::vector<AllDifferentMemberSupport> allDifferentMembers_;
+  std::vector<PnrIndex> allDifferentChoiceValues_;
+  std::vector<PnrIndex> allDifferentActiveChoiceCounts_;
+  std::vector<PnrIndex> allDifferentForcedDecisionCounts_;
+  std::vector<std::size_t> allDifferentValueOccurrenceOffsets_;
+  std::vector<AllDifferentChoiceOccurrence> allDifferentChoiceOccurrences_;
+  std::vector<std::uint8_t> allDifferentForcedValuePending_;
+  std::vector<AllDifferentForcedValue> allDifferentForcedValueQueue_;
   std::vector<PnrIndex> canonicalActiveChoices_;
   std::vector<PnrIndex> choiceOrder_;
   std::vector<PnrIndex> choiceFenwick_;
@@ -217,6 +256,7 @@ private:
   std::size_t queueTail_ = 0;
   std::size_t queueCount_ = 0;
   std::uint64_t assignmentAttempts_ = 0;
+  bool rootCardinalityContradiction_ = false;
 };
 
 } // namespace loom::pnr::detail

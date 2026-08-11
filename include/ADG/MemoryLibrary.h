@@ -45,6 +45,13 @@ struct LocalMemoryParameters final {
   bool managerEndpoint = false;
 };
 
+/// Parameters for an Operation Engine whose only storage target is an
+/// external service reached through its manager endpoint.
+struct ManagerMemoryParameters final {
+  MemoryInterfaceParameters interface;
+  std::optional<TemporalMemoryParameters> temporal;
+};
+
 /// Exact address range, access domain, and independent beat width of one
 /// catalog System memory-service recipe.
 struct SystemMemoryParameters final {
@@ -73,6 +80,16 @@ makeHybrid32LocalMemory(LocalMemoryParameters parameters);
 /// the registered 64-bit element domain and optional indexed-address form.
 llvm::Expected<MemorySpec>
 makeGeneral64LocalMemory(LocalMemoryParameters parameters);
+
+/// Builds the same Hybrid32 Operation Engine without a Local Memory Service.
+/// Every admitted operation dispatches through the single manager endpoint.
+llvm::Expected<MemorySpec>
+makeHybrid32ManagerMemory(ManagerMemoryParameters parameters);
+
+/// Builds the same General64 Operation Engine without a Local Memory Service.
+/// Every admitted operation dispatches through the single manager endpoint.
+llvm::Expected<MemorySpec>
+makeGeneral64ManagerMemory(ManagerMemoryParameters parameters);
 
 llvm::Expected<SystemMemorySpec>
 makeHybrid32SystemMemory(SystemMemoryParameters parameters,

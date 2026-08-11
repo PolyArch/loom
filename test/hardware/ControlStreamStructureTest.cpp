@@ -890,11 +890,14 @@ void writeAtomicTransportToolArtifacts(const std::filesystem::path &root) {
       port("capacity_available", input), port("held_valid_0", input),
       port("held_valid_1", input),       port("result_ready_0", input),
       port("result_ready_1", input)};
-  llvm::SmallVector<circt::hw::PortInfo, 7> outputs{
+  llvm::SmallVector<circt::hw::PortInfo, 14> outputs{
       port("input_ready_0", output),     port("input_ready_1", output),
       port("published_valid_0", output), port("published_valid_1", output),
       port("occupied", output),          port("released", output),
-      port("available", output)};
+      port("available", output),         port("elastic_valid_0", output),
+      port("elastic_valid_1", output),   port("elastic_handoff_0", output),
+      port("elastic_handoff_1", output), port("elastic_occupied", output),
+      port("elastic_released", output),  port("elastic_available", output)};
   circt::hw::HWModuleOp::create(
       builder, location, builder.getStringAttr("atomic_transport_contract"),
       circt::hw::ModulePortInfo(inputs, outputs),
@@ -916,6 +919,9 @@ void writeAtomicTransportToolArtifacts(const std::filesystem::path &root) {
         auto tuple =
             take(test, loom::hardware::rtl::deriveAtomicResultTupleSignals(
                            bodyBuilder, location, heldValids, resultReady));
+        auto elastic =
+            take(test, loom::hardware::rtl::deriveElasticResultTupleSignals(
+                           bodyBuilder, location, heldValids, resultReady));
 
         expectError(test,
                     loom::hardware::rtl::deriveAtomicInputReadiness(
@@ -927,6 +933,11 @@ void writeAtomicTransportToolArtifacts(const std::filesystem::path &root) {
                         bodyBuilder, location, heldValids,
                         llvm::ArrayRef<mlir::Value>{resultReady}.drop_back()),
                     "arity");
+        expectError(test,
+                    loom::hardware::rtl::deriveElasticResultTupleSignals(
+                        bodyBuilder, location, heldValids,
+                        llvm::ArrayRef<mlir::Value>{resultReady}.drop_back()),
+                    "arity");
 
         accessor.setOutput("input_ready_0", inputReady[0]);
         accessor.setOutput("input_ready_1", inputReady[1]);
@@ -935,6 +946,13 @@ void writeAtomicTransportToolArtifacts(const std::filesystem::path &root) {
         accessor.setOutput("occupied", tuple.occupied);
         accessor.setOutput("released", tuple.released);
         accessor.setOutput("available", tuple.available);
+        accessor.setOutput("elastic_valid_0", elastic.publishedValids[0]);
+        accessor.setOutput("elastic_valid_1", elastic.publishedValids[1]);
+        accessor.setOutput("elastic_handoff_0", elastic.handoffs[0]);
+        accessor.setOutput("elastic_handoff_1", elastic.handoffs[1]);
+        accessor.setOutput("elastic_occupied", elastic.occupied);
+        accessor.setOutput("elastic_released", elastic.released);
+        accessor.setOutput("elastic_available", elastic.available);
       });
 
   const std::string systemVerilog = take(
@@ -963,6 +981,13 @@ module atomic_transport_testbench;
   logic occupied;
   logic released;
   logic available;
+  logic elastic_valid_0;
+  logic elastic_valid_1;
+  logic elastic_handoff_0;
+  logic elastic_handoff_1;
+  logic elastic_occupied;
+  logic elastic_released;
+  logic elastic_available;
 
   atomic_transport_contract dut(.*);
 
@@ -996,6 +1021,16 @@ module atomic_transport_testbench;
       check(available ==
                 (!(held_valid_0 || held_valid_1) || released),
             "Tuple capacity did not permit exact replacement");
+      check(elastic_valid_0 == held_valid_0 &&
+                elastic_valid_1 == held_valid_1,
+            "Elastic tuple gated a result with peer readiness");
+      check(elastic_handoff_0 == (held_valid_0 && result_ready_0) &&
+                elastic_handoff_1 == (held_valid_1 && result_ready_1),
+            "Elastic tuple changed a per-result handoff");
+      check(elastic_occupied == occupied &&
+                elastic_released == released &&
+                elastic_available == available,
+            "Elastic tuple changed shared slot lifetime");
     end
     $finish;
   end

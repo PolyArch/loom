@@ -224,6 +224,8 @@ struct ConfigPatch {
   std::optional<
       loom::evaluation::models::CadenceVoltusStaticRailProviderBinding>
       cadenceVoltusStaticRail;
+  std::optional<loom::evaluation::models::MappedRtlSimulatorBinding>
+      mappedRtlSimulator;
   std::optional<std::uint32_t> ownershipScopeExpansionLimit;
   std::optional<std::uint32_t> scheduleScopeExpansionLimit;
   std::optional<std::uint32_t> memoryCommunicationScopeExpansionLimit;
@@ -302,6 +304,8 @@ void applyPatch(loom::ResolvedConfig &config, const ConfigPatch &patch) {
     config.hardwareTarget = *patch.hardwareTarget;
   if (patch.cadenceVoltusStaticRail)
     config.evaluation.cadenceVoltusStaticRail = *patch.cadenceVoltusStaticRail;
+  if (patch.mappedRtlSimulator)
+    config.evaluation.mappedRtlSimulator = *patch.mappedRtlSimulator;
   if (patch.ownershipScopeExpansionLimit)
     config.dse.structuredOwnership.scopeExpansionLimit =
         *patch.ownershipScopeExpansionLimit;
@@ -990,6 +994,7 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
   auto routingOrErr = ClosedMapping::parse(
       searchOrErr->at("routing"), key + ".search_policy.routing",
       {"endpoint_expansion_limit", "negotiation_iteration_limit",
+       "no_progress_iteration_limit", "no_progress_trend_window",
        "negotiation_policy", "route_guidance_binding"});
   if (!routingOrErr)
     return routingOrErr.takeError();
@@ -999,6 +1004,12 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
   auto negotiationLimit =
       requireU64(routingOrErr->at("negotiation_iteration_limit"),
                  key + ".search_policy.routing.negotiation_iteration_limit");
+  auto noProgressLimit =
+      requireU64(routingOrErr->at("no_progress_iteration_limit"),
+                 key + ".search_policy.routing.no_progress_iteration_limit");
+  auto noProgressTrendWindow =
+      requireU64(routingOrErr->at("no_progress_trend_window"),
+                 key + ".search_policy.routing.no_progress_trend_window");
   auto negotiation = parseRoutingNegotiationPolicy(
       routingOrErr->at("negotiation_policy"),
       key + ".search_policy.routing.negotiation_policy");
@@ -1006,6 +1017,10 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
     return endpointLimit.takeError();
   if (!negotiationLimit)
     return negotiationLimit.takeError();
+  if (!noProgressLimit)
+    return noProgressLimit.takeError();
+  if (!noProgressTrendWindow)
+    return noProgressTrendWindow.takeError();
   if (!negotiation)
     return negotiation.takeError();
   std::optional<std::uint32_t> routeGuidance;
@@ -1209,6 +1224,7 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
        loom::ResolvedPnrActionProposalPolicy{*realization, *transport,
                                              *resource},
        loom::ResolvedPnrRoutingPolicy{*endpointLimit, *negotiationLimit,
+                                      *noProgressLimit, *noProgressTrendWindow,
                                       std::move(*negotiation), routeGuidance},
        loom::ResolvedPnrAnnealingPolicy{*calibration, *quantile, *acceptance,
                                         *fallback, *minimum, *cooling,
@@ -1389,10 +1405,10 @@ llvm::Expected<loom::evaluation::models::CadenceVoltusStaticRailProviderBinding>
 parseCadenceVoltusStaticRailBinding(const ConfigSyntax *node) {
   constexpr llvm::StringLiteral prefix =
       "evaluation.cadence_voltus_static_rail";
-  auto fieldsOrErr = ClosedMapping::parse(
-      node, prefix,
-      {"stable_provider_build_identity", "power_grid_library_members",
-       "power_grid_library_entrypoints"});
+  auto fieldsOrErr = ClosedMapping::parse(node, prefix,
+                                          {"stable_provider_build_identity",
+                                           "power_grid_library_members",
+                                           "power_grid_library_entrypoints"});
   if (!fieldsOrErr)
     return fieldsOrErr.takeError();
 
@@ -1442,8 +1458,7 @@ parseCadenceVoltusStaticRailBinding(const ConfigSyntax *node) {
   for (std::size_t index = 0; index < (*entrypointsOrErr)->size(); ++index) {
     auto entrypointOrErr = requireScalarString(
         &(*entrypointsOrErr)->at(index),
-        prefix + ".power_grid_library_entrypoints[" + llvm::Twine(index) +
-            "]");
+        prefix + ".power_grid_library_entrypoints[" + llvm::Twine(index) + "]");
     if (!entrypointOrErr)
       return entrypointOrErr.takeError();
     entrypoints.push_back(std::move(*entrypointOrErr));
@@ -1457,9 +1472,30 @@ parseCadenceVoltusStaticRailBinding(const ConfigSyntax *node) {
   return binding;
 }
 
+llvm::Expected<loom::evaluation::models::MappedRtlSimulatorBinding>
+parseMappedRtlSimulatorBinding(const ConfigSyntax *node) {
+  constexpr llvm::StringLiteral prefix = "evaluation.mapped_rtl_simulator";
+  auto fieldsOrErr = ClosedMapping::parse(
+      node, prefix, {"stable_hdl_simulator_build_identity"});
+  if (!fieldsOrErr)
+    return fieldsOrErr.takeError();
+  auto buildOrErr = requireScalarString(
+      fieldsOrErr->at("stable_hdl_simulator_build_identity"),
+      prefix + ".stable_hdl_simulator_build_identity");
+  if (!buildOrErr)
+    return buildOrErr.takeError();
+  loom::evaluation::models::MappedRtlSimulatorBinding binding{
+      std::move(*buildOrErr)};
+  if (llvm::Error error =
+          loom::evaluation::models::validateMappedRtlSimulatorBinding(binding))
+    return std::move(error);
+  return binding;
+}
+
 llvm::Error parseEvaluation(ConfigPatch &patch, const ConfigSyntax *node) {
-  auto fieldsOrErr = ClosedMapping::parse(node, "evaluation", {},
-                                          {"cadence_voltus_static_rail"});
+  auto fieldsOrErr = ClosedMapping::parse(
+      node, "evaluation", {},
+      {"cadence_voltus_static_rail", "mapped_rtl_simulator"});
   if (!fieldsOrErr)
     return fieldsOrErr.takeError();
   if (const ConfigSyntax *rail =
@@ -1470,6 +1506,14 @@ llvm::Error parseEvaluation(ConfigPatch &patch, const ConfigSyntax *node) {
     patch.cadenceVoltusStaticRail = std::move(*bindingOrErr);
     if (llvm::Error error =
             touch(patch, "evaluation.cadence_voltus_static_rail"))
+      return error;
+  }
+  if (const ConfigSyntax *mapped = fieldsOrErr->at("mapped_rtl_simulator")) {
+    auto bindingOrErr = parseMappedRtlSimulatorBinding(mapped);
+    if (!bindingOrErr)
+      return bindingOrErr.takeError();
+    patch.mappedRtlSimulator = std::move(*bindingOrErr);
+    if (llvm::Error error = touch(patch, "evaluation.mapped_rtl_simulator"))
       return error;
   }
   return llvm::Error::success();
@@ -1565,6 +1609,11 @@ llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
     if (llvm::Error error = loom::evaluation::models::
             validateCadenceVoltusStaticRailProviderBinding(
                 *config.evaluation.cadenceVoltusStaticRail))
+      return error;
+  if (config.evaluation.mappedRtlSimulator)
+    if (llvm::Error error =
+            loom::evaluation::models::validateMappedRtlSimulatorBinding(
+                *config.evaluation.mappedRtlSimulator))
       return error;
   return loom::validateResolvedPnrPolicyConfig(config.dse.systemPnr,
                                                config.dse.objectiveCatalogs);

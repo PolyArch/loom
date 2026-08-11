@@ -407,6 +407,7 @@ public:
   llvm::Expected<bool> close();
   llvm::ArrayRef<PnrIndex> cycleWitness() const;
   llvm::ArrayRef<PnrIndex> touchedRouteTraversals() const;
+  bool hasSemanticChange() const;
   llvm::Error commit();
   void rollback() noexcept;
 

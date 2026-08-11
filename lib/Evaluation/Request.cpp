@@ -1,6 +1,8 @@
 #include "Evaluation/Request.h"
 #include "Evaluation/ModelParameterBundle.h"
 
+#include "Evaluation/ArtifactImportCache.h"
+
 #include "CanonicalSupport.h"
 
 #include "Common/ArtifactFinalizer.h"
@@ -306,6 +308,7 @@ llvm::Expected<EvaluationRequest> EvaluationRequest::get(
     ResolvedModelBinding modelBinding, std::uint64_t replicateIndex,
     const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  ArtifactImportCacheScope cacheScope;
   const EvaluationModelDescriptor *descriptor =
       modelBinding.descriptorRef().descriptor();
   if (!descriptor)
@@ -314,10 +317,28 @@ llvm::Expected<EvaluationRequest> EvaluationRequest::get(
   if (evaluationCase.signature() != descriptor->caseSignature)
     return evaluationError(
         "EvaluationCase signature does not match the model descriptor");
-  return get(evaluationCase.subjectBindings(), evaluationCase.workload(),
-             evaluationCase.runtimeInput(), evaluationCase.baseConditions(),
-             metricRequests, findingRequests, std::move(modelBinding),
-             replicateIndex, resolution, artifactStore, blobStore);
+  auto canonicalMetrics = canonicalizeMetricRequests(metricRequests);
+  if (!canonicalMetrics)
+    return canonicalMetrics.takeError();
+  auto canonicalFindings = canonicalizeFindingRequests(findingRequests);
+  if (!canonicalFindings)
+    return canonicalFindings.takeError();
+  if (canonicalMetrics->empty() && canonicalFindings->empty() &&
+      !hasRequiredCompletedOutput(*descriptor))
+    return evaluationError(
+        "an EvaluationRequest requires a metric, finding, or required "
+        "completed output");
+  EvaluationRequest request(
+      evaluationCase.subjectBindings(), evaluationCase.workload(),
+      evaluationCase.runtimeInput(),
+      std::vector<EvaluationCondition>(evaluationCase.baseConditions().begin(),
+                                       evaluationCase.baseConditions().end()),
+      std::move(*canonicalMetrics), std::move(*canonicalFindings),
+      std::move(modelBinding), replicateIndex);
+  RequestVerifier verifier(resolution, artifactStore, blobStore);
+  if (llvm::Error error = verifier.verify(request, evaluationCase))
+    return std::move(error);
+  return request;
 }
 
 llvm::Expected<EvaluationRequest> EvaluationRequest::get(
@@ -330,40 +351,21 @@ llvm::Expected<EvaluationRequest> EvaluationRequest::get(
     ResolvedModelBinding modelBinding, std::uint64_t replicateIndex,
     const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
-  auto canonicalMetrics = canonicalizeMetricRequests(metricRequests);
-  if (!canonicalMetrics)
-    return canonicalMetrics.takeError();
-  auto canonicalFindings = canonicalizeFindingRequests(findingRequests);
-  if (!canonicalFindings)
-    return canonicalFindings.takeError();
+  ArtifactImportCacheScope cacheScope;
   const EvaluationModelDescriptor *descriptor =
       modelBinding.descriptorRef().descriptor();
   if (!descriptor)
     return evaluationError("EvaluationRequest references an unregistered model "
                            "descriptor");
-  if (canonicalMetrics->empty() && canonicalFindings->empty() &&
-      !hasRequiredCompletedOutput(*descriptor))
-    return evaluationError(
-        "an EvaluationRequest requires a metric, finding, or required "
-        "completed output");
   auto evaluationCase =
       EvaluationCase::get(descriptor->caseSignature, std::move(subjectBindings),
                           std::move(workload), std::move(runtimeInput),
                           baseConditions, resolution, artifactStore, blobStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
-
-  EvaluationRequest request(
-      evaluationCase->subjectBindings(), evaluationCase->workload(),
-      evaluationCase->runtimeInput(),
-      std::vector<EvaluationCondition>(evaluationCase->baseConditions().begin(),
-                                       evaluationCase->baseConditions().end()),
-      std::move(*canonicalMetrics), std::move(*canonicalFindings),
-      std::move(modelBinding), replicateIndex);
-  RequestVerifier verifier(resolution, artifactStore, blobStore);
-  if (llvm::Error error = verifier.verify(request))
-    return std::move(error);
-  return request;
+  return get(*evaluationCase, metricRequests, findingRequests,
+             std::move(modelBinding), replicateIndex, resolution,
+             artifactStore, blobStore);
 }
 
 const MetricRequest *
@@ -386,10 +388,38 @@ resolveEvaluationModelDescriptor(const EvaluationRequest &request) {
 }
 
 llvm::Error RequestVerifier::verify(const EvaluationRequest &request) const {
+  ArtifactImportCacheScope cacheScope;
   const EvaluationModelDescriptor *descriptor =
       resolveEvaluationModelDescriptor(request);
   if (!descriptor)
     return evaluationError("EvaluationRequest model descriptor is unresolved");
+  auto evaluationCase = EvaluationCase::get(
+      descriptor->caseSignature, request.subjectBindings(), request.workload(),
+      request.runtimeInput(), request.baseConditions(), resolution_,
+      artifactStore_, blobStore_);
+  if (!evaluationCase)
+    return evaluationCase.takeError();
+  return verify(request, *evaluationCase);
+}
+
+llvm::Error
+RequestVerifier::verify(const EvaluationRequest &request,
+                        const EvaluationCase &verifiedCase) const {
+  ArtifactImportCacheScope cacheScope;
+  const EvaluationModelDescriptor *descriptor =
+      resolveEvaluationModelDescriptor(request);
+  if (!descriptor)
+    return evaluationError("EvaluationRequest model descriptor is unresolved");
+  if (verifiedCase.signature() != descriptor->caseSignature ||
+      verifiedCase.subjectBindings() != request.subjectBindings() ||
+      verifiedCase.workload() != request.workload() ||
+      verifiedCase.runtimeInput() != request.runtimeInput() ||
+      !std::equal(verifiedCase.baseConditions().begin(),
+                  verifiedCase.baseConditions().end(),
+                  request.baseConditions().begin(),
+                  request.baseConditions().end()))
+    return evaluationError(
+        "verified EvaluationCase does not describe the exact Request");
   if (request.metricRequests().empty() && request.findingRequests().empty() &&
       !hasRequiredCompletedOutput(*descriptor))
     return evaluationError("EvaluationRequest has no requested result");
@@ -398,13 +428,6 @@ llvm::Error RequestVerifier::verify(const EvaluationRequest &request) const {
   if (descriptor->determinism == DeterminismContract::Deterministic &&
       request.replicateIndex() != 0)
     return evaluationError("deterministic model requires replicate_index zero");
-
-  auto evaluationCase = EvaluationCase::get(
-      descriptor->caseSignature, request.subjectBindings(), request.workload(),
-      request.runtimeInput(), request.baseConditions(), resolution_,
-      artifactStore_, blobStore_);
-  if (!evaluationCase)
-    return evaluationCase.takeError();
 
   for (const ModelInputSlotDescriptor &slot : descriptor->inputSlots) {
     const ModelInputBinding *input =
@@ -423,7 +446,7 @@ llvm::Error RequestVerifier::verify(const EvaluationRequest &request) const {
     }
     if (slot.verifyCompatibility)
       if (llvm::Error error =
-              slot.verifyCompatibility(input->artifacts, *evaluationCase,
+              slot.verifyCompatibility(input->artifacts, verifiedCase,
                                        resolution_, artifactStore_, blobStore_))
         return error;
   }
@@ -433,7 +456,7 @@ llvm::Error RequestVerifier::verify(const EvaluationRequest &request) const {
   for (const MetricRequest &requestItem : request.metricRequests()) {
     auto reverified =
         MetricRequest::get(requestItem.query(), requestItem.conditions(),
-                           *evaluationCase, resolution_, artifactStore_);
+                           verifiedCase, resolution_, artifactStore_);
     if (!reverified)
       return reverified.takeError();
     if (!(*reverified == requestItem))
@@ -443,7 +466,7 @@ llvm::Error RequestVerifier::verify(const EvaluationRequest &request) const {
     // validated result without storing or re-resolving it.
     auto cycleBasis = validateMetricScopeAdmissibility(
         requestItem.query().metric, requestItem.query().scope.form,
-        *evaluationCase, resolution_, artifactStore_, blobStore_);
+        verifiedCase, resolution_, artifactStore_, blobStore_);
     if (!cycleBasis)
       return cycleBasis.takeError();
     (void)*cycleBasis;
@@ -451,14 +474,14 @@ llvm::Error RequestVerifier::verify(const EvaluationRequest &request) const {
   for (const FindingRequest &requestItem : request.findingRequests()) {
     auto reverified =
         FindingRequest::get(requestItem.query(), requestItem.conditions(),
-                            *evaluationCase, resolution_, artifactStore_);
+                            verifiedCase, resolution_, artifactStore_);
     if (!reverified)
       return reverified.takeError();
     if (!(*reverified == requestItem))
       return evaluationError("finding request is not canonical");
   }
 
-  if (llvm::Error error = validateModelCapability(*descriptor, *evaluationCase,
+  if (llvm::Error error = validateModelCapability(*descriptor, verifiedCase,
                                                   request.metricRequests(),
                                                   request.findingRequests()))
     return error;

@@ -482,4 +482,105 @@ llvm::Expected<CanonicalSemanticBytes> encodeSpatialSwitchConfiguration(
   return encoded;
 }
 
+llvm::Expected<CanonicalSemanticBytes> encodeFabricBoundaryConfiguration(
+    const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
+    std::optional<FabricBoundaryConfiguration> activeConfiguration) {
+  const FabricInventoryOwnerRef &owner = field.owner.catalog();
+  if (owner.kind() != FabricInventoryOwnerKind::BoundaryOccurrence ||
+      field.ordinal != 0)
+    return rejected("boundary codec received a non-boundary field");
+  const auto boundary = std::get<FabricBoundaryOccurrenceRef>(owner.payload);
+  const auto point = fabric.boundaryTagContinuityPoint(boundary);
+  if (!point)
+    return rejected("boundary codec cannot resolve the continuity shape");
+
+  mlir::MLIRContext context;
+  auto relation = fabric.semanticFieldRelation(field, context);
+  if (!relation)
+    return relation.takeError();
+
+  CanonicalSemanticBytes encoded = tagged(0);
+  using Kind = FabricBoundaryTagContinuityKind;
+  switch (point->kind) {
+  case Kind::TokenWriter:
+  case Kind::Remover:
+    if (activeConfiguration &&
+        (activeConfiguration->configuredTag ||
+         !activeConfiguration->tagRewrites.empty()))
+      return rejected("payload-free boundary received configuration payload");
+    encoded = tagged(activeConfiguration ? 1 : 0);
+    break;
+  case Kind::ConfigurableWriter: {
+    const std::uint64_t width = 1 + point->outputTagWidthBits;
+    std::vector<std::uint8_t> carrier = zeroBits(width);
+    if (activeConfiguration) {
+      if (!activeConfiguration->configuredTag ||
+          !activeConfiguration->tagRewrites.empty())
+        return rejected("configurable tag writer requires exactly one tag");
+      const llvm::APInt &tag = *activeConfiguration->configuredTag;
+      if (tag.getBitWidth() != point->outputTagWidthBits)
+        return rejected("configured boundary tag has the wrong width");
+      setBit(carrier, 0);
+      for (std::uint64_t bit = 0; bit < point->outputTagWidthBits; ++bit)
+        if (tag[bit])
+          setBit(carrier, 1 + bit);
+    }
+    encoded = CanonicalSemanticBytes(std::move(carrier));
+    break;
+  }
+  case Kind::Rewriter: {
+    if (activeConfiguration && activeConfiguration->configuredTag)
+      return rejected("tag rewriter cannot carry a configured writer tag");
+    std::vector<FabricBoundaryTagRewrite> rewrites =
+        activeConfiguration ? std::move(activeConfiguration->tagRewrites)
+                            : std::vector<FabricBoundaryTagRewrite>();
+    if (rewrites.size() > fabric.boundaryLookupTableSize(boundary))
+      return rejected("boundary tag rewrite set exceeds its lookup table");
+    for (const FabricBoundaryTagRewrite &rewrite : rewrites)
+      if (rewrite.inputTag.getBitWidth() != point->inputTagWidthBits ||
+          rewrite.outputTag.getBitWidth() != point->outputTagWidthBits)
+        return rejected("boundary tag rewrite has the wrong width");
+    llvm::sort(rewrites, [](const auto &lhs, const auto &rhs) {
+      if (lhs.inputTag != rhs.inputTag)
+        return lhs.inputTag.ult(rhs.inputTag);
+      return lhs.outputTag.ult(rhs.outputTag);
+    });
+    std::vector<FabricBoundaryTagRewrite> canonicalRewrites;
+    canonicalRewrites.reserve(rewrites.size());
+    for (FabricBoundaryTagRewrite &rewrite : rewrites) {
+      if (canonicalRewrites.empty() ||
+          canonicalRewrites.back().inputTag != rewrite.inputTag) {
+        canonicalRewrites.push_back(std::move(rewrite));
+        continue;
+      }
+      if (canonicalRewrites.back().outputTag != rewrite.outputTag)
+        return rejected("boundary tag rewrites repeat an input tag");
+    }
+    rewrites = std::move(canonicalRewrites);
+
+    const std::uint64_t rowWidth =
+        1 + point->inputTagWidthBits + point->outputTagWidthBits;
+    const std::uint64_t width =
+        fabric.boundaryLookupTableSize(boundary) * rowWidth;
+    std::vector<std::uint8_t> carrier = zeroBits(width);
+    for (const auto &[row, rewrite] : llvm::enumerate(rewrites)) {
+      const std::uint64_t base = row * rowWidth;
+      setBit(carrier, base);
+      for (std::uint64_t bit = 0; bit < point->inputTagWidthBits; ++bit)
+        if (rewrite.inputTag[bit])
+          setBit(carrier, base + 1 + bit);
+      for (std::uint64_t bit = 0; bit < point->outputTagWidthBits; ++bit)
+        if (rewrite.outputTag[bit])
+          setBit(carrier, base + 1 + point->inputTagWidthBits + bit);
+    }
+    encoded = CanonicalSemanticBytes(std::move(carrier));
+    break;
+  }
+  }
+
+  if (llvm::Error error = relation->validateSemanticValue(encoded.bytes()))
+    return std::move(error);
+  return encoded;
+}
+
 } // namespace loom::fabric

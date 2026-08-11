@@ -8,6 +8,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <array>
 #include <optional>
 #include <variant>
 
@@ -92,6 +93,23 @@ using SpatialResourceAllocationAction = std::variant<
 using SpatialMappingAction =
     std::variant<SpatialRealizationBindingAction, SpatialTransportRoutingAction,
                  SpatialResourceAllocationAction>;
+
+/// Dense canonical key for one closed Spatial Action. It is an ephemeral
+/// search-cache key, not an Artifact identity or serialization.
+struct SpatialActionKey final {
+  std::array<std::uint64_t, 6> fields{};
+
+  friend bool operator==(const SpatialActionKey &lhs,
+                         const SpatialActionKey &rhs) {
+    return lhs.fields == rhs.fields;
+  }
+  friend bool operator<(const SpatialActionKey &lhs,
+                        const SpatialActionKey &rhs) {
+    return lhs.fields < rhs.fields;
+  }
+};
+
+SpatialActionKey spatialActionKey(const SpatialMappingAction &action);
 
 /// Validates one ephemeral ActionBatch in canonical typed-anchor order. A
 /// batch is nonempty and may change each selected-decision anchor at most once.

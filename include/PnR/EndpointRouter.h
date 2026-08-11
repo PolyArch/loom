@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -65,6 +66,9 @@ struct EndpointRouteSearchRequest final {
   /// Empty means every traversal is eligible beyond width/replication checks.
   /// Otherwise this is the worker-local dense mask for the exact route probe.
   llvm::ArrayRef<std::uint64_t> eligibleTraversalBits;
+  /// Enables exact worker-local heuristic reuse. The owner must increment the
+  /// revision whenever any lower-bound arc cost changes in place.
+  std::optional<std::uint64_t> lowerBoundCostRevision;
 };
 
 struct EndpointRouteSearchResult final {
@@ -90,6 +94,10 @@ public:
   std::uint64_t endpointExpansionCount() const {
     return endpointExpansionCount_;
   }
+  std::uint64_t heuristicCacheHitCount() const {
+    return heuristicCacheHitCount_;
+  }
+  std::uint64_t heuristicBuildCount() const { return heuristicBuildCount_; }
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -119,6 +127,27 @@ private:
   bool arcEligible(PnrIndex arc, const EndpointRouteSearchRequest &request,
                    bool enforceSourceReplication) const;
   llvm::Error buildHeuristic(const EndpointRouteSearchRequest &request);
+  bool loadCachedHeuristic(const EndpointRouteSearchRequest &request);
+  void storeCachedHeuristic(const EndpointRouteSearchRequest &request);
+
+  struct HeuristicCacheEntry final {
+    const RouteCost *lowerBoundCostData = nullptr;
+    std::size_t lowerBoundCostSize = 0;
+    std::uint64_t lowerBoundCostRevision = 0;
+    std::uint64_t keyHash = 0;
+    std::uint32_t requiredPayloadWidthBits = 0;
+    std::uint32_t requiredTagWidthBits = 0;
+    std::size_t targetEndpointCount = 0;
+    std::size_t eligibleTraversalWordCount = 0;
+    bool populated = false;
+  };
+
+  std::uint64_t
+  heuristicCacheKeyHash(const EndpointRouteSearchRequest &request) const;
+  bool heuristicCacheKeyEquals(
+      const HeuristicCacheEntry &entry,
+      const EndpointRouteSearchRequest &request,
+      std::uint64_t keyHash, std::size_t slot) const;
 
   EndpointRoutingGraphView graph_;
   std::vector<RouteCost> heuristics_;
@@ -134,11 +163,19 @@ private:
   std::vector<PnrIndex> heap_;
   std::vector<PnrIndex> heapPositions_;
   std::vector<PnrIndex> path_;
+  std::vector<HeuristicCacheEntry> heuristicCache_;
+  std::vector<PnrIndex> heuristicCacheTargets_;
+  std::vector<std::uint64_t> heuristicCacheEligibility_;
+  std::vector<RouteCost> heuristicCacheDistances_;
+  std::size_t heuristicCacheTraversalWordCount_ = 0;
+  const RouteCost *activeCachedHeuristics_ = nullptr;
   std::uint64_t heuristicGeneration_ = 0;
   std::uint64_t searchGeneration_ = 0;
   std::uint64_t targetGeneration_ = 0;
   std::uint64_t sourceGeneration_ = 0;
   std::uint64_t endpointExpansionCount_ = 0;
+  std::uint64_t heuristicCacheHitCount_ = 0;
+  std::uint64_t heuristicBuildCount_ = 0;
   HeapMode heapMode_ = HeapMode::ReverseDistance;
   bool prepared_ = false;
 };

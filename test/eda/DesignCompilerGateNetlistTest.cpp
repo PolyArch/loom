@@ -696,8 +696,10 @@ void fusionCompilerGeneratorIsClosed(
                inputs, binding, artifacts, blobs,
                ExternalToolPreparationContext{makeLocal(), bundle.string()}));
   const std::string manifest = readFile(bundle / "tool-invocation.json");
+  const std::string manifestVersion =
+      "\"version\": \"" + externalToolInvocationManifestVersion.str() + "\"";
   require(__func__,
-          llvm::StringRef(manifest).contains("\"version\": \"2.1\"") &&
+          llvm::StringRef(manifest).contains(manifestVersion) &&
               llvm::StringRef(manifest).contains("\"external_file_trees\"") &&
               llvm::StringRef(manifest).contains("\"path\": \"parts/p0\"") &&
               readFile(bundle / "drivers/fusion-floorplan.def") == floorplan,

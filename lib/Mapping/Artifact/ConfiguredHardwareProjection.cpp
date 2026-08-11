@@ -63,11 +63,26 @@ SlotKey key(const ::loom::fabric::FabricConfigurationSlotRef &slot) {
   return {::loom::fabric::canonicalFabricBytes(slot)};
 }
 
-llvm::Expected<::loom::fabric::FabricConfigurationSlotRef> configurationSlot(
+void appendRouteTraversals(
+    const SpatialRouteTreeView &route,
+    std::vector<::loom::fabric::FabricPhysicalTraversalRef> &result) {
+  if (route.localTraversal)
+    result.push_back(*route.localTraversal);
+  for (const SpatialRouteNodeView &node : route.nodes)
+    if (node.incomingTraversal)
+      result.push_back(*node.incomingTraversal);
+  for (const SpatialRouteSinkView &sink : route.sinks)
+    if (sink.localTraversal)
+      result.push_back(*sink.localTraversal);
+}
+
+} // namespace
+
+llvm::Expected<::loom::fabric::FabricConfigurationSlotRef>
+resolveConfiguredHardwareSlot(
     const ::loom::fabric::FabricArtifactView &fabric,
     const ::loom::fabric::FabricSemanticConfigFieldRef &field,
-    std::optional<::loom::fabric::InstructionContextRef> instructionContext =
-        std::nullopt) {
+    std::optional<::loom::fabric::InstructionContextRef> instructionContext) {
   auto residencies = fabric.configurationResidencies(field);
   if (!residencies)
     return residencies.takeError();
@@ -84,21 +99,6 @@ llvm::Expected<::loom::fabric::FabricConfigurationSlotRef> configurationSlot(
                    "context");
   return ::loom::fabric::FabricConfigurationSlotRef{field, selected};
 }
-
-void appendRouteTraversals(
-    const SpatialRouteTreeView &route,
-    std::vector<::loom::fabric::FabricPhysicalTraversalRef> &result) {
-  if (route.localTraversal)
-    result.push_back(*route.localTraversal);
-  for (const SpatialRouteNodeView &node : route.nodes)
-    if (node.incomingTraversal)
-      result.push_back(*node.incomingTraversal);
-  for (const SpatialRouteSinkView &sink : route.sinks)
-    if (sink.localTraversal)
-      result.push_back(*sink.localTraversal);
-}
-
-} // namespace
 
 llvm::Expected<ConfiguredHardwareProjectionView>
 canonicalizeConfiguredHardwareProjection(
@@ -153,7 +153,8 @@ deriveConfiguredHardwareProjection(
         ::loom::fabric::FabricConfigurationOwnerRef(
             ::loom::fabric::FabricInventoryOwnerRef::of(binding->occurrence)),
         0};
-    auto fuSlot = configurationSlot(fabric, fuField, binding->context);
+    auto fuSlot =
+        resolveConfiguredHardwareSlot(fabric, fuField, binding->context);
     if (!fuSlot)
       return fuSlot.takeError();
     auto fuValue = ::loom::fabric::encodeFabricFuConfiguration(
@@ -203,8 +204,8 @@ deriveConfiguredHardwareProjection(
                 ::loom::fabric::validateFabricRef(fabric, occurrenceField))
           return std::move(error);
 
-        auto slot =
-            configurationSlot(fabric, occurrenceField, binding->context);
+        auto slot = resolveConfiguredHardwareSlot(fabric, occurrenceField,
+                                                  binding->context);
         if (!slot)
           return slot.takeError();
 
@@ -212,6 +213,21 @@ deriveConfiguredHardwareProjection(
       }
     }
   }
+
+  auto peFields = deriveConfiguredPeFields(fabric, bindings, routes,
+                                           resourceUses, physicalTagSegments);
+  if (!peFields)
+    return peFields.takeError();
+  fields.insert(fields.end(), std::make_move_iterator(peFields->begin()),
+                std::make_move_iterator(peFields->end()));
+
+  auto boundaryFields = deriveConfiguredBoundaryFields(
+      fabric, routes, resourceUses, physicalTagSegments);
+  if (!boundaryFields)
+    return boundaryFields.takeError();
+  fields.insert(fields.end(),
+                std::make_move_iterator(boundaryFields->begin()),
+                std::make_move_iterator(boundaryFields->end()));
 
   std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversals;
   for (const SpatialRouteTreeView &route : routes)
@@ -238,7 +254,7 @@ deriveConfiguredHardwareProjection(
         ::loom::fabric::FabricConfigurationOwnerRef(
             ::loom::fabric::FabricInventoryOwnerRef::of(sw)),
         0};
-    auto slot = configurationSlot(fabric, field);
+    auto slot = resolveConfiguredHardwareSlot(fabric, field);
     if (!slot)
       return slot.takeError();
     auto value = ::loom::fabric::encodeSpatialSwitchConfiguration(fabric, field,
@@ -266,7 +282,7 @@ deriveConfiguredHardwareProjection(
         ::loom::fabric::FabricConfigurationOwnerRef(
             ::loom::fabric::FabricInventoryOwnerRef::of(fifo)),
         0};
-    auto slot = configurationSlot(fabric, field);
+    auto slot = resolveConfiguredHardwareSlot(fabric, field);
     if (!slot)
       return slot.takeError();
     auto value = ::loom::fabric::encodeFabricFifoConfiguration(fabric, field,

@@ -1383,10 +1383,19 @@ void loom::test::exerciseSpatialAnnealingReplay(
     fail("Spatial annealing replay changed its search statistics");
   if (warmScratch && firstSearch.retainedStorageBytes() != warmStorage)
     fail("warm Spatial annealing replay changed retained storage");
-  if (firstStatistics.minimumTemperatureLevelCount != 1 ||
-      firstStatistics.calibrationProposalSlots !=
-          problem->config().policy().search.annealing.calibrationProposalCount)
+  const std::uint64_t configuredCalibration =
+      problem->config().policy().search.annealing.calibrationProposalCount;
+  if (firstStatistics.calibrationProposalSlots != 0 &&
+      firstStatistics.calibrationProposalSlots != configuredCalibration)
+    fail("Spatial annealing changed its fixed calibration schedule");
+  if (!firstStatistics.exactClosureReached &&
+      (firstStatistics.minimumTemperatureLevelCount != 1 ||
+       firstStatistics.calibrationProposalSlots != configuredCalibration))
     fail("Spatial annealing did not execute its exact fixed schedule");
+  if (firstStatistics.calibrationProposalSlots == 0 &&
+      (firstStatistics.minimumTemperatureLevelCount != 0 ||
+       firstStatistics.annealingProposalSlots != 0))
+    fail("entry-closed Spatial annealing consumed schedule work");
 
   const auto requireSameCandidate = [&](const pnr::SpatialCandidateState &lhs,
                                         const pnr::SpatialCandidateState &rhs) {
@@ -1479,7 +1488,15 @@ void loom::test::exercisePathFinderFixedTerminalCutRejection(
                              candidate.problem()
                                  .config()
                                  .policy()
-                                 .search.routing.negotiationIterationLimit},
+                                 .search.routing.negotiationIterationLimit,
+                             candidate.problem()
+                                 .config()
+                                 .policy()
+                                 .search.routing.noProgressIterationLimit,
+                             candidate.problem()
+                                 .config()
+                                 .policy()
+                                 .search.routing.noProgressTrendWindow},
                             {});
   if (fixedCut)
     fail("PathFinder ignored a fixed-terminal capacity cut");

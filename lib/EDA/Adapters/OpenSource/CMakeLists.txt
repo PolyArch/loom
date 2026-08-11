@@ -1,4 +1,8 @@
 add_library(LoomEDAOpenSource
+  MappedRtlSimulation.cpp
+  MappedRtlSimulationFacts.cpp
+  MappedRtlSimulationHarness.cpp
+  MappedRtlSimulationResult.cpp
   OpenRoad.cpp
   Verilator.cpp
   Yosys.cpp
@@ -14,6 +18,8 @@ target_link_libraries(LoomEDAOpenSource PUBLIC
   LoomEDAAsicContracts
   LoomExternalTool
   LoomHardwareImplementation
+  LoomHardwareRTL
   LoomImplementationPlatform
+  LoomStructuredFabricAnalyticModel
   LLVMSupport
 )

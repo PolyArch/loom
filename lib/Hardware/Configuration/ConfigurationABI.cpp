@@ -663,6 +663,19 @@ llvm::Error canonicalizeEncoding(ConfigurationFieldEncoding &field) {
   return llvm::Error::success();
 }
 
+bool sameSemanticEncoding(const SemanticFieldEncoding &lhs,
+                          const SemanticFieldEncoding &rhs) {
+  if (lhs.index() != rhs.index())
+    return false;
+  if (const auto *left = std::get_if<DirectBitsEncoding>(&lhs))
+    return left->encodedBitCount ==
+           std::get<DirectBitsEncoding>(rhs).encodedBitCount;
+  const auto &left = std::get<FiniteCodebookEncoding>(lhs);
+  const auto &right = std::get<FiniteCodebookEncoding>(rhs);
+  return left.encodedBitCount == right.encodedBitCount &&
+         left.entries == right.entries;
+}
+
 llvm::Error validateFieldEncoding(const fabric::FabricSystemRootView &system,
                                   const ConfigurationFieldEncoding &field) {
   const auto physicalField = fabric::configurationField(field.slot);
@@ -909,6 +922,7 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
 
   std::set<ByteVector> allOwners;
   std::set<ByteVector> allFields;
+  std::map<ByteVector, SemanticFieldEncoding> encodingByPhysicalField;
   std::vector<ProgrammingUnit> units;
   units.reserve(draft.programmingUnits.size());
   for (ProgrammingUnitDraft &unit : draft.programmingUnits) {
@@ -958,6 +972,14 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
             "configuration field owner is absent from its resource closure");
       if (llvm::Error error = canonicalizeEncoding(field))
         return error;
+      const ByteVector physicalFieldKey = referenceKey(physicalField);
+      auto [knownEncoding, inserted] = encodingByPhysicalField.emplace(
+          physicalFieldKey, field.semanticEncoding);
+      if (!inserted &&
+          !sameSemanticEncoding(knownEncoding->second,
+                                field.semanticEncoding))
+        return invalid("configuration residencies of one physical field use "
+                       "different semantic encodings");
       if (llvm::Error error = validateFieldEncoding(*system, field))
         return error;
       if (llvm::Error error = canonicalizeSlices(field, unit.payloadBitCount,
@@ -1217,13 +1239,12 @@ const ConfigurationFieldEncoding *ConfigurationABI::findOperationField(
     llvm::consumeError(physical.takeError());
     return nullptr;
   }
-  auto slot = fabric::qualifyFabricConfigurationSlot(
-      *physical, fabric::FabricStaticConfigurationResidency{});
-  if (!slot) {
-    llvm::consumeError(slot.takeError());
-    return nullptr;
-  }
-  return findField(*slot);
+  const ByteVector key = referenceKey(*physical);
+  for (const ProgrammingUnit &unit : programmingUnits_)
+    for (const ConfigurationFieldEncoding &candidate : unit.fields)
+      if (referenceKey(fabric::configurationField(candidate.slot)) == key)
+        return &candidate;
+  return nullptr;
 }
 
 llvm::Expected<std::vector<std::uint8_t>> ConfigurationABI::encode(

@@ -27,6 +27,29 @@ target_link_libraries(loom-verilator-functional-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-mapped-rtl-simulation-test
+  MappedRtlSimulationTest.cpp
+  MappedRtlSimulationTestSupport.cpp
+)
+
+target_link_libraries(loom-mapped-rtl-simulation-test PRIVATE
+  LoomDeploymentTestSupport
+  LoomDSE
+  LoomDSEMappingGenerator
+  LoomEDAOpenSource
+  LoomHardwareConfigurationTestSupport
+  LoomHardwareRTL
+  LoomRootCompleteSpatialPnrTestSupport
+  LoomStructuredFabricAnalyticModel
+  MLIRArithDialect
+  MLIRDLTIDialect
+  MLIRDataflow
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
 add_executable(loom-openroad-placed-test
   OpenRoadPlacedTest.cpp
 )

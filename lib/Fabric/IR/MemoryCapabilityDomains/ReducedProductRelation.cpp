@@ -397,6 +397,21 @@ reduceAtField(llvm::ArrayRef<ReducedProductRowRef> rows, std::size_t field,
   if (field == fieldCount)
     return publish({ReducedProductRow{}});
 
+  if (rows.size() == 1) {
+    bool canonicalSingleton = true;
+    for (std::size_t index = field; index < fieldCount; ++index) {
+      const auto *finite =
+          std::get_if<ReducedFiniteDomain>(&(*rows.front())[index]);
+      if (finite && !groupFiniteFields[index] && finite->atoms.size() != 1) {
+        canonicalSingleton = false;
+        break;
+      }
+    }
+    if (canonicalSingleton)
+      return publish({ReducedProductRow(rows.front()->begin() + field,
+                                        rows.front()->end())});
+  }
+
   const std::size_t domainKind = (*rows.front())[field].index();
   std::map<std::size_t, std::vector<ReducedProductRowRef>> kindPartitions;
   for (ReducedProductRowRef row : rows)

@@ -64,10 +64,23 @@ add_executable(loom-root-complete-tech-mapping-generator-test
   RootCompleteTechMappingGeneratorTest.cpp
 )
 
+add_library(LoomRootCompleteSpatialPnrTestSupport
+  RootCompleteSpatialPnrTestSupport.cpp
+)
+
+target_include_directories(LoomRootCompleteSpatialPnrTestSupport PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(LoomRootCompleteSpatialPnrTestSupport PUBLIC
+  LoomADGBuilder
+  LoomFabricArtifact
+  LLVMSupport
+)
+
 add_executable(loom-root-complete-spatial-pnr-generator-test
   RootCompleteSpatialFeedbackTestSupport.cpp
   RootCompleteSpatialPnrGeneratorTest.cpp
-  RootCompleteSpatialPnrTestSupport.cpp
 )
 
 target_link_libraries(loom-dse-objective-test PRIVATE
@@ -167,6 +180,7 @@ target_link_libraries(loom-root-complete-tech-mapping-generator-test PRIVATE
 )
 
 target_link_libraries(loom-root-complete-spatial-pnr-generator-test PRIVATE
+  LoomRootCompleteSpatialPnrTestSupport
   LoomADGBuilder
   LoomDSE
   LoomDSEFeedback

@@ -111,7 +111,9 @@ llvm::Error classifyTransitionFailure(llvm::Error failure) {
                                     closureFailure.forcedLogicalNets().end()));
         return llvm::make_error<SpatialActionTransitionFailure>(
             closureFailure.kind() ==
-                    SpatialPathFinderClosureFailure::Kind::NonClosure
+                        SpatialPathFinderClosureFailure::Kind::NonClosure ||
+                    closureFailure.kind() ==
+                        SpatialPathFinderClosureFailure::Kind::NoProgress
                 ? SpatialActionTransitionFailureKind::WorkLimit
                 : SpatialActionTransitionFailureKind::IntrinsicInvalid,
             stream.str());
@@ -154,15 +156,18 @@ SpatialActionExecutorScratch::~SpatialActionExecutorScratch() = default;
 SpatialActionProbe::SpatialActionProbe(
     SpatialActionExecutorScratch &owner, SpatialMoveTransaction move,
     dse::ObjectiveVector objective,
-    dse::ObjectiveSignedDifference energyDifference, bool globalRouting)
+    dse::ObjectiveSignedDifference energyDifference, bool globalRouting,
+    bool semanticChange)
     : owner_(&owner), move_(std::move(move)), objective_(std::move(objective)),
-      energyDifference_(energyDifference), globalRouting_(globalRouting) {}
+      energyDifference_(energyDifference), globalRouting_(globalRouting),
+      semanticChange_(semanticChange) {}
 
 SpatialActionProbe::SpatialActionProbe(SpatialActionProbe &&other) noexcept
     : owner_(other.owner_), move_(std::move(other.move_)),
       objective_(std::move(other.objective_)),
       energyDifference_(other.energyDifference_),
-      globalRouting_(other.globalRouting_) {
+      globalRouting_(other.globalRouting_),
+      semanticChange_(other.semanticChange_) {
   other.owner_ = nullptr;
 }
 
@@ -202,6 +207,11 @@ SpatialActionProbe::resolve(std::uint64_t temperature,
                             DeterministicPnrRandomStream &acceptanceStream) {
   if (!owner_)
     return executorError("probe is no longer active");
+  if (!semanticChange_) {
+    if (llvm::Error error = discard())
+      return std::move(error);
+    return SpatialActionResolution{false, std::move(objective_)};
+  }
   auto accepted =
       acceptAnnealingDelta(energyDifference_, temperature, acceptanceStream);
   if (!accepted)
@@ -1362,7 +1372,9 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
     const auto &routing = candidate.problem().config().policy().search.routing;
     auto closure = router_.routeToClosureInMove(
         move, candidate, *routeCosts_,
-        {routing.endpointExpansionLimit, routing.negotiationIterationLimit}, {},
+        {routing.endpointExpansionLimit, routing.negotiationIterationLimit,
+         routing.noProgressIterationLimit, routing.noProgressTrendWindow},
+        {},
         context == SpatialActionExecutionContext::FinalClosure
             ? SpatialRoutingClosureRequirement::Final
             : SpatialRoutingClosureRequirement::PolicyAdmittedTemporary);
@@ -1388,18 +1400,25 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
           routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_))
     return restoreAfterFailure(move, std::move(error));
 
-  auto objective = candidate.problem().objectiveProgram().evaluate(candidate);
-  if (!objective)
-    return restoreAfterFailure(move, objective.takeError());
-  auto difference =
-      candidate.problem().objectiveProgram().selectedEnergyDifference(
-          *objective, *currentObjective_);
-  if (!difference)
-    return restoreAfterFailure(move, difference.takeError());
+  const bool semanticChange = move.hasSemanticChange();
+  dse::ObjectiveVector objective = *currentObjective_;
+  dse::ObjectiveSignedDifference difference;
+  if (semanticChange) {
+    auto evaluated = candidate.problem().objectiveProgram().evaluate(candidate);
+    if (!evaluated)
+      return restoreAfterFailure(move, evaluated.takeError());
+    objective = std::move(*evaluated);
+    auto evaluatedDifference =
+        candidate.problem().objectiveProgram().selectedEnergyDifference(
+            objective, *currentObjective_);
+    if (!evaluatedDifference)
+      return restoreAfterFailure(move, evaluatedDifference.takeError());
+    difference = *evaluatedDifference;
+  }
 
   activeProbe_ = true;
-  return SpatialActionProbe(*this, std::move(move), std::move(*objective),
-                            *difference, globalRouting_);
+  return SpatialActionProbe(*this, std::move(move), std::move(objective),
+                            difference, globalRouting_, semanticChange);
 }
 
 std::size_t SpatialActionExecutorScratch::retainedStorageBytes() const {

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,14 @@ namespace loom::external_tool {
 namespace {
 
 using detail::shellQuote;
+
+constexpr int exitCode(InvocationLauncherExitCode code) {
+  return static_cast<int>(code);
+}
+
+std::string exitCodeText(InvocationLauncherExitCode code) {
+  return std::to_string(exitCode(code));
+}
 
 std::string renderContainerInvocation(const std::vector<std::string> &arguments,
                                       const InvocationManifestData &manifest) {
@@ -28,7 +37,10 @@ std::string renderCommand(const std::vector<std::string> &command,
                           const InvocationManifestData &manifest) {
   if (manifest.runtime.kind == InvocationRuntimeKind::PolyArchContainer) {
     std::vector<std::string> containerArguments{
-        "/usr/bin/bash", "-c", "cd -- \"$HOME/work\" || exit 126\nexec \"$@\"",
+        "/usr/bin/bash", "-c",
+        "cd -- \"$HOME/work\" || exit " +
+            exitCodeText(InvocationLauncherExitCode::LauncherFailure) +
+            "\nexec \"$@\"",
         "loom-container-entry"};
     containerArguments.insert(containerArguments.end(), command.begin(),
                               command.end());
@@ -70,10 +82,12 @@ moduleInitializer(const InvocationManifestData &manifest) {
   return std::nullopt;
 }
 
-void appendFailure(std::string &script, llvm::StringRef status, int code) {
-  script += "  loom_publish_completion " + shellQuote(status) + " " +
-            std::to_string(code) + "\n";
-  script += "  exit " + std::to_string(code) + "\n";
+void appendFailure(std::string &script, InvocationCompletionStatus status,
+                   InvocationLauncherExitCode code) {
+  script += "  loom_publish_completion " +
+            shellQuote(completionStatusSpelling(status)) + " " +
+            exitCodeText(code) + "\n";
+  script += "  exit " + exitCodeText(code) + "\n";
 }
 
 void appendContentDigestCheck(std::string &script, llvm::StringRef path,
@@ -84,29 +98,47 @@ void appendContentDigestCheck(std::string &script, llvm::StringRef path,
             " 2>/dev/null) || "
             "[[ \"$loom_digest\" != " +
             shellQuote(expectedDigest) + " ]]; then\n";
-  appendFailure(script, "bundle_content_mismatch", 121);
+  appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                InvocationLauncherExitCode::BundleContentMismatch);
   script += "fi\n";
+}
+
+void appendOrdinaryDirectoryPathCheck(std::string &script,
+                                      const std::filesystem::path &path) {
+  std::filesystem::path current;
+  for (const std::filesystem::path &component : path) {
+    current /= component;
+    const std::string spelling = current.generic_string();
+    script += "if [[ ! -d " + shellQuote(spelling) + " || -L " +
+              shellQuote(spelling) + " ]]; then\n";
+    appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                  InvocationLauncherExitCode::BundleContentMismatch);
+    script += "fi\n";
+  }
 }
 
 void appendFileTreeCheck(std::string &script,
                          const ResolvedExternalFileTree &tree) {
   script += "if [[ ! -d " + shellQuote(tree.absolutePath) + " || -L " +
             shellQuote(tree.absolutePath) + " ]]; then\n";
-  appendFailure(script, "bundle_content_mismatch", 121);
+  appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                InvocationLauncherExitCode::BundleContentMismatch);
   script += "fi\n";
   script += "loom_tree_special=$(find -P -- " + shellQuote(tree.absolutePath) +
             " ! -type d ! -type f -print -quit 2>/dev/null)\n";
   script += "loom_status=$?\n";
   script += "if (( loom_status != 0 )) || [[ -n \"$loom_tree_special\" ]]; "
             "then\n";
-  appendFailure(script, "bundle_content_mismatch", 121);
+  appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                InvocationLauncherExitCode::BundleContentMismatch);
   script += "fi\n";
   script += "loom_tree_count=$(find -P -- " + shellQuote(tree.absolutePath) +
             " -type f -printf . 2>/dev/null | wc -c)\n";
   script += "loom_status=$?\n";
   script += "if (( loom_status != 0 )) || [[ \"$loom_tree_count\" != " +
             shellQuote(std::to_string(tree.members.size())) + " ]]; then\n";
-  appendFailure(script, "bundle_content_mismatch", 121);
+  appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                InvocationLauncherExitCode::BundleContentMismatch);
   script += "fi\n";
   for (const ExternalFileTreeMember &member : tree.members) {
     const std::filesystem::path path =
@@ -126,7 +158,8 @@ void appendVersionStatusCheck(std::string &script,
         "loom_status == " + std::to_string(probe.acceptedExitCodes[index]);
   }
   script += " )); then\n";
-  appendFailure(script, "version_mismatch", 123);
+  appendFailure(script, InvocationCompletionStatus::VersionMismatch,
+                InvocationLauncherExitCode::VersionMismatch);
   script += "fi\n";
 }
 
@@ -146,7 +179,8 @@ void appendVersionOutputCheck(std::string &script,
     script += "  fi\n";
     script += "done <<< \"$loom_version_output\"\n";
     script += "if (( loom_version_match_count != 1 )); then\n";
-    appendFailure(script, "version_mismatch", 123);
+    appendFailure(script, InvocationCompletionStatus::VersionMismatch,
+                  InvocationLauncherExitCode::VersionMismatch);
     script += "fi\n";
     script += "loom_version_output=\"$loom_version_selected\"\n";
   }
@@ -157,7 +191,8 @@ void appendVersionOutputCheck(std::string &script,
             "output}-1}\"; done\n";
   script += "if [[ \"$loom_version_output\" != " + shellQuote(expected) +
             " ]]; then\n";
-  appendFailure(script, "version_mismatch", 123);
+  appendFailure(script, InvocationCompletionStatus::VersionMismatch,
+                InvocationLauncherExitCode::VersionMismatch);
   script += "fi\n";
 }
 
@@ -175,10 +210,10 @@ void appendContainerToolVersionCheck(std::string &script,
   std::vector<std::string> arguments{
       "/usr/bin/bash",
       "-c",
-      "cd -- \"$HOME/work\" || exit 126\n"
-      "loom_version_path=$1\n"
-      "shift\n"
-      "\"$@\" >\"$loom_version_path\" 2>&1",
+      "cd -- \"$HOME/work\" || exit " +
+          exitCodeText(InvocationLauncherExitCode::LauncherFailure) +
+          "\nloom_version_path=$1\nshift\n"
+          "\"$@\" >\"$loom_version_path\" 2>&1",
       "loom-container-version",
       kToolVersionPath.str(),
       manifest.tool.executable,
@@ -192,7 +227,8 @@ void appendContainerToolVersionCheck(std::string &script,
   script += "loom_status=$?\n";
   appendVersionStatusCheck(script, manifest.toolVersionProbe);
   script += "if [[ ! -f \"$loom_tool_version_file\" ]]; then\n";
-  appendFailure(script, "version_mismatch", 123);
+  appendFailure(script, InvocationCompletionStatus::VersionMismatch,
+                InvocationLauncherExitCode::VersionMismatch);
   script += "fi\n";
   script += "loom_version_output=$(<\"$loom_tool_version_file\")\n";
   script += "rm -f -- \"$loom_tool_version_file\"\n";
@@ -206,14 +242,15 @@ void appendContainerToolVersionCheck(std::string &script,
 std::string renderRunScript(const InvocationManifestData &manifest) {
   const std::string manifestDigest =
       formatBlobDigestHex(contentDigest(serializeManifest(manifest)));
-  std::string script =
-      "#!/usr/bin/env bash\n"
-      "set -u -o pipefail\n"
-      "loom_bundle_root=$(CDPATH= cd -- \"$(dirname -- "
-      "\"${BASH_SOURCE[0]}\")\" && pwd -P)\n"
-      "cd -- \"$loom_bundle_root\" || exit 126\n"
-      "loom_completion=" +
-      shellQuote(kCompletionPath) +
+  const std::string launcherFailure =
+      exitCodeText(InvocationLauncherExitCode::LauncherFailure);
+  std::string script = "#!/usr/bin/env bash\n"
+                       "set -u -o pipefail\n"
+                       "loom_bundle_root=$(CDPATH= cd -- \"$(dirname -- "
+                       "\"${BASH_SOURCE[0]}\")\" && pwd -P)\n";
+  script += "cd -- \"$loom_bundle_root\" || exit " + launcherFailure + "\n";
+  script +=
+      "loom_completion=" + shellQuote(kCompletionPath) +
       "\n"
       "loom_completion_partial=\"${loom_completion}.partial.$$\"\n"
       "loom_tool_version_file=''\n"
@@ -231,26 +268,27 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
       "\"manifest_sha256\":\"%s\",\"output_sha256\":%s}\\n' "
       "\"$1\" \"$2\" \"$loom_manifest_digest\" "
       "\"$loom_output_digests\" "
-      ">\"$loom_completion_partial\" || exit 126\n"
-      "  mv -f -- \"$loom_completion_partial\" \"$loom_completion\" || exit "
-      "126\n"
-      "}\n"
-      // Every removal whose success is required for fresh publication is
-      // checked: stale completion, partial, or declared output material
-      // that cannot be removed fails integrity before the tool is entered.
-      "if ! rm -f -- \"$loom_completion\"; then\n"
-      "  loom_publish_completion 'bundle_content_mismatch' 121\n"
-      "  exit 121\n"
-      "fi\n"
-      "if ! rm -f -- \"$loom_completion_partial\"; then\n"
-      "  loom_publish_completion 'bundle_content_mismatch' 121\n"
-      "  exit 121\n"
-      "fi\n";
+      ">\"$loom_completion_partial\" || exit " +
+      launcherFailure + "\n";
+  script += "  mv -f -- \"$loom_completion_partial\" \"$loom_completion\" "
+            "|| exit " +
+            launcherFailure + "\n}\n";
+  // Every removal whose success is required for fresh publication is
+  // checked: stale completion, partial, or declared output material that
+  // cannot be removed fails integrity before the tool is entered.
+  script += "if ! rm -f -- \"$loom_completion\"; then\n";
+  appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                InvocationLauncherExitCode::BundleContentMismatch);
+  script += "fi\nif ! rm -f -- \"$loom_completion_partial\"; then\n";
+  appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                InvocationLauncherExitCode::BundleContentMismatch);
+  script += "fi\n";
 
   script += "if ! command -v sha256sum >/dev/null 2>&1 || "
             "! command -v find >/dev/null 2>&1 || "
             "! command -v wc >/dev/null 2>&1; then\n";
-  appendFailure(script, "bundle_content_mismatch", 121);
+  appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                InvocationLauncherExitCode::BundleContentMismatch);
   script += "fi\n";
   appendContentDigestCheck(script, kManifestName, manifestDigest);
   for (const ManifestMaterializedFile &file : manifest.materializedFiles)
@@ -263,13 +301,27 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
     appendFileTreeCheck(script, tree);
   for (const std::string &output : manifest.declaredOutputs) {
     script += "if ! rm -f -- " + shellQuote(output) + "; then\n";
-    appendFailure(script, "bundle_content_mismatch", 121);
+    appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                  InvocationLauncherExitCode::BundleContentMismatch);
+    script += "fi\n";
+  }
+  std::set<std::filesystem::path> producedExecutableParents;
+  for (const std::string &executable : manifest.toolProducedExecutables)
+    producedExecutableParents.insert(
+        std::filesystem::path(executable).parent_path());
+  for (const std::filesystem::path &parent : producedExecutableParents)
+    appendOrdinaryDirectoryPathCheck(script, parent);
+  for (const std::string &executable : manifest.toolProducedExecutables) {
+    script += "if ! rm -f -- " + shellQuote(executable) + "; then\n";
+    appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                  InvocationLauncherExitCode::BundleContentMismatch);
     script += "fi\n";
   }
 
   for (const std::string &name : manifest.inheritEnvironment) {
     script += "if [[ -z \"${" + name + "+x}\" ]]; then\n";
-    appendFailure(script, "missing_environment", 125);
+    appendFailure(script, InvocationCompletionStatus::MissingEnvironment,
+                  InvocationLauncherExitCode::MissingEnvironment);
     script += "fi\n";
   }
 
@@ -278,29 +330,34 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
     if (std::optional<std::string> init = moduleInitializer(manifest)) {
       script += "if [[ ! -r " + shellQuote(*init) + " ]] || ! source " +
                 shellQuote(*init) + " >/dev/null 2>&1; then\n";
-      appendFailure(script, "module_activation_failed", 124);
+      appendFailure(script, InvocationCompletionStatus::ModuleActivationFailed,
+                    InvocationLauncherExitCode::ModuleActivationFailed);
       script += "fi\n";
     }
     script += "if ! type module >/dev/null 2>&1; then\n";
-    appendFailure(script, "module_activation_failed", 124);
+    appendFailure(script, InvocationCompletionStatus::ModuleActivationFailed,
+                  InvocationLauncherExitCode::ModuleActivationFailed);
     script += "fi\n";
     for (const std::string &module : modules) {
       script +=
           "if ! module load " + shellQuote(module) + " >/dev/null 2>&1; then\n";
-      appendFailure(script, "module_activation_failed", 124);
+      appendFailure(script, InvocationCompletionStatus::ModuleActivationFailed,
+                    InvocationLauncherExitCode::ModuleActivationFailed);
       script += "fi\n";
     }
   }
 
   script +=
       "if [[ ! -x " + shellQuote(manifest.tool.executable) + " ]]; then\n";
-  appendFailure(script, "version_mismatch", 123);
+  appendFailure(script, InvocationCompletionStatus::VersionMismatch,
+                InvocationLauncherExitCode::VersionMismatch);
   script += "fi\n";
   if (manifest.runtime.polyArchContainer) {
     script += "if [[ ! -x " +
               shellQuote(manifest.runtime.polyArchContainer->executable) +
               " ]]; then\n";
-    appendFailure(script, "version_mismatch", 123);
+    appendFailure(script, InvocationCompletionStatus::VersionMismatch,
+                  InvocationLauncherExitCode::VersionMismatch);
     script += "fi\n";
     appendVersionCheck(
         script,
@@ -321,14 +378,45 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
   script += "{\n";
   for (const std::vector<std::string> &command : manifest.commands) {
     script += "  if (( loom_status == 0 )); then\n";
-    script +=
-        "    " + renderCommand(command, manifest) + " || loom_status=$?\n";
+    if (std::find(manifest.toolProducedExecutables.begin(),
+                  manifest.toolProducedExecutables.end(),
+                  command.front()) != manifest.toolProducedExecutables.end()) {
+      script += "    if [[ -L " + shellQuote(command.front()) + " ]]; then\n";
+      script +=
+          "      loom_publish_completion " +
+          shellQuote(completionStatusSpelling(
+              InvocationCompletionStatus::BundleContentMismatch)) +
+          " " +
+          exitCodeText(InvocationLauncherExitCode::BundleContentMismatch) +
+          "\n";
+      script +=
+          "      exit " +
+          exitCodeText(InvocationLauncherExitCode::BundleContentMismatch) +
+          "\n";
+      script += "    elif [[ ! -f " + shellQuote(command.front()) +
+                " || ! -x " + shellQuote(command.front()) + " ]]; then\n";
+      script +=
+          "      loom_status=" +
+          exitCodeText(
+              InvocationLauncherExitCode::ToolProducedExecutableUnavailable) +
+          "\n";
+      script += "    else\n";
+      script +=
+          "      " + renderCommand(command, manifest) + " || loom_status=$?\n";
+      script += "    fi\n";
+    } else {
+      script +=
+          "    " + renderCommand(command, manifest) + " || loom_status=$?\n";
+    }
     script += "  fi\n";
   }
   script +=
       "} >" + shellQuote(kStdoutPath) + " 2>" + shellQuote(kStderrPath) + "\n";
   script += "if (( loom_status != 0 )); then\n";
-  script += "  loom_publish_completion 'tool_exit' \"$loom_status\"\n";
+  script += "  loom_publish_completion " +
+            shellQuote(completionStatusSpelling(
+                InvocationCompletionStatus::ToolExit)) +
+            " \"$loom_status\"\n";
   script += "  exit \"$loom_status\"\n";
   script += "fi\n";
   script += "loom_success_output_digests='['\n";
@@ -337,13 +425,15 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
     const std::string &output = manifest.declaredOutputs[index];
     script += "if [[ ! -f " + shellQuote(output) + " || -L " +
               shellQuote(output) + " ]]; then\n";
-    appendFailure(script, "missing_output", 122);
+    appendFailure(script, InvocationCompletionStatus::MissingOutput,
+                  InvocationLauncherExitCode::MissingOutput);
     script += "fi\n";
     script += "loom_output_digest=''\n";
     script +=
         "if ! IFS= read -r -N 64 loom_output_digest < <(sha256sum --zero -- " +
         shellQuote(output) + " 2>/dev/null); then\n";
-    appendFailure(script, "missing_output", 122);
+    appendFailure(script, InvocationCompletionStatus::MissingOutput,
+                  InvocationLauncherExitCode::MissingOutput);
     script += "fi\n";
     if (index != 0)
       script += "loom_success_output_digests+=','\n";
@@ -352,7 +442,10 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
   }
   script += "loom_success_output_digests+=']'\n";
   script += "loom_output_digests=\"$loom_success_output_digests\"\n";
-  script += "loom_publish_completion 'success' 0\n";
+  script += "loom_publish_completion " +
+            shellQuote(
+                completionStatusSpelling(InvocationCompletionStatus::Success)) +
+            " 0\n";
   return script;
 }
 

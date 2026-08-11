@@ -71,7 +71,21 @@ void normalizeValues(std::vector<llvm::APInt> &values) {
   for (llvm::APInt &value : values)
     value = canonicalUnsigned(value);
   llvm::sort(values, unsignedLess);
-  values.erase(std::unique(values.begin(), values.end()), values.end());
+  values.erase(std::unique(values.begin(), values.end(),
+                           [](const llvm::APInt &lhs,
+                              const llvm::APInt &rhs) {
+                             return compareUnsigned(lhs, rhs) == 0;
+                           }),
+               values.end());
+}
+
+bool equalUnsignedValues(llvm::ArrayRef<llvm::APInt> lhs,
+                         llvm::ArrayRef<llvm::APInt> rhs) {
+  return lhs.size() == rhs.size() &&
+         llvm::equal(lhs, rhs, [](const llvm::APInt &left,
+                                  const llvm::APInt &right) {
+           return compareUnsigned(left, right) == 0;
+         });
 }
 
 bool containsValue(llvm::ArrayRef<llvm::APInt> values,
@@ -540,7 +554,8 @@ llvm::Error verifyRelations(const TagStateStorage &storage) {
       return invalid("Physical Tag equality class has no member");
     classValues[equalityClass] = projectedValues(storage.nets[members.front()]);
     for (PnrIndex net : members.drop_front())
-      if (projectedValues(storage.nets[net]) != classValues[equalityClass])
+      if (!equalUnsignedValues(projectedValues(storage.nets[net]),
+                               classValues[equalityClass]))
         return invalid("Physical Tag value-set equality is violated");
   }
   for (PnrIndex equalityClass = 0;

@@ -1,3 +1,4 @@
 # RUN: %loom-spatial-pnr-scale-test irregular | FileCheck %s
 
-# CHECK: spatial_pnr_scale kind=irregular actors=1009
+# CHECK: spatial_pnr_scale kind=irregular_infeasible actors=1009
+# CHECK-SAME: assignments=0 endpoint_expansions=0 negotiations=0

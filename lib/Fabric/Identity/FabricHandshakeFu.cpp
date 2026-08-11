@@ -204,7 +204,8 @@ llvm::Error compileOperationCase(detail::HandshakeOwnerModelBuilder &builder,
   }
   for (std::uint32_t position = 0; position < resultCount; ++position) {
     base.emplace_back(resultPrefix[position], resultPrefix[position + 1]);
-    base.emplace_back(resultSuffix[position + 1], resultSuffix[position]);
+    if (!registered)
+      base.emplace_back(resultSuffix[position + 1], resultSuffix[position]);
   }
   builder.addFragment(
       fuOperationSelector(
@@ -228,10 +229,13 @@ llvm::Error compileOperationCase(detail::HandshakeOwnerModelBuilder &builder,
   }
 
   for (std::uint32_t ordinal = 0; ordinal < resultCount; ++ordinal) {
-    std::vector<Arc> arcs{{resultReady[ordinal], resultPrefix[ordinal + 1]},
-                          {resultReady[ordinal], resultSuffix[ordinal]},
-                          {resultPrefix[ordinal], resultValid[ordinal]},
-                          {resultSuffix[ordinal + 1], resultValid[ordinal]}};
+    std::vector<Arc> arcs{
+        {resultReady[ordinal], resultPrefix[ordinal + 1]}};
+    if (!registered) {
+      arcs.emplace_back(resultReady[ordinal], resultSuffix[ordinal]);
+      arcs.emplace_back(resultPrefix[ordinal], resultValid[ordinal]);
+      arcs.emplace_back(resultSuffix[ordinal + 1], resultValid[ordinal]);
+    }
     if (!registered && inputCount != 0)
       arcs.emplace_back(inputPrefix.back(), resultValid[ordinal]);
     builder.addFragment(

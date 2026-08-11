@@ -38,6 +38,7 @@ struct FrozenSpatialComputePlacement final {
   PnrIndex realization = 0;
   ::loom::fabric::FabricFuOccurrenceRef fu;
   ::loom::fabric::FabricPeOccurrenceRef parentPe;
+  ::fabric::Schedule schedule = ::fabric::Schedule::Spatial;
   PnrIndex contextOffset = 0;
   PnrIndex contextCount = 0;
 };

@@ -873,7 +873,7 @@ loom::pnr::detail::buildSystemServiceRoutes(
              request.lowerBoundArcCosts, *currentArcCosts,
              leg.requiredPayloadWidthBits, 0,
              problem.config().policy().search.routing.endpointExpansionLimit,
-             eligibleTraversals});
+             eligibleTraversals, std::nullopt});
         const std::uint64_t consumed = search.endpointExpansionCount();
         if (consumed >
             std::numeric_limits<std::uint64_t>::max() - endpointExpansions)

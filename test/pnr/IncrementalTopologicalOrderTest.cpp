@@ -290,6 +290,37 @@ void mixedUpdateRollbackRestoresEveryJournal() {
   requireExactState(*order, active, originalOrder, originalRanks);
 }
 
+void bulkCycleWitnessAndRollbackAreExact() {
+  const PotentialGraph graph = buildOffsetGraph(16, {1, 2, 3, 4, 5, 6, 7, 8});
+  std::vector<PnrIndex> cycleArcs;
+  for (PnrIndex arc = 0; arc < graph.arcs.size(); ++arc)
+    if (graph.arcs[arc].destination ==
+        (graph.arcs[arc].source + 1) % graph.nodeCount)
+      cycleArcs.push_back(arc);
+  if (cycleArcs.size() != graph.nodeCount)
+    fail("bulk cycle fixture lost its ring");
+
+  IncrementalTopologicalOrderHandle order =
+      take(IncrementalTopologicalOrder::create(graph.view(), {}));
+  IncrementalTopologicalScratch scratch;
+  requireSuccess(scratch.prepare(graph.view()));
+  const std::vector<PnrIndex> originalOrder(order->order().begin(),
+                                            order->order().end());
+  const std::vector<PnrIndex> originalRanks(order->ranks().begin(),
+                                            order->ranks().end());
+  const std::vector<bool> active(graph.arcs.size(), false);
+
+  auto transaction = take(order->beginTransaction(scratch));
+  if (take(transaction.applyArcChanges({}, cycleArcs)))
+    fail("bulk cycle was accepted");
+  if (!std::equal(transaction.cycleWitness().begin(),
+                  transaction.cycleWitness().end(), cycleArcs.begin(),
+                  cycleArcs.end()))
+    fail("bulk cycle witness is not the exact canonical ring");
+  transaction.rollback();
+  requireExactState(*order, active, originalOrder, originalRanks);
+}
+
 void randomizedUpdatesAgreeWithFullKahn() {
   const PotentialGraph graph =
       buildOffsetGraph(128, {1, 14, 27, 40, 53, 66, 79, 92});
@@ -511,6 +542,7 @@ int main() {
   cycleWitnessAndRollbackAreDeterministic();
   deletionRollbackRestoresTheCommittedGraph();
   mixedUpdateRollbackRestoresEveryJournal();
+  bulkCycleWitnessAndRollbackAreExact();
   randomizedUpdatesAgreeWithFullKahn();
   pinnedScaleBenchmarkMeetsNativeContract();
   return 0;

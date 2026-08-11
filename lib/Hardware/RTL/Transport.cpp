@@ -187,6 +187,44 @@ deriveAtomicResultTupleSignals(mlir::OpBuilder &builder,
                                   available};
 }
 
+llvm::Expected<ElasticResultTupleSignals>
+deriveElasticResultTupleSignals(mlir::OpBuilder &builder,
+                                mlir::Location location,
+                                llvm::ArrayRef<mlir::Value> heldValids,
+                                llvm::ArrayRef<mlir::Value> downstreamReady) {
+  if (heldValids.empty())
+    return transportError("elastic result tuple is empty");
+  if (heldValids.size() != downstreamReady.size())
+    return transportError("elastic result tuple arity does not match ready");
+  for (mlir::Value valid : heldValids)
+    if (llvm::Error error = validateBit("held result valid signal", valid))
+      return std::move(error);
+  for (mlir::Value ready : downstreamReady)
+    if (llvm::Error error = validateBit("result ready signal", ready))
+      return std::move(error);
+
+  llvm::SmallVector<mlir::Value, 4> handoffs;
+  llvm::SmallVector<mlir::Value, 4> completedTerms;
+  handoffs.reserve(heldValids.size());
+  completedTerms.reserve(heldValids.size());
+  for (auto [valid, ready] : llvm::zip_equal(heldValids, downstreamReady)) {
+    handoffs.push_back(
+        circt::comb::AndOp::create(builder, location, valid, ready));
+    completedTerms.push_back(circt::comb::OrOp::create(
+        builder, location,
+        circt::comb::createOrFoldNot(builder, location, valid), ready));
+  }
+  mlir::Value occupied = orAll(builder, location, heldValids);
+  mlir::Value released = circt::comb::AndOp::create(
+      builder, location, occupied, andAll(builder, location, completedTerms));
+  mlir::Value available = circt::comb::OrOp::create(
+      builder, location,
+      circt::comb::createOrFoldNot(builder, location, occupied), released);
+  return ElasticResultTupleSignals{
+      llvm::SmallVector<mlir::Value, 4>(heldValids), std::move(handoffs),
+      occupied, released, available};
+}
+
 llvm::Expected<std::vector<ModuleBoundaryTransportPortProjection>>
 deriveModuleBoundaryTransportPorts(
     mlir::OpBuilder &builder,

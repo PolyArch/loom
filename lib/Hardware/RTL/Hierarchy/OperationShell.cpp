@@ -315,8 +315,6 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
         std::vector<mlir::Value> dataRegisters(outputEndpoints.size());
         std::vector<circt::Backedge> resultValidNext;
         std::vector<mlir::Value> resultValid;
-        circt::Backedge tupleValidNext;
-        mlir::Value tupleValid;
         if (hasResultStorage) {
           for (auto [ordinal, endpoint] : llvm::enumerate(outputEndpoints)) {
             if (endpoint->payloadWidthBits == 0)
@@ -332,39 +330,30 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
                     : "result_data_" + std::to_string(ordinal) + "_reg",
                 clockReset.asynchronousReset);
           }
-          if (interface->protocol ==
-              FabricOperationLeafProtocol::Combinational) {
-            tupleValidNext = backedges.get(bodyBuilder.getI1Type());
-            tupleValid = createRegister(bodyBuilder, location, tupleValidNext,
-                                        accessor.getInput("clock"),
-                                        accessor.getInput("reset"),
-                                        llvm::APInt(1, 0), "result_valid_reg",
-                                        clockReset.asynchronousReset);
-            resultValid.assign(outputEndpoints.size(), tupleValid);
-          } else {
-            resultValidNext.resize(outputEndpoints.size());
-            resultValid.resize(outputEndpoints.size());
-            for (std::size_t ordinal = 0; ordinal < outputEndpoints.size();
-                 ++ordinal) {
-              resultValidNext[ordinal] = backedges.get(bodyBuilder.getI1Type());
-              resultValid[ordinal] = createRegister(
-                  bodyBuilder, location, resultValidNext[ordinal],
-                  accessor.getInput("clock"), accessor.getInput("reset"),
-                  llvm::APInt(1, 0),
-                  "result_valid_" + std::to_string(ordinal) + "_reg",
-                  clockReset.asynchronousReset);
-            }
+          resultValidNext.resize(outputEndpoints.size());
+          resultValid.resize(outputEndpoints.size());
+          for (std::size_t ordinal = 0; ordinal < outputEndpoints.size();
+               ++ordinal) {
+            resultValidNext[ordinal] = backedges.get(bodyBuilder.getI1Type());
+            resultValid[ordinal] = createRegister(
+                bodyBuilder, location, resultValidNext[ordinal],
+                accessor.getInput("clock"), accessor.getInput("reset"),
+                llvm::APInt(1, 0),
+                outputEndpoints.size() == 1
+                    ? "result_valid_reg"
+                    : "result_valid_" + std::to_string(ordinal) + "_reg",
+                clockReset.asynchronousReset);
           }
         }
 
-        std::optional<AtomicResultTupleSignals> held;
+        std::optional<ElasticResultTupleSignals> held;
         mlir::Value slotAvailable = bitConstant(bodyBuilder, location, true);
         if (hasResultStorage) {
           llvm::SmallVector<mlir::Value, 4> downstreamReady;
           for (const OperationEndpointPlan *endpoint : outputEndpoints)
             downstreamReady.push_back(
                 accessor.getInput(endpoint->ready.getName()));
-          auto tuple = deriveAtomicResultTupleSignals(
+          auto tuple = deriveElasticResultTupleSignals(
               bodyBuilder, location, resultValid, downstreamReady);
           if (!tuple) {
             materializationError = llvm::toString(tuple.takeError());
@@ -489,12 +478,16 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
               bodyBuilder, location,
               {capacity, andValues(bodyBuilder, location, inputValids)});
           contextCapture = accept;
-          mlir::Value retain = andValues(
-              bodyBuilder, location,
-              {tupleValid, circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                        held->released)});
-          tupleValidNext.setValue(
-              orValues(bodyBuilder, location, {accept, retain}));
+          for (std::size_t ordinal = 0; ordinal < outputEndpoints.size();
+               ++ordinal) {
+            mlir::Value retain = andValues(
+                bodyBuilder, location,
+                {resultValid[ordinal],
+                 circt::comb::createOrFoldNot(bodyBuilder, location,
+                                              held->handoffs[ordinal])});
+            resultValidNext[ordinal].setValue(
+                orValues(bodyBuilder, location, {accept, retain}));
+          }
           publishedValid = held->publishedValids;
           for (auto [ordinal, endpoint] : llvm::enumerate(outputEndpoints)) {
             if (!endpoint->data)
@@ -531,11 +524,11 @@ buildOperationShell(mlir::OpBuilder &builder, mlir::Location location,
                          {capturedNonFinal, retainedContinuation}));
           }
           for (auto [ordinal, endpoint] : llvm::enumerate(outputEndpoints)) {
-            mlir::Value retain =
-                andValues(bodyBuilder, location,
-                          {resultValid[ordinal],
-                           circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                        held->released)});
+            mlir::Value retain = andValues(
+                bodyBuilder, location,
+                {resultValid[ordinal],
+                 circt::comb::createOrFoldNot(bodyBuilder, location,
+                                              held->handoffs[ordinal])});
             mlir::Value acquire = andValues(bodyBuilder, location,
                                             {capture, producedValid[ordinal]});
             resultValidNext[ordinal].setValue(

@@ -18,7 +18,6 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -232,13 +231,6 @@ const CandidateGeneratorDescriptor descriptor{
     ProviderForm::InProcess,
 };
 
-std::uint32_t defaultWorkerCount() {
-  const unsigned hardware = std::thread::hardware_concurrency();
-  if (hardware <= 4)
-    return 1;
-  return std::min<std::uint32_t>(hardware - 4, 120);
-}
-
 const ArtifactRootReference &
 singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
             InputSlot slot) {
@@ -289,7 +281,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
 
   StructuredOwnershipGenerationOptions options;
   options.scopeExpansionLimit = config->scopeExpansionLimit();
-  options.candidateWorkerCount = defaultWorkerCount();
+  options.candidateWorkerCount = defaultCandidateWorkerCount();
   options.protocolCallableRoots.assign(config->protocolCallableRoots().begin(),
                                        config->protocolCallableRoots().end());
   auto generated = generateStructuredOwnershipCandidates(

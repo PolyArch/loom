@@ -23,6 +23,11 @@
 
 namespace loom::external_tool {
 
+inline constexpr llvm::StringLiteral externalToolInvocationManifestSchema =
+    "loom.external_tool_invocation";
+inline constexpr llvm::StringLiteral externalToolInvocationManifestVersion =
+    "2.2";
+
 /// The CandidateGenerator closure of one semantic invocation: the exact
 /// typed input bindings and the exact resolved binding as owner-codec
 /// canonical bytes, plus the registry-derived binding identity. The bundle
@@ -114,6 +119,9 @@ struct ExternalToolInvocationBundleSpec {
   std::vector<MaterializedBundleFile> files;
   std::vector<ResolvedExternalFile> externalFiles;
   std::vector<ResolvedExternalFileTree> externalFileTrees;
+  /// Canonical work-relative programs that a preceding frozen-tool command
+  /// must create before a later command may execute them.
+  std::vector<std::string> toolProducedExecutables = {};
 };
 
 enum class InvocationCompletionStatus {
@@ -124,6 +132,19 @@ enum class InvocationCompletionStatus {
   BundleContentMismatch,
   ToolExit,
   MissingOutput,
+};
+
+/// Exit codes reserved by the generated launcher itself. External tools keep
+/// their native nonzero exit codes; only launcher-authored failures use this
+/// closed domain.
+enum class InvocationLauncherExitCode : int {
+  ToolProducedExecutableUnavailable = 120,
+  BundleContentMismatch = 121,
+  MissingOutput = 122,
+  VersionMismatch = 123,
+  ModuleActivationFailed = 124,
+  MissingEnvironment = 125,
+  LauncherFailure = 126,
 };
 
 struct InvocationCompletion {

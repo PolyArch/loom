@@ -81,6 +81,12 @@ llvm::Expected<std::uint64_t>
 spatialMappingViolationValue(const SpatialCandidateState &candidate,
                              ResolvedPnrViolationKind kind);
 
+/// Returns true exactly when every Mapping-owned final violation projection is
+/// zero. This is the shared semantic closure predicate used by search and final
+/// verification; objective ranking remains independently selected.
+llvm::Expected<bool>
+spatialMappingViolationsAreZero(const SpatialCandidateState &candidate);
+
 /// Projects one Mapping-owned domain-independent measure from the exact
 /// candidate state. The candidate remains the sole owner of incremental route
 /// occupancy; this query does not cache or reconstruct that state.

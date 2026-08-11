@@ -202,6 +202,8 @@ public:
         blobStore_(blobStore) {}
 
   llvm::Error verify(const EvaluationRequest &request) const;
+  llvm::Error verify(const EvaluationRequest &request,
+                     const EvaluationCase &verifiedCase) const;
 
 private:
   const CaseArtifactResolution &resolution_;

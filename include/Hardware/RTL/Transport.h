@@ -53,6 +53,17 @@ struct AtomicResultTupleSignals final {
   mlir::Value available;
 };
 
+/// Publication signals for distinct results retained by one tuple holding
+/// slot. Each pending result remains valid until its own handoff. The shared
+/// slot is released only after the final pending result handoff.
+struct ElasticResultTupleSignals final {
+  llvm::SmallVector<mlir::Value, 4> publishedValids;
+  llvm::SmallVector<mlir::Value, 4> handoffs;
+  mlir::Value occupied;
+  mlir::Value released;
+  mlir::Value available;
+};
+
 /// Derives the all-input atomic-join readiness equations for one operation
 /// acquisition. Every signal must be signless i1. An empty tuple is invalid.
 llvm::Expected<llvm::SmallVector<mlir::Value, 4>>
@@ -68,6 +79,15 @@ deriveAtomicResultTupleSignals(mlir::OpBuilder &builder,
                                mlir::Location location,
                                llvm::ArrayRef<mlir::Value> heldValids,
                                llvm::ArrayRef<mlir::Value> downstreamReady);
+
+/// Derives publication, per-result handoff, and final release for distinct
+/// result tokens retained in one tuple holding slot. Inactive or already
+/// handed-off results have a false held-valid bit and do not block release.
+llvm::Expected<ElasticResultTupleSignals>
+deriveElasticResultTupleSignals(mlir::OpBuilder &builder,
+                                mlir::Location location,
+                                llvm::ArrayRef<mlir::Value> heldValids,
+                                llvm::ArrayRef<mlir::Value> downstreamReady);
 
 /// Projects every token-plane endpoint of one finalized Module root in input
 /// signature order followed by output signature order. Memory-plane endpoints

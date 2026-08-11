@@ -7,6 +7,7 @@ add_library(LoomStructuredFabricAnalyticModel
   DfgSimulation.cpp
   FixedTabularGbdt.cpp
   FpaParameterContract.cpp
+  MappedRtlSimulation.cpp
   ProductionRegistry.cpp
   SimulationComparison.cpp
   StructuredEvaluationInvocationCache.cpp

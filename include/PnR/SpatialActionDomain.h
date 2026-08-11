@@ -41,6 +41,8 @@ private:
   std::vector<SpatialActionChoiceRange> transportAnchors_;
   std::vector<SpatialTransportRoutingAction> transportChoices_;
   std::vector<PnrIndex> routeRootEndpoints_;
+  std::vector<PnrIndex> routeSubtreeSlots_;
+  std::vector<std::uint8_t> routeSubtreeHasSink_;
   std::vector<SpatialActionChoiceRange> resourceAnchors_;
   std::vector<SpatialResourceAllocationAction> resourceChoices_;
   std::vector<PnrIndex> relationChoices_;

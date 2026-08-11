@@ -26,6 +26,18 @@ using namespace loom::external_tool;
 
 namespace {
 
+constexpr int launcherExitCode(InvocationLauncherExitCode code) {
+  return static_cast<int>(code);
+}
+
+constexpr int kFixtureToolExitCode = 93;
+constexpr llvm::StringLiteral kCompatibleTypedClosureManifestVersion = "2.0";
+constexpr llvm::StringLiteral kUnsupportedLegacyManifestVersion = "1.0";
+
+std::string jsonVersionMember(llvm::StringRef version) {
+  return "\"version\": \"" + version.str() + "\"";
+}
+
 [[noreturn]] void fail(const char *test, const std::string &message) {
   std::cerr << test << ": " << message << '\n';
   std::exit(1);
@@ -105,11 +117,10 @@ void writeText(const std::filesystem::path &path, llvm::StringRef contents) {
 }
 
 ExternalFileFingerprint fingerprint(llvm::StringRef contents) {
-  const auto *bytes =
-      reinterpret_cast<const std::uint8_t *>(contents.data());
-  return take(__func__, ExternalFileFingerprint::fromBytes(llvm::SHA256::hash(
-                            llvm::ArrayRef<std::uint8_t>(bytes,
-                                                         contents.size()))));
+  const auto *bytes = reinterpret_cast<const std::uint8_t *>(contents.data());
+  return take(__func__,
+              ExternalFileFingerprint::fromBytes(llvm::SHA256::hash(
+                  llvm::ArrayRef<std::uint8_t>(bytes, contents.size()))));
 }
 
 loom::BlobDigest blobDigest(llvm::StringRef contents) {
@@ -120,23 +131,24 @@ loom::BlobDigest blobDigest(llvm::StringRef contents) {
 
 void resultImporterIdentityUsesCanonicalFraming() {
   const std::array<std::uint8_t, 2> descriptorReference = {0x01, 0x02};
-  const std::string identity = take(
-      __func__, deriveExternalToolResultImporterIdentity(
-                    descriptorReference,
-                    loom::ProviderForm::ExternalPrepareImport));
-  require(__func__,
-          identity ==
-              "a64d161a4e75675a8338e952ac0d199d9f31863e9f2aa881227c57a316c9389b",
-          "result-importer digest framing changed");
+  const std::string identity =
+      take(__func__,
+           deriveExternalToolResultImporterIdentity(
+               descriptorReference, loom::ProviderForm::ExternalPrepareImport));
+  require(
+      __func__,
+      identity ==
+          "a64d161a4e75675a8338e952ac0d199d9f31863e9f2aa881227c57a316c9389b",
+      "result-importer digest framing changed");
   requireFailureContains(
       __func__,
       deriveExternalToolResultImporterIdentity(descriptorReference,
                                                loom::ProviderForm::InProcess),
       "ExternalPrepareImport");
-  requireFailureContains(
-      __func__, deriveExternalToolResultImporterIdentity(
-                    {}, loom::ProviderForm::ExternalPrepareImport),
-      "descriptor reference");
+  requireFailureContains(__func__,
+                         deriveExternalToolResultImporterIdentity(
+                             {}, loom::ProviderForm::ExternalPrepareImport),
+                         "descriptor reference");
 }
 
 ResolvedToolBinding toolBinding(const std::filesystem::path &executable,
@@ -150,11 +162,11 @@ ExternalToolInvocationBundleSpec baseSpec(const std::filesystem::path &tool,
                                           const std::filesystem::path &output) {
   ExternalToolInvocationBundleSpec spec;
   spec.semanticContract.providerIdentity = "fake_eda@1";
-  spec.semanticContract.semanticClosure = SemanticInvocationClosure(
-      CandidateGeneratorInvocationClosure{{0x01, 0x02},
-                                          {0x03, 0x04},
-                                          blobDigest("fake-model-binding")
-                                              .bytes()});
+  spec.semanticContract.semanticClosure =
+      SemanticInvocationClosure(CandidateGeneratorInvocationClosure{
+          {0x01, 0x02},
+          {0x03, 0x04},
+          blobDigest("fake-model-binding").bytes()});
   spec.semanticContract.resultImporterIdentity = std::string(64, 'a');
   spec.tool = toolBinding(tool, ToolBindingSource::Explicit);
   spec.toolVersionProbe = ToolVersionProbe{{"--version"}, "Fake EDA"};
@@ -299,6 +311,119 @@ void deterministicHostBundleExecutes(const std::filesystem::path &root,
           "tampered bundle content was not distinguished in completion");
 }
 
+void toolProducedExecutableLifecycle(const std::filesystem::path &root,
+                                     const std::filesystem::path &tool) {
+  const std::string produced = "work/generated/simulator";
+  const std::string output = "outputs/generated-result.txt";
+  ExternalToolInvocationBundleSpec spec = baseSpec(tool, output);
+  spec.commands = {{tool.string(), "compile", produced},
+                   {produced, output, "fresh"}};
+  spec.toolProducedExecutables = {produced};
+  const std::filesystem::path bundle = root / "produced-executable";
+  const PreparedExternalToolInvocation prepared = take(
+      __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
+  require(__func__,
+          std::filesystem::is_directory((bundle / produced).parent_path()),
+          "tool-produced executable parent was not materialized");
+  writeExecutable(bundle / produced,
+                  "#!/usr/bin/env bash\nprintf stale >\"$1\"\n");
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
+          "fresh tool-produced executable did not run");
+  require(__func__, readFile(bundle / output) == "fresh",
+          "launcher executed a stale generated program");
+  const std::string manifest = readFile(bundle / "tool-invocation.json");
+  const std::string currentVersion =
+      jsonVersionMember(externalToolInvocationManifestVersion);
+  require(__func__,
+          manifest.find(currentVersion) != std::string::npos &&
+              manifest.find("\"tool_produced_executables\"") !=
+                  std::string::npos,
+          "produced executable closure is absent from the current manifest");
+  take(__func__,
+       importExternalToolInvocationBundle(prepared, importExpectation(spec)));
+
+  ExternalToolInvocationBundleSpec noTool = spec;
+  noTool.commands = {{produced, output, "invalid"},
+                     {tool.string(), "compile", produced}};
+  requireFailureContains(__func__,
+                         finalizeExternalToolInvocationBundle(
+                             (root / "produced-before-tool").string(), noTool),
+                         "no preceding frozen-tool command");
+
+  ExternalToolInvocationBundleSpec unused = spec;
+  unused.commands = {{tool.string(), "no-output"}};
+  requireFailureContains(
+      __func__,
+      finalizeExternalToolInvocationBundle(
+          (root / "unused-produced-executable").string(), unused),
+      "must be used");
+
+  ExternalToolInvocationBundleSpec unlisted = spec;
+  unlisted.toolProducedExecutables.clear();
+  requireFailureContains(
+      __func__,
+      finalizeExternalToolInvocationBundle(
+          (root / "unlisted-produced-executable").string(), unlisted),
+      "manifest-listed");
+
+  const std::array<std::string, 3> invalidPaths{
+      "/absolute/simulator", "work/../escape", "drivers/simulator"};
+  for (std::size_t index = 0; index != invalidPaths.size(); ++index) {
+    const std::string &invalidPath = invalidPaths[index];
+    ExternalToolInvocationBundleSpec invalid = spec;
+    invalid.commands = {{tool.string(), "compile", invalidPath},
+                        {invalidPath, output, "invalid"}};
+    invalid.toolProducedExecutables = {invalidPath};
+    requireFailure(
+        __func__,
+        finalizeExternalToolInvocationBundle(
+            (root / ("invalid-produced-" + std::to_string(index))).string(),
+            invalid),
+        "invalid tool-produced executable path was accepted");
+  }
+
+  ExternalToolInvocationBundleSpec nonExecutable = spec;
+  nonExecutable.commands = {{tool.string(), "compile-nonexec", produced},
+                            {produced, output, "invalid"}};
+  const std::filesystem::path nonExecutableBundle = root / "produced-nonexec";
+  const PreparedExternalToolInvocation nonExecutablePrepared =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         nonExecutableBundle.string(), nonExecutable));
+  require(
+      __func__,
+      take(__func__,
+           executeExternalToolInvocationBundle(nonExecutablePrepared)) ==
+          launcherExitCode(
+              InvocationLauncherExitCode::ToolProducedExecutableUnavailable),
+      "non-executable generated program was not rejected");
+  InvocationCompletion nonExecutableCompletion = take(
+      __func__, loadExternalToolInvocationCompletion(nonExecutablePrepared));
+  require(__func__,
+          nonExecutableCompletion.status ==
+              InvocationCompletionStatus::ToolExit,
+          "non-executable generated program has the wrong completion status");
+
+  ExternalToolInvocationBundleSpec symlink = spec;
+  symlink.commands = {{tool.string(), "compile-symlink", produced},
+                      {produced, output, "invalid"}};
+  const std::filesystem::path symlinkBundle = root / "produced-symlink";
+  const PreparedExternalToolInvocation symlinkPrepared = take(
+      __func__,
+      finalizeExternalToolInvocationBundle(symlinkBundle.string(), symlink));
+  require(
+      __func__,
+      take(__func__, executeExternalToolInvocationBundle(symlinkPrepared)) ==
+          launcherExitCode(InvocationLauncherExitCode::BundleContentMismatch),
+      "symlink generated program was not rejected");
+  InvocationCompletion symlinkCompletion =
+      take(__func__, loadExternalToolInvocationCompletion(symlinkPrepared));
+  require(__func__,
+          symlinkCompletion.status ==
+              InvocationCompletionStatus::BundleContentMismatch,
+          "symlink generated program was not an integrity failure");
+}
+
 void containerBundleExecutes(const std::filesystem::path &root,
                              const std::filesystem::path &tool,
                              const std::filesystem::path &container) {
@@ -337,7 +462,8 @@ void externalFileIsRevalidated(const std::filesystem::path &root,
 
   LocalToolConfig config;
   config.externalFiles.emplace("asic_typical_lib", external.string());
-  const ExternalFileRequirement requirement{"asic.liberty", fingerprint(contents)};
+  const ExternalFileRequirement requirement{"asic.liberty",
+                                            fingerprint(contents)};
   std::vector<ResolvedExternalFile> resolved =
       take(__func__, resolveExternalFiles({requirement}, config));
 
@@ -356,12 +482,10 @@ void externalFileIsRevalidated(const std::filesystem::path &root,
                   std::string::npos &&
               manifest.find(external.string()) != std::string::npos &&
               manifest.find(formatExternalFileFingerprint(
-                                resolved.front().fingerprint)) !=
-                  std::string::npos,
+                  resolved.front().fingerprint)) != std::string::npos,
           "resolved external file provenance is absent from the manifest");
 
-  int status =
-      take(__func__, executeExternalToolInvocationBundle(prepared));
+  int status = take(__func__, executeExternalToolInvocationBundle(prepared));
   require(__func__, status == 0,
           "bundle rejected an unchanged resolved external file");
   require(__func__, readFile(bundle / output) == "literal; $(touch never)",
@@ -371,23 +495,22 @@ void externalFileIsRevalidated(const std::filesystem::path &root,
   take(__func__, importExternalToolInvocationBundle(prepared, expected));
   ExternalToolInvocationImportExpectation wrong = expected;
   wrong.externalInputs.front().fingerprint = fingerprint("different-bytes");
-  requireFailure(__func__,
-                 importExternalToolInvocationBundle(prepared, wrong),
+  requireFailure(__func__, importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong external input fingerprint was accepted");
 
   writeText(external, "vendor-library-mutated\n");
   const std::filesystem::path changedBundle = root / "changed-external-bundle";
-  const PreparedExternalToolInvocation preparedChanged = take(
-      __func__,
-      finalizeExternalToolInvocationBundle(changedBundle.string(), spec));
-  status = take(__func__,
-                executeExternalToolInvocationBundle(preparedChanged));
+  const PreparedExternalToolInvocation preparedChanged =
+      take(__func__,
+           finalizeExternalToolInvocationBundle(changedBundle.string(), spec));
+  status = take(__func__, executeExternalToolInvocationBundle(preparedChanged));
   require(__func__, status != 0,
           "bundle accepted a changed resolved external file");
-  InvocationCompletion completion = take(
-      __func__, loadExternalToolInvocationCompletion(preparedChanged));
+  InvocationCompletion completion =
+      take(__func__, loadExternalToolInvocationCompletion(preparedChanged));
   require(__func__,
-          completion.status == InvocationCompletionStatus::BundleContentMismatch,
+          completion.status ==
+              InvocationCompletionStatus::BundleContentMismatch,
           "changed external content was not distinguished in completion");
   require(__func__, !std::filesystem::exists(changedBundle / output),
           "the tool ran after external content verification failed");
@@ -413,11 +536,13 @@ void externalFileTreeIsRevalidated(const std::filesystem::path &root,
   const PreparedExternalToolInvocation prepared = take(
       __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
   const std::string manifest = readFile(bundle / "tool-invocation.json");
+  const std::string currentVersion =
+      jsonVersionMember(externalToolInvocationManifestVersion);
   require(__func__,
-          manifest.find("\"version\": \"2.1\"") != std::string::npos &&
+          manifest.find(currentVersion) != std::string::npos &&
               manifest.find("\"external_file_trees\"") != std::string::npos &&
               manifest.find("\"path\": \"parts/p0\"") != std::string::npos,
-          "resolved external file tree is absent from the 2.1 manifest");
+          "resolved external file tree is absent from the current manifest");
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
           "bundle rejected an unchanged external file tree");
@@ -505,16 +630,16 @@ void missingOutputIsRecorded(const std::filesystem::path &root,
   ExternalToolInvocationBundleSpec staleSpec =
       baseSpec(tool, "outputs/required.txt");
   staleSpec.commands = {{tool.string(), "no-output"}};
-  const PreparedExternalToolInvocation preparedStale = take(
-      __func__,
-      finalizeExternalToolInvocationBundle(staleBundle.string(), staleSpec));
+  const PreparedExternalToolInvocation preparedStale =
+      take(__func__, finalizeExternalToolInvocationBundle(staleBundle.string(),
+                                                          staleSpec));
   writeText(staleBundle / staleSpec.declaredOutputs.front(), "stale");
   require(__func__,
-          take(__func__,
-               executeExternalToolInvocationBundle(preparedStale)) != 0,
+          take(__func__, executeExternalToolInvocationBundle(preparedStale)) !=
+              0,
           "a preexisting output was accepted as a fresh tool result");
-  completion = take(__func__,
-                    loadExternalToolInvocationCompletion(preparedStale));
+  completion =
+      take(__func__, loadExternalToolInvocationCompletion(preparedStale));
   require(__func__,
           completion.status == InvocationCompletionStatus::MissingOutput,
           "a planted stale output was not removed before execution");
@@ -592,8 +717,7 @@ void conflictingPathLeavesNoBundle(const std::filesystem::path &root,
       baseSpec(tool, "outputs/completion.json/child");
   llvm::Expected<PreparedExternalToolInvocation> result =
       finalizeExternalToolInvocationBundle(bundle.string(), spec);
-  require(__func__, !result,
-          "a path below the completion record was accepted");
+  require(__func__, !result, "a path below the completion record was accepted");
   llvm::consumeError(result.takeError());
   require(__func__, !std::filesystem::exists(bundle),
           "conflicting finalization published a bundle");
@@ -606,8 +730,7 @@ void internalVersionPathCannotBeDeclared(const std::filesystem::path &root,
       baseSpec(tool, "outputs/.loom-tool-version");
   llvm::Expected<PreparedExternalToolInvocation> result =
       finalizeExternalToolInvocationBundle(bundle.string(), spec);
-  require(__func__, !result,
-          "the internal version output path was accepted");
+  require(__func__, !result, "the internal version output path was accepted");
   llvm::consumeError(result.takeError());
   require(__func__, !std::filesystem::exists(bundle),
           "reserved-path finalization published a bundle");
@@ -622,13 +745,13 @@ void independentBundlesExecuteInParallel(const std::filesystem::path &root,
   firstSpec.commands = {{tool.string(), "block", "outputs/tool-entry.log",
                          "outputs/release", "outputs/result.txt"}};
   const PreparedExternalToolInvocation preparedFirst =
-      take(__func__, finalizeExternalToolInvocationBundle(first.string(),
-                                                          firstSpec));
+      take(__func__,
+           finalizeExternalToolInvocationBundle(first.string(), firstSpec));
   ExternalToolInvocationBundleSpec secondSpec =
       baseSpec(tool, "outputs/result.txt");
   const PreparedExternalToolInvocation preparedSecond =
-      take(__func__, finalizeExternalToolInvocationBundle(second.string(),
-                                                          secondSpec));
+      take(__func__,
+           finalizeExternalToolInvocationBundle(second.string(), secondSpec));
 
   const pid_t child = ::fork();
   require(__func__, child >= 0, "could not fork the first bundle execution");
@@ -660,8 +783,8 @@ void independentBundlesExecuteInParallel(const std::filesystem::path &root,
   // A second independent bundle root executes to completion while the first
   // is still inside the tool: no shared mutable state exists between roots.
   require(__func__,
-          take(__func__,
-               executeExternalToolInvocationBundle(preparedSecond)) == 0,
+          take(__func__, executeExternalToolInvocationBundle(preparedSecond)) ==
+              0,
           "an independent bundle could not execute while another ran");
   writeText(first / "outputs" / "release", "");
   const int firstStatus = waitForChild(__func__, child);
@@ -696,12 +819,13 @@ void unremovableDeclaredOutputFailsBeforeToolEntry(
   InvocationCompletion completion =
       take(__func__, loadExternalToolInvocationCompletion(prepared));
   require(__func__,
-          completion.status == InvocationCompletionStatus::BundleContentMismatch,
+          completion.status ==
+              InvocationCompletionStatus::BundleContentMismatch,
           "an unremovable declared output did not fail integrity validation");
-  requireFailure(__func__,
-                 importExternalToolInvocationBundle(
-                     prepared, importExpectation(spec)),
-                 "stale bytes were imported after a failed removal");
+  requireFailure(
+      __func__,
+      importExternalToolInvocationBundle(prepared, importExpectation(spec)),
+      "stale bytes were imported after a failed removal");
 }
 
 void sequentialReexecutionIsCallerOwned(const std::filesystem::path &root,
@@ -712,41 +836,42 @@ void sequentialReexecutionIsCallerOwned(const std::filesystem::path &root,
       __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
 
   require(__func__,
-          take(__func__,
-               executeExternalToolInvocationBundle(prepared)) == 0,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
           "the first execution failed");
-  take(__func__, importExternalToolInvocationBundle(
-                     prepared, importExpectation(spec)));
+  take(__func__,
+       importExternalToolInvocationBundle(prepared, importExpectation(spec)));
 
   // The caller chooses to execute the same prepared bundle again: the
   // completion and declared outputs are republished by the new execution.
   require(__func__,
-          take(__func__,
-               executeExternalToolInvocationBundle(prepared)) == 0,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
           "a caller-chosen sequential re-execution was refused");
-  take(__func__, importExternalToolInvocationBundle(
-                     prepared, importExpectation(spec)));
+  take(__func__,
+       importExternalToolInvocationBundle(prepared, importExpectation(spec)));
 
   // An interrupted attempt leaves no completion; re-execution still works,
   // and the incomplete state stays import-rejected in between.
   std::filesystem::remove(bundle / "outputs" / "completion.json");
-  requireFailure(__func__,
-                 importExternalToolInvocationBundle(
-                     prepared, importExpectation(spec)),
-                 "an interrupted bundle remained importable");
+  requireFailure(
+      __func__,
+      importExternalToolInvocationBundle(prepared, importExpectation(spec)),
+      "an interrupted bundle remained importable");
   require(__func__,
-          take(__func__,
-               executeExternalToolInvocationBundle(prepared)) == 0,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
           "re-execution after an interrupted attempt failed");
-  take(__func__, importExternalToolInvocationBundle(
-                     prepared, importExpectation(spec)));
+  take(__func__,
+       importExternalToolInvocationBundle(prepared, importExpectation(spec)));
 
   // No Loom-owned claim or retry authority remains in the generated script.
   const std::string script = readFile(bundle / "run.sh");
-  require(__func__, script.find(".loom-execution-started") ==
-                            std::string::npos &&
-                        script.find("exit 120") == std::string::npos,
-          "run.sh retained an execution claim or retry authority");
+  require(
+      __func__,
+      script.find(".loom-execution-started") == std::string::npos &&
+          script.find("exit " + std::to_string(launcherExitCode(
+                                    InvocationLauncherExitCode::
+                                        ToolProducedExecutableUnavailable))) ==
+              std::string::npos,
+      "run.sh retained an execution claim or retry authority");
 }
 
 void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
@@ -756,10 +881,9 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
   ExternalToolInvocationBundleSpec spec = baseSpec(tool, output);
   const PreparedExternalToolInvocation prepared = take(
       __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
-  require(
-      __func__,
-      take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
-      "strict-import bundle did not execute");
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
+          "strict-import bundle did not execute");
 
   ExternalToolInvocationImportExpectation expected = importExpectation(spec);
   ExternalToolInvocationAttemptOutcome attempt =
@@ -788,36 +912,30 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
 
   ExternalToolInvocationImportExpectation wrong = expected;
   wrong.semanticContract.providerIdentity = "other-provider@1";
-  requireFailure(__func__,
-                 importExternalToolInvocationBundle(prepared, wrong),
+  requireFailure(__func__, importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong provider identity was accepted");
   wrong = expected;
-  wrong.semanticContract.semanticClosure =
-      SemanticInvocationClosure(loom::ArtifactRootReference{
-          "loom.test_request",
-          {1, 0},
-          take(__func__,
-               loom::parseArtifactIdentityHex(std::string(64, '3')))});
-  requireFailure(__func__,
-                 importExternalToolInvocationBundle(prepared, wrong),
+  wrong.semanticContract.semanticClosure = SemanticInvocationClosure(
+      loom::ArtifactRootReference{"loom.test_request",
+                                  {1, 0},
+                                  take(__func__, loom::parseArtifactIdentityHex(
+                                                     std::string(64, '3')))});
+  requireFailure(__func__, importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong semantic closure was accepted");
   wrong = expected;
   wrong.semanticContract.resultImporterIdentity = std::string(64, 'b');
-  requireFailure(__func__,
-                 importExternalToolInvocationBundle(prepared, wrong),
+  requireFailure(__func__, importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong result importer identity was accepted");
   wrong = expected;
   wrong.semanticInputs.front().sourceArtifact = loom::ArtifactRootReference{
       "loom.test_input",
       {1, 0},
       take(__func__, loom::parseArtifactIdentityHex(std::string(64, '2')))};
-  requireFailure(__func__,
-                 importExternalToolInvocationBundle(prepared, wrong),
+  requireFailure(__func__, importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong semantic input Artifact reference was accepted");
   wrong = expected;
   wrong.semanticInputs.front().contentDigest = blobDigest("other-input-bytes");
-  requireFailure(__func__,
-                 importExternalToolInvocationBundle(prepared, wrong),
+  requireFailure(__func__, importExternalToolInvocationBundle(prepared, wrong),
                  "a wrong semantic input content digest was accepted");
 
   const std::filesystem::path substituted = root / "strict-import-substituted";
@@ -839,16 +957,14 @@ void successfulImportIsExactAndOutputSafe(const std::filesystem::path &root,
 
   wrong = expected;
   wrong.declaredOutputs.push_back("outputs/unexpected.txt");
-  requireFailure(__func__,
-                 importExternalToolInvocationBundle(prepared, wrong),
+  requireFailure(__func__, importExternalToolInvocationBundle(prepared, wrong),
                  "wrong declared output membership was accepted");
 
   const std::string completionBefore =
       readFile(bundle / "outputs" / "completion.json");
-  require(
-      __func__,
-      take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
-      "a caller-chosen rerun of a completed bundle was refused");
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
+          "a caller-chosen rerun of a completed bundle was refused");
   require(__func__,
           readFile(bundle / "outputs" / "completion.json") == completionBefore,
           "a deterministic rerun changed the completion record");
@@ -873,8 +989,7 @@ void unsafeOutputsCannotBeImported(const std::filesystem::path &root,
     const PreparedExternalToolInvocation prepared = take(
         __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
     require(__func__,
-            take(__func__,
-                 executeExternalToolInvocationBundle(prepared)) == 0,
+            take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
             "unsafe-output bundle did not execute");
     return std::tuple(bundle, std::move(spec), prepared);
   };
@@ -920,8 +1035,7 @@ void strictImportRejectsAttemptTampering(const std::filesystem::path &root,
     const PreparedExternalToolInvocation prepared = take(
         __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
     require(__func__,
-            take(__func__,
-                 executeExternalToolInvocationBundle(prepared)) == 0,
+            take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
             "import-negative bundle did not execute");
     return std::tuple(bundle, std::move(spec), prepared);
   };
@@ -934,20 +1048,19 @@ void strictImportRejectsAttemptTampering(const std::filesystem::path &root,
   // The handle must bind the tampered bytes exactly, or the import stops at
   // the prepared-handle digest check instead of the canonical parser.
   const PreparedExternalToolInvocation noncanonicalHandle{
-      noncanonicalBundle.string(),
-      blobDigest(readFile(noncanonicalManifest))};
-  requireFailure(
-      __func__,
-      importExternalToolInvocationBundle(noncanonicalHandle,
-                                         importExpectation(noncanonicalSpec)),
-      "a noncanonical manifest was accepted");
+      noncanonicalBundle.string(), blobDigest(readFile(noncanonicalManifest))};
+  requireFailure(__func__,
+                 importExternalToolInvocationBundle(
+                     noncanonicalHandle, importExpectation(noncanonicalSpec)),
+                 "a noncanonical manifest was accepted");
 
   auto [unknownBundle, unknownSpec, unknownPrepared] =
       makeExecutedBundle("unknown-manifest");
   const std::filesystem::path unknownManifest =
       unknownBundle / "tool-invocation.json";
   std::string unknownText = readFile(unknownManifest);
-  const std::size_t version = unknownText.find("  \"version\": \"2.1\",");
+  const std::size_t version = unknownText.find(
+      "  " + jsonVersionMember(externalToolInvocationManifestVersion) + ",");
   require(__func__, version != std::string::npos,
           "cannot locate manifest version field");
   unknownText.insert(version, "  \"unknown\": true,\n");
@@ -999,11 +1112,10 @@ void strictImportRejectsAttemptTampering(const std::filesystem::path &root,
   writeText(malformedManifest, malformedText);
   const PreparedExternalToolInvocation malformedHandle{
       malformedBundle.string(), blobDigest(readFile(malformedManifest))};
-  requireFailure(
-      __func__,
-      importExternalToolInvocationBundle(malformedHandle,
-                                         importExpectation(malformedSpec)),
-      "malformed nested manifest fields were accepted");
+  requireFailure(__func__,
+                 importExternalToolInvocationBundle(
+                     malformedHandle, importExpectation(malformedSpec)),
+                 "malformed nested manifest fields were accepted");
 
   const std::filesystem::path incomplete = root / "incomplete-import";
   ExternalToolInvocationBundleSpec incompleteSpec =
@@ -1019,13 +1131,13 @@ void strictImportRejectsAttemptTampering(const std::filesystem::path &root,
   ExternalToolInvocationBundleSpec failedSpec =
       baseSpec(tool, "outputs/result.txt");
   failedSpec.commands = {{tool.string(), "no-output"}};
-  const PreparedExternalToolInvocation preparedFailed = take(
-      __func__,
-      finalizeExternalToolInvocationBundle(failed.string(), failedSpec));
-  require(
-      __func__,
-      take(__func__, executeExternalToolInvocationBundle(preparedFailed)) != 0,
-      "failed-import bundle unexpectedly succeeded");
+  const PreparedExternalToolInvocation preparedFailed =
+      take(__func__,
+           finalizeExternalToolInvocationBundle(failed.string(), failedSpec));
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(preparedFailed)) !=
+              0,
+          "failed-import bundle unexpectedly succeeded");
   requireFailure(__func__,
                  importExternalToolInvocationBundle(
                      preparedFailed, importExpectation(failedSpec)),
@@ -1038,20 +1150,18 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
   // import.
   const std::filesystem::path bundle = root / "evaluation-closure";
   ExternalToolInvocationBundleSpec spec = baseSpec(tool, "outputs/result.txt");
-  spec.semanticContract.semanticClosure =
-      SemanticInvocationClosure(loom::ArtifactRootReference{
-          "loom.test_request",
-          {1, 0},
-          take(__func__,
-               loom::parseArtifactIdentityHex(std::string(64, '7')))});
+  spec.semanticContract.semanticClosure = SemanticInvocationClosure(
+      loom::ArtifactRootReference{"loom.test_request",
+                                  {1, 0},
+                                  take(__func__, loom::parseArtifactIdentityHex(
+                                                     std::string(64, '7')))});
   const PreparedExternalToolInvocation prepared = take(
       __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
   require(__func__,
-          take(__func__, executeExternalToolInvocationBundle(prepared)) ==
-              0,
+          take(__func__, executeExternalToolInvocationBundle(prepared)) == 0,
           "evaluation-closure bundle did not execute");
-  take(__func__, importExternalToolInvocationBundle(prepared,
-                                                    importExpectation(spec)));
+  take(__func__,
+       importExternalToolInvocationBundle(prepared, importExpectation(spec)));
 
   // A candidate-generator closure without owner bytes fails closed at
   // finalization.
@@ -1059,32 +1169,37 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
       baseSpec(tool, "outputs/result.txt");
   emptyClosure.semanticContract.semanticClosure =
       SemanticInvocationClosure(CandidateGeneratorInvocationClosure{});
-  requireFailureContains(
-      __func__,
-      finalizeExternalToolInvocationBundle(
-          (root / "empty-closure").string(), emptyClosure),
-      "empty owner bytes");
+  requireFailureContains(__func__,
+                         finalizeExternalToolInvocationBundle(
+                             (root / "empty-closure").string(), emptyClosure),
+                         "empty owner bytes");
 
-  // Compatible 2.0 manifests have no external tree field and remain
-  // importable under the 2.1 reader.
+  // Compatible typed-closure manifests have neither extension field and
+  // remain importable under the current reader.
   const std::filesystem::path compatible = root / "compatible-manifest";
   take(__func__,
        finalizeExternalToolInvocationBundle(compatible.string(), spec));
   const std::filesystem::path compatibleManifest =
       compatible / "tool-invocation.json";
   std::string compatibleText = readFile(compatibleManifest);
-  const std::size_t compatibleVersion =
-      compatibleText.find("\"version\": \"2.1\"");
+  const std::string currentVersion =
+      jsonVersionMember(externalToolInvocationManifestVersion);
+  const std::size_t compatibleVersion = compatibleText.find(currentVersion);
   const std::string treeField = "  \"external_file_trees\": [],\n";
   const std::size_t treeFieldOffset = compatibleText.find(treeField);
+  const std::string producedField = "  \"tool_produced_executables\": [],\n";
+  const std::size_t producedFieldOffset = compatibleText.find(producedField);
   require(__func__,
           compatibleVersion != std::string::npos &&
-              treeFieldOffset != std::string::npos,
-          "cannot derive the compatible 2.0 manifest fixture");
+              treeFieldOffset != std::string::npos &&
+              producedFieldOffset != std::string::npos,
+          "cannot derive the compatible typed-closure manifest fixture");
   compatibleText.replace(compatibleVersion,
-                         std::string("\"version\": \"2.1\"").size(),
-                         "\"version\": \"2.0\"");
+                         currentVersion.size(),
+                         jsonVersionMember(
+                             kCompatibleTypedClosureManifestVersion));
   compatibleText.erase(treeFieldOffset, treeField.size());
+  compatibleText.erase(producedFieldOffset, producedField.size());
   writeText(compatibleManifest, compatibleText);
   const PreparedExternalToolInvocation compatibleHandle{
       compatible.string(), blobDigest(compatibleText)};
@@ -1094,18 +1209,18 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
   require(__func__,
           std::holds_alternative<IncompleteExternalToolInvocationAttempt>(
               compatibleAttempt),
-          "compatible 2.0 manifest did not reach typed incomplete import");
+          "compatible typed-closure manifest did not reach incomplete import");
 
-  // A legacy 1.0 manifest is rejected by name; no upgrade path exists.
+  // The unsupported legacy manifest is rejected by name; no upgrade exists.
   const std::filesystem::path legacy = root / "legacy-manifest";
   take(__func__, finalizeExternalToolInvocationBundle(legacy.string(), spec));
   const std::filesystem::path legacyManifest = legacy / "tool-invocation.json";
   std::string legacyText = readFile(legacyManifest);
-  const std::size_t version = legacyText.find("\"version\": \"2.1\"");
+  const std::size_t version = legacyText.find(currentVersion);
   require(__func__, version != std::string::npos,
-          "cannot locate the 2.1 manifest version");
-  legacyText.replace(version, std::string("\"version\": \"2.1\"").size(),
-                     "\"version\": \"1.0\"");
+          "cannot locate the current manifest version");
+  legacyText.replace(version, currentVersion.size(),
+                     jsonVersionMember(kUnsupportedLegacyManifestVersion));
   writeText(legacyManifest, legacyText);
   // The handle must bind the tampered bytes exactly, or the import stops at
   // the prepared-handle digest check instead of the version rejection.
@@ -1113,9 +1228,8 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
       legacy.string(), blobDigest(readFile(legacyManifest))};
   requireFailureContains(
       __func__,
-      importExternalToolInvocationBundle(legacyHandle,
-                                         importExpectation(spec)),
-      "1.0");
+      importExternalToolInvocationBundle(legacyHandle, importExpectation(spec)),
+      kUnsupportedLegacyManifestVersion.str());
 
   // An unknown closure form is rejected by the strict parser.
   const std::filesystem::path unknownForm = root / "unknown-closure-form";
@@ -1132,11 +1246,10 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
   writeText(unknownManifest, unknownText);
   const PreparedExternalToolInvocation unknownFormHandle{
       unknownForm.string(), blobDigest(readFile(unknownManifest))};
-  requireFailureContains(
-      __func__,
-      importExternalToolInvocationBundle(unknownFormHandle,
-                                         importExpectation(spec)),
-      "unknown closure form");
+  requireFailureContains(__func__,
+                         importExternalToolInvocationBundle(
+                             unknownFormHandle, importExpectation(spec)),
+                         "unknown closure form");
 }
 
 void preparedHandleBindsTheExactManifest(const std::filesystem::path &root,
@@ -1168,19 +1281,19 @@ void preparedHandleBindsTheExactManifest(const std::filesystem::path &root,
   const std::filesystem::path other = root / "prepared-anchor-other";
   ExternalToolInvocationBundleSpec otherSpec =
       baseSpec(tool, "outputs/other-result.txt");
-  const PreparedExternalToolInvocation preparedOther = take(
-      __func__,
-      finalizeExternalToolInvocationBundle(other.string(), otherSpec));
+  const PreparedExternalToolInvocation preparedOther =
+      take(__func__,
+           finalizeExternalToolInvocationBundle(other.string(), otherSpec));
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(preparedOther)) ==
               0,
           "second prepared-anchor bundle did not execute");
   const PreparedExternalToolInvocation swapped{other.string(),
                                                prepared.manifestDigest};
-  requireFailureContains(__func__,
-                         importExternalToolInvocationBundle(
-                             swapped, importExpectation(otherSpec)),
-                         "prepared handle");
+  requireFailureContains(
+      __func__,
+      importExternalToolInvocationBundle(swapped, importExpectation(otherSpec)),
+      "prepared handle");
 }
 
 void executionRejectsSubstitutedBundle(const std::filesystem::path &root,
@@ -1190,7 +1303,8 @@ void executionRejectsSubstitutedBundle(const std::filesystem::path &root,
   ExternalToolInvocationBundleSpec spec = baseSpec(tool, "outputs/result.txt");
   const PreparedExternalToolInvocation prepared = take(
       __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
-  ExternalToolInvocationBundleSpec otherSpec = baseSpec(tool, "outputs/other.txt");
+  ExternalToolInvocationBundleSpec otherSpec =
+      baseSpec(tool, "outputs/other.txt");
   take(__func__,
        finalizeExternalToolInvocationBundle(replacement.string(), otherSpec));
   // A whole self-consistent bundle replacement before execution is rejected
@@ -1281,8 +1395,9 @@ void failedAttemptImportIsExpectationBound(const std::filesystem::path &root,
   const PreparedExternalToolInvocation prepared = take(
       __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
   require(__func__,
-          take(__func__, executeExternalToolInvocationBundle(prepared)) == 124,
-          "the timeout-like fixture did not return exit status 124");
+          take(__func__, executeExternalToolInvocationBundle(prepared)) ==
+              kFixtureToolExitCode,
+          "the timeout-like fixture did not preserve its tool exit status");
 
   std::filesystem::create_directory(bundle / spec.declaredOutputs.front());
   const ExternalToolInvocationImportExpectation expected =
@@ -1293,7 +1408,7 @@ void failedAttemptImportIsExpectationBound(const std::filesystem::path &root,
       std::get_if<FailedExternalToolInvocationAttempt>(&attempt);
   require(__func__,
           failed && failed->status == InvocationCompletionStatus::ToolExit &&
-              failed->exitCode == 124,
+              failed->exitCode == kFixtureToolExitCode,
           "ToolExit did not preserve its exact status and exit reason");
   require(
       __func__,
@@ -1306,12 +1421,11 @@ void failedAttemptImportIsExpectationBound(const std::filesystem::path &root,
                          importExternalToolInvocationAttempt(prepared, wrong),
                          "provider identity");
   wrong = expected;
-  wrong.semanticContract.semanticClosure =
-      SemanticInvocationClosure(loom::ArtifactRootReference{
-          "loom.test_request",
-          {1, 0},
-          take(__func__,
-               loom::parseArtifactIdentityHex(std::string(64, '3')))});
+  wrong.semanticContract.semanticClosure = SemanticInvocationClosure(
+      loom::ArtifactRootReference{"loom.test_request",
+                                  {1, 0},
+                                  take(__func__, loom::parseArtifactIdentityHex(
+                                                     std::string(64, '3')))});
   requireFailureContains(__func__,
                          importExternalToolInvocationAttempt(prepared, wrong),
                          "semantic closure");
@@ -1352,20 +1466,37 @@ int main(int argc, char **argv) {
       std::filesystem::absolute(argv[1]).lexically_normal();
   std::filesystem::create_directories(root);
   const std::filesystem::path tool = root / "tool bin; data" / "fake tool";
-  writeExecutable(tool, "#!/usr/bin/env bash\n"
-                        "set -u\n"
-                        "case \"${1-}\" in\n"
-                        "  --version) printf '%s\\n' 'Fake EDA 1.2' ;;\n"
-                        "  run) printf '%s' \"$2\" >\"$3\" ;;\n"
-                        "  block)\n"
-                        "    printf '%s\\n' entered >>\"$2\"\n"
-                        "    while [[ ! -e \"$3\" ]]; do sleep 0.01; done\n"
-                        "    printf '%s' completed >\"$4\"\n"
-                        "    ;;\n"
-                        "  no-output) : ;;\n"
-                        "  timeout) exit 124 ;;\n"
-                        "  *) exit 64 ;;\n"
-                        "esac\n");
+  const std::string toolBody =
+      "#!/usr/bin/env bash\n"
+      "set -u\n"
+      "case \"${1-}\" in\n"
+      "  --version) printf '%s\\n' 'Fake EDA 1.2' ;;\n"
+      "  run) printf '%s' \"$2\" >\"$3\" ;;\n"
+      "  block)\n"
+      "    printf '%s\\n' entered >>\"$2\"\n"
+      "    while [[ ! -e \"$3\" ]]; do sleep 0.01; done\n"
+      "    printf '%s' completed >\"$4\"\n"
+      "    ;;\n"
+      "  no-output) : ;;\n"
+      "  compile|compile-nonexec|compile-symlink)\n"
+      "    mkdir -p -- \"$(dirname -- \"$2\")\"\n"
+      "    if [[ \"$1\" == compile-symlink ]]; then\n"
+      "      ln -s /bin/true \"$2\"\n"
+      "    else\n"
+      "      cat >\"$2\" <<'LOOM_GENERATED'\n"
+      "#!/usr/bin/env bash\n"
+      "set -eu\n"
+      "printf '%s' \"$2\" >\"$1\"\n"
+      "LOOM_GENERATED\n"
+      "      if [[ \"$1\" == compile ]]; then chmod u+x \"$2\"; fi\n"
+      "    fi\n"
+      "    ;;\n"
+      "  timeout) exit " +
+      std::to_string(kFixtureToolExitCode) +
+      " ;;\n"
+      "  *) exit 64 ;;\n"
+      "esac\n";
+  writeExecutable(tool, toolBody);
   const std::filesystem::path container = root / "container bin" / "container";
   writeExecutable(container, "#!/usr/bin/env bash\n"
                              "set -u\n"
@@ -1398,6 +1529,7 @@ int main(int argc, char **argv) {
   resultImporterIdentityUsesCanonicalFraming();
   executionResourceBindingIsExact(root, tool);
   deterministicHostBundleExecutes(root, tool);
+  toolProducedExecutableLifecycle(root, tool);
   containerBundleExecutes(root, tool, container);
   externalFileIsRevalidated(root, tool);
   externalFileTreeIsRevalidated(root, tool);

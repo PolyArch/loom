@@ -33,6 +33,12 @@ detail::SystemRoutingClosureFailure::convertToErrorCode() const {
 
 namespace {
 
+enum class RankTrendTransition : std::uint8_t {
+  Equal,
+  Improved,
+  Regressed,
+};
+
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
@@ -338,8 +344,15 @@ detail::negotiateSystemServiceRoutes(
   negotiationIterations = 0;
   const auto &routing = problem.config().policy().search.routing;
   if (routing.endpointExpansionLimit == 0 ||
-      routing.negotiationIterationLimit == 0)
+      routing.negotiationIterationLimit == 0 ||
+      routing.noProgressIterationLimit == 0 ||
+      routing.noProgressTrendWindow == 0)
     return invalid("routing work limits must be positive");
+  if (routing.noProgressTrendWindow > routing.noProgressIterationLimit ||
+      routing.noProgressIterationLimit > routing.negotiationIterationLimit)
+    return invalid("routing no-progress limits are not canonical");
+  if (routing.noProgressTrendWindow > std::numeric_limits<std::size_t>::max())
+    return invalid("routing trend window exceeds host size_t");
   const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
 
   mapping_debug::MappingRunStatistics debugStatistics;
@@ -350,6 +363,9 @@ detail::negotiateSystemServiceRoutes(
         fields["logical_leg_count"] = problem.serviceLegs().size();
         fields["negotiation_iteration_limit"] =
             routing.negotiationIterationLimit;
+        fields["no_progress_iteration_limit"] =
+            routing.noProgressIterationLimit;
+        fields["no_progress_trend_window"] = routing.noProgressTrendWindow;
         fields["endpoint_expansion_limit"] = routing.endpointExpansionLimit;
         fields["strict_closure"] =
             closureRequirement == SystemRoutingClosureRequirement::Strict;
@@ -383,7 +399,17 @@ detail::negotiateSystemServiceRoutes(
   std::optional<CanonicalSystemServiceRoutes> previous;
   std::optional<CanonicalSystemServiceRoutes> best;
   std::optional<dse::ObjectiveVector> bestObjective;
+  std::optional<dse::ObjectiveVector> bestRankObjective;
+  std::optional<dse::ObjectiveVector> previousRankObjective;
   std::vector<std::uint8_t> bestKey;
+  std::uint64_t consecutiveNoProgressIterations = 0;
+  const std::size_t trendWindow =
+      static_cast<std::size_t>(routing.noProgressTrendWindow);
+  std::vector<std::uint8_t> rankTrendTransitions(trendWindow);
+  std::size_t trendHead = 0;
+  std::size_t trendCount = 0;
+  std::uint64_t trendImprovedCount = 0;
+  std::uint64_t trendRegressedCount = 0;
   std::vector<std::uint64_t> previousUsage;
   if (priorRoutes) {
     auto usage =
@@ -488,16 +514,55 @@ detail::negotiateSystemServiceRoutes(
         llvm::is_contained(
             problem.config().policy().temporaryViolations.admitted,
             ResolvedPnrViolationKind::CapacityOveruse);
+    auto traversalClaim = measureSystemServiceRouteTraversalClaim(
+        topology, {built->selections.routes, built->selections.nodes,
+                   built->selections.sinks});
+    if (!traversalClaim)
+      return traversalClaim.takeError();
+    auto objective = problem.objectiveProgram().evaluateSystemProjection(
+        problem, capacity->total, *traversalClaim);
+    if (!objective)
+      return objective.takeError();
+    bool selectedRankImproved = !bestRankObjective;
+    if (bestRankObjective) {
+      auto comparison = problem.objectiveProgram().compareSelectedRank(
+          *objective, {}, *bestRankObjective, {});
+      if (!comparison)
+        return comparison.takeError();
+      selectedRankImproved = *comparison < 0;
+    }
+    if (selectedRankImproved) {
+      bestRankObjective = *objective;
+      consecutiveNoProgressIterations = 0;
+    } else {
+      ++consecutiveNoProgressIterations;
+    }
+    if (previousRankObjective) {
+      auto comparison = problem.objectiveProgram().compareSelectedRank(
+          *objective, {}, *previousRankObjective, {});
+      if (!comparison)
+        return comparison.takeError();
+      const RankTrendTransition transition =
+          *comparison < 0   ? RankTrendTransition::Improved
+          : *comparison > 0 ? RankTrendTransition::Regressed
+                            : RankTrendTransition::Equal;
+      if (trendCount == trendWindow) {
+        const auto evicted =
+            static_cast<RankTrendTransition>(rankTrendTransitions[trendHead]);
+        trendImprovedCount -= evicted == RankTrendTransition::Improved ? 1 : 0;
+        trendRegressedCount -=
+            evicted == RankTrendTransition::Regressed ? 1 : 0;
+      } else {
+        ++trendCount;
+      }
+      rankTrendTransitions[trendHead] = static_cast<std::uint8_t>(transition);
+      trendHead = (trendHead + 1) % trendWindow;
+      trendImprovedCount += transition == RankTrendTransition::Improved ? 1 : 0;
+      trendRegressedCount +=
+          transition == RankTrendTransition::Regressed ? 1 : 0;
+    }
+    previousRankObjective = *objective;
     if (admitsTemporary) {
-      auto traversalClaim = measureSystemServiceRouteTraversalClaim(
-          topology, {built->selections.routes, built->selections.nodes,
-                     built->selections.sinks});
-      if (!traversalClaim)
-        return traversalClaim.takeError();
-      auto objective = problem.objectiveProgram().evaluateSystemProjection(
-          problem, capacity->total, *traversalClaim);
-      if (!objective)
-        return objective.takeError();
       std::vector<std::uint8_t> key = canonicalRoutingCandidateKey(
           threadChoices, graphChoices, built->selections);
       bool replace = !best;
@@ -596,6 +661,15 @@ detail::negotiateSystemServiceRoutes(
           fields["capacity_conflicts"] = conflicts->size();
           fields["capacity_closed"] = false;
           fields["fixed_terminal_cut_certificate"] = certificate != nullptr;
+          fields["selected_rank_improved"] = selectedRankImproved;
+          fields["consecutive_no_progress_iterations"] =
+              consecutiveNoProgressIterations;
+          fields["no_progress_iteration_limit"] =
+              routing.noProgressIterationLimit;
+          fields["no_progress_trend_window"] = routing.noProgressTrendWindow;
+          fields["rank_trend_transition_count"] = trendCount;
+          fields["rank_trend_improved_count"] = trendImprovedCount;
+          fields["rank_trend_regressed_count"] = trendRegressedCount;
           fields["a_star_expansions"] = endpointExpansions;
         });
     if (certificate) {
@@ -624,6 +698,34 @@ detail::negotiateSystemServiceRoutes(
               std::to_string(certificate->mandatoryUsage) +
               " greater than capacity " +
               std::to_string(certificate->capacity));
+    }
+    if (consecutiveNoProgressIterations >= routing.noProgressIterationLimit &&
+        trendCount == trendWindow &&
+        trendImprovedCount <= trendRegressedCount) {
+      mapping_debug::emit(
+          mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["iteration"] = iteration;
+            fields["operation"] = "selected_rank_no_progress";
+            fields["consecutive_no_progress_iterations"] =
+                consecutiveNoProgressIterations;
+            fields["no_progress_iteration_limit"] =
+                routing.noProgressIterationLimit;
+            fields["no_progress_trend_window"] = routing.noProgressTrendWindow;
+            fields["rank_trend_improved_count"] = trendImprovedCount;
+            fields["rank_trend_regressed_count"] = trendRegressedCount;
+            fields["temporary_return"] = best.has_value();
+          });
+      if (best) {
+        closureStatus = "no_progress_temporary";
+        return std::move(*best);
+      }
+      closureStatus = "no_progress";
+      return llvm::make_error<SystemRoutingClosureFailure>(
+          SystemRoutingClosureFailureKind::NoProgress,
+          "System routing negotiation exhausted its selected-rank "
+          "no-progress limit before capacity closure");
     }
     if (iteration + 1 == routing.negotiationIterationLimit) {
       if (best) {

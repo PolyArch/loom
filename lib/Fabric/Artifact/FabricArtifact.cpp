@@ -55,8 +55,10 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -617,6 +619,53 @@ struct StrictImportResult {
   std::vector<detail::FabricModuleBoundaryEndpointViewData>
       moduleBoundaryOutputs;
 };
+
+constexpr std::size_t strictImportCacheCapacity = 8;
+
+struct StrictImportCacheEntry final {
+  ArtifactIdentity::Storage identity;
+  StrictImportResult imported;
+};
+
+struct StrictImportCache final {
+  std::mutex mutex;
+  std::list<StrictImportCacheEntry> entries;
+};
+
+StrictImportCache &strictImportCache() {
+  static StrictImportCache cache;
+  return cache;
+}
+
+std::optional<StrictImportResult>
+findCachedStrictImport(const ArtifactIdentity &identity) {
+  StrictImportCache &cache = strictImportCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  const auto found = llvm::find_if(cache.entries, [&](const auto &entry) {
+    return entry.identity == identity.bytes();
+  });
+  if (found == cache.entries.end())
+    return std::nullopt;
+  StrictImportResult result = found->imported;
+  cache.entries.splice(cache.entries.begin(), cache.entries, found);
+  return result;
+}
+
+void cacheStrictImport(const ArtifactIdentity &identity,
+                       const StrictImportResult &imported) {
+  StrictImportCache &cache = strictImportCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  const auto found = llvm::find_if(cache.entries, [&](const auto &entry) {
+    return entry.identity == identity.bytes();
+  });
+  if (found != cache.entries.end()) {
+    cache.entries.splice(cache.entries.begin(), cache.entries, found);
+    return;
+  }
+  cache.entries.push_front({identity.bytes(), imported});
+  if (cache.entries.size() > strictImportCacheCapacity)
+    cache.entries.pop_back();
+}
 
 llvm::Expected<StrictImportResult>
 strictImportModule(const ArtifactRootReference &reference,
@@ -1477,20 +1526,28 @@ strictImport(const ArtifactRootReference &reference,
   if (finalizeArtifactIdentity(fabricArtifactSchema, canonicalBytes) !=
       reference.artifact)
     return invalid("root reference identity does not match canonical bytes");
+  if (auto cached = findCachedStrictImport(reference.artifact))
+    return std::move(*cached);
   auto decoded = decodeFabricArtifactEnvelope(canonicalBytes.bytes());
   if (!decoded)
     return decoded.takeError();
-  switch (decoded->rootKind) {
-  case FabricRootKind::Module:
-    return strictImportModule(reference, canonicalBytes, std::move(*decoded));
-  case FabricRootKind::System:
-    return strictImportSystem(reference, canonicalBytes, std::move(*decoded),
-                              store);
-  case FabricRootKind::InterconnectImplementation:
-    return ownerUnavailable(
-        "InterconnectImplementation strict import provider is unavailable");
-  }
-  llvm_unreachable("closed Fabric root kind");
+  llvm::Expected<StrictImportResult> imported = [&]() {
+    switch (decoded->rootKind) {
+    case FabricRootKind::Module:
+      return strictImportModule(reference, canonicalBytes, std::move(*decoded));
+    case FabricRootKind::System:
+      return strictImportSystem(reference, canonicalBytes, std::move(*decoded),
+                                store);
+    case FabricRootKind::InterconnectImplementation:
+      return llvm::Expected<StrictImportResult>(ownerUnavailable(
+          "InterconnectImplementation strict import provider is unavailable"));
+    }
+    llvm_unreachable("closed Fabric root kind");
+  }();
+  if (!imported)
+    return imported.takeError();
+  cacheStrictImport(reference.artifact, *imported);
+  return imported;
 }
 
 llvm::Expected<StrictImportResult>

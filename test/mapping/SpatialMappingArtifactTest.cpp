@@ -48,6 +48,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
@@ -107,6 +108,14 @@ bool rejected(llvm::Error error) {
     return false;
   llvm::consumeError(std::move(error));
   return true;
+}
+
+template <typename Callable>
+bool rejectedWithoutDiagnostic(mlir::MLIRContext &context,
+                               Callable &&callable) {
+  mlir::ScopedDiagnosticHandler capture(
+      &context, [](mlir::Diagnostic &) { return mlir::success(); });
+  return rejected(std::forward<Callable>(callable)());
 }
 
 class TemporaryDirectory final {
@@ -851,7 +860,9 @@ void completeCandidateRoundTrip(
       take(router.routeToClosure(
           *candidate, candidateScratch, costs,
           {pnrConfig.policy().search.routing.endpointExpansionLimit,
-           pnrConfig.policy().search.routing.negotiationIterationLimit},
+           pnrConfig.policy().search.routing.negotiationIterationLimit,
+           pnrConfig.policy().search.routing.noProgressIterationLimit,
+           pnrConfig.policy().search.routing.noProgressTrendWindow},
           {}));
     }
   } else {
@@ -911,8 +922,12 @@ void completeCandidateRoundTrip(
     const std::size_t retainedClosureBytes =
         globalRoutingClosure.retainedStorageBytes();
     requireSuccess(globalRoutingClosure.run(*candidate));
-    if (globalRoutingClosure.retainedStorageBytes() != retainedClosureBytes)
-      fail("warmed global routing closure grew worker-local storage");
+    const std::size_t repeatedClosureBytes =
+        globalRoutingClosure.retainedStorageBytes();
+    if (repeatedClosureBytes > retainedClosureBytes)
+      fail("warmed global routing closure grew worker-local storage from " +
+           std::to_string(retainedClosureBytes) + " to " +
+           std::to_string(repeatedClosureBytes));
   }
   requireSuccess(candidate->verify());
 
@@ -1353,8 +1368,10 @@ void completeCandidateRoundTrip(
   auto root = *missingRoute->getOps<::mapping::SpatialOp>().begin();
   auto routes = root.getBody().front().getOps<::mapping::RouteTreeOp>();
   (*routes.begin()).erase();
-  if (!rejected(loom::mapping::verifySpatialMappingBase(
-          root, dataflow, tech.view(), fabric.view())))
+  if (!rejectedWithoutDiagnostic(context, [&] {
+        return loom::mapping::verifySpatialMappingBase(
+            root, dataflow, tech.view(), fabric.view());
+      }))
     fail("SpatialMapping finalized without a required RouteTree");
 
   auto missingUse = parseSpatial(context, finalized.canonicalBytes());
@@ -1631,7 +1648,9 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
     auto routed = router.routeToClosure(
         *candidate, candidateScratch, costs,
         {pnrConfig.policy().search.routing.endpointExpansionLimit,
-         pnrConfig.policy().search.routing.negotiationIterationLimit},
+         pnrConfig.policy().search.routing.negotiationIterationLimit,
+         pnrConfig.policy().search.routing.noProgressIterationLimit,
+         pnrConfig.policy().search.routing.noProgressTrendWindow},
         {});
     if (routed) {
       closed = true;
@@ -1806,8 +1825,10 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
         original.getTarget());
     second.getBody().push_back(new mlir::Block());
     original.erase();
-    if (!rejected(loom::mapping::verifySpatialMappingBase(
-            root, dataflow, tech.view(), fabric.view())))
+    if (!rejectedWithoutDiagnostic(context, [&] {
+          return loom::mapping::verifySpatialMappingBase(
+              root, dataflow, tech.view(), fabric.view());
+        }))
       fail("SpatialMapping accepted overlapping local physical intervals");
   }
 }

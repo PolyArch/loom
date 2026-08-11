@@ -6,8 +6,10 @@
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Evaluation/ArtifactImportCache.h"
 
 #include <algorithm>
+#include <array>
 #include <utility>
 
 namespace loom::sim {
@@ -22,6 +24,32 @@ int compareSystemEventCoordinates(const SystemEventCoordinate &lhs,
 }
 
 namespace {
+
+llvm::Expected<std::shared_ptr<const evaluation::EvaluationRequest>>
+importCachedRequest(
+    const ArtifactRootReference &reference,
+    const evaluation::CaseArtifactResolution &resolution,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  const std::array<ArtifactRootReference, 1> references{reference};
+  return evaluation::importCachedArtifact<evaluation::EvaluationRequest>(
+      store, &blobs, references, [&]() {
+        return evaluation::importEvaluationRequest(reference, resolution,
+                                                   store, blobs);
+      });
+}
+
+llvm::Expected<std::shared_ptr<const ImportedSystemSimulationInputs>>
+importCachedSystemInputs(const ArtifactRootReference &workload,
+                         const ArtifactRootReference &runtimeInput,
+                         const ArtifactStore &store, const BlobStore &blobs) {
+  const std::array<ArtifactRootReference, 2> references{workload,
+                                                       runtimeInput};
+  return evaluation::importCachedArtifact<ImportedSystemSimulationInputs>(
+      store, &blobs, references, [&]() {
+        return importSystemSimulationInputs(workload, runtimeInput, store,
+                                            blobs);
+      });
+}
 
 bool isRetired(const ExecutionTerminal &terminal) {
   return std::holds_alternative<RetiredExecution>(terminal);
@@ -78,7 +106,7 @@ llvm::Expected<ImportedMemoryProjection>
 validateMemoryObservation(const SystemMemoryObservable &observable,
                           const MemoryObservationPayload &payload,
                           const detail::SystemExecutionContext &context) {
-  const auto &runtime = *context.inputs.runtimeInput.system();
+  const auto &runtime = *context.inputs->runtimeInput.system();
   const SystemMemoryInterfaceBindingEntry *binding =
       findBinding(runtime, observable.interfaceRef);
   if (!binding ||
@@ -195,8 +223,8 @@ validateFunctionalObservations(const SystemFunctionalObservations &observations,
                                const ExecutionTerminal &terminal,
                                const detail::SystemExecutionContext &context) {
   const SystemObservableContract &contract =
-      context.inputs.workload.system()->observableContract;
-  const auto &runtime = *context.inputs.runtimeInput.system();
+      context.inputs->workload.system()->observableContract;
+  const auto &runtime = *context.inputs->runtimeInput.system();
   if (observations.valueResults.size() != contract.valueResults.size() ||
       observations.externalValueOutputs.size() !=
           contract.externalValueOutputs.size() ||
@@ -291,7 +319,7 @@ llvm::Error validateExecution(const SystemSimulationExecution &execution,
                            "has no unique rooted-launch reference-cycle "
                            "source");
   const evaluation::FindingTerminalWitnessContext terminalContext(
-      context.request, *context.resolution, *context.artifactStore,
+      *context.request, *context.resolution, *context.artifactStore,
       *context.blobStore);
   if (llvm::Error error = detail::validateExecutionTerminal(execution.terminal,
                                                             terminalContext))
@@ -387,7 +415,7 @@ void encodeFunctional(detail::WireWriter &writer,
                       const SystemFunctionalObservations &observations,
                       const detail::SystemExecutionContext &context) {
   const SystemObservableContract &contract =
-      context.inputs.workload.system()->observableContract;
+      context.inputs->workload.system()->observableContract;
   writer.u64(observations.valueResults.size());
   for (std::size_t index = 0; index < observations.valueResults.size(); ++index)
     encodeValueObservation(
@@ -414,7 +442,7 @@ llvm::Expected<SystemFunctionalObservations>
 decodeFunctional(detail::WireReader &reader,
                  const detail::SystemExecutionContext &context) {
   const SystemObservableContract &contract =
-      context.inputs.workload.system()->observableContract;
+      context.inputs->workload.system()->observableContract;
   SystemFunctionalObservations observations;
   auto valueCount = reader.u64();
   if (!valueCount)
@@ -541,7 +569,7 @@ encodeExecution(const SystemSimulationExecution &execution,
       encodeArtifactRootReference(execution.request);
   detail::WireWriter writer;
   const evaluation::FindingTerminalWitnessContext terminalContext(
-      context.request, *context.resolution, *context.artifactStore,
+      *context.request, *context.resolution, *context.artifactStore,
       *context.blobStore);
   if (llvm::Error error = detail::encodeExecutionTerminal(
           writer, execution.terminal, terminalContext))
@@ -567,7 +595,7 @@ decodeExecution(llvm::ArrayRef<std::uint8_t> bytes,
     return context.takeError();
   detail::WireReader reader(bytes.drop_front(requestPrefix->byteCount));
   const evaluation::FindingTerminalWitnessContext terminalContext(
-      context->request, *context->resolution, *context->artifactStore,
+      *context->request, *context->resolution, *context->artifactStore,
       *context->blobStore);
   auto terminal = detail::decodeExecutionTerminal(reader, terminalContext);
   if (!terminal)
@@ -606,14 +634,14 @@ llvm::Expected<SimulationWorkloadKind>
 executionWorkloadKind(const ArtifactRootReference &requestReference,
                       const evaluation::CaseArtifactResolution &resolution,
                       const ArtifactStore &store, const BlobStore &blobs) {
-  auto request = evaluation::importEvaluationRequest(requestReference,
-                                                     resolution, store, blobs);
+  auto request = importCachedRequest(requestReference, resolution, store,
+                                     blobs);
   if (!request)
     return request.takeError();
-  if (!request->workload())
+  if (!(*request)->workload())
     return detail::invalid(
         "simulation execution: Request has no workload reference");
-  auto bytes = store.get(*request->workload());
+  auto bytes = store.get(*(*request)->workload());
   if (!bytes)
     return bytes.takeError();
   detail::WireReader reader(bytes->bytes());
@@ -635,22 +663,24 @@ llvm::Expected<SystemExecutionContext> resolveSystemExecutionContext(
     const ArtifactRootReference &requestReference,
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &store, const BlobStore &blobs) {
-  auto request = evaluation::importEvaluationRequest(requestReference,
-                                                     resolution, store, blobs);
+  auto request = importCachedRequest(requestReference, resolution, store,
+                                     blobs);
   if (!request)
     return request.takeError();
-  auto stoppedCardinality = resolveSimulationOutputCardinality(*request);
+  auto stoppedCardinality = resolveSimulationOutputCardinality(**request);
   if (!stoppedCardinality)
     return stoppedCardinality.takeError();
-  if (!request->workload() || !request->runtimeInput())
+  if (!(*request)->workload() || !(*request)->runtimeInput())
     return invalid("simulation execution: Request workload inputs are not "
                    "total");
-  auto inputs = importSystemSimulationInputs(
-      *request->workload(), *request->runtimeInput(), store, blobs);
+  auto inputs = importCachedSystemInputs(*(*request)->workload(),
+                                         *(*request)->runtimeInput(), store,
+                                         blobs);
   if (!inputs)
     return inputs.takeError();
   auto system = resolveSystemContext(
-      inputs->deployment, inputs->workload.system()->programEntryRef, store);
+      (*inputs)->deployment, (*inputs)->workload.system()->programEntryRef,
+      store);
   if (!system)
     return system.takeError();
   return SystemExecutionContext{std::move(*request),

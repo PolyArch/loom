@@ -1,4 +1,5 @@
 add_library(LoomEvaluation
+  ArtifactImportCache.cpp
   CanonicalSupport.cpp
   CaseSignature.cpp
   CaseText.cpp

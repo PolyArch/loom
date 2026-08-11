@@ -332,21 +332,34 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
         }
 
         std::vector<mlir::Value> requested(inputCount);
-        for (unsigned input = 0; input != inputCount; ++input)
+        std::vector<mlir::Value> configuredRequest(inputCount);
+        for (unsigned input = 0; input != inputCount; ++input) {
+          configuredRequest[input] =
+              orValues(bodyBuilder, location, requestedRoute[input]);
           requested[input] = andValues(
               bodyBuilder, location,
               {accessor.getInput(inputEndpoints[input]->valid.getName()),
-               orValues(bodyBuilder, location, requestedRoute[input])});
+               configuredRequest[input]});
+        }
 
         std::vector<mlir::Value> selectedInput(
+            inputCount, bitConstant(bodyBuilder, location, false));
+        std::vector<mlir::Value> admissibleInput(
             inputCount, bitConstant(bodyBuilder, location, false));
         std::optional<circt::BackedgeBuilder> backedges;
         if (roundRobin)
           backedges.emplace(bodyBuilder, location);
         for (const SwitchArbitrationComponent &component : components) {
+          struct ArbitrationSelection final {
+            std::vector<mlir::Value> selected;
+            std::vector<mlir::Value> admissible;
+          };
           const auto deriveSelection = [&](llvm::ArrayRef<unsigned> order) {
-            std::vector<mlir::Value> selected(
-                inputCount, bitConstant(bodyBuilder, location, false));
+            ArbitrationSelection result{
+                std::vector<mlir::Value>(
+                    inputCount, bitConstant(bodyBuilder, location, false)),
+                std::vector<mlir::Value>(
+                    inputCount, bitConstant(bodyBuilder, location, false))};
             std::vector<mlir::Value> reserved(
                 outputCount, bitConstant(bodyBuilder, location, false));
             for (unsigned input : order) {
@@ -355,27 +368,32 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                 conflicts.push_back(andValues(
                     bodyBuilder, location,
                     {requestedRoute[input][output], reserved[output]}));
-              selected[input] =
-                  andValues(bodyBuilder, location,
-                            {requested[input],
-                             circt::comb::createOrFoldNot(
-                                 bodyBuilder, location,
-                                 orValues(bodyBuilder, location, conflicts))});
+              mlir::Value conflictFree = circt::comb::createOrFoldNot(
+                  bodyBuilder, location,
+                  orValues(bodyBuilder, location, conflicts));
+              result.admissible[input] = andValues(
+                  bodyBuilder, location,
+                  {configuredRequest[input], conflictFree});
+              result.selected[input] = andValues(
+                  bodyBuilder, location, {requested[input], conflictFree});
               for (unsigned output : component.outputs)
                 reserved[output] = circt::comb::OrOp::create(
                     bodyBuilder, location, reserved[output],
                     andValues(
                         bodyBuilder, location,
-                        {selected[input], requestedRoute[input][output]}));
+                        {result.selected[input],
+                         requestedRoute[input][output]}));
             }
-            return selected;
+            return result;
           };
 
           if (!component.roundRobinResetPosition) {
-            std::vector<mlir::Value> selected =
+            ArbitrationSelection selection =
                 deriveSelection(component.requesterOrder);
-            for (unsigned input : component.inputs)
-              selectedInput[input] = selected[input];
+            for (unsigned input : component.inputs) {
+              selectedInput[input] = selection.selected[input];
+              admissibleInput[input] = selection.admissible[input];
+            }
             continue;
           }
 
@@ -400,7 +418,7 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
               order.push_back(
                   component.requesterOrder[(start + offset) %
                                            component.requesterOrder.size()]);
-            std::vector<mlir::Value> selected = deriveSelection(order);
+            ArbitrationSelection selection = deriveSelection(order);
             mlir::Value cursorIs = circt::comb::ICmpOp::create(
                 bodyBuilder, location, circt::comb::ICmpPredicate::eq, cursor,
                 circt::hw::ConstantOp::create(bodyBuilder, location,
@@ -413,7 +431,11 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
               selectedInput[input] = circt::comb::OrOp::create(
                   bodyBuilder, location, selectedInput[input],
                   andValues(bodyBuilder, location,
-                            {cursorIs, selected[input]}));
+                            {cursorIs, selection.selected[input]}));
+              admissibleInput[input] = circt::comb::OrOp::create(
+                  bodyBuilder, location, admissibleInput[input],
+                  andValues(bodyBuilder, location,
+                            {cursorIs, selection.admissible[input]}));
               llvm::SmallVector<mlir::Value> allReady;
               for (unsigned output : component.outputs)
                 allReady.push_back(circt::comb::OrOp::create(
@@ -424,7 +446,7 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
                         outputEndpoints[output]->ready.getName())));
               mlir::Value fire =
                   andValues(bodyBuilder, location,
-                            {selected[input],
+                            {selection.selected[input],
                              andValues(bodyBuilder, location, allReady)});
               const unsigned next = (start + offset + 1) % order.size();
               candidateNext = circt::comb::MuxOp::create(
@@ -451,7 +473,7 @@ buildSwitchModule(mlir::OpBuilder &builder, mlir::Location location,
           accessor.setOutput(
               inputEndpoints[input]->ready.getName(),
               andValues(bodyBuilder, location,
-                        {selectedInput[input],
+                        {admissibleInput[input],
                          andValues(bodyBuilder, location, allReady)}));
         }
 

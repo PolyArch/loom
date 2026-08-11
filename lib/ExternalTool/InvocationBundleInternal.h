@@ -21,6 +21,11 @@ constexpr llvm::StringLiteral kCompletionPath = "outputs/completion.json";
 constexpr llvm::StringLiteral kStdoutPath = "outputs/stdout.log";
 constexpr llvm::StringLiteral kStderrPath = "outputs/stderr.log";
 constexpr llvm::StringLiteral kToolVersionPath = "outputs/.loom-tool-version";
+constexpr llvm::StringLiteral kTypedClosureManifestVersion = "2.0";
+constexpr llvm::StringLiteral kExternalFileTreeManifestVersion = "2.1";
+constexpr llvm::StringLiteral kToolProducedExecutableManifestVersion = "2.2";
+constexpr llvm::StringLiteral kCurrentManifestVersion =
+    externalToolInvocationManifestVersion;
 
 struct ManifestMaterializedFile final {
   std::string relativePath;
@@ -41,15 +46,21 @@ struct InvocationManifestData final {
   std::vector<ResolvedExternalFile> externalFiles;
   std::vector<ResolvedExternalFileTree> externalFileTrees;
   std::vector<std::string> declaredOutputs;
+  std::vector<std::string> toolProducedExecutables;
 };
 
 /// The single content digest of in-memory bundle bytes, used for manifests,
 /// materialized files, and declared outputs.
 BlobDigest contentDigest(llvm::StringRef contents);
 
+/// The sole canonical text codec used at the shell/JSON boundary. Runtime
+/// logic carries InvocationCompletionStatus rather than comparing spellings.
+llvm::StringRef completionStatusSpelling(InvocationCompletionStatus status);
+
 /// The canonical manifest JSON bytes of one invocation bundle.
-std::string serializeManifest(const InvocationManifestData &manifest,
-                              llvm::StringRef version = "2.1");
+std::string
+serializeManifest(const InvocationManifestData &manifest,
+                  llvm::StringRef version = kCurrentManifestVersion);
 
 /// The deterministic run.sh bytes of one invocation bundle.
 std::string renderRunScript(const InvocationManifestData &manifest);

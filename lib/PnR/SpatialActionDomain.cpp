@@ -215,6 +215,8 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   transportAnchors_.clear();
   transportChoices_.clear();
   routeRootEndpoints_.clear();
+  routeSubtreeSlots_.clear();
+  routeSubtreeHasSink_.clear();
   resourceAnchors_.clear();
   resourceChoices_.clear();
   movableDecisionCount_ = 0;
@@ -223,6 +225,8 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   transportAnchors_.reserve(*transportAnchorCapacity);
   transportChoices_.reserve(*transportChoiceCapacity);
   routeRootEndpoints_.reserve(endpointCount);
+  routeSubtreeSlots_.reserve(endpointCount);
+  routeSubtreeHasSink_.reserve(endpointCount);
   resourceAnchors_.reserve(resourceAnchorCapacity);
   resourceChoices_.reserve(resourceChoiceCapacity);
   relationChoices_.resize(relations.decisionCount());
@@ -363,10 +367,39 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
         transportChoices_.emplace_back(
             SpatialSingleSinkRoutingAction{logicalNet, sink});
       const PnrIndex source = *route.sourceEndpoint();
+      const auto sourceSlot = route.findNode(source);
+      if (!sourceSlot)
+        return invalid("routed tree has no source node");
       routeRootEndpoints_.clear();
-      for (const RouteTreeNode &node : route.nodeStorage())
-        if (node.isActive() && node.endpoint != source)
+      routeSubtreeSlots_.clear();
+      routeSubtreeHasSink_.assign(route.nodeStorage().size(), 0);
+      routeSubtreeSlots_.push_back(*sourceSlot);
+      for (std::size_t cursor = 0; cursor != routeSubtreeSlots_.size();
+           ++cursor) {
+        const PnrIndex slot = routeSubtreeSlots_[cursor];
+        if (slot >= route.nodeStorage().size() ||
+            !route.nodeStorage()[slot].isActive())
+          return invalid("routed tree traversal reached an inactive node");
+        for (PnrIndex child = route.nodeStorage()[slot].firstChild;
+             child != getInvalidPnrIndex();
+             child = route.nodeStorage()[child].nextSibling) {
+          if (child >= route.nodeStorage().size())
+            return invalid("routed tree child is out of range");
+          routeSubtreeSlots_.push_back(child);
+        }
+      }
+      for (auto slot = routeSubtreeSlots_.rbegin();
+           slot != routeSubtreeSlots_.rend(); ++slot) {
+        const RouteTreeNode &node = route.nodeStorage()[*slot];
+        bool hasSink = node.sinkObligationCount != 0;
+        for (PnrIndex child = node.firstChild;
+             child != getInvalidPnrIndex();
+             child = route.nodeStorage()[child].nextSibling)
+          hasSink |= routeSubtreeHasSink_[child] != 0;
+        routeSubtreeHasSink_[*slot] = hasSink;
+        if (hasSink && node.endpoint != source)
           routeRootEndpoints_.push_back(node.endpoint);
+      }
       llvm::sort(routeRootEndpoints_);
       for (PnrIndex endpoint : routeRootEndpoints_)
         transportChoices_.emplace_back(
@@ -640,7 +673,8 @@ std::size_t SpatialActionDomainScratch::retainedStorageBytes() const {
          retainedBytes(transportChoices_) + retainedBytes(resourceAnchors_) +
          retainedBytes(resourceChoices_) + retainedBytes(relationChoices_) +
          retainedBytes(logicalMemoryChoices_) +
-         retainedBytes(routeRootEndpoints_) +
+         retainedBytes(routeRootEndpoints_) + retainedBytes(routeSubtreeSlots_) +
+         retainedBytes(routeSubtreeHasSink_) +
          (memoryConstraintScratch_
               ? memoryConstraintScratch_->retainedStorageBytes()
               : 0);
