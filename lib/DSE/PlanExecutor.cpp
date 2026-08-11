@@ -305,6 +305,10 @@ private:
   llvm::Expected<SiteResourceClaim>
   resourceClaim(const WorkUnitKey &key,
                 const BlobDigest *externalBinding) const;
+  llvm::Expected<bool> executePreparedInvocation(
+      const WorkUnitKey &key,
+      const external_tool::PreparedExternalToolInvocation &prepared,
+      bool reserveNewDispatch);
   llvm::Expected<PromotionEvidenceExecutionResult>
   executeEvidence(const PromotionEvidenceExecutionTask &task,
                   const ArtifactStore &store, const BlobStore &blobs);
@@ -443,6 +447,45 @@ llvm::Expected<SiteResourceClaim> RecoverablePlanWorkExecutor::resourceClaim(
                                 site.scratchBytes, {tool}, licenses);
 }
 
+llvm::Expected<bool> RecoverablePlanWorkExecutor::executePreparedInvocation(
+    const WorkUnitKey &key,
+    const external_tool::PreparedExternalToolInvocation &prepared,
+    bool reserveNewDispatch) {
+  if (!policy_.externalSite() ||
+      policy_.externalSite()->disposition !=
+          ExternalAttemptDisposition::ExecutePrepared ||
+      (reserveNewDispatch && !reserveDispatch()))
+    return false;
+  auto bindingDigest =
+      external_tool::deriveExternalToolExecutionBindingDigest(prepared);
+  if (!bindingDigest)
+    return bindingDigest.takeError();
+  auto claim = resourceClaim(key, &*bindingDigest);
+  if (!claim)
+    return claim.takeError();
+  auto lease = scheduler_.acquire(key, *claim);
+  if (!lease)
+    return lease.takeError();
+  if (llvm::Error error = journal_.beginPreparedExecution(key))
+    return std::move(error);
+  const auto begin = std::chrono::steady_clock::now();
+  auto exitCode = external_tool::executeExternalToolInvocationBundle(prepared);
+  auto active = activeNanoseconds(begin);
+  if (!active)
+    return active.takeError();
+  auto end = terminalUnixNanoseconds();
+  if (!end)
+    return end.takeError();
+  llvm::Error intervalError =
+      journal_.recordPreparedExecutionInterval(key, *active, *end);
+  if (!exitCode)
+    return llvm::joinErrors(exitCode.takeError(), std::move(intervalError));
+  if (intervalError)
+    return std::move(intervalError);
+  (void)*exitCode;
+  return true;
+}
+
 llvm::Expected<CandidateGeneratorProviderResult>
 RecoverablePlanWorkExecutor::executeGenerate(
     std::uint64_t planNodeOrdinal,
@@ -466,23 +509,28 @@ RecoverablePlanWorkExecutor::executeGenerate(
     if (descriptor->providerForm != ProviderForm::ExternalPrepareImport ||
         !(*record)->preparedInvocation)
       return invalid("prepared Generate record has the wrong provider form");
-    const auto importBegin = std::chrono::steady_clock::now();
     auto imported = tryImportPreparedCandidate(
         inputs, binding, *(*record)->preparedInvocation, store, blobs);
-    auto importActive = activeNanoseconds(importBegin);
-    if (!importActive)
-      return importActive.takeError();
-    auto importEnd = terminalUnixNanoseconds();
-    if (!importEnd)
-      return importEnd.takeError();
-    if (llvm::Error error = journal_.recordPreparedExecutionInterval(
-            *key, *importActive, *importEnd))
-      return std::move(error);
     if (!imported)
       return imported.takeError();
-    if (!*imported)
-      return makeIncompleteCandidateResult(
-          *descriptor, CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+    if (!*imported) {
+      auto executed =
+          executePreparedInvocation(*key, *(*record)->preparedInvocation, true);
+      if (!executed)
+        return executed.takeError();
+      if (!*executed)
+        return makeIncompleteCandidateResult(
+            *descriptor,
+            CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+      imported = tryImportPreparedCandidate(
+          inputs, binding, *(*record)->preparedInvocation, store, blobs);
+      if (!imported)
+        return imported.takeError();
+      if (!*imported)
+        return makeIncompleteCandidateResult(
+            *descriptor,
+            CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+    }
     std::vector<ArtifactRootReference> roots = candidateResultRoots(**imported);
     auto terminalTime = terminalUnixNanoseconds();
     if (!terminalTime)
@@ -645,33 +693,12 @@ RecoverablePlanWorkExecutor::executeGenerate(
       ExternalAttemptDisposition::PrepareOnly)
     return makeIncompleteCandidateResult(
         *descriptor, CandidateGeneratorIncompleteReason::CancelledOrTimeout);
-  auto bindingDigest =
-      external_tool::deriveExternalToolExecutionBindingDigest(*prepared);
-  if (!bindingDigest)
-    return bindingDigest.takeError();
-  auto executionClaim = resourceClaim(*key, &*bindingDigest);
-  if (!executionClaim)
-    return executionClaim.takeError();
-  auto executionLease = scheduler_.acquire(*key, *executionClaim);
-  if (!executionLease)
-    return executionLease.takeError();
-  if (llvm::Error error = journal_.beginPreparedExecution(*key))
-    return std::move(error);
-  const auto executionBegin = std::chrono::steady_clock::now();
-  auto exitCode = external_tool::executeExternalToolInvocationBundle(*prepared);
-  auto executionActive = activeNanoseconds(executionBegin);
-  if (!executionActive)
-    return executionActive.takeError();
-  auto executionEnd = terminalUnixNanoseconds();
-  if (!executionEnd)
-    return executionEnd.takeError();
-  llvm::Error intervalError = journal_.recordPreparedExecutionInterval(
-      *key, *executionActive, *executionEnd);
-  if (!exitCode)
-    return llvm::joinErrors(exitCode.takeError(), std::move(intervalError));
-  if (intervalError)
-    return std::move(intervalError);
-  (void)*exitCode;
+  auto executed = executePreparedInvocation(*key, *prepared, false);
+  if (!executed)
+    return executed.takeError();
+  if (!*executed)
+    return makeIncompleteCandidateResult(
+        *descriptor, CandidateGeneratorIncompleteReason::CancelledOrTimeout);
   auto imported =
       tryImportPreparedCandidate(inputs, binding, *prepared, store, blobs);
   if (!imported)
@@ -805,24 +832,28 @@ RecoverablePlanWorkExecutor::executeEvidence(
     if (descriptor->providerForm != ProviderForm::ExternalPrepareImport ||
         !(*record)->preparedInvocation)
       return invalid("prepared Evidence record has the wrong provider form");
-    const auto importBegin = std::chrono::steady_clock::now();
     auto imported =
         tryImportPreparedEvidence(task.request, *task.resolution,
                                   *(*record)->preparedInvocation, store, blobs);
-    auto importActive = activeNanoseconds(importBegin);
-    if (!importActive)
-      return importActive.takeError();
-    auto importEnd = terminalUnixNanoseconds();
-    if (!importEnd)
-      return importEnd.takeError();
-    if (llvm::Error error = journal_.recordPreparedExecutionInterval(
-            *key, *importActive, *importEnd))
-      return std::move(error);
     if (!imported)
       return imported.takeError();
-    if (!*imported)
-      return PromotionEvidenceExecutionResult{
-          PromotionAcquisitionIncompleteReason::ProviderUnavailable};
+    if (!*imported) {
+      auto executed =
+          executePreparedInvocation(*key, *(*record)->preparedInvocation, true);
+      if (!executed)
+        return executed.takeError();
+      if (!*executed)
+        return PromotionEvidenceExecutionResult{
+            PromotionAcquisitionIncompleteReason::ProviderUnavailable};
+      imported = tryImportPreparedEvidence(task.request, *task.resolution,
+                                           *(*record)->preparedInvocation,
+                                           store, blobs);
+      if (!imported)
+        return imported.takeError();
+      if (!*imported)
+        return PromotionEvidenceExecutionResult{
+            PromotionAcquisitionIncompleteReason::ProviderUnavailable};
+    }
     auto root = evaluation::publishEvaluationEvidence(**imported, store);
     if (!root)
       return root.takeError();
@@ -925,34 +956,12 @@ RecoverablePlanWorkExecutor::executeEvidence(
           ExternalAttemptDisposition::PrepareOnly)
         return PromotionEvidenceExecutionResult{
             PromotionAcquisitionIncompleteReason::ProviderUnavailable};
-      auto bindingDigest =
-          external_tool::deriveExternalToolExecutionBindingDigest(prepared);
-      if (!bindingDigest)
-        return bindingDigest.takeError();
-      auto executionClaim = resourceClaim(*key, &*bindingDigest);
-      if (!executionClaim)
-        return executionClaim.takeError();
-      auto executionLease = scheduler_.acquire(*key, *executionClaim);
-      if (!executionLease)
-        return executionLease.takeError();
-      if (llvm::Error error = journal_.beginPreparedExecution(*key))
-        return std::move(error);
-      const auto executionBegin = std::chrono::steady_clock::now();
-      auto exitCode =
-          external_tool::executeExternalToolInvocationBundle(prepared);
-      auto executionActive = activeNanoseconds(executionBegin);
-      if (!executionActive)
-        return executionActive.takeError();
-      auto executionEnd = terminalUnixNanoseconds();
-      if (!executionEnd)
-        return executionEnd.takeError();
-      llvm::Error intervalError = journal_.recordPreparedExecutionInterval(
-          *key, *executionActive, *executionEnd);
-      if (!exitCode)
-        return llvm::joinErrors(exitCode.takeError(), std::move(intervalError));
-      if (intervalError)
-        return std::move(intervalError);
-      (void)*exitCode;
+      auto executed = executePreparedInvocation(*key, prepared, false);
+      if (!executed)
+        return executed.takeError();
+      if (!*executed)
+        return PromotionEvidenceExecutionResult{
+            PromotionAcquisitionIncompleteReason::ProviderUnavailable};
       auto imported = tryImportPreparedEvidence(task.request, *task.resolution,
                                                 prepared, store, blobs);
       if (!imported)

@@ -10,7 +10,12 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
+
+namespace hardware {
+class ExternalImplementationContractCatalog;
 }
+} // namespace loom
 
 namespace loom::evaluation::models {
 
@@ -74,6 +79,12 @@ EvaluationModelDescriptorRef cadenceVoltusStaticRailModelDescriptorRef();
 CaseSubjectRoleRef hardwareImplementationPhysicalSubjectRole();
 llvm::ArrayRef<ConditionApplicabilityPattern>
 hardwareImplementationPhysicalBaseConditionPatterns();
+
+llvm::Expected<CaseArtifactResolution>
+resolveHardwareImplementationPhysicalCase(
+    const ArtifactRootReference &hardwareImplementation,
+    const hardware::ExternalImplementationContractCatalog &externalContracts,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
 const RailAnalysisModelConfig &staticExplicitRailAnalysisModelConfig();
 

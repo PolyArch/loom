@@ -135,6 +135,8 @@ tools = [
     "loom-dse-ground-truth-campaign-integration-test",
     "loom-dse-portable-system-rtl-generator-test",
     "loom-mapped-rtl-simulation-test",
+    "loom-openroad-routed-test",
+    "loom-openroad-static-fpa-test",
     "loom-evaluation-production-registry-test",
     "loom-evaluation-fabric-fast-evaluation-test",
     "loom-dfg-sim",

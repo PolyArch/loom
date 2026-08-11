@@ -100,6 +100,21 @@ bool compatible(const PlanValueDescriptor &producer,
          producer.calibrationPartitionRole == consumer.calibrationPartitionRole;
 }
 
+llvm::Expected<const PlanValueDescriptor *> resolvePriorOutput(
+    PlanOutputRef output, std::size_t nodeIndex,
+    llvm::ArrayRef<ResolvedDsePlanNode> nodes,
+    llvm::ArrayRef<std::uint64_t> outputOffsets,
+    llvm::ArrayRef<PlanValueDescriptor> outputs) {
+  if (output.producerNodeOrdinal >= nodeIndex ||
+      output.producerNodeOrdinal >= nodes.size())
+    return invalid("produced input must reference an earlier node");
+  const std::uint64_t begin = outputOffsets[output.producerNodeOrdinal];
+  const std::uint64_t end = outputOffsets[output.producerNodeOrdinal + 1];
+  if (output.outputSlotOrdinal >= end - begin)
+    return invalid("produced input references an unknown output slot");
+  return &outputs[begin + output.outputSlotOrdinal];
+}
+
 llvm::Expected<std::optional<CalibrationPartitionRole>>
 evidencePartitionRole(const ResolvedPromotionAcquisitionBinding &binding,
                       llvm::ArrayRef<EvidenceObligationTemplate> templates) {
@@ -143,18 +158,48 @@ llvm::Error resolveInputBindings(std::vector<PlanInputBinding> &bindings,
       binding = std::move(*canonical);
       continue;
     }
-    const PlanOutputRef output = std::get<PlanOutputRef>(binding);
-    if (output.producerNodeOrdinal >= nodeIndex ||
-        output.producerNodeOrdinal >= nodes.size())
-      return invalid("produced input must reference an earlier node");
-    const std::uint64_t begin = outputOffsets[output.producerNodeOrdinal];
-    const std::uint64_t end = outputOffsets[output.producerNodeOrdinal + 1];
-    if (output.outputSlotOrdinal >= end - begin)
-      return invalid("produced input references an unknown output slot");
-    if (!compatible(outputs[begin + output.outputSlotOrdinal],
-                    expected[inputIndex]))
-      return invalid("produced input role, artifact schema, or cardinality "
-                     "does not match its slot");
+    if (const auto *output = std::get_if<PlanOutputRef>(&binding)) {
+      auto descriptor = resolvePriorOutput(*output, nodeIndex, nodes,
+                                           outputOffsets, outputs);
+      if (!descriptor)
+        return descriptor.takeError();
+      if (!compatible(**descriptor, expected[inputIndex]))
+        return invalid("produced input role, artifact schema, or cardinality "
+                       "does not match its slot");
+      continue;
+    }
+
+    auto &join = std::get<BoundedPlanOutputJoin>(binding);
+    if (join.outputs.empty() || join.maximumArtifacts == 0)
+      return invalid("bounded output join requires prior outputs and a "
+                     "positive artifact bound");
+    if (!llvm::is_sorted(join.outputs) ||
+        std::adjacent_find(join.outputs.begin(), join.outputs.end()) !=
+            join.outputs.end())
+      return invalid("bounded output join sources are not canonical and "
+                     "unique");
+    std::optional<PlanValueDescriptor> joined;
+    for (PlanOutputRef output : join.outputs) {
+      auto descriptor = resolvePriorOutput(output, nodeIndex, nodes,
+                                           outputOffsets, outputs);
+      if (!descriptor)
+        return descriptor.takeError();
+      if (!joined) {
+        joined = **descriptor;
+        joined->cardinality = PlanValueCardinality::FiniteSet;
+        continue;
+      }
+      if ((*descriptor)->role != joined->role ||
+          (*descriptor)->schema != joined->schema ||
+          (*descriptor)->modelParameterContract !=
+              joined->modelParameterContract ||
+          (*descriptor)->calibrationPartitionRole !=
+              joined->calibrationPartitionRole)
+        return invalid("bounded output join mixes incompatible plan values");
+    }
+    if (!compatible(*joined, expected[inputIndex]))
+      return invalid("bounded output join role, artifact schema, or "
+                     "cardinality does not match its slot");
   }
   return llvm::Error::success();
 }
@@ -528,10 +573,27 @@ resolveRuntimeInput(const PlanInputBinding &input,
                     const CompletedDsePlanExecution &completed) {
   if (const auto *exact = std::get_if<ExactPlanArtifacts>(&input))
     return exact->artifacts;
-  const PlanOutputRef output = std::get<PlanOutputRef>(input);
-  if (!completed.hasOutput(output))
-    return invalid("resolved use-def references an unavailable output");
-  return completed.resolve(output).vec();
+  if (const auto *output = std::get_if<PlanOutputRef>(&input)) {
+    if (!completed.hasOutput(*output))
+      return invalid("resolved use-def references an unavailable output");
+    return completed.resolve(*output).vec();
+  }
+  const auto &join = std::get<BoundedPlanOutputJoin>(input);
+  std::vector<ArtifactRootReference> artifacts;
+  for (PlanOutputRef output : join.outputs) {
+    if (!completed.hasOutput(output))
+      return invalid("bounded output join references an unavailable output");
+    llvm::ArrayRef<ArtifactRootReference> source = completed.resolve(output);
+    artifacts.insert(artifacts.end(), source.begin(), source.end());
+  }
+  llvm::sort(artifacts, artifactRootReferenceLess);
+  artifacts.erase(std::unique(artifacts.begin(), artifacts.end()),
+                  artifacts.end());
+  if (artifacts.size() > join.maximumArtifacts)
+    artifacts.erase(
+        artifacts.begin() + static_cast<std::size_t>(join.maximumArtifacts),
+        artifacts.end());
+  return artifacts;
 }
 
 } // namespace
@@ -1038,8 +1100,15 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
           break;
         const bool dependsOnCurrentFrontier = llvm::any_of(
             candidate->inputBindings(), [&](const PlanInputBinding &binding) {
-              const auto *output = std::get_if<PlanOutputRef>(&binding);
-              return output && output->producerNodeOrdinal >= nodeIndex;
+              if (const auto *output = std::get_if<PlanOutputRef>(&binding))
+                return output->producerNodeOrdinal >= nodeIndex;
+              const auto *join =
+                  std::get_if<BoundedPlanOutputJoin>(&binding);
+              return join && llvm::any_of(
+                                 join->outputs, [&](PlanOutputRef output) {
+                                   return output.producerNodeOrdinal >=
+                                          nodeIndex;
+                                 });
             });
         if (dependsOnCurrentFrontier)
           break;

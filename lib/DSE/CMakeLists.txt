@@ -1,7 +1,12 @@
 add_library(LoomDSE
   DataflowEvaluationAcquisition.cpp
   EvidenceObligationSetConfig.cpp
+  FpaGroundTruthCollection.cpp
+  HardwareImplementationEvaluationAcquisition.cpp
   InvocationManifest.cpp
+  JointDesignExploration.cpp
+  JointDesignPolicy.cpp
+  JointFrontier.cpp
   SpatialMappingEvaluationAcquisition.cpp
   StructuredEvaluationAcquisition.cpp
   StructuredOwnership.cpp
@@ -16,14 +21,19 @@ target_link_libraries(LoomDSE PUBLIC
   LoomCommon
   LoomConfig
   LoomDSECandidateGenerator
+  LoomDSEMappingGenerator
   LoomDSEObjective
   LoomDSEPolicy
+  LoomEDAAsicContracts
   LoomEvaluation
   LoomFrontendCompilation
+  LoomHardwareImplementation
   LoomMappingArtifact
   LoomNativeSimulationOracle
+  LoomPnRGenerator
   LoomSimulator
   LoomStructuredFabricAnalyticModel
+  LoomTechMapping
   LLVMSupport
 )
 

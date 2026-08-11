@@ -52,6 +52,61 @@ application:
 * membership in the `smoke`, `validation`, and `scale_eda` execution
   selections.
 
+The tracked JSON contract is schema `loom.application_portfolio` version
+`1.0`. Its exact structural shape is:
+
+```text
+{
+  "schema": "loom.application_portfolio",
+  "version": "1.0",
+  "applications": [{
+    "identity": <stable logical name>,
+    "source": {"kind": "gitlink" | "repository", "root": <repo path>},
+    "build": {
+      "entry": <selected C/C++ translation unit>,
+      "language": "c" | "c++",
+      "sources": [<source-relative translation units>],
+      "compiler_options": [<argument>],
+      "link_options": [<argument>]
+    },
+    "cached_inputs": [
+      {"logical_name": <name>, "path": <cache path>, "sha256": <digest>}
+    ],
+    "inputs": [{
+      "name": <name>,
+      "workload": <logical workload selection>,
+      "runtime_input": <logical runtime-input selection>,
+      "cached_inputs": [<cached logical name>],
+      "oracle": {"kind": "exact" | "typed_invariant", "entry": <repo path>}
+    }],
+    "selections": ["smoke" | "validation" | "scale_eda"]
+  }]
+}
+```
+
+Applications, source selections, cached inputs, named inputs, cache
+references, and execution selections are strictly ordered and unique.
+Compiler and link option order remains semantic and is preserved. All paths
+are normalized visible-ASCII relative paths; stable logical names use
+lowercase ASCII letters, digits, `.`, `_`, or `-`. Execution-selection order
+is `smoke`, `validation`, then `scale_eda`. The build entry is one member of
+the exact source selection. Every cached declaration is referenced by a named
+input.
+Unknown fields are invalid, so a Gitlink row cannot copy a revision, version
+alias, tolerance, or untyped property into the manifest. Workload and
+runtime-input names are repository selections for their existing owners, not
+new Artifact identities.
+
+Source admission resolves a Gitlink only from its mode `160000` repository
+index entry, requires the checkout `HEAD` to equal that entry, and verifies
+that selected translation units are tracked and unchanged at that commit.
+Repository sources, selected translation units, and oracle entries must exist
+without escaping their admitted roots. An oracle entry cannot be a selected
+program translation unit. Cache bytes must match their declared SHA-256.
+Missing Gitlink checkout or cache content is typed unavailable; a wrong mode,
+revision mismatch, modified selected source, path escape, or digest mismatch
+is invalid. Admission never initializes a submodule or substitutes content.
+
 The referenced source package owns program sources and build semantics. Existing
 Loom owners produce the linked LLVM module, Structured Program Candidate,
 Canonical Dataflow Program, Mapping, Deployment, HardwareImplementation,

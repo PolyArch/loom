@@ -742,6 +742,15 @@ llvm::ArrayRef<std::uint8_t> openRoadPlacedConfigSchemaDescriptorBytes() {
       reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size());
 }
 
+llvm::Error validateOpenRoadPlacementParameters(
+    const OpenRoadPlacementParameters &parameters) {
+  return validatePlacementParameters(parameters);
+}
+
+std::string openRoadExternalFileInputSlot(const OpenRoadExternalFile &file) {
+  return externalSlot(file);
+}
+
 llvm::Expected<std::vector<std::uint8_t>>
 encodeOpenRoadPlacedConfig(const OpenRoadPlacedConfig &config) {
   auto canonical = canonicalizeConfig(config);
@@ -934,7 +943,7 @@ llvm::Error registerOpenRoadPlacedCandidateGeneratorDescriptor() {
 
 namespace {
 
-llvm::Expected<OpenRoadResolvedExecution> resolveOpenRoadExecution(
+llvm::Expected<OpenRoadResolvedExecution> resolveOpenRoadExecutionImpl(
     llvm::StringRef providerBuild,
     const external_tool::ExternalToolPreparationContext &context) {
   const external_tool::ExternalToolProviderDescriptor &toolProvider =
@@ -992,7 +1001,7 @@ prepareRegisteredOpenRoad(
   auto config = decodeOpenRoadPlacedConfig(binding.canonicalConfigBytes());
   if (!config)
     return config.takeError();
-  auto execution = resolveOpenRoadExecution(config->providerBuild, context);
+  auto execution = resolveOpenRoadExecutionImpl(config->providerBuild, context);
   if (!execution)
     return execution.takeError();
   auto contracts = makeYosysStandardCellContractCatalog();
@@ -1015,6 +1024,18 @@ llvm::Expected<dse::CandidateGeneratorProviderResult> importRegisteredOpenRoad(
 }
 
 } // namespace
+
+llvm::Expected<OpenRoadResolvedExecution> resolveOpenRoadExecution(
+    llvm::StringRef providerBuild,
+    const external_tool::ExternalToolPreparationContext &context) {
+  return resolveOpenRoadExecutionImpl(providerBuild, context);
+}
+
+llvm::Error
+validateOpenRoadResolvedExecution(const OpenRoadResolvedExecution &execution,
+                                  llvm::StringRef providerBuild) {
+  return validateExecution(execution, providerBuild);
+}
 
 llvm::Error registerOpenRoadPlacedCandidateGenerator() {
   const dse::CandidateGeneratorDescriptor &descriptor =

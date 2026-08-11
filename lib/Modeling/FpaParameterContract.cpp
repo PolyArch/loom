@@ -4,6 +4,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "EDA/Adapters/AsicStandardCellContracts.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
@@ -700,15 +701,14 @@ targetKey(const EvaluationRequest &request,
 }
 
 llvm::Expected<std::vector<std::uint8_t>>
-sampleGroup(const EvaluationEvidence &, const EvaluationRequest &request,
-            const CaseArtifactResolution &, const ArtifactStore &artifactStore,
-            const BlobStore &blobStore) {
-  const auto subjects = request.subjectBindings().subjects(
-      hardwareImplementationPhysicalSubjectRole());
-  if (subjects.size() != 1)
-    return invalid("ground-truth Request does not bind one implementation");
+deriveSampleGroupKey(const ArtifactRootReference &implementationReference,
+                     const ArtifactStore &artifactStore,
+                     const BlobStore &blobStore) {
+  auto externalContracts = eda::makeKnownAsicStandardCellContractCatalog();
+  if (!externalContracts)
+    return externalContracts.takeError();
   auto implementation = hardware::importHardwareImplementation(
-      subjects.front(), artifactStore, blobStore);
+      implementationReference, *externalContracts, artifactStore, blobStore);
   if (!implementation)
     return implementation.takeError();
   auto family = implementationFamily(implementation->implementation());
@@ -720,6 +720,17 @@ sampleGroup(const EvaluationEvidence &, const EvaluationRequest &request,
   appendFramed(key, fabric);
   appendFramed(key, *family);
   return key;
+}
+
+llvm::Expected<std::vector<std::uint8_t>>
+sampleGroup(const EvaluationEvidence &, const EvaluationRequest &request,
+            const CaseArtifactResolution &, const ArtifactStore &artifactStore,
+            const BlobStore &blobStore) {
+  const auto subjects = request.subjectBindings().subjects(
+      hardwareImplementationPhysicalSubjectRole());
+  if (subjects.size() != 1)
+    return invalid("ground-truth Request does not bind one implementation");
+  return deriveSampleGroupKey(subjects.front(), artifactStore, blobStore);
 }
 
 llvm::Expected<FpaMetricPredictionView>
@@ -872,6 +883,14 @@ const ModelParameterContractDescriptor &descriptor() {
 struct FpaGbdtParameters::Storage final {
   detail::FixedTabularGbdtParameters parameters;
 };
+
+llvm::Expected<std::vector<std::uint8_t>>
+deriveFpaSampleGroupKey(const ArtifactRootReference &hardwareImplementation,
+                        const ArtifactStore &artifactStore,
+                        const BlobStore &blobStore) {
+  return deriveSampleGroupKey(hardwareImplementation, artifactStore,
+                              blobStore);
+}
 
 llvm::ArrayRef<std::uint8_t> FpaGbdtParameters::groundTruthTargetKey() const {
   return storage_ ? llvm::ArrayRef<std::uint8_t>(

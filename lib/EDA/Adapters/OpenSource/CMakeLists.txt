@@ -26,6 +26,8 @@ target_link_libraries(LoomMappedRtlExecution PUBLIC
 add_library(LoomEDAOpenSource
   MappedRtlSimulation.cpp
   OpenRoad.cpp
+  OpenRoadRouted.cpp
+  OpenRoadStaticFpa.cpp
   Verilator.cpp
   Yosys.cpp
   YosysGateNetlist.cpp

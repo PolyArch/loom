@@ -71,6 +71,30 @@ target_link_libraries(loom-openroad-placed-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-openroad-routed-test
+  OpenRoadRoutedTest.cpp
+  OpenRoadPhysicalTestSupport.cpp
+)
+
+target_link_libraries(loom-openroad-routed-test PRIVATE
+  LoomHardwareConfigurationTestSupport
+  LoomEDAOpenSource
+  LLVMSupport
+)
+
+add_executable(loom-openroad-static-fpa-test
+  OpenRoadStaticFpaTest.cpp
+  OpenRoadPhysicalTestSupport.cpp
+)
+
+target_link_libraries(loom-openroad-static-fpa-test PRIVATE
+  LoomConfig
+  LoomEvaluation
+  LoomHardwareConfigurationTestSupport
+  LoomEDAOpenSource
+  LLVMSupport
+)
+
 add_executable(loom-quartus-prime-test
   QuartusPrimeTest.cpp
 )

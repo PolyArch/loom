@@ -6,6 +6,7 @@
 #include "Common/ResolvedPnrPolicy.h"
 #include "DSE/ResolvedConfigView.h"
 #include "Evaluation/Models/MappedRtlSimulationConfig.h"
+#include "Evaluation/Models/OpenRoadStaticFpaConfig.h"
 #include "Evaluation/Models/PhysicalRailAnalysisConfig.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -66,6 +67,8 @@ struct ResolvedEvaluationConfig final {
       cadenceVoltusStaticRail;
   std::optional<evaluation::models::MappedRtlSimulatorBinding>
       mappedRtlSimulator;
+  std::optional<evaluation::models::OpenRoadStaticFpaProviderBinding>
+      openRoadStaticFpa;
 };
 
 struct ResolvedConfig {

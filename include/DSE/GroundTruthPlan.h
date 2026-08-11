@@ -11,6 +11,11 @@
 #include <utility>
 #include <vector>
 
+namespace loom {
+class ArtifactStore;
+class BlobStore;
+} // namespace loom
+
 namespace loom::dse {
 
 struct GroundTruthEvidencePartitions final {
@@ -83,6 +88,31 @@ private:
 
 llvm::Expected<ResolvedGroundTruthPlan>
 buildGroundTruthPlan(ResolvedConfig baseConfig, GroundTruthPlanInputs inputs);
+
+/// Exact routed HardwareImplementation members assigned to one calibration
+/// partition. The roots remain ordinary Hardware Artifacts; this record owns
+/// only the finite plan input set.
+struct FpaGroundTruthPartitionInputs final {
+  std::vector<ArtifactRootReference> hardwareImplementations;
+};
+
+struct FpaGroundTruthPlanInputs final {
+  FpaGroundTruthPartitionInputs training;
+  FpaGroundTruthPartitionInputs validation;
+  FpaGroundTruthPartitionInputs heldOut;
+  std::vector<evaluation::EvaluationCondition> operatingConditions;
+};
+
+struct FpaGroundTruthCollectionPlan final {
+  ResolvedConfig resolvedConfig;
+  PlanOutputRef trainingEvidence;
+  PlanOutputRef validationEvidence;
+  PlanOutputRef heldOutEvidence;
+};
+
+llvm::Expected<FpaGroundTruthCollectionPlan> buildFpaGroundTruthCollectionPlan(
+    FpaGroundTruthPlanInputs inputs, const ResolvedConfig &baseConfig,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
 } // namespace loom::dse
 

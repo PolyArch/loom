@@ -12,7 +12,9 @@ add_library(LoomStructuredFabricAnalyticModel
   Gem5SystemCgra.cpp
   Gem5SystemDfg.cpp
   Gem5SystemRtl.cpp
+  HardwareImplementationPhysicalCase.cpp
   MappedRtlSimulation.cpp
+  OpenRoadStaticFpa.cpp
   ProductionRegistry.cpp
   PredictionCalibration.cpp
   SimulationComparison.cpp
@@ -29,6 +31,7 @@ target_include_directories(LoomStructuredFabricAnalyticModel PUBLIC
 
 target_link_libraries(LoomStructuredFabricAnalyticModel PUBLIC
   LoomConfig
+  LoomEDAAsicContracts
   LoomEvaluation
   LoomFabricArtifact
   LoomFrontendCompilation

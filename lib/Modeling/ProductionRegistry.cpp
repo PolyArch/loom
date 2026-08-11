@@ -16,6 +16,7 @@
 #include "Evaluation/Models/Gem5SystemDfg.h"
 #include "Evaluation/Models/Gem5SystemRtl.h"
 #include "Evaluation/Models/MappedRtlSimulation.h"
+#include "Evaluation/Models/OpenRoadStaticFpa.h"
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
 #include "Evaluation/Models/PredictionCalibration.h"
 #include "Evaluation/Models/SimulationComparison.h"
@@ -874,10 +875,10 @@ llvm::ArrayRef<EvaluationModelDescriptor> builtinModelDescriptors() {
        models::hardwareImplementationPhysicalCaseSignatureRef(),
        openRoadConditionCapabilities(),
        kFpaMetrics,
-       {},
-       {},
-       {},
-       providerBuildConfig<BuiltinEvaluationModel::OpenRoadRoutedStaticFpa>(),
+      {},
+      {},
+      {},
+      models::openRoadStaticFpaConfigViewContract(),
        kHardwarePhenomena,
        EvaluationExecutionMethod::ToolMeasurement,
        {},

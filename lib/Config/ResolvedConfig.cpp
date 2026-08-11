@@ -226,6 +226,8 @@ struct ConfigPatch {
       cadenceVoltusStaticRail;
   std::optional<loom::evaluation::models::MappedRtlSimulatorBinding>
       mappedRtlSimulator;
+  std::optional<loom::evaluation::models::OpenRoadStaticFpaProviderBinding>
+      openRoadStaticFpa;
   std::optional<std::uint32_t> ownershipScopeExpansionLimit;
   std::optional<std::uint32_t> scheduleScopeExpansionLimit;
   std::optional<std::uint32_t> memoryCommunicationScopeExpansionLimit;
@@ -306,6 +308,8 @@ void applyPatch(loom::ResolvedConfig &config, const ConfigPatch &patch) {
     config.evaluation.cadenceVoltusStaticRail = *patch.cadenceVoltusStaticRail;
   if (patch.mappedRtlSimulator)
     config.evaluation.mappedRtlSimulator = *patch.mappedRtlSimulator;
+  if (patch.openRoadStaticFpa)
+    config.evaluation.openRoadStaticFpa = *patch.openRoadStaticFpa;
   if (patch.ownershipScopeExpansionLimit)
     config.dse.structuredOwnership.scopeExpansionLimit =
         *patch.ownershipScopeExpansionLimit;
@@ -1492,10 +1496,33 @@ parseMappedRtlSimulatorBinding(const ConfigSyntax *node) {
   return binding;
 }
 
+llvm::Expected<loom::evaluation::models::OpenRoadStaticFpaProviderBinding>
+parseOpenRoadStaticFpaBinding(const ConfigSyntax *node) {
+  constexpr llvm::StringLiteral prefix =
+      "evaluation.openroad_routed_static_fpa";
+  auto fieldsOrErr =
+      ClosedMapping::parse(node, prefix, {"stable_provider_build_identity"});
+  if (!fieldsOrErr)
+    return fieldsOrErr.takeError();
+  auto buildOrErr =
+      requireScalarString(fieldsOrErr->at("stable_provider_build_identity"),
+                          prefix + ".stable_provider_build_identity");
+  if (!buildOrErr)
+    return buildOrErr.takeError();
+  loom::evaluation::models::OpenRoadStaticFpaProviderBinding binding{
+      std::move(*buildOrErr)};
+  if (llvm::Error error =
+          loom::evaluation::models::validateOpenRoadStaticFpaProviderBinding(
+              binding))
+    return std::move(error);
+  return binding;
+}
+
 llvm::Error parseEvaluation(ConfigPatch &patch, const ConfigSyntax *node) {
-  auto fieldsOrErr = ClosedMapping::parse(
-      node, "evaluation", {},
-      {"cadence_voltus_static_rail", "mapped_rtl_simulator"});
+  auto fieldsOrErr = ClosedMapping::parse(node, "evaluation", {},
+                                          {"cadence_voltus_static_rail",
+                                           "mapped_rtl_simulator",
+                                           "openroad_routed_static_fpa"});
   if (!fieldsOrErr)
     return fieldsOrErr.takeError();
   if (const ConfigSyntax *rail =
@@ -1514,6 +1541,15 @@ llvm::Error parseEvaluation(ConfigPatch &patch, const ConfigSyntax *node) {
       return bindingOrErr.takeError();
     patch.mappedRtlSimulator = std::move(*bindingOrErr);
     if (llvm::Error error = touch(patch, "evaluation.mapped_rtl_simulator"))
+      return error;
+  }
+  if (const ConfigSyntax *fpa = fieldsOrErr->at("openroad_routed_static_fpa")) {
+    auto bindingOrErr = parseOpenRoadStaticFpaBinding(fpa);
+    if (!bindingOrErr)
+      return bindingOrErr.takeError();
+    patch.openRoadStaticFpa = std::move(*bindingOrErr);
+    if (llvm::Error error =
+            touch(patch, "evaluation.openroad_routed_static_fpa"))
       return error;
   }
   return llvm::Error::success();
@@ -1614,6 +1650,11 @@ llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
     if (llvm::Error error =
             loom::evaluation::models::validateMappedRtlSimulatorBinding(
                 *config.evaluation.mappedRtlSimulator))
+      return error;
+  if (config.evaluation.openRoadStaticFpa)
+    if (llvm::Error error =
+            loom::evaluation::models::validateOpenRoadStaticFpaProviderBinding(
+                *config.evaluation.openRoadStaticFpa))
       return error;
   return loom::validateResolvedPnrPolicyConfig(config.dse.systemPnr,
                                                config.dse.objectiveCatalogs);
