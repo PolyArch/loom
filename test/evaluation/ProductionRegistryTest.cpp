@@ -7,6 +7,7 @@
 #include "Evaluation/Metric.h"
 #include "Evaluation/Request.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "ImplementationPlatform/ImplementationPlatform.h"
 #include "Simulator/SimulationExecution.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -286,8 +287,10 @@ void appendedMetricsAndModelSlotsMatchTheCatalog() {
               builtinEvaluationCaseKind(
                   BuiltinEvaluationCase::FabricHardwareAnalysis) &&
           lowConfidenceFabricModel->inputSlots.empty() &&
-          calibratedFabricModel->inputSlots.size() == 1 &&
+          calibratedFabricModel->inputSlots.size() == 2 &&
           calibratedFabricModel->inputSlots.front().modelParameterContract &&
+          *calibratedFabricModel->inputSlots[1].acceptedSchemas.front() ==
+              platform::implementationPlatformSchema &&
           runtimeCalibrationModel->inputSlots.size() == 1 &&
           runtimeCalibrationModel->inputSlots.front().modelParameterContract &&
           systemRuntimePredictor->inputSlots.front().modelParameterContract ==

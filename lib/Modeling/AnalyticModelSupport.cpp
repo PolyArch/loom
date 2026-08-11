@@ -81,6 +81,30 @@ llvm::Error accumulateScaled(std::uint64_t &total, std::uint64_t value,
   return llvm::Error::success();
 }
 
+llvm::Expected<std::uint64_t> scaledRatioCeil(std::uint64_t value,
+                                              ExactRatio ratio,
+                                              std::uint64_t denominatorScale,
+                                              llvm::StringRef context) {
+  using u128 = unsigned __int128;
+  const u128 numerator =
+      static_cast<u128>(value) * static_cast<u128>(ratio.numerator());
+  const u128 denominator = static_cast<u128>(ratio.denominator()) *
+                           static_cast<u128>(denominatorScale);
+  if (denominator == 0)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "low_confidence_model_invalid: %s has a zero denominator",
+        context.str().c_str());
+  u128 quotient = numerator / denominator;
+  if (numerator % denominator != 0)
+    ++quotient;
+  if (quotient > std::numeric_limits<std::uint64_t>::max())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "low_confidence_model_overflow: %s",
+                                   context.str().c_str());
+  return static_cast<std::uint64_t>(quotient);
+}
+
 EntityCost entityCost(fabric::FabricEntityKind kind) {
   using Kind = fabric::FabricEntityKind;
   switch (kind) {
@@ -669,6 +693,59 @@ estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
       runtime, frequency,
       std::max<std::uint64_t>(physical->areaSquareMicrometers, 1),
       *dynamicPower, std::max<std::uint64_t>(physical->leakageMicrowatts, 1)};
+}
+
+llvm::Expected<LowConfidenceMetricSet> estimateLowConfidencePhysicalMetrics(
+    const fabric::FinalizedFabricRoot &fabricRoot,
+    std::optional<LowConfidencePhysicalActivity> activity) {
+  auto physical = summarizeFabric(fabricRoot);
+  if (!physical)
+    return physical.takeError();
+  if (physical->criticalDelayPicoseconds == 0)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "low_confidence_model_invalid: zero critical delay");
+  const std::uint64_t frequency =
+      kPicosecondsPerSecond / physical->criticalDelayPicoseconds;
+  if (frequency == 0)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "low_confidence_model_invalid: critical delay exceeds one second");
+
+  const std::uint64_t area =
+      std::max<std::uint64_t>(physical->areaSquareMicrometers, 1);
+  std::uint64_t dynamicPower = 0;
+  std::uint64_t leakagePower =
+      std::max<std::uint64_t>(physical->leakageMicrowatts, 1);
+  if (activity) {
+    auto switchedArea =
+        scaledRatioCeil(area, activity->transitionsPerClock, 1,
+                        "hardware-only dynamic activity projection");
+    if (!switchedArea)
+      return switchedArea.takeError();
+    const std::optional<std::uint64_t> scaledDynamic =
+        llvm::checkedMulUnsigned(*switchedArea, std::uint64_t{2});
+    if (!scaledDynamic)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "low_confidence_model_overflow: hardware-only dynamic power");
+    dynamicPower = *scaledDynamic;
+
+    auto stateDependentLeakage =
+        scaledRatioCeil(leakagePower, activity->staticProbability, 4,
+                        "hardware-only state-dependent leakage projection");
+    if (!stateDependentLeakage)
+      return stateDependentLeakage.takeError();
+    const std::optional<std::uint64_t> scaledLeakage =
+        llvm::checkedAddUnsigned(leakagePower, *stateDependentLeakage);
+    if (!scaledLeakage)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "low_confidence_model_overflow: hardware-only leakage power");
+    leakagePower = *scaledLeakage;
+  }
+
+  return LowConfidenceMetricSet{0, frequency, area, dynamicPower, leakagePower};
 }
 
 llvm::Expected<std::optional<AnalyticWorkloadEstimate>>

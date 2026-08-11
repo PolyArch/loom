@@ -37,6 +37,11 @@ struct AnalyticWorkloadEstimate final {
   std::uint64_t memoryTransactions = 0;
 };
 
+struct LowConfidencePhysicalActivity final {
+  ExactRatio staticProbability;
+  ExactRatio transitionsPerClock;
+};
+
 struct LowConfidenceMetricSet final {
   std::uint64_t runtimePicoseconds = 0;
   std::uint64_t limitingClockFrequencyHertz = 0;
@@ -72,6 +77,13 @@ llvm::Expected<LowConfidenceMetricSet>
 estimateLowConfidenceMetrics(std::uint64_t instructionLeaves,
                              AnalyticWorkloadEstimate workload,
                              const fabric::FinalizedFabricRoot &fabricRoot);
+
+/// Projects the hardware-only portion of the same fixed low-confidence model.
+/// Dynamic power is meaningful only when the caller supplies one exact typed
+/// activity assumption; the absent branch contains no hidden toggle default.
+llvm::Expected<LowConfidenceMetricSet> estimateLowConfidencePhysicalMetrics(
+    const fabric::FinalizedFabricRoot &fabricRoot,
+    std::optional<LowConfidencePhysicalActivity> activity);
 
 llvm::Expected<std::optional<AnalyticWorkloadEstimate>>
 projectCanonicalDataflowWorkload(

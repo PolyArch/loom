@@ -5,10 +5,12 @@
 #include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/Evidence.h"
 #include "Evaluation/ModelParameterBundle.h"
+#include "Evaluation/Models/CalibratedFpa.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/CanonicalDataflowFunctional.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/DfgSimulation.h"
+#include "Evaluation/Models/FabricLowConfidence.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/Models/MappedRtlSimulation.h"
 #include "Evaluation/Models/OpenRoadStaticFpa.h"
@@ -24,8 +26,6 @@
 #include "Runtime/Gem5SimulationBinding.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
-
-#include "AnalyticModelSupport.h"
 
 #include "Config/ResolvedConfig.h"
 
@@ -69,8 +69,6 @@ EvaluationCaseSignatureRef caseRef(BuiltinEvaluationCase evaluationCase) {
       evaluationSchemaVersion(), builtinEvaluationCaseKind(evaluationCase)));
 }
 
-const ArtifactSchemaDescriptor *const kFabricSchemas[] = {
-    &fabric::fabricArtifactSchema};
 const ArtifactSchemaDescriptor *const kDeploymentSchemas[] = {
     &deployment::deploymentSchema};
 const ArtifactSchemaDescriptor *const kGem5Schemas[] = {
@@ -126,8 +124,7 @@ bool reaches(const CaseArtifactResolution &resolution,
 
 llvm::Expected<std::shared_ptr<const deployment::FinalizedDeployment>>
 importCachedDeployment(const ArtifactRootReference &reference,
-                       const ArtifactStore &artifacts,
-                       const BlobStore &blobs) {
+                       const ArtifactStore &artifacts, const BlobStore &blobs) {
   const std::array<ArtifactRootReference, 1> references{reference};
   return importCachedArtifact<deployment::FinalizedDeployment>(
       artifacts, &blobs, references, [&] {
@@ -219,9 +216,8 @@ resolveMappedRtlCycle(const EvaluationCase &evaluationCase,
       importCachedDeployment(deployments.front(), artifacts, blobs);
   if (!deployment)
     return deployment.takeError();
-  auto inputs = importCachedSpatialInputs(*evaluationCase.workload(),
-                                          *evaluationCase.runtimeInput(),
-                                          artifacts);
+  auto inputs = importCachedSpatialInputs(
+      *evaluationCase.workload(), *evaluationCase.runtimeInput(), artifacts);
   if (!inputs)
     return inputs.takeError();
   const sim::SpatialSimulationWorkload *spatial = (*inputs)->workload.spatial();
@@ -242,31 +238,6 @@ SubjectReferenceType mappingRootType() {
   return SubjectReferenceType{ArtifactRootType{mapping::mappingArtifactSchema}};
 }
 
-SubjectTargetPattern fabricTarget() {
-  return SubjectTargetPattern{kRole0, SubjectReferenceType{ArtifactRootType{
-                                          fabric::fabricArtifactSchema}}};
-}
-
-const std::vector<ConditionApplicabilityPattern> &hardwareConditions() {
-  static const std::vector<ConditionApplicabilityPattern> patterns = {
-      {EvaluationConditionKind::ProcessCorner,
-       {caseRef(kHardwareCase), {fabricTarget()}}},
-      {EvaluationConditionKind::SupplyVoltage,
-       {caseRef(kHardwareCase), {fabricTarget()}}},
-      {EvaluationConditionKind::Temperature,
-       {caseRef(kHardwareCase), {fabricTarget()}}},
-      {EvaluationConditionKind::RequiredClockPeriod,
-       {caseRef(kHardwareCase), {fabricTarget()}}},
-      {EvaluationConditionKind::RelativeClockSchedule,
-       {caseRef(kHardwareCase), {fabricTarget(), fabricTarget()}}},
-      {EvaluationConditionKind::ActivityBinding,
-       {caseRef(kHardwareCase), {fabricTarget()}}},
-      {EvaluationConditionKind::ActivityBinding,
-       {caseRef(kHardwareCase), {fabricTarget(), fabricTarget()}}},
-  };
-  return patterns;
-}
-
 const CaseSubjectRoleDescriptor kSystemRoles[] = {
     {kRole0, "deployment", SubjectRoleCardinality::ExactlyOne,
      kDeploymentSchemas, nullptr},
@@ -285,23 +256,6 @@ const EvaluationCaseSignatureDescriptor kSystemSignature{
     &verifySystemWorkload,
     AbsentReferenceCycle{},
     {}};
-
-const CaseSubjectRoleDescriptor kHardwareRoles[] = {
-    {kRole0, "fabric", SubjectRoleCardinality::ExactlyOne, kFabricSchemas,
-     nullptr},
-};
-const EvaluationCaseSignatureDescriptor kHardwareSignature{
-    builtinEvaluationCaseKind(kHardwareCase),
-    "fabric_hardware_analysis",
-    "One exact Fabric analyzed without a software workload.",
-    kHardwareRoles,
-    ArtifactRequirement::Forbidden,
-    {},
-    ArtifactRequirement::Forbidden,
-    {},
-    nullptr,
-    AbsentReferenceCycle{},
-    hardwareConditions()};
 
 const CaseSubjectRoleDescriptor kRuntimeCalibrationRoles[] = {
     {kRole0, "system_runtime_parameter_bundle",
@@ -346,8 +300,6 @@ template <BuiltinEvaluationModel Model> struct EmptyModelConfig {};
 
 llvm::StringRef modelConfigOwner(BuiltinEvaluationModel model) {
   switch (model) {
-  case BuiltinEvaluationModel::FabricCalibratedFpa:
-    return "fabric_calibrated_fpa";
   case BuiltinEvaluationModel::SystemRuntimeModelParameterCalibration:
     return "system_runtime_model_parameter_calibration";
   case BuiltinEvaluationModel::Gem5CgraSystemRuntimePredictor:
@@ -418,16 +370,6 @@ const MetricCapability kRuntimeErrorMetric[] = {
 const MetricCapability kCycleMetric[] = {
     {MetricKind::CycleCount, kWholeCaseScopes, kPoint}};
 
-const std::vector<ModelConditionCapability> &hardwareConditionCapabilities() {
-  static const std::vector<ModelConditionCapability> capabilities = [] {
-    std::vector<ModelConditionCapability> result;
-    for (const ConditionApplicabilityPattern &pattern : hardwareConditions())
-      result.push_back({pattern, ConditionDisposition::Consumed});
-    return result;
-  }();
-  return capabilities;
-}
-
 const std::vector<ModelConditionCapability> &openRoadConditionCapabilities() {
   static const std::vector<ModelConditionCapability> capabilities = [] {
     std::vector<ModelConditionCapability> result;
@@ -453,10 +395,6 @@ llvm::ArrayRef<ModelConditionCapability> runtimeErrorConditions() {
   return capabilities;
 }
 
-const ModelInputSlotDescriptor kFpaParameterInputs[] = {
-    {kParameterInput, "model_parameter_bundle", kParameterSchemas,
-     ArtifactCollectionCardinality::ExactlyOne, nullptr,
-     models::fpaModelParameterContractRef()}};
 const ModelInputSlotDescriptor kSystemRuntimeParameterInputs[] = {
     {kParameterInput, "model_parameter_bundle", kParameterSchemas,
      ArtifactCollectionCardinality::ExactlyOne, nullptr,
@@ -483,38 +421,6 @@ const ModeledPhenomenon kRtlPhenomena[] = {ModeledPhenomenon::CanonicalDataflow,
 
 llvm::ArrayRef<EvaluationModelDescriptor> builtinModelDescriptors() {
   static const EvaluationModelDescriptor descriptors[] = {
-      {builtinEvaluationModelKind(BuiltinEvaluationModel::FabricLowConfidence),
-       "fabric_low_confidence",
-       "loom.fabric.low_confidence.v1",
-       caseRef(kHardwareCase),
-       hardwareConditionCapabilities(),
-       kFpaMetrics,
-       {},
-       {},
-       {},
-       models::detail::emptyLowConfidenceConfigView(),
-       kHardwarePhenomena,
-       EvaluationExecutionMethod::Analytic,
-       {},
-       DeterminismContract::Deterministic,
-       {},
-       ProviderForm::InProcess},
-      {builtinEvaluationModelKind(BuiltinEvaluationModel::FabricCalibratedFpa),
-       "fabric_calibrated_fpa",
-       "loom.fabric.calibrated_fpa.v1",
-       caseRef(kHardwareCase),
-       hardwareConditionCapabilities(),
-       kFpaMetrics,
-       {},
-       kFpaParameterInputs,
-       {},
-       emptyConfig<BuiltinEvaluationModel::FabricCalibratedFpa>(),
-       kHardwarePhenomena,
-       EvaluationExecutionMethod::Analytic,
-       {},
-       DeterminismContract::Deterministic,
-       {},
-       ProviderForm::InProcess},
       {builtinEvaluationModelKind(
            BuiltinEvaluationModel::SystemRuntimeModelParameterCalibration),
        "system_runtime_model_parameter_calibration",
@@ -655,9 +561,9 @@ llvm::Error registerProductionEvaluationRegistry() {
     return error;
   if (llvm::Error error = models::registerCadenceVoltusStaticRailModel())
     return error;
-  if (llvm::Error error = registerEvaluationCaseSignature(kSystemSignature))
+  if (llvm::Error error = models::registerFabricLowConfidenceModel())
     return error;
-  if (llvm::Error error = registerEvaluationCaseSignature(kHardwareSignature))
+  if (llvm::Error error = registerEvaluationCaseSignature(kSystemSignature))
     return error;
   if (llvm::Error error =
           registerEvaluationCaseSignature(kRuntimeCalibrationSignature))
@@ -669,7 +575,11 @@ llvm::Error registerProductionEvaluationRegistry() {
       return error;
   if (llvm::Error error = models::registerFpaModelParameterContract())
     return error;
-  return models::registerSystemRuntimeModelParameterContract();
+  if (llvm::Error error = models::registerSystemRuntimeModelParameterContract())
+    return error;
+  if (llvm::Error error = models::registerCalibratedFpaModels())
+    return error;
+  return models::registerFpaModelParameterCalibrationModel();
 }
 
 EvaluationCaseSignatureRef systemSimulationCaseSignatureRef() {

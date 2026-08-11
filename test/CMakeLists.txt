@@ -37,6 +37,7 @@ add_subdirectory(dataflow)
 add_subdirectory(deployment)
 add_subdirectory(dse)
 add_subdirectory(evaluation)
+add_subdirectory(modeling)
 add_subdirectory(external_tool)
 add_subdirectory(eda)
 add_subdirectory(implementation_platform)
@@ -115,6 +116,7 @@ set(LOOM_TEST_DEPENDS
   loom-evaluation-evidence-test
   loom-evaluation-metric-test
   loom-evaluation-physical-rail-analysis-test
+  loom-fast-fpa-model-test
   loom-external-tool-local-config-test
   loom-external-tool-external-file-test
   loom-external-tool-binding-test

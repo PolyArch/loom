@@ -1,11 +1,14 @@
 add_library(LoomStructuredFabricAnalyticModel
   AnalyticModelSupport.cpp
+  CalibratedFpa.cpp
   CanonicalDataflowFabricAnalytic.cpp
   CanonicalDataflowFunctional.cpp
   CgraSimulation.cpp
   DeterministicGbdt.cpp
   DfgSimulation.cpp
   FixedTabularGbdt.cpp
+  FpaCalibration.cpp
+  FabricLowConfidence.cpp
   FpaParameterContract.cpp
   MappedRtlSimulation.cpp
   OpenRoadStaticFpa.cpp
