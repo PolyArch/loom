@@ -100,6 +100,7 @@ set(LOOM_TEST_DEPENDS
   loom-dse-candidate-generator-test
   loom-dse-model-parameter-training-test
   loom-dse-production-candidate-generator-registration-test
+  loom-dse-portable-system-rtl-generator-test
   loom-dse-evidence-obligation-test
   loom-dse-promotion-acquisition-execution-test
   loom-dse-resolved-config-view-test

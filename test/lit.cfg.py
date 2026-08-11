@@ -130,6 +130,7 @@ tools = [
     "loom-dataflow-service-schema-test",
     "loom-dse-invocation-manifest-test",
     "loom-dse-model-parameter-training-test",
+    "loom-dse-portable-system-rtl-generator-test",
     "loom-mapped-rtl-simulation-test",
     "loom-evaluation-production-registry-test",
     "loom-dfg-sim",

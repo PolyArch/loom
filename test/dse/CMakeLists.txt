@@ -14,6 +14,10 @@ add_executable(loom-dse-hardware-candidate-generator-test
   HardwareCandidateGeneratorTest.cpp
 )
 
+add_executable(loom-dse-portable-system-rtl-generator-test
+  PortableSystemRtlGeneratorTest.cpp
+)
+
 add_executable(loom-dse-model-parameter-training-test
   ModelParameterTrainingTest.cpp
 )
@@ -107,6 +111,12 @@ target_link_libraries(loom-dse-hardware-candidate-generator-test PRIVATE
   LoomADGBuilder
   LoomDSEHardwareGenerator
   LoomFabricArtifact
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-portable-system-rtl-generator-test PRIVATE
+  LoomMappedRtlSimulationTestSupport
+  LoomDSEHardwareGenerator
   LLVMSupport
 )
 

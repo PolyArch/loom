@@ -3,6 +3,7 @@
 #include "DSE/FabricTemplateCandidateGenerator.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/ModelParameterTrainingCandidateGenerator.h"
+#include "DSE/PortableSystemRtlCandidateGenerator.h"
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
 #include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
@@ -65,6 +66,7 @@ int main() {
   requireSuccess(
       loom::dse::registerSpatialMicroarchitectureCandidateGenerator());
   requireSuccess(loom::dse::registerSystemCompositionCandidateGenerator());
+  requireSuccess(loom::dse::registerPortableSystemRtlCandidateGenerator());
   requireSuccess(loom::dse::registerFpaGbdtTrainingCandidateGenerator());
   requireSuccess(
       loom::dse::
@@ -110,6 +112,8 @@ int main() {
       loom::dse::spatialMicroarchitectureCandidateGeneratorDescriptor());
   requireRegistered(CandidateGeneratorKind(15),
                     loom::dse::systemCompositionCandidateGeneratorDescriptor());
+  requireRegistered(CandidateGeneratorKind(16),
+                    loom::dse::portableSystemRtlCandidateGeneratorDescriptor());
   requireRegistered(CandidateGeneratorKind(17),
                     loom::dse::fpaGbdtTrainingCandidateGeneratorDescriptor());
   requireRegistered(
