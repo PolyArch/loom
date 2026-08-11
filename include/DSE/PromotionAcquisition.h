@@ -225,7 +225,7 @@ using PromotionAcquisitionProviderFunction =
         const ResolvedPromotionAcquisitionBinding &binding,
         llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings,
         llvm::ArrayRef<PromotionEvidenceAcquisitionTask> tasks,
-        const ArtifactStore &store);
+        const ArtifactStore &store, const BlobStore &blobs);
 
 struct PromotionAcquisitionProvider final {
   PromotionAcquisitionDescriptorRef descriptor;

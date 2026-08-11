@@ -10,6 +10,7 @@ add_library(LoomStructuredFabricAnalyticModel
   FpaCalibration.cpp
   FabricLowConfidence.cpp
   FpaParameterContract.cpp
+  HardwareImplementationPhysicalCase.cpp
   MappedRtlSimulation.cpp
   OpenRoadStaticFpa.cpp
   ProductionRegistry.cpp
@@ -26,9 +27,11 @@ target_include_directories(LoomStructuredFabricAnalyticModel PUBLIC
 
 target_link_libraries(LoomStructuredFabricAnalyticModel PUBLIC
   LoomConfig
+  LoomEDAAsicContracts
   LoomEvaluation
   LoomFabricArtifact
   LoomFrontendCompilation
+  LoomHardwareImplementation
   LoomNativeSimulationOracle
   LoomSimulator
   MLIRDataflow

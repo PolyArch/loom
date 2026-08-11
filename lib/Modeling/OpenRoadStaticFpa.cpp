@@ -1,6 +1,7 @@
 #include "Evaluation/Models/OpenRoadStaticFpa.h"
 
 #include "Config/ResolvedConfig.h"
+#include "EDA/Adapters/AsicStandardCellContracts.h"
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
 #include "Evaluation/ProductionRegistry.h"
 
@@ -111,6 +112,56 @@ const ResolvedModelConfigViewContract &openRoadStaticFpaConfigViewContract() {
   return kConfigView;
 }
 
+llvm::Expected<PreparedOpenRoadStaticFpaEvaluation>
+prepareOpenRoadStaticFpaEvaluation(
+    const ArtifactRootReference &hardwareImplementation,
+    llvm::ArrayRef<EvaluationCondition> conditions,
+    llvm::ArrayRef<MetricKind> metrics, const ResolvedConfig &config,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  if (llvm::Error error = registerOpenRoadStaticFpaModel())
+    return std::move(error);
+  auto externalContracts = eda::makeKnownAsicStandardCellContractCatalog();
+  if (!externalContracts)
+    return externalContracts.takeError();
+  auto resolution = resolveHardwareImplementationPhysicalCase(
+      hardwareImplementation, *externalContracts, artifactStore, blobStore);
+  if (!resolution)
+    return resolution.takeError();
+  auto subjects = EvaluationSubjectBindings::get(
+      {{hardwareImplementationPhysicalSubjectRole(),
+        {hardwareImplementation}}});
+  if (!subjects)
+    return subjects.takeError();
+  auto evaluationCase =
+      EvaluationCase::get(hardwareImplementationPhysicalCaseSignatureRef(),
+                          std::move(*subjects), std::nullopt, std::nullopt,
+                          conditions, *resolution, artifactStore, blobStore);
+  if (!evaluationCase)
+    return evaluationCase.takeError();
+  std::vector<MetricRequest> requests;
+  requests.reserve(metrics.size());
+  for (MetricKind metric : metrics) {
+    auto request =
+        MetricRequest::get({metric, EvaluationScope{kWholeCaseScope, {}}}, {},
+                           *evaluationCase, *resolution, artifactStore);
+    if (!request)
+      return request.takeError();
+    requests.push_back(std::move(*request));
+  }
+  auto binding = ResolvedModelBinding::project(
+      openRoadStaticFpaModelDescriptorRef(), {}, config);
+  if (!binding)
+    return binding.takeError();
+  auto request =
+      EvaluationRequest::get(*evaluationCase, requests, {}, std::move(*binding),
+                             0, *resolution, artifactStore, blobStore);
+  if (!request)
+    return request.takeError();
+  return PreparedOpenRoadStaticFpaEvaluation{
+      std::move(*request), std::move(*resolution),
+      hardwareImplementationPhysicalSubjectRole()};
+}
+
 llvm::Expected<CompleteOpenRoadStaticFpaConfiguration>
 projectCompleteOpenRoadStaticFpaConfiguration(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
@@ -184,11 +235,15 @@ projectCompleteOpenRoadStaticFpaConfiguration(
   }
 
   return CompleteOpenRoadStaticFpaConfiguration{
-      *providerBinding, *processCorner, *supplyVoltage, *temperature,
+      *providerBinding,
+      *processCorner,
+      *supplyVoltage,
+      *temperature,
       *clockPeriod,
       activity ? std::optional<ActivityBindingCondition>(*activity)
                : std::nullopt,
-      std::move(assumption), std::move(*metrics)};
+      std::move(assumption),
+      std::move(*metrics)};
 }
 
 } // namespace loom::evaluation::models

@@ -229,7 +229,7 @@ llvm::Expected<PromotionAcquisitionResolutionOutcome>
 resolveObjectives(const ResolvedPromotionAcquisitionBinding &binding,
                   llvm::ArrayRef<PromotionAcquisitionInputBinding> inputs,
                   llvm::ArrayRef<PromotionEvidenceAcquisitionTask> tasks,
-                  const ArtifactStore &) {
+                  const ArtifactStore &, const BlobStore &) {
   if (binding.descriptorRef() != objectiveAcquisition.reference() ||
       inputs.size() != 1 || inputs.front().artifacts.size() != 2 ||
       !tasks.empty())

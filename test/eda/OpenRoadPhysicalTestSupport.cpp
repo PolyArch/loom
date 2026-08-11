@@ -337,11 +337,11 @@ ExternalFileFingerprint contentFingerprint(llvm::StringRef contents) {
       ExternalFileFingerprint::fromBytes(llvm::SHA256::hash(bytes(contents))));
 }
 
-llvm::Expected<OpenRoadGateFixture>
-makeOpenRoadGateFixture(const std::filesystem::path &root,
-                        const ArtifactStore &artifacts, const BlobStore &blobs,
-                        llvm::StringRef providerBuild,
-                        const OpenRoadTechnologyFixture &technology) {
+llvm::Expected<OpenRoadGateFixture> makeOpenRoadGateFixture(
+    const std::filesystem::path &root, const ArtifactStore &artifacts,
+    const BlobStore &blobs, llvm::StringRef providerBuild,
+    const OpenRoadTechnologyFixture &technology, llvm::StringRef designIdentity,
+    std::uint32_t designPortBitWidth) {
   const std::filesystem::path external = root / "external";
   const std::filesystem::path technologyPath = external / "technology.lef";
   const std::filesystem::path cellsPath = external / "cells.lef";
@@ -354,11 +354,27 @@ makeOpenRoadGateFixture(const std::filesystem::path &root,
     return std::move(error);
 
   adg::DesignBuilder design(artifacts);
-  auto spatial = design.createSpatialCore("openroad-routed-fixture", {}, {});
+  std::vector<adg::PortType> designPorts;
+  if (designPortBitWidth != 0) {
+    auto port = adg::PortType::bits(designPortBitWidth);
+    if (!port)
+      return port.takeError();
+    designPorts.push_back(*port);
+  }
+  auto spatial =
+      design.createSpatialCore(designIdentity, designPorts, designPorts);
   if (!spatial)
     return spatial.takeError();
-  if (llvm::Error error = spatial->close({}))
-    return std::move(error);
+  if (designPorts.empty()) {
+    if (llvm::Error error = spatial->close({}))
+      return std::move(error);
+  } else {
+    auto input = spatial->input(0);
+    if (!input)
+      return input.takeError();
+    if (llvm::Error error = spatial->close({*input}))
+      return std::move(error);
+  }
   auto moduleDesign = std::move(design).finalize();
   if (!moduleDesign)
     return moduleDesign.takeError();
@@ -574,6 +590,51 @@ sed -n '/^set loom_result /,$p' drivers/openroad-routed.tcl > work/publish-resul
 tclsh work/publish-result.tcl
 if [[ "$PWD" == *route-missing* ]]; then
   rm outputs/routed.def
+fi
+)sh";
+  if (llvm::Error error = writeText(tool, body, true))
+    return std::move(error);
+  return tool;
+}
+
+llvm::Expected<std::filesystem::path>
+writeAuthoredOpenRoadStaticFpaTool(const std::filesystem::path &root) {
+  const std::filesystem::path tool = root / "authored-openroad-fpa";
+  const std::string body = R"sh(#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-version" || "${1:-}" == "--version" ]]; then
+  printf '%s\n' 'OpenROAD synthetic b9a38929e342'
+  exit 0
+fi
+if [[ "$#" -ne 7 || "$1" != "-no_init" || "$2" != "-no_splash" ||
+      "$3" != "-no_settings" || "$4" != "-threads" || "$5" != "1" ||
+      "$6" != "-exit" || "$7" != "drivers/openroad-static-fpa.tcl" ]]; then
+  exit 64
+fi
+grep -F 'read_def "inputs/database/routed.def"' drivers/openroad-static-fpa.tcl >/dev/null
+grep -F 'extract_parasitics -version 2.0 -lef_rc' drivers/openroad-static-fpa.tcl >/dev/null
+grep -F 'OpenRCX produced no parasitic segments' drivers/openroad-static-fpa.tcl >/dev/null
+grep -E 'sta::find_clk_min_period|sta::design_power|rsz::design_area' drivers/openroad-static-fpa.tcl >/dev/null
+grep -F 'DESIGN top' inputs/database/routed.def >/dev/null
+grep -F 'module top' inputs/netlist/0.v >/dev/null
+grep -F 'create_clock' inputs/constraints/0.sdc >/dev/null
+mkdir -p work outputs
+printf '%s\n' 'driver-and-routed-closure-read' > work/authored-fixture-read.txt
+if [[ "$PWD" == *fpa-failed* ]]; then
+  exit 41
+fi
+{
+  printf '%s\n' 'schema=loom.openroad_static_fpa_raw_report'
+  printf '%s\n' 'version=1.0'
+  printf '%s\n' 'top=top'
+  grep -F 'limiting_clock_frequency_hz=%.12e' drivers/openroad-static-fpa.tcl >/dev/null && printf '%s\n' 'limiting_clock_frequency_hz=5.000000000000e+08' || true
+  grep -F 'total_area_square_meters=%.12e' drivers/openroad-static-fpa.tcl >/dev/null && printf '%s\n' 'total_area_square_meters=1.200000000000e-10' || true
+  grep -F 'dynamic_power_watts=%.12e' drivers/openroad-static-fpa.tcl >/dev/null && printf '%s\n' 'dynamic_power_watts=3.400000000000e-03' || true
+  grep -F 'leakage_power_watts=%.12e' drivers/openroad-static-fpa.tcl >/dev/null && printf '%s\n' 'leakage_power_watts=5.600000000000e-04' || true
+} > work/openroad-static-fpa-raw.txt
+tclsh drivers/openroad-static-fpa-publish.tcl
+if [[ "$PWD" == *fpa-adapter* ]]; then
+  sed -i '0,/"unit":"watt"/s//"unit":"volt"/' outputs/openroad-static-fpa-result.json
 fi
 )sh";
   if (llvm::Error error = writeText(tool, body, true))

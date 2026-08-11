@@ -12,6 +12,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -51,11 +52,12 @@ struct OpenRoadGateFixture final {
   std::filesystem::path libertyPath;
 };
 
-llvm::Expected<OpenRoadGateFixture>
-makeOpenRoadGateFixture(const std::filesystem::path &root,
-                        const ArtifactStore &artifacts, const BlobStore &blobs,
-                        llvm::StringRef providerBuild,
-                        const OpenRoadTechnologyFixture &technology);
+llvm::Expected<OpenRoadGateFixture> makeOpenRoadGateFixture(
+    const std::filesystem::path &root, const ArtifactStore &artifacts,
+    const BlobStore &blobs, llvm::StringRef providerBuild,
+    const OpenRoadTechnologyFixture &technology,
+    llvm::StringRef designIdentity = "openroad-routed-fixture",
+    std::uint32_t designPortBitWidth = 0);
 
 struct OpenRoadRouteHarness final {
   std::vector<dse::CandidateGeneratorInputBinding> inputs;
@@ -78,6 +80,9 @@ makeOpenRoadResolvedExecution(llvm::StringRef executable,
 
 llvm::Expected<std::filesystem::path>
 writeAuthoredOpenRoadRouteTool(const std::filesystem::path &root);
+
+llvm::Expected<std::filesystem::path>
+writeAuthoredOpenRoadStaticFpaTool(const std::filesystem::path &root);
 
 llvm::Expected<hardware::FinalizedHardwareImplementation>
 runOpenRoadRouteFixture(const OpenRoadGateFixture &fixture,

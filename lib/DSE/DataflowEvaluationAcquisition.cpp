@@ -79,7 +79,7 @@ llvm::Expected<PromotionAcquisitionResolutionOutcome>
 resolveCases(const ResolvedPromotionAcquisitionBinding &,
              llvm::ArrayRef<PromotionAcquisitionInputBinding> inputBindings,
              llvm::ArrayRef<PromotionEvidenceAcquisitionTask> tasks,
-             const ArtifactStore &store) {
+             const ArtifactStore &store, const BlobStore &) {
   const auto analytic =
       evaluation::models::canonicalDataflowFabricAnalyticModelDescriptorRef();
   const auto functional =

@@ -130,6 +130,11 @@ importFpaTrainingEvidenceSample(const ArtifactRootReference &evidence,
                                 const ArtifactStore &artifactStore,
                                 const BlobStore &blobStore);
 
+llvm::Expected<std::vector<std::uint8_t>>
+deriveFpaSampleGroupKey(const ArtifactRootReference &hardwareImplementation,
+                        const ArtifactStore &artifactStore,
+                        const BlobStore &blobStore);
+
 llvm::Expected<FpaGbdtParameters>
 trainFpaGbdtParameters(llvm::ArrayRef<FpaTrainingEvidenceSample> training,
                        const FpaGbdtTrainingConfig &config,

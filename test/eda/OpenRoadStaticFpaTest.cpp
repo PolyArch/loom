@@ -81,8 +81,7 @@ RequestFixture
 makeRequest(const FinalizedHardwareImplementation &hardware,
             const platform::FinalizedImplementationPlatform &platform,
             llvm::StringRef providerBuild, const ArtifactStore &artifacts,
-            const BlobStore &blobs,
-            std::int64_t supplyVoltageMillivolts = 1050,
+            const BlobStore &blobs, std::int64_t supplyVoltageMillivolts = 1050,
             llvm::ArrayRef<MetricKind> metricKinds = kAllFpaMetrics,
             bool includeActivity = true) {
   const ArtifactRootReference hardwareRef = hardware.reference();
@@ -108,9 +107,9 @@ makeRequest(const FinalizedHardwareImplementation &hardware,
           target, take(__func__, DecimalValue::get(2, -9))}}};
   if (includeActivity)
     conditions.push_back(EvaluationCondition{ActivityBindingCondition{
-        target, ExplicitAssumptionSource{
-                    target, take(__func__, ExactRatio::get(1, 2)),
-                    take(__func__, ExactRatio::get(1, 10))}}});
+        target,
+        ExplicitAssumptionSource{target, take(__func__, ExactRatio::get(1, 2)),
+                                 take(__func__, ExactRatio::get(1, 10))}}});
   const EvaluationCase evaluationCase = take(
       __func__,
       EvaluationCase::get(
@@ -147,49 +146,6 @@ makeRequest(const FinalizedHardwareImplementation &hardware,
   require(__func__, published == evaluationRequestReference(request),
           "request publication changed identity");
   return {std::move(request), std::move(resolution)};
-}
-
-std::filesystem::path writeAuthoredFpaTool(const std::filesystem::path &root) {
-  const std::filesystem::path tool = root / "authored-openroad-fpa";
-  const std::string body = R"sh(#!/usr/bin/env bash
-set -euo pipefail
-if [[ "${1:-}" == "-version" || "${1:-}" == "--version" ]]; then
-  printf '%s\n' 'OpenROAD synthetic b9a38929e342'
-  exit 0
-fi
-if [[ "$#" -ne 7 || "$1" != "-no_init" || "$2" != "-no_splash" ||
-      "$3" != "-no_settings" || "$4" != "-threads" || "$5" != "1" ||
-      "$6" != "-exit" || "$7" != "drivers/openroad-static-fpa.tcl" ]]; then
-  exit 64
-fi
-grep -F 'read_def "inputs/database/routed.def"' drivers/openroad-static-fpa.tcl >/dev/null
-grep -F 'extract_parasitics -version 2.0 -lef_rc' drivers/openroad-static-fpa.tcl >/dev/null
-grep -F 'OpenRCX produced no parasitic segments' drivers/openroad-static-fpa.tcl >/dev/null
-grep -E 'sta::find_clk_min_period|sta::design_power|rsz::design_area' drivers/openroad-static-fpa.tcl >/dev/null
-grep -F 'DESIGN top' inputs/database/routed.def >/dev/null
-grep -F 'module top' inputs/netlist/0.v >/dev/null
-grep -F 'create_clock' inputs/constraints/0.sdc >/dev/null
-mkdir -p work outputs
-printf '%s\n' 'driver-and-routed-closure-read' > work/authored-fixture-read.txt
-if [[ "$PWD" == *fpa-failed* ]]; then
-  exit 41
-fi
-{
-  printf '%s\n' 'schema=loom.openroad_static_fpa_raw_report'
-  printf '%s\n' 'version=1.0'
-  printf '%s\n' 'top=top'
-  grep -F 'limiting_clock_frequency_hz=%.12e' drivers/openroad-static-fpa.tcl >/dev/null && printf '%s\n' 'limiting_clock_frequency_hz=5.000000000000e+08' || true
-  grep -F 'total_area_square_meters=%.12e' drivers/openroad-static-fpa.tcl >/dev/null && printf '%s\n' 'total_area_square_meters=1.200000000000e-10' || true
-  grep -F 'dynamic_power_watts=%.12e' drivers/openroad-static-fpa.tcl >/dev/null && printf '%s\n' 'dynamic_power_watts=3.400000000000e-03' || true
-  grep -F 'leakage_power_watts=%.12e' drivers/openroad-static-fpa.tcl >/dev/null && printf '%s\n' 'leakage_power_watts=5.600000000000e-04' || true
-} > work/openroad-static-fpa-raw.txt
-tclsh drivers/openroad-static-fpa-publish.tcl
-if [[ "$PWD" == *fpa-adapter* ]]; then
-  sed -i '0,/"unit":"watt"/s//"unit":"volt"/' outputs/openroad-static-fpa-result.json
-fi
-)sh";
-  requireSuccess(__func__, writeText(tool, body, true));
-  return tool;
 }
 
 std::filesystem::path
@@ -304,9 +260,8 @@ void resultParserAndDriverAreStrict() {
       "\"unit\":\"watt\"},"
       "\"leakage_power\":{\"value\":\"5.6e-04\","
       "\"unit\":\"watt\"}}\n";
-  const OpenRoadStaticFpaObservation observation =
-      take(__func__,
-           parseOpenRoadStaticFpaResult(canonical, "top", kAllFpaMetrics));
+  const OpenRoadStaticFpaObservation observation = take(
+      __func__, parseOpenRoadStaticFpaResult(canonical, "top", kAllFpaMetrics));
   require(__func__,
           observation.limitingClockFrequencyHertz ==
                   take(__func__, DecimalValue::get(5, 8)) &&
@@ -320,39 +275,35 @@ void resultParserAndDriverAreStrict() {
 
   std::string wrongTop = canonical;
   wrongTop.replace(wrongTop.find("\"top\":\"top\""), 11, "\"top\":\"other\"");
-  expectErrorContains(__func__,
-                      parseOpenRoadStaticFpaResult(wrongTop, "top",
-                                                   kAllFpaMetrics),
-                      "top");
+  expectErrorContains(
+      __func__, parseOpenRoadStaticFpaResult(wrongTop, "top", kAllFpaMetrics),
+      "top");
   std::string wrongUnit = canonical;
   wrongUnit.replace(wrongUnit.find("\"unit\":\"watt\""), 13,
                     "\"unit\":\"volt\"");
-  expectErrorContains(__func__,
-                      parseOpenRoadStaticFpaResult(wrongUnit, "top",
-                                                   kAllFpaMetrics),
-                      "unit");
+  expectErrorContains(
+      __func__, parseOpenRoadStaticFpaResult(wrongUnit, "top", kAllFpaMetrics),
+      "unit");
   std::string nonfinite = canonical;
   nonfinite.replace(nonfinite.find("3.4e-03"), 7, "NaN");
-  expectErrorContains(__func__,
-                      parseOpenRoadStaticFpaResult(nonfinite, "top",
-                                                   kAllFpaMetrics),
-                      "finite scientific decimal");
+  expectErrorContains(
+      __func__, parseOpenRoadStaticFpaResult(nonfinite, "top", kAllFpaMetrics),
+      "finite scientific decimal");
   std::string extra = canonical;
   extra.insert(extra.rfind('}'), ",\"claim\":\"signoff\"");
-  expectErrorContains(__func__,
-                      parseOpenRoadStaticFpaResult(extra, "top",
-                                                   kAllFpaMetrics),
-                      "shape");
+  expectErrorContains(
+      __func__, parseOpenRoadStaticFpaResult(extra, "top", kAllFpaMetrics),
+      "shape");
 
-  constexpr std::array<MetricKind, 1> leakageMetric{
-      MetricKind::LeakagePower};
+  constexpr std::array<MetricKind, 1> leakageMetric{MetricKind::LeakagePower};
   const std::string leakageOnly =
       "{\"schema\":\"loom.openroad_static_fpa_result\","
       "\"version\":\"1.0\",\"top\":\"top\","
       "\"leakage_power\":{\"value\":\"5.6e-04\","
       "\"unit\":\"watt\"}}\n";
-  const OpenRoadStaticFpaObservation leakageObservation = take(
-      __func__, parseOpenRoadStaticFpaResult(leakageOnly, "top", leakageMetric));
+  const OpenRoadStaticFpaObservation leakageObservation =
+      take(__func__,
+           parseOpenRoadStaticFpaResult(leakageOnly, "top", leakageMetric));
   require(__func__,
           leakageObservation.leakagePowerWatts ==
                   take(__func__, DecimalValue::get(56, -5)) &&
@@ -418,8 +369,8 @@ void resultParserAndDriverAreStrict() {
                 command.str());
   require(__func__,
           take(__func__, renderOpenRoadStaticFpaPublisher(kAllFpaMetrics))
-                  .find(
-              "outputs/openroad-static-fpa-result.json") != std::string::npos,
+                  .find("outputs/openroad-static-fpa-result.json") !=
+              std::string::npos,
           "shared publisher omitted the owner result path");
 }
 
@@ -436,7 +387,8 @@ void authoredLifecycleSeparatesAllOutcomes(const std::filesystem::path &root) {
   requireSuccess(__func__, registerOpenRoadStaticFpaEvaluationProvider());
   const RequestFixture request =
       makeRequest(routed, fixture.platform, kSyntheticBuild, artifacts, blobs);
-  const std::filesystem::path tool = writeAuthoredFpaTool(root);
+  const std::filesystem::path tool =
+      take(__func__, writeAuthoredOpenRoadStaticFpaTool(root));
   const LocalToolConfig local = makeOpenRoadLocalToolConfig(fixture, tool);
 
   EvaluationModelPreparation preparation =
@@ -497,49 +449,47 @@ void authoredLifecycleSeparatesAllOutcomes(const std::filesystem::path &root) {
             "FPA importer mapped a value to the wrong MetricKind");
   }
 
-  constexpr std::array<MetricKind, 1> leakageMetric{
-      MetricKind::LeakagePower};
+  constexpr std::array<MetricKind, 1> leakageMetric{MetricKind::LeakagePower};
   const RequestFixture leakageRequest =
       makeRequest(routed, fixture.platform, kSyntheticBuild, artifacts, blobs,
                   1050, leakageMetric, false);
-  EvaluationModelPreparation leakagePreparation = prepareAt(
-      leakageRequest, root, "fpa-leakage", local, artifacts, blobs);
+  EvaluationModelPreparation leakagePreparation =
+      prepareAt(leakageRequest, root, "fpa-leakage", local, artifacts, blobs);
   const auto *leakagePrepared =
       std::get_if<PreparedExternalToolInvocation>(&leakagePreparation);
   require(__func__, leakagePrepared,
           "leakage-only request without activity did not prepare");
-  const std::string leakageDriver = take(
-      __func__, readText(root / "fpa-leakage" / "drivers" /
-                         "openroad-static-fpa.tcl"));
-  require(__func__,
-          !llvm::StringRef(leakageDriver).contains("set_power_activity") &&
-              !llvm::StringRef(leakageDriver)
-                   .contains("dynamic_power_watts=%.12e") &&
-              llvm::StringRef(leakageDriver)
-                  .contains("leakage_power_watts=%.12e"),
-          "leakage-only driver added hidden activity or dynamic power");
+  const std::string leakageDriver =
+      take(__func__, readText(root / "fpa-leakage" / "drivers" /
+                              "openroad-static-fpa.tcl"));
+  require(
+      __func__,
+      !llvm::StringRef(leakageDriver).contains("set_power_activity") &&
+          !llvm::StringRef(leakageDriver)
+               .contains("dynamic_power_watts=%.12e") &&
+          llvm::StringRef(leakageDriver).contains("leakage_power_watts=%.12e"),
+      "leakage-only driver added hidden activity or dynamic power");
   require(__func__,
           take(__func__,
                executeExternalToolInvocationBundle(*leakagePrepared)) == 0,
           "authored leakage-only invocation failed");
-  const EvaluationEvidence leakageEvidence = take(
-      __func__, importEvaluationModelInvocation(
-                    leakageRequest.request, leakageRequest.resolution,
-                    *leakagePrepared, artifacts, blobs));
+  const EvaluationEvidence leakageEvidence =
+      take(__func__, importEvaluationModelInvocation(
+                         leakageRequest.request, leakageRequest.resolution,
+                         *leakagePrepared, artifacts, blobs));
   const auto *leakageCompleted =
       std::get_if<CompletedEvidence>(&leakageEvidence.outcome());
   require(__func__,
           leakageCompleted && leakageCompleted->metricResults.size() == 1,
           "leakage-only importer did not preserve the requested metric subset");
 
-  constexpr std::array<MetricKind, 1> dynamicMetric{
-      MetricKind::DynamicPower};
+  constexpr std::array<MetricKind, 1> dynamicMetric{MetricKind::DynamicPower};
   const RequestFixture missingActivityRequest =
       makeRequest(routed, fixture.platform, kSyntheticBuild, artifacts, blobs,
                   1050, dynamicMetric, false);
-  const EvaluationModelPreparation missingActivityPreparation = prepareAt(
-      missingActivityRequest, root, "fpa-dynamic-no-activity", local,
-      artifacts, blobs);
+  const EvaluationModelPreparation missingActivityPreparation =
+      prepareAt(missingActivityRequest, root, "fpa-dynamic-no-activity", local,
+                artifacts, blobs);
   const auto *missingActivityEvidence =
       std::get_if<EvaluationEvidence>(&missingActivityPreparation);
   require(__func__,

@@ -40,6 +40,15 @@ add_executable(loom-dse-campaign-runner-test
   PlanExecutionTestSupport.cpp
 )
 
+add_executable(loom-dse-ground-truth-campaign-integration-test
+  GroundTruthCampaignIntegrationTest.cpp
+  ../eda/OpenRoadPhysicalTestSupport.cpp
+)
+
+target_include_directories(loom-dse-ground-truth-campaign-integration-test PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../eda
+)
+
 add_executable(loom-dse-invocation-manifest-test
   InvocationManifestTest.cpp
 )
@@ -137,6 +146,14 @@ target_link_libraries(loom-dse-site-scheduler-test PRIVATE
 
 target_link_libraries(loom-dse-campaign-runner-test PRIVATE
   LoomDSE
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-ground-truth-campaign-integration-test PRIVATE
+  LoomConfig
+  LoomDSE
+  LoomEDAOpenSource
+  LoomHardwareConfigurationTestSupport
   LLVMSupport
 )
 

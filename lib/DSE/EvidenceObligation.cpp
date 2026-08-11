@@ -189,10 +189,28 @@ const CaseRoleBinding *findFixedBinding(const TemplateParts &parts,
   return &*found;
 }
 
-llvm::Error validateTarget(const TemplateParts &parts,
-                           const SubjectTargetRef &target) {
+llvm::Error
+validateTarget(const TemplateParts &parts, const SubjectTargetRef &target,
+               std::optional<ArtifactRootReference> &candidatePrototype) {
+  if (target.caseSubjectRole == parts.candidateRole) {
+    const auto *root = std::get_if<ArtifactRootReference>(&target.target);
+    if (!root || target.anchorSubjectArtifact != *root)
+      return invalid("candidate target must be the exact candidate root");
+    const EvaluationModelDescriptor *model =
+        parts.modelBinding.descriptorRef().descriptor();
+    const EvaluationCaseSignatureDescriptor *signature =
+        model ? model->caseSignature.descriptor() : nullptr;
+    const CaseSubjectRoleDescriptor *candidate =
+        signature ? signature->findSubjectRole(parts.candidateRole) : nullptr;
+    if (!candidate || !acceptsSchema(candidate->acceptedSchemas, *root))
+      return invalid("candidate target has an unaccepted artifact schema");
+    if (candidatePrototype && *candidatePrototype != *root)
+      return invalid("candidate targets do not share one prototype root");
+    candidatePrototype = *root;
+    return llvm::Error::success();
+  }
   if (dynamicRole(parts, target.caseSubjectRole))
-    return invalid("request target references an unresolved dynamic subject "
+    return invalid("request target references an input-bound dynamic subject "
                    "role");
   const CaseRoleBinding *binding =
       findFixedBinding(parts, target.caseSubjectRole);
@@ -203,11 +221,13 @@ llvm::Error validateTarget(const TemplateParts &parts,
 }
 
 llvm::Error validateTargets(const TemplateParts &parts) {
+  std::optional<ArtifactRootReference> candidatePrototype;
   const auto validateConditions =
       [&](llvm::ArrayRef<EvaluationCondition> conditions) -> llvm::Error {
     for (const EvaluationCondition &condition : conditions)
       for (const SubjectTargetRef *target : conditionOrderedTargets(condition))
-        if (llvm::Error error = validateTarget(parts, *target))
+        if (llvm::Error error =
+                validateTarget(parts, *target, candidatePrototype))
           return error;
     return llvm::Error::success();
   };
@@ -216,18 +236,81 @@ llvm::Error validateTargets(const TemplateParts &parts) {
     return error;
   for (const MetricRequestTemplate &request : parts.metricRequests) {
     for (const SubjectTargetRef &target : request.query.scope.targets)
-      if (llvm::Error error = validateTarget(parts, target))
+      if (llvm::Error error = validateTarget(parts, target, candidatePrototype))
         return error;
     if (llvm::Error error = validateConditions(request.conditions))
       return error;
   }
   for (const FindingRequestTemplate &request : parts.findingRequests) {
     for (const SubjectTargetRef &target : request.query.scope.targets)
-      if (llvm::Error error = validateTarget(parts, target))
+      if (llvm::Error error = validateTarget(parts, target, candidatePrototype))
         return error;
     if (llvm::Error error = validateConditions(request.conditions))
       return error;
   }
+  return llvm::Error::success();
+}
+
+llvm::Error rebindCandidateTarget(SubjectTargetRef &target,
+                                  CaseSubjectRoleRef candidateRole,
+                                  const ArtifactRootReference &candidate) {
+  if (target.caseSubjectRole != candidateRole)
+    return llvm::Error::success();
+  const auto *root = std::get_if<ArtifactRootReference>(&target.target);
+  if (!root || target.anchorSubjectArtifact != *root)
+    return invalid("candidate target is not an exact prototype root");
+  target.anchorSubjectArtifact = candidate;
+  target.target = candidate;
+  return llvm::Error::success();
+}
+
+llvm::Error rebindCandidateTargets(EvaluationCondition &condition,
+                                   CaseSubjectRoleRef candidateRole,
+                                   const ArtifactRootReference &candidate) {
+  const auto rebind = [&](SubjectTargetRef &target) {
+    return rebindCandidateTarget(target, candidateRole, candidate);
+  };
+  switch (condition.kind()) {
+  case EvaluationConditionKind::ProcessCorner:
+    return rebind(std::get<ProcessCornerCondition>(condition.payload).target);
+  case EvaluationConditionKind::SupplyVoltage:
+    return rebind(
+        std::get<SupplyVoltageCondition>(condition.payload).powerDomain);
+  case EvaluationConditionKind::Temperature:
+    return rebind(
+        std::get<TemperatureCondition>(condition.payload).thermalDomainOrRoot);
+  case EvaluationConditionKind::RequiredClockPeriod:
+    return rebind(
+        std::get<RequiredClockPeriodCondition>(condition.payload).clockDomain);
+  case EvaluationConditionKind::RelativeClockSchedule: {
+    auto &schedule =
+        std::get<RelativeClockScheduleCondition>(condition.payload);
+    if (llvm::Error error = rebind(schedule.referenceClock))
+      return error;
+    return rebind(schedule.dependentClock);
+  }
+  case EvaluationConditionKind::ActivityBinding: {
+    auto &activity = std::get<ActivityBindingCondition>(condition.payload);
+    if (llvm::Error error = rebind(activity.target))
+      return error;
+    if (auto *assumption =
+            std::get_if<ExplicitAssumptionSource>(&activity.source))
+      return rebind(assumption->clockDomain);
+    return llvm::Error::success();
+  }
+  case EvaluationConditionKind::Quantile:
+    return llvm::Error::success();
+  }
+  llvm_unreachable("unknown EvaluationConditionKind");
+}
+
+llvm::Error rebindCandidateTargets(std::vector<EvaluationCondition> &conditions,
+                                   CaseSubjectRoleRef candidateRole,
+                                   const ArtifactRootReference &candidate) {
+  for (EvaluationCondition &condition : conditions)
+    if (llvm::Error error =
+            rebindCandidateTargets(condition, candidateRole, candidate))
+      return error;
   return llvm::Error::success();
 }
 
@@ -676,20 +759,47 @@ llvm::Expected<EvaluationRequest> instantiateEvidenceObligation(
   if (!bindings)
     return bindings.takeError();
 
+  std::vector<EvaluationCondition> baseConditions = obligation.baseConditions_;
+  if (llvm::Error error = rebindCandidateTargets(
+          baseConditions, obligation.candidateRole_, candidate))
+    return std::move(error);
+  std::vector<MetricRequestTemplate> metricTemplates =
+      obligation.metricRequests_;
+  for (MetricRequestTemplate &request : metricTemplates) {
+    for (SubjectTargetRef &target : request.query.scope.targets)
+      if (llvm::Error error = rebindCandidateTarget(
+              target, obligation.candidateRole_, candidate))
+        return std::move(error);
+    if (llvm::Error error = rebindCandidateTargets(
+            request.conditions, obligation.candidateRole_, candidate))
+      return std::move(error);
+  }
+  std::vector<FindingRequestTemplate> findingTemplates =
+      obligation.findingRequests_;
+  for (FindingRequestTemplate &request : findingTemplates) {
+    for (SubjectTargetRef &target : request.query.scope.targets)
+      if (llvm::Error error = rebindCandidateTarget(
+              target, obligation.candidateRole_, candidate))
+        return std::move(error);
+    if (llvm::Error error = rebindCandidateTargets(
+            request.conditions, obligation.candidateRole_, candidate))
+      return std::move(error);
+  }
+
   const EvaluationModelDescriptor *model =
       obligation.modelBinding_.descriptorRef().descriptor();
   if (!model)
     return invalid("template model descriptor became unavailable");
-  auto evaluationCase = EvaluationCase::get(
-      model->caseSignature, std::move(*bindings), obligation.workload_,
-      obligation.runtimeInput_, obligation.baseConditions_, resolution,
-      artifactStore, blobStore);
+  auto evaluationCase =
+      EvaluationCase::get(model->caseSignature, std::move(*bindings),
+                          obligation.workload_, obligation.runtimeInput_,
+                          baseConditions, resolution, artifactStore, blobStore);
   if (!evaluationCase)
     return evaluationCase.takeError();
 
   std::vector<MetricRequest> metrics;
-  metrics.reserve(obligation.metricRequests_.size());
-  for (const MetricRequestTemplate &request : obligation.metricRequests_) {
+  metrics.reserve(metricTemplates.size());
+  for (const MetricRequestTemplate &request : metricTemplates) {
     auto resolved =
         MetricRequest::get(request.query, request.conditions, *evaluationCase,
                            resolution, artifactStore);
@@ -698,8 +808,8 @@ llvm::Expected<EvaluationRequest> instantiateEvidenceObligation(
     metrics.push_back(std::move(*resolved));
   }
   std::vector<FindingRequest> findings;
-  findings.reserve(obligation.findingRequests_.size());
-  for (const FindingRequestTemplate &request : obligation.findingRequests_) {
+  findings.reserve(findingTemplates.size());
+  for (const FindingRequestTemplate &request : findingTemplates) {
     auto resolved =
         FindingRequest::get(request.query, request.conditions, *evaluationCase,
                             resolution, artifactStore);

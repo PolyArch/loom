@@ -38,7 +38,8 @@ llvm::Expected<std::uint64_t> unixNanosecondsNow() {
   const auto nanoseconds =
       std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
   if (nanoseconds <= 0)
-    return invalid("system clock cannot represent a positive dispatch deadline");
+    return invalid(
+        "system clock cannot represent a positive dispatch deadline");
   return static_cast<std::uint64_t>(nanoseconds);
 }
 
@@ -105,9 +106,8 @@ ancestorNodes(const ResolvedDsePlan &plan) {
                            transitive.end());
     }
     llvm::sort(nodeAncestors);
-    nodeAncestors.erase(
-        std::unique(nodeAncestors.begin(), nodeAncestors.end()),
-        nodeAncestors.end());
+    nodeAncestors.erase(std::unique(nodeAncestors.begin(), nodeAncestors.end()),
+                        nodeAncestors.end());
   }
   return ancestors;
 }
@@ -117,20 +117,19 @@ bool containsNode(llvm::ArrayRef<std::uint64_t> nodes,
   return llvm::binary_search(nodes, candidate);
 }
 
-llvm::Expected<std::uint64_t> campaignActiveNanoseconds(
-    llvm::ArrayRef<JournalWorkUnitRecord> records) {
+llvm::Expected<std::uint64_t>
+campaignActiveNanoseconds(llvm::ArrayRef<JournalWorkUnitRecord> records) {
   std::vector<Interval> intervals;
   for (const JournalWorkUnitRecord &record : records)
-    for (const JournalActiveWallInterval &interval :
-         record.activeWallIntervals)
+    for (const JournalActiveWallInterval &interval : record.activeWallIntervals)
       intervals.push_back(
           {interval.beginUnixTimeNanoseconds, interval.endUnixTimeNanoseconds});
   return intervalUnionNanoseconds(std::move(intervals));
 }
 
-llvm::Expected<std::uint64_t> maximumSampleActiveNanoseconds(
-    const ResolvedDsePlan &plan,
-    llvm::ArrayRef<JournalWorkUnitRecord> records) {
+llvm::Expected<std::uint64_t>
+maximumSampleActiveNanoseconds(const ResolvedDsePlan &plan,
+                               llvm::ArrayRef<JournalWorkUnitRecord> records) {
   auto ancestors = ancestorNodes(plan);
   if (!ancestors)
     return ancestors.takeError();
@@ -171,8 +170,8 @@ llvm::Expected<std::uint64_t> maximumSampleActiveNanoseconds(
   return maximum;
 }
 
-std::uint64_t terminalObservationCount(
-    llvm::ArrayRef<JournalWorkUnitRecord> records) {
+std::uint64_t
+terminalObservationCount(llvm::ArrayRef<JournalWorkUnitRecord> records) {
   return static_cast<std::uint64_t>(
       llvm::count_if(records, [](const JournalWorkUnitRecord &record) {
         return terminal(record.status);
@@ -185,44 +184,126 @@ bool hasPreparedAttempt(llvm::ArrayRef<JournalWorkUnitRecord> records) {
   });
 }
 
-llvm::Expected<PlanExecutionPolicy> pilotPolicy(
-    const PlanExecutionPolicy &base,
-    const CampaignExecutionPolicy &campaign) {
+llvm::Expected<std::optional<std::uint64_t>>
+exactCandidateCount(const PlanInputBinding &binding,
+                    const CompletedDsePlanExecution &completedPrefix) {
+  if (const auto *exact = std::get_if<ExactPlanArtifacts>(&binding))
+    return static_cast<std::uint64_t>(exact->artifacts.size());
+  const PlanOutputRef output = std::get<PlanOutputRef>(binding);
+  if (!completedPrefix.hasOutput(output))
+    return std::optional<std::uint64_t>{};
+  return static_cast<std::uint64_t>(completedPrefix.resolve(output).size());
+}
+
+llvm::Expected<std::optional<std::uint64_t>>
+remainingPlanWorkUnits(const ResolvedDsePlan &plan,
+                       const IncompleteDsePlanExecution &incomplete,
+                       llvm::ArrayRef<JournalWorkUnitRecord> records) {
+  std::uint64_t total = 0;
+  for (std::uint64_t ordinal = incomplete.nodeOrdinal();
+       ordinal < plan.nodes().size(); ++ordinal) {
+    const ResolvedDsePlanNode &node = plan.nodes()[ordinal];
+    if (std::holds_alternative<ResolvedGeneratePlanNode>(node)) {
+      if (llvm::Error error = add(total, 1, "remaining Generate work"))
+        return std::move(error);
+      continue;
+    }
+    const ResolvedPromotePlanNode &promote =
+        std::get<ResolvedPromotePlanNode>(node);
+    const PromotionAcquisitionDescriptor *descriptor =
+        promote.acquisitionRef().descriptor();
+    if (!descriptor || descriptor->candidateInputSlot.ordinal() >=
+                           promote.inputBindings().size())
+      return invalid("remaining Promote node lost its candidate input");
+    auto candidates = exactCandidateCount(
+        promote.inputBindings()[descriptor->candidateInputSlot.ordinal()],
+        incomplete.completedPrefix());
+    if (!candidates)
+      return candidates.takeError();
+    if (!*candidates)
+      return std::optional<std::uint64_t>{};
+    const std::uint64_t obligations =
+        promote.acquisitionBinding().evidenceObligations().size();
+    if (obligations != 0 &&
+        **candidates > std::numeric_limits<std::uint64_t>::max() / obligations)
+      return invalid("remaining Promote work overflows uint64");
+    if (llvm::Error error =
+            add(total, **candidates * obligations, "remaining Promote work"))
+      return std::move(error);
+  }
+
+  std::uint64_t terminalRemaining = 0;
+  for (const JournalWorkUnitRecord &record : records)
+    if (record.key.planNodeOrdinal() >= incomplete.nodeOrdinal() &&
+        terminal(record.status))
+      if (llvm::Error error =
+              add(terminalRemaining, 1, "remaining terminal work"))
+        return std::move(error);
+  if (terminalRemaining > total)
+    return invalid("Journal terminal work exceeds the remaining plan bound");
+  return total - terminalRemaining;
+}
+
+llvm::Expected<std::optional<std::uint64_t>>
+conservativeRemainingEstimate(const ResolvedDsePlan &plan,
+                              const DsePlanExecutionOutcome &outcome,
+                              llvm::ArrayRef<JournalWorkUnitRecord> records,
+                              const DseOperationalProjection &projection) {
+  const auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&outcome);
+  if (!incomplete)
+    return std::uint64_t{0};
+  auto remaining = remainingPlanWorkUnits(plan, *incomplete, records);
+  if (!remaining)
+    return remaining.takeError();
+  if (!*remaining)
+    return std::optional<std::uint64_t>{};
+  if (**remaining == 0)
+    return std::uint64_t{0};
+  std::uint64_t maximumP90 = 0;
+  for (const WorkUnitDurationProjection &duration : projection.durations)
+    maximumP90 = std::max(maximumP90, duration.p90Nanoseconds);
+  if (maximumP90 == 0)
+    return std::optional<std::uint64_t>{};
+  if (**remaining > std::numeric_limits<std::uint64_t>::max() / maximumP90)
+    return invalid("remaining campaign estimate overflows uint64");
+  return **remaining * maximumP90;
+}
+
+llvm::Expected<PlanExecutionPolicy>
+pilotPolicy(const PlanExecutionPolicy &base,
+            const CampaignExecutionPolicy &campaign) {
   std::uint64_t dispatches = campaign.pilotDispatchCount();
   if (base.maximumDispatches())
     dispatches = std::min(dispatches, *base.maximumDispatches());
-  return PlanExecutionPolicy::get(
-      base.workerCount(), base.inProcessClaim(), base.externalSite(),
-      base.resourceBindings(), dispatches,
-      base.dispatchNotAfterUnixNanoseconds());
+  return PlanExecutionPolicy::get(base.workerCount(), base.inProcessClaim(),
+                                  base.externalSite(), base.resourceBindings(),
+                                  dispatches,
+                                  base.dispatchNotAfterUnixNanoseconds());
 }
 
-llvm::Expected<PlanExecutionPolicy> admittedPolicy(
-    const PlanExecutionPolicy &base, std::uint64_t campaignActive,
-    const CampaignExecutionPolicy &campaign) {
-  if (campaignActive >=
-      campaign.campaignActiveWallTimeLimitNanoseconds())
+llvm::Expected<PlanExecutionPolicy>
+admittedPolicy(const PlanExecutionPolicy &base, std::uint64_t campaignActive,
+               const CampaignExecutionPolicy &campaign) {
+  if (campaignActive >= campaign.campaignActiveWallTimeLimitNanoseconds())
     return invalid("campaign has no remaining active-time budget");
   const std::uint64_t remaining =
       campaign.campaignActiveWallTimeLimitNanoseconds() - campaignActive;
   auto now = unixNanosecondsNow();
   if (!now)
     return now.takeError();
-  if (remaining >
-      std::numeric_limits<std::uint64_t>::max() - *now)
+  if (remaining > std::numeric_limits<std::uint64_t>::max() - *now)
     return invalid("campaign dispatch deadline overflows uint64");
   std::uint64_t deadline = *now + remaining;
   if (base.dispatchNotAfterUnixNanoseconds())
-    deadline = std::min(deadline,
-                        *base.dispatchNotAfterUnixNanoseconds());
-  return PlanExecutionPolicy::get(
-      base.workerCount(), base.inProcessClaim(), base.externalSite(),
-      base.resourceBindings(), base.maximumDispatches(), deadline);
+    deadline = std::min(deadline, *base.dispatchNotAfterUnixNanoseconds());
+  return PlanExecutionPolicy::get(base.workerCount(), base.inProcessClaim(),
+                                  base.externalSite(), base.resourceBindings(),
+                                  base.maximumDispatches(), deadline);
 }
 
-CampaignExecutionResult refuse(
-    CampaignAdmissionFailureReason reason, DsePlanExecutionOutcome outcome,
-    DseOperationalProjection projection) {
+CampaignExecutionResult refuse(CampaignAdmissionFailureReason reason,
+                               DsePlanExecutionOutcome outcome,
+                               DseOperationalProjection projection) {
   return CampaignExecutionResult{CampaignAdmissionRefusal{
       reason, std::move(outcome), std::move(projection)}};
 }
@@ -271,18 +352,19 @@ llvm::Expected<CampaignExecutionPolicy> CampaignExecutionPolicy::get(
       campaignActiveWallTimeLimitNanoseconds >
           maximumCampaignActiveWallTimeNanoseconds)
     return invalid("campaign active-time limit exceeds the 23-hour bound");
-  return CampaignExecutionPolicy(
-      pilotDispatchCount, minimumObservedPilotWorkUnits,
-      sampleActiveWallTimeLimitNanoseconds,
-      campaignActiveWallTimeLimitNanoseconds);
+  return CampaignExecutionPolicy(pilotDispatchCount,
+                                 minimumObservedPilotWorkUnits,
+                                 sampleActiveWallTimeLimitNanoseconds,
+                                 campaignActiveWallTimeLimitNanoseconds);
 }
 
-llvm::Expected<CampaignExecutionResult> runGroundTruthCampaign(
-    const ResolvedDseConfigView &view, const DseRunClosure &closure,
-    const CampaignExecutionPolicy &campaignPolicy,
-    const PlanExecutionPolicy &executionPolicy, SiteScheduler &scheduler,
-    ExecutionJournal &journal, const ArtifactStore &store,
-    const BlobStore &blobs) {
+llvm::Expected<CampaignExecutionResult>
+runGroundTruthCampaign(const ResolvedDseConfigView &view,
+                       const DseRunClosure &closure,
+                       const CampaignExecutionPolicy &campaignPolicy,
+                       const PlanExecutionPolicy &executionPolicy,
+                       SiteScheduler &scheduler, ExecutionJournal &journal,
+                       const ArtifactStore &store, const BlobStore &blobs) {
   auto pilotExecutionPolicy = pilotPolicy(executionPolicy, campaignPolicy);
   if (!pilotExecutionPolicy)
     return pilotExecutionPolicy.takeError();
@@ -293,8 +375,8 @@ llvm::Expected<CampaignExecutionResult> runGroundTruthCampaign(
   auto records = journal.workUnits();
   if (!records)
     return records.takeError();
-  auto projection = projectDseOperationalState(
-      journal, scheduler, executionPolicy.workerCount());
+  auto projection = projectDseOperationalState(journal, scheduler,
+                                               executionPolicy.workerCount());
   if (!projection)
     return projection.takeError();
 
@@ -303,8 +385,7 @@ llvm::Expected<CampaignExecutionResult> runGroundTruthCampaign(
   if (!limitFailure)
     return limitFailure.takeError();
   if (*limitFailure)
-    return refuse(**limitFailure, std::move(*pilot),
-                  std::move(*projection));
+    return refuse(**limitFailure, std::move(*pilot), std::move(*projection));
 
   if (std::holds_alternative<CompletedDsePlanExecution>(*pilot))
     return CampaignExecutionResult{
@@ -312,23 +393,23 @@ llvm::Expected<CampaignExecutionResult> runGroundTruthCampaign(
 
   if (terminalObservationCount(*records) <
       campaignPolicy.minimumObservedPilotWorkUnits())
-    return refuse(
-        CampaignAdmissionFailureReason::InsufficientPilotObservations,
-        std::move(*pilot), std::move(*projection));
+    return refuse(CampaignAdmissionFailureReason::InsufficientPilotObservations,
+                  std::move(*pilot), std::move(*projection));
+
+  if (!projection->estimatedRemainingNanoseconds) {
+    auto estimate = conservativeRemainingEstimate(view.plan(), *pilot, *records,
+                                                  *projection);
+    if (!estimate)
+      return estimate.takeError();
+    projection->estimatedRemainingNanoseconds = *estimate;
+  }
 
   auto active = campaignActiveNanoseconds(*records);
   if (!active)
     return active.takeError();
   if (!projection->estimatedRemainingNanoseconds) {
-    std::uint64_t outstanding = projection->status.queued;
-    if (llvm::Error error =
-            add(outstanding, projection->status.running, "outstanding work"))
-      return std::move(error);
-    if (outstanding != 0)
-      return refuse(CampaignAdmissionFailureReason::ThroughputUnavailable,
-                    std::move(*pilot), std::move(*projection));
-    return CampaignExecutionResult{
-        CampaignExecution{std::move(*pilot), std::move(*projection)}};
+    return refuse(CampaignAdmissionFailureReason::ThroughputUnavailable,
+                  std::move(*pilot), std::move(*projection));
   }
   if (*projection->estimatedRemainingNanoseconds >
       campaignPolicy.campaignActiveWallTimeLimitNanoseconds() - *active)
@@ -346,16 +427,15 @@ llvm::Expected<CampaignExecutionResult> runGroundTruthCampaign(
   records = journal.workUnits();
   if (!records)
     return records.takeError();
-  projection = projectDseOperationalState(
-      journal, scheduler, executionPolicy.workerCount());
+  projection = projectDseOperationalState(journal, scheduler,
+                                          executionPolicy.workerCount());
   if (!projection)
     return projection.takeError();
   limitFailure = validateObservedLimits(view.plan(), *records, campaignPolicy);
   if (!limitFailure)
     return limitFailure.takeError();
   if (*limitFailure)
-    return refuse(**limitFailure, std::move(*outcome),
-                  std::move(*projection));
+    return refuse(**limitFailure, std::move(*outcome), std::move(*projection));
   return CampaignExecutionResult{
       CampaignExecution{std::move(*outcome), std::move(*projection)}};
 }

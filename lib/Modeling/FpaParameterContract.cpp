@@ -4,6 +4,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "EDA/Adapters/AsicStandardCellContracts.h"
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
@@ -568,88 +569,24 @@ resolveGroundTruthRequest(const ArtifactRootReference &requestReference,
       implementations.push_back(reference);
   if (implementations.size() != 1)
     return invalid("ground-truth Request must name one HardwareImplementation");
-  auto implementation = hardware::importHardwareImplementation(
-      implementations.front(), artifactStore, blobStore);
-  if (!implementation)
-    return implementation.takeError();
-
+  auto externalContracts = eda::makeKnownAsicStandardCellContractCatalog();
+  if (!externalContracts)
+    return externalContracts.takeError();
+  auto physical = resolveHardwareImplementationPhysicalCase(
+      implementations.front(), *externalContracts, artifactStore, blobStore);
+  if (!physical)
+    return physical.takeError();
   std::map<ArtifactRootReference, std::vector<ArtifactRootReference>,
            decltype(&artifactRootReferenceLess)>
       entries(&artifactRootReferenceLess);
-  std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)>
-      completed(&artifactRootReferenceLess);
-  std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)>
-      visiting(&artifactRootReferenceLess);
-  const auto merge = [&](const ArtifactRootReference &owner,
-                         llvm::ArrayRef<ArtifactRootReference> dependencies) {
-    std::vector<ArtifactRootReference> &closure = entries[owner];
-    closure.insert(closure.end(), dependencies.begin(), dependencies.end());
-    llvm::sort(closure, artifactRootReferenceLess);
-    closure.erase(std::unique(closure.begin(), closure.end()), closure.end());
-  };
   for (const ArtifactRootReference &reference : *direct) {
     auto stored = artifactStore.get(reference);
     if (!stored)
       return stored.takeError();
     entries.emplace(reference, std::vector<ArtifactRootReference>{});
   }
-
-  std::function<llvm::Expected<std::vector<ArtifactRootReference>>(
-      const ArtifactRootReference &)>
-      fabricClosure = [&](const ArtifactRootReference &reference)
-      -> llvm::Expected<std::vector<ArtifactRootReference>> {
-    if (completed.count(reference) != 0)
-      return entries[reference];
-    if (!visiting.insert(reference).second)
-      return invalid("Fabric dependency closure is cyclic");
-    auto root = fabric::importEntireFabricRoot(reference, artifactStore);
-    if (!root) {
-      visiting.erase(reference);
-      return root.takeError();
-    }
-    std::vector<ArtifactRootReference> closure;
-    for (const fabric::FabricDirectDependency &dependency :
-         root->directDependencies()) {
-      closure.push_back(dependency.root);
-      auto nested = fabricClosure(dependency.root);
-      if (!nested) {
-        visiting.erase(reference);
-        return nested.takeError();
-      }
-      closure.insert(closure.end(), nested->begin(), nested->end());
-    }
-    llvm::sort(closure, artifactRootReferenceLess);
-    closure.erase(std::unique(closure.begin(), closure.end()), closure.end());
-    entries[reference] = closure;
-    visiting.erase(reference);
-    completed.insert(reference);
-    return closure;
-  };
-
-  const hardware::HardwareImplementation &implementationView =
-      implementation->implementation();
-  std::vector<ArtifactRootReference> hardwareClosure = {
-      implementationView.fabric(), implementationView.configurationAbi()};
-  auto fabricDependencies = fabricClosure(implementationView.fabric());
-  if (!fabricDependencies)
-    return fabricDependencies.takeError();
-  hardwareClosure.insert(hardwareClosure.end(), fabricDependencies->begin(),
-                         fabricDependencies->end());
-  const std::array<ArtifactRootReference, 1> configurationDependencies = {
-      implementationView.fabric()};
-  merge(implementationView.configurationAbi(), configurationDependencies);
-  for (const ArtifactRootReference &interconnect :
-       implementationView.interconnectImplementations()) {
-    hardwareClosure.push_back(interconnect);
-    auto dependencies = fabricClosure(interconnect);
-    if (!dependencies)
-      return dependencies.takeError();
-    hardwareClosure.insert(hardwareClosure.end(), dependencies->begin(),
-                           dependencies->end());
-  }
-  if (implementationView.implementationPlatform())
-    hardwareClosure.push_back(*implementationView.implementationPlatform());
-  merge(implementations.front(), hardwareClosure);
+  for (const CaseArtifactResolution::Entry &entry : physical->entries())
+    entries[entry.artifact] = entry.dependencyClosure;
 
   std::vector<CaseArtifactResolution::Entry> resolved;
   resolved.reserve(entries.size());
@@ -707,19 +644,7 @@ sampleGroup(const EvaluationEvidence &, const EvaluationRequest &request,
       hardwareImplementationPhysicalSubjectRole());
   if (subjects.size() != 1)
     return invalid("ground-truth Request does not bind one implementation");
-  auto implementation = hardware::importHardwareImplementation(
-      subjects.front(), artifactStore, blobStore);
-  if (!implementation)
-    return implementation.takeError();
-  auto family = implementationFamily(implementation->implementation());
-  if (!family)
-    return family.takeError();
-  std::vector<std::uint8_t> key;
-  const std::vector<std::uint8_t> fabric =
-      encodeArtifactRootReference(implementation->implementation().fabric());
-  appendFramed(key, fabric);
-  appendFramed(key, *family);
-  return key;
+  return deriveFpaSampleGroupKey(subjects.front(), artifactStore, blobStore);
 }
 
 llvm::Expected<FpaMetricPredictionView>
@@ -872,6 +797,28 @@ const ModelParameterContractDescriptor &descriptor() {
 struct FpaGbdtParameters::Storage final {
   detail::FixedTabularGbdtParameters parameters;
 };
+
+llvm::Expected<std::vector<std::uint8_t>>
+deriveFpaSampleGroupKey(const ArtifactRootReference &hardwareImplementation,
+                        const ArtifactStore &artifactStore,
+                        const BlobStore &blobStore) {
+  auto externalContracts = eda::makeKnownAsicStandardCellContractCatalog();
+  if (!externalContracts)
+    return externalContracts.takeError();
+  auto implementation = hardware::importHardwareImplementation(
+      hardwareImplementation, *externalContracts, artifactStore, blobStore);
+  if (!implementation)
+    return implementation.takeError();
+  auto family = implementationFamily(implementation->implementation());
+  if (!family)
+    return family.takeError();
+  std::vector<std::uint8_t> key;
+  const std::vector<std::uint8_t> fabric =
+      encodeArtifactRootReference(implementation->implementation().fabric());
+  appendFramed(key, fabric);
+  appendFramed(key, *family);
+  return key;
+}
 
 llvm::ArrayRef<std::uint8_t> FpaGbdtParameters::groundTruthTargetKey() const {
   return storage_ ? llvm::ArrayRef<std::uint8_t>(

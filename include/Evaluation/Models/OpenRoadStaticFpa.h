@@ -28,11 +28,24 @@ struct CompleteOpenRoadStaticFpaConfiguration final {
   std::vector<MetricKind> metrics;
 };
 
+struct PreparedOpenRoadStaticFpaEvaluation final {
+  EvaluationRequest request;
+  CaseArtifactResolution resolution;
+  CaseSubjectRoleRef candidateRole;
+};
+
 llvm::Error registerOpenRoadStaticFpaModel();
 
 EvaluationModelDescriptorRef openRoadStaticFpaModelDescriptorRef();
 
 const ResolvedModelConfigViewContract &openRoadStaticFpaConfigViewContract();
+
+llvm::Expected<PreparedOpenRoadStaticFpaEvaluation>
+prepareOpenRoadStaticFpaEvaluation(
+    const ArtifactRootReference &hardwareImplementation,
+    llvm::ArrayRef<EvaluationCondition> conditions,
+    llvm::ArrayRef<MetricKind> metrics, const ResolvedConfig &config,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore);
 
 llvm::Expected<CompleteOpenRoadStaticFpaConfiguration>
 projectCompleteOpenRoadStaticFpaConfiguration(
