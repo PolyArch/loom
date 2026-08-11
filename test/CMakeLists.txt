@@ -32,6 +32,7 @@ function(loom_enable_allocation_probe target)
 endfunction()
 
 add_subdirectory(common)
+add_subdirectory(applications)
 add_subdirectory(adg)
 add_subdirectory(dataflow)
 add_subdirectory(deployment)
@@ -79,6 +80,7 @@ set(LOOM_TEST_DEPENDS
   loom-common-canonical-relation-test
   loom-common-mapping-debug-log-test
   loom-common-special-math-accuracy-test
+  loom-application-manifest-test
   loom-dataflow-activity-definedness-test
   loom-dataflow-ordered-cardinality-handshake-test
   loom-dataflow-rewrite-decision-test
