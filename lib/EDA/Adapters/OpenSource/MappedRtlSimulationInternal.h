@@ -1,13 +1,12 @@
 #ifndef LOOM_LIB_EDA_ADAPTERS_OPENSOURCE_MAPPEDRTLSIMULATIONINTERNAL_H
 #define LOOM_LIB_EDA_ADAPTERS_OPENSOURCE_MAPPEDRTLSIMULATIONINTERNAL_H
 
-#include "EDA/Adapters/OpenSource/MappedRtlSimulation.h"
+#include "EDA/Adapters/OpenSource/MappedRtlExecution.h"
 
 #include "Deployment/Deployment.h"
 #include "Deployment/DeploymentSpatialLaunchSelection.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Evaluation/Evidence.h"
-#include "Evaluation/Models/MappedRtlSimulation.h"
 #include "ExternalTool/InvocationBundle.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -95,7 +94,7 @@ struct MappedRtlObservationFacts final {
 };
 
 struct MappedRtlInvocationFacts final {
-  evaluation::models::MappedRtlSimulationConfiguration configuration;
+  evaluation::models::MappedRtlSimulatorBinding simulatorBinding;
   external_tool::ExternalToolSemanticContract semanticContract;
   std::vector<external_tool::MaterializedBundleFile> semanticInputs;
   std::vector<std::string> rtlPaths;
@@ -122,19 +121,16 @@ using MappedRtlFactsOrUnsupported =
     std::variant<MappedRtlInvocationFacts, evaluation::UnsupportedEvidence>;
 
 llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
-    const evaluation::EvaluationRequest &request,
-    const evaluation::CaseArtifactResolution &resolution,
+    const MappedRtlExecutionClosure &closure,
     const ArtifactStore &artifacts, const BlobStore &blobs);
 
 llvm::Expected<external_tool::ExternalToolInvocationImportExpectation>
 deriveMappedRtlImportExpectation(
-    const evaluation::EvaluationRequest &request,
-    const evaluation::CaseArtifactResolution &resolution,
+    const MappedRtlExecutionClosure &closure,
     const ArtifactStore &artifacts, const BlobStore &blobs);
 
 llvm::Expected<MappedRtlObservationFacts> deriveMappedRtlObservationFacts(
-    const evaluation::EvaluationRequest &request,
-    const evaluation::CaseArtifactResolution &resolution,
+    const MappedRtlExecutionClosure &closure,
     const ArtifactStore &artifacts, const BlobStore &blobs);
 
 llvm::Expected<std::string>
@@ -143,6 +139,10 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts);
 llvm::Expected<std::string>
 renderMappedRtlVerilatorDriver(const MappedRtlInvocationFacts &facts,
                                std::uint64_t buildJobs);
+
+llvm::Expected<std::string>
+renderMappedRtlBridgedVerilatorDriver(const MappedRtlInvocationFacts &facts,
+                                      std::uint64_t buildJobs);
 
 llvm::Expected<sim::SpatialFunctionalObservations>
 projectMappedRtlFunctionalObservations(const MappedRtlObservationFacts &facts,

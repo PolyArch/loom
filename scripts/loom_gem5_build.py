@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -157,6 +158,17 @@ def bridge_source_digest(repository_root: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
+def bridge_abi_identity(repository_root: pathlib.Path) -> str:
+    header = repository_root / "include" / "Runtime" / "Gem5BridgeWire.h"
+    source = header.read_text(encoding="utf-8")
+    match = re.search(
+        r'gem5BridgeAbiIdentity\[\]\s*=\s*\n?\s*"([^"]+)";', source
+    )
+    if not match:
+        raise BuildError("Gem5BridgeWire.h does not define the bridge ABI identity")
+    return match.group(1)
+
+
 @dataclass(frozen=True)
 class BuildPaths:
     root: pathlib.Path
@@ -203,6 +215,7 @@ def expected_readiness(
     encoded = json.dumps(configuration, sort_keys=True, separators=(",", ":"))
     return {
         "schema": READINESS_SCHEMA,
+        "bridge_abi_identity": bridge_abi_identity(repository_root),
         "gem5_repository_identity": "https://gem5.googlesource.com/public/gem5",
         "gem5_full_commit_identity": gem5_commit,
         "build_configuration_digest": hashlib.sha256(encoded.encode()).hexdigest(),

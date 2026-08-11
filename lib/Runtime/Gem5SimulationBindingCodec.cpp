@@ -540,6 +540,8 @@ serializeGem5SimulationBinding(const Gem5SimulationBinding &binding) {
                      binding.gem5BuildIdentity().fullCommitIdentity);
       json.attribute("build_configuration_digest",
                      binding.gem5BuildIdentity().buildConfigurationDigest);
+      json.attribute("binary_fingerprint",
+                     binding.gem5BuildIdentity().binaryFingerprint);
     });
     json.attributeEnd();
     json.attribute("bridge_abi_identity", binding.bridgeAbiIdentity());
@@ -604,7 +606,7 @@ parseGem5SimulationBinding(llvm::StringRef canonicalJson) {
   if (llvm::Error error = rejectUnknownFields(
           **buildObject, "gem5_build_identity",
           {"repository_identity", "full_commit_identity",
-           "build_configuration_digest"}))
+           "build_configuration_digest", "binary_fingerprint"}))
     return std::move(error);
   auto repository = requireString(**buildObject, "repository_identity",
                                   "gem5_build_identity");
@@ -612,12 +614,16 @@ parseGem5SimulationBinding(llvm::StringRef canonicalJson) {
                               "gem5_build_identity");
   auto digest = requireString(**buildObject, "build_configuration_digest",
                               "gem5_build_identity");
+  auto binaryFingerprint = requireString(
+      **buildObject, "binary_fingerprint", "gem5_build_identity");
   if (!repository)
     return repository.takeError();
   if (!commit)
     return commit.takeError();
   if (!digest)
     return digest.takeError();
+  if (!binaryFingerprint)
+    return binaryFingerprint.takeError();
   std::vector<Gem5Correspondence> rows;
   rows.reserve((*correspondences)->size());
   for (const auto &[index, value] : llvm::enumerate(**correspondences)) {
@@ -632,7 +638,8 @@ parseGem5SimulationBinding(llvm::StringRef canonicalJson) {
   }
   return Gem5SimulationBindingDraft{
       std::move(*fabric), std::move(*interconnect),
-      Gem5BuildIdentity{repository->str(), commit->str(), digest->str()},
+      Gem5BuildIdentity{repository->str(), commit->str(), digest->str(),
+                        binaryFingerprint->str()},
       bridge->str(), std::move(rows)};
 }
 

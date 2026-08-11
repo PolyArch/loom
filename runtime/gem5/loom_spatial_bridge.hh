@@ -48,18 +48,23 @@ private:
   State state = State::Idle;
   std::uint32_t errorCode = 0;
   std::uint64_t nextSequence = 0;
+  std::uint64_t launchPayloadAddress = 0;
+  std::uint32_t launchPayloadSize = 0;
+  std::uint64_t lastCompletionTick = 0;
   std::vector<std::uint8_t> launchPayload;
   std::vector<std::uint8_t> memoryBuffer;
   loom::runtime::Gem5BridgeMemoryRequest pendingMemory;
   loom::runtime::Gem5BridgeCompletion pendingCompletion;
 
   EventFunctionWrapper launchEvent;
+  EventFunctionWrapper launchPayloadCompletionEvent;
   EventFunctionWrapper dmaCompletionEvent;
   EventFunctionWrapper completionEvent;
 
   bool connectEngine();
   bool sendMessage(const loom::runtime::Gem5BridgeMessage &message);
   bool receiveMessage(loom::runtime::Gem5BridgeMessage &message);
+  void fetchLaunchPayload();
   void startLaunch();
   void consumeEngineMessage();
   void completeMemoryRequest();

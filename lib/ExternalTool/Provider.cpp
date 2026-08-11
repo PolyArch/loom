@@ -83,6 +83,23 @@ const std::vector<BackendToolCatalogEntry> &catalogStorage() {
        {release(
            "openroad-2026-08-06", "openroad/2026.08.06-b9a38929e342",
            ToolVersionProbe{{"-version"}, "b9a38929e", {0}, "b9a38929e"})}},
+      {"gem5",
+       ExternalToolProviderDescriptor{
+           ToolProviderDescriptor{
+               "gem5",
+               {"gem5.opt"},
+               {{"GEM5_ROOT", "build/RISCV/gem5.opt"}},
+               {},
+           },
+           ToolVersionProbe{{"--build-info"}, "gem5 version"},
+           ToolRuntimeCompatibility{},
+       },
+       {BackendToolReleaseProfile{
+           "gem5-25.1.0.1", std::nullopt,
+           ToolVersionProbe{{"--build-info"},
+                            "gem5 version 25.1.0.1",
+                            {0},
+                            "gem5 version"}}}},
       {"Synopsys VCS",
        ExternalToolProviderDescriptor{
            ToolProviderDescriptor{
@@ -368,6 +385,10 @@ const ExternalToolProviderDescriptor &yosysProvider() {
 
 const ExternalToolProviderDescriptor &openRoadProvider() {
   return provider("openroad");
+}
+
+const ExternalToolProviderDescriptor &gem5Provider() {
+  return provider("gem5");
 }
 
 const ExternalToolProviderDescriptor &vcsProvider() { return provider("vcs"); }

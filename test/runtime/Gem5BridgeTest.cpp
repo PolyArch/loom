@@ -113,6 +113,37 @@ void payloadRoundTrips() {
               decodedCompletion.status == completion.status &&
               decodedCompletion.result == completion.result,
           "completion round-trip changed semantic fields");
+
+  const Gem5BridgeResult result{1, 0x1020304050607080ULL,
+                                0x8877665544332211ULL,
+                                {0x00, 0x7f, 0x80, 0xff}};
+  const auto encodedResult = encodeGem5BridgeResult(result);
+  Gem5BridgeResult decodedResult;
+  diagnostic.clear();
+  require(decodeGem5BridgeResult(encodedResult, decodedResult, diagnostic),
+          diagnostic);
+  require(decodedResult.status == result.status &&
+              decodedResult.completionTick == result.completionTick &&
+              decodedResult.sequence == result.sequence &&
+              decodedResult.result == result.result,
+          "normalized bridge result round-trip changed semantic fields");
+
+  auto badResultMagic = encodedResult;
+  badResultMagic.front() ^= 0xff;
+  diagnostic.clear();
+  require(!decodeGem5BridgeResult(badResultMagic, decodedResult,
+                                  diagnostic) &&
+              diagnostic.find("wrong bridge result magic") !=
+                  std::string::npos,
+          "normalized bridge result accepted a bad magic");
+
+  auto badResultLength = encodedResult;
+  badResultLength[31] += 1;
+  diagnostic.clear();
+  require(!decodeGem5BridgeResult(badResultLength, decodedResult,
+                                  diagnostic) &&
+              diagnostic.find("size does not match") != std::string::npos,
+          "normalized bridge result accepted a bad payload length");
 }
 
 } // namespace

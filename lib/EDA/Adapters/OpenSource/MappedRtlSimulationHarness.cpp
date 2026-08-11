@@ -649,7 +649,11 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts) {
   std::string text;
   llvm::raw_string_ostream output(text);
   output << "`timescale 1fs/1fs\n"
-         << "module " << mappedRtlHarnessTop << ";\n";
+         << "module " << mappedRtlHarnessTop << "(\n"
+         << "  output wire loom_engine_retired,\n"
+         << "  output wire [63:0] loom_engine_launch_cycle,\n"
+         << "  output wire [63:0] loom_engine_retirement_cycle\n"
+         << ");\n";
   for (const RtlPort &port : facts.rootPorts)
     renderPortDeclaration(output, port);
   output << "  logic loom_inputs_enabled;\n"
@@ -663,6 +667,10 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts) {
          << "  logic [" << kAxiResponseWidth - 1
          << ":0] loom_cfg_response;\n"
          << "  integer loom_debug_verbose;\n";
+  output << "  assign loom_engine_retired = loom_retired;\n"
+         << "  assign loom_engine_launch_cycle = loom_launch_cycle;\n"
+         << "  assign loom_engine_retirement_cycle = "
+            "loom_retirement_cycle;\n";
   for (const auto &[ordinal, value] : llvm::enumerate(facts.valueResults))
     output << "  logic [" << value.tokenBitWidth - 1 << ":0] loom_value_result_"
            << ordinal << " [$];\n";
@@ -868,6 +876,32 @@ renderMappedRtlVerilatorDriver(const MappedRtlInvocationFacts &facts,
   for (const std::string &path : facts.rtlPaths)
     output << path << "\n";
   output << mappedRtlTestbenchPath << "\n";
+  return text;
+}
+
+llvm::Expected<std::string>
+renderMappedRtlBridgedVerilatorDriver(const MappedRtlInvocationFacts &facts,
+                                      std::uint64_t buildJobs) {
+  if (facts.rtlPaths.empty())
+    return invalid("Verilator driver has no RTL sources");
+  if (buildJobs == 0)
+    return invalid("Verilator build parallelism must be positive");
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  const std::filesystem::path simulatorExecutable(
+      mappedRtlSimulatorExecutablePath.str());
+  output << "--cc\n--exe\n--build\n--build-jobs\n" << buildJobs
+         << "\n--timing\n--Wall\n--Wno-fatal\n"
+            "--Wno-DECLFILENAME\n--Wno-UNUSEDSIGNAL\n--Wno-PINMISSING\n"
+            "--Wno-TIMESCALEMOD\n"
+            "-CFLAGS\n-std=c++20\n--top-module\n"
+         << mappedRtlHarnessTop << "\n--Mdir\n"
+         << simulatorExecutable.parent_path().generic_string() << "\n-o\n"
+         << simulatorExecutable.filename().generic_string() << "\n";
+  for (const std::string &path : facts.rtlPaths)
+    output << path << "\n";
+  output << mappedRtlTestbenchPath << "\n"
+         << mappedRtlBridgeEngineSourcePath << "\n";
   return text;
 }
 

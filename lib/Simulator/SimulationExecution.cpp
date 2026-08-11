@@ -459,6 +459,43 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
                                  &blobs};
 }
 
+llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
+    const ArtifactRootReference &workloadReference,
+    const ArtifactRootReference &runtimeInputReference,
+    const ArtifactStore &store) {
+  auto inputs = importCachedSpatialInputs(workloadReference,
+                                          runtimeInputReference, store);
+  if (!inputs)
+    return inputs.takeError();
+  auto view = (*inputs)->dataflow.view();
+  if (!view)
+    return view.takeError();
+  auto launch =
+      resolveLaunchContext(*view, (*inputs)->workload.spatial()->launchRef);
+  if (!launch)
+    return launch.takeError();
+  return SpatialExecutionContext{
+      {}, std::move(*inputs), std::move(*view), std::move(*launch),
+      evaluation::ArtifactCollectionCardinality::OneOrMore, nullptr, &store,
+      nullptr};
+}
+
+llvm::Error validateSpatialProgressObservations(
+    const SpatialProgressObservations &progress,
+    const ExecutionTerminal &terminal) {
+  return validateProgress(progress, terminal);
+}
+
+void encodeSpatialProgressObservations(
+    WireWriter &writer, const SpatialProgressObservations &progress) {
+  encodeProgress(writer, progress);
+}
+
+llvm::Expected<SpatialProgressObservations>
+decodeSpatialProgressObservations(WireReader &reader) {
+  return decodeProgress(reader);
+}
+
 llvm::Expected<SpatialSimulationExecution> decodeSpatialSimulationExecution(
     llvm::ArrayRef<std::uint8_t> bytes,
     const evaluation::CaseArtifactResolution &resolution,

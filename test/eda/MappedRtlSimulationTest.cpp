@@ -126,7 +126,7 @@ grep -Fx -- '--top-module' "$driver_path" >/dev/null
   script += "grep -Fx -- '" + mappedRtlHarnessTop.str() +
             "' \"$driver_path\" >/dev/null\n";
   script += "grep -F 'module " + mappedRtlHarnessTop.str() +
-            ";' \"$testbench_path\" >/dev/null\n";
+            "(' \"$testbench_path\" >/dev/null\n";
   if (behavior.compileExitCode != 0) {
     script += "exit " + std::to_string(behavior.compileExitCode) + "\n";
     return script;

@@ -12,7 +12,7 @@
 namespace loom::runtime {
 
 inline constexpr char gem5BridgeAbiIdentity[] =
-    "loom.gem5_spatial_bridge_abi.v1";
+    "loom.gem5_spatial_bridge_abi.v2";
 
 enum class Gem5BridgeMessageKind : std::uint32_t {
   SpatialLaunch = 0,
@@ -53,6 +53,17 @@ struct Gem5BridgeCompletion final {
   std::uint32_t status = 0;
   std::vector<std::uint8_t> result;
 };
+
+struct Gem5BridgeResult final {
+  std::uint32_t status = 0;
+  std::uint64_t completionTick = 0;
+  std::uint64_t sequence = 0;
+  std::vector<std::uint8_t> result;
+};
+
+inline constexpr std::array<std::uint8_t, 4> gem5BridgeResultMagic{
+    'L', 'G', 'R', '1'};
+inline constexpr std::size_t gem5BridgeResultHeaderBytes = 32;
 
 inline constexpr std::array<std::uint8_t, 4> gem5BridgeWireMagic{
     'L', 'G', 'B', '1'};
@@ -240,6 +251,46 @@ inline bool decodeGem5BridgeCompletion(
   completion.readyAfterTicks = detail::readGem5BridgeU64(bytes.data());
   completion.status = detail::readGem5BridgeU32(bytes.data() + 8);
   completion.result.assign(bytes.begin() + headerBytes, bytes.end());
+  return true;
+}
+
+inline std::vector<std::uint8_t>
+encodeGem5BridgeResult(const Gem5BridgeResult &result) {
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(gem5BridgeResultHeaderBytes + result.result.size());
+  bytes.insert(bytes.end(), gem5BridgeResultMagic.begin(),
+               gem5BridgeResultMagic.end());
+  detail::appendGem5BridgeU32(bytes, result.status);
+  detail::appendGem5BridgeU64(bytes, result.completionTick);
+  detail::appendGem5BridgeU64(bytes, result.sequence);
+  detail::appendGem5BridgeU64(bytes, result.result.size());
+  bytes.insert(bytes.end(), result.result.begin(), result.result.end());
+  return bytes;
+}
+
+inline bool decodeGem5BridgeResult(const std::vector<std::uint8_t> &bytes,
+                                   Gem5BridgeResult &result,
+                                   std::string &error) {
+  if (bytes.size() < gem5BridgeResultHeaderBytes) {
+    error = "truncated bridge result";
+    return false;
+  }
+  if (!std::equal(gem5BridgeResultMagic.begin(), gem5BridgeResultMagic.end(),
+                  bytes.begin())) {
+    error = "wrong bridge result magic";
+    return false;
+  }
+  const std::uint64_t size = detail::readGem5BridgeU64(bytes.data() + 24);
+  if (size > std::numeric_limits<std::size_t>::max() ||
+      size != bytes.size() - gem5BridgeResultHeaderBytes) {
+    error = "bridge result size does not match its payload";
+    return false;
+  }
+  result.status = detail::readGem5BridgeU32(bytes.data() + 4);
+  result.completionTick = detail::readGem5BridgeU64(bytes.data() + 8);
+  result.sequence = detail::readGem5BridgeU64(bytes.data() + 16);
+  result.result.assign(bytes.begin() + gem5BridgeResultHeaderBytes,
+                       bytes.end());
   return true;
 }
 

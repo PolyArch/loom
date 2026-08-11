@@ -6,7 +6,6 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Evaluation/ArtifactImportCache.h"
-#include "Evaluation/ModelProvider.h"
 #include "Fabric/Artifact/FabricModuleRootView.h"
 #include "Hardware/RTL/MemoryServiceTransport.h"
 
@@ -977,7 +976,8 @@ llvm::Expected<std::vector<ConfigurationProgram>> projectConfigurationPrograms(
 
 llvm::Expected<std::vector<MaterializedBundleFile>>
 materializeMappedRtlSemanticInputs(
-    const EvaluationRequest &request,
+    const ArtifactRootReference &workloadReference,
+    const ArtifactRootReference &runtimeReference,
     const FinalizedHardwareImplementation &implementation,
     const deployment::FinalizedDeployment &deployment,
     const sim::ImportedSpatialSimulationInputs &inputs,
@@ -995,8 +995,6 @@ materializeMappedRtlSemanticInputs(
           semanticInputs, "inputs/semantic/deployment.json",
           deployment.reference(), deployment.canonicalBytes().bytes()))
     return std::move(error);
-  const ArtifactRootReference workloadReference = *request.workload();
-  const ArtifactRootReference runtimeReference = *request.runtimeInput();
   if (llvm::Error error = addSemanticInput(
           semanticInputs, "inputs/semantic/workload.bin", workloadReference,
           inputs.workload.canonicalBytes().bytes()))
@@ -1075,24 +1073,15 @@ ExternalToolInvocationImportExpectation makeMappedRtlImportExpectation(
 } // namespace
 
 llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
-    const EvaluationRequest &request, const CaseArtifactResolution &resolution,
+    const MappedRtlExecutionClosure &closure,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto configuration =
-      evaluation::models::projectVerifiedMappedRtlSimulationConfiguration(
-          request);
-  if (!configuration)
-    return configuration.takeError();
-  const auto implementations = request.subjectBindings().subjects(
-      evaluation::models::mappedRtlHardwareImplementationSubjectRole());
-  const auto deployments = request.subjectBindings().subjects(
-      evaluation::models::mappedRtlDeploymentSubjectRole());
-  if (implementations.size() != 1 || deployments.size() != 1 ||
-      !request.workload() || !request.runtimeInput())
-    return invalid("Request does not bind one complete mapped RTL case");
+  if (llvm::Error error = evaluation::models::validateMappedRtlSimulatorBinding(
+          closure.simulatorBinding))
+    return std::move(error);
 
   auto implementation = importCachedOne<FinalizedHardwareImplementation>(
-      implementations.front(), artifacts, &blobs, [&]() {
-        return importHardwareImplementation(implementations.front(), artifacts,
+      closure.hardwareImplementation, artifacts, &blobs, [&]() {
+        return importHardwareImplementation(closure.hardwareImplementation, artifacts,
                                             blobs);
       });
   if (!implementation)
@@ -1112,7 +1101,7 @@ llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
       !hardware.externalImplementationBindings().empty())
     return unsupported();
   auto representationIndex = importCachedOne<RepresentationIndex>(
-      implementations.front(), artifacts, &blobs,
+      closure.hardwareImplementation, artifacts, &blobs,
       [&]() { return indexRepresentationRoot(representation, blobs); });
   if (!representationIndex)
     return representationIndex.takeError();
@@ -1120,14 +1109,14 @@ llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
     return unsupported();
 
   auto deployment = importCachedOne<deployment::FinalizedDeployment>(
-      deployments.front(), artifacts, &blobs, [&]() {
-        return deployment::importDeployment(deployments.front(), artifacts,
+      closure.deployment, artifacts, &blobs, [&]() {
+        return deployment::importDeployment(closure.deployment, artifacts,
                                             blobs);
       });
   if (!deployment)
     return deployment.takeError();
-  auto inputs = importCachedSpatialInputs(*request.workload(),
-                                          *request.runtimeInput(), artifacts);
+  auto inputs = importCachedSpatialInputs(closure.workload,
+                                          closure.runtimeInput, artifacts);
   if (!inputs)
     return inputs.takeError();
   const auto *workload = (*inputs)->workload.spatial();
@@ -1363,8 +1352,8 @@ llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
     return unsupported();
 
   auto semanticInputs = materializeMappedRtlSemanticInputs(
-      request, **implementation, **deployment, **inputs, *selection, **mapping,
-      **abi, **fabricSystem, artifacts, blobs);
+      closure.workload, closure.runtimeInput, **implementation, **deployment,
+      **inputs, *selection, **mapping, **abi, **fabricSystem, artifacts, blobs);
   if (!semanticInputs)
     return semanticInputs.takeError();
   std::vector<std::string> rtlPaths;
@@ -1372,9 +1361,6 @@ llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
     if (llvm::StringRef(file.relativePath)
             .starts_with("inputs/implementation/"))
       rtlPaths.push_back(file.relativePath);
-  auto semanticContract = deriveExternalToolSemanticContract(request);
-  if (!semanticContract)
-    return semanticContract.takeError();
   std::string top = representation.top.canonicalName;
 
   std::vector<InputTokenStream> denseValues;
@@ -1390,8 +1376,8 @@ llvm::Expected<MappedRtlFactsOrUnsupported> deriveMappedRtlInvocationFacts(
   }
 
   return MappedRtlFactsOrUnsupported{
-      MappedRtlInvocationFacts{std::move(*configuration),
-                               std::move(*semanticContract),
+      MappedRtlInvocationFacts{closure.simulatorBinding,
+                               closure.semanticContract,
                                std::move(*semanticInputs),
                                std::move(rtlPaths),
                                std::move(top),
@@ -1423,22 +1409,17 @@ struct MappedRtlLaunchClosure final {
 };
 
 llvm::Expected<MappedRtlLaunchClosure> importMappedRtlLaunchClosure(
-    const EvaluationRequest &request, const ArtifactStore &artifacts,
+    const MappedRtlExecutionClosure &closure, const ArtifactStore &artifacts,
     const BlobStore &blobs) {
-  const auto deployments = request.subjectBindings().subjects(
-      evaluation::models::mappedRtlDeploymentSubjectRole());
-  if (deployments.size() != 1 || !request.workload() ||
-      !request.runtimeInput())
-    return invalid("Request does not bind one complete mapped RTL case");
   auto deployment = importCachedOne<deployment::FinalizedDeployment>(
-      deployments.front(), artifacts, &blobs, [&]() {
-        return deployment::importDeployment(deployments.front(), artifacts,
+      closure.deployment, artifacts, &blobs, [&]() {
+        return deployment::importDeployment(closure.deployment, artifacts,
                                             blobs);
       });
   if (!deployment)
     return deployment.takeError();
-  auto inputs = importCachedSpatialInputs(*request.workload(),
-                                          *request.runtimeInput(), artifacts);
+  auto inputs = importCachedSpatialInputs(closure.workload,
+                                          closure.runtimeInput, artifacts);
   if (!inputs)
     return inputs.takeError();
   const auto *workload = (*inputs)->workload.spatial();
@@ -1468,25 +1449,17 @@ llvm::Expected<MappedRtlLaunchClosure> importMappedRtlLaunchClosure(
 
 llvm::Expected<ExternalToolInvocationImportExpectation>
 deriveMappedRtlImportExpectation(
-    const EvaluationRequest &request,
-    const CaseArtifactResolution &resolution,
+    const MappedRtlExecutionClosure &requestClosure,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
-  (void)resolution;
-  auto semanticContract = deriveExternalToolSemanticContract(request);
-  if (!semanticContract)
-    return semanticContract.takeError();
-  const auto implementations = request.subjectBindings().subjects(
-      evaluation::models::mappedRtlHardwareImplementationSubjectRole());
-  if (implementations.size() != 1)
-    return invalid("Request does not bind one HardwareImplementation");
   auto implementation = importCachedOne<FinalizedHardwareImplementation>(
-      implementations.front(), artifacts, &blobs, [&]() {
-        return importHardwareImplementation(implementations.front(), artifacts,
-                                            blobs);
+      requestClosure.hardwareImplementation, artifacts, &blobs, [&]() {
+        return importHardwareImplementation(requestClosure.hardwareImplementation,
+                                            artifacts, blobs);
       });
   if (!implementation)
     return implementation.takeError();
-  auto closure = importMappedRtlLaunchClosure(request, artifacts, blobs);
+  auto closure =
+      importMappedRtlLaunchClosure(requestClosure, artifacts, blobs);
   if (!closure)
     return closure.takeError();
   if (closure->selection.hardwareImplementation !=
@@ -1506,20 +1479,20 @@ deriveMappedRtlImportExpectation(
   if (!fabricSystem)
     return fabricSystem.takeError();
   auto semanticInputs = materializeMappedRtlSemanticInputs(
-      request, **implementation, *closure->deployment, *closure->inputs,
-      closure->selection, *closure->mapping, **abi, **fabricSystem, artifacts,
-      blobs);
+      requestClosure.workload, requestClosure.runtimeInput, **implementation,
+      *closure->deployment, *closure->inputs, closure->selection,
+      *closure->mapping, **abi, **fabricSystem, artifacts, blobs);
   if (!semanticInputs)
     return semanticInputs.takeError();
-  return makeMappedRtlImportExpectation(*semanticContract, *semanticInputs);
+  return makeMappedRtlImportExpectation(requestClosure.semanticContract,
+                                        *semanticInputs);
 }
 
 llvm::Expected<MappedRtlObservationFacts> deriveMappedRtlObservationFacts(
-    const EvaluationRequest &request,
-    const CaseArtifactResolution &resolution,
+    const MappedRtlExecutionClosure &requestClosure,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
-  (void)resolution;
-  auto closure = importMappedRtlLaunchClosure(request, artifacts, blobs);
+  auto closure =
+      importMappedRtlLaunchClosure(requestClosure, artifacts, blobs);
   if (!closure)
     return closure.takeError();
   const auto *workload = closure->inputs->workload.spatial();

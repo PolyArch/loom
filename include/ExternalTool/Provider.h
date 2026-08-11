@@ -42,6 +42,7 @@ const ExternalToolProviderDescriptor &polyArchContainerProvider();
 const ExternalToolProviderDescriptor &verilatorProvider();
 const ExternalToolProviderDescriptor &yosysProvider();
 const ExternalToolProviderDescriptor &openRoadProvider();
+const ExternalToolProviderDescriptor &gem5Provider();
 const ExternalToolProviderDescriptor &vcsProvider();
 const ExternalToolProviderDescriptor &designCompilerProvider();
 const ExternalToolProviderDescriptor &fusionCompilerProvider();

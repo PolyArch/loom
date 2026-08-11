@@ -10,6 +10,9 @@
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/DfgSimulation.h"
 #include "Evaluation/Models/FpaParameterContract.h"
+#include "Evaluation/Models/Gem5SystemCgra.h"
+#include "Evaluation/Models/Gem5SystemDfg.h"
+#include "Evaluation/Models/Gem5SystemRtl.h"
 #include "Evaluation/Models/MappedRtlSimulation.h"
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
 #include "Evaluation/Models/SimulationComparison.h"
@@ -19,8 +22,10 @@
 #include "Evaluation/OwnerError.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/IR/MappingSchema.h"
 #include "Runtime/Gem5SimulationBinding.h"
+#include "Runtime/Gem5BuiltinModels.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
 
@@ -85,14 +90,45 @@ const ArtifactSchemaDescriptor *const kWorkloadSchemas[] = {
 const ArtifactSchemaDescriptor *const kRuntimeInputSchemas[] = {
     &sim::simulationRuntimeInputSchema};
 
-llvm::Error unavailableGem5Binding(const ArtifactRootReference &,
-                                   const EvaluationCase &,
-                                   const EvaluationSubjectBindings &,
-                                   const CaseArtifactResolution &,
-                                   const ArtifactStore &, const BlobStore &) {
-  return evaluationOwnerUnavailable(
-      runtime::gem5SimulationBindingSchema.identity,
-      runtime::gem5SimulationBindingSchema.version);
+llvm::Error verifyGem5Binding(const ArtifactRootReference &subject,
+                              const EvaluationCase &,
+                              const EvaluationSubjectBindings &bindings,
+                              const CaseArtifactResolution &,
+                              const ArtifactStore &artifacts,
+                              const BlobStore &blobs) {
+  const auto deployments = bindings.subjects(kRole0);
+  if (deployments.size() != 1)
+    return invalid("gem5 binding compatibility requires one Deployment");
+  auto deployment =
+      deployment::importDeployment(deployments.front(), artifacts, blobs);
+  if (!deployment)
+    return deployment.takeError();
+  auto gem5 = runtime::importGem5SimulationBinding(subject, artifacts);
+  if (!gem5)
+    return gem5.takeError();
+  auto systemMapping = mapping::importSystemMapping(
+      deployment->deployment().systemMapping(), artifacts);
+  if (!systemMapping)
+    return systemMapping.takeError();
+  if (systemMapping->view().fabricIdentity() != gem5->binding().fabric().artifact)
+    return invalid("gem5 binding names a foreign System Fabric");
+
+  bool ownsInterconnect = false;
+  for (const deployment::DeploymentHardwareBinding &binding :
+       deployment->deployment().hardwareBindings()) {
+    auto implementation = hardware::importHardwareImplementation(
+        binding.hardwareImplementation, artifacts, blobs);
+    if (!implementation)
+      return implementation.takeError();
+    if (llvm::is_contained(
+            implementation->implementation().interconnectImplementations(),
+            gem5->binding().interconnectImplementation()))
+      ownsInterconnect = true;
+  }
+  if (!ownsInterconnect)
+    return invalid("Deployment hardware closure does not own the gem5 "
+                   "interconnect implementation");
+  return llvm::Error::success();
 }
 
 llvm::Error
@@ -270,7 +306,7 @@ const CaseSubjectRoleDescriptor kSystemRoles[] = {
     {kRole0, "deployment", SubjectRoleCardinality::ExactlyOne,
      kDeploymentSchemas, nullptr},
     {kRole1, "gem5_simulation_binding", SubjectRoleCardinality::ExactlyOne,
-     kGem5Schemas, &unavailableGem5Binding},
+     kGem5Schemas, &verifyGem5Binding},
 };
 const EvaluationCaseSignatureDescriptor kSystemSignature{
     builtinEvaluationCaseKind(kSystemCase),
@@ -633,7 +669,7 @@ llvm::ArrayRef<EvaluationModelDescriptor> builtinModelDescriptors() {
        {},
        {},
        kExecutionOutputs,
-       emptyConfig<BuiltinEvaluationModel::Gem5SystemRtl>(),
+       models::mappedRtlSimulationConfigViewContract(),
        kSystemPhenomena,
        EvaluationExecutionMethod::Simulation,
        {},
@@ -680,6 +716,8 @@ llvm::ArrayRef<EvaluationModelDescriptor> builtinModelDescriptors() {
 } // namespace
 
 llvm::Error registerProductionEvaluationRegistry() {
+  if (llvm::Error error = runtime::registerBuiltinGem5ModelContracts())
+    return error;
   if (llvm::Error error = models::registerStructuredFabricAnalyticModel())
     return error;
   if (llvm::Error error =
@@ -711,7 +749,13 @@ llvm::Error registerProductionEvaluationRegistry() {
       return error;
   if (llvm::Error error = models::registerFpaModelParameterContract())
     return error;
-  return models::registerSystemRuntimeModelParameterContract();
+  if (llvm::Error error = models::registerSystemRuntimeModelParameterContract())
+    return error;
+  if (llvm::Error error = models::registerGem5SystemDfgProvider())
+    return error;
+  if (llvm::Error error = models::registerGem5SystemCgraProvider())
+    return error;
+  return models::registerGem5SystemRtlProvider();
 }
 
 EvaluationCaseSignatureRef systemSimulationCaseSignatureRef() {

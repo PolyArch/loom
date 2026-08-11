@@ -244,6 +244,8 @@ llvm::Error validateBuildIdentity(const Gem5BuildIdentity &identity) {
   if (!isLowerHex(identity.buildConfigurationDigest, 64))
     return invalid(
         "gem5 build configuration digest is not a canonical SHA-256 hex");
+  if (!isLowerHex(identity.binaryFingerprint, 64))
+    return invalid("gem5 binary fingerprint is not a canonical SHA-256 hex");
   return llvm::Error::success();
 }
 

@@ -7,7 +7,6 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
-#include <iterator>
 #include <limits>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -21,6 +20,11 @@ constexpr Addr controlRegister = 0x04;
 constexpr Addr errorRegister = 0x08;
 constexpr Addr sequenceLowRegister = 0x0c;
 constexpr Addr sequenceHighRegister = 0x10;
+constexpr Addr payloadAddressLowRegister = 0x14;
+constexpr Addr payloadAddressHighRegister = 0x18;
+constexpr Addr payloadSizeRegister = 0x1c;
+constexpr Addr completionTickLowRegister = 0x20;
+constexpr Addr completionTickHighRegister = 0x24;
 constexpr std::uint32_t controlStart = 1u << 0;
 constexpr std::uint32_t controlReset = 1u << 1;
 
@@ -54,14 +58,6 @@ bool writeAll(int descriptor, const std::uint8_t *bytes, std::size_t size) {
   return true;
 }
 
-std::vector<std::uint8_t> readFile(const std::string &path) {
-  std::ifstream input(path, std::ios::binary);
-  if (!input)
-    return {};
-  return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input),
-                                   std::istreambuf_iterator<char>());
-}
-
 } // namespace
 
 LoomSpatialBridge::LoomSpatialBridge(const Params &params)
@@ -69,20 +65,20 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
       pioDelay(params.pio_latency), engineSocketPath(params.engine_socket),
       resultPath(params.result_path),
       maximumMessageBytes(params.max_message_bytes),
-      launchPayload(readFile(params.launch_payload)),
-      launchEvent([this] { startLaunch(); }, name() + ".launch"),
+      launchEvent([this] { fetchLaunchPayload(); }, name() + ".launch"),
+      launchPayloadCompletionEvent([this] { startLaunch(); },
+                                   name() + ".launch_payload_completion"),
       dmaCompletionEvent([this] { completeMemoryRequest(); },
                          name() + ".dma_completion"),
       completionEvent([this] { completeInvocation(); },
                       name() + ".completion") {
   panic_if(engineSocketPath.empty(), "LoomSpatialBridge socket is empty");
-  panic_if(params.launch_payload.empty(),
-           "LoomSpatialBridge launch payload path is empty");
   panic_if(resultPath.empty(), "LoomSpatialBridge result path is empty");
   panic_if(maximumMessageBytes < loom::runtime::gem5BridgeWireHeaderBytes,
            "LoomSpatialBridge message limit is too small");
-  panic_if(launchPayload.empty(),
-           "LoomSpatialBridge launch payload is missing or empty");
+  panic_if(maximumMessageBytes >
+               static_cast<std::uint64_t>(std::numeric_limits<int>::max()),
+           "LoomSpatialBridge message limit exceeds the DMA size domain");
 }
 
 LoomSpatialBridge::~LoomSpatialBridge() {
@@ -127,6 +123,21 @@ Tick LoomSpatialBridge::read(PacketPtr packet) {
   case sequenceHighRegister:
     value = static_cast<std::uint32_t>(nextSequence >> 32);
     break;
+  case payloadAddressLowRegister:
+    value = static_cast<std::uint32_t>(launchPayloadAddress);
+    break;
+  case payloadAddressHighRegister:
+    value = static_cast<std::uint32_t>(launchPayloadAddress >> 32);
+    break;
+  case payloadSizeRegister:
+    value = launchPayloadSize;
+    break;
+  case completionTickLowRegister:
+    value = static_cast<std::uint32_t>(lastCompletionTick);
+    break;
+  case completionTickHighRegister:
+    value = static_cast<std::uint32_t>(lastCompletionTick >> 32);
+    break;
   default:
     fail(1, "read from an unknown MMIO register");
     break;
@@ -142,14 +153,26 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
            "LoomSpatialBridge requires 32-bit MMIO accesses");
   const std::uint32_t value =
       static_cast<std::uint32_t>(packet->getUintX(ByteOrder::little));
-  if (offset != controlRegister) {
+  if (offset == payloadAddressLowRegister) {
+    launchPayloadAddress = (launchPayloadAddress & 0xffffffff00000000ULL) |
+                           static_cast<std::uint64_t>(value);
+  } else if (offset == payloadAddressHighRegister) {
+    launchPayloadAddress =
+        (launchPayloadAddress & 0x00000000ffffffffULL) |
+        (static_cast<std::uint64_t>(value) << 32);
+  } else if (offset == payloadSizeRegister) {
+    launchPayloadSize = value;
+  } else if (offset != controlRegister) {
     fail(2, "write to an unknown MMIO register");
   } else if (value & controlReset) {
     resetBridge();
   } else if (value & controlStart) {
     if (state != State::Idle && state != State::Complete)
       fail(3, "launch requested while the bridge is not idle");
-    else {
+    else if (launchPayloadSize == 0 ||
+             launchPayloadSize > maximumMessageBytes) {
+      fail(17, "launch payload size is outside the bridge limit");
+    } else {
       state = State::Running;
       errorCode = 0;
       schedule(&launchEvent, clockEdge());
@@ -157,6 +180,16 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
   }
   packet->makeAtomicResponse();
   return pioDelay;
+}
+
+void LoomSpatialBridge::fetchLaunchPayload() {
+  if (launchPayloadSize == 0 || launchPayloadSize > maximumMessageBytes) {
+    fail(18, "launch payload descriptor changed before DMA");
+    return;
+  }
+  launchPayload.assign(launchPayloadSize, 0);
+  dmaRead(launchPayloadAddress, static_cast<int>(launchPayloadSize),
+          &launchPayloadCompletionEvent, launchPayload.data());
 }
 
 bool LoomSpatialBridge::connectEngine() {
@@ -306,13 +339,18 @@ void LoomSpatialBridge::completeMemoryRequest() {
 }
 
 void LoomSpatialBridge::completeInvocation() {
+  lastCompletionTick = curTick();
+  const std::vector<std::uint8_t> normalized =
+      loom::runtime::encodeGem5BridgeResult(
+          {pendingCompletion.status, lastCompletionTick, nextSequence,
+           pendingCompletion.result});
   std::ofstream output(resultPath, std::ios::binary | std::ios::trunc);
   if (!output) {
     fail(15, "could not create the normalized result");
     return;
   }
-  output.write(reinterpret_cast<const char *>(pendingCompletion.result.data()),
-               static_cast<std::streamsize>(pendingCompletion.result.size()));
+  output.write(reinterpret_cast<const char *>(normalized.data()),
+               static_cast<std::streamsize>(normalized.size()));
   if (!output) {
     fail(16, "could not write the normalized result");
     return;
@@ -332,12 +370,18 @@ void LoomSpatialBridge::resetBridge() {
   panic_if(dmaPending(), "cannot reset LoomSpatialBridge with pending DMA");
   if (launchEvent.scheduled())
     deschedule(&launchEvent);
+  if (launchPayloadCompletionEvent.scheduled())
+    deschedule(&launchPayloadCompletionEvent);
   if (completionEvent.scheduled())
     deschedule(&completionEvent);
   memoryBuffer.clear();
+  launchPayload.clear();
   pendingMemory = {};
   pendingCompletion = {};
   errorCode = 0;
+  launchPayloadAddress = 0;
+  launchPayloadSize = 0;
+  lastCompletionTick = 0;
   state = State::Idle;
 }
 

@@ -7,4 +7,11 @@ repo_root = os.path.abspath(os.path.join(Dir('.').srcnode().abspath, '..', '..')
 env.Append(CPPPATH=[repo_root, os.path.join(repo_root, 'include')])
 
 SimObject('LoomSpatialBridge.py', sim_objects=['LoomSpatialBridge'])
+SimObject(
+    'LoomRiscvDeploymentWorkload.py',
+    sim_objects=['LoomRiscvDeploymentWorkload'],
+)
+SimObject('LoomThreadDispatch.py', sim_objects=['LoomThreadDispatch'])
 Source('loom_spatial_bridge.cc')
+Source('loom_riscv_deployment_workload.cc')
+Source('loom_thread_dispatch.cc')

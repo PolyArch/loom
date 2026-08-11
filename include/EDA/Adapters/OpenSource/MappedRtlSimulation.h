@@ -23,6 +23,10 @@ inline constexpr llvm::StringLiteral mappedRtlTestbenchPath =
     "drivers/testbench.sv";
 inline constexpr llvm::StringLiteral mappedRtlVerilatorDriverPath =
     "drivers/verilator.args";
+inline constexpr llvm::StringLiteral mappedRtlBridgedVerilatorDriverPath =
+    "drivers/verilator-bridge.args";
+inline constexpr llvm::StringLiteral mappedRtlBridgeEngineSourcePath =
+    "drivers/loom-gem5-rtl-engine.cpp";
 inline constexpr llvm::StringLiteral mappedRtlSimulatorExecutablePath =
     "work/verilator/simulation";
 inline constexpr llvm::StringLiteral mappedRtlResultPath =

@@ -257,7 +257,8 @@ Gem5SimulationBindingDraft makeDraft(
       interconnect,
       {"https://gem5.googlesource.com/public/gem5",
        "0123456789abcdef0123456789abcdef01234567",
-       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+       "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"},
       gem5BridgeAbiIdentity,
       {}};
   std::uint8_t ordinal = 1;

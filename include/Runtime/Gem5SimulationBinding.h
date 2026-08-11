@@ -52,6 +52,10 @@ struct Gem5ModelContractDescriptorRef final {
                          const Gem5ModelContractDescriptorRef &rhs) {
     return lhs.identity == rhs.identity && lhs.version == rhs.version;
   }
+  friend bool operator!=(const Gem5ModelContractDescriptorRef &lhs,
+                         const Gem5ModelContractDescriptorRef &rhs) {
+    return !(lhs == rhs);
+  }
 };
 
 using Gem5CanonicalPayloadValidator =
@@ -121,12 +125,14 @@ struct Gem5BuildIdentity final {
   std::string repositoryIdentity;
   std::string fullCommitIdentity;
   std::string buildConfigurationDigest;
+  std::string binaryFingerprint;
 
   friend bool operator==(const Gem5BuildIdentity &lhs,
                          const Gem5BuildIdentity &rhs) {
     return lhs.repositoryIdentity == rhs.repositoryIdentity &&
            lhs.fullCommitIdentity == rhs.fullCommitIdentity &&
-           lhs.buildConfigurationDigest == rhs.buildConfigurationDigest;
+           lhs.buildConfigurationDigest == rhs.buildConfigurationDigest &&
+           lhs.binaryFingerprint == rhs.binaryFingerprint;
   }
 };
 

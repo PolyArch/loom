@@ -37,6 +37,7 @@ add_mlir_library(LoomSimulator
   SimulationAdmission.cpp
   SimulationArtifactStore.cpp
   SimulationExecution.cpp
+  SpatialEngineBoundaryResult.cpp
   SimulationFunctionalObservations.cpp
   SimulationInputCapture.cpp
   SimulationPointerCapture.cpp

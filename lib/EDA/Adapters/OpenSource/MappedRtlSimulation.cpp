@@ -3,6 +3,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Evaluation/ModelProvider.h"
+#include "Evaluation/Models/MappedRtlSimulation.h"
 #include "ExternalTool/Provider.h"
 #include "ExternalTool/RuntimeBinding.h"
 #include "ExternalTool/ShellProbe.h"
@@ -26,75 +27,11 @@ using namespace evaluation;
 using namespace external_tool;
 
 constexpr ModelOutputSlotRef kExecutionOutput(0);
-constexpr std::uint64_t kDefaultCycleLimit = 1'000'000;
-constexpr std::uint64_t kDefaultBuildJobs = 4;
-constexpr std::uint64_t kMaximumBuildJobs = 256;
-constexpr std::uint64_t kMaximumDebugVerbosity = 3;
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
       "mapped_rtl_simulation_invalid: " + detail);
-}
-
-llvm::Expected<std::uint64_t>
-resolveCycleLimit(const LocalToolConfig &localConfig,
-                  const ExternalToolProviderDescriptor &provider) {
-  const auto configured = localConfig.tools.find(provider.binding.key);
-  if (configured == localConfig.tools.end())
-    return kDefaultCycleLimit;
-  const llvm::json::Value *value =
-      configured->second.providerOptions.get("max_cycles");
-  if (!value)
-    return kDefaultCycleLimit;
-  const std::optional<std::uint64_t> parsed = value->getAsUINT64();
-  if (!parsed || *parsed == 0)
-    return invalid("verilator.provider_options.max_cycles must be a positive "
-                   "unsigned integer");
-  return *parsed;
-}
-
-llvm::Expected<std::uint64_t>
-resolveDebugVerbosity(const LocalToolConfig &localConfig,
-                      const ExternalToolProviderDescriptor &provider) {
-  const auto configured = localConfig.tools.find(provider.binding.key);
-  if (configured == localConfig.tools.end())
-    return 0;
-  const llvm::json::Value *value =
-      configured->second.providerOptions.get("debug_verbose");
-  if (!value)
-    return 0;
-  const std::optional<std::uint64_t> parsed = value->getAsUINT64();
-  if (!parsed || *parsed > kMaximumDebugVerbosity)
-    return invalid("verilator.provider_options.debug_verbose must be an "
-                   "unsigned integer from zero through three");
-  return *parsed;
-}
-
-llvm::Expected<std::uint64_t>
-resolveBuildJobs(const LocalToolConfig &localConfig,
-                 const ExternalToolProviderDescriptor &provider) {
-  const auto configured = localConfig.tools.find(provider.binding.key);
-  if (configured == localConfig.tools.end())
-    return kDefaultBuildJobs;
-  const llvm::json::Value *value =
-      configured->second.providerOptions.get("build_jobs");
-  if (!value)
-    return kDefaultBuildJobs;
-  const std::optional<std::uint64_t> parsed = value->getAsUINT64();
-  if (!parsed || *parsed == 0 || *parsed > kMaximumBuildJobs)
-    return invalid("verilator.provider_options.build_jobs must be an "
-                   "unsigned integer from one through 256");
-  return *parsed;
-}
-
-std::vector<std::string>
-inheritedEnvironment(const LocalToolConfig &localConfig,
-                     const ExternalToolProviderDescriptor &provider) {
-  const auto configured = localConfig.tools.find(provider.binding.key);
-  if (configured == localConfig.tools.end())
-    return {};
-  return configured->second.inheritEnvironment;
 }
 
 llvm::Error rejectUndeclaredOutputs(llvm::StringRef bundleRoot) {
@@ -154,33 +91,43 @@ classifyFailedAttempt(const FailedExternalToolInvocationAttempt &failed) {
   llvm_unreachable("closed invocation status");
 }
 
+llvm::Expected<MappedRtlExecutionClosure>
+deriveExecutionClosure(const EvaluationRequest &request) {
+  auto configuration =
+      evaluation::models::projectVerifiedMappedRtlSimulationConfiguration(
+          request);
+  if (!configuration)
+    return configuration.takeError();
+  const auto implementations = request.subjectBindings().subjects(
+      evaluation::models::mappedRtlHardwareImplementationSubjectRole());
+  const auto deployments = request.subjectBindings().subjects(
+      evaluation::models::mappedRtlDeploymentSubjectRole());
+  if (implementations.size() != 1 || deployments.size() != 1 ||
+      !request.workload() || !request.runtimeInput())
+    return invalid("Request does not bind one complete mapped RTL case");
+  auto contract = deriveExternalToolSemanticContract(request);
+  if (!contract)
+    return contract.takeError();
+  return MappedRtlExecutionClosure{
+      configuration->providerBinding, std::move(*contract),
+      implementations.front(), deployments.front(), *request.workload(),
+      *request.runtimeInput()};
+}
+
 llvm::Expected<EvaluationModelProviderPreparation>
 prepareProvider(const EvaluationRequest &request,
                 const CaseArtifactResolution &resolution,
                 const ArtifactStore &artifacts, const BlobStore &blobs,
                 const ExternalToolPreparationContext &context) {
-  auto factsOrUnsupported = detail::deriveMappedRtlInvocationFacts(
-      request, resolution, artifacts, blobs);
-  if (!factsOrUnsupported)
-    return factsOrUnsupported.takeError();
-  if (const auto *unsupported =
-          std::get_if<UnsupportedEvidence>(&*factsOrUnsupported))
-    return EvaluationModelProviderPreparation{*unsupported};
-  auto facts = std::get<detail::MappedRtlInvocationFacts>(
-      std::move(*factsOrUnsupported));
+  (void)resolution;
+  auto closure = deriveExecutionClosure(request);
+  if (!closure)
+    return closure.takeError();
 
   const ExternalToolProviderDescriptor &toolProvider = verilatorProvider();
-  auto cycleLimit = resolveCycleLimit(context.localConfig, toolProvider);
-  if (!cycleLimit)
-    return cycleLimit.takeError();
-  facts.cycleLimit = *cycleLimit;
-  auto debugVerbosity =
-      resolveDebugVerbosity(context.localConfig, toolProvider);
-  if (!debugVerbosity)
-    return debugVerbosity.takeError();
-  auto buildJobs = resolveBuildJobs(context.localConfig, toolProvider);
-  if (!buildJobs)
-    return buildJobs.takeError();
+  auto options = resolveMappedRtlExecutionAttemptOptions(context.localConfig);
+  if (!options)
+    return options.takeError();
 
   const std::filesystem::path destination(context.bundleDestination);
   const std::filesystem::path probeRoot = destination.parent_path();
@@ -192,11 +139,10 @@ prepareProvider(const EvaluationRequest &request,
   if (!tool)
     return tool.takeError();
   if (tool->version !=
-      facts.configuration.providerBinding.stableHdlSimulatorBuildIdentity)
+      closure->simulatorBinding.stableHdlSimulatorBuildIdentity)
     return invalid("resolved Verilator build differs from the model binding");
 
-  std::vector<std::string> inheritEnvironment =
-      inheritedEnvironment(context.localConfig, toolProvider);
+  std::vector<std::string> inheritEnvironment = options->inheritedEnvironment;
   const ExternalToolProviderDescriptor &containerProvider =
       polyArchContainerProvider();
   ShellToolBindingProbe containerProbe(probeRoot.string(),
@@ -215,28 +161,32 @@ prepareProvider(const EvaluationRequest &request,
   if (!runtime)
     return runtime.takeError();
 
-  auto testbench = detail::renderMappedRtlTestbench(facts);
-  if (!testbench)
-    return testbench.takeError();
-  auto driver = detail::renderMappedRtlVerilatorDriver(facts, *buildJobs);
-  if (!driver)
-    return driver.takeError();
+  auto projection = deriveMappedRtlExecutionBundleProjection(
+      *closure, options->cycleLimit, options->buildJobs, artifacts, blobs);
+  if (!projection)
+    return projection.takeError();
+  if (const auto *unsupported =
+          std::get_if<UnsupportedEvidence>(&*projection))
+    return EvaluationModelProviderPreparation{*unsupported};
+  auto bundle = std::get<MappedRtlExecutionBundleProjection>(
+      std::move(*projection));
   std::vector<MaterializedBundleFile> files{
-      {mappedRtlTestbenchPath.str(), std::move(*testbench), std::nullopt, false},
-      {mappedRtlVerilatorDriverPath.str(), std::move(*driver), std::nullopt,
-       false}};
+      {mappedRtlTestbenchPath.str(), std::move(bundle.testbench), std::nullopt,
+       false},
+      {mappedRtlVerilatorDriverPath.str(),
+       std::move(bundle.standaloneVerilatorDriver), std::nullopt, false}};
   files.insert(files.end(),
-               std::make_move_iterator(facts.semanticInputs.begin()),
-               std::make_move_iterator(facts.semanticInputs.end()));
+               std::make_move_iterator(bundle.semanticInputs.begin()),
+               std::make_move_iterator(bundle.semanticInputs.end()));
 
   const std::string executable = tool->executable;
   std::vector<std::string> simulationCommand{
       mappedRtlSimulatorExecutablePath.str()};
-  if (*debugVerbosity != 0)
+  if (options->debugVerbosity != 0)
     simulationCommand.push_back("+LOOM_DEBUG_VERBOSE=" +
-                                std::to_string(*debugVerbosity));
+                                std::to_string(options->debugVerbosity));
   ExternalToolInvocationBundleSpec specification{
-      facts.semanticContract,
+      closure->semanticContract,
       std::move(*tool),
       toolProvider.versionProbe,
       std::move(*runtime),
@@ -261,8 +211,11 @@ importProvider(const EvaluationRequest &request,
                const CaseArtifactResolution &resolution,
                const PreparedExternalToolInvocation &prepared,
                const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto expectation = detail::deriveMappedRtlImportExpectation(
-      request, resolution, artifacts, blobs);
+  auto closure = deriveExecutionClosure(request);
+  if (!closure)
+    return closure.takeError();
+  auto expectation = deriveMappedRtlExecutionImportExpectation(
+      *closure, artifacts, blobs);
   if (!expectation)
     return expectation.takeError();
   auto attempt = importExternalToolInvocationAttempt(
@@ -300,33 +253,17 @@ importProvider(const EvaluationRequest &request,
     return terminalResult(
         ExecutionFailedEvidence{OutcomeReason::AdapterFailure});
 
-  auto facts = detail::deriveMappedRtlObservationFacts(
-      request, resolution, artifacts, blobs);
-  if (!facts)
-    return facts.takeError();
-  auto functional =
-      detail::projectMappedRtlFunctionalObservations(*facts, *result);
-  if (!functional)
-    return functional.takeError();
-  auto launch = ExactRatio::get(result->launchCycle, 1);
-  auto retirement = ExactRatio::get(*result->retirementCycle, 1);
-  auto terminal = ExactRatio::get(result->terminalCycle, 1);
-  if (!launch)
-    return launch.takeError();
-  if (!retirement)
-    return retirement.takeError();
-  if (!terminal)
-    return terminal.takeError();
+  auto boundary = projectMappedRtlSpatialEngineBoundaryResult(
+      *closure, *result, artifacts, blobs);
+  if (!boundary)
+    return boundary.takeError();
 
   sim::SpatialSimulationExecution execution{
       evaluationRequestReference(request),
-      sim::RetiredExecution{},
-      std::move(*functional),
-      sim::SpatialProgressObservations{
-          sim::SpatialEventCoordinate{std::move(*launch), 0},
-          sim::SpatialEventCoordinate{std::move(*retirement), 0},
-          sim::SpatialEventCoordinate{std::move(*terminal), 0}},
-      {}};
+      std::move(boundary->terminal),
+      std::move(boundary->functionalObservations),
+      std::move(boundary->progressObservations),
+      std::move(boundary->activitySummaries)};
   auto finalized =
       sim::finalizeSimulationExecution(execution, resolution, artifacts, blobs);
   if (!finalized)

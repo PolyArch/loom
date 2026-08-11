@@ -27,7 +27,7 @@ int main() {
     fail("backend tool catalog is invalid: " +
          llvm::toString(std::move(error)));
   const llvm::ArrayRef<BackendToolCatalogEntry> catalog = backendToolCatalog();
-  require(catalog.size() == 16,
+  require(catalog.size() == 17,
           "backend tool catalog does not cover every supported provider");
   std::set<std::string> keys;
   std::set<std::string> names;
@@ -105,6 +105,20 @@ int main() {
               openroad.versionProbe.requiredOutputSubstring == "b9a38929e" &&
               openroad.versionProbe.selectedOutputLineSubstring == "b9a38929e",
           "OpenROAD provider contract is incomplete");
+
+  const ExternalToolProviderDescriptor &gem5 = gem5Provider();
+  require(gem5.binding.key == "gem5" &&
+              gem5.binding.executableNames ==
+                  std::vector<std::string>{"gem5.opt"} &&
+              gem5.binding.environmentCandidates.size() == 1 &&
+              gem5.binding.environmentCandidates.front().variable ==
+                  "GEM5_ROOT" &&
+              gem5.versionProbe.arguments ==
+                  std::vector<std::string>{"--build-info"} &&
+              findBackendTool("gem5") &&
+              findBackendTool("gem5")->validatedReleases.front()
+                      .conformanceFeature == "gem5-25.1.0.1",
+          "gem5 provider contract is incomplete");
 
   const ExternalToolProviderDescriptor &vcs = vcsProvider();
   require(vcs.binding.key == "vcs" &&

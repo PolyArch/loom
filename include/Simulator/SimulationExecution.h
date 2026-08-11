@@ -121,6 +121,17 @@ struct SpatialSimulationExecution {
   std::vector<ActorTransitionsActivitySummary> activitySummaries;
 };
 
+/// Invocation-local result at a Spatial engine boundary. The exact workload
+/// and runtime input supply its observation shape; this value has no Artifact
+/// identity and carries neither a Request nor an engine selector. It is the
+/// shared transport used by standalone adapters and the gem5 bridge.
+struct SpatialEngineBoundaryResult {
+  ExecutionTerminal terminal;
+  SpatialFunctionalObservations functionalObservations;
+  SpatialProgressObservations progressObservations;
+  std::vector<ActorTransitionsActivitySummary> activitySummaries;
+};
+
 /// The Deployment-owned observation form selected by a System workload. The
 /// root wire remains untagged; request -> workload selects this form.
 struct SystemSimulationExecution {
@@ -236,6 +247,16 @@ importSimulationExecution(const ArtifactRootReference &reference,
 llvm::Expected<ArtifactRootReference>
 simulationExecutionRequestReference(const ArtifactRootReference &reference,
                                     const ArtifactStore &store);
+
+llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
+    const SpatialEngineBoundaryResult &result,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ArtifactStore &store);
+
+llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
+    llvm::ArrayRef<std::uint8_t> bytes,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ArtifactStore &store);
 
 } // namespace loom::sim
 

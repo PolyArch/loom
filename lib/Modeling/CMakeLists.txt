@@ -7,6 +7,9 @@ add_library(LoomStructuredFabricAnalyticModel
   DfgSimulation.cpp
   FixedTabularGbdt.cpp
   FpaParameterContract.cpp
+  Gem5SystemCgra.cpp
+  Gem5SystemDfg.cpp
+  Gem5SystemRtl.cpp
   MappedRtlSimulation.cpp
   ProductionRegistry.cpp
   SimulationComparison.cpp
@@ -25,6 +28,7 @@ target_link_libraries(LoomStructuredFabricAnalyticModel PUBLIC
   LoomEvaluation
   LoomFabricArtifact
   LoomFrontendCompilation
+  LoomGem5SystemExecution
   LoomNativeSimulationOracle
   LoomSimulator
   MLIRDataflow
