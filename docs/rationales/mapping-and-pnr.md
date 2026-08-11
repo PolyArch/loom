@@ -665,7 +665,19 @@ claiming traversals cannot consume less than that minimum. Exceeding physical
 capacity proves only the current fixed-terminal routing subproblem cannot
 close. Returning the best policy-admitted temporary iterate lets the existing
 outer Action algebra repair the assignment without a new restart mechanism,
-new violation kind, heuristic stagnation rule, or numeric exception.
+new violation kind, or numeric exception.
+
+The exact cut and the no-progress work bound answer different questions. The
+cut proves that one fixed-terminal routing subproblem cannot close. The
+no-progress bound proves nothing about future iterations; it only prevents an
+explicitly bounded search from repeatedly spending the dominant all-net route
+work without improving the Mapping-owned selected rank. Reusing
+`SelectedObjectiveClosure` avoids a second convergence score, while excluding
+candidate-key tie breaks prevents equal-quality route churn from resetting the
+bound. Returning `NoProgress` as work exhaustion preserves the distinction
+between search incompleteness and infeasibility, and still lets a non-final
+Action consume the retained temporary iterate through the existing repair
+algebra.
 
 The complete dynamic-cost baseline is derived once from the complete route
 overlay at an iteration boundary. Candidate-local changes reuse Fabric's raw
@@ -686,6 +698,21 @@ as soon as cooling reaches the minimum can either skip that level or execute it
 twice depending on loop shape. Executing exactly one complete level at the
 minimum gives one finite rule without a second temperature-level budget or a
 host-time termination heuristic.
+
+An exact all-zero final violation vector is different from heuristic no
+progress. It is already the condition the independent final verifier requires,
+so calibration or further equal-energy rerouting cannot improve legality and
+can only spend work or leave the solution. Checking that owner-derived fact on
+entry and after an accepted Action removes the random walk without a visited
+set, candidate-history state, timeout, or second convergence rule.
+
+The same candidate can also propose the same deterministic reroute many times.
+Re-running A* cannot change its result while the selected decisions, route
+trees, and derived costs are unchanged. Remembering only exact self-loops and
+typed failures for that candidate removes repeated graph work without banning
+an equal-energy but physically different route. Clearing the dense key cache
+on the first accepted semantic change avoids a history-dependent tabu rule and
+keeps the cache a removable execution optimization.
 
 The annealing level length counts movable decision owners rather than Action
 choices or routing neighborhoods. A decision with 100 alternatives should

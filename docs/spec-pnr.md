@@ -1794,12 +1794,27 @@ may be retained only when all remaining violations are admitted by
 `TemporaryViolationPolicy`; it is ranked through the existing
 `SelectedObjectiveClosure` using route-related Mapping `V/G`, not A* cost or
 private prices. Equal rank retains the earlier canonical iterate. Work
-exhaustion is not infeasibility. Zero violation is the only normal early-
-convergence test; there is no epsilon, stagnation window, route-signature cycle
-detector, or hidden no-progress threshold. Exhausting the routing policy's
-owner-local work limit returns the best admissible temporary iterate only for
-a non-final Action; otherwise it returns typed non-closure and rolls back.
-Final global closure never returns a temporary iterate.
+exhaustion is not infeasibility.
+
+Every complete non-closed iteration also participates in the explicit
+`no_progress_iteration_limit` work bound. The first such iteration establishes
+the retained best selected rank and a zero consecutive-no-progress count. A
+later iteration resets that count to zero only when
+`SelectedObjectiveClosure` ranks its objective vector strictly before the
+retained best vector; otherwise it increments the count. This comparison uses
+the selected total ordering without a candidate-key tie break. A physically
+different route at equal rank is therefore not progress. A* cost, negotiated
+prices, route signatures, elapsed time, epsilon comparisons, and private
+conflict counts are never progress authorities.
+
+Reaching `no_progress_iteration_limit` is typed `NoProgress` work exhaustion,
+not convergence, success, or proof of infeasibility. An exact fixed-terminal
+capacity-cut certificate takes precedence when both are available from the
+same completed iteration. Exhausting either the no-progress bound or the
+absolute `negotiation_iteration_limit` returns the best admissible temporary
+iterate only for a non-final Action; otherwise it returns typed non-closure and
+rolls back. Final global closure never returns a temporary iterate. There is no
+hidden stagnation threshold or route-signature cycle detector.
 
 After a complete non-closed iteration, Negotiated Routing may also derive an
 exact fixed-terminal capacity-cut certificate. For one overused physical
@@ -2021,8 +2036,8 @@ selection remain SystemMapping decisions.
 Spatial and System PnR have distinct component-view descriptors:
 
 ```text
-loom.spatial_pnr.config.2.0
-loom.system_pnr.config.2.0
+loom.spatial_pnr.config.3.0
+loom.system_pnr.config.3.0
 ```
 
 They use the same field types and codecs but project the independently selected
@@ -2143,6 +2158,7 @@ SearchPolicy {
   routing {
     endpoint_expansion_limit: positive uint64
     negotiation_iteration_limit: positive uint64
+    no_progress_iteration_limit: positive uint64
     negotiation_policy: RoutingNegotiationPolicy
     route_guidance_binding: optional<ResolvedPnrEvaluationBindingRef>
   }
@@ -2559,6 +2575,25 @@ not multiply the count. The domain is rebuilt once at level start for this
 count; later proposal-local rebuilds cannot change the already fixed level
 length.
 
+Before calibration, and after every accepted Action, the annealer queries all
+Mapping-owned final violation projections. If every projection is exactly
+zero, it terminates immediately without consuming another proposal or random
+draw. A candidate that is already closed on entry therefore executes no
+calibration or temperature level. This is the only candidate-state early exit;
+it is deterministic semantic closure, not a stagnation, elapsed-time, or
+accepted-Action limit.
+
+Within one exact candidate state, a worker may retain the canonical keys of
+Actions already proven to produce either a typed transition failure or an
+exact semantic self-loop. A repeated proposal consumes its normal proposal
+slot and proposal-stream draws but does not repeat transition work or consume
+an acceptance draw. The cache is cleared after every accepted semantic state
+change. A self-loop requires equality of every selected decision and every
+touched logical net's rooted physical traversal tree and terminal bindings;
+equal objective energy alone is insufficient. This worker-local cache is
+removable, bounded by the current Action domain, and cannot affect the formal
+candidate sequence.
+
 Calibration rolls back its fixed proposal count, sorts positive deltas in
 stable order, and selects index `floor(q * (n - 1))`. It chooses the minimum
 positive integer temperature that reaches the target under the exact
@@ -2571,14 +2606,15 @@ T_next = max(minimum_temperature,
                      / cooling_ratio.denominator))
 ```
 
-The annealer executes exactly one complete proposal level at
-`minimum_temperature`, then terminates. If calibration chooses a temperature
-at or below the minimum, that first level is the required minimum-temperature
-level. Otherwise, after each complete level above the minimum, it computes
-`T_next`; the first level whose temperature equals the minimum is executed in
-full and is the last level. There is no separate temperature-level limit,
-reheating, online acceptance-ratio adaptation, wall-time or stagnation
-termination, or accepted-Action budget.
+Unless exact semantic closure terminates it first, the annealer executes
+exactly one complete proposal level at `minimum_temperature`, then terminates.
+If calibration chooses a temperature at or below the minimum, that first level
+is the required minimum-temperature level. Otherwise, after each complete
+level above the minimum, it computes `T_next`; the first level whose
+temperature equals the minimum is executed in full and is the last level.
+There is no separate temperature-level limit, reheating, online
+acceptance-ratio adaptation, wall-time or stagnation termination, or
+accepted-Action budget.
 
 `DeterminismPolicy` contains exactly:
 
