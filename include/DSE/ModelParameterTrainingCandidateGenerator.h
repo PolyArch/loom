@@ -84,11 +84,7 @@ resolveFpaGbdtTrainingCandidateGeneratorBinding(
 
 const CandidateGeneratorDescriptor &
 systemRuntimeGbdtTrainingCandidateGeneratorDescriptor();
-
-/// Registers the exact kind-18 descriptor without an execution provider.
-/// Ground-truth import remains unavailable until the Gem5 Simulation Binding
-/// owner supplies its production typed view and closure projector.
-llvm::Error registerSystemRuntimeGbdtTrainingCandidateGeneratorDescriptor();
+llvm::Error registerSystemRuntimeGbdtTrainingCandidateGenerator();
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
 bindSystemRuntimeGbdtTrainingCandidateGeneratorInputs(

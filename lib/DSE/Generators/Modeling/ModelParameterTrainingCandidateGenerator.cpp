@@ -25,6 +25,8 @@ namespace {
 
 using evaluation::models::FpaGbdtParameters;
 using evaluation::models::FpaTrainingEvidenceSample;
+using evaluation::models::SystemRuntimeGbdtParameters;
+using evaluation::models::SystemRuntimeTrainingSample;
 
 constexpr llvm::StringLiteral kConfigSchema =
     "loom.deterministic_gbdt_training.config.1.0";
@@ -391,6 +393,130 @@ const CandidateGeneratorProvider &fpaProvider() {
   return provider;
 }
 
+struct ImportedSystemRuntimePartition final {
+  std::vector<SystemRuntimeTrainingSample> samples;
+  std::set<std::vector<std::uint8_t>> sampleGroups;
+};
+
+llvm::Expected<ImportedSystemRuntimePartition>
+importSystemRuntimePartition(llvm::ArrayRef<ArtifactRootReference> evidence,
+                             const ArtifactStore &store,
+                             const BlobStore &blobs) {
+  ImportedSystemRuntimePartition partition;
+  partition.samples.reserve(evidence.size());
+  for (const ArtifactRootReference &reference : evidence) {
+    auto sample = evaluation::models::importSystemRuntimeTrainingEvidenceSample(
+        reference, store, blobs);
+    if (!sample)
+      return sample.takeError();
+    partition.sampleGroups.insert(sample->sampleGroupKey);
+    partition.samples.push_back(std::move(*sample));
+  }
+  return partition;
+}
+
+llvm::Error validateSystemRuntimeTargetKeys(
+    const ImportedSystemRuntimePartition &training,
+    const ImportedSystemRuntimePartition &validation,
+    const ImportedSystemRuntimePartition &heldOut) {
+  const std::vector<std::uint8_t> &target =
+      training.samples.front().groundTruthTargetKey;
+  for (const ImportedSystemRuntimePartition *partition :
+       {&training, &validation, &heldOut})
+    for (const SystemRuntimeTrainingSample &sample : partition->samples)
+      if (sample.groundTruthTargetKey != target)
+        return invalid("Evidence partitions mix ground-truth target keys");
+  return llvm::Error::success();
+}
+
+llvm::Expected<CandidateGeneratorProviderResult> invokeSystemRuntimeProvider(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  auto resolved = adoptResolvedDeterministicGbdtTrainingConfigView(
+      configSchemaBytes(), binding.canonicalConfigBytes(),
+      binding.configDigest());
+  if (!resolved)
+    return resolved.takeError();
+  const DeterministicGbdtTrainingConfig &config = resolved->config();
+  if (inputBindings[0].artifacts.size() < config.minimumTrainingRowsPerLeaf)
+    return invalid("Training partition is smaller than one required leaf");
+
+  auto training =
+      importSystemRuntimePartition(inputBindings[0].artifacts, store, blobs);
+  if (!training)
+    return training.takeError();
+  auto validation =
+      importSystemRuntimePartition(inputBindings[1].artifacts, store, blobs);
+  if (!validation)
+    return validation.takeError();
+  auto heldOut =
+      importSystemRuntimePartition(inputBindings[2].artifacts, store, blobs);
+  if (!heldOut)
+    return heldOut.takeError();
+  if (intersects(training->sampleGroups, validation->sampleGroups) ||
+      intersects(training->sampleGroups, heldOut->sampleGroups) ||
+      intersects(validation->sampleGroups, heldOut->sampleGroups))
+    return invalid("calibration sample groups overlap across partitions");
+  if (llvm::Error error =
+          validateSystemRuntimeTargetKeys(*training, *validation, *heldOut))
+    return std::move(error);
+
+  std::optional<evaluation::FinalizedModelParameterBundle> priorBundle;
+  const SystemRuntimeGbdtParameters *prior = nullptr;
+  if (!inputBindings[3].artifacts.empty()) {
+    auto imported = evaluation::importModelParameterBundle(
+        inputBindings[3].artifacts.front(), store, blobs);
+    if (!imported)
+      return imported.takeError();
+    priorBundle = std::move(*imported);
+    prior = priorBundle->parametersIf<SystemRuntimeGbdtParameters>();
+    if (!prior)
+      return invalid("prior bundle has a foreign parameter owner type");
+    if (prior->groundTruthTargetKey() !=
+        llvm::ArrayRef<std::uint8_t>(
+            training->samples.front().groundTruthTargetKey))
+      return invalid("prior bundle has a different ground-truth target key");
+  }
+
+  evaluation::models::SystemRuntimeGbdtTrainingConfig trainingConfig{
+      config.seed,
+      config.treeCount,
+      config.maximumDepth,
+      config.minimumTrainingRowsPerLeaf,
+      config.learningRateNumerator,
+      config.learningRateDenominator};
+  auto parameters = evaluation::models::trainSystemRuntimeGbdtParameters(
+      training->samples, trainingConfig, prior);
+  if (!parameters)
+    return parameters.takeError();
+  evaluation::OwnerValue owner =
+      evaluation::OwnerValue::get(std::move(*parameters));
+  auto bundle = evaluation::finalizeModelParameterBundle(
+      evaluation::models::systemRuntimeModelParameterContractRef(), owner,
+      store, blobs);
+  if (!bundle)
+    return bundle.takeError();
+
+  const std::uint64_t work = config.treeCount;
+  return CandidateGeneratorProviderResult{
+      CompletedCandidateGeneratorResult{
+          {{CandidateGeneratorOutputSlotRef(0), {bundle->reference()}}},
+          {{CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+            CandidateGeneratorOutputSlotRef(0),
+            bundle->reference(),
+            {},
+            {}}}},
+      {{CandidateGeneratorWorkUnitRef(0), work, work}}};
+}
+
+const CandidateGeneratorProvider &systemRuntimeProvider() {
+  static const CandidateGeneratorProvider provider{
+      systemRuntimeDescriptor().reference(),
+      CandidateGeneratorInProcessProvider{invokeSystemRuntimeProvider}};
+  return provider;
+}
+
 void canonicalizeReferences(std::vector<ArtifactRootReference> &references) {
   llvm::sort(references, artifactRootReferenceLess);
   references.erase(std::unique(references.begin(), references.end()),
@@ -493,10 +619,13 @@ systemRuntimeGbdtTrainingCandidateGeneratorDescriptor() {
   return systemRuntimeDescriptor();
 }
 
-llvm::Error registerSystemRuntimeGbdtTrainingCandidateGeneratorDescriptor() {
+llvm::Error registerSystemRuntimeGbdtTrainingCandidateGenerator() {
   if (llvm::Error error = evaluation::registerProductionEvaluationRegistry())
     return error;
-  return registerCandidateGeneratorDescriptor(systemRuntimeDescriptor());
+  if (llvm::Error error =
+          registerCandidateGeneratorDescriptor(systemRuntimeDescriptor()))
+    return error;
+  return registerCandidateGeneratorProvider(systemRuntimeProvider());
 }
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
@@ -505,8 +634,7 @@ bindSystemRuntimeGbdtTrainingCandidateGeneratorInputs(
     llvm::ArrayRef<ArtifactRootReference> validation,
     llvm::ArrayRef<ArtifactRootReference> heldOut,
     const std::optional<ArtifactRootReference> &priorBundle) {
-  if (llvm::Error error =
-          registerSystemRuntimeGbdtTrainingCandidateGeneratorDescriptor())
+  if (llvm::Error error = registerSystemRuntimeGbdtTrainingCandidateGenerator())
     return std::move(error);
   std::vector<ArtifactRootReference> trainingSet = training.vec();
   std::vector<ArtifactRootReference> validationSet = validation.vec();
@@ -531,8 +659,7 @@ bindSystemRuntimeGbdtTrainingCandidateGeneratorInputs(
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolveSystemRuntimeGbdtTrainingCandidateGeneratorBinding(
     const ResolvedDeterministicGbdtTrainingConfigView &config) {
-  if (llvm::Error error =
-          registerSystemRuntimeGbdtTrainingCandidateGeneratorDescriptor())
+  if (llvm::Error error = registerSystemRuntimeGbdtTrainingCandidateGenerator())
     return std::move(error);
   return ResolvedCandidateGeneratorBinding::get(
       systemRuntimeDescriptor().reference(), config.canonicalViewBytes(),

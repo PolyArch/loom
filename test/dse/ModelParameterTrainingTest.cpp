@@ -315,8 +315,7 @@ void systemRuntimeIndependentCore() {
   require(imported.parametersIf<SystemRuntimeGbdtParameters>() != nullptr,
           "System Runtime bundle did not strict-import its owner payload");
 
-  requireSuccess(
-      registerSystemRuntimeGbdtTrainingCandidateGeneratorDescriptor());
+  requireSuccess(registerSystemRuntimeGbdtTrainingCandidateGenerator());
   const CandidateGeneratorDescriptor &descriptor =
       systemRuntimeGbdtTrainingCandidateGeneratorDescriptor();
   require(descriptor.kind == systemRuntimeGbdtTrainingCandidateGeneratorKind &&

@@ -14,6 +14,7 @@
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/DfgSimulation.h"
 #include "Evaluation/Models/MappedRtlSimulation.h"
+#include "Evaluation/Models/SystemRuntimeParameterContract.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "ExternalTool/InvocationBundle.h"
 #include "ExternalTool/LocalConfig.h"
@@ -1109,8 +1110,22 @@ CompletedRun runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
     local.tools[external_tool::verilatorProvider().binding.key]
         .providerOptions["max_cycles"] = 128;
   }
-  return runExternal(test, request, resolution, std::move(local),
-                     tree.path("system-bundle"), artifacts, blobs);
+  CompletedRun completed =
+      runExternal(test, request, resolution, std::move(local),
+                  tree.path("system-bundle"), artifacts, blobs);
+  if (cell == ExecutionMatrixCell::SystemCgra) {
+    auto sample = take(
+        test, evaluation::models::importSystemRuntimeTrainingEvidenceSample(
+                  completed.evidenceReference, artifacts, blobs));
+    require(test,
+            !sample.groundTruthTargetKey.empty() &&
+                !sample.sampleGroupKey.empty() &&
+                sample.features.fabric.acceleratorCoreOccurrenceCount == 4 &&
+                sample.features.mapping.spatialContextDomainCount == 4,
+            "System Runtime training projection lost the heterogeneous "
+            "execution context");
+  }
+  return completed;
 }
 
 std::uint64_t

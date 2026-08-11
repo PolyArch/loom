@@ -69,8 +69,7 @@ int main() {
   requireSuccess(loom::dse::registerPortableSystemRtlCandidateGenerator());
   requireSuccess(loom::dse::registerFpaGbdtTrainingCandidateGenerator());
   requireSuccess(
-      loom::dse::
-          registerSystemRuntimeGbdtTrainingCandidateGeneratorDescriptor());
+      loom::dse::registerSystemRuntimeGbdtTrainingCandidateGenerator());
 
   requireRegistered(CandidateGeneratorKind(0),
                     loom::dse::spatialPnrCandidateGeneratorDescriptor());
