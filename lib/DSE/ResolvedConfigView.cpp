@@ -20,7 +20,7 @@
 namespace loom::dse {
 namespace {
 
-constexpr char schemaDescriptor[] = "loom.dse.config.1.0";
+constexpr char schemaDescriptor[] = "loom.dse.config.1.1";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -489,10 +489,20 @@ void encodePlanInput(Encoder &encoder, const PlanInputBinding &input) {
       encoder.root(artifact);
     return;
   }
-  const PlanOutputRef output = std::get<PlanOutputRef>(input);
-  encoder.u32(1);
-  encoder.u64(output.producerNodeOrdinal);
-  encoder.u32(output.outputSlotOrdinal);
+  if (const auto *output = std::get_if<PlanOutputRef>(&input)) {
+    encoder.u32(1);
+    encoder.u64(output->producerNodeOrdinal);
+    encoder.u32(output->outputSlotOrdinal);
+    return;
+  }
+  const auto &join = std::get<BoundedPlanOutputJoin>(input);
+  encoder.u32(2);
+  encoder.u64(join.outputs.size());
+  for (PlanOutputRef output : join.outputs) {
+    encoder.u64(output.producerNodeOrdinal);
+    encoder.u32(output.outputSlotOrdinal);
+  }
+  encoder.u64(join.maximumArtifacts);
 }
 
 llvm::Expected<PlanInputBinding> decodePlanInput(Decoder &decoder) {
@@ -521,6 +531,27 @@ llvm::Expected<PlanInputBinding> decodePlanInput(Decoder &decoder) {
     if (!slot)
       return slot.takeError();
     return PlanInputBinding{PlanOutputRef{*producer, *slot}};
+  }
+  if (*tag == 2) {
+    auto count = decoder.count(12);
+    if (!count)
+      return count.takeError();
+    BoundedPlanOutputJoin join;
+    join.outputs.reserve(*count);
+    for (std::size_t index = 0; index != *count; ++index) {
+      auto producer = decoder.u64();
+      auto slot = decoder.u32();
+      if (!producer)
+        return producer.takeError();
+      if (!slot)
+        return slot.takeError();
+      join.outputs.push_back(PlanOutputRef{*producer, *slot});
+    }
+    auto maximum = decoder.u64();
+    if (!maximum)
+      return maximum.takeError();
+    join.maximumArtifacts = *maximum;
+    return PlanInputBinding{std::move(join)};
   }
   return invalid("plan input has an unknown tag");
 }
@@ -855,13 +886,22 @@ llvm::Error validateCanonicalInputs(const ViewParts &parts) {
         return invalid("Promote quality gate reference is out of range");
     }
     for (const PlanInputBinding &input : inputs) {
-      const auto *exact = std::get_if<ExactPlanArtifacts>(&input);
-      if (!exact)
+      if (const auto *exact = std::get_if<ExactPlanArtifacts>(&input)) {
+        if (!llvm::is_sorted(exact->artifacts, artifactRootReferenceLess) ||
+            std::adjacent_find(exact->artifacts.begin(),
+                               exact->artifacts.end()) !=
+                exact->artifacts.end())
+          return invalid("exact plan artifacts are not canonical and unique");
         continue;
-      if (!llvm::is_sorted(exact->artifacts, artifactRootReferenceLess) ||
-          std::adjacent_find(exact->artifacts.begin(),
-                             exact->artifacts.end()) != exact->artifacts.end())
-        return invalid("exact plan artifacts are not canonical and unique");
+      }
+      const auto *join = std::get_if<BoundedPlanOutputJoin>(&input);
+      if (!join)
+        continue;
+      if (join->maximumArtifacts == 0 || join->outputs.empty() ||
+          !llvm::is_sorted(join->outputs) ||
+          std::adjacent_find(join->outputs.begin(), join->outputs.end()) !=
+              join->outputs.end())
+        return invalid("bounded output join is not canonical and bounded");
     }
   }
   return llvm::Error::success();

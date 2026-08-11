@@ -86,13 +86,27 @@ struct PlanOutputRef final {
   friend bool operator!=(PlanOutputRef lhs, PlanOutputRef rhs) {
     return !(lhs == rhs);
   }
+  friend bool operator<(PlanOutputRef lhs, PlanOutputRef rhs) {
+    if (lhs.producerNodeOrdinal != rhs.producerNodeOrdinal)
+      return lhs.producerNodeOrdinal < rhs.producerNodeOrdinal;
+    return lhs.outputSlotOrdinal < rhs.outputSlotOrdinal;
+  }
 };
 
 struct ExactPlanArtifacts final {
   std::vector<ArtifactRootReference> artifacts;
 };
 
-using PlanInputBinding = std::variant<ExactPlanArtifacts, PlanOutputRef>;
+/// Explicit finite union of prior plan outputs. The bound is semantic work
+/// policy: runtime resolution canonicalizes and deduplicates the union before
+/// retaining its first `maximumArtifacts` roots.
+struct BoundedPlanOutputJoin final {
+  std::vector<PlanOutputRef> outputs;
+  std::uint64_t maximumArtifacts = 0;
+};
+
+using PlanInputBinding =
+    std::variant<ExactPlanArtifacts, PlanOutputRef, BoundedPlanOutputJoin>;
 
 struct PlanValueDescriptor final {
   PlanValueRole role;

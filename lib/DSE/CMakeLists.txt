@@ -4,6 +4,9 @@ add_library(LoomDSE
   GroundTruthPlan.cpp
   HardwareImplementationEvaluationAcquisition.cpp
   InvocationManifest.cpp
+  JointDesignExploration.cpp
+  JointDesignPolicy.cpp
+  JointFrontier.cpp
   SpatialMappingEvaluationAcquisition.cpp
   StructuredEvaluationAcquisition.cpp
   StructuredOwnership.cpp
@@ -18,6 +21,7 @@ target_link_libraries(LoomDSE PUBLIC
   LoomCommon
   LoomConfig
   LoomDSECandidateGenerator
+  LoomDSEMappingGenerator
   LoomDSEObjective
   LoomDSEPolicy
   LoomEDAAsicContracts
@@ -26,8 +30,10 @@ target_link_libraries(LoomDSE PUBLIC
   LoomHardwareImplementation
   LoomMappingArtifact
   LoomNativeSimulationOracle
+  LoomPnRGenerator
   LoomSimulator
   LoomStructuredFabricAnalyticModel
+  LoomTechMapping
   LLVMSupport
 )
 

@@ -94,16 +94,21 @@ ancestorNodes(const ResolvedDsePlan &plan) {
     std::vector<std::uint64_t> &nodeAncestors = ancestors[nodeOrdinal];
     for (const PlanInputBinding &binding :
          inputBindings(plan.nodes()[nodeOrdinal])) {
-      const auto *output = std::get_if<PlanOutputRef>(&binding);
-      if (!output)
-        continue;
-      if (output->producerNodeOrdinal >= nodeOrdinal)
-        return invalid("resolved plan contains a non-prior use-def edge");
-      nodeAncestors.push_back(output->producerNodeOrdinal);
-      const std::vector<std::uint64_t> &transitive =
-          ancestors[output->producerNodeOrdinal];
-      nodeAncestors.insert(nodeAncestors.end(), transitive.begin(),
-                           transitive.end());
+      std::vector<PlanOutputRef> outputs;
+      if (const auto *output = std::get_if<PlanOutputRef>(&binding))
+        outputs.push_back(*output);
+      else if (const auto *join =
+                   std::get_if<BoundedPlanOutputJoin>(&binding))
+        outputs = join->outputs;
+      for (PlanOutputRef output : outputs) {
+        if (output.producerNodeOrdinal >= nodeOrdinal)
+          return invalid("resolved plan contains a non-prior use-def edge");
+        nodeAncestors.push_back(output.producerNodeOrdinal);
+        const std::vector<std::uint64_t> &transitive =
+            ancestors[output.producerNodeOrdinal];
+        nodeAncestors.insert(nodeAncestors.end(), transitive.begin(),
+                             transitive.end());
+      }
     }
     llvm::sort(nodeAncestors);
     nodeAncestors.erase(std::unique(nodeAncestors.begin(), nodeAncestors.end()),
@@ -189,10 +194,24 @@ exactCandidateCount(const PlanInputBinding &binding,
                     const CompletedDsePlanExecution &completedPrefix) {
   if (const auto *exact = std::get_if<ExactPlanArtifacts>(&binding))
     return static_cast<std::uint64_t>(exact->artifacts.size());
-  const PlanOutputRef output = std::get<PlanOutputRef>(binding);
-  if (!completedPrefix.hasOutput(output))
-    return std::optional<std::uint64_t>{};
-  return static_cast<std::uint64_t>(completedPrefix.resolve(output).size());
+  if (const auto *output = std::get_if<PlanOutputRef>(&binding)) {
+    if (!completedPrefix.hasOutput(*output))
+      return std::optional<std::uint64_t>{};
+    return static_cast<std::uint64_t>(completedPrefix.resolve(*output).size());
+  }
+  const auto &join = std::get<BoundedPlanOutputJoin>(binding);
+  std::vector<ArtifactRootReference> artifacts;
+  for (PlanOutputRef output : join.outputs) {
+    if (!completedPrefix.hasOutput(output))
+      return std::optional<std::uint64_t>{};
+    llvm::ArrayRef<ArtifactRootReference> source =
+        completedPrefix.resolve(output);
+    artifacts.insert(artifacts.end(), source.begin(), source.end());
+  }
+  llvm::sort(artifacts, artifactRootReferenceLess);
+  artifacts.erase(std::unique(artifacts.begin(), artifacts.end()),
+                  artifacts.end());
+  return std::min<std::uint64_t>(artifacts.size(), join.maximumArtifacts);
 }
 
 llvm::Expected<std::optional<std::uint64_t>>

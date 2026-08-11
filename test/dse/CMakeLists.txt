@@ -45,6 +45,10 @@ add_executable(loom-dse-ground-truth-campaign-integration-test
   ../eda/OpenRoadPhysicalTestSupport.cpp
 )
 
+add_executable(loom-dse-joint-design-exploration-test
+  JointDesignExplorationTest.cpp
+)
+
 target_include_directories(loom-dse-ground-truth-campaign-integration-test PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/../eda
 )
@@ -154,6 +158,18 @@ target_link_libraries(loom-dse-ground-truth-campaign-integration-test PRIVATE
   LoomDSE
   LoomEDAOpenSource
   LoomHardwareConfigurationTestSupport
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-joint-design-exploration-test PRIVATE
+  LoomADGBuilder
+  LoomDSE
+  MLIRArithDialect
+  MLIRDataflow
+  MLIRDLTIDialect
+  MLIRFuncDialect
+  MLIRIR
+  MLIRParser
   LLVMSupport
 )
 

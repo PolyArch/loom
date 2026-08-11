@@ -503,6 +503,71 @@ void exerciseOrderedTypedUseDef() {
               .front()
               .lineageEdges.size() != 2)
     fail("missing Promote provider did not produce typed Incomplete");
+
+  const std::vector<DsePlanNodeDefinition> joinedNodes = {
+      makeNode(sourceGenerator.reference(),
+               {ExactPlanArtifacts{{executionSource}}}, digest),
+      makeNode(sourceGenerator.reference(),
+               {ExactPlanArtifacts{{executionSource}}}, digest),
+      makeNode(unavailableGenerator.reference(),
+               {BoundedPlanOutputJoin{{PlanOutputRef{0, 0},
+                                       PlanOutputRef{1, 0}},
+                                      1}},
+               digest),
+  };
+  const std::vector<std::uint8_t> encodedJoin =
+      canonicalDsePlanNodeBytes(joinedNodes.back());
+  DsePlanNodeDefinition adoptedJoin =
+      take(adoptDsePlanNode(encodedJoin));
+  const auto &adoptedJoinBinding =
+      std::get<BoundedPlanOutputJoin>(
+          std::get<GeneratePlanNodeDefinition>(adoptedJoin).inputBindings[0]);
+  if (adoptedJoinBinding.outputs !=
+          std::vector<PlanOutputRef>{{0, 0}, {1, 0}} ||
+      adoptedJoinBinding.maximumArtifacts != 1)
+    fail("bounded output join codec changed its sources or bound");
+  ResolvedDseConfigView joinedView =
+      resolveView(joinedNodes, objectiveCatalogs, qualityGates);
+  DsePlanExecutionOutcome joined =
+      take(executeDsePlan(joinedView, store, blobs));
+  const auto *joinedIncomplete =
+      std::get_if<IncompleteDsePlanExecution>(&joined);
+  const GenerateInvocationRecord *joinedInvocation =
+      joinedIncomplete ? joinedIncomplete->incompleteGenerateInvocation()
+                       : nullptr;
+  if (!joinedIncomplete || joinedIncomplete->nodeOrdinal() != 2 ||
+      !joinedInvocation || joinedInvocation->inputBindings.size() != 1 ||
+      joinedInvocation->inputBindings.front().artifacts !=
+          std::vector<ArtifactRootReference>{generated.front()})
+    fail("bounded output join did not canonicalize, deduplicate, and truncate");
+
+  std::vector<DsePlanNodeDefinition> duplicateJoin = {
+      makeNode(sourceGenerator.reference(),
+               {ExactPlanArtifacts{{executionSource}}}, digest),
+      makeNode(unavailableGenerator.reference(),
+               {BoundedPlanOutputJoin{{PlanOutputRef{0, 0},
+                                       PlanOutputRef{0, 0}},
+                                      1}},
+               digest),
+  };
+  auto rejectedDuplicateJoin = ResolvedDsePlan::get(
+      duplicateJoin, {}, objectiveCatalogs, qualityGates);
+  if (rejectedDuplicateJoin)
+    fail("plan accepted duplicate bounded output join sources");
+  requireErrorContains(rejectedDuplicateJoin.takeError(),
+                       "canonical and unique");
+
+  std::vector<DsePlanNodeDefinition> zeroBoundJoin = {
+      makeNode(sourceGenerator.reference(),
+               {ExactPlanArtifacts{{executionSource}}}, digest),
+      makeNode(unavailableGenerator.reference(),
+               {BoundedPlanOutputJoin{{PlanOutputRef{0, 0}}, 0}}, digest),
+  };
+  auto rejectedZeroBound =
+      ResolvedDsePlan::get(zeroBoundJoin, {}, objectiveCatalogs, qualityGates);
+  if (rejectedZeroBound)
+    fail("plan accepted a zero-bound output join");
+  requireErrorContains(rejectedZeroBound.takeError(), "positive artifact");
   llvm::sys::fs::remove_directories(storePath);
 
   std::vector<DsePlanNodeDefinition> forward;
