@@ -459,6 +459,23 @@ sound bounds may reject impossible designs, while analytical and learned
 estimates only rank, promote, or choose which candidates receive expensive
 evidence.
 
+The frontier join is expressed by two narrow Candidate Generator adapters. One
+reuses the Dataflow rewrite owner over a bounded Dataflow/System pair prefix;
+the other reuses the three root-complete Mapping owners and returns their
+ordinary Artifacts. This split preserves the real software-generation and
+Mapping boundaries while allowing a later Promote node to narrow either
+frontier. A single generic joint-action generator would absorb compiler,
+Mapping, hardware, and Evaluation semantics. A persistent pair Artifact would
+add identity without an independently observable fact. Dynamically adding
+plan nodes after execution would instead create the rejected runtime workflow
+and make recovery scheduler-dependent.
+
+Diagonal canonical pair order gives both input frontiers early representation
+without allocating the full product. The positive pair bound is resolved
+semantic policy, so truncation means exactly that the declared finite prefix
+was searched. It does not imply that unvisited pairs are infeasible or that a
+selected result is globally optimal.
+
 ## Why Ground-Truth Collection Reuses Plans And Evidence
 
 A campaign is operationally large but semantically ordinary: a finite plan

@@ -2467,8 +2467,11 @@ kinds 0 through 11:
 | 16 | `portable_system_rtl` | finalized architecture-only portable RTL `loom.hardware_implementation 3.0` children |
 | 17 | `fpa_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.fpa", 3.0, 0)` |
 | 18 | `system_runtime_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.system_runtime", 1.0, 0)` |
+| 19 | `joint_dataflow_frontier` | finalized Canonical Dataflow children produced for an explicit bounded Dataflow/System frontier |
+| 20 | `joint_mapping_frontier` | finalized TechMapping, SpatialMapping, and SystemMapping roots plus the exact successfully mapped Dataflow and System input roots |
 
-The hardware kinds use five descriptor-owned typed configuration roots:
+The hardware and frontier kinds use the following descriptor-owned typed
+configuration roots:
 
 ```text
 FabricTemplateConfig {
@@ -2492,6 +2495,22 @@ SystemCompositionRewriteConfig {
   decision_domains:
     canonical nonempty set<SystemCompositionDecisionDomain>
   max_children_per_parent: positive uint64
+}
+
+BoundedFrontierPolicy {
+  maximum_pairs: positive uint64
+}
+
+JointDataflowFrontierConfig {
+  frontier: BoundedFrontierPolicy
+  dataflow_rewrite: exact resolved DataflowRewriteGeneratorConfigView
+}
+
+JointMappingFrontierConfig {
+  frontier: BoundedFrontierPolicy
+  tech_mapping: exact resolved TechMappingConfigView
+  spatial_pnr: exact resolved SpatialPnrConfigView
+  system_pnr: exact resolved SystemPnrConfigView
 }
 
 ```
@@ -2533,16 +2552,17 @@ default neighborhood. `max_children_per_parent` truncates the descriptor's
 canonical decision order before construction and is semantic work policy, not
 an execution limit.
 
-The topology generator consumes exactly one `fabric.module` parent. Its closed
-decision union is `AddOccurrence`, `RemoveOccurrence`,
+The topology generator consumes a finite canonical set of `fabric.module`
+parents. Each generated decision names and changes exactly one parent. Its
+closed decision union is `AddOccurrence`, `RemoveOccurrence`,
 `ReplacePointConnection`, `AdjustParallelConnectionCount`, and
 `ChangeBoundaryInventory`. Each decision uses an exact typed PE, switch,
 memory, FIFO, or boundary prototype and exact Fabric local references; there is
 no generic node record. It changes connectivity, occurrence inventory, or
 module interface, but not an occurrence's internal implementation policy.
 
-The spatial-microarchitecture generator also consumes exactly one
-`fabric.module` parent. Its closed decision union is `ChangePeKind`,
+The spatial-microarchitecture generator has the same finite-parent input and
+one-exact-parent decision rule. Its closed decision union is `ChangePeKind`,
 `ResizeInstructionStore`, `ChangeFuInventory`, `ChangeFuCapability`,
 `ChangeSwitchModeOrScheduleCapacity`, `ResizeMemory`,
 `ChangeMemoryOperationTable`, `ResizeFifo`, and
@@ -2550,9 +2570,10 @@ The spatial-microarchitecture generator also consumes exactly one
 parameter domain. The generator cannot create an operation capability, memory
 contract, scheduling rule, or bypass meaning outside those domains.
 
-The system-composition generator consumes one exact `fabric.system` parent and
-an explicit canonical set of admissible finalized Module candidates. Its
-closed decision union is `AddAccCore`, `RemoveAccCore`,
+The system-composition generator consumes a finite canonical set of exact
+`fabric.system` parents and an explicit canonical set of admissible finalized
+Module candidates. Each generated decision changes exactly one System parent.
+Its closed decision union is `AddAccCore`, `RemoveAccCore`,
 `ReplaceSpatialAttachment`, `SelectInstructionCoreRealization`,
 `ChangeTransportResource`, `ChangeTransportConnection`, and
 `ChangeServiceOrMemoryAttachment`. It preserves the root-complete ISA/ABI
@@ -2584,6 +2605,39 @@ draft produces no child and no lineage edge; it cannot partially mutate the
 parent or leave a DSE-only Fabric form. A completed child carries one
 `CandidateDecision` lineage contribution whose payload is owned by that exact
 generator descriptor. Identity deduplication occurs only after finalization.
+
+Kinds 19 and 20 are the only built-in cross-frontier adapters. Both index the
+canonical Dataflow and System input sets and visit pairs by increasing
+`dataflow_ordinal + system_ordinal`, then by increasing Dataflow ordinal. The
+visited domain is the prefix of that order with at most `maximum_pairs`
+members. They compute each next pair directly and never materialize either the
+complete Cartesian product or a persistent pair object. An empty input set
+therefore completes with empty outputs. Reaching `maximum_pairs` completes the
+declared finite domain; it is not an incomplete search or a claim of global
+optimality.
+
+Kind 19 invokes the exact registered Dataflow rewrite generator separately for
+each visited pair and returns its ordinary Canonical Dataflow children. The
+underlying generator remains the sole owner of rewrite admission, decisions,
+lineage payloads, and local work. Convergent children deduplicate by normal
+Dataflow identity. The adapter adds only explicit pair-attempt accounting and
+cannot define another rewrite rule or Fabric-capability predicate.
+
+Kind 20 invokes the exact root-complete TechMapping, Spatial PnR, and System PnR
+generators in that order for every visited pair. It returns every finalized
+stage Artifact, and returns a Dataflow or System input root in its pass-through
+output exactly when at least one complete SystemMapping for that pair was
+produced. A proven-infeasible stage contributes no SystemMapping for that pair
+and does not invalidate other pairs. A typed incomplete stage stops at that
+pair and retains only complete stage Artifacts already returned by the nested
+owners. Invalid or internal owner failure aborts the Generate invocation.
+Nested work catalogs are projected with stage-qualified names; their meanings
+and counts remain derived from the registered owner descriptors.
+
+Neither adapter creates a `JointCandidate`, changes Mapping legality, ranks a
+candidate, acquires Evidence, or owns a mutable frontier. Their input bindings,
+resolved pair bound, nested exact config views, output slots, and work summaries
+make the complete bounded join visible in the ordinary Generate record.
 
 Module candidates are intermediate hardware design inputs. A joint
 software/hardware search promotes a complete `fabric.system` before system
