@@ -569,6 +569,17 @@ enum, fallback order, or simulator policy. Standalone simulation and the
 Bridge use the same engine implementation; only the environment adapter and
 time authority differ.
 
+For mapped RTL, "the same engine implementation" means the same exact
+Deployment-selected RTL, configuration image, harness semantics, result
+normalization, and `MappedRtlSimulatorBinding` used by the standalone mapped
+RTL provider. The System descriptor prepares and imports its own invocation;
+it does not adopt standalone Evidence. The frozen HDL compiler produces the
+invocation-local engine executable. That executable may launch only the exact
+gem5 binary admitted by the `Gem5SimulationBinding`; the bundle must validate
+that binary as a content-fingerprinted external input before execution. This
+keeps the existing one-frozen-tool bundle invariant without inventing a
+multi-tool selection authority.
+
 The gem5 event queue is the only whole-system time authority. A SpatialCore
 execution advances to its next system-boundary observable, such as a memory
 request, completion, interrupt, mapped boundary transfer, or deterministic

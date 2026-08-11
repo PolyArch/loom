@@ -96,6 +96,17 @@ would execute a different environment. The dedicated case therefore adds no
 engine field or execution subtype: Deployment supplies only the exact launch
 closure, and the Spatial workload still owns the execution boundary.
 
+The gem5-backed RTL descriptor reuses the standalone descriptor's typed HDL
+simulator binding and mapped-RTL closure, but not its Request or Evidence. A
+generic multi-tool bundle was rejected because it would add a new tool-cohort
+authority to every external provider. A precompiled RTL-engine Artifact was
+also rejected because it would duplicate the exact HardwareImplementation,
+Deployment, and simulator-build closure. Instead, the frozen HDL compiler
+creates the invocation-local engine, while the independently owned gem5 binary
+is an external file whose content is checked before that engine launches it.
+This is the smallest composition that preserves both build identities and one
+System time authority.
+
 The HostCore can be understood as the cluster's additional stored-program
 engine, but not as an AccCore: it has no SpatialCore and no `dataflow.thread`
 identity. Requiring one compatible RISC-V ISA/ABI cohort for the HostCore and

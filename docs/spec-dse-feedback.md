@@ -350,7 +350,12 @@ and use a zero-field config view. Model kind 14 consumes that same contract for
 the hardware-only case. Model kinds 15 and 16 consume the exact System Runtime
 parameter contract. Model kinds 17, 18, and 19 are separate descriptors rather
 than values of a bridge-private engine enum; none may fall back to another
-fidelity. Model kind 20 is the initial exact FPA ground-truth descriptor; its
+fidelity. Kinds 17 and 18 use distinct zero-field config views. Kind 19 uses
+the same exact HDL-simulator config-view contract and
+`MappedRtlSimulatorBinding` owner as kind 21. This reuse selects only the HDL
+compiler build; it neither adopts kind 21 Evidence nor changes kind 19's
+System case, Request, importer, or gem5 time authority. Model kind 20 is the
+initial exact FPA ground-truth descriptor; its
 resolved config view names one OpenROAD provider build rather than treating all
 physical Evidence as interchangeable. The exact descriptor owns the routed
 static-analysis and report-normalization contract.
@@ -420,7 +425,11 @@ the exact descriptor fixes the SpatialCore fidelity. The gem5 event queue is
 their sole whole-system time authority. DFG execution may publish functional
 observations without claiming CGRA or RTL timing; kind 18 is the initial
 learned-runtime ground-truth target, and kind 19 remains a distinct higher-cost
-fidelity.
+fidelity. Kind 19 compiles and runs the same Deployment-selected mapped-RTL
+closure as kind 21 under its exact `MappedRtlSimulatorBinding`. The
+Gem5SimulationBinding independently owns the exact gem5 build. An invocation
+must verify both bindings and may not hide either executable behind an
+unidentified command or reinterpret one build identity as the other.
 
 Model kind 20 consumes and requires the exact physical Base-condition patterns
 for `ProcessCorner`, `SupplyVoltage`, `Temperature`, and
