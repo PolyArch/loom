@@ -55,6 +55,7 @@ def load_projection(path: pathlib.Path) -> dict:
             "host",
             "instruction_images",
             "runtime_images",
+            "system_memory",
             "dispatch",
             "processors",
             "bridges",
@@ -72,6 +73,8 @@ def load_projection(path: pathlib.Path) -> dict:
         raise ValueError("gem5 instruction images must be an array")
     if not isinstance(value["runtime_images"], list):
         raise ValueError("gem5 runtime images must be an array")
+    if not isinstance(value["system_memory"], dict):
+        raise ValueError("gem5 System memory projection must be an object")
     return value
 
 
@@ -183,6 +186,26 @@ def build_system(projection: dict) -> RiscvSystem:
         runtime_image_paths.append(image["path"])
         runtime_image_addresses.append(image["address"])
 
+    system_memory = projection["system_memory"]
+    require_keys(
+        system_memory,
+        {
+            "interface_table_address",
+            "interface_table_entries",
+            "observation_path",
+            "observations",
+        },
+        "system memory",
+    )
+    observation_addresses = []
+    observation_sizes = []
+    if not isinstance(system_memory["observations"], list):
+        raise ValueError("System memory observations must be an array")
+    for ordinal, observation in enumerate(system_memory["observations"]):
+        require_keys(observation, {"address", "size"}, f"observation {ordinal}")
+        observation_addresses.append(observation["address"])
+        observation_sizes.append(observation["size"])
+
     target_cpu_ids = []
     target_image_ordinals = []
     target_entry_symbols = []
@@ -222,11 +245,16 @@ def build_system(projection: dict) -> RiscvSystem:
         host_cpu_id=host["cpu_id"],
         host_entry_symbol=host["entry_symbol"],
         host_dispatch_address=dispatch["pio_address"],
+        host_memory_table_address=system_memory["interface_table_address"],
+        host_memory_table_entries=system_memory["interface_table_entries"],
         stack_base=dispatch["stack_base"],
         stack_stride=dispatch["stack_stride"],
         instruction_images=instruction_images,
         runtime_images=runtime_image_paths,
         runtime_image_addresses=runtime_image_addresses,
+        memory_observation_path=system_memory["observation_path"],
+        memory_observation_addresses=observation_addresses,
+        memory_observation_sizes=observation_sizes,
         target_cpu_ids=target_cpu_ids,
         target_image_ordinals=target_image_ordinals,
         target_entry_symbols=target_entry_symbols,
@@ -289,6 +317,7 @@ def main() -> None:
         entry_tick = int(m5.curTick())
         event = m5.simulate(projection["maximum_ticks"])
         finish_engines(engines)
+        system.workload.writeMemoryObservations()
         result = {
             "schema": "loom.gem5_system_attempt.1",
             "entry_tick": entry_tick,

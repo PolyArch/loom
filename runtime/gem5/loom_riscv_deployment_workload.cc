@@ -19,20 +19,35 @@ namespace {
 constexpr std::uint64_t noActiveTarget =
     std::numeric_limits<std::uint64_t>::max();
 
+void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
 } // namespace
 
-LoomRiscvDeploymentWorkload::LoomRiscvDeploymentWorkload(
-    const Params &params)
+LoomRiscvDeploymentWorkload::LoomRiscvDeploymentWorkload(const Params &params)
     : RiscvISA::BareMetal(params), hostCpuId(params.host_cpu_id),
       hostEntrySymbol(params.host_entry_symbol),
       hostDispatchAddress(params.host_dispatch_address),
+      hostMemoryTableAddress(params.host_memory_table_address),
+      hostMemoryTableEntries(params.host_memory_table_entries),
       stackBase(params.stack_base), stackStride(params.stack_stride),
       runtimeImagePaths(params.runtime_images),
-      runtimeImageAddresses(params.runtime_image_addresses) {
+      runtimeImageAddresses(params.runtime_image_addresses),
+      memoryObservationPath(params.memory_observation_path),
+      memoryObservationAddresses(params.memory_observation_addresses),
+      memoryObservationSizes(params.memory_observation_sizes) {
   fatal_if(hostEntrySymbol.empty(), "Loom host entry symbol is empty");
   fatal_if(stackStride == 0, "Loom per-CPU stack stride is zero");
   fatal_if(runtimeImagePaths.size() != runtimeImageAddresses.size(),
            "Loom runtime image paths and addresses differ in cardinality");
+  fatal_if(memoryObservationPath.empty(),
+           "Loom memory-observation destination is empty");
+  fatal_if(memoryObservationAddresses.size() != memoryObservationSizes.size(),
+           "Loom memory-observation arrays differ in cardinality");
+  for (std::uint64_t size : memoryObservationSizes)
+    fatal_if(size == 0, "Loom memory observation is empty");
 
   instructionImages.reserve(params.instruction_images.size());
   for (const std::string &path : params.instruction_images) {
@@ -53,8 +68,7 @@ LoomRiscvDeploymentWorkload::LoomRiscvDeploymentWorkload(
   std::set<std::uint64_t> cpuIds;
   targets.reserve(count);
   for (std::size_t ordinal = 0; ordinal < count; ++ordinal) {
-    const std::uint64_t imageOrdinal =
-        params.target_image_ordinals[ordinal];
+    const std::uint64_t imageOrdinal = params.target_image_ordinals[ordinal];
     fatal_if(imageOrdinal >= instructionImages.size(),
              "Loom dispatch target %d names an absent image", ordinal);
     fatal_if(params.target_entry_symbols[ordinal].empty(),
@@ -75,8 +89,8 @@ LoomRiscvDeploymentWorkload::LoomRiscvDeploymentWorkload(
 
 LoomRiscvDeploymentWorkload::~LoomRiscvDeploymentWorkload() = default;
 
-ThreadContext *LoomRiscvDeploymentWorkload::contextForCpu(
-    std::uint64_t cpuId) const {
+ThreadContext *
+LoomRiscvDeploymentWorkload::contextForCpu(std::uint64_t cpuId) const {
   for (ThreadContext *context : contexts)
     if (context->cpuId() >= 0 &&
         static_cast<std::uint64_t>(context->cpuId()) == cpuId)
@@ -92,8 +106,7 @@ Addr LoomRiscvDeploymentWorkload::symbolAddress(
 }
 
 Addr LoomRiscvDeploymentWorkload::stackPointer(std::uint64_t cpuId) const {
-  fatal_if(cpuId >
-               (std::numeric_limits<Addr>::max() - stackBase) / stackStride,
+  fatal_if(cpuId > (std::numeric_limits<Addr>::max() - stackBase) / stackStride,
            "Loom CPU id overflows the stack projection");
   return stackBase + (cpuId + 1) * stackStride;
 }
@@ -119,8 +132,8 @@ void LoomRiscvDeploymentWorkload::initState() {
   }
 
   contexts.assign(system->threads.begin(), system->threads.end());
-  fatal_if(!contextForCpu(hostCpuId),
-           "Loom HostCore CPU id %d is absent", hostCpuId);
+  fatal_if(!contextForCpu(hostCpuId), "Loom HostCore CPU id %d is absent",
+           hostCpuId);
   for (const Target &target : targets)
     fatal_if(!contextForCpu(target.cpuId),
              "Loom InstructionCore CPU id %d is absent", target.cpuId);
@@ -135,7 +148,33 @@ void LoomRiscvDeploymentWorkload::initState() {
   host->pcState(symbolAddress(bootloaderSymtab, hostEntrySymbol));
   host->setReg(RiscvISA::int_reg::A0, hostDispatchAddress);
   host->setReg(RiscvISA::int_reg::A1, targets.size());
+  host->setReg(RiscvISA::int_reg::A2, hostMemoryTableAddress);
+  host->setReg(RiscvISA::int_reg::A3, hostMemoryTableEntries);
   host->activate();
+}
+
+void LoomRiscvDeploymentWorkload::writeMemoryObservations() {
+  std::vector<std::uint8_t> encoded{'L', 'G', 'M', '1'};
+  appendU64(encoded, memoryObservationAddresses.size());
+  for (std::size_t ordinal = 0; ordinal < memoryObservationAddresses.size();
+       ++ordinal) {
+    const Addr address = memoryObservationAddresses[ordinal];
+    const std::uint64_t size = memoryObservationSizes[ordinal];
+    fatal_if(size > std::numeric_limits<std::size_t>::max(),
+             "Loom memory observation is too large");
+    appendU64(encoded, address);
+    appendU64(encoded, size);
+    const std::size_t offset = encoded.size();
+    encoded.resize(offset + static_cast<std::size_t>(size));
+    system->physProxy.readBlob(address, encoded.data() + offset, size);
+  }
+  std::ofstream output(memoryObservationPath,
+                       std::ios::binary | std::ios::trunc);
+  fatal_if(!output, "Could not create Loom memory-observation result %s",
+           memoryObservationPath);
+  output.write(reinterpret_cast<const char *>(encoded.data()), encoded.size());
+  fatal_if(!output, "Could not write Loom memory-observation result %s",
+           memoryObservationPath);
 }
 
 const loader::SymbolTable &

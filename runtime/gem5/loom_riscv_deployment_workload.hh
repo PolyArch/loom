@@ -28,6 +28,7 @@ public:
 
   void initState() override;
   const loader::SymbolTable &symtab(ThreadContext *context) override;
+  void writeMemoryObservations();
 
   bool dispatch(std::uint64_t targetOrdinal, Addr completionAddress);
   CompletionState complete(std::uint64_t targetOrdinal);
@@ -46,11 +47,16 @@ private:
   const std::uint64_t hostCpuId;
   const std::string hostEntrySymbol;
   const Addr hostDispatchAddress;
+  const Addr hostMemoryTableAddress;
+  const std::uint64_t hostMemoryTableEntries;
   const Addr stackBase;
   const Addr stackStride;
   std::vector<std::unique_ptr<loader::ObjectFile>> instructionImages;
   std::vector<std::string> runtimeImagePaths;
   std::vector<Addr> runtimeImageAddresses;
+  const std::string memoryObservationPath;
+  std::vector<Addr> memoryObservationAddresses;
+  std::vector<std::uint64_t> memoryObservationSizes;
   std::vector<Target> targets;
   std::vector<ThreadContext *> contexts;
   std::vector<std::uint64_t> activeTargets;

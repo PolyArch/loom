@@ -144,7 +144,13 @@ def bridge_source_digest(repository_root: pathlib.Path) -> str:
         if root.is_file():
             files.append(root)
         elif root.is_dir():
-            files.extend(path for path in root.rglob("*") if path.is_file())
+            files.extend(
+                path
+                for path in root.rglob("*")
+                if path.is_file()
+                and "__pycache__" not in path.parts
+                and path.suffix not in {".pyc", ".pyo"}
+            )
         else:
             raise BuildError(f"required bridge source is missing: {root}")
     digest = hashlib.sha256()

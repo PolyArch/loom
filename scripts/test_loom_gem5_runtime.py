@@ -42,13 +42,17 @@ MEMORY_BASE = 0x80000000
 MEMORY_SIZE = 0x04000000
 LAUNCH_ADDRESS = 0x82000000
 EXTERNAL_VALUE_ADDRESS = 0x82001000
+SYSTEM_MEMORY_ADDRESS = 0x82002000
+MEMORY_TABLE_ADDRESS = 0x82003000
 BRIDGE_ADDRESS = 0x10000000
 DISPATCH_ADDRESS = 0x10001000
 STACK_BASE = 0x83F00000
 STACK_STRIDE = 0x00010000
 EXPECTED_VALUE = 0x1122334455667788
+EXPECTED_SYSTEM_MEMORY = 0x8877665544332211
 EXPECTED_RESULT = b"loom-gem5-system-smoke"
 EXPECTED_LAUNCH = b"loom-spatial-launch-v1"
+INITIAL_SYSTEM_MEMORY = b"loommem0"
 
 HOST_SOURCE = f"""
 .section .text,"ax",@progbits
@@ -57,6 +61,27 @@ HOST_SOURCE = f"""
 .type loom_host_entry,@function
 loom_host_entry:
   mv s0, a0
+  mv s1, a2
+  mv s2, a3
+  li t0, 1
+  bne s2, t0, 3f
+  lw t0, 0(s1)
+  li t1, 0x494d474c
+  bne t0, t1, 3f
+  lw t0, 4(s1)
+  li t1, 1
+  bne t0, t1, 3f
+  ld t0, 8(s1)
+  bne t0, t1, 3f
+  ld t0, 32(s1)
+  li t1, 8
+  bltu t0, t1, 3f
+  lw t0, 40(s1)
+  andi t0, t0, 2
+  beqz t0, 3f
+  ld t0, 24(s1)
+  li t1, {EXPECTED_SYSTEM_MEMORY}
+  sd t1, 0(t0)
   sw zero, 0(s0)
   sw zero, 4(s0)
   li t0, 1
@@ -310,6 +335,9 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         host_image = root / "host.elf"
         instruction_image = root / "instruction.elf"
         launch_path = root / "spatial-launch.bin"
+        memory_object_path = root / "system-memory.bin"
+        memory_table_path = root / "system-memory-table.bin"
+        memory_observation_path = root / "system-memory.result"
         socket_path = root / "spatial-bridge.sock"
         bridge_result_path = root / "spatial-result.bin"
         system_result_path = root / "system-result.json"
@@ -320,6 +348,20 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         host_source.write_text(HOST_SOURCE, encoding="ascii")
         instruction_source.write_text(INSTRUCTION_SOURCE, encoding="ascii")
         launch_path.write_bytes(EXPECTED_LAUNCH)
+        memory_object_path.write_bytes(INITIAL_SYSTEM_MEMORY)
+        memory_table_path.write_bytes(
+            struct.pack(
+                "<4sIQQQQII",
+                b"LGMI",
+                1,
+                1,
+                0,
+                SYSTEM_MEMORY_ADDRESS,
+                len(INITIAL_SYSTEM_MEMORY),
+                3,
+                0,
+            )
+        )
         compile_image(
             compiler,
             host_source,
@@ -359,7 +401,22 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 "entry_symbol": "loom_host_entry",
             },
             "instruction_images": [str(instruction_image)],
-            "runtime_images": [{"path": str(launch_path), "address": LAUNCH_ADDRESS}],
+            "runtime_images": [
+                {"path": str(launch_path), "address": LAUNCH_ADDRESS},
+                {"path": str(memory_object_path), "address": SYSTEM_MEMORY_ADDRESS},
+                {"path": str(memory_table_path), "address": MEMORY_TABLE_ADDRESS},
+            ],
+            "system_memory": {
+                "interface_table_address": MEMORY_TABLE_ADDRESS,
+                "interface_table_entries": 1,
+                "observation_path": str(memory_observation_path),
+                "observations": [
+                    {
+                        "address": SYSTEM_MEMORY_ADDRESS,
+                        "size": len(INITIAL_SYSTEM_MEMORY),
+                    }
+                ],
+            },
             "dispatch": {
                 "pio_address": DISPATCH_ADDRESS,
                 "pio_latency": "10ns",
@@ -431,6 +488,17 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         trace = json.loads(engine_trace_path.read_text(encoding="utf-8"))
         if trace["memory_value"] != EXPECTED_VALUE:
             raise RuntimeError("engine trace omitted the exact external-memory value")
+        expected_memory = EXPECTED_SYSTEM_MEMORY.to_bytes(8, byteorder="little")
+        expected_observation = (
+            b"LGM1"
+            + struct.pack(">Q", 1)
+            + struct.pack(
+                ">QQ", SYSTEM_MEMORY_ADDRESS, len(expected_memory)
+            )
+            + expected_memory
+        )
+        if memory_observation_path.read_bytes() != expected_observation:
+            raise RuntimeError("System memory observation differs from the guest write")
 
         print(
             json.dumps(
@@ -439,6 +507,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "cause": system_result["cause"],
                     "exit_tick": system_result["exit_tick"],
                     "memory_value": EXPECTED_VALUE,
+                    "system_memory_value": EXPECTED_SYSTEM_MEMORY,
                 },
                 sort_keys=True,
             )

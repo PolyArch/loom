@@ -68,6 +68,11 @@ class Gem5BuildHelperTest(unittest.TestCase):
         second = self.module.bridge_source_digest(repository)
         self.assertNotEqual(first, second)
 
+        cache = bridge / "__pycache__"
+        cache.mkdir()
+        (cache / "generated.cpython-312.pyc").write_bytes(b"generated")
+        self.assertEqual(second, self.module.bridge_source_digest(repository))
+
     def test_readiness_rejects_binary_and_configuration_drift(self) -> None:
         root = self.root / "build"
         binary = root / "build" / "RISCV" / "gem5.opt"

@@ -1,15 +1,23 @@
 from m5.objects.RiscvFsWorkload import RiscvBareMetal
 from m5.params import Param, VectorParam
+from m5.util.pybind import PyBindMethod
 
 
 class LoomRiscvDeploymentWorkload(RiscvBareMetal):
     type = "LoomRiscvDeploymentWorkload"
     cxx_class = "gem5::LoomRiscvDeploymentWorkload"
     cxx_header = "runtime/gem5/loom_riscv_deployment_workload.hh"
+    cxx_exports = [PyBindMethod("writeMemoryObservations")]
 
     host_cpu_id = Param.Unsigned("HostCore gem5 CPU identifier")
     host_entry_symbol = Param.String("Deployment-selected host entry symbol")
     host_dispatch_address = Param.Addr("Thread Dispatch MMIO base address")
+    host_memory_table_address = Param.Addr(
+        0, "Invocation-local System memory-interface table address"
+    )
+    host_memory_table_entries = Param.UInt64(
+        0, "System memory-interface table entry count"
+    )
     stack_base = Param.Addr("Lowest per-CPU stack address")
     stack_stride = Param.Addr("Per-CPU stack allocation size")
     instruction_images = VectorParam.String(
@@ -18,6 +26,15 @@ class LoomRiscvDeploymentWorkload(RiscvBareMetal):
     runtime_images = VectorParam.String([], "Deployment runtime image files")
     runtime_image_addresses = VectorParam.Addr(
         [], "Physical addresses for Deployment runtime images"
+    )
+    memory_observation_path = Param.String(
+        "Normalized System memory-observation destination"
+    )
+    memory_observation_addresses = VectorParam.Addr(
+        [], "Physical base address of each selected System memory observation"
+    )
+    memory_observation_sizes = VectorParam.UInt64(
+        [], "Byte count of each selected System memory observation"
     )
     target_cpu_ids = VectorParam.Unsigned(
         [], "CPU identifier for each Thread Dispatch target"
