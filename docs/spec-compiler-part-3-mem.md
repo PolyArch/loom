@@ -142,7 +142,7 @@ network, but finalization rejects any such residual producer rather than
 granting it an external-memory authority.
 
 A source-origin `llvm.alloca` accepted by the Structured
-`PromoteSpscBufferToChannel` decision is not an exception to this rule. That
+`PromoteOrderedBufferToChannel` decision is not an exception to this rule. That
 decision must remove the complete proved allocation closure before D0; a
 residual allocation or pointer use remains non-canonical and is rejected.
 

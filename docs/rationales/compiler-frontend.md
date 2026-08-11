@@ -573,7 +573,7 @@ The closed four-kind catalog is the smallest current surface that owns those
 distinctions. `StageConstantGlobal` introduces an explicit logical buffer,
 `PermuteLocalBufferLayout` changes only its dense storage order,
 `PipelineStagedLoop` changes only a proved two-stage logical schedule, and
-`PromoteSpscBufferToChannel` replaces one proved ordered temporary with the
+`PromoteOrderedBufferToChannel` replaces one proved ordered temporary with the
 canonical channel operations. Each decision materializes ordinary IR and then
 disappears; no persistent plan object is needed.
 
@@ -602,12 +602,16 @@ therefore double buffering. Making buffer count independently configurable
 would admit redundant or insufficient states and would confuse a logical
 iteration relation with physical latency.
 
-Channel promotion requires an exact single-producer/single-consumer event
-bijection and effect-safe launch motion. That narrow proof avoids inventing a
-general concurrent alias model while still exposing an important streaming
-alternative. Channel capacity, physical FIFO choice, banking, coalescing,
-service endpoints, and routes remain downstream Fabric and Mapping facts.
-Keeping those facts out of all four decisions preserves one owner for each
+Channel promotion requires one exact producer sequence, an exact event
+bijection for every consumer, and effect-safe launch motion. The same proof
+admits unicast and multicast because canonical Dataflow channel semantics
+already owns one producer with one or more independently mapped consumers.
+Adding a second multicast decision or synthesizing a fanout carrier would
+duplicate that owner without proving anything new. The narrow ordered proof
+still avoids inventing a general concurrent alias model. Channel capacity,
+physical FIFO choice, banking, coalescing, service endpoints, replication
+placement, and routes remain downstream Fabric and Mapping facts. Keeping
+those facts out of all four decisions preserves one owner for each
 software or hardware distinction.
 
 ## Why SCF-To-Dataflow Is Mechanical

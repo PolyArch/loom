@@ -488,7 +488,8 @@ before canonical lowering. The current canonical Dataflow ISA has no dedicated
 `dataflow.transfer`; adding one requires independent software semantics and a
 closed Fabric capability rather than a lowering shortcut. Random access or
 cross-time reuse remains logical memory. A producer/consumer relation becomes
-a channel only when an ordered SPSC schedule is proved.
+a channel only when one total ordered producer sequence and one or more total
+ordered consumer sequences are proved.
 
 ## Transactional Decisions
 
@@ -781,11 +782,11 @@ StructuredMemoryCommunicationDecisionKind =
     StageConstantGlobal          = 0
   | PermuteLocalBufferLayout     = 1
   | PipelineStagedLoop           = 2
-  | PromoteSpscBufferToChannel   = 3
+  | PromoteOrderedBufferToChannel = 3
 ```
 
 The canonical lineage-payload schema is
-`loom.structured_memory_communication.decision.2.0`. Its bytes are:
+`loom.structured_memory_communication.decision.3.0`. Its bytes are:
 
 ```text
 u32be(kind)
@@ -795,7 +796,7 @@ u32be(kind)
 kind_payload(StageConstantGlobal)        = empty
 kind_payload(PermuteLocalBufferLayout)   = u64be(adjacent_storage_position)
 kind_payload(PipelineStagedLoop)         = empty
-kind_payload(PromoteSpscBufferToChannel) = empty
+kind_payload(PromoteOrderedBufferToChannel) = empty
 ```
 
 The anchor is respectively the selected Spatial memory block argument, local
@@ -807,11 +808,12 @@ decision payload are rejected rather than reinterpreted.
 
 The provider for this catalog, decision schema, and component-view schema has
 implementation semantic identity
-`loom.compiler.structured_memory_communication.generator.v2`. The existing
-`loom.compiler.structured_memory_communication.generator.v1` identity remains
-bound to the incompatible constant-staging-only behavior and cannot be
-reinterpreted. Registry, manifest, cache, replay, and lineage validation must
-therefore distinguish the providers without a compatibility switch.
+`loom.compiler.structured_memory_communication.generator.v3`. The existing
+`loom.compiler.structured_memory_communication.generator.v1` and
+`loom.compiler.structured_memory_communication.generator.v2` identities remain
+bound to their incompatible historical behavior and cannot be reinterpreted.
+Registry, manifest, cache, replay, and lineage validation must therefore
+distinguish the providers without a compatibility switch.
 
 Memory-relevant structural scopes are visited in canonical Structured entity
 order. The first `scope_expansion_limit` scopes across the ordered input
@@ -919,16 +921,17 @@ its ring count by the same equation. Pipeline offsets are logical iteration
 offsets, not cycle slots, a predicted initiation interval, physical memory
 latency, or a Mapping reservation.
 
-#### `PromoteSpscBufferToChannel`
+#### `PromoteOrderedBufferToChannel`
 
 This decision anchors one fresh temporary allocation in an InstructionCore
 caller. Its complete use and symbol closure must identify exactly one producer
-thread launch and one consumer thread launch. After any required private
-thread-definition specialization, the producer performs one total ordered
-write sequence and the consumer performs one total ordered read sequence over
-the allocation's exact logical domain. Their affine event correspondence must
-be a bijection with identical payload type and order. The allocation has no
-other read, write, capture, alias, escape, or observation.
+thread launch and one or more distinct consumer thread launches. After any
+required private thread-definition specialization, the producer performs one
+total ordered write sequence and every consumer performs one total ordered
+read sequence over the allocation's exact logical domain. Each consumer's
+affine event correspondence with the producer must be a bijection with
+identical payload type and order. The allocation has no other read, write,
+capture, alias, escape, or observation.
 
 The fresh allocation may be an ordinary static `memref.alloc`, or a
 source-origin `llvm.alloca` that the same proof can eliminate completely. The
@@ -936,30 +939,32 @@ LLVM form is eligible only when it allocates exactly one non-empty,
 statically-sized aggregate with one primitive scalar leaf type, is not
 `inalloca`, and has one exact lifetime interval when lifetime markers are
 present. Outside those markers, its result may occur only as the matching body
-operand of the two launches. Within each selected thread, every use of that
-formal must resolve through in-bounds constant-offset GEPs, or the zero-offset
-formal itself, to one scalar load or store. The two lexical event sequences
-must each cover the same dense offsets exactly once in strictly increasing
-order. Unknown size, padding between scalar leaves, dynamic or repeated
-offsets, casts, nested pointer escape, or any residual use makes the decision
-absent.
+operand of the producer and admitted consumer launches. Within each selected
+thread, every use of that formal must resolve through in-bounds
+constant-offset GEPs, or the zero-offset formal itself, to one scalar load or
+store. The producer and every consumer lexical event sequence must each cover
+the same dense offsets exactly once in strictly increasing order. Unknown
+size, padding between scalar leaves, dynamic or repeated offsets, casts,
+nested pointer escape, or any residual use makes the decision absent.
 
-The launch and effect proof must also establish that moving the consumer
-launch before the producer-completion wait is behavior-preserving: the
+The launch and effect proof must also establish that moving every consumer
+launch before the producer-completion wait is behavior-preserving: each
 consumer performs no externally visible effect before its first blocking
-receive, and all remaining producer and consumer effects are disjoint or keep
-the original causal order. A competing consumer, partial domain, reordered
-access, unknown effect, visible temporary state, or unproved launch motion
+receive, and all remaining producer/consumer and consumer/consumer effects are
+disjoint or keep the original causal order. A partial domain, reordered
+access, unknown effect, visible temporary state, or any unproved launch motion
 makes the decision absent.
 
 Materialization creates one fresh `dataflow.channel.create`, specializes only
 the selected producer and consumer definitions when they have other users,
-replaces the proved writes and reads with ordered send and receive endpoints,
-updates the two launches, and removes the dead allocation. The canonical
-Dataflow channel owner derives endpoint identity, event correspondence, and
-any required source map from the resulting program. The decision does not
-select logical capacity, a physical FIFO, a NoC, a memory-backed queue, or a
-route.
+replaces the proved writes and reads with one ordered send endpoint and one
+ordered receive endpoint per consumer, updates all selected launches, and
+removes the dead allocation. Passing the same channel handle to every consumer
+is the sole software multicast representation. The canonical Dataflow channel
+owner derives endpoint identity, event correspondence, and each consumer's
+source map from the resulting program. The decision does not select logical
+capacity, a physical FIFO, a NoC, a memory-backed queue, replication
+placement, or a route.
 
 For a source-origin LLVM allocation, materialization also removes its proved
 GEPs and lifetime markers. No LLVM pointer, allocation, memory-service root, or
