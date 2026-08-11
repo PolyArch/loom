@@ -61,7 +61,11 @@ inputDescriptor(const CandidateGeneratorInputSlotDescriptor &slot) {
   if (!slot.schema || !validRole(slot.role) ||
       !validCardinality(slot.cardinality))
     return invalid("candidate generator input slot is not plan-typed");
-  return PlanValueDescriptor{slot.role, *slot.schema, slot.cardinality};
+  return PlanValueDescriptor{slot.role, *slot.schema, slot.cardinality,
+                             slot.modelParameterContract
+                                 ? std::optional(*slot.modelParameterContract)
+                                 : std::nullopt,
+                             slot.calibrationPartitionRole};
 }
 
 llvm::Expected<PlanValueDescriptor>
@@ -69,7 +73,11 @@ inputDescriptor(const PromotionAcquisitionInputSlotDescriptor &slot) {
   if (!slot.schema || !validRole(slot.role) ||
       !validCardinality(slot.cardinality))
     return invalid("promotion acquisition input slot is not plan-typed");
-  return PlanValueDescriptor{slot.role, *slot.schema, slot.cardinality};
+  return PlanValueDescriptor{slot.role, *slot.schema, slot.cardinality,
+                             slot.modelParameterContract
+                                 ? std::optional(*slot.modelParameterContract)
+                                 : std::nullopt,
+                             slot.calibrationPartitionRole};
 }
 
 llvm::Expected<PlanValueDescriptor>
@@ -77,13 +85,44 @@ outputDescriptor(const CandidateGeneratorOutputSlotDescriptor &slot) {
   if (!slot.schema || !validRole(slot.role) ||
       !validCardinality(slot.cardinality))
     return invalid("candidate generator output slot is not plan-typed");
-  return PlanValueDescriptor{slot.role, *slot.schema, slot.cardinality};
+  return PlanValueDescriptor{slot.role, *slot.schema, slot.cardinality,
+                             slot.modelParameterContract
+                                 ? std::optional(*slot.modelParameterContract)
+                                 : std::nullopt,
+                             slot.calibrationPartitionRole};
 }
 
 bool compatible(const PlanValueDescriptor &producer,
                 const PlanValueDescriptor &consumer) {
   return producer.role == consumer.role && producer.schema == consumer.schema &&
-         planCardinalityCanFlow(producer.cardinality, consumer.cardinality);
+         planCardinalityCanFlow(producer.cardinality, consumer.cardinality) &&
+         producer.modelParameterContract == consumer.modelParameterContract &&
+         producer.calibrationPartitionRole == consumer.calibrationPartitionRole;
+}
+
+llvm::Expected<std::optional<CalibrationPartitionRole>>
+evidencePartitionRole(const ResolvedPromotionAcquisitionBinding &binding,
+                      llvm::ArrayRef<EvidenceObligationTemplate> templates) {
+  std::optional<CalibrationPartitionRole> selected;
+  bool sawUnpartitioned = false;
+  for (EvidenceObligationTemplateRef reference :
+       binding.evidenceObligations()) {
+    if (reference.ordinal() >= templates.size())
+      return invalid("acquisition references a foreign Evidence obligation");
+    const std::optional<CalibrationPartitionRole> role =
+        templates[reference.ordinal()].calibrationPartitionRole();
+    if (!role) {
+      sawUnpartitioned = true;
+      continue;
+    }
+    if (selected && *selected != *role)
+      return invalid("one Promote output cannot mix calibration partitions");
+    selected = role;
+  }
+  if (selected && sawUnpartitioned)
+    return invalid(
+        "one Promote output cannot mix partitioned and unpartitioned Evidence");
+  return selected;
 }
 
 llvm::Error resolveInputBindings(std::vector<PlanInputBinding> &bindings,
@@ -337,8 +376,8 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
 
   auto objectiveAcquisition = invokePromotionAcquisition(
       inputs, promote.acquisitionBinding(), evidenceObligations,
-      {candidateSet.candidates(), promote.objectiveObligations()}, store,
-      blobs, executor);
+      {candidateSet.candidates(), promote.objectiveObligations()}, store, blobs,
+      executor);
   if (!objectiveAcquisition)
     return objectiveAcquisition.takeError();
   if (auto *incomplete =
@@ -670,6 +709,10 @@ llvm::Expected<ResolvedDsePlan> ResolvedDsePlan::get(
             qualityGates[definition.qualityGate.ordinal()],
             definition.selection, objectiveCatalogs))
       return std::move(error);
+    auto evidencePartition =
+        evidencePartitionRole(*acquisitionBinding, evidenceObligationTemplates);
+    if (!evidencePartition)
+      return evidencePartition.takeError();
     std::vector<std::uint32_t> objectiveOrdinals;
     collectSelectionObligations(definition.selection, objectiveCatalogs,
                                 objectiveOrdinals);
@@ -687,11 +730,16 @@ llvm::Expected<ResolvedDsePlan> ResolvedDsePlan::get(
       return invalid("Promote candidate input slot is unavailable");
     if (outputs.size() > std::numeric_limits<std::uint64_t>::max() - 2)
       return invalid("plan output count overflows uint64");
-    outputs.push_back({PlanValueRole::CandidateSet, *candidateSlot->schema,
-                       PlanValueCardinality::FiniteSet});
+    outputs.push_back(
+        {PlanValueRole::CandidateSet, *candidateSlot->schema,
+         PlanValueCardinality::FiniteSet,
+         candidateSlot->modelParameterContract
+             ? std::optional(*candidateSlot->modelParameterContract)
+             : std::nullopt});
     outputs.push_back({PlanValueRole::EvidenceSet,
                        evaluation::EvaluationEvidence::artifactSchema,
-                       PlanValueCardinality::FiniteSet});
+                       PlanValueCardinality::FiniteSet, std::nullopt,
+                       *evidencePartition});
     outputOffsets.push_back(outputs.size());
     nodes.emplace_back(ResolvedPromotePlanNode(
         std::move(*acquisitionBinding), std::move(inputBindings),
@@ -963,11 +1011,9 @@ llvm::StringRef toString(const DsePlanIncompleteReason &reason) {
       reason);
 }
 
-llvm::Expected<DsePlanExecutionOutcome>
-detail::executeDsePlanWithWorkExecutor(const ResolvedDseConfigView &view,
-                                       const ArtifactStore &store,
-                                       const BlobStore &blobs,
-                                       detail::DsePlanWorkExecutor *executor) {
+llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
+    const ResolvedDseConfigView &view, const ArtifactStore &store,
+    const BlobStore &blobs, detail::DsePlanWorkExecutor *executor) {
   const ResolvedDsePlan &plan = view.plan();
   CompletedDsePlanExecution completed =
       DsePlanExecutionBuilder::createCompleted(view.digest());
@@ -1021,9 +1067,8 @@ detail::executeDsePlanWithWorkExecutor(const ResolvedDseConfigView &view,
       for (std::size_t taskIndex = 0; taskIndex != tasks.size(); ++taskIndex) {
         detail::DseGenerateExecutionTask &task = tasks[taskIndex];
         CandidateGeneratorProviderResult &result = (*results)[taskIndex];
-        if (auto *incomplete =
-                std::get_if<IncompleteCandidateGeneratorResult>(
-                    &result.outcome)) {
+        if (auto *incomplete = std::get_if<IncompleteCandidateGeneratorResult>(
+                &result.outcome)) {
           GenerateInvocationRecord invocationRecord{
               task.planNodeOrdinal, std::move(task.inputs),
               std::move(task.binding),
@@ -1046,8 +1091,7 @@ detail::executeDsePlanWithWorkExecutor(const ResolvedDseConfigView &view,
         GenerateInvocationWorkSummary workSummary{
             task.planNodeOrdinal, std::move(result.workSummary)};
         if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
-                completed, std::move(invocationRecord),
-                std::move(workSummary)))
+                completed, std::move(invocationRecord), std::move(workSummary)))
           return std::move(error);
       }
       nodeIndex += tasks.size() - 1;
@@ -1071,17 +1115,15 @@ detail::executeDsePlanWithWorkExecutor(const ResolvedDseConfigView &view,
           generate->configDigest());
       if (!binding)
         return binding.takeError();
-      auto result = executor
-                        ? executor->executeGenerate(
-                              static_cast<std::uint64_t>(nodeIndex), inputs,
-                              *binding, store, blobs)
-                        : invokeCandidateGenerator(inputs, *binding, store,
-                                                   blobs);
+      auto result =
+          executor
+              ? executor->executeGenerate(static_cast<std::uint64_t>(nodeIndex),
+                                          inputs, *binding, store, blobs)
+              : invokeCandidateGenerator(inputs, *binding, store, blobs);
       if (!result)
         return result.takeError();
-      if (auto *incomplete =
-              std::get_if<IncompleteCandidateGeneratorResult>(
-                  &result->outcome)) {
+      if (auto *incomplete = std::get_if<IncompleteCandidateGeneratorResult>(
+              &result->outcome)) {
         GenerateInvocationRecord invocationRecord{
             static_cast<std::uint64_t>(nodeIndex), std::move(inputs),
             std::move(*binding), std::move(incomplete->retainedOutputBindings),
@@ -1160,11 +1202,10 @@ detail::executeDsePlanWithWorkExecutor(const ResolvedDseConfigView &view,
         topK && !promote.objectiveObligations().empty()) {
       if (!plan.objectiveProgram())
         return invalid("resolved TopK node lost its ObjectiveProgram");
-      auto staged =
-          executeStagedTopK(promote, *descriptor, inputs, *candidateSet,
-                            view.evidenceObligationTemplates(), *qualityGate,
-                            *plan.objectiveProgram(), *topK, store, blobs,
-                            executor);
+      auto staged = executeStagedTopK(
+          promote, *descriptor, inputs, *candidateSet,
+          view.evidenceObligationTemplates(), *qualityGate,
+          *plan.objectiveProgram(), *topK, store, blobs, executor);
       if (!staged)
         return staged.takeError();
       if (auto *incomplete = std::get_if<IncompleteStagedTopK>(&*staged))

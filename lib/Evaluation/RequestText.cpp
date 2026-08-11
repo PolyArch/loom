@@ -5,6 +5,7 @@
 #include "Evaluation/ConditionText.h"
 #include "QueryText.h"
 
+#include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -352,6 +353,101 @@ parseFindingRequests(const llvm::json::Object &root,
   return requests;
 }
 
+llvm::Expected<llvm::json::Value> parseRequestEnvelope(llvm::StringRef text) {
+  auto value = llvm::json::parse(text);
+  if (!value)
+    return value.takeError();
+  const llvm::json::Object *root = value->getAsObject();
+  if (!root)
+    return evaluationError("evaluation.request root must be an object");
+  if (llvm::Error error = rejectUnknownFields(
+          *root, "evaluation.request root",
+          {"schema", "schema_version", "subject_bindings", "workload_ref",
+           "runtime_input_ref", "base_conditions", "metric_requests",
+           "finding_requests", "model_binding", "replicate_index"}))
+    return std::move(error);
+  auto schema = requireString(*root, "schema", "evaluation.request root");
+  if (!schema)
+    return schema.takeError();
+  if (*schema != EvaluationRequest::artifactSchema.identity)
+    return evaluationError("unsupported EvaluationRequest schema '" + *schema +
+                           "'");
+  auto versionSpelling =
+      requireString(*root, "schema_version", "evaluation.request root");
+  if (!versionSpelling)
+    return versionSpelling.takeError();
+  auto version = parseSchemaVersion(*versionSpelling);
+  if (!version)
+    return version.takeError();
+  if (*version != EvaluationRequest::artifactSchema.version)
+    return evaluationError("unsupported evaluation.request version '" +
+                           *versionSpelling + "'");
+  return std::move(*value);
+}
+
+void appendTargetReferences(std::vector<ArtifactRootReference> &references,
+                            const SubjectTargetRef &target) {
+  references.push_back(target.anchorSubjectArtifact);
+  references.push_back(target.targetArtifact());
+}
+
+void appendConditionReferences(std::vector<ArtifactRootReference> &references,
+                               llvm::ArrayRef<EvaluationCondition> conditions) {
+  for (const EvaluationCondition &condition : conditions) {
+    switch (condition.kind()) {
+    case EvaluationConditionKind::ProcessCorner: {
+      const auto &value = std::get<ProcessCornerCondition>(condition.payload);
+      appendTargetReferences(references, value.target);
+      references.push_back(
+          platform::encodeTechnologyCornerRef(value.corner).artifact);
+      break;
+    }
+    case EvaluationConditionKind::SupplyVoltage:
+      appendTargetReferences(
+          references,
+          std::get<SupplyVoltageCondition>(condition.payload).powerDomain);
+      break;
+    case EvaluationConditionKind::Temperature:
+      appendTargetReferences(references,
+                             std::get<TemperatureCondition>(condition.payload)
+                                 .thermalDomainOrRoot);
+      break;
+    case EvaluationConditionKind::RequiredClockPeriod:
+      appendTargetReferences(
+          references, std::get<RequiredClockPeriodCondition>(condition.payload)
+                          .clockDomain);
+      break;
+    case EvaluationConditionKind::RelativeClockSchedule: {
+      const auto &value =
+          std::get<RelativeClockScheduleCondition>(condition.payload);
+      appendTargetReferences(references, value.referenceClock);
+      appendTargetReferences(references, value.dependentClock);
+      break;
+    }
+    case EvaluationConditionKind::ActivityBinding: {
+      const auto &value = std::get<ActivityBindingCondition>(condition.payload);
+      appendTargetReferences(references, value.target);
+      if (const auto *execution =
+              std::get_if<ExecutionActivitySource>(&value.source))
+        references.push_back(execution->simulationExecution);
+      else
+        appendTargetReferences(
+            references,
+            std::get<ExplicitAssumptionSource>(value.source).clockDomain);
+      break;
+    }
+    case EvaluationConditionKind::Quantile:
+      break;
+    }
+  }
+}
+
+void appendScopeReferences(std::vector<ArtifactRootReference> &references,
+                           const EvaluationScope &scope) {
+  for (const SubjectTargetRef &target : scope.targets)
+    appendTargetReferences(references, target);
+}
+
 } // namespace
 
 std::string serializeResolvedModelBinding(const ResolvedModelBinding &binding) {
@@ -476,34 +572,10 @@ std::string serializeEvaluationRequest(const EvaluationRequest &request) {
 llvm::Expected<EvaluationRequest> parseEvaluationRequest(
     llvm::StringRef jsonText, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
-  auto value = llvm::json::parse(jsonText);
+  auto value = parseRequestEnvelope(jsonText);
   if (!value)
     return value.takeError();
   const llvm::json::Object *root = value->getAsObject();
-  if (!root)
-    return evaluationError("evaluation.request root must be an object");
-  if (llvm::Error error = rejectUnknownFields(
-          *root, "evaluation.request root",
-          {"schema", "schema_version", "subject_bindings", "workload_ref",
-           "runtime_input_ref", "base_conditions", "metric_requests",
-           "finding_requests", "model_binding", "replicate_index"}))
-    return std::move(error);
-  auto schema = requireString(*root, "schema", "evaluation.request root");
-  if (!schema)
-    return schema.takeError();
-  if (*schema != EvaluationRequest::artifactSchema.identity)
-    return evaluationError("unsupported EvaluationRequest schema '" + *schema +
-                           "'");
-  auto versionSpelling =
-      requireString(*root, "schema_version", "evaluation.request root");
-  if (!versionSpelling)
-    return versionSpelling.takeError();
-  auto version = parseSchemaVersion(*versionSpelling);
-  if (!version)
-    return version.takeError();
-  if (*version != EvaluationRequest::artifactSchema.version)
-    return evaluationError("unsupported evaluation.request version '" +
-                           *versionSpelling + "'");
 
   auto modelBinding = parseModelBinding(*root);
   if (!modelBinding)
@@ -553,6 +625,117 @@ llvm::Expected<EvaluationRequest> parseEvaluationRequest(
   if (serializeEvaluationRequest(*request) != jsonText)
     return evaluationError("EvaluationRequest JSON is not canonical");
   return request;
+}
+
+llvm::Expected<std::vector<ArtifactRootReference>>
+importEvaluationRequestArtifactReferences(
+    const ArtifactRootReference &reference,
+    const ArtifactStore &artifactStore) {
+  if (reference.schemaIdentity != EvaluationRequest::artifactSchema.identity ||
+      reference.schemaVersion != EvaluationRequest::artifactSchema.version)
+    return evaluationError("foreign EvaluationRequest reference schema");
+  auto stored =
+      artifactStore.get(EvaluationRequest::artifactSchema, reference.artifact);
+  if (!stored)
+    return stored.takeError();
+  const llvm::ArrayRef<std::uint8_t> bytes = stored->bytes();
+  const llvm::StringRef text(reinterpret_cast<const char *>(bytes.data()),
+                             bytes.size());
+  auto value = parseRequestEnvelope(text);
+  if (!value)
+    return value.takeError();
+  const llvm::json::Object &root = *value->getAsObject();
+
+  auto subjects = parseSubjectBindings(root);
+  if (!subjects)
+    return subjects.takeError();
+  auto workload = parseOptionalRootReference(root, "workload_ref",
+                                             "evaluation.request root");
+  if (!workload)
+    return workload.takeError();
+  auto runtimeInput = parseOptionalRootReference(root, "runtime_input_ref",
+                                                 "evaluation.request root");
+  if (!runtimeInput)
+    return runtimeInput.takeError();
+  auto baseConditions =
+      parseConditions(root, "base_conditions", "evaluation.request root");
+  if (!baseConditions)
+    return baseConditions.takeError();
+  auto modelBinding = parseModelBinding(root);
+  if (!modelBinding)
+    return modelBinding.takeError();
+
+  std::vector<ArtifactRootReference> references;
+  for (const CaseRoleBinding &binding : subjects->roleBindings())
+    references.insert(references.end(), binding.subjects.begin(),
+                      binding.subjects.end());
+  if (*workload)
+    references.push_back(**workload);
+  if (*runtimeInput)
+    references.push_back(**runtimeInput);
+  for (const ModelInputBinding &binding : modelBinding->inputBindings())
+    references.insert(references.end(), binding.artifacts.begin(),
+                      binding.artifacts.end());
+  appendConditionReferences(references, *baseConditions);
+
+  auto metrics =
+      requireArray(root, "metric_requests", "evaluation.request root");
+  if (!metrics)
+    return metrics.takeError();
+  for (const llvm::json::Value &entry : **metrics) {
+    const llvm::json::Object *object = entry.getAsObject();
+    if (!object)
+      return evaluationError("metric request must be an object");
+    if (llvm::Error error = rejectUnknownFields(*object, "metric request",
+                                                {"query", "conditions"}))
+      return std::move(error);
+    auto queryObject = requireObject(*object, "query", "metric request");
+    if (!queryObject)
+      return queryObject.takeError();
+    auto query =
+        detail::parseMetricQueryPayload(**queryObject, "metric request query");
+    if (!query)
+      return query.takeError();
+    appendScopeReferences(references, query->scope);
+    auto conditions = parseConditions(*object, "conditions", "metric request");
+    if (!conditions)
+      return conditions.takeError();
+    appendConditionReferences(references, *conditions);
+  }
+
+  auto findings =
+      requireArray(root, "finding_requests", "evaluation.request root");
+  if (!findings)
+    return findings.takeError();
+  for (const llvm::json::Value &entry : **findings) {
+    const llvm::json::Object *object = entry.getAsObject();
+    if (!object)
+      return evaluationError("finding request must be an object");
+    if (llvm::Error error = rejectUnknownFields(*object, "finding request",
+                                                {"query", "conditions"}))
+      return std::move(error);
+    auto queryObject = requireObject(*object, "query", "finding request");
+    if (!queryObject)
+      return queryObject.takeError();
+    auto query = detail::parseFindingQueryPayload(**queryObject,
+                                                  "finding request query");
+    if (!query)
+      return query.takeError();
+    appendScopeReferences(references, query->scope);
+    auto conditions = parseConditions(*object, "conditions", "finding request");
+    if (!conditions)
+      return conditions.takeError();
+    appendConditionReferences(references, *conditions);
+  }
+  auto replicate =
+      requireUnsigned(root, "replicate_index", "evaluation.request root");
+  if (!replicate)
+    return replicate.takeError();
+
+  llvm::sort(references, artifactRootReferenceLess);
+  references.erase(std::unique(references.begin(), references.end()),
+                   references.end());
+  return references;
 }
 
 } // namespace loom::evaluation

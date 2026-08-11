@@ -43,6 +43,30 @@ const CaseSubjectRoleDescriptor kSubjectRoles[] = {
     {kFabricRole, "fabric", SubjectRoleCardinality::ExactlyOne, kFabricSchemas,
      nullptr},
 };
+
+SubjectTargetPattern fabricRootPattern() {
+  return SubjectTargetPattern{
+      kFabricRole,
+      SubjectReferenceType{ArtifactRootType{fabric::fabricArtifactSchema}}};
+}
+
+const std::vector<ConditionApplicabilityPattern> kBaseConditionPatterns = {
+    {EvaluationConditionKind::ProcessCorner,
+     {caseSignatureRef(), {fabricRootPattern()}}},
+    {EvaluationConditionKind::SupplyVoltage,
+     {caseSignatureRef(), {fabricRootPattern()}}},
+    {EvaluationConditionKind::Temperature,
+     {caseSignatureRef(), {fabricRootPattern()}}},
+    {EvaluationConditionKind::RequiredClockPeriod,
+     {caseSignatureRef(), {fabricRootPattern()}}},
+    {EvaluationConditionKind::RelativeClockSchedule,
+     {caseSignatureRef(), {fabricRootPattern(), fabricRootPattern()}}},
+    {EvaluationConditionKind::ActivityBinding,
+     {caseSignatureRef(), {fabricRootPattern()}}},
+    {EvaluationConditionKind::ActivityBinding,
+     {caseSignatureRef(), {fabricRootPattern(), fabricRootPattern()}}},
+};
+
 const EvaluationCaseSignatureDescriptor kCaseSignature{
     builtinEvaluationCaseKind(kCase),
     "canonical_dataflow_with_fabric",
@@ -54,7 +78,7 @@ const EvaluationCaseSignatureDescriptor kCaseSignature{
     {},
     nullptr,
     AbsentReferenceCycle{},
-    {}};
+    kBaseConditionPatterns};
 
 const ScopeFormRef kWholeCaseScopeForms[] = {ScopeFormRef(0)};
 const MetricCapability kMetricCapabilities[] = {

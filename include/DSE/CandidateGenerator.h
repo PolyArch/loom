@@ -7,6 +7,7 @@
 #include "Common/ComponentViewDigest.h"
 #include "Common/ProviderForm.h"
 #include "DSE/PlanValue.h"
+#include "Evaluation/ModelParameterBundle.h"
 #include "ExternalTool/InvocationBundle.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -14,6 +15,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -114,6 +116,9 @@ struct CandidateGeneratorInputSlotDescriptor final {
   PlanValueRole role;
   const ArtifactSchemaDescriptor *schema;
   PlanValueCardinality cardinality;
+  const evaluation::ModelParameterContractRef *modelParameterContract = nullptr;
+  std::optional<CalibrationPartitionRole> calibrationPartitionRole =
+      std::nullopt;
 };
 
 struct CandidateGeneratorOutputSlotDescriptor final {
@@ -122,6 +127,9 @@ struct CandidateGeneratorOutputSlotDescriptor final {
   PlanValueRole role;
   const ArtifactSchemaDescriptor *schema;
   PlanValueCardinality cardinality;
+  const evaluation::ModelParameterContractRef *modelParameterContract = nullptr;
+  std::optional<CalibrationPartitionRole> calibrationPartitionRole =
+      std::nullopt;
 };
 
 enum class CandidateGeneratorDeterminism : std::uint32_t {
@@ -347,9 +355,9 @@ struct CandidateGeneratorExternalPrepareImportProvider final {
   CandidateGeneratorPrepareFunction prepare;
   CandidateGeneratorImportFunction import;
 
-  friend bool operator==(
-      const CandidateGeneratorExternalPrepareImportProvider &lhs,
-      const CandidateGeneratorExternalPrepareImportProvider &rhs) {
+  friend bool
+  operator==(const CandidateGeneratorExternalPrepareImportProvider &lhs,
+             const CandidateGeneratorExternalPrepareImportProvider &rhs) {
     return lhs.prepare == rhs.prepare && lhs.import == rhs.import;
   }
 };

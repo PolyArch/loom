@@ -194,8 +194,7 @@ generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   if (sourceGenerationReturnsEmpty)
     return CandidateGeneratorProviderResult{
         CompletedCandidateGeneratorResult{
-            {{CandidateGeneratorOutputSlotRef(0), {}}},
-            {}},
+            {{CandidateGeneratorOutputSlotRef(0), {}}}, {}},
         {{CandidateGeneratorWorkUnitRef(0), 1, 1}}};
   const ArtifactRootReference first =
       publishReference(store, candidateSchema, 0x31);
@@ -218,13 +217,11 @@ generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     return CandidateGeneratorProviderResult{
         IncompleteCandidateGeneratorResult{
             CandidateGeneratorIncompleteReason::SemanticLimitReached,
-            std::move(outputBindings),
-            std::move(lineageEdges)},
+            std::move(outputBindings), std::move(lineageEdges)},
         {{CandidateGeneratorWorkUnitRef(0), 2, 2}}};
   return CandidateGeneratorProviderResult{
-      CompletedCandidateGeneratorResult{
-          std::move(outputBindings),
-          std::move(lineageEdges)},
+      CompletedCandidateGeneratorResult{std::move(outputBindings),
+                                        std::move(lineageEdges)},
       {{CandidateGeneratorWorkUnitRef(0), 2, 2}}};
 }
 
@@ -312,7 +309,8 @@ void exerciseOrderedTypedUseDef() {
     fail("resolved Promote output did not derive the candidate contract");
   const PlanValueDescriptor *evidence = plan.resolve(PlanOutputRef{1, 1});
   if (!evidence || evidence->role != PlanValueRole::EvidenceSet ||
-      evidence->schema != evaluation::EvaluationEvidence::artifactSchema)
+      evidence->schema != evaluation::EvaluationEvidence::artifactSchema ||
+      evidence->modelParameterContract || evidence->calibrationPartitionRole)
     fail("resolved Promote output did not derive the Evidence contract");
 
   llvm::SmallString<128> storePath;

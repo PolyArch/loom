@@ -3,12 +3,14 @@
 
 #include "Common/Artifact.h"
 #include "Common/ComponentViewDigest.h"
+#include "Evaluation/ModelParameterBundle.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -31,6 +33,12 @@ enum class PlanValueCardinality : std::uint32_t {
   ZeroOrOne = 1,
   NonEmptySet = 2,
   FiniteSet = 3,
+};
+
+enum class CalibrationPartitionRole : std::uint32_t {
+  Training = 0,
+  Validation = 1,
+  HeldOut = 2,
 };
 
 struct PlanCardinalityBounds final {
@@ -90,6 +98,10 @@ struct PlanValueDescriptor final {
   PlanValueRole role;
   ArtifactSchemaDescriptor schema;
   PlanValueCardinality cardinality;
+  std::optional<evaluation::ModelParameterContractRef> modelParameterContract =
+      std::nullopt;
+  std::optional<CalibrationPartitionRole> calibrationPartitionRole =
+      std::nullopt;
 };
 
 } // namespace loom::dse

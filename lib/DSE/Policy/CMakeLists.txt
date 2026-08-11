@@ -21,6 +21,7 @@ target_include_directories(LoomDSECandidateGenerator PUBLIC
 
 target_link_libraries(LoomDSECandidateGenerator PUBLIC
   LoomCommon
+  LoomEvaluation
   LoomExternalTool
   LLVMSupport
 )

@@ -245,6 +245,14 @@ importEvaluationRequest(const ArtifactRootReference &reference,
                         const ArtifactStore &artifactStore,
                         const BlobStore &blobStore);
 
+/// Reads the exact Artifact roots directly named by the stored Request. This
+/// preparatory projection validates the outer owner envelope and typed nested
+/// codecs, but full case and dependency admission remains exclusively in
+/// `importEvaluationRequest`.
+llvm::Expected<std::vector<ArtifactRootReference>>
+importEvaluationRequestArtifactReferences(
+    const ArtifactRootReference &reference, const ArtifactStore &artifactStore);
+
 /// A removable derived index over exact case facts. It is never serialized
 /// into Request or Evidence, and it is not an Artifact identity.
 class EvaluationCaseKey {

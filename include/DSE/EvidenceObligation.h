@@ -1,6 +1,7 @@
 #ifndef LOOM_DSE_EVIDENCEOBLIGATION_H
 #define LOOM_DSE_EVIDENCEOBLIGATION_H
 
+#include "DSE/PlanValue.h"
 #include "Evaluation/Request.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -48,12 +49,6 @@ public:
 
 private:
   std::uint32_t ordinal_;
-};
-
-enum class CalibrationPartitionRole : std::uint32_t {
-  Training = 0,
-  Validation = 1,
-  HeldOut = 2,
 };
 
 struct InputSubjectBinding final {

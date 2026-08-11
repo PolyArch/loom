@@ -9,6 +9,8 @@ add_library(LoomEvaluation
   Finding.cpp
   Metric.cpp
   ModelDescriptor.cpp
+  ModelParameterBundle.cpp
+  ModelParameterContract.cpp
   ModelProvider.cpp
   NumericValue.cpp
   OwnerError.cpp

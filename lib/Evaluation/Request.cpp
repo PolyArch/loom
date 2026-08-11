@@ -1,4 +1,5 @@
 #include "Evaluation/Request.h"
+#include "Evaluation/ModelParameterBundle.h"
 
 #include "CanonicalSupport.h"
 
@@ -408,6 +409,18 @@ llvm::Error RequestVerifier::verify(const EvaluationRequest &request) const {
   for (const ModelInputSlotDescriptor &slot : descriptor->inputSlots) {
     const ModelInputBinding *input =
         request.modelBinding().findInputBinding(slot.slot);
+    if (slot.modelParameterContract) {
+      for (const ArtifactRootReference &artifact : input->artifacts) {
+        auto bundle =
+            importModelParameterBundle(artifact, artifactStore_, blobStore_);
+        if (!bundle)
+          return bundle.takeError();
+        if (bundle->bundle().parameterContract() !=
+            *slot.modelParameterContract)
+          return evaluationError(
+              "model input bundle has the wrong parameter contract");
+      }
+    }
     if (slot.verifyCompatibility)
       if (llvm::Error error =
               slot.verifyCompatibility(input->artifacts, *evaluationCase,

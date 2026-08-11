@@ -64,6 +64,29 @@ const CaseSubjectRoleDescriptor kSubjectRoles[] = {
      nullptr},
 };
 
+SubjectTargetPattern fabricRootPattern() {
+  return SubjectTargetPattern{
+      kFabricRole,
+      SubjectReferenceType{ArtifactRootType{fabric::fabricArtifactSchema}}};
+}
+
+const std::vector<ConditionApplicabilityPattern> kBaseConditionPatterns = {
+    {EvaluationConditionKind::ProcessCorner,
+     {caseSignatureRef(), {fabricRootPattern()}}},
+    {EvaluationConditionKind::SupplyVoltage,
+     {caseSignatureRef(), {fabricRootPattern()}}},
+    {EvaluationConditionKind::Temperature,
+     {caseSignatureRef(), {fabricRootPattern()}}},
+    {EvaluationConditionKind::RequiredClockPeriod,
+     {caseSignatureRef(), {fabricRootPattern()}}},
+    {EvaluationConditionKind::RelativeClockSchedule,
+     {caseSignatureRef(), {fabricRootPattern(), fabricRootPattern()}}},
+    {EvaluationConditionKind::ActivityBinding,
+     {caseSignatureRef(), {fabricRootPattern()}}},
+    {EvaluationConditionKind::ActivityBinding,
+     {caseSignatureRef(), {fabricRootPattern(), fabricRootPattern()}}},
+};
+
 llvm::Error verifyWorkloadCompatibility(
     const EvaluationCase &, const EvaluationSubjectBindings &,
     const std::optional<ArtifactRootReference> &workload,
@@ -111,7 +134,7 @@ const EvaluationCaseSignatureDescriptor kCaseSignature{
     kRuntimeInputSchemas,
     &verifyWorkloadCompatibility,
     AbsentReferenceCycle{},
-    {}};
+    kBaseConditionPatterns};
 
 const ScopeFormRef kWholeCaseScopeForms[] = {ScopeFormRef(0)};
 const MetricCapability kMetricCapabilities[] = {

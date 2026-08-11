@@ -3,12 +3,16 @@ add_library(LoomStructuredFabricAnalyticModel
   CanonicalDataflowFabricAnalytic.cpp
   CanonicalDataflowFunctional.cpp
   CgraSimulation.cpp
+  DeterministicGbdt.cpp
   DfgSimulation.cpp
+  FixedTabularGbdt.cpp
+  FpaParameterContract.cpp
   ProductionRegistry.cpp
   SimulationComparison.cpp
   StructuredEvaluationInvocationCache.cpp
   StructuredFabricAnalytic.cpp
   StructuredProgramFunctional.cpp
+  SystemRuntimeParameterContract.cpp
 )
 
 target_include_directories(LoomStructuredFabricAnalyticModel PUBLIC

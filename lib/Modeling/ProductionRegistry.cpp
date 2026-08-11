@@ -8,10 +8,12 @@
 #include "Evaluation/Models/CanonicalDataflowFunctional.h"
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/DfgSimulation.h"
+#include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/Models/PhysicalRailAnalysis.h"
 #include "Evaluation/Models/SimulationComparison.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/Models/StructuredProgramFunctional.h"
+#include "Evaluation/Models/SystemRuntimeParameterContract.h"
 #include "Evaluation/OwnerError.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
@@ -80,18 +82,6 @@ const ArtifactSchemaDescriptor *const kWorkloadSchemas[] = {
 const ArtifactSchemaDescriptor *const kRuntimeInputSchemas[] = {
     &sim::simulationRuntimeInputSchema};
 
-const ModelParameterContractRef &fpaParameterContract() {
-  static const ModelParameterContractRef reference =
-      llvm::cantFail(ModelParameterContractRef::get("loom.fpa", {3, 0}, 0));
-  return reference;
-}
-
-const ModelParameterContractRef &systemRuntimeParameterContract() {
-  static const ModelParameterContractRef reference = llvm::cantFail(
-      ModelParameterContractRef::get("loom.system_runtime", {1, 0}, 0));
-  return reference;
-}
-
 llvm::Error unavailableGem5Binding(const ArtifactRootReference &,
                                    const EvaluationCase &,
                                    const EvaluationSubjectBindings &,
@@ -102,21 +92,25 @@ llvm::Error unavailableGem5Binding(const ArtifactRootReference &,
       runtime::gem5SimulationBindingSchema.version);
 }
 
-llvm::Error unavailableModelParameterBundle(
-    llvm::ArrayRef<ArtifactRootReference>, const EvaluationCase &,
-    const CaseArtifactResolution &, const ArtifactStore &, const BlobStore &) {
-  return evaluationOwnerUnavailable(modelParameterBundleSchema.identity,
-                                    modelParameterBundleSchema.version);
+llvm::Error
+verifyParameterSubject(const ArtifactRootReference &subject,
+                       const ModelParameterContractRef &expectedContract,
+                       const ArtifactStore &artifacts, const BlobStore &blobs) {
+  auto bundle = importModelParameterBundle(subject, artifacts, blobs);
+  if (!bundle)
+    return bundle.takeError();
+  if (bundle->bundle().parameterContract() != expectedContract)
+    return invalid("model parameter subject has the wrong contract");
+  return llvm::Error::success();
 }
 
-llvm::Error unavailableModelParameterSubject(const ArtifactRootReference &,
-                                             const EvaluationCase &,
-                                             const EvaluationSubjectBindings &,
-                                             const CaseArtifactResolution &,
-                                             const ArtifactStore &,
-                                             const BlobStore &) {
-  return evaluationOwnerUnavailable(modelParameterBundleSchema.identity,
-                                    modelParameterBundleSchema.version);
+llvm::Error verifySystemRuntimeParameterSubject(
+    const ArtifactRootReference &subject, const EvaluationCase &,
+    const EvaluationSubjectBindings &, const CaseArtifactResolution &,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  return verifyParameterSubject(
+      subject, models::systemRuntimeModelParameterContractRef(), artifacts,
+      blobs);
 }
 
 bool reaches(const CaseArtifactResolution &resolution,
@@ -285,7 +279,7 @@ const EvaluationCaseSignatureDescriptor kHardwareSignature{
 const CaseSubjectRoleDescriptor kRuntimeCalibrationRoles[] = {
     {kRole0, "system_runtime_parameter_bundle",
      SubjectRoleCardinality::ExactlyOne, kParameterSchemas,
-     &unavailableModelParameterSubject},
+     &verifySystemRuntimeParameterSubject},
     {kRole1, "ground_truth_evidence", SubjectRoleCardinality::OneOrMore,
      kEvidenceSchemas, nullptr},
 };
@@ -466,19 +460,23 @@ const std::vector<ModelConditionCapability> &openRoadConditionCapabilities() {
   return capabilities;
 }
 
-const ModelConditionCapability kRuntimeErrorConditions[] = {
-    {metricDescriptor(MetricKind::RuntimePredictionError)
-         .requiredRequestConditionPatterns.front(),
-     ConditionDisposition::Required}};
+llvm::ArrayRef<ModelConditionCapability> runtimeErrorConditions() {
+  static const std::array<ModelConditionCapability, 1> conditions = {{
+      {metricDescriptor(MetricKind::RuntimePredictionError)
+           .requiredRequestConditionPatterns.front(),
+       ConditionDisposition::Required},
+  }};
+  return conditions;
+}
 
 const ModelInputSlotDescriptor kFpaParameterInputs[] = {
     {kParameterInput, "model_parameter_bundle", kParameterSchemas,
-     ArtifactCollectionCardinality::ExactlyOne,
-     &unavailableModelParameterBundle, fpaParameterContract()}};
+     ArtifactCollectionCardinality::ExactlyOne, nullptr,
+     models::fpaModelParameterContractRef()}};
 const ModelInputSlotDescriptor kSystemRuntimeParameterInputs[] = {
     {kParameterInput, "model_parameter_bundle", kParameterSchemas,
-     ArtifactCollectionCardinality::ExactlyOne,
-     &unavailableModelParameterBundle, systemRuntimeParameterContract()}};
+     ArtifactCollectionCardinality::ExactlyOne, nullptr,
+     models::systemRuntimeModelParameterContractRef()}};
 
 const ModelOutputSlotDescriptor kExecutionOutputs[] = {{
     kExecutionOutput,
@@ -499,156 +497,159 @@ const ModeledPhenomenon kSystemPhenomena[] = {
 const ModeledPhenomenon kRtlPhenomena[] = {ModeledPhenomenon::CanonicalDataflow,
                                            ModeledPhenomenon::RTLBehavior};
 
-const EvaluationModelDescriptor kBuiltinModelDescriptors[] = {
-    {builtinEvaluationModelKind(BuiltinEvaluationModel::FabricLowConfidence),
-     "fabric_low_confidence",
-     "loom.fabric.low_confidence.v1",
-     caseRef(kHardwareCase),
-     hardwareConditionCapabilities(),
-     kFpaMetrics,
-     {},
-     {},
-     {},
-     models::detail::emptyLowConfidenceConfigView(),
-     kHardwarePhenomena,
-     EvaluationExecutionMethod::Analytic,
-     {},
-     DeterminismContract::Deterministic,
-     {},
-     ProviderForm::InProcess},
-    {builtinEvaluationModelKind(BuiltinEvaluationModel::FabricCalibratedFpa),
-     "fabric_calibrated_fpa",
-     "loom.fabric.calibrated_fpa.v1",
-     caseRef(kHardwareCase),
-     hardwareConditionCapabilities(),
-     kFpaMetrics,
-     {},
-     kFpaParameterInputs,
-     {},
-     emptyConfig<BuiltinEvaluationModel::FabricCalibratedFpa>(),
-     kHardwarePhenomena,
-     EvaluationExecutionMethod::Analytic,
-     {},
-     DeterminismContract::Deterministic,
-     {},
-     ProviderForm::InProcess},
-    {builtinEvaluationModelKind(
-         BuiltinEvaluationModel::SystemRuntimeModelParameterCalibration),
-     "system_runtime_model_parameter_calibration",
-     "loom.system_runtime.calibration.v1",
-     caseRef(kRuntimeCalibrationCase),
-     kRuntimeErrorConditions,
-     kRuntimeErrorMetric,
-     {},
-     kSystemRuntimeParameterInputs,
-     {},
-     emptyConfig<
-         BuiltinEvaluationModel::SystemRuntimeModelParameterCalibration>(),
-     {},
-     EvaluationExecutionMethod::Analytic,
-     {},
-     DeterminismContract::Deterministic,
-     {},
-     ProviderForm::InProcess},
-    {builtinEvaluationModelKind(
-         BuiltinEvaluationModel::Gem5CgraSystemRuntimePredictor),
-     "gem5_cgra_system_runtime_predictor",
-     "loom.gem5_cgra.system_runtime_predictor.v1",
-     caseRef(kSystemCase),
-     {},
-     kRuntimeMetric,
-     {},
-     kSystemRuntimeParameterInputs,
-     {},
-     emptyConfig<BuiltinEvaluationModel::Gem5CgraSystemRuntimePredictor>(),
-     kSystemPhenomena,
-     EvaluationExecutionMethod::Analytic,
-     {},
-     DeterminismContract::Deterministic,
-     {},
-     ProviderForm::InProcess},
-    {builtinEvaluationModelKind(BuiltinEvaluationModel::Gem5SystemDfg),
-     "gem5_system_dfg",
-     "loom.gem5.system_dfg.v1",
-     caseRef(kSystemCase),
-     {},
-     {},
-     {},
-     {},
-     kExecutionOutputs,
-     emptyConfig<BuiltinEvaluationModel::Gem5SystemDfg>(),
-     kSystemPhenomena,
-     EvaluationExecutionMethod::Simulation,
-     {},
-     DeterminismContract::Deterministic,
-     {},
-     ProviderForm::ExternalPrepareImport},
-    {builtinEvaluationModelKind(BuiltinEvaluationModel::Gem5SystemCgra),
-     "gem5_system_cgra",
-     "loom.gem5.system_cgra.v1",
-     caseRef(kSystemCase),
-     {},
-     kRuntimeMetric,
-     {},
-     {},
-     kExecutionOutputs,
-     emptyConfig<BuiltinEvaluationModel::Gem5SystemCgra>(),
-     kSystemPhenomena,
-     EvaluationExecutionMethod::Simulation,
-     {},
-     DeterminismContract::Deterministic,
-     {},
-     ProviderForm::ExternalPrepareImport},
-    {builtinEvaluationModelKind(BuiltinEvaluationModel::Gem5SystemRtl),
-     "gem5_system_rtl",
-     "loom.gem5.system_rtl.v1",
-     caseRef(kSystemCase),
-     {},
-     kRuntimeMetric,
-     {},
-     {},
-     kExecutionOutputs,
-     emptyConfig<BuiltinEvaluationModel::Gem5SystemRtl>(),
-     kSystemPhenomena,
-     EvaluationExecutionMethod::Simulation,
-     {},
-     DeterminismContract::Deterministic,
-     {},
-     ProviderForm::ExternalPrepareImport},
-    {builtinEvaluationModelKind(
-         BuiltinEvaluationModel::OpenRoadRoutedStaticFpa),
-     "openroad_routed_static_fpa",
-     "loom.eda.openroad.routed_static_fpa.v1",
-     models::hardwareImplementationPhysicalCaseSignatureRef(),
-     openRoadConditionCapabilities(),
-     kFpaMetrics,
-     {},
-     {},
-     {},
-     providerBuildConfig<BuiltinEvaluationModel::OpenRoadRoutedStaticFpa>(),
-     kHardwarePhenomena,
-     EvaluationExecutionMethod::ToolMeasurement,
-     {},
-     DeterminismContract::Deterministic,
-     {},
-     ProviderForm::ExternalPrepareImport},
-    {builtinEvaluationModelKind(BuiltinEvaluationModel::MappedRtlSimulator),
-     "mapped_rtl_simulator",
-     "loom.mapped_rtl.simulator.v1",
-     caseRef(kMappedRtlCase),
-     {},
-     kCycleMetric,
-     {},
-     {},
-     kExecutionOutputs,
-     providerBuildConfig<BuiltinEvaluationModel::MappedRtlSimulator>(),
-     kRtlPhenomena,
-     EvaluationExecutionMethod::Simulation,
-     {},
-     DeterminismContract::Deterministic,
-     {},
-     ProviderForm::ExternalPrepareImport},
-};
+llvm::ArrayRef<EvaluationModelDescriptor> builtinModelDescriptors() {
+  static const EvaluationModelDescriptor descriptors[] = {
+      {builtinEvaluationModelKind(BuiltinEvaluationModel::FabricLowConfidence),
+       "fabric_low_confidence",
+       "loom.fabric.low_confidence.v1",
+       caseRef(kHardwareCase),
+       hardwareConditionCapabilities(),
+       kFpaMetrics,
+       {},
+       {},
+       {},
+       models::detail::emptyLowConfidenceConfigView(),
+       kHardwarePhenomena,
+       EvaluationExecutionMethod::Analytic,
+       {},
+       DeterminismContract::Deterministic,
+       {},
+       ProviderForm::InProcess},
+      {builtinEvaluationModelKind(BuiltinEvaluationModel::FabricCalibratedFpa),
+       "fabric_calibrated_fpa",
+       "loom.fabric.calibrated_fpa.v1",
+       caseRef(kHardwareCase),
+       hardwareConditionCapabilities(),
+       kFpaMetrics,
+       {},
+       kFpaParameterInputs,
+       {},
+       emptyConfig<BuiltinEvaluationModel::FabricCalibratedFpa>(),
+       kHardwarePhenomena,
+       EvaluationExecutionMethod::Analytic,
+       {},
+       DeterminismContract::Deterministic,
+       {},
+       ProviderForm::InProcess},
+      {builtinEvaluationModelKind(
+           BuiltinEvaluationModel::SystemRuntimeModelParameterCalibration),
+       "system_runtime_model_parameter_calibration",
+       "loom.system_runtime.calibration.v1",
+       caseRef(kRuntimeCalibrationCase),
+       runtimeErrorConditions(),
+       kRuntimeErrorMetric,
+       {},
+       kSystemRuntimeParameterInputs,
+       {},
+       emptyConfig<
+           BuiltinEvaluationModel::SystemRuntimeModelParameterCalibration>(),
+       {},
+       EvaluationExecutionMethod::Analytic,
+       {},
+       DeterminismContract::Deterministic,
+       {},
+       ProviderForm::InProcess},
+      {builtinEvaluationModelKind(
+           BuiltinEvaluationModel::Gem5CgraSystemRuntimePredictor),
+       "gem5_cgra_system_runtime_predictor",
+       "loom.gem5_cgra.system_runtime_predictor.v1",
+       caseRef(kSystemCase),
+       {},
+       kRuntimeMetric,
+       {},
+       kSystemRuntimeParameterInputs,
+       {},
+       emptyConfig<BuiltinEvaluationModel::Gem5CgraSystemRuntimePredictor>(),
+       kSystemPhenomena,
+       EvaluationExecutionMethod::Analytic,
+       {},
+       DeterminismContract::Deterministic,
+       {},
+       ProviderForm::InProcess},
+      {builtinEvaluationModelKind(BuiltinEvaluationModel::Gem5SystemDfg),
+       "gem5_system_dfg",
+       "loom.gem5.system_dfg.v1",
+       caseRef(kSystemCase),
+       {},
+       {},
+       {},
+       {},
+       kExecutionOutputs,
+       emptyConfig<BuiltinEvaluationModel::Gem5SystemDfg>(),
+       kSystemPhenomena,
+       EvaluationExecutionMethod::Simulation,
+       {},
+       DeterminismContract::Deterministic,
+       {},
+       ProviderForm::ExternalPrepareImport},
+      {builtinEvaluationModelKind(BuiltinEvaluationModel::Gem5SystemCgra),
+       "gem5_system_cgra",
+       "loom.gem5.system_cgra.v1",
+       caseRef(kSystemCase),
+       {},
+       kRuntimeMetric,
+       {},
+       {},
+       kExecutionOutputs,
+       emptyConfig<BuiltinEvaluationModel::Gem5SystemCgra>(),
+       kSystemPhenomena,
+       EvaluationExecutionMethod::Simulation,
+       {},
+       DeterminismContract::Deterministic,
+       {},
+       ProviderForm::ExternalPrepareImport},
+      {builtinEvaluationModelKind(BuiltinEvaluationModel::Gem5SystemRtl),
+       "gem5_system_rtl",
+       "loom.gem5.system_rtl.v1",
+       caseRef(kSystemCase),
+       {},
+       kRuntimeMetric,
+       {},
+       {},
+       kExecutionOutputs,
+       emptyConfig<BuiltinEvaluationModel::Gem5SystemRtl>(),
+       kSystemPhenomena,
+       EvaluationExecutionMethod::Simulation,
+       {},
+       DeterminismContract::Deterministic,
+       {},
+       ProviderForm::ExternalPrepareImport},
+      {builtinEvaluationModelKind(
+           BuiltinEvaluationModel::OpenRoadRoutedStaticFpa),
+       "openroad_routed_static_fpa",
+       "loom.eda.openroad.routed_static_fpa.v1",
+       models::hardwareImplementationPhysicalCaseSignatureRef(),
+       openRoadConditionCapabilities(),
+       kFpaMetrics,
+       {},
+       {},
+       {},
+       providerBuildConfig<BuiltinEvaluationModel::OpenRoadRoutedStaticFpa>(),
+       kHardwarePhenomena,
+       EvaluationExecutionMethod::ToolMeasurement,
+       {},
+       DeterminismContract::Deterministic,
+       {},
+       ProviderForm::ExternalPrepareImport},
+      {builtinEvaluationModelKind(BuiltinEvaluationModel::MappedRtlSimulator),
+       "mapped_rtl_simulator",
+       "loom.mapped_rtl.simulator.v1",
+       caseRef(kMappedRtlCase),
+       {},
+       kCycleMetric,
+       {},
+       {},
+       kExecutionOutputs,
+       providerBuildConfig<BuiltinEvaluationModel::MappedRtlSimulator>(),
+       kRtlPhenomena,
+       EvaluationExecutionMethod::Simulation,
+       {},
+       DeterminismContract::Deterministic,
+       {},
+       ProviderForm::ExternalPrepareImport},
+  };
+  return descriptors;
+}
 
 } // namespace
 
@@ -679,10 +680,12 @@ llvm::Error registerProductionEvaluationRegistry() {
     return error;
   if (llvm::Error error = registerEvaluationCaseSignature(kMappedRtlSignature))
     return error;
-  for (const EvaluationModelDescriptor &model : kBuiltinModelDescriptors)
+  for (const EvaluationModelDescriptor &model : builtinModelDescriptors())
     if (llvm::Error error = registerEvaluationModelDescriptor(model))
       return error;
-  return llvm::Error::success();
+  if (llvm::Error error = models::registerFpaModelParameterContract())
+    return error;
+  return models::registerSystemRuntimeModelParameterContract();
 }
 
 EvaluationCaseSignatureRef systemSimulationCaseSignatureRef() {

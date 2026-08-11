@@ -5,6 +5,7 @@
 #include "Common/ArtifactStore.h"
 
 #include "Common/ArtifactLocalReference.h"
+#include "Evaluation/ModelParameter.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -307,6 +308,50 @@ llvm::Error canonicalizeOutputBindings(
   return llvm::Error::success();
 }
 
+llvm::Error validateContractedInputArtifacts(
+    const CandidateGeneratorDescriptor &descriptor,
+    llvm::ArrayRef<CandidateGeneratorInputBinding> bindings,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  for (std::size_t index = 0; index < bindings.size(); ++index) {
+    const CandidateGeneratorInputSlotDescriptor &slot =
+        descriptor.inputSlots[index];
+    if (!slot.modelParameterContract)
+      continue;
+    for (const ArtifactRootReference &artifact : bindings[index].artifacts) {
+      auto bundle =
+          evaluation::importModelParameterBundle(artifact, store, blobs);
+      if (!bundle)
+        return bundle.takeError();
+      if (bundle->bundle().parameterContract() != *slot.modelParameterContract)
+        return invalid("input slot '" + slot.semanticRole +
+                       "' received a bundle for another parameter contract");
+    }
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error validateContractedOutputArtifacts(
+    const CandidateGeneratorDescriptor &descriptor,
+    llvm::ArrayRef<CandidateGeneratorOutputBinding> bindings,
+    const ArtifactStore &store, const BlobStore &blobs) {
+  for (std::size_t index = 0; index < bindings.size(); ++index) {
+    const CandidateGeneratorOutputSlotDescriptor &slot =
+        descriptor.outputSlots[index];
+    if (!slot.modelParameterContract)
+      continue;
+    for (const ArtifactRootReference &artifact : bindings[index].artifacts) {
+      auto bundle =
+          evaluation::importModelParameterBundle(artifact, store, blobs);
+      if (!bundle)
+        return bundle.takeError();
+      if (bundle->bundle().parameterContract() != *slot.modelParameterContract)
+        return invalid("output slot '" + slot.semanticRole +
+                       "' published a bundle for another parameter contract");
+    }
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
   if (!isCanonicalAscii(descriptor.spelling))
     return invalid("descriptor spelling must be nonempty canonical ASCII");
@@ -341,6 +386,25 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
         static_cast<std::uint32_t>(slot.cardinality) >
             static_cast<std::uint32_t>(PlanValueCardinality::FiniteSet))
       return invalid("input slot has an invalid plan value contract");
+    const bool isParameterBundle =
+        *slot.schema == evaluation::modelParameterBundleSchema;
+    if (isParameterBundle != (slot.modelParameterContract != nullptr))
+      return invalid("input slot must declare one parameter contract iff it "
+                     "accepts ModelParameterBundle");
+    if (slot.modelParameterContract &&
+        !evaluation::findModelParameterContract(*slot.modelParameterContract))
+      return invalid("input slot references an unregistered model parameter "
+                     "contract");
+    const bool isEvidence =
+        slot.role == PlanValueRole::EvidenceSet &&
+        *slot.schema == evaluation::EvaluationEvidence::artifactSchema;
+    if (slot.calibrationPartitionRole && !isEvidence)
+      return invalid("calibration partition is permitted only on an exact "
+                     "Evidence input slot");
+    if (slot.calibrationPartitionRole &&
+        static_cast<std::uint32_t>(*slot.calibrationPartitionRole) >
+            static_cast<std::uint32_t>(CalibrationPartitionRole::HeldOut))
+      return invalid("input slot has an unknown calibration partition");
   }
 
   for (std::size_t index = 0; index < descriptor.outputSlots.size(); ++index) {
@@ -355,6 +419,25 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
         static_cast<std::uint32_t>(slot.cardinality) >
             static_cast<std::uint32_t>(PlanValueCardinality::FiniteSet))
       return invalid("output slot has an invalid plan value contract");
+    const bool isParameterBundle =
+        *slot.schema == evaluation::modelParameterBundleSchema;
+    if (isParameterBundle != (slot.modelParameterContract != nullptr))
+      return invalid("output slot must declare one parameter contract iff it "
+                     "publishes ModelParameterBundle");
+    if (slot.modelParameterContract &&
+        !evaluation::findModelParameterContract(*slot.modelParameterContract))
+      return invalid("output slot references an unregistered model parameter "
+                     "contract");
+    const bool isEvidence =
+        slot.role == PlanValueRole::EvidenceSet &&
+        *slot.schema == evaluation::EvaluationEvidence::artifactSchema;
+    if (slot.calibrationPartitionRole && !isEvidence)
+      return invalid("calibration partition is permitted only on an exact "
+                     "Evidence output slot");
+    if (slot.calibrationPartitionRole &&
+        static_cast<std::uint32_t>(*slot.calibrationPartitionRole) >
+            static_cast<std::uint32_t>(CalibrationPartitionRole::HeldOut))
+      return invalid("output slot has an unknown calibration partition");
   }
 
   for (std::size_t index = 0; index < descriptor.workUnits.size(); ++index) {
@@ -383,7 +466,8 @@ llvm::Error validateProviderResult(
     const CandidateGeneratorDescriptor &descriptor,
     const ResolvedCandidateGeneratorBinding &binding,
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
-    CandidateGeneratorProviderResult &result, const ArtifactStore &store) {
+    CandidateGeneratorProviderResult &result, const ArtifactStore &store,
+    const BlobStore &blobs) {
   if (llvm::Error error = validateCandidateGeneratorWorkSummary(
           binding.descriptorRef(), result.workSummary))
     return error;
@@ -391,6 +475,9 @@ llvm::Error validateProviderResult(
           std::get_if<CompletedCandidateGeneratorResult>(&result.outcome)) {
     if (llvm::Error error = canonicalizeOutputBindings(
             descriptor, completed->outputBindings, true, store))
+      return error;
+    if (llvm::Error error = validateContractedOutputArtifacts(
+            descriptor, completed->outputBindings, store, blobs))
       return error;
     if (llvm::Error error = canonicalizeLineageEdges(
             descriptor, inputBindings, completed->outputBindings,
@@ -405,6 +492,9 @@ llvm::Error validateProviderResult(
       return invalid("provider returned an invalid Incomplete reason");
     if (llvm::Error error = canonicalizeOutputBindings(
             descriptor, incomplete.retainedOutputBindings, false, store))
+      return error;
+    if (llvm::Error error = validateContractedOutputArtifacts(
+            descriptor, incomplete.retainedOutputBindings, store, blobs))
       return error;
     if (llvm::Error error = canonicalizeLineageEdges(
             descriptor, inputBindings, incomplete.retainedOutputBindings,
@@ -737,6 +827,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           binding.descriptorRef(), inputBindings))
     return std::move(error);
+  if (llvm::Error error = validateContractedInputArtifacts(
+          *descriptor, inputBindings, store, blobs))
+    return std::move(error);
 
   std::optional<CandidateGeneratorProviderImplementation> implementation =
       lookupProviderImplementation(binding.descriptorRef());
@@ -767,8 +860,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
   auto result = invoke(inputBindings, binding, store, blobs);
   if (!result)
     return result.takeError();
-  if (llvm::Error error = validateProviderResult(*descriptor, binding,
-                                                 inputBindings, *result, store))
+  if (llvm::Error error = validateProviderResult(
+          *descriptor, binding, inputBindings, *result, store, blobs))
     return std::move(error);
   return result;
 }
@@ -788,6 +881,9 @@ prepareCandidateGeneratorInvocation(
     return invalid("in-process provider cannot prepare an external invocation");
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           binding.descriptorRef(), inputBindings))
+    return std::move(error);
+  if (llvm::Error error = validateContractedInputArtifacts(
+          *descriptor, inputBindings, store, blobs))
     return std::move(error);
   std::optional<CandidateGeneratorProviderImplementation> implementation =
       lookupProviderImplementation(binding.descriptorRef());
@@ -813,6 +909,9 @@ importCandidateGeneratorInvocation(
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           binding.descriptorRef(), inputBindings))
     return std::move(error);
+  if (llvm::Error error = validateContractedInputArtifacts(
+          *descriptor, inputBindings, store, blobs))
+    return std::move(error);
   std::optional<CandidateGeneratorProviderImplementation> implementation =
       lookupProviderImplementation(binding.descriptorRef());
   if (!implementation)
@@ -822,8 +921,8 @@ importCandidateGeneratorInvocation(
           .import(inputBindings, binding, prepared, store, blobs);
   if (!result)
     return result.takeError();
-  if (llvm::Error error = validateProviderResult(*descriptor, binding,
-                                                 inputBindings, *result, store))
+  if (llvm::Error error = validateProviderResult(
+          *descriptor, binding, inputBindings, *result, store, blobs))
     return std::move(error);
   return result;
 }

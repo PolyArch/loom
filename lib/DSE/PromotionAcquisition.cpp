@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Evaluation/ModelParameter.h"
 #include "Evaluation/ModelProvider.h"
 
 #include "llvm/Support/ErrorHandling.h"
@@ -126,6 +127,25 @@ validateDescriptor(const PromotionAcquisitionDescriptor &descriptor) {
     if (!isCanonicalAscii(slot.spelling) || !slot.schema ||
         !validRole(slot.role) || !validCardinality(slot.cardinality))
       return invalid("input slot has an invalid typed contract");
+    const bool isParameterBundle =
+        *slot.schema == evaluation::modelParameterBundleSchema;
+    if (isParameterBundle != (slot.modelParameterContract != nullptr))
+      return invalid("input slot must declare one parameter contract iff it "
+                     "accepts ModelParameterBundle");
+    if (slot.modelParameterContract &&
+        !evaluation::findModelParameterContract(*slot.modelParameterContract))
+      return invalid("input slot references an unregistered model parameter "
+                     "contract");
+    const bool isEvidence =
+        slot.role == PlanValueRole::EvidenceSet &&
+        *slot.schema == evaluation::EvaluationEvidence::artifactSchema;
+    if (slot.calibrationPartitionRole && !isEvidence)
+      return invalid("calibration partition is permitted only on an exact "
+                     "Evidence input slot");
+    if (slot.calibrationPartitionRole &&
+        static_cast<std::uint32_t>(*slot.calibrationPartitionRole) >
+            static_cast<std::uint32_t>(CalibrationPartitionRole::HeldOut))
+      return invalid("input slot has an unknown calibration partition");
   }
   const PromotionAcquisitionInputSlotDescriptor *candidate =
       descriptor.findInputSlot(descriptor.candidateInputSlot);
@@ -430,15 +450,16 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
         evaluation::publishEvaluationRequest(*request, store);
     if (!requestReference)
       return requestReference.takeError();
-    executionTasks.push_back(
-        {task.candidate, task.obligationTemplate, std::move(*request),
-         resolved.resolution});
+    executionTasks.push_back({task.candidate, task.obligationTemplate,
+                              std::move(*request), resolved.resolution});
   }
 
   InProcessPromotionEvidenceExecutor inProcess;
   PromotionEvidenceExecutor &selectedExecutor =
-      executor ? *executor : static_cast<PromotionEvidenceExecutor &>(inProcess);
-  auto executionResults = selectedExecutor.execute(executionTasks, store, blobs);
+      executor ? *executor
+               : static_cast<PromotionEvidenceExecutor &>(inProcess);
+  auto executionResults =
+      selectedExecutor.execute(executionTasks, store, blobs);
   if (!executionResults)
     return executionResults.takeError();
   if (executionResults->size() != executionTasks.size())
@@ -451,8 +472,8 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     PromotionEvidenceExecutionResult &result = (*executionResults)[index];
     if (auto *incomplete =
             std::get_if<PromotionAcquisitionIncompleteReason>(&result))
-      return PromotionAcquisitionOutcome{IncompletePromotionAcquisition{
-          *incomplete, std::move(evidence)}};
+      return PromotionAcquisitionOutcome{
+          IncompletePromotionAcquisition{*incomplete, std::move(evidence)}};
     evidence.emplace_back(
         std::move(task.request),
         std::get<evaluation::EvaluationEvidence>(std::move(result)),

@@ -64,6 +64,9 @@ struct PromotionAcquisitionInputSlotDescriptor final {
   PlanValueRole role;
   const ArtifactSchemaDescriptor *schema;
   PlanValueCardinality cardinality;
+  const evaluation::ModelParameterContractRef *modelParameterContract = nullptr;
+  std::optional<CalibrationPartitionRole> calibrationPartitionRole =
+      std::nullopt;
 };
 
 struct PromotionAcquisitionDescriptor;
