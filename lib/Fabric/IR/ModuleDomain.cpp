@@ -4,9 +4,11 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "mlir/IR/IRMapping.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/ADT/bit.h"
+#include <algorithm>
 #include <limits>
 
 #include <cstddef>
@@ -282,13 +284,11 @@ ModuleDomainAuthoringRelation::declareSlot(
     return invalid("default Module domain assignments are already active");
   switch (kind) {
   case loom::fabric::FabricClockResetKind::Clock:
-    if (clockSlots_ ==
-        std::numeric_limits<loom::fabric::FabricOrdinal>::max())
+    if (clockSlots_ == std::numeric_limits<loom::fabric::FabricOrdinal>::max())
       return invalid("Clock slot inventory overflows the ordinal domain");
     return clockSlots_++;
   case loom::fabric::FabricClockResetKind::Reset:
-    if (resetSlots_ ==
-        std::numeric_limits<loom::fabric::FabricOrdinal>::max())
+    if (resetSlots_ == std::numeric_limits<loom::fabric::FabricOrdinal>::max())
       return invalid("Reset slot inventory overflows the ordinal domain");
     return resetSlots_++;
   }
@@ -435,8 +435,7 @@ llvm::Error ModuleDomainAuthoringRelation::assignBoundary(
     loom::fabric::FabricOrdinal slotOrdinal) {
   if (direction != loom::fabric::FabricPortDirection::Input &&
       direction != loom::fabric::FabricPortDirection::Output)
-    return invalid(
-        "boundary domain member direction is outside the catalog");
+    return invalid("boundary domain member direction is outside the catalog");
   MemberKey key;
   key.direction = direction;
   key.ordinal = endpointOrdinal;
@@ -585,6 +584,149 @@ void ModuleDomainAuthoringRelation::remapMappedOperations(
   for (InstanceBindingRecord &binding : instanceBindings_)
     if (mlir::Operation *mapped = mapping.lookupOrNull(binding.instance))
       binding.instance = mapped;
+}
+
+llvm::Error ModuleDomainAuthoringRelation::replicateMappedOperations(
+    const mlir::IRMapping &mapping) {
+  std::vector<MemberKey> replicatedMembers;
+  for (const MemberKey &member : internalMembers_) {
+    mlir::Operation *mapped =
+        member.internal ? mapping.lookupOrNull(member.owner) : nullptr;
+    if (!mapped)
+      continue;
+    MemberKey replicated = member;
+    replicated.owner = mapped;
+    if (llvm::is_contained(internalMembers_, replicated) ||
+        llvm::is_contained(replicatedMembers, replicated))
+      return invalid("replicated Module domain member already exists");
+    replicatedMembers.push_back(replicated);
+  }
+
+  std::vector<AssignmentRow> replicatedAssignments;
+  for (const AssignmentRow &assignment : assignments_) {
+    mlir::Operation *mapped =
+        assignment.member.internal
+            ? mapping.lookupOrNull(assignment.member.owner)
+            : nullptr;
+    if (!mapped)
+      continue;
+    AssignmentRow replicated = assignment;
+    replicated.member.owner = mapped;
+    replicatedAssignments.push_back(replicated);
+  }
+
+  internalMembers_.insert(internalMembers_.end(), replicatedMembers.begin(),
+                          replicatedMembers.end());
+  assignments_.insert(assignments_.end(), replicatedAssignments.begin(),
+                      replicatedAssignments.end());
+  return llvm::Error::success();
+}
+
+llvm::Error ModuleDomainAuthoringRelation::eraseOperations(
+    llvm::ArrayRef<mlir::Operation *> operations) {
+  if (llvm::is_contained(operations, nullptr))
+    return invalid("erased Module domain operation is null");
+  const auto erased = [&](mlir::Operation *operation) {
+    return llvm::is_contained(operations, operation);
+  };
+  internalMembers_.erase(
+      std::remove_if(internalMembers_.begin(), internalMembers_.end(),
+                     [&](const MemberKey &member) {
+                       return member.internal && erased(member.owner);
+                     }),
+      internalMembers_.end());
+  assignments_.erase(std::remove_if(assignments_.begin(), assignments_.end(),
+                                    [&](const AssignmentRow &row) {
+                                      return row.member.internal &&
+                                             erased(row.member.owner);
+                                    }),
+                     assignments_.end());
+  instanceBindings_.erase(
+      std::remove_if(instanceBindings_.begin(), instanceBindings_.end(),
+                     [&](const InstanceBindingRecord &record) {
+                       return erased(record.instance);
+                     }),
+      instanceBindings_.end());
+  return llvm::Error::success();
+}
+
+llvm::Error ModuleDomainAuthoringRelation::resizeInternalMembers(
+    mlir::Operation *owner, InternalMemberRole role,
+    loom::fabric::FabricOrdinal oldCount, loom::fabric::FabricOrdinal newCount,
+    loom::fabric::FabricOrdinal prototypeOrdinal) {
+  if (!owner)
+    return invalid("resized Module domain owner is null");
+  if (oldCount == 0)
+    return invalid("resized Module domain inventory has no source member");
+  if (prototypeOrdinal >= oldCount)
+    return invalid("Module domain prototype member is out of range");
+
+  for (loom::fabric::FabricOrdinal ordinal = 0; ordinal < oldCount; ++ordinal) {
+    MemberKey member;
+    member.internal = true;
+    member.owner = owner;
+    member.role = role;
+    member.ordinal = ordinal;
+    if (!llvm::is_contained(internalMembers_, member))
+      return invalid("resized Module domain inventory is not dense");
+  }
+
+  MemberKey prototype;
+  prototype.internal = true;
+  prototype.owner = owner;
+  prototype.role = role;
+  prototype.ordinal = prototypeOrdinal;
+  std::vector<AssignmentRow> prototypeAssignments;
+  for (const AssignmentRow &row : assignments_)
+    if (row.member == prototype)
+      prototypeAssignments.push_back(row);
+  if (prototypeAssignments.empty())
+    return invalid("Module domain prototype member has no assignments");
+
+  if (newCount < oldCount) {
+    internalMembers_.erase(
+        std::remove_if(internalMembers_.begin(), internalMembers_.end(),
+                       [&](const MemberKey &member) {
+                         return member.internal && member.owner == owner &&
+                                member.role == role &&
+                                member.ordinal >= newCount;
+                       }),
+        internalMembers_.end());
+    assignments_.erase(std::remove_if(assignments_.begin(), assignments_.end(),
+                                      [&](const AssignmentRow &row) {
+                                        return row.member.internal &&
+                                               row.member.owner == owner &&
+                                               row.member.role == role &&
+                                               row.member.ordinal >= newCount;
+                                      }),
+                       assignments_.end());
+  }
+  for (loom::fabric::FabricOrdinal ordinal = oldCount; ordinal < newCount;
+       ++ordinal) {
+    MemberKey member = prototype;
+    member.ordinal = ordinal;
+    internalMembers_.push_back(member);
+    for (const AssignmentRow &row : prototypeAssignments)
+      assignments_.push_back({member, row.slotKind, row.slotOrdinal});
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error ModuleDomainAuthoringRelation::truncateBoundaryMembers(
+    loom::fabric::FabricPortDirection direction,
+    loom::fabric::FabricOrdinal oldCount,
+    loom::fabric::FabricOrdinal newCount) {
+  if (newCount > oldCount)
+    return invalid("Module boundary growth requires explicit domain rows");
+  assignments_.erase(std::remove_if(assignments_.begin(), assignments_.end(),
+                                    [&](const AssignmentRow &row) {
+                                      return !row.member.internal &&
+                                             row.member.direction ==
+                                                 direction &&
+                                             row.member.ordinal >= newCount;
+                                    }),
+                     assignments_.end());
+  return llvm::Error::success();
 }
 
 llvm::Error ModuleDomainAuthoringRelation::composeInstance(

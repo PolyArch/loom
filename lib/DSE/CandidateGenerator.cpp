@@ -313,8 +313,6 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
   if (!isCanonicalAscii(descriptor.implementationSemanticIdentity))
     return invalid("implementation semantic identity must be nonempty "
                    "canonical ASCII");
-  if (descriptor.inputSlots.empty())
-    return invalid("descriptor requires at least one typed input slot");
   if (descriptor.outputSlots.empty())
     return invalid("descriptor requires at least one typed output slot");
   if (descriptor.resolvedConfigView.schemaDescriptorBytes.empty() ||
@@ -371,12 +369,11 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
 std::optional<CandidateGeneratorProviderImplementation>
 lookupProviderImplementation(CandidateGeneratorDescriptorRef descriptorRef) {
   std::shared_lock<std::shared_mutex> lock(providerMutex());
-  auto found = llvm::lower_bound(
-      providers(), descriptorRef.kind(),
-      [](const CandidateGeneratorProvider &candidate,
-         CandidateGeneratorKind kind) {
-        return candidate.descriptor.kind() < kind;
-      });
+  auto found = llvm::lower_bound(providers(), descriptorRef.kind(),
+                                 [](const CandidateGeneratorProvider &candidate,
+                                    CandidateGeneratorKind kind) {
+                                   return candidate.descriptor.kind() < kind;
+                                 });
   if (found != providers().end() && found->descriptor == descriptorRef)
     return found->implementation;
   return std::nullopt;
@@ -453,8 +450,7 @@ std::vector<std::uint8_t> canonicalCandidateGeneratorDescriptorReferenceBytes(
   };
   const std::uint64_t identityLength = schema.identity.size();
   for (unsigned shift = 56; shift != 0; shift -= 8)
-    bytes.push_back(
-        static_cast<std::uint8_t>(identityLength >> shift));
+    bytes.push_back(static_cast<std::uint8_t>(identityLength >> shift));
   bytes.push_back(static_cast<std::uint8_t>(identityLength));
   bytes.insert(bytes.end(), schema.identity.bytes_begin(),
                schema.identity.bytes_end());
@@ -545,8 +541,7 @@ deriveExternalToolSemanticContract(
   if (!descriptor)
     return invalid("binding references an unregistered descriptor");
   if (descriptor->providerForm != ProviderForm::ExternalPrepareImport)
-    return invalid(
-        "external semantic contract requires ExternalPrepareImport");
+    return invalid("external semantic contract requires ExternalPrepareImport");
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           binding.descriptorRef(), inputs))
     return std::move(error);
@@ -694,9 +689,8 @@ registerCandidateGeneratorProvider(const CandidateGeneratorProvider &provider) {
       provider.descriptor.descriptor();
   if (!descriptor)
     return invalid("provider requires a registered descriptor");
-  if (const auto *inProcess =
-          std::get_if<CandidateGeneratorInProcessProvider>(
-              &provider.implementation)) {
+  if (const auto *inProcess = std::get_if<CandidateGeneratorInProcessProvider>(
+          &provider.implementation)) {
     if (descriptor->providerForm != ProviderForm::InProcess)
       return invalid("provider form does not match the descriptor");
     if (!inProcess->invoke)
@@ -747,10 +741,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
   std::optional<CandidateGeneratorProviderImplementation> implementation =
       lookupProviderImplementation(binding.descriptorRef());
   CandidateGeneratorProviderFunction invoke =
-      implementation ? std::get<CandidateGeneratorInProcessProvider>(
-                           *implementation)
-                           .invoke
-                     : nullptr;
+      implementation
+          ? std::get<CandidateGeneratorInProcessProvider>(*implementation)
+                .invoke
+          : nullptr;
   if (!invoke) {
     std::vector<CandidateGeneratorOutputBinding> outputs;
     outputs.reserve(descriptor->outputSlots.size());
@@ -823,9 +817,9 @@ importCandidateGeneratorInvocation(
       lookupProviderImplementation(binding.descriptorRef());
   if (!implementation)
     return invalid("external prepare/import provider is unavailable");
-  auto result = std::get<CandidateGeneratorExternalPrepareImportProvider>(
-                    *implementation)
-                    .import(inputBindings, binding, prepared, store, blobs);
+  auto result =
+      std::get<CandidateGeneratorExternalPrepareImportProvider>(*implementation)
+          .import(inputBindings, binding, prepared, store, blobs);
   if (!result)
     return result.takeError();
   if (llvm::Error error = validateProviderResult(*descriptor, binding,

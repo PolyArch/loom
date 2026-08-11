@@ -55,6 +55,12 @@ llvm::Expected<NormalizedModuleDomainRelation> normalizeFabricModuleDomain(
 llvm::Expected<NormalizedModuleDomainRelation>
 buildDefaultFabricModuleDomain(::fabric::ModuleOp root);
 
+/// Recovers the sole Builder-lifetime authoring relation from one validated
+/// canonical carrier. This is used only to derive a fresh ordinary draft from
+/// a finalized Module; it introduces no second persistent representation.
+llvm::Expected<::fabric::ModuleDomainAuthoringRelation>
+recoverFabricModuleDomainAuthoring(::fabric::ModuleOp root);
+
 /// Reconstructs the identifier-free relation from a stored canonical carrier,
 /// reruns domain-aware canonical labeling, and rejects any carrier that is not
 /// the exact materialization of that relation.

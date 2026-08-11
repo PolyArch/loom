@@ -830,6 +830,58 @@ public:
   llvm::Expected<PeBuilder> addPe(llvm::ArrayRef<SpatialValue> inputs,
                                   const PeSpec &spec);
 
+  /// Clones or removes one exact finalized occurrence in this fresh derived
+  /// draft. The existing Fabric physical-owner union is the typed selector;
+  /// definition nodes and nested inventory members are rejected.
+  llvm::Error
+  cloneOccurrence(const loom::fabric::FabricModulePhysicalOwnerRef &prototype);
+  llvm::Error
+  eraseOccurrence(const loom::fabric::FabricModulePhysicalOwnerRef &target);
+
+  /// Replaces one or several exact point connections. Every destination must
+  /// already be connected in the finalized parent and may occur only once in
+  /// the replacement set.
+  llvm::Error replacePointConnection(
+      const loom::fabric::FabricTransportEndpointRef &destination,
+      const loom::fabric::FabricTransportEndpointRef &source);
+  llvm::Error replaceParallelConnections(
+      llvm::ArrayRef<loom::fabric::FabricPointConnectionPayload> connections);
+
+  /// Replaces the Module signature with a prefix-preserving input inventory
+  /// and exact physical output sources. This operation never invents domain
+  /// assignments: boundary growth is rejected.
+  llvm::Error changeBoundaryInventory(
+      std::size_t inputCount,
+      llvm::ArrayRef<loom::fabric::FabricTransportEndpointRef> outputSources);
+
+  llvm::Error replacePeKind(loom::fabric::FabricPeOccurrenceRef target,
+                            loom::fabric::FabricPeOccurrenceRef prototype);
+  llvm::Error resizeInstructionStore(loom::fabric::FabricPeOccurrenceRef target,
+                                     std::uint32_t instructionCapacity);
+  llvm::Error replaceFuInventory(
+      loom::fabric::FabricPeOccurrenceRef target,
+      llvm::ArrayRef<loom::fabric::FabricFuOccurrenceRef> prototypes);
+  llvm::Error
+  replaceFuCapability(loom::fabric::FabricFuOccurrenceRef target,
+                      loom::fabric::FabricFuOccurrenceRef prototype);
+  llvm::Error replaceSwitchModeOrScheduleCapacity(
+      loom::fabric::FabricSwitchOccurrenceRef target,
+      loom::fabric::FabricSwitchOccurrenceRef prototype);
+  llvm::Error resizeMemory(loom::fabric::FabricMemoryOccurrenceRef target,
+                           std::uint64_t capacityBytes);
+  llvm::Error replaceMemoryOperationTable(
+      loom::fabric::FabricMemoryOccurrenceRef target,
+      loom::fabric::FabricMemoryOccurrenceRef prototype);
+  llvm::Error resizeFifo(loom::fabric::FabricFifoOccurrenceRef target,
+                         std::uint32_t depth);
+  llvm::Error
+  changeFifoBypassCapability(loom::fabric::FabricFifoOccurrenceRef target,
+                             bool bypassable);
+
+  /// Closes a root returned by DesignBuilder::deriveSpatialCore with the
+  /// preserved or explicitly replaced output sequence.
+  llvm::Error closeDerived();
+
   /// Closes this root with the exact declared result sequence. When domain
   /// authoring is active, every member of the complete boundary and internal
   /// inventory must carry exactly one Clock and one Reset assignment before
@@ -1213,6 +1265,29 @@ public:
   llvm::Error connect(const SystemMemoryEndpoint &manager,
                       const SystemMemoryEndpoint &subordinate);
 
+  llvm::Expected<AccCore>
+  addAccCoreFromPrototype(loom::fabric::AccCoreOccurrenceRef prototype,
+                          const loom::fabric::FinalizedFabricRoot &spatialCore);
+  llvm::Error removeAccCore(loom::fabric::AccCoreOccurrenceRef target);
+  llvm::Error replaceSpatialAttachment(
+      loom::fabric::AccCoreOccurrenceRef target,
+      const loom::fabric::FinalizedFabricRoot &spatialCore);
+  llvm::Error selectInstructionCoreRealization(
+      loom::fabric::InstructionCoreContextRef target,
+      loom::fabric::InstructionCoreContextRef prototype);
+  llvm::Error
+  replaceTransportResource(loom::fabric::SystemTransportResourceRef target,
+                           loom::fabric::SystemTransportResourceRef prototype);
+  llvm::Error replaceTransportConnection(
+      const loom::fabric::FabricTransportEndpointRef &destination,
+      const loom::fabric::FabricTransportEndpointRef &source);
+  llvm::Error replaceSpatialMemoryAttachment(
+      const loom::fabric::FabricMemoryEndpointRef &spatialEndpoint,
+      loom::fabric::SystemServiceEndpointRef serviceEndpoint);
+  llvm::Error replaceMemoryServiceConnection(
+      const loom::fabric::FabricMemoryEndpointRef &destination,
+      const loom::fabric::FabricMemoryEndpointRef &source);
+
   llvm::Error close();
 
 private:
@@ -1264,6 +1339,16 @@ public:
                     llvm::ArrayRef<PortType> outputs);
 
   llvm::Expected<SystemBuilder> createSystem(llvm::StringRef label);
+
+  /// Rebuilds one exact finalized root as a fresh ordinary Builder draft. The
+  /// parent remains immutable and every result still passes through
+  /// DesignBuilder::finalize().
+  llvm::Expected<SpatialCoreBuilder>
+  deriveSpatialCore(const loom::fabric::FinalizedFabricRoot &parent);
+
+  llvm::Expected<SystemBuilder> deriveSystem(
+      const loom::fabric::FinalizedFabricRoot &parent,
+      llvm::ArrayRef<loom::fabric::FinalizedFabricRoot> admissibleModules);
 
   llvm::Expected<FinalizedFabricDesign> finalize() &&;
 

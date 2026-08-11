@@ -10,6 +10,10 @@ add_executable(loom-dse-production-candidate-generator-registration-test
   ProductionCandidateGeneratorRegistrationTest.cpp
 )
 
+add_executable(loom-dse-hardware-candidate-generator-test
+  HardwareCandidateGeneratorTest.cpp
+)
+
 add_executable(loom-dse-plan-test
   PlanTest.cpp
 )
@@ -76,7 +80,15 @@ target_link_libraries(loom-dse-candidate-generator-test PRIVATE
 target_link_libraries(loom-dse-production-candidate-generator-registration-test PRIVATE
   LoomDSECompilerGenerator
   LoomDSEFeedback
+  LoomDSEHardwareGenerator
   LoomDSEMappingGenerator
+  LLVMSupport
+)
+
+target_link_libraries(loom-dse-hardware-candidate-generator-test PRIVATE
+  LoomADGBuilder
+  LoomDSEHardwareGenerator
+  LoomFabricArtifact
   LLVMSupport
 )
 

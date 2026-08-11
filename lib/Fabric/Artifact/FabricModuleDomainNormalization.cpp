@@ -558,6 +558,47 @@ buildDefaultFabricModuleDomain(::fabric::ModuleOp root) {
   return normalizeFabricModuleDomain(root, authoring);
 }
 
+llvm::Expected<::fabric::ModuleDomainAuthoringRelation>
+recoverFabricModuleDomainAuthoring(::fabric::ModuleOp root) {
+  auto normalized = reconstructStoredFabricModuleDomain(root);
+  if (!normalized)
+    return normalized.takeError();
+
+  ::fabric::ModuleDomainAuthoringRelation relation;
+  for (const NormalizedModuleDomainSlot &slot : normalized->slots) {
+    auto ordinal = relation.declareSlot(slot.kind);
+    if (!ordinal)
+      return ordinal.takeError();
+    if (*ordinal != slot.provisionalOrdinal)
+      return invalid("stored Module domain slots are not dense");
+  }
+  for (const NormalizedModuleDomainMember &member : normalized->members) {
+    if (member.boundary)
+      continue;
+    if (llvm::Error error = relation.noteInternalMember(
+            member.owner, member.role, member.ordinal))
+      return std::move(error);
+  }
+  for (const NormalizedModuleDomainAssignment &assignment :
+       normalized->assignments) {
+    if (assignment.member >= normalized->members.size() ||
+        assignment.slot >= normalized->slots.size())
+      return invalid("stored Module domain relation has an invalid ordinal");
+    const NormalizedModuleDomainMember &member =
+        normalized->members[assignment.member];
+    const NormalizedModuleDomainSlot &slot = normalized->slots[assignment.slot];
+    llvm::Error error =
+        member.boundary
+            ? relation.assignBoundary(member.direction, member.ordinal,
+                                      slot.kind, slot.provisionalOrdinal)
+            : relation.assignInternal(member.owner, member.role, member.ordinal,
+                                      slot.kind, slot.provisionalOrdinal);
+    if (error)
+      return std::move(error);
+  }
+  return relation;
+}
+
 llvm::Expected<FabricCanonicalLabeling>
 validateStoredFabricModuleDomain(::fabric::ModuleOp root) {
   if (llvm::Error error = validateStoredDerivedIdentifiers(root))

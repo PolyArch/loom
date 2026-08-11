@@ -1740,7 +1740,9 @@ DesignBuilder::createSpatialCore(llvm::StringRef label,
       std::vector<mlir::Type>(resultTypes.begin(), resultTypes.end()),
       {},
       {},
-      false});
+      false,
+      std::nullopt,
+      {}});
   return SpatialCoreBuilder(state_, ordinal);
 }
 

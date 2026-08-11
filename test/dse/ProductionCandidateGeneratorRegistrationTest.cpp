@@ -1,15 +1,19 @@
 #include "DSE/CandidateGenerator.h"
 #include "DSE/DataflowRewriteCandidateGenerator.h"
+#include "DSE/FabricTemplateCandidateGenerator.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
 #include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "DSE/SpatialMappingFeedbackCandidateGenerator.h"
+#include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
+#include "DSE/SpatialTopologyCandidateGenerator.h"
 #include "DSE/StructuredExecutionShapeCandidateGenerator.h"
 #include "DSE/StructuredMemoryCommunicationCandidateGenerator.h"
 #include "DSE/StructuredOwnershipCandidateGenerator.h"
 #include "DSE/StructuredScheduleCandidateGenerator.h"
 #include "DSE/StructuredSpecialMathAccuracyCandidateGenerator.h"
+#include "DSE/SystemCompositionCandidateGenerator.h"
 
 #include "llvm/Support/Error.h"
 
@@ -55,6 +59,11 @@ int main() {
   requireSuccess(loom::dse::registerRootCompleteSystemPnrCandidateGenerator());
   requireSuccess(
       loom::dse::registerStructuredSpecialMathAccuracyCandidateGenerator());
+  requireSuccess(loom::dse::registerFabricTemplateCandidateGenerator());
+  requireSuccess(loom::dse::registerSpatialTopologyCandidateGenerator());
+  requireSuccess(
+      loom::dse::registerSpatialMicroarchitectureCandidateGenerator());
+  requireSuccess(loom::dse::registerSystemCompositionCandidateGenerator());
 
   requireRegistered(CandidateGeneratorKind(0),
                     loom::dse::spatialPnrCandidateGeneratorDescriptor());
@@ -87,4 +96,13 @@ int main() {
   requireRegistered(
       CandidateGeneratorKind(10),
       loom::dse::structuredSpecialMathAccuracyCandidateGeneratorDescriptor());
+  requireRegistered(CandidateGeneratorKind(12),
+                    loom::dse::fabricTemplateCandidateGeneratorDescriptor());
+  requireRegistered(CandidateGeneratorKind(13),
+                    loom::dse::spatialTopologyCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(14),
+      loom::dse::spatialMicroarchitectureCandidateGeneratorDescriptor());
+  requireRegistered(CandidateGeneratorKind(15),
+                    loom::dse::systemCompositionCandidateGeneratorDescriptor());
 }

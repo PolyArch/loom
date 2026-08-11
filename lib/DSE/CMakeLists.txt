@@ -29,4 +29,5 @@ target_link_libraries(LoomDSE PUBLIC
 
 add_subdirectory(Generators/Mapping)
 add_subdirectory(Generators/Compiler)
+add_subdirectory(Generators/Hardware)
 add_subdirectory(Feedback)

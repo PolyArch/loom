@@ -147,15 +147,14 @@ public:
                                        loom::fabric::FabricOrdinal outputCount);
 
   /// Registers one internal owner member created by a construction call.
-  llvm::Error
-  noteInternalMember(mlir::Operation *owner, InternalMemberRole role,
-                     loom::fabric::FabricOrdinal subOrdinal);
+  llvm::Error noteInternalMember(mlir::Operation *owner,
+                                 InternalMemberRole role,
+                                 loom::fabric::FabricOrdinal subOrdinal);
 
-  llvm::Error
-  assignBoundary(loom::fabric::FabricPortDirection direction,
-                 loom::fabric::FabricOrdinal endpointOrdinal,
-                 loom::fabric::FabricClockResetKind slotKind,
-                 loom::fabric::FabricOrdinal slotOrdinal);
+  llvm::Error assignBoundary(loom::fabric::FabricPortDirection direction,
+                             loom::fabric::FabricOrdinal endpointOrdinal,
+                             loom::fabric::FabricClockResetKind slotKind,
+                             loom::fabric::FabricOrdinal slotOrdinal);
   llvm::Error assignInternal(mlir::Operation *owner, InternalMemberRole role,
                              loom::fabric::FabricOrdinal subOrdinal,
                              loom::fabric::FabricClockResetKind slotKind,
@@ -168,9 +167,8 @@ public:
   /// Validates exact totality over the boundary members implied by the
   /// signature and every registered internal member: exactly one Clock and
   /// one Reset assignment per member, dense slots, and no extra assignment.
-  llvm::Error
-  validateTotality(loom::fabric::FabricOrdinal inputCount,
-                   loom::fabric::FabricOrdinal outputCount) const;
+  llvm::Error validateTotality(loom::fabric::FabricOrdinal inputCount,
+                               loom::fabric::FabricOrdinal outputCount) const;
 
   /// Remaps every Builder-lifetime operation identity through one exact IR
   /// clone. Missing mappings fail closed.
@@ -180,6 +178,33 @@ public:
   /// Replaces every operation identity present in a partial physical-instance
   /// clone map while leaving unrelated Module members unchanged.
   void remapMappedOperations(const mlir::IRMapping &mapping);
+
+  /// Replicates every member and assignment selected by a partial clone map.
+  /// Existing members remain unchanged; this is used when an ordinary Builder
+  /// draft clones a finalized physical occurrence as another occurrence.
+  llvm::Error replicateMappedOperations(const mlir::IRMapping &mapping);
+
+  /// Removes all member and assignment rows owned by one exact operation set.
+  /// Callers pass the complete erased subtree, so no stale draft pointer can
+  /// survive into finalization.
+  llvm::Error eraseOperations(llvm::ArrayRef<mlir::Operation *> operations);
+
+  /// Changes the dense submember inventory of one owner. Added members inherit
+  /// the exact Clock and Reset assignments of `prototypeOrdinal`; removed
+  /// members and their assignments are discarded.
+  llvm::Error
+  resizeInternalMembers(mlir::Operation *owner, InternalMemberRole role,
+                        loom::fabric::FabricOrdinal oldCount,
+                        loom::fabric::FabricOrdinal newCount,
+                        loom::fabric::FabricOrdinal prototypeOrdinal = 0);
+
+  /// Removes trailing boundary members after a Builder changes one root
+  /// signature. Boundary growth requires explicit domain authoring and is not
+  /// inferred by this operation.
+  llvm::Error
+  truncateBoundaryMembers(loom::fabric::FabricPortDirection direction,
+                          loom::fabric::FabricOrdinal oldCount,
+                          loom::fabric::FabricOrdinal newCount);
 
   llvm::Error composeInstance(mlir::Operation *instance,
                               const mlir::IRMapping &childCloneMapping);

@@ -27,6 +27,8 @@ struct SpatialRootState final {
   std::vector<mlir::Operation *> unresolvedBackedges;
   ::fabric::ModuleDomainAuthoringRelation domainRelation;
   bool closed = false;
+  std::optional<loom::fabric::FabricArtifactView> derivedParent;
+  std::vector<mlir::Value> derivedOutputs;
 };
 
 struct PeState final {
@@ -97,6 +99,8 @@ struct SystemRootState final {
   std::vector<ImportedModuleState> importedModules;
   std::vector<SystemEntityState> entities;
   bool closed = false;
+  std::optional<loom::fabric::FabricArtifactView> derivedParent;
+  std::vector<ArtifactRootReference> admissibleModules;
 };
 
 class DesignState final {
@@ -129,6 +133,11 @@ llvm::Error checkDomainHandleOwner(const std::shared_ptr<DesignState> &state,
 
 mlir::Type materializePortType(mlir::MLIRContext &context,
                                const PortType &type);
+
+llvm::Expected<mlir::ModuleOp>
+loadCanonicalFabricModule(const loom::fabric::FinalizedFabricRoot &parent,
+                          DesignState &state,
+                          loom::fabric::FabricRootKind expectedKind);
 
 } // namespace loom::adg::detail
 
