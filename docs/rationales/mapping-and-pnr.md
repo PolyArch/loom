@@ -740,30 +740,35 @@ exposure choices enter the dependent MRV only when their owner references can
 be resolved. This keeps one generic MRV and rollback protocol without inventing
 placeholder choices or a retry loop per decision kind.
 
-An unqualified canonical-first placement is nevertheless a pathological seed
-for repeated isomorphic domains: every independent compute realization selects
-the same physical instruction context. Routing then encounters a fixed-terminal
-port cut or a combinational handshake cycle before an outer placement Action
-can improve the candidate. Making instruction contexts hard-disjoint would
-incorrectly shrink the legal set because selected Fabric resource contracts,
-event-relative use, and explicit constraints are the only authorities that can
-forbid sharing. Moving initialization into a joint CP-SAT placement-and-routing
-solve would duplicate both the relation solver and bounded exact repair.
+An instruction context is a resident dispatch slot, not a runtime resource
+claim. A Spatial PE has one context and one active FU selection. A Temporal PE
+has one context per instruction-memory row and may keep several FU selections
+active. In both schedules, two independent Compute Realizations cannot occupy
+the same context: doing so would require an unmodeled instruction selector and
+would alias their configured graph and dynamic actor state. ResourceUse owns
+pipeline, queue, endpoint, and service occupancy after a realization is
+resident; it cannot create another resident slot. The initializer therefore
+projects every compute choice through its exact `InstructionContextRef` and
+places all Compute Realizations in one hard `Disjoint` relation. A relation
+whose member count exceeds its exact value union is a zero-search pigeonhole
+proof.
 
-The initializer therefore applies one deterministic least-selected physical
-context preference and asks the same relation solver to close compatibility
-again. Hard-constrained compute roots stay at their baseline choices, while
-port attachments remain derived rather than copied. A failed preference falls
-back to the already legal baseline. This keeps the complete legal domain and
-all capacity semantics unchanged, but prevents a repeated owner-local ordinal
-zero from dominating every independent root.
+The relation is intentionally over Compute Realizations rather than raw
+actors. TechMapping may prove that several actors and their internal edges form
+one FU realization, in which case that group consumes one context. Conversely,
+configuration equality or event separation cannot merge independently selected
+realizations. This preserves actor grouping without inventing temporal sharing
+for Spatial PEs, while a Temporal PE exposes exactly the additional residency
+that its `num_instruction` hardware declares.
 
-Load balance alone is not sufficient. A chain placed once on every PE of a
-bounded one-dimensional mesh can still follow a topology-independent
+Distinct resident contexts alone are not sufficient for a useful seed. A chain
+placed once on every PE of a bounded one-dimensional mesh can still follow a
+topology-independent
 occurrence permutation. About half of its logical nets then cross the same
-middle cut even though a neighboring placement exists. The equal-count
-tie-break therefore uses minimum directed hop distance to active topology
-anchors. Already processed compute neighbors provide the recurring anchor.
+middle cut even though a neighboring placement exists. The locality preference
+among still-unoccupied contexts therefore uses minimum directed hop distance
+to active topology anchors. Already processed compute neighbors provide the
+recurring anchor.
 Directly incident graph-boundary domains also anchor a graph's first compute
 root; without that anchor, a chain can begin in the middle of a bounded path,
 walk to one end, and require one schedule-wide jump to reach the unused half.
@@ -771,10 +776,9 @@ The score is derived from the existing frozen attachment domains and
 payload-compatible routing arcs, with no coordinate metadata, premature
 boundary selection, or mutable congestion term. It is a cheap placement
 preference, not a shadow capacity model, a second routing search, or an
-infeasibility certificate. Hard all-different contexts would still delete
-legal sharing, while an independent placer would duplicate relation and
-routing ownership. The load-then-locality refinement instead composes the two
-existing facts needed for a useful seed: exact context identity and exact
+infeasibility certificate. An independent placer would duplicate relation and
+routing ownership. The locality refinement instead composes the two existing
+facts needed for a useful seed: exact resident-context identity and exact
 frozen connectivity.
 
 Attachment roots expose the same issue one level below placement. If two

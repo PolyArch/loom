@@ -140,6 +140,9 @@ The verifier checks in dependency order:
 * `T.D == D`, `T.F == F`, and complete inherited TechMapping coverage;
 * exactly one ComputeBinding per Compute Realization and one
   MemoryEngineBinding per Memory Realization;
+* pairwise-distinct selected `InstructionContextRef` values across all
+  ComputeBindings, so one resident instruction context never contains two
+  independently selected Compute Realizations;
 * for every TechMapping-derived dead-result discard requirement, an exact
   selected FU occurrence whose enclosing PE output selector is `Discard`, not
   `Disconnected`, with no RouteTree or transport attachment for that result;

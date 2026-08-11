@@ -39,8 +39,9 @@ fabric.pe @ALU [spatial] (!fabric.bits<32>, !fabric.bits<32>)
 * `spatial`: at most one inner `fabric.fu` is architecturally active per
   PE configuration. Routing between PE ports and the active FU's ports
   is described by the PE's configured view (see "Configured Spatial PE
-  View"). The verifier rules in this document apply to
-  this branch.
+  View"). The PE owns exactly one resident `InstructionContextRef`, ordinal
+  zero, and at most one Compute Realization may occupy that context in one
+  SpatialMapping. The verifier rules in this document apply to this branch.
 * `temporal`: time-multiplexes multiple FUs / instructions through the
   PE. The temporal-branch IR shape, hardware parameters, and software
   configuration record are documented in
@@ -518,10 +519,14 @@ PE output. The finalizer derives `selected_fu`, boundary selectors, and
 `ConfigurationABI` alone encodes those fields.
 
 Within one `fabric.pe [spatial]`, at most one physical `fabric.fu` is active in
-a programmed configuration. Multiple exact software actors may belong to one
-TechMapping realization when the selected FU template and parameterized
-capability support the complete actor group. They are not made legal by raw
-`sw_configs` or by an inactive branch drain.
+a programmed configuration. Its sole resident context therefore admits at
+most one Compute Realization. Multiple exact software actors may belong to
+that one TechMapping realization when the selected FU template and
+parameterized capability support the complete actor group; such an actor group
+does not consume one context per actor. Two independently selected Compute
+Realizations cannot share the context, even when they select byte-identical FU
+configuration or have non-overlapping Dataflow events. They are not made legal
+by raw `sw_configs`, event-relative ResourceUse, or an inactive branch drain.
 
 The configured FU is a physical graph/capability boundary, not a macro firing
 or actor-atomicity boundary. Each active operation follows its Canonical

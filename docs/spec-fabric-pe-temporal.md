@@ -16,6 +16,15 @@ resource's declared capacity and grant policy. The entry is a physical
 configuration record, not a Mapping identity, a whole-FU firing, or a
 one-actor-per-cycle quota.
 
+Each instruction-memory row is the physical dispatch storage for exactly one
+resident `InstructionContextRef`, and at most one Compute Realization may
+occupy that context in one SpatialMapping. Several rows may be active at once;
+their resident configured graphs may select and use several FU occurrences at
+runtime. This is the defining distinction from a Spatial PE's single active FU
+and sole context. Simultaneous operation firings remain subject to the exact
+shared FU, operation, operand-buffer, register-FIFO, and boundary resource
+contracts; multiple active rows do not manufacture duplicate hardware.
+
 Both anonymous and named-template forms are accepted:
 
 ```mlir
@@ -155,6 +164,13 @@ reference or state namespace and does not own context identity.
 `fu_config_mode` selects a hardware configuration-storage organization, not a
 different context model or encoding authority. Inner FUs and `fabric.op`
 resources must not create local context IDs.
+
+The context ordinal is also the resident dispatch capacity: one active row
+holds one Compute Realization. Distinct Compute Realizations require distinct
+context ordinals, while all actors already grouped inside one Compute
+Realization share that realization's row. ResourceUse records refine the
+runtime occupancy of resources used by a resident graph; they cannot merge two
+realizations into one row or create an additional row.
 
 ## Software configuration
 

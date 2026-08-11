@@ -238,3 +238,13 @@ An FU or Compute Realization is not one dynamic firing unit. Active actors fire
 according to their own Dataflow transitions while sharing physical resources
 under the PE contract. This avoids macro-actor semantics and lets a temporal PE
 schedule multi-actor configured graphs without redefining the software.
+
+Instruction-context occupancy is nevertheless not a shareable ResourceUse.
+One context is one resident dispatch slot for one Compute Realization. A
+Spatial PE has one such slot and therefore one active FU selection. A Temporal
+PE has `num_instruction` slots, so several resident graphs may activate and use
+several FUs while exact resource contracts arbitrate their simultaneous
+firings. Letting two realizations alias one context would require an unmodeled
+instruction selector and would conflate their runtime actor state; equal
+configuration bytes or non-overlapping events cannot supply that missing
+hardware.

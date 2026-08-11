@@ -1111,9 +1111,24 @@ as a repairable routing or congestion state.
 An unresolved dynamic mask cannot shrink a domain or static resource-claim
 envelope. PnR verifies the complete Fabric-declared mask domain; actual masks
 may reduce only execution-time transactions and Evaluation observations.
-Context co-residency compares the complete derived
-`ProgrammedConfigurationKey`, not a template or encoding identifier. That key
-is rebuildable native state, not persistent identity.
+When distinct Temporal PE contexts use one statically configured FU under
+`per_fu_config`, their shared configuration compatibility compares the complete
+derived `ProgrammedConfigurationKey`, not a template or encoding identifier.
+That key is rebuildable native state, not persistent identity. This
+cross-context compatibility never permits two realizations to occupy the same
+context.
+
+Every compute-binding root also participates in one Fabric-derived global
+`Disjoint` relation projected through `compute_instruction_context`. This
+relation enforces the Mapping-owned injectivity of resident contexts before
+dependent decisions or routing become active. Its members are Compute
+Realizations, not the actors already grouped within a realization. Its value
+domain is the exact union of `InstructionContextRef` values in the member
+choice domains: one value for each Spatial PE and `num_instruction` values for
+each Temporal PE. If the relation has more members than values, the initializer
+returns `ProvenInfeasible` with zero assignment or routing work. ResourceUse
+capacity, configuration equality, event separation, or endpoint sharing cannot
+relax this relation because none creates an instruction-memory row.
 
 System `H` factorizes parameterized binding relations into finite atoms for
 search. The candidate cannot synthesize new Presburger predicates or alter a
@@ -2302,7 +2317,9 @@ The first relation solve is the baseline root assignment. Seed attempt zero
 uses canonical choice order. Every other seed uses only its
 `InitializerDiversification` PRNG stream: repeated `nextBounded(remaining)`
 selection over the canonical remaining domain defines its deterministic
-without-replacement permutation.
+without-replacement permutation. The root model always includes the global
+resident-context `Disjoint` relation before caller-authored equality or
+disjoint constraints are applied.
 
 Before dependent decisions become active, one exact preference refinement may
 replace the baseline choices of independent compute roots. The refinement uses
@@ -2311,10 +2328,11 @@ this closed protocol:
 1. a compute root participating in any constraint-owned relation retains its
    baseline choice;
 2. memory roots retain their baseline choices;
-3. process every remaining compute root in canonical owner order and select a
-   legal choice whose exact `InstructionContextRef` currently has the least
-   selected-root count;
-4. among equal-count choices, minimize the sum of directed frozen-topology hop
+3. process every remaining compute root in canonical owner order and consider
+   only choices whose exact `InstructionContextRef` is not retained or already
+   preferred by another compute root, as required by the global `Disjoint`
+   relation;
+4. minimize the sum of directed frozen-topology hop
    distances to active topology anchors joined to this root by a logical net.
    An active anchor is either an already processed compute root or a directly
    incident graph-boundary terminal. For a compute-compute incidence, the
@@ -2341,20 +2359,21 @@ this closed protocol:
 7. if the preferred fixed roots have no complete assignment within the
    remaining initializer work, retain the complete baseline assignment.
 
-The selected-root count, frozen-topology distance, and selected-attachment
-endpoint count are only deterministic search preferences. None is capacity,
-none removes a legal choice, and none can prove infeasibility. The distance and
-endpoint identity use the same immutable endpoint, arc, payload-width, and
+The unselected-context restriction is a consequence of the hard resident-slot
+relation, not a load-balancing heuristic or a duplicate capacity authority.
+Frozen-topology distance and selected-attachment endpoint count are only
+deterministic search preferences. They cannot prove infeasibility. The distance
+and endpoint identity use the same immutable endpoint, arc, payload-width, and
 attachment domains already owned by the FrozenModel; they ignore mutable route
 costs and resource occupancy and therefore do not form a second router or
-crosspoint model. Fabric `ResourceContract`, raw candidate capacity projection,
-and final verification remain the only capacity authorities. The refinement
-consumes no PRNG words beyond the baseline solve. Every relation assignment
-attempted by either solve consumes one initializer work unit under the single
-shared limit. A work-limit stop without an already complete baseline is
-incomplete initialization, not infeasibility. The configured seed-attempt
-slots are fixed before execution; a failed slot is never replaced by an extra
-attempt.
+crosspoint model. Resource contracts remain the owners of runtime pipeline,
+queue, endpoint, and routing capacity after resident contexts have been
+assigned. The refinement consumes no PRNG words beyond the baseline solve.
+Every relation assignment attempted by either solve consumes one initializer
+work unit under the single shared limit. A work-limit stop without an already
+complete baseline is incomplete initialization, not infeasibility. The
+configured seed-attempt slots are fixed before execution; a failed slot is
+never replaced by an extra attempt.
 
 The current legal domain is defined only for an active decision. Realization
 binding decisions and graph-boundary attachment decisions are roots. They
@@ -3048,7 +3067,12 @@ Tests protect semantic anchors rather than implementation shape:
   domains, outcome separation, pre-result subjects, derived hot indexes, and
   rejection of result-time subjects and extension escapes;
 * deterministic aggregate freeze, MLIR-to-native projection, factorized
-  domains, cache framing, native index capacity, and derived work-budget view;
+  domains, cache framing, native index capacity, derived work-budget view, and
+  one all-different resident-context relation over Compute Realizations;
+* zero-work `ProvenInfeasible` for a resident-context pigeonhole, one
+  realization consuming one Spatial PE's sole context, multiple actors grouped
+  in one realization consuming one context, and a Temporal PE admitting at
+  most `num_instruction` independently selected realizations;
 * System `H` Presburger and stable-key partitions, overlap/gap and target-in-
   shape rejection, mutually exclusive hierarchical versus flat graph domains,
   exact flat five-input tuple and seed validation, same-target canonical

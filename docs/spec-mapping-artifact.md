@@ -299,7 +299,19 @@ non-derived owner-local physical refinement assignments. The realization key
 already identifies the record, so `ComputeBinding` has no Mapping-local ID.
 
 An `InstructionContextRef` is exactly a Fabric PE occurrence plus a context
-ordinal. It is not a schedule slot, optional sentinel, or independent entity.
+ordinal. Its ordinal names Fabric-owned resident dispatch capacity; it is not
+an independently allocated Mapping entity, optional sentinel, or copied
+instruction-memory row.
+
+The selected `InstructionContextRef` values of all `ComputeBinding` records in
+one SpatialMapping are injective. A context is the resident dispatch slot for
+one Compute Realization, so two distinct realizations selecting the same
+context are invalid regardless of equal configuration values, disjoint actor
+events, or compatible ResourceUse records. A Spatial PE contributes its sole
+ordinal-zero context; a Temporal PE contributes the `num_instruction` contexts
+owned by its instruction memory. Multiple actors grouped into one TechMapping
+Compute Realization still consume only that realization's one selected
+context.
 
 ### MemoryEngineBinding
 
