@@ -2497,10 +2497,12 @@ SystemCompositionRewriteConfig {
 ```
 
 Kind 16 has one empty canonical resolved-config view. Its exact descriptor
-fixes the portable operation-provider catalog and the packed ConfigurationABI
-derivation. It consumes finalized `fabric.system` candidates and produces one
-architecture-only portable RTL HardwareImplementation per supported System.
-No provider selector or downstream flow decision is repeated in this view.
+fixes the portable operation-provider catalog. It consumes exactly one
+finalized `fabric.system`, exactly one finalized ConfigurationABI describing
+that System, and a finite set of exact interconnect implementations, then
+produces one architecture-only portable RTL HardwareImplementation when the
+complete System is supported. No ABI encoding policy, provider selector, or
+downstream flow decision is repeated in this view.
 
 Kinds 17 and 18 are distinct `InProcess` descriptors because one trainer
 output slot must name exactly one parameter contract. They may share the same
@@ -2559,9 +2561,10 @@ occurrences may reference one exact Module while retaining distinct
 occurrence-qualified resources and cost multiplicity.
 
 The portable-System-RTL generator preserves Fabric semantics while producing
-an immutable first HardwareImplementation. It derives the packed
-ConfigurationABI from each exact System and uses the Hardware-owned portable
-operation-provider catalog fixed by its descriptor. Unsupported operation or
+an immutable first HardwareImplementation. It consumes an exact finalized
+ConfigurationABI for the selected System and uses the Hardware-owned portable
+operation-provider catalog fixed by its descriptor. The ABI remains the sole
+owner of physical encodings and inactive values. Unsupported operation or
 structure coverage is a typed incomplete outcome and never selects a native
 provider implicitly.
 

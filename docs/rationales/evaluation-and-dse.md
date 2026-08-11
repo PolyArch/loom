@@ -433,7 +433,8 @@ Hardware search therefore starts from an exact finalized seed and uses typed
 template, topology, microarchitecture, and System-composition generators.
 These create fresh drafts through the public Builder and publish only after
 ordinary Fabric finalization. One Hardware-owned generator then performs the
-pure portable-System-RTL derivation. Provider-specific generators already own
+pure portable-System-RTL derivation from the exact System and its independently
+finalized ConfigurationABI. Provider-specific generators already own
 all later gate, physical, FPGA, and native implementation transitions; an
 additional generic implementation-flow wrapper would create competing
 provider and work authorities. Module children are useful intermediate
