@@ -137,8 +137,7 @@ void allDifferentCardinalityProvesInfeasibilityBeforeSearch() {
     fail("all-different cardinality contradiction produced an assignment");
   bool observedCanonicalProof = false;
   llvm::handleAllErrors(
-      canonical.takeError(),
-      [&](const InitializerRelationSolveFailure &error) {
+      canonical.takeError(), [&](const InitializerRelationSolveFailure &error) {
         observedCanonicalProof =
             error.kind() ==
             InitializerRelationSolveFailureKind::ProvenInfeasible;
@@ -164,9 +163,9 @@ void allDifferentCardinalityProvesInfeasibilityBeforeSearch() {
 }
 
 void repeatedChoicesDoNotCreateResidentContexts() {
-  InitializerRelationModel model =
-      makeModel({3, 2}, {{InitializerRelationKind::Disjoint,
-                         {{0, {0, 0, 1}}, {1, {0, 1}}}}});
+  InitializerRelationModel model = makeModel(
+      {3, 2},
+      {{InitializerRelationKind::Disjoint, {{0, {0, 0, 1}}, {1, {0, 1}}}}});
   InitializerRelationSolver solver(model);
   const auto result = take(solver.solveCanonical(/*assignmentLimit=*/8));
   if (llvm::Error error = model.verifyChoices(result.choices))
@@ -259,6 +258,47 @@ void sparseDomainsReusePreparedStorage() {
     fail("sparse warm solve expanded retained solver storage");
 }
 
+void binaryEqualityIncidenceScalesWithAllDifferentDomains() {
+  constexpr PnrIndex decisionCount = 256;
+  std::vector<PnrIndex> choiceCounts(decisionCount * 2, decisionCount);
+  std::vector<PnrIndex> projectedValues(decisionCount);
+  for (PnrIndex value = 0; value < decisionCount; ++value)
+    projectedValues[value] = value;
+
+  std::vector<InitializerRelationInput> relations;
+  InitializerRelationInput residentContexts;
+  residentContexts.kind = InitializerRelationKind::Disjoint;
+  for (PnrIndex decision = 0; decision < decisionCount; ++decision)
+    residentContexts.members.push_back({decision, projectedValues});
+  relations.push_back(std::move(residentContexts));
+  for (PnrIndex decision = 0; decision < decisionCount; ++decision)
+    relations.push_back({InitializerRelationKind::Equal,
+                         {{decision, projectedValues},
+                          {decisionCount + decision, projectedValues}}});
+
+  InitializerRelationModel model =
+      makeModel(std::move(choiceCounts), std::move(relations));
+  InitializerRelationSolver solver(model);
+  const std::size_t retainedBytes = solver.retainedStorageBytes();
+  const auto result =
+      take(solver.solveCanonical(/*assignmentLimit=*/decisionCount));
+  if (result.assignmentAttempts != decisionCount - 1)
+    fail("all-different equality solve consumed noncanonical search work");
+  for (PnrIndex decision = 0; decision < decisionCount; ++decision)
+    if (result.choices[decision] != decision ||
+        result.choices[decisionCount + decision] != decision)
+      fail("binary equality incidence lost its resident-context value");
+
+  const auto replay =
+      take(solver.solveCanonical(/*assignmentLimit=*/decisionCount));
+  if (replay.choices != result.choices)
+    fail("warm binary equality incidence solve changed its assignment");
+  if (replay.assignmentAttempts != result.assignmentAttempts)
+    fail("warm binary equality incidence solve changed its accounting");
+  if (solver.retainedStorageBytes() != retainedBytes)
+    fail("warm binary equality incidence solve expanded retained storage");
+}
+
 void diversifiedSearchUsesExactWithoutReplacementOrder() {
   constexpr PnrIndex decisionCount = 4;
   constexpr PnrIndex choiceCount = 5;
@@ -343,6 +383,7 @@ int main() {
   fixedRootFailureIsNotGlobalInfeasibility();
   fixedChoicesConstrainTheSharedRelationModel();
   sparseDomainsReusePreparedStorage();
+  binaryEqualityIncidenceScalesWithAllDifferentDomains();
   diversifiedSearchUsesExactWithoutReplacementOrder();
   independentRootDecisionsParticipateInMrvOrdering();
   return 0;

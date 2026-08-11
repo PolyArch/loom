@@ -153,7 +153,15 @@ private:
     std::size_t secondChoiceValueOffset = 0;
     std::size_t firstCountOffset = 0;
     std::size_t secondCountOffset = 0;
+    std::size_t firstValueOccurrenceOffset = 0;
+    std::size_t secondValueOccurrenceOffset = 0;
     PnrIndex valueCount = 0;
+  };
+
+  struct BinaryEqualDepletedValue final {
+    PnrIndex relation = 0;
+    PnrIndex value = 0;
+    bool first = false;
   };
 
   struct AllDifferentRelationSupport final {
@@ -199,6 +207,10 @@ private:
   void enqueueDecisionRelations(PnrIndex decision);
   void updateBinaryEqualSupport(PnrIndex decision, PnrIndex localChoice,
                                 bool add);
+  void enqueueBinaryEqualDepletedValue(PnrIndex relation, PnrIndex value,
+                                       bool first);
+  bool propagateBinaryEqualDepletedValue(PnrIndex relation, PnrIndex value,
+                                         bool first);
   void updateAllDifferentSupport(PnrIndex decision, PnrIndex localChoice,
                                  bool add);
   void enqueueAllDifferentForcedValue(PnrIndex relation, PnrIndex value);
@@ -239,6 +251,10 @@ private:
   std::vector<BinaryEqualSupport> binaryEqualSupports_;
   std::vector<PnrIndex> binaryEqualChoiceValues_;
   std::vector<PnrIndex> binaryEqualActiveCounts_;
+  std::vector<std::size_t> binaryEqualValueOccurrenceOffsets_;
+  std::vector<PnrIndex> binaryEqualChoiceOccurrences_;
+  std::vector<std::uint8_t> binaryEqualDepletedValuePending_;
+  std::vector<BinaryEqualDepletedValue> binaryEqualDepletedValueQueue_;
   std::vector<AllDifferentRelationSupport> allDifferentSupports_;
   std::vector<AllDifferentMemberSupport> allDifferentMembers_;
   std::vector<PnrIndex> allDifferentChoiceValues_;

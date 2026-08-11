@@ -226,6 +226,38 @@ InitializerRelationSolver::InitializerRelationSolver(
       support.secondCountOffset = binaryEqualActiveCounts_.size();
       binaryEqualActiveCounts_.resize(binaryEqualActiveCounts_.size() +
                                       support.valueCount);
+
+      const auto appendValueOccurrences = [&](std::size_t choiceValueOffset,
+                                              PnrIndex choiceCount) {
+        const std::size_t offset = binaryEqualValueOccurrenceOffsets_.size();
+        std::vector<std::size_t> counts(support.valueCount, 0);
+        for (PnrIndex choice = 0; choice < choiceCount; ++choice)
+          ++counts[binaryEqualChoiceValues_[choiceValueOffset + choice]];
+        binaryEqualValueOccurrenceOffsets_.push_back(
+            binaryEqualChoiceOccurrences_.size());
+        for (std::size_t count : counts)
+          binaryEqualValueOccurrenceOffsets_.push_back(
+              binaryEqualValueOccurrenceOffsets_.back() + count);
+        binaryEqualChoiceOccurrences_.resize(
+            binaryEqualValueOccurrenceOffsets_.back());
+        std::vector<std::size_t> cursors(
+            llvm::ArrayRef(binaryEqualValueOccurrenceOffsets_)
+                .slice(offset, support.valueCount));
+        for (PnrIndex choice = 0; choice < choiceCount; ++choice) {
+          const PnrIndex value =
+              binaryEqualChoiceValues_[choiceValueOffset + choice];
+          binaryEqualChoiceOccurrences_[cursors[value]++] = choice;
+        }
+        return offset;
+      };
+      support.firstValueOccurrenceOffset = appendValueOccurrences(
+          support.firstChoiceValueOffset,
+          decisionChoiceOffsets_[support.first.decision + 1] -
+              decisionChoiceOffsets_[support.first.decision]);
+      support.secondValueOccurrenceOffset = appendValueOccurrences(
+          support.secondChoiceValueOffset,
+          decisionChoiceOffsets_[support.second.decision + 1] -
+              decisionChoiceOffsets_[support.second.decision]);
       continue;
     }
 
@@ -336,6 +368,9 @@ InitializerRelationSolver::InitializerRelationSolver(
   }
   allDifferentForcedValuePending_.resize(
       allDifferentForcedDecisionCounts_.size());
+  binaryEqualDepletedValuePending_.resize(binaryEqualActiveCounts_.size());
+  binaryEqualDepletedValueQueue_.reserve(
+      binaryEqualDepletedValuePending_.size());
   allDifferentForcedValueQueue_.reserve(allDifferentMembers_.size());
   canonicalActiveChoices_.resize(choiceCount);
   choiceOrder_.resize(choiceCount);
@@ -346,6 +381,9 @@ InitializerRelationSolver::InitializerRelationSolver(
 
 void InitializerRelationSolver::clearQueue() {
   std::fill(relationPending_.begin(), relationPending_.end(), 0);
+  std::fill(binaryEqualDepletedValuePending_.begin(),
+            binaryEqualDepletedValuePending_.end(), 0);
+  binaryEqualDepletedValueQueue_.clear();
   std::fill(allDifferentForcedValuePending_.begin(),
             allDifferentForcedValuePending_.end(), 0);
   allDifferentForcedValueQueue_.clear();
@@ -414,7 +452,18 @@ void InitializerRelationSolver::reset() {
   }
   removalJournal_.clear();
   assignmentAttempts_ = 0;
-  for (PnrIndex relation = 0; relation < model_->relations().size(); ++relation)
+  for (PnrIndex relation = 0; relation < model_->relations().size();
+       ++relation) {
+    const BinaryEqualSupport &equal = binaryEqualSupports_[relation];
+    if (equal.valueCount != 0) {
+      for (PnrIndex value = 0; value < equal.valueCount; ++value) {
+        if (binaryEqualActiveCounts_[equal.firstCountOffset + value] == 0)
+          enqueueBinaryEqualDepletedValue(relation, value, true);
+        if (binaryEqualActiveCounts_[equal.secondCountOffset + value] == 0)
+          enqueueBinaryEqualDepletedValue(relation, value, false);
+      }
+      continue;
+    }
     if (allDifferentSupports_[relation].valueCount == 0)
       enqueueRelation(relation);
     else {
@@ -425,6 +474,7 @@ void InitializerRelationSolver::reset() {
                 [support.forcedDecisionCountOffset + value] != 0)
           enqueueAllDifferentForcedValue(relation, value);
     }
+  }
 }
 
 void InitializerRelationSolver::enqueueRelation(PnrIndex relation) {
@@ -443,7 +493,8 @@ void InitializerRelationSolver::enqueueDecisionRelations(PnrIndex decision) {
   const auto offsets = model_->decisionRelationOffsets();
   for (PnrIndex relation : model_->decisionRelations().slice(
            offsets[decision], offsets[decision + 1] - offsets[decision])) {
-    if (allDifferentSupports_[relation].valueCount != 0)
+    if (binaryEqualSupports_[relation].valueCount != 0 ||
+        allDifferentSupports_[relation].valueCount != 0)
       continue;
     enqueueRelation(relation);
   }
@@ -474,14 +525,50 @@ void InitializerRelationSolver::updateBinaryEqualSupport(PnrIndex decision,
         binaryEqualActiveCounts_[countOffset +
                                  binaryEqualChoiceValues_[choiceValueOffset +
                                                           localChoice]];
+    const PnrIndex value =
+        binaryEqualChoiceValues_[choiceValueOffset + localChoice];
     if (add) {
       assert(count != getPnrIndexMax());
       ++count;
     } else {
       assert(count != 0);
-      --count;
+      if (--count == 0)
+        enqueueBinaryEqualDepletedValue(relation, value,
+                                        support.first.decision == decision);
     }
   }
+}
+
+void InitializerRelationSolver::enqueueBinaryEqualDepletedValue(
+    PnrIndex relation, PnrIndex value, bool first) {
+  const BinaryEqualSupport &support = binaryEqualSupports_[relation];
+  assert(value < support.valueCount);
+  const std::size_t countOffset =
+      first ? support.firstCountOffset : support.secondCountOffset;
+  const std::size_t pendingIndex = countOffset + value;
+  if (binaryEqualDepletedValuePending_[pendingIndex])
+    return;
+  binaryEqualDepletedValuePending_[pendingIndex] = 1;
+  binaryEqualDepletedValueQueue_.push_back({relation, value, first});
+}
+
+bool InitializerRelationSolver::propagateBinaryEqualDepletedValue(
+    PnrIndex relation, PnrIndex value, bool first) {
+  const BinaryEqualSupport &support = binaryEqualSupports_[relation];
+  const InitializerRelationMember &target =
+      first ? support.second : support.first;
+  const std::size_t occurrenceOffset = first
+                                           ? support.secondValueOccurrenceOffset
+                                           : support.firstValueOccurrenceOffset;
+  const auto offsets = llvm::ArrayRef(binaryEqualValueOccurrenceOffsets_)
+                           .slice(occurrenceOffset, support.valueCount + 1);
+  for (PnrIndex localChoice :
+       llvm::ArrayRef(binaryEqualChoiceOccurrences_)
+           .slice(offsets[value], offsets[value + 1] - offsets[value]))
+    if (choiceActive(target.decision, localChoice) &&
+        !removeChoice(target.decision, localChoice))
+      return false;
+  return true;
 }
 
 void InitializerRelationSolver::updateAllDifferentSupport(PnrIndex decision,
@@ -797,7 +884,8 @@ bool InitializerRelationSolver::activeRelationSatisfied(
 }
 
 bool InitializerRelationSolver::propagate() {
-  while (queueCount_ != 0 || !allDifferentForcedValueQueue_.empty()) {
+  while (queueCount_ != 0 || !allDifferentForcedValueQueue_.empty() ||
+         !binaryEqualDepletedValueQueue_.empty()) {
     if (!allDifferentForcedValueQueue_.empty()) {
       const AllDifferentForcedValue forced =
           allDifferentForcedValueQueue_.back();
@@ -807,6 +895,20 @@ bool InitializerRelationSolver::propagate() {
       allDifferentForcedValuePending_[support.forcedDecisionCountOffset +
                                       forced.value] = 0;
       if (!propagateAllDifferentValue(forced.relation, forced.value))
+        return false;
+      continue;
+    }
+    if (!binaryEqualDepletedValueQueue_.empty()) {
+      const BinaryEqualDepletedValue depleted =
+          binaryEqualDepletedValueQueue_.back();
+      binaryEqualDepletedValueQueue_.pop_back();
+      const BinaryEqualSupport &support =
+          binaryEqualSupports_[depleted.relation];
+      const std::size_t countOffset =
+          depleted.first ? support.firstCountOffset : support.secondCountOffset;
+      binaryEqualDepletedValuePending_[countOffset + depleted.value] = 0;
+      if (!propagateBinaryEqualDepletedValue(depleted.relation, depleted.value,
+                                             depleted.first))
         return false;
       continue;
     }
@@ -1068,6 +1170,10 @@ std::size_t InitializerRelationSolver::retainedStorageBytes() const {
          retainedBytes(binaryEqualSupports_) +
          retainedBytes(binaryEqualChoiceValues_) +
          retainedBytes(binaryEqualActiveCounts_) +
+         retainedBytes(binaryEqualValueOccurrenceOffsets_) +
+         retainedBytes(binaryEqualChoiceOccurrences_) +
+         retainedBytes(binaryEqualDepletedValuePending_) +
+         retainedBytes(binaryEqualDepletedValueQueue_) +
          retainedBytes(allDifferentSupports_) +
          retainedBytes(allDifferentMembers_) +
          retainedBytes(allDifferentChoiceValues_) +
