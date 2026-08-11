@@ -1658,6 +1658,20 @@ def cmd_build_loom(paths: Paths, args: argparse.Namespace) -> None:
     build_loom(paths, args)
 
 
+def cmd_build_gem5(paths: Paths, args: argparse.Namespace) -> None:
+    check_git_version()
+    run(
+        [
+            sys.executable,
+            str(paths.root / "scripts" / "loom_gem5_build.py"),
+            "--repository-root",
+            str(paths.root),
+            "--jobs",
+            str(args.jobs),
+        ]
+    )
+
+
 def cmd_clean(paths: Paths, args: argparse.Namespace) -> None:
     if paths.loom_build.exists():
         info(f"removing {paths.loom_build}")
@@ -1766,6 +1780,7 @@ def main() -> None:
         "build-llvm",
         "build-circt",
         "build-or-tools",
+        "build-gem5",
         "build-loom",
         "clean",
         "distclean",
@@ -1782,6 +1797,7 @@ def main() -> None:
         "build-llvm": cmd_build_llvm,
         "build-circt": cmd_build_circt,
         "build-or-tools": cmd_build_or_tools,
+        "build-gem5": cmd_build_gem5,
         "build-loom": cmd_build_loom,
         "clean": cmd_clean,
         "distclean": cmd_distclean,

@@ -1,0 +1,1 @@
+# RUN: %python %S/../../scripts/test_loom_gem5_build.py

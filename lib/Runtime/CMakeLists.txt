@@ -1,4 +1,7 @@
 add_library(LoomRuntimePlatformBinding
+  Gem5BridgeABI.cpp
+  Gem5SimulationBinding.cpp
+  Gem5SimulationBindingCodec.cpp
   RuntimePlatformBinding.cpp
   RuntimeProvider.cpp
 )

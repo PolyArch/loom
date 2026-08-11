@@ -13,6 +13,29 @@ target_link_libraries(loom-runtime-platform-binding-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-runtime-gem5-bridge-test
+  Gem5BridgeTest.cpp
+)
+
+target_link_libraries(loom-runtime-gem5-bridge-test PRIVATE
+  LoomRuntimePlatformBinding
+  LLVMSupport
+)
+
+add_executable(loom-runtime-gem5-simulation-binding-test
+  Gem5SimulationBindingTest.cpp
+)
+
+target_link_libraries(loom-runtime-gem5-simulation-binding-test PRIVATE
+  LoomHardwareConfigurationTestSupport
+  LoomRuntimePlatformBinding
+  MLIRDataflow
+  MLIRFabric
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
 add_executable(loom-runtime-deployment-loader-test
   DeploymentLoaderTest.cpp
 )

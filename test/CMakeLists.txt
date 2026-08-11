@@ -221,6 +221,8 @@ set(LOOM_TEST_DEPENDS
   loom-pnr-cp-sat-exact-protocol-test
   loom-relocatable-payload-test
   loom-runtime-platform-binding-test
+  loom-runtime-gem5-bridge-test
+  loom-runtime-gem5-simulation-binding-test
   loom-runtime-deployment-loader-test
   loom-simulator-atomic-order-test
   loom-simulator-cgra-event-queue-test

@@ -17,6 +17,7 @@
 #                    main worktree's externals; main and linked invocations
 #                    alike route to those shared outputs.
 #   make or-tools  - build and install the exact shared OR-Tools package.
+#   make gem5      - build the pinned out-of-tree RISC-V gem5 component
 #   make loom      - build this worktree's loom build (auto-builds LLVM
 #                    and OR-Tools when missing or when their build identities
 #                    drifted;
@@ -50,7 +51,7 @@ WT            := $(PYTHON) $(WT_SCRIPT) \
 export LIT_OPTS
 export JOBS
 
-.PHONY: all doctor llvm circt or-tools loom test experiment-root install-hooks sync-worktree clean distclean
+.PHONY: all doctor llvm circt or-tools gem5 loom test experiment-root install-hooks sync-worktree clean distclean
 
 all: loom
 
@@ -65,6 +66,9 @@ circt:
 
 or-tools:
 	@$(WT) build-or-tools
+
+gem5:
+	@$(WT) build-gem5
 
 loom:
 	@$(WT) build-loom
