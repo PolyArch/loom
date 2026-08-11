@@ -18,6 +18,13 @@ Fabric closure, ABI, and programming unit. It is a final encoding, never a
 second Mapping record. Equivalent raw encodings are canonicalized by the ABI;
 unknown fields or hidden backend defaults are invalid.
 
+Instruction-context residency banks storage rather than semantics. Requiring
+one encoding for every residency of a physical field lets a Temporal PE share
+the field's single Fabric relation and hardware decoder across contexts while
+retaining independently placed configuration bits. Context-specific codecs
+would add no behavior and would force duplicate operation implementations or
+another runtime decode authority.
+
 ## Why Deployment Is The Executable Closure
 
 Mapping alone does not contain host code, InstructionCore binaries, static

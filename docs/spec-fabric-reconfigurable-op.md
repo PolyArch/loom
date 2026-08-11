@@ -734,12 +734,16 @@ transition.
 
 A firing accepted in local cycle `t` publishes its complete active tuple in
 cycle `t + 1`. The latency is one cycle and the initiation interval is one
-under downstream progress. A stalled tuple, including validity and every
-payload, remains stable, and a second firing cannot consume operands while the
-slot remains claimed. The final required handoff releases the old claim before
-capacity is tested for acquisitions at the same coordinate, so consumption of
-one held tuple and acceptance of its replacement may occur together. There is
-no hidden input queue, per-result slot, or drain.
+under downstream progress. Every active result is a distinct Produced
+obligation: its valid and payload remain stable until its own handoff, after
+which that result cannot be published again. The payload tuple remains in the
+one holding slot, and claim-local pending-result bits record only the remaining
+handoff obligations; they are not per-result capacity or payload slots. A
+second firing cannot consume operands while any obligation remains. The final
+required handoff releases the old claim before capacity is tested for
+acquisitions at the same coordinate, so consumption of one held tuple and
+acceptance of its replacement may occur together. There is no hidden input
+queue, second retire use, or inherited-state drain.
 
 This baseline does not apply to operation schemas with logical state, such as
 `dataflow.stream`, `dataflow.carry`, `dataflow.invariant`, or

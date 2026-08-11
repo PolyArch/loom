@@ -184,8 +184,12 @@ The same distinction handles an elastic result slot without a second retire
 use. Acceptance owns one capacity claim for the complete active result tuple;
 a publish transition materializes claim-local holding state, and the same use
 retains it until all active result handoffs occur. Releasing the claim destroys
-that local tuple. No later use drains inherited state, and no per-result claim
-can release the tuple early.
+that local tuple. Distinct result handoffs clear claim-local obligation bits,
+not independent resource claims or payload slots; only the final handoff
+releases capacity. This lets ordinary ready/valid consumers make independent
+progress without turning a multi-result operation into an atomic broadcast.
+No later use drains inherited state, and no per-result claim can release the
+tuple early.
 
 Mapping represents that release as a conjunction of existing Dataflow event
 points. A new aggregate event identity would duplicate the canonical terminal

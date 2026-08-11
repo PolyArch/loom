@@ -147,6 +147,13 @@ resident slot, or use a context owned by another PE. This one distinction is
 enough to represent both shared physical FU configuration and context-banked
 configuration without a sentinel context or duplicate field identity.
 
+All residency slots of one occurrence-qualified semantic field use one equal
+`semantic_encoding`. Residency selects the storage bank; it does not create a
+second behavior codec or decoder. Destination slices, programming-unit
+placement, and `inactive_value` remain slot properties. An ABI whose static or
+instruction-context slots assign different encodings to the same physical
+field is invalid.
+
 A SpatialMapping's `ConfiguredHardwareProjection` contains Module-local
 `FabricConfigurationSlotRef` values because SpatialMapping binds a Module
 root, not a System occurrence. SystemMapping resolves each imported projection
