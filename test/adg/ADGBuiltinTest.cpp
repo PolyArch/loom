@@ -120,6 +120,51 @@ void builtinPresetsExpandThroughPublicBuilder() {
         "builtin lost its SpatialCore, AccCore, or System memory inventory");
 
     auto systemView = take(test, loom::fabric::requireSystemRoot(root.view()));
+    std::optional<loom::fabric::HardwareDomainRef> clockDomain;
+    std::optional<loom::fabric::HardwareDomainRef> resetDomain;
+    const loom::fabric::ClockDomainContractRecord *clockContract = nullptr;
+    const loom::fabric::ResetDomainContractRecord *resetContract = nullptr;
+    for (const auto domain : systemView.hardwareDomains()) {
+      const auto *contract = systemView.hardwareDomainContract(domain);
+      require(test, contract != nullptr,
+              "builtin hardware domain has no contract");
+      if (const auto *clock =
+              std::get_if<loom::fabric::ClockDomainContractRecord>(
+                  &contract->contract())) {
+        require(test, !clockDomain,
+                "builtin declares more than one Clock domain");
+        clockDomain = domain;
+        clockContract = clock;
+      } else if (const auto *reset =
+                     std::get_if<loom::fabric::ResetDomainContractRecord>(
+                         &contract->contract())) {
+        require(test, !resetDomain,
+                "builtin declares more than one Reset domain");
+        resetDomain = domain;
+        resetContract = reset;
+      } else {
+        fail(test, "builtin declares an unexpected hardware domain kind");
+      }
+    }
+    require(test,
+            clockDomain && resetDomain && clockContract && resetContract &&
+                clockContract->periodFs() == 1'000 &&
+                clockContract->phaseFs() == 0 &&
+                resetContract->polarity() ==
+                    loom::fabric::ResetPolarity::ActiveHigh &&
+                resetContract->assertion() ==
+                    loom::fabric::ResetTiming::Synchronous &&
+                resetContract->deassertion() ==
+                    loom::fabric::ResetTiming::Synchronous &&
+                resetContract->initialState() ==
+                    loom::fabric::ResetInitialState::Asserted &&
+                resetContract->synchronousTo() ==
+                    std::optional<loom::fabric::ClockDomainRef>(
+                        loom::fabric::ClockDomainRef(*clockDomain)) &&
+                resetContract->releaseLatencyCycles() == 0 &&
+                llvm::equal(systemView.hardwareDomainMembers(*clockDomain),
+                            systemView.hardwareDomainMembers(*resetDomain)),
+            "builtin lost its exact Clock and Reset contract");
     requireExactCanonicalEntityRange(
         test, root.view(), systemView.artifact().hostCoreOccurrences(),
         loom::fabric::FabricEntityKind::HostCoreOccurrence);

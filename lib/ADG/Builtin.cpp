@@ -927,9 +927,10 @@ expandBuiltinSystemImpl(DesignBuilder &design,
     return reset.takeError();
   auto resetContract = loom::fabric::ResetDomainContractRecord::create(
       loom::fabric::ResetPolarity::ActiveHigh,
-      loom::fabric::ResetTiming::Asynchronous,
-      loom::fabric::ResetTiming::Asynchronous,
-      loom::fabric::ResetInitialState::Asserted, std::nullopt, 0);
+      loom::fabric::ResetTiming::Synchronous,
+      loom::fabric::ResetTiming::Synchronous,
+      loom::fabric::ResetInitialState::Asserted,
+      loom::fabric::ClockDomainRef(clock->reference()), 0);
   if (!resetContract)
     return resetContract.takeError();
   if (llvm::Error error = reset->close(clockMembers, *resetContract))
