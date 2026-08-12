@@ -2155,6 +2155,7 @@ SearchPolicy {
     cooling_ratio: ExactRatio
     proposals_per_level_base: uint64
     proposals_per_movable_decision: uint64
+    realization_move_radius: RealizationMoveRadius
   }
   focused_closure {
     proposal_limit: positive uint64
@@ -2210,7 +2211,8 @@ PnR-kernel defaults. All initial builtin profiles use Action weights
 `1:3:2` for realization, routing, and resource Actions; PathFinder
 `Multiplicative` with initial pressure `1`, reduced growth ratio `3/2`, and
 history increment `1`; quantile `3/4`; target acceptance `4/5`; fallback
-temperature `1024`; minimum temperature `1`; cooling ratio `19/20`; no route
+temperature `1024`; minimum temperature `1`; cooling ratio `19/20`;
+`realization_move_radius` `Unbounded`; no route
 guidance; and deterministic master seed `0` with the protocols named above.
 
 ```text
@@ -2537,8 +2539,60 @@ SearchPolicy.annealing {
   cooling_ratio
   proposals_per_level_base
   proposals_per_movable_decision
+  realization_move_radius
 }
+
+RealizationMoveRadius =
+    Unbounded            // 0
+  | Bounded(positive uint64)
 ```
+
+`realization_move_radius` bounds how far one `RealizationBindingAction` may
+move an occurrence from where that realization was bound when the annealing run
+started. `Unbounded` is the value every builtin profile selects. It is a union
+rather than an integer with a reserved value because zero is not a bound of
+zero hops, and spelling it as one would let arithmetic over the field compute a
+displacement bound of zero for a run with no bound at all.
+
+`Bounded(r)` removes from that run's proposal domain every realization-binding
+choice whose occurrence exceeds `r` directed frozen-topology hops from that
+realization's run-start occurrence, using the same immutable endpoint, arc,
+payload-width, and attachment domains the initializer's preference refinement
+already measures distance over, so no second topology or router model appears.
+
+The bound is a search preference and not a legality authority. It removes
+proposals, never candidate legality: a choice it excludes remains a legal
+Mapping decision, and an empty proposal neighborhood is not `ProvenInfeasible`.
+It applies only to realization-binding proposals; routing and resource Actions
+are untouched.
+
+The bound forms a proposal domain rather than filtering a draw taken from one.
+An annealing run's proposal domain is the projection of `A(M,C,S)` this policy
+selects from; `A(M,C,S)` itself is what the candidate admits and the radius
+does not narrow it. Within that projection a realization anchor whose every
+alternative the radius excludes is not present, the realization-binding kind is
+not live when no such anchor remains, and every `nextBounded` call still ranges
+over a nonempty canonical domain. Filtering after the draw was rejected because
+it would leave empty anchors in the projection, which the Action proposal
+contract forbids and which `nextBounded` cannot be called over.
+
+A selector that is not this policy — one that enumerates `A(M,C,S)` directly
+rather than drawing a proposal from it — is unaffected by the radius under
+either arm, because the projection is formed by the run that reads the field
+and not by the candidate.
+
+A `Bounded` radius therefore lowers `movableDecisionCount` and shortens a
+proposal level. That is a real consequence of the bound and not a defect: a
+level's length is proportional to the decisions the level can actually move,
+and a run that may move fewer of them has less to propose. The level length is
+still fixed once at level start from the domain rebuilt there, so no
+proposal-local rebuild changes it mid-level.
+
+The run-start occurrence is fixed once, at the start of the annealing run that
+reads the policy, and is not re-anchored per temperature level or per accepted
+move. Re-anchoring would let a sequence of within-radius moves drift
+arbitrarily far, which is exactly the property a caller selecting a radius is
+buying against.
 
 Fractions use canonical integer or fixed-point values. Quantile is in `[0,1]`,
 target acceptance is in `(0,1)`, temperatures are positive, and the reduced
@@ -2551,8 +2605,11 @@ proposals_per_level_base
 ```
 
 `movableDecisionCount` counts each canonical typed selected-decision anchor
-whose current dynamic Action domain contains at least one legal alternative,
-plus one routing decision for each residual logical net or service leg.
+whose current proposal domain contains at least one legal alternative, plus one
+routing decision for each residual logical net or service leg. It is the
+proposal domain and not `A(M,C,S)` because the count exists to size a proposal
+level, and a level that counted anchors this run may not propose would draw
+proposals it must then discard. Under `Unbounded` the two coincide.
 `SingleSink`, `RootedSubtree`, `WitnessRegion`, and `Global` are neighborhoods
 over those routing decisions and do not add decisions. Choice cardinality does
 not multiply the count. The domain is rebuilt once at level start for this
@@ -3035,6 +3092,16 @@ Tests protect semantic anchors rather than implementation shape:
   central `Promote` separation; replay-stable annealing; focused closure; and
   exact-repair taxonomy, proof-bearing statuses, solver-call budget, and
   lexicographically canonical extraction;
+* `realization_move_radius` `Unbounded` admitting the complete
+  realization-binding proposal domain, a `Bounded` radius excluding exactly the
+  choices beyond it while leaving `A(M,C,S)`, `CandidateDomain`, routing and
+  resource proposals, final verification, and `K` admission unchanged, a
+  radius-emptied anchor being
+  absent from the dynamic domain rather than drawn and retried, the
+  realization-binding kind becoming not live when every such anchor is empty,
+  an empty neighborhood not being reported as `ProvenInfeasible`, and the
+  run-start occurrence not being re-anchored by an accepted move or a
+  temperature level;
 * shared objective dimensions, three-valued CNF truth, independent full `V/G`
   and `Q`, TotalOrdering versus SearchEnergy separation, base verification,
   and exact admission;

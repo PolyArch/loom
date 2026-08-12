@@ -328,6 +328,23 @@ reimported the result cannot return `FinalizedFabricRoot` or claim artifact
 success. It must return the typed unavailable, invalid, incomplete, or store
 failure owned by the first unsatisfied stage.
 
+The pipeline has exactly one named intermediate. A `VerifiedFabricClosure` is
+the value that exists after independent reverification and before
+`ArtifactStore::put`: canonical bytes, the computed candidate
+ArtifactIdentity, and the validated dependency closure, with no store object.
+It is not a reduced finalization mode, because every semantic stage above has
+already run and none may be skipped to reach it; it is the same derivation
+observed one step before its terminal. Publication consumes a `VerifiedFabricClosure` and
+returns the published `ArtifactRootReference`.
+
+A caller that requires an Artifact publishes. A caller that only requires a
+verified candidate and its exact identity, such as a search harness evaluating
+a candidate it may discard, may hold the closure and publish later or never.
+A `VerifiedFabricClosure` is a transient in-process value, not an Artifact
+family, a persistent schema, or a second identity authority: until publication
+no other owner may reference it, nothing may depend on it, and any value
+derived from it is a removable projection.
+
 Fabric failure atomicity means one root object is complete or absent; it does
 not mean that the root and its dependency graph become visible in one
 transaction. Dependencies are independently valid, immutable, shareable

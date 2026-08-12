@@ -751,6 +751,40 @@ identity remain Loom-owned; Loom does not maintain a gem5 patch stack or edit
 the pinned submodule source. A gem5 upgrade is a separate exact dependency
 change with Runtime ABI and System simulation conformance.
 
+Ray is the one modified dependency. It is a Loom-owned fork at
+`externals/ray`, and Loom does maintain its patch stack. An upgrade is a
+separate exact dependency change: it selects an exact upstream Ray release,
+rebases the patch stack onto it, reruns the ML environment's conformance
+anchors, and atomically pins both the resulting fork commit and the upstream
+release tag it was built from. Recording only the fork commit would be
+insufficient, since the patch stack is the difference between the two and a
+fork commit alone does not say what it is a patch stack against.
+
+The patch adds graph-space support to the sampler and connector pipeline, which
+[ML Environment Core](spec-ml-core-environment.md#rllib-environment-definition)
+requires because every ML search environment's observation is a variable-size
+graph. That capability is the only reason the fork exists; a patch that is not
+required by a Loom-owned contract belongs upstream instead. Carrying a patch
+stack is a standing cost recorded here rather than a precedent for modifying
+any other pinned dependency.
+
+The fork is admitted on a narrower footing than the others: no Artifact,
+Evidence, or semantic configuration schema depends on it, so a rebase can break
+training without invalidating a semantic artifact. It does reach the search
+harness's own training views, which are digest-covered like any other, so a
+rebase that changed their vocabulary would change a training run's identity.
+That is the intended blast radius, and it is the whole of it.
+
+Every Python runtime a search-harness document states conformance against is
+pinned here to an exact version, and the pinned Ray fork is required to be
+compatible with all of them. Currently that is the Gymnasium release the
+[ML Environment Core](spec-ml-core-environment.md#rllib-environment-definition)
+targets and the PyTorch release
+[ML Model Core](spec-ml-core-model.md#module-boundary) targets. They are pinned
+here rather than in the documents that consume them, so that a second ML
+document adopting either does not give the stack two places to disagree about
+which runtime it runs on.
+
 ## Verification Boundary
 
 Tests protect stable semantic anchors: canonical schema and identity,
