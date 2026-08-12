@@ -19,14 +19,12 @@
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
-#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <system_error>
-#include <type_traits>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -36,7 +34,7 @@ namespace {
 
 constexpr llvm::StringLiteral kSnapshotName = "execution-journal.snapshot";
 constexpr llvm::StringLiteral kSnapshotIdentity = "loom.dse.execution_journal";
-constexpr SchemaVersion kSnapshotVersion{1, 0};
+constexpr SchemaVersion kSnapshotVersion{1, 1};
 constexpr std::uint64_t kMaximumSnapshotBytes = 64ULL * 1024ULL * 1024ULL;
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -187,28 +185,6 @@ bool boundedCount(std::uint64_t count, std::size_t remaining,
          count <= remaining / minimumEncodedWidth;
 }
 
-std::vector<ArtifactRootReference>
-generateResultRoots(const CandidateGeneratorProviderResult &result) {
-  std::vector<ArtifactRootReference> roots;
-  std::visit(
-      [&](const auto &outcome) {
-        using T = std::decay_t<decltype(outcome)>;
-        const auto &bindings = [&]() -> const auto & {
-          if constexpr (std::is_same_v<T, CompletedCandidateGeneratorResult>)
-            return outcome.outputBindings;
-          else
-            return outcome.retainedOutputBindings;
-        }();
-        for (const CandidateGeneratorOutputBinding &binding : bindings)
-          roots.insert(roots.end(), binding.artifacts.begin(),
-                       binding.artifacts.end());
-      },
-      result.outcome);
-  llvm::sort(roots, artifactRootReferenceLess);
-  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
-  return roots;
-}
-
 llvm::Expected<std::uint64_t> unixNanosecondsNow() {
   const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
   const auto count =
@@ -302,6 +278,8 @@ llvm::Error validateRecord(const JournalWorkUnitRecord &record) {
        record.status == JournalWorkUnitStatus::Running) &&
       record.preparedInvocation)
     return invalid("unprepared work carries a prepared invocation");
+  if (!terminal(record.status) && record.finalizedWorkRecord)
+    return invalid("nonterminal work carries a finalized-work record");
   if (llvm::Error error = validateIntervals(record.activeWallIntervals))
     return error;
   if (record.status == JournalWorkUnitStatus::Running &&
@@ -330,6 +308,9 @@ llvm::Error validateRecord(const JournalWorkUnitRecord &record) {
   if (record.preparedInvocation &&
       record.preparedInvocation->bundleRoot.empty())
     return invalid("prepared invocation has an empty bundle root");
+  if (record.finalizedWorkRecord &&
+      !canonicalAscii(record.finalizedWorkRecord->schemaIdentity))
+    return invalid("finalized-work record schema is not canonical ASCII");
   return llvm::Error::success();
 }
 
@@ -354,6 +335,13 @@ void encodeRecord(Encoder &encoder, const JournalWorkUnitRecord &record) {
   if (record.preparedInvocation) {
     encoder.string(record.preparedInvocation->bundleRoot);
     encoder.bytes(record.preparedInvocation->manifestDigest.bytes());
+  }
+  encoder.u32(record.finalizedWorkRecord ? 1 : 0);
+  if (record.finalizedWorkRecord) {
+    encoder.string(record.finalizedWorkRecord->schemaIdentity);
+    encoder.u32(record.finalizedWorkRecord->schemaVersion.major);
+    encoder.u32(record.finalizedWorkRecord->schemaVersion.minor);
+    encoder.bytes(record.finalizedWorkRecord->payloadDigest.bytes());
   }
 }
 
@@ -434,11 +422,37 @@ llvm::Expected<JournalWorkUnitRecord> decodeRecord(Decoder &decoder) {
     prepared = external_tool::PreparedExternalToolInvocation{
         std::move(*root), std::move(*digest)};
   }
+  auto hasFinalizedWork = decoder.u32("finalized-work record presence");
+  if (!hasFinalizedWork)
+    return hasFinalizedWork.takeError();
+  if (*hasFinalizedWork > 1)
+    return invalid("finalized-work record presence is not boolean");
+  std::optional<OwnerFinalizedWorkRecordRef> finalizedWork;
+  if (*hasFinalizedWork == 1) {
+    auto schema = decoder.string("finalized-work record schema");
+    if (!schema)
+      return schema.takeError();
+    auto major = decoder.u32("finalized-work record major version");
+    if (!major)
+      return major.takeError();
+    auto minor = decoder.u32("finalized-work record minor version");
+    if (!minor)
+      return minor.takeError();
+    auto digestBytes =
+        decoder.bytes(BlobDigest::byteSize, "finalized-work record digest");
+    if (!digestBytes)
+      return digestBytes.takeError();
+    auto digest = BlobDigest::fromBytes(*digestBytes);
+    if (!digest)
+      return digest.takeError();
+    finalizedWork = OwnerFinalizedWorkRecordRef{
+        std::move(*schema), {*major, *minor}, std::move(*digest)};
+  }
   JournalWorkUnitRecord record{
       std::move(*key),      static_cast<JournalWorkUnitStatus>(*rawStatus),
       std::move(intervals), *activeStart,
       *terminalTime,        std::move(outputs),
-      std::move(prepared)};
+      std::move(prepared),  std::move(finalizedWork)};
   if (llvm::Error error = validateRecord(record))
     return error;
   return record;
@@ -566,8 +580,6 @@ struct ExecutionJournal::State final {
   ComponentViewDigest viewDigest;
   bool stopRequested = false;
   std::vector<JournalWorkUnitRecord> workUnits;
-  std::map<WorkUnitKey, CandidateGeneratorProviderResult>
-      transientGenerateResults;
   mutable std::mutex mutex;
 };
 
@@ -807,12 +819,17 @@ llvm::Error ExecutionJournal::queue(const WorkUnitKey &key) {
     found->terminalUnixTimeNanoseconds = 0;
     found->finalizedOutputs.clear();
     found->preparedInvocation.reset();
-    state_->transientGenerateResults.erase(key);
+    found->finalizedWorkRecord.reset();
   } else {
     state_->workUnits.insert(
-        found,
-        JournalWorkUnitRecord{
-            key, JournalWorkUnitStatus::Queued, {}, 0, 0, {}, std::nullopt});
+        found, JournalWorkUnitRecord{key,
+                                     JournalWorkUnitStatus::Queued,
+                                     {},
+                                     0,
+                                     0,
+                                     {},
+                                     std::nullopt,
+                                     std::nullopt});
   }
   return flushLocked(*state_);
 }
@@ -915,7 +932,8 @@ llvm::Error ExecutionJournal::markTerminal(
     const WorkUnitKey &key, JournalWorkUnitStatus status,
     std::uint64_t activeWallTimeNanoseconds,
     std::uint64_t terminalUnixTimeNanoseconds,
-    llvm::ArrayRef<ArtifactRootReference> finalizedOutputs) {
+    llvm::ArrayRef<ArtifactRootReference> finalizedOutputs,
+    std::optional<OwnerFinalizedWorkRecordRef> finalizedWorkRecord) {
   if (!terminal(status))
     return invalid("terminal transition requires a terminal status");
   if (terminalUnixTimeNanoseconds == 0)
@@ -931,7 +949,8 @@ llvm::Error ExecutionJournal::markTerminal(
   if (terminal(found->status)) {
     if (activeWallTimeNanoseconds != 0 || found->status != status ||
         found->terminalUnixTimeNanoseconds != terminalUnixTimeNanoseconds ||
-        llvm::ArrayRef(found->finalizedOutputs) != finalizedOutputs)
+        llvm::ArrayRef(found->finalizedOutputs) != finalizedOutputs ||
+        found->finalizedWorkRecord != finalizedWorkRecord)
       return invalid("terminal work record cannot be overwritten");
     return llvm::Error::success();
   }
@@ -952,35 +971,11 @@ llvm::Error ExecutionJournal::markTerminal(
   updated.terminalUnixTimeNanoseconds = terminalUnixTimeNanoseconds;
   updated.finalizedOutputs.assign(finalizedOutputs.begin(),
                                   finalizedOutputs.end());
+  updated.finalizedWorkRecord = std::move(finalizedWorkRecord);
   if (llvm::Error error = validateRecord(updated))
     return error;
   *found = std::move(updated);
   return flushLocked(*state_);
-}
-
-llvm::Error ExecutionJournal::rememberTransientGenerateResult(
-    const WorkUnitKey &key, const CandidateGeneratorProviderResult &result) {
-  std::lock_guard<std::mutex> lock(state_->mutex);
-  auto found = findRecord(state_->workUnits, key);
-  if (found == state_->workUnits.end() || !(found->key == key) ||
-      !terminal(found->status))
-    return invalid("Generate report requires a terminal work record");
-  if (generateResultRoots(result) != found->finalizedOutputs)
-    return invalid("Generate report roots disagree with finalized roots");
-  const bool inserted =
-      state_->transientGenerateResults.emplace(key, result).second;
-  if (!inserted)
-    return invalid("Generate report cache cannot be overwritten");
-  return llvm::Error::success();
-}
-
-llvm::Expected<std::optional<CandidateGeneratorProviderResult>>
-ExecutionJournal::findTransientGenerateResult(const WorkUnitKey &key) const {
-  std::lock_guard<std::mutex> lock(state_->mutex);
-  auto found = state_->transientGenerateResults.find(key);
-  if (found == state_->transientGenerateResults.end())
-    return std::optional<CandidateGeneratorProviderResult>{};
-  return std::optional<CandidateGeneratorProviderResult>(found->second);
 }
 
 llvm::Error ExecutionJournal::requestGracefulStop() {

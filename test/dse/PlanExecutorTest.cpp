@@ -95,9 +95,10 @@ void testParallelExecutionAndTerminalReplay(const ArtifactStore &store,
   if (records.size() != 2 ||
       records[0].status != JournalWorkUnitStatus::Completed ||
       records[1].status != JournalWorkUnitStatus::Completed ||
+      !records[0].finalizedWorkRecord || !records[1].finalizedWorkRecord ||
       records[0].key.planNodeOrdinal() != 0 ||
       records[1].key.planNodeOrdinal() != 1)
-    fail("journal did not retain canonical stable Generate work keys");
+    fail("journal did not retain canonical recoverable Generate work");
 
   DsePlanExecutionResult replay =
       take(resumeDsePlan(fixture.view, fixture.closure, journal, scheduler,
@@ -121,8 +122,8 @@ void testParallelExecutionAndTerminalReplay(const ArtifactStore &store,
                          makePolicy(2), store, blobs));
   if (!std::holds_alternative<CompletedDsePlanExecution>(recovered))
     fail("reopened plan did not reconstruct its completed outcome");
-  if (planExecutionProviderCalls() != 4)
-    fail("reopen did not reconstruct transient Generate reports exactly once");
+  if (planExecutionProviderCalls() != 2)
+    fail("reopen invoked providers for finalized recoverable Generate work");
   const auto recoveredRecords = take(reopened.workUnits());
   if (recoveredRecords.size() != records.size())
     fail("reopen renumbered or duplicated stable work keys");

@@ -785,6 +785,25 @@ llvm::Error validateCandidateGeneratorWorkSummary(
   return llvm::Error::success();
 }
 
+llvm::Error validateCandidateGeneratorProviderResult(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    CandidateGeneratorProviderResult &result, const ArtifactStore &store,
+    const BlobStore &blobs) {
+  const CandidateGeneratorDescriptor *descriptor =
+      binding.descriptorRef().descriptor();
+  if (!descriptor)
+    return invalid("provider result references an unregistered descriptor");
+  if (llvm::Error error = validateCandidateGeneratorInputBindings(
+          binding.descriptorRef(), inputs))
+    return error;
+  if (llvm::Error error =
+          validateContractedInputArtifacts(*descriptor, inputs, store, blobs))
+    return error;
+  return validateProviderResult(*descriptor, binding, inputs, result, store,
+                                blobs);
+}
+
 llvm::Error
 registerCandidateGeneratorProvider(const CandidateGeneratorProvider &provider) {
   const CandidateGeneratorDescriptor *descriptor =

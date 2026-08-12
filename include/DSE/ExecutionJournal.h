@@ -18,9 +18,6 @@
 namespace loom::dse {
 
 class ResolvedDseConfigView;
-namespace detail {
-class ExecutionJournalAccess;
-}
 
 /// Exact owner-local work descriptor used only to derive recoverable work
 /// keys. The referenced owner registry remains the authority for the kind.
@@ -109,6 +106,23 @@ struct JournalActiveWallInterval final {
   }
 };
 
+struct OwnerFinalizedWorkRecordRef final {
+  std::string schemaIdentity;
+  SchemaVersion schemaVersion;
+  BlobDigest payloadDigest;
+
+  friend bool operator==(const OwnerFinalizedWorkRecordRef &lhs,
+                         const OwnerFinalizedWorkRecordRef &rhs) {
+    return lhs.schemaIdentity == rhs.schemaIdentity &&
+           lhs.schemaVersion == rhs.schemaVersion &&
+           lhs.payloadDigest == rhs.payloadDigest;
+  }
+  friend bool operator!=(const OwnerFinalizedWorkRecordRef &lhs,
+                         const OwnerFinalizedWorkRecordRef &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 struct JournalWorkUnitRecord final {
   WorkUnitKey key;
   JournalWorkUnitStatus status = JournalWorkUnitStatus::Queued;
@@ -118,6 +132,7 @@ struct JournalWorkUnitRecord final {
   std::vector<ArtifactRootReference> finalizedOutputs;
   std::optional<external_tool::PreparedExternalToolInvocation>
       preparedInvocation;
+  std::optional<OwnerFinalizedWorkRecordRef> finalizedWorkRecord;
 
   std::uint64_t activeWallTimeNanoseconds() const;
 };
@@ -154,7 +169,9 @@ public:
   markTerminal(const WorkUnitKey &key, JournalWorkUnitStatus status,
                std::uint64_t activeWallTimeNanoseconds,
                std::uint64_t terminalUnixTimeNanoseconds,
-               llvm::ArrayRef<ArtifactRootReference> finalizedOutputs = {});
+               llvm::ArrayRef<ArtifactRootReference> finalizedOutputs = {},
+               std::optional<OwnerFinalizedWorkRecordRef> finalizedWorkRecord =
+                   std::nullopt);
 
   llvm::Error requestGracefulStop();
   llvm::Error beginResume();
@@ -162,21 +179,11 @@ public:
   llvm::Error flush() const;
 
 private:
-  /// Retains a validated Generate report only for the lifetime of this open
-  /// journal. It is deliberately absent from the canonical snapshot because
-  /// InvocationManifest is the sole persistent owner of Generate reports.
-  llvm::Error rememberTransientGenerateResult(
-      const WorkUnitKey &key, const CandidateGeneratorProviderResult &result);
-  llvm::Expected<std::optional<CandidateGeneratorProviderResult>>
-  findTransientGenerateResult(const WorkUnitKey &key) const;
-
   struct State;
   explicit ExecutionJournal(std::shared_ptr<State> state)
       : state_(std::move(state)) {}
 
   std::shared_ptr<State> state_;
-
-  friend class detail::ExecutionJournalAccess;
 };
 
 llvm::Expected<ExecutionJournal>

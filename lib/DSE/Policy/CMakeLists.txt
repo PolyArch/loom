@@ -28,6 +28,7 @@ target_link_libraries(LoomDSECandidateGenerator PUBLIC
 
 add_library(LoomDSEPolicy
   ../CampaignRunner.cpp
+  ../CandidateGeneratorRecovery.cpp
   ../EvidenceObligation.cpp
   ../ExecutionJournal.cpp
   ../Plan.cpp

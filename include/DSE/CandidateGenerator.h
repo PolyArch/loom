@@ -391,6 +391,15 @@ llvm::Error validateCandidateGeneratorWorkSummary(
     CandidateGeneratorDescriptorRef descriptor,
     llvm::ArrayRef<CandidateGeneratorWorkUnitSummary> summary);
 
+/// Revalidates a complete provider report at an owner-controlled persistence
+/// boundary. Canonical set ordering is restored in-place before the caller
+/// compares or publishes the result.
+llvm::Error validateCandidateGeneratorProviderResult(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ResolvedCandidateGeneratorBinding &binding,
+    CandidateGeneratorProviderResult &result, const ArtifactStore &store,
+    const BlobStore &blobs);
+
 /// Prepares one deterministic finalized invocation bundle through the exact
 /// registered ExternalPrepareImport provider. The descriptor form is
 /// validated before any provider lookup; the caller alone decides whether,

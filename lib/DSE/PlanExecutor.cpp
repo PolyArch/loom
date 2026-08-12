@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "DSE/CandidateGeneratorRecovery.h"
 #include "DSE/ResolvedConfigView.h"
 #include "Evaluation/ModelDescriptor.h"
 #include "Evaluation/ModelProvider.h"
@@ -29,23 +30,6 @@
 #include <vector>
 
 namespace loom::dse {
-namespace detail {
-
-class ExecutionJournalAccess final {
-public:
-  static llvm::Error
-  rememberGenerateResult(ExecutionJournal &journal, const WorkUnitKey &key,
-                         const CandidateGeneratorProviderResult &result) {
-    return journal.rememberTransientGenerateResult(key, result);
-  }
-
-  static llvm::Expected<std::optional<CandidateGeneratorProviderResult>>
-  findGenerateResult(const ExecutionJournal &journal, const WorkUnitKey &key) {
-    return journal.findTransientGenerateResult(key);
-  }
-};
-
-} // namespace detail
 namespace {
 
 constexpr llvm::StringLiteral kEvaluationRegistryIdentity =
@@ -546,12 +530,15 @@ RecoverablePlanWorkExecutor::executeGenerate(
                         (*record)->status == JournalWorkUnitStatus::TimedOut ||
                         (*record)->status == JournalWorkUnitStatus::Unsupported;
   if (terminal) {
-    bool regeneratedInProcessReport = false;
     llvm::Expected<CandidateGeneratorProviderResult> replay =
         [&]() -> llvm::Expected<CandidateGeneratorProviderResult> {
       if (descriptor->providerForm == ProviderForm::ExternalPrepareImport) {
         if (!(*record)->preparedInvocation)
           return invalid("terminal external Generate record lost its attempt");
+        if ((*record)->finalizedWorkRecord)
+          return invalid(
+              "terminal external Generate record has an in-process recovery "
+              "record");
         auto imported = tryImportPreparedCandidate(
             inputs, binding, *(*record)->preparedInvocation, store, blobs);
         if (!imported)
@@ -560,27 +547,25 @@ RecoverablePlanWorkExecutor::executeGenerate(
           return invalid("terminal Generate attempt is incomplete");
         return std::move(**imported);
       }
-      auto cached =
-          detail::ExecutionJournalAccess::findGenerateResult(journal_, *key);
-      if (!cached)
-        return cached.takeError();
-      std::optional<CandidateGeneratorProviderResult> recovered;
-      if (*cached) {
-        recovered.emplace(std::move(**cached));
-      } else {
-        auto claim = resourceClaim(*key, nullptr);
-        if (!claim)
-          return claim.takeError();
-        auto lease = scheduler_.acquire(*key, *claim);
-        if (!lease)
-          return lease.takeError();
-        auto regenerated =
-            invokeCandidateGenerator(inputs, binding, store, blobs);
-        if (!regenerated)
-          return regenerated.takeError();
-        recovered.emplace(std::move(*regenerated));
-        regeneratedInProcessReport = true;
-      }
+      if ((*record)->preparedInvocation)
+        return invalid(
+            "terminal in-process Generate record has an external attempt");
+      if (!(*record)->finalizedWorkRecord)
+        return invalid(
+            "terminal in-process Generate work has no owner recovery record");
+      const OwnerFinalizedWorkRecordRef &reference =
+          *(*record)->finalizedWorkRecord;
+      if (reference.schemaIdentity !=
+              candidateGeneratorFinalizedWorkRecordSchemaIdentity ||
+          reference.schemaVersion !=
+              candidateGeneratorFinalizedWorkRecordSchemaVersion)
+        return invalid(
+            "terminal in-process Generate work has a foreign recovery owner");
+      auto recovered = importCandidateGeneratorFinalizedWorkRecord(
+          reference.payloadDigest, journal_.runKey(), *key, inputs, binding,
+          store, blobs);
+      if (!recovered)
+        return recovered.takeError();
       const bool completed =
           std::holds_alternative<CompletedCandidateGeneratorResult>(
               recovered->outcome);
@@ -602,7 +587,7 @@ RecoverablePlanWorkExecutor::executeGenerate(
       if (llvm::Error error = validateCandidateGeneratorWorkSummary(
               binding.descriptorRef(), recovered->workSummary))
         return std::move(error);
-      return std::move(*recovered);
+      return recovered;
     }();
     if (!replay)
       return replay.takeError();
@@ -610,11 +595,6 @@ RecoverablePlanWorkExecutor::executeGenerate(
       return invalid("replayed Generate status differs from the Journal");
     if (candidateResultRoots(*replay) != (*record)->finalizedOutputs)
       return invalid("replayed Generate roots differ from the Journal");
-    if (regeneratedInProcessReport)
-      if (llvm::Error error =
-              detail::ExecutionJournalAccess::rememberGenerateResult(
-                  journal_, *key, *replay))
-        return std::move(error);
     return replay;
   }
   if ((*record)->status != JournalWorkUnitStatus::Queued)
@@ -649,13 +629,18 @@ RecoverablePlanWorkExecutor::executeGenerate(
     if (!terminalTime)
       return terminalTime.takeError();
     std::vector<ArtifactRootReference> roots = candidateResultRoots(*generated);
-    if (llvm::Error error =
-            journal_.markTerminal(*key, candidateJournalStatus(*generated),
-                                  *active, *terminalTime, roots))
-      return std::move(error);
-    if (llvm::Error error =
-            detail::ExecutionJournalAccess::rememberGenerateResult(
-                journal_, *key, *generated))
+    auto recovery = publishCandidateGeneratorFinalizedWorkRecord(
+        journal_.runKey(), *key, inputs, binding, *generated, store, blobs);
+    if (!recovery) {
+      llvm::Error reset = journal_.queue(*key);
+      return llvm::joinErrors(recovery.takeError(), std::move(reset));
+    }
+    OwnerFinalizedWorkRecordRef recoveryRef{
+        candidateGeneratorFinalizedWorkRecordSchemaIdentity.str(),
+        candidateGeneratorFinalizedWorkRecordSchemaVersion, *recovery};
+    if (llvm::Error error = journal_.markTerminal(
+            *key, candidateJournalStatus(*generated), *active, *terminalTime,
+            roots, std::move(recoveryRef)))
       return std::move(error);
     return generated;
   }
