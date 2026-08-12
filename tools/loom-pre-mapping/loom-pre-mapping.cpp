@@ -130,6 +130,22 @@ namespace {
                      "operator protocol ownership domain"),
     ::llvm::cl::value_desc("symbol"), ::llvm::cl::ZeroOrMore);
 
+::llvm::cl::opt<loom::dse::StructuredOwnershipSelectionMode>
+    ownershipSelectionMode(
+        "ownership-selection-mode",
+        ::llvm::cl::desc("pre-Mapping ownership selection intent"),
+        ::llvm::cl::values(
+            clEnumValN(
+                loom::dse::StructuredOwnershipSelectionMode::BenefitQualified,
+                "benefit-qualified",
+                "rank independently materialized ownership alternatives"),
+            clEnumValN(loom::dse::StructuredOwnershipSelectionMode::
+                           SemanticConformance,
+                       "semantic-conformance",
+                       "compose one feasible closure over all protocol roots")),
+        ::llvm::cl::init(
+            loom::dse::StructuredOwnershipSelectionMode::BenefitQualified));
+
 ::llvm::cl::opt<unsigned> canonicalIndexWidth(
     "canonical-index-width",
     ::llvm::cl::desc("explicit canonical index width materialized for a "
@@ -406,6 +422,7 @@ int main(int argc, char **argv) {
          {loom::evaluation::MetricRequestOrdinal(0),
           loom::ResolvedObjectiveDirection::Minimize, 1},
          candidateJobs}};
+    exploration.ownership.selectionMode = ownershipSelectionMode;
     exploration.ownership.protocolCallableRoots = std::move(*protocolRoots);
     auto outcome = loom::dse::exploreStructuredCompilationToPreMapping(
         std::move(*source), inputs->workload, inputs->runtimeInput,
