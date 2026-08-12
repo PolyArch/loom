@@ -40,6 +40,12 @@ includes every lower nonzero level:
   and endpoint/traversal detail, exact cut or reachability evidence, and Action
   deltas.
 
+A level-two `mapping_failure` for `route_whole_net` carries the closed
+`failure_kind` spelling owned by `EndpointRouteSearchFailureKind`: `invalid`,
+`arithmetic_overflow`, `unreachable`, or `work_limit`. Its `diagnostic` is the
+human-readable explanation from that same failed search. The logger observes
+the returned failure and does not repeat or extend the route search.
+
 Every event is one line-atomic JSON object on stderr. It contains
 `schema = "loom.mapping.debug.1"`, numeric `level`, closed ASCII `event` and
 `stage` spellings, and an invocation-local `sequence`. Events add the stable

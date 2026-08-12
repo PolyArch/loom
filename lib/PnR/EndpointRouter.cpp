@@ -14,6 +14,21 @@ using namespace loom::pnr;
 
 char EndpointRouteSearchFailure::ID;
 
+llvm::StringRef loom::pnr::stringifyEndpointRouteSearchFailureKind(
+    EndpointRouteSearchFailureKind kind) {
+  switch (kind) {
+  case EndpointRouteSearchFailureKind::Invalid:
+    return "invalid";
+  case EndpointRouteSearchFailureKind::ArithmeticOverflow:
+    return "arithmetic_overflow";
+  case EndpointRouteSearchFailureKind::Unreachable:
+    return "unreachable";
+  case EndpointRouteSearchFailureKind::WorkLimit:
+    return "work_limit";
+  }
+  llvm_unreachable("invalid endpoint route search failure kind");
+}
+
 EndpointRouteSearchFailure::EndpointRouteSearchFailure(
     EndpointRouteSearchFailureKind kind, std::string message)
     : kind_(kind), message_(std::move(message)) {}

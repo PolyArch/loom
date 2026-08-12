@@ -230,6 +230,21 @@ void checkedCostAndAdmissibility() {
                 EndpointRouteSearchFailureKind::ArithmeticOverflow);
 }
 
+void failureKindSpellings() {
+  const std::array<std::pair<EndpointRouteSearchFailureKind, llvm::StringRef>,
+                   4>
+      expected{{
+          {EndpointRouteSearchFailureKind::Invalid, "invalid"},
+          {EndpointRouteSearchFailureKind::ArithmeticOverflow,
+           "arithmetic_overflow"},
+          {EndpointRouteSearchFailureKind::Unreachable, "unreachable"},
+          {EndpointRouteSearchFailureKind::WorkLimit, "work_limit"},
+      }};
+  for (auto [kind, spelling] : expected)
+    if (stringifyEndpointRouteSearchFailureKind(kind) != spelling)
+      fail(__func__, "failure kind spelling is not canonical");
+}
+
 void exactHeuristicCacheInvalidation() {
   Fixture fixture;
   EndpointRouteSearchScratch scratch;
@@ -274,6 +289,7 @@ int main() {
   widthFilteringAndWorkLimit();
   requiredTraversalProductState();
   checkedCostAndAdmissibility();
+  failureKindSpellings();
   exactHeuristicCacheInvalidation();
   return 0;
 }

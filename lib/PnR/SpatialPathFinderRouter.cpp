@@ -60,6 +60,13 @@ llvm::Error pathFinderError(const llvm::Twine &message) {
       std::make_error_code(std::errc::invalid_argument));
 }
 
+std::string errorMessage(const llvm::ErrorInfoBase &error) {
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  error.log(stream);
+  return message;
+}
+
 template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
   return values.capacity() * sizeof(T);
 }
@@ -967,18 +974,46 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           netRouter_.routeWholeNet(move, candidate, costs, entry.logicalNet,
                                    limits.endpointExpansionLimit);
       if (!route) {
-        loom::mapping_debug::emit(loom::mapping_debug::Level::Decision,
-                                  loom::mapping_debug::Stage::SpatialPnr,
-                                  loom::mapping_debug::Event::MappingFailure,
-                                  [&](llvm::json::Object &fields) {
-                                    fields["iteration"] = iteration;
-                                    fields["session_iteration"] =
-                                        sessionIteration;
-                                    fields["logical_net"] = entry.logicalNet;
-                                    fields["operation"] = "route_whole_net";
-                                  });
+        llvm::Error routeFailure = route.takeError();
+        bool emittedTypedFailure = false;
+        if (loom::mapping_debug::enabled(
+                loom::mapping_debug::Level::Decision)) {
+          routeFailure = llvm::handleErrors(
+              std::move(routeFailure),
+              [&](const EndpointRouteSearchFailure &failure) -> llvm::Error {
+                emittedTypedFailure = true;
+                std::string diagnostic = errorMessage(failure);
+                loom::mapping_debug::emit(
+                    loom::mapping_debug::Level::Decision,
+                    loom::mapping_debug::Stage::SpatialPnr,
+                    loom::mapping_debug::Event::MappingFailure,
+                    [&](llvm::json::Object &fields) {
+                      fields["iteration"] = iteration;
+                      fields["session_iteration"] = sessionIteration;
+                      fields["logical_net"] = entry.logicalNet;
+                      fields["operation"] = "route_whole_net";
+                      fields["failure_kind"] =
+                          stringifyEndpointRouteSearchFailureKind(
+                              failure.kind());
+                      fields["diagnostic"] = diagnostic;
+                    });
+                return llvm::make_error<EndpointRouteSearchFailure>(
+                    failure.kind(), std::move(diagnostic));
+              });
+        }
+        if (!emittedTypedFailure)
+          loom::mapping_debug::emit(loom::mapping_debug::Level::Decision,
+                                    loom::mapping_debug::Stage::SpatialPnr,
+                                    loom::mapping_debug::Event::MappingFailure,
+                                    [&](llvm::json::Object &fields) {
+                                      fields["iteration"] = iteration;
+                                      fields["session_iteration"] =
+                                          sessionIteration;
+                                      fields["logical_net"] = entry.logicalNet;
+                                      fields["operation"] = "route_whole_net";
+                                    });
         emitStatistics("route_failure");
-        return route.takeError();
+        return routeFailure;
       }
       loom::mapping_debug::emit(
           loom::mapping_debug::Level::Detail,
