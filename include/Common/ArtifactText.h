@@ -40,6 +40,15 @@ writeArtifactRootReferenceJsonFile(llvm::StringRef path,
 llvm::Expected<ArtifactRootReference>
 loadArtifactRootReferenceJsonFile(llvm::StringRef path);
 
+/// Canonical sorted unique non-empty root-reference set JSON. This is a text
+/// authoring boundary only; each reference retains its family owner.
+std::string formatArtifactRootReferenceSetJson(
+    llvm::ArrayRef<ArtifactRootReference> references);
+llvm::Error writeArtifactRootReferenceSetJsonFile(
+    llvm::StringRef path, llvm::ArrayRef<ArtifactRootReference> references);
+llvm::Expected<std::vector<ArtifactRootReference>>
+loadArtifactRootReferenceSetJsonFile(llvm::StringRef path);
+
 /// Lowercase hexadecimal text of a complete family-owned local-reference
 /// payload of any length, exactly as canonical JSON frames it.
 std::string formatArtifactLocalPayloadHex(llvm::ArrayRef<std::uint8_t> payload);

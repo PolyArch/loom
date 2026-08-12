@@ -9,6 +9,8 @@ namespace loom::dse {
 
 inline constexpr CandidateGeneratorKind
     rootCompleteSystemPnrCandidateGeneratorKind(9);
+inline constexpr CandidateGeneratorKind
+    applicationSystemPnrCandidateGeneratorKind(22);
 
 const CandidateGeneratorDescriptor &
 rootCompleteSystemPnrCandidateGeneratorDescriptor();
@@ -22,6 +24,21 @@ bindRootCompleteSystemPnrCandidateGeneratorInputs(
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolveRootCompleteSystemPnrCandidateGeneratorBinding(
+    const ::loom::pnr::ResolvedPnrConfigView &config);
+
+const CandidateGeneratorDescriptor &
+applicationSystemPnrCandidateGeneratorDescriptor();
+llvm::Error registerApplicationSystemPnrCandidateGenerator();
+
+llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
+bindApplicationSystemPnrCandidateGeneratorInputs(
+    const ArtifactRootReference &dataflow,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappingCandidates,
+    const ArtifactRootReference &fabric,
+    const ArtifactRootReference &systemConstraints);
+
+llvm::Expected<ResolvedCandidateGeneratorBinding>
+resolveApplicationSystemPnrCandidateGeneratorBinding(
     const ::loom::pnr::ResolvedPnrConfigView &config);
 
 std::vector<CandidateGeneratorWorkUnitSummary>

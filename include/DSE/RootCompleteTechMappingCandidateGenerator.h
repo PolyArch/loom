@@ -9,7 +9,7 @@ namespace loom::dse {
 inline constexpr CandidateGeneratorKind
     rootCompleteTechMappingCandidateGeneratorKind(6);
 inline constexpr CandidateGeneratorKind
-    canonicalGraphTechMappingCandidateGeneratorKind(21);
+    applicationGraphTechMappingCandidateGeneratorKind(21);
 
 const CandidateGeneratorDescriptor &
 rootCompleteTechMappingCandidateGeneratorDescriptor();
@@ -25,16 +25,17 @@ resolveRootCompleteTechMappingCandidateGeneratorBinding(
     const mapping::ResolvedTechMappingConfigView &config);
 
 const CandidateGeneratorDescriptor &
-canonicalGraphTechMappingCandidateGeneratorDescriptor();
-llvm::Error registerCanonicalGraphTechMappingCandidateGenerator();
+applicationGraphTechMappingCandidateGeneratorDescriptor();
+llvm::Error registerApplicationGraphTechMappingCandidateGenerator();
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
-bindCanonicalGraphTechMappingCandidateGeneratorInputs(
-    llvm::ArrayRef<ArtifactRootReference> dataflowCandidates,
+bindApplicationGraphTechMappingCandidateGeneratorInputs(
+    const ArtifactRootReference &dataflow,
+    const ArtifactRootReference &systemConstraints,
     const ArtifactRootReference &fabric);
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
-resolveCanonicalGraphTechMappingCandidateGeneratorBinding(
+resolveApplicationGraphTechMappingCandidateGeneratorBinding(
     const mapping::ResolvedTechMappingConfigView &config);
 
 } // namespace loom::dse

@@ -86,9 +86,10 @@ llvm::cl::list<std::string> evidenceInputFiles(
     "preexisting-evidence",
     llvm::cl::desc("JSON file containing one exact preexisting Evidence root"),
     llvm::cl::value_desc("path"), llvm::cl::ZeroOrMore);
-llvm::cl::list<std::string> jointSoftwareRootFiles(
-    "joint-software-root",
-    llvm::cl::desc("exact Canonical Dataflow root admitted to joint Mapping"),
+llvm::cl::list<std::string> jointApplicationScopeFiles(
+    "joint-application-scope",
+    llvm::cl::desc("canonical Spatial workload-root set admitted as one "
+                   "application scope"),
     llvm::cl::value_desc("path"), llvm::cl::ZeroOrMore);
 llvm::cl::list<std::string> jointSystemRootFiles(
     "joint-system-root",
@@ -214,10 +215,11 @@ llvm::Error registerProductionOwners() {
       &registerDataflowRewriteCandidateGenerator,
       &registerSpatialPnrCandidateGenerator,
       &registerRootCompleteTechMappingCandidateGenerator,
-      &registerCanonicalGraphTechMappingCandidateGenerator,
+      &registerApplicationGraphTechMappingCandidateGenerator,
       &registerRootCompleteSpatialPnrCandidateGenerator,
       &registerSpatialMappingFeedbackCandidateGenerator,
       &registerRootCompleteSystemPnrCandidateGenerator,
+      &registerApplicationSystemPnrCandidateGenerator,
       &registerFabricTemplateCandidateGenerator,
       &registerSpatialTopologyCandidateGenerator,
       &registerSpatialMicroarchitectureCandidateGenerator,
@@ -338,16 +340,48 @@ int reportPlanOutcome(const DsePlanExecutionOutcome &outcome) {
   return 2;
 }
 
+std::size_t outputCount(const CompletedDsePlanExecution &completed,
+                        llvm::ArrayRef<PlanOutputRef> outputs) {
+  std::size_t count = 0;
+  for (PlanOutputRef output : outputs)
+    if (completed.hasOutput(output))
+      count += completed.resolve(output).size();
+  return count;
+}
+
+void reportJointOutputs(
+    const DsePlanExecutionOutcome &outcome,
+    llvm::ArrayRef<JointDesignPlanPair> pairs) {
+  const CompletedDsePlanExecution *completed =
+      std::get_if<CompletedDsePlanExecution>(&outcome);
+  if (!completed)
+    completed =
+        &std::get<IncompleteDsePlanExecution>(outcome).completedPrefix();
+  for (std::size_t index = 0; index != pairs.size(); ++index) {
+    const JointDesignPlanPair &pair = pairs[index];
+    llvm::errs() << "joint_pair=" << index
+                 << " tech_mappings="
+                 << outputCount(*completed, pair.techMappings)
+                 << " spatial_mappings="
+                 << outputCount(*completed, pair.spatialMappings)
+                 << " system_mappings="
+                 << (completed->hasOutput(pair.systemMappings)
+                         ? completed->resolve(pair.systemMappings).size()
+                         : 0)
+                 << '\n';
+  }
+}
+
 llvm::Expected<int> run() {
   if (progressIntervalMilliseconds == 0)
     return invalid("progress interval must be positive");
   if (prepareOnly && localToolConfigPath.empty())
     return invalid("prepare-only requires a local tool configuration");
   const bool authorJointPlan =
-      !jointSoftwareRootFiles.empty() || !jointSystemRootFiles.empty();
-  if (jointSoftwareRootFiles.empty() != jointSystemRootFiles.empty())
-    return invalid("joint plan authoring requires both software and System "
-                   "root frontiers");
+      !jointApplicationScopeFiles.empty() || !jointSystemRootFiles.empty();
+  if (jointApplicationScopeFiles.empty() != jointSystemRootFiles.empty())
+    return invalid("joint plan authoring requires both application scopes "
+                   "and System root frontiers");
   if (authorJointPlan && jointSpatialMappingLimit == 0)
     return invalid("joint plan authoring requires a positive SpatialMapping "
                    "join limit");
@@ -374,33 +408,45 @@ llvm::Expected<int> run() {
 
   ArtifactStore artifacts(artifactStorePath);
   BlobStore blobs(blobStorePath);
+  std::vector<JointDesignPlanPair> jointPairOutputs;
   if (authorJointPlan) {
-    auto software = loadRootReferences(jointSoftwareRootFiles);
-    if (!software)
-      return software.takeError();
+    std::vector<std::vector<ArtifactRootReference>> applicationScopes;
+    applicationScopes.reserve(jointApplicationScopeFiles.size());
+    for (const std::string &path : jointApplicationScopeFiles) {
+      auto scope = loadArtifactRootReferenceSetJsonFile(path);
+      if (!scope)
+        return llvm::joinErrors(
+            invalid(llvm::Twine("cannot load application scope '") + path +
+                    "'"),
+            scope.takeError());
+      applicationScopes.push_back(std::move(*scope));
+    }
     auto systems = loadRootReferences(jointSystemRootFiles);
     if (!systems)
       return systems.takeError();
-    if (software->size() >
+    if (applicationScopes.size() >
         std::numeric_limits<std::uint64_t>::max() / systems->size())
       return invalid("joint pair count overflows u64");
     const std::uint64_t completePairCount =
-        static_cast<std::uint64_t>(software->size()) *
+        static_cast<std::uint64_t>(applicationScopes.size()) *
         static_cast<std::uint64_t>(systems->size());
     const std::uint64_t pairLimit =
         jointPairLimit == 0 ? completePairCount : jointPairLimit;
-    auto policy = JointDesignPolicy::get(software->size(), systems->size(),
+    auto policy = JointDesignPolicy::get(applicationScopes.size(),
+                                         systems->size(),
                                          pairLimit, jointSpatialMappingLimit);
     if (!policy)
       return policy.takeError();
     auto plan = buildJointDesignExplorationPlan(
-        {std::move(*software), std::move(*systems)}, *policy, *config,
+        {std::move(applicationScopes), std::move(*systems)}, *policy, *config,
         artifacts);
     if (!plan)
       return plan.takeError();
-    semanticInputs->insert(semanticInputs->end(),
-                           plan->frontier.softwareFrontier.begin(),
-                           plan->frontier.softwareFrontier.end());
+    for (const JointSoftwareScope &scope : plan->frontier.softwareFrontier) {
+      semanticInputs->push_back(scope.dataflow);
+      semanticInputs->insert(semanticInputs->end(), scope.workloads.begin(),
+                             scope.workloads.end());
+    }
     semanticInputs->insert(semanticInputs->end(),
                            plan->frontier.systemFrontier.begin(),
                            plan->frontier.systemFrontier.end());
@@ -409,6 +455,7 @@ llvm::Expected<int> run() {
                  << plan->frontier.eligiblePairCount
                  << " retained=" << plan->frontier.pairs.size()
                  << " truncated=" << (plan->frontier.truncated ? 1 : 0) << '\n';
+    jointPairOutputs = plan->pairOutputs;
     *config = std::move(plan->resolvedConfig);
   }
   auto view = projectResolvedDseConfigView(*config);
@@ -579,8 +626,11 @@ llvm::Expected<int> run() {
           std::get<CampaignExecution>(campaignOutcome).outcome);
     }
   } else {
-    exitCode =
-        reportPlanOutcome(std::get<DsePlanExecutionOutcome>(*executionResult));
+    DsePlanExecutionOutcome &outcome =
+        std::get<DsePlanExecutionOutcome>(*executionResult);
+    if (!jointPairOutputs.empty())
+      reportJointOutputs(outcome, jointPairOutputs);
+    exitCode = reportPlanOutcome(outcome);
   }
   return exitCode;
 }

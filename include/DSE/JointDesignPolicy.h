@@ -57,12 +57,22 @@ private:
 };
 
 struct JointDesignInputs final {
-  std::vector<ArtifactRootReference> softwareFrontier;
+  std::vector<std::vector<ArtifactRootReference>> applicationScopes;
   std::vector<ArtifactRootReference> systemFrontier;
 };
 
+struct JointSoftwareScope final {
+  ArtifactRootReference dataflow;
+  std::vector<ArtifactRootReference> workloads;
+
+  friend bool operator==(const JointSoftwareScope &lhs,
+                         const JointSoftwareScope &rhs) {
+    return lhs.dataflow == rhs.dataflow && lhs.workloads == rhs.workloads;
+  }
+};
+
 struct JointDesignPair final {
-  ArtifactRootReference software;
+  JointSoftwareScope software;
   ArtifactRootReference system;
 
   friend bool operator==(const JointDesignPair &lhs,
@@ -75,7 +85,7 @@ struct JointDesignPair final {
 /// join. `eligiblePairCount` records the complete product size before the
 /// declared pair bound; a truncated result is never a global optimum claim.
 struct BoundedJointFrontier final {
-  std::vector<ArtifactRootReference> softwareFrontier;
+  std::vector<JointSoftwareScope> softwareFrontier;
   std::vector<ArtifactRootReference> systemFrontier;
   std::vector<JointDesignPair> pairs;
   std::uint64_t eligiblePairCount = 0;

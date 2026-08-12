@@ -113,6 +113,35 @@ llvm::Expected<ImportedSpatialSimulationInputs> importSpatialSimulationInputs(
       std::move(*dataflow), std::move(*workload), std::move(*runtimeInput)};
 }
 
+llvm::Expected<ImportedSpatialSimulationWorkload>
+importSpatialSimulationWorkload(
+    const ArtifactRootReference &workloadReference,
+    const ArtifactStore &store) {
+  if (!hasSchema(workloadReference, simulationWorkloadSchema))
+    return invalid("foreign SimulationWorkload reference schema");
+  auto workloadBytes = store.get(workloadReference);
+  if (!workloadBytes)
+    return workloadBytes.takeError();
+  auto dataflowIdentity = spatialWorkloadOwnerIdentity(workloadBytes->bytes());
+  if (!dataflowIdentity)
+    return dataflowIdentity.takeError();
+  ArtifactRootReference dataflowReference{
+      dataflow::canonicalDataflowSchema.identity.str(),
+      dataflow::canonicalDataflowSchema.version, *dataflowIdentity};
+  auto dataflow = dataflow::importCanonicalDataflow(dataflowReference, store);
+  if (!dataflow)
+    return dataflow.takeError();
+  auto view = dataflow->view();
+  if (!view)
+    return view.takeError();
+  auto workload = importSimulationWorkload(
+      workloadBytes->bytes(), *view, workloadReference.artifact);
+  if (!workload)
+    return workload.takeError();
+  return ImportedSpatialSimulationWorkload{std::move(*dataflow),
+                                           std::move(*workload)};
+}
+
 llvm::Expected<ImportedStructuredProgramSimulationInputs>
 importStructuredProgramSimulationInputs(
     const ArtifactRootReference &workloadReference,

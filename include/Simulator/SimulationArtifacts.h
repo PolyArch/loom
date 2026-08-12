@@ -643,6 +643,11 @@ struct ImportedSpatialSimulationInputs {
   CanonicalSimulationRuntimeInput runtimeInput;
 };
 
+struct ImportedSpatialSimulationWorkload {
+  dataflow::CanonicalDataflowArtifact dataflow;
+  CanonicalSimulationWorkload workload;
+};
+
 struct ImportedSystemSimulationInputs {
   deployment::FinalizedDeployment deployment;
   CanonicalSimulationWorkload workload;
@@ -673,6 +678,13 @@ llvm::Expected<ImportedSpatialSimulationInputs>
 importSpatialSimulationInputs(const ::loom::ArtifactRootReference &workload,
                               const ::loom::ArtifactRootReference &runtimeInput,
                               const ::loom::ArtifactStore &store);
+
+/// Strictly imports one stored Spatial workload and recovers its sole
+/// Canonical Dataflow owner without requiring a runtime-input instance.
+llvm::Expected<ImportedSpatialSimulationWorkload>
+importSpatialSimulationWorkload(
+    const ::loom::ArtifactRootReference &workload,
+    const ::loom::ArtifactStore &store);
 
 /// Strictly imports one stored System workload/runtime pair and its exact
 /// Deployment owner. Deployment remains responsible for closure and blob

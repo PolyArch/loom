@@ -1,11 +1,14 @@
 #include "Common/ArtifactText.h"
 
+#include "Common/ArtifactLocalReference.h"
+
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -191,6 +194,67 @@ loadArtifactRootReferenceJsonFile(llvm::StringRef path) {
     return artifactTextError("artifact reference file must contain one JSON "
                              "object");
   return parseArtifactRootReferenceJson(*object);
+}
+
+std::string formatArtifactRootReferenceSetJson(
+    llvm::ArrayRef<ArtifactRootReference> references) {
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  llvm::json::OStream json(output);
+  json.array([&] {
+    for (const ArtifactRootReference &reference : references)
+      writeArtifactRootReferenceJson(json, reference);
+  });
+  output.flush();
+  return text;
+}
+
+llvm::Error writeArtifactRootReferenceSetJsonFile(
+    llvm::StringRef path, llvm::ArrayRef<ArtifactRootReference> references) {
+  if (references.empty() ||
+      !llvm::is_sorted(references, artifactRootReferenceLess) ||
+      std::adjacent_find(references.begin(), references.end()) !=
+          references.end())
+    return artifactTextError(
+        "artifact reference set must be non-empty, sorted, and unique");
+  std::error_code error;
+  llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
+  if (error)
+    return llvm::errorCodeToError(error);
+  output << formatArtifactRootReferenceSetJson(references) << '\n';
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::vector<ArtifactRootReference>>
+loadArtifactRootReferenceSetJsonFile(llvm::StringRef path) {
+  auto buffer = llvm::MemoryBuffer::getFile(path);
+  if (!buffer)
+    return llvm::errorCodeToError(buffer.getError());
+  auto parsed = llvm::json::parse((*buffer)->getBuffer());
+  if (!parsed)
+    return parsed.takeError();
+  const llvm::json::Array *array = parsed->getAsArray();
+  if (!array || array->empty())
+    return artifactTextError(
+        "artifact reference set file must contain a non-empty JSON array");
+  std::vector<ArtifactRootReference> references;
+  references.reserve(array->size());
+  for (const llvm::json::Value &value : *array) {
+    const llvm::json::Object *object = value.getAsObject();
+    if (!object)
+      return artifactTextError(
+          "artifact reference set entry must be a JSON object");
+    auto reference = parseArtifactRootReferenceJson(*object);
+    if (!reference)
+      return reference.takeError();
+    references.push_back(std::move(*reference));
+  }
+  if (!llvm::is_sorted(references, artifactRootReferenceLess) ||
+      std::adjacent_find(references.begin(), references.end()) !=
+          references.end())
+    return artifactTextError(
+        "artifact reference set must be sorted and unique");
+  return references;
 }
 
 std::string

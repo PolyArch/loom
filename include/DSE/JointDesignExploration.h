@@ -24,6 +24,8 @@ namespace loom::dse {
 
 struct JointDesignPlanPair final {
   JointDesignPair pair;
+  std::vector<PlanOutputRef> techMappings;
+  std::vector<PlanOutputRef> spatialMappings;
   PlanOutputRef systemMappings;
 };
 
@@ -33,8 +35,9 @@ struct JointDesignExplorationPlan final {
   std::vector<JointDesignPlanPair> pairOutputs;
 };
 
-/// Builds one ordinary finite Generate plan. Each explicit software/System
-/// pair traverses root-complete TechMapping, SpatialMapping, and SystemMapping.
+/// Builds one ordinary finite Generate plan. Each explicit application/System
+/// pair traverses application-scoped TechMapping, SpatialMapping, and
+/// SystemMapping under one exact System MappingConstraintSet.
 llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     JointDesignInputs inputs, const JointDesignPolicy &policy,
     const ResolvedConfig &baseConfig, const ArtifactStore &artifactStore);

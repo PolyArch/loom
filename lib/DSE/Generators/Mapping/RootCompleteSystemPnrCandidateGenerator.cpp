@@ -30,6 +30,14 @@ enum InputSlot : std::uint32_t {
   InputSlotCount,
 };
 
+enum ApplicationInputSlot : std::uint32_t {
+  ApplicationDataflowInput,
+  ApplicationSpatialMappingCandidatesInput,
+  ApplicationFabricInput,
+  ApplicationSystemConstraintsInput,
+  ApplicationInputSlotCount,
+};
+
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
     inputSlots = {{
         {CandidateGeneratorInputSlotRef(DataflowInput), "dataflow",
@@ -41,6 +49,26 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
          PlanValueCardinality::FiniteSet},
         {CandidateGeneratorInputSlotRef(FabricInput), "fabric",
          PlanValueRole::CandidateSet, &::loom::fabric::fabricArtifactSchema,
+         PlanValueCardinality::ExactlyOne},
+    }};
+
+constexpr std::array<CandidateGeneratorInputSlotDescriptor,
+                     ApplicationInputSlotCount>
+    applicationInputSlots = {{
+        {CandidateGeneratorInputSlotRef(ApplicationDataflowInput), "dataflow",
+         PlanValueRole::CandidateSet, &::dataflow::canonicalDataflowSchema,
+         PlanValueCardinality::ExactlyOne},
+        {CandidateGeneratorInputSlotRef(
+             ApplicationSpatialMappingCandidatesInput),
+         "spatial_mapping", PlanValueRole::CandidateSet,
+         &::loom::mapping::mappingArtifactSchema,
+         PlanValueCardinality::FiniteSet},
+        {CandidateGeneratorInputSlotRef(ApplicationFabricInput), "fabric",
+         PlanValueRole::CandidateSet, &::loom::fabric::fabricArtifactSchema,
+         PlanValueCardinality::ExactlyOne},
+        {CandidateGeneratorInputSlotRef(ApplicationSystemConstraintsInput),
+         "system_constraints", PlanValueRole::CandidateSet,
+         &::loom::mapping::mappingConstraintSetSchema,
          PlanValueCardinality::ExactlyOne},
     }};
 
@@ -64,11 +92,31 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs);
 
+llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store, const BlobStore &blobs);
+
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSystemPnrCandidateGeneratorKind,
     "mapping.root_complete_system_pnr",
     "loom.mapping.root_complete_system_pnr.generator.v2",
     inputSlots,
+    outputSlots,
+    ResolvedDseConfigViewContract{
+        ::loom::pnr::resolvedSystemPnrConfigSchemaDescriptorBytes(),
+        validateConfig},
+    CandidateGeneratorDeterminism::Deterministic,
+    pnrCandidateGeneratorWorkUnits,
+    nullptr,
+    ProviderForm::InProcess,
+};
+
+const CandidateGeneratorDescriptor applicationDescriptor{
+    applicationSystemPnrCandidateGeneratorKind,
+    "mapping.application_system_pnr",
+    "loom.mapping.application_system_pnr.generator.v1",
+    applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
         ::loom::pnr::resolvedSystemPnrConfigSchemaDescriptorBytes(),
@@ -247,9 +295,118 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
           internal.diagnostic);
 }
 
+llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store, const BlobStore &) {
+  auto config = ::loom::pnr::adoptResolvedSystemPnrConfigView(
+      ::loom::pnr::resolvedSystemPnrConfigSchemaDescriptorBytes(),
+      binding.canonicalConfigBytes(), binding.configDigest());
+  if (!config)
+    return config.takeError();
+  auto dataflowArtifact = ::dataflow::importCanonicalDataflow(
+      inputBindings[ApplicationDataflowInput].artifacts.front(), store);
+  if (!dataflowArtifact)
+    return dataflowArtifact.takeError();
+  auto dataflow = dataflowArtifact->view();
+  if (!dataflow)
+    return dataflow.takeError();
+  auto fabricArtifact = ::loom::fabric::importEntireFabricRoot(
+      inputBindings[ApplicationFabricInput].artifacts.front(), store);
+  if (!fabricArtifact)
+    return fabricArtifact.takeError();
+  auto system = ::loom::fabric::requireSystemRoot(fabricArtifact->view());
+  if (!system)
+    return system.takeError();
+  auto constraints = ::loom::mapping::importSystemMappingConstraintSet(
+      inputBindings[ApplicationSystemConstraintsInput].artifacts.front(),
+      store);
+  if (!constraints)
+    return constraints.takeError();
+  if (constraints->view().dataflowIdentity() != dataflow->identity() ||
+      constraints->view().fabricIdentity() != system->artifact().identity())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "application_system_pnr_generator_invalid: constraints bind foreign "
+        "Dataflow or Fabric owners");
+  if (llvm::Error error = validateSpatialMappingOwners(
+          inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts,
+          *dataflow, *system, store))
+    return std::move(error);
+
+  auto partition = ::loom::pnr::projectWholeDomainPresburgerPartitionPlan(
+      *dataflow, constraints->view().rootThreadLaunches());
+  if (!partition)
+    return partition.takeError();
+  ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{
+      inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts};
+  auto searchDomain = ::loom::pnr::projectSystemPnrSearchDomain(
+      *dataflow, *system, *config, *constraints, *partition,
+      graphSearch, store);
+  if (!searchDomain) {
+    bool unsupported = false;
+    llvm::Error remaining = llvm::handleErrors(
+        searchDomain.takeError(),
+        [&](const ::loom::pnr::UnsupportedSystemPnrSearchDomain &) {
+          unsupported = true;
+        });
+    if (remaining)
+      return std::move(remaining);
+    if (unsupported)
+      return CandidateGeneratorProviderResult{
+          incomplete(CandidateGeneratorIncompleteReason::Unsupported),
+          rootCompleteSystemPnrCandidateGeneratorWorkSummary({})};
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "application_system_pnr_generator_invalid: search-domain projection "
+        "lost its failure cause");
+  }
+
+  ::loom::pnr::SystemPnrGenerationOutcome outcome =
+      ::loom::pnr::generateSystemMappings(
+          {*dataflow, *system, *searchDomain, *config, *constraints, store});
+  if (auto *generated =
+          std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome))
+    return CandidateGeneratorProviderResult{
+        completed(std::move(generated->candidates)),
+        rootCompleteSystemPnrCandidateGeneratorWorkSummary(
+            generated->accounting)};
+  if (const auto *infeasible =
+          std::get_if<::loom::pnr::ProvenInfeasibleSystemMapping>(&outcome))
+    return CandidateGeneratorProviderResult{
+        completed({}), rootCompleteSystemPnrCandidateGeneratorWorkSummary(
+                           infeasible->accounting)};
+  if (const auto *partial =
+          std::get_if<::loom::pnr::IncompleteSystemPnrGeneration>(&outcome)) {
+    const CandidateGeneratorIncompleteReason reason =
+        partial->reason == ::loom::pnr::IncompleteSystemPnrGenerationReason::
+                               SemanticLimitReached
+            ? CandidateGeneratorIncompleteReason::SemanticLimitReached
+            : CandidateGeneratorIncompleteReason::ProofNotEstablished;
+    return CandidateGeneratorProviderResult{
+        incomplete(reason), rootCompleteSystemPnrCandidateGeneratorWorkSummary(
+                                partial->accounting)};
+  }
+  if (const auto *invalid =
+          std::get_if<::loom::pnr::InvalidSystemPnrGeneration>(&outcome))
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "application_system_pnr_generator_invalid: " + invalid->diagnostic);
+  const auto &internal =
+      std::get<::loom::pnr::InternalSystemPnrGeneration>(outcome);
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "application_system_pnr_generator_execution_failed: " +
+          internal.diagnostic);
+}
+
 const CandidateGeneratorProvider provider{
     descriptor.reference(),
     CandidateGeneratorInProcessProvider{invokeRootCompleteProvider}};
+
+const CandidateGeneratorProvider applicationProvider{
+    applicationDescriptor.reference(),
+    CandidateGeneratorInProcessProvider{invokeApplicationProvider}};
 
 } // namespace
 
@@ -290,6 +447,51 @@ resolveRootCompleteSystemPnrCandidateGeneratorBinding(
     return std::move(error);
   return ResolvedCandidateGeneratorBinding::get(
       descriptor.reference(), config.canonicalViewBytes(), config.digest());
+}
+
+const CandidateGeneratorDescriptor &
+applicationSystemPnrCandidateGeneratorDescriptor() {
+  return applicationDescriptor;
+}
+
+llvm::Error registerApplicationSystemPnrCandidateGenerator() {
+  if (llvm::Error error =
+          registerCandidateGeneratorDescriptor(applicationDescriptor))
+    return error;
+  return registerCandidateGeneratorProvider(applicationProvider);
+}
+
+llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
+bindApplicationSystemPnrCandidateGeneratorInputs(
+    const ArtifactRootReference &dataflow,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappingCandidates,
+    const ArtifactRootReference &fabric,
+    const ArtifactRootReference &systemConstraints) {
+  if (llvm::Error error = registerApplicationSystemPnrCandidateGenerator())
+    return std::move(error);
+  std::vector<CandidateGeneratorInputBinding> bindings = {
+      {CandidateGeneratorInputSlotRef(ApplicationDataflowInput), {dataflow}},
+      {CandidateGeneratorInputSlotRef(
+           ApplicationSpatialMappingCandidatesInput),
+       spatialMappingCandidates.vec()},
+      {CandidateGeneratorInputSlotRef(ApplicationFabricInput), {fabric}},
+      {CandidateGeneratorInputSlotRef(ApplicationSystemConstraintsInput),
+       {systemConstraints}},
+  };
+  if (llvm::Error error = validateCandidateGeneratorInputBindings(
+          applicationDescriptor.reference(), bindings))
+    return std::move(error);
+  return bindings;
+}
+
+llvm::Expected<ResolvedCandidateGeneratorBinding>
+resolveApplicationSystemPnrCandidateGeneratorBinding(
+    const ::loom::pnr::ResolvedPnrConfigView &config) {
+  if (llvm::Error error = registerApplicationSystemPnrCandidateGenerator())
+    return std::move(error);
+  return ResolvedCandidateGeneratorBinding::get(
+      applicationDescriptor.reference(), config.canonicalViewBytes(),
+      config.digest());
 }
 
 std::vector<CandidateGeneratorWorkUnitSummary>

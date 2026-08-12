@@ -188,6 +188,13 @@ public:
     return logicalMemoryRoots_;
   }
 
+  /// Derives the root thread launches reachable from one exact defined LLVM
+  /// ABI entry through direct calls. Indirect calls fail closed because they
+  /// do not define a complete static application closure.
+  llvm::Expected<std::vector<RootThreadLaunchRef>>
+  projectRootThreadLaunchesReachableFromAbiEntry(
+      llvm::StringRef entrySymbol) const;
+
   //== Closed structural-reference generation, validation, and resolution ==//
 
   /// Enumerate every rooted graph launch lazily, composing each root/static

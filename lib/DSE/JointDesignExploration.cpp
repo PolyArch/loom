@@ -14,9 +14,11 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "PnR/PnrConfig.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -46,11 +48,11 @@ std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
 }
 
 llvm::Error registerMappingGenerators() {
-  if (llvm::Error error = registerCanonicalGraphTechMappingCandidateGenerator())
+  if (llvm::Error error = registerApplicationGraphTechMappingCandidateGenerator())
     return error;
   if (llvm::Error error = registerRootCompleteSpatialPnrCandidateGenerator())
     return error;
-  return registerRootCompleteSystemPnrCandidateGenerator();
+  return registerApplicationSystemPnrCandidateGenerator();
 }
 
 llvm::Expected<std::vector<ArtifactRootReference>>
@@ -91,6 +93,59 @@ targetModules(const ArtifactRootReference &systemReference,
       return invalid("System target dependency is not a Module root");
   }
   return modules;
+}
+
+llvm::Expected<std::vector<dataflow::RootThreadLaunchRef>>
+scopeRoots(const JointSoftwareScope &scope, const ArtifactStore &store) {
+  std::vector<dataflow::RootThreadLaunchRef> roots;
+  roots.reserve(scope.workloads.size());
+  for (const ArtifactRootReference &reference : scope.workloads) {
+    auto imported = sim::importSpatialSimulationWorkload(reference, store);
+    if (!imported)
+      return imported.takeError();
+    if (imported->dataflow.identity() != scope.dataflow.artifact)
+      return invalid("application workload has a foreign Dataflow owner");
+    const sim::SpatialSimulationWorkload *workload =
+        imported->workload.spatial();
+    if (!workload)
+      return invalid("application scope contains a non-Spatial workload");
+    roots.push_back(workload->launchRef.rootThreadLaunch);
+  }
+  llvm::sort(roots, [](const auto &lhs, const auto &rhs) {
+    return lhs.entity.value() < rhs.entity.value();
+  });
+  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+  if (roots.empty())
+    return invalid("application scope projects no root thread launch");
+  return roots;
+}
+
+llvm::Expected<ArtifactRootReference> publishScopeConstraints(
+    const JointSoftwareScope &scope,
+    const ArtifactRootReference &systemReference,
+    const ArtifactStore &store) {
+  auto dataflowArtifact =
+      dataflow::importCanonicalDataflow(scope.dataflow, store);
+  if (!dataflowArtifact)
+    return dataflowArtifact.takeError();
+  auto dataflow = dataflowArtifact->view();
+  if (!dataflow)
+    return dataflow.takeError();
+  auto systemArtifact =
+      fabric::importEntireFabricRoot(systemReference, store);
+  if (!systemArtifact)
+    return systemArtifact.takeError();
+  auto system = fabric::requireSystemRoot(systemArtifact->view());
+  if (!system)
+    return system.takeError();
+  auto roots = scopeRoots(scope, store);
+  if (!roots)
+    return roots.takeError();
+  auto constraints = mapping::finalizeEmptySystemMappingConstraintSet(
+      *dataflow, *system, *roots, store);
+  if (!constraints)
+    return constraints.takeError();
+  return constraints->reference();
 }
 
 void canonicalize(std::vector<ArtifactRootReference> &roots) {
@@ -165,6 +220,10 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
   std::vector<JointDesignPlanPair> outputs;
   outputs.reserve(frontier->pairs.size());
   for (const JointDesignPair &pair : frontier->pairs) {
+    auto constraints =
+        publishScopeConstraints(pair.software, pair.system, artifactStore);
+    if (!constraints)
+      return constraints.takeError();
     auto modules = targetModules(pair.system, artifactStore);
     if (!modules)
       return modules.takeError();
@@ -176,8 +235,9 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     for (const ArtifactRootReference &module : *modules) {
       const std::uint64_t techNode = planConfig.dse.planNodes.size();
       planConfig.dse.planNodes.push_back(GeneratePlanNodeDefinition{
-          canonicalGraphTechMappingCandidateGeneratorDescriptor().reference(),
-          {ExactPlanArtifacts{{pair.software}}, ExactPlanArtifacts{{module}}},
+          applicationGraphTechMappingCandidateGeneratorDescriptor().reference(),
+          {ExactPlanArtifacts{{pair.software.dataflow}},
+           ExactPlanArtifacts{{*constraints}}, ExactPlanArtifacts{{module}}},
           techConfig->canonicalViewBytes().vec(),
           techConfig->digest()});
       techOutputs.push_back(PlanOutputRef{techNode, 0});
@@ -196,15 +256,17 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
       spatialOutputs.push_back(PlanOutputRef{spatialNode, 0});
     }
     const std::uint64_t systemNode = planConfig.dse.planNodes.size();
+    const std::vector<PlanOutputRef> retainedSpatialOutputs = spatialOutputs;
     planConfig.dse.planNodes.push_back(GeneratePlanNodeDefinition{
-        rootCompleteSystemPnrCandidateGeneratorDescriptor().reference(),
-        {ExactPlanArtifacts{{pair.software}},
+        applicationSystemPnrCandidateGeneratorDescriptor().reference(),
+        {ExactPlanArtifacts{{pair.software.dataflow}},
          BoundedPlanOutputJoin{std::move(spatialOutputs),
                                policy.maximumSpatialMappingsPerPair()},
-         ExactPlanArtifacts{{pair.system}}},
+         ExactPlanArtifacts{{pair.system}}, ExactPlanArtifacts{{*constraints}}},
         systemConfig->canonicalViewBytes().vec(),
         systemConfig->digest()});
-    outputs.push_back({pair, PlanOutputRef{systemNode, 0}});
+    outputs.push_back({pair, std::move(techOutputs), retainedSpatialOutputs,
+                       PlanOutputRef{systemNode, 0}});
   }
   auto admitted = projectResolvedDseConfigView(planConfig);
   if (!admitted)
@@ -244,7 +306,8 @@ llvm::Expected<JointDesignExecution> executeJointDesignExploration(
       auto imported = mapping::importSystemMapping(reference, artifactStore);
       if (!imported)
         return imported.takeError();
-      if (imported->view().dataflowIdentity() != pair.pair.software.artifact ||
+      if (imported->view().dataflowIdentity() !=
+              pair.pair.software.dataflow.artifact ||
           imported->view().fabricIdentity() != pair.pair.system.artifact)
         return invalid("joint plan output has foreign Dataflow/System owners");
     }

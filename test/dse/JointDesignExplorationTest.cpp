@@ -12,6 +12,7 @@
 #include "Frontend/IR/LoomOps.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
+#include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -96,11 +97,31 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
     return
   }
 }
+
 )mlir";
   auto module = mlir::parseSourceString<mlir::ModuleOp>(source, &context);
   if (!module)
     fail("cannot parse Dataflow fixture");
   return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+loom::ArtifactRootReference publishApplicationWorkload(
+    const dataflow::CanonicalDataflowArtifact &artifact,
+    const loom::ArtifactStore &store) {
+  auto view = take(artifact.view());
+  if (view.rootThreadLaunches().size() != 1 ||
+      view.staticGraphLaunches().size() != 1)
+    fail("application fixture does not have one rooted graph launch");
+  dataflow::RootedGraphLaunchRef launch{
+      view.rootThreadLaunches().front().ref,
+      view.staticGraphLaunches().front().ref};
+  loom::sim::SpatialSimulationWorkload draft{launch};
+  auto shapes = take(loom::sim::projectSpatialSimulationBoundaryShapes(
+      view, launch));
+  draft.valueInputPlan.assign(shapes.valueInputs.size(),
+                              loom::sim::RuntimeValueInput{});
+  auto workload = take(loom::sim::finalizeSimulationWorkload(draft, view));
+  return take(loom::sim::publishSimulationWorkload(workload, store));
 }
 
 std::string key(llvm::ArrayRef<std::uint8_t> bytes) {
@@ -150,10 +171,12 @@ void exerciseJointExploration() {
 
   auto first = buildDataflow(context, 7);
   auto second = buildDataflow(context, 11);
-  const loom::ArtifactRootReference firstReference =
-      take(dataflow::publishCanonicalDataflow(first, store));
-  const loom::ArtifactRootReference secondReference =
-      take(dataflow::publishCanonicalDataflow(second, store));
+  take(dataflow::publishCanonicalDataflow(first, store));
+  take(dataflow::publishCanonicalDataflow(second, store));
+  const loom::ArtifactRootReference firstWorkload =
+      publishApplicationWorkload(first, store);
+  const loom::ArtifactRootReference secondWorkload =
+      publishApplicationWorkload(second, store);
   auto small = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
   auto alternate = take(loom::adg::buildBuiltinTarget(
@@ -169,10 +192,13 @@ void exerciseJointExploration() {
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
   config.dse.techMapping.candidatePublicationLimit = 2;
   auto plan = take(loom::dse::buildJointDesignExplorationPlan(
-      {{firstReference, secondReference}, {system}}, policy, config, store));
+      {{{firstWorkload}, {secondWorkload}}, {system}}, policy, config, store));
   if (plan.frontier.eligiblePairCount != 2 || !plan.frontier.truncated ||
       plan.frontier.pairs.size() != 1 || plan.pairOutputs.size() != 1)
     fail("bounded pair frontier did not declare deterministic truncation");
+  if (plan.pairOutputs.front().techMappings.empty() ||
+      plan.pairOutputs.front().spatialMappings.empty())
+    fail("joint Mapping plan lost an intermediate result projection");
   const auto &systemNode = std::get<loom::dse::GeneratePlanNodeDefinition>(
       plan.resolvedConfig.dse.planNodes
           [plan.pairOutputs.front().systemMappings.producerNodeOrdinal]);
@@ -188,7 +214,7 @@ void exerciseJointExploration() {
     const auto &techNode = std::get<loom::dse::GeneratePlanNodeDefinition>(
         plan.resolvedConfig.dse.planNodes[techOutput.producerNodeOrdinal]);
     if (techNode.descriptor !=
-        loom::dse::canonicalGraphTechMappingCandidateGeneratorDescriptor()
+        loom::dse::applicationGraphTechMappingCandidateGeneratorDescriptor()
             .reference())
       fail("joint Mapping plan used a whole-program TechMapping cover");
   }
@@ -210,7 +236,7 @@ void exerciseJointExploration() {
   for (const loom::ArtifactRootReference &reference : mappings) {
     auto mapping = take(loom::mapping::importSystemMapping(reference, store));
     if (mapping.view().dataflowIdentity() !=
-            plan.frontier.pairs.front().software.artifact ||
+            plan.frontier.pairs.front().software.dataflow.artifact ||
         mapping.view().fabricIdentity() != system.artifact)
       fail("joint Mapping output lost its exact pair owners");
   }
@@ -218,7 +244,7 @@ void exerciseJointExploration() {
   const std::vector<loom::ArtifactRootReference> systems = {system,
                                                              alternateSystem};
   const std::vector<loom::dse::JointMemberPromotion> memberPromotions = {
-      {plan.frontier.pairs.front().software,
+      {plan.frontier.pairs.front().software.dataflow,
        loom::dse::CompletedSelection{mappings, {}}}};
   auto selected = take(loom::dse::selectJointDesignSystems(
       systems, memberPromotions, {}, loom::dse::AllPassingSelection{}, nullptr,
@@ -253,7 +279,7 @@ void exerciseJointExploration() {
     fail("typed System dispositions lost missing-member or AccCore coverage");
 
   auto oversized = loom::dse::buildBoundedJointFrontier(
-      {{firstReference, secondReference}, {system}},
+      {{{firstWorkload}, {secondWorkload}}, {system}},
       take(loom::dse::JointDesignPolicy::get(1, 1, 1, 1)), store);
   if (oversized)
     fail("joint frontier accepted a software set beyond its resolved bound");

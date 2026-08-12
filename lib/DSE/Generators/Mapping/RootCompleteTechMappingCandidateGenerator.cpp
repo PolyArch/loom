@@ -3,8 +3,12 @@
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
+
+#include "llvm/ADT/STLExtras.h"
 
 #include <array>
 #include <cstdint>
@@ -23,12 +27,34 @@ enum InputSlot : std::uint32_t {
   InputSlotCount,
 };
 
+enum ApplicationInputSlot : std::uint32_t {
+  ApplicationDataflowInput,
+  ApplicationSystemConstraintsInput,
+  ApplicationFabricInput,
+  ApplicationInputSlotCount,
+};
+
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
     inputSlots = {{
         {CandidateGeneratorInputSlotRef(DataflowCandidatesInput),
          "canonical_dataflow", PlanValueRole::CandidateSet,
          &::dataflow::canonicalDataflowSchema, PlanValueCardinality::FiniteSet},
         {CandidateGeneratorInputSlotRef(FabricInput), "fabric",
+         PlanValueRole::CandidateSet, &::loom::fabric::fabricArtifactSchema,
+         PlanValueCardinality::ExactlyOne},
+    }};
+
+constexpr std::array<CandidateGeneratorInputSlotDescriptor,
+                     ApplicationInputSlotCount>
+    applicationInputSlots = {{
+        {CandidateGeneratorInputSlotRef(ApplicationDataflowInput), "dataflow",
+         PlanValueRole::CandidateSet, &::dataflow::canonicalDataflowSchema,
+         PlanValueCardinality::ExactlyOne},
+        {CandidateGeneratorInputSlotRef(ApplicationSystemConstraintsInput),
+         "system_constraints", PlanValueRole::CandidateSet,
+         &::loom::mapping::mappingConstraintSetSchema,
+         PlanValueCardinality::ExactlyOne},
+        {CandidateGeneratorInputSlotRef(ApplicationFabricInput), "fabric",
          PlanValueRole::CandidateSet, &::loom::fabric::fabricArtifactSchema,
          PlanValueCardinality::ExactlyOne},
     }};
@@ -59,7 +85,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs);
 
-llvm::Expected<CandidateGeneratorProviderResult> invokeCanonicalGraphProvider(
+llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs);
@@ -79,11 +105,11 @@ const CandidateGeneratorDescriptor descriptor{
     ProviderForm::InProcess,
 };
 
-const CandidateGeneratorDescriptor canonicalGraphDescriptor{
-    canonicalGraphTechMappingCandidateGeneratorKind,
-    "mapping.canonical_graph_tech_mapping",
-    "loom.mapping.canonical_graph_tech_mapping.generator.v1",
-    inputSlots,
+const CandidateGeneratorDescriptor applicationGraphDescriptor{
+    applicationGraphTechMappingCandidateGeneratorKind,
+    "mapping.application_graph_tech_mapping",
+    "loom.mapping.application_graph_tech_mapping.generator.v2",
+    applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
         ::loom::mapping::resolvedTechMappingConfigSchemaDescriptorBytes(),
@@ -92,11 +118,6 @@ const CandidateGeneratorDescriptor canonicalGraphDescriptor{
     workUnits,
     nullptr,
     ProviderForm::InProcess,
-};
-
-enum class GraphCoverPolicy : std::uint8_t {
-  CompleteCatalog,
-  CanonicalSingletons,
 };
 
 llvm::Error accumulate(std::uint64_t source, std::uint64_t &target,
@@ -192,7 +213,7 @@ consumeTechMappingOutcome(
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &store, GraphCoverPolicy coverPolicy) {
+               const ArtifactStore &store) {
   auto config = ::loom::mapping::adoptResolvedTechMappingConfigView(
       ::loom::mapping::resolvedTechMappingConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -220,32 +241,17 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       continue;
 
     std::vector<::dataflow::GraphRef> completeCover;
-    if (coverPolicy == GraphCoverPolicy::CompleteCatalog) {
-      completeCover.reserve(dataflow->graphs().size());
-      for (const ::dataflow::CanonicalGraphView &graph : dataflow->graphs())
-        completeCover.push_back(graph.ref);
-      auto terminal = consumeTechMappingOutcome(
-          ::loom::mapping::generateTechMappings(
-              {*dataflow, completeCover, fabric->view(), *config, store}),
-          accounting, outputs, lineage);
-      if (!terminal)
-        return terminal.takeError();
-      if (*terminal)
-        return std::move(**terminal);
-      continue;
-    }
-
-    for (const ::dataflow::CanonicalGraphView &graph : dataflow->graphs()) {
-      const std::array cover = {graph.ref};
-      auto terminal = consumeTechMappingOutcome(
-          ::loom::mapping::generateTechMappings(
-              {*dataflow, cover, fabric->view(), *config, store}),
-          accounting, outputs, lineage);
-      if (!terminal)
-        return terminal.takeError();
-      if (*terminal)
-        return std::move(**terminal);
-    }
+    completeCover.reserve(dataflow->graphs().size());
+    for (const ::dataflow::CanonicalGraphView &graph : dataflow->graphs())
+      completeCover.push_back(graph.ref);
+    auto terminal = consumeTechMappingOutcome(
+        ::loom::mapping::generateTechMappings(
+            {*dataflow, completeCover, fabric->view(), *config, store}),
+        accounting, outputs, lineage);
+    if (!terminal)
+      return terminal.takeError();
+    if (*terminal)
+      return std::move(**terminal);
   }
 
   return CandidateGeneratorProviderResult{
@@ -259,25 +265,114 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &) {
-  return invokeProvider(inputBindings, binding, store,
-                        GraphCoverPolicy::CompleteCatalog);
+  return invokeProvider(inputBindings, binding, store);
 }
 
-llvm::Expected<CandidateGeneratorProviderResult> invokeCanonicalGraphProvider(
+llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &) {
-  return invokeProvider(inputBindings, binding, store,
-                        GraphCoverPolicy::CanonicalSingletons);
+  auto config = ::loom::mapping::adoptResolvedTechMappingConfigView(
+      ::loom::mapping::resolvedTechMappingConfigSchemaDescriptorBytes(),
+      binding.canonicalConfigBytes(), binding.configDigest());
+  if (!config)
+    return config.takeError();
+  auto dataflowArtifact = ::dataflow::importCanonicalDataflow(
+      inputBindings[ApplicationDataflowInput].artifacts.front(), store);
+  if (!dataflowArtifact)
+    return dataflowArtifact.takeError();
+  auto dataflow = dataflowArtifact->view();
+  if (!dataflow)
+    return dataflow.takeError();
+  auto constraints = ::loom::mapping::importSystemMappingConstraintSet(
+      inputBindings[ApplicationSystemConstraintsInput].artifacts.front(),
+      store);
+  if (!constraints)
+    return constraints.takeError();
+  if (constraints->view().dataflowIdentity() != dataflow->identity())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "application_graph_tech_mapping_generator_invalid: constraints "
+        "bind a foreign Dataflow");
+  auto fabric = ::loom::fabric::importEntireFabricRoot(
+      inputBindings[ApplicationFabricInput].artifacts.front(), store);
+  if (!fabric)
+    return fabric.takeError();
+  ArtifactRootReference systemReference{
+      ::loom::fabric::fabricArtifactSchema.identity.str(),
+      ::loom::fabric::fabricArtifactSchema.version,
+      constraints->view().fabricIdentity()};
+  auto systemArtifact =
+      ::loom::fabric::importEntireFabricRoot(systemReference, store);
+  if (!systemArtifact)
+    return systemArtifact.takeError();
+  auto system = ::loom::fabric::requireSystemRoot(systemArtifact->view());
+  if (!system)
+    return system.takeError();
+  const bool attached = llvm::any_of(
+      system->artifact().accCoreOccurrences(), [&](const auto core) {
+        auto target = system->spatialCoreTarget(core);
+        return target && target->dependencyOrdinal <
+                             system->artifact().importedModules().size() &&
+               system->artifact()
+                       .importedModules()[target->dependencyOrdinal]
+                       .identity() == fabric->view().identity();
+      });
+  if (!attached)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "application_graph_tech_mapping_generator_invalid: Fabric Module "
+        "is not attached to the constrained System");
+
+  std::vector<::dataflow::GraphRef> graphs;
+  llvm::Error graphError = llvm::Error::success();
+  for (const auto &root : constraints->view().rootThreadLaunches()) {
+    dataflow->forEachRootedGraphLaunch(
+        [&](::dataflow::RootedGraphLaunchRef launch) {
+          if (graphError || launch.rootThreadLaunch != root)
+            return;
+          auto graph = dataflow->resolve(launch);
+          if (graph)
+            graphs.push_back(*graph);
+          else
+            graphError = graph.takeError();
+        });
+    if (graphError)
+      return std::move(graphError);
+  }
+  llvm::sort(graphs, [](const auto &lhs, const auto &rhs) {
+    return lhs.entity.value() < rhs.entity.value();
+  });
+  graphs.erase(std::unique(graphs.begin(), graphs.end()), graphs.end());
+
+  std::vector<ArtifactRootReference> outputs;
+  std::vector<CandidateGeneratorLineageEdge> lineage;
+  ::loom::mapping::TechMappingGenerationAccounting accounting;
+  for (const ::dataflow::GraphRef &graph : graphs) {
+    const std::array cover = {graph};
+    auto terminal = consumeTechMappingOutcome(
+        ::loom::mapping::generateTechMappings(
+            {*dataflow, cover, fabric->view(), *config, store}),
+        accounting, outputs, lineage);
+    if (!terminal)
+      return terminal.takeError();
+    if (*terminal)
+      return std::move(**terminal);
+  }
+  return CandidateGeneratorProviderResult{
+      CompletedCandidateGeneratorResult{
+          {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
+          std::move(lineage)},
+      workSummary(accounting)};
 }
 
 const CandidateGeneratorProvider provider{
     descriptor.reference(),
     CandidateGeneratorInProcessProvider{invokeRootCompleteProvider}};
 
-const CandidateGeneratorProvider canonicalGraphProvider{
-    canonicalGraphDescriptor.reference(),
-    CandidateGeneratorInProcessProvider{invokeCanonicalGraphProvider}};
+const CandidateGeneratorProvider applicationGraphProvider{
+    applicationGraphDescriptor.reference(),
+    CandidateGeneratorInProcessProvider{invokeApplicationGraphProvider}};
 
 } // namespace
 
@@ -319,41 +414,43 @@ resolveRootCompleteTechMappingCandidateGeneratorBinding(
 }
 
 const CandidateGeneratorDescriptor &
-canonicalGraphTechMappingCandidateGeneratorDescriptor() {
-  return canonicalGraphDescriptor;
+applicationGraphTechMappingCandidateGeneratorDescriptor() {
+  return applicationGraphDescriptor;
 }
 
-llvm::Error registerCanonicalGraphTechMappingCandidateGenerator() {
+llvm::Error registerApplicationGraphTechMappingCandidateGenerator() {
   if (llvm::Error error =
-          registerCandidateGeneratorDescriptor(canonicalGraphDescriptor))
+          registerCandidateGeneratorDescriptor(applicationGraphDescriptor))
     return error;
-  return registerCandidateGeneratorProvider(canonicalGraphProvider);
+  return registerCandidateGeneratorProvider(applicationGraphProvider);
 }
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
-bindCanonicalGraphTechMappingCandidateGeneratorInputs(
-    llvm::ArrayRef<ArtifactRootReference> dataflowCandidates,
+bindApplicationGraphTechMappingCandidateGeneratorInputs(
+    const ArtifactRootReference &dataflow,
+    const ArtifactRootReference &systemConstraints,
     const ArtifactRootReference &fabric) {
-  if (llvm::Error error = registerCanonicalGraphTechMappingCandidateGenerator())
+  if (llvm::Error error = registerApplicationGraphTechMappingCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
-      {CandidateGeneratorInputSlotRef(DataflowCandidatesInput),
-       dataflowCandidates.vec()},
-      {CandidateGeneratorInputSlotRef(FabricInput), {fabric}},
+      {CandidateGeneratorInputSlotRef(ApplicationDataflowInput), {dataflow}},
+      {CandidateGeneratorInputSlotRef(ApplicationSystemConstraintsInput),
+       {systemConstraints}},
+      {CandidateGeneratorInputSlotRef(ApplicationFabricInput), {fabric}},
   };
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
-          canonicalGraphDescriptor.reference(), bindings))
+          applicationGraphDescriptor.reference(), bindings))
     return std::move(error);
   return bindings;
 }
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
-resolveCanonicalGraphTechMappingCandidateGeneratorBinding(
+resolveApplicationGraphTechMappingCandidateGeneratorBinding(
     const ::loom::mapping::ResolvedTechMappingConfigView &config) {
-  if (llvm::Error error = registerCanonicalGraphTechMappingCandidateGenerator())
+  if (llvm::Error error = registerApplicationGraphTechMappingCandidateGenerator())
     return std::move(error);
   return ResolvedCandidateGeneratorBinding::get(
-      canonicalGraphDescriptor.reference(), config.canonicalViewBytes(),
+      applicationGraphDescriptor.reference(), config.canonicalViewBytes(),
       config.digest());
 }
 

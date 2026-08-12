@@ -100,6 +100,16 @@ namespace {
     ::llvm::cl::desc("optional canonical Dataflow root-reference JSON output"),
     ::llvm::cl::value_desc("filename"), ::llvm::cl::init(""));
 
+::llvm::cl::opt<std::string> applicationEntry(
+    "application-entry",
+    ::llvm::cl::desc("defined LLVM ABI entry that owns the application scope"),
+    ::llvm::cl::value_desc("symbol"), ::llvm::cl::init("main"));
+
+::llvm::cl::opt<std::string> applicationWorkloadSetFilename(
+    "application-workload-set",
+    ::llvm::cl::desc("optional canonical Spatial workload-root set output"),
+    ::llvm::cl::value_desc("filename"), ::llvm::cl::init(""));
+
 ::llvm::cl::opt<std::string> wholeCallableSpatial(
     "whole-callable-spatial",
     ::llvm::cl::desc("materialize one exact LLVM callable as an "
@@ -635,12 +645,76 @@ int main(int argc, char **argv) {
                    << ", \"graphs\": " << view->graphs().size() << "}\n";
   countsFile->keep();
 
+  std::optional<loom::ArtifactRootReference> dataflowReference;
+  if (!rootReferenceFilename.empty() ||
+      !applicationWorkloadSetFilename.empty()) {
+    auto published = dataflow::publishCanonicalDataflow(canonical, store);
+    if (!published)
+      return reportError(published.takeError());
+    dataflowReference = std::move(*published);
+  }
+
   if (!rootReferenceFilename.empty()) {
-    auto reference = dataflow::publishCanonicalDataflow(canonical, store);
-    if (!reference)
-      return reportError(reference.takeError());
     if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
-            rootReferenceFilename, *reference))
+            rootReferenceFilename, *dataflowReference))
+      return reportError(std::move(error));
+  }
+
+  if (!applicationWorkloadSetFilename.empty()) {
+    auto roots = view->projectRootThreadLaunchesReachableFromAbiEntry(
+        applicationEntry);
+    if (!roots)
+      return reportError(roots.takeError());
+    std::vector<loom::ArtifactRootReference> workloads;
+    for (const dataflow::RootThreadLaunchRef &root : *roots) {
+      auto domain = view->projectRootThreadLogicalDomain(root);
+      if (!domain)
+        return reportError(domain.takeError());
+      if (domain->coordinateRank != 0)
+        return reportError(::llvm::createStringError(
+            ::llvm::inconvertibleErrorCode(),
+            "application workload authoring requires explicit coordinates "
+            "for non-rank-zero root thread launches"));
+      llvm::Error workloadError = llvm::Error::success();
+      view->forEachRootedGraphLaunch(
+          [&](dataflow::RootedGraphLaunchRef launch) {
+            if (workloadError || launch.rootThreadLaunch != root)
+              return;
+            loom::sim::SpatialSimulationWorkload draft{launch};
+            auto shapes =
+                loom::sim::projectSpatialSimulationBoundaryShapes(*view,
+                                                                   launch);
+            if (!shapes) {
+              workloadError = shapes.takeError();
+              return;
+            }
+            draft.valueInputPlan.assign(shapes->valueInputs.size(),
+                                        loom::sim::RuntimeValueInput{});
+            auto workload = loom::sim::finalizeSimulationWorkload(draft, *view);
+            if (!workload) {
+              workloadError = workload.takeError();
+              return;
+            }
+            auto reference = loom::sim::publishSimulationWorkload(*workload,
+                                                                   store);
+            if (!reference) {
+              workloadError = reference.takeError();
+              return;
+            }
+            workloads.push_back(std::move(*reference));
+          });
+      if (workloadError)
+        return reportError(std::move(workloadError));
+    }
+    ::llvm::sort(workloads, loom::artifactRootReferenceLess);
+    workloads.erase(std::unique(workloads.begin(), workloads.end()),
+                    workloads.end());
+    if (workloads.empty())
+      return reportError(::llvm::createStringError(
+          ::llvm::inconvertibleErrorCode(),
+          "application entry reaches no authorable Spatial workload"));
+    if (llvm::Error error = loom::writeArtifactRootReferenceSetJsonFile(
+            applicationWorkloadSetFilename, workloads))
       return reportError(std::move(error));
   }
 

@@ -58,10 +58,11 @@ int main() {
   requireSuccess(
       loom::dse::registerRootCompleteTechMappingCandidateGenerator());
   requireSuccess(
-      loom::dse::registerCanonicalGraphTechMappingCandidateGenerator());
+      loom::dse::registerApplicationGraphTechMappingCandidateGenerator());
   requireSuccess(loom::dse::registerRootCompleteSpatialPnrCandidateGenerator());
   requireSuccess(loom::dse::registerSpatialMappingFeedbackCandidateGenerator());
   requireSuccess(loom::dse::registerRootCompleteSystemPnrCandidateGenerator());
+  requireSuccess(loom::dse::registerApplicationSystemPnrCandidateGenerator());
   requireSuccess(
       loom::dse::registerStructuredSpecialMathAccuracyCandidateGenerator());
   requireSuccess(loom::dse::registerFabricTemplateCandidateGenerator());
@@ -125,5 +126,8 @@ int main() {
       loom::dse::systemRuntimeGbdtTrainingCandidateGeneratorDescriptor());
   requireRegistered(
       CandidateGeneratorKind(21),
-      loom::dse::canonicalGraphTechMappingCandidateGeneratorDescriptor());
+      loom::dse::applicationGraphTechMappingCandidateGeneratorDescriptor());
+  requireRegistered(
+      CandidateGeneratorKind(22),
+      loom::dse::applicationSystemPnrCandidateGeneratorDescriptor());
 }

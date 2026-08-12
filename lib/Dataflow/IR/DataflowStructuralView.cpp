@@ -23,15 +23,19 @@
 #include "Dataflow/IR/DataflowGraphValidation.h"
 #include "Dataflow/IR/DataflowInterfaces.h"
 #include "Dataflow/IR/DataflowOps.h"
+
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -46,6 +50,55 @@
 using namespace mlir;
 
 namespace dataflow {
+
+llvm::Expected<std::vector<RootThreadLaunchRef>>
+CanonicalDataflowProgramView::projectRootThreadLaunchesReachableFromAbiEntry(
+    llvm::StringRef entrySymbol) const {
+  if (entrySymbol.empty())
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "application ABI entry symbol is empty");
+  auto entry = mlir::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(
+      mlir::SymbolTable::lookupSymbolIn(module_, entrySymbol));
+  if (!entry || entry.isExternal())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "application ABI entry is not a defined LLVM function");
+
+  llvm::SmallPtrSet<mlir::Operation *, 16> reachable;
+  llvm::SmallVector<mlir::LLVM::LLVMFuncOp, 16> worklist{entry};
+  while (!worklist.empty()) {
+    mlir::LLVM::LLVMFuncOp function = worklist.pop_back_val();
+    if (!reachable.insert(function.getOperation()).second)
+      continue;
+    llvm::Error error = llvm::Error::success();
+    function.walk([&](mlir::LLVM::CallOp call) {
+      if (error)
+        return mlir::WalkResult::interrupt();
+      if (!call.getCalleeAttr()) {
+        error = llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "application ABI entry closure contains an indirect call");
+        return mlir::WalkResult::interrupt();
+      }
+      auto callee =
+          mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+              call, call.getCalleeAttr());
+      if (callee && !callee.isExternal())
+        worklist.push_back(callee);
+      return mlir::WalkResult::advance();
+    });
+    if (error)
+      return std::move(error);
+  }
+
+  std::vector<RootThreadLaunchRef> roots;
+  for (const CanonicalRootThreadLaunchView &root : rootThreadLaunches_) {
+    auto owner = root.op->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    if (owner && reachable.contains(owner.getOperation()))
+      roots.push_back(root.ref);
+  }
+  return roots;
+}
 namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
