@@ -1,6 +1,7 @@
 #ifndef LOOM_EVALUATION_CASETEXT_H
 #define LOOM_EVALUATION_CASETEXT_H
 
+#include "Common/ArtifactText.h"
 #include "Evaluation/Case.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -8,11 +9,6 @@
 #include "llvm/Support/JSON.h"
 
 namespace loom::evaluation {
-
-void writeArtifactRootReferenceJson(llvm::json::OStream &json,
-                                    const ArtifactRootReference &reference);
-llvm::Expected<ArtifactRootReference>
-parseArtifactRootReferenceJson(const llvm::json::Object &object);
 
 void writeEncodedArtifactLocalReferenceJson(
     llvm::json::OStream &json, const EncodedArtifactLocalReference &reference);

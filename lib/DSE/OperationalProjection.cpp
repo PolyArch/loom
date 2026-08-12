@@ -59,8 +59,7 @@ llvm::Error add(std::uint64_t &value, std::uint64_t amount,
 }
 
 std::uint64_t percentile(llvm::ArrayRef<std::uint64_t> sorted,
-                         std::uint64_t numerator,
-                         std::uint64_t denominator) {
+                         std::uint64_t numerator, std::uint64_t denominator) {
   const std::uint64_t count = sorted.size();
   const std::uint64_t rank = static_cast<std::uint64_t>(
       (static_cast<unsigned __int128>(count) * numerator + denominator - 1) /
@@ -122,32 +121,29 @@ limitingResource(const SiteSchedulerSnapshot &snapshot) {
   std::map<SiteResourceKey, std::uint64_t> queuedTools;
   std::map<SiteResourceKey, std::uint64_t> queuedLicenses;
   for (const ScheduledWorkUnit &unit : snapshot.queued) {
-    if (llvm::Error error = add(queuedCpu, unit.claim.cpuCores(),
-                                "queued CPU demand"))
+    if (llvm::Error error =
+            add(queuedCpu, unit.claim.cpuCores(), "queued CPU demand"))
       return std::move(error);
-    if (llvm::Error error = add(queuedMemory, unit.claim.memoryBytes(),
-                                "queued memory demand"))
+    if (llvm::Error error =
+            add(queuedMemory, unit.claim.memoryBytes(), "queued memory demand"))
       return std::move(error);
     if (llvm::Error error = add(queuedScratch, unit.claim.scratchBytes(),
                                 "queued scratch demand"))
       return std::move(error);
-    for (const CountedSiteResource &resource :
-         unit.claim.externalTools())
-      if (llvm::Error error =
-              add(queuedTools[resource.key], resource.units,
-                  "queued external-tool demand"))
+    for (const CountedSiteResource &resource : unit.claim.externalTools())
+      if (llvm::Error error = add(queuedTools[resource.key], resource.units,
+                                  "queued external-tool demand"))
         return std::move(error);
     for (const CountedSiteResource &resource : unit.claim.licenses())
-      if (llvm::Error error =
-              add(queuedLicenses[resource.key], resource.units,
-                  "queued license demand"))
+      if (llvm::Error error = add(queuedLicenses[resource.key], resource.units,
+                                  "queued license demand"))
         return std::move(error);
   }
 
   std::vector<ResourcePressure> pressures;
-  pressures.push_back({{SiteResourceKind::Cpu, std::nullopt,
-                        snapshot.allocated.cpuCores(), queuedCpu,
-                        snapshot.capacity.cpuCores()}});
+  pressures.push_back(
+      {{SiteResourceKind::Cpu, std::nullopt, snapshot.allocated.cpuCores(),
+        queuedCpu, snapshot.capacity.cpuCores()}});
   pressures.push_back({{SiteResourceKind::Memory, std::nullopt,
                         snapshot.allocated.memoryBytes(), queuedMemory,
                         snapshot.capacity.memoryBytes()}});
@@ -169,20 +165,18 @@ limitingResource(const SiteSchedulerSnapshot &snapshot) {
     const CountedSiteResource *allocated =
         findResource(snapshot.allocated.licenses(), capacity.key);
     auto queued = queuedLicenses.find(capacity.key);
-    pressures.push_back(
-        {{SiteResourceKind::License, capacity.key,
-          allocated ? allocated->units : 0,
-          queued == queuedLicenses.end() ? 0 : queued->second,
-          capacity.units}});
+    pressures.push_back({{SiteResourceKind::License, capacity.key,
+                          allocated ? allocated->units : 0,
+                          queued == queuedLicenses.end() ? 0 : queued->second,
+                          capacity.units}});
   }
 
-  pressures.erase(
-      std::remove_if(pressures.begin(), pressures.end(),
-                     [](const ResourcePressure &pressure) {
-                       return pressure.value.allocated == 0 &&
-                              pressure.value.queuedDemand == 0;
-                     }),
-      pressures.end());
+  pressures.erase(std::remove_if(pressures.begin(), pressures.end(),
+                                 [](const ResourcePressure &pressure) {
+                                   return pressure.value.allocated == 0 &&
+                                          pressure.value.queuedDemand == 0;
+                                 }),
+                  pressures.end());
   if (pressures.empty())
     return std::optional<LimitingSiteResource>{};
   return std::optional<LimitingSiteResource>(
@@ -207,8 +201,8 @@ llvm::StringRef resourceKindSpelling(SiteResourceKind kind) {
 
 llvm::Expected<std::int64_t> jsonInteger(std::uint64_t value,
                                          llvm::StringRef field) {
-  if (value > static_cast<std::uint64_t>(
-                  std::numeric_limits<std::int64_t>::max()))
+  if (value >
+      static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
     return invalid(field + " exceeds the JSON integer domain");
   return static_cast<std::int64_t>(value);
 }
@@ -217,32 +211,30 @@ llvm::Expected<std::int64_t> jsonInteger(std::uint64_t value,
 
 llvm::Expected<DseOperationalProjection> projectDseOperationalState(
     const ExecutionJournal &journal, const SiteScheduler &scheduler,
-    std::uint64_t requestedWorkerCount,
-    std::uint64_t recentWindowNanoseconds) {
+    std::uint64_t requestedWorkerCount, std::uint64_t recentWindowNanoseconds) {
   if (requestedWorkerCount == 0)
     return invalid("requested worker count must be positive");
   if (recentWindowNanoseconds == 0)
     return invalid("recent throughput window must be positive");
 
-  auto observed = unixNanosecondsNow();
-  if (!observed)
-    return observed.takeError();
   auto records = journal.workUnits();
   if (!records)
     return records.takeError();
   auto schedulerSnapshot = scheduler.snapshot();
   if (!schedulerSnapshot)
     return schedulerSnapshot.takeError();
+  auto observed = unixNanosecondsNow();
+  if (!observed)
+    return observed.takeError();
 
   DseOperationalProjection projection;
   projection.observedUnixTimeNanoseconds = *observed;
   std::map<WorkUnitDescriptorRef, std::vector<std::uint64_t>> durations;
   std::vector<std::uint64_t> allDurations;
   std::uint64_t recentTerminal = 0;
-  const std::uint64_t recentBegin =
-      *observed > recentWindowNanoseconds
-          ? *observed - recentWindowNanoseconds
-          : 0;
+  const std::uint64_t recentBegin = *observed > recentWindowNanoseconds
+                                        ? *observed - recentWindowNanoseconds
+                                        : 0;
 
   for (const JournalWorkUnitRecord &record : *records) {
     switch (record.status) {
@@ -255,8 +247,7 @@ llvm::Expected<DseOperationalProjection> projectDseOperationalState(
         return std::move(error);
       break;
     case JournalWorkUnitStatus::Prepared:
-      if (llvm::Error error =
-              increment(projection.status.prepared, "prepared"))
+      if (llvm::Error error = increment(projection.status.prepared, "prepared"))
         return std::move(error);
       break;
     case JournalWorkUnitStatus::Completed:
@@ -297,8 +288,7 @@ llvm::Expected<DseOperationalProjection> projectDseOperationalState(
       return invalid("Journal contains a future terminal timestamp");
     durations[record.key.descriptor()].push_back(active);
     if (record.terminalUnixTimeNanoseconds >= recentBegin)
-      if (llvm::Error error =
-              increment(recentTerminal, "recent terminal"))
+      if (llvm::Error error = increment(recentTerminal, "recent terminal"))
         return std::move(error);
   }
 
@@ -321,14 +311,12 @@ llvm::Expected<DseOperationalProjection> projectDseOperationalState(
       !allDurations.empty()) {
     llvm::sort(allDurations);
     const std::uint64_t p90 = percentile(allDurations, 90, 100);
-    const std::uint64_t lanes =
-        std::max<std::uint64_t>(
-            1, std::min(requestedWorkerCount,
-                        schedulerSnapshot->capacity.cpuCores()));
-    const std::uint64_t batches = outstanding / lanes +
-                                  (outstanding % lanes == 0 ? 0 : 1);
-    if (p90 != 0 &&
-        batches > std::numeric_limits<std::uint64_t>::max() / p90)
+    const std::uint64_t lanes = std::max<std::uint64_t>(
+        1,
+        std::min(requestedWorkerCount, schedulerSnapshot->capacity.cpuCores()));
+    const std::uint64_t batches =
+        outstanding / lanes + (outstanding % lanes == 0 ? 0 : 1);
+    if (p90 != 0 && batches > std::numeric_limits<std::uint64_t>::max() / p90)
       return invalid("estimated remaining duration overflows uint64");
     projection.estimatedRemainingNanoseconds = batches * p90;
   }
@@ -355,8 +343,8 @@ llvm::Error writeDseOperationalProjectionJsonLine(
     status[name] = *encoded;
     return llvm::Error::success();
   };
-  if (llvm::Error error =
-          addStatus("completed", projection.status.completed, "completed count"))
+  if (llvm::Error error = addStatus("completed", projection.status.completed,
+                                    "completed count"))
     return error;
   if (llvm::Error error =
           addStatus("running", projection.status.running, "running count"))
@@ -370,17 +358,16 @@ llvm::Error writeDseOperationalProjectionJsonLine(
   if (llvm::Error error =
           addStatus("failed", projection.status.failed, "failed count"))
     return error;
-  if (llvm::Error error = addStatus("timed_out", projection.status.timedOut,
-                                    "timed-out count"))
+  if (llvm::Error error =
+          addStatus("timed_out", projection.status.timedOut, "timed-out count"))
     return error;
-  if (llvm::Error error = addStatus("unsupported", projection.status.unsupported,
-                                    "unsupported count"))
+  if (llvm::Error error = addStatus(
+          "unsupported", projection.status.unsupported, "unsupported count"))
     return error;
 
   llvm::json::Array durations;
   for (const WorkUnitDurationProjection &duration : projection.durations) {
-    auto terminalCount =
-        jsonInteger(duration.terminalCount, "terminal count");
+    auto terminalCount = jsonInteger(duration.terminalCount, "terminal count");
     if (!terminalCount)
       return terminalCount.takeError();
     auto p50 = jsonInteger(duration.p50Nanoseconds, "p50 duration");
@@ -390,8 +377,7 @@ llvm::Error writeDseOperationalProjectionJsonLine(
     if (!p90)
       return p90.takeError();
     llvm::json::Object item;
-    item["owner_registry"] =
-        duration.descriptor.ownerRegistryIdentity().str();
+    item["owner_registry"] = duration.descriptor.ownerRegistryIdentity().str();
     item["owner_major"] = static_cast<std::int64_t>(
         duration.descriptor.ownerRegistryVersion().major);
     item["owner_minor"] = static_cast<std::int64_t>(
@@ -407,8 +393,7 @@ llvm::Error writeDseOperationalProjectionJsonLine(
   llvm::json::Object root;
   root["observed_unix_time_ns"] = *observed;
   root["status"] = std::move(status);
-  root["recent_throughput_per_second"] =
-      projection.recentThroughputPerSecond;
+  root["recent_throughput_per_second"] = projection.recentThroughputPerSecond;
   root["durations"] = std::move(durations);
   if (projection.estimatedRemainingNanoseconds) {
     auto eta = jsonInteger(*projection.estimatedRemainingNanoseconds,

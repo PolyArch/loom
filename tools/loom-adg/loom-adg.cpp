@@ -27,6 +27,11 @@ llvm::cl::opt<std::string>
                llvm::cl::desc("output base for paired .mlir and .html files"),
                llvm::cl::value_desc("path"), llvm::cl::Required);
 
+llvm::cl::opt<std::string> rootReferencePath(
+    "root-reference",
+    llvm::cl::desc("optional canonical Fabric root-reference JSON output"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+
 int reportError(llvm::Error error) {
   llvm::errs() << "error: " << llvm::toString(std::move(error)) << '\n';
   return 1;
@@ -57,6 +62,10 @@ int main(int argc, char **argv) {
   if (llvm::Error error =
           loom::adg::exportFabricDesign(root, store, outputBase))
     return reportError(std::move(error));
+  if (!rootReferencePath.empty())
+    if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
+            rootReferencePath, root.reference()))
+      return reportError(std::move(error));
 
   llvm::outs() << loom::formatArtifactIdentityHex(root.reference().artifact)
                << '\n';

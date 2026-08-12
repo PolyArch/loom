@@ -95,6 +95,11 @@ namespace {
                                     "counts as one JSON object"),
                    ::llvm::cl::value_desc("filename"), ::llvm::cl::Required);
 
+::llvm::cl::opt<std::string> rootReferenceFilename(
+    "root-reference",
+    ::llvm::cl::desc("optional canonical Dataflow root-reference JSON output"),
+    ::llvm::cl::value_desc("filename"), ::llvm::cl::init(""));
+
 ::llvm::cl::opt<std::string> wholeCallableSpatial(
     "whole-callable-spatial",
     ::llvm::cl::desc("materialize one exact LLVM callable as an "
@@ -612,6 +617,15 @@ int main(int argc, char **argv) {
                    << planGenerateSummary.planExecutions
                    << ", \"graphs\": " << view->graphs().size() << "}\n";
   countsFile->keep();
+
+  if (!rootReferenceFilename.empty()) {
+    auto reference = dataflow::publishCanonicalDataflow(canonical, store);
+    if (!reference)
+      return reportError(reference.takeError());
+    if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
+            rootReferenceFilename, *reference))
+      return reportError(std::move(error));
+  }
 
   return 0;
 }

@@ -1,4 +1,5 @@
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
 #include "Common/BlobDigest.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
@@ -6,6 +7,7 @@
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/DataflowRewriteCandidateGenerator.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
+#include "DSE/JointDesignExploration.h"
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/ModelParameterCalibrationAcquisition.h"
 #include "DSE/ModelParameterTrainingCandidateGenerator.h"
@@ -24,7 +26,6 @@
 #include "DSE/StructuredScheduleCandidateGenerator.h"
 #include "DSE/StructuredSpecialMathAccuracyCandidateGenerator.h"
 #include "DSE/SystemCompositionCandidateGenerator.h"
-#include "Evaluation/CaseText.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "ExternalTool/LocalConfig.h"
 
@@ -32,8 +33,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/Support/JSON.h"
-#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -43,6 +42,7 @@
 #include <condition_variable>
 #include <csignal>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -86,6 +86,27 @@ llvm::cl::list<std::string> evidenceInputFiles(
     "preexisting-evidence",
     llvm::cl::desc("JSON file containing one exact preexisting Evidence root"),
     llvm::cl::value_desc("path"), llvm::cl::ZeroOrMore);
+llvm::cl::list<std::string> jointSoftwareRootFiles(
+    "joint-software-root",
+    llvm::cl::desc("exact Canonical Dataflow root admitted to joint Mapping"),
+    llvm::cl::value_desc("path"), llvm::cl::ZeroOrMore);
+llvm::cl::list<std::string> jointSystemRootFiles(
+    "joint-system-root",
+    llvm::cl::desc("exact Fabric System root admitted to joint Mapping"),
+    llvm::cl::value_desc("path"), llvm::cl::ZeroOrMore);
+llvm::cl::opt<std::uint64_t> jointPairLimit(
+    "joint-pair-limit",
+    llvm::cl::desc(
+        "maximum joint software/System pairs; zero admits the full product"),
+    llvm::cl::init(0));
+llvm::cl::opt<std::uint64_t> jointSpatialMappingLimit(
+    "joint-spatial-mapping-limit",
+    llvm::cl::desc("maximum SpatialMapping roots joined for each pair"),
+    llvm::cl::init(0));
+llvm::cl::opt<std::string> resolvedConfigOutputPath(
+    "resolved-config-output",
+    llvm::cl::desc("optional canonical executed ResolvedConfig JSON output"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
 
 llvm::cl::opt<std::uint64_t>
     workerCount("workers", llvm::cl::desc("concurrent plan workers"),
@@ -214,16 +235,7 @@ llvm::Error registerProductionOwners() {
 }
 
 llvm::Expected<ArtifactRootReference> loadRootReference(llvm::StringRef path) {
-  auto buffer = llvm::MemoryBuffer::getFile(path);
-  if (!buffer)
-    return llvm::errorCodeToError(buffer.getError());
-  auto parsed = llvm::json::parse((*buffer)->getBuffer());
-  if (!parsed)
-    return parsed.takeError();
-  const llvm::json::Object *object = parsed->getAsObject();
-  if (!object)
-    return invalid("root binding file must contain one JSON object");
-  return evaluation::parseArtifactRootReferenceJson(*object);
+  return loadArtifactRootReferenceJsonFile(path);
 }
 
 llvm::Expected<std::vector<ArtifactRootReference>>
@@ -242,6 +254,21 @@ loadRootReferences(llvm::ArrayRef<std::string> paths) {
   if (std::adjacent_find(roots.begin(), roots.end()) != roots.end())
     return invalid("root bindings contain a duplicate reference");
   return roots;
+}
+
+void canonicalizeRootUnion(std::vector<ArtifactRootReference> &roots) {
+  llvm::sort(roots, artifactRootReferenceLess);
+  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+}
+
+llvm::Error writeResolvedConfig(llvm::StringRef path,
+                                const ResolvedConfig &config) {
+  std::error_code error;
+  llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
+  if (error)
+    return llvm::errorCodeToError(error);
+  output << canonicalResolvedConfigJson(config) << '\n';
+  return llvm::Error::success();
 }
 
 llvm::Expected<std::uint64_t> parsePositiveInteger(llvm::StringRef text) {
@@ -315,6 +342,17 @@ llvm::Expected<int> run() {
     return invalid("progress interval must be positive");
   if (prepareOnly && localToolConfigPath.empty())
     return invalid("prepare-only requires a local tool configuration");
+  const bool authorJointPlan =
+      !jointSoftwareRootFiles.empty() || !jointSystemRootFiles.empty();
+  if (jointSoftwareRootFiles.empty() != jointSystemRootFiles.empty())
+    return invalid("joint plan authoring requires both software and System "
+                   "root frontiers");
+  if (authorJointPlan && jointSpatialMappingLimit == 0)
+    return invalid("joint plan authoring requires a positive SpatialMapping "
+                   "join limit");
+  if (!authorJointPlan && (jointPairLimit.getNumOccurrences() != 0 ||
+                           jointSpatialMappingLimit.getNumOccurrences() != 0))
+    return invalid("joint policy requires joint software and System roots");
   if (!llvm::sys::fs::is_directory(artifactStorePath) ||
       !llvm::sys::fs::is_directory(blobStorePath))
     return invalid("ArtifactStore and BlobStore roots must already exist");
@@ -326,9 +364,6 @@ llvm::Expected<int> run() {
   auto config = loadResolvedConfig(configPath);
   if (!config)
     return config.takeError();
-  auto view = projectResolvedDseConfigView(*config);
-  if (!view)
-    return view.takeError();
   auto semanticInputs = loadRootReferences(semanticInputFiles);
   if (!semanticInputs)
     return semanticInputs.takeError();
@@ -338,6 +373,50 @@ llvm::Expected<int> run() {
 
   ArtifactStore artifacts(artifactStorePath);
   BlobStore blobs(blobStorePath);
+  if (authorJointPlan) {
+    auto software = loadRootReferences(jointSoftwareRootFiles);
+    if (!software)
+      return software.takeError();
+    auto systems = loadRootReferences(jointSystemRootFiles);
+    if (!systems)
+      return systems.takeError();
+    if (software->size() >
+        std::numeric_limits<std::uint64_t>::max() / systems->size())
+      return invalid("joint pair count overflows u64");
+    const std::uint64_t completePairCount =
+        static_cast<std::uint64_t>(software->size()) *
+        static_cast<std::uint64_t>(systems->size());
+    const std::uint64_t pairLimit =
+        jointPairLimit == 0 ? completePairCount : jointPairLimit;
+    auto policy = JointDesignPolicy::get(software->size(), systems->size(),
+                                         pairLimit, jointSpatialMappingLimit);
+    if (!policy)
+      return policy.takeError();
+    auto plan = buildJointDesignExplorationPlan(
+        {std::move(*software), std::move(*systems)}, *policy, *config,
+        artifacts);
+    if (!plan)
+      return plan.takeError();
+    semanticInputs->insert(semanticInputs->end(),
+                           plan->frontier.softwareFrontier.begin(),
+                           plan->frontier.softwareFrontier.end());
+    semanticInputs->insert(semanticInputs->end(),
+                           plan->frontier.systemFrontier.begin(),
+                           plan->frontier.systemFrontier.end());
+    canonicalizeRootUnion(*semanticInputs);
+    llvm::errs() << "joint_frontier_eligible="
+                 << plan->frontier.eligiblePairCount
+                 << " retained=" << plan->frontier.pairs.size()
+                 << " truncated=" << (plan->frontier.truncated ? 1 : 0) << '\n';
+    *config = std::move(plan->resolvedConfig);
+  }
+  auto view = projectResolvedDseConfigView(*config);
+  if (!view)
+    return view.takeError();
+  if (!resolvedConfigOutputPath.empty())
+    if (llvm::Error error =
+            writeResolvedConfig(resolvedConfigOutputPath, *config))
+      return std::move(error);
   auto publishedConfig = artifacts.put(ResolvedConfig::artifactSchema,
                                        canonicalResolvedConfigBytes(*config));
   if (!publishedConfig)
@@ -467,10 +546,14 @@ llvm::Expected<int> run() {
   monitoring.store(false, std::memory_order_relaxed);
   monitorChanged.notify_all();
   monitor.join();
+  if (!executionResult) {
+    llvm::Error executionError = executionResult.takeError();
+    if (!monitorError.empty())
+      return llvm::joinErrors(std::move(executionError), invalid(monitorError));
+    return std::move(executionError);
+  }
   if (!monitorError.empty())
     return invalid(monitorError);
-  if (!executionResult)
-    return executionResult.takeError();
 
   auto finalProjection =
       projectDseOperationalState(*journal, *scheduler, workerCount);

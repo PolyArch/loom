@@ -36,60 +36,6 @@ llvm::Expected<std::uint32_t> requireOrdinal(const llvm::json::Object &object,
   return static_cast<std::uint32_t>(*value);
 }
 
-llvm::Expected<ArtifactIdentity>
-requireIdentity(const llvm::json::Object &object, llvm::StringRef key,
-                llvm::StringRef context) {
-  llvm::Expected<llvm::StringRef> spelling =
-      requireString(object, key, context);
-  if (!spelling)
-    return spelling.takeError();
-  return parseArtifactIdentityHex(*spelling);
-}
-
-struct ParsedSchema {
-  std::string identity;
-  SchemaVersion version;
-};
-
-llvm::Expected<ParsedSchema> requireSchema(const llvm::json::Object &object,
-                                           llvm::StringRef context) {
-  llvm::Expected<llvm::StringRef> identity =
-      requireString(object, "schema", context);
-  if (!identity)
-    return identity.takeError();
-  llvm::Expected<llvm::StringRef> version =
-      requireString(object, "schema_version", context);
-  if (!version)
-    return version.takeError();
-  llvm::Expected<SchemaVersion> parsed = parseSchemaVersion(*version);
-  if (!parsed)
-    return parsed.takeError();
-  return ParsedSchema{identity->str(), *parsed};
-}
-
-llvm::Expected<ArtifactRootReference>
-parseRootReference(const llvm::json::Object &object, llvm::StringRef context,
-                   bool isTarget) {
-  if (isTarget) {
-    if (llvm::Error error = rejectUnknownFields(
-            object, context, {"kind", "schema", "schema_version", "artifact"}))
-      return std::move(error);
-  } else {
-    if (llvm::Error error = rejectUnknownFields(
-            object, context, {"schema", "schema_version", "artifact"}))
-      return std::move(error);
-  }
-  llvm::Expected<ParsedSchema> schema = requireSchema(object, context);
-  if (!schema)
-    return schema.takeError();
-  llvm::Expected<ArtifactIdentity> artifact =
-      requireIdentity(object, "artifact", context);
-  if (!artifact)
-    return artifact.takeError();
-  return ArtifactRootReference{std::move(schema->identity), schema->version,
-                               std::move(*artifact)};
-}
-
 llvm::Expected<SubjectTarget> parseTarget(const llvm::json::Object &object) {
   llvm::Expected<llvm::StringRef> kind =
       requireString(object, "kind", targetContext);
@@ -97,8 +43,12 @@ llvm::Expected<SubjectTarget> parseTarget(const llvm::json::Object &object) {
     return kind.takeError();
 
   if (*kind == "artifact_root") {
+    if (llvm::Error error = rejectUnknownFields(
+            object, targetContext,
+            {"kind", "schema", "schema_version", "artifact"}))
+      return std::move(error);
     llvm::Expected<ArtifactRootReference> root =
-        parseRootReference(object, targetContext, true);
+        parseArtifactRootReferenceJsonFields(object);
     if (!root)
       return root.takeError();
     return SubjectTarget{std::move(*root)};
@@ -112,11 +62,8 @@ llvm::Expected<SubjectTarget> parseTarget(const llvm::json::Object &object) {
                               {"kind", "schema", "schema_version", "artifact",
                                "local_kind", "payload"}))
     return std::move(error);
-  llvm::Expected<ParsedSchema> schema = requireSchema(object, targetContext);
-  if (!schema)
-    return schema.takeError();
-  llvm::Expected<ArtifactIdentity> artifact =
-      requireIdentity(object, "artifact", targetContext);
+  llvm::Expected<ArtifactRootReference> artifact =
+      parseArtifactRootReferenceJsonFields(object);
   if (!artifact)
     return artifact.takeError();
   llvm::Expected<std::uint32_t> localKind =
@@ -132,10 +79,8 @@ llvm::Expected<SubjectTarget> parseTarget(const llvm::json::Object &object) {
   if (!payload)
     return payload.takeError();
 
-  EncodedArtifactLocalReference local{
-      ArtifactRootReference{schema->identity, schema->version,
-                            std::move(*artifact)},
-      *localKind, std::move(*payload)};
+  EncodedArtifactLocalReference local{std::move(*artifact), *localKind,
+                                      std::move(*payload)};
   if (llvm::Error error = validateArtifactLocalReferencePayload(local))
     return error;
   return SubjectTarget{std::move(local)};
@@ -159,7 +104,7 @@ parseSubjectTargetRefImpl(const llvm::json::Value &value) {
   if (!anchorObject)
     return anchorObject.takeError();
   llvm::Expected<ArtifactRootReference> anchor =
-      parseRootReference(**anchorObject, referenceContext, false);
+      parseArtifactRootReferenceJson(**anchorObject);
   if (!anchor)
     return anchor.takeError();
   llvm::Expected<const llvm::json::Object *> targetObject =
@@ -176,23 +121,10 @@ parseSubjectTargetRefImpl(const llvm::json::Value &value) {
 
 void writeRootReference(llvm::json::OStream &json,
                         const ArtifactRootReference &reference) {
-  json.attribute("schema", reference.schemaIdentity);
-  json.attribute("schema_version",
-                 formatSchemaVersion(reference.schemaVersion));
-  json.attribute("artifact", formatArtifactIdentityHex(reference.artifact));
+  writeArtifactRootReferenceJsonFields(json, reference);
 }
 
 } // namespace
-
-void writeArtifactRootReferenceJson(llvm::json::OStream &json,
-                                    const ArtifactRootReference &reference) {
-  json.object([&] { writeRootReference(json, reference); });
-}
-
-llvm::Expected<ArtifactRootReference>
-parseArtifactRootReferenceJson(const llvm::json::Object &object) {
-  return parseRootReference(object, referenceContext, false);
-}
 
 void writeEncodedArtifactLocalReferenceJson(
     llvm::json::OStream &json, const EncodedArtifactLocalReference &reference) {
@@ -209,11 +141,8 @@ parseEncodedArtifactLocalReferenceJson(const llvm::json::Object &object) {
           object, referenceContext,
           {"schema", "schema_version", "artifact", "local_kind", "payload"}))
     return std::move(error);
-  llvm::Expected<ParsedSchema> schema = requireSchema(object, referenceContext);
-  if (!schema)
-    return schema.takeError();
-  llvm::Expected<ArtifactIdentity> artifact =
-      requireIdentity(object, "artifact", referenceContext);
+  llvm::Expected<ArtifactRootReference> artifact =
+      parseArtifactRootReferenceJsonFields(object);
   if (!artifact)
     return artifact.takeError();
   llvm::Expected<std::uint32_t> localKind =
@@ -228,10 +157,8 @@ parseEncodedArtifactLocalReferenceJson(const llvm::json::Object &object) {
       parseArtifactLocalPayloadHex(*payloadText);
   if (!payload)
     return payload.takeError();
-  EncodedArtifactLocalReference reference{
-      ArtifactRootReference{std::move(schema->identity), schema->version,
-                            std::move(*artifact)},
-      *localKind, std::move(*payload)};
+  EncodedArtifactLocalReference reference{std::move(*artifact), *localKind,
+                                          std::move(*payload)};
   if (llvm::Error error = validateArtifactLocalReferencePayload(reference))
     return std::move(error);
   return reference;

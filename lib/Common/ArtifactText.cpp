@@ -1,6 +1,9 @@
 #include "Common/ArtifactText.h"
 
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <array>
 #include <cstddef>
@@ -33,6 +36,19 @@ parseSchemaVersionComponent(llvm::StringRef spelling) {
     value = value * 10 + digit;
   }
   return value;
+}
+
+llvm::Expected<llvm::StringRef> requireString(const llvm::json::Object &object,
+                                              llvm::StringRef key) {
+  const llvm::json::Value *value = object.get(key);
+  if (!value)
+    return artifactTextError("artifact reference is missing field '" + key +
+                             "'");
+  auto string = value->getAsString();
+  if (!string)
+    return artifactTextError("artifact reference field '" + key +
+                             "' must be a string");
+  return *string;
 }
 
 } // namespace
@@ -94,6 +110,87 @@ parseArtifactIdentityHex(llvm::StringRef spelling) {
     bytes[index / 2] = static_cast<std::uint8_t>((high << 4) | low);
   }
   return ArtifactIdentity::fromBytes(bytes);
+}
+
+void writeArtifactRootReferenceJsonFields(
+    llvm::json::OStream &json, const ArtifactRootReference &reference) {
+  json.attribute("schema", reference.schemaIdentity);
+  json.attribute("schema_version",
+                 formatSchemaVersion(reference.schemaVersion));
+  json.attribute("artifact", formatArtifactIdentityHex(reference.artifact));
+}
+
+llvm::Expected<ArtifactRootReference>
+parseArtifactRootReferenceJsonFields(const llvm::json::Object &object) {
+  auto schema = requireString(object, "schema");
+  if (!schema)
+    return schema.takeError();
+  auto version = requireString(object, "schema_version");
+  if (!version)
+    return version.takeError();
+  auto parsedVersion = parseSchemaVersion(*version);
+  if (!parsedVersion)
+    return parsedVersion.takeError();
+  auto artifact = requireString(object, "artifact");
+  if (!artifact)
+    return artifact.takeError();
+  auto parsedArtifact = parseArtifactIdentityHex(*artifact);
+  if (!parsedArtifact)
+    return parsedArtifact.takeError();
+  return ArtifactRootReference{schema->str(), *parsedVersion,
+                               std::move(*parsedArtifact)};
+}
+
+void writeArtifactRootReferenceJson(llvm::json::OStream &json,
+                                    const ArtifactRootReference &reference) {
+  json.object([&] { writeArtifactRootReferenceJsonFields(json, reference); });
+}
+
+llvm::Expected<ArtifactRootReference>
+parseArtifactRootReferenceJson(const llvm::json::Object &object) {
+  for (const auto &field : object)
+    if (field.first != "schema" && field.first != "schema_version" &&
+        field.first != "artifact")
+      return artifactTextError(llvm::Twine("artifact reference has unknown "
+                                           "field '") +
+                               field.first.str() + "'");
+  return parseArtifactRootReferenceJsonFields(object);
+}
+
+std::string
+formatArtifactRootReferenceJson(const ArtifactRootReference &reference) {
+  std::string text;
+  llvm::raw_string_ostream output(text);
+  llvm::json::OStream json(output);
+  writeArtifactRootReferenceJson(json, reference);
+  output.flush();
+  return text;
+}
+
+llvm::Error
+writeArtifactRootReferenceJsonFile(llvm::StringRef path,
+                                   const ArtifactRootReference &reference) {
+  std::error_code error;
+  llvm::raw_fd_ostream output(path, error, llvm::sys::fs::OF_Text);
+  if (error)
+    return llvm::errorCodeToError(error);
+  output << formatArtifactRootReferenceJson(reference) << '\n';
+  return llvm::Error::success();
+}
+
+llvm::Expected<ArtifactRootReference>
+loadArtifactRootReferenceJsonFile(llvm::StringRef path) {
+  auto buffer = llvm::MemoryBuffer::getFile(path);
+  if (!buffer)
+    return llvm::errorCodeToError(buffer.getError());
+  auto parsed = llvm::json::parse((*buffer)->getBuffer());
+  if (!parsed)
+    return parsed.takeError();
+  const llvm::json::Object *object = parsed->getAsObject();
+  if (!object)
+    return artifactTextError("artifact reference file must contain one JSON "
+                             "object");
+  return parseArtifactRootReferenceJson(*object);
 }
 
 std::string

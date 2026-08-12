@@ -48,8 +48,7 @@ std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
 llvm::Error registerMappingGenerators() {
   if (llvm::Error error = registerRootCompleteTechMappingCandidateGenerator())
     return error;
-  if (llvm::Error error =
-          registerRootCompleteSpatialPnrCandidateGenerator())
+  if (llvm::Error error = registerRootCompleteSpatialPnrCandidateGenerator())
     return error;
   return registerRootCompleteSystemPnrCandidateGenerator();
 }
@@ -76,9 +75,9 @@ targetModules(const ArtifactRootReference &systemReference,
     if (!module.moduleRootTemplate() ||
         *module.moduleRootTemplate() != target->target)
       return invalid("System AccCore target is not its imported Module root");
-    modules.push_back(
-        {fabric::fabricArtifactSchema.identity.str(),
-         fabric::fabricArtifactSchema.version, module.identity()});
+    modules.push_back({fabric::fabricArtifactSchema.identity.str(),
+                       fabric::fabricArtifactSchema.version,
+                       module.identity()});
   }
   llvm::sort(modules, artifactRootReferenceLess);
   modules.erase(std::unique(modules.begin(), modules.end()), modules.end());
@@ -104,9 +103,9 @@ bool rootsAreCanonical(llvm::ArrayRef<ArtifactRootReference> roots) {
          std::adjacent_find(roots.begin(), roots.end()) == roots.end();
 }
 
-llvm::Error validateEvidenceRoots(
-    llvm::ArrayRef<ArtifactRootReference> evidence,
-    const ArtifactStore &artifactStore) {
+llvm::Error
+validateEvidenceRoots(llvm::ArrayRef<ArtifactRootReference> evidence,
+                      const ArtifactStore &artifactStore) {
   if (!rootsAreCanonical(evidence))
     return invalid("member Promotion Evidence is not canonical and unique");
   for (const ArtifactRootReference &reference : evidence) {
@@ -130,9 +129,8 @@ struct ImportedSystem final {
   std::set<std::string> usedAccCores;
 };
 
-llvm::Expected<std::size_t>
-findSystem(llvm::ArrayRef<ImportedSystem> systems,
-           const ArtifactIdentity &identity) {
+llvm::Expected<std::size_t> findSystem(llvm::ArrayRef<ImportedSystem> systems,
+                                       const ArtifactIdentity &identity) {
   for (std::size_t index = 0; index != systems.size(); ++index)
     if (systems[index].reference.artifact == identity)
       return index;
@@ -144,14 +142,15 @@ findSystem(llvm::ArrayRef<ImportedSystem> systems,
 llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     JointDesignInputs inputs, const JointDesignPolicy &policy,
     const ResolvedConfig &baseConfig, const ArtifactStore &artifactStore) {
+  if (!baseConfig.dse.planNodes.empty())
+    return invalid("base ResolvedConfig already owns a DSE invocation plan");
   if (llvm::Error error = registerMappingGenerators())
     return std::move(error);
-  auto frontier = buildBoundedJointFrontier(std::move(inputs), policy,
-                                            artifactStore);
+  auto frontier =
+      buildBoundedJointFrontier(std::move(inputs), policy, artifactStore);
   if (!frontier)
     return frontier.takeError();
-  auto techConfig =
-      mapping::projectResolvedTechMappingConfigView(baseConfig);
+  auto techConfig = mapping::projectResolvedTechMappingConfigView(baseConfig);
   if (!techConfig)
     return techConfig.takeError();
   auto spatialConfig = pnr::projectResolvedSpatialPnrConfigView(baseConfig);
@@ -179,7 +178,8 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
       planConfig.dse.planNodes.push_back(GeneratePlanNodeDefinition{
           rootCompleteTechMappingCandidateGeneratorDescriptor().reference(),
           {ExactPlanArtifacts{{pair.software}}, ExactPlanArtifacts{{module}}},
-          techConfig->canonicalViewBytes().vec(), techConfig->digest()});
+          techConfig->canonicalViewBytes().vec(),
+          techConfig->digest()});
       techOutputs.push_back(PlanOutputRef{techNode, 0});
     }
     std::vector<PlanOutputRef> spatialOutputs;
@@ -191,7 +191,8 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
           rootCompleteSpatialPnrCandidateGeneratorDescriptor().reference(),
           {techOutputs[moduleIndex],
            ExactPlanArtifacts{{(*modules)[moduleIndex]}}},
-          spatialConfig->canonicalViewBytes().vec(), spatialConfig->digest()});
+          spatialConfig->canonicalViewBytes().vec(),
+          spatialConfig->digest()});
       spatialOutputs.push_back(PlanOutputRef{spatialNode, 0});
     }
     const std::uint64_t systemNode = planConfig.dse.planNodes.size();
@@ -201,14 +202,15 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
          BoundedPlanOutputJoin{std::move(spatialOutputs),
                                policy.maximumSpatialMappingsPerPair()},
          ExactPlanArtifacts{{pair.system}}},
-        systemConfig->canonicalViewBytes().vec(), systemConfig->digest()});
+        systemConfig->canonicalViewBytes().vec(),
+        systemConfig->digest()});
     outputs.push_back({pair, PlanOutputRef{systemNode, 0}});
   }
   auto admitted = projectResolvedDseConfigView(planConfig);
   if (!admitted)
     return admitted.takeError();
-  return JointDesignExplorationPlan{std::move(planConfig),
-                                    std::move(*frontier), std::move(outputs)};
+  return JointDesignExplorationPlan{std::move(planConfig), std::move(*frontier),
+                                    std::move(outputs)};
 }
 
 llvm::Expected<JointDesignExecution> executeJointDesignExploration(
@@ -230,8 +232,8 @@ llvm::Expected<JointDesignExecution> executeJointDesignExploration(
   const CompletedDsePlanExecution *completed =
       std::get_if<CompletedDsePlanExecution>(&*execution);
   if (!completed)
-    completed = &std::get<IncompleteDsePlanExecution>(*execution)
-                     .completedPrefix();
+    completed =
+        &std::get<IncompleteDsePlanExecution>(*execution).completedPrefix();
   std::vector<JointMappedPair> mappedPairs;
   for (const JointDesignPlanPair &pair : plan.pairOutputs) {
     if (!completed->hasOutput(pair.systemMappings))
@@ -290,10 +292,12 @@ llvm::Expected<JointDesignSelectionOutcome> selectJointDesignSystems(
       return view.takeError();
     if (view->artifact().accCoreOccurrences().empty())
       return invalid("selection System has no AccCore occurrence");
-    systems.push_back({reference, std::move(*artifact), std::move(*view),
-                       std::vector<std::vector<ArtifactRootReference>>(
-                           members.size()),
-                       {}});
+    systems.push_back(
+        {reference,
+         std::move(*artifact),
+         std::move(*view),
+         std::vector<std::vector<ArtifactRootReference>>(members.size()),
+         {}});
   }
 
   std::vector<ArtifactRootReference> satisfiedEvidence;
@@ -323,8 +327,7 @@ llvm::Expected<JointDesignSelectionOutcome> selectJointDesignSystems(
           mapping::importSystemMapping(reference, artifactStore);
       if (!systemMapping)
         return systemMapping.takeError();
-      if (systemMapping->view().dataflowIdentity() !=
-          member.software.artifact)
+      if (systemMapping->view().dataflowIdentity() != member.software.artifact)
         return invalid("member Promotion selected a foreign Dataflow Mapping");
       auto systemIndex =
           findSystem(systems, systemMapping->view().fabricIdentity());
@@ -337,8 +340,8 @@ llvm::Expected<JointDesignSelectionOutcome> selectJointDesignSystems(
         return contexts.takeError();
       for (const mapping::SystemInstructionContextDomain &domain :
            contexts->instructionDomains) {
-        systems[*systemIndex].usedAccCores.insert(byteKey(
-            fabric::canonicalFabricBytes(domain.context.accCore)));
+        systems[*systemIndex].usedAccCores.insert(
+            byteKey(fabric::canonicalFabricBytes(domain.context.accCore)));
       }
     }
   }
@@ -355,9 +358,8 @@ llvm::Expected<JointDesignSelectionOutcome> selectJointDesignSystems(
         break;
       }
     if (missing) {
-      outcomes.emplace_back(
-          JointSystemMissingMember{system.reference,
-                                   members[*missing]->software});
+      outcomes.emplace_back(JointSystemMissingMember{
+          system.reference, members[*missing]->software});
       continue;
     }
 
@@ -393,9 +395,9 @@ llvm::Expected<JointDesignSelectionOutcome> selectJointDesignSystems(
       CandidateSet::get(fabric::fabricArtifactSchema, canonicalSystems);
   if (!candidateSet)
     return candidateSet.takeError();
-  auto selected = applyCandidateSelection(*candidateSet, eligibleSystems,
-                                          systemObjectives, selection,
-                                          objectiveProgram);
+  auto selected =
+      applyCandidateSelection(*candidateSet, eligibleSystems, systemObjectives,
+                              selection, objectiveProgram);
   if (!selected)
     return selected.takeError();
   if (selected->empty())
@@ -406,16 +408,16 @@ llvm::Expected<JointDesignSelectionOutcome> selectJointDesignSystems(
   for (const JointSystemGateOutcome &outcome : outcomes) {
     const auto *eligible = std::get_if<JointEligibleSystem>(&outcome);
     if (!eligible || !llvm::binary_search(*selected, eligible->system,
-                                         artifactRootReferenceLess))
+                                          artifactRootReferenceLess))
       continue;
     acceptedMappings.insert(acceptedMappings.end(),
                             eligible->acceptedMappings.begin(),
                             eligible->acceptedMappings.end());
   }
   canonicalize(acceptedMappings);
-  return JointDesignSelectionOutcome{JointDesignSelection{
-      std::move(*selected), std::move(acceptedMappings),
-      std::move(satisfiedEvidence), std::move(outcomes)}};
+  return JointDesignSelectionOutcome{
+      JointDesignSelection{std::move(*selected), std::move(acceptedMappings),
+                           std::move(satisfiedEvidence), std::move(outcomes)}};
 }
 
 } // namespace loom::dse
