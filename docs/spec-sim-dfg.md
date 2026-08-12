@@ -127,9 +127,20 @@ all-empty aggregate cannot report success.
 Graph value inputs are classified totally as `Fixed` or `Runtime`. Fixed
 inputs preserve defined, poison, or undef state; runtime inputs are captured in
 graph ABI order. Memory roots are projected onto finite byte-addressed backing
-objects, and roots that share one object ordinal preserve aliasing. Unknown
-extent, stream input capture, ambiguous ownership lineage, or an unsafe native
-execution target is typed `Unsupported`, not repaired with fabricated input.
+objects, and roots that share one object ordinal preserve aliasing. A graph
+stream port may be captured only when its selected Structured boundary traces
+to one unique typed logical-channel endpoint. For each dynamic selected-region
+activation, the oracle records the exact ordered token sequence transferred by
+that endpoint and its closed termination state. Input sequences populate the
+existing runtime stream plane; output sequences populate the existing Spatial
+observation plane. Channel identity, multicast receiver identity, payload type,
+and port order remain owned by the selected Structured candidate and Canonical
+Dataflow ABI; native handles and capture locators are ephemeral and never enter
+a persistent Artifact. Distinct exact direct-call paths remain independent
+replays. Unknown extent, indirect or recursive invocation, ambiguous ownership
+lineage, non-unique channel endpoint projection, incomplete stream consumption,
+or an unsafe native execution target is typed `Unsupported`, not repaired with
+fabricated input.
 When an operation-owned root is a region-carried or dynamically indexed view,
 the static derivation must prove one unique finite backing object. The oracle
 then derives that root's exact byte offset from the concrete boundary pointer

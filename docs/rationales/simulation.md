@@ -245,6 +245,13 @@ second port-kind union. Aliasing uses shared canonical memory-object ordinals,
 not a separate alias graph. Defined, poison, and undef values use one canonical
 semantic-value algebra shared with compiler semantics.
 
+Source-backed validation captures stream traffic at the unique typed logical
+channel endpoint that produced the corresponding graph port. This retains the
+source execution as the independent oracle while avoiding a second channel
+identity scheme or a positional match against native runtime queues. The
+capture is activation-local and ephemeral; its ordered values are encoded
+directly through the existing runtime-stream and stream-observation planes.
+
 ## Why Execution Has One Root And Closed Terminals
 
 The exact EvaluationRequest already selects spatial or system model semantics.
