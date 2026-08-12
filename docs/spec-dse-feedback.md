@@ -1658,6 +1658,28 @@ therefore carries only Artifact references, while owner-local `GraphRef`
 values remain ephemeral and no graph-cover Artifact or resolved-config field
 is introduced.
 
+The built-in canonical-graph TechMapping generator is the corresponding
+System-composition adapter. Its descriptor has kind 21, spelling
+`mapping.canonical_graph_tech_mapping`, and implementation semantic identity
+`loom.mapping.canonical_graph_tech_mapping.generator.v1`. It has the same two
+input slots, output slot, resolved TechMapping config view, determinism, work
+catalog, and outcome algebra as the root-complete adapter. For each exact
+Canonical Dataflow input, it visits the Dataflow-owned canonical graph catalog
+and invokes the ordinary TechMapping owner once with the singleton cover for
+that graph. It returns the canonical union of the resulting ordinary
+TechMapping Artifacts and mechanical lineage edges. A graph proven infeasible
+contributes no candidate; an incomplete graph invocation retains only already
+completed graph candidates under the ordinary typed incomplete result; invalid
+or internal owner failure aborts the adapter invocation.
+
+This second adapter exists because hierarchical SystemMapping selects one
+SpatialMapping for each `RootedGraphLaunchRef`; it must be able to compose
+different graph definitions onto different AccCore occurrences. It does not
+split a Canonical Dataflow Artifact, invent a graph-scope Artifact, reinterpret
+root-complete results, or permit one TechMapping realization to cross a graph
+definition. A caller that needs a selected multi-graph cover still invokes the
+ordinary TechMapping owner explicitly.
+
 The built-in root-complete Spatial PnR generator composes the next boundary in
 the same typed plan. It consumes the finite TechMapping output and the same
 exact Fabric Artifact. Each `T` already binds one unique Canonical Dataflow

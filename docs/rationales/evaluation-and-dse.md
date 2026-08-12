@@ -193,6 +193,17 @@ and TechMapping consumes that ephemeral scope. A generic graph-cover value in
 the plan would instead duplicate Dataflow-local identity and turn one mapping
 policy into a second cross-domain authority.
 
+Whole-program and System composition need two different derived covers. The
+root-complete adapter intentionally asks whether one target Module can realize
+the complete program graph catalog. Hierarchical SystemMapping instead assigns
+each rooted graph launch independently and therefore needs ordinary
+singleton-graph TechMappings from which it can select SpatialMappings for
+different AccCore occurrences. The canonical-graph adapter derives those
+singleton covers by visiting the same Dataflow-owned catalog. Keeping the two
+adapters explicit preserves both questions without a persistent graph-scope
+object, a generic scope language, or a System planner that inspects Dataflow
+internals.
+
 The root-complete Spatial adapter applies the same rule to a different
 granularity mismatch. A TechMapping already seals its Dataflow and Fabric
 owners, while the exact Spatial PnR API must also receive a real constraint
