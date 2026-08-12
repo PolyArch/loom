@@ -4,6 +4,7 @@
 #include "Config/ResolvedConfig.h"
 #include "DSE/JointDesignExploration.h"
 #include "DSE/ResolvedConfigView.h"
+#include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -179,6 +180,18 @@ void exerciseJointExploration() {
       systemNode.inputBindings[1]);
   if (join.outputs.empty() || join.maximumArtifacts != 32)
     fail("joint Mapping plan lost its explicit SpatialMapping bound");
+  for (const loom::dse::PlanOutputRef &spatialOutput : join.outputs) {
+    const auto &spatialNode = std::get<loom::dse::GeneratePlanNodeDefinition>(
+        plan.resolvedConfig.dse.planNodes[spatialOutput.producerNodeOrdinal]);
+    const auto &techOutput =
+        std::get<loom::dse::PlanOutputRef>(spatialNode.inputBindings.front());
+    const auto &techNode = std::get<loom::dse::GeneratePlanNodeDefinition>(
+        plan.resolvedConfig.dse.planNodes[techOutput.producerNodeOrdinal]);
+    if (techNode.descriptor !=
+        loom::dse::canonicalGraphTechMappingCandidateGeneratorDescriptor()
+            .reference())
+      fail("joint Mapping plan used a whole-program TechMapping cover");
+  }
 
   auto view = take(loom::dse::projectResolvedDseConfigView(
       plan.resolvedConfig));

@@ -46,7 +46,7 @@ std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
 }
 
 llvm::Error registerMappingGenerators() {
-  if (llvm::Error error = registerRootCompleteTechMappingCandidateGenerator())
+  if (llvm::Error error = registerCanonicalGraphTechMappingCandidateGenerator())
     return error;
   if (llvm::Error error = registerRootCompleteSpatialPnrCandidateGenerator())
     return error;
@@ -176,7 +176,7 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     for (const ArtifactRootReference &module : *modules) {
       const std::uint64_t techNode = planConfig.dse.planNodes.size();
       planConfig.dse.planNodes.push_back(GeneratePlanNodeDefinition{
-          rootCompleteTechMappingCandidateGeneratorDescriptor().reference(),
+          canonicalGraphTechMappingCandidateGeneratorDescriptor().reference(),
           {ExactPlanArtifacts{{pair.software}}, ExactPlanArtifacts{{module}}},
           techConfig->canonicalViewBytes().vec(),
           techConfig->digest()});

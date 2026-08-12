@@ -214,6 +214,7 @@ llvm::Error registerProductionOwners() {
       &registerDataflowRewriteCandidateGenerator,
       &registerSpatialPnrCandidateGenerator,
       &registerRootCompleteTechMappingCandidateGenerator,
+      &registerCanonicalGraphTechMappingCandidateGenerator,
       &registerRootCompleteSpatialPnrCandidateGenerator,
       &registerSpatialMappingFeedbackCandidateGenerator,
       &registerRootCompleteSystemPnrCandidateGenerator,

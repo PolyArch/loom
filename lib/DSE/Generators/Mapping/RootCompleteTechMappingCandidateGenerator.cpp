@@ -9,6 +9,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -58,6 +59,11 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs);
 
+llvm::Expected<CandidateGeneratorProviderResult> invokeCanonicalGraphProvider(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store, const BlobStore &blobs);
+
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteTechMappingCandidateGeneratorKind,
     "mapping.root_complete_tech_mapping",
@@ -71,6 +77,26 @@ const CandidateGeneratorDescriptor descriptor{
     workUnits,
     nullptr,
     ProviderForm::InProcess,
+};
+
+const CandidateGeneratorDescriptor canonicalGraphDescriptor{
+    canonicalGraphTechMappingCandidateGeneratorKind,
+    "mapping.canonical_graph_tech_mapping",
+    "loom.mapping.canonical_graph_tech_mapping.generator.v1",
+    inputSlots,
+    outputSlots,
+    ResolvedDseConfigViewContract{
+        ::loom::mapping::resolvedTechMappingConfigSchemaDescriptorBytes(),
+        validateConfig},
+    CandidateGeneratorDeterminism::Deterministic,
+    workUnits,
+    nullptr,
+    ProviderForm::InProcess,
+};
+
+enum class GraphCoverPolicy : std::uint8_t {
+  CompleteCatalog,
+  CanonicalSingletons,
 };
 
 llvm::Error accumulate(std::uint64_t source, std::uint64_t &target,
@@ -111,10 +137,62 @@ std::vector<CandidateGeneratorWorkUnitSummary> workSummary(
   };
 }
 
-llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
-    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
-    const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, const BlobStore &blobs) {
+llvm::Expected<std::optional<CandidateGeneratorProviderResult>>
+consumeTechMappingOutcome(
+    ::loom::mapping::TechMappingGenerationOutcome outcome,
+    ::loom::mapping::TechMappingGenerationAccounting &accounting,
+    std::vector<ArtifactRootReference> &outputs,
+    std::vector<CandidateGeneratorLineageEdge> &lineage) {
+  const auto &currentAccounting = std::visit(
+      [](const auto &result)
+          -> const ::loom::mapping::TechMappingGenerationAccounting & {
+        return result.accounting;
+      },
+      outcome);
+  if (llvm::Error error = accumulate(currentAccounting, accounting))
+    return std::move(error);
+  if (auto *generated =
+          std::get_if<::loom::mapping::GeneratedTechMappings>(&outcome)) {
+    for (ArtifactRootReference &candidate : generated->candidates) {
+      lineage.push_back(CandidateGeneratorLineageEdge{
+          CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+          CandidateGeneratorOutputSlotRef(0),
+          candidate,
+          {},
+          {}});
+      outputs.push_back(std::move(candidate));
+    }
+    return std::nullopt;
+  }
+  if (std::holds_alternative<::loom::mapping::ProvenInfeasibleTechMapping>(
+          outcome))
+    return std::nullopt;
+  if (std::holds_alternative<::loom::mapping::IncompleteTechMappingGeneration>(
+          outcome))
+    return std::optional<CandidateGeneratorProviderResult>{
+        CandidateGeneratorProviderResult{
+            IncompleteCandidateGeneratorResult{
+                CandidateGeneratorIncompleteReason::ProofNotEstablished,
+                {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
+                std::move(lineage)},
+            workSummary(accounting)}};
+  if (const auto *invalid =
+          std::get_if<::loom::mapping::InvalidTechMappingGeneration>(&outcome))
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "tech_mapping_generator_adapter_invalid: " +
+                                       invalid->diagnostic);
+  const auto &internal =
+      std::get<::loom::mapping::InternalTechMappingGeneration>(outcome);
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "tech_mapping_generator_adapter_execution_failed: " +
+          internal.diagnostic);
+}
+
+llvm::Expected<CandidateGeneratorProviderResult>
+invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+               const ResolvedCandidateGeneratorBinding &binding,
+               const ArtifactStore &store, GraphCoverPolicy coverPolicy) {
   auto config = ::loom::mapping::adoptResolvedTechMappingConfigView(
       ::loom::mapping::resolvedTechMappingConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -141,59 +219,33 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     if (dataflow->graphs().empty())
       continue;
 
-    std::vector<::dataflow::GraphRef> covers;
-    covers.reserve(dataflow->graphs().size());
-    for (const ::dataflow::CanonicalGraphView &graph : dataflow->graphs())
-      covers.push_back(graph.ref);
-
-    ::loom::mapping::TechMappingGenerationOutcome outcome =
-        ::loom::mapping::generateTechMappings(
-            {*dataflow, covers, fabric->view(), *config, store});
-    const auto &currentAccounting = std::visit(
-        [](const auto &result)
-            -> const ::loom::mapping::TechMappingGenerationAccounting & {
-          return result.accounting;
-        },
-        outcome);
-    if (llvm::Error error = accumulate(currentAccounting, accounting))
-      return std::move(error);
-    if (auto *generated =
-            std::get_if<::loom::mapping::GeneratedTechMappings>(&outcome)) {
-      for (ArtifactRootReference &candidate : generated->candidates) {
-        lineage.push_back(CandidateGeneratorLineageEdge{
-            CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
-            CandidateGeneratorOutputSlotRef(0),
-            candidate,
-            {},
-            {}});
-        outputs.push_back(std::move(candidate));
-      }
+    std::vector<::dataflow::GraphRef> completeCover;
+    if (coverPolicy == GraphCoverPolicy::CompleteCatalog) {
+      completeCover.reserve(dataflow->graphs().size());
+      for (const ::dataflow::CanonicalGraphView &graph : dataflow->graphs())
+        completeCover.push_back(graph.ref);
+      auto terminal = consumeTechMappingOutcome(
+          ::loom::mapping::generateTechMappings(
+              {*dataflow, completeCover, fabric->view(), *config, store}),
+          accounting, outputs, lineage);
+      if (!terminal)
+        return terminal.takeError();
+      if (*terminal)
+        return std::move(**terminal);
       continue;
     }
-    if (std::holds_alternative<::loom::mapping::ProvenInfeasibleTechMapping>(
-            outcome))
-      continue;
-    if (std::holds_alternative<
-            ::loom::mapping::IncompleteTechMappingGeneration>(outcome))
-      return CandidateGeneratorProviderResult{
-          IncompleteCandidateGeneratorResult{
-              CandidateGeneratorIncompleteReason::ProofNotEstablished,
-              {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-              std::move(lineage)},
-          workSummary(accounting)};
-    if (const auto *invalid =
-            std::get_if<::loom::mapping::InvalidTechMappingGeneration>(
-                &outcome))
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "root_complete_tech_mapping_generator_invalid: " +
-              invalid->diagnostic);
-    const auto &internal =
-        std::get<::loom::mapping::InternalTechMappingGeneration>(outcome);
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "root_complete_tech_mapping_generator_execution_failed: " +
-            internal.diagnostic);
+
+    for (const ::dataflow::CanonicalGraphView &graph : dataflow->graphs()) {
+      const std::array cover = {graph.ref};
+      auto terminal = consumeTechMappingOutcome(
+          ::loom::mapping::generateTechMappings(
+              {*dataflow, cover, fabric->view(), *config, store}),
+          accounting, outputs, lineage);
+      if (!terminal)
+        return terminal.takeError();
+      if (*terminal)
+        return std::move(**terminal);
+    }
   }
 
   return CandidateGeneratorProviderResult{
@@ -203,9 +255,29 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       workSummary(accounting)};
 }
 
+llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store, const BlobStore &) {
+  return invokeProvider(inputBindings, binding, store,
+                        GraphCoverPolicy::CompleteCatalog);
+}
+
+llvm::Expected<CandidateGeneratorProviderResult> invokeCanonicalGraphProvider(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store, const BlobStore &) {
+  return invokeProvider(inputBindings, binding, store,
+                        GraphCoverPolicy::CanonicalSingletons);
+}
+
 const CandidateGeneratorProvider provider{
     descriptor.reference(),
     CandidateGeneratorInProcessProvider{invokeRootCompleteProvider}};
+
+const CandidateGeneratorProvider canonicalGraphProvider{
+    canonicalGraphDescriptor.reference(),
+    CandidateGeneratorInProcessProvider{invokeCanonicalGraphProvider}};
 
 } // namespace
 
@@ -244,6 +316,45 @@ resolveRootCompleteTechMappingCandidateGeneratorBinding(
     return std::move(error);
   return ResolvedCandidateGeneratorBinding::get(
       descriptor.reference(), config.canonicalViewBytes(), config.digest());
+}
+
+const CandidateGeneratorDescriptor &
+canonicalGraphTechMappingCandidateGeneratorDescriptor() {
+  return canonicalGraphDescriptor;
+}
+
+llvm::Error registerCanonicalGraphTechMappingCandidateGenerator() {
+  if (llvm::Error error =
+          registerCandidateGeneratorDescriptor(canonicalGraphDescriptor))
+    return error;
+  return registerCandidateGeneratorProvider(canonicalGraphProvider);
+}
+
+llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
+bindCanonicalGraphTechMappingCandidateGeneratorInputs(
+    llvm::ArrayRef<ArtifactRootReference> dataflowCandidates,
+    const ArtifactRootReference &fabric) {
+  if (llvm::Error error = registerCanonicalGraphTechMappingCandidateGenerator())
+    return std::move(error);
+  std::vector<CandidateGeneratorInputBinding> bindings = {
+      {CandidateGeneratorInputSlotRef(DataflowCandidatesInput),
+       dataflowCandidates.vec()},
+      {CandidateGeneratorInputSlotRef(FabricInput), {fabric}},
+  };
+  if (llvm::Error error = validateCandidateGeneratorInputBindings(
+          canonicalGraphDescriptor.reference(), bindings))
+    return std::move(error);
+  return bindings;
+}
+
+llvm::Expected<ResolvedCandidateGeneratorBinding>
+resolveCanonicalGraphTechMappingCandidateGeneratorBinding(
+    const ::loom::mapping::ResolvedTechMappingConfigView &config) {
+  if (llvm::Error error = registerCanonicalGraphTechMappingCandidateGenerator())
+    return std::move(error);
+  return ResolvedCandidateGeneratorBinding::get(
+      canonicalGraphDescriptor.reference(), config.canonicalViewBytes(),
+      config.digest());
 }
 
 } // namespace loom::dse
