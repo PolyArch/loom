@@ -23,17 +23,13 @@ profile and no fourth profile for flat System search.
 
 ## Mapping Invocation Diagnostics
 
-Mapping diagnostics use one process-wide logger and one environment binding:
+Mapping diagnostics consume the process-wide verbosity binding owned by
+[Loom Full-Stack Architecture](spec-loom-stack.md#invocation-diagnostics):
 
-```text
-LOOM_DEBUG_VERBOSE = nonnegative decimal integer
-```
-
-The binding is invocation-local debug input. It is not ResolvedConfig,
+The binding is invocation-local diagnostic input. It is not ResolvedConfig,
 Mapping state, an Artifact field, an Evaluation observation, semantic work, or
-a persistent trace. The logger parses it once per process. An unset, empty,
-non-decimal, or zero value selects level zero; values above three select level
-three. Level `N` includes every lower nonzero level:
+a persistent trace. Mapping uses the shared level as follows, and level `N`
+includes every lower nonzero level:
 
 * level one emits invocation lifecycle, termination or failure, and cumulative
   statistics;
@@ -75,7 +71,7 @@ search decisions, deterministic work accounting, termination, Mapping bytes,
 or Artifact identity. Events never
 include raw Dataflow values, source or host paths, environment contents,
 credentials, external-tool restricted data, raw pointers, or implementation
-container order. No subsystem may parse `LOOM_DEBUG_VERBOSE` independently or
+container order. Mapping does not parse the environment independently or
 create a second Mapping statistics/logging channel.
 
 ## MappingConstraintSet Artifact Family

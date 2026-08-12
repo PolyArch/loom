@@ -45,6 +45,35 @@ Independent development and test executables may expose individual passes or
 component pipelines, but their library functionality is also integrated
 in-process into the public drivers and does not define alternate semantics.
 
+## Invocation Diagnostics
+
+Loom has one process-wide invocation-local diagnostic verbosity binding:
+
+```text
+LOOM_VERBOSE_LEVEL = nonnegative decimal integer
+```
+
+Common owns its parsing and exposes the resulting closed level to every
+in-process consumer. An unset, empty, non-decimal, or zero value selects level
+zero; values above three select level three. Level `N` includes every lower
+nonzero level. No subsystem independently parses this environment binding or
+defines a second verbosity variable.
+
+The level controls presentation only. It is not ResolvedConfig, semantic work,
+an Artifact field, an Evaluation observation, a cache-key component, or a
+persistent trace. Enabling diagnostics cannot change semantic inputs,
+candidate order, random draws, external-tool inputs, termination, normalized
+results, Artifact bytes, or identity. A subsystem specification owns its event
+vocabulary and the detail emitted at each shared level.
+
+An external process or generated simulation harness cannot implicitly inherit
+the host binding. When its diagnostics are requested, the owning execution
+configuration explicitly projects the numeric level through the external
+command using the same `LOOM_VERBOSE_LEVEL` spelling. That projection remains
+nonsemantic unless the external provider documents that the option changes
+results, in which case it is not a diagnostic option and must enter the exact
+semantic execution configuration.
+
 `loom-opt` is the canonical developer-only MLIR pass runner. Other focused
 developer executables are justified only by a real input protocol,
 multi-artifact orchestration, simulator, or performance-sensitive component

@@ -58,12 +58,14 @@ reachable alternate path existed. Temporary print statements answer one case
 but require rebuilding and tend to leave several incompatible debug paths.
 
 One invocation-only JSONL logger therefore spans all three Mapping profiles.
-A single numeric level is sufficient: summaries answer routine performance
-questions, decision events reconstruct search progress, and detailed exact
-owner/net/cut events diagnose topology or algorithm failures. Independent
-category flags, a persistent statistics artifact, and profile-specific loggers
-were rejected because they duplicate configuration and event ownership without
-adding semantic capability.
+It consumes the same Common-owned `LOOM_VERBOSE_LEVEL` binding as other Loom
+diagnostics. A single numeric level is sufficient: summaries answer routine
+performance questions, decision events reconstruct search progress, and
+detailed exact owner/net/cut events diagnose topology or algorithm failures.
+Independent category flags, subsystem-specific environment bindings, a
+persistent statistics artifact, and profile-specific loggers were rejected
+because they duplicate configuration and event ownership without adding
+semantic capability.
 
 The channel is deliberately outside ResolvedConfig and Mapping identity.
 Turning it on may spend diagnostic presentation time, but cannot change search

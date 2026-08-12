@@ -96,6 +96,22 @@ The earlier `loom` versus `loom-devel` package wording was only an analogy for
 compiler users versus ADG-library users. Distribution and package naming are
 deliberately not architectural commitments.
 
+## Why Invocation Diagnostics Use One Binding
+
+Mapping search, runtime integration, generated RTL harnesses, and external-tool
+caches need different diagnostic events, but they do not need different
+verbosity concepts. Separate environment variables and parsers made one
+invocation depend on subsystem-specific knowledge and allowed invalid values or
+level ranges to diverge.
+
+One Common-owned `LOOM_VERBOSE_LEVEL` therefore supplies the closed levels zero
+through three. Each subsystem still owns its event vocabulary and may use only
+the levels it needs. ResolvedConfig ownership was rejected because diagnostic
+presentation cannot change semantic identity or reproducibility.
+Implicit propagation into external processes was also rejected: an external
+bundle receives a level only through its explicit execution option, so host
+environment state cannot silently change prepared invocation contents.
+
 ## Why Vertical Closure Comes Before Breadth
 
 A single real path exposes ownership and integration defects that hundreds of

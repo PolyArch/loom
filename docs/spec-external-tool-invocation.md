@@ -683,6 +683,17 @@ identity, exact version probe, and exact resolved launcher content digest. It
 also covers the runtime kind and exact container key, version, version probe,
 launcher content digest, and operating system when a container is selected.
 
+Host-side cache diagnostics consume the invocation-local `LOOM_VERBOSE_LEVEL`
+binding owned by
+[Loom Full-Stack Architecture](spec-loom-stack.md#invocation-diagnostics).
+Level one reports cache availability, hit, miss, discard, and publication
+failures; level two additionally reports successful publication. The cache
+does not parse a second environment binding, and the verbosity level never
+enters prepared invocation semantics or the cache key. Diagnostics explicitly
+projected into an external command, including an RTL simulation plusarg, use
+the same spelling but remain an exact caller-provided execution option; a
+prepared external invocation never inherits the host binding implicitly.
+
 Absolute bundle and executable paths, binding-source choice, module
 initialization paths, requested or loaded module aliases, local external-file
 keys and paths, cache location, process identity, file metadata and times,
