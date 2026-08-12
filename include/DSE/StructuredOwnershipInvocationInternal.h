@@ -104,12 +104,16 @@ public:
   ownedSpatialRegion(const StructuredOwnershipInvocation &invocation,
                      const ArtifactRootReference &reference);
 
+  static llvm::Expected<
+      llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>>
+  sourceProvenance(const StructuredOwnershipInvocation &invocation,
+                   const ArtifactRootReference &reference);
+
   static llvm::Error recordScheduleCandidate(
       StructuredOwnershipInvocation &invocation,
       const ArtifactRootReference &parent, const ArtifactRootReference &child,
       const frontend::StructuredScheduleDecision &decision,
       frontend::MaterializedStructuredScheduleCandidate candidate,
-      lowering::ProjectedCanonicalDataflow projected,
       const ArtifactStore &store);
 
   static llvm::Error recordExecutionShapeCandidate(
@@ -141,7 +145,6 @@ public:
       const ArtifactRootReference &parent, const ArtifactRootReference &child,
       const frontend::StructuredMemoryCommunicationDecision &decision,
       frontend::MaterializedStructuredMemoryCommunicationCandidate candidate,
-      lowering::ProjectedCanonicalDataflow projected,
       const ArtifactStore &store);
 
   static llvm::Error recordDataflowRewriteCandidate(

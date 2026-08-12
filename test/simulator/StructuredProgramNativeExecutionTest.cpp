@@ -493,18 +493,17 @@ module {
   loom::sim::StructuredProgramSimulationWorkload workloadDraft{
       entryRef(test, sourceView)};
   workloadDraft.observableContract.returnValue = true;
-  auto workload = take(test, loom::sim::finalizeSimulationWorkload(
-                                 workloadDraft, sourceView));
+  auto workload = take(
+      test, loom::sim::finalizeSimulationWorkload(workloadDraft, sourceView));
   loom::sim::StructuredProgramSimulationRuntimeInputDraft inputDraft{
       workload.identity()};
   auto input = take(test, loom::sim::finalizeSimulationRuntimeInput(
                               inputDraft, workload, sourceView));
 
-  const auto reference = take(test, loom::sim::executeNativeStructuredProgram(
-                                        source, workload, input));
-  const auto candidate =
-      take(test, loom::sim::executeSelectedStructuredProgram(
-                     selected, source, workload, input));
+  const auto reference = take(
+      test, loom::sim::executeNativeStructuredProgram(source, workload, input));
+  const auto candidate = take(test, loom::sim::executeSelectedStructuredProgram(
+                                        selected, source, workload, input));
   require(test,
           loom::sim::haveEquivalentFunctionalObservations(reference, candidate),
           "ordered multicast changed whole-program observations");
@@ -904,8 +903,8 @@ module {
       dataflow::RootThreadLaunchRef{identity, dataflow::RootThreadLaunchId(0)},
       dataflow::StaticGraphLaunchRef{identity,
                                      dataflow::StaticGraphLaunchId(0)}};
-  loom::sim::WorkloadBackedSimulationInputCapturePlan plan{
-      launch, {}, {}, {}, {}};
+  loom::sim::WorkloadBackedSimulationInputCapturePlan plan{launch, {}, {}, {},
+                                                           {},     {}, {}};
   plan.memoryRoots.push_back({dataflow::LogicalMemoryRootRef{
                                   identity, dataflow::LogicalMemoryRootId(0)},
                               selectedStore.getAddr()});
@@ -1011,8 +1010,8 @@ module {
       dataflow::RootThreadLaunchRef{identity, dataflow::RootThreadLaunchId(0)},
       dataflow::StaticGraphLaunchRef{identity,
                                      dataflow::StaticGraphLaunchId(0)}};
-  loom::sim::WorkloadBackedSimulationInputCapturePlan plan{
-      launch, {}, {}, {}, {}};
+  loom::sim::WorkloadBackedSimulationInputCapturePlan plan{launch, {}, {}, {},
+                                                           {},     {}, {}};
   plan.memoryRoots.push_back({dataflow::LogicalMemoryRootRef{
                                   identity, dataflow::LogicalMemoryRootId(0)},
                               kernel.getArgument(0)});

@@ -118,16 +118,21 @@
 // CHECK: dataflow.graph.return
 // CHECK-LABEL: dataflow.graph private @sequential_producer_graph(
 // CHECK-SAME: -> i32
-// CHECK: dataflow.stream
-// CHECK: %[[SEQUENCE_ORDINAL:[[:alnum:]_]+]] = arith.index_cast
-// CHECK: dataflow.mux %[[SEQUENCE_ORDINAL]], %{{.*}}, %{{.*}}, %{{.*}} : (index, i32, i32, i32) -> i32
+// CHECK: %[[SEQUENCE_IV:[[:alnum:]_]+]], %{{.*}} = dataflow.stream
+// CHECK: %[[SEQUENCE_ROOT:[[:alnum:]_]+]] = arith.cmpi uge, %[[SEQUENCE_IV]], %{{.*}} : i32
+// CHECK: %[[SEQUENCE_ORDINALS:[[:alnum:]_]+]]:2 = dataflow.demux %[[SEQUENCE_ROOT]], %[[SEQUENCE_IV]] : (i1, i32) -> (i32, i32)
+// CHECK: %[[SEQUENCE_LEFT_SELECTOR:[[:alnum:]_]+]] = arith.cmpi uge, %[[SEQUENCE_ORDINALS]]#0, %{{.*}} : i32
+// CHECK: %[[SEQUENCE_LEFT:[[:alnum:]_]+]] = dataflow.mux %[[SEQUENCE_LEFT_SELECTOR]], %{{.*}}, %{{.*}} : (i1, i32, i32) -> i32
+// CHECK: %[[SEQUENCE_OUTPUT:[[:alnum:]_]+]] = dataflow.mux %[[SEQUENCE_ROOT]], %[[SEQUENCE_LEFT]], %{{.*}} : (i1, i32, i32) -> i32
+// CHECK: %[[SEQUENCE_COMMIT:[[:alnum:]_]+]] = dataflow.mux %[[SEQUENCE_ROOT]], {{.*}} : (i1, none, none) -> none
+// CHECK: %[[SEQUENCE_DRAIN:[[:alnum:]_]+]]:2 = dataflow.sync %[[SEQUENCE_COMMIT]], %[[SEQUENCE_OUTPUT]] : (none, i32) -> (none, i32)
 // CHECK-NOT: dataflow.channel
-// CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
+// CHECK: dataflow.graph.return values() streams(%[[SEQUENCE_DRAIN]]#1 : i32)
 // CHECK-LABEL: dataflow.graph private @sequential_consumer_graph(
 // CHECK-SAME: %{{.*}}: none, %[[SEQUENCE_INPUT:[[:alnum:]_]+]]: i32, %{{.*}}: memref<2xi32>)
-// CHECK: dataflow.stream
-// CHECK: %[[SEQUENCE_LANE:[[:alnum:]_]+]] = arith.trunci
-// CHECK: dataflow.demux %[[SEQUENCE_LANE]], %[[SEQUENCE_INPUT]] : (i1, i32) -> (i32, i32)
+// CHECK: %[[SEQUENCE_INPUT_IV:[[:alnum:]_]+]], %{{.*}} = dataflow.stream
+// CHECK: %[[SEQUENCE_INPUT_SELECTOR:[[:alnum:]_]+]] = arith.cmpi uge, %[[SEQUENCE_INPUT_IV]], %{{.*}} : i32
+// CHECK: dataflow.demux %[[SEQUENCE_INPUT_SELECTOR]], %[[SEQUENCE_INPUT]] : (i1, i32) -> (i32, i32)
 // CHECK: dataflow.store
 // CHECK: dataflow.store
 // CHECK-NOT: dataflow.channel
@@ -135,13 +140,21 @@
 // CHECK-LABEL: dataflow.graph private @branch_relay_graph(
 // CHECK-SAME: %{{.*}}: none, %[[BRANCH_SELECT:[[:alnum:]_]+]]: i1, %{{.*}}: index, %[[BRANCH_INPUT:[[:alnum:]_]+]]: i32) -> i32
 // CHECK: dataflow.stream
-// CHECK: dataflow.demux %{{.*}}, %[[BRANCH_INPUT]] : (index, i32) -> (i32, i32, i32, i32, i32)
+// CHECK: %[[BRANCH_INPUT_ROOT:[[:alnum:]_]+]]:2 = dataflow.demux %{{.*}}, %[[BRANCH_INPUT]] : (i1, i32) -> (i32, i32)
+// CHECK: %[[BRANCH_INPUT_LEFT:[[:alnum:]_]+]]:2 = dataflow.demux %{{.*}}, %[[BRANCH_INPUT_ROOT]]#0 : (i1, i32) -> (i32, i32)
+// CHECK: dataflow.demux %{{.*}}, %[[BRANCH_INPUT_LEFT]]#0 : (i1, i32) -> (i32, i32)
+// CHECK: dataflow.demux %{{.*}}, %[[BRANCH_INPUT_ROOT]]#1 : (i1, i32) -> (i32, i32)
 // CHECK: dataflow.stream
 // CHECK: dataflow.invariant %{{.*}}, %[[BRANCH_SELECT]] : i1
 // CHECK: dataflow.gate
-// CHECK: dataflow.mux %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}}, %{{.*}} : (index, i32, i32, i32, i32, i32) -> i32
+// CHECK: %[[BRANCH_OUTPUT_LEFT_LEFT:[[:alnum:]_]+]] = dataflow.mux %{{.*}}, %{{.*}}, %{{.*}} : (i1, i32, i32) -> i32
+// CHECK: %[[BRANCH_OUTPUT_LEFT:[[:alnum:]_]+]] = dataflow.mux %{{.*}}, %[[BRANCH_OUTPUT_LEFT_LEFT]], %{{.*}} : (i1, i32, i32) -> i32
+// CHECK: %[[BRANCH_OUTPUT_RIGHT:[[:alnum:]_]+]] = dataflow.mux %{{.*}}, %{{.*}}, %{{.*}} : (i1, i32, i32) -> i32
+// CHECK: %[[BRANCH_OUTPUT:[[:alnum:]_]+]] = dataflow.mux %[[BRANCH_OUTPUT_ROOT:[^,]+]], %[[BRANCH_OUTPUT_LEFT]], %[[BRANCH_OUTPUT_RIGHT]] : (i1, i32, i32) -> i32
+// CHECK: %[[BRANCH_COMMIT:[[:alnum:]_]+]] = dataflow.mux %[[BRANCH_OUTPUT_ROOT]], {{.*}} : (i1, none, none) -> none
+// CHECK: %[[BRANCH_DRAIN:[[:alnum:]_]+]]:2 = dataflow.sync %[[BRANCH_COMMIT]], %[[BRANCH_OUTPUT]] : (none, i32) -> (none, i32)
 // CHECK-NOT: dataflow.channel
-// CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
+// CHECK: dataflow.graph.return values() streams(%[[BRANCH_DRAIN]]#1 : i32)
 // CHECK-LABEL: dataflow.graph private @optional_producer_graph(
 // CHECK: %{{.*}}, %[[OPTIONAL_PHASE:[[:alnum:]_]+]] = dataflow.stream
 // CHECK: %[[OPTIONAL_EVENTS:[[:alnum:]_]+]]:2 = dataflow.demux %[[OPTIONAL_PHASE]], %{{.*}} : (i1, none) -> (none, none)
@@ -154,11 +167,12 @@
 // CHECK-SAME: %{{.*}}: none, %[[DEPENDENT_INPUT:[[:alnum:]_]+]]: i32, %{{.*}}: memref<2xi32>)
 // CHECK: %[[DEPENDENT_CONDITION:[[:alnum:]_]+]] = arith.cmpi ne, %[[FIRST_SYNC:[[:alnum:]_]+]]#1, %{{.*}} : i32
 // CHECK: %[[DEPENDENT_IV:[[:alnum:]_]+]], %{{.*}} = dataflow.stream
-// CHECK: %[[DEPENDENT_STATIC:[[:alnum:]_]+]] = arith.trunci %[[DEPENDENT_IV]] : i32 to i1
-// CHECK: dataflow.mux %[[DEPENDENT_CONDITION]], %{{.*}}, %{{.*}} : (i1, i1, i1) -> i1
+// CHECK: %[[DEPENDENT_STATIC:[[:alnum:]_]+]] = arith.cmpi uge, %[[DEPENDENT_IV]], %{{.*}} : i32
+// CHECK: %[[DEPENDENT_SYNC:[[:alnum:]_]+]]:2 = dataflow.sync %[[DEPENDENT_CONDITION]], %{{.*}} : (i1, none) -> (i1, none)
+// CHECK: dataflow.mux %[[DEPENDENT_SYNC]]#0, %{{.*}}, %{{.*}} : (i1, i1, i1) -> i1
 // CHECK: %[[DEPENDENT_ACTIVE:[[:alnum:]_]+]] = dataflow.mux %[[DEPENDENT_STATIC]], %{{.*}}, %{{.*}} : (i1, i1, i1) -> i1
 // CHECK: %[[DEPENDENT_ACTIVE_ORDINALS:[[:alnum:]_]+]]:2 = dataflow.demux %[[DEPENDENT_ACTIVE]], %[[DEPENDENT_IV]] : (i1, i32) -> (i32, i32)
-// CHECK: %[[DEPENDENT_ROUTE:[[:alnum:]_]+]] = arith.trunci %[[DEPENDENT_ACTIVE_ORDINALS]]#1 : i32 to i1
+// CHECK: %[[DEPENDENT_ROUTE:[[:alnum:]_]+]] = arith.cmpi uge, %[[DEPENDENT_ACTIVE_ORDINALS]]#1, %{{.*}} : i32
 // CHECK: %[[DEPENDENT_LANES:[[:alnum:]_]+]]:2 = dataflow.demux %[[DEPENDENT_ROUTE]], %[[DEPENDENT_INPUT]] : (i1, i32) -> (i32, i32)
 // CHECK: %[[FIRST_SYNC]]:2 = dataflow.sync %{{.*}}, %[[DEPENDENT_LANES]]#0 : (none, i32) -> (none, i32)
 // CHECK-NOT: dataflow.channel

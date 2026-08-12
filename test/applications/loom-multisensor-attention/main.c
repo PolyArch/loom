@@ -9,9 +9,16 @@ enum {
   STATISTIC_COUNT = 4,
 };
 
+#if defined(__clang__)
+#define LOOM_UNROLL_FULL _Pragma("clang loop unroll(full)")
+#else
+#define LOOM_UNROLL_FULL
+#endif
+
 __attribute__((weak)) void
-project_audio(const float input[TOKEN_COUNT][SENSOR_LANE_COUNT],
-              float output[TOKEN_COUNT][FEATURE_LANE_COUNT]) {
+project_audio(const float input[restrict TOKEN_COUNT][SENSOR_LANE_COUNT],
+              float output[restrict TOKEN_COUNT][FEATURE_LANE_COUNT]) {
+  LOOM_UNROLL_FULL
   for (uint32_t token = 0; token < TOKEN_COUNT; ++token) {
     const float x = input[token][0];
     const float y = input[token][1];
@@ -24,8 +31,9 @@ project_audio(const float input[TOKEN_COUNT][SENSOR_LANE_COUNT],
 }
 
 __attribute__((weak)) void
-project_imu(const float input[TOKEN_COUNT][SENSOR_LANE_COUNT],
-            float output[TOKEN_COUNT][FEATURE_LANE_COUNT]) {
+project_imu(const float input[restrict TOKEN_COUNT][SENSOR_LANE_COUNT],
+            float output[restrict TOKEN_COUNT][FEATURE_LANE_COUNT]) {
+  LOOM_UNROLL_FULL
   for (uint32_t token = 0; token < TOKEN_COUNT; ++token) {
     const float x = input[token][0];
     const float y = input[token][1];
@@ -38,61 +46,78 @@ project_imu(const float input[TOKEN_COUNT][SENSOR_LANE_COUNT],
 }
 
 __attribute__((weak)) void
-fuse_attention(const float query[TOKEN_COUNT][FEATURE_LANE_COUNT],
-               const float key_value[TOKEN_COUNT][FEATURE_LANE_COUNT],
-               float output[TOKEN_COUNT][FEATURE_LANE_COUNT]) {
+fuse_attention(const float query[restrict TOKEN_COUNT][FEATURE_LANE_COUNT],
+               const float key_value[restrict TOKEN_COUNT][FEATURE_LANE_COUNT],
+               float output[restrict TOKEN_COUNT][FEATURE_LANE_COUNT]) {
+  float query_local[TOKEN_COUNT][FEATURE_LANE_COUNT];
+  float key_value_local[TOKEN_COUNT][FEATURE_LANE_COUNT];
   float scores[TOKEN_COUNT];
   float probabilities[TOKEN_COUNT];
 
+  LOOM_UNROLL_FULL
+  for (uint32_t token = 0; token < TOKEN_COUNT; ++token) {
+    LOOM_UNROLL_FULL
+    for (uint32_t lane = 0; lane < FEATURE_LANE_COUNT; ++lane) {
+      query_local[token][lane] = query[token][lane];
+      key_value_local[token][lane] = key_value[token][lane];
+    }
+  }
+
+  LOOM_UNROLL_FULL
   for (uint32_t row = 0; row < TOKEN_COUNT; ++row) {
     float maximum = 0.0f;
+    LOOM_UNROLL_FULL
     for (uint32_t column = 0; column < TOKEN_COUNT; ++column) {
       float dot = 0.0f;
+      LOOM_UNROLL_FULL
       for (uint32_t lane = 0; lane < FEATURE_LANE_COUNT; ++lane)
-        dot += query[row][lane] * key_value[column][lane];
+        dot += query_local[row][lane] * key_value_local[column][lane];
       scores[column] = dot * 0.5f;
       if (column == 0 || scores[column] > maximum)
         maximum = scores[column];
     }
 
     float denominator = 0.0f;
+    LOOM_UNROLL_FULL
     for (uint32_t column = 0; column < TOKEN_COUNT; ++column) {
       probabilities[column] = expf(scores[column] - maximum);
       denominator += probabilities[column];
     }
 
+    LOOM_UNROLL_FULL
     for (uint32_t lane = 0; lane < FEATURE_LANE_COUNT; ++lane) {
       float value = 0.0f;
+      LOOM_UNROLL_FULL
       for (uint32_t column = 0; column < TOKEN_COUNT; ++column)
-        value += probabilities[column] * key_value[column][lane];
+        value += probabilities[column] * key_value_local[column][lane];
       output[row][lane] = value / denominator;
     }
   }
 }
 
-__attribute__((weak)) void
-reduce_statistics(
-    const float projected_audio[TOKEN_COUNT][FEATURE_LANE_COUNT],
-    const float attention[TOKEN_COUNT][FEATURE_LANE_COUNT],
-    float output[TOKEN_COUNT][FEATURE_LANE_COUNT],
-    float statistics[STATISTIC_COUNT]) {
+__attribute__((weak)) void reduce_statistics(
+    const float projected_audio[restrict TOKEN_COUNT][FEATURE_LANE_COUNT],
+    const float attention[restrict TOKEN_COUNT][FEATURE_LANE_COUNT],
+    float output[restrict TOKEN_COUNT][FEATURE_LANE_COUNT],
+    float statistics[restrict STATISTIC_COUNT]) {
   float projection_energy = 0.0f;
   float attention_sum = 0.0f;
   float weighted_sum = 0.0f;
   float maximum_magnitude = 0.0f;
 
+  LOOM_UNROLL_FULL
   for (uint32_t token = 0; token < TOKEN_COUNT; ++token) {
+    LOOM_UNROLL_FULL
     for (uint32_t lane = 0; lane < FEATURE_LANE_COUNT; ++lane) {
       const float projection = projected_audio[token][lane];
       const float value = attention[token][lane];
       const float magnitude = value < 0.0f ? -value : value;
       projection_energy += projection * projection;
       attention_sum += value;
-      weighted_sum +=
-          (float)(token * FEATURE_LANE_COUNT + lane + 1u) * value;
+      weighted_sum += (float)(token * FEATURE_LANE_COUNT + lane + 1u) * value;
       if (magnitude > maximum_magnitude)
         maximum_magnitude = magnitude;
-      output[token][lane] = value;
+      output[token][lane] = value + projection * 0.125f;
     }
   }
 
@@ -103,10 +128,10 @@ reduce_statistics(
 }
 
 __attribute__((noinline)) void loom_multisensor_attention(
-    const float audio[TOKEN_COUNT][SENSOR_LANE_COUNT],
-    const float imu[TOKEN_COUNT][SENSOR_LANE_COUNT],
-    float output[TOKEN_COUNT][FEATURE_LANE_COUNT],
-    float statistics[STATISTIC_COUNT]) {
+    const float audio[restrict TOKEN_COUNT][SENSOR_LANE_COUNT],
+    const float imu[restrict TOKEN_COUNT][SENSOR_LANE_COUNT],
+    float output[restrict TOKEN_COUNT][FEATURE_LANE_COUNT],
+    float statistics[restrict STATISTIC_COUNT]) {
   float projected_audio[TOKEN_COUNT][FEATURE_LANE_COUNT];
   float projected_imu[TOKEN_COUNT][FEATURE_LANE_COUNT];
   float attention[TOKEN_COUNT][FEATURE_LANE_COUNT];

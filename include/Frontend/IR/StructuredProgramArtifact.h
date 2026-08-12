@@ -21,6 +21,7 @@
 
 namespace mlir {
 class Block;
+class IRMapping;
 class MLIRContext;
 class Operation;
 class Region;
@@ -65,6 +66,15 @@ struct StructuredOperationSourceProvenance final {
   StructuredEntityRef operation;
   std::vector<std::string> sourceFiles;
 };
+
+/// Clones one exact parent and restores its invocation-local source locations.
+/// The returned mapping resolves parent entities in the private clone; source
+/// provenance remains removable and does not enter Structured identity.
+llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>>
+cloneStructuredProgramWithSourceLocations(
+    const StructuredProgramCandidate &parent,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> provenance,
+    mlir::IRMapping &mapping);
 
 inline constexpr std::size_t structuredEntityRefWireSize =
     ArtifactIdentity::byteSize + sizeof(std::uint32_t) + sizeof(std::uint64_t);

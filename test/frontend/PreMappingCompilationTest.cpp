@@ -811,6 +811,9 @@ void explicitWholeCallableSpatialOwnership() {
         dataflow::OperationSchemaId::DataflowStore})
     if (schemas.find(required) == schemas.end())
       fail(test, "canonical graph omitted a load-add-store actor");
+  if (schemas.find(dataflow::OperationSchemaId::LLVMGetElementPtr) !=
+      schemas.end())
+    fail(test, "constant GEP survived mechanical address normalization");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)

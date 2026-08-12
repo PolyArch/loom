@@ -60,9 +60,28 @@ struct StreamScheduleMaterialization {
   ::llvm::SmallVector<::mlir::Operation *, 4> endpoints;
   ::llvm::SmallVector<ChoiceSelectorUse, 4> choiceSelectorUses;
   ::llvm::SmallVector<RepeatSelectorUse, 4> repeatSelectorUses;
-  ::mlir::Value selector;
+  ::mlir::Value activation;
+  ::mlir::Value phase;
+  ::mlir::Value ordinal;
   ::mlir::Value event;
+  ::mlir::Value activity;
+  ::mlir::Value inactiveEvent;
   ::mlir::Value close;
+};
+
+struct StreamSelectiveRouter {
+  struct Node {
+    ::mlir::Value selector;
+    unsigned leftCount;
+  };
+
+  unsigned leafCount = 0;
+  ::llvm::SmallVector<Node, 4> nodes;
+};
+
+struct StreamSelectiveRouterMaterialization {
+  StreamSelectiveRouter router;
+  ::llvm::SmallVector<::mlir::Value, 4> events;
 };
 
 ::llvm::SmallVector<::mlir::Operation *, 4>
@@ -82,6 +101,23 @@ StreamScheduleMaterialization
 materializeStreamSchedule(const StreamScheduleNode &schedule,
                           ::mlir::Value execution, ::mlir::OpBuilder &builder,
                           ::mlir::Operation *anchor);
+
+StreamSelectiveRouterMaterialization
+materializeStreamSelectiveRouter(::mlir::Value ordinal, ::mlir::Value event,
+                                 unsigned endpointCount, ::mlir::Location loc,
+                                 ::mlir::OpBuilder &builder,
+                                 ::mlir::Operation *anchor);
+
+::llvm::SmallVector<::mlir::Value, 4>
+routeStreamInput(const StreamSelectiveRouter &router, ::mlir::Value event,
+                 ::mlir::Value input, ::mlir::Location loc,
+                 ::mlir::OpBuilder &builder, ::mlir::Operation *anchor);
+
+::mlir::Value collectStreamOutput(const StreamSelectiveRouter &router,
+                                  ::mlir::ValueRange inputs,
+                                  ::mlir::Location loc,
+                                  ::mlir::OpBuilder &builder,
+                                  ::mlir::Operation *anchor);
 
 } // namespace detail
 } // namespace lowering

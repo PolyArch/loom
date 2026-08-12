@@ -26,7 +26,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
-
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -682,9 +681,10 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
         impl.analyticPrimeCount.fetch_add(1, std::memory_order_relaxed);
     }
   }
-  if (!metrics)
+  if (!metrics) {
     return EvaluationModelResult{
         {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
+  }
 
   std::vector<MetricResult> metricResults;
   metricResults.reserve(request.metricRequests().size());

@@ -601,8 +601,40 @@ std::optional<dataflow::GateOp> getGateCloseProjection(mlir::Value value);
 std::optional<mlir::Value> getSelectorActivation(mlir::Value selector,
                                                  unsigned arity);
 
+/// The graph activation of a stream input leaf selected exactly once by a
+/// balanced binary router. When a branch is supplied, activity need only be
+/// true in that branch; otherwise it must be unconditionally true.
+std::optional<mlir::Value> getSelectiveRouterLeafActivation(
+    mlir::Value value, mlir::Value branchSelector = {},
+    std::optional<unsigned> branchLane = std::nullopt);
+
+std::optional<mlir::Value> getSelectiveRouterLeafSynchronization(
+    mlir::Value value, mlir::Value branchSelector = {},
+    std::optional<unsigned> branchLane = std::nullopt);
+
+/// The root event of a total stream activity projection. A single endpoint or
+/// every leaf of a balanced router must define one Boolean for its event.
+std::optional<mlir::Value> getStreamActivityEvent(mlir::Value value);
+
+/// Whether two Boolean selectors differ only by event-preserving rendezvous or
+/// an identity selection between false and true.
+bool haveEquivalentSynchronizedSelectionCorrespondence(mlir::Value lhs,
+                                                       mlir::Value rhs);
+
+/// The active event of a stream publication. A single rendezvous or every leaf
+/// of a balanced collector must use the corresponding routed event.
+std::optional<mlir::Value> getStreamPublicationEvent(mlir::Value value);
+
 bool selectorSelectsLaneOncePerActivation(mlir::Value selector, unsigned arity,
                                           unsigned lane);
+
+/// The parent activation of a selector lane whose input is the true-phase
+/// event of the selector's finite stream and whose lane is visited exactly
+/// once per activation.
+std::optional<mlir::Value> getSelectorLaneEventActivation(mlir::Value selector,
+                                                          unsigned arity,
+                                                          unsigned lane,
+                                                          mlir::Value event);
 
 bool selectorSelectsEveryLaneOncePerActivation(mlir::Value selector,
                                                unsigned arity);

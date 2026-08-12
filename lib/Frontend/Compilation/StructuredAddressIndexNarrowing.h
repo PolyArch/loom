@@ -67,8 +67,10 @@ explainAddressStateNormalizationRejection(mlir::Operation *selectedOperation);
 /// Enforces an explicit canonical index contract for LLVM GEPs. A selected
 /// width is materialized in the Structured Program and wider operands are
 /// narrowed only when their complete signed value domain is proven to fit.
-/// Without a selected width, an existing explicit module declaration is
-/// required. The caller owns failure atomicity through a private clone.
+/// Without a selected width, an existing explicit module declaration or the
+/// one common DataLayout pointer address width mechanically owns constant-only
+/// memory addressing. The caller owns failure atomicity through a private
+/// clone.
 llvm::Expected<mlir::Operation *>
 materializeAddressIndexContract(mlir::ModuleOp module,
                                 mlir::Operation *selectedOperation,

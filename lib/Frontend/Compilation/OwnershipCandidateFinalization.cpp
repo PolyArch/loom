@@ -4,7 +4,6 @@
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 
 #include "llvm/Support/Error.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <string>
 #include <utility>
@@ -67,7 +66,8 @@ finalizeSpatialOwnershipCandidate(
           requireExactFabricCapabilities(projected->artifact, fabric))
     return std::move(error);
   return MaterializedOwnershipCandidate{
-      std::move(candidate.structuredProgram), std::move(projected->artifact),
+      std::move(candidate.structuredProgram),
+      std::move(projected->artifact),
       std::move(projected->spatialGraphs),
       std::move(candidate.ownedSpatialRegion),
       std::move(candidate.blockActivityLineage),

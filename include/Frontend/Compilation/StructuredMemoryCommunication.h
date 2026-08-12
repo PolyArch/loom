@@ -102,7 +102,8 @@ llvm::Expected<MaterializedStructuredMemoryCommunicationCandidate>
 materializeStructuredMemoryCommunicationDecision(
     const StructuredProgramCandidate &parent,
     const StructuredMemoryCommunicationDecision &decision,
-    std::optional<StructuredEntityRef> trackedSpatialRegion = std::nullopt);
+    std::optional<StructuredEntityRef> trackedSpatialRegion = std::nullopt,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance = {});
 
 } // namespace loom::frontend
 

@@ -12,6 +12,7 @@
 #include "Simulator/NativeSimulationOracle.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
@@ -994,16 +995,32 @@ detail::StructuredOwnershipInvocationAccess::ownedSpatialRegion(
   return invalid("Structured candidate has no bound Spatial projection");
 }
 
+llvm::Expected<llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>>
+detail::StructuredOwnershipInvocationAccess::sourceProvenance(
+    const StructuredOwnershipInvocation &invocation,
+    const ArtifactRootReference &reference) {
+  const StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
+  if (!impl.generationRecorded)
+    return invalid("source provenance lookup precedes Ownership generation");
+  auto final = impl.finalCandidates.find(reference);
+  if (final != impl.finalCandidates.end())
+    return llvm::ArrayRef(final->second.sourceProvenance);
+  auto structured = impl.structuredCandidates.find(reference);
+  if (structured != impl.structuredCandidates.end())
+    return llvm::ArrayRef(structured->second.sourceProvenance);
+  auto materialized = impl.materialized.find(reference);
+  if (materialized != impl.materialized.end())
+    return llvm::ArrayRef(materialized->second.sourceProvenance);
+  return invalid("Structured candidate has no source provenance state");
+}
+
 llvm::Error
 detail::StructuredOwnershipInvocationAccess::recordScheduleCandidate(
     StructuredOwnershipInvocation &invocation,
     const ArtifactRootReference &parent, const ArtifactRootReference &child,
     const frontend::StructuredScheduleDecision &decision,
     frontend::MaterializedStructuredScheduleCandidate candidate,
-    lowering::ProjectedCanonicalDataflow projected,
     const ArtifactStore &store) {
-  if (llvm::Error error = requireProjectedDataflowOwner(projected, "Schedule"))
-    return error;
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
   if (!impl.generationRecorded || !impl.sourceReference)
     return invalid("Schedule generation precedes Ownership generation");
@@ -1038,15 +1055,14 @@ detail::StructuredOwnershipInvocationAccess::recordScheduleCandidate(
     return invalid("Schedule lineage key has conflicting decisions");
   impl.structuredReachable.insert(child);
 
-  auto found = impl.finalCandidates.find(child);
-  if (found == impl.finalCandidates.end()) {
-    impl.finalCandidates.try_emplace(
-        child, StructuredOwnershipInvocation::Impl::FinalCandidateState{
+  auto found = impl.structuredCandidates.find(child);
+  if (found == impl.structuredCandidates.end()) {
+    impl.structuredCandidates.try_emplace(
+        child, frontend::MaterializedStructuredOwnershipCandidate{
                    std::move(candidate.structuredProgram),
                    std::move(candidate.trackedSpatialRegion),
                    {},
-                   std::move(candidate.sourceProvenance),
-                   std::move(projected)});
+                   std::move(candidate.sourceProvenance)});
   } else if (found->second.structuredProgram.canonicalBytes().bytes() !=
              candidate.structuredProgram.canonicalBytes().bytes()) {
     return invalid("deduplicated Schedule child changed canonical bytes");
@@ -1060,11 +1076,7 @@ detail::StructuredOwnershipInvocationAccess::recordMemoryCommunicationCandidate(
     const ArtifactRootReference &parent, const ArtifactRootReference &child,
     const frontend::StructuredMemoryCommunicationDecision &decision,
     frontend::MaterializedStructuredMemoryCommunicationCandidate candidate,
-    lowering::ProjectedCanonicalDataflow projected,
     const ArtifactStore &store) {
-  if (llvm::Error error =
-          requireProjectedDataflowOwner(projected, "MemoryCommunication"))
-    return error;
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
   if (!impl.generationRecorded || !impl.sourceReference)
     return invalid(
@@ -1103,15 +1115,14 @@ detail::StructuredOwnershipInvocationAccess::recordMemoryCommunicationCandidate(
     return invalid("MemoryCommunication lineage key has conflicting decisions");
   impl.structuredReachable.insert(child);
 
-  auto found = impl.finalCandidates.find(child);
-  if (found == impl.finalCandidates.end()) {
-    impl.finalCandidates.try_emplace(
-        child, StructuredOwnershipInvocation::Impl::FinalCandidateState{
+  auto found = impl.structuredCandidates.find(child);
+  if (found == impl.structuredCandidates.end()) {
+    impl.structuredCandidates.try_emplace(
+        child, frontend::MaterializedStructuredOwnershipCandidate{
                    std::move(candidate.structuredProgram),
                    std::move(candidate.trackedSpatialRegion),
                    {},
-                   std::move(candidate.sourceProvenance),
-                   std::move(projected)});
+                   std::move(candidate.sourceProvenance)});
   } else if (found->second.structuredProgram.canonicalBytes().bytes() !=
              candidate.structuredProgram.canonicalBytes().bytes()) {
     return invalid(

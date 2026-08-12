@@ -853,6 +853,43 @@ extractBytecode(const CanonicalSemanticBytes &semanticBytes) {
 
 } // namespace
 
+llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>>
+cloneStructuredProgramWithSourceLocations(
+    const StructuredProgramCandidate &parent,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> provenance,
+    mlir::IRMapping &mapping) {
+  mlir::OwningOpRef<mlir::ModuleOp> clone(
+      llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
+  auto parentView = parent.view();
+  if (!parentView)
+    return parentView.takeError();
+  llvm::DenseSet<std::uint64_t> locatedOperations;
+  for (const StructuredOperationSourceProvenance &entry : provenance) {
+    if (entry.operation.parent != parent.identity() ||
+        entry.operation.kind != StructuredEntityKind::Operation)
+      return invalid("source provenance has the wrong Structured owner");
+    if (entry.sourceFiles.empty() || !llvm::is_sorted(entry.sourceFiles) ||
+        std::adjacent_find(entry.sourceFiles.begin(),
+                           entry.sourceFiles.end()) != entry.sourceFiles.end())
+      return invalid("source provenance files are not canonical");
+    if (!locatedOperations.insert(entry.operation.ordinal).second)
+      return invalid("source provenance duplicates an operation");
+    auto parentOperation = parentView->resolve(entry.operation);
+    if (!parentOperation)
+      return parentOperation.takeError();
+    mlir::Operation *mapped = mapping.lookupOrNull(parentOperation->operation);
+    if (!mapped)
+      return invalid("source-backed operation was not cloned");
+    llvm::SmallVector<mlir::Location> fileLocations;
+    fileLocations.reserve(entry.sourceFiles.size());
+    for (const std::string &sourceFile : entry.sourceFiles)
+      fileLocations.push_back(
+          mlir::FileLineColLoc::get(clone->getContext(), sourceFile, 0, 0));
+    mapped->setLoc(mlir::FusedLoc::get(clone->getContext(), fileLocations));
+  }
+  return clone;
+}
+
 llvm::Expected<StructuredProgramCandidateView>
 buildStructuredProgramCandidateView(ModuleOp module,
                                     const ArtifactIdentity &identity) {
@@ -965,10 +1002,9 @@ canonicalizeClone(ModuleOp source, ArrayRef<Block *> trackedBlocks,
   trackedOps.reserve(trackedOperations.size());
   DenseSet<Operation *> seenOperations;
   for (Operation *operation : trackedOperations) {
-    ModuleOp module = operation ? operation->getParentOfType<ModuleOp>()
-                                : ModuleOp{};
-    if (!operation ||
-        (operation != source.getOperation() && module != source))
+    ModuleOp module =
+        operation ? operation->getParentOfType<ModuleOp>() : ModuleOp{};
+    if (!operation || (operation != source.getOperation() && module != source))
       return invalid(
           "tracked operation has the wrong Structured Program owner");
     if (!seenOperations.insert(operation).second)

@@ -988,35 +988,11 @@ llvm::Expected<PrivateSelection> cloneSelectedOperation(
     return invalid("selected StructuredEntityRef is not an operation");
 
   mlir::IRMapping mapping;
-  mlir::OwningOpRef<mlir::ModuleOp> clone(
-      llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
-  llvm::DenseSet<std::uint64_t> locatedOperations;
-  for (const StructuredOperationSourceProvenance &provenance :
-       sourceProvenance) {
-    if (provenance.operation.parent != parent.identity() ||
-        provenance.operation.kind != StructuredEntityKind::Operation)
-      return invalid("source provenance has the wrong Structured owner");
-    if (provenance.sourceFiles.empty() ||
-        !llvm::is_sorted(provenance.sourceFiles) ||
-        std::adjacent_find(provenance.sourceFiles.begin(),
-                           provenance.sourceFiles.end()) !=
-            provenance.sourceFiles.end())
-      return invalid("source provenance files are not canonical");
-    if (!locatedOperations.insert(provenance.operation.ordinal).second)
-      return invalid("source provenance duplicates an operation");
-    auto parentOperation = parentView->resolve(provenance.operation);
-    if (!parentOperation)
-      return parentOperation.takeError();
-    mlir::Operation *mapped = mapping.lookupOrNull(parentOperation->operation);
-    if (!mapped)
-      return invalid("source-backed operation was not cloned");
-    llvm::SmallVector<mlir::Location> fileLocations;
-    fileLocations.reserve(provenance.sourceFiles.size());
-    for (const std::string &sourceFile : provenance.sourceFiles)
-      fileLocations.push_back(
-          mlir::FileLineColLoc::get(clone->getContext(), sourceFile, 0, 0));
-    mapped->setLoc(mlir::FusedLoc::get(clone->getContext(), fileLocations));
-  }
+  auto privateClone = cloneStructuredProgramWithSourceLocations(
+      parent, sourceProvenance, mapping);
+  if (!privateClone)
+    return privateClone.takeError();
+  mlir::OwningOpRef<mlir::ModuleOp> clone = std::move(*privateClone);
   mlir::Operation *clonedOperation =
       mapping.lookupOrNull(parentEntity->operation);
   if (!clonedOperation)
@@ -1124,8 +1100,7 @@ finalizeStructuredOwnershipCandidate(
   }
   return MaterializedStructuredOwnershipCandidate{
       std::move(structured->artifact), structured->trackedOperations.front(),
-      std::move(blockActivityLineage),
-      std::move(structured->sourceProvenance)};
+      std::move(blockActivityLineage), std::move(structured->sourceProvenance)};
 }
 
 llvm::Expected<llvm::DenseSet<mlir::Operation *>>

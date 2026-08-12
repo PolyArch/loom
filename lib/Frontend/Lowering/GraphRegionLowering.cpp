@@ -48,9 +48,13 @@ using ::loom::lowering::getFixedParallelDomain;
 using ::loom::lowering::detail::analyzeStreamBinding;
 using ::loom::lowering::detail::analyzeStreamBoundary;
 using ::loom::lowering::detail::checkStreamBoundaryUses;
+using ::loom::lowering::detail::collectStreamOutput;
 using ::loom::lowering::detail::materializeStreamSchedule;
+using ::loom::lowering::detail::materializeStreamSelectiveRouter;
+using ::loom::lowering::detail::routeStreamInput;
 using ::loom::lowering::detail::StreamBoundaryInfo;
 using ::loom::lowering::detail::StreamScheduleNode;
+using ::loom::lowering::detail::StreamSelectiveRouter;
 
 struct MemoryFrontier {
   ::mlir::Value write;
@@ -84,10 +88,17 @@ struct StreamLoweringPlan {
   unsigned boundaryIndex;
   ::mlir::Location loc;
   std::unique_ptr<StreamScheduleNode> schedule;
-  ::mlir::Value selector;
+  ::mlir::Value activation;
+  ::mlir::Value phase;
+  ::mlir::Value ordinal;
   ::mlir::Value event;
+  ::mlir::Value activity;
+  ::mlir::Value inactiveEvent;
   ::mlir::Value close;
+  StreamSelectiveRouter router;
+  ::llvm::SmallVector<::mlir::Value, 4> endpointEvents;
   ::llvm::SmallVector<::mlir::Value, 4> outputs;
+  ::llvm::SmallVector<::mlir::Value, 4> commits;
 };
 
 struct StreamOutputSlot {
@@ -406,6 +417,17 @@ private:
         .getOutput();
   }
 
+  ::mlir::Value closeStreamSchedule(StreamLoweringPlan &plan,
+                                    ::mlir::Value feedback) {
+    assert(plan.activation && plan.phase && feedback &&
+           "stream schedule drain requires a complete recurrence");
+    setInsertionPoint(plan.loc);
+    auto carry =
+        ::dataflow::CarryOp::create(builder, plan.loc, builder.getNoneType(),
+                                    plan.phase, plan.activation, feedback);
+    return demux(plan.phase, carry.getOutput(), 2, plan.loc).front();
+  }
+
   void prepareStreamPlans(::mlir::Block &block, ::mlir::Value execution) {
     for (const auto &ownedPlan : streamPlans) {
       StreamLoweringPlan *plan = ownedPlan.get();
@@ -414,8 +436,12 @@ private:
 
       auto materialization = materializeStreamSchedule(
           *plan->schedule, execution, builder, anchor);
-      plan->selector = materialization.selector;
+      plan->activation = materialization.activation;
+      plan->phase = materialization.phase;
+      plan->ordinal = materialization.ordinal;
       plan->event = materialization.event;
+      plan->activity = materialization.activity;
+      plan->inactiveEvent = materialization.inactiveEvent;
       plan->close = materialization.close;
       for (const auto &choiceUse : materialization.choiceSelectorUses)
         streamChoiceUsers[choiceUse.choice].push_back(choiceUse.user);
@@ -423,22 +449,23 @@ private:
         streamRepeatUsers[repeatUse.repeat].push_back(
             {repeatUse.user, repeatUse.placeholder});
 
+      auto routing = materializeStreamSelectiveRouter(
+          plan->ordinal, plan->event, materialization.endpoints.size(),
+          plan->loc, builder, anchor);
+      plan->router = std::move(routing.router);
+      plan->endpointEvents = std::move(routing.events);
+
       if (plan->input) {
         ::mlir::Value input = streamInputByChannel.lookup(plan->channel);
         assert(input && "stream input plan must reference a graph stream port");
-        ::llvm::SmallVector<::mlir::Value, 4> routed;
-        if (materialization.endpoints.size() == 1) {
-          auto lanes = demux(materialization.selector, input, 2, plan->loc);
-          routed.push_back(lanes[1]);
-        } else {
-          routed = demux(plan->selector, input,
-                         materialization.endpoints.size(), plan->loc);
-        }
+        ::llvm::SmallVector<::mlir::Value, 4> routed = routeStreamInput(
+            plan->router, plan->event, input, plan->loc, builder, anchor);
         for (auto [endpoint, payload] :
              ::llvm::zip_equal(materialization.endpoints, routed))
           routedStreamInputs.try_emplace(endpoint, payload);
       } else {
         plan->outputs.resize(materialization.endpoints.size());
+        plan->commits.resize(materialization.endpoints.size());
         for (auto [index, endpoint] :
              ::llvm::enumerate(materialization.endpoints))
           streamOutputSlots.try_emplace(
@@ -455,36 +482,59 @@ private:
       if (plan->scope != &block)
         continue;
 
-      if (plan->close)
-        closeEvents.push_back(plan->close);
-      if (!plan->input) {
+      if (plan->input) {
+        if (plan->activity) {
+          ::mlir::Value feedback = mux(
+              plan->activity,
+              ::mlir::ValueRange{plan->inactiveEvent, plan->event}, plan->loc);
+          closeEvents.push_back(closeStreamSchedule(*plan, feedback));
+        } else if (plan->close) {
+          closeEvents.push_back(plan->close);
+        }
+      } else {
         assert(::llvm::all_of(plan->outputs,
                               [](const ::mlir::Value &value) {
                                 return static_cast<bool>(value);
                               }) &&
                "every stream output endpoint must be lowered");
-        ::mlir::Value output =
-            plan->outputs.size() == 1
-                ? plan->outputs.front()
-                : mux(plan->selector, plan->outputs, plan->loc);
-        if (plan->outputs.size() == 1) {
-          setInsertionPoint(plan->loc);
-          auto publication = ::dataflow::SyncOp::create(
-              builder, plan->loc,
-              ::mlir::TypeRange{builder.getNoneType(), output.getType()},
-              ::mlir::ValueRange{plan->event, output});
-          output = publication.getOutputs()[1];
-        }
+        assert(::llvm::all_of(plan->commits,
+                              [](const ::mlir::Value &value) {
+                                return static_cast<bool>(value);
+                              }) &&
+               "every stream output endpoint must publish a commit");
+        ::mlir::Value output = collectStreamOutput(plan->router, plan->outputs,
+                                                   plan->loc, builder, anchor);
+        ::mlir::Value commit = collectStreamOutput(plan->router, plan->commits,
+                                                   plan->loc, builder, anchor);
+        setInsertionPoint(plan->loc);
+        auto drained = ::dataflow::SyncOp::create(
+            builder, plan->loc,
+            ::mlir::TypeRange{builder.getNoneType(), output.getType()},
+            ::mlir::ValueRange{commit, output});
+        ::mlir::Value feedback = drained.getOutputs()[0];
+        output = drained.getOutputs()[1];
+        if (plan->activity)
+          feedback =
+              mux(plan->activity, plan->inactiveEvent, feedback, plan->loc);
+
+        closeEvents.push_back(closeStreamSchedule(*plan, feedback));
         assert(!streamOutputs[plan->boundaryIndex] &&
                "stream output binding must be materialized once");
         streamOutputs[plan->boundaryIndex] = output;
       }
       plan->scope = nullptr;
       plan->channel = {};
-      plan->selector = {};
+      plan->activation = {};
+      plan->phase = {};
+      plan->ordinal = {};
       plan->event = {};
+      plan->activity = {};
+      plan->inactiveEvent = {};
       plan->close = {};
+      plan->router = {};
+      plan->endpointEvents.clear();
       plan->outputs.clear();
+      plan->commits.clear();
     }
     if (!closeEvents.empty()) {
       closeEvents.insert(closeEvents.begin(), result.execution);
@@ -1002,7 +1052,14 @@ private:
           StreamOutputSlot target = slot->second;
           assert(!target.plan->outputs[target.index] &&
                  "stream endpoint must be lowered once");
-          target.plan->outputs[target.index] = sync.getOutputs()[1];
+          auto publication = ::dataflow::SyncOp::create(
+              builder, send.getLoc(),
+              ::mlir::TypeRange{builder.getNoneType(),
+                                send.getMessage().getType()},
+              ::mlir::ValueRange{target.plan->endpointEvents[target.index],
+                                 sync.getOutputs()[1]});
+          target.plan->outputs[target.index] = publication.getOutputs()[1];
+          target.plan->commits[target.index] = publication.getOutputs()[0];
           streamOutputSlots.erase(slot);
         } else {
           assert(!streamOutputs[output->second] &&

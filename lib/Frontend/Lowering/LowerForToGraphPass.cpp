@@ -835,6 +835,12 @@ struct ClassifiedGraphValues {
                     ::mlir::memref::GetGlobalOp, ::mlir::LLVM::AddressOfOp>(
             def))
       return value;
+    if (auto service = ::llvm::dyn_cast<::dataflow::MemoryServiceOp>(def)) {
+      if (value != service.getMemory())
+        return {};
+      value = service.getPointer();
+      continue;
+    }
     if (auto view = ::llvm::dyn_cast<::mlir::ViewLikeOpInterface>(def)) {
       if (value != view.getViewDest())
         return {};

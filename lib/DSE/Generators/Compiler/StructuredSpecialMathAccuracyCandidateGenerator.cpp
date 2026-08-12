@@ -131,8 +131,7 @@ cloneCandidate(
     return clone.takeError();
   return frontend::MaterializedStructuredOwnershipCandidate{
       std::move(*clone), candidate.ownedSpatialRegion,
-      candidate.blockActivityLineage,
-      candidate.sourceProvenance};
+      candidate.blockActivityLineage, candidate.sourceProvenance};
 }
 
 llvm::Expected<frontend::MaterializedStructuredOwnershipCandidate>
@@ -162,7 +161,7 @@ finalizeCandidate(
   bool rejected = false;
   llvm::Error unhandled = llvm::handleErrors(
       finalized.takeError(),
-      [&](const frontend::SpatialOwnershipCandidateRejection &) {
+      [&](const frontend::SpatialOwnershipCandidateRejection &rejection) {
         rejected = true;
       });
   if (unhandled)

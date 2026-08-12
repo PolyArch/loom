@@ -27,7 +27,9 @@ struct NativeCapturedMemoryObject {
 struct NativeSimulationCallCapture {
   std::vector<std::uint64_t> denseCoordinates;
   std::vector<RuntimeValueEntry> runtimeValues;
+  std::vector<CanonicalStreamSequence> runtimeStreams;
   std::vector<CanonicalValueSequence> valueResults;
+  std::vector<CanonicalStreamSequence> streamOutputs;
   std::vector<NativeCapturedMemoryObject> objects;
   /// Per logical-memory-root capture binding, the invocation-local object in
   /// `objects`. Static developer-tool capture and workload-backed production
@@ -87,6 +89,18 @@ struct WorkloadBackedDenseCoordinateCapture final {
   std::uint64_t byteCount = 0;
 };
 
+/// One graph stream port and the exact selected Structured endpoint sites
+/// that exchange its ordered tokens. Endpoint operations and storage sizes
+/// are invocation-local instrumentation handles; graph ordinal and lane shape
+/// remain derived from the canonical Dataflow boundary.
+struct WorkloadBackedStreamCapture final {
+  std::uint64_t graphOrdinal = 0;
+  std::uint64_t lanesPerToken = 0;
+  std::uint32_t laneBitWidth = 0;
+  std::uint64_t byteCount = 0;
+  std::vector<mlir::Operation *> endpoints;
+};
+
 /// The exact finite graph boundary instrumented during one selected
 /// Structured execution. This is a removable native-execution plan, not a
 /// persistent Simulation schema or a second graph ABI authority.
@@ -94,7 +108,9 @@ struct WorkloadBackedSimulationInputCapturePlan final {
   dataflow::RootedGraphLaunchRef launch;
   std::vector<WorkloadBackedDenseCoordinateCapture> denseCoordinates;
   std::vector<SimulationValueInputCapture> valueInputs;
+  std::vector<WorkloadBackedStreamCapture> streamInputs;
   std::vector<SimulationValueResultCapture> valueResults;
+  std::vector<WorkloadBackedStreamCapture> streamOutputs;
   std::vector<WorkloadBackedMemoryRootCapture> memoryRoots;
 };
 

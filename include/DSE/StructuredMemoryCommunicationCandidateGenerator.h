@@ -68,8 +68,7 @@ llvm::Error registerStructuredMemoryCommunicationCandidateGenerator();
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
 bindStructuredMemoryCommunicationCandidateGeneratorInputs(
-    llvm::ArrayRef<ArtifactRootReference> structuredPrograms,
-    const ArtifactRootReference &fabric);
+    llvm::ArrayRef<ArtifactRootReference> structuredPrograms);
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolveStructuredMemoryCommunicationCandidateGeneratorBinding(

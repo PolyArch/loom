@@ -14,8 +14,12 @@ bool areKnownDistinctMemoryRoots(mlir::Value lhs, mlir::Value rhs);
 bool canPromoteOrderedBufferToChannel(mlir::memref::AllocOp allocation);
 bool canPromoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation);
 
-llvm::Error promoteOrderedBufferToChannel(mlir::memref::AllocOp allocation);
-llvm::Error promoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation);
+llvm::Error
+promoteOrderedBufferToChannel(mlir::memref::AllocOp allocation,
+                              mlir::Operation *&trackedSpatialRegion);
+llvm::Error
+promoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation,
+                              mlir::Operation *&trackedSpatialRegion);
 
 } // namespace loom::frontend::detail
 

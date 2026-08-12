@@ -42,6 +42,7 @@ add_mlir_dialect_library(MLIRDataflow
   OperationSchemaCodec.cpp
   OperationSchemaTypeCodec.cpp
   DataflowThreadCompletion.cpp
+  DataflowVectorSemantics.cpp
 
   PARTIAL_SOURCES_INTENDED
 

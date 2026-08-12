@@ -18,6 +18,8 @@ namespace {
 using ::loom::lowering::detail::StreamBindingPlan;
 using ::loom::lowering::detail::StreamScheduleMaterialization;
 using ::loom::lowering::detail::StreamScheduleNode;
+using ::loom::lowering::detail::StreamSelectiveRouter;
+using ::loom::lowering::detail::StreamSelectiveRouterMaterialization;
 
 struct StreamChoiceLeg {
   ::mlir::Operation *choice;
@@ -96,18 +98,6 @@ void setInsertionPoint(::mlir::OpBuilder &builder, ::mlir::Operation *anchor) {
       .getValue();
 }
 
-::llvm::SmallVector<::mlir::Value, 4> demux(::mlir::Value selector,
-                                            ::mlir::Value input, unsigned width,
-                                            ::mlir::Location loc,
-                                            ::mlir::OpBuilder &builder,
-                                            ::mlir::Operation *anchor) {
-  assert(width > 1 && "multi-lane demux requires multiple outputs");
-  setInsertionPoint(builder, anchor);
-  ::llvm::SmallVector<::mlir::Type, 4> types(width, input.getType());
-  auto op = ::dataflow::DemuxOp::create(builder, loc, types, selector, input);
-  return {op.getOutputs().begin(), op.getOutputs().end()};
-}
-
 std::pair<::mlir::Value, ::mlir::Value>
 demux(::mlir::Value selector, ::mlir::Value input, ::mlir::Location loc,
       ::mlir::OpBuilder &builder, ::mlir::Operation *anchor) {
@@ -126,20 +116,6 @@ demux(::mlir::Value selector, ::mlir::Value input, ::mlir::Location loc,
   return ::dataflow::MuxOp::create(builder, loc, inputs.front().getType(),
                                    selector, inputs)
       .getOutput();
-}
-
-::mlir::Value scheduleSelector(::mlir::Value ordinal, unsigned siteCount,
-                               ::mlir::Location loc, ::mlir::OpBuilder &builder,
-                               ::mlir::Operation *anchor) {
-  assert(siteCount > 1 && "one site needs no schedule selector");
-  setInsertionPoint(builder, anchor);
-  if (siteCount == 2)
-    return ::mlir::arith::TruncIOp::create(builder, loc, builder.getI1Type(),
-                                           ordinal)
-        .getResult();
-  return ::mlir::arith::IndexCastOp::create(builder, loc,
-                                            builder.getIndexType(), ordinal)
-      .getResult();
 }
 
 void collectScheduledEndpoints(
@@ -165,7 +141,6 @@ void collectScheduledEndpoints(
     assert(schedule.children.size() == 1 && "stream repeat must have one body");
     size_t begin = endpoints.size();
     collectScheduledEndpoints(*schedule.children.front(), path, endpoints);
-    // The innermost repeat selector already implies all structured ancestors.
     for (size_t index = begin; index < endpoints.size(); ++index)
       if (!endpoints[index].repeat)
         endpoints[index].repeat = schedule.repeat;
@@ -186,6 +161,12 @@ materializeEndpointActivity(const ScheduledStreamEndpoint &endpoint,
   for (const StreamChoiceLeg &leg : ::llvm::reverse(endpoint.path)) {
     ::mlir::Value condition =
         ::mlir::cast<::mlir::scf::IfOp>(leg.choice).getCondition();
+    setInsertionPoint(builder, anchor);
+    auto synchronized = ::dataflow::SyncOp::create(
+        builder, loc, ::mlir::TypeRange{i1, builder.getNoneType()},
+        ::mlir::ValueRange{condition, event});
+    condition = synchronized.getOutputs()[0];
+    event = synchronized.getOutputs()[1];
     ::mlir::Value inactive =
         scheduleConstant(event, i1, 0, loc, builder, anchor);
     active = leg.onTrue ? mux(condition, ::mlir::ValueRange{inactive, active},
@@ -193,18 +174,22 @@ materializeEndpointActivity(const ScheduledStreamEndpoint &endpoint,
                         : mux(condition, ::mlir::ValueRange{active, inactive},
                               loc, builder, anchor);
     materialization.choiceSelectorUses.push_back(
-        {leg.choice, active.getDefiningOp()});
+        {leg.choice, synchronized.getOperation()});
   }
   if (endpoint.repeat) {
     setInsertionPoint(builder, anchor);
     auto placeholder = ::mlir::arith::ConstantOp::create(
         builder, loc, i1, builder.getBoolAttr(false));
+    auto synchronized = ::dataflow::SyncOp::create(
+        builder, loc, ::mlir::TypeRange{i1, builder.getNoneType()},
+        ::mlir::ValueRange{placeholder, event});
+    event = synchronized.getOutputs()[1];
     ::mlir::Value inactive =
         scheduleConstant(event, i1, 0, loc, builder, anchor);
-    active = mux(placeholder, ::mlir::ValueRange{inactive, active}, loc,
-                 builder, anchor);
+    active = mux(synchronized.getOutputs()[0],
+                 ::mlir::ValueRange{inactive, active}, loc, builder, anchor);
     materialization.repeatSelectorUses.push_back(
-        {endpoint.repeat, active.getDefiningOp(), placeholder});
+        {endpoint.repeat, synchronized.getOperation(), placeholder});
   }
   return active;
 }
@@ -550,6 +535,138 @@ private:
   }
 };
 
+class SelectiveRouterBuilder {
+public:
+  SelectiveRouterBuilder(::mlir::Location loc, ::mlir::OpBuilder &builder,
+                         ::mlir::Operation *anchor)
+      : loc(loc), builder(builder), anchor(anchor) {}
+
+  StreamSelectiveRouterMaterialization
+  materialize(::mlir::Value ordinal, ::mlir::Value event, unsigned count) {
+    assert(count != 0 && "selective routing requires an endpoint");
+    StreamSelectiveRouterMaterialization result;
+    result.router.leafCount = count;
+    result.events.reserve(count);
+    if (count == 1) {
+      result.events.push_back(event);
+      return result;
+    }
+    materializeNode(ordinal, event, count, result.router, result.events);
+    return result;
+  }
+
+private:
+  struct Split {
+    ::mlir::Value selector;
+    ::mlir::Value leftOrdinal;
+    ::mlir::Value leftEvent;
+    ::mlir::Value rightOrdinal;
+    ::mlir::Value rightEvent;
+    unsigned leftCount;
+  };
+
+  ::mlir::Location loc;
+  ::mlir::OpBuilder &builder;
+  ::mlir::Operation *anchor;
+
+  ::mlir::Value ordinalConstant(::mlir::Value event, ::mlir::Type type,
+                                int64_t value) {
+    assert(::llvm::isa<::mlir::IntegerType>(type) &&
+           "stream schedule ordinal must be an integer");
+    return scheduleConstant(event, ::llvm::cast<::mlir::IntegerType>(type),
+                            value, loc, builder, anchor);
+  }
+
+  Split split(::mlir::Value ordinal, ::mlir::Value event, unsigned count) {
+    assert(count > 1 && "selective router split requires multiple endpoints");
+    const unsigned leftCount = (count + 1) / 2;
+    ::mlir::Value threshold =
+        ordinalConstant(event, ordinal.getType(), leftCount);
+    setInsertionPoint(builder, anchor);
+    ::mlir::Value selector =
+        ::mlir::arith::CmpIOp::create(
+            builder, loc, ::mlir::arith::CmpIPredicate::uge, ordinal, threshold)
+            .getResult();
+    auto events = demux(selector, event, loc, builder, anchor);
+    auto ordinals = demux(selector, ordinal, loc, builder, anchor);
+    ::mlir::Value rightThreshold =
+        ordinalConstant(events.second, ordinal.getType(), leftCount);
+    setInsertionPoint(builder, anchor);
+    ::mlir::Value rightOrdinal =
+        ::mlir::arith::SubIOp::create(builder, loc, ordinals.second,
+                                      rightThreshold)
+            .getResult();
+    return {selector,     ordinals.first, events.first,
+            rightOrdinal, events.second,  leftCount};
+  }
+
+  void materializeNode(::mlir::Value ordinal, ::mlir::Value event,
+                       unsigned count, StreamSelectiveRouter &router,
+                       ::llvm::SmallVectorImpl<::mlir::Value> &events) {
+    Split routed = split(ordinal, event, count);
+    router.nodes.push_back({routed.selector, routed.leftCount});
+    const unsigned rightCount = count - routed.leftCount;
+    if (routed.leftCount == 1)
+      events.push_back(routed.leftEvent);
+    else
+      materializeNode(routed.leftOrdinal, routed.leftEvent, routed.leftCount,
+                      router, events);
+    if (rightCount == 1)
+      events.push_back(routed.rightEvent);
+    else
+      materializeNode(routed.rightOrdinal, routed.rightEvent, rightCount,
+                      router, events);
+  }
+};
+
+void routeStreamInputNode(const StreamSelectiveRouter &router, unsigned count,
+                          std::size_t &nodeIndex, ::mlir::Value input,
+                          ::mlir::Location loc, ::mlir::OpBuilder &builder,
+                          ::mlir::Operation *anchor,
+                          ::llvm::SmallVectorImpl<::mlir::Value> &outputs) {
+  assert(nodeIndex < router.nodes.size() &&
+         "selective router omitted an internal node");
+  const StreamSelectiveRouter::Node &node = router.nodes[nodeIndex++];
+  auto payloads = demux(node.selector, input, loc, builder, anchor);
+  const unsigned rightCount = count - node.leftCount;
+  if (node.leftCount == 1)
+    outputs.push_back(payloads.first);
+  else
+    routeStreamInputNode(router, node.leftCount, nodeIndex, payloads.first, loc,
+                         builder, anchor, outputs);
+  if (rightCount == 1)
+    outputs.push_back(payloads.second);
+  else
+    routeStreamInputNode(router, rightCount, nodeIndex, payloads.second, loc,
+                         builder, anchor, outputs);
+}
+
+::mlir::Value collectStreamOutputNode(const StreamSelectiveRouter &router,
+                                      unsigned count, std::size_t &nodeIndex,
+                                      ::mlir::ValueRange inputs,
+                                      ::mlir::Location loc,
+                                      ::mlir::OpBuilder &builder,
+                                      ::mlir::Operation *anchor) {
+  assert(nodeIndex < router.nodes.size() &&
+         "selective router omitted an internal node");
+  const StreamSelectiveRouter::Node &node = router.nodes[nodeIndex++];
+  ::mlir::Value left =
+      node.leftCount == 1
+          ? inputs.front()
+          : collectStreamOutputNode(router, node.leftCount, nodeIndex,
+                                    inputs.take_front(node.leftCount), loc,
+                                    builder, anchor);
+  ::mlir::ValueRange rightInputs = inputs.drop_front(node.leftCount);
+  const unsigned rightCount = count - node.leftCount;
+  ::mlir::Value right =
+      rightCount == 1
+          ? rightInputs.front()
+          : collectStreamOutputNode(router, rightCount, nodeIndex, rightInputs,
+                                    loc, builder, anchor);
+  return mux(node.selector, ::mlir::ValueRange{left, right}, loc, builder,
+             anchor);
+}
+
 } // namespace
 
 namespace loom {
@@ -711,8 +828,6 @@ materializeStreamSchedule(const StreamScheduleNode &schedule,
 
   if (schedule.kind == StreamScheduleNode::Kind::Endpoint) {
     result.event = execution;
-    result.selector = scheduleConstant(execution, builder.getI1Type(), 1,
-                                       schedule.loc, builder, anchor);
     return result;
   }
 
@@ -744,6 +859,8 @@ materializeStreamSchedule(const StreamScheduleNode &schedule,
       stream.getPhase(), activations.getOutput());
 
   ::mlir::Value ordinal = stream.getIv();
+  result.activation = execution;
+  result.phase = stream.getPhase();
   result.event = phases.getOutputs()[1];
   result.close = phases.getOutputs()[0];
   ::mlir::Value route = ordinal;
@@ -751,25 +868,18 @@ materializeStreamSchedule(const StreamScheduleNode &schedule,
     network->setPhase(stream.getPhase());
     route = network->route(schedule, ordinal, result.event);
   }
-  if (schedule.siteCount > 1) {
-    result.selector = scheduleSelector(route, schedule.siteCount, schedule.loc,
-                                       builder, anchor);
-  } else {
-    result.selector = scheduleConstant(result.event, builder.getI1Type(), 1,
-                                       schedule.loc, builder, anchor);
-  }
+  result.ordinal = route;
 
   if (!::llvm::any_of(endpoints, [](const ScheduledStreamEndpoint &endpoint) {
         return !endpoint.path.empty();
       }))
     return result;
 
-  ::llvm::SmallVector<::mlir::Value, 4> events;
-  if (endpoints.size() == 1)
-    events.push_back(result.event);
-  else
-    events = demux(result.selector, result.event, endpoints.size(),
-                   schedule.loc, builder, anchor);
+  StreamSelectiveRouterMaterialization routing =
+      materializeStreamSelectiveRouter(result.ordinal, result.event,
+                                       endpoints.size(), schedule.loc, builder,
+                                       anchor);
+  ::llvm::SmallVector<::mlir::Value, 4> &events = routing.events;
 
   ::llvm::SmallVector<::mlir::Value, 4> activities;
   for (auto [endpoint, event] : ::llvm::zip_equal(endpoints, events))
@@ -778,19 +888,64 @@ materializeStreamSchedule(const StreamScheduleNode &schedule,
   ::mlir::Value active =
       activities.size() == 1
           ? activities.front()
-          : mux(result.selector, activities, schedule.loc, builder, anchor);
+          : collectStreamOutput(routing.router, activities, schedule.loc,
+                                builder, anchor);
 
   route = demux(active, route, schedule.loc, builder, anchor).second;
-  result.event =
-      demux(active, result.event, schedule.loc, builder, anchor).second;
-  if (schedule.siteCount > 1) {
-    result.selector = scheduleSelector(route, schedule.siteCount, schedule.loc,
-                                       builder, anchor);
-  } else {
-    result.selector = scheduleConstant(result.event, builder.getI1Type(), 1,
-                                       schedule.loc, builder, anchor);
-  }
+  auto gatedEvent = demux(active, result.event, schedule.loc, builder, anchor);
+  result.activity = active;
+  result.inactiveEvent = gatedEvent.first;
+  result.event = gatedEvent.second;
+  result.ordinal = route;
   return result;
+}
+
+StreamSelectiveRouterMaterialization
+materializeStreamSelectiveRouter(::mlir::Value ordinal, ::mlir::Value event,
+                                 unsigned endpointCount, ::mlir::Location loc,
+                                 ::mlir::OpBuilder &builder,
+                                 ::mlir::Operation *anchor) {
+  assert((endpointCount == 1 || ordinal) &&
+         "multi-endpoint stream routing requires an ordinal");
+  return SelectiveRouterBuilder(loc, builder, anchor)
+      .materialize(ordinal, event, endpointCount);
+}
+
+::llvm::SmallVector<::mlir::Value, 4>
+routeStreamInput(const StreamSelectiveRouter &router, ::mlir::Value event,
+                 ::mlir::Value input, ::mlir::Location loc,
+                 ::mlir::OpBuilder &builder, ::mlir::Operation *anchor) {
+  assert(router.leafCount != 0 && "stream input routing requires an endpoint");
+  if (router.leafCount == 1) {
+    ::mlir::Value selected =
+        scheduleConstant(event, builder.getI1Type(), 1, loc, builder, anchor);
+    return {demux(selected, input, loc, builder, anchor).second};
+  }
+  ::llvm::SmallVector<::mlir::Value, 4> outputs;
+  outputs.reserve(router.leafCount);
+  std::size_t nodeIndex = 0;
+  routeStreamInputNode(router, router.leafCount, nodeIndex, input, loc, builder,
+                       anchor, outputs);
+  assert(nodeIndex == router.nodes.size() &&
+         "stream input routing did not consume its selector tree");
+  return outputs;
+}
+
+::mlir::Value collectStreamOutput(const StreamSelectiveRouter &router,
+                                  ::mlir::ValueRange inputs,
+                                  ::mlir::Location loc,
+                                  ::mlir::OpBuilder &builder,
+                                  ::mlir::Operation *anchor) {
+  assert(inputs.size() == router.leafCount &&
+         "stream output collection must cover every selector leaf");
+  if (inputs.size() == 1)
+    return inputs.front();
+  std::size_t nodeIndex = 0;
+  ::mlir::Value output = collectStreamOutputNode(
+      router, router.leafCount, nodeIndex, inputs, loc, builder, anchor);
+  assert(nodeIndex == router.nodes.size() &&
+         "stream output collection did not consume its selector tree");
+  return output;
 }
 
 } // namespace detail

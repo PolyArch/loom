@@ -52,6 +52,14 @@ std::optional<ResolvedLinearMemoryAddress>
 resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
                            unsigned canonicalIndexBits);
 
+/// Resolves an exact root-relative address while stopping at the service root
+/// owned by the caller's projection boundary. The root predicate changes only
+/// where the shared GEP walk stops; DataLayout and element-index proofs remain
+/// identical to graph lowering.
+std::optional<ResolvedLinearMemoryAddress> resolveLinearMemoryAddress(
+    mlir::Value pointer, mlir::Type accessType, unsigned canonicalIndexBits,
+    llvm::function_ref<bool(mlir::Value)> isBoundaryRoot);
+
 /// Resolves one typed LLVM GEP chain as an exact DataLayout byte address.
 /// Unlike the RootRelative overload above, this projection derives its
 /// arithmetic width from the pointer address space and does not require a

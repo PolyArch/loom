@@ -3,18 +3,16 @@
 
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
-#include "Fabric/Artifact/FabricArtifact.h"
-#include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/StructuredMemoryCommunication.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
-#include "Frontend/Lowering/CanonicalDataflowLowering.h"
 
 #include "llvm/Support/Error.h"
 
 #include <array>
 #include <cstdint>
+#include <deque>
 #include <limits>
-#include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -22,11 +20,10 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.structured_memory_communication_generator.config.3.0";
+    "loom.structured_memory_communication_generator.config.4.0";
 
 enum InputSlot : std::uint32_t {
   StructuredProgramsInput,
-  FabricInput,
   InputSlotCount,
 };
 
@@ -36,9 +33,6 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
          "structured_program", PlanValueRole::CandidateSet,
          &frontend::structuredProgramArtifactSchema,
          PlanValueCardinality::FiniteSet},
-        {CandidateGeneratorInputSlotRef(FabricInput), "fabric",
-         PlanValueRole::CandidateSet, &fabric::fabricArtifactSchema,
-         PlanValueCardinality::ExactlyOne},
     }};
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
@@ -130,7 +124,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredMemoryCommunicationCandidateGeneratorKind,
     "compiler.structured_memory_communication",
-    "loom.compiler.structured_memory_communication.generator.v3",
+    "loom.compiler.structured_memory_communication.generator.v4",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -139,12 +133,6 @@ const CandidateGeneratorDescriptor descriptor{
     &lineageContract,
     ProviderForm::InProcess,
 };
-
-const ArtifactRootReference &
-singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> bindings,
-            InputSlot slot) {
-  return bindings[slot].artifacts.front();
-}
 
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
@@ -158,38 +146,31 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
 
   StructuredOwnershipInvocation *invocation =
       detail::StructuredOwnershipInvocationAccess::current();
-  std::optional<fabric::FinalizedFabricRoot> importedFabric;
-  const fabric::FinalizedFabricRoot *exactFabric = nullptr;
-  if (invocation) {
-    exactFabric =
-        &detail::StructuredOwnershipInvocationAccess::fabric(*invocation);
-    if (singleInput(inputBindings, FabricInput) != exactFabric->reference())
-      return invalid("Fabric input differs from the bound invocation");
-  } else {
-    auto imported = fabric::importEntireFabricRoot(
-        singleInput(inputBindings, FabricInput), store);
-    if (!imported)
-      return imported.takeError();
-    importedFabric.emplace(std::move(*imported));
-    exactFabric = &*importedFabric;
-  }
-  frontend::FabricCapabilityIndex capabilities(exactFabric->view());
-  const lowering::CanonicalDataflowLoweringOptions loweringOptions =
-      invocation ? detail::StructuredOwnershipInvocationAccess::loweringOptions(
-                       *invocation)
-                 : lowering::CanonicalDataflowLoweringOptions{};
+  struct FrontierEntry final {
+    ArtifactRootReference reference;
+    bool initial = false;
+  };
 
-  std::vector<ArtifactRootReference> outputs =
+  std::vector<ArtifactRootReference> orderedInputs =
       inputBindings[StructuredProgramsInput].artifacts;
+  llvm::sort(orderedInputs, artifactRootReferenceLess);
+  std::vector<ArtifactRootReference> outputs;
+  std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)> seen(
+      &artifactRootReferenceLess);
+  std::deque<FrontierEntry> frontier;
+  for (const ArtifactRootReference &reference : orderedInputs)
+    if (seen.insert(reference).second) {
+      outputs.push_back(reference);
+      frontier.push_back({reference, true});
+    }
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
   std::uint64_t remainingScopes = config->scopeExpansionLimit();
   std::uint64_t inspectedMemoryScopes = 0;
   std::uint64_t decisionAttempts = 0;
-  for (const ArtifactRootReference &reference :
-       inputBindings[StructuredProgramsInput].artifacts) {
-    if (remainingScopes == 0)
-      break;
-    auto parent = frontend::importStructuredProgram(reference, store);
+  while (remainingScopes != 0 && !frontier.empty()) {
+    FrontierEntry entry = std::move(frontier.front());
+    frontier.pop_front();
+    auto parent = frontend::importStructuredProgram(entry.reference, store);
     if (!parent)
       return parent.takeError();
     auto decisions = frontend::enumerateStructuredMemoryCommunicationDecisions(
@@ -203,44 +184,47 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     if (decisions->inspectedMemoryScopes > remainingScopes)
       return invalid("memory scope domain exceeded its resolved limit");
     remainingScopes -= decisions->inspectedMemoryScopes;
-    if (decisions->decisions.size() >
-        std::numeric_limits<std::uint64_t>::max() - decisionAttempts)
-      return invalid("memory-decision accounting overflows u64");
-    decisionAttempts += decisions->decisions.size();
-    outputs.reserve(outputs.size() + decisions->decisions.size());
     std::optional<frontend::StructuredEntityRef> trackedSpatialRegion;
+    llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
+        sourceProvenance;
     if (invocation) {
-      auto tracked = detail::StructuredOwnershipInvocationAccess::
-          ownedSpatialRegion(*invocation, reference);
+      auto tracked =
+          detail::StructuredOwnershipInvocationAccess::ownedSpatialRegion(
+              *invocation, entry.reference);
       if (!tracked)
         return tracked.takeError();
       trackedSpatialRegion = *tracked;
+      auto provenance =
+          detail::StructuredOwnershipInvocationAccess::sourceProvenance(
+              *invocation, entry.reference);
+      if (!provenance)
+        return provenance.takeError();
+      sourceProvenance = *provenance;
     }
     for (const frontend::StructuredMemoryCommunicationDecision &decision :
          decisions->decisions) {
+      const bool channelDecision =
+          frontend::structuredMemoryCommunicationDecisionKind(decision) ==
+          frontend::StructuredMemoryCommunicationDecisionKind::
+              PromoteOrderedBufferToChannel;
+      if (!entry.initial && !channelDecision)
+        continue;
+      if (decisionAttempts == std::numeric_limits<std::uint64_t>::max())
+        return invalid("memory-decision accounting overflows u64");
+      ++decisionAttempts;
       auto child = frontend::materializeStructuredMemoryCommunicationDecision(
-          *parent, decision, trackedSpatialRegion);
+          *parent, decision, trackedSpatialRegion, sourceProvenance);
       if (!child)
         return child.takeError();
-      auto projected =
-          lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
-              child->structuredProgram, loweringOptions);
-      if (!projected)
-        return projected.takeError();
-      auto miss = capabilities.firstInadmissibleActor(projected->artifact);
-      if (!miss)
-        return miss.takeError();
-      if (*miss)
-        continue;
       auto published =
           frontend::publishStructuredProgram(child->structuredProgram, store);
       if (!published)
         return published.takeError();
       if (invocation)
         if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
-                recordMemoryCommunicationCandidate(
-                    *invocation, reference, *published, decision,
-                    std::move(*child), std::move(*projected), store))
+                recordMemoryCommunicationCandidate(*invocation, entry.reference,
+                                                   *published, decision,
+                                                   std::move(*child), store))
           return std::move(error);
       auto ownerPayload =
           frontend::encodeStructuredMemoryCommunicationDecision(decision);
@@ -250,9 +234,13 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
           CandidateGeneratorLineageEdgeKind::CandidateDecision,
           CandidateGeneratorOutputSlotRef(0),
           *published,
-          {reference},
+          {entry.reference},
           std::move(*ownerPayload)});
-      outputs.push_back(std::move(*published));
+      if (seen.insert(*published).second) {
+        outputs.push_back(*published);
+        if (channelDecision)
+          frontier.push_back({*published, false});
+      }
     }
   }
   return CandidateGeneratorProviderResult{
@@ -323,15 +311,13 @@ llvm::Error registerStructuredMemoryCommunicationCandidateGenerator() {
 
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
 bindStructuredMemoryCommunicationCandidateGeneratorInputs(
-    llvm::ArrayRef<ArtifactRootReference> structuredPrograms,
-    const ArtifactRootReference &fabric) {
+    llvm::ArrayRef<ArtifactRootReference> structuredPrograms) {
   if (llvm::Error error =
           registerStructuredMemoryCommunicationCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
       {CandidateGeneratorInputSlotRef(StructuredProgramsInput),
        structuredPrograms.vec()},
-      {CandidateGeneratorInputSlotRef(FabricInput), {fabric}},
   };
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           descriptor.reference(), bindings))

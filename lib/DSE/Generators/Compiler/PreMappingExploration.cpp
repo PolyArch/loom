@@ -479,22 +479,22 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
           executionShapeConfig->canonicalViewBytes().vec(),
           executionShapeConfig->digest()},
       GeneratePlanNodeDefinition{
-          structuredSpecialMathAccuracyCandidateGeneratorDescriptor()
-              .reference(),
-          {PlanOutputRef{1, 0}, ExactPlanArtifacts{{fabric.reference()}}},
-          specialMathAccuracyConfig->canonicalViewBytes().vec(),
-          specialMathAccuracyConfig->digest()},
-      GeneratePlanNodeDefinition{
           structuredScheduleCandidateGeneratorDescriptor().reference(),
-          {PlanOutputRef{2, 0}, ExactPlanArtifacts{{fabric.reference()}}},
+          {PlanOutputRef{1, 0}, ExactPlanArtifacts{{fabric.reference()}}},
           scheduleConfig->canonicalViewBytes().vec(),
           scheduleConfig->digest()},
       GeneratePlanNodeDefinition{
           structuredMemoryCommunicationCandidateGeneratorDescriptor()
               .reference(),
-          {PlanOutputRef{3, 0}, ExactPlanArtifacts{{fabric.reference()}}},
+          {PlanOutputRef{2, 0}},
           memoryCommunicationConfig->canonicalViewBytes().vec(),
           memoryCommunicationConfig->digest()},
+      GeneratePlanNodeDefinition{
+          structuredSpecialMathAccuracyCandidateGeneratorDescriptor()
+              .reference(),
+          {PlanOutputRef{3, 0}, ExactPlanArtifacts{{fabric.reference()}}},
+          specialMathAccuracyConfig->canonicalViewBytes().vec(),
+          specialMathAccuracyConfig->digest()},
       PromotePlanNodeDefinition{
           structuredEvaluationPromotionAcquisitionDescriptor().reference(),
           {PlanOutputRef{4, 0}, ExactPlanArtifacts{{fabric.reference()}},

@@ -366,13 +366,12 @@ void catalogLineageIsClosed(llvm::StringRef directory) {
                    resolved));
   auto inputs =
       take(loom::dse::bindStructuredMemoryCommunicationCandidateGeneratorInputs(
-          parents, design.roots().front().reference()));
+          parents));
   auto binding = take(
       loom::dse::resolveStructuredMemoryCommunicationCandidateGeneratorBinding(
           config));
-  auto emptyInputs =
-      take(loom::dse::bindStructuredMemoryCommunicationCandidateGeneratorInputs(
-          {}, design.roots().front().reference()));
+  auto emptyInputs = take(
+      loom::dse::bindStructuredMemoryCommunicationCandidateGeneratorInputs({}));
   auto empty = take(
       loom::dse::invokeCandidateGenerator(emptyInputs, binding, store, blobs));
   const auto *emptyCompleted =
@@ -415,7 +414,7 @@ void catalogLineageIsClosed(llvm::StringRef directory) {
          std::to_string(lineageCount) + " lineage edges, kinds " + kinds);
   }
   const std::vector<loom::dse::CandidateGeneratorWorkUnitSummary> expectedWork =
-      {{loom::dse::CandidateGeneratorWorkUnitRef(0), 16, 16},
+      {{loom::dse::CandidateGeneratorWorkUnitRef(0), 20, 20},
        {loom::dse::CandidateGeneratorWorkUnitRef(1), 4, 4}};
   if (expected.workSummary != expectedWork)
     fail("closed catalog changed exact scope or decision work");
@@ -472,7 +471,7 @@ void catalogLineageIsClosed(llvm::StringRef directory) {
   }
   auto limitedInputs =
       take(loom::dse::bindStructuredMemoryCommunicationCandidateGeneratorInputs(
-          layoutOnly, design.roots().front().reference()));
+          layoutOnly));
   auto limitedBinding = take(
       loom::dse::resolveStructuredMemoryCommunicationCandidateGeneratorBinding(
           limitedConfig));
@@ -491,11 +490,12 @@ void catalogLineageIsClosed(llvm::StringRef directory) {
 
   if (loom::dse::structuredMemoryCommunicationCandidateGeneratorDescriptor()
           .implementationSemanticIdentity !=
-      "loom.compiler.structured_memory_communication.generator.v3")
-    fail("memory generator does not expose the v3 semantic identity");
-  static constexpr std::array<llvm::StringLiteral, 2> legacyConfigSchemas = {
+      "loom.compiler.structured_memory_communication.generator.v4")
+    fail("memory generator does not expose the v4 semantic identity");
+  static constexpr std::array<llvm::StringLiteral, 3> legacyConfigSchemas = {
       "loom.structured_memory_communication_generator.config.1.0",
-      "loom.structured_memory_communication_generator.config.2.0"};
+      "loom.structured_memory_communication_generator.config.2.0",
+      "loom.structured_memory_communication_generator.config.3.0"};
   for (llvm::StringLiteral legacyConfigSchema : legacyConfigSchemas) {
     auto legacyDigest = take(loom::computeComponentViewDigest(
         {reinterpret_cast<const std::uint8_t *>(legacyConfigSchema.data()),
@@ -506,7 +506,7 @@ void catalogLineageIsClosed(llvm::StringRef directory) {
             .reference(),
         config.canonicalViewBytes(), legacyDigest);
     if (legacy)
-      fail("registry v3 reinterpreted a legacy generator config binding");
+      fail("registry v4 reinterpreted a legacy generator config binding");
     llvm::consumeError(legacy.takeError());
   }
 }

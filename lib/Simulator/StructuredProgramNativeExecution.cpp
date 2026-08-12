@@ -135,7 +135,9 @@ struct WorkloadCaptureContext final {
   std::vector<std::optional<NativeSimulationCallCapture>> captures;
   std::vector<WorkloadCaptureValueShape> coordinateShapes;
   std::vector<WorkloadCaptureValueShape> runtimeValueShapes;
+  std::vector<WorkloadCaptureValueShape> streamInputShapes;
   std::vector<WorkloadCaptureValueShape> valueResultShapes;
+  std::vector<WorkloadCaptureValueShape> streamOutputShapes;
   std::vector<std::pair<std::uint8_t *, std::size_t>> runtimeObjects;
   std::map<TrackedPointerKey, TrackedPointerPayload> pointerPayloads;
   std::vector<WorkloadCaptureActiveCall> activeCalls;
@@ -163,7 +165,8 @@ void nativeInvalidLogicalThreadExtent() {
 std::uint64_t nativeLogicalChannelCreate(std::uint64_t receiverCount) {
   if (!activeExecution || receiverCount == 0 ||
       receiverCount > std::numeric_limits<std::size_t>::max()) {
-    recordExecutionError("logical channel create has an invalid receiver count");
+    recordExecutionError(
+        "logical channel create has an invalid receiver count");
     return 0;
   }
   NativeExecutionContext::LogicalChannel channel;
@@ -320,6 +323,12 @@ void workloadCaptureBegin() {
   activeWorkloadCapture->captures.emplace_back(std::in_place);
   WorkloadCaptureActiveCall active;
   active.captureIndex = activeWorkloadCapture->captures.size() - 1;
+  NativeSimulationCallCapture &capture =
+      *activeWorkloadCapture->captures.back();
+  capture.runtimeStreams.resize(
+      activeWorkloadCapture->streamInputShapes.size());
+  capture.streamOutputs.resize(
+      activeWorkloadCapture->streamOutputShapes.size());
   activeWorkloadCapture->activeCalls.push_back(std::move(active));
 }
 
@@ -747,6 +756,53 @@ void workloadCaptureValue(std::uint64_t ordinal, void *base,
   context.captures[active.captureIndex]->runtimeValues.push_back(
       RuntimeValueEntry{shape.graphOrdinal, std::move(value)});
   ++active.nextValue;
+}
+
+void workloadCaptureStream(std::uint64_t ordinal, void *base,
+                           std::uint64_t byteCount, bool input) {
+  if (!activeWorkloadCapture || activeWorkloadCapture->error)
+    return;
+  WorkloadCaptureContext &context = *activeWorkloadCapture;
+  const auto &shapes =
+      input ? context.streamInputShapes : context.streamOutputShapes;
+  if (context.activeCalls.empty() || ordinal >= shapes.size() || !base ||
+      shapes[ordinal].byteCount != byteCount ||
+      context.activeCalls.back().nextCoordinate !=
+          context.coordinateShapes.size() ||
+      context.activeCalls.back().nextRoot != context.rootCount ||
+      context.activeCalls.back().nextValue !=
+          context.runtimeValueShapes.size()) {
+    recordWorkloadCaptureError(std::make_error_code(std::errc::io_error),
+                               "stream token callback is malformed");
+    return;
+  }
+  WorkloadCaptureActiveCall &active = context.activeCalls.back();
+  if (!reserveWorkloadCaptureBytes(context, active, byteCount))
+    return;
+  CanonicalValueSequence token =
+      readWorkloadCaptureValue(base, shapes[ordinal], context.littleEndian);
+  NativeSimulationCallCapture &capture = *context.captures[active.captureIndex];
+  CanonicalStreamSequence &stream =
+      input ? capture.runtimeStreams[ordinal] : capture.streamOutputs[ordinal];
+  if (stream.values.tokenCount == std::numeric_limits<std::uint64_t>::max()) {
+    recordWorkloadCaptureError(std::make_error_code(std::errc::io_error),
+                               "stream token count overflowed");
+    return;
+  }
+  ++stream.values.tokenCount;
+  stream.values.lanes.insert(stream.values.lanes.end(),
+                             std::make_move_iterator(token.lanes.begin()),
+                             std::make_move_iterator(token.lanes.end()));
+}
+
+void workloadCaptureStreamInput(std::uint64_t ordinal, void *base,
+                                std::uint64_t byteCount) {
+  workloadCaptureStream(ordinal, base, byteCount, true);
+}
+
+void workloadCaptureStreamOutput(std::uint64_t ordinal, void *base,
+                                 std::uint64_t byteCount) {
+  workloadCaptureStream(ordinal, base, byteCount, false);
 }
 
 void workloadCaptureResult(std::uint64_t ordinal, void *base,
@@ -1316,6 +1372,15 @@ llvm::Expected<WorkloadCaptureContext> prepareWorkloadCaptureContext(
           input.valueInputOrdinal, input.lanesPerToken, input.laneBitWidth,
           input.byteCount, input.pointerTarget});
   }
+  capture.streamInputShapes.reserve(plan.streamInputs.size());
+  for (auto [ordinal, stream] : llvm::enumerate(plan.streamInputs)) {
+    if (stream.graphOrdinal != ordinal || stream.lanesPerToken == 0 ||
+        stream.laneBitWidth == 0 || stream.byteCount == 0)
+      return invalid("graph stream inputs are not dense in ABI order");
+    capture.streamInputShapes.push_back(WorkloadCaptureValueShape{
+        stream.graphOrdinal, stream.lanesPerToken, stream.laneBitWidth,
+        stream.byteCount, std::nullopt});
+  }
   capture.valueResultShapes.reserve(plan.valueResults.size());
   for (auto [ordinal, result] : llvm::enumerate(plan.valueResults)) {
     if (result.valueResultOrdinal != ordinal)
@@ -1323,6 +1388,15 @@ llvm::Expected<WorkloadCaptureContext> prepareWorkloadCaptureContext(
     capture.valueResultShapes.push_back(WorkloadCaptureValueShape{
         result.valueResultOrdinal, result.lanesPerToken, result.laneBitWidth,
         result.byteCount, std::nullopt});
+  }
+  capture.streamOutputShapes.reserve(plan.streamOutputs.size());
+  for (auto [ordinal, stream] : llvm::enumerate(plan.streamOutputs)) {
+    if (stream.graphOrdinal != ordinal || stream.lanesPerToken == 0 ||
+        stream.laneBitWidth == 0 || stream.byteCount == 0)
+      return invalid("graph stream outputs are not dense in ABI order");
+    capture.streamOutputShapes.push_back(WorkloadCaptureValueShape{
+        stream.graphOrdinal, stream.lanesPerToken, stream.laneBitWidth,
+        stream.byteCount, std::nullopt});
   }
   return capture;
 }
@@ -1402,9 +1476,17 @@ llvm::Error runInstrumentedExecution(
       callbacks[jit->mangleAndIntern(*workloadCaptureNames->value)] = {
           llvm::orc::ExecutorAddr::fromPtr(&workloadCaptureValue),
           llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+    if (workloadCaptureNames->streamInput)
+      callbacks[jit->mangleAndIntern(*workloadCaptureNames->streamInput)] = {
+          llvm::orc::ExecutorAddr::fromPtr(&workloadCaptureStreamInput),
+          llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
     if (workloadCaptureNames->result)
       callbacks[jit->mangleAndIntern(*workloadCaptureNames->result)] = {
           llvm::orc::ExecutorAddr::fromPtr(&workloadCaptureResult),
+          llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
+    if (workloadCaptureNames->streamOutput)
+      callbacks[jit->mangleAndIntern(*workloadCaptureNames->streamOutput)] = {
+          llvm::orc::ExecutorAddr::fromPtr(&workloadCaptureStreamOutput),
           llvm::JITSymbolFlags::Exported | llvm::JITSymbolFlags::Callable};
     if (workloadCaptureNames->memoryWrite)
       callbacks[jit->mangleAndIntern(*workloadCaptureNames->memoryWrite)] = {

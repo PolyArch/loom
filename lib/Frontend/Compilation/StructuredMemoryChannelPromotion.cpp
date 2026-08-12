@@ -10,9 +10,11 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/APInt.h"
@@ -67,6 +69,26 @@ bool isEnclosingBlockArgument(mlir::Value value, mlir::Operation *operation) {
     if (current->getBlock() == argument.getOwner())
       return true;
   return false;
+}
+
+bool areDistinctNoAliasFunctionArguments(mlir::Value lhs, mlir::Value rhs) {
+  auto lhsArgument = llvm::dyn_cast<mlir::BlockArgument>(lhs);
+  auto rhsArgument = llvm::dyn_cast<mlir::BlockArgument>(rhs);
+  if (!lhsArgument || !rhsArgument ||
+      lhsArgument.getOwner() != rhsArgument.getOwner() ||
+      lhsArgument.getArgNumber() == rhsArgument.getArgNumber())
+    return false;
+  auto function = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(
+      lhsArgument.getOwner()->getParentOp());
+  if (!function)
+    return false;
+  mlir::DictionaryAttr lhsAttrs = mlir::function_interface_impl::getArgAttrDict(
+      function, lhsArgument.getArgNumber());
+  mlir::DictionaryAttr rhsAttrs = mlir::function_interface_impl::getArgAttrDict(
+      function, rhsArgument.getArgNumber());
+  llvm::StringRef noAlias = mlir::LLVM::LLVMDialect::getNoAliasAttrName();
+  return lhsAttrs && rhsAttrs && lhsAttrs.contains(noAlias) &&
+         rhsAttrs.contains(noAlias);
 }
 
 enum class EndpointKind { Producer, Consumer };
@@ -125,10 +147,24 @@ struct SourceChannelPlan final {
   SourceEndpointPlan producer;
   llvm::SmallVector<SourceEndpointPlan, 4> consumers;
   dataflow::ThreadWaitOp producerWait;
-  llvm::SmallVector<dataflow::ThreadWaitOp, 4> consumerWaits;
+  llvm::SmallVector<dataflow::ThreadLaunchOp, 4> launchesToMove;
+};
+
+struct ThreadEffectPlan final {
+  dataflow::ThreadLaunchOp launch;
+  llvm::SmallVector<unsigned, 4> readOrdinals;
+  llvm::SmallVector<unsigned, 4> writeOrdinals;
+};
+
+struct TransparentOwnedThreadWrapper final {
+  mlir::LLVM::LLVMFuncOp function;
+  dataflow::ThreadLaunchOp launch;
+  dataflow::ThreadWaitOp wait;
 };
 
 bool isAllowedStructure(mlir::Operation *operation);
+std::optional<unsigned> launchBodyOrdinal(mlir::OpOperand &use,
+                                          dataflow::ThreadLaunchOp launch);
 
 std::optional<unsigned> spatialMemoryOrdinal(loom::SpatialRegionOp spatial,
                                              mlir::Value value) {
@@ -258,6 +294,81 @@ mlir::Value llvmMemoryAddress(mlir::Operation *operation) {
   return {};
 }
 
+std::optional<TransparentOwnedThreadWrapper>
+transparentOwnedThreadWrapper(mlir::LLVM::CallOp call) {
+  if (!call || !call.getCalleeAttr() || call.getNumResults() != 0)
+    return std::nullopt;
+  auto function =
+      mlir::SymbolTable::lookupNearestSymbolFrom<mlir::LLVM::LLVMFuncOp>(
+          call, call.getCalleeAttr());
+  if (!function || function.isExternal() || function.isVarArg() ||
+      !function.getBody().hasOneBlock() ||
+      !llvm::isa<mlir::LLVM::LLVMVoidType>(
+          function.getFunctionType().getReturnType()) ||
+      call.getArgOperands().size() !=
+          function.getFunctionType().getParams().size())
+    return std::nullopt;
+
+  mlir::Block &block = function.getBody().front();
+  if (block.getNumArguments() != call.getArgOperands().size())
+    return std::nullopt;
+  auto operation = block.begin();
+  if (operation == block.end())
+    return std::nullopt;
+  auto launch = llvm::dyn_cast<dataflow::ThreadLaunchOp>(&*operation++);
+  if (!launch || !launch.getGridUpperBounds().empty() ||
+      !launch.getAsyncDependencies().empty() ||
+      launch.getBodyOperands().size() != block.getNumArguments())
+    return std::nullopt;
+  for (auto [operand, argument] :
+       llvm::zip_equal(launch.getBodyOperands(), block.getArguments()))
+    if (operand != argument)
+      return std::nullopt;
+  if (operation == block.end())
+    return std::nullopt;
+  auto wait = llvm::dyn_cast<dataflow::ThreadWaitOp>(&*operation++);
+  if (!wait || wait.getAsyncDependencies().size() != 1 ||
+      wait.getAsyncDependencies().front() != launch.getAsyncToken() ||
+      !llvm::hasSingleElement(launch.getAsyncToken().getUses()))
+    return std::nullopt;
+  if (operation == block.end())
+    return std::nullopt;
+  auto returned = llvm::dyn_cast<mlir::LLVM::ReturnOp>(&*operation++);
+  if (!returned || returned.getNumOperands() != 0 || operation != block.end())
+    return std::nullopt;
+  return TransparentOwnedThreadWrapper{function, launch, wait};
+}
+
+llvm::Error
+liftTransparentOwnedThreadWrapperCalls(mlir::LLVM::AllocaOp allocation) {
+  llvm::SmallVector<mlir::LLVM::CallOp, 4> calls;
+  llvm::SmallPtrSet<mlir::Operation *, 4> seenCalls;
+  for (mlir::OpOperand &use : allocation.getRes().getUses()) {
+    if (llvm::isa<mlir::LLVM::LifetimeStartOp, mlir::LLVM::LifetimeEndOp,
+                  dataflow::ThreadLaunchOp>(use.getOwner()))
+      continue;
+    auto call = llvm::dyn_cast<mlir::LLVM::CallOp>(use.getOwner());
+    if (!call || !transparentOwnedThreadWrapper(call))
+      return invalid("source allocation has a non-transparent callable use");
+    if (seenCalls.insert(call.getOperation()).second)
+      calls.push_back(call);
+  }
+
+  for (mlir::LLVM::CallOp call : calls) {
+    auto wrapper = transparentOwnedThreadWrapper(call);
+    if (!wrapper)
+      return invalid("source allocation wrapper changed during lifting");
+    mlir::OpBuilder builder(call);
+    auto launch = dataflow::ThreadLaunchOp::create(
+        builder, call.getLoc(), wrapper->launch.getCalleeAttr(),
+        call.getArgOperands(), mlir::ValueRange{}, mlir::ValueRange{});
+    dataflow::ThreadWaitOp::create(builder, call.getLoc(),
+                                   mlir::ValueRange{launch.getAsyncToken()});
+    call.erase();
+  }
+  return llvm::Error::success();
+}
+
 std::optional<SourceEndpointPlan>
 analyzeSourceEndpoint(dataflow::ThreadLaunchOp launch, unsigned formalOrdinal,
                       const SourceAllocationShape &shape,
@@ -270,25 +381,30 @@ analyzeSourceEndpoint(dataflow::ThreadLaunchOp launch, unsigned formalOrdinal,
       formalOrdinal >= thread.getFunctionType().getNumInputs() ||
       thread.getFunctionType().getInput(formalOrdinal) != pointerType ||
       thread.getBody().front().getNumArguments() !=
-          thread.getFunctionType().getNumInputs() + 1)
+          thread.getFunctionType().getNumInputs() + 1) {
     return std::nullopt;
+  }
 
   mlir::BlockArgument formal =
       thread.getBody().front().getArgument(formalOrdinal);
-  if (!llvm::hasSingleElement(formal.getUses()))
+  if (!llvm::hasSingleElement(formal.getUses())) {
     return std::nullopt;
+  }
   auto spatial =
       llvm::dyn_cast<loom::SpatialRegionOp>(formal.use_begin()->getOwner());
-  if (!spatial || spatial->getBlock() != &thread.getBody().front())
+  if (!spatial || spatial->getBlock() != &thread.getBody().front()) {
     return std::nullopt;
+  }
   auto value = llvm::find(spatial.getValueInputs(), formal);
-  if (value == spatial.getValueInputs().end())
+  if (value == spatial.getValueInputs().end()) {
     return std::nullopt;
+  }
   const unsigned valueOrdinal = value - spatial.getValueInputs().begin();
   mlir::BlockArgument pointerArgument =
       spatial.getBody().front().getArgument(valueOrdinal);
-  if (pointerArgument.getType() != pointerType)
+  if (pointerArgument.getType() != pointerType) {
     return std::nullopt;
+  }
 
   std::optional<EndpointKind> endpointKind;
   for (mlir::OpOperand &use : pointerArgument.getUses()) {
@@ -299,22 +415,26 @@ analyzeSourceEndpoint(dataflow::ThreadLaunchOp launch, unsigned formalOrdinal,
       auto gep = llvm::dyn_cast<mlir::LLVM::GEPOp>(owner);
       mlir::LLVM::GEPOp ignored;
       if (!gep || gep.getBase() != pointerArgument ||
-          !sourcePointerByteOffset(gep.getRes(), pointerArgument, ignored))
+          !sourcePointerByteOffset(gep.getRes(), pointerArgument, ignored)) {
         return std::nullopt;
+      }
       event = gep.getRes().use_begin()->getOwner();
     }
     if (!llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(event) ||
-        exactMemoryRoot(llvmMemoryAddress(event)) != pointerArgument)
+        exactMemoryRoot(llvmMemoryAddress(event)) != pointerArgument) {
       return std::nullopt;
+    }
     const EndpointKind kind = llvm::isa<mlir::LLVM::StoreOp>(event)
                                   ? EndpointKind::Producer
                                   : EndpointKind::Consumer;
-    if (endpointKind && *endpointKind != kind)
+    if (endpointKind && *endpointKind != kind) {
       return std::nullopt;
+    }
     endpointKind = kind;
   }
-  if (!endpointKind)
+  if (!endpointKind) {
     return std::nullopt;
+  }
 
   SourceEndpointPlan plan;
   plan.launch = launch;
@@ -360,14 +480,14 @@ analyzeSourceEndpoint(dataflow::ThreadLaunchOp launch, unsigned formalOrdinal,
 
       std::optional<unsigned> ordinal =
           threadFormalForSpatialValue(spatial, address);
-      if (!ordinal || beforeReceive) {
+      if (!ordinal) {
         legal = false;
         return mlir::WalkResult::interrupt();
       }
       if (llvm::isa<mlir::LLVM::LoadOp>(operation)) {
         plan.readOrdinals.push_back(*ordinal);
       } else {
-        if (plan.kind == EndpointKind::Producer) {
+        if (beforeReceive || plan.kind == EndpointKind::Producer) {
           legal = false;
           return mlir::WalkResult::interrupt();
         }
@@ -381,18 +501,22 @@ analyzeSourceEndpoint(dataflow::ThreadLaunchOp launch, unsigned formalOrdinal,
     }
     return mlir::WalkResult::advance();
   });
-  if (!legal || !sawSelectedEvent || plan.accesses.size() != shape.elementCount)
+  if (!legal || !sawSelectedEvent ||
+      plan.accesses.size() != shape.elementCount) {
     return std::nullopt;
+  }
   for (auto [ordinal, access] : llvm::enumerate(plan.accesses)) {
     if (access.byteOffset != ordinal * shape.elementBytes ||
-        (ordinal == 0) != !access.address)
+        (ordinal == 0) != !access.address) {
       return std::nullopt;
+    }
   }
   for (mlir::Operation &operation :
        thread.getBody().front().without_terminator())
     if (&operation != spatial.getOperation() &&
-        !mlir::isMemoryEffectFree(&operation))
+        !mlir::isMemoryEffectFree(&operation)) {
       return std::nullopt;
+    }
   llvm::sort(plan.readOrdinals);
   plan.readOrdinals.erase(
       std::unique(plan.readOrdinals.begin(), plan.readOrdinals.end()),
@@ -446,7 +570,139 @@ bool coversExactLogicalDomain(mlir::Operation *event, mlir::ValueRange indices,
 bool isAllowedStructure(mlir::Operation *operation) {
   return llvm::isa<mlir::scf::ForOp, mlir::scf::YieldOp, loom::SpatialYieldOp>(
              operation) ||
+         llvm::isa<dataflow::ChannelSendOp, dataflow::ChannelReceiveOp>(
+             operation) ||
          mlir::isMemoryEffectFree(operation);
+}
+
+std::optional<ThreadEffectPlan>
+analyzeThreadEffects(dataflow::ThreadLaunchOp launch) {
+  auto thread = mlir::SymbolTable::lookupNearestSymbolFrom<dataflow::ThreadOp>(
+      launch, launch.getCalleeAttr());
+  if (!thread || thread.isExternal() ||
+      launch.getBodyOperands().size() !=
+          thread.getFunctionType().getNumInputs() ||
+      thread.getBody().front().getNumArguments() !=
+          thread.getFunctionType().getNumInputs() + 1)
+    return std::nullopt;
+
+  loom::SpatialRegionOp spatial;
+  for (mlir::Operation &operation :
+       thread.getBody().front().without_terminator()) {
+    if (auto candidate = llvm::dyn_cast<loom::SpatialRegionOp>(operation)) {
+      if (spatial)
+        return std::nullopt;
+      spatial = candidate;
+      continue;
+    }
+    if (!mlir::isMemoryEffectFree(&operation))
+      return std::nullopt;
+  }
+  if (!spatial)
+    return std::nullopt;
+
+  ThreadEffectPlan plan{launch, {}, {}};
+  bool legal = true;
+  spatial.getBody().walk([&](mlir::Operation *operation) {
+    if (!legal)
+      return mlir::WalkResult::interrupt();
+    if (mlir::Value address = llvmMemoryAddress(operation)) {
+      std::optional<unsigned> ordinal =
+          threadFormalForSpatialValue(spatial, address);
+      if (!ordinal) {
+        legal = false;
+        return mlir::WalkResult::interrupt();
+      }
+      if (llvm::isa<mlir::LLVM::LoadOp>(operation))
+        plan.readOrdinals.push_back(*ordinal);
+      else
+        plan.writeOrdinals.push_back(*ordinal);
+      return mlir::WalkResult::advance();
+    }
+    if (auto load = llvm::dyn_cast<mlir::memref::LoadOp>(operation)) {
+      std::optional<unsigned> ordinal =
+          threadFormalForSpatialMemory(spatial, load.getMemref());
+      if (!ordinal) {
+        legal = false;
+        return mlir::WalkResult::interrupt();
+      }
+      plan.readOrdinals.push_back(*ordinal);
+      return mlir::WalkResult::advance();
+    }
+    if (auto store = llvm::dyn_cast<mlir::memref::StoreOp>(operation)) {
+      std::optional<unsigned> ordinal =
+          threadFormalForSpatialMemory(spatial, store.getMemref());
+      if (!ordinal) {
+        legal = false;
+        return mlir::WalkResult::interrupt();
+      }
+      plan.writeOrdinals.push_back(*ordinal);
+      return mlir::WalkResult::advance();
+    }
+    if (!isAllowedStructure(operation)) {
+      legal = false;
+      return mlir::WalkResult::interrupt();
+    }
+    return mlir::WalkResult::advance();
+  });
+  if (!legal)
+    return std::nullopt;
+  llvm::sort(plan.readOrdinals);
+  plan.readOrdinals.erase(
+      std::unique(plan.readOrdinals.begin(), plan.readOrdinals.end()),
+      plan.readOrdinals.end());
+  llvm::sort(plan.writeOrdinals);
+  plan.writeOrdinals.erase(
+      std::unique(plan.writeOrdinals.begin(), plan.writeOrdinals.end()),
+      plan.writeOrdinals.end());
+  return plan;
+}
+
+std::optional<EndpointKind> channelBindingKind(dataflow::ThreadLaunchOp launch,
+                                               unsigned formalOrdinal) {
+  auto thread = mlir::SymbolTable::lookupNearestSymbolFrom<dataflow::ThreadOp>(
+      launch, launch.getCalleeAttr());
+  if (!thread || thread.isExternal() ||
+      formalOrdinal >= thread.getFunctionType().getNumInputs())
+    return std::nullopt;
+  mlir::BlockArgument formal =
+      thread.getBody().front().getArgument(formalOrdinal);
+  if (!llvm::hasSingleElement(formal.getUses()))
+    return std::nullopt;
+  auto spatial =
+      llvm::dyn_cast<loom::SpatialRegionOp>(formal.use_begin()->getOwner());
+  if (!spatial)
+    return std::nullopt;
+  if (llvm::is_contained(spatial.getStreamOutputs(), formal))
+    return EndpointKind::Producer;
+  if (llvm::is_contained(spatial.getStreamInputs(), formal))
+    return EndpointKind::Consumer;
+  return std::nullopt;
+}
+
+std::optional<dataflow::ThreadLaunchOp>
+channelProducerLaunch(dataflow::ThreadLaunchOp consumer,
+                      unsigned consumerOrdinal) {
+  if (consumerOrdinal >= consumer.getBodyOperands().size() ||
+      channelBindingKind(consumer, consumerOrdinal) != EndpointKind::Consumer)
+    return std::nullopt;
+  mlir::Value channel = consumer.getBodyOperands()[consumerOrdinal];
+  if (!llvm::isa<dataflow::ChannelType>(channel.getType()))
+    return std::nullopt;
+
+  dataflow::ThreadLaunchOp producer;
+  for (mlir::OpOperand &use : channel.getUses()) {
+    auto launch = llvm::dyn_cast<dataflow::ThreadLaunchOp>(use.getOwner());
+    std::optional<unsigned> ordinal =
+        launch ? launchBodyOrdinal(use, launch) : std::nullopt;
+    if (!ordinal ||
+        channelBindingKind(launch, *ordinal) != EndpointKind::Producer)
+      continue;
+    if (producer && producer != launch)
+      return std::nullopt;
+    producer = launch;
+  }
+  return producer ? std::optional(producer) : std::nullopt;
 }
 
 std::optional<EndpointPlan> analyzeEndpoint(dataflow::ThreadLaunchOp launch,
@@ -605,8 +861,8 @@ std::optional<mlir::Value> launchOperand(const Plan &plan, unsigned ordinal) {
   return launch.getBodyOperands()[ordinal];
 }
 
-template <typename Plan>
-bool haveIndependentRemainingEffects(const Plan &lhs, const Plan &rhs) {
+template <typename LhsPlan, typename RhsPlan>
+bool haveIndependentRemainingEffects(const LhsPlan &lhs, const RhsPlan &rhs) {
   auto areDistinct = [&](unsigned lhsOrdinal, unsigned rhsOrdinal) {
     std::optional<mlir::Value> lhsRoot = launchOperand(lhs, lhsOrdinal);
     std::optional<mlir::Value> rhsRoot = launchOperand(rhs, rhsOrdinal);
@@ -639,6 +895,138 @@ bool haveIndependentFanoutEffects(const Plan &producer,
       if (!haveIndependentRemainingEffects(consumers[left], consumers[right]))
         return false;
   return true;
+}
+
+std::optional<llvm::SmallVector<dataflow::ThreadLaunchOp, 4>>
+sourceLaunchesToMove(const SourceEndpointPlan &producer,
+                     llvm::ArrayRef<SourceEndpointPlan> consumers,
+                     dataflow::ThreadWaitOp producerWait) {
+  mlir::Block *block = producer.launch->getBlock();
+  if (!block || producerWait->getBlock() != block)
+    return std::nullopt;
+
+  llvm::SmallVector<dataflow::ThreadLaunchOp, 8> pending;
+  llvm::SmallPtrSet<mlir::Operation *, 8> closure;
+  for (const SourceEndpointPlan &consumer : consumers) {
+    dataflow::ThreadLaunchOp consumerLaunch = consumer.launch;
+    if (consumerLaunch->getBlock() != block ||
+        !producer.launch->isBeforeInBlock(consumerLaunch))
+      return std::nullopt;
+    if (closure.insert(consumerLaunch.getOperation()).second)
+      pending.push_back(consumerLaunch);
+  }
+
+  auto appendChannelDependencies = [&](std::size_t begin) {
+    for (std::size_t index = begin; index < pending.size(); ++index) {
+      dataflow::ThreadLaunchOp launch = pending[index];
+      for (auto [ordinal, operand] :
+           llvm::enumerate(launch.getBodyOperands())) {
+        if (!llvm::isa<dataflow::ChannelType>(operand.getType()) ||
+            channelBindingKind(launch, ordinal) != EndpointKind::Consumer)
+          continue;
+        auto dependency = channelProducerLaunch(launch, ordinal);
+        if (!dependency || (*dependency)->getBlock() != block ||
+            *dependency == producer.launch ||
+            !(*dependency)->isBeforeInBlock(launch))
+          return false;
+        if (closure.insert(dependency->getOperation()).second)
+          pending.push_back(*dependency);
+      }
+    }
+    return true;
+  };
+  if (!appendChannelDependencies(0))
+    return std::nullopt;
+
+  llvm::sort(pending,
+             [](dataflow::ThreadLaunchOp lhs, dataflow::ThreadLaunchOp rhs) {
+               return lhs->isBeforeInBlock(rhs);
+             });
+  auto reversedPending = llvm::reverse(pending);
+  auto lastAfterWait =
+      llvm::find_if(reversedPending, [&](dataflow::ThreadLaunchOp launch) {
+        return producerWait->isBeforeInBlock(launch);
+      });
+  if (lastAfterWait != reversedPending.end()) {
+    const std::size_t dependencyCount = pending.size();
+    mlir::Operation *last = lastAfterWait->getOperation();
+    for (mlir::Operation *operation = producerWait->getNextNode(); operation;
+         operation = operation->getNextNode()) {
+      if (auto launch = llvm::dyn_cast<dataflow::ThreadLaunchOp>(operation);
+          launch && closure.insert(operation).second)
+        pending.push_back(launch);
+      if (operation == last)
+        break;
+    }
+    if (!appendChannelDependencies(dependencyCount))
+      return std::nullopt;
+    llvm::sort(pending,
+               [](dataflow::ThreadLaunchOp lhs, dataflow::ThreadLaunchOp rhs) {
+                 return lhs->isBeforeInBlock(rhs);
+               });
+  }
+
+  llvm::SmallVector<dataflow::ThreadLaunchOp, 4> moved;
+  for (dataflow::ThreadLaunchOp launch : pending) {
+    std::optional<dataflow::ThreadWaitOp> wait = uniqueWait(launch);
+    if (!wait || !launch->isBeforeInBlock(*wait))
+      return std::nullopt;
+    if (producerWait->isBeforeInBlock(launch))
+      moved.push_back(launch);
+  }
+
+  mlir::DominanceInfo dominance(block->getParentOp());
+  for (dataflow::ThreadLaunchOp launch : moved)
+    if (llvm::any_of(launch->getOperands(), [&](mlir::Value operand) {
+          return !dominance.dominates(operand, producerWait.getOperation());
+        }))
+      return std::nullopt;
+
+  for (dataflow::ThreadLaunchOp launch : pending) {
+    auto selected =
+        llvm::find_if(consumers, [&](const SourceEndpointPlan &plan) {
+          return plan.launch == launch;
+        });
+    if (selected != consumers.end()) {
+      if (!haveIndependentRemainingEffects(producer, *selected))
+        return std::nullopt;
+      continue;
+    }
+    auto effects = analyzeThreadEffects(launch);
+    if (!effects || !haveIndependentRemainingEffects(producer, *effects))
+      return std::nullopt;
+  }
+
+  if (moved.empty())
+    return moved;
+
+  llvm::SmallPtrSet<mlir::Operation *, 8> movedOperations;
+  for (dataflow::ThreadLaunchOp launch : moved)
+    movedOperations.insert(launch.getOperation());
+  mlir::Operation *last = moved.back().getOperation();
+  for (mlir::Operation *operation = producerWait->getNextNode(); operation;
+       operation = operation->getNextNode()) {
+    if (movedOperations.contains(operation)) {
+      if (operation == last)
+        break;
+      continue;
+    }
+    if (mlir::isMemoryEffectFree(operation)) {
+      if (operation == last)
+        break;
+      continue;
+    }
+    auto wait = llvm::dyn_cast<dataflow::ThreadWaitOp>(operation);
+    if (!wait ||
+        llvm::any_of(wait.getAsyncDependencies(), [&](mlir::Value token) {
+          auto launch = token.getDefiningOp<dataflow::ThreadLaunchOp>();
+          return !launch || !closure.contains(launch.getOperation());
+        }))
+      return std::nullopt;
+    if (operation == last)
+      break;
+  }
+  return moved;
 }
 
 std::optional<ChannelPlan> analyzeChannel(mlir::memref::AllocOp allocation) {
@@ -818,29 +1206,17 @@ analyzeSourceChannel(mlir::LLVM::AllocaOp allocation) {
       !producer->launch->isBeforeInBlock(*producerWait))
     return std::nullopt;
 
-  llvm::SmallVector<dataflow::ThreadWaitOp, 4> consumerWaits;
-  mlir::Operation *previousWait = producerWait->getOperation();
   for (const SourceEndpointPlan &consumer : consumers) {
     std::optional<dataflow::ThreadWaitOp> wait = uniqueWait(consumer.launch);
     if (!wait || (*wait)->getBlock() != block ||
-        !previousWait->isBeforeInBlock(consumer.launch) ||
+        !producer->launch->isBeforeInBlock(consumer.launch) ||
         !consumer.launch->isBeforeInBlock(*wait) ||
-        !hasOnlyPureOperationsBetween(previousWait, consumer.launch))
+        (lifetimeEnd && !(*wait)->isBeforeInBlock(lifetimeEnd)))
       return std::nullopt;
-    consumerWaits.push_back(*wait);
-    previousWait = wait->getOperation();
   }
-  if (lifetimeEnd && !previousWait->isBeforeInBlock(lifetimeEnd))
-    return std::nullopt;
-
-  mlir::DominanceInfo dominance(block->getParentOp());
-  for (const SourceEndpointPlan &consumer : consumers)
-    if (llvm::any_of(consumer.launch->getOperands(), [&](mlir::Value operand) {
-          return !dominance.dominates(operand, producerWait->getOperation());
-        }))
-      return std::nullopt;
-  if (!haveIndependentFanoutEffects(
-          *producer, llvm::ArrayRef<SourceEndpointPlan>(consumers)))
+  auto launchesToMove = sourceLaunchesToMove(
+      *producer, llvm::ArrayRef<SourceEndpointPlan>(consumers), *producerWait);
+  if (!launchesToMove)
     return std::nullopt;
   llvm::SmallVector<mlir::Operation *, 2> lifetimeMarkers;
   if (lifetimeStart)
@@ -853,7 +1229,26 @@ analyzeSourceChannel(mlir::LLVM::AllocaOp allocation) {
                            std::move(*producer),
                            std::move(consumers),
                            *producerWait,
-                           std::move(consumerWaits)};
+                           std::move(*launchesToMove)};
+}
+
+bool canPromoteSourceOrderedBuffer(mlir::LLVM::AllocaOp allocation) {
+  mlir::ModuleOp module = allocation->getParentOfType<mlir::ModuleOp>();
+  if (!module)
+    return false;
+  mlir::IRMapping mapping;
+  mlir::OwningOpRef<mlir::ModuleOp> clone(
+      llvm::cast<mlir::ModuleOp>(module->clone(mapping)));
+  auto clonedAllocation = llvm::dyn_cast_or_null<mlir::LLVM::AllocaOp>(
+      mapping.lookupOrNull(allocation.getOperation()));
+  if (!clonedAllocation)
+    return false;
+  if (llvm::Error error =
+          liftTransparentOwnedThreadWrapperCalls(clonedAllocation)) {
+    llvm::consumeError(std::move(error));
+    return false;
+  }
+  return analyzeSourceChannel(clonedAllocation).has_value();
 }
 
 std::string freshThreadName(mlir::ModuleOp module, llvm::StringRef base,
@@ -868,7 +1263,8 @@ std::string freshThreadName(mlir::ModuleOp module, llvm::StringRef base,
 }
 
 llvm::Expected<EndpointPlan>
-specializeIfShared(EndpointPlan plan, mlir::MemRefType allocationType) {
+specializeIfShared(EndpointPlan plan, mlir::MemRefType allocationType,
+                   mlir::Operation *&trackedSpatialRegion) {
   mlir::ModuleOp module = plan.thread->getParentOfType<mlir::ModuleOp>();
   if (!module)
     return invalid("selected thread has no module owner");
@@ -889,13 +1285,14 @@ specializeIfShared(EndpointPlan plan, mlir::MemRefType allocationType) {
       analyzeEndpoint(plan.launch, plan.formalOrdinal, allocationType);
   if (!specialized || specialized->kind != plan.kind)
     return invalid("specialized thread no longer has the selected endpoint");
+  if (trackedSpatialRegion == plan.spatial.getOperation())
+    trackedSpatialRegion = specialized->spatial.getOperation();
   return *specialized;
 }
 
-llvm::Expected<SourceEndpointPlan>
-specializeSourceIfShared(SourceEndpointPlan plan,
-                         const SourceAllocationShape &shape,
-                         mlir::Type pointerType) {
+llvm::Expected<SourceEndpointPlan> specializeSourceIfShared(
+    SourceEndpointPlan plan, const SourceAllocationShape &shape,
+    mlir::Type pointerType, mlir::Operation *&trackedSpatialRegion) {
   mlir::ModuleOp module = plan.thread->getParentOfType<mlir::ModuleOp>();
   if (!module)
     return invalid("selected source thread has no module owner");
@@ -917,6 +1314,8 @@ specializeSourceIfShared(SourceEndpointPlan plan,
   if (!specialized || specialized->kind != plan.kind)
     return invalid(
         "specialized source thread no longer has the selected endpoint");
+  if (trackedSpatialRegion == plan.spatial.getOperation())
+    trackedSpatialRegion = specialized->spatial.getOperation();
   return *specialized;
 }
 
@@ -1047,6 +1446,8 @@ bool areKnownDistinctMemoryRoots(mlir::Value lhs, mlir::Value rhs) {
   rhs = exactMemoryRoot(rhs);
   if (lhs == rhs)
     return false;
+  if (areDistinctNoAliasFunctionArguments(lhs, rhs))
+    return true;
   auto lhsGlobal = lhs.getDefiningOp<mlir::memref::GetGlobalOp>();
   auto rhsGlobal = rhs.getDefiningOp<mlir::memref::GetGlobalOp>();
   auto lhsAlloc = lhs.getDefiningOp<mlir::memref::AllocOp>();
@@ -1077,22 +1478,26 @@ bool canPromoteOrderedBufferToChannel(mlir::memref::AllocOp allocation) {
 }
 
 bool canPromoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation) {
-  return analyzeSourceChannel(allocation).has_value();
+  return canPromoteSourceOrderedBuffer(allocation);
 }
 
-llvm::Error promoteOrderedBufferToChannel(mlir::memref::AllocOp allocation) {
+llvm::Error
+promoteOrderedBufferToChannel(mlir::memref::AllocOp allocation,
+                              mlir::Operation *&trackedSpatialRegion) {
   std::optional<ChannelPlan> analyzed = analyzeChannel(allocation);
   if (!analyzed)
     return invalid("selected allocation is not an exact promotable ordered "
                    "producer-consumer buffer");
   ChannelPlan plan = *analyzed;
   mlir::MemRefType allocationType = allocation.getType();
-  auto producer = specializeIfShared(plan.producer, allocationType);
+  auto producer =
+      specializeIfShared(plan.producer, allocationType, trackedSpatialRegion);
   if (!producer)
     return producer.takeError();
   plan.producer = *producer;
   for (EndpointPlan &consumer : plan.consumers) {
-    auto specialized = specializeIfShared(consumer, allocationType);
+    auto specialized =
+        specializeIfShared(consumer, allocationType, trackedSpatialRegion);
     if (!specialized)
       return specialized.takeError();
     consumer = std::move(*specialized);
@@ -1121,21 +1526,25 @@ llvm::Error promoteOrderedBufferToChannel(mlir::memref::AllocOp allocation) {
   return llvm::Error::success();
 }
 
-llvm::Error promoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation) {
+llvm::Error
+promoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation,
+                              mlir::Operation *&trackedSpatialRegion) {
+  if (llvm::Error error = liftTransparentOwnedThreadWrapperCalls(allocation))
+    return error;
   std::optional<SourceChannelPlan> analyzed = analyzeSourceChannel(allocation);
   if (!analyzed)
     return invalid("selected source allocation is not an exact promotable "
                    "ordered producer-consumer buffer");
   SourceChannelPlan plan = *analyzed;
   mlir::Type pointerType = allocation.getRes().getType();
-  auto producer =
-      specializeSourceIfShared(plan.producer, plan.shape, pointerType);
+  auto producer = specializeSourceIfShared(plan.producer, plan.shape,
+                                           pointerType, trackedSpatialRegion);
   if (!producer)
     return producer.takeError();
   plan.producer = *producer;
   for (SourceEndpointPlan &consumer : plan.consumers) {
-    auto specialized =
-        specializeSourceIfShared(consumer, plan.shape, pointerType);
+    auto specialized = specializeSourceIfShared(
+        consumer, plan.shape, pointerType, trackedSpatialRegion);
     if (!specialized)
       return specialized.takeError();
     consumer = std::move(*specialized);
@@ -1153,10 +1562,10 @@ llvm::Error promoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation) {
       return error;
   plan.producer.launch->setOperand(plan.producer.formalOrdinal,
                                    channel.getChannel());
-  for (SourceEndpointPlan &consumer : plan.consumers) {
+  for (SourceEndpointPlan &consumer : plan.consumers)
     consumer.launch->setOperand(consumer.formalOrdinal, channel.getChannel());
-    consumer.launch->moveBefore(plan.producerWait);
-  }
+  for (dataflow::ThreadLaunchOp launch : plan.launchesToMove)
+    launch->moveBefore(plan.producerWait);
   for (mlir::Operation *marker : plan.lifetimeMarkers)
     marker->erase();
   if (!allocation.getRes().use_empty())

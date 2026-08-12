@@ -66,7 +66,8 @@ llvm::Expected<MaterializedStructuredScheduleCandidate>
 materializeStructuredScheduleDecision(
     const StructuredProgramCandidate &parent,
     const StructuredScheduleDecision &decision,
-    std::optional<StructuredEntityRef> trackedSpatialRegion = std::nullopt);
+    std::optional<StructuredEntityRef> trackedSpatialRegion = std::nullopt,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance = {});
 
 } // namespace loom::frontend
 

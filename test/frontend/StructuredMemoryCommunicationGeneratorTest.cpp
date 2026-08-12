@@ -427,7 +427,7 @@ void scopeExpansionLimitIsInvocationWide() {
                    resolved));
   auto inputs =
       take(loom::dse::bindStructuredMemoryCommunicationCandidateGeneratorInputs(
-          parents, design.roots().front().reference()));
+          parents));
   auto binding = take(
       loom::dse::resolveStructuredMemoryCommunicationCandidateGeneratorBinding(
           config));
@@ -468,7 +468,7 @@ void providerPublishesParentAndAdmittedChild() {
                    loom::defaultResolvedConfig()));
   auto inputs =
       take(loom::dse::bindStructuredMemoryCommunicationCandidateGeneratorInputs(
-          {parentReference}, design.roots().front().reference()));
+          {parentReference}));
   auto binding = take(
       loom::dse::resolveStructuredMemoryCommunicationCandidateGeneratorBinding(
           config));
@@ -506,52 +506,6 @@ void providerPublishesParentAndAdmittedChild() {
                  parent, 64))
             .decisions.front()))
     fail("memory decision lineage payload did not round-trip");
-
-  std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
-  if (cleanup)
-    fail("cannot remove ArtifactStore directory: " + cleanup.message());
-}
-
-void exactFabricInadmissionExcludesTheStagedChild() {
-  llvm::SmallString<128> directory;
-  std::error_code error = llvm::sys::fs::createUniqueDirectory(
-      "loom-memory-communication-inadmissible", directory);
-  if (error)
-    fail("cannot create ArtifactStore directory: " + error.message());
-  loom::ArtifactStore store(directory);
-  llvm::SmallString<128> blobPath(directory);
-  llvm::sys::path::append(blobPath, "blobs");
-  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
-    fail("cannot create BlobStore directory: " + error.message());
-  const loom::BlobStore blobs(blobPath);
-  loom::adg::DesignBuilder design(store);
-  auto spatial = take(design.createSpatialCore("operation-free", {}, {}));
-  if (llvm::Error closeError = spatial.close({}))
-    fail(llvm::toString(std::move(closeError)));
-  auto operationFree = take(std::move(design).finalize());
-
-  auto parent = parseProgram();
-  auto parentReference =
-      take(loom::frontend::publishStructuredProgram(parent, store));
-  auto config =
-      take(loom::dse::
-               projectResolvedStructuredMemoryCommunicationGeneratorConfigView(
-                   loom::defaultResolvedConfig()));
-  auto inputs =
-      take(loom::dse::bindStructuredMemoryCommunicationCandidateGeneratorInputs(
-          {parentReference}, operationFree.roots().front().reference()));
-  auto binding = take(
-      loom::dse::resolveStructuredMemoryCommunicationCandidateGeneratorBinding(
-          config));
-  auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
-  auto *completed = std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
-      &outcome.outcome);
-  if (!completed || completed->outputBindings.size() != 1 ||
-      completed->outputBindings.front().artifacts !=
-          std::vector<loom::ArtifactRootReference>{parentReference} ||
-      !completed->lineageEdges.empty())
-    fail("provider published a child rejected by the exact Fabric");
 
   std::error_code cleanup = llvm::sys::fs::remove_directories(directory);
   if (cleanup)
@@ -622,7 +576,6 @@ int main() {
   stagingPreservesAlignmentAndExpandsMemoryWork();
   scopeExpansionLimitIsInvocationWide();
   providerPublishesParentAndAdmittedChild();
-  exactFabricInadmissionExcludesTheStagedChild();
   invalidInMemoryDecisionFailsClosed();
   lineageCodecRejectsAnOutOfRangeMemoryInput();
   return EXIT_SUCCESS;

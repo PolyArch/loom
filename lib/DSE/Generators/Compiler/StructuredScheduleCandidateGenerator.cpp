@@ -4,12 +4,9 @@
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Fabric/Artifact/FabricArtifact.h"
-#include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
 
-#include "Frontend/IR/LoomOps.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
-#include "Frontend/Lowering/CanonicalDataflowLowering.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 
 #include "llvm/Support/Error.h"
@@ -132,7 +129,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v1",
+    "loom.compiler.structured_schedule.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -146,16 +143,6 @@ const ArtifactRootReference &
 singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> bindings,
             InputSlot slot) {
   return bindings[slot].artifacts.front();
-}
-
-bool hasSelectedSpatialRegion(
-    const frontend::StructuredProgramCandidate &candidate) {
-  bool found = false;
-  candidate.module().walk([&](loom::SpatialRegionOp) {
-    found = true;
-    return mlir::WalkResult::interrupt();
-  });
-  return found;
 }
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
@@ -184,12 +171,6 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     importedFabric.emplace(std::move(*imported));
     exactFabric = &*importedFabric;
   }
-  frontend::FabricCapabilityIndex capabilities(exactFabric->view());
-  const lowering::CanonicalDataflowLoweringOptions loweringOptions =
-      invocation ? detail::StructuredOwnershipInvocationAccess::loweringOptions(
-                       *invocation)
-                 : lowering::CanonicalDataflowLoweringOptions{};
-
   std::vector<ArtifactRootReference> outputs =
       inputBindings[StructuredProgramsInput].artifacts;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
@@ -214,46 +195,36 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     decisionAttempts += decisions->decisions.size();
     outputs.reserve(outputs.size() + decisions->decisions.size());
     std::optional<frontend::StructuredEntityRef> trackedSpatialRegion;
+    llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
+        sourceProvenance;
     if (invocation) {
-      auto tracked = detail::StructuredOwnershipInvocationAccess::
-          ownedSpatialRegion(*invocation, reference);
+      auto tracked =
+          detail::StructuredOwnershipInvocationAccess::ownedSpatialRegion(
+              *invocation, reference);
       if (!tracked)
         return tracked.takeError();
       trackedSpatialRegion = *tracked;
+      auto provenance =
+          detail::StructuredOwnershipInvocationAccess::sourceProvenance(
+              *invocation, reference);
+      if (!provenance)
+        return provenance.takeError();
+      sourceProvenance = *provenance;
     }
     for (const frontend::StructuredScheduleDecision &decision :
          decisions->decisions) {
       auto child = frontend::materializeStructuredScheduleDecision(
-          *parent, decision, trackedSpatialRegion);
+          *parent, decision, trackedSpatialRegion, sourceProvenance);
       if (!child)
         return child.takeError();
-      std::optional<lowering::ProjectedCanonicalDataflow> projected;
-      if (hasSelectedSpatialRegion(child->structuredProgram)) {
-        auto lowered =
-            lowering::lowerStructuredProgramToCanonicalDataflowWithProjection(
-                child->structuredProgram, loweringOptions);
-        if (!lowered)
-          return lowered.takeError();
-        auto miss = capabilities.firstInadmissibleActor(lowered->artifact);
-        if (!miss)
-          return miss.takeError();
-        if (*miss)
-          continue;
-        projected.emplace(std::move(*lowered));
-      }
       auto published =
           frontend::publishStructuredProgram(child->structuredProgram, store);
       if (!published)
         return published.takeError();
       if (invocation)
-        if (!projected)
-          return invalid(
-              "central Schedule child has no selected Spatial projection");
-      if (invocation)
         if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
                 recordScheduleCandidate(*invocation, reference, *published,
-                                        decision, std::move(*child),
-                                        std::move(*projected), store))
+                                        decision, std::move(*child), store))
           return std::move(error);
       auto ownerPayload = frontend::encodeStructuredScheduleDecision(decision);
       if (!ownerPayload)
@@ -273,8 +244,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
           std::move(lineageEdges)},
       {{CandidateGeneratorWorkUnitRef(0), inspectedLoopScopes,
         inspectedLoopScopes},
-       {CandidateGeneratorWorkUnitRef(1), decisionAttempts,
-        decisionAttempts}}};
+       {CandidateGeneratorWorkUnitRef(1), decisionAttempts, decisionAttempts}}};
 }
 
 const CandidateGeneratorProvider provider{

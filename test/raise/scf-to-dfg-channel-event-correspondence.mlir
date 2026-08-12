@@ -139,12 +139,20 @@ module {
 // RATE: scf.for
 // RATE: dataflow.thread.launch @single
 // RATE-LABEL: dataflow.graph private @burst_graph
-// RATE: %[[RATE_EVENT0:[^: ]+]]:2 = dataflow.sync
-// RATE: %[[RATE_EVENT1:[^: ]+]]:2 = dataflow.sync
-// RATE: %[[RATE_EVENT2:[^: ]+]]:2 = dataflow.sync
-// RATE: %[[RATE_EVENT3:[^: ]+]]:2 = dataflow.sync
-// RATE: %[[RATE_PAYLOAD:[^ ]+]] = dataflow.mux {{[^,]+}}, %[[RATE_EVENT0]]#1, %[[RATE_EVENT1]]#1, %[[RATE_EVENT2]]#1, %[[RATE_EVENT3]]#1 : (index, i32, i32, i32, i32) -> i32
-// RATE: dataflow.graph.return values() streams(%[[RATE_PAYLOAD]] : i32)
+// RATE: %[[RATE_CONTROL0:[^: ]+]]:2 = dataflow.sync
+// RATE-NEXT: %[[RATE_EVENT0:[^: ]+]]:2 = dataflow.sync
+// RATE-NEXT: %[[RATE_CONTROL1:[^: ]+]]:2 = dataflow.sync
+// RATE-NEXT: %[[RATE_EVENT1:[^: ]+]]:2 = dataflow.sync
+// RATE-NEXT: %[[RATE_CONTROL2:[^: ]+]]:2 = dataflow.sync
+// RATE-NEXT: %[[RATE_EVENT2:[^: ]+]]:2 = dataflow.sync
+// RATE-NEXT: %[[RATE_CONTROL3:[^: ]+]]:2 = dataflow.sync
+// RATE-NEXT: %[[RATE_EVENT3:[^: ]+]]:2 = dataflow.sync
+// RATE: %[[RATE_LEFT:[^ ]+]] = dataflow.mux %[[RATE_LEFT_SELECTOR:[^,]+]], %[[RATE_EVENT0]]#1, %[[RATE_EVENT1]]#1 : (i1, i32, i32) -> i32
+// RATE: %[[RATE_RIGHT:[^ ]+]] = dataflow.mux %[[RATE_RIGHT_SELECTOR:[^,]+]], %[[RATE_EVENT2]]#1, %[[RATE_EVENT3]]#1 : (i1, i32, i32) -> i32
+// RATE: %[[RATE_PAYLOAD:[^ ]+]] = dataflow.mux %[[RATE_ROOT_SELECTOR:[^,]+]], %[[RATE_LEFT]], %[[RATE_RIGHT]] : (i1, i32, i32) -> i32
+// RATE: %[[RATE_COMMIT:[^ ]+]] = dataflow.mux %[[RATE_ROOT_SELECTOR]], {{.*}} : (i1, none, none) -> none
+// RATE: %[[RATE_DRAIN:[^: ]+]]:2 = dataflow.sync %[[RATE_COMMIT]], %[[RATE_PAYLOAD]] : (none, i32) -> (none, i32)
+// RATE: dataflow.graph.return values() streams(%[[RATE_DRAIN]]#1 : i32)
 
 //--- coordinate-identity.mlir
 module {
@@ -299,7 +307,9 @@ module {
 // MULTICAST: dataflow.thread.launch @left(%[[CHANNEL]])
 // MULTICAST: dataflow.thread.launch @right(%[[CHANNEL]])
 // MULTICAST-LABEL: dataflow.graph private @multicast_graph
-// MULTICAST: %[[MULTICAST_EVENT0:[^: ]+]]:2 = dataflow.sync
-// MULTICAST: %[[MULTICAST_EVENT1:[^: ]+]]:2 = dataflow.sync
+// MULTICAST: %[[MULTICAST_EVENT0:[^: ]+]]:2 = dataflow.sync %{{.*}}#0, %{{.*}}#1 : (none, i32) -> (none, i32)
+// MULTICAST: %[[MULTICAST_EVENT1:[^: ]+]]:2 = dataflow.sync %{{.*}}#1, %{{.*}}#1 : (none, i32) -> (none, i32)
 // MULTICAST: %[[MULTICAST_PAYLOAD:[^ ]+]] = dataflow.mux {{[^,]+}}, %[[MULTICAST_EVENT0]]#1, %[[MULTICAST_EVENT1]]#1 : (i1, i32, i32) -> i32
-// MULTICAST: dataflow.graph.return values() streams(%[[MULTICAST_PAYLOAD]] : i32)
+// MULTICAST: %[[MULTICAST_COMMIT:[^ ]+]] = dataflow.mux {{[^,]+}}, %[[MULTICAST_EVENT0]]#0, %[[MULTICAST_EVENT1]]#0 : (i1, none, none) -> none
+// MULTICAST: %[[MULTICAST_DRAIN:[^: ]+]]:2 = dataflow.sync %[[MULTICAST_COMMIT]], %[[MULTICAST_PAYLOAD]] : (none, i32) -> (none, i32)
+// MULTICAST: dataflow.graph.return values() streams(%[[MULTICAST_DRAIN]]#1 : i32)

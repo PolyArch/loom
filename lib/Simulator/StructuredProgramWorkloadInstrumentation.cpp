@@ -296,9 +296,15 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
         return !input.fixedValue.has_value();
       }))
     names.value = uniqueMlirSymbolName(module, "__loom_workload_capture_value");
+  if (!plan.streamInputs.empty())
+    names.streamInput =
+        uniqueMlirSymbolName(module, "__loom_workload_capture_stream_input");
   if (!plan.valueResults.empty())
     names.result =
         uniqueMlirSymbolName(module, "__loom_workload_capture_result");
+  if (!plan.streamOutputs.empty())
+    names.streamOutput =
+        uniqueMlirSymbolName(module, "__loom_workload_capture_stream_output");
   if (llvm::any_of(originalStores, [](mlir::LLVM::StoreOp store) {
         return !llvm::isa<mlir::LLVM::LLVMPointerType>(
             store.getValue().getType());
@@ -331,8 +337,14 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
   if (names.value)
     mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.value,
                                    valueType);
+  if (names.streamInput)
+    mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.streamInput,
+                                   valueType);
   if (names.result)
     mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.result,
+                                   valueType);
+  if (names.streamOutput)
+    mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.streamOutput,
                                    valueType);
   if (names.memoryWrite)
     mlir::LLVM::LLVMFuncOp::create(declarations, location, *names.memoryWrite,
@@ -457,6 +469,70 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
     resultStorageTypes.push_back(*storageType);
     resultSlots.push_back(allocateSlot(*storageType));
   }
+  std::vector<mlir::Value> streamInputSlots;
+  std::vector<mlir::Type> streamInputStorageTypes;
+  mlir::OpBuilder streamStorage(context);
+  mlir::Value streamStorageCount;
+  auto allocateStreamSlot =
+      [&](mlir::Type type) -> llvm::Expected<mlir::Value> {
+    if (!streamStorageCount) {
+      if (selectedFunction || selectedForall) {
+        streamStorage.setInsertionPointToStart(captureEntry);
+      } else {
+        if (selectedOperation->getNumRegions() != 1 ||
+            selectedOperation->getRegion(0).empty())
+          return invalid("selected stream boundary has no executable region");
+        streamStorage.setInsertionPointToStart(
+            &selectedOperation->getRegion(0).front());
+      }
+      streamStorageCount = mlir::LLVM::ConstantOp::create(
+          streamStorage, location, i64, streamStorage.getI64IntegerAttr(1));
+    }
+    return mlir::Value(mlir::LLVM::AllocaOp::create(streamStorage, location,
+                                                    pointer, type,
+                                                    streamStorageCount)
+                           .getRes());
+  };
+  streamInputSlots.reserve(plan.streamInputs.size());
+  streamInputStorageTypes.reserve(plan.streamInputs.size());
+  for (const WorkloadBackedStreamCapture &stream : plan.streamInputs) {
+    if (stream.endpoints.empty())
+      return invalid("graph stream input has no selected endpoint");
+    auto channel =
+        llvm::dyn_cast<dataflow::ChannelReceiveOp>(stream.endpoints.front());
+    if (!channel)
+      return invalid("graph stream input endpoint is not a receive");
+    auto storageType =
+        storageTypeFor(channel.getMessage().getType(), stream.byteCount);
+    if (!storageType)
+      return storageType.takeError();
+    auto slot = allocateStreamSlot(*storageType);
+    if (!slot)
+      return slot.takeError();
+    streamInputStorageTypes.push_back(*storageType);
+    streamInputSlots.push_back(*slot);
+  }
+  std::vector<mlir::Value> streamOutputSlots;
+  std::vector<mlir::Type> streamOutputStorageTypes;
+  streamOutputSlots.reserve(plan.streamOutputs.size());
+  streamOutputStorageTypes.reserve(plan.streamOutputs.size());
+  for (const WorkloadBackedStreamCapture &stream : plan.streamOutputs) {
+    if (stream.endpoints.empty())
+      return invalid("graph stream output has no selected endpoint");
+    auto channel =
+        llvm::dyn_cast<dataflow::ChannelSendOp>(stream.endpoints.front());
+    if (!channel)
+      return invalid("graph stream output endpoint is not a send");
+    auto storageType =
+        storageTypeFor(channel.getMessage().getType(), stream.byteCount);
+    if (!storageType)
+      return storageType.takeError();
+    auto slot = allocateStreamSlot(*storageType);
+    if (!slot)
+      return slot.takeError();
+    streamOutputStorageTypes.push_back(*storageType);
+    streamOutputSlots.push_back(*slot);
+  }
 
   mlir::OpBuilder before(context);
   if (selectedFunction) {
@@ -570,6 +646,65 @@ llvm::Expected<WorkloadCaptureCallbackNames> instrumentWorkloadBackedCapture(
         mlir::ValueRange{ordinalValue, inputSlots[ordinal], byteCount});
     ++runtimeOrdinal;
   }
+
+  auto instrumentStreams =
+      [&](llvm::ArrayRef<WorkloadBackedStreamCapture> streams,
+          llvm::ArrayRef<mlir::Value> slots,
+          llvm::ArrayRef<mlir::Type> storageTypes,
+          const std::optional<std::string> &callback,
+          bool input) -> llvm::Error {
+    if (streams.empty())
+      return llvm::Error::success();
+    if (!callback)
+      return invalid("graph stream has no capture callback");
+    for (auto [ordinal, stream] : llvm::enumerate(streams)) {
+      if (stream.graphOrdinal != ordinal || stream.byteCount == 0)
+        return invalid("graph stream capture is not dense in ABI order");
+      for (mlir::Operation *endpoint : stream.endpoints) {
+        if (!endpoint || !selectedOperation->isAncestor(endpoint))
+          return invalid(
+              "graph stream endpoint is outside its selected region");
+        mlir::Value message;
+        if (input) {
+          auto receive = llvm::dyn_cast<dataflow::ChannelReceiveOp>(endpoint);
+          if (!receive)
+            return invalid("graph stream input endpoint is not a receive");
+          message = receive.getMessage();
+        } else {
+          auto send = llvm::dyn_cast<dataflow::ChannelSendOp>(endpoint);
+          if (!send)
+            return invalid("graph stream output endpoint is not a send");
+          message = send.getMessage();
+        }
+        mlir::OpBuilder capture(endpoint);
+        capture.setInsertionPointAfter(endpoint);
+        auto storageValue =
+            valueForStorage(capture, message, storageTypes[ordinal]);
+        if (!storageValue)
+          return storageValue.takeError();
+        mlir::LLVM::StoreOp::create(capture, endpoint->getLoc(), *storageValue,
+                                    slots[ordinal]);
+        mlir::Value ordinalValue = mlir::LLVM::ConstantOp::create(
+            capture, endpoint->getLoc(), i64,
+            capture.getI64IntegerAttr(stream.graphOrdinal));
+        mlir::Value byteCount = mlir::LLVM::ConstantOp::create(
+            capture, endpoint->getLoc(), i64,
+            capture.getI64IntegerAttr(stream.byteCount));
+        mlir::LLVM::CallOp::create(
+            capture, endpoint->getLoc(), mlir::TypeRange{}, *callback,
+            mlir::ValueRange{ordinalValue, slots[ordinal], byteCount});
+      }
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error error =
+          instrumentStreams(plan.streamInputs, streamInputSlots,
+                            streamInputStorageTypes, names.streamInput, true))
+    return std::move(error);
+  if (llvm::Error error = instrumentStreams(
+          plan.streamOutputs, streamOutputSlots, streamOutputStorageTypes,
+          names.streamOutput, false))
+    return std::move(error);
 
   auto emitResultsAndEnd = [&](mlir::OpBuilder &after) -> llvm::Error {
     for (auto [ordinal, result] : llvm::enumerate(plan.valueResults)) {

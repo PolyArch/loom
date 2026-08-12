@@ -1,5 +1,6 @@
 #include "StructuredAddressIndexNarrowing.h"
 
+#include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Frontend/IR/LoomDialect.h"
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
@@ -401,6 +402,43 @@ std::optional<unsigned> explicitFixedIndexWidth(mlir::ModuleOp module) {
       declared.getValue().getZExtValue() > mlir::IntegerType::kMaxWidth)
     return std::nullopt;
   return static_cast<unsigned>(declared.getValue().getZExtValue());
+}
+
+llvm::Expected<std::optional<unsigned>>
+commonMemoryAddressWidth(mlir::Operation *selectedOperation) {
+  std::optional<unsigned> commonWidth;
+  llvm::Error error = llvm::Error::success();
+  selectedOperation->walk([&](mlir::Operation *operation) {
+    mlir::Value address;
+    if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(operation))
+      address = load.getAddr();
+    else if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(operation))
+      address = store.getAddr();
+    else
+      return mlir::WalkResult::advance();
+
+    auto pointer =
+        llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(address.getType());
+    if (!pointer) {
+      error = invalid("found an LLVM memory access without a pointer address");
+      return mlir::WalkResult::interrupt();
+    }
+    auto layout =
+        ::loom::resolvePointerLayout(operation, pointer.getAddressSpace());
+    if (!layout) {
+      error = layout.takeError();
+      return mlir::WalkResult::interrupt();
+    }
+    if (commonWidth && *commonWidth != layout->addressBits) {
+      commonWidth.reset();
+      return mlir::WalkResult::interrupt();
+    }
+    commonWidth = layout->addressBits;
+    return mlir::WalkResult::advance();
+  });
+  if (error)
+    return std::move(error);
+  return commonWidth;
 }
 
 struct GepIndexUse final {
@@ -1540,8 +1578,14 @@ materializeAddressIndexContract(mlir::ModuleOp module,
       return invalid("requires an explicit canonical index width for LLVM "
                      "GEP operands");
     effectiveWidth = explicitFixedIndexWidth(module);
-    if (!effectiveWidth)
-      return selectedOperation;
+    if (!effectiveWidth) {
+      auto derived = commonMemoryAddressWidth(selectedOperation);
+      if (!derived)
+        return derived.takeError();
+      effectiveWidth = *derived;
+      if (!effectiveWidth)
+        return selectedOperation;
+    }
   }
   if (*effectiveWidth == 0 || *effectiveWidth > mlir::IntegerType::kMaxWidth)
     return invalid("requires a representable nonzero fixed width");
@@ -1631,12 +1675,50 @@ materializeAddressIndexContract(mlir::ModuleOp module,
           rewritePointerSelections(selectedOperation, *effectiveWidth))
     return reject(llvm::toString(std::move(error)));
 
+  llvm::SmallVector<mlir::Operation *, 8> rootRelativeAccesses;
+  std::string addressFailure;
+  auto isSelectionBoundaryRoot = [&](mlir::Value value) {
+    if (!llvm::isa<mlir::LLVM::LLVMPointerType>(value.getType()))
+      return false;
+    if (mlir::Operation *definition = value.getDefiningOp())
+      return definition != selectedOperation &&
+             !selectedOperation->isAncestor(definition);
+    auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+    mlir::Operation *owner =
+        argument ? argument.getOwner()->getParentOp() : nullptr;
+    return owner && (owner == selectedOperation ||
+                     !selectedOperation->isAncestor(owner));
+  };
   selectedOperation->walk([&](mlir::Operation *operation) {
-    if (!llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(operation))
-      return;
+    mlir::Value address;
+    mlir::Type accessType;
+    if (auto load = llvm::dyn_cast<mlir::LLVM::LoadOp>(operation)) {
+      address = load.getAddr();
+      accessType = load.getResult().getType();
+    } else if (auto store = llvm::dyn_cast<mlir::LLVM::StoreOp>(operation)) {
+      address = store.getAddr();
+      accessType = store.getValue().getType();
+    } else {
+      return mlir::WalkResult::advance();
+    }
+    auto resolved = ::loom::lowering::resolveLinearMemoryAddress(
+        address, accessType, *effectiveWidth, isSelectionBoundaryRoot);
+    if (!resolved || resolved->terms.size() != resolved->elementTerms.size()) {
+      if (canonicalIndexWidth) {
+        addressFailure =
+            "cannot prove an exact root-relative address projection";
+        return mlir::WalkResult::interrupt();
+      }
+      return mlir::WalkResult::advance();
+    }
+    rootRelativeAccesses.push_back(operation);
+    return mlir::WalkResult::advance();
+  });
+  if (!addressFailure.empty())
+    return reject(addressFailure);
+  for (mlir::Operation *operation : rootRelativeAccesses)
     operation->setAttr(loom::rootRelativeAddressAttrName,
                        mlir::UnitAttr::get(module.getContext()));
-  });
   if (mlir::failed(mlir::verify(module)))
     return invalid("produced an invalid pointer-induction normalization");
   return selectedOperation;

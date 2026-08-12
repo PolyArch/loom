@@ -14,7 +14,6 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <map>

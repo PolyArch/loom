@@ -52,6 +52,12 @@ bool haveEquivalentCorrespondence(mlir::Value lhs, mlir::Value rhs) {
   return dataflow::haveEquivalentDeterministicComputeCorrespondence(lhs, rhs);
 }
 
+bool haveEquivalentSelectorCorrespondence(mlir::Value lhs, mlir::Value rhs) {
+  return haveEquivalentCorrespondence(lhs, rhs) ||
+         dataflow::semantics::haveEquivalentSynchronizedSelectionCorrespondence(
+             lhs, rhs);
+}
+
 bool isGraphMemoryInput(dataflow::GraphOp graph, mlir::Value value) {
   auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
   return argument && argument.getOwner() == &graph.getBody().front() &&
@@ -119,7 +125,7 @@ using SelectorLanes = llvm::DenseMap<mlir::Value, unsigned>;
 SelectorLanes::iterator findEquivalentSelector(SelectorLanes &lanes,
                                                mlir::Value selector) {
   return llvm::find_if(lanes, [&](const auto &entry) {
-    return haveEquivalentCorrespondence(entry.first, selector);
+    return haveEquivalentSelectorCorrespondence(entry.first, selector);
   });
 }
 
@@ -410,7 +416,7 @@ struct CardinalityGraphIndex {
   void collectDemuxes(mlir::Value selector,
                       llvm::SmallVectorImpl<dataflow::DemuxOp> &result) const {
     for (const auto &entry : demuxesBySelector)
-      if (haveEquivalentCorrespondence(entry.first, selector))
+      if (haveEquivalentSelectorCorrespondence(entry.first, selector))
         result.append(entry.second);
   }
 
@@ -634,6 +640,13 @@ private:
       alignedCarryAssumptionSet.reset();
   }
 
+  void inheritAssumptions(const GraphCardinalityAnalysis &parent) {
+    for (mlir::Value value : parent.exactOneAssumptions)
+      insertExactOneAssumption(value);
+    for (mlir::Value value : parent.alignedCarryAssumptions)
+      insertAlignedCarryAssumption(value);
+  }
+
   template <typename Compute>
   bool evaluateAlignment(const AlignmentQuery &query, Compute &&compute) {
     auto known = sharedState->alignment.find(query);
@@ -709,6 +722,7 @@ private:
   bool isExactOneWhenSelected(mlir::Value value, mlir::Value selector,
                               unsigned lane) {
     GraphCardinalityAnalysis branch(graph, sharedState, causalDependencies);
+    branch.inheritAssumptions(*this);
     llvm::SmallVector<dataflow::DemuxOp, 4> demuxes;
     graphIndex->collectDemuxes(selector, demuxes);
     for (dataflow::DemuxOp demux : demuxes) {
@@ -724,6 +738,7 @@ private:
                                         mlir::Value assumption,
                                         bool truePhaseOnly) {
     GraphCardinalityAnalysis branch(graph, sharedState, causalDependencies);
+    branch.inheritAssumptions(*this);
     llvm::SmallVector<dataflow::DemuxOp, 4> demuxes;
     graphIndex->collectDemuxes(selector, demuxes);
     for (dataflow::DemuxOp demux : demuxes) {
@@ -741,12 +756,15 @@ private:
   bool computeAvailableWhenSelected(mlir::Value value, mlir::Value selector,
                                     unsigned lane,
                                     llvm::DenseSet<mlir::Value> &visited) {
+    if (auto activation = dataflow::semantics::getSelectiveRouterLeafActivation(
+            value, selector, lane))
+      return isExactOne(*activation);
     auto result = llvm::dyn_cast<mlir::OpResult>(value);
     mlir::Operation *def = result ? result.getOwner() : nullptr;
     if (!def)
       return false;
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
-      if (haveEquivalentCorrespondence(demux.getSel(), selector))
+      if (haveEquivalentSelectorCorrespondence(demux.getSel(), selector))
         return result.getResultNumber() == lane &&
                (isExactOne(demux.getInput()) ||
                 isGraphStreamInput(demux.getInput()));
@@ -808,10 +826,39 @@ private:
     return availableWhenSelected(value, selector, lane, visited);
   }
 
+  bool isExactOnePerSelectorActivation(mlir::Value value, mlir::Value selector,
+                                       unsigned arity) {
+    if (isExactOne(value))
+      return true;
+    auto activation =
+        dataflow::semantics::getSelectorActivation(selector, arity);
+    auto result = activation ? llvm::dyn_cast<mlir::OpResult>(*activation)
+                             : mlir::OpResult{};
+    auto projection =
+        result ? llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner()) : nullptr;
+    if (!projection || projection.getOutputs().size() != 2 ||
+        result.getResultNumber() != 1)
+      return false;
+    llvm::DenseSet<mlir::Value> visited;
+    return isAligned(value, projection.getSel(), *activation,
+                     /*truePhaseOnly=*/true, visited);
+  }
+
   bool computeAvailableWhenSelectedAndAligned(
       mlir::Value value, mlir::Value selector, unsigned lane, mlir::Value phase,
       mlir::Value assumption, bool truePhaseOnly,
       llvm::DenseSet<mlir::Value> &visited) {
+    if (auto event = dataflow::semantics::getStreamPublicationEvent(value))
+      return availableWhenSelectedAndAligned(
+          *event, selector, lane, phase, assumption, truePhaseOnly, visited);
+    if (auto synchronization =
+            dataflow::semantics::getSelectiveRouterLeafSynchronization(
+                value, selector, lane))
+      return isAligned(*synchronization, phase, assumption, truePhaseOnly,
+                       visited);
+    if (auto activation = dataflow::semantics::getSelectiveRouterLeafActivation(
+            value, selector, lane))
+      return isAligned(*activation, phase, assumption, truePhaseOnly, visited);
     auto result = llvm::dyn_cast<mlir::OpResult>(value);
     mlir::Operation *def = result ? result.getOwner() : nullptr;
     if (!def)
@@ -821,7 +868,7 @@ private:
          isNestedGateCloseAligned(value, selector, lane, phase, assumption)))
       return true;
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
-      if (haveEquivalentCorrespondence(demux.getSel(), selector) &&
+      if (haveEquivalentSelectorCorrespondence(demux.getSel(), selector) &&
           result.getResultNumber() == lane) {
         if (!isGraphStreamInput(demux.getInput())) {
           return isAligned(demux.getInput(), phase, assumption, truePhaseOnly,
@@ -861,6 +908,9 @@ private:
         !llvm::isa<mlir::memref::CastOp>(def))
       return false;
     bool hasSelectedOperand = false;
+    const bool laneSelectedOnce =
+        dataflow::semantics::selectorSelectsLaneOncePerActivation(selector, 2,
+                                                                  lane);
     for (mlir::Value operand : def->getOperands()) {
       if (isMemoryCapabilityType(operand.getType()))
         continue;
@@ -869,6 +919,9 @@ private:
         hasSelectedOperand = true;
         continue;
       }
+      if (laneSelectedOnce &&
+          isExactOnePerSelectorActivation(operand, selector, 2))
+        continue;
       if (!isAligned(operand, phase, assumption, truePhaseOnly, visited))
         return false;
     }
@@ -903,6 +956,7 @@ private:
       mlir::Value childPhase, mlir::Value selector, unsigned lane,
       mlir::Value parentPhase, mlir::Value parentAssumption, bool truePhaseOnly,
       GraphCardinalityAnalysis &activation) {
+    activation.inheritAssumptions(*this);
     auto assumeExact = [&](mlir::Value value) {
       llvm::DenseSet<mlir::Value> visited;
       if (!availableWhenSelectedAndAligned(value, selector, lane, parentPhase,
@@ -986,6 +1040,7 @@ private:
                                   mlir::Value parentAssumption,
                                   bool truePhaseOnly,
                                   GraphCardinalityAnalysis &activation) {
+    activation.inheritAssumptions(*this);
     // Parent-aligned inputs are exact-one within each child activation.
     auto assumeExact = [&](mlir::Value value) {
       llvm::DenseSet<mlir::Value> visited;
@@ -1150,6 +1205,25 @@ private:
           return isAligned(*activation, phase, assumption,
                            /*truePhaseOnly=*/true, visited);
       if (truePhaseOnly)
+        if (auto activation =
+                dataflow::semantics::getSelectiveRouterLeafActivation(value))
+          return isAligned(*activation, phase, assumption,
+                           /*truePhaseOnly=*/true, visited);
+      if (truePhaseOnly)
+        if (auto synchronization =
+                dataflow::semantics::getSelectiveRouterLeafSynchronization(
+                    value))
+          return isAligned(*synchronization, phase, assumption,
+                           /*truePhaseOnly=*/true, visited);
+      if (truePhaseOnly)
+        if (auto event = dataflow::semantics::getStreamActivityEvent(value))
+          return isAligned(*event, phase, assumption,
+                           /*truePhaseOnly=*/true, visited);
+      if (truePhaseOnly)
+        if (auto event = dataflow::semantics::getStreamPublicationEvent(value))
+          return isAligned(*event, phase, assumption,
+                           /*truePhaseOnly=*/true, visited);
+      if (truePhaseOnly)
         if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def);
             demux && isGraphStreamInput(demux.getInput())) {
           if (auto selected = getKnownUnsigned(demux.getSel());
@@ -1215,6 +1289,12 @@ private:
           return true;
         if (!truePhaseOnly)
           return false;
+        if (auto activation =
+                dataflow::semantics::getSelectorLaneEventActivation(
+                    demux.getSel(), demux.getOutputs().size(),
+                    result.getResultNumber(), demux.getInput()))
+          return isAligned(*activation, phase, assumption,
+                           /*truePhaseOnly=*/true, visited);
         if (!haveEquivalentCorrespondence(demux.getSel(), phase) ||
             result.getResultNumber() != 1)
           return false;
@@ -1418,6 +1498,9 @@ private:
     }
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(def)) {
       unsigned lane = result.getResultNumber();
+      if (auto activation =
+              dataflow::semantics::getSelectiveRouterLeafActivation(value))
+        return isExactOne(*activation);
       if (auto selected = getKnownUnsigned(demux.getSel())) {
         if (isGraphStreamInput(demux.getInput()))
           return *selected == lane && isExactOne(demux.getSel());

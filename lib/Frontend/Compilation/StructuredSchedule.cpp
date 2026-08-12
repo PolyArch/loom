@@ -142,12 +142,12 @@ aggregateUnrollCapacity(mlir::scf::ForOp loop,
   return capacity;
 }
 
-llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>>
-cloneAndResolveLoop(const StructuredProgramCandidate &parent,
-                    const StructuredEntityRef &reference,
-                    std::optional<StructuredEntityRef> trackedSpatialRegion,
-                    mlir::scf::ForOp &clonedLoop,
-                    mlir::Operation *&clonedSpatialRegion) {
+llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolveLoop(
+    const StructuredProgramCandidate &parent,
+    const StructuredEntityRef &reference,
+    std::optional<StructuredEntityRef> trackedSpatialRegion,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance,
+    mlir::scf::ForOp &clonedLoop, mlir::Operation *&clonedSpatialRegion) {
   if (reference.kind != StructuredEntityKind::Operation)
     return invalid("schedule decision does not reference an operation");
   auto view = parent.view();
@@ -161,8 +161,11 @@ cloneAndResolveLoop(const StructuredProgramCandidate &parent,
     return invalid("schedule decision does not reference scf.for");
 
   mlir::IRMapping mapping;
-  mlir::OwningOpRef<mlir::ModuleOp> clone(
-      llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
+  auto privateClone = cloneStructuredProgramWithSourceLocations(
+      parent, sourceProvenance, mapping);
+  if (!privateClone)
+    return privateClone.takeError();
+  mlir::OwningOpRef<mlir::ModuleOp> clone = std::move(*privateClone);
   clonedLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(
       mapping.lookupOrNull(sourceLoop.getOperation()));
   if (!clonedLoop)
@@ -171,8 +174,7 @@ cloneAndResolveLoop(const StructuredProgramCandidate &parent,
     auto spatialEntity = view->resolve(*trackedSpatialRegion);
     if (!spatialEntity)
       return spatialEntity.takeError();
-    if (!llvm::isa_and_nonnull<loom::SpatialRegionOp>(
-            spatialEntity->operation))
+    if (!llvm::isa_and_nonnull<loom::SpatialRegionOp>(spatialEntity->operation))
       return invalid("tracked operation is not a Spatial region");
     clonedSpatialRegion = mapping.lookupOrNull(spatialEntity->operation);
     if (!clonedSpatialRegion)
@@ -378,14 +380,15 @@ llvm::Expected<MaterializedStructuredScheduleCandidate>
 materializeStructuredScheduleDecision(
     const StructuredProgramCandidate &parent,
     const StructuredScheduleDecision &decision,
-    std::optional<StructuredEntityRef> trackedSpatialRegion) {
+    std::optional<StructuredEntityRef> trackedSpatialRegion,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
   auto encoded = encodeStructuredScheduleDecision(decision);
   if (!encoded)
     return encoded.takeError();
   mlir::scf::ForOp loop;
   mlir::Operation *clonedSpatialRegion = nullptr;
   auto clone = cloneAndResolveLoop(parent, decision.loop, trackedSpatialRegion,
-                                   loop, clonedSpatialRegion);
+                                   sourceProvenance, loop, clonedSpatialRegion);
   if (!clone)
     return clone.takeError();
 

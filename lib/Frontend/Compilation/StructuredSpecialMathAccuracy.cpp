@@ -102,8 +102,11 @@ llvm::Expected<MaterializedAccuracyProjection> materializeDecision(
     return selected.takeError();
 
   mlir::IRMapping mapping;
-  mlir::OwningOpRef<mlir::ModuleOp> clone(
-      llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
+  auto privateClone = cloneStructuredProgramWithSourceLocations(
+      parent, sourceProvenance, mapping);
+  if (!privateClone)
+    return privateClone.takeError();
+  mlir::OwningOpRef<mlir::ModuleOp> clone = std::move(*privateClone);
   mlir::Operation *trackedSpatialOperation = nullptr;
   if (trackedSpatialRegion) {
     if (trackedSpatialRegion->parent != parent.identity() ||
@@ -126,34 +129,6 @@ llvm::Expected<MaterializedAccuracyProjection> materializeDecision(
       mlir::StringAttr::get(
           clone->getContext(),
           stringifySpecialMathAccuracyTier(decision.accuracy)));
-
-  llvm::DenseSet<std::uint64_t> locatedOperations;
-  for (const StructuredOperationSourceProvenance &provenance :
-       sourceProvenance) {
-    if (provenance.operation.parent != parent.identity() ||
-        provenance.operation.kind != StructuredEntityKind::Operation)
-      return invalid("source provenance has the wrong Structured owner");
-    if (provenance.sourceFiles.empty() ||
-        !llvm::is_sorted(provenance.sourceFiles) ||
-        std::adjacent_find(provenance.sourceFiles.begin(),
-                           provenance.sourceFiles.end()) !=
-            provenance.sourceFiles.end())
-      return invalid("source provenance files are not canonical");
-    if (!locatedOperations.insert(provenance.operation.ordinal).second)
-      return invalid("source provenance duplicates an operation");
-    auto parentOperation = parentView->resolve(provenance.operation);
-    if (!parentOperation)
-      return parentOperation.takeError();
-    mlir::Operation *mapped = mapping.lookupOrNull(parentOperation->operation);
-    if (!mapped)
-      return invalid("source-backed operation was not cloned");
-    llvm::SmallVector<mlir::Location> fileLocations;
-    fileLocations.reserve(provenance.sourceFiles.size());
-    for (const std::string &sourceFile : provenance.sourceFiles)
-      fileLocations.push_back(
-          mlir::FileLineColLoc::get(clone->getContext(), sourceFile, 0, 0));
-    mapped->setLoc(mlir::FusedLoc::get(clone->getContext(), fileLocations));
-  }
 
   llvm::DenseSet<std::uint64_t> trackedOrdinals;
   std::vector<mlir::Block *> trackedBlocks;
@@ -184,13 +159,12 @@ llvm::Expected<MaterializedAccuracyProjection> materializeDecision(
   if (finalized->trackedOperations.size() !=
       static_cast<std::size_t>(trackedSpatialOperation != nullptr))
     return invalid("tracked Spatial region projection changed cardinality");
-  return MaterializedAccuracyProjection{std::move(finalized->artifact),
-                                        std::move(finalized->trackedBlocks),
-                                        finalized->trackedOperations.empty()
-                                            ? std::nullopt
-                                            : std::optional(
-                                                  finalized->trackedOperations.front()),
-                                        std::move(finalized->sourceProvenance)};
+  return MaterializedAccuracyProjection{
+      std::move(finalized->artifact), std::move(finalized->trackedBlocks),
+      finalized->trackedOperations.empty()
+          ? std::nullopt
+          : std::optional(finalized->trackedOperations.front()),
+      std::move(finalized->sourceProvenance)};
 }
 
 } // namespace
@@ -301,9 +275,9 @@ materializeStructuredSpecialMathAccuracyDecision(
   for (const StructuredBlockActivityLineage &lineage :
        parent.blockActivityLineage)
     trackedBlocks.push_back(lineage.childBlock);
-  auto child = materializeDecision(parent.structuredProgram, decision,
-                                   trackedBlocks, parent.ownedSpatialRegion,
-                                   parent.sourceProvenance);
+  auto child =
+      materializeDecision(parent.structuredProgram, decision, trackedBlocks,
+                          parent.ownedSpatialRegion, parent.sourceProvenance);
   if (!child)
     return child.takeError();
   if (child->trackedBlocks.size() != parent.blockActivityLineage.size())

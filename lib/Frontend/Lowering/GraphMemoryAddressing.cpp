@@ -89,6 +89,21 @@ private:
     return false;
   }
 
+  bool proveSelectionResult(mlir::Operation *selection, unsigned ordinal) {
+    if (!selection || selection->getNumRegions() == 0)
+      return false;
+    for (mlir::Region &region : selection->getRegions()) {
+      if (!region.hasOneBlock())
+        return false;
+      auto yield =
+          llvm::dyn_cast<mlir::scf::YieldOp>(region.front().getTerminator());
+      if (!yield || ordinal >= yield.getNumOperands() ||
+          !prove(yield.getOperand(ordinal)))
+        return false;
+    }
+    return true;
+  }
+
   bool proveImpl(mlir::Value value) {
     if (std::optional<llvm::APInt> constant = integerConstantValue(value))
       return constant->isZero() || constant->countTrailingZeros() >= shift;
@@ -128,6 +143,12 @@ private:
       return proveWhileInvariant(loop, ordinal, beforeArgument) &&
              prove(loop.getConditionOp().getArgs()[ordinal]);
     }
+    if (auto selection = value.getDefiningOp<mlir::scf::IfOp>())
+      return proveSelectionResult(
+          selection, llvm::cast<mlir::OpResult>(value).getResultNumber());
+    if (auto selection = value.getDefiningOp<mlir::scf::IndexSwitchOp>())
+      return proveSelectionResult(
+          selection, llvm::cast<mlir::OpResult>(value).getResultNumber());
     return false;
   }
 
@@ -209,10 +230,15 @@ struct ResolvedPointerRoot {
   llvm::SmallVector<mlir::LLVM::GEPOp, 4> gepsLeafToRoot;
 };
 
-std::optional<ResolvedPointerRoot> resolvePointerRoot(mlir::Value pointer) {
+std::optional<ResolvedPointerRoot>
+resolvePointerRoot(mlir::Value pointer,
+                   llvm::function_ref<bool(mlir::Value)> isBoundaryRoot) {
   llvm::SmallVector<mlir::LLVM::GEPOp, 4> gepsLeafToRoot;
   mlir::Value root = pointer;
-  while (auto gep = root.getDefiningOp<mlir::LLVM::GEPOp>()) {
+  while (!isBoundaryRoot(root)) {
+    auto gep = root.getDefiningOp<mlir::LLVM::GEPOp>();
+    if (!gep)
+      break;
     gepsLeafToRoot.push_back(gep);
     root = gep.getBase();
   }
@@ -434,9 +460,11 @@ resolveExactElementStrideScale(mlir::Value index, std::uint64_t byteStride,
 }
 
 static std::optional<ResolvedLinearMemoryAddress>
-resolveLinearMemoryAddressImpl(mlir::Value pointer, mlir::Type accessType,
-                               std::optional<unsigned> canonicalIndexBits) {
-  auto pointerRoot = resolvePointerRoot(pointer);
+resolveLinearMemoryAddressImpl(
+    mlir::Value pointer, mlir::Type accessType,
+    std::optional<unsigned> canonicalIndexBits,
+    llvm::function_ref<bool(mlir::Value)> isBoundaryRoot) {
+  auto pointerRoot = resolvePointerRoot(pointer, isBoundaryRoot);
   if (!pointerRoot)
     return std::nullopt;
   const unsigned arithmeticBits =
@@ -608,13 +636,21 @@ resolveLinearMemoryAddressImpl(mlir::Value pointer, mlir::Type accessType,
 std::optional<ResolvedLinearMemoryAddress>
 resolveLinearMemoryAddress(mlir::Value pointer, mlir::Type accessType,
                            unsigned canonicalIndexBits) {
-  return resolveLinearMemoryAddressImpl(pointer, accessType,
-                                        canonicalIndexBits);
+  return resolveLinearMemoryAddressImpl(pointer, accessType, canonicalIndexBits,
+                                        [](mlir::Value) { return false; });
+}
+
+std::optional<ResolvedLinearMemoryAddress> resolveLinearMemoryAddress(
+    mlir::Value pointer, mlir::Type accessType, unsigned canonicalIndexBits,
+    llvm::function_ref<bool(mlir::Value)> isBoundaryRoot) {
+  return resolveLinearMemoryAddressImpl(pointer, accessType, canonicalIndexBits,
+                                        isBoundaryRoot);
 }
 
 std::optional<ResolvedLinearMemoryAddress>
 resolveLinearPointerAddress(mlir::Value pointer, mlir::Type accessType) {
-  return resolveLinearMemoryAddressImpl(pointer, accessType, std::nullopt);
+  return resolveLinearMemoryAddressImpl(pointer, accessType, std::nullopt,
+                                        [](mlir::Value) { return false; });
 }
 
 std::optional<ResolvedLinearMemoryAddress>

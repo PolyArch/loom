@@ -92,10 +92,10 @@ takeEntityRef(llvm::ArrayRef<std::uint8_t> &bytes) {
   return reference;
 }
 
-llvm::Expected<mlir::Operation *> mapTrackedSpatialRegion(
-    const StructuredProgramCandidate &parent,
-    std::optional<StructuredEntityRef> trackedSpatialRegion,
-    mlir::IRMapping &mapping) {
+llvm::Expected<mlir::Operation *>
+mapTrackedSpatialRegion(const StructuredProgramCandidate &parent,
+                        std::optional<StructuredEntityRef> trackedSpatialRegion,
+                        mlir::IRMapping &mapping) {
   if (!trackedSpatialRegion)
     return nullptr;
   auto view = parent.view();
@@ -230,12 +230,12 @@ bool isStageableConstantInput(loom::SpatialRegionOp spatial,
   return isConstantAtEveryRootLaunch(thread, threadInput.getArgNumber());
 }
 
-llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>>
-cloneAndResolveMemoryInput(const StructuredProgramCandidate &parent,
-                           const StructuredEntityRef &reference,
-                           std::optional<StructuredEntityRef> trackedSpatialRegion,
-                           mlir::BlockArgument &clonedInput,
-                           mlir::Operation *&clonedSpatialRegion) {
+llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolveMemoryInput(
+    const StructuredProgramCandidate &parent,
+    const StructuredEntityRef &reference,
+    std::optional<StructuredEntityRef> trackedSpatialRegion,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance,
+    mlir::BlockArgument &clonedInput, mlir::Operation *&clonedSpatialRegion) {
   if (reference.kind != StructuredEntityKind::Value)
     return invalid("memory decision does not reference a value");
   auto view = parent.view();
@@ -249,8 +249,11 @@ cloneAndResolveMemoryInput(const StructuredProgramCandidate &parent,
     return invalid("memory decision does not reference a block argument");
 
   mlir::IRMapping mapping;
-  mlir::OwningOpRef<mlir::ModuleOp> clone(
-      llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
+  auto privateClone = cloneStructuredProgramWithSourceLocations(
+      parent, sourceProvenance, mapping);
+  if (!privateClone)
+    return privateClone.takeError();
+  mlir::OwningOpRef<mlir::ModuleOp> clone = std::move(*privateClone);
   clonedInput = llvm::dyn_cast_or_null<mlir::BlockArgument>(
       mapping.lookupOrNull(sourceInput));
   if (!clonedInput)
@@ -304,12 +307,12 @@ llvm::Error stageConstantGlobal(mlir::BlockArgument input) {
   return llvm::Error::success();
 }
 
-llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>>
-cloneAndResolveAllocation(const StructuredProgramCandidate &parent,
-                          const StructuredEntityRef &reference,
-                          std::optional<StructuredEntityRef> trackedSpatialRegion,
-                          mlir::memref::AllocOp &clonedAlloc,
-                          mlir::Operation *&clonedSpatialRegion) {
+llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolveAllocation(
+    const StructuredProgramCandidate &parent,
+    const StructuredEntityRef &reference,
+    std::optional<StructuredEntityRef> trackedSpatialRegion,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance,
+    mlir::memref::AllocOp &clonedAlloc, mlir::Operation *&clonedSpatialRegion) {
   if (reference.kind != StructuredEntityKind::Value)
     return invalid("layout decision does not reference a value");
   auto view = parent.view();
@@ -323,8 +326,11 @@ cloneAndResolveAllocation(const StructuredProgramCandidate &parent,
     return invalid("layout decision does not reference an allocation result");
 
   mlir::IRMapping mapping;
-  mlir::OwningOpRef<mlir::ModuleOp> clone(
-      llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
+  auto privateClone = cloneStructuredProgramWithSourceLocations(
+      parent, sourceProvenance, mapping);
+  if (!privateClone)
+    return privateClone.takeError();
+  mlir::OwningOpRef<mlir::ModuleOp> clone = std::move(*privateClone);
   mlir::Value clonedValue = mapping.lookupOrNull(entity->value);
   clonedAlloc = clonedValue.getDefiningOp<mlir::memref::AllocOp>();
   if (!clonedAlloc)
@@ -337,11 +343,12 @@ cloneAndResolveAllocation(const StructuredProgramCandidate &parent,
 }
 
 llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>>
-cloneAndResolveChannelAllocation(const StructuredProgramCandidate &parent,
-                                 const StructuredEntityRef &reference,
-                                 std::optional<StructuredEntityRef> trackedSpatialRegion,
-                                 mlir::Value &clonedValue,
-                                 mlir::Operation *&clonedSpatialRegion) {
+cloneAndResolveChannelAllocation(
+    const StructuredProgramCandidate &parent,
+    const StructuredEntityRef &reference,
+    std::optional<StructuredEntityRef> trackedSpatialRegion,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance,
+    mlir::Value &clonedValue, mlir::Operation *&clonedSpatialRegion) {
   if (reference.kind != StructuredEntityKind::Value)
     return invalid("channel decision does not reference a value");
   auto view = parent.view();
@@ -357,8 +364,11 @@ cloneAndResolveChannelAllocation(const StructuredProgramCandidate &parent,
         "channel decision does not reference a supported allocation result");
 
   mlir::IRMapping mapping;
-  mlir::OwningOpRef<mlir::ModuleOp> clone(
-      llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
+  auto privateClone = cloneStructuredProgramWithSourceLocations(
+      parent, sourceProvenance, mapping);
+  if (!privateClone)
+    return privateClone.takeError();
+  mlir::OwningOpRef<mlir::ModuleOp> clone = std::move(*privateClone);
   clonedValue = mapping.lookupOrNull(entity->value);
   if (!clonedValue)
     return invalid("selected channel allocation was not mapped into the clone");
@@ -833,12 +843,12 @@ std::optional<PipelineLoopPlan> analyzePipelineLoop(mlir::scf::ForOp loop) {
   return plan;
 }
 
-llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>>
-cloneAndResolvePipelineLoop(const StructuredProgramCandidate &parent,
-                            const StructuredEntityRef &reference,
-                            std::optional<StructuredEntityRef> trackedSpatialRegion,
-                            mlir::scf::ForOp &clonedLoop,
-                            mlir::Operation *&clonedSpatialRegion) {
+llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> cloneAndResolvePipelineLoop(
+    const StructuredProgramCandidate &parent,
+    const StructuredEntityRef &reference,
+    std::optional<StructuredEntityRef> trackedSpatialRegion,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance,
+    mlir::scf::ForOp &clonedLoop, mlir::Operation *&clonedSpatialRegion) {
   if (reference.kind != StructuredEntityKind::Operation)
     return invalid("pipeline decision does not reference an operation");
   auto view = parent.view();
@@ -852,8 +862,11 @@ cloneAndResolvePipelineLoop(const StructuredProgramCandidate &parent,
     return invalid("pipeline decision does not reference scf.for");
 
   mlir::IRMapping mapping;
-  mlir::OwningOpRef<mlir::ModuleOp> clone(
-      llvm::cast<mlir::ModuleOp>(parent.module()->clone(mapping)));
+  auto privateClone = cloneStructuredProgramWithSourceLocations(
+      parent, sourceProvenance, mapping);
+  if (!privateClone)
+    return privateClone.takeError();
+  mlir::OwningOpRef<mlir::ModuleOp> clone = std::move(*privateClone);
   clonedLoop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(
       mapping.lookupOrNull(sourceLoop.getOperation()));
   if (!clonedLoop)
@@ -1216,7 +1229,8 @@ llvm::Expected<MaterializedStructuredMemoryCommunicationCandidate>
 materializeStructuredMemoryCommunicationDecision(
     const StructuredProgramCandidate &parent,
     const StructuredMemoryCommunicationDecision &decision,
-    std::optional<StructuredEntityRef> trackedSpatialRegion) {
+    std::optional<StructuredEntityRef> trackedSpatialRegion,
+    llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance) {
   auto encoded = encodeStructuredMemoryCommunicationDecision(decision);
   if (!encoded)
     return encoded.takeError();
@@ -1225,7 +1239,7 @@ materializeStructuredMemoryCommunicationDecision(
   if (const auto *stage = std::get_if<StageConstantGlobalDecision>(&decision)) {
     mlir::BlockArgument input;
     auto resolved = cloneAndResolveMemoryInput(
-        parent, stage->anchor, trackedSpatialRegion, input,
+        parent, stage->anchor, trackedSpatialRegion, sourceProvenance, input,
         clonedSpatialRegion);
     if (!resolved)
       return resolved.takeError();
@@ -1235,9 +1249,9 @@ materializeStructuredMemoryCommunicationDecision(
   } else if (const auto *layout =
                  std::get_if<PermuteLocalBufferLayoutDecision>(&decision)) {
     mlir::memref::AllocOp alloc;
-    auto resolved = cloneAndResolveAllocation(
-        parent, layout->anchor, trackedSpatialRegion, alloc,
-        clonedSpatialRegion);
+    auto resolved =
+        cloneAndResolveAllocation(parent, layout->anchor, trackedSpatialRegion,
+                                  sourceProvenance, alloc, clonedSpatialRegion);
     if (!resolved)
       return resolved.takeError();
     clone = std::move(*resolved);
@@ -1247,7 +1261,7 @@ materializeStructuredMemoryCommunicationDecision(
                  std::get_if<PipelineStagedLoopDecision>(&decision)) {
     mlir::scf::ForOp loop;
     auto resolved = cloneAndResolvePipelineLoop(
-        parent, pipeline->anchor, trackedSpatialRegion, loop,
+        parent, pipeline->anchor, trackedSpatialRegion, sourceProvenance, loop,
         clonedSpatialRegion);
     if (!resolved)
       return resolved.takeError();
@@ -1259,16 +1273,18 @@ materializeStructuredMemoryCommunicationDecision(
                      &decision)) {
     mlir::Value allocation;
     auto resolved = cloneAndResolveChannelAllocation(
-        parent, channel->anchor, trackedSpatialRegion, allocation,
-        clonedSpatialRegion);
+        parent, channel->anchor, trackedSpatialRegion, sourceProvenance,
+        allocation, clonedSpatialRegion);
     if (!resolved)
       return resolved.takeError();
     clone = std::move(*resolved);
     if (auto alloc = allocation.getDefiningOp<mlir::memref::AllocOp>()) {
-      if (llvm::Error error = detail::promoteOrderedBufferToChannel(alloc))
+      if (llvm::Error error =
+              detail::promoteOrderedBufferToChannel(alloc, clonedSpatialRegion))
         return std::move(error);
     } else if (auto alloca = allocation.getDefiningOp<mlir::LLVM::AllocaOp>()) {
-      if (llvm::Error error = detail::promoteOrderedBufferToChannel(alloca))
+      if (llvm::Error error = detail::promoteOrderedBufferToChannel(
+              alloca, clonedSpatialRegion))
         return std::move(error);
     } else {
       return invalid("channel allocation changed representation in the clone");

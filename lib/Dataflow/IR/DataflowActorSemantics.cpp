@@ -1,6 +1,5 @@
 #include "Dataflow/IR/DataflowActorSemantics.h"
 
-#include "Common/VectorWidth.h"
 #include "Dataflow/IR/OperationSchema.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -15,6 +14,7 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cassert>
 #include <optional>
 #include <string>
@@ -23,22 +23,6 @@
 namespace {
 
 using dataflow::semantics::getStreamActivation;
-
-llvm::Error validateVectorElementRepresentation(mlir::Type type) {
-  auto integer = llvm::dyn_cast<mlir::IntegerType>(type);
-  if (llvm::isa<mlir::FloatType>(type) || (integer && integer.getWidth() != 0))
-    return llvm::Error::success();
-  return llvm::createStringError(
-      std::errc::invalid_argument,
-      "data vector element type must be a nonzero-width integer or "
-      "floating-point type");
-}
-
-std::uint64_t vectorElementBitWidth(mlir::Type type) {
-  if (auto integer = llvm::dyn_cast<mlir::IntegerType>(type))
-    return integer.getWidth();
-  return llvm::cast<mlir::FloatType>(type).getWidth();
-}
 
 std::string typeToString(mlir::Type type) {
   std::string storage;
@@ -146,15 +130,45 @@ std::optional<bool> getKnownBool(mlir::Value value,
       return std::nullopt;
     return getKnownBool(gate.getBeforeValue(), visited);
   }
-  if (auto result = llvm::dyn_cast<mlir::OpResult>(value))
+  if (auto result = llvm::dyn_cast<mlir::OpResult>(value)) {
+    if (auto sync = llvm::dyn_cast<dataflow::SyncOp>(result.getOwner());
+        sync && result.getResultNumber() < sync.getInputs().size())
+      return getKnownBool(sync.getInputs()[result.getResultNumber()], visited);
     if (auto demux = llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner()))
       return getKnownBool(demux.getInput(), visited);
+  }
   return std::nullopt;
 }
 
 std::optional<bool> getKnownBool(mlir::Value value) {
   llvm::DenseSet<mlir::Value> visited;
   return getKnownBool(value, visited);
+}
+
+mlir::Value unwrapSynchronizedSelection(mlir::Value value) {
+  llvm::DenseSet<mlir::Value> visited;
+  while (value && visited.insert(value).second) {
+    auto result = llvm::dyn_cast<mlir::OpResult>(value);
+    auto sync =
+        result ? llvm::dyn_cast<dataflow::SyncOp>(result.getOwner()) : nullptr;
+    if (sync && result.getResultNumber() < sync.getInputs().size()) {
+      value = sync.getInputs()[result.getResultNumber()];
+      continue;
+    }
+    auto mux = value.getDefiningOp<dataflow::MuxOp>();
+    if (!mux || mux.getInputs().size() != 2 || !value.getType().isInteger(1))
+      break;
+    auto falseValue = getKnownBool(mux.getInputs()[0]);
+    auto trueValue = getKnownBool(mux.getInputs()[1]);
+    if (!falseValue || !trueValue || *falseValue || !*trueValue)
+      break;
+    value = mux.getSel();
+  }
+  return value;
+}
+
+bool haveSynchronizedValueCorrespondence(mlir::Value lhs, mlir::Value rhs) {
+  return unwrapSynchronizedSelection(lhs) == unwrapSynchronizedSelection(rhs);
 }
 
 mlir::Value graphStartForArgument(mlir::Value value) {
@@ -223,6 +237,33 @@ mlir::Value unwrapSelectorOrdinal(mlir::Value selector, unsigned arity) {
       return {};
     if (auto trunc = selector.getDefiningOp<mlir::arith::TruncIOp>())
       return trunc.getIn();
+    if (auto compare = selector.getDefiningOp<mlir::arith::CmpIOp>()) {
+      auto unwrapComparison = [&](mlir::Value ordinal, mlir::Value constant,
+                                  int64_t expected) -> mlir::Value {
+        auto known = getIntegerConstant(constant);
+        return known && *known == expected ? ordinal : mlir::Value{};
+      };
+      switch (compare.getPredicate()) {
+      case mlir::arith::CmpIPredicate::eq:
+        if (mlir::Value ordinal =
+                unwrapComparison(compare.getLhs(), compare.getRhs(), 1))
+          return ordinal;
+        return unwrapComparison(compare.getRhs(), compare.getLhs(), 1);
+      case mlir::arith::CmpIPredicate::ne:
+        if (mlir::Value ordinal =
+                unwrapComparison(compare.getLhs(), compare.getRhs(), 0))
+          return ordinal;
+        return unwrapComparison(compare.getRhs(), compare.getLhs(), 0);
+      case mlir::arith::CmpIPredicate::sge:
+      case mlir::arith::CmpIPredicate::uge:
+        if (auto threshold = getIntegerConstant(compare.getRhs());
+            threshold && *threshold > 0)
+          return compare.getLhs();
+        return {};
+      default:
+        break;
+      }
+    }
     return selector;
   }
   if (!llvm::isa<mlir::IndexType>(selector.getType()))
@@ -640,6 +681,31 @@ bool routeVisitsLaneOnce(mlir::Value route, unsigned lane) {
          equalsConstant(matches.front().upper - matches.front().lower, 1);
 }
 
+bool selectorPredicateVisitsLaneOnce(mlir::Value selector, unsigned lane) {
+  if (lane > 1)
+    return false;
+  auto compare = selector.getDefiningOp<mlir::arith::CmpIOp>();
+  if (!compare)
+    return false;
+  dataflow::StreamOp stream = findRootStream(compare.getLhs());
+  auto threshold = stream ? parseThreshold(selector, stream) : std::nullopt;
+  if (!stream || !threshold ||
+      stream.getStepKind() != dataflow::StreamStepKind::Add ||
+      (stream.getPredicate() != mlir::arith::CmpIPredicate::slt &&
+       stream.getPredicate() != mlir::arith::CmpIPredicate::ult) ||
+      getIntegerConstant(stream.getStep()) != 1)
+    return false;
+
+  Interval interval{parseLinear(stream.getInit(), stream),
+                    parseLinear(stream.getLimit(), stream), true};
+  const bool trueLane = lane == 1;
+  if (trueLane == threshold->trueIsLess)
+    interval.tightenUpper(threshold->value);
+  else
+    interval.tightenLower(threshold->value);
+  return interval.valid && equalsConstant(interval.upper - interval.lower, 1);
+}
+
 struct SelectorDescription {
   mlir::Value routeSelector;
   mlir::Value route;
@@ -676,6 +742,528 @@ std::optional<SelectorDescription> describeSelector(mlir::Value selector,
     routeSelector = activities.getSel();
   }
   return SelectorDescription{routeSelector, route, activity, stream, arity};
+}
+
+bool isGraphStreamInput(mlir::Value value) {
+  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
+  if (!argument || argument.getArgNumber() == 0)
+    return false;
+  auto graph = llvm::dyn_cast_or_null<dataflow::GraphOp>(
+      argument.getOwner()->getParentOp());
+  return graph && argument.getOwner() == &graph.getBody().front() &&
+         graph.getInputPortKind(argument.getArgNumber() - 1) ==
+             dataflow::GraphPortKind::Stream;
+}
+
+struct StaticSelectiveRouterLeg {
+  mlir::Value selector;
+  mlir::Value ordinal;
+  mlir::Value event;
+  std::int64_t threshold = 0;
+  unsigned lane = 0;
+};
+
+struct SelectiveRouterLeafDescription {
+  mlir::Value activation;
+  mlir::Value route;
+  mlir::Value activity;
+  mlir::Value activityEvent;
+  mlir::Value synchronization;
+  unsigned lane = 0;
+};
+
+std::optional<StaticSelectiveRouterLeg>
+describeStaticSelectiveRouterLeg(dataflow::DemuxOp payload, unsigned lane) {
+  if (!payload || payload.getOutputs().size() != 2 || lane > 1)
+    return std::nullopt;
+  auto compare = payload.getSel().getDefiningOp<mlir::arith::CmpIOp>();
+  if (!compare || compare.getPredicate() != mlir::arith::CmpIPredicate::uge)
+    return std::nullopt;
+  auto threshold = compare.getRhs().getDefiningOp<dataflow::ConstantOp>();
+  auto value = getIntegerConstant(compare.getRhs());
+  if (!threshold || !value || *value <= 0 ||
+      threshold.getValue().getType() != compare.getLhs().getType())
+    return std::nullopt;
+  return StaticSelectiveRouterLeg{payload.getSel(), compare.getLhs(),
+                                  threshold.getCtrl(), *value, lane};
+}
+
+std::optional<mlir::Value> findRoutedResult(mlir::Value selector,
+                                            mlir::Value input, unsigned lane) {
+  mlir::Value found;
+  for (mlir::Operation *user : input.getUsers()) {
+    auto demux = llvm::dyn_cast<dataflow::DemuxOp>(user);
+    if (!demux || demux.getSel() != selector || demux.getInput() != input ||
+        demux.getOutputs().size() != 2)
+      continue;
+    if (found)
+      return std::nullopt;
+    found = demux.getOutputs()[lane];
+  }
+  return found ? std::optional<mlir::Value>{found} : std::nullopt;
+}
+
+std::optional<mlir::Value> findRightLocalOrdinal(mlir::Value routedOrdinal,
+                                                 mlir::Value event,
+                                                 std::int64_t threshold) {
+  mlir::Value found;
+  for (mlir::Operation *user : routedOrdinal.getUsers()) {
+    auto subtract = llvm::dyn_cast<mlir::arith::SubIOp>(user);
+    if (!subtract || subtract.getLhs() != routedOrdinal ||
+        getIntegerConstant(subtract.getRhs()) != threshold)
+      continue;
+    auto constant = subtract.getRhs().getDefiningOp<dataflow::ConstantOp>();
+    if (!constant || constant.getCtrl() != event)
+      continue;
+    if (found)
+      return std::nullopt;
+    found = subtract.getResult();
+  }
+  return found ? std::optional<mlir::Value>{found} : std::nullopt;
+}
+
+std::optional<std::int64_t> getRouterThreshold(mlir::Value selector,
+                                               mlir::Value ordinal,
+                                               mlir::Value event) {
+  auto compare = selector.getDefiningOp<mlir::arith::CmpIOp>();
+  if (!compare || compare.getPredicate() != mlir::arith::CmpIPredicate::uge ||
+      compare.getLhs() != ordinal)
+    return std::nullopt;
+  auto constant = compare.getRhs().getDefiningOp<dataflow::ConstantOp>();
+  auto threshold = getIntegerConstant(compare.getRhs());
+  if (!constant || constant.getCtrl() != event || !threshold || *threshold <= 0)
+    return std::nullopt;
+  return threshold;
+}
+
+struct RouterLeaf {
+  mlir::Value value;
+  mlir::Value event;
+};
+
+bool hasPayloadRouterChild(mlir::Value payload) {
+  return llvm::any_of(payload.getUsers(), [&](mlir::Operation *user) {
+    auto demux = llvm::dyn_cast<dataflow::DemuxOp>(user);
+    return demux && demux.getInput() == payload &&
+           demux.getOutputs().size() == 2 &&
+           describeStaticSelectiveRouterLeg(demux, 0).has_value();
+  });
+}
+
+bool collectPayloadRouterLeaves(mlir::Value payload, mlir::Value ordinal,
+                                mlir::Value event,
+                                llvm::SmallVectorImpl<RouterLeaf> &leaves,
+                                bool requireNode = false) {
+  dataflow::DemuxOp router;
+  std::int64_t threshold = 0;
+  for (mlir::Operation *user : payload.getUsers()) {
+    auto demux = llvm::dyn_cast<dataflow::DemuxOp>(user);
+    if (!demux || demux.getInput() != payload || demux.getOutputs().size() != 2)
+      continue;
+    auto candidate = getRouterThreshold(demux.getSel(), ordinal, event);
+    if (!candidate)
+      continue;
+    if (router)
+      return false;
+    router = demux;
+    threshold = *candidate;
+  }
+  if (!router) {
+    if (requireNode)
+      return false;
+    leaves.push_back({payload, event});
+    return true;
+  }
+
+  const std::size_t leftBegin = leaves.size();
+  if (hasPayloadRouterChild(router.getOutputs()[0])) {
+    auto leftEvent = findRoutedResult(router.getSel(), event, 0);
+    auto leftOrdinal = findRoutedResult(router.getSel(), ordinal, 0);
+    if (!leftEvent || !leftOrdinal ||
+        !collectPayloadRouterLeaves(router.getOutputs()[0], *leftOrdinal,
+                                    *leftEvent, leaves))
+      return false;
+  } else {
+    leaves.push_back({router.getOutputs()[0], {}});
+  }
+  const std::size_t leftCount = leaves.size() - leftBegin;
+  const std::size_t rightBegin = leaves.size();
+  if (hasPayloadRouterChild(router.getOutputs()[1])) {
+    auto rightEvent = findRoutedResult(router.getSel(), event, 1);
+    auto routedRightOrdinal = findRoutedResult(router.getSel(), ordinal, 1);
+    if (!rightEvent || !routedRightOrdinal)
+      return false;
+    auto rightOrdinal =
+        findRightLocalOrdinal(*routedRightOrdinal, *rightEvent, threshold);
+    if (!rightOrdinal ||
+        !collectPayloadRouterLeaves(router.getOutputs()[1], *rightOrdinal,
+                                    *rightEvent, leaves))
+      return false;
+  } else {
+    leaves.push_back({router.getOutputs()[1], {}});
+  }
+  const std::size_t rightCount = leaves.size() - rightBegin;
+  const std::size_t total = leftCount + rightCount;
+  return leftCount == static_cast<std::size_t>(threshold) &&
+         leftCount == (total + 1) / 2;
+}
+
+bool collectActivityRouterLeaves(mlir::Value activity, mlir::Value ordinal,
+                                 mlir::Value event,
+                                 llvm::SmallVectorImpl<RouterLeaf> &leaves) {
+  auto router = activity.getDefiningOp<dataflow::MuxOp>();
+  auto threshold = router && router.getInputs().size() == 2
+                       ? getRouterThreshold(router.getSel(), ordinal, event)
+                       : std::nullopt;
+  if (!threshold) {
+    leaves.push_back({activity, event});
+    return true;
+  }
+
+  auto leftEvent = findRoutedResult(router.getSel(), event, 0);
+  auto rightEvent = findRoutedResult(router.getSel(), event, 1);
+  if (!leftEvent || !rightEvent)
+    return false;
+
+  auto collectChild = [&](mlir::Value child, mlir::Value childEvent,
+                          unsigned lane) {
+    auto childRouter = child.getDefiningOp<dataflow::MuxOp>();
+    auto childCompare =
+        childRouter && childRouter.getInputs().size() == 2
+            ? childRouter.getSel().getDefiningOp<mlir::arith::CmpIOp>()
+            : nullptr;
+    auto childThreshold =
+        childCompare
+            ? childCompare.getRhs().getDefiningOp<dataflow::ConstantOp>()
+            : nullptr;
+    bool nested =
+        childCompare && childThreshold &&
+        childCompare.getPredicate() == mlir::arith::CmpIPredicate::uge &&
+        childThreshold.getCtrl() == childEvent;
+    if (!nested) {
+      leaves.push_back({child, childEvent});
+      return true;
+    }
+
+    auto routedOrdinal = findRoutedResult(router.getSel(), ordinal, lane);
+    if (!routedOrdinal)
+      return false;
+    mlir::Value childOrdinal = *routedOrdinal;
+    if (lane == 1) {
+      auto local = findRightLocalOrdinal(childOrdinal, childEvent, *threshold);
+      if (!local)
+        return false;
+      childOrdinal = *local;
+    }
+    return getRouterThreshold(childRouter.getSel(), childOrdinal, childEvent) &&
+           collectActivityRouterLeaves(child, childOrdinal, childEvent, leaves);
+  };
+
+  const std::size_t leftBegin = leaves.size();
+  if (!collectChild(router.getInputs()[0], *leftEvent, 0))
+    return false;
+  const std::size_t leftCount = leaves.size() - leftBegin;
+  const std::size_t rightBegin = leaves.size();
+  if (!collectChild(router.getInputs()[1], *rightEvent, 1))
+    return false;
+  const std::size_t rightCount = leaves.size() - rightBegin;
+  const std::size_t total = leftCount + rightCount;
+  return leftCount == static_cast<std::size_t>(*threshold) &&
+         leftCount == (total + 1) / 2;
+}
+
+bool activityIsTrueForEvent(mlir::Value value, mlir::Value event,
+                            mlir::Value branchSelector,
+                            std::optional<unsigned> branchLane,
+                            llvm::DenseSet<mlir::Value> &visited) {
+  if (!value || !visited.insert(value).second)
+    return false;
+  if (auto known = getKnownBool(value)) {
+    auto constant = value.getDefiningOp<dataflow::ConstantOp>();
+    return constant && *known && constant.getCtrl() == event;
+  }
+  auto mux = value.getDefiningOp<dataflow::MuxOp>();
+  if (!mux)
+    return false;
+  if (auto selected = getKnownBool(mux.getSel())) {
+    unsigned lane = *selected ? 1 : 0;
+    llvm::DenseSet<mlir::Value> branchVisited = visited;
+    return activityIsTrueForEvent(mux.getInputs()[lane], event, branchSelector,
+                                  branchLane, branchVisited);
+  }
+  if (branchLane &&
+      haveSynchronizedValueCorrespondence(mux.getSel(), branchSelector)) {
+    if (*branchLane >= mux.getInputs().size())
+      return false;
+    llvm::DenseSet<mlir::Value> branchVisited = visited;
+    return activityIsTrueForEvent(mux.getInputs()[*branchLane], event,
+                                  branchSelector, branchLane, branchVisited);
+  }
+  return llvm::all_of(mux.getInputs(), [&](mlir::Value input) {
+    llvm::DenseSet<mlir::Value> branchVisited = visited;
+    return activityIsTrueForEvent(input, event, branchSelector, branchLane,
+                                  branchVisited);
+  });
+}
+
+bool activityIsTrueForEvent(mlir::Value value, mlir::Value event,
+                            mlir::Value branchSelector = {},
+                            std::optional<unsigned> branchLane = std::nullopt) {
+  if (!value)
+    return true;
+  llvm::DenseSet<mlir::Value> visited;
+  return activityIsTrueForEvent(value, event, branchSelector, branchLane,
+                                visited);
+}
+
+bool activityIsTotalForEvent(mlir::Value value, mlir::Value event,
+                             llvm::DenseSet<mlir::Value> &visited) {
+  if (!value || !visited.insert(value).second)
+    return false;
+  if (auto constant = value.getDefiningOp<dataflow::ConstantOp>())
+    return value.getType().isInteger(1) && constant.getCtrl() == event &&
+           llvm::isa<mlir::BoolAttr>(constant.getConstValue());
+
+  auto mux = value.getDefiningOp<dataflow::MuxOp>();
+  if (!mux || mux.getInputs().size() != 2)
+    return false;
+  auto selector = llvm::dyn_cast<mlir::OpResult>(mux.getSel());
+  auto sync = selector ? llvm::dyn_cast<dataflow::SyncOp>(selector.getOwner())
+                       : nullptr;
+  if (!sync || sync.getInputs().size() != 2 || sync.getOutputs().size() != 2 ||
+      selector.getResultNumber() != 0)
+    return false;
+  mlir::Value synchronizedEvent = sync.getOutputs()[1];
+  mlir::Value predecessor = sync.getInputs()[1];
+  auto descendsFromEvent = [&](mlir::Value candidate) {
+    while (candidate != event) {
+      auto result = llvm::dyn_cast<mlir::OpResult>(candidate);
+      auto parent = result ? llvm::dyn_cast<dataflow::SyncOp>(result.getOwner())
+                           : nullptr;
+      if (!parent || result.getResultNumber() != 1 ||
+          parent.getInputs().size() != 2)
+        return false;
+      candidate = parent.getInputs()[1];
+    }
+    return true;
+  };
+  if (!descendsFromEvent(predecessor))
+    return false;
+  auto inactiveAt = [&](mlir::Value candidate) {
+    auto constant = candidate.getDefiningOp<dataflow::ConstantOp>();
+    return constant && candidate.getType().isInteger(1) &&
+           constant.getCtrl() == synchronizedEvent &&
+           llvm::isa<mlir::BoolAttr>(constant.getConstValue());
+  };
+  for (auto [inactive, active] :
+       {std::pair{mux.getInputs()[0], mux.getInputs()[1]},
+        std::pair{mux.getInputs()[1], mux.getInputs()[0]}}) {
+    if (!inactiveAt(inactive))
+      continue;
+    llvm::DenseSet<mlir::Value> branchVisited = visited;
+    if (activityIsTotalForEvent(active, event, branchVisited))
+      return true;
+  }
+  return false;
+}
+
+std::optional<mlir::Value>
+describeSelectiveRouterActivityEvent(mlir::Value activity) {
+  auto root = activity.getDefiningOp<dataflow::MuxOp>();
+  if (!root || root.getInputs().size() != 2)
+    return std::nullopt;
+  auto compare = root.getSel().getDefiningOp<mlir::arith::CmpIOp>();
+  auto threshold =
+      compare ? getIntegerConstant(compare.getRhs()) : std::nullopt;
+  auto controlledThreshold =
+      compare ? compare.getRhs().getDefiningOp<dataflow::ConstantOp>()
+              : nullptr;
+  if (!compare || compare.getPredicate() != mlir::arith::CmpIPredicate::uge ||
+      !threshold || *threshold <= 0 || !controlledThreshold)
+    return std::nullopt;
+  mlir::Value route = compare.getLhs();
+  mlir::Value event = controlledThreshold.getCtrl();
+  llvm::SmallVector<RouterLeaf, 8> leaves;
+  if (!collectActivityRouterLeaves(activity, route, event, leaves) ||
+      leaves.size() < 2)
+    return std::nullopt;
+  for (const RouterLeaf &leaf : leaves) {
+    llvm::DenseSet<mlir::Value> visited;
+    if (!activityIsTotalForEvent(leaf.value, leaf.event, visited))
+      return std::nullopt;
+  }
+  dataflow::StreamOp stream = findRootStream(route);
+  auto activation = stream ? getStreamActivation(stream) : std::nullopt;
+  if (!activation || unwrapPhaseProjection(event, stream) != *activation)
+    return std::nullopt;
+  return event;
+}
+
+std::optional<mlir::Value>
+describeSingleStreamActivityEvent(mlir::Value activity) {
+  if (auto constant = activity.getDefiningOp<dataflow::ConstantOp>()) {
+    if (!activity.getType().isInteger(1) ||
+        !llvm::isa<mlir::BoolAttr>(constant.getConstValue()))
+      return std::nullopt;
+    return constant.getCtrl();
+  }
+
+  auto mux = activity.getDefiningOp<dataflow::MuxOp>();
+  if (!mux || mux.getInputs().size() != 2)
+    return std::nullopt;
+  auto selector = llvm::dyn_cast<mlir::OpResult>(mux.getSel());
+  auto sync = selector ? llvm::dyn_cast<dataflow::SyncOp>(selector.getOwner())
+                       : nullptr;
+  if (!sync || selector.getResultNumber() != 0 ||
+      sync.getInputs().size() != 2 || sync.getOutputs().size() != 2)
+    return std::nullopt;
+  mlir::Value event = sync.getInputs()[1];
+  llvm::DenseSet<mlir::Value> visited;
+  return activityIsTotalForEvent(activity, event, visited)
+             ? std::optional<mlir::Value>{event}
+             : std::nullopt;
+}
+
+std::optional<mlir::Value>
+describeSelectiveRouterPublicationEvent(mlir::Value publication) {
+  auto root = publication.getDefiningOp<dataflow::MuxOp>();
+  if (!root || root.getInputs().size() != 2)
+    return std::nullopt;
+  auto compare = root.getSel().getDefiningOp<mlir::arith::CmpIOp>();
+  auto threshold =
+      compare ? getIntegerConstant(compare.getRhs()) : std::nullopt;
+  auto controlledThreshold =
+      compare ? compare.getRhs().getDefiningOp<dataflow::ConstantOp>()
+              : nullptr;
+  if (!compare || compare.getPredicate() != mlir::arith::CmpIPredicate::uge ||
+      !threshold || *threshold <= 0 || !controlledThreshold)
+    return std::nullopt;
+
+  mlir::Value route = compare.getLhs();
+  mlir::Value event = controlledThreshold.getCtrl();
+  llvm::SmallVector<RouterLeaf, 8> leaves;
+  if (!collectActivityRouterLeaves(publication, route, event, leaves) ||
+      leaves.size() < 2)
+    return std::nullopt;
+
+  std::optional<unsigned> resultOrdinal;
+  for (const RouterLeaf &leaf : leaves) {
+    auto result = llvm::dyn_cast<mlir::OpResult>(leaf.value);
+    auto sync =
+        result ? llvm::dyn_cast<dataflow::SyncOp>(result.getOwner()) : nullptr;
+    if (!sync || sync.getInputs().size() != 2 ||
+        sync.getOutputs().size() != 2 || sync.getInputs()[0] != leaf.event)
+      return std::nullopt;
+    unsigned ordinal = result.getResultNumber();
+    if (ordinal > 1 || (resultOrdinal && *resultOrdinal != ordinal))
+      return std::nullopt;
+    resultOrdinal = ordinal;
+  }
+  return event;
+}
+
+std::optional<mlir::Value>
+describeSingleStreamPublicationEvent(mlir::Value publication) {
+  auto result = llvm::dyn_cast<mlir::OpResult>(publication);
+  auto sync =
+      result ? llvm::dyn_cast<dataflow::SyncOp>(result.getOwner()) : nullptr;
+  if (!sync || sync.getInputs().size() != 2 || sync.getOutputs().size() != 2 ||
+      result.getResultNumber() > 1)
+    return std::nullopt;
+  auto activeResult = llvm::dyn_cast<mlir::OpResult>(sync.getInputs()[0]);
+  auto activityGate =
+      activeResult ? llvm::dyn_cast<dataflow::DemuxOp>(activeResult.getOwner())
+                   : nullptr;
+  if (!activityGate || activityGate.getOutputs().size() != 2 ||
+      activeResult.getResultNumber() != 1)
+    return std::nullopt;
+  auto activityEvent = describeSingleStreamActivityEvent(activityGate.getSel());
+  if (!activityEvent || *activityEvent != activityGate.getInput())
+    return std::nullopt;
+  return activeResult;
+}
+
+std::optional<SelectiveRouterLeafDescription>
+describeSelectiveRouterLeaf(mlir::Value value) {
+  llvm::SmallVector<StaticSelectiveRouterLeg, 8> reversePath;
+  mlir::Value input = value;
+  while (auto result = llvm::dyn_cast<mlir::OpResult>(input)) {
+    auto payload = llvm::dyn_cast<dataflow::DemuxOp>(result.getOwner());
+    if (!payload)
+      break;
+    auto leg =
+        describeStaticSelectiveRouterLeg(payload, result.getResultNumber());
+    if (!leg) {
+      if (reversePath.empty())
+        return std::nullopt;
+      break;
+    }
+    reversePath.push_back(*leg);
+    input = payload.getInput();
+  }
+  if (reversePath.empty())
+    return std::nullopt;
+  std::reverse(reversePath.begin(), reversePath.end());
+  const StaticSelectiveRouterLeg &root = reversePath.front();
+  if (!isGraphStreamInput(input) && input != root.event &&
+      input != root.ordinal)
+    return std::nullopt;
+  mlir::Value synchronization =
+      input == root.event || input == root.ordinal ? root.event : mlir::Value{};
+
+  llvm::SmallVector<RouterLeaf, 8> payloadLeaves;
+  if (!collectPayloadRouterLeaves(input, root.ordinal, root.event,
+                                  payloadLeaves, /*requireNode=*/true))
+    return std::nullopt;
+  auto leaf = llvm::find_if(payloadLeaves, [&](const RouterLeaf &entry) {
+    return entry.value == value;
+  });
+  if (leaf == payloadLeaves.end())
+    return std::nullopt;
+  const unsigned lane =
+      static_cast<unsigned>(std::distance(payloadLeaves.begin(), leaf));
+
+  mlir::Value route = root.ordinal;
+  mlir::Value event = root.event;
+  mlir::Value activity;
+  auto routeResult = llvm::dyn_cast<mlir::OpResult>(route);
+  auto eventResult = llvm::dyn_cast<mlir::OpResult>(event);
+  auto routeFilter =
+      routeResult ? llvm::dyn_cast<dataflow::DemuxOp>(routeResult.getOwner())
+                  : nullptr;
+  auto eventFilter =
+      eventResult ? llvm::dyn_cast<dataflow::DemuxOp>(eventResult.getOwner())
+                  : nullptr;
+  if (routeFilter) {
+    if (!eventFilter || routeFilter.getOutputs().size() != 2 ||
+        eventFilter.getOutputs().size() != 2 ||
+        routeResult.getResultNumber() != 1 ||
+        eventResult.getResultNumber() != 1 ||
+        routeFilter.getSel() != eventFilter.getSel())
+      return std::nullopt;
+    activity = routeFilter.getSel();
+    route = routeFilter.getInput();
+    event = eventFilter.getInput();
+  }
+
+  dataflow::StreamOp stream = findRootStream(route);
+  auto activation = stream ? getStreamActivation(stream) : std::nullopt;
+  if (!stream || !activation ||
+      unwrapPhaseProjection(event, stream) != *activation)
+    return std::nullopt;
+
+  mlir::Value leafActivity;
+  mlir::Value activityEvent;
+  if (activity) {
+    llvm::SmallVector<RouterLeaf, 8> activityLeaves;
+    if (!collectActivityRouterLeaves(activity, route, event, activityLeaves) ||
+        activityLeaves.size() != payloadLeaves.size())
+      return std::nullopt;
+    leafActivity = activityLeaves[lane].value;
+    activityEvent = activityLeaves[lane].event;
+  }
+  return SelectiveRouterLeafDescription{
+      *activation, route, leafActivity, activityEvent, synchronization, lane};
 }
 
 bool controlMatchesLane(mlir::Value control,
@@ -727,7 +1315,8 @@ bool activityIsTrue(mlir::Value value, const SelectorDescription &description,
     return activityIsTrue(mux.getInputs()[selectedLane], description, lane,
                           branchSelector, branchLane, visited);
   }
-  if (branchLane && mux.getSel() == branchSelector) {
+  if (branchLane &&
+      haveSynchronizedValueCorrespondence(mux.getSel(), branchSelector)) {
     if (*branchLane >= mux.getInputs().size())
       return false;
     return activityIsTrue(mux.getInputs()[*branchLane], description, lane,
@@ -760,7 +1349,8 @@ findSynchronization(mlir::Value value, mlir::Value branchSelector,
   auto mux = value.getDefiningOp<dataflow::MuxOp>();
   if (!mux)
     return std::nullopt;
-  if (branchLane && mux.getSel() == branchSelector) {
+  if (branchLane &&
+      haveSynchronizedValueCorrespondence(mux.getSel(), branchSelector)) {
     if (*branchLane >= mux.getInputs().size())
       return std::nullopt;
     auto nested = findSynchronization(mux.getInputs()[*branchLane],
@@ -779,51 +1369,6 @@ findSynchronization(mlir::Value value, mlir::Value branchSelector,
 }
 
 } // namespace
-
-llvm::Expected<mlir::VectorType>
-dataflow::semantics::analyzeFixedRankDataVector(mlir::Type type,
-                                                VectorRank rank) {
-  auto vector = llvm::dyn_cast<mlir::VectorType>(type);
-  const bool admitted = vector && !vector.isScalable() &&
-                        (rank == VectorRank::AnyFixed ? vector.getRank() > 0
-                                                      : vector.getRank() == 1);
-  if (!admitted)
-    return llvm::createStringError(
-        std::errc::invalid_argument, "data vector must be a fixed-size %s",
-        rank == VectorRank::AnyFixed ? "vector" : "rank-1 vector");
-  if (llvm::Error error =
-          validateVectorElementRepresentation(vector.getElementType()))
-    return std::move(error);
-  return vector;
-}
-
-llvm::Expected<std::uint64_t>
-dataflow::semantics::getFlattenedVectorBitWidth(mlir::VectorType vector) {
-  if (llvm::Error error =
-          validateVectorElementRepresentation(vector.getElementType()))
-    return std::move(error);
-  return loom::getFixedVectorBitWidth(
-      vector, vectorElementBitWidth(vector.getElementType()));
-}
-
-llvm::Error
-dataflow::semantics::validateVectorMaskType(mlir::VectorType dataVector,
-                                            mlir::Type maskType) {
-  // The shape comparison below subsumes any rank requirement on the mask.
-  auto mask = llvm::dyn_cast<mlir::VectorType>(maskType);
-  if (!mask || mask.isScalable())
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "mask vector must be a fixed-size vector");
-  if (!mask.getElementType().isInteger(1))
-    return llvm::createStringError(std::errc::invalid_argument,
-                                   "mask vector element type must be 'i1'");
-  if (mask.getShape() != dataVector.getShape())
-    return llvm::createStringError(
-        std::errc::invalid_argument,
-        "mask vector shape '%s' must match data vector shape '%s'",
-        typeToString(mask).c_str(), typeToString(dataVector).c_str());
-  return llvm::Error::success();
-}
 
 llvm::Expected<dataflow::semantics::MemoryAccessType>
 dataflow::semantics::analyzeMemoryAccessType(mlir::MemRefType memoryType,
@@ -1181,84 +1726,6 @@ dataflow::semantics::evaluateSerializeTransition(std::optional<bool> groupPhase,
   return transition;
 }
 
-bool dataflow::semantics::isStatelessOneTokenVectorBoundary(
-    mlir::Operation *op) {
-  return op && llvm::isa<dataflow::PackOp, dataflow::UnpackOp>(op);
-}
-
-std::optional<mlir::Value>
-dataflow::semantics::getVectorBoundaryInputPhase(mlir::Operation *op) {
-  if (!op)
-    return std::nullopt;
-  if (auto parallelize = llvm::dyn_cast<dataflow::ParallelizeOp>(op))
-    return parallelize.getScalarPhase();
-  if (auto serialize = llvm::dyn_cast<dataflow::SerializeOp>(op))
-    return serialize.getGroupPhase();
-  return std::nullopt;
-}
-
-std::optional<mlir::Value>
-dataflow::semantics::getVectorBoundaryOutputPhase(mlir::Operation *op) {
-  if (!op)
-    return std::nullopt;
-  if (auto parallelize = llvm::dyn_cast<dataflow::ParallelizeOp>(op))
-    return parallelize.getGroupPhase();
-  if (auto serialize = llvm::dyn_cast<dataflow::SerializeOp>(op))
-    return serialize.getScalarPhase();
-  return std::nullopt;
-}
-
-mlir::ValueRange dataflow::semantics::getVectorBoundaryTruePhaseInputPayloads(
-    mlir::Operation *op) {
-  if (!op || !llvm::isa<dataflow::ParallelizeOp, dataflow::SerializeOp>(op))
-    return {};
-  return op->getOperands().drop_back();
-}
-
-bool dataflow::semantics::isVectorBoundaryTruePhaseOutputPayload(
-    mlir::Value value, mlir::Value phase) {
-  mlir::Operation *def = value.getDefiningOp();
-  if (auto parallelize = llvm::dyn_cast_or_null<dataflow::ParallelizeOp>(def))
-    return phase == parallelize.getGroupPhase() &&
-           (value == parallelize.getVector() || value == parallelize.getMask());
-  if (auto serialize = llvm::dyn_cast_or_null<dataflow::SerializeOp>(def))
-    return phase == serialize.getScalarPhase() && value == serialize.getData();
-  return false;
-}
-
-bool dataflow::semantics::haveEquivalentOrderedCardinality(
-    mlir::Value lhsPhase, mlir::Value rhsPhase) {
-  if (lhsPhase == rhsPhase)
-    return true;
-  auto lhsParallelize = lhsPhase.getDefiningOp<dataflow::ParallelizeOp>();
-  auto rhsParallelize = rhsPhase.getDefiningOp<dataflow::ParallelizeOp>();
-  if (lhsParallelize && rhsParallelize &&
-      lhsPhase == lhsParallelize.getGroupPhase() &&
-      rhsPhase == rhsParallelize.getGroupPhase()) {
-    auto lhsType =
-        llvm::dyn_cast<mlir::VectorType>(lhsParallelize.getVector().getType());
-    auto rhsType =
-        llvm::dyn_cast<mlir::VectorType>(rhsParallelize.getVector().getType());
-    return lhsType && rhsType && lhsType.getShape() == rhsType.getShape() &&
-           lhsParallelize.getScalarPhase() == rhsParallelize.getScalarPhase();
-  }
-
-  auto lhsSerialize = lhsPhase.getDefiningOp<dataflow::SerializeOp>();
-  auto rhsSerialize = rhsPhase.getDefiningOp<dataflow::SerializeOp>();
-  if (lhsSerialize && rhsSerialize &&
-      lhsPhase == lhsSerialize.getScalarPhase() &&
-      rhsPhase == rhsSerialize.getScalarPhase()) {
-    auto lhsType =
-        llvm::dyn_cast<mlir::VectorType>(lhsSerialize.getVector().getType());
-    auto rhsType =
-        llvm::dyn_cast<mlir::VectorType>(rhsSerialize.getVector().getType());
-    return lhsType && rhsType && lhsType.getShape() == rhsType.getShape() &&
-           lhsSerialize.getMask() == rhsSerialize.getMask() &&
-           lhsSerialize.getGroupPhase() == rhsSerialize.getGroupPhase();
-  }
-  return false;
-}
-
 std::optional<mlir::Value>
 dataflow::semantics::getStreamActivation(dataflow::StreamOp stream) {
   if (!stream)
@@ -1351,14 +1818,82 @@ dataflow::semantics::getSelectorActivation(mlir::Value selector,
   return getStreamActivation(description->stream);
 }
 
+std::optional<mlir::Value>
+dataflow::semantics::getSelectiveRouterLeafActivation(
+    mlir::Value value, mlir::Value branchSelector,
+    std::optional<unsigned> branchLane) {
+  auto description = describeSelectiveRouterLeaf(value);
+  if (!description ||
+      !routeVisitsLaneOnce(description->route, description->lane) ||
+      !activityIsTrueForEvent(description->activity, description->activityEvent,
+                              branchSelector, branchLane))
+    return std::nullopt;
+  return description->activation;
+}
+
+std::optional<mlir::Value>
+dataflow::semantics::getSelectiveRouterLeafSynchronization(
+    mlir::Value value, mlir::Value branchSelector,
+    std::optional<unsigned> branchLane) {
+  auto description = describeSelectiveRouterLeaf(value);
+  if (!description ||
+      !activityIsTrueForEvent(description->activity, description->activityEvent,
+                              branchSelector, branchLane))
+    return std::nullopt;
+  if (description->synchronization)
+    return description->synchronization;
+  if (!description->activity)
+    return std::nullopt;
+  llvm::DenseSet<mlir::Value> visited;
+  return findSynchronization(description->activity, branchSelector, branchLane,
+                             visited);
+}
+
+std::optional<mlir::Value>
+dataflow::semantics::getStreamActivityEvent(mlir::Value value) {
+  if (auto event = describeSelectiveRouterActivityEvent(value))
+    return event;
+  return describeSingleStreamActivityEvent(value);
+}
+
+bool dataflow::semantics::haveEquivalentSynchronizedSelectionCorrespondence(
+    mlir::Value lhs, mlir::Value rhs) {
+  return haveSynchronizedValueCorrespondence(lhs, rhs);
+}
+
+std::optional<mlir::Value>
+dataflow::semantics::getStreamPublicationEvent(mlir::Value value) {
+  if (auto event = describeSelectiveRouterPublicationEvent(value))
+    return event;
+  return describeSingleStreamPublicationEvent(value);
+}
+
 bool dataflow::semantics::selectorSelectsLaneOncePerActivation(
     mlir::Value selector, unsigned arity, unsigned lane) {
   if (lane >= arity)
     return false;
   auto description = describeSelector(selector, arity);
-  bool route = description && routeVisitsLaneOnce(description->route, lane);
+  bool route =
+      description && (routeVisitsLaneOnce(description->route, lane) ||
+                      (arity == 2 && selectorPredicateVisitsLaneOnce(
+                                         description->routeSelector, lane)));
   bool activity = description && activityIsTrue(*description, lane);
   return description && route && activity;
+}
+
+std::optional<mlir::Value> dataflow::semantics::getSelectorLaneEventActivation(
+    mlir::Value selector, unsigned arity, unsigned lane, mlir::Value event) {
+  if (!selectorSelectsLaneOncePerActivation(selector, arity, lane))
+    return std::nullopt;
+  auto description = describeSelector(selector, arity);
+  auto activation =
+      description ? getStreamActivation(description->stream) : std::nullopt;
+  mlir::Value projection =
+      description ? unwrapPhaseProjection(event, description->stream)
+                  : mlir::Value{};
+  if (!activation || projection != *activation)
+    return std::nullopt;
+  return activation;
 }
 
 bool dataflow::semantics::selectorSelectsEveryLaneOncePerActivation(
