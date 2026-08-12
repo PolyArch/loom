@@ -65,7 +65,7 @@ void fpgaNativeExternalContractsAreCanonical() {
                   "contracts/amd_xilinx_unisim_dsp58.json" &&
               amd.stableProviderBuildIdentity ==
                   amdVivadoToolBundledResourceProviderIdentity(
-                      "SW Build 6060944 on Thu Mar 06 19:10:09 MST 2025"),
+                      "SW Build 6511674 on Tue Jun 16 11:01:26 MDT 2026"),
           "AMD DSP58 contract facts diverged");
   require(intel.vendor == platform::FpgaVendor::IntelAltera &&
               intel.contractRef == "intel.altera.lpm_mult@1" &&

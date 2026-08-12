@@ -152,6 +152,14 @@ other local operational settings. `provider_options` is accepted only through
 the exact provider descriptor's closed typed local schema. The initial common
 schema has no arbitrary argument list or environment-value map.
 
+`inherit_environment` admits only execution-availability state such as a
+provider license or credential handle. Values are intentionally absent from
+the manifest, logs, and reusable-result identity. A seed, effort, PVT value,
+library selector, feature switch, or any other result-affecting option cannot
+be inherited through this plane; its semantic owner must project it through a
+typed provider option, generated driver, structured command, semantic input,
+or external content fingerprint.
+
 `external_files` maps opaque machine-local keys to explicitly named absolute
 ordinary files. `external_file_trees`, added compatibly in local-config 1.1,
 maps separate opaque keys to absolute directory roots. Local-config 1.0 remains
@@ -219,6 +227,18 @@ top-level `build/` in the current worktree; `/scratch/loom-<uid>` when
 `/scratch` has more than 100 GiB available; `~/.cache/loom`; and
 `/tmp/loom-<uid>`. The resolver creates the selected external or user-local
 directory. Every attempt receives an independent child beneath that root.
+
+Reusable external-tool results use the same resolver rather than another path
+policy. An explicit absolute `LOOM_EXTERNAL_TOOL_CACHE_ROOT` environment value
+overrides only the cache location. Otherwise the cache is the
+`external-tool-cache` child of the resolved experiment root, so an ordinary
+build uses `build/external-tool-cache` while an explicitly selected experiment
+root, large scratch root, user cache, or temporary fallback retains the same
+precedence. The cache root is private to its owning user and carries a
+Loom-owned format marker. Repository
+`distclean` may remove that exact marked namespace, including an explicit
+external cache root, but cannot recursively clean an unmarked parent or infer
+other cache locations.
 
 The same placement rule applies to a local Artifact Store or Blob Store that
 contains direct EDA-generated implementations, Evidence, invocation records,
@@ -626,6 +646,106 @@ Evidence.
 Raw logs, reports, waveforms, tool databases, and the completion record remain
 owner-attempt material until an exact raw-bundle Artifact owner is defined.
 Normalized metrics and findings remain owned only by Evaluation.
+
+## Persistent Result Reuse
+
+External Tool Invocation owns one optional content-addressed result cache for
+successful prepared invocations. Adapters, Candidate Generators, Evaluators,
+and tests cannot define provider-private cache keys or cache directories. A
+cache entry contains only the exact declared output bytes from one successful
+invocation. It contains no raw attempt log, semantic Artifact, Evidence,
+completion authority, license value, host identity, or mutable job state.
+
+The cache address is the ordered triple below. Each component uses a distinct
+domain-separated SHA-256 codec; the three digests remain visible independently
+rather than being replaced by one caller-authored string.
+
+```text
+ExternalToolResultCacheKey {
+  input_material_sha256
+  execution_configuration_sha256
+  tool_version_sha256
+}
+```
+
+`input_material_sha256` covers every materialized semantic input by canonical
+relative path, exact source Artifact reference, and content digest, plus every
+external-file slot and every external-file-tree member by logical slot,
+relative member path, and expected fingerprint. `execution_configuration_sha256`
+covers the exact provider and semantic closure, importer identity, structured
+commands, inherited environment names, normalized generated-file bytes,
+declared outputs, and tool-produced executable closure. Generated-file and
+command normalization replaces only manifest-known bundle, executable,
+external-file, and external-tree paths with typed logical tokens; it does not
+apply textual timestamp heuristics or reinterpret provider languages.
+`tool_version_sha256` covers the logical tool key, normalized exact version
+identity, exact version probe, and exact resolved launcher content digest. It
+also covers the runtime kind and exact container key, version, version probe,
+launcher content digest, and operating system when a container is selected.
+
+Absolute bundle and executable paths, binding-source choice, module
+initialization paths, requested or loaded module aliases, local external-file
+keys and paths, cache location, process identity, file metadata and times,
+completion times, scheduler state, license values, and diagnostic verbosity do
+not enter the key. A result-affecting seed, effort, PVT condition, library
+content, runtime component, or provider option must already appear in semantic
+inputs, generated files, structured commands, external content, or the exact
+tool/runtime identity. It cannot be omitted merely by labeling it local.
+
+Only a canonical `Success` completion whose `outputs/` tree contains exactly
+the lifecycle files, declared outputs, and their necessary parent directories
+may publish an entry. Publication verifies and snapshots all declared outputs,
+writes one private staging entry, and atomically renames it while holding the
+exact-key writer lock. An extra file, directory, symbolic link, or special
+entry makes the attempt non-cacheable because omitting it on restoration could
+change a strict provider import. Failed, incomplete, cancelled, timed-out, or
+partially published attempts are never cached. Concurrent readers of one key
+observe either no entry or one complete entry; different keys remain
+independently executable.
+
+After a real tool reports success, the launcher revalidates the same manifest,
+materialized inputs, external files and trees, required environment and module
+closure, executable, and exact version identity without removing or rewriting
+completed outputs. A change makes that attempt non-cacheable while preserving
+its real completion and ordinary strict import. Thus a long-running tool cannot
+publish its result under a key derived from inputs that changed during the run.
+
+A hit is accepted only after the current prepared bundle, materialized inputs,
+external inputs, environment requirements, executable binding, and exact
+version probe have passed the same pre-execution validation used by a real
+run. The cache entry schema, key triple, output membership, and every payload
+digest are then checked. Corrupt or incomplete entries are discarded as
+misses. Valid bytes are restored atomically beneath the current bundle, then a
+cache-hit diagnostic log and new completion record are published for the
+current attempt. The completion is written last and binds the current manifest
+digest.
+The ordinary expectation-bound importer still validates that completion and
+all restored outputs; cache lookup never calls or replaces the semantic
+importer.
+
+Real-tool hardware conformance commands that predate provider bundle adoption
+use the same cache root and ordered key domain through one ExternalTool-owned
+command adapter. Its input component is the exact pre-execution working tree
+plus content-addressed external path arguments; its configuration component is
+the normalized argument vector and result-affecting compiler flag environment;
+its tool component is the exact product version and resolved launcher digest.
+A successful command publishes a copy-on-write snapshot of its complete
+post-execution working tree and captured output streams. A hit validates that
+snapshot, restores it beneath the current test work directory, and replays the
+streams so subsequent independent binaries and output oracles still execute.
+Version queries, nonzero exits, special filesystem entries, and results that
+cannot be snapshotted without copying are not reused. This adapter is test
+infrastructure for direct conformance commands, not another provider or a
+semantic Artifact owner.
+
+Cache presence, absence, corruption, worker order, and cache path cannot change
+the semantic result or work identity. An unavailable entry causes real tool
+execution. Failure to publish a cache entry after a successful real execution
+is a nonsemantic diagnostic and cannot turn that execution into failure.
+Runtime-configurable diagnostics may report keys and hit, miss, discard, and
+publication events while normal execution remains quiet. Level one reports
+cache lifecycle events; level two additionally reports the three independent
+content digests. Neither level exposes inherited environment values.
 
 ## Failure Contract
 

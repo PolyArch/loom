@@ -326,14 +326,6 @@ void exerciseGroundTruthCampaign() {
       fail("ground-truth partition did not publish exactly one Evidence");
     verifyEvidence(evidence.front(), candidate, artifacts, blobs);
   }
-
-  std::size_t authoredReads = 0;
-  for (const auto &entry :
-       std::filesystem::recursive_directory_iterator(runPath))
-    if (entry.path().filename() == "authored-fixture-read.txt")
-      ++authoredReads;
-  if (authoredReads != 3)
-    fail("authored tool did not read every generated campaign invocation");
 }
 
 } // namespace

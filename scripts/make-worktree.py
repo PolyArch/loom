@@ -56,6 +56,27 @@ from dataclasses import dataclass
 from pathlib import Path
 
 try:
+    from resolve_experiment_root import (
+        EXTERNAL_TOOL_CACHE_DIRECTORY,
+        EXTERNAL_TOOL_CACHE_ROOT_ENVIRONMENT,
+        ExperimentRootError,
+        configured_root_from_file,
+        is_external_tool_cache_root,
+        remove_external_tool_cache_root,
+        resolve_external_tool_cache_root,
+    )
+except ModuleNotFoundError:
+    from scripts.resolve_experiment_root import (
+        EXTERNAL_TOOL_CACHE_DIRECTORY,
+        EXTERNAL_TOOL_CACHE_ROOT_ENVIRONMENT,
+        ExperimentRootError,
+        configured_root_from_file,
+        is_external_tool_cache_root,
+        remove_external_tool_cache_root,
+        resolve_external_tool_cache_root,
+    )
+
+try:
     from loom_build_environment import (
         LLVM_C_COMPILER,
         LLVM_CXX_COMPILER,
@@ -1674,8 +1695,15 @@ def cmd_build_gem5(paths: Paths, args: argparse.Namespace) -> None:
 
 def cmd_clean(paths: Paths, args: argparse.Namespace) -> None:
     if paths.loom_build.exists():
-        info(f"removing {paths.loom_build}")
-        shutil.rmtree(paths.loom_build, ignore_errors=True)
+        cache_root = paths.loom_build / EXTERNAL_TOOL_CACHE_DIRECTORY
+        info(f"removing build products under {paths.loom_build}")
+        for product in paths.loom_build.iterdir():
+            if product == cache_root and is_external_tool_cache_root(cache_root):
+                continue
+            if product.is_symlink() or product.is_file():
+                product.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(product)
 
 
 def cmd_build_circt(paths: Paths, args: argparse.Namespace) -> None:
@@ -1687,6 +1715,30 @@ def cmd_build_or_tools(paths: Paths, args: argparse.Namespace) -> None:
 
 
 def cmd_distclean(paths: Paths, args: argparse.Namespace) -> None:
+    local_config = os.environ.get("LOOM_LOCAL_CONFIG")
+    try:
+        configured_root = configured_root_from_file(
+            Path(local_config) if local_config else None
+        )
+        explicit_cache_root = os.environ.get(EXTERNAL_TOOL_CACHE_ROOT_ENVIRONMENT)
+        if explicit_cache_root:
+            cache_root = resolve_external_tool_cache_root(
+                repository=paths.root,
+                configured_root=None,
+                environment=os.environ,
+                cache_root=Path.home() / ".cache" / "loom",
+            )
+        elif configured_root:
+            cache_root = (
+                configured_root / EXTERNAL_TOOL_CACHE_DIRECTORY
+            ).resolve(strict=False)
+        else:
+            cache_root = paths.loom_build / EXTERNAL_TOOL_CACHE_DIRECTORY
+        if not cache_root.is_relative_to(paths.loom_build):
+            if remove_external_tool_cache_root(cache_root):
+                info(f"removing external-tool cache {cache_root}")
+    except ExperimentRootError as error:
+        die(str(error))
     if paths.loom_build.exists():
         info(f"removing {paths.loom_build}")
         shutil.rmtree(paths.loom_build, ignore_errors=True)
@@ -1750,6 +1802,19 @@ def cmd_test(paths: Paths, args: argparse.Namespace) -> None:
             child_env = os.environ.copy()
             extra_args = shlex.split(child_env.pop("LIT_OPTS", ""))
             child_env.setdefault("LOOM_TEST_JOBS", str(args.jobs))
+            local_config = child_env.get("LOOM_LOCAL_CONFIG")
+            try:
+                external_tool_cache = resolve_external_tool_cache_root(
+                    repository=paths.root,
+                    configured_root=configured_root_from_file(
+                        Path(local_config) if local_config else None
+                    ),
+                    environment=child_env,
+                    cache_root=Path.home() / ".cache" / "loom",
+                )
+            except ExperimentRootError as error:
+                die(str(error))
+            child_env["LOOM_EXTERNAL_TOOL_CACHE_ROOT"] = str(external_tool_cache)
             run_lit_with_unsupported_summary(
                 paths.llvm_lit,
                 paths.loom_build / "test",

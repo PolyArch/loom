@@ -209,12 +209,12 @@ void executionResourceBindingIsExact(const std::filesystem::path &root,
                                      const std::filesystem::path &tool) {
   ExternalToolInvocationBundleSpec spec =
       baseSpec(tool, "outputs/resource-result.txt");
-  const loom::BlobDigest host = take(
-      __func__, deriveExternalToolExecutionBindingDigest(spec.tool,
-                                                         spec.runtime));
-  const PreparedExternalToolInvocation prepared = take(
-      __func__, finalizeExternalToolInvocationBundle(
-                    (root / "resource-binding").string(), spec));
+  const loom::BlobDigest host =
+      take(__func__,
+           deriveExternalToolExecutionBindingDigest(spec.tool, spec.runtime));
+  const PreparedExternalToolInvocation prepared =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         (root / "resource-binding").string(), spec));
   require(__func__,
           take(__func__, deriveExternalToolExecutionBindingDigest(prepared)) ==
               host,
@@ -1194,10 +1194,9 @@ void typedClosureIsExactAndLegacyManifestIsRejected(
               treeFieldOffset != std::string::npos &&
               producedFieldOffset != std::string::npos,
           "cannot derive the compatible typed-closure manifest fixture");
-  compatibleText.replace(compatibleVersion,
-                         currentVersion.size(),
-                         jsonVersionMember(
-                             kCompatibleTypedClosureManifestVersion));
+  compatibleText.replace(
+      compatibleVersion, currentVersion.size(),
+      jsonVersionMember(kCompatibleTypedClosureManifestVersion));
   compatibleText.erase(treeFieldOffset, treeField.size());
   compatibleText.erase(producedFieldOffset, producedField.size());
   writeText(compatibleManifest, compatibleText);
@@ -1457,6 +1456,291 @@ void failedAttemptImportIsExpectationBound(const std::filesystem::path &root,
       "completion does not bind the imported manifest");
 }
 
+void persistentResultCacheIsExact(const std::filesystem::path &root,
+                                  const std::filesystem::path &tool) {
+  const std::filesystem::path cache = root / "persistent-result-cache";
+  const std::filesystem::path counter = root / "tool-entry-count";
+  require(__func__,
+          ::setenv("LOOM_EXTERNAL_TOOL_CACHE_ROOT", cache.c_str(), 1) == 0,
+          "could not enable the result cache");
+
+  const std::string output = "outputs/cache-result.txt";
+  auto countedSpec = [&](const std::filesystem::path &executable,
+                         llvm::StringRef value) {
+    ExternalToolInvocationBundleSpec spec = baseSpec(executable, output);
+    spec.files.push_back({"drivers/binary-config.bin", std::string("\xff\0", 2),
+                          std::nullopt, false});
+    spec.commands = {{executable.string(), "counted-run", counter.string(),
+                      value.str(), output}};
+    return spec;
+  };
+  ExternalToolInvocationBundleSpec firstSpec = countedSpec(tool, "cached");
+  const PreparedExternalToolInvocation first =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         (root / "cache-first").string(), firstSpec));
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(first)) == 0,
+          "the cache population invocation failed");
+  require(__func__, readFile(counter) == "1",
+          "cache population did not enter the tool exactly once");
+
+  const std::filesystem::path relocatedTool = root / "relocated" / "fake tool";
+  writeExecutable(relocatedTool, readFile(tool));
+  ExternalToolInvocationBundleSpec relocatedSpec =
+      countedSpec(relocatedTool, "cached");
+  const PreparedExternalToolInvocation relocated =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         (root / "cache-relocated").string(), relocatedSpec));
+  const ExternalToolResultCacheKey firstKey =
+      take(__func__, deriveExternalToolResultCacheKey(first));
+  const ExternalToolResultCacheKey relocatedKey =
+      take(__func__, deriveExternalToolResultCacheKey(relocated));
+  require(__func__, firstKey == relocatedKey,
+          "equivalent local tool and bundle paths changed the cache key");
+  require(__func__, first.manifestDigest != relocated.manifestDigest,
+          "the path-relocated fixtures unexpectedly share one manifest");
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(relocated)) == 0,
+          "the path-relocated cache lookup failed");
+  require(__func__, readFile(counter) == "1",
+          "a cache hit re-entered the external tool");
+  const InvocationCompletion relocatedCompletion =
+      take(__func__, loadExternalToolInvocationCompletion(relocated));
+  require(__func__,
+          relocatedCompletion.manifestDigest == relocated.manifestDigest,
+          "a cache hit reused another bundle's completion authority");
+  const ImportedExternalToolInvocationBundle relocatedImport =
+      take(__func__, importExternalToolInvocationBundle(
+                         relocated, importExpectation(relocatedSpec)));
+  require(__func__,
+          take(__func__, readExternalToolInvocationDeclaredOutput(
+                             relocatedImport, output)) == "cached",
+          "strict import did not accept the restored declared output");
+
+  const std::filesystem::path changedLauncherTool =
+      root / "changed-launcher" / "fake tool";
+  writeExecutable(changedLauncherTool, readFile(tool) + "\n");
+  ExternalToolInvocationBundleSpec changedLauncher =
+      countedSpec(changedLauncherTool, "cached");
+  const PreparedExternalToolInvocation launcherInvocation =
+      take(__func__,
+           finalizeExternalToolInvocationBundle(
+               (root / "cache-changed-launcher").string(), changedLauncher));
+  const ExternalToolResultCacheKey launcherKey =
+      take(__func__, deriveExternalToolResultCacheKey(launcherInvocation));
+  require(__func__,
+          launcherKey.inputMaterialDigest == firstKey.inputMaterialDigest &&
+              launcherKey.executionConfigurationDigest ==
+                  firstKey.executionConfigurationDigest &&
+              launcherKey.toolVersionDigest != firstKey.toolVersionDigest,
+          "launcher mutation did not invalidate only the tool key domain");
+  require(__func__,
+          take(__func__,
+               executeExternalToolInvocationBundle(launcherInvocation)) == 0,
+          "changed launcher did not execute as a cache miss");
+  require(__func__, readFile(counter) == "2",
+          "changed launcher bytes were incorrectly reused");
+
+  const std::filesystem::path entry =
+      cache / "entries" /
+      loom::formatBlobDigestHex(firstKey.inputMaterialDigest) /
+      loom::formatBlobDigestHex(firstKey.executionConfigurationDigest) /
+      loom::formatBlobDigestHex(firstKey.toolVersionDigest);
+  writeText(entry / "payload" / output, "corrupt");
+  const PreparedExternalToolInvocation afterCorruption = take(
+      __func__, finalizeExternalToolInvocationBundle(
+                    (root / "cache-after-corruption").string(), firstSpec));
+  require(
+      __func__,
+      take(__func__, executeExternalToolInvocationBundle(afterCorruption)) == 0,
+      "a corrupt cache entry did not fall back to real execution");
+  require(__func__, readFile(counter) == "3",
+          "a corrupt cache entry was adopted as a hit");
+
+  ExternalToolInvocationBundleSpec changedInput = firstSpec;
+  for (MaterializedBundleFile &file : changedInput.files)
+    if (file.sourceArtifact)
+      file.contents = "changed-input-bytes";
+  const PreparedExternalToolInvocation inputInvocation = take(
+      __func__, finalizeExternalToolInvocationBundle(
+                    (root / "cache-changed-input").string(), changedInput));
+  const ExternalToolResultCacheKey inputKey =
+      take(__func__, deriveExternalToolResultCacheKey(inputInvocation));
+  require(__func__,
+          inputKey.inputMaterialDigest != firstKey.inputMaterialDigest &&
+              inputKey.executionConfigurationDigest ==
+                  firstKey.executionConfigurationDigest &&
+              inputKey.toolVersionDigest == firstKey.toolVersionDigest,
+          "input mutation did not invalidate only the input key domain");
+  require(
+      __func__,
+      take(__func__, executeExternalToolInvocationBundle(inputInvocation)) == 0,
+      "changed input did not execute as a cache miss");
+
+  ExternalToolInvocationBundleSpec changedConfiguration =
+      countedSpec(tool, "changed-configuration");
+  const PreparedExternalToolInvocation configurationInvocation =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         (root / "cache-changed-configuration").string(),
+                         changedConfiguration));
+  const ExternalToolResultCacheKey configurationKey =
+      take(__func__, deriveExternalToolResultCacheKey(configurationInvocation));
+  require(__func__,
+          configurationKey.inputMaterialDigest ==
+                  firstKey.inputMaterialDigest &&
+              configurationKey.executionConfigurationDigest !=
+                  firstKey.executionConfigurationDigest &&
+              configurationKey.toolVersionDigest == firstKey.toolVersionDigest,
+          "configuration mutation did not invalidate only its key domain");
+  require(__func__,
+          take(__func__, executeExternalToolInvocationBundle(
+                             configurationInvocation)) == 0,
+          "changed configuration did not execute as a cache miss");
+
+  const std::filesystem::path changedVersionTool =
+      root / "changed-version" / "fake tool";
+  std::string changedVersionBody = readFile(tool);
+  const std::size_t versionOffset = changedVersionBody.find("Fake EDA 1.2");
+  require(__func__, versionOffset != std::string::npos,
+          "could not derive the changed-version fixture");
+  changedVersionBody.replace(versionOffset, std::string("Fake EDA 1.2").size(),
+                             "Fake EDA 2.0");
+  writeExecutable(changedVersionTool, changedVersionBody);
+  ExternalToolInvocationBundleSpec changedVersion =
+      countedSpec(changedVersionTool, "cached");
+  changedVersion.tool.version = "Fake EDA 2.0";
+  const PreparedExternalToolInvocation versionInvocation = take(
+      __func__, finalizeExternalToolInvocationBundle(
+                    (root / "cache-changed-version").string(), changedVersion));
+  const ExternalToolResultCacheKey versionKey =
+      take(__func__, deriveExternalToolResultCacheKey(versionInvocation));
+  require(__func__,
+          versionKey.inputMaterialDigest == firstKey.inputMaterialDigest &&
+              versionKey.executionConfigurationDigest ==
+                  firstKey.executionConfigurationDigest &&
+              versionKey.toolVersionDigest != firstKey.toolVersionDigest,
+          "tool-version mutation did not invalidate only its key domain");
+  require(__func__,
+          take(__func__,
+               executeExternalToolInvocationBundle(versionInvocation)) == 0,
+          "changed tool version did not execute as a cache miss");
+  require(__func__, readFile(counter) == "6",
+          "one of the three key-domain changes was incorrectly reused");
+
+  const std::filesystem::path failureCounter = root / "failure-entry-count";
+  ExternalToolInvocationBundleSpec failed = baseSpec(tool, output);
+  failed.commands = {{tool.string(), "counted-fail", failureCounter.string()}};
+  failed.declaredOutputs.clear();
+  const PreparedExternalToolInvocation failedInvocation =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         (root / "cache-failed").string(), failed));
+  for (unsigned attempt = 0; attempt != 2; ++attempt)
+    require(__func__,
+            take(__func__, executeExternalToolInvocationBundle(
+                               failedInvocation)) == kFixtureToolExitCode,
+            "failed invocation did not preserve its exact status");
+  require(__func__, readFile(failureCounter) == "2",
+          "a failed attempt was reused from the result cache");
+
+  const std::filesystem::path undeclaredCounter =
+      root / "undeclared-entry-count";
+  ExternalToolInvocationBundleSpec undeclared = baseSpec(tool, output);
+  undeclared.commands = {{tool.string(), "counted-run-extra",
+                          undeclaredCounter.string(), "declared", output,
+                          "outputs/undeclared.txt"}};
+  for (llvm::StringRef name :
+       {"cache-undeclared-first", "cache-undeclared-second"}) {
+    const std::filesystem::path bundle = root / name.str();
+    const PreparedExternalToolInvocation invocation =
+        take(__func__,
+             finalizeExternalToolInvocationBundle(bundle.string(), undeclared));
+    require(__func__,
+            take(__func__, executeExternalToolInvocationBundle(invocation)) ==
+                0,
+            "an undeclared-output attempt did not preserve tool success");
+    require(
+        __func__,
+        std::filesystem::is_regular_file(bundle / "outputs" / "undeclared.txt"),
+        "the undeclared-output fixture did not expose its extra entry");
+  }
+  require(__func__, readFile(undeclaredCounter) == "2",
+          "an output-open attempt was reused from the result cache");
+
+  constexpr llvm::StringLiteral midflightContents = "stable-external-input\n";
+  const std::filesystem::path midflightExternal =
+      root / "midflight-external.lib";
+  writeText(midflightExternal, midflightContents);
+  LocalToolConfig midflightConfig;
+  midflightConfig.externalFiles.emplace("midflight_external",
+                                        midflightExternal.string());
+  ExternalToolInvocationBundleSpec midflight =
+      baseSpec(tool, "outputs/midflight-result.txt");
+  midflight.externalFiles = take(
+      __func__, resolveExternalFiles(
+                    {ExternalFileRequirement{"midflight.liberty",
+                                             fingerprint(midflightContents)}},
+                    midflightConfig));
+  midflight.commands = {{tool.string(), "block", "outputs/tool-entry.log",
+                         "outputs/release", "outputs/midflight-result.txt"}};
+  const PreparedExternalToolInvocation midflightPrepared =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         (root / "cache-midflight").string(), midflight));
+  const ExternalToolResultCacheKey midflightKey =
+      take(__func__, deriveExternalToolResultCacheKey(midflightPrepared));
+  const pid_t midflightChild = ::fork();
+  require(__func__, midflightChild >= 0,
+          "could not fork the midflight cache fixture");
+  if (midflightChild == 0) {
+    auto status = executeExternalToolInvocationBundle(midflightPrepared);
+    if (!status) {
+      llvm::consumeError(status.takeError());
+      ::_exit(254);
+    }
+    ::_exit(*status == 0 ? 0 : 253);
+  }
+  const std::filesystem::path midflightEntered =
+      root / "cache-midflight" / "outputs" / "tool-entry.log";
+  for (unsigned attempt = 0;
+       attempt != 5000 && !std::filesystem::exists(midflightEntered); ++attempt)
+    ::usleep(1000);
+  if (!std::filesystem::exists(midflightEntered)) {
+    writeText(root / "cache-midflight" / "outputs" / "release", "");
+    waitForChild(__func__, midflightChild);
+    fail(__func__, "midflight cache fixture did not enter the tool");
+  }
+  writeText(midflightExternal, "changed-during-execution\n");
+  writeText(root / "cache-midflight" / "outputs" / "release", "");
+  const int midflightStatus = waitForChild(__func__, midflightChild);
+  require(__func__,
+          WIFEXITED(midflightStatus) && WEXITSTATUS(midflightStatus) == 0,
+          "midflight input mutation changed the real execution result");
+  take(__func__, importExternalToolInvocationBundle(
+                     midflightPrepared, importExpectation(midflight)));
+  const std::filesystem::path midflightEntry =
+      cache / "entries" /
+      loom::formatBlobDigestHex(midflightKey.inputMaterialDigest) /
+      loom::formatBlobDigestHex(midflightKey.executionConfigurationDigest) /
+      loom::formatBlobDigestHex(midflightKey.toolVersionDigest);
+  require(__func__, !std::filesystem::exists(midflightEntry),
+          "a result was cached after its external input changed");
+
+  writeText(midflightExternal, midflightContents);
+  const std::filesystem::path replayRoot = root / "cache-midflight-replay";
+  const PreparedExternalToolInvocation midflightReplay =
+      take(__func__, finalizeExternalToolInvocationBundle(replayRoot.string(),
+                                                          midflight));
+  writeText(replayRoot / "outputs" / "release", "");
+  require(
+      __func__,
+      take(__func__, executeExternalToolInvocationBundle(midflightReplay)) == 0,
+      "midflight cache fixture could not execute after input restoration");
+  require(__func__,
+          std::filesystem::exists(replayRoot / "outputs" / "tool-entry.log"),
+          "an unpublished midflight result was incorrectly reused");
+  require(__func__, ::unsetenv("LOOM_EXTERNAL_TOOL_CACHE_ROOT") == 0,
+          "could not disable the result cache");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -1469,9 +1753,20 @@ int main(int argc, char **argv) {
   const std::string toolBody =
       "#!/usr/bin/env bash\n"
       "set -u\n"
+      "increment_counter() {\n"
+      "  local value=0\n"
+      "  if [[ -f \"$1\" ]]; then IFS= read -r value <\"$1\"; fi\n"
+      "  printf '%s' \"$((value + 1))\" >\"$1\"\n"
+      "}\n"
       "case \"${1-}\" in\n"
       "  --version) printf '%s\\n' 'Fake EDA 1.2' ;;\n"
       "  run) printf '%s' \"$2\" >\"$3\" ;;\n"
+      "  counted-run) increment_counter \"$2\"; printf '%s' \"$3\" >\"$4\" ;;\n"
+      "  counted-run-extra) increment_counter \"$2\"; printf '%s' \"$3\" "
+      ">\"$4\"; printf '%s' extra >\"$5\" ;;\n"
+      "  counted-fail) increment_counter \"$2\"; exit " +
+      std::to_string(kFixtureToolExitCode) +
+      " ;;\n"
       "  block)\n"
       "    printf '%s\\n' entered >>\"$2\"\n"
       "    while [[ ! -e \"$3\" ]]; do sleep 0.01; done\n"
@@ -1526,6 +1821,8 @@ int main(int argc, char **argv) {
   require("main",
           ::setenv("LOOM_BUNDLE_TEST_LICENSE", "license-secret-value", 1) == 0,
           "could not set test environment");
+  require("main", ::unsetenv("LOOM_EXTERNAL_TOOL_CACHE_ROOT") == 0,
+          "could not isolate the cache fixture");
   resultImporterIdentityUsesCanonicalFraming();
   executionResourceBindingIsExact(root, tool);
   deterministicHostBundleExecutes(root, tool);
@@ -1551,5 +1848,6 @@ int main(int argc, char **argv) {
   finalizeRejectsNonNormalizedBundleRoot(root, tool);
   incompleteAttemptHasATypedImportError(root, tool);
   failedAttemptImportIsExpectationBound(root, tool);
+  persistentResultCacheIsExact(root, tool);
   return 0;
 }

@@ -6,12 +6,28 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 
 MINIMUM_SCRATCH_BYTES = 100 << 30
+EXTERNAL_TOOL_CACHE_ROOT_ENVIRONMENT = "LOOM_EXTERNAL_TOOL_CACHE_ROOT"
+EXTERNAL_TOOL_CACHE_DIRECTORY = "external-tool-cache"
+EXTERNAL_TOOL_CACHE_MARKER = ".loom-external-tool-result-cache"
+EXTERNAL_TOOL_CACHE_MARKER_CONTENTS = "loom.external_tool_result_cache 1.0\n"
+EXTERNAL_TOOL_CACHE_MEMBERS = frozenset(
+    {
+        EXTERNAL_TOOL_CACHE_MARKER,
+        ".loom-external-tool-result-cache.lock",
+        "command-entries",
+        "command-locks",
+        "entries",
+        "locks",
+    }
+)
 
 
 class ExperimentRootError(RuntimeError):
@@ -99,6 +115,88 @@ def resolve_experiment_root(
         ) from error
 
 
+def resolve_external_tool_cache_root(
+    *,
+    repository: Path,
+    configured_root: Path | None,
+    environment: Mapping[str, str] = os.environ,
+    scratch_root: Path = Path("/scratch"),
+    cache_root: Path | None = None,
+    temporary_root: Path = Path("/tmp"),
+) -> Path:
+    override = environment.get(EXTERNAL_TOOL_CACHE_ROOT_ENVIRONMENT)
+    if override:
+        selected = Path(override)
+        if not selected.is_absolute():
+            raise ExperimentRootError(
+                f"{EXTERNAL_TOOL_CACHE_ROOT_ENVIRONMENT} must be absolute"
+            )
+        return Path(os.path.abspath(selected))
+    experiment_root = resolve_experiment_root(
+        repository=repository,
+        configured_root=configured_root,
+        scratch_root=scratch_root,
+        cache_root=cache_root,
+        temporary_root=temporary_root,
+    )
+    return (experiment_root / EXTERNAL_TOOL_CACHE_DIRECTORY).resolve(strict=False)
+
+
+def remove_external_tool_cache_root(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.is_symlink() or not path.is_dir():
+        raise ExperimentRootError(
+            f"external-tool cache root is not an ordinary directory: {path}"
+        )
+    resolved = path.resolve()
+    if resolved == resolved.parent or resolved == Path.home().resolve():
+        raise ExperimentRootError(
+            f"refusing to remove a broad external-tool cache root: {path}"
+        )
+    marker = path / EXTERNAL_TOOL_CACHE_MARKER
+    try:
+        marker_status = marker.stat(follow_symlinks=False)
+        marker_contents = marker.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ExperimentRootError(
+            f"refusing to remove unmarked external-tool cache root {path}: {error}"
+        ) from error
+    if not stat.S_ISREG(marker_status.st_mode) or marker.is_symlink():
+        raise ExperimentRootError(
+            f"refusing to remove invalid external-tool cache root {path}"
+        )
+    if marker_contents != EXTERNAL_TOOL_CACHE_MARKER_CONTENTS:
+        raise ExperimentRootError(
+            f"refusing to remove incompatible external-tool cache root {path}"
+        )
+    members = {member.name for member in path.iterdir()}
+    if not members <= EXTERNAL_TOOL_CACHE_MEMBERS:
+        raise ExperimentRootError(
+            f"refusing to remove external-tool cache root with foreign members: {path}"
+        )
+    shutil.rmtree(path)
+    return True
+
+
+def is_external_tool_cache_root(path: Path) -> bool:
+    if not path.is_dir() or path.is_symlink():
+        return False
+    marker = path / EXTERNAL_TOOL_CACHE_MARKER
+    try:
+        marker_status = marker.stat(follow_symlinks=False)
+        marker_contents = marker.read_text(encoding="utf-8")
+        members = {member.name for member in path.iterdir()}
+    except OSError:
+        return False
+    return (
+        stat.S_ISREG(marker_status.st_mode)
+        and not marker.is_symlink()
+        and marker_contents == EXTERNAL_TOOL_CACHE_MARKER_CONTENTS
+        and members <= EXTERNAL_TOOL_CACHE_MEMBERS
+    )
+
+
 def configured_root_from_file(path: Path | None) -> Path | None:
     if path is None:
         return None
@@ -110,7 +208,10 @@ def configured_root_from_file(path: Path | None) -> Path | None:
         ) from error
     if not isinstance(value, dict):
         raise ExperimentRootError("local configuration must be a JSON object")
-    if value.get("schema") != "loom.local_tool_config" or value.get("version") != "1.0":
+    if value.get("schema") != "loom.local_tool_config" or value.get("version") not in (
+        "1.0",
+        "1.1",
+    ):
         raise ExperimentRootError("local configuration has the wrong schema or version")
     configured = value.get("experiment_root")
     if configured is None:

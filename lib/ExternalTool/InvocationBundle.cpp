@@ -435,25 +435,6 @@ void writeBinding(llvm::json::OStream &json,
   });
 }
 
-void writeVersionProbe(llvm::json::OStream &json,
-                       const ToolVersionProbe &probe) {
-  json.object([&] {
-    json.attributeBegin("arguments");
-    writeStringArray(json, probe.arguments);
-    json.attributeEnd();
-    if (probe.requiredOutputSubstring)
-      json.attribute("required_output_substring",
-                     *probe.requiredOutputSubstring);
-    json.attributeArray("accepted_exit_codes", [&] {
-      for (int exitCode : probe.acceptedExitCodes)
-        json.value(exitCode);
-    });
-    if (probe.selectedOutputLineSubstring)
-      json.attribute("selected_output_line_substring",
-                     *probe.selectedOutputLineSubstring);
-  });
-}
-
 std::string formatCanonicalHex(llvm::ArrayRef<std::uint8_t> bytes) {
   return llvm::toHex(bytes, /*LowerCase=*/true);
 }
@@ -1407,10 +1388,48 @@ openPreparedBundle(const PreparedExternalToolInvocation &prepared) {
 
 } // namespace
 
+void writeToolVersionProbeJson(llvm::json::OStream &json,
+                               const ToolVersionProbe &probe) {
+  json.object([&] {
+    json.attributeArray("arguments", [&] {
+      for (const std::string &argument : probe.arguments)
+        json.value(argument);
+    });
+    if (probe.requiredOutputSubstring)
+      json.attribute("required_output_substring",
+                     *probe.requiredOutputSubstring);
+    json.attributeArray("accepted_exit_codes", [&] {
+      for (int exitCode : probe.acceptedExitCodes)
+        json.value(exitCode);
+    });
+    if (probe.selectedOutputLineSubstring)
+      json.attribute("selected_output_line_substring",
+                     *probe.selectedOutputLineSubstring);
+  });
+}
+
 BlobDigest contentDigest(llvm::StringRef contents) {
   const auto *bytes = reinterpret_cast<const std::uint8_t *>(contents.data());
   return computeBlobDigest(
       llvm::ArrayRef<std::uint8_t>(bytes, contents.size()));
+}
+
+llvm::Expected<std::pair<std::string, InvocationManifestData>>
+loadPreparedInvocationManifest(const PreparedExternalToolInvocation &prepared) {
+  auto bundle = openPreparedBundle(prepared);
+  if (!bundle)
+    return bundle.takeError();
+  auto manifest = parseManifest(bundle->manifestBytes);
+  if (!manifest)
+    return manifest.takeError();
+  return std::make_pair(std::move(bundle->manifestBytes), std::move(*manifest));
+}
+
+std::string
+serializeInvocationCompletion(InvocationCompletionStatus status, int exitCode,
+                              const BlobDigest &manifestDigest,
+                              llvm::ArrayRef<BlobDigest> outputDigests) {
+  return serializeCompletion(status, exitCode, manifestDigest, outputDigests);
 }
 
 llvm::Expected<BlobDigest> deriveExternalToolExecutionBindingDigest(
@@ -1541,7 +1560,7 @@ std::string serializeManifest(const InvocationManifestData &manifest,
     writeBinding(json, manifest.tool);
     json.attributeEnd();
     json.attributeBegin("tool_version_probe");
-    writeVersionProbe(json, manifest.toolVersionProbe);
+    writeToolVersionProbeJson(json, manifest.toolVersionProbe);
     json.attributeEnd();
     json.attributeObject("runtime_binding", [&] {
       json.attribute("kind", runtimeKindName(manifest.runtime.kind));
@@ -1551,7 +1570,7 @@ std::string serializeManifest(const InvocationManifestData &manifest,
         writeBinding(json, *manifest.runtime.polyArchContainer);
         json.attributeEnd();
         json.attributeBegin("container_version_probe");
-        writeVersionProbe(json, manifest.containerVersionProbe);
+        writeToolVersionProbeJson(json, manifest.containerVersionProbe);
         json.attributeEnd();
       }
       json.attributeBegin("rejected_compositions");
@@ -1692,28 +1711,6 @@ finalizeExternalToolInvocationBundle(
   cleanup.published = true;
   return PreparedExternalToolInvocation{bundleRoot.str(),
                                         contentDigest(manifestBytes)};
-}
-
-/// Thin caller-side launcher: verifies the prepared manifest through the
-/// shared integrity helper, then only invokes run.sh.
-llvm::Expected<int> executeExternalToolInvocationBundle(
-    const PreparedExternalToolInvocation &prepared) {
-  auto bundle = openPreparedBundle(prepared);
-  if (!bundle)
-    return bundle.takeError();
-  llvm::SmallString<256> script(prepared.bundleRoot);
-  llvm::sys::path::append(script, kRunScriptName);
-  llvm::ErrorOr<std::string> bash = llvm::sys::findProgramByName("bash");
-  if (!bash)
-    return bundleError("could not find bash: " + bash.getError().message());
-  const llvm::SmallVector<llvm::StringRef, 2> arguments{*bash, script};
-  std::string message;
-  bool executionFailed = false;
-  const int status = llvm::sys::ExecuteAndWait(
-      *bash, arguments, std::nullopt, {}, 0, 0, &message, &executionFailed);
-  if (executionFailed || status < 0)
-    return bundleError("could not execute generated run script: " + message);
-  return status;
 }
 
 llvm::Expected<InvocationCompletion> loadExternalToolInvocationCompletion(

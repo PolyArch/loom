@@ -27,7 +27,8 @@
 #   make experiment-root - create and print the resolved local experiment root
 #   make install-hooks - install the repository's local Git hooks
 #   make sync-worktree - preflight and synchronize a linked branch with main
-#   make clean     - remove this worktree's loom build only
+#   make clean     - remove this worktree's build products while preserving
+#                    its reusable external-tool result cache
 #   make distclean - main worktree: remove the loom build and shared LLVM,
 #                    CIRCT, and OR-Tools builds. Linked worktree: remove only
 #                    this loom build (shared builds are left alone).
@@ -50,6 +51,8 @@ WT            := $(PYTHON) $(WT_SCRIPT) \
 # environment matches an interactive shell invocation.
 export LIT_OPTS
 export JOBS
+export LOOM_LOCAL_CONFIG
+export LOOM_EXTERNAL_TOOL_CACHE_ROOT
 
 .PHONY: all doctor llvm circt or-tools gem5 loom test experiment-root install-hooks sync-worktree clean distclean
 

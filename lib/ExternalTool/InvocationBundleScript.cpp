@@ -84,9 +84,11 @@ moduleInitializer(const InvocationManifestData &manifest) {
 
 void appendFailure(std::string &script, InvocationCompletionStatus status,
                    InvocationLauncherExitCode code) {
-  script += "  loom_publish_completion " +
+  script += "  if (( loom_cache_postflight == 0 )); then\n";
+  script += "    loom_publish_completion " +
             shellQuote(completionStatusSpelling(status)) + " " +
             exitCodeText(code) + "\n";
+  script += "  fi\n";
   script += "  exit " + exitCodeText(code) + "\n";
 }
 
@@ -246,6 +248,19 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
       exitCodeText(InvocationLauncherExitCode::LauncherFailure);
   std::string script = "#!/usr/bin/env bash\n"
                        "set -u -o pipefail\n"
+                       "loom_cache_preflight=0\n"
+                       "loom_cache_postflight=0\n"
+                       "if (( $# == 1 )) && [[ \"$1\" == "
+                       "--loom-cache-preflight ]]; then\n"
+                       "  loom_cache_preflight=1\n"
+                       "elif (( $# == 1 )) && [[ \"$1\" == "
+                       "--loom-cache-postflight ]]; then\n"
+                       "  loom_cache_postflight=1\n"
+                       "elif (( $# != 0 )); then\n"
+                       "  exit " +
+                       launcherFailure +
+                       "\n"
+                       "fi\n"
                        "loom_bundle_root=$(CDPATH= cd -- \"$(dirname -- "
                        "\"${BASH_SOURCE[0]}\")\" && pwd -P)\n";
   script += "cd -- \"$loom_bundle_root\" || exit " + launcherFailure + "\n";
@@ -276,12 +291,14 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
   // Every removal whose success is required for fresh publication is
   // checked: stale completion, partial, or declared output material that
   // cannot be removed fails integrity before the tool is entered.
+  script += "if (( loom_cache_postflight == 0 )); then\n";
   script += "if ! rm -f -- \"$loom_completion\"; then\n";
   appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
                 InvocationLauncherExitCode::BundleContentMismatch);
   script += "fi\nif ! rm -f -- \"$loom_completion_partial\"; then\n";
   appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
                 InvocationLauncherExitCode::BundleContentMismatch);
+  script += "fi\n";
   script += "fi\n";
 
   script += "if ! command -v sha256sum >/dev/null 2>&1 || "
@@ -299,10 +316,14 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
                              formatExternalFileFingerprint(file.fingerprint));
   for (const ResolvedExternalFileTree &tree : manifest.externalFileTrees)
     appendFileTreeCheck(script, tree);
-  for (const std::string &output : manifest.declaredOutputs) {
-    script += "if ! rm -f -- " + shellQuote(output) + "; then\n";
-    appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
-                  InvocationLauncherExitCode::BundleContentMismatch);
+  if (!manifest.declaredOutputs.empty()) {
+    script += "if (( loom_cache_postflight == 0 )); then\n";
+    for (const std::string &output : manifest.declaredOutputs) {
+      script += "if ! rm -f -- " + shellQuote(output) + "; then\n";
+      appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                    InvocationLauncherExitCode::BundleContentMismatch);
+      script += "fi\n";
+    }
     script += "fi\n";
   }
   std::set<std::filesystem::path> producedExecutableParents;
@@ -311,10 +332,14 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
         std::filesystem::path(executable).parent_path());
   for (const std::filesystem::path &parent : producedExecutableParents)
     appendOrdinaryDirectoryPathCheck(script, parent);
-  for (const std::string &executable : manifest.toolProducedExecutables) {
-    script += "if ! rm -f -- " + shellQuote(executable) + "; then\n";
-    appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
-                  InvocationLauncherExitCode::BundleContentMismatch);
+  if (!manifest.toolProducedExecutables.empty()) {
+    script += "if (( loom_cache_postflight == 0 )); then\n";
+    for (const std::string &executable : manifest.toolProducedExecutables) {
+      script += "if ! rm -f -- " + shellQuote(executable) + "; then\n";
+      appendFailure(script, InvocationCompletionStatus::BundleContentMismatch,
+                    InvocationLauncherExitCode::BundleContentMismatch);
+      script += "fi\n";
+    }
     script += "fi\n";
   }
 
@@ -373,6 +398,9 @@ std::string renderRunScript(const InvocationManifestData &manifest) {
                        renderDirectCommand(manifest.tool.executable,
                                            manifest.toolVersionProbe),
                        manifest.toolVersionProbe, manifest.tool.version);
+
+  script += "if (( loom_cache_preflight != 0 || "
+            "loom_cache_postflight != 0 )); then exit 0; fi\n";
 
   script += "loom_status=0\n";
   script += "{\n";

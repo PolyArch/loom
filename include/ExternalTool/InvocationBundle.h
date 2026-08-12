@@ -107,6 +107,26 @@ struct PreparedExternalToolInvocation final {
   BlobDigest manifestDigest;
 };
 
+/// The three independently reviewable content domains of one reusable
+/// successful external-tool result. Paths and attempt state are excluded.
+struct ExternalToolResultCacheKey final {
+  BlobDigest inputMaterialDigest;
+  BlobDigest executionConfigurationDigest;
+  BlobDigest toolVersionDigest;
+
+  friend bool operator==(const ExternalToolResultCacheKey &lhs,
+                         const ExternalToolResultCacheKey &rhs) {
+    return lhs.inputMaterialDigest == rhs.inputMaterialDigest &&
+           lhs.executionConfigurationDigest ==
+               rhs.executionConfigurationDigest &&
+           lhs.toolVersionDigest == rhs.toolVersionDigest;
+  }
+  friend bool operator!=(const ExternalToolResultCacheKey &lhs,
+                         const ExternalToolResultCacheKey &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
 struct ExternalToolInvocationBundleSpec {
   ExternalToolSemanticContract semanticContract;
   ResolvedToolBinding tool;
@@ -259,6 +279,12 @@ finalizeExternalToolInvocationBundle(
     const ExternalToolInvocationBundleSpec &specification);
 
 llvm::Expected<int> executeExternalToolInvocationBundle(
+    const PreparedExternalToolInvocation &prepared);
+
+/// Derives the exact persistent-result cache key from one verified prepared
+/// invocation. This reads and validates the key-bearing generated files and
+/// resolved launcher bytes but neither looks up nor publishes a cache entry.
+llvm::Expected<ExternalToolResultCacheKey> deriveExternalToolResultCacheKey(
     const PreparedExternalToolInvocation &prepared);
 
 /// Mechanically derives the execution-resource identity of one exact resolved

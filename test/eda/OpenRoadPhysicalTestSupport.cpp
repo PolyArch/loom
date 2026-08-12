@@ -538,8 +538,26 @@ makeOpenRoadResolvedExecution(llvm::StringRef executable,
 }
 
 llvm::Expected<std::filesystem::path>
-writeAuthoredOpenRoadRouteTool(const std::filesystem::path &root) {
-  const std::filesystem::path tool = root / "authored-openroad-route";
+writeAuthoredOpenRoadRouteTool(const std::filesystem::path &root,
+                               AuthoredOpenRoadRouteBehavior behavior) {
+  llvm::StringRef suffix;
+  llvm::StringRef failure;
+  llvm::StringRef missingOutput;
+  switch (behavior) {
+  case AuthoredOpenRoadRouteBehavior::Complete:
+    suffix = "complete";
+    break;
+  case AuthoredOpenRoadRouteBehavior::ToolFailure:
+    suffix = "tool-failure";
+    failure = "exit 37\n";
+    break;
+  case AuthoredOpenRoadRouteBehavior::MissingOutput:
+    suffix = "missing-output";
+    missingOutput = "rm outputs/routed.def\n";
+    break;
+  }
+  const std::filesystem::path tool =
+      root / ("authored-openroad-route-" + suffix).str();
   const std::string body = R"sh(#!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "-version" || "${1:-}" == "--version" ]]; then
@@ -556,11 +574,7 @@ grep -F 'detailed_route -or_seed 1' drivers/openroad-routed.tcl >/dev/null
 grep -F 'module top' inputs/netlist/0000.v >/dev/null
 grep -F 'create_clock' inputs/constraints/0000.sdc >/dev/null
 mkdir -p outputs work
-printf '%s\n' 'driver-and-input-closure-read' > work/authored-fixture-read.txt
-if [[ "$PWD" == *route-failed* ]]; then
-  exit 37
-fi
-cp inputs/netlist/0000.v outputs/routed.v
+)sh" + failure.str() + R"sh(cp inputs/netlist/0000.v outputs/routed.v
 cat > outputs/routed.def <<'EOF'
 VERSION 5.8 ;
 DIVIDERCHAR "/" ;
@@ -588,18 +602,34 @@ END DESIGN
 EOF
 sed -n '/^set loom_result /,$p' drivers/openroad-routed.tcl > work/publish-result.tcl
 tclsh work/publish-result.tcl
-if [[ "$PWD" == *route-missing* ]]; then
-  rm outputs/routed.def
-fi
-)sh";
+)sh" + missingOutput.str();
   if (llvm::Error error = writeText(tool, body, true))
     return std::move(error);
   return tool;
 }
 
 llvm::Expected<std::filesystem::path>
-writeAuthoredOpenRoadStaticFpaTool(const std::filesystem::path &root) {
-  const std::filesystem::path tool = root / "authored-openroad-fpa";
+writeAuthoredOpenRoadStaticFpaTool(const std::filesystem::path &root,
+                                   AuthoredOpenRoadStaticFpaBehavior behavior) {
+  llvm::StringRef suffix;
+  llvm::StringRef failure;
+  llvm::StringRef malformedResult;
+  switch (behavior) {
+  case AuthoredOpenRoadStaticFpaBehavior::Complete:
+    suffix = "complete";
+    break;
+  case AuthoredOpenRoadStaticFpaBehavior::ToolFailure:
+    suffix = "tool-failure";
+    failure = "exit 41\n";
+    break;
+  case AuthoredOpenRoadStaticFpaBehavior::MalformedResult:
+    suffix = "malformed-result";
+    malformedResult = "sed -i '0,/\"unit\":\"watt\"/s//\"unit\":\"volt\"/' "
+                      "outputs/openroad-static-fpa-result.json\n";
+    break;
+  }
+  const std::filesystem::path tool =
+      root / ("authored-openroad-fpa-" + suffix).str();
   const std::string body = R"sh(#!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "-version" || "${1:-}" == "--version" ]]; then
@@ -619,11 +649,7 @@ grep -F 'DESIGN top' inputs/database/routed.def >/dev/null
 grep -F 'module top' inputs/netlist/0.v >/dev/null
 grep -F 'create_clock' inputs/constraints/0.sdc >/dev/null
 mkdir -p work outputs
-printf '%s\n' 'driver-and-routed-closure-read' > work/authored-fixture-read.txt
-if [[ "$PWD" == *fpa-failed* ]]; then
-  exit 41
-fi
-{
+)sh" + failure.str() + R"sh({
   printf '%s\n' 'schema=loom.openroad_static_fpa_raw_report'
   printf '%s\n' 'version=1.0'
   printf '%s\n' 'top=top'
@@ -633,10 +659,7 @@ fi
   grep -F 'leakage_power_watts=%.12e' drivers/openroad-static-fpa.tcl >/dev/null && printf '%s\n' 'leakage_power_watts=5.600000000000e-04' || true
 } > work/openroad-static-fpa-raw.txt
 tclsh drivers/openroad-static-fpa-publish.tcl
-if [[ "$PWD" == *fpa-adapter* ]]; then
-  sed -i '0,/"unit":"watt"/s//"unit":"volt"/' outputs/openroad-static-fpa-result.json
-fi
-)sh";
+)sh" + malformedResult.str();
   if (llvm::Error error = writeText(tool, body, true))
     return std::move(error);
   return tool;

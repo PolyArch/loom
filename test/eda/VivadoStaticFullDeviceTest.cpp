@@ -1168,7 +1168,7 @@ void registeredProviderImportsBuiltInNativeClosure(
       take(__func__, bindVivadoStaticFullDeviceCandidateGeneratorInputs(
                          implementation.reference(), platform.reference()));
   constexpr llvm::StringLiteral build =
-      "SW Build 6060944 on Thu Mar 06 19:10:09 MST 2025";
+      "SW Build 6511674 on Tue Jun 16 11:01:26 MDT 2026";
   auto config = take(__func__, projectResolvedVivadoStaticFullDeviceConfigView(
                                    build, definition.deviceOrderingCode));
   auto binding = take(

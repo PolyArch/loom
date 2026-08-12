@@ -13,18 +13,18 @@ namespace loom::hardware {
 namespace {
 
 constexpr llvm::StringLiteral kAmdVivadoBuild =
-    "SW Build 6060944 on Thu Mar 06 19:10:09 MST 2025";
+    "SW Build 6511674 on Tue Jun 16 11:01:26 MDT 2026";
 constexpr llvm::StringLiteral kAmdProviderIdentity =
-    "amd_vivado_build_5357204275696c642036303630393434206f6e20546875204d61"
-    "722030362031393a31303a3039204d53542032303235";
+    "amd_vivado_build_5357204275696c642036353131363734206f6e20547565204a75"
+    "6e2031362031313a30313a3236204d44542032303236";
 constexpr llvm::StringLiteral kAmdBlackBoxContract =
     "{\"contract\":\"amd.xilinx.unisim.dsp58@2\","
     "\"device\":\"xcvp1802-vsva5601-3HP-e-S\","
     "\"latency\":\"combinational\",\"module\":\"DSP58\","
     "\"operation\":\"i16_mul_mod\","
     "\"resource\":\"unisim:versal:DSP58\","
-    "\"tool_build\":\"amd_vivado_build_5357204275696c642036303630393434"
-    "206f6e20546875204d61722030362031393a31303a3039204d53542032303235\"}\n";
+    "\"tool_build\":\"amd_vivado_build_5357204275696c642036353131363734"
+    "206f6e20547565204a756e2031362031313a30313a3236204d44542032303236\"}\n";
 
 constexpr llvm::StringLiteral kIntelBlackBoxContract =
     "{\"contract\":\"intel.altera.lpm_mult@1\","

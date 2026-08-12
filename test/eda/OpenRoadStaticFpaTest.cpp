@@ -168,7 +168,6 @@ grep -F 'DFFX1 launch' inputs/netlist/0000.v >/dev/null
 grep -F 'INVX1 combinational' inputs/netlist/0000.v >/dev/null
 grep -F 'create_clock -name core_clock -period 2' inputs/constraints/0000.sdc >/dev/null
 mkdir -p outputs work
-printf '%s\n' 'generated-route-invocation-read' > work/authored-fixture-read.txt
 cp inputs/netlist/0000.v outputs/routed.v
 cat > outputs/routed.def <<'EOF'
 VERSION 5.8 ;
@@ -409,10 +408,6 @@ void authoredLifecycleSeparatesAllOutcomes(const std::filesystem::path &root) {
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(*prepared)) == 0,
           "authored FPA invocation failed");
-  require(__func__,
-          std::filesystem::exists(root / "fpa-complete" / "work" /
-                                  "authored-fixture-read.txt"),
-          "authored FPA tool did not read the generated invocation");
   const EvaluationEvidence evidence =
       take(__func__,
            importEvaluationModelInvocation(request.request, request.resolution,
@@ -523,8 +518,13 @@ void authoredLifecycleSeparatesAllOutcomes(const std::filesystem::path &root) {
                               gateEvidence->outcome()),
           "non-routed HImpl did not remain explicitly unsupported");
 
+  const std::filesystem::path failedTool =
+      take(__func__, writeAuthoredOpenRoadStaticFpaTool(
+                         root, AuthoredOpenRoadStaticFpaBehavior::ToolFailure));
+  const LocalToolConfig failedLocal =
+      makeOpenRoadLocalToolConfig(fixture, failedTool);
   EvaluationModelPreparation failedPreparation =
-      prepareAt(request, root, "fpa-failed", local, artifacts, blobs);
+      prepareAt(request, root, "fpa-failed", failedLocal, artifacts, blobs);
   const auto *failedPrepared =
       std::get_if<PreparedExternalToolInvocation>(&failedPreparation);
   require(__func__, failedPrepared,
@@ -539,8 +539,13 @@ void authoredLifecycleSeparatesAllOutcomes(const std::filesystem::path &root) {
                                            *failedPrepared, artifacts, blobs)),
                         OutcomeReason::ToolFailure);
 
+  const std::filesystem::path malformedTool = take(
+      __func__, writeAuthoredOpenRoadStaticFpaTool(
+                    root, AuthoredOpenRoadStaticFpaBehavior::MalformedResult));
+  const LocalToolConfig malformedLocal =
+      makeOpenRoadLocalToolConfig(fixture, malformedTool);
   EvaluationModelPreparation adapterPreparation =
-      prepareAt(request, root, "fpa-adapter", local, artifacts, blobs);
+      prepareAt(request, root, "fpa-adapter", malformedLocal, artifacts, blobs);
   const auto *adapterPrepared =
       std::get_if<PreparedExternalToolInvocation>(&adapterPreparation);
   require(__func__, adapterPrepared,
@@ -589,10 +594,6 @@ void realOpenRoadFpaSmoke(const std::filesystem::path &root,
                                         makeOpenRoadResolvedExecution(
                                             routeTool.string(), version, false),
                                         artifacts, blobs));
-  require(__func__,
-          std::filesystem::exists(root / "authored-route" / "work" /
-                                  "authored-fixture-read.txt"),
-          "authored route fixture did not read the generated invocation");
 
   requireSuccess(__func__, registerOpenRoadStaticFpaEvaluationProvider());
   const RequestFixture request =

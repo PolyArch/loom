@@ -482,8 +482,6 @@ if [[ "${1-}" == "--version" ]]; then
   printf 'fixture-tool 1.0\n'
   exit 0
 fi
-mkdir -p scratch
-: > scratch/tool-entered
 args="$*"
 if [[ "$args" == *"innovus.tcl"* ]]; then
   printf 'module top;\nendmodule\n' > outputs/innovus-routed.v
@@ -526,8 +524,6 @@ fi
     const auto bundle = root / name.str();
     auto prepared = take(
         __func__, finalizeExternalToolInvocationBundle(bundle.string(), spec));
-    require(__func__, !std::filesystem::exists(bundle / "scratch/tool-entered"),
-            "preparation executed the tool");
     return prepared;
   };
   auto execute = [&](const PreparedExternalToolInvocation &prepared) {

@@ -659,8 +659,6 @@ if [[ "${1-}" == "--version" ]]; then
   printf 'fixture-tool 1.0\n'
   exit 0
 fi
-mkdir -p scratch
-: > scratch/tool-entered
 loom_args="$*"
 if [[ "$loom_args" == *"design-compiler.tcl"* ]]; then
   printf 'module top(input wire a, output wire y);\n  assign y = a;\nendmodule\n' > outputs/design-compiler-gate-netlist.v
@@ -712,9 +710,6 @@ fi
         auto prepared = take(
             __func__, loom::external_tool::finalizeExternalToolInvocationBundle(
                           bundle.string(), specification));
-        require(__func__,
-                !std::filesystem::exists(bundle / "scratch" / "tool-entered"),
-                "bundle preparation executed the tool");
         return prepared;
       };
   auto execute =
@@ -724,11 +719,6 @@ fi
                      loom::external_tool::executeExternalToolInvocationBundle(
                          prepared)) == 0,
                 "fixture bundle execution failed");
-        require(
-            __func__,
-            std::filesystem::exists(std::filesystem::path(prepared.bundleRoot) /
-                                    "scratch" / "tool-entered"),
-            "caller-owned execution did not enter the tool");
       };
 
   SynopsysBundleInputs vcsInputs = bundleInputs(

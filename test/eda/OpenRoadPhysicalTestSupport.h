@@ -78,11 +78,27 @@ OpenRoadResolvedExecution
 makeOpenRoadResolvedExecution(llvm::StringRef executable,
                               llvm::StringRef version, bool moduleBound);
 
-llvm::Expected<std::filesystem::path>
-writeAuthoredOpenRoadRouteTool(const std::filesystem::path &root);
+enum class AuthoredOpenRoadRouteBehavior {
+  Complete,
+  ToolFailure,
+  MissingOutput,
+};
 
 llvm::Expected<std::filesystem::path>
-writeAuthoredOpenRoadStaticFpaTool(const std::filesystem::path &root);
+writeAuthoredOpenRoadRouteTool(const std::filesystem::path &root,
+                               AuthoredOpenRoadRouteBehavior behavior =
+                                   AuthoredOpenRoadRouteBehavior::Complete);
+
+enum class AuthoredOpenRoadStaticFpaBehavior {
+  Complete,
+  ToolFailure,
+  MalformedResult,
+};
+
+llvm::Expected<std::filesystem::path> writeAuthoredOpenRoadStaticFpaTool(
+    const std::filesystem::path &root,
+    AuthoredOpenRoadStaticFpaBehavior behavior =
+        AuthoredOpenRoadStaticFpaBehavior::Complete);
 
 llvm::Expected<hardware::FinalizedHardwareImplementation>
 runOpenRoadRouteFixture(const OpenRoadGateFixture &fixture,

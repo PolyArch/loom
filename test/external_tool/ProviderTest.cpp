@@ -116,7 +116,8 @@ int main() {
               gem5.versionProbe.arguments ==
                   std::vector<std::string>{"--build-info"} &&
               findBackendTool("gem5") &&
-              findBackendTool("gem5")->validatedReleases.front()
+              findBackendTool("gem5")
+                      ->validatedReleases.front()
                       .conformanceFeature == "gem5-25.1.0.1",
           "gem5 provider contract is incomplete");
 
@@ -178,11 +179,11 @@ int main() {
 
   const ExternalToolProviderDescriptor &vivado = vivadoProvider();
   require(vivado.binding.key == "vivado" &&
-              vivado.binding.moduleAliases.front() == "amd/vivado/2024.2" &&
+              vivado.binding.moduleAliases.front() == "amd/2026.1" &&
               findBackendTool("vivado")
                       ->validatedReleases.front()
-                      .conformanceFeature == "vivado-2024.2.2",
-          "Vivado provider must prefer the validated 2024.2 release");
+                      .conformanceFeature == "vivado-2026.1",
+          "Vivado provider must select the validated 2026.1 release");
 
   const ExternalToolProviderDescriptor &quartus = quartusPrimeProvider();
   require(quartus.binding.key == "quartus_sh" &&

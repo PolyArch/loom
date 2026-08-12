@@ -1,5 +1,6 @@
 #include "Hardware/RTL/Providers/AmdXilinxScalarIntegerMultiply.h"
 #include "ConfigurationABITestSupport.h"
+#include "Hardware/Implementation/FpgaNativeExternalContracts.h"
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarIntegerMultiply.h"
@@ -52,23 +53,9 @@ using namespace loom::hardware;
 using namespace loom::hardware::rtl;
 namespace platform = loom::platform;
 
-constexpr llvm::StringLiteral kContractRef = "amd.xilinx.unisim.dsp58@2";
-constexpr llvm::StringLiteral kInputSlot = "primitive";
-constexpr llvm::StringLiteral kProviderBuild =
-    "amd_vivado_build_5357204275696c642036303630393434206f6e20546875204d61"
-    "722030362031393a31303a3039204d53542032303235";
-constexpr llvm::StringLiteral kResourceKey = "unisim:versal:DSP58";
-constexpr llvm::StringLiteral kPart = "xcvp1802-vsva5601-3HP-e-S";
-constexpr llvm::StringLiteral kPayloadName =
-    "contracts/amd_xilinx_unisim_dsp58.json";
-constexpr llvm::StringLiteral kBlackBoxContract =
-    "{\"contract\":\"amd.xilinx.unisim.dsp58@2\","
-    "\"device\":\"xcvp1802-vsva5601-3HP-e-S\","
-    "\"latency\":\"combinational\",\"module\":\"DSP58\","
-    "\"operation\":\"i16_mul_mod\","
-    "\"resource\":\"unisim:versal:DSP58\","
-    "\"tool_build\":\"amd_vivado_build_5357204275696c642036303630393434"
-    "206f6e20546875204d61722030362031393a31303a3039204d53542032303235\"}\n";
+const FpgaNativeExternalModuleContract &nativeContract() {
+  return amdXilinxDsp58ExternalModuleContract();
+}
 
 [[noreturn]] void fail(llvm::StringRef test, const std::string &message) {
   llvm::errs() << test << ": " << message << '\n';
@@ -267,7 +254,8 @@ FinalizedConfigurationABI makeAbi(llvm::StringRef test,
 platform::FinalizedImplementationPlatform
 makePlatform(llvm::StringRef test, const ArtifactStore &store,
              platform::ImplementationTarget target = platform::FpgaTarget{
-                 platform::FpgaVendor::AmdXilinx, kPart.str()}) {
+                 platform::FpgaVendor::AmdXilinx,
+                 nativeContract().deviceOrderingCode.str()}) {
   return take(test, platform::finalizeImplementationPlatform(
                         {std::move(target), {"default"}}, store));
 }
@@ -320,8 +308,11 @@ SkeletonFixture makeSkeleton(llvm::StringRef test, mlir::MLIRContext &context,
 }
 
 ExternalInputBinding exactInput() {
-  return {kInputSlot.str(), ToolBundledResourceDependency{kProviderBuild.str(),
-                                                          kResourceKey.str()}};
+  const FpgaNativeExternalModuleContract &contract = nativeContract();
+  return {
+      contract.providerInputSlotRef.str(),
+      ToolBundledResourceDependency{contract.stableProviderBuildIdentity.str(),
+                                    contract.resourceKey.str()}};
 }
 
 ExternalImplementationContractCatalog makeContracts(llvm::StringRef test) {
@@ -630,6 +621,7 @@ specialize(SkeletonFixture &skeleton, const FabricFixture &fixture,
 
 void sealedCapabilityAndRegistration(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
+  const FpgaNativeExternalModuleContract &definition = nativeContract();
   std::filesystem::create_directories(root);
   ArtifactStore store(root.string());
   FabricFixture fixture = makeFabric(test, store, 16);
@@ -674,10 +666,11 @@ void sealedCapabilityAndRegistration(const std::filesystem::path &root) {
           "portable and AMD/Xilinx recipes do not coexist explicitly");
 
   ExternalImplementationContractCatalog contracts = makeContracts(test);
-  const auto contract = contracts.find(kContractRef);
+  const auto contract = contracts.find(definition.contractRef);
   require(test,
           contract && contract->inputSlots.size() == 1 &&
-              contract->inputSlots.front().providerInputSlotRef == kInputSlot &&
+              contract->inputSlots.front().providerInputSlotRef ==
+                  definition.providerInputSlotRef &&
               contract->inputSlots.front().acceptedDependencyKinds ==
                   std::vector<ExternalDependencyKind>{
                       ExternalDependencyKind::ToolBundledResource} &&
@@ -693,11 +686,12 @@ void sealedCapabilityAndRegistration(const std::filesystem::path &root) {
            std::vector<ExternalInputBinding>{},
            std::vector<ExternalInputBinding>{
                {"wrong_slot",
-                ToolBundledResourceDependency{kProviderBuild.str(),
-                                              kResourceKey.str()}}},
+                ToolBundledResourceDependency{
+                    definition.stableProviderBuildIdentity.str(),
+                    definition.resourceKey.str()}}},
            std::vector<ExternalInputBinding>{exactInput(), exactInput()}}) {
     auto canonical = contracts.canonicalizeAndValidateInputs(
-        kContractRef, invalidInputs, RepresentationRootVariant::Rtl);
+        definition.contractRef, invalidInputs, RepresentationRootVariant::Rtl);
     require(test, !canonical,
             "DSP58 external contract accepted an invalid input closure");
     llvm::consumeError(canonical.takeError());
@@ -707,6 +701,7 @@ void sealedCapabilityAndRegistration(const std::filesystem::path &root) {
 void exactOccurrenceMaterializesDeterministically(
     const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
+  const FpgaNativeExternalModuleContract &definition = nativeContract();
   std::filesystem::create_directories(root);
   ArtifactStore store(root.string());
   FabricFixture fixture = makeFabric(test, store, 16);
@@ -722,19 +717,21 @@ void exactOccurrenceMaterializesDeterministically(
       take(test, specialize(first, fixture, abi, registry, contracts,
                             &platform.platform(), inputs));
   const std::vector<std::uint8_t> expectedBlackBox(
-      kBlackBoxContract.bytes_begin(), kBlackBoxContract.bytes_end());
-  require(
-      test,
-      firstOutput.payloads.size() == 1 &&
-          firstOutput.payloads.front().role == PayloadRole::BlackBoxContract &&
-          firstOutput.payloads.front().canonicalLogicalName == kPayloadName &&
-          firstOutput.payloads.front().bytes == expectedBlackBox &&
-          firstOutput.externalImplementationBindings.size() == 1,
-      "DSP58 provider omitted its BlackBoxContract or external binding");
+      definition.blackBoxContractBytes.bytes_begin(),
+      definition.blackBoxContractBytes.bytes_end());
+  require(test,
+          firstOutput.payloads.size() == 1 &&
+              firstOutput.payloads.front().role ==
+                  PayloadRole::BlackBoxContract &&
+              firstOutput.payloads.front().canonicalLogicalName ==
+                  definition.blackBoxPayloadLogicalName &&
+              firstOutput.payloads.front().bytes == expectedBlackBox &&
+              firstOutput.externalImplementationBindings.size() == 1,
+          "DSP58 provider omitted its BlackBoxContract or external binding");
   const ExternalImplementationBindingDraft &binding =
       firstOutput.externalImplementationBindings.front();
   require(test,
-          binding.providerContractRef == kContractRef &&
+          binding.providerContractRef == definition.contractRef &&
               binding.externalInputs ==
                   std::vector<ExternalInputBinding>{exactInput()} &&
               binding.fabricResourceRefs ==
@@ -742,16 +739,19 @@ void exactOccurrenceMaterializesDeterministically(
                       fixture.operations.front().physicalOccurrence} &&
               binding.representationLocators ==
                   std::vector<RepresentationLocator>{
-                      {RepresentationObjectKind::Module, "DSP58"}} &&
+                      {RepresentationObjectKind::Module,
+                       definition.moduleName.str()}} &&
               binding.blackBoxContractPayload ==
-                  ImplementationPayloadKey{PayloadRole::BlackBoxContract,
-                                           kPayloadName.str()},
+                  ImplementationPayloadKey{
+                      PayloadRole::BlackBoxContract,
+                      definition.blackBoxPayloadLogicalName.str()},
           "DSP58 provider changed its exact external binding");
   const auto format =
       take(test, RepresentationFormatDescriptorRef::get(
                      RepresentationFormatKind::SystemVerilogRtl));
   const ImplementationPayload contractPayload{
-      PayloadRole::BlackBoxContract, kPayloadName.str(),
+      PayloadRole::BlackBoxContract,
+      definition.blackBoxPayloadLogicalName.str(),
       loom::computeBlobDigest(expectedBlackBox)};
   const ImplementationRepresentationRoot representation{
       RepresentationRootVariant::Rtl,
@@ -870,6 +870,7 @@ void exactOccurrenceMaterializesDeterministically(
 
 void unsupportedBoundaryIsTyped(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
+  const FpgaNativeExternalModuleContract &definition = nativeContract();
   std::filesystem::create_directories(root);
   ArtifactStore store(root.string());
   FabricOperationProviderRegistry registry = makeRegistry(test);
@@ -890,18 +891,18 @@ void unsupportedBoundaryIsTyped(const std::filesystem::path &root) {
         fixture.operations.front().capability->implementationFamily);
   };
 
-  runUnsupported(
-      makeFabric(test, store, 8),
-      platform::FpgaTarget{platform::FpgaVendor::AmdXilinx, kPart.str()},
-      inputs);
-  runUnsupported(
-      makeFabric(test, store, 16, FixtureKind::MultiplyAllWidths),
-      platform::FpgaTarget{platform::FpgaVendor::AmdXilinx, kPart.str()},
-      inputs);
-  runUnsupported(
-      makeFabric(test, store, 16, FixtureKind::UnsupportedContract),
-      platform::FpgaTarget{platform::FpgaVendor::AmdXilinx, kPart.str()},
-      inputs);
+  runUnsupported(makeFabric(test, store, 8),
+                 platform::FpgaTarget{platform::FpgaVendor::AmdXilinx,
+                                      definition.deviceOrderingCode.str()},
+                 inputs);
+  runUnsupported(makeFabric(test, store, 16, FixtureKind::MultiplyAllWidths),
+                 platform::FpgaTarget{platform::FpgaVendor::AmdXilinx,
+                                      definition.deviceOrderingCode.str()},
+                 inputs);
+  runUnsupported(makeFabric(test, store, 16, FixtureKind::UnsupportedContract),
+                 platform::FpgaTarget{platform::FpgaVendor::AmdXilinx,
+                                      definition.deviceOrderingCode.str()},
+                 inputs);
   runUnsupported(makeFabric(test, store, 16),
                  platform::FpgaTarget{platform::FpgaVendor::AmdXilinx,
                                       "xcvh1782-vsva3340-2MP-e-S"},
@@ -926,16 +927,14 @@ void unsupportedBoundaryIsTyped(const std::filesystem::path &root) {
   auto exactPlatform = makePlatform(test, store);
   for (const ExternalInputBinding &wrong : std::array<ExternalInputBinding, 2>{
            ExternalInputBinding{
-               kInputSlot.str(),
-               ToolBundledResourceDependency{
-                   "amd_vivado_build_5357204275696c6420363036"
-                   "30393434206f6e20546875204d61722030362031393a"
-                   "31303a3039204d53542032303234",
-                   kResourceKey.str()}},
+               definition.providerInputSlotRef.str(),
+               ToolBundledResourceDependency{"wrong_provider_build",
+                                             definition.resourceKey.str()}},
            ExternalInputBinding{
-               kInputSlot.str(),
-               ToolBundledResourceDependency{kProviderBuild.str(),
-                                             "unisim:versal:DSP48E2"}}}) {
+               definition.providerInputSlotRef.str(),
+               ToolBundledResourceDependency{
+                   definition.stableProviderBuildIdentity.str(),
+                   "unisim:versal:DSP48E2"}}}) {
     std::unique_ptr<mlir::MLIRContext> context = makeCirctContext();
     SkeletonFixture skeleton =
         makeSkeleton(test, *context, valid, validAbi.abi());
@@ -959,6 +958,7 @@ void unsupportedBoundaryIsTyped(const std::filesystem::path &root) {
 
 void malformedAbiAndTransactionRollBack(const std::filesystem::path &root) {
   const llvm::StringRef test = __func__;
+  const FpgaNativeExternalModuleContract &definition = nativeContract();
   std::filesystem::create_directories(root);
   ArtifactStore store(root.string());
   FabricOperationProviderRegistry registry = makeRegistry(test);
@@ -990,8 +990,9 @@ void malformedAbiAndTransactionRollBack(const std::filesystem::path &root) {
   std::vector<FabricOperationRecipeBinding> repeatedRecipes =
       recipes(repeated, inputs);
   repeatedRecipes.back().externalInputs.front().dependencyIdentity =
-      ToolBundledResourceDependency{kProviderBuild.str(),
-                                    "unisim:versal:DSP48E2"};
+      ToolBundledResourceDependency{
+          definition.stableProviderBuildIdentity.str(),
+          "unisim:versal:DSP48E2"};
   const std::string repeatedBefore = moduleText(*repeatedSkeleton.module);
   auto result = specializeFabricOperationLeaves(
       *repeatedSkeleton.module, repeatedAbi,

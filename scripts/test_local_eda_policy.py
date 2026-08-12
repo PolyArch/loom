@@ -228,6 +228,58 @@ class ExperimentRootPolicyTest(unittest.TestCase):
                 temporary_root=self.temporary_root,
             )
 
+    def test_external_tool_cache_selection_and_cleanup_are_exact(self) -> None:
+        module = load_resolver()
+        repository_build = self.repository / "build"
+        repository_build.mkdir()
+        selected = module.resolve_external_tool_cache_root(
+            repository=self.repository,
+            configured_root=None,
+            environment={},
+            scratch_root=self.scratch,
+            cache_root=self.cache,
+            temporary_root=self.temporary_root,
+        )
+        self.assertEqual(selected, repository_build / "external-tool-cache")
+        self.assertFalse(selected.exists())
+
+        explicit = self.root / "explicit-cache"
+        overridden = module.resolve_external_tool_cache_root(
+            repository=self.repository,
+            configured_root=None,
+            environment={module.EXTERNAL_TOOL_CACHE_ROOT_ENVIRONMENT: str(explicit)},
+            scratch_root=self.scratch,
+            cache_root=self.cache,
+            temporary_root=self.temporary_root,
+        )
+        self.assertEqual(overridden, explicit)
+
+        explicit.mkdir()
+        write(
+            explicit / module.EXTERNAL_TOOL_CACHE_MARKER,
+            module.EXTERNAL_TOOL_CACHE_MARKER_CONTENTS,
+        )
+        write(explicit / "entries" / "cached", "payload\n")
+        (explicit / "locks").mkdir()
+        self.assertTrue(module.remove_external_tool_cache_root(explicit))
+        self.assertFalse(explicit.exists())
+
+        unmarked = self.root / "unmarked-cache"
+        write(unmarked / "keep", "owned elsewhere\n")
+        with self.assertRaisesRegex(module.ExperimentRootError, "unmarked"):
+            module.remove_external_tool_cache_root(unmarked)
+        self.assertTrue((unmarked / "keep").is_file())
+
+        foreign = self.root / "marked-cache-with-foreign-member"
+        write(
+            foreign / module.EXTERNAL_TOOL_CACHE_MARKER,
+            module.EXTERNAL_TOOL_CACHE_MARKER_CONTENTS,
+        )
+        write(foreign / "unrelated", "keep\n")
+        with self.assertRaisesRegex(module.ExperimentRootError, "foreign"):
+            module.remove_external_tool_cache_root(foreign)
+        self.assertTrue((foreign / "unrelated").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

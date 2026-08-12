@@ -703,6 +703,34 @@ logical WorkUnitKey. Adding execution claims or mutable Job states would repeat
 facts already owned by the bundle completion record, ExecutionJournal, and
 external scheduler.
 
+The same boundary is the narrowest sound place to reuse expensive successful
+tool results. Provider adapters already converge on one structured invocation
+manifest and one strict importer, so adapter-local caches would duplicate key
+codecs and let two providers disagree about whether an input changed. A cache
+in Evaluation or DSE would instead confuse raw attempt bytes with semantic
+Evidence or candidate identity. ExternalTool therefore derives one
+domain-separated input/configuration/tool-version key from the exact prepared
+manifest, restores only verified declared bytes, and lets the existing owner
+importer decide their meaning.
+
+Caching the old completion record was rejected because it binds another
+manifest and would create a competing success authority. A hit republishes a
+fresh current-manifest completion only after current input and version
+validation. Caching failures was also rejected: a license outage, timeout,
+host interruption, or tool crash is an observation about one attempt, not a
+stable capability fact. Typed Unsupported remains the negative-cache form for
+owner-proven capability exclusions.
+
+Three visible digests are retained instead of hashing the complete manifest.
+The complete manifest contains local executable, module, external-file, and
+bundle paths whose changes do not alter the tool question. The input digest
+owns exact consumed material, the configuration digest owns the exact
+operation and semantic closure, and the tool digest owns the exact executing
+version and launcher bytes. This separation preserves cache reuse across
+equivalent local bindings while preventing a seed, generated file, library
+byte, runtime, provider version, or silently replaced launcher from being
+ignored.
+
 A stable capability rejection precedes that lifecycle. Returning typed
 Unsupported before bundle construction preserves the exact Request as a
 negative cache without inventing an executable no-op attempt. Restricting this

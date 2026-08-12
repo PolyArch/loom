@@ -322,7 +322,21 @@ std::string imageMetadata(llvm::StringRef providerBuild,
          "\",\"input_physical_output\":\"outputs/fpga-physical.qar\"}\n";
 }
 
-void writeFakeQuartus(const std::filesystem::path &tool) {
+enum class FakeQuartusBehavior {
+  Complete,
+  MissingImage,
+  InvalidMetadata,
+  UndeclaredOutput,
+};
+
+void writeFakeQuartus(
+    const std::filesystem::path &tool,
+    FakeQuartusBehavior behavior = FakeQuartusBehavior::Complete) {
+  const bool emitImage = behavior != FakeQuartusBehavior::MissingImage;
+  const llvm::StringRef metadataDevice =
+      behavior == FakeQuartusBehavior::InvalidMetadata ? "1SM21BHN1F53E1VG"
+                                                       : kDevice;
+  const bool emitUndeclared = behavior == FakeQuartusBehavior::UndeclaredOutput;
   std::string script =
       "#!/usr/bin/env bash\n"
       "set -euo pipefail\n"
@@ -342,22 +356,13 @@ void writeFakeQuartus(const std::filesystem::path &tool) {
       "' >outputs/fpga-physical.json\n"
       "    ;;\n"
       "  sta) : ;;\n"
-      "  assembler)\n"
-      "    if [[ -z \"${LOOM_QUARTUS_TEST_OMIT_IMAGE-}\" ]]; then\n"
-      "      printf '%s' 'device-image' >outputs/device.sof\n"
-      "    fi\n"
-      "    if [[ -n \"${LOOM_QUARTUS_TEST_BAD_METADATA-}\" ]]; then\n"
-      "      printf '%s' '" +
-      imageMetadata(kProviderBuild, "1SM21BHN1F53E1VG") +
-      "' >outputs/fpga-image.json\n"
-      "    else\n"
-      "      printf '%s' '" +
-      imageMetadata(kProviderBuild, kDevice) +
-      "' >outputs/fpga-image.json\n"
-      "    fi\n"
-      "    if [[ -n \"${LOOM_QUARTUS_TEST_UNDECLARED_OUTPUT-}\" ]]; then\n"
-      "      printf '%s' 'undeclared' >outputs/undeclared.bin\n"
-      "    fi\n"
+      "  assembler)\n" +
+      (emitImage ? "    printf '%s' 'device-image' >outputs/device.sof\n"
+                 : "") +
+      "    printf '%s' '" + imageMetadata(kProviderBuild, metadataDevice) +
+      "' >outputs/fpga-image.json\n" +
+      (emitUndeclared ? "    printf '%s' 'undeclared' >outputs/undeclared.bin\n"
+                      : "") +
       "    ;;\n"
       "  *) exit 64 ;;\n"
       "esac\n";
@@ -773,35 +778,38 @@ void strictImportUsesOnlyTheCompletedDeclaredSnapshot(
   writeFile(root / "tampered" / "outputs" / "fpga-physical.qar", "changed");
   expectFailureContains(__func__, import(tampered, fixture.binding), "digest");
 
+  const std::filesystem::path missingImageTool =
+      root / "tools" / "quartus_sh-missing-image";
+  writeFakeQuartus(missingImageTool, FakeQuartusBehavior::MissingImage);
   PreparedExternalToolInvocation partial =
-      prepareBundle(__func__, fixture, root / "partial", tool);
-  ::setenv("LOOM_QUARTUS_TEST_OMIT_IMAGE", "1", 1);
+      prepareBundle(__func__, fixture, root / "partial", missingImageTool);
   const int partialExit =
       take(__func__, executeExternalToolInvocationBundle(partial));
-  ::unsetenv("LOOM_QUARTUS_TEST_OMIT_IMAGE");
   require(__func__, partialExit != 0,
           "partial synthetic output was marked successful");
   requireIncompleteResult(__func__,
                           take(__func__, import(partial, fixture.binding)),
                           CandidateGeneratorIncompleteReason::ExecutionFailed);
 
-  PreparedExternalToolInvocation badMetadata =
-      prepareBundle(__func__, fixture, root / "bad-metadata", tool);
-  ::setenv("LOOM_QUARTUS_TEST_BAD_METADATA", "1", 1);
+  const std::filesystem::path invalidMetadataTool =
+      root / "tools" / "quartus_sh-invalid-metadata";
+  writeFakeQuartus(invalidMetadataTool, FakeQuartusBehavior::InvalidMetadata);
+  PreparedExternalToolInvocation badMetadata = prepareBundle(
+      __func__, fixture, root / "bad-metadata", invalidMetadataTool);
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(badMetadata)) == 0,
           "bad-metadata fixture execution failed");
-  ::unsetenv("LOOM_QUARTUS_TEST_BAD_METADATA");
   expectFailureContains(__func__, import(badMetadata, fixture.binding),
                         "FpgaImage metadata");
 
-  PreparedExternalToolInvocation undeclared =
-      prepareBundle(__func__, fixture, root / "undeclared", tool);
-  ::setenv("LOOM_QUARTUS_TEST_UNDECLARED_OUTPUT", "1", 1);
+  const std::filesystem::path undeclaredOutputTool =
+      root / "tools" / "quartus_sh-undeclared-output";
+  writeFakeQuartus(undeclaredOutputTool, FakeQuartusBehavior::UndeclaredOutput);
+  PreparedExternalToolInvocation undeclared = prepareBundle(
+      __func__, fixture, root / "undeclared", undeclaredOutputTool);
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(undeclared)) == 0,
           "undeclared-output fixture execution failed");
-  ::unsetenv("LOOM_QUARTUS_TEST_UNDECLARED_OUTPUT");
   expectFailureContains(__func__, import(undeclared, fixture.binding),
                         "undeclared output");
 

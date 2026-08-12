@@ -94,12 +94,11 @@ const std::vector<BackendToolCatalogEntry> &catalogStorage() {
            ToolVersionProbe{{"--build-info"}, "gem5 version"},
            ToolRuntimeCompatibility{},
        },
-       {BackendToolReleaseProfile{
-           "gem5-25.1.0.1", std::nullopt,
-           ToolVersionProbe{{"--build-info"},
-                            "gem5 version 25.1.0.1",
-                            {0},
-                            "gem5 version"}}}},
+       {BackendToolReleaseProfile{"gem5-25.1.0.1", std::nullopt,
+                                  ToolVersionProbe{{"--build-info"},
+                                                   "gem5 version 25.1.0.1",
+                                                   {0},
+                                                   "gem5 version"}}}},
       {"Synopsys VCS",
        ExternalToolProviderDescriptor{
            ToolProviderDescriptor{
@@ -277,15 +276,14 @@ const std::vector<BackendToolCatalogEntry> &catalogStorage() {
                "vivado",
                {"vivado"},
                {{"XILINX_VIVADO", "bin/vivado"}},
-               {"amd/vivado/2024.2", "amd/vivado"},
+               {"amd/2026.1", "amd"},
            },
            ToolVersionProbe{{"-version"}, "vivado v", {0}, "vivado v"},
            edaContainerCompatibility(),
        },
-       {release(
-           "vivado-2024.2.2", "amd/vivado/2024.2",
-           ToolVersionProbe{
-               {"-version"}, "vivado v2024.2.2", {0}, "vivado v2024.2.2"})}},
+       {release("vivado-2026.1", "amd/2026.1",
+                ToolVersionProbe{
+                    {"-version"}, "vivado v2026.1", {0}, "vivado v2026.1"})}},
       {"Altera Quartus Prime Pro",
        ExternalToolProviderDescriptor{
            ToolProviderDescriptor{

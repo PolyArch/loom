@@ -22,6 +22,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from resolve_experiment_root import (
+    EXTERNAL_TOOL_CACHE_MARKER,
+    EXTERNAL_TOOL_CACHE_MARKER_CONTENTS,
+)
+
 SCRIPT = Path(__file__).with_name("make-worktree.py")
 REPO_ROOT = SCRIPT.parents[1]
 REPO_TEMP_ROOT = REPO_ROOT / "build" / "test-runs"
@@ -1023,6 +1028,40 @@ class MakeWorktreeTest(unittest.TestCase):
             self.assertTrue(linked.llvm_stamp.exists())
             self.assertTrue(linked.circt_stamp.exists())
             self.assertTrue(linked.or_tools_stamp.exists())
+
+    def test_clean_preserves_only_a_marked_external_tool_cache(self):
+        with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:
+            paths = build_paths(Path(td))
+            paths.loom_build.mkdir(parents=True)
+            cache = (
+                paths.loom_build / self.module.EXTERNAL_TOOL_CACHE_DIRECTORY
+            )
+            cache.mkdir()
+            (cache / EXTERNAL_TOOL_CACHE_MARKER).write_text(
+                EXTERNAL_TOOL_CACHE_MARKER_CONTENTS
+            )
+            (cache / "entries").mkdir()
+            (cache / "locks").mkdir()
+            (cache / "entries" / "result").write_text("cached\n")
+            (paths.loom_build / "build.ninja").write_text("generated\n")
+            (paths.loom_build / "lib").mkdir()
+            (paths.loom_build / "lib" / "generated.a").write_text("generated\n")
+
+            self.module.cmd_clean(paths, self.args)
+
+            self.assertTrue((cache / "entries" / "result").is_file())
+            self.assertFalse((paths.loom_build / "build.ninja").exists())
+            self.assertFalse((paths.loom_build / "lib").exists())
+
+            paths.is_main = False
+            self.module.cmd_distclean(paths, self.args)
+            self.assertFalse(paths.loom_build.exists())
+
+            paths.loom_build.mkdir()
+            cache.mkdir()
+            (cache / "foreign").write_text("not a Loom cache\n")
+            self.module.cmd_clean(paths, self.args)
+            self.assertFalse(cache.exists())
 
     def test_explicit_circt_build_uses_package_readiness_only(self):
         with tempfile.TemporaryDirectory(dir=REPO_TEMP_ROOT) as td:

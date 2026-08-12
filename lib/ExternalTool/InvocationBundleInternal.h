@@ -6,9 +6,11 @@
 #include "Common/BlobDigest.h"
 
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/JSON.h"
 
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace loom::external_tool {
@@ -48,6 +50,23 @@ struct InvocationManifestData final {
   std::vector<std::string> declaredOutputs;
   std::vector<std::string> toolProducedExecutables;
 };
+
+/// Opens the prepared root through the bundle integrity path and returns the
+/// exact canonical manifest bytes and parsed typed manifest.
+llvm::Expected<std::pair<std::string, InvocationManifestData>>
+loadPreparedInvocationManifest(const PreparedExternalToolInvocation &prepared);
+
+/// The sole canonical completion serializer shared by the generated launcher
+/// and cache restoration.
+std::string
+serializeInvocationCompletion(InvocationCompletionStatus status, int exitCode,
+                              const BlobDigest &manifestDigest,
+                              llvm::ArrayRef<BlobDigest> outputDigests);
+
+/// The one JSON codec for the exact version probe carried by a manifest and
+/// by the persistent tool-version cache domain.
+void writeToolVersionProbeJson(llvm::json::OStream &json,
+                               const ToolVersionProbe &probe);
 
 /// The single content digest of in-memory bundle bytes, used for manifests,
 /// materialized files, and declared outputs.

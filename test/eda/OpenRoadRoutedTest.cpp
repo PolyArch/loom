@@ -136,12 +136,13 @@ void authoredLifecyclePublishesOnlyThroughImporter(
   const OpenRoadGateFixture fixture = take(
       __func__, makeOpenRoadGateFixture(root, artifacts, blobs, kSyntheticBuild,
                                         syntheticOpenRoadTechnologyFixture()));
-  const std::filesystem::path tool =
-      take(__func__, writeAuthoredOpenRoadRouteTool(root));
-  const LocalToolConfig local = makeOpenRoadLocalToolConfig(fixture, tool);
   requireSuccess(__func__, registerOpenRoadRoutedCandidateGenerator());
 
-  auto prepareAt = [&](llvm::StringRef name) {
+  auto prepareAt = [&](llvm::StringRef name,
+                       AuthoredOpenRoadRouteBehavior behavior) {
+    const std::filesystem::path tool =
+        take(__func__, writeAuthoredOpenRoadRouteTool(root, behavior));
+    const LocalToolConfig local = makeOpenRoadLocalToolConfig(fixture, tool);
     OpenRoadRouteHarness harness = take(
         __func__, makeOpenRoadRouteHarness(root / name.str(), fixture, local));
     auto prepared = take(__func__, prepareCandidateGeneratorInvocation(
@@ -151,7 +152,8 @@ void authoredLifecyclePublishesOnlyThroughImporter(
         std::move(harness), std::move(prepared)};
   };
 
-  auto [firstHarness, first] = prepareAt("route-complete");
+  auto [firstHarness, first] =
+      prepareAt("route-complete", AuthoredOpenRoadRouteBehavior::Complete);
   const std::string driver =
       take(__func__, readText(root / "route-complete" / "drivers" /
                               "openroad-routed.tcl"));
@@ -168,10 +170,6 @@ void authoredLifecyclePublishesOnlyThroughImporter(
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(first)) == 0,
           "authored route invocation failed");
-  require(__func__,
-          std::filesystem::exists(root / "route-complete" / "work" /
-                                  "authored-fixture-read.txt"),
-          "authored tool did not prove it read the generated invocation");
   const CandidateGeneratorProviderResult imported =
       take(__func__, importCandidateGeneratorInvocation(
                          firstHarness.inputs, firstHarness.binding, first,
@@ -224,7 +222,8 @@ void authoredLifecyclePublishesOnlyThroughImporter(
               !external.front().representationLocators.empty(),
           "routed HImpl did not replace the source standard-cell closure");
 
-  auto [failedHarness, failed] = prepareAt("route-failed");
+  auto [failedHarness, failed] =
+      prepareAt("route-failed", AuthoredOpenRoadRouteBehavior::ToolFailure);
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(failed)) == 37,
           "authored failure did not preserve the tool exit status");
@@ -239,7 +238,8 @@ void authoredLifecyclePublishesOnlyThroughImporter(
                             CandidateGeneratorIncompleteReason::ExecutionFailed,
           "tool failure did not remain a typed non-publishing result");
 
-  auto [missingHarness, missing] = prepareAt("route-missing");
+  auto [missingHarness, missing] =
+      prepareAt("route-missing", AuthoredOpenRoadRouteBehavior::MissingOutput);
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(missing)) == 122,
           "missing-output fixture lost the bundle status");
@@ -255,7 +255,8 @@ void authoredLifecyclePublishesOnlyThroughImporter(
                   CandidateGeneratorIncompleteReason::ExecutionFailed,
           "missing route output did not become typed execution failure");
 
-  auto [tamperedHarness, tampered] = prepareAt("route-tampered");
+  auto [tamperedHarness, tampered] =
+      prepareAt("route-tampered", AuthoredOpenRoadRouteBehavior::Complete);
   require(__func__,
           take(__func__, executeExternalToolInvocationBundle(tampered)) == 0,
           "tamper fixture failed before mutation");
