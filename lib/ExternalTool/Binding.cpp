@@ -86,6 +86,44 @@ probeModules(const ToolProviderDescriptor &provider, ToolBindingSource source,
   return std::optional<ResolvedToolBinding>{std::move(*resolved)};
 }
 
+llvm::Expected<std::optional<ResolvedToolBinding>>
+resolveEnvironmentBinding(const ToolProviderDescriptor &provider,
+                          const ToolEnvironment &environment,
+                          ToolBindingProbe &probe) {
+  llvm::SmallVector<llvm::StringRef, 16> pathEntries;
+  llvm::StringRef(environment.path)
+      .split(pathEntries, llvm::sys::EnvPathSeparator, -1, false);
+  for (const std::string &name : provider.executableNames) {
+    for (llvm::StringRef directory : pathEntries) {
+      llvm::SmallString<256> path(directory);
+      llvm::sys::path::append(path, name);
+      auto result = probeExecutable(
+          provider, ToolBindingSource::EnvironmentPath, path, probe);
+      if (!result)
+        return result.takeError();
+      if (*result)
+        return std::move(*result);
+    }
+  }
+
+  for (const ToolEnvironmentCandidate &candidate :
+       provider.environmentCandidates) {
+    auto value = environment.variables.find(candidate.variable);
+    if (value == environment.variables.end() || value->second.empty())
+      continue;
+    llvm::SmallString<256> path(value->second);
+    llvm::sys::path::append(path, candidate.relativeExecutable);
+    auto result = probeExecutable(provider, ToolBindingSource::EnvironmentRoot,
+                                  path, probe, candidate.variable);
+    if (!result)
+      return result.takeError();
+    if (*result)
+      return std::move(*result);
+  }
+
+  return std::optional<ResolvedToolBinding>{};
+}
+
 llvm::Error validateDescriptor(const ToolProviderDescriptor &provider) {
   auto isInvalidRelativePath = [](llvm::StringRef spelling) {
     const std::filesystem::path path(spelling.str());
@@ -160,36 +198,12 @@ resolveBinding(const ToolProviderDescriptor &provider,
                         "' is unavailable or incompatible");
   }
 
-  llvm::SmallVector<llvm::StringRef, 16> pathEntries;
-  llvm::StringRef(environment.path)
-      .split(pathEntries, llvm::sys::EnvPathSeparator, -1, false);
-  for (const std::string &name : provider.executableNames) {
-    for (llvm::StringRef directory : pathEntries) {
-      llvm::SmallString<256> path(directory);
-      llvm::sys::path::append(path, name);
-      auto result = probeExecutable(
-          provider, ToolBindingSource::EnvironmentPath, path, probe);
-      if (!result)
-        return result.takeError();
-      if (*result)
-        return std::move(**result);
-    }
-  }
-
-  for (const ToolEnvironmentCandidate &candidate :
-       provider.environmentCandidates) {
-    auto value = environment.variables.find(candidate.variable);
-    if (value == environment.variables.end() || value->second.empty())
-      continue;
-    llvm::SmallString<256> path(value->second);
-    llvm::sys::path::append(path, candidate.relativeExecutable);
-    auto result = probeExecutable(provider, ToolBindingSource::EnvironmentRoot,
-                                  path, probe, candidate.variable);
-    if (!result)
-      return result.takeError();
-    if (*result)
-      return std::move(**result);
-  }
+  auto environmentBinding =
+      resolveEnvironmentBinding(provider, environment, probe);
+  if (!environmentBinding)
+    return environmentBinding.takeError();
+  if (*environmentBinding)
+    return std::move(**environmentBinding);
 
   for (const std::string &alias : provider.moduleAliases) {
     const std::vector<std::string> modules{alias};
@@ -216,6 +230,15 @@ ToolEnvironment captureToolEnvironment(const ToolProviderDescriptor &provider) {
             llvm::sys::Process::GetEnv(candidate.variable))
       environment.variables.emplace(candidate.variable, std::move(*value));
   return environment;
+}
+
+llvm::Expected<std::optional<ResolvedToolBinding>>
+resolveEnvironmentToolBinding(const ToolProviderDescriptor &provider,
+                              const ToolEnvironment &environment,
+                              ToolBindingProbe &probe) {
+  if (llvm::Error error = validateDescriptor(provider))
+    return std::move(error);
+  return resolveEnvironmentBinding(provider, environment, probe);
 }
 
 llvm::Expected<ResolvedToolBinding> resolveToolBinding(

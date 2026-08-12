@@ -7,7 +7,9 @@ import sys
 
 def main() -> int:
     root = pathlib.Path(sys.argv[1])
+    ddi_root = pathlib.Path(sys.argv[2])
     root.mkdir(parents=True, exist_ok=True)
+    (ddi_root / "bin").mkdir(parents=True, exist_ok=True)
     executables = (
         "dc_shell",
         "fc_shell",
@@ -33,6 +35,13 @@ def main() -> int:
         "#!/usr/bin/bash\necho 'Verilator 5.050 fixture'\n", encoding="ascii"
     )
     verilator.chmod(0o755)
+    genus = ddi_root / "bin" / "genus"
+    genus.write_text(
+        "#!/usr/bin/bash\n"
+        "echo 'Program Name: Genus(TM) Synthesis Solution, Version: 26.10-p002_1'\n",
+        encoding="ascii",
+    )
+    genus.chmod(0o755)
     return 0
 
 

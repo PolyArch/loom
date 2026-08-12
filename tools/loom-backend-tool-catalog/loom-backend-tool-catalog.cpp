@@ -9,7 +9,6 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <filesystem>
@@ -49,19 +48,15 @@ llvm::Expected<bool> releaseIsAvailable(
     const loom::external_tool::BackendToolCatalogEntry &entry,
     const loom::external_tool::BackendToolReleaseProfile &release,
     llvm::StringRef probeDirectory) {
-  for (const std::string &name : entry.provider.binding.executableNames) {
-    llvm::ErrorOr<std::string> executable = llvm::sys::findProgramByName(name);
-    if (!executable)
-      continue;
-    loom::external_tool::ShellToolBindingProbe probe(probeDirectory.str(),
-                                                     release.exactVersionProbe);
-    auto result = probe.probeExecutable(*executable);
-    if (!result)
-      return result.takeError();
-    if (*result)
-      return true;
-  }
-  return false;
+  loom::external_tool::ShellToolBindingProbe probe(probeDirectory.str(),
+                                                   release.exactVersionProbe);
+  auto result = loom::external_tool::resolveEnvironmentToolBinding(
+      entry.provider.binding,
+      loom::external_tool::captureToolEnvironment(entry.provider.binding),
+      probe);
+  if (!result)
+    return result.takeError();
+  return result->has_value();
 }
 
 llvm::Error run() {

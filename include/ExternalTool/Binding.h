@@ -75,6 +75,11 @@ struct ResolvedToolBinding {
   std::optional<std::string> environmentVariable;
 };
 
+llvm::Expected<std::optional<ResolvedToolBinding>>
+resolveEnvironmentToolBinding(const ToolProviderDescriptor &provider,
+                              const ToolEnvironment &environment,
+                              ToolBindingProbe &probe);
+
 llvm::Expected<ResolvedToolBinding>
 resolveToolBinding(const ToolProviderDescriptor &provider,
                    const LocalToolConfig &config,
