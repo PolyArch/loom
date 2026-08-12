@@ -3,6 +3,8 @@
 #include "DSE/MappingCandidateGenerator.h"
 
 #include "Common/ArtifactLocalReference.h"
+#include "Common/ArtifactText.h"
+#include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Mapping/Artifact/MappingArtifact.h"
@@ -166,8 +168,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorWorkUnitSummary> workSummary =
       spatialPnrCandidateGeneratorWorkSummary({});
-  for (const ArtifactRootReference &techReference :
-       inputBindings[TechMappingCandidatesInput].artifacts) {
+  for (const auto indexedTech : llvm::enumerate(
+           inputBindings[TechMappingCandidatesInput].artifacts)) {
+    const std::size_t techOrdinal = indexedTech.index();
+    const ArtifactRootReference &techReference = indexedTech.value();
     auto tech = ::loom::mapping::importTechMapping(techReference, store);
     if (!tech)
       return tech.takeError();
@@ -227,9 +231,23 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                      std::make_move_iterator(generated->candidates.end()));
       continue;
     }
-    if (std::holds_alternative<::loom::pnr::ProvenInfeasibleSpatialMapping>(
-            outcome))
+    if (const auto *infeasible =
+            std::get_if<::loom::pnr::ProvenInfeasibleSpatialMapping>(
+                &outcome)) {
+      ::loom::mapping_debug::emit(
+          ::loom::mapping_debug::Level::Summary,
+          ::loom::mapping_debug::Stage::SpatialPnr,
+          ::loom::mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["closure_status"] = "proven_infeasible";
+            fields["tech_mapping_ordinal"] =
+                static_cast<std::uint64_t>(techOrdinal);
+            fields["tech_mapping"] =
+                formatArtifactIdentityHex(techReference.artifact);
+            fields["diagnostic"] = infeasible->diagnostic;
+          });
       continue;
+    }
     if (const auto *partial =
             std::get_if<::loom::pnr::IncompleteSpatialPnrGeneration>(
                 &outcome)) {
