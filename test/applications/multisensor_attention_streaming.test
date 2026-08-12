@@ -1,0 +1,22 @@
+# RUN: %loom-small-cc -emit-llvm -S -O1 -ffp-contract=off -fno-math-errno \
+# RUN:   -gline-tables-only %S/loom-multisensor-attention/main.c -o %t.ll
+# RUN: mkdir -p %t.store
+# RUN: loom-dfg-run --builtin=small --artifact-store=%t.store \
+# RUN:   --candidate-jobs=4 --operator-protocol-symbol=project_audio \
+# RUN:   --operator-protocol-symbol=project_imu \
+# RUN:   --operator-protocol-symbol=fuse_attention \
+# RUN:   --operator-protocol-symbol=reduce_statistics \
+# RUN:   --expected-entry-result=0 --canonical-output=%t.mlir \
+# RUN:   --output=%t.json %t.ll
+# RUN: FileCheck %s --input-file=%t.mlir --check-prefix=STREAMING
+# RUN: %python %S/../frontend/check_source_to_dataflow_anchor.py \
+# RUN:   --report=%t.json --source=%S/loom-multisensor-attention/main.c
+
+# STREAMING-LABEL: llvm.func local_unnamed_addr @loom_multisensor_attention
+# STREAMING: %[[AUDIO:[^ ]+]] = dataflow.channel.create : !dataflow.channel<f32>
+# STREAMING-NEXT: %[[IMU:[^ ]+]] = dataflow.channel.create : !dataflow.channel<f32>
+# STREAMING-NEXT: %[[ATTENTION:[^ ]+]] = dataflow.channel.create : !dataflow.channel<f32>
+# STREAMING: dataflow.thread.launch @{{[^ (]+}}(%arg0, %[[AUDIO]])
+# STREAMING: dataflow.thread.launch @{{[^ (]+}}(%arg1, %[[IMU]])
+# STREAMING: dataflow.thread.launch @{{[^ (]+}}(%[[AUDIO]], %[[IMU]], %[[ATTENTION]])
+# STREAMING: dataflow.thread.launch @{{[^ (]+}}(%[[AUDIO]], %[[ATTENTION]], %arg2, %arg3)
