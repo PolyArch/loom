@@ -596,6 +596,16 @@ and dense ordered offsets are all exact. Promotion deletes that entire pointer
 closure and emits the same channel operations as the memref form. Any case that
 would leave a pointer or require inferred alias authority stays unpromotable.
 
+Whole-callable ownership leaves a small synchronous LLVM wrapper around its
+owned thread launch. Requiring the source allocation to bypass that wrapper
+would make direct operation ownership and whole-callable ownership expose
+different MemoryCommunication domains. The transparent single-launch wrapper
+rule removes that accidental representation distinction. Lifting its launch
+and wait to the exact direct call site preserves the InstructionCore order and
+the separate Spatial graph while making the allocation-to-launch relation
+explicit. General LLVM inlining, result forwarding, launch dependencies, and
+multi-launch wrappers remain outside this proof.
+
 Adjacent storage-position exchange is sufficient because repeated exchanges
 generate every dense permutation. Enumerating complete permutations in one
 decision would make the same final layout reachable through a factorial
@@ -622,6 +632,17 @@ physical FIFO choice, banking, coalescing, service endpoints, replication
 placement, and routes remain downstream Fabric and Mapping facts. Keeping
 those facts out of all four decisions preserves one owner for each
 software or hardware distinction.
+
+Multiple independent temporaries often form one pipeline, so exposing only one
+promotion generation cannot represent the complete ordinary channel program.
+Recursively expanding every MemoryCommunication transform would need a generic
+depth policy and could revisit layout or pipeline choices indefinitely.
+Channel promotion has a stronger invariant: every accepted edge deletes one
+exact temporary allocation. The generator can therefore traverse only that
+strictly decreasing closure under its existing scope budget, retain each
+atomic lineage edge, and leave staging, layout, and pipelining as one-generation
+alternatives. This provides composition without a second plan object or an
+unbounded search mechanism.
 
 ## Why SCF-To-Dataflow Is Mechanical
 

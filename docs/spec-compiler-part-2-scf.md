@@ -771,9 +771,13 @@ the exact selected tier byte for byte.
 The current Structured MemoryCommunication generator consumes a finite set of
 exact Structured Program references and one exact finalized Fabric. It emits
 every input parent plus each distinct child obtained by one legal atomic
-logical memory decision. An empty input set produces an empty output set. Its
-resolved component view contains only the positive `scope_expansion_limit`
-owned by the Resolved Configuration View.
+logical memory decision. It additionally follows
+`PromoteOrderedBufferToChannel` children through the same decision owner until
+no further promotion is legal or the resolved scope budget is exhausted.
+Every lineage edge remains one atomic promotion. Other decision kinds are not
+recursively expanded by this generator. An empty input set produces an empty
+output set. Its resolved component view contains only the positive
+`scope_expansion_limit` owned by the Resolved Configuration View.
 
 The current closed decision catalog and stable ordinals are:
 
@@ -808,20 +812,27 @@ decision payload are rejected rather than reinterpreted.
 
 The provider for this catalog, decision schema, and component-view schema has
 implementation semantic identity
-`loom.compiler.structured_memory_communication.generator.v3`. The existing
-`loom.compiler.structured_memory_communication.generator.v1` and
-`loom.compiler.structured_memory_communication.generator.v2` identities remain
+`loom.compiler.structured_memory_communication.generator.v4`. The existing
+`loom.compiler.structured_memory_communication.generator.v1`,
+`loom.compiler.structured_memory_communication.generator.v2`, and
+`loom.compiler.structured_memory_communication.generator.v3` identities remain
 bound to their incompatible historical behavior and cannot be reinterpreted.
 Registry, manifest, cache, replay, and lineage validation must therefore
 distinguish the providers without a compatibility switch.
 
 Memory-relevant structural scopes are visited in canonical Structured entity
-order. The first `scope_expansion_limit` scopes across the ordered input
-parents are inspected. Each inspected scope retains its complete applicable
-kind and parameter domain; the limit cannot cut the adjacent-layout choices of
-one admitted allocation. The two descriptor-owned work units remain inspected
-memory scopes and attempted decisions. Worker count, completion order, exact
-Fabric capacity, and wall time cannot change this finite semantic domain.
+order. Initial parents are visited in canonical input order. Admitted channel
+children are appended to a FIFO frontier in canonical decision order and are
+deduplicated by Structured Program Artifact identity before expansion. The
+first `scope_expansion_limit` scopes across that complete ordered traversal are
+inspected. Each inspected scope retains its complete applicable kind and
+parameter domain; the limit cannot cut the adjacent-layout choices of one
+admitted allocation. Only channel decisions are attempted on a derived
+frontier child. Because each such decision eliminates one exact temporary
+allocation, this closure is finite without a depth parameter. The two
+descriptor-owned work units remain inspected memory scopes and attempted
+decisions. Worker count, completion order, exact Fabric capacity, and wall time
+cannot change this finite semantic domain.
 
 #### `StageConstantGlobal`
 
@@ -939,13 +950,19 @@ LLVM form is eligible only when it allocates exactly one non-empty,
 statically-sized aggregate with one primitive scalar leaf type, is not
 `inalloca`, and has one exact lifetime interval when lifetime markers are
 present. Outside those markers, its result may occur only as the matching body
-operand of the producer and admitted consumer launches. Within each selected
-thread, every use of that formal must resolve through in-bounds
-constant-offset GEPs, or the zero-offset formal itself, to one scalar load or
-store. The producer and every consumer lexical event sequence must each cover
-the same dense offsets exactly once in strictly increasing order. Unknown
-size, padding between scalar leaves, dynamic or repeated offsets, casts,
-nested pointer escape, or any residual use makes the decision absent.
+operand of the producer and admitted consumer launches, either directly or
+through an exact transparent owned-thread wrapper call. Such a wrapper is one
+defined, non-variadic, void LLVM callable with one block containing exactly one
+dependency-free `dataflow.thread.launch`, the matching single-token
+`dataflow.thread.wait`, and a void return. Every launch body operand is the
+same-position wrapper formal, and the selected call is a direct void call with
+exactly matching operands. Within each selected thread, every use of that
+formal must resolve through in-bounds constant-offset GEPs, or the zero-offset
+formal itself, to one scalar load or store. The producer and every consumer
+lexical event sequence must each cover the same dense offsets exactly once in
+strictly increasing order. Unknown size, padding between scalar leaves,
+dynamic or repeated offsets, casts, nested pointer escape, a non-transparent
+callable, or any residual use makes the decision absent.
 
 The launch and effect proof must also establish that moving every consumer
 launch before the producer-completion wait is behavior-preserving: each
@@ -965,6 +982,13 @@ owner derives endpoint identity, event correspondence, and each consumer's
 source map from the resulting program. The decision does not select logical
 capacity, a physical FIFO, a NoC, a memory-backed queue, replication
 placement, or a route.
+
+Before rewriting an LLVM source allocation, each admitted transparent wrapper
+call is mechanically replaced at that exact call site by the wrapper's thread
+launch and matching wait with the call operands. This exposes the same
+InstructionCore launch sequence without inlining Spatial work, merging graphs,
+or changing the wrapper definition for other call sites. The ordinary channel
+rewrite then owns all endpoint and launch changes.
 
 For a source-origin LLVM allocation, materialization also removes its proved
 GEPs and lifetime markers. No LLVM pointer, allocation, memory-service root, or
