@@ -574,6 +574,14 @@ each rule lands in IR.
    or structured mutually exclusive sites. Lowering emits one fixed ordinal
    schedule, filters inactive branch sites, demuxes each input from the
    filtered ordinal, and muxes outputs back into that same dynamic order.
+   A schedule with more than one static endpoint is materialized as a balanced
+   tree of two-lane selective routers. Each internal node derives its in-range
+   branch selector from the same proved endpoint ordinal and routes both the
+   payload and the remaining local ordinal only into the selected subtree.
+   Output collection uses the corresponding selector phase. Publication never
+   creates one mux or demux whose lane count grows with the number of static
+   endpoint sites; this is a mechanical projection of the fixed schedule, not
+   a Fabric-dependent fan limit or a Dataflow rewrite decision.
    Branches may have unequal or empty site sets, and a later branch selector
    may depend on an earlier input event. Enclosing loops repeatedly activate
    the same schedule, so one or several static body sites may each fire

@@ -81,10 +81,20 @@ until reaching an explicit storage or boundary root. The finalized surface
 recognizes:
 
 * a graph memory input, whose root identity comes from its launch binding;
+* a `dataflow.memory.service` result at that binding, which preserves the root
+  of its exact pointer operand while changing only the value-plane pointer into
+  a memory-plane capability;
 * a fresh `memref.alloc` result, whose root is unique for each invocation;
 * a verified side-effect-free view that preserves the source root. The initial
   accepted set contains `memref.cast`; adding another view form requires one
   matching root, region, and simulator contract before admission.
+
+When graph publication can trace every captured memory capability to a known
+root, an exact service rooted at a unique thread argument mechanically inherits
+that argument's `llvm.noalias` fact. If a root is unknown, appears through more
+than one captured capability, or does not resolve to that argument, publication
+must omit the fact. The service result does not independently assert aliasing,
+and graph publication does not perform another alias analysis.
 
 Graph launch memory bindings require exact memref capability types. An LLVM
 pointer cannot bind a graph memref through a conversion, inferred base, or

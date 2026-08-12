@@ -663,6 +663,24 @@ an A-by-B rule matrix, then emits ordinary Dataflow control and memory-event
 edges. This keeps source order semantics while allowing the canonical graph to
 be text-order independent.
 
+A pointer-backed `dataflow.memory.service` changes representation, not memory
+identity. Graph publication therefore traces the capability through that op to
+the exact thread argument before projecting `llvm.noalias`. Treating the
+service result as an unknown root would erase source-owned disjointness and
+manufacture memory-frontier rendezvous between independent objects. Letting
+the service op assert its own alias fact would instead create a second alias
+authority. Root-preserving derivation is the smaller and stricter rule.
+
+The static endpoint count of an ordered channel binding is similarly a
+lowering fact, not a request for one physical crossbar. A balanced composition
+of two-lane selective routers expresses every fixed ordinal schedule from the
+smallest mux/demux primitive and preserves the rule that unselected lanes do
+not fire. Routing the local ordinal with the payload keeps inactive subtrees
+silent; broadcasting one selector to independent flat subtrees would not.
+Because this construction follows from the already proved ordinal range, it is
+mechanical lowering rather than a new optimization coordinate or a Fabric
+capability query.
+
 LLVM pointers remain valid in the callable ABI and may enter the graph as
 ordinary pointer values. When analysis proves a static logical root, SCF
 optimization may instead materialize an exact memref capability plus integer
