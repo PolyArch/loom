@@ -1272,6 +1272,17 @@ independent `PointerAddressed` candidate. A `PointerAddressed` candidate instead
 retains the exact LLVM pointer type, GEP index path, no-wrap semantics, and
 module DataLayout-derived pointer format. It does not acquire a synthetic
 canonical index width.
+
+A selected region whose memory addresses are direct pointers or contain only
+constant GEP indices has no runtime address-projection choice and therefore
+creates no address decision. Such a region is mechanically normalized to
+`RootRelative` using the explicit module `index` width when present, otherwise
+the one fixed LLVM pointer address width shared by every selected memory
+access. This removes constant pointer arithmetic without making source syntax
+a hardware requirement. If the accesses do not share one fixed width, no
+implicit width is chosen and their exact pointer form remains. Ambient process
+configuration, a widest-width rule, and exact-Fabric capability are not width
+owners for this projection.
 When a parallel candidate retains this `PointerAddressed` form, overlap
 validation compares exact DataLayout byte-address expressions at the pointer
 address-space index width. It does not truncate those expressions to a

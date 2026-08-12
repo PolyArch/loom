@@ -689,6 +689,15 @@ width narrows only the root-relative candidate domain. Treating it as an
 implicit address-form selection would erase a valid pointer-addressed
 candidate and turn DataLayout into a second DSE policy owner.
 
+Direct and constant-only addresses are different from a dynamic address-form
+choice. They contain no runtime arithmetic strategy to explore, so retaining a
+constant GEP as a compute actor would make equivalent source spellings demand
+different hardware. The frontend instead uses the explicit module `index`
+width, or the one common DataLayout pointer address width when no such entry
+exists, to derive the root-relative constant mechanically. It refuses to pick
+among unequal widths. This folds syntax without introducing a default DSE
+policy or a second index-width owner.
+
 The temporary root-relative marker exists because the selected projection must
 survive immutable Structured publication until graph memory lowering, while an
 LLVM pointer type alone denotes the opposite `PointerAddressed` form. Keeping
