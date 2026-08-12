@@ -6,7 +6,6 @@
 
 #include <array>
 #include <cstdint>
-#include <optional>
 #include <utility>
 #include <vector>
 
@@ -108,15 +107,10 @@ decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     scale.memoryCapacityBytes = (scale.memoryCapacityBytes << 8) | byte;
   if (!loom::adg::isValidBuiltinTargetScale(scale))
     return invalid("all template scale values must be positive");
-  for (loom::adg::BuiltinTargetPreset preset :
-       {loom::adg::BuiltinTargetPreset::Small,
-        loom::adg::BuiltinTargetPreset::Default,
-        loom::adg::BuiltinTargetPreset::Large}) {
-    const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(preset);
-    if (identity == descriptor.templateIdentity &&
-        major == descriptor.schemaMajor && minor == descriptor.schemaMinor)
-      return DecodedConfig{preset, scale};
-  }
+  const auto *descriptor = loom::adg::findBuiltinTargetDescriptor(
+      identity, major, minor);
+  if (descriptor)
+    return DecodedConfig{descriptor->preset, scale};
   return invalid(
       "template descriptor is not a registered public Builder template");
 }
@@ -203,28 +197,17 @@ resolveFabricTemplateConfig(llvm::StringRef templateIdentity,
                             const loom::adg::BuiltinTargetScale &scale) {
   if (!loom::adg::isValidBuiltinTargetScale(scale))
     return invalid("all template scale values must be positive");
-  std::optional<loom::adg::BuiltinTargetPreset> preset;
-  for (loom::adg::BuiltinTargetPreset candidate :
-       {loom::adg::BuiltinTargetPreset::Small,
-        loom::adg::BuiltinTargetPreset::Default,
-        loom::adg::BuiltinTargetPreset::Large}) {
-    const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(candidate);
-    if (templateIdentity == descriptor.templateIdentity &&
-        schemaMajor == descriptor.schemaMajor &&
-        schemaMinor == descriptor.schemaMinor) {
-      preset = candidate;
-      break;
-    }
-  }
-  if (!preset)
+  const auto *descriptor = loom::adg::findBuiltinTargetDescriptor(
+      templateIdentity, schemaMajor, schemaMinor);
+  if (!descriptor)
     return invalid(
         "template descriptor is not a registered public Builder template");
-  std::vector<std::uint8_t> bytes = encodeConfig(*preset, scale);
+  std::vector<std::uint8_t> bytes = encodeConfig(descriptor->preset, scale);
   auto digest = computeComponentViewDigest(descriptorBytes(), bytes);
   if (!digest)
     return digest.takeError();
-  return ResolvedFabricTemplateConfigView(*preset, scale, std::move(bytes),
-                                          *digest);
+  return ResolvedFabricTemplateConfigView(descriptor->preset, scale,
+                                          std::move(bytes), *digest);
 }
 
 llvm::Expected<ResolvedFabricTemplateConfigView>

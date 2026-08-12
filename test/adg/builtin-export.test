@@ -8,8 +8,16 @@
 # RUN: not grep -E 'forceSimulation|dagre\.layout|elk\.layout' %t/small.html
 # RUN: loom-adg --builtin=large --artifact-store=%t/store --output=%t/large > /dev/null
 # RUN: %python -c 'import re; h=open(r"%t/large.html").read(); m=re.search(r"data-view-kind=\"system\"[^>]*viewBox=\"0 0 ([0-9.]+) ([0-9.]+)\"", h); assert m and 0.25 <= float(m[1]) / float(m[2]) <= 4.0'
+# RUN: loom-config-test --resolved-json > %t/config.json
+# RUN: loom-adg --config=%t/config.json --artifact-store=%t/store \
+# RUN:   --output=%t/configured --root-reference=%t/system.json \
+# RUN:   --module-root-reference=%t/module.json > /dev/null
+# RUN: FileCheck %s --check-prefix=SYSTEM-ROOT < %t/system.json
+# RUN: FileCheck %s --check-prefix=MODULE-ROOT < %t/module.json
 
 # IDENTITY: {{^[0-9a-f]{64}$}}
+# SYSTEM-ROOT: "schema":"loom.fabric"
+# MODULE-ROOT: "schema":"loom.fabric"
 
 # MLIR: fabric.system
 # MLIR: fabric.system.acc_core

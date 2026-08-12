@@ -2,6 +2,7 @@
 #include "ADG/Export.h"
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
+#include "Config/ResolvedConfig.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
@@ -15,7 +16,13 @@ namespace {
 llvm::cl::opt<std::string>
     builtinName("builtin", llvm::cl::desc("builtin Fabric target preset"),
                 llvm::cl::value_desc("small|default|large"),
-                llvm::cl::Required);
+                llvm::cl::init(""));
+
+llvm::cl::opt<std::string>
+    configPath("config",
+               llvm::cl::desc("resolved configuration selecting a builtin "
+                              "Fabric target"),
+               llvm::cl::value_desc("path"), llvm::cl::init(""));
 
 llvm::cl::opt<std::string>
     artifactStorePath("artifact-store",
@@ -32,6 +39,12 @@ llvm::cl::opt<std::string> rootReferencePath(
     llvm::cl::desc("optional canonical Fabric root-reference JSON output"),
     llvm::cl::value_desc("path"), llvm::cl::init(""));
 
+llvm::cl::opt<std::string> moduleRootReferencePath(
+    "module-root-reference",
+    llvm::cl::desc("optional canonical imported Module root-reference JSON "
+                   "output"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+
 int reportError(llvm::Error error) {
   llvm::errs() << "error: " << llvm::toString(std::move(error)) << '\n';
   return 1;
@@ -45,12 +58,37 @@ int main(int argc, char **argv) {
       argc, argv,
       "loom-adg: build and export a canonical builtin Fabric target\n");
 
-  auto preset = loom::adg::parseBuiltinTargetPreset(builtinName);
-  if (!preset)
-    return reportError(preset.takeError());
+  if (builtinName.empty() == configPath.empty())
+    return reportError(llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "exactly one of --builtin and --config is required"));
+
+  loom::adg::BuiltinTargetPreset preset;
+  loom::adg::BuiltinTargetScale scale;
+  if (!builtinName.empty()) {
+    auto parsed = loom::adg::parseBuiltinTargetPreset(builtinName);
+    if (!parsed)
+      return reportError(parsed.takeError());
+    preset = *parsed;
+    scale = loom::adg::getBuiltinTargetDescriptor(preset).scale;
+  } else {
+    auto config = loom::loadResolvedConfig(configPath);
+    if (!config)
+      return reportError(config.takeError());
+    const auto *descriptor = loom::adg::findBuiltinTargetDescriptor(
+        config->hardwareTarget.templateIdentity,
+        config->hardwareTarget.schemaVersion.major,
+        config->hardwareTarget.schemaVersion.minor);
+    if (!descriptor)
+      return reportError(llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "resolved hardware target is not a registered builtin template"));
+    preset = descriptor->preset;
+    scale = config->hardwareTarget.parameters;
+  }
 
   loom::ArtifactStore store(artifactStorePath);
-  auto design = loom::adg::buildBuiltinTarget(store, *preset);
+  auto design = loom::adg::buildBuiltinTarget(store, preset, scale);
   if (!design)
     return reportError(design.takeError());
   if (design->roots().size() != 1)
@@ -66,6 +104,18 @@ int main(int argc, char **argv) {
     if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
             rootReferencePath, root.reference()))
       return reportError(std::move(error));
+  if (!moduleRootReferencePath.empty()) {
+    if (root.directDependencies().size() != 1 ||
+        root.directDependencies().front().role !=
+            loom::fabric::FabricDependencyRole::ImportedModule)
+      return reportError(llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "builtin System does not have exactly one imported Module"));
+    if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
+            moduleRootReferencePath,
+            root.directDependencies().front().root))
+      return reportError(std::move(error));
+  }
 
   llvm::outs() << loom::formatArtifactIdentityHex(root.reference().artifact)
                << '\n';

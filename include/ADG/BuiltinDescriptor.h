@@ -74,6 +74,19 @@ getBuiltinTargetDescriptor(BuiltinTargetPreset preset) {
   return builtinDefaultTarget;
 }
 
+inline const BuiltinTargetDescriptor *
+findBuiltinTargetDescriptor(llvm::StringRef templateIdentity,
+                            std::uint32_t schemaMajor,
+                            std::uint32_t schemaMinor) {
+  for (const BuiltinTargetDescriptor *descriptor :
+       {&builtinSmallTarget, &builtinDefaultTarget, &builtinLargeTarget})
+    if (templateIdentity == descriptor->templateIdentity &&
+        schemaMajor == descriptor->schemaMajor &&
+        schemaMinor == descriptor->schemaMinor)
+      return descriptor;
+  return nullptr;
+}
+
 } // namespace loom::adg
 
 #endif // LOOM_ADG_BUILTINDESCRIPTOR_H

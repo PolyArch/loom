@@ -1393,10 +1393,18 @@ development:
 ```text
 loom-adg --builtin=<small|default|large> \
   --artifact-store=<existing-directory> --output=<output-base>
+
+loom-adg --config=<resolved-config> \
+  --artifact-store=<existing-directory> --output=<output-base>
 ```
 
-It publishes the exact builtin Fabric closure to the supplied ArtifactStore,
-prints the root ArtifactIdentity, and calls the common paired export boundary.
+Exactly one selector is required. The preset selector supplies its descriptor's
+default scale; the resolved-config selector consumes the exact template
+identity, version, and typed hardware parameters. Both publish the exact
+builtin Fabric closure to the supplied ArtifactStore, print the root
+ArtifactIdentity, and call the common paired export boundary. The optional
+root-reference outputs expose the System and its unique imported Module for
+ordinary downstream tools; they do not define another identity.
 It is a developer surface over the same library used in-process by the product
 drivers, not a second Fabric generator or an additional product compiler.
 
