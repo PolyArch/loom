@@ -192,9 +192,11 @@ enumerateSyncRendezvousDecisions(const CanonicalDataflowArtifact &parent) {
   return decisions;
 }
 
-llvm::Expected<std::optional<CanonicalDataflowArtifact>>
-materializeSyncRendezvousRewrite(const CanonicalDataflowArtifact &parent,
-                                 const SyncRendezvousRewrite &decision) {
+llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
+materializeSyncRendezvousRewriteProjection(
+    const CanonicalDataflowArtifact &parent,
+    const SyncRendezvousRewrite &decision,
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
   auto resolved = resolveRoot(parent, decision.root);
   if (!resolved)
     return resolved.takeError();
@@ -241,12 +243,21 @@ materializeSyncRendezvousRewrite(const CanonicalDataflowArtifact &parent,
       node.sync.erase();
   }
 
-  auto finalized = finalizeCanonicalDataflow(candidate.get());
-  if (!finalized)
-    return finalized.takeError();
-  if (finalized->identity() == parent.identity())
+  return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
+                                          trackedStaticGraphLaunches);
+}
+
+llvm::Expected<std::optional<CanonicalDataflowArtifact>>
+materializeSyncRendezvousRewrite(const CanonicalDataflowArtifact &parent,
+                                 const SyncRendezvousRewrite &decision) {
+  auto projected =
+      materializeSyncRendezvousRewriteProjection(parent, decision, {});
+  if (!projected)
+    return projected.takeError();
+  if (!*projected)
     return std::optional<CanonicalDataflowArtifact>{};
-  return std::optional<CanonicalDataflowArtifact>(std::move(*finalized));
+  return std::optional<CanonicalDataflowArtifact>(
+      std::move((*projected)->artifact));
 }
 
 } // namespace dataflow::detail

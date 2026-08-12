@@ -473,7 +473,9 @@ llvm::Expected<dataflow::RootedGraphLaunchRef> selectOwnedRootedLaunch(
 
   std::optional<dataflow::RootedGraphLaunchRef> selected;
   bool duplicate = false;
+  std::uint64_t rootedLaunchCount = 0;
   view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
+    ++rootedLaunchCount;
     if (selectedStaticLaunch &&
         launch.staticGraphLaunch != *selectedStaticLaunch)
       return;
@@ -481,7 +483,25 @@ llvm::Expected<dataflow::RootedGraphLaunchRef> selectOwnedRootedLaunch(
     selected = launch;
   });
   if (!selected)
-    return invalid("ownership candidate has no matching rooted graph launch");
+    return invalid(
+        "ownership candidate has no matching rooted graph launch: "
+        "rooted_launches=" +
+        llvm::Twine(rootedLaunchCount) + ", spatial_projections=" +
+        llvm::Twine(candidate.spatialGraphs.size()) + ", owned_region=" +
+        llvm::Twine(candidate.ownedSpatialRegion.has_value()) +
+        ", projection_artifact_matches=" +
+        llvm::Twine(selectedStaticLaunch &&
+                    selectedStaticLaunch->artifact == view.identity()) +
+        ", projection_matches_artifact=" +
+        llvm::Twine(selectedStaticLaunch &&
+                    selectedStaticLaunch->artifact ==
+                        candidate.canonicalDataflow.identity()) +
+        ", view_matches_artifact=" +
+        llvm::Twine(view.identity() == candidate.canonicalDataflow.identity()) +
+        ", projection_entity=" +
+        llvm::Twine(selectedStaticLaunch
+                        ? selectedStaticLaunch->entity.value()
+                        : std::numeric_limits<std::uint64_t>::max()));
   if (duplicate)
     return unsupported(
         "owned graph projection reaches multiple rooted graph launches");
@@ -685,6 +705,7 @@ finalizeReplayWorkload(const WorkloadBackedSimulationInputCapturePlan &plan,
 } // namespace
 
 llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
+    const frontend::StructuredProgramCandidate &generationParent,
     const frontend::StructuredProgramCandidate &sourceProgram,
     const frontend::SpatialOwnershipScope &scope,
     const frontend::SpatialOwnershipDecisionPoint &decision,
@@ -700,7 +721,7 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
       limits.maxSimulationWallTime <
           std::chrono::steady_clock::duration::zero())
     return invalid("execution limits must be positive");
-  auto prepared = frontend::prepareSpatialOwnershipSelection(sourceProgram,
+  auto prepared = frontend::prepareSpatialOwnershipSelection(generationParent,
                                                              scope, decision);
   if (!prepared)
     return prepared.takeError();
@@ -881,14 +902,26 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
       deferredReplayFailure.emplace(std::move(error));
     return llvm::Error::success();
   };
-  if (llvm::Error error = visitWorkloadBackedSimulationInputCaptures(
+  llvm::Error parentCaptureError = [&]() -> llvm::Error {
+    if (generationParent.identity() == sourceProgram.identity())
+      return visitWorkloadBackedSimulationInputCaptures(
           std::move(prepared->module), prepared->operation, *plan,
           sourceProgram, workload, runtimeInput, limits.maxRetainedCaptureBytes,
-          censusAndReplay)) {
+          censusAndReplay);
+    auto parentObservations =
+        native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
+            std::move(prepared->module), prepared->operation, *plan,
+            sourceProgram, workload, runtimeInput,
+            limits.maxRetainedCaptureBytes, censusAndReplay);
+    if (!parentObservations)
+      return parentObservations.takeError();
+    return llvm::Error::success();
+  }();
+  if (parentCaptureError) {
     if (deferredReplayFailure)
-      return llvm::joinErrors(std::move(error),
+      return llvm::joinErrors(std::move(parentCaptureError),
                               std::move(*deferredReplayFailure));
-    return std::move(error);
+    return std::move(parentCaptureError);
   }
   activationMismatch |= llvm::any_of(
       selectedActivations, [](const auto &entry) { return entry.second != 0; });

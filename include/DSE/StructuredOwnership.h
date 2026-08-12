@@ -193,6 +193,7 @@ struct SelectedStructuredOwnershipCandidate final {
 llvm::Expected<CompletedStructuredOwnershipGeneration>
 generateStructuredOwnershipCandidates(
     const frontend::StructuredProgramCandidate &parent,
+    const frontend::StructuredProgramCandidate &sourceProgram,
     const sim::CanonicalSimulationWorkload &workload,
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     const fabric::FinalizedFabricRoot &fabric,

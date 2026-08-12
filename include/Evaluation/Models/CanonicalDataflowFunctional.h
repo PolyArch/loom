@@ -30,6 +30,7 @@ struct PreparedCanonicalDataflowFunctionalEvaluation final {
 struct CanonicalDataflowFunctionalReplayInvocation final {
   const ArtifactRootReference &workload;
   const ArtifactRootReference &runtimeInput;
+  const frontend::StructuredProgramCandidate &generationParent;
   const frontend::StructuredProgramCandidate &sourceProgram;
   const frontend::SpatialOwnershipScope &scope;
   const frontend::SpatialOwnershipDecisionPoint &decision;

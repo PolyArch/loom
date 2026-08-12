@@ -27,12 +27,18 @@ public:
                          const ArtifactRootReference &dataflowRoot);
   llvm::Expected<ArtifactRootReference>
   root(const ArtifactRootReference &structuredParent) const;
-  llvm::Error recordDecision(const ArtifactRootReference &parent,
-                             const ArtifactRootReference &child,
-                             const dataflow::DataflowRewriteDecision &decision);
+  llvm::Error recordDecision(
+      const ArtifactRootReference &parent, const ArtifactRootReference &child,
+      const dataflow::DataflowRewriteDecision &decision,
+      llvm::ArrayRef<dataflow::StaticGraphLaunchRef> parentLaunches = {},
+      llvm::ArrayRef<dataflow::StaticGraphLaunchRef> childLaunches = {});
   llvm::Expected<std::optional<std::vector<DataflowRewriteDerivation>>>
   tryResolve(const ArtifactRootReference &structuredParent,
              const ArtifactRootReference &candidate) const;
+  llvm::Expected<dataflow::StaticGraphLaunchRef>
+  projectStaticGraphLaunch(const ArtifactRootReference &structuredParent,
+                           const ArtifactRootReference &candidate,
+                           dataflow::StaticGraphLaunchRef rootLaunch) const;
 
 private:
   class Impl;
@@ -40,10 +46,10 @@ private:
 };
 
 struct StructuredOwnershipPreparedSource final {
-  const ArtifactRootReference &sourceReference;
+  const ArtifactRootReference &generationParentReference;
   const ArtifactRootReference &workloadReference;
   const ArtifactRootReference &runtimeInputReference;
-  const sim::NativeStructuredProgramObservations &observations;
+  const sim::NativeStructuredProgramObservations &generationParentObservations;
 };
 
 struct StructuredOwnershipCandidateState final {
@@ -57,14 +63,14 @@ public:
   static StructuredOwnershipInvocation *
   bind(StructuredOwnershipInvocation *invocation);
 
-  static llvm::Error
-  prepareGeneration(StructuredOwnershipInvocation &invocation,
-                    const frontend::StructuredProgramCandidate &sourceProgram,
-                    const sim::CanonicalSimulationWorkload &workload,
-                    const sim::CanonicalSimulationRuntimeInput &runtimeInput,
-                    const fabric::FinalizedFabricRoot &fabric,
-                    const ArtifactStore &store,
-                    StructuredOwnershipGenerationOptions &options);
+  static llvm::Error prepareGeneration(
+      StructuredOwnershipInvocation &invocation,
+      const frontend::StructuredProgramCandidate &generationParent,
+      const frontend::StructuredProgramCandidate &sourceProgram,
+      const sim::CanonicalSimulationWorkload &workload,
+      const sim::CanonicalSimulationRuntimeInput &runtimeInput,
+      const fabric::FinalizedFabricRoot &fabric, const ArtifactStore &store,
+      StructuredOwnershipGenerationOptions &options);
 
   static llvm::Expected<StructuredOwnershipPreparedSource>
   preparedSource(const StructuredOwnershipInvocation &invocation);
@@ -83,7 +89,7 @@ public:
 
   static llvm::Error recordGeneration(
       StructuredOwnershipInvocation &invocation,
-      ArtifactRootReference sourceReference,
+      ArtifactRootReference generationParentReference,
       ArtifactRootReference workloadReference,
       ArtifactRootReference runtimeInputReference,
       llvm::ArrayRef<StructuredOwnershipCandidateDisposition> dispositions,
@@ -142,6 +148,8 @@ public:
       StructuredOwnershipInvocation &invocation,
       const ArtifactRootReference &parent, const ArtifactRootReference &child,
       const dataflow::DataflowRewriteDecision &decision,
+      llvm::ArrayRef<dataflow::StaticGraphLaunchRef> parentLaunches,
+      llvm::ArrayRef<dataflow::StaticGraphLaunchRef> childLaunches,
       const ArtifactStore &store);
 
   static llvm::Error

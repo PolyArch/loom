@@ -1519,7 +1519,7 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
   auto fabric = loom::test::buildFeedbackPruningSpatialCore(store);
 
   loom::dse::StructuredOwnershipInvocation invocation(
-      source, sourceInputs.workload, sourceInputs.runtimeInput, fabric,
+      source, source, sourceInputs.workload, sourceInputs.runtimeInput, fabric,
       loom::defaultResolvedConfig(), {}, 1,
       {100000, 1000000, 256ULL * 1024ULL * 1024ULL});
   loom::dse::StructuredOwnershipInvocationScope invocationScope(invocation);
@@ -1527,7 +1527,7 @@ void spatialMappingFeedbackReplaysAgainstItsSourceWorkload() {
   ownership.protocolCallableRoots = {
       loom::test::findStructuredCallable(source, "kernel")};
   auto generated = take(loom::dse::generateStructuredOwnershipCandidates(
-      source, sourceInputs.workload, sourceInputs.runtimeInput, fabric,
+      source, source, sourceInputs.workload, sourceInputs.runtimeInput, fabric,
       ownership, store));
 
   std::optional<loom::ArtifactRootReference> structuredParent;

@@ -685,24 +685,66 @@ dataflow::enumerateFixedDataflowRewriteDecisions(
   return decisions;
 }
 
-llvm::Expected<std::optional<dataflow::CanonicalDataflowArtifact>>
-dataflow::detail::materializeFixedDataflowRewrite(
+llvm::Expected<std::optional<dataflow::MaterializedDataflowRewriteProjection>>
+dataflow::detail::finalizeDataflowRewriteCandidate(
+    const CanonicalDataflowArtifact &parent, mlir::ModuleOp candidate,
+    const mlir::IRMapping &mapping,
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
+  auto parentView = parent.view();
+  if (!parentView)
+    return parentView.takeError();
+  llvm::SmallVector<mlir::Operation *> trackedOperations;
+  trackedOperations.reserve(trackedStaticGraphLaunches.size());
+  for (StaticGraphLaunchRef reference : trackedStaticGraphLaunches) {
+    if (reference.artifact != parent.identity())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "dataflow_rewrite_invalid: tracked launch has a foreign parent");
+    auto launch = parentView->resolve(reference);
+    if (!launch)
+      return launch.takeError();
+    mlir::Operation *mapped = mapping.lookupOrNull(launch->op);
+    if (!mapped || !mlir::isa<GraphLaunchOp>(mapped))
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "dataflow_rewrite_invalid: tracked launch was not preserved");
+    trackedOperations.push_back(mapped);
+  }
+  auto finalized = finalizeCanonicalDataflowWithTrackedStaticGraphLaunches(
+      candidate, trackedOperations);
+  if (!finalized)
+    return finalized.takeError();
+  if (finalized->artifact.identity() == parent.identity())
+    return std::optional<MaterializedDataflowRewriteProjection>{};
+  return std::optional<MaterializedDataflowRewriteProjection>(
+      MaterializedDataflowRewriteProjection{
+          std::move(finalized->artifact),
+          std::move(finalized->trackedStaticGraphLaunches)});
+}
+
+llvm::Expected<std::optional<dataflow::MaterializedDataflowRewriteProjection>>
+dataflow::detail::materializeFixedDataflowRewriteProjection(
     const CanonicalDataflowArtifact &parent,
-    const DataflowRewriteDecision &decision) {
+    const DataflowRewriteDecision &decision,
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
   auto encoded = encodeDataflowRewriteDecision(decision);
   if (!encoded)
     return encoded.takeError();
   if (const auto *sync = std::get_if<SyncRendezvousRewrite>(&decision))
-    return materializeSyncRendezvousRewrite(parent, *sync);
+    return materializeSyncRendezvousRewriteProjection(
+        parent, *sync, trackedStaticGraphLaunches);
   if (const auto *cardinality =
           std::get_if<ElementwiseCardinalityCommuteRewrite>(&decision))
-    return materializeCardinalityCommuteRewrite(parent, *cardinality);
+    return materializeCardinalityCommuteRewriteProjection(
+        parent, *cardinality, trackedStaticGraphLaunches);
   if (std::holds_alternative<PureComputeFanoutReplicateRewrite>(decision) ||
       std::holds_alternative<PureComputeFanoutFactorRewrite>(decision))
-    return materializePureComputeFanoutRewrite(parent, decision);
+    return materializePureComputeFanoutRewriteProjection(
+        parent, decision, trackedStaticGraphLaunches);
   if (std::holds_alternative<GraphDefinitionSplitRewrite>(decision) ||
       std::holds_alternative<GraphDefinitionMergeRewrite>(decision))
-    return materializeGraphDefinitionRefactor(parent, decision);
+    return materializeGraphDefinitionRefactorProjection(
+        parent, decision, trackedStaticGraphLaunches);
   auto view = parent.view();
   if (!view)
     return view.takeError();
@@ -731,12 +773,22 @@ dataflow::detail::materializeFixedDataflowRewrite(
     return ::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
         "dataflow_rewrite_invalid: legal match failed to materialize");
-  auto finalized = finalizeCanonicalDataflow(candidate.get());
-  if (!finalized)
-    return finalized.takeError();
-  if (finalized->identity() == parent.identity())
+  return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
+                                          trackedStaticGraphLaunches);
+}
+
+llvm::Expected<std::optional<dataflow::CanonicalDataflowArtifact>>
+dataflow::detail::materializeFixedDataflowRewrite(
+    const CanonicalDataflowArtifact &parent,
+    const DataflowRewriteDecision &decision) {
+  auto projected =
+      materializeFixedDataflowRewriteProjection(parent, decision, {});
+  if (!projected)
+    return projected.takeError();
+  if (!*projected)
     return std::optional<CanonicalDataflowArtifact>{};
-  return std::optional<CanonicalDataflowArtifact>(std::move(*finalized));
+  return std::optional<CanonicalDataflowArtifact>(
+      std::move((*projected)->artifact));
 }
 
 void dataflow::registerDataflowTransformsPasses() {

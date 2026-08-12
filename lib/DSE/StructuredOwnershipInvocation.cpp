@@ -41,6 +41,17 @@ bool sameRoot(const ArtifactRootReference &reference,
          reference.artifact == identity;
 }
 
+llvm::Error requireProjectedDataflowOwner(
+    const lowering::ProjectedCanonicalDataflow &projected,
+    llvm::StringRef producer) {
+  for (const lowering::StructuredSpatialGraphProjection &projection :
+       projected.spatialGraphs)
+    if (projection.staticGraphLaunch.artifact != projected.artifact.identity())
+      return invalid(producer +
+                     " produced a foreign static graph launch projection");
+  return llvm::Error::success();
+}
+
 struct ArtifactReferenceLess final {
   bool operator()(const ArtifactRootReference &lhs,
                   const ArtifactRootReference &rhs) const {
@@ -89,6 +100,25 @@ struct DataflowReplayKeyLess final {
   }
 };
 
+struct StaticGraphLaunchLineage final {
+  dataflow::StaticGraphLaunchRef parent;
+  dataflow::StaticGraphLaunchRef child;
+
+  bool operator==(const StaticGraphLaunchLineage &other) const {
+    return parent == other.parent && child == other.child;
+  }
+};
+
+struct DataflowRewriteLineageEdge final {
+  DataflowRewriteDerivation derivation;
+  std::vector<StaticGraphLaunchLineage> staticGraphLaunches;
+
+  bool operator==(const DataflowRewriteLineageEdge &other) const {
+    return derivation == other.derivation &&
+           staticGraphLaunches == other.staticGraphLaunches;
+  }
+};
+
 } // namespace
 
 class detail::StructuredOwnershipDataflowLineageIndex::Impl final {
@@ -96,7 +126,7 @@ public:
   std::map<ArtifactRootReference, ArtifactRootReference,
            decltype(&artifactRootReferenceLess)>
       roots{&artifactRootReferenceLess};
-  CanonicalDerivationIndex<DataflowRewriteDerivation> lineage;
+  CanonicalDerivationIndex<DataflowRewriteLineageEdge> lineage;
   ArtifactReferenceSet nodes;
 };
 
@@ -141,7 +171,9 @@ detail::StructuredOwnershipDataflowLineageIndex::root(
 
 llvm::Error detail::StructuredOwnershipDataflowLineageIndex::recordDecision(
     const ArtifactRootReference &parent, const ArtifactRootReference &child,
-    const dataflow::DataflowRewriteDecision &decision) {
+    const dataflow::DataflowRewriteDecision &decision,
+    llvm::ArrayRef<dataflow::StaticGraphLaunchRef> parentLaunches,
+    llvm::ArrayRef<dataflow::StaticGraphLaunchRef> childLaunches) {
   if (parent.schemaIdentity != dataflow::canonicalDataflowSchema.identity ||
       parent.schemaVersion != dataflow::canonicalDataflowSchema.version ||
       child.schemaIdentity != dataflow::canonicalDataflowSchema.identity ||
@@ -151,13 +183,25 @@ llvm::Error detail::StructuredOwnershipDataflowLineageIndex::recordDecision(
     return invalid("Dataflow rewrite parent is outside the prepared lineage");
   if (parent == child)
     return invalid("Dataflow rewrite cannot derive a candidate from itself");
+  if (parentLaunches.size() != childLaunches.size())
+    return invalid("Dataflow rewrite changed tracked launch cardinality");
+  std::vector<StaticGraphLaunchLineage> launches;
+  launches.reserve(parentLaunches.size());
+  for (auto [parentLaunch, childLaunch] :
+       llvm::zip_equal(parentLaunches, childLaunches)) {
+    if (parentLaunch.artifact != parent.artifact ||
+        childLaunch.artifact != child.artifact)
+      return invalid("Dataflow rewrite launch lineage has a foreign owner");
+    launches.push_back({parentLaunch, childLaunch});
+  }
   auto payload = dataflow::encodeDataflowRewriteDecision(decision);
   if (!payload)
     return payload.takeError();
   DataflowRewriteDerivation derivation{parent, child, decision};
+  DataflowRewriteLineageEdge edge{derivation, std::move(launches)};
   auto [lineage, inserted] = impl_->lineage[child].try_emplace(
-      CanonicalDerivationKey{parent, std::move(*payload)}, derivation);
-  if (!inserted && !(lineage->second == derivation))
+      CanonicalDerivationKey{parent, std::move(*payload)}, edge);
+  if (!inserted && !(lineage->second == edge))
     return invalid("Dataflow lineage key has conflicting decisions");
   impl_->nodes.insert(child);
   return llvm::Error::success();
@@ -196,7 +240,7 @@ detail::StructuredOwnershipDataflowLineageIndex::tryResolve(
     states.try_emplace(reference, VisitState::Visiting);
     bool reachesRoot = false;
     for (const auto &entry : edges->second) {
-      const DataflowRewriteDerivation &edge = entry.second;
+      const DataflowRewriteDerivation &edge = entry.second.derivation;
       auto reaches = visit(edge.parent);
       if (!reaches)
         return reaches.takeError();
@@ -230,6 +274,64 @@ detail::StructuredOwnershipDataflowLineageIndex::tryResolve(
       std::move(result));
 }
 
+llvm::Expected<dataflow::StaticGraphLaunchRef>
+detail::StructuredOwnershipDataflowLineageIndex::projectStaticGraphLaunch(
+    const ArtifactRootReference &structuredParent,
+    const ArtifactRootReference &candidate,
+    dataflow::StaticGraphLaunchRef rootLaunch) const {
+  auto root = impl_->roots.find(structuredParent);
+  if (root == impl_->roots.end())
+    return invalid("Structured parent has no Canonical Dataflow root");
+  if (rootLaunch.artifact != root->second.artifact)
+    return invalid("Dataflow root launch has a foreign artifact owner");
+
+  ArtifactReferenceSet visiting;
+  std::function<llvm::Expected<std::optional<dataflow::StaticGraphLaunchRef>>(
+      const ArtifactRootReference &)>
+      visit = [&](const ArtifactRootReference &reference)
+      -> llvm::Expected<std::optional<dataflow::StaticGraphLaunchRef>> {
+    if (reference == root->second)
+      return std::optional<dataflow::StaticGraphLaunchRef>(rootLaunch);
+    if (!visiting.insert(reference).second)
+      return invalid("Dataflow launch lineage contains a cycle");
+    auto edges = impl_->lineage.find(reference);
+    if (edges == impl_->lineage.end()) {
+      visiting.erase(reference);
+      return std::optional<dataflow::StaticGraphLaunchRef>{};
+    }
+
+    std::optional<dataflow::StaticGraphLaunchRef> projected;
+    for (const auto &entry : edges->second) {
+      const DataflowRewriteLineageEdge &edge = entry.second;
+      auto parentLaunch = visit(edge.derivation.parent);
+      if (!parentLaunch)
+        return parentLaunch.takeError();
+      if (!*parentLaunch)
+        continue;
+      auto mapped = llvm::find_if(edge.staticGraphLaunches,
+                                  [&](const StaticGraphLaunchLineage &lineage) {
+                                    return lineage.parent == **parentLaunch;
+                                  });
+      if (mapped == edge.staticGraphLaunches.end())
+        return invalid("Dataflow rewrite omitted a tracked graph launch");
+      if (projected && *projected != mapped->child)
+        return invalid("Dataflow rewrite paths disagree on graph launch");
+      projected = mapped->child;
+    }
+    visiting.erase(reference);
+    return projected;
+  };
+
+  auto projected = visit(candidate);
+  if (!projected)
+    return projected.takeError();
+  if (!*projected)
+    return invalid("Dataflow candidate does not descend from its exact D0");
+  if ((*projected)->artifact != candidate.artifact)
+    return invalid("Dataflow projected launch has the wrong child owner");
+  return **projected;
+}
+
 class StructuredOwnershipInvocation::Impl final {
 public:
   struct FinalCandidateState final {
@@ -248,7 +350,8 @@ public:
     std::vector<StructuredMemoryCommunicationDerivation> memoryCommunication;
   };
 
-  Impl(const frontend::StructuredProgramCandidate &sourceProgram,
+  Impl(const frontend::StructuredProgramCandidate &generationParent,
+       const frontend::StructuredProgramCandidate &sourceProgram,
        const sim::CanonicalSimulationWorkload &workload,
        const sim::CanonicalSimulationRuntimeInput &runtimeInput,
        const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
@@ -257,9 +360,10 @@ public:
        sim::SourceBackedDfgValidationLimits functionalReplayLimits,
        llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
            sourceProvenance)
-      : sourceProgram(sourceProgram), workload(workload),
-        runtimeInput(runtimeInput), fabric(fabric), config(config),
-        lowering(lowering), candidateWorkerCount(candidateWorkerCount),
+      : generationParent(generationParent), sourceProgram(sourceProgram),
+        workload(workload), runtimeInput(runtimeInput), fabric(fabric),
+        config(config), lowering(lowering),
+        candidateWorkerCount(candidateWorkerCount),
         functionalReplayLimits(functionalReplayLimits),
         sourceProvenance(sourceProvenance.begin(), sourceProvenance.end()),
         structuredCandidates(&artifactRootReferenceLess),
@@ -267,6 +371,7 @@ public:
         specialMathMechanicalParents(&artifactRootReferenceLess),
         finalCandidates(&artifactRootReferenceLess) {}
 
+  const frontend::StructuredProgramCandidate &generationParent;
   const frontend::StructuredProgramCandidate &sourceProgram;
   const sim::CanonicalSimulationWorkload &workload;
   const sim::CanonicalSimulationRuntimeInput &runtimeInput;
@@ -278,10 +383,13 @@ public:
   std::vector<frontend::StructuredOperationSourceProvenance> sourceProvenance;
   evaluation::models::StructuredEvaluationInvocationCache evaluationCache;
 
+  std::optional<ArtifactRootReference> generationParentReference;
   std::optional<ArtifactRootReference> sourceReference;
   std::optional<ArtifactRootReference> workloadReference;
   std::optional<ArtifactRootReference> runtimeInputReference;
   std::optional<sim::NativeStructuredProgramObservations> sourceObservations;
+  std::optional<sim::NativeStructuredProgramObservations>
+      generationParentObservations;
   std::uint64_t sourceNativeExecutionCount = 0;
   bool generationRecorded = false;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
@@ -414,6 +522,7 @@ private:
 };
 
 StructuredOwnershipInvocation::StructuredOwnershipInvocation(
+    const frontend::StructuredProgramCandidate &generationParent,
     const frontend::StructuredProgramCandidate &sourceProgram,
     const sim::CanonicalSimulationWorkload &workload,
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
@@ -423,28 +532,35 @@ StructuredOwnershipInvocation::StructuredOwnershipInvocation(
     sim::SourceBackedDfgValidationLimits functionalReplayLimits,
     llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
         sourceProvenance)
-    : impl_(std::make_unique<Impl>(
-          sourceProgram, workload, runtimeInput, fabric, config, lowering,
-          candidateWorkerCount, functionalReplayLimits, sourceProvenance)) {}
+    : impl_(std::make_unique<Impl>(generationParent, sourceProgram, workload,
+                                   runtimeInput, fabric, config, lowering,
+                                   candidateWorkerCount, functionalReplayLimits,
+                                   sourceProvenance)) {}
 
 StructuredOwnershipInvocation::~StructuredOwnershipInvocation() = default;
 
-llvm::Error StructuredOwnershipInvocation::prepareSource(
+llvm::Error StructuredOwnershipInvocation::prepareInputs(
+    const ArtifactRootReference &generationParent,
     const ArtifactRootReference &source, const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ArtifactStore &store) {
   Impl &impl = *impl_;
-  if (impl.sourceReference) {
-    if (!impl.workloadReference || !impl.runtimeInputReference ||
-        !impl.sourceObservations || *impl.sourceReference != source ||
-        *impl.workloadReference != workload ||
+  if (impl.generationParentReference) {
+    if (!impl.sourceReference ||
+        *impl.generationParentReference != generationParent ||
+        *impl.sourceReference != source || !impl.generationParentObservations ||
+        !impl.workloadReference || !impl.runtimeInputReference ||
+        !impl.sourceObservations || *impl.workloadReference != workload ||
         *impl.runtimeInputReference != runtimeInput)
-      return invalid("prepared source roots differ from the invocation");
+      return invalid("prepared input roots differ from the invocation");
     return llvm::Error::success();
   }
-  if (impl.workloadReference || impl.runtimeInputReference ||
+  if (impl.sourceReference || impl.generationParentObservations ||
+      impl.workloadReference || impl.runtimeInputReference ||
       impl.sourceObservations)
-    return invalid("source preparation is partially initialized");
-  if (!sameRoot(source, frontend::structuredProgramArtifactSchema,
+    return invalid("input preparation is partially initialized");
+  if (!sameRoot(generationParent, frontend::structuredProgramArtifactSchema,
+                impl.generationParent.identity()) ||
+      !sameRoot(source, frontend::structuredProgramArtifactSchema,
                 impl.sourceProgram.identity()) ||
       !sameRoot(workload, sim::simulationWorkloadSchema,
                 impl.workload.identity()) ||
@@ -456,6 +572,17 @@ llvm::Error StructuredOwnershipInvocation::prepareSource(
       impl.sourceProgram, impl.workload, impl.runtimeInput);
   if (!observations)
     return observations.takeError();
+  std::optional<sim::NativeStructuredProgramObservations> parentObservations;
+  if (impl.generationParent.identity() == impl.sourceProgram.identity()) {
+    parentObservations = *observations;
+  } else {
+    auto profiled = sim::executeProfiledSelectedStructuredProgram(
+        impl.generationParent, impl.sourceProgram, impl.workload,
+        impl.runtimeInput);
+    if (!profiled)
+      return profiled.takeError();
+    parentObservations.emplace(std::move(*profiled));
+  }
   evaluation::models::StructuredEvaluationInvocationCacheScope cacheScope(
       impl.evaluationCache);
   if (llvm::Error error =
@@ -471,10 +598,12 @@ llvm::Error StructuredOwnershipInvocation::prepareSource(
               invocation, impl.fabric, impl.config, store))
     return error;
 
+  impl.generationParentReference.emplace(generationParent);
   impl.sourceReference.emplace(source);
   impl.workloadReference.emplace(workload);
   impl.runtimeInputReference.emplace(runtimeInput);
   impl.sourceObservations.emplace(std::move(*observations));
+  impl.generationParentObservations.emplace(std::move(*parentObservations));
   ++impl.sourceNativeExecutionCount;
   return llvm::Error::success();
 }
@@ -497,12 +626,12 @@ StructuredOwnershipInvocation::dispositions() const {
 llvm::Expected<SelectedStructuredOwnershipCandidate>
 StructuredOwnershipInvocation::materializeSelectedCandidate(
     const ArtifactRootReference &candidate, const ArtifactStore &store) {
-  if (!impl_->sourceReference || !impl_->workloadReference ||
-      !impl_->runtimeInputReference)
+  if (!impl_->generationParentReference || !impl_->sourceReference ||
+      !impl_->workloadReference || !impl_->runtimeInputReference)
     return invalid("candidate generation has not completed");
 
   std::optional<frontend::MaterializedOwnershipCandidate> materialized;
-  if (candidate == *impl_->sourceReference) {
+  if (candidate == *impl_->generationParentReference) {
     auto structured = frontend::importStructuredProgram(candidate, store);
     if (!structured)
       return structured.takeError();
@@ -510,24 +639,29 @@ StructuredOwnershipInvocation::materializeSelectedCandidate(
         *structured, impl_->lowering);
     if (!dataflow)
       return dataflow.takeError();
-    materialized.emplace(frontend::MaterializedOwnershipCandidate{
-        std::move(*structured), std::move(*dataflow), {}, std::nullopt, {}, {}});
+    materialized.emplace(
+        frontend::MaterializedOwnershipCandidate{std::move(*structured),
+                                                 std::move(*dataflow),
+                                                 {},
+                                                 std::nullopt,
+                                                 {},
+                                                 {}});
   } else {
     auto found = impl_->materialized.find(candidate);
     if (found == impl_->materialized.end())
       return invalid("selected candidate has no functional replay projection");
+    auto structured = frontend::importStructuredProgram(candidate, store);
+    if (!structured)
+      return structured.takeError();
     auto dataflow = dataflow::importCanonicalDataflow(
         found->second.canonicalDataflow.identity(),
         found->second.canonicalDataflow.canonicalBytes());
     if (!dataflow)
       return dataflow.takeError();
     materialized.emplace(frontend::MaterializedOwnershipCandidate{
-        std::move(found->second.structuredProgram), std::move(*dataflow),
-        std::move(found->second.spatialGraphs),
-        std::move(found->second.ownedSpatialRegion),
-        std::move(found->second.blockActivityLineage),
-        std::move(found->second.sourceProvenance)});
-    impl_->materialized.erase(found);
+        std::move(*structured), std::move(*dataflow),
+        found->second.spatialGraphs, found->second.ownedSpatialRegion,
+        found->second.blockActivityLineage, found->second.sourceProvenance});
   }
 
   std::vector<StructuredOwnershipDerivation> derivations;
@@ -537,7 +671,7 @@ StructuredOwnershipInvocation::materializeSelectedCandidate(
   std::vector<StructuredScheduleDerivation> scheduleDerivations;
   std::vector<StructuredMemoryCommunicationDerivation>
       memoryCommunicationDerivations;
-  if (candidate != *impl_->sourceReference) {
+  if (candidate != *impl_->generationParentReference) {
     auto lineage = impl_->resolveLineage(candidate);
     if (!lineage)
       return lineage.takeError();
@@ -549,7 +683,7 @@ StructuredOwnershipInvocation::materializeSelectedCandidate(
   }
 
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
-  if (candidate != *impl_->sourceReference) {
+  if (candidate != *impl_->generationParentReference) {
     auto replay =
         evaluation::models::getPrimedStructuredProgramFunctionalReplay(
             candidate, *impl_->workloadReference,
@@ -618,8 +752,8 @@ StructuredOwnershipInvocation::materializeSelectedDataflowCandidate(
   if (!selectedDataflow)
     return selectedDataflow.takeError();
   frontend::MaterializedOwnershipCandidate materialized{
-      std::move(*selectedStructured), std::move(*selectedDataflow),
-      found->second.spatialGraphs, found->second.ownedSpatialRegion,
+      std::move(*selectedStructured),     std::move(*selectedDataflow),
+      found->second.spatialGraphs,        found->second.ownedSpatialRegion,
       found->second.blockActivityLineage, found->second.sourceProvenance};
 
   auto lineage = impl_->resolveLineage(structuredParent);
@@ -658,6 +792,7 @@ detail::StructuredOwnershipInvocationAccess::bind(
 
 llvm::Error detail::StructuredOwnershipInvocationAccess::prepareGeneration(
     StructuredOwnershipInvocation &invocation,
+    const frontend::StructuredProgramCandidate &generationParent,
     const frontend::StructuredProgramCandidate &sourceProgram,
     const sim::CanonicalSimulationWorkload &workload,
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
@@ -666,14 +801,19 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::prepareGeneration(
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
   if (impl.candidateWorkerCount == 0)
     return invalid("candidate worker count must be positive");
-  if (sourceProgram.identity() != impl.sourceProgram.identity() ||
+  if (generationParent.identity() != impl.generationParent.identity() ||
+      sourceProgram.identity() != impl.sourceProgram.identity() ||
       workload.identity() != impl.workload.identity() ||
       runtimeInput.identity() != impl.runtimeInput.identity() ||
       fabric.reference() != impl.fabric.reference())
     return invalid("Generate inputs differ from the bound invocation");
   options.lowering = impl.lowering;
   options.candidateWorkerCount = impl.candidateWorkerCount;
-  if (!impl.sourceReference) {
+  if (!impl.generationParentReference) {
+    auto generationParentReference =
+        frontend::publishStructuredProgram(impl.generationParent, store);
+    if (!generationParentReference)
+      return generationParentReference.takeError();
     auto sourceReference =
         frontend::publishStructuredProgram(impl.sourceProgram, store);
     if (!sourceReference)
@@ -686,9 +826,9 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::prepareGeneration(
         sim::publishSimulationRuntimeInput(impl.runtimeInput, store);
     if (!runtimeInputReference)
       return runtimeInputReference.takeError();
-    if (llvm::Error error =
-            invocation.prepareSource(*sourceReference, *workloadReference,
-                                     *runtimeInputReference, store))
+    if (llvm::Error error = invocation.prepareInputs(
+            *generationParentReference, *sourceReference, *workloadReference,
+            *runtimeInputReference, store))
       return error;
   }
   return llvm::Error::success();
@@ -698,12 +838,12 @@ llvm::Expected<detail::StructuredOwnershipPreparedSource>
 detail::StructuredOwnershipInvocationAccess::preparedSource(
     const StructuredOwnershipInvocation &invocation) {
   const StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
-  if (!impl.sourceReference || !impl.workloadReference ||
-      !impl.runtimeInputReference || !impl.sourceObservations)
-    return invalid("source preparation has not completed");
+  if (!impl.generationParentReference || !impl.workloadReference ||
+      !impl.runtimeInputReference || !impl.generationParentObservations)
+    return invalid("input preparation has not completed");
   return StructuredOwnershipPreparedSource{
-      *impl.sourceReference, *impl.workloadReference,
-      *impl.runtimeInputReference, *impl.sourceObservations};
+      *impl.generationParentReference, *impl.workloadReference,
+      *impl.runtimeInputReference, *impl.generationParentObservations};
 }
 
 const ResolvedConfig &detail::StructuredOwnershipInvocationAccess::config(
@@ -737,7 +877,7 @@ detail::StructuredOwnershipInvocationAccess::sourceProvenance(
 
 llvm::Error detail::StructuredOwnershipInvocationAccess::recordGeneration(
     StructuredOwnershipInvocation &invocation,
-    ArtifactRootReference sourceReference,
+    ArtifactRootReference generationParentReference,
     ArtifactRootReference workloadReference,
     ArtifactRootReference runtimeInputReference,
     llvm::ArrayRef<StructuredOwnershipCandidateDisposition> dispositions,
@@ -746,9 +886,10 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::recordGeneration(
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
   if (impl.generationRecorded)
     return invalid("invocation contains more than one Ownership generation");
-  if (!impl.sourceReference || !impl.workloadReference ||
-      !impl.runtimeInputReference || !impl.sourceObservations ||
-      *impl.sourceReference != sourceReference ||
+  if (!impl.generationParentReference || !impl.sourceReference ||
+      !impl.workloadReference || !impl.runtimeInputReference ||
+      !impl.sourceObservations || !impl.generationParentObservations ||
+      *impl.generationParentReference != generationParentReference ||
       *impl.workloadReference != workloadReference ||
       *impl.runtimeInputReference != runtimeInputReference)
     return invalid("generated roots differ from the bound invocation");
@@ -786,7 +927,7 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::recordGeneration(
   for (const StructuredOwnershipCandidateDisposition &disposition :
        dispositions) {
     const auto *child = std::get_if<ArtifactRootReference>(&disposition.result);
-    if (!child || *child == sourceReference)
+    if (!child || *child == generationParentReference)
       continue;
     if (!disposition.coordinate.decision)
       return invalid("Ownership child has no typed decision");
@@ -800,7 +941,7 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::recordGeneration(
     if (!payload)
       return payload.takeError();
     auto [found, inserted] = impl.ownershipLineage[*child].try_emplace(
-        CanonicalDerivationKey{sourceReference, std::move(*payload)},
+        CanonicalDerivationKey{generationParentReference, std::move(*payload)},
         derivation);
     if (!inserted && !(found->second == derivation))
       return invalid("Ownership lineage key has conflicting decisions");
@@ -831,8 +972,7 @@ detail::StructuredOwnershipInvocationAccess::clonePreClosureCandidate(
     return clone.takeError();
   return frontend::MaterializedStructuredOwnershipCandidate{
       std::move(*clone), found->second.ownedSpatialRegion,
-      found->second.blockActivityLineage,
-      found->second.sourceProvenance};
+      found->second.blockActivityLineage, found->second.sourceProvenance};
 }
 
 llvm::Expected<std::optional<frontend::StructuredEntityRef>>
@@ -862,6 +1002,8 @@ detail::StructuredOwnershipInvocationAccess::recordScheduleCandidate(
     frontend::MaterializedStructuredScheduleCandidate candidate,
     lowering::ProjectedCanonicalDataflow projected,
     const ArtifactStore &store) {
+  if (llvm::Error error = requireProjectedDataflowOwner(projected, "Schedule"))
+    return error;
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
   if (!impl.generationRecorded || !impl.sourceReference)
     return invalid("Schedule generation precedes Ownership generation");
@@ -920,6 +1062,9 @@ detail::StructuredOwnershipInvocationAccess::recordMemoryCommunicationCandidate(
     frontend::MaterializedStructuredMemoryCommunicationCandidate candidate,
     lowering::ProjectedCanonicalDataflow projected,
     const ArtifactStore &store) {
+  if (llvm::Error error =
+          requireProjectedDataflowOwner(projected, "MemoryCommunication"))
+    return error;
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
   if (!impl.generationRecorded || !impl.sourceReference)
     return invalid(
@@ -1136,6 +1281,9 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::
   lowering::ProjectedCanonicalDataflow projected{
       std::move(candidate.canonicalDataflow),
       std::move(candidate.spatialGraphs)};
+  if (llvm::Error error =
+          requireProjectedDataflowOwner(projected, "SpecialMathAccuracy"))
+    return error;
   auto found = impl.finalCandidates.find(child);
   if (found == impl.finalCandidates.end()) {
     impl.finalCandidates.try_emplace(
@@ -1158,6 +1306,8 @@ detail::StructuredOwnershipInvocationAccess::recordDataflowRewriteCandidate(
     StructuredOwnershipInvocation &invocation,
     const ArtifactRootReference &parent, const ArtifactRootReference &child,
     const dataflow::DataflowRewriteDecision &decision,
+    llvm::ArrayRef<dataflow::StaticGraphLaunchRef> parentLaunches,
+    llvm::ArrayRef<dataflow::StaticGraphLaunchRef> childLaunches,
     const ArtifactStore &store) {
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
   if (impl.dataflowLineage.empty())
@@ -1170,7 +1320,8 @@ detail::StructuredOwnershipInvocationAccess::recordDataflowRewriteCandidate(
   auto stored = store.get(child);
   if (!stored)
     return stored.takeError();
-  return impl.dataflowLineage.recordDecision(parent, child, decision);
+  return impl.dataflowLineage.recordDecision(parent, child, decision,
+                                             parentLaunches, childLaunches);
 }
 
 llvm::Error detail::StructuredOwnershipInvocationAccess::primeAnalyticCandidate(
@@ -1206,10 +1357,11 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
     StructuredOwnershipInvocation &invocation,
     const ArtifactRootReference &candidate, const ArtifactStore &store) {
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
-  if (!impl.sourceReference || !impl.workloadReference ||
-      !impl.runtimeInputReference || !impl.sourceObservations)
+  if (!impl.generationParentReference || !impl.sourceReference ||
+      !impl.workloadReference || !impl.runtimeInputReference ||
+      !impl.sourceObservations)
     return invalid("functional acquisition precedes Ownership generation");
-  if (candidate == *impl.sourceReference)
+  if (candidate == *impl.generationParentReference)
     return llvm::Error::success();
   if (impl.primedCandidates.find(candidate) != impl.primedCandidates.end())
     return llvm::Error::success();
@@ -1233,12 +1385,17 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
     const StructuredOwnershipDerivation &derivation =
         lineage->ownership.front();
     auto direct = frontend::materializeSpatialOwnershipDecision(
-        impl.sourceProgram, derivation.scope, derivation.decision, impl.fabric,
-        impl.lowering, impl.sourceProvenance);
+        impl.generationParent, derivation.scope, derivation.decision,
+        impl.fabric, impl.lowering, impl.sourceProvenance);
     if (!direct)
       return direct.takeError();
     materialized.emplace(std::move(*direct));
   }
+  for (const lowering::StructuredSpatialGraphProjection &projection :
+       materialized->spatialGraphs)
+    if (projection.staticGraphLaunch.artifact !=
+        materialized->canonicalDataflow.identity())
+      return invalid("functional candidate has a foreign graph projection");
   if (materialized->structuredProgram.identity() != candidate.artifact)
     return invalid("rematerialized candidate changed identity");
   auto stored = store.get(candidate);
@@ -1263,10 +1420,10 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
             evaluation::models::primeStructuredProgramFunctionalReplay(
                 candidate,
                 {*impl.workloadReference, *impl.runtimeInputReference,
-                 impl.sourceProgram, derivation.scope, derivation.decision,
-                executionShapeDecisions, found->second, impl.workload,
-                impl.runtimeInput, *impl.sourceObservations,
-                impl.functionalReplayLimits},
+                 impl.generationParent, impl.sourceProgram, derivation.scope,
+                 derivation.decision, executionShapeDecisions, found->second,
+                 impl.workload, impl.runtimeInput, *impl.sourceObservations,
+                 impl.functionalReplayLimits},
                 store))
       return error;
   }
@@ -1281,8 +1438,9 @@ detail::StructuredOwnershipInvocationAccess::primeDataflowFunctionalReplay(
     const ArtifactRootReference &dataflowCandidate,
     const ArtifactStore &store) {
   StructuredOwnershipInvocation::Impl &impl = *invocation.impl_;
-  if (!impl.sourceReference || !impl.workloadReference ||
-      !impl.runtimeInputReference || !impl.sourceObservations)
+  if (!impl.generationParentReference || !impl.sourceReference ||
+      !impl.workloadReference || !impl.runtimeInputReference ||
+      !impl.sourceObservations)
     return invalid(
         "Dataflow functional acquisition precedes source preparation");
   const auto key = std::make_pair(structuredParent, dataflowCandidate);
@@ -1327,9 +1485,20 @@ detail::StructuredOwnershipInvocationAccess::primeDataflowFunctionalReplay(
   if (!dataflow)
     return dataflow.takeError();
 
+  std::vector<lowering::StructuredSpatialGraphProjection> spatialGraphs =
+      parentState->second.spatialGraphs;
+  for (lowering::StructuredSpatialGraphProjection &projection : spatialGraphs) {
+    auto projected = impl.dataflowLineage.projectStaticGraphLaunch(
+        structuredParent, dataflowCandidate, projection.staticGraphLaunch);
+    if (!projected)
+      return projected.takeError();
+    projection.staticGraphLaunch = *projected;
+  }
+
   frontend::MaterializedOwnershipCandidate candidate{
-      std::move(*structured), std::move(*dataflow),
-      parentState->second.spatialGraphs,
+      std::move(*structured),
+      std::move(*dataflow),
+      std::move(spatialGraphs),
       parentState->second.ownedSpatialRegion,
       parentState->second.blockActivityLineage,
       parentState->second.sourceProvenance};
@@ -1344,9 +1513,9 @@ detail::StructuredOwnershipInvocationAccess::primeDataflowFunctionalReplay(
             evaluation::models::primeCanonicalDataflowFunctionalReplay(
                 dataflowCandidate, structuredParent,
                 {*impl.workloadReference, *impl.runtimeInputReference,
-                 impl.sourceProgram, derivation.scope, derivation.decision,
-                 executionShapeDecisions, candidate, impl.workload,
-                 impl.runtimeInput, *impl.sourceObservations,
+                 impl.generationParent, impl.sourceProgram, derivation.scope,
+                 derivation.decision, executionShapeDecisions, candidate,
+                 impl.workload, impl.runtimeInput, *impl.sourceObservations,
                  impl.functionalReplayLimits},
                 store))
       return error;

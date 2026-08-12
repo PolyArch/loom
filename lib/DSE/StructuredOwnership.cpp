@@ -89,6 +89,7 @@ llvm::Expected<OwnershipAttemptResult> materializeOwnershipWorkItem(
 static llvm::Expected<OwnershipGenerationState>
 generateStructuredOwnershipCandidatesImpl(
     const frontend::StructuredProgramCandidate &parent,
+    const frontend::StructuredProgramCandidate &sourceProgram,
     const sim::CanonicalSimulationWorkload &workload,
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     const fabric::FinalizedFabricRoot &fabric,
@@ -96,7 +97,6 @@ generateStructuredOwnershipCandidatesImpl(
     const ArtifactStore &artifactStore,
     llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
         sourceProvenance,
-    const ResolvedConfig *analyticConfig,
     evaluation::models::StructuredEvaluationInvocationCache *evaluationCache,
     const detail::StructuredOwnershipPreparedSource *preparedSource) {
   if (options.candidateWorkerCount == 0)
@@ -109,16 +109,16 @@ generateStructuredOwnershipCandidatesImpl(
   std::optional<ArtifactRootReference> ownedWorkloadReference;
   std::optional<ArtifactRootReference> ownedRuntimeInputReference;
   std::optional<sim::NativeStructuredProgramObservations>
-      ownedSourceObservations;
+      ownedParentObservations;
   const ArtifactRootReference *parentReference = nullptr;
   const ArtifactRootReference *workloadReference = nullptr;
   const ArtifactRootReference *runtimeInputReference = nullptr;
-  const sim::NativeStructuredProgramObservations *sourceObservations = nullptr;
+  const sim::NativeStructuredProgramObservations *parentObservations = nullptr;
   if (preparedSource) {
-    parentReference = &preparedSource->sourceReference;
+    parentReference = &preparedSource->generationParentReference;
     workloadReference = &preparedSource->workloadReference;
     runtimeInputReference = &preparedSource->runtimeInputReference;
-    sourceObservations = &preparedSource->observations;
+    parentObservations = &preparedSource->generationParentObservations;
   } else {
     auto publishedParent =
         frontend::publishStructuredProgram(parent, artifactStore);
@@ -132,34 +132,26 @@ generateStructuredOwnershipCandidatesImpl(
         sim::publishSimulationRuntimeInput(runtimeInput, artifactStore);
     if (!publishedRuntimeInput)
       return publishedRuntimeInput.takeError();
-    auto observations =
-        sim::executeNativeStructuredProgram(parent, workload, runtimeInput);
-    if (!observations)
-      return observations.takeError();
+    auto sourceObservations = sim::executeNativeStructuredProgram(
+        sourceProgram, workload, runtimeInput);
+    if (!sourceObservations)
+      return sourceObservations.takeError();
+    if (parent.identity() == sourceProgram.identity()) {
+      ownedParentObservations.emplace(std::move(*sourceObservations));
+    } else {
+      auto observations = sim::executeProfiledSelectedStructuredProgram(
+          parent, sourceProgram, workload, runtimeInput);
+      if (!observations)
+        return observations.takeError();
+      ownedParentObservations.emplace(std::move(*observations));
+    }
     ownedParentReference.emplace(std::move(*publishedParent));
     ownedWorkloadReference.emplace(std::move(*publishedWorkload));
     ownedRuntimeInputReference.emplace(std::move(*publishedRuntimeInput));
-    ownedSourceObservations.emplace(std::move(*observations));
     parentReference = &*ownedParentReference;
     workloadReference = &*ownedWorkloadReference;
     runtimeInputReference = &*ownedRuntimeInputReference;
-    sourceObservations = &*ownedSourceObservations;
-  }
-  if (analyticConfig && !preparedSource) {
-    const evaluation::models::StructuredFabricAnalyticInvocation invocation{
-        *workloadReference,
-        *runtimeInputReference,
-        workload,
-        runtimeInput,
-        parent,
-        *sourceObservations};
-    if (llvm::Error error =
-            evaluation::models::primeStructuredFabricAnalyticResult(
-                *parentReference,
-                evaluation::models::StructuredFabricAnalyticCandidateProjection{
-                    parent, nullptr, {}, {}, &*sourceObservations},
-                invocation, fabric, *analyticConfig, artifactStore))
-      return std::move(error);
+    parentObservations = &*ownedParentObservations;
   }
   candidateReferences.push_back(*parentReference);
 
@@ -179,7 +171,7 @@ generateStructuredOwnershipCandidatesImpl(
     scopeReferences.push_back(scope.selection);
   }
   auto scopeActivity = evaluation::models::projectStructuredScopeActivity(
-      parent, *sourceObservations, scopeReferences);
+      parent, *parentObservations, scopeReferences);
   if (!scopeActivity)
     return scopeActivity.takeError();
   if (scopeActivity->size() != domain->size())
@@ -381,6 +373,7 @@ generateStructuredOwnershipCandidatesImpl(
 llvm::Expected<CompletedStructuredOwnershipGeneration>
 generateStructuredOwnershipCandidates(
     const frontend::StructuredProgramCandidate &parent,
+    const frontend::StructuredProgramCandidate &sourceProgram,
     const sim::CanonicalSimulationWorkload &workload,
     const sim::CanonicalSimulationRuntimeInput &runtimeInput,
     const fabric::FinalizedFabricRoot &fabric,
@@ -389,7 +382,6 @@ generateStructuredOwnershipCandidates(
     llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
         sourceProvenance) {
   StructuredOwnershipGenerationOptions effectiveOptions = options;
-  const ResolvedConfig *analyticConfig = nullptr;
   evaluation::models::StructuredEvaluationInvocationCache *evaluationCache =
       nullptr;
   std::optional<detail::StructuredOwnershipPreparedSource> preparedSource;
@@ -398,11 +390,9 @@ generateStructuredOwnershipCandidates(
   if (invocation) {
     if (llvm::Error error =
             detail::StructuredOwnershipInvocationAccess::prepareGeneration(
-                *invocation, parent, workload, runtimeInput, fabric,
-                artifactStore, effectiveOptions))
+                *invocation, parent, sourceProgram, workload, runtimeInput,
+                fabric, artifactStore, effectiveOptions))
       return std::move(error);
-    analyticConfig =
-        &detail::StructuredOwnershipInvocationAccess::config(*invocation);
     evaluationCache =
         &detail::StructuredOwnershipInvocationAccess::evaluationCache(
             *invocation);
@@ -416,8 +406,8 @@ generateStructuredOwnershipCandidates(
     preparedSource.emplace(*source);
   }
   auto generated = generateStructuredOwnershipCandidatesImpl(
-      parent, workload, runtimeInput, fabric, effectiveOptions, artifactStore,
-      sourceProvenance, analyticConfig, evaluationCache,
+      parent, sourceProgram, workload, runtimeInput, fabric, effectiveOptions,
+      artifactStore, sourceProvenance, evaluationCache,
       preparedSource ? &*preparedSource : nullptr);
   if (!generated)
     return generated.takeError();

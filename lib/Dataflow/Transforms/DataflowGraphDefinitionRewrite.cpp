@@ -130,17 +130,6 @@ std::string freshGraphName(mlir::ModuleOp module) {
   return name;
 }
 
-llvm::Expected<std::optional<CanonicalDataflowArtifact>>
-finalizeChanged(const CanonicalDataflowArtifact &parent,
-                mlir::ModuleOp candidate) {
-  auto finalized = finalizeCanonicalDataflow(candidate);
-  if (!finalized)
-    return finalized.takeError();
-  if (finalized->identity() == parent.identity())
-    return std::optional<CanonicalDataflowArtifact>{};
-  return std::optional<CanonicalDataflowArtifact>(std::move(*finalized));
-}
-
 } // namespace
 
 llvm::Expected<std::vector<DataflowRewriteDecision>>
@@ -176,9 +165,11 @@ enumerateGraphDefinitionRefactorDecisions(
   return decisions;
 }
 
-llvm::Expected<std::optional<CanonicalDataflowArtifact>>
-materializeGraphDefinitionRefactor(const CanonicalDataflowArtifact &parent,
-                                   const DataflowRewriteDecision &decision) {
+llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
+materializeGraphDefinitionRefactorProjection(
+    const CanonicalDataflowArtifact &parent,
+    const DataflowRewriteDecision &decision,
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
   auto view = parent.view();
   if (!view)
     return view.takeError();
@@ -211,7 +202,8 @@ materializeGraphDefinitionRefactor(const CanonicalDataflowArtifact &parent,
         return invalid("selected static launch was not cloned");
       clonedLaunch.setCallee(clone.getSymName());
     }
-    return finalizeChanged(parent, candidate.get());
+    return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
+                                            trackedStaticGraphLaunches);
   }
 
   const auto *merge = std::get_if<GraphDefinitionMergeRewrite>(&decision);
@@ -244,7 +236,21 @@ materializeGraphDefinitionRefactor(const CanonicalDataflowArtifact &parent,
     clonedLaunch.setCallee(clonedLower.getSymName());
   }
   clonedHigher.erase();
-  return finalizeChanged(parent, candidate.get());
+  return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
+                                          trackedStaticGraphLaunches);
+}
+
+llvm::Expected<std::optional<CanonicalDataflowArtifact>>
+materializeGraphDefinitionRefactor(const CanonicalDataflowArtifact &parent,
+                                   const DataflowRewriteDecision &decision) {
+  auto projected =
+      materializeGraphDefinitionRefactorProjection(parent, decision, {});
+  if (!projected)
+    return projected.takeError();
+  if (!*projected)
+    return std::optional<CanonicalDataflowArtifact>{};
+  return std::optional<CanonicalDataflowArtifact>(
+      std::move((*projected)->artifact));
 }
 
 } // namespace dataflow::detail

@@ -20,7 +20,9 @@
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Simulator/SimulationArtifacts.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
@@ -28,7 +30,9 @@
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <optional>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -321,6 +325,217 @@ retainedEvidence(const IncompleteDsePlanExecution &incomplete,
   return result;
 }
 
+struct CompletedOwnershipSelection final {
+  std::unique_ptr<StructuredOwnershipInvocation> invocation;
+  std::vector<ArtifactRootReference> selected;
+  std::vector<ArtifactRootReference> evidence;
+  std::vector<StructuredOwnershipCandidateDisposition> dispositions;
+  DsePlanGenerateInvocationRecords generateInvocations;
+};
+
+using OwnershipSelectionOutcome =
+    std::variant<CompletedOwnershipSelection, IncompletePreMappingExploration>;
+
+llvm::Expected<std::vector<std::string>>
+protocolCallableSymbols(const frontend::StructuredProgramCandidate &source,
+                        llvm::ArrayRef<frontend::StructuredEntityRef> roots) {
+  auto view = source.view();
+  if (!view)
+    return view.takeError();
+  std::vector<std::string> symbols;
+  symbols.reserve(roots.size());
+  for (const frontend::StructuredEntityRef &root : roots) {
+    auto entity = view->resolve(root);
+    if (!entity)
+      return entity.takeError();
+    auto function =
+        llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(entity->operation);
+    if (!function || function.isExternal())
+      return invalid("operator protocol root is not a defined LLVM callable");
+    const std::string symbol = function.getSymName().str();
+    if (llvm::is_contained(symbols, symbol))
+      return invalid("operator protocol roots contain a duplicate callable");
+    symbols.push_back(symbol);
+  }
+  return symbols;
+}
+
+llvm::Expected<std::vector<frontend::StructuredEntityRef>>
+resolveProtocolCallableRoots(const frontend::StructuredProgramCandidate &parent,
+                             llvm::ArrayRef<std::string> symbols) {
+  llvm::SmallVector<llvm::StringRef> names;
+  names.reserve(symbols.size());
+  for (const std::string &symbol : symbols)
+    names.push_back(symbol);
+  return frontend::resolveDefinedLlvmCallables(parent, names);
+}
+
+llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
+    const frontend::StructuredCompilation &generationParent,
+    const ArtifactRootReference &generationParentReference,
+    const frontend::StructuredProgramCandidate &sourceProgram,
+    const ArtifactRootReference &sourceReference,
+    const sim::CanonicalSimulationWorkload &workload,
+    const ArtifactRootReference &workloadReference,
+    const sim::CanonicalSimulationRuntimeInput &runtimeInput,
+    const ArtifactRootReference &runtimeInputReference,
+    const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
+    const StructuredOwnershipExplorationOptions &options,
+    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+  auto invocation = std::make_unique<StructuredOwnershipInvocation>(
+      generationParent.structuredProgram, sourceProgram, workload, runtimeInput,
+      fabric, config, options.lowering, options.candidateWorkerCount,
+      options.functionalReplayLimits, generationParent.sourceProvenance);
+  StructuredOwnershipInvocationScope invocationScope(*invocation);
+  if (llvm::Error error = invocation->prepareInputs(
+          generationParentReference, sourceReference, workloadReference,
+          runtimeInputReference, artifactStore))
+    return std::move(error);
+
+  auto analytic = prepareStructuredFabricAnalyticEvidenceObligationTemplate(
+      generationParentReference, fabric.reference(), workloadReference,
+      runtimeInputReference, config, artifactStore, blobStore);
+  if (!analytic)
+    return analytic.takeError();
+  auto functional =
+      prepareStructuredProgramFunctionalEvidenceObligationTemplate(
+          generationParentReference, workloadReference, runtimeInputReference,
+          config, artifactStore, blobStore);
+  if (!functional)
+    return functional.takeError();
+  auto obligations =
+      canonicalizeObligations(std::move(*analytic), std::move(*functional));
+  if (!obligations)
+    return obligations.takeError();
+
+  std::optional<BaselineMetric> baseline;
+  std::vector<ArtifactRootReference> baselineEvidence;
+  if (options.selectionMode ==
+      StructuredOwnershipSelectionMode::BenefitQualified) {
+    auto acquired = acquireBaselineMetric(
+        *obligations, options.selection.metricRequest,
+        generationParentReference, fabric.reference(), workloadReference,
+        runtimeInputReference, artifactStore, blobStore);
+    if (!acquired)
+      return acquired.takeError();
+    if (auto *incomplete =
+            std::get_if<IncompletePreMappingExploration>(&*acquired))
+      return OwnershipSelectionOutcome{std::move(*incomplete)};
+    baseline.emplace(std::get<BaselineMetric>(std::move(*acquired)));
+    baselineEvidence.push_back(baseline->evidence);
+  }
+
+  auto objectives = compilerObjectives(
+      *obligations, options.selection.metricRequest,
+      options.selection.direction,
+      evaluation::models::structuredFabricAnalyticMetricQuantumBase10Exponent);
+  if (!objectives)
+    return objectives.takeError();
+  auto gate = ownershipQualityGate(*obligations, options, baseline);
+  if (!gate)
+    return gate.takeError();
+  auto generatorConfig = projectResolvedStructuredOwnershipGeneratorConfigView(
+      config, options.protocolCallableRoots);
+  if (!generatorConfig)
+    return generatorConfig.takeError();
+  auto acquisitionConfig = projectResolvedEvidenceObligationSetConfigView(
+      {obligations->analytic, obligations->functional});
+  if (!acquisitionConfig)
+    return acquisitionConfig.takeError();
+  auto scheduleConfig =
+      projectResolvedStructuredScheduleGeneratorConfigView(config);
+  if (!scheduleConfig)
+    return scheduleConfig.takeError();
+  auto executionShapeConfig =
+      projectResolvedStructuredExecutionShapeGeneratorConfigView();
+  if (!executionShapeConfig)
+    return executionShapeConfig.takeError();
+  auto specialMathAccuracyConfig =
+      projectResolvedStructuredSpecialMathAccuracyGeneratorConfigView();
+  if (!specialMathAccuracyConfig)
+    return specialMathAccuracyConfig.takeError();
+  auto memoryCommunicationConfig =
+      projectResolvedStructuredMemoryCommunicationGeneratorConfigView(config);
+  if (!memoryCommunicationConfig)
+    return memoryCommunicationConfig.takeError();
+
+  ResolvedConfig planConfig = config;
+  planConfig.dse.modelAuthorizations = modelAuthorizations(*obligations);
+  planConfig.dse.evidenceObligationTemplates = obligations->templates;
+  planConfig.dse.objectiveCatalogs = std::move(*objectives);
+  planConfig.dse.qualityGatePolicies = {*gate};
+  planConfig.dse.planNodes = {
+      GeneratePlanNodeDefinition{
+          structuredOwnershipCandidateGeneratorDescriptor().reference(),
+          {ExactPlanArtifacts{{generationParentReference}},
+           ExactPlanArtifacts{{fabric.reference()}},
+           ExactPlanArtifacts{{workloadReference}},
+           ExactPlanArtifacts{{runtimeInputReference}}},
+          generatorConfig->canonicalViewBytes().vec(),
+          generatorConfig->digest()},
+      GeneratePlanNodeDefinition{
+          structuredExecutionShapeCandidateGeneratorDescriptor().reference(),
+          {PlanOutputRef{0, 1}},
+          executionShapeConfig->canonicalViewBytes().vec(),
+          executionShapeConfig->digest()},
+      GeneratePlanNodeDefinition{
+          structuredSpecialMathAccuracyCandidateGeneratorDescriptor()
+              .reference(),
+          {PlanOutputRef{1, 0}, ExactPlanArtifacts{{fabric.reference()}}},
+          specialMathAccuracyConfig->canonicalViewBytes().vec(),
+          specialMathAccuracyConfig->digest()},
+      GeneratePlanNodeDefinition{
+          structuredScheduleCandidateGeneratorDescriptor().reference(),
+          {PlanOutputRef{2, 0}, ExactPlanArtifacts{{fabric.reference()}}},
+          scheduleConfig->canonicalViewBytes().vec(),
+          scheduleConfig->digest()},
+      GeneratePlanNodeDefinition{
+          structuredMemoryCommunicationCandidateGeneratorDescriptor()
+              .reference(),
+          {PlanOutputRef{3, 0}, ExactPlanArtifacts{{fabric.reference()}}},
+          memoryCommunicationConfig->canonicalViewBytes().vec(),
+          memoryCommunicationConfig->digest()},
+      PromotePlanNodeDefinition{
+          structuredEvaluationPromotionAcquisitionDescriptor().reference(),
+          {PlanOutputRef{4, 0}, ExactPlanArtifacts{{fabric.reference()}},
+           ExactPlanArtifacts{{workloadReference}},
+           ExactPlanArtifacts{{runtimeInputReference}}},
+          acquisitionConfig->canonicalViewBytes().vec(),
+          acquisitionConfig->digest(),
+          QualityGatePolicyRef(0),
+          TopKSelection{0, options.selection.k},
+          PromotePurpose::CandidateSelection}};
+  auto view = projectResolvedDseConfigView(planConfig);
+  if (!view)
+    return view.takeError();
+  auto executed = executeDsePlan(*view, artifactStore, blobStore);
+  if (!executed)
+    return executed.takeError();
+  if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed)) {
+    const std::uint64_t nodeOrdinal = incomplete->nodeOrdinal();
+    const DsePlanIncompleteReason reason = incomplete->reason();
+    auto evidence = retainedEvidence(*incomplete, baselineEvidence);
+    std::vector<DsePlanGenerateInvocationRecords> generateInvocations;
+    generateInvocations.push_back(
+        takeDsePlanGenerateInvocationRecords(std::move(*executed)));
+    return OwnershipSelectionOutcome{IncompletePreMappingExploration{
+        nodeOrdinal, reason, std::move(evidence),
+        std::move(generateInvocations)}};
+  }
+
+  auto &completed = std::get<CompletedDsePlanExecution>(*executed);
+  std::vector<ArtifactRootReference> selected(completed.resolve({5, 0}).begin(),
+                                              completed.resolve({5, 0}).end());
+  std::vector<ArtifactRootReference> evidence = std::move(baselineEvidence);
+  mergeReferences(evidence, completed.resolve({5, 1}));
+  std::vector<StructuredOwnershipCandidateDisposition> dispositions(
+      invocation->dispositions().begin(), invocation->dispositions().end());
+  return OwnershipSelectionOutcome{CompletedOwnershipSelection{
+      std::move(invocation), std::move(selected), std::move(evidence),
+      std::move(dispositions),
+      takeDsePlanGenerateInvocationRecords(std::move(*executed))}};
+}
+
 struct CompletedDataflowSelection final {
   std::vector<ArtifactRootReference> selected;
   std::vector<ArtifactRootReference> evidence;
@@ -494,190 +709,217 @@ exploreStructuredCompilationToPreMapping(
   if (!runtimeInputReference)
     return runtimeInputReference.takeError();
 
-  StructuredOwnershipInvocation invocation(
-      compilation.structuredProgram, workload, runtimeInput, fabric, config,
-      options.ownership.lowering, options.ownership.candidateWorkerCount,
-      options.ownership.functionalReplayLimits, compilation.sourceProvenance);
-  StructuredOwnershipInvocationScope invocationScope(invocation);
-  if (llvm::Error error =
-          invocation.prepareSource(*sourceReference, *workloadReference,
-                                   *runtimeInputReference, artifactStore))
-    return std::move(error);
+  auto callableSymbols = protocolCallableSymbols(
+      compilation.structuredProgram, options.ownership.protocolCallableRoots);
+  if (!callableSymbols)
+    return callableSymbols.takeError();
+  const std::size_t ownershipGenerationCount =
+      options.ownership.selectionMode ==
+              StructuredOwnershipSelectionMode::SemanticConformance
+          ? std::max<std::size_t>(1, callableSymbols->size())
+          : 1;
+  if (ownershipGenerationCount > 1 && options.ownership.selection.k != 1)
+    return invalid("multiple protocol roots require TopK(1) ownership");
+  std::vector<std::unique_ptr<frontend::StructuredCompilation>> parents;
+  parents.push_back(std::make_unique<frontend::StructuredCompilation>(
+      std::move(compilation)));
+  const frontend::StructuredCompilation &sourceCompilation = *parents.front();
 
-  auto analytic = prepareStructuredFabricAnalyticEvidenceObligationTemplate(
-      *sourceReference, fabric.reference(), *workloadReference,
-      *runtimeInputReference, config, artifactStore, blobStore);
-  if (!analytic)
-    return analytic.takeError();
-  auto functional =
-      prepareStructuredProgramFunctionalEvidenceObligationTemplate(
-          *sourceReference, *workloadReference, *runtimeInputReference, config,
-          artifactStore, blobStore);
-  if (!functional)
-    return functional.takeError();
-  auto obligations =
-      canonicalizeObligations(std::move(*analytic), std::move(*functional));
-  if (!obligations)
-    return obligations.takeError();
-
-  std::optional<BaselineMetric> baseline;
-  std::vector<ArtifactRootReference> baselineEvidence;
-  if (options.ownership.selectionMode ==
-      StructuredOwnershipSelectionMode::BenefitQualified) {
-    auto acquired = acquireBaselineMetric(
-        *obligations, options.ownership.selection.metricRequest,
-        *sourceReference, fabric.reference(), *workloadReference,
-        *runtimeInputReference, artifactStore, blobStore);
-    if (!acquired)
-      return acquired.takeError();
-    if (auto *incomplete =
-            std::get_if<IncompletePreMappingExploration>(&*acquired))
-      return PreMappingExplorationOutcome{std::move(*incomplete)};
-    baseline.emplace(std::get<BaselineMetric>(std::move(*acquired)));
-    baselineEvidence.push_back(baseline->evidence);
-  }
-
-  auto objectives = compilerObjectives(
-      *obligations, options.ownership.selection.metricRequest,
-      options.ownership.selection.direction,
-      evaluation::models::structuredFabricAnalyticMetricQuantumBase10Exponent);
-  if (!objectives)
-    return objectives.takeError();
-  auto gate = ownershipQualityGate(*obligations, options.ownership, baseline);
-  if (!gate)
-    return gate.takeError();
-  auto generatorConfig = projectResolvedStructuredOwnershipGeneratorConfigView(
-      config, options.ownership.protocolCallableRoots);
-  if (!generatorConfig)
-    return generatorConfig.takeError();
-  auto acquisitionConfig = projectResolvedEvidenceObligationSetConfigView(
-      {obligations->analytic, obligations->functional});
-  if (!acquisitionConfig)
-    return acquisitionConfig.takeError();
-  auto scheduleConfig =
-      projectResolvedStructuredScheduleGeneratorConfigView(config);
-  if (!scheduleConfig)
-    return scheduleConfig.takeError();
-  auto executionShapeConfig =
-      projectResolvedStructuredExecutionShapeGeneratorConfigView();
-  if (!executionShapeConfig)
-    return executionShapeConfig.takeError();
-  auto specialMathAccuracyConfig =
-      projectResolvedStructuredSpecialMathAccuracyGeneratorConfigView();
-  if (!specialMathAccuracyConfig)
-    return specialMathAccuracyConfig.takeError();
-  auto memoryCommunicationConfig =
-      projectResolvedStructuredMemoryCommunicationGeneratorConfigView(config);
-  if (!memoryCommunicationConfig)
-    return memoryCommunicationConfig.takeError();
-
-  ResolvedConfig planConfig = config;
-  planConfig.dse.modelAuthorizations = modelAuthorizations(*obligations);
-  planConfig.dse.evidenceObligationTemplates = obligations->templates;
-  planConfig.dse.objectiveCatalogs = std::move(*objectives);
-  planConfig.dse.qualityGatePolicies = {*gate};
-  planConfig.dse.planNodes = {
-      GeneratePlanNodeDefinition{
-          structuredOwnershipCandidateGeneratorDescriptor().reference(),
-          {ExactPlanArtifacts{{*sourceReference}},
-           ExactPlanArtifacts{{fabric.reference()}},
-           ExactPlanArtifacts{{*workloadReference}},
-           ExactPlanArtifacts{{*runtimeInputReference}}},
-          generatorConfig->canonicalViewBytes().vec(),
-          generatorConfig->digest()},
-      GeneratePlanNodeDefinition{
-          structuredExecutionShapeCandidateGeneratorDescriptor().reference(),
-          {PlanOutputRef{0, 1}},
-          executionShapeConfig->canonicalViewBytes().vec(),
-          executionShapeConfig->digest()},
-      GeneratePlanNodeDefinition{
-          structuredSpecialMathAccuracyCandidateGeneratorDescriptor()
-              .reference(),
-          {PlanOutputRef{1, 0}, ExactPlanArtifacts{{fabric.reference()}}},
-          specialMathAccuracyConfig->canonicalViewBytes().vec(),
-          specialMathAccuracyConfig->digest()},
-      GeneratePlanNodeDefinition{
-          structuredScheduleCandidateGeneratorDescriptor().reference(),
-          {PlanOutputRef{2, 0}, ExactPlanArtifacts{{fabric.reference()}}},
-          scheduleConfig->canonicalViewBytes().vec(),
-          scheduleConfig->digest()},
-      GeneratePlanNodeDefinition{
-          structuredMemoryCommunicationCandidateGeneratorDescriptor()
-              .reference(),
-          {PlanOutputRef{3, 0}, ExactPlanArtifacts{{fabric.reference()}}},
-          memoryCommunicationConfig->canonicalViewBytes().vec(),
-          memoryCommunicationConfig->digest()},
-      PromotePlanNodeDefinition{
-          structuredEvaluationPromotionAcquisitionDescriptor().reference(),
-          {PlanOutputRef{4, 0}, ExactPlanArtifacts{{fabric.reference()}},
-           ExactPlanArtifacts{{*workloadReference}},
-           ExactPlanArtifacts{{*runtimeInputReference}}},
-          acquisitionConfig->canonicalViewBytes().vec(),
-          acquisitionConfig->digest(),
-          QualityGatePolicyRef(0),
-          TopKSelection{0, options.ownership.selection.k},
-          PromotePurpose::CandidateSelection}};
-  auto view = projectResolvedDseConfigView(planConfig);
-  if (!view)
-    return view.takeError();
-  auto executed = executeDsePlan(*view, artifactStore, blobStore);
-  if (!executed)
-    return executed.takeError();
-  if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed)) {
-    const std::uint64_t nodeOrdinal = incomplete->nodeOrdinal();
-    const DsePlanIncompleteReason reason = incomplete->reason();
-    auto evidence = retainedEvidence(*incomplete, baselineEvidence);
-    std::vector<DsePlanGenerateInvocationRecords> generateInvocations;
-    generateInvocations.push_back(
-        takeDsePlanGenerateInvocationRecords(std::move(*executed)));
-    return PreMappingExplorationOutcome{IncompletePreMappingExploration{
-        nodeOrdinal, reason, std::move(evidence),
-        std::move(generateInvocations)}};
-  }
-
-  auto &completed = std::get<CompletedDsePlanExecution>(*executed);
-  std::vector<ArtifactRootReference> selectedReferences(
-      completed.resolve({5, 0}).begin(), completed.resolve({5, 0}).end());
-  std::vector<ArtifactRootReference> satisfiedEvidence = baselineEvidence;
-  mergeReferences(satisfiedEvidence, completed.resolve({5, 1}));
+  struct RetainedOwnershipSelection final {
+    std::unique_ptr<StructuredOwnershipInvocation> invocation;
+    std::vector<ArtifactRootReference> selected;
+  };
+  std::vector<RetainedOwnershipSelection> generations;
+  std::vector<ArtifactRootReference> satisfiedEvidence;
+  std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
-  planGenerateInvocations.push_back(
-      takeDsePlanGenerateInvocationRecords(std::move(*executed)));
-  if (selectedReferences.empty()) {
-    if (options.ownership.selectionMode ==
-        StructuredOwnershipSelectionMode::SemanticConformance)
-      return PreMappingExplorationOutcome{
-          CompletedPreMappingNoFeasibleCandidate{
-              std::move(satisfiedEvidence),
-              std::move(planGenerateInvocations)}};
-    selectedReferences.push_back(*sourceReference);
+  std::vector<StructuredOwnershipDerivation> ownershipPrefix;
+  std::vector<StructuredExecutionShapeDerivation> executionShapePrefix;
+  std::vector<StructuredSpecialMathAccuracyDerivation> specialMathPrefix;
+  std::vector<StructuredScheduleDerivation> schedulePrefix;
+  std::vector<StructuredMemoryCommunicationDerivation> memoryPrefix;
+
+  std::optional<std::size_t> priorSelectedGeneration;
+  std::optional<ArtifactRootReference> priorSelectedReference;
+  bool priorDerivationsIncluded = false;
+  std::optional<std::size_t> finalGeneration;
+  std::vector<ArtifactRootReference> finalReferences;
+  bool finalDerivationsIncluded = false;
+
+  for (std::size_t transformationOrdinal = 0;
+       transformationOrdinal != ownershipGenerationCount;
+       ++transformationOrdinal) {
+    frontend::StructuredCompilation &parent = *parents.back();
+    auto parentReference = frontend::publishStructuredProgram(
+        parent.structuredProgram, artifactStore);
+    if (!parentReference)
+      return parentReference.takeError();
+    auto protocolRoots = resolveProtocolCallableRoots(parent.structuredProgram,
+                                                      *callableSymbols);
+    if (!protocolRoots)
+      return protocolRoots.takeError();
+    StructuredOwnershipExplorationOptions generationOptions = options.ownership;
+    generationOptions.protocolCallableRoots = std::move(*protocolRoots);
+    auto explored = exploreOwnershipCandidates(
+        parent, *parentReference, sourceCompilation.structuredProgram,
+        *sourceReference, workload, *workloadReference, runtimeInput,
+        *runtimeInputReference, fabric, config, generationOptions,
+        artifactStore, blobStore);
+    if (!explored)
+      return explored.takeError();
+    if (auto *incomplete =
+            std::get_if<IncompletePreMappingExploration>(&*explored)) {
+      mergeReferences(incomplete->retainedEvidence, satisfiedEvidence);
+      incomplete->planGenerateInvocations.insert(
+          incomplete->planGenerateInvocations.begin(),
+          std::make_move_iterator(planGenerateInvocations.begin()),
+          std::make_move_iterator(planGenerateInvocations.end()));
+      return PreMappingExplorationOutcome{std::move(*incomplete)};
+    }
+
+    auto completed =
+        std::get<CompletedOwnershipSelection>(std::move(*explored));
+    mergeReferences(satisfiedEvidence, completed.evidence);
+    dispositions.insert(dispositions.end(),
+                        std::make_move_iterator(completed.dispositions.begin()),
+                        std::make_move_iterator(completed.dispositions.end()));
+    planGenerateInvocations.push_back(std::move(completed.generateInvocations));
+    generations.push_back(RetainedOwnershipSelection{
+        std::move(completed.invocation), std::move(completed.selected)});
+    const std::size_t generationIndex = generations.size() - 1;
+    RetainedOwnershipSelection &generation = generations.back();
+
+    if (generation.selected.empty()) {
+      if (!priorSelectedGeneration) {
+        if (options.ownership.selectionMode ==
+            StructuredOwnershipSelectionMode::SemanticConformance)
+          return PreMappingExplorationOutcome{
+              CompletedPreMappingNoFeasibleCandidate{
+                  std::move(satisfiedEvidence),
+                  std::move(planGenerateInvocations)}};
+        finalGeneration = generationIndex;
+        finalReferences = {*sourceReference};
+        break;
+      }
+      finalGeneration = *priorSelectedGeneration;
+      finalReferences = {*priorSelectedReference};
+      finalDerivationsIncluded = priorDerivationsIncluded;
+      break;
+    }
+
+    priorSelectedGeneration = generationIndex;
+    priorSelectedReference = generation.selected.front();
+    priorDerivationsIncluded = false;
+    if (transformationOrdinal + 1 == ownershipGenerationCount) {
+      finalGeneration = generationIndex;
+      finalReferences = generation.selected;
+      break;
+    }
+
+    StructuredOwnershipInvocationScope generationScope(*generation.invocation);
+    auto selected = generation.invocation->materializeSelectedCandidate(
+        generation.selected.front(), artifactStore);
+    if (!selected)
+      return selected.takeError();
+    ownershipPrefix.insert(
+        ownershipPrefix.end(),
+        std::make_move_iterator(selected->derivations.begin()),
+        std::make_move_iterator(selected->derivations.end()));
+    executionShapePrefix.insert(
+        executionShapePrefix.end(),
+        std::make_move_iterator(selected->executionShapeDerivations.begin()),
+        std::make_move_iterator(selected->executionShapeDerivations.end()));
+    specialMathPrefix.insert(
+        specialMathPrefix.end(),
+        std::make_move_iterator(
+            selected->specialMathAccuracyDerivations.begin()),
+        std::make_move_iterator(
+            selected->specialMathAccuracyDerivations.end()));
+    schedulePrefix.insert(
+        schedulePrefix.end(),
+        std::make_move_iterator(selected->scheduleDerivations.begin()),
+        std::make_move_iterator(selected->scheduleDerivations.end()));
+    memoryPrefix.insert(memoryPrefix.end(),
+                        std::make_move_iterator(
+                            selected->memoryCommunicationDerivations.begin()),
+                        std::make_move_iterator(
+                            selected->memoryCommunicationDerivations.end()));
+    parents.push_back(std::make_unique<frontend::StructuredCompilation>(
+        frontend::StructuredCompilation{
+            sourceCompilation.fabric, sourceCompilation.staticGlobalMemory,
+            std::move(selected->candidate.structuredProgram),
+            std::move(selected->candidate.sourceProvenance)}));
+    priorDerivationsIncluded = true;
   }
+
+  if (!finalGeneration || finalReferences.empty())
+    return invalid("ownership exploration did not choose a terminal candidate");
+
+  RetainedOwnershipSelection &terminalGeneration =
+      generations[*finalGeneration];
+  auto assemble = [&](SelectedStructuredOwnershipCandidate candidate) {
+    std::vector<StructuredOwnershipDerivation> ownership = ownershipPrefix;
+    std::vector<StructuredExecutionShapeDerivation> executionShape =
+        executionShapePrefix;
+    std::vector<StructuredSpecialMathAccuracyDerivation> specialMath =
+        specialMathPrefix;
+    std::vector<StructuredScheduleDerivation> schedule = schedulePrefix;
+    std::vector<StructuredMemoryCommunicationDerivation> memory = memoryPrefix;
+    if (!finalDerivationsIncluded) {
+      ownership.insert(ownership.end(),
+                       std::make_move_iterator(candidate.derivations.begin()),
+                       std::make_move_iterator(candidate.derivations.end()));
+      executionShape.insert(
+          executionShape.end(),
+          std::make_move_iterator(candidate.executionShapeDerivations.begin()),
+          std::make_move_iterator(candidate.executionShapeDerivations.end()));
+      specialMath.insert(specialMath.end(),
+                         std::make_move_iterator(
+                             candidate.specialMathAccuracyDerivations.begin()),
+                         std::make_move_iterator(
+                             candidate.specialMathAccuracyDerivations.end()));
+      schedule.insert(
+          schedule.end(),
+          std::make_move_iterator(candidate.scheduleDerivations.begin()),
+          std::make_move_iterator(candidate.scheduleDerivations.end()));
+      memory.insert(memory.end(),
+                    std::make_move_iterator(
+                        candidate.memoryCommunicationDerivations.begin()),
+                    std::make_move_iterator(
+                        candidate.memoryCommunicationDerivations.end()));
+    }
+    return SelectedPreMappingCompilation{
+        frontend::PreMappingCompilation{
+            sourceCompilation.fabric, sourceCompilation.staticGlobalMemory,
+            std::move(candidate.candidate.structuredProgram),
+            std::move(candidate.candidate.sourceProvenance),
+            std::move(candidate.candidate.canonicalDataflow)},
+        std::move(ownership),
+        std::move(executionShape),
+        std::move(specialMath),
+        std::move(schedule),
+        std::move(memory),
+        std::move(candidate.dataflowRewriteDerivations),
+        std::move(candidate.functionalReplay)};
+  };
 
   std::vector<SelectedPreMappingCompilation> selected;
-  selected.reserve(selectedReferences.size() * options.ownership.selection.k);
-  for (const ArtifactRootReference &reference : selectedReferences) {
+  selected.reserve(finalReferences.size() * options.ownership.selection.k);
+  StructuredOwnershipInvocationScope terminalScope(
+      *terminalGeneration.invocation);
+  for (const ArtifactRootReference &reference : finalReferences) {
     if (reference == *sourceReference) {
       auto candidate =
-          invocation.materializeSelectedCandidate(reference, artifactStore);
+          terminalGeneration.invocation->materializeSelectedCandidate(
+              reference, artifactStore);
       if (!candidate)
         return candidate.takeError();
-      selected.push_back(SelectedPreMappingCompilation{
-          frontend::PreMappingCompilation{
-              compilation.fabric, compilation.staticGlobalMemory,
-              std::move(candidate->candidate.structuredProgram),
-              std::move(candidate->candidate.sourceProvenance),
-              std::move(candidate->candidate.canonicalDataflow)},
-          std::move(candidate->derivations),
-          std::move(candidate->executionShapeDerivations),
-          std::move(candidate->specialMathAccuracyDerivations),
-          std::move(candidate->scheduleDerivations),
-          std::move(candidate->memoryCommunicationDerivations),
-          std::move(candidate->dataflowRewriteDerivations),
-          std::move(candidate->functionalReplay)});
+      selected.push_back(assemble(std::move(*candidate)));
       continue;
     }
 
-    auto d0 = invocation.prepareDataflowGeneration(reference, artifactStore);
+    auto d0 = terminalGeneration.invocation->prepareDataflowGeneration(
+        reference, artifactStore);
     if (!d0)
       return d0.takeError();
     auto dataflowSelection = exploreDataflowCandidates(
@@ -702,23 +944,12 @@ exploreStructuredCompilationToPreMapping(
         std::move(dataflowCompleted.generateInvocations));
     for (const ArtifactRootReference &dataflowReference :
          dataflowCompleted.selected) {
-      auto candidate = invocation.materializeSelectedDataflowCandidate(
-          reference, dataflowReference, artifactStore);
+      auto candidate =
+          terminalGeneration.invocation->materializeSelectedDataflowCandidate(
+              reference, dataflowReference, artifactStore);
       if (!candidate)
         return candidate.takeError();
-      selected.push_back(SelectedPreMappingCompilation{
-          frontend::PreMappingCompilation{
-              compilation.fabric, compilation.staticGlobalMemory,
-              std::move(candidate->candidate.structuredProgram),
-              std::move(candidate->candidate.sourceProvenance),
-              std::move(candidate->candidate.canonicalDataflow)},
-          std::move(candidate->derivations),
-          std::move(candidate->executionShapeDerivations),
-          std::move(candidate->specialMathAccuracyDerivations),
-          std::move(candidate->scheduleDerivations),
-          std::move(candidate->memoryCommunicationDerivations),
-          std::move(candidate->dataflowRewriteDerivations),
-          std::move(candidate->functionalReplay)});
+      selected.push_back(assemble(std::move(*candidate)));
     }
   }
   if (selected.empty())
@@ -726,9 +957,7 @@ exploreStructuredCompilationToPreMapping(
         std::move(satisfiedEvidence), std::move(planGenerateInvocations)}};
   return PreMappingExplorationOutcome{CompletedPreMappingSelection{
       std::move(selected), std::move(satisfiedEvidence),
-      std::vector<StructuredOwnershipCandidateDisposition>(
-          invocation.dispositions().begin(), invocation.dispositions().end()),
-      std::move(planGenerateInvocations)}};
+      std::move(dispositions), std::move(planGenerateInvocations)}};
 }
 
 } // namespace loom::dse

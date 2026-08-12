@@ -149,17 +149,6 @@ const Replica *findReplica(llvm::ArrayRef<Replica> replicas, ActorId id) {
   return found == replicas.end() ? nullptr : &*found;
 }
 
-llvm::Expected<std::optional<CanonicalDataflowArtifact>>
-finalizeChanged(const CanonicalDataflowArtifact &parent,
-                mlir::ModuleOp candidate) {
-  auto finalized = finalizeCanonicalDataflow(candidate);
-  if (!finalized)
-    return finalized.takeError();
-  if (finalized->identity() == parent.identity())
-    return std::optional<CanonicalDataflowArtifact>{};
-  return std::optional<CanonicalDataflowArtifact>(std::move(*finalized));
-}
-
 } // namespace
 
 llvm::Expected<std::vector<DataflowRewriteDecision>>
@@ -199,9 +188,11 @@ enumeratePureComputeFanoutDecisions(const CanonicalDataflowArtifact &parent) {
   return decisions;
 }
 
-llvm::Expected<std::optional<CanonicalDataflowArtifact>>
-materializePureComputeFanoutRewrite(const CanonicalDataflowArtifact &parent,
-                                    const DataflowRewriteDecision &decision) {
+llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
+materializePureComputeFanoutRewriteProjection(
+    const CanonicalDataflowArtifact &parent,
+    const DataflowRewriteDecision &decision,
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
   auto view = parent.view();
   if (!view)
     return view.takeError();
@@ -238,7 +229,8 @@ materializePureComputeFanoutRewrite(const CanonicalDataflowArtifact &parent,
           .set(clone->getResult(0));
     }
     clonedSource->erase();
-    return finalizeChanged(parent, candidate.get());
+    return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
+                                            trackedStaticGraphLaunches);
   }
 
   const auto *factor = std::get_if<PureComputeFanoutFactorRewrite>(&decision);
@@ -264,7 +256,21 @@ materializePureComputeFanoutRewrite(const CanonicalDataflowArtifact &parent,
     clonedReplica->getResult(0).replaceAllUsesWith(clonedSource->getResult(0));
     clonedReplica->erase();
   }
-  return finalizeChanged(parent, candidate.get());
+  return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
+                                          trackedStaticGraphLaunches);
+}
+
+llvm::Expected<std::optional<CanonicalDataflowArtifact>>
+materializePureComputeFanoutRewrite(const CanonicalDataflowArtifact &parent,
+                                    const DataflowRewriteDecision &decision) {
+  auto projected =
+      materializePureComputeFanoutRewriteProjection(parent, decision, {});
+  if (!projected)
+    return projected.takeError();
+  if (!*projected)
+    return std::optional<CanonicalDataflowArtifact>{};
+  return std::optional<CanonicalDataflowArtifact>(
+      std::move((*projected)->artifact));
 }
 
 } // namespace dataflow::detail

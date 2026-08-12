@@ -421,10 +421,11 @@ enumerateCardinalityCommuteDecisions(const CanonicalDataflowArtifact &parent) {
   return decisions;
 }
 
-llvm::Expected<std::optional<CanonicalDataflowArtifact>>
-materializeCardinalityCommuteRewrite(
+llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
+materializeCardinalityCommuteRewriteProjection(
     const CanonicalDataflowArtifact &parent,
-    const ElementwiseCardinalityCommuteRewrite &decision) {
+    const ElementwiseCardinalityCommuteRewrite &decision,
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
   auto decisions = enumerateCardinalityCommuteDecisions(parent);
   if (!decisions)
     return decisions.takeError();
@@ -465,12 +466,22 @@ materializeCardinalityCommuteRewrite(
   if (llvm::Error error = applyMatch(*selected))
     return std::move(error);
 
-  auto finalized = finalizeCanonicalDataflow(candidate.get());
-  if (!finalized)
-    return finalized.takeError();
-  if (finalized->identity() == parent.identity())
+  return finalizeDataflowRewriteCandidate(parent, candidate.get(), mapping,
+                                          trackedStaticGraphLaunches);
+}
+
+llvm::Expected<std::optional<CanonicalDataflowArtifact>>
+materializeCardinalityCommuteRewrite(
+    const CanonicalDataflowArtifact &parent,
+    const ElementwiseCardinalityCommuteRewrite &decision) {
+  auto projected =
+      materializeCardinalityCommuteRewriteProjection(parent, decision, {});
+  if (!projected)
+    return projected.takeError();
+  if (!*projected)
     return std::optional<CanonicalDataflowArtifact>{};
-  return std::optional<CanonicalDataflowArtifact>(std::move(*finalized));
+  return std::optional<CanonicalDataflowArtifact>(
+      std::move((*projected)->artifact));
 }
 
 } // namespace dataflow::detail

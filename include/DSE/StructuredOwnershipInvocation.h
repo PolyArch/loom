@@ -27,6 +27,7 @@ class StructuredOwnershipInvocationAccess;
 class StructuredOwnershipInvocation final {
 public:
   StructuredOwnershipInvocation(
+      const frontend::StructuredProgramCandidate &generationParent,
       const frontend::StructuredProgramCandidate &sourceProgram,
       const sim::CanonicalSimulationWorkload &workload,
       const sim::CanonicalSimulationRuntimeInput &runtimeInput,
@@ -44,7 +45,8 @@ public:
 
   llvm::ArrayRef<StructuredOwnershipCandidateDisposition> dispositions() const;
 
-  llvm::Error prepareSource(const ArtifactRootReference &source,
+  llvm::Error prepareInputs(const ArtifactRootReference &generationParent,
+                            const ArtifactRootReference &source,
                             const ArtifactRootReference &workload,
                             const ArtifactRootReference &runtimeInput,
                             const ArtifactStore &store);

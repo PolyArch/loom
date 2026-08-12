@@ -594,6 +594,16 @@ Pre-Mapping ownership selection has two exact intents. `BenefitQualified`
 requires both gates and continues through the configured Dataflow rewrite
 generator so the resolved objective can compare QoR alternatives.
 `SemanticConformance` is feasibility-only and makes no QoR-optimality claim.
+Multiple explicit protocol roots remain parent-local alternatives in one
+`BenefitQualified` generation; that intent does not greedily compose selected
+children. In `SemanticConformance`, the same root set requests one complete
+feasible source closure. The controller therefore applies `TopK(1)` and chains
+at most one immutable ownership child per root, re-resolving the defined
+callable in each child and stopping early when no next child exists. The
+generation bound is mechanically the protocol-root cardinality, not another
+policy field, CLI option, or execution limit. Every edge retains ordinary
+candidate lineage, while the original source workload and runtime input remain
+the sole functional oracle.
 After one selected Structured candidate lowers mechanically to D0, the
 controller queries the exact Fabric capability index. If every D0 actor is
 admitted, the controller retains that exact input directly as D*, instantiates

@@ -338,6 +338,11 @@ llvm::Expected<std::optional<FeedbackCandidate>> materializeFeedback(
   if (!ranked)
     return ranked.takeError();
   ::loom::frontend::FabricCapabilityIndex capabilities(fabric);
+  std::vector<::dataflow::StaticGraphLaunchRef> parentLaunches;
+  parentLaunches.reserve(parentView.staticGraphLaunches().size());
+  for (const ::dataflow::CanonicalStaticGraphLaunchView &launch :
+       parentView.staticGraphLaunches())
+    parentLaunches.push_back(launch.ref);
 
   for (auto indexedNet : llvm::enumerate(*ranked)) {
     const std::size_t netRank = indexedNet.index();
@@ -381,12 +386,14 @@ llvm::Expected<std::optional<FeedbackCandidate>> materializeFeedback(
         if (decisionAttempts == std::numeric_limits<std::uint64_t>::max())
           return invalid("feedback decision accounting overflows u64");
         ++decisionAttempts;
-        auto child = ::dataflow::materializeDataflowRewrite(parent, decision);
+        auto child = ::dataflow::
+            materializeDataflowRewriteWithTrackedStaticGraphLaunches(
+                parent, decision, parentLaunches);
         if (!child)
           return child.takeError();
         if (!*child)
           return invalid("typed feedback rewrite produced an identity");
-        auto miss = capabilities.firstInadmissibleActor(**child);
+        auto miss = capabilities.firstInadmissibleActor((*child)->artifact);
         if (!miss)
           return miss.takeError();
         const bool inadmissible = miss->has_value();
@@ -413,14 +420,17 @@ llvm::Expected<std::optional<FeedbackCandidate>> materializeFeedback(
             });
         if (inadmissible)
           continue;
-        auto published = ::dataflow::publishCanonicalDataflow(**child, store);
+        auto published =
+            ::dataflow::publishCanonicalDataflow((*child)->artifact, store);
         if (!published)
           return published.takeError();
         if (StructuredOwnershipInvocation *invocation =
                 detail::StructuredOwnershipInvocationAccess::current())
           if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
-                  recordDataflowRewriteCandidate(*invocation, parentReference,
-                                                 *published, decision, store))
+                  recordDataflowRewriteCandidate(
+                      *invocation, parentReference, *published, decision,
+                      parentLaunches, (*child)->trackedStaticGraphLaunches,
+                      store))
             return std::move(error);
         auto payload = ::dataflow::encodeDataflowRewriteDecision(decision);
         if (!payload)

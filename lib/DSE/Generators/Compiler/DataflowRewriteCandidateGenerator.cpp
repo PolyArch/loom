@@ -220,22 +220,25 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   const auto publishChild =
       [&](const ArtifactRootReference &parent,
           const dataflow::DataflowRewriteDecision &decision,
-          dataflow::CanonicalDataflowArtifact child) -> llvm::Error {
+          llvm::ArrayRef<dataflow::StaticGraphLaunchRef> parentLaunches,
+          dataflow::MaterializedDataflowRewriteProjection child)
+      -> llvm::Error {
     ArtifactRootReference reference{
         dataflow::canonicalDataflowSchema.identity.str(),
-        dataflow::canonicalDataflowSchema.version, child.identity()};
+        dataflow::canonicalDataflowSchema.version, child.artifact.identity()};
     // The attempt has already consumed its logical work slot. An identity
     // reached through another lineage is neither republished nor re-enqueued.
     if (seen.find(reference) != seen.end())
       return llvm::Error::success();
-    auto published = dataflow::publishCanonicalDataflow(child, store);
+    auto published = dataflow::publishCanonicalDataflow(child.artifact, store);
     if (!published)
       return published.takeError();
     if (StructuredOwnershipInvocation *invocation =
             detail::StructuredOwnershipInvocationAccess::current())
       if (llvm::Error error = detail::StructuredOwnershipInvocationAccess::
-              recordDataflowRewriteCandidate(*invocation, parent, *published,
-                                             decision, store))
+              recordDataflowRewriteCandidate(
+                  *invocation, parent, *published, decision, parentLaunches,
+                  child.trackedStaticGraphLaunches, store))
         return error;
     auto ownerPayload = dataflow::encodeDataflowRewriteDecision(decision);
     if (!ownerPayload)
@@ -246,7 +249,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         *published,
         {parent},
         std::move(*ownerPayload)});
-    return classify(std::move(*published), std::move(child));
+    return classify(std::move(*published), std::move(child.artifact));
   };
 
   std::vector<ArtifactRootReference> orderedInputs =
@@ -285,6 +288,15 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     if (!llvm::is_sorted(decisions, dataflow::dataflowRewriteDecisionLess))
       return invalid("rewrite decision domain is not canonically ordered");
 
+    std::vector<dataflow::StaticGraphLaunchRef> parentLaunches;
+    auto parentView = parent.artifact.view();
+    if (!parentView)
+      return parentView.takeError();
+    parentLaunches.reserve(parentView->staticGraphLaunches().size());
+    for (const dataflow::CanonicalStaticGraphLaunchView &launch :
+         parentView->staticGraphLaunches())
+      parentLaunches.push_back(launch.ref);
+
     for (const dataflow::DataflowRewriteDecision &decision : decisions) {
       auto payload = dataflow::encodeDataflowRewriteDecision(decision);
       if (!payload)
@@ -304,13 +316,14 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       }
       expansions += *cost;
       auto child =
-          dataflow::materializeDataflowRewrite(parent.artifact, decision);
+          dataflow::materializeDataflowRewriteWithTrackedStaticGraphLaunches(
+              parent.artifact, decision, parentLaunches);
       if (!child)
         return child.takeError();
       if (!*child)
         continue;
-      if (llvm::Error error =
-              publishChild(parent.reference, decision, std::move(**child)))
+      if (llvm::Error error = publishChild(parent.reference, decision,
+                                           parentLaunches, std::move(**child)))
         return std::move(error);
     }
   }

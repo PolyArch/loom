@@ -333,15 +333,18 @@ dataflowRewriteExpansionCost(const CanonicalDataflowArtifact &parent,
   return analyzed->elementCount;
 }
 
-llvm::Expected<std::optional<CanonicalDataflowArtifact>>
-materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
-                           const DataflowRewriteDecision &decision) {
+llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
+materializeDataflowRewriteWithTrackedStaticGraphLaunches(
+    const CanonicalDataflowArtifact &parent,
+    const DataflowRewriteDecision &decision,
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches) {
   auto encoded = encodeDataflowRewriteDecision(decision);
   if (!encoded)
     return encoded.takeError();
   if (dataflowRewriteKind(decision) !=
       DataflowRewriteKind::ElementwiseVectorDecompose)
-    return detail::materializeFixedDataflowRewrite(parent, decision);
+    return detail::materializeFixedDataflowRewriteProjection(
+        parent, decision, trackedStaticGraphLaunches);
 
   auto analyzed = validateElementwiseDecision(parent, decision);
   if (!analyzed)
@@ -365,12 +368,21 @@ materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
     return std::move(error);
   }
 
-  auto finalized = finalizeCanonicalDataflow(candidate.get());
-  if (!finalized)
-    return finalized.takeError();
-  if (finalized->identity() == parent.identity())
+  return detail::finalizeDataflowRewriteCandidate(
+      parent, candidate.get(), mapping, trackedStaticGraphLaunches);
+}
+
+llvm::Expected<std::optional<CanonicalDataflowArtifact>>
+materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
+                           const DataflowRewriteDecision &decision) {
+  auto projected = materializeDataflowRewriteWithTrackedStaticGraphLaunches(
+      parent, decision, {});
+  if (!projected)
+    return projected.takeError();
+  if (!*projected)
     return std::optional<CanonicalDataflowArtifact>{};
-  return std::optional<CanonicalDataflowArtifact>(std::move(*finalized));
+  return std::optional<CanonicalDataflowArtifact>(
+      std::move((*projected)->artifact));
 }
 
 } // namespace dataflow

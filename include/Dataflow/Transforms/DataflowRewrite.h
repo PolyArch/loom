@@ -152,6 +152,15 @@ using DataflowRewriteDecision = std::variant<
     GraphDefinitionMergeRewrite, ElementwiseVectorChunkRewrite,
     ElementwiseVectorScalarizeRewrite>;
 
+/// Ephemeral correspondence produced by one exact rewrite transaction. The
+/// tracked launch references preserve the caller's input order and belong to
+/// `artifact`; they are mechanically derived by the canonical finalizer and
+/// are never serialized beside the child.
+struct MaterializedDataflowRewriteProjection final {
+  CanonicalDataflowArtifact artifact;
+  std::vector<StaticGraphLaunchRef> trackedStaticGraphLaunches;
+};
+
 DataflowRewriteKind
 dataflowRewriteKind(const DataflowRewriteDecision &decision);
 
@@ -186,6 +195,14 @@ dataflowRewriteExpansionCost(const CanonicalDataflowArtifact &parent,
 llvm::Expected<std::optional<CanonicalDataflowArtifact>>
 materializeDataflowRewrite(const CanonicalDataflowArtifact &parent,
                            const DataflowRewriteDecision &decision);
+
+/// Applies one exact decision while carrying selected parent static graph
+/// launches through the rewrite and canonical relabeling transaction.
+llvm::Expected<std::optional<MaterializedDataflowRewriteProjection>>
+materializeDataflowRewriteWithTrackedStaticGraphLaunches(
+    const CanonicalDataflowArtifact &parent,
+    const DataflowRewriteDecision &decision,
+    llvm::ArrayRef<StaticGraphLaunchRef> trackedStaticGraphLaunches);
 
 /// Developer-only bulk driver for the three one-way legacy test surfaces. It
 /// composes exact per-match decisions and is not a lineage decision API.

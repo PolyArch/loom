@@ -43,6 +43,7 @@ struct PreparedStructuredProgramFunctionalEvaluation final {
 struct StructuredProgramFunctionalReplayInvocation final {
   const ::loom::ArtifactRootReference &workload;
   const ::loom::ArtifactRootReference &runtimeInput;
+  const ::loom::frontend::StructuredProgramCandidate &generationParent;
   const ::loom::frontend::StructuredProgramCandidate &sourceProgram;
   const ::loom::frontend::SpatialOwnershipScope &scope;
   const ::loom::frontend::SpatialOwnershipDecisionPoint &decision;

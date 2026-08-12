@@ -430,6 +430,15 @@ unmodified baseline and every Sn candidate; only exact graph-replay inputs are
 derived after lowering. This is also why corpus harnesses are workload
 providers, not a separate testing semantics.
 
+QoR selection and feasibility composition deliberately treat multiple
+protocol roots differently. Greedily composing `BenefitQualified` winners
+would erase the alternatives needed for a global objective. A
+`SemanticConformance` request instead needs one program containing every
+explicit operator boundary. Chaining one `TopK(1)` child per root produces that
+closure without a powerset, and the root count already provides a finite bound.
+Adding a second generation-limit knob would describe no new semantic fact and
+could silently disagree with the requested root set.
+
 ## Why Schedule Admission Follows Materialization
 
 Aggregate body capacity is a useful early bound for unroll, but it cannot

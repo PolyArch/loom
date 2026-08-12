@@ -56,6 +56,7 @@ struct SourceBackedDfgValidationLimits final {
 /// computed source observation so the selected execution also proves the
 /// whole-program transformation without executing the candidate twice.
 llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
+    const frontend::StructuredProgramCandidate &generationParent,
     const frontend::StructuredProgramCandidate &sourceProgram,
     const frontend::SpatialOwnershipScope &scope,
     const frontend::SpatialOwnershipDecisionPoint &decision,

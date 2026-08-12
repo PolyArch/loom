@@ -297,7 +297,7 @@ explore(const loom::fabric::FinalizedFabricRoot &fabric,
 
 void requireCompleteAccounting(
     const loom::dse::CompletedPreMappingSelection &selection) {
-  if (selection.dispositions.size() != 7)
+  if (selection.dispositions.size() != 11)
     fail("candidate domain included a declaration or omitted an attempt; "
          "observed=" +
          std::to_string(selection.dispositions.size()));
@@ -313,6 +313,10 @@ void requireCompleteAccounting(
   const auto &point4 = *ordered[4].coordinate.decision;
   const auto &point5 = *ordered[5].coordinate.decision;
   const auto &point6 = *ordered[6].coordinate.decision;
+  const auto &point7 = *ordered[7].coordinate.decision;
+  const auto &point8 = *ordered[8].coordinate.decision;
+  const auto &point9 = *ordered[9].coordinate.decision;
+  const auto &point10 = *ordered[10].coordinate.decision;
   if (point0.rootRelativeIndexWidth() != 32 ||
       point1.rootRelativeIndexWidth() != 64 || !point2.isPointerAddressed() ||
       point3.addressProjection || point0.directCallInlining ||
@@ -320,9 +324,14 @@ void requireCompleteAccounting(
       point3.directCallInlining || !point4.directCallInlining ||
       !point5.directCallInlining || !point6.directCallInlining ||
       point4.rootRelativeIndexWidth() != 32 ||
-      point5.rootRelativeIndexWidth() != 64 || !point6.isPointerAddressed())
+      point5.rootRelativeIndexWidth() != 64 || !point6.isPointerAddressed() ||
+      point7.addressProjection || point7.directCallInlining ||
+      !point8.directCallInlining || !point9.directCallInlining ||
+      !point10.directCallInlining || point8.rootRelativeIndexWidth() != 32 ||
+      point9.rootRelativeIndexWidth() != 64 || !point10.isPointerAddressed())
     fail("complete ownership disposition order drifted");
   unsigned unresolvedCallRejections = 0;
+  unsigned directCallRootRejections = 0;
   unsigned narrowingRejections = 0;
   unsigned rootRelativeChildren = 0;
   unsigned pointerAddressedChildren = 0;
@@ -345,11 +354,16 @@ void requireCompleteAccounting(
           rejection->kind !=
               loom::frontend::SpatialOwnershipCandidateRejectionKind::
                   NonFinalizable ||
-          rejection->message.find("unresolved general call") ==
-              std::string::npos ||
           decision.directCallInlining)
         fail("no-inline coordinate lost its typed call rejection");
-      ++unresolvedCallRejections;
+      if (rejection->message.find("unresolved general call") !=
+          std::string::npos)
+        ++unresolvedCallRejections;
+      else if (rejection->message.find(
+                   "requires its exact inline coordinate") != std::string::npos)
+        ++directCallRootRejections;
+      else
+        fail("no-inline coordinate has an unknown rejection");
       continue;
     }
     if (decision.rootRelativeIndexWidth() == 32) {
@@ -376,9 +390,9 @@ void requireCompleteAccounting(
     }
     fail("candidate domain contained an unknown ownership coordinate");
   }
-  if (unresolvedCallRejections != 1 || narrowingRejections != 2 ||
-      rootRelativeChildren != 2 || pointerAddressedChildren != 2 ||
-      inlineDecisions != 3)
+  if (unresolvedCallRejections != 1 || directCallRootRejections != 1 ||
+      narrowingRejections != 3 || rootRelativeChildren != 3 ||
+      pointerAddressedChildren != 3 || inlineDecisions != 6)
     fail("candidate domain accounting was incomplete");
 }
 

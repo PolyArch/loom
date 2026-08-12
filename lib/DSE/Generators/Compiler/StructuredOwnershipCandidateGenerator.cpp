@@ -254,8 +254,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
     return simulationInputs.takeError();
   const ArtifactRootReference &structured =
       singleInput(inputBindings, StructuredProgramInput);
-  if (structured.artifact != simulationInputs->structuredProgram.identity())
-    return invalid("workload owner differs from the Structured input");
+  auto generationParent = frontend::importStructuredProgram(structured, store);
+  if (!generationParent)
+    return generationParent.takeError();
 
   StructuredOwnershipInvocation *invocation =
       detail::StructuredOwnershipInvocationAccess::current();
@@ -276,7 +277,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
   }
   for (const frontend::StructuredEntityRef &root :
        config->protocolCallableRoots())
-    if (root.parent != simulationInputs->structuredProgram.identity())
+    if (root.parent != generationParent->identity())
       return invalid("protocol root belongs to a foreign Structured owner");
 
   StructuredOwnershipGenerationOptions options;
@@ -285,8 +286,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
   options.protocolCallableRoots.assign(config->protocolCallableRoots().begin(),
                                        config->protocolCallableRoots().end());
   auto generated = generateStructuredOwnershipCandidates(
-      simulationInputs->structuredProgram, simulationInputs->workload,
-      simulationInputs->runtimeInput, *exactFabric, options, store);
+      *generationParent, simulationInputs->structuredProgram,
+      simulationInputs->workload, simulationInputs->runtimeInput, *exactFabric,
+      options, store);
   if (!generated)
     return generated.takeError();
   std::vector<ArtifactRootReference> allCandidates(
