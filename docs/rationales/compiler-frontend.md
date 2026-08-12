@@ -439,14 +439,16 @@ closure without a powerset, and the root count already provides a finite bound.
 Adding a second generation-limit knob would describe no new semantic fact and
 could silently disagree with the requested root set.
 
-## Why Schedule Admission Follows Materialization
+## Why D0 Admission Follows Structured Closure
 
 Aggregate body capacity is a useful early bound for unroll, but it cannot
 predict every actor shape created by a legal SCF transform. Tiling can add an
 inner control frontier and widen a `dataflow.sync` even when each source body
-actor has enough aggregate occurrences. Letting that child enter Evaluation
-would turn a known exact-Fabric hard negative into `Unsupported` Evidence and
-make the entire promotion incomplete.
+actor has enough aggregate occurrences. Conversely, memory communication can
+remove an allocation, its pointer arithmetic, and its loads or stores by
+replacing the whole ordered buffer with a channel. Complete actor admission in
+the middle of this sequence would therefore treat a transient representation
+as a final hardware requirement.
 
 Parallelization reuses one conservative legality and materialization owner.
 Having the pass pipeline and the Schedule generator maintain separate alias or
@@ -457,13 +459,15 @@ deliberately absent: preserving graph-local parallelism or distributing the
 logical domain across thread launches is an ownership and later Mapping choice,
 not another hidden parallelization hint.
 
-The Schedule generator therefore applies two complementary checks owned by the
-same Fabric capability projection: cheap aggregate pruning before cloning, and
-complete actor admission after the transformed child is mechanically lowered.
-The second check excludes only children with no concrete capability. It does
-not approximate Mapping feasibility. Retaining the resulting D0 in an
-invocation-local reference-keyed cache avoids a second lowering for analytical
-Evaluation and functional replay without creating another program authority.
+The Schedule generator therefore applies only cheap, decision-local aggregate
+pruning before cloning. MemoryCommunication publishes its complete immutable
+Structured children without an intermediate D0. SpecialMathAccuracy, after the
+last D0-affecting Structured transform in the central plan, owns the single
+mechanical lowering and complete actor-admission gate. It excludes only final
+children with no concrete capability and does not approximate Mapping
+feasibility. Retaining that terminal D0 in an invocation-local reference-keyed
+cache avoids a second lowering for analytical Evaluation and functional replay
+without creating another program authority.
 
 An empty candidate set is an ordinary finite result rather than a provider
 failure. This lets independently composable Generate nodes remain total while
@@ -519,11 +523,12 @@ Combining them would couple unrelated candidate domains and make every future
 shape decision carry numerical-policy fields. Delaying accuracy to D0-to-D*
 was also rejected because that lineage is semantics-preserving: weakening a
 correctly-rounded actor after publication would silently change its contract.
-Making SpecialMathAccuracy the first selected-Spatial D0 and exact-Fabric
+Making SpecialMathAccuracy the terminal selected-Spatial D0 and exact-Fabric
 admission gate keeps those decisions separate while giving unresolved semantic
-state one closure owner. ExecutionShape publishes only its complete Structured
-children; it does not create a partial Dataflow projection or duplicate target
-admission before the accuracy contract exists.
+state one closure owner. ExecutionShape, Schedule, and MemoryCommunication
+publish only complete Structured children; none creates a partial Dataflow
+projection or duplicates target admission before all Structured choices are
+closed.
 
 One four-element ordered domain is sufficient. It permits exact conformance and
 the practical one-, two-, and four-ULP research points without a floating

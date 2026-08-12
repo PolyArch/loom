@@ -597,14 +597,30 @@ They cover schedule/polyhedral transformations; spatial/vector/unroll/jam and
 reduction shape; accepted special-math accuracy; layout/staging/multibuffer/
 pipeline/channel choices; and InstructionCore/SpatialCore plus thread-domain
 ownership. The groups are generator capabilities, not persistent IR families.
-A resolved DSE policy may interleave them and revisit a family.
+A resolved DSE policy may interleave them and revisit a family, but every path
+presented to Structured Evaluation or Dataflow lowering must cross
+SpecialMathAccuracy after its last Schedule or MemoryCommunication transform.
+The current canonical plan is:
 
-Each Generate node consumes complete immutable candidates, exact Fabric, and
-descriptor-declared analysis or Evidence projections. The transform scope is
-the smallest structured ancestor closed over every data, control, memory,
-channel, and ownership dependence that the decision may change. Independent
-regions are explored separately only when analysis proves no cross-region
-coupling.
+```text
+Ownership
+-> ExecutionShape
+-> Schedule
+-> MemoryCommunication
+-> SpecialMathAccuracy plus D0/exact-Fabric closure
+```
+
+This ordering is semantic, not an optimization heuristic. Schedule and memory
+communication may remove or replace operations that occur in an intermediate
+Structured child, so complete actor admission before those transforms would
+mistake a transient representation for the final SpatialCore surface.
+
+Each Generate node consumes complete immutable candidates plus only the exact
+Fabric, analysis, or Evidence projections declared by its descriptor. The
+transform scope is the smallest structured ancestor closed over every data,
+control, memory, channel, and ownership dependence that the decision may
+change. Independent regions are explored separately only when analysis proves
+no cross-region coupling.
 
 Pruning has exactly three authorities:
 
@@ -676,17 +692,21 @@ passes it through the sole Structured Program finalizer. Equal children
 deduplicate by Artifact identity. No schedule tree, factor table, hidden pass
 state, or persisted analysis view exists.
 
-When the parent already contains a selected `loom.spatial_region`, the
-generator mechanically lowers each child to D0 before admitting it to the
-output set and queries the shared exact-Fabric capability projection for every
-canonical actor. A child that introduces an actor shape with no admitted
-concrete resource is outside that exact Generate result; for example, tiling
-that creates a five-lane `dataflow.sync` is excluded when the selected Fabric
-admits at most four lanes. This is hard-negative capability pruning, not a
-placement, routing, contention, or QoR conclusion. The invocation may retain
-the sealed child and D0 projection as a reference-keyed read-through cache for
-Evaluation and functional replay, but the Structured and Dataflow Artifacts
-remain the only semantic owners.
+The generator may use exact aggregate Fabric capacity to reject a schedule
+decision that is already impossible, but it does not lower the complete child
+to D0 or admit every intermediate actor. MemoryCommunication may still remove
+or replace part of that actor surface. The terminal SpecialMathAccuracy gate
+performs complete D0 actor admission after the last such transform. Thus a
+five-lane `dataflow.sync` created by tiling is rejected there when it survives
+to the final child and the selected Fabric admits at most four lanes, while an
+intermediate pointer operation later consumed by channel promotion is not a
+hardware requirement. This is hard-negative capability pruning, not a
+placement, routing, contention, or QoR conclusion.
+
+The provider for this behavior has implementation semantic identity
+`loom.compiler.structured_schedule.generator.v2`. The historical v1 provider
+performed complete D0 admission before downstream Structured transforms and
+cannot be reinterpreted as v2.
 
 ### Structured ExecutionShape Generator
 
@@ -711,11 +731,12 @@ contract.
 Each child preserves the exact floating type, fast-math contract, source
 location, Ownership lineage, and source-provenance projection. It is verified
 and finalized through the sole Structured Program finalizer before publication
-to the output set. The following SpecialMathAccuracy generator is the one
-selected-Spatial semantic-closure gate that first lowers the complete candidate
-to D0 and checks exact concrete Fabric admission. No unresolved parent,
-mixed Fused/Split child, hidden backend default, or target-code-generation
-choice may cross the ExecutionShape boundary.
+to the output set. Schedule and MemoryCommunication may then form further
+complete Structured children. The terminal SpecialMathAccuracy generator is
+the selected-Spatial semantic-closure gate that first lowers the final complete
+candidate to D0 and checks exact concrete Fabric admission. No unresolved
+parent, mixed Fused/Split child, hidden backend default, or
+target-code-generation choice may cross the ExecutionShape boundary.
 
 The resolved current component view is empty. Worker count and cached typed
 candidates are invocation-local execution policy and do not change the finite
@@ -737,9 +758,11 @@ finite domain above but does not itself select a tier or imply `Max4Ulp`.
 
 A candidate with no selected-Spatial special-math operation passes through this
 generator without a semantic decision, but still crosses the same mechanical
-D0 and exact-Fabric admission gate. ExecutionShape and SpecialMathAccuracy
-therefore have one first-D0 owner rather than duplicating partial lowering or
-inventing an unresolved actor projection.
+D0 and exact-Fabric admission gate. SpecialMathAccuracy is therefore the one
+terminal D0 owner rather than duplicating partial lowering or inventing an
+unresolved actor projection in earlier Structured generators. A central plan
+may revisit other generator families, but it must invoke this gate again after
+the last D0-affecting Structured transform before promotion.
 
 For an `afn` operation, the finite domain is `CorrectlyRounded`, `Max1Ulp`,
 `Max2Ulp`, and `Max4Ulp`. A resolved Loom policy or a source-derived typed hint
@@ -769,9 +792,9 @@ the exact selected tier byte for byte.
 ### Structured MemoryCommunication Generator
 
 The current Structured MemoryCommunication generator consumes a finite set of
-exact Structured Program references and one exact finalized Fabric. It emits
-every input parent plus each distinct child obtained by one legal atomic
-logical memory decision. It additionally follows
+exact Structured Program references. It emits every input parent plus each
+distinct child obtained by one legal atomic logical memory decision. It
+additionally follows
 `PromoteOrderedBufferToChannel` children through the same decision owner until
 no further promotion is legal or the resolved scope budget is exhausted.
 Every lineage edge remains one atomic promotion. Other decision kinds are not
@@ -870,11 +893,11 @@ allocation carries the strongest proved base alignment required by any
 redirected load; each load retains its own explicit alignment unchanged. A
 dynamic or otherwise unproved effective-address alignment makes the decision
 absent rather than weakening the source contract. The child is verified and
-finalized through the sole Structured Program finalizer, then mechanically
-lowered to D0. That lowering expands `memref.copy` into ordinary Dataflow
-load/store actors; finalized D0 contains neither `memref.copy` nor
-`memref.get_global` inside a graph. Complete exact-Fabric actor admission runs
-before publication.
+finalized through the sole Structured Program finalizer. At the terminal
+SpecialMathAccuracy gate, mechanical D0 lowering expands `memref.copy` into
+ordinary Dataflow load/store actors; finalized D0 contains neither
+`memref.copy` nor `memref.get_global` inside a graph, and complete exact-Fabric
+actor admission runs once over that final surface.
 
 #### `PermuteLocalBufferLayout`
 
