@@ -268,6 +268,18 @@ references the ordinary PnR owner's complete work-unit catalog unchanged;
 adapter-local aggregation, omitted search work, and a second System-only work
 taxonomy are forbidden.
 
+The application-scoped System PnR candidate generator consumes the same
+Dataflow, System, SpatialMapping candidate set, and resolved System PnR view,
+plus one exact System MappingConstraintSet. The constraint root must bind the
+same `D` and `F`; its canonical non-empty root-thread-launch set supplies `R`.
+The adapter projects the ordinary whole-domain partition and hierarchical `H`
+from `K`, then invokes `generateSystemMappings(D,F,R,H,C,K)` unchanged. This is
+candidate-generator kind 22 with spelling `mapping.application_system_pnr` and
+implementation semantic identity
+`loom.mapping.application_system_pnr.generator.v1`. It exists only to compose
+an already-authored application scope into a common DSE plan. It adds no
+constraint clause, root selector, Mapping state, or search semantics.
+
 ### System Search-Domain View
 
 `H` atomizes each Dataflow-owned execution relation without selecting a

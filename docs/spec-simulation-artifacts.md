@@ -204,6 +204,16 @@ observables. They do not own concrete runtime values, stream contents, memory
 images, simulator policy, expected results, trace capture, or execution
 limits.
 
+A planner may accept a canonical non-empty set of Spatial workload roots as
+an exact application selection. It strictly imports every workload, requires
+one common Canonical Dataflow owner, and mechanically projects the unique set
+of `RootThreadLaunchRef` values from their `launch_ref` fields. That projection
+does not make workload values, dense coordinates, or observable choices part
+of Mapping. The planner publishes the projected set through the ordinary
+System MappingConstraintSet owner; that constraint set remains the sole
+persistent Mapping coverage authority. A workload set is therefore an
+authoring input, not a second Mapping-scope schema.
+
 ## Canonical Semantic Values
 
 One value representation is shared by fixed workload inputs, runtime value

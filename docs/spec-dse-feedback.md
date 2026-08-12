@@ -1658,27 +1658,33 @@ therefore carries only Artifact references, while owner-local `GraphRef`
 values remain ephemeral and no graph-cover Artifact or resolved-config field
 is introduced.
 
-The built-in canonical-graph TechMapping generator is the corresponding
+The built-in application-graph TechMapping generator is the corresponding
 System-composition adapter. Its descriptor has kind 21, spelling
-`mapping.canonical_graph_tech_mapping`, and implementation semantic identity
-`loom.mapping.canonical_graph_tech_mapping.generator.v1`. It has the same two
-input slots, output slot, resolved TechMapping config view, determinism, work
-catalog, and outcome algebra as the root-complete adapter. For each exact
-Canonical Dataflow input, it visits the Dataflow-owned canonical graph catalog
-and invokes the ordinary TechMapping owner once with the singleton cover for
-that graph. It returns the canonical union of the resulting ordinary
-TechMapping Artifacts and mechanical lineage edges. A graph proven infeasible
-contributes no candidate; an incomplete graph invocation retains only already
-completed graph candidates under the ordinary typed incomplete result; invalid
-or internal owner failure aborts the adapter invocation.
+`mapping.application_graph_tech_mapping`, and implementation semantic identity
+`loom.mapping.application_graph_tech_mapping.generator.v2`. Its exact input
+slots are `dataflow: ExactlyOne`, `system_constraints: ExactlyOne`, and
+`fabric: ExactlyOne`; the constraint root must bind the same Dataflow and a
+System whose attached Module catalog contains the exact Fabric input. The
+descriptor uses the same output slot, resolved TechMapping config view,
+determinism, work catalog, and outcome algebra as the root-complete adapter.
+It derives the unique graph set reachable from the constraint root's canonical
+non-empty root-thread-launch set, then invokes the ordinary TechMapping owner
+once per graph with a singleton cover. It returns the canonical union of the
+resulting ordinary TechMapping Artifacts and mechanical lineage edges. A graph
+proven infeasible contributes no candidate; an incomplete graph invocation
+retains only already completed graph candidates under the ordinary typed
+incomplete result; invalid or internal owner failure aborts the adapter
+invocation.
 
-This second adapter exists because hierarchical SystemMapping selects one
+This adapter exists because hierarchical SystemMapping selects one
 SpatialMapping for each `RootedGraphLaunchRef`; it must be able to compose
 different graph definitions onto different AccCore occurrences. It does not
 split a Canonical Dataflow Artifact, invent a graph-scope Artifact, reinterpret
-root-complete results, or permit one TechMapping realization to cross a graph
-definition. A caller that needs a selected multi-graph cover still invokes the
-ordinary TechMapping owner explicitly.
+root-complete results, treat an unselected callable definition as active, or
+permit one TechMapping realization to cross a graph definition. The existing
+System MappingConstraintSet remains the only persistent application Mapping
+scope. A caller that needs another selected multi-graph cover still invokes
+the ordinary TechMapping owner explicitly.
 
 The built-in root-complete Spatial PnR generator composes the next boundary in
 the same typed plan. It consumes the finite TechMapping output and the same
@@ -1722,6 +1728,21 @@ incomplete result, unsupported `H` projection remains `Unsupported`, and an
 invalid or internal owner result aborts the Generate invocation. Descriptor
 v1, which exposed only assignment and endpoint work, is not compatible and is
 not registered.
+
+The built-in application-scoped System PnR generator is the strict-scope
+counterpart. Its descriptor has kind 22, spelling
+`mapping.application_system_pnr`, implementation semantic identity
+`loom.mapping.application_system_pnr.generator.v1`, and exact input slots
+`dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, `fabric: ExactlyOne`, and
+`system_constraints: ExactlyOne`. The constraint root must bind exactly that
+Dataflow and Fabric System. Its non-empty `root_thread_launches` is the sole
+coverage root. The adapter projects the whole-domain partition and
+hierarchical search domain from that exact set, supplies the finite
+SpatialMapping candidates as the ordinary graph-search input, and invokes the
+unchanged System PnR owner. Output, work accounting, lineage, incomplete
+outcomes, and failures are identical to the root-complete adapter. It neither
+copies the root set into config nor derives another scope from the Dataflow
+catalog.
 
 The built-in SpatialMapping CGRA acquisition consumes a finite SpatialMapping
 candidate set, a nonempty Canonical Dataflow owner set, one exact Fabric, one

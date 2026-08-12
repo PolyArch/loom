@@ -250,6 +250,19 @@ global workflow semantics. A typed adapter has the smallest conceptual
 surface: exact Artifact inputs remain the plan authority, Dataflow remains the
 graph-catalog authority, and TechMapping remains the realization authority.
 
+Application exploration cannot use the complete catalog implicitly. One
+Canonical Dataflow Artifact may retain several externally callable definitions
+while one selected application executes only a subset. Treating every retained
+definition as simultaneously active produces false capacity conflicts; putting
+entry names or graph lists in DSE config creates a competing scope authority.
+The existing System MappingConstraintSet already owns the exact non-empty root
+launch set. Application-scoped adapters therefore consume that root, derive
+its reachable graph set through Dataflow, and otherwise delegate to the same
+TechMapping and System PnR owners. A planner may derive the initial root set
+from exact Spatial workloads, but workload values never enter Mapping identity.
+This preserves one scope owner while keeping the complete-catalog adapter
+available for whole-library analysis.
+
 The following Spatial boundary has the inverse mismatch. The exact PnR owner
 must accept an independently authored MappingConstraintSet, while the common
 root-complete exploration path has no additional clauses. Omitting `K` would
