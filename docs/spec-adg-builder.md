@@ -554,13 +554,25 @@ parseBuiltinTargetPreset(StringRef)
   -> Expected<BuiltinTargetPreset>
 expandBuiltinSpatialCore(DesignBuilder, BuiltinTargetPreset)
   -> Expected<BuiltinSpatialCoreExpansion>
+expandBuiltinSpatialCore(DesignBuilder, BuiltinTargetPreset,
+                         BuiltinTargetScale)
+  -> Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSystem(DesignBuilder, BuiltinTargetPreset, FinalizedFabricRoot)
+  -> Expected<SystemBuilder>
+expandBuiltinSystem(DesignBuilder, BuiltinTargetPreset, BuiltinTargetScale,
+                    FinalizedFabricRoot)
   -> Expected<SystemBuilder>
 buildBuiltinTarget(ArtifactStore, BuiltinTargetPreset)
   -> Expected<FinalizedFabricDesign>
+buildBuiltinTarget(ArtifactStore, BuiltinTargetPreset, BuiltinTargetScale)
+  -> Expected<FinalizedFabricDesign>
 ```
 
-The two expansion calls are the extensible authoring boundary. SpatialCore
+The parameterized expansion calls are the resolved authoring boundary. The
+preset-only calls mechanically supply the descriptor's default scale. The
+template identity and version select the topology recipe while the complete
+typed scale controls every resource multiplicity and capacity; a resolved
+scale is never discarded in favor of preset defaults. SpatialCore
 expansion returns its open typed root and default result sequence. The caller
 may add ordinary resources and close it with that or a replacement result
 sequence. After that Module is independently finalized and published, System

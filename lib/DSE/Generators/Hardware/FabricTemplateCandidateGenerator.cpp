@@ -2,9 +2,11 @@
 
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
+#include "Config/ResolvedConfig.h"
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -12,7 +14,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.fabric_template_generator.config.1.0";
+    "loom.fabric_template_generator.config.2.0";
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
     {CandidateGeneratorOutputSlotRef(0), "fabric", PlanValueRole::CandidateSet,
@@ -39,7 +41,14 @@ void appendU32(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
     bytes.push_back(static_cast<std::uint8_t>(value >> shift));
 }
 
-std::vector<std::uint8_t> encodeConfig(loom::adg::BuiltinTargetPreset preset) {
+void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
+  for (int shift = 56; shift >= 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+}
+
+std::vector<std::uint8_t>
+encodeConfig(loom::adg::BuiltinTargetPreset preset,
+             const loom::adg::BuiltinTargetScale &scale) {
   const loom::adg::BuiltinTargetDescriptor &descriptor =
       loom::adg::getBuiltinTargetDescriptor(preset);
   std::vector<std::uint8_t> bytes;
@@ -48,10 +57,23 @@ std::vector<std::uint8_t> encodeConfig(loom::adg::BuiltinTargetPreset preset) {
                descriptor.templateIdentity.end());
   appendU32(bytes, descriptor.schemaMajor);
   appendU32(bytes, descriptor.schemaMinor);
+  appendU32(bytes, scale.accCoreCount);
+  appendU32(bytes, scale.spatialPeCount);
+  appendU32(bytes, scale.temporalPeCount);
+  appendU32(bytes, scale.spatialMemoryCount);
+  appendU32(bytes, scale.temporalMemoryCount);
+  appendU32(bytes, scale.temporalResidentContexts);
+  appendU32(bytes, scale.gatewayCount);
+  appendU64(bytes, scale.memoryCapacityBytes);
   return bytes;
 }
 
-llvm::Expected<loom::adg::BuiltinTargetPreset>
+struct DecodedConfig final {
+  loom::adg::BuiltinTargetPreset preset;
+  loom::adg::BuiltinTargetScale scale;
+};
+
+llvm::Expected<DecodedConfig>
 decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   if (bytes.size() < 4)
     return invalid("truncated template descriptor identity length");
@@ -63,14 +85,29 @@ decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid("truncated template descriptor identity");
   llvm::StringRef identity(reinterpret_cast<const char *>(bytes.data()), size);
   bytes = bytes.drop_front(size);
-  if (bytes.size() != 8)
-    return invalid("template descriptor version is not canonical");
+  if (bytes.size() != 44)
+    return invalid("template descriptor and scale are not canonical");
   std::uint32_t major = 0;
   std::uint32_t minor = 0;
   for (std::uint8_t byte : bytes.take_front(4))
     major = (major << 8) | byte;
-  for (std::uint8_t byte : bytes.drop_front(4))
+  for (std::uint8_t byte : bytes.slice(4, 4))
     minor = (minor << 8) | byte;
+  bytes = bytes.drop_front(8);
+  const auto readU32 = [&bytes]() {
+    std::uint32_t value = 0;
+    for (std::uint8_t byte : bytes.take_front(4))
+      value = (value << 8) | byte;
+    bytes = bytes.drop_front(4);
+    return value;
+  };
+  loom::adg::BuiltinTargetScale scale{readU32(), readU32(), readU32(),
+                                      readU32(), readU32(), readU32(),
+                                      readU32(), 0};
+  for (std::uint8_t byte : bytes)
+    scale.memoryCapacityBytes = (scale.memoryCapacityBytes << 8) | byte;
+  if (!loom::adg::isValidBuiltinTargetScale(scale))
+    return invalid("all template scale values must be positive");
   for (loom::adg::BuiltinTargetPreset preset :
        {loom::adg::BuiltinTargetPreset::Small,
         loom::adg::BuiltinTargetPreset::Default,
@@ -78,7 +115,7 @@ decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(preset);
     if (identity == descriptor.templateIdentity &&
         major == descriptor.schemaMajor && minor == descriptor.schemaMinor)
-      return preset;
+      return DecodedConfig{preset, scale};
   }
   return invalid(
       "template descriptor is not a registered public Builder template");
@@ -96,7 +133,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     fabricTemplateCandidateGeneratorKind,
     "fabric_template",
-    "loom.fabric_template.generator.v1",
+    "loom.fabric_template.generator.v2",
     {},
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -117,7 +154,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       binding.configDigest());
   if (!config)
     return config.takeError();
-  auto result = loom::adg::buildBuiltinTarget(store, config->preset());
+  auto result = loom::adg::buildBuiltinTarget(store, config->preset(),
+                                               config->scale());
   if (!result)
     return result.takeError();
   std::vector<ArtifactRootReference> outputs;
@@ -152,11 +190,50 @@ llvm::ArrayRef<std::uint8_t> resolvedFabricTemplateConfigSchemaBytes() {
 
 llvm::Expected<ResolvedFabricTemplateConfigView>
 resolveFabricTemplateConfig(loom::adg::BuiltinTargetPreset preset) {
-  std::vector<std::uint8_t> bytes = encodeConfig(preset);
+  const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(preset);
+  return resolveFabricTemplateConfig(
+      descriptor.templateIdentity, descriptor.schemaMajor,
+      descriptor.schemaMinor, descriptor.scale);
+}
+
+llvm::Expected<ResolvedFabricTemplateConfigView>
+resolveFabricTemplateConfig(llvm::StringRef templateIdentity,
+                            std::uint32_t schemaMajor,
+                            std::uint32_t schemaMinor,
+                            const loom::adg::BuiltinTargetScale &scale) {
+  if (!loom::adg::isValidBuiltinTargetScale(scale))
+    return invalid("all template scale values must be positive");
+  std::optional<loom::adg::BuiltinTargetPreset> preset;
+  for (loom::adg::BuiltinTargetPreset candidate :
+       {loom::adg::BuiltinTargetPreset::Small,
+        loom::adg::BuiltinTargetPreset::Default,
+        loom::adg::BuiltinTargetPreset::Large}) {
+    const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(candidate);
+    if (templateIdentity == descriptor.templateIdentity &&
+        schemaMajor == descriptor.schemaMajor &&
+        schemaMinor == descriptor.schemaMinor) {
+      preset = candidate;
+      break;
+    }
+  }
+  if (!preset)
+    return invalid(
+        "template descriptor is not a registered public Builder template");
+  std::vector<std::uint8_t> bytes = encodeConfig(*preset, scale);
   auto digest = computeComponentViewDigest(descriptorBytes(), bytes);
   if (!digest)
     return digest.takeError();
-  return ResolvedFabricTemplateConfigView(preset, std::move(bytes), *digest);
+  return ResolvedFabricTemplateConfigView(*preset, scale, std::move(bytes),
+                                          *digest);
+}
+
+llvm::Expected<ResolvedFabricTemplateConfigView>
+projectResolvedFabricTemplateConfigView(const ResolvedConfig &config) {
+  return resolveFabricTemplateConfig(
+      config.hardwareTarget.templateIdentity,
+      config.hardwareTarget.schemaVersion.major,
+      config.hardwareTarget.schemaVersion.minor,
+      config.hardwareTarget.parameters);
 }
 
 llvm::Expected<ResolvedFabricTemplateConfigView>
@@ -169,14 +246,15 @@ adoptResolvedFabricTemplateConfigView(
   if (llvm::Error error = validateComponentViewDigest(
           schemaDescriptorBytes, canonicalViewBytes, digest))
     return std::move(error);
-  auto preset = decodeConfig(canonicalViewBytes);
-  if (!preset)
-    return preset.takeError();
-  std::vector<std::uint8_t> reencoded = encodeConfig(*preset);
+  auto decoded = decodeConfig(canonicalViewBytes);
+  if (!decoded)
+    return decoded.takeError();
+  std::vector<std::uint8_t> reencoded =
+      encodeConfig(decoded->preset, decoded->scale);
   if (llvm::ArrayRef<std::uint8_t>(reencoded) != canonicalViewBytes)
     return invalid("template config does not re-encode to the source bytes");
-  return ResolvedFabricTemplateConfigView(*preset, std::move(reencoded),
-                                          digest);
+  return ResolvedFabricTemplateConfigView(decoded->preset, decoded->scale,
+                                          std::move(reencoded), digest);
 }
 
 const CandidateGeneratorDescriptor &

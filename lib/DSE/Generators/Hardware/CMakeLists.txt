@@ -14,6 +14,7 @@ target_include_directories(LoomDSEHardwareGenerator PUBLIC
 target_link_libraries(LoomDSEHardwareGenerator PUBLIC
   LoomADGBuilder
   LoomCommon
+  LoomConfig
   LoomDSECandidateGenerator
   LoomFabricArtifact
   LoomHardwareRTL

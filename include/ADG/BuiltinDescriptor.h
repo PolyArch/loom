@@ -20,6 +20,14 @@ struct BuiltinTargetScale final {
   std::uint64_t memoryCapacityBytes;
 };
 
+constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
+  return scale.accCoreCount != 0 && scale.spatialPeCount != 0 &&
+         scale.temporalPeCount != 0 && scale.spatialMemoryCount != 0 &&
+         scale.temporalMemoryCount != 0 &&
+         scale.temporalResidentContexts != 0 && scale.gatewayCount != 0 &&
+         scale.memoryCapacityBytes != 0;
+}
+
 struct BuiltinTargetDescriptor final {
   BuiltinTargetPreset preset;
   llvm::StringLiteral name;

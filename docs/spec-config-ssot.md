@@ -187,7 +187,9 @@ part of either PnR component view: Spatial and System PnR consume the exact
 finalized Fabric identity as a separate input. The two PnR policy domains use
 the same closed field types and codecs but remain separate values, so they may
 select different search policies and objective closures without introducing a
-second schema.
+second schema. Fabric template expansion consumes the resolved template
+identity, schema version, and complete typed parameter record. Preset defaults
+are authoring provenance and cannot replace those resolved parameters.
 
 The Structured ownership generator policy owns:
 

@@ -1,5 +1,6 @@
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Config/ResolvedConfig.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
 #include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
 #include "DSE/SpatialTopologyCandidateGenerator.h"
@@ -84,9 +85,12 @@ struct Fixture final {
 
 loom::fabric::FinalizedFabricRoot
 generateBuiltinSystem(Fixture &fixture,
-                      loom::adg::BuiltinTargetPreset preset =
-                          loom::adg::BuiltinTargetPreset::Small) {
-  auto config = take(loom::dse::resolveFabricTemplateConfig(preset));
+                      loom::adg::BuiltinTargetPreset preset,
+                      const loom::adg::BuiltinTargetScale &scale) {
+  const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(preset);
+  auto config = take(loom::dse::resolveFabricTemplateConfig(
+      descriptor.templateIdentity, descriptor.schemaMajor,
+      descriptor.schemaMinor, scale));
   auto inputs = take(loom::dse::bindFabricTemplateCandidateGeneratorInputs());
   auto binding =
       take(loom::dse::resolveFabricTemplateCandidateGeneratorBinding(config));
@@ -102,6 +106,14 @@ generateBuiltinSystem(Fixture &fixture,
 }
 
 loom::fabric::FinalizedFabricRoot
+generateBuiltinSystem(Fixture &fixture,
+                      loom::adg::BuiltinTargetPreset preset =
+                          loom::adg::BuiltinTargetPreset::Small) {
+  return generateBuiltinSystem(
+      fixture, preset, loom::adg::getBuiltinTargetDescriptor(preset).scale);
+}
+
+loom::fabric::FinalizedFabricRoot
 importBuiltinModule(const loom::fabric::FinalizedFabricRoot &system,
                     Fixture &fixture) {
   require(system.directDependencies().size() == 1,
@@ -114,6 +126,51 @@ importBuiltinModule(const loom::fabric::FinalizedFabricRoot &system,
   require(module.view().rootKind() == loom::fabric::FabricRootKind::Module,
           "builtin dependency is not a Module");
   return module;
+}
+
+void parameterizedTemplateScale(
+    Fixture &fixture,
+    const loom::fabric::FinalizedFabricRoot &defaultSystem) {
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.hardwareTarget.templateIdentity =
+      loom::adg::builtinSmallTarget.templateIdentity.str();
+  resolved.hardwareTarget.schemaVersion = {
+      loom::adg::builtinSmallTarget.schemaMajor,
+      loom::adg::builtinSmallTarget.schemaMinor};
+  auto &scale = resolved.hardwareTarget.parameters;
+  scale = loom::adg::builtinSmallTarget.scale;
+  scale.accCoreCount = 2;
+  scale.spatialPeCount = 13;
+  scale.temporalPeCount = 5;
+  scale.temporalResidentContexts = 3;
+  auto projected =
+      take(loom::dse::projectResolvedFabricTemplateConfigView(resolved));
+  auto inputs = take(loom::dse::bindFabricTemplateCandidateGeneratorInputs());
+  auto binding = take(
+      loom::dse::resolveFabricTemplateCandidateGeneratorBinding(projected));
+  auto generated = take(loom::dse::invokeCandidateGenerator(
+      inputs, binding, fixture.store, fixture.blobs));
+  const auto &outputs = completed(generated).outputBindings.front().artifacts;
+  require(outputs.size() == 1,
+          "resolved hardware target did not generate one System");
+  auto system = take(
+      loom::fabric::importEntireFabricRoot(outputs.front(), fixture.store));
+  require(system.reference() != defaultSystem.reference(),
+          "resolved target scale did not change the System identity");
+  require(system.view().accCoreOccurrences().size() == scale.accCoreCount,
+          "resolved AccCore count did not reach the System artifact");
+  auto module = importBuiltinModule(system, fixture);
+  std::uint64_t instructionContexts = 0;
+  for (const auto &pe : module.view().peOccurrences())
+    instructionContexts += module.view().inventorySize(
+        loom::fabric::FabricInventoryOwnerRef::of(pe),
+        loom::fabric::FabricInventoryKind::InstructionContext);
+  const std::uint64_t expectedContexts =
+      scale.spatialPeCount +
+      static_cast<std::uint64_t>(scale.temporalPeCount) *
+          scale.temporalResidentContexts;
+  require(instructionContexts == expectedContexts,
+          "resolved PE scale did not reach the Module context inventory");
 }
 
 void strictConfigAdmission() {
@@ -515,6 +572,7 @@ int main() {
   strictConfigAdmission();
   Fixture fixture;
   auto system = generateBuiltinSystem(fixture);
+  parameterizedTemplateScale(fixture, system);
   auto module = importBuiltinModule(system, fixture);
   topologyRewrite(fixture, module);
   occurrenceInventoryRewrite(fixture, module);

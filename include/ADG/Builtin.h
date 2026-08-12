@@ -28,12 +28,19 @@ llvm::Expected<BuiltinTargetPreset> parseBuiltinTargetPreset(llvm::StringRef);
 
 llvm::Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset);
+llvm::Expected<BuiltinSpatialCoreExpansion>
+expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset,
+                         const BuiltinTargetScale &scale);
 
 /// Expands the System recipe around an independently finalized SpatialCore.
 /// The builtin hardware domain is complete, while the returned System remains
 /// open for additional typed resources and domains before close().
 llvm::Expected<SystemBuilder>
 expandBuiltinSystem(DesignBuilder &design, BuiltinTargetPreset preset,
+                    const loom::fabric::FinalizedFabricRoot &spatialCore);
+llvm::Expected<SystemBuilder>
+expandBuiltinSystem(DesignBuilder &design, BuiltinTargetPreset preset,
+                    const BuiltinTargetScale &scale,
                     const loom::fabric::FinalizedFabricRoot &spatialCore);
 
 /// Expands and finalizes the selected descriptor through the same public ADG
@@ -43,6 +50,9 @@ expandBuiltinSystem(DesignBuilder &design, BuiltinTargetPreset preset,
 llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store,
                    BuiltinTargetPreset preset);
+llvm::Expected<FinalizedFabricDesign>
+buildBuiltinTarget(const loom::ArtifactStore &store, BuiltinTargetPreset preset,
+                   const BuiltinTargetScale &scale);
 
 } // namespace loom::adg
 

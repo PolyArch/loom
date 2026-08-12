@@ -285,8 +285,10 @@ struct MemoryMeshAttachments final {
 
 llvm::Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSpatialCoreImpl(DesignBuilder &design,
-                             const BuiltinTargetDescriptor &descriptor) {
-  const BuiltinTargetScale &scale = descriptor.scale;
+                             const BuiltinTargetDescriptor &descriptor,
+                             const BuiltinTargetScale &scale) {
+  if (!isValidBuiltinTargetScale(scale))
+    return invalid("all builtin target scale values must be positive");
   auto tagBits = PortType::bits(scale.temporalResidentContexts);
   if (!tagBits)
     return tagBits.takeError();
@@ -640,7 +642,10 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
 llvm::Expected<SystemBuilder>
 expandBuiltinSystemImpl(DesignBuilder &design,
                         const BuiltinTargetDescriptor &descriptor,
+                        const BuiltinTargetScale &scale,
                         const loom::fabric::FinalizedFabricRoot &module) {
+  if (!isValidBuiltinTargetScale(scale))
+    return invalid("all builtin target scale values must be positive");
   auto system = design.createSystem((descriptor.name + "-system").str());
   if (!system)
     return system.takeError();
@@ -661,9 +666,8 @@ expandBuiltinSystemImpl(DesignBuilder &design,
     return host.takeError();
 
   std::vector<AccCore> cores;
-  cores.reserve(descriptor.scale.accCoreCount);
-  for (std::uint32_t ordinal = 0; ordinal != descriptor.scale.accCoreCount;
-       ++ordinal) {
+  cores.reserve(scale.accCoreCount);
+  for (std::uint32_t ordinal = 0; ordinal != scale.accCoreCount; ++ordinal) {
     auto core = system->addAccCore(
         *architecture, ordinal % 2 == 0 ? *inOrder : *outOfOrder, *imported);
     if (!core)
@@ -672,16 +676,15 @@ expandBuiltinSystemImpl(DesignBuilder &design,
   }
 
   auto transportContract = singleRequesterResourceContract(
-      2 * (descriptor.scale.accCoreCount + descriptor.scale.gatewayCount) *
-      descriptor.scale.temporalResidentContexts);
+      2 * (scale.accCoreCount + scale.gatewayCount) *
+      scale.temporalResidentContexts);
   if (!transportContract)
     return transportContract.takeError();
   auto bits128 = PortType::bits(128);
   if (!bits128)
     return bits128.takeError();
   std::vector<HardwareDomainMember> clockMembers;
-  clockMembers.reserve(cores.size() * (2 + descriptor.scale.gatewayCount * 2) +
-                       3);
+  clockMembers.reserve(cores.size() * (2 + scale.gatewayCount * 2) + 3);
   clockMembers.push_back(host->domainMember());
   for (const AccCore &core : cores) {
     clockMembers.push_back(core.instructionCoreDomainMember());
@@ -694,8 +697,7 @@ expandBuiltinSystemImpl(DesignBuilder &design,
   std::vector<std::vector<SystemTransportEndpoint>> occurrenceResponseCarriers(
       cores.size());
   for (std::uint32_t source = 0; source != cores.size(); ++source) {
-    for (std::uint32_t gateway = 0; gateway != descriptor.scale.gatewayCount;
-         ++gateway) {
+    for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway) {
       auto transport = system->addTransportResource(
           {{*bits128}, {*bits128}, *transportContract});
       if (!transport)
@@ -704,7 +706,7 @@ expandBuiltinSystemImpl(DesignBuilder &design,
       if (!pattern)
         return pattern.takeError();
       const std::uint32_t destination =
-          (source + gateway + 1) % descriptor.scale.accCoreCount;
+          (source + gateway + 1) % scale.accCoreCount;
       auto sourceEndpoint = cores[source].spatialTransportOutput(gateway);
       if (!sourceEndpoint)
         return sourceEndpoint.takeError();
@@ -740,13 +742,13 @@ expandBuiltinSystemImpl(DesignBuilder &design,
   if (!clockContract)
     return clockContract.takeError();
   auto serviceRate = system->createServiceRate(
-      *clock, 1, 1, descriptor.scale.temporalResidentContexts,
+      *clock, 1, 1, scale.temporalResidentContexts,
       loom::fabric::ServiceProgress(
           std::in_place_type<::fabric::FairEventual>));
   if (!serviceRate)
     return serviceRate.takeError();
   auto systemMemoryCapacity = llvm::checkedMulUnsigned<std::uint64_t>(
-      descriptor.scale.memoryCapacityBytes, descriptor.scale.accCoreCount);
+      scale.memoryCapacityBytes, scale.accCoreCount);
   if (!systemMemoryCapacity)
     return invalid("builtin System memory capacity overflows u64");
   auto memoryAccessDomain = builtinMemoryAccessDomain();
@@ -956,22 +958,47 @@ parseBuiltinTargetPreset(llvm::StringRef spelling) {
 
 llvm::Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset) {
+  const BuiltinTargetDescriptor &descriptor =
+      getBuiltinTargetDescriptor(preset);
+  return expandBuiltinSpatialCoreImpl(design, descriptor, descriptor.scale);
+}
+
+llvm::Expected<BuiltinSpatialCoreExpansion>
+expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset,
+                         const BuiltinTargetScale &scale) {
   return expandBuiltinSpatialCoreImpl(design,
-                                      getBuiltinTargetDescriptor(preset));
+                                      getBuiltinTargetDescriptor(preset), scale);
 }
 
 llvm::Expected<SystemBuilder>
 expandBuiltinSystem(DesignBuilder &design, BuiltinTargetPreset preset,
                     const loom::fabric::FinalizedFabricRoot &spatialCore) {
-  return expandBuiltinSystemImpl(design, getBuiltinTargetDescriptor(preset),
+  const BuiltinTargetDescriptor &descriptor =
+      getBuiltinTargetDescriptor(preset);
+  return expandBuiltinSystemImpl(design, descriptor, descriptor.scale,
                                  spatialCore);
+}
+
+llvm::Expected<SystemBuilder>
+expandBuiltinSystem(DesignBuilder &design, BuiltinTargetPreset preset,
+                    const BuiltinTargetScale &scale,
+                    const loom::fabric::FinalizedFabricRoot &spatialCore) {
+  return expandBuiltinSystemImpl(design, getBuiltinTargetDescriptor(preset),
+                                 scale, spatialCore);
 }
 
 llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store,
                    BuiltinTargetPreset preset) {
+  return buildBuiltinTarget(store, preset,
+                            getBuiltinTargetDescriptor(preset).scale);
+}
+
+llvm::Expected<FinalizedFabricDesign>
+buildBuiltinTarget(const loom::ArtifactStore &store, BuiltinTargetPreset preset,
+                   const BuiltinTargetScale &scale) {
   DesignBuilder moduleDesign(store);
-  auto moduleExpansion = expandBuiltinSpatialCore(moduleDesign, preset);
+  auto moduleExpansion = expandBuiltinSpatialCore(moduleDesign, preset, scale);
   if (!moduleExpansion)
     return moduleExpansion.takeError();
   if (llvm::Error error =
@@ -984,8 +1011,8 @@ buildBuiltinTarget(const loom::ArtifactStore &store,
     return invalid("builtin expansion did not finalize one SpatialCore");
 
   DesignBuilder systemDesign(store);
-  auto system =
-      expandBuiltinSystem(systemDesign, preset, modules->roots().front());
+  auto system = expandBuiltinSystem(systemDesign, preset, scale,
+                                    modules->roots().front());
   if (!system)
     return system.takeError();
   if (llvm::Error error = system->close())
