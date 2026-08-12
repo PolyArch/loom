@@ -2111,10 +2111,11 @@ WorkUnitKey =
 ```
 
 The mutable ExecutionJournal may record starts, finalized output references,
-attempt references, and checkpoint references by WorkUnitKey. Physical journal
-event order has no semantic meaning. The Journal cannot own a current-best
-answer, override an Artifact or Evidence, replace the resolved plan, or publish
-a checkpoint as formal selection.
+attempt references, checkpoint references, and finalized-work recovery-record
+references by WorkUnitKey. Physical journal event order has no semantic
+meaning. The Journal cannot own a current-best answer, override an Artifact or
+Evidence, replace the resolved plan, interpret an owner payload, or publish any
+recovery record as formal selection.
 
 Resume recomputes the run key and resolved plan, verifies closure and each
 owner schema, revalidates Artifact preimages and Request/Evidence references,
@@ -2131,14 +2132,23 @@ another attempt, it retains the same `WorkUnitKey` and materializes an
 independent bundle. This is owner-attempt recovery, not a new semantic work item
 or generic Job state machine.
 
-Attempts and checkpoints remain owner-specific. Evaluation uses its
+Attempts and recovery records remain owner-specific. Evaluation uses its
 request-local attempt record; an ExternalToolInvocationBundle retains generated
 scripts, frozen local bindings, stdout, stderr, raw reports, and its atomic
 completion record in attempt or scratch material; PnR, training, and other
-domains define typed checkpoints only when real recovery requires them. A
-checkpoint binds the exact run key, occurrence, plan node, WorkUnitKey, owner
-schema, and version. There is no generic Attempt Artifact or all-domain
-checkpoint payload.
+domains define typed checkpoints only when real recovery requires them. An
+in-flight checkpoint binds the exact run key, occurrence, plan node,
+WorkUnitKey, owner schema, and version because its mutable state belongs to one
+attempt. A finalized-work recovery record instead binds the exact run key,
+plan node, WorkUnitKey, owner schema and version, exact owner invocation
+closure, terminal outcome, and finalized output roots. It is immutable and may
+be reused by later occurrences of the same run key solely to reconstruct the
+owner report already accepted at that WorkUnitKey. Recovery strict-imports the
+record through its owner codec, revalidates all referenced Artifact preimages,
+and requires its terminal outcome and root set to equal the Journal record.
+It cannot provide best-so-far state, authorize a new output, or act as formal
+selection. There is no generic Attempt Artifact, generic recovery payload, or
+all-domain checkpoint codec.
 
 ## Ground-Truth Collection Campaign
 

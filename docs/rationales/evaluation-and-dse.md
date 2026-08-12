@@ -496,6 +496,17 @@ and ETA remain removable Journal projections, while graceful stop imports
 atomic completions and resumes missing WorkUnitKeys. Timeouts stay incomplete;
 they do not become negative training labels or infeasibility proofs.
 
+Reconstructing a finalized owner report by invoking the provider again would
+charge real work during resume and could change lineage or work accounting even
+when every output root was already terminal. The owner therefore may publish a
+typed immutable recovery record at the same atomic boundary as terminal work.
+The Journal stores only its digest and verifies that it names the same run key,
+WorkUnitKey, invocation closure, terminal outcome, and roots. Unlike an
+in-flight checkpoint, this record deliberately spans later occurrences of the
+same run key: it describes accepted finalized work rather than mutable attempt
+state. Keeping the codec with the work owner preserves exact resume without
+making the Journal a second report or selection authority.
+
 ## Why Derived Quantities Use Ordinary Metrics And Models
 
 A generic formula registry would introduce a second semantic language beside
