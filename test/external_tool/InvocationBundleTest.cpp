@@ -2,6 +2,7 @@
 #include "ExternalTool/ExternalFile.h"
 
 #include "Common/ArtifactText.h"
+#include "Common/DiagnosticVerbosity.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -1493,6 +1494,35 @@ void persistentResultCacheIsExact(const std::filesystem::path &root,
                          (root / "cache-relocated").string(), relocatedSpec));
   const ExternalToolResultCacheKey firstKey =
       take(__func__, deriveExternalToolResultCacheKey(first));
+  ExternalToolInvocationBundleSpec diagnosticBase = baseSpec(tool, output);
+  diagnosticBase.commands = {
+      {tool.string(), "compile", "work/diagnostic-runner"},
+      {"work/diagnostic-runner", output, "diagnostic"}};
+  diagnosticBase.toolProducedExecutables = {"work/diagnostic-runner"};
+  const PreparedExternalToolInvocation diagnosticBaseInvocation = take(
+      __func__, finalizeExternalToolInvocationBundle(
+                    (root / "cache-diagnostic-base").string(), diagnosticBase));
+  ExternalToolInvocationBundleSpec diagnosticSpec = diagnosticBase;
+  diagnosticSpec.diagnosticCommandOrdinals = {1};
+  const PreparedExternalToolInvocation diagnosticInvocation =
+      take(__func__, finalizeExternalToolInvocationBundle(
+                         (root / "cache-diagnostic").string(), diagnosticSpec));
+  const ExternalToolResultCacheKey diagnosticBaseKey = take(
+      __func__, deriveExternalToolResultCacheKey(diagnosticBaseInvocation));
+  const ExternalToolResultCacheKey diagnosticKey =
+      take(__func__, deriveExternalToolResultCacheKey(diagnosticInvocation));
+  require(__func__, diagnosticKey == diagnosticBaseKey,
+          "diagnostic verbosity changed the result cache key");
+  const std::string diagnosticManifest =
+      readFile(std::filesystem::path(diagnosticInvocation.bundleRoot) /
+               "tool-invocation.json");
+  const bool expectsArgument =
+      loom::diagnosticVerbosity() != loom::DiagnosticVerbosity::Disabled;
+  require(
+      __func__,
+      (diagnosticManifest.find(loom::diagnosticVerbosityArgumentPrefix.str()) !=
+       std::string::npos) == expectsArgument,
+      "diagnostic projection disagrees with the Common-owned level");
   const ExternalToolResultCacheKey relocatedKey =
       take(__func__, deriveExternalToolResultCacheKey(relocated));
   require(__func__, firstKey == relocatedKey,

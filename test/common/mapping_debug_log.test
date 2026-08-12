@@ -1,10 +1,13 @@
-# RUN: env -u LOOM_DEBUG_VERBOSE %loom-common-mapping-debug-log-test 0 2>&1 | count 0
-# RUN: env LOOM_DEBUG_VERBOSE=invalid %loom-common-mapping-debug-log-test 0 2>&1 | count 0
-# RUN: env LOOM_DEBUG_VERBOSE=0 %loom-common-mapping-debug-log-test 0 2>&1 | count 0
-# RUN: env LOOM_DEBUG_VERBOSE=1 %loom-common-mapping-debug-log-test 1 2>&1 | FileCheck %s --check-prefix=L1
-# RUN: env LOOM_DEBUG_VERBOSE=2 %loom-common-mapping-debug-log-test 2 2>&1 | FileCheck %s --check-prefix=L2
-# RUN: env LOOM_DEBUG_VERBOSE=3 %loom-common-mapping-debug-log-test 3 2>&1 | FileCheck %s --check-prefix=L3
-# RUN: env LOOM_DEBUG_VERBOSE=99 %loom-common-mapping-debug-log-test 3 2>&1 | FileCheck %s --check-prefix=L3
+# RUN: env -u LOOM_VERBOSE_LEVEL %loom-common-mapping-debug-log-test 0 2>&1 | count 0
+# RUN: env LOOM_VERBOSE_LEVEL=invalid %loom-common-mapping-debug-log-test 0 2>&1 | count 0
+# RUN: env LOOM_VERBOSE_LEVEL='+2' %loom-common-mapping-debug-log-test 0 2>&1 | count 0
+# RUN: env LOOM_VERBOSE_LEVEL=' 2' %loom-common-mapping-debug-log-test 0 2>&1 | count 0
+# RUN: env LOOM_VERBOSE_LEVEL=0 %loom-common-mapping-debug-log-test 0 2>&1 | count 0
+# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-common-mapping-debug-log-test 1 2>&1 | FileCheck %s --check-prefix=L1
+# RUN: env LOOM_VERBOSE_LEVEL=2 %loom-common-mapping-debug-log-test 2 2>&1 | FileCheck %s --check-prefix=L2
+# RUN: env LOOM_VERBOSE_LEVEL=3 %loom-common-mapping-debug-log-test 3 2>&1 | FileCheck %s --check-prefix=L3
+# RUN: env LOOM_VERBOSE_LEVEL=99 %loom-common-mapping-debug-log-test 3 2>&1 | FileCheck %s --check-prefix=L3
+# RUN: env LOOM_VERBOSE_LEVEL=999999999999999999999999 %loom-common-mapping-debug-log-test 3 2>&1 | FileCheck %s --check-prefix=L3
 
 # L1-COUNT-1: "event":"invocation_begin"
 # L1-NOT: "event":"negotiation_iteration"

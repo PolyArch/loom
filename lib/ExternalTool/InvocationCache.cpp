@@ -4,6 +4,7 @@
 
 #include "Common/ArtifactText.h"
 #include "Common/BlobDigest.h"
+#include "Common/DiagnosticVerbosity.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -62,19 +63,9 @@ llvm::Error cacheSystemError(const llvm::Twine &message) {
   return cacheError(message + ": " + std::strerror(errno));
 }
 
-unsigned cacheVerbosity() {
-  const char *value = std::getenv("LOOM_VERBOSE_LEVEL");
-  if (!value || !*value)
-    return 0;
-  unsigned parsed = 0;
-  if (llvm::StringRef(value).getAsInteger(10, parsed))
-    return 0;
-  return parsed;
-}
-
-void cacheDiagnostic(unsigned level, llvm::StringRef event,
+void cacheDiagnostic(DiagnosticVerbosity level, llvm::StringRef event,
                      llvm::StringRef detail = {}) {
-  if (cacheVerbosity() < level)
+  if (!diagnosticVerbosityEnabled(level))
     return;
   llvm::errs() << "[loom.external-tool-cache] " << event;
   if (!detail.empty())
@@ -387,11 +378,17 @@ canonicalExecutionConfiguration(const PreparedExternalToolInvocation &prepared,
     json.attributeEnd();
     json.attribute("result_importer_identity",
                    manifest.semanticContract.resultImporterIdentity);
+    const std::set<std::string> producedExecutables(
+        manifest.toolProducedExecutables.begin(),
+        manifest.toolProducedExecutables.end());
     json.attributeArray("commands", [&] {
       for (const std::vector<std::string> &command : manifest.commands)
         json.array([&] {
-          for (const std::string &argument : command)
-            writeNormalizedLocalPathSegments(json, argument, tokens);
+          for (const auto &[index, argument] : llvm::enumerate(command))
+            if (!(producedExecutables.count(command.front()) != 0 &&
+                  index + 1 == command.size() &&
+                  isDiagnosticVerbosityArgument(argument)))
+              writeNormalizedLocalPathSegments(json, argument, tokens);
         });
     });
     json.attributeBegin("inherit_environment");
@@ -1037,7 +1034,8 @@ llvm::Expected<int> executeExternalToolInvocationBundle(
     const PreparedExternalToolInvocation &prepared) {
   auto root = cacheRoot();
   if (!root) {
-    cacheDiagnostic(1, "unavailable", llvm::toString(root.takeError()));
+    cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
+                    llvm::toString(root.takeError()));
     return runScript(prepared, CacheScriptMode::Execute);
   }
   if (!*root)
@@ -1045,19 +1043,22 @@ llvm::Expected<int> executeExternalToolInvocationBundle(
 
   auto key = deriveExternalToolResultCacheKey(prepared);
   if (!key) {
-    cacheDiagnostic(1, "unavailable", llvm::toString(key.takeError()));
+    cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
+                    llvm::toString(key.takeError()));
     return runScript(prepared, CacheScriptMode::Execute);
   }
   const std::string keySpelling = keyText(*key);
   auto lock = lockKey(**root, *key);
   if (!lock) {
-    cacheDiagnostic(1, "unavailable", llvm::toString(lock.takeError()));
+    cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
+                    llvm::toString(lock.takeError()));
     return runScript(prepared, CacheScriptMode::Execute);
   }
 
   auto loaded = loadPreparedInvocationManifest(prepared);
   if (!loaded) {
-    cacheDiagnostic(1, "unavailable", llvm::toString(loaded.takeError()));
+    cacheDiagnostic(DiagnosticVerbosity::Summary, "unavailable",
+                    llvm::toString(loaded.takeError()));
     return runScript(prepared, CacheScriptMode::Execute);
   }
   const std::filesystem::path entry = entryPath(**root, *key);
@@ -1070,15 +1071,16 @@ llvm::Expected<int> executeExternalToolInvocationBundle(
       return *preflight;
     auto restored = restoreEntry(entry, prepared, loaded->second, *key);
     if (restored && *restored) {
-      cacheDiagnostic(1, "hit", keySpelling);
+      cacheDiagnostic(DiagnosticVerbosity::Summary, "hit", keySpelling);
       return 0;
     }
     if (!restored)
-      cacheDiagnostic(1, "discard", llvm::toString(restored.takeError()));
+      cacheDiagnostic(DiagnosticVerbosity::Summary, "discard",
+                      llvm::toString(restored.takeError()));
     std::error_code removeError;
     std::filesystem::remove_all(entry, removeError);
   }
-  cacheDiagnostic(1, "miss", keySpelling);
+  cacheDiagnostic(DiagnosticVerbosity::Summary, "miss", keySpelling);
   auto status = runScript(prepared, CacheScriptMode::Execute);
   if (!status)
     return status.takeError();
@@ -1086,29 +1088,30 @@ llvm::Expected<int> executeExternalToolInvocationBundle(
     return *status;
   auto postflight = runScript(prepared, CacheScriptMode::Postflight);
   if (!postflight) {
-    cacheDiagnostic(1, "publish-unavailable",
+    cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     llvm::toString(postflight.takeError()));
     return 0;
   }
   if (*postflight != 0) {
-    cacheDiagnostic(1, "publish-unavailable",
+    cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                     "invocation inputs or tool changed during execution");
     return 0;
   }
   auto postflightKey = deriveExternalToolResultCacheKey(prepared);
   if (!postflightKey || *postflightKey != *key) {
     if (!postflightKey)
-      cacheDiagnostic(1, "publish-unavailable",
+      cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                       llvm::toString(postflightKey.takeError()));
     else
-      cacheDiagnostic(1, "publish-unavailable",
+      cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
                       "cache-key material changed during execution");
     return 0;
   }
   if (llvm::Error error = publishEntry(entry, prepared, loaded->second, *key))
-    cacheDiagnostic(1, "publish-unavailable", llvm::toString(std::move(error)));
+    cacheDiagnostic(DiagnosticVerbosity::Summary, "publish-unavailable",
+                    llvm::toString(std::move(error)));
   else
-    cacheDiagnostic(2, "published", entry.string());
+    cacheDiagnostic(DiagnosticVerbosity::Decision, "published", entry.string());
   return 0;
 }
 

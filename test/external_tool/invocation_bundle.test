@@ -1,2 +1,4 @@
 # RUN: rm -rf %t && mkdir -p %t
 # RUN: %loom-external-tool-invocation-bundle-test %t
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: env LOOM_VERBOSE_LEVEL=3 %loom-external-tool-invocation-bundle-test %t

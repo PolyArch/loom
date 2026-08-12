@@ -1,6 +1,8 @@
 #ifndef LOOM_COMMON_MAPPINGDEBUGLOG_H
 #define LOOM_COMMON_MAPPINGDEBUGLOG_H
 
+#include "Common/DiagnosticVerbosity.h"
+
 #include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/JSON.h"
@@ -9,12 +11,7 @@
 
 namespace loom::mapping_debug {
 
-enum class Level : std::uint8_t {
-  Disabled = 0,
-  Summary = 1,
-  Decision = 2,
-  Detail = 3,
-};
+using Level = DiagnosticVerbosity;
 
 enum class Stage : std::uint8_t {
   TechMapping,
@@ -39,7 +36,7 @@ enum class Event : std::uint8_t {
   MappingFailure,
 };
 
-/// Returns the process-wide level parsed once from LOOM_DEBUG_VERBOSE.
+/// Returns the Common-owned process-wide diagnostic level.
 Level level();
 
 bool enabled(Level minimum);

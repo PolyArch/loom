@@ -532,6 +532,7 @@ bool validatePeerExecutables(const std::vector<PeerCommand> &commands,
 }
 
 bool launchPeers(const std::vector<PeerCommand> &commands,
+                 const std::vector<std::string> &verilatorArguments,
                  ChildGroup &children) {
   for (const PeerCommand &command : commands) {
     const pid_t child = ::fork();
@@ -539,9 +540,12 @@ bool launchPeers(const std::vector<PeerCommand> &commands,
       return false;
     if (child == 0) {
       std::vector<char *> arguments;
-      arguments.reserve(command.arguments.size() + 1);
+      arguments.reserve(command.arguments.size() + verilatorArguments.size());
       for (const std::string &argument : command.arguments)
         arguments.push_back(const_cast<char *>(argument.c_str()));
+      for (std::size_t index = 1; index != verilatorArguments.size(); ++index)
+        arguments.push_back(
+            const_cast<char *>(verilatorArguments[index].c_str()));
       arguments.push_back(nullptr);
       ::execv(arguments.front(), arguments.data());
       _exit(127);
@@ -602,7 +606,7 @@ int main(int argc, char **argv) {
   if (!options.peer &&
       (!parsePeerManifest(options.peerManifestPath, peerCommands) ||
        !validatePeerExecutables(peerCommands, options.peerExecutables) ||
-       !launchPeers(peerCommands, peerChildren))) {
+       !launchPeers(peerCommands, verilatorArguments, peerChildren))) {
     ::close(server);
     ::unlink(options.socketPath.c_str());
     std::cerr << "cannot launch the peer RTL engines\n";

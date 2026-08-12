@@ -737,9 +737,6 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
           std::to_string(facts.processors.front().parameters.clockPeriodTicks)};
       if (indexed.index() != 0)
         engineCommand.push_back("--peer");
-      if (options->debugVerbosity != 0)
-        engineCommand.push_back("+LOOM_DEBUG_VERBOSE=" +
-                                std::to_string(options->debugVerbosity));
       engineCommands.push_back(std::move(engineCommand));
     }
 
@@ -788,6 +785,8 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
         {gem5ExternalFile},
         {},
         std::move(executables)};
+    specification.diagnosticCommandOrdinals = {specification.commands.size() -
+                                               1};
     llvm::sort(specification.declaredOutputs);
     llvm::sort(specification.files, [](const auto &lhs, const auto &rhs) {
       return lhs.relativePath < rhs.relativePath;

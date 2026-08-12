@@ -9,6 +9,7 @@ add_mlir_library(LoomCommon
   BlobStore.cpp
   CanonicalRelation.cpp
   ComponentViewDigest.cpp
+  DiagnosticVerbosity.cpp
   ExternalFileFingerprint.cpp
   IndexWidth.cpp
   MappingDebugLog.cpp

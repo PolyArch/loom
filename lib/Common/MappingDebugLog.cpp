@@ -1,27 +1,13 @@
 #include "Common/MappingDebugLog.h"
 
-#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <algorithm>
-#include <cstdlib>
 #include <mutex>
 #include <string>
 
 namespace loom::mapping_debug {
 namespace {
-
-Level parseLevel() {
-  const char *binding = std::getenv("LOOM_DEBUG_VERBOSE");
-  if (!binding || !*binding)
-    return Level::Disabled;
-
-  std::uint64_t value = 0;
-  if (llvm::StringRef(binding).getAsInteger(10, value) || value == 0)
-    return Level::Disabled;
-  return static_cast<Level>(std::min<std::uint64_t>(value, 3));
-}
 
 llvm::StringRef spelling(Stage stage) {
   switch (stage) {
@@ -81,15 +67,9 @@ OutputState &outputState() {
 
 } // namespace
 
-Level level() {
-  static const Level parsed = parseLevel();
-  return parsed;
-}
+Level level() { return diagnosticVerbosity(); }
 
-bool enabled(Level minimum) {
-  return static_cast<std::uint8_t>(level()) >=
-         static_cast<std::uint8_t>(minimum);
-}
+bool enabled(Level minimum) { return diagnosticVerbosityEnabled(minimum); }
 
 void emit(Level minimum, Stage stage, Event event,
           llvm::function_ref<void(llvm::json::Object &)> buildFields) {
@@ -117,21 +97,21 @@ void emit(Level minimum, Stage stage, Event event,
 
 void MappingRunStatistics::emit(Stage stage,
                                 llvm::StringRef closureStatus) const {
-  mapping_debug::emit(
-      Level::Summary, stage, Event::Statistics,
-      [&](llvm::json::Object &fields) {
-        fields["candidate_rows"] = candidateRows;
-        fields["candidate_publications"] = candidatePublications;
-        fields["actions_proposed"] = actionsProposed;
-        fields["actions_accepted"] = actionsAccepted;
-        fields["actions_rejected"] = actionsRejected;
-        fields["actions_rolled_back"] = actionsRolledBack;
-        fields["a_star_expansions"] = aStarExpansions;
-        fields["negotiated_iterations"] = negotiatedIterations;
-        fields["capacity_conflicts"] = capacityConflicts;
-        fields["arithmetic_failures"] = arithmeticFailures;
-        fields["closure_status"] = closureStatus;
-      });
+  mapping_debug::emit(Level::Summary, stage, Event::Statistics,
+                      [&](llvm::json::Object &fields) {
+                        fields["candidate_rows"] = candidateRows;
+                        fields["candidate_publications"] =
+                            candidatePublications;
+                        fields["actions_proposed"] = actionsProposed;
+                        fields["actions_accepted"] = actionsAccepted;
+                        fields["actions_rejected"] = actionsRejected;
+                        fields["actions_rolled_back"] = actionsRolledBack;
+                        fields["a_star_expansions"] = aStarExpansions;
+                        fields["negotiated_iterations"] = negotiatedIterations;
+                        fields["capacity_conflicts"] = capacityConflicts;
+                        fields["arithmetic_failures"] = arithmeticFailures;
+                        fields["closure_status"] = closureStatus;
+                      });
 }
 
 } // namespace loom::mapping_debug

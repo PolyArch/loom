@@ -129,10 +129,10 @@ std::string portableAxiLiteSignalDeclarations() {
   logic        cfg_rready;
   logic [31:0] cfg_readback;
   logic [1:0]  cfg_read_response;
-  integer      loom_debug_verbose;
+  integer      loom_verbose_level;
   initial begin
-    if (!$value$plusargs("LOOM_DEBUG_VERBOSE=%d", loom_debug_verbose))
-      loom_debug_verbose = 0;
+    if (!$value$plusargs("LOOM_VERBOSE_LEVEL=%d", loom_verbose_level))
+      loom_verbose_level = 0;
   end
 )sv";
 }
@@ -146,7 +146,7 @@ std::string portableAxiLiteDriverTasks() {
       input logic [1:0] expected_response);
     integer wait_cycles;
     begin
-      if (loom_debug_verbose >= 1)
+      if (loom_verbose_level >= 1)
         $display("[loom][config][write] address=%h data=%h strobe=%h",
                  address, data, strobe);
       cfg_awaddr = address;
@@ -155,13 +155,13 @@ std::string portableAxiLiteDriverTasks() {
       do begin
         @(posedge clock);
         wait_cycles = wait_cycles + 1;
-        if (loom_debug_verbose >= 3)
+        if (loom_verbose_level >= 3)
           $display("[loom][config][aw] cycle=%0d reset=%b valid=%b ready=%b",
                    wait_cycles, reset, cfg_awvalid, cfg_awready);
         if (wait_cycles == 64 && !cfg_awready)
           $fatal(1, "AXI4-Lite AW handshake timed out");
       end while (!cfg_awready);
-      if (loom_debug_verbose >= 2)
+      if (loom_verbose_level >= 2)
         $display("[loom][config][aw] accepted address=%h", address);
       #1 cfg_awvalid = 0;
 
@@ -172,13 +172,13 @@ std::string portableAxiLiteDriverTasks() {
       do begin
         @(posedge clock);
         wait_cycles = wait_cycles + 1;
-        if (loom_debug_verbose >= 3)
+        if (loom_verbose_level >= 3)
           $display("[loom][config][w] cycle=%0d reset=%b valid=%b ready=%b",
                    wait_cycles, reset, cfg_wvalid, cfg_wready);
         if (wait_cycles == 64 && !cfg_wready)
           $fatal(1, "AXI4-Lite W handshake timed out");
       end while (!cfg_wready);
-      if (loom_debug_verbose >= 2)
+      if (loom_verbose_level >= 2)
         $display("[loom][config][w] accepted data=%h strobe=%h", data,
                  strobe);
       #1 cfg_wvalid = 0;
@@ -187,7 +187,7 @@ std::string portableAxiLiteDriverTasks() {
       do begin
         @(negedge clock);
         wait_cycles = wait_cycles + 1;
-        if (loom_debug_verbose >= 3)
+        if (loom_verbose_level >= 3)
           $display("[loom][config][b] cycle=%0d valid=%b response=%b",
                    wait_cycles, cfg_bvalid, cfg_bresp);
         if (wait_cycles == 64 && !cfg_bvalid)
@@ -204,7 +204,7 @@ std::string portableAxiLiteDriverTasks() {
       output logic [1:0] response);
     integer wait_cycles;
     begin
-      if (loom_debug_verbose >= 1)
+      if (loom_verbose_level >= 1)
         $display("[loom][config][read] address=%h", address);
       cfg_araddr = address;
       cfg_arvalid = 1;
@@ -212,13 +212,13 @@ std::string portableAxiLiteDriverTasks() {
       do begin
         @(posedge clock);
         wait_cycles = wait_cycles + 1;
-        if (loom_debug_verbose >= 3)
+        if (loom_verbose_level >= 3)
           $display("[loom][config][ar] cycle=%0d reset=%b valid=%b ready=%b",
                    wait_cycles, reset, cfg_arvalid, cfg_arready);
         if (wait_cycles == 64 && !cfg_arready)
           $fatal(1, "AXI4-Lite AR handshake timed out");
       end while (!cfg_arready);
-      if (loom_debug_verbose >= 2)
+      if (loom_verbose_level >= 2)
         $display("[loom][config][ar] accepted address=%h", address);
       #1 cfg_arvalid = 0;
 
@@ -226,7 +226,7 @@ std::string portableAxiLiteDriverTasks() {
       do begin
         @(negedge clock);
         wait_cycles = wait_cycles + 1;
-        if (loom_debug_verbose >= 3)
+        if (loom_verbose_level >= 3)
           $display("[loom][config][r] cycle=%0d valid=%b response=%b data=%h",
                    wait_cycles, cfg_rvalid, cfg_rresp, cfg_rdata);
         if (wait_cycles == 64 && !cfg_rvalid)

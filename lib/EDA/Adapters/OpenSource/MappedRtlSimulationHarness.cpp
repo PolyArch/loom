@@ -314,7 +314,7 @@ void renderMemoryService(llvm::raw_ostream &output,
            << " * 8 +: 8];\n"
            << "          end\n"
            << "        end\n"
-           << "        if (loom_debug_verbose >= 2) $display("
+           << "        if (loom_verbose_level >= 2) $display("
               "\"[loom][rtl][memory] port="
            << ordinal << " kind=%0d lanes=%0d element_bits=%0d\", "
            << port.prefix << "_request_kind, " << port.prefix
@@ -373,7 +373,7 @@ void renderConfigurationTask(llvm::raw_ostream &output, llvm::StringRef prefix,
          << ":0] strobe);\n"
          << "    integer wait_cycles;\n"
          << "    begin\n"
-         << "      if (loom_debug_verbose >= 1) $display(\"[loom][rtl][cfg] "
+         << "      if (loom_verbose_level >= 1) $display(\"[loom][rtl][cfg] "
             "write address=%h data=%h strobe=%h\", address, data, strobe);\n"
          << "      " << prefix << "_awaddr = address;\n"
          << "      " << prefix << "_awvalid = 1;\n"
@@ -661,7 +661,7 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
          << "  logic [" << hardware::rtl::portableConfigurationDataWidth - 1
          << ":0] loom_cfg_readback;\n"
          << "  logic [" << kAxiResponseWidth - 1 << ":0] loom_cfg_response;\n"
-         << "  integer loom_debug_verbose;\n";
+         << "  integer loom_verbose_level;\n";
   output << "  assign loom_engine_retired = loom_retired;\n"
          << "  assign loom_engine_launch_cycle = loom_launch_cycle;\n"
          << "  assign loom_engine_retirement_cycle = "
@@ -698,8 +698,8 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   output << "  initial begin\n"
          << "    loom_inputs_enabled = 0;\n"
          << "    loom_resets_released = 0;\n"
-         << "    if (!$value$plusargs(\"LOOM_DEBUG_VERBOSE=%d\", "
-            "loom_debug_verbose)) loom_debug_verbose = 0;\n";
+         << "    if (!$value$plusargs(\"LOOM_VERBOSE_LEVEL=%d\", "
+            "loom_verbose_level)) loom_verbose_level = 0;\n";
   for (const InputTokenStream &input : facts.streamInputs) {
     const std::uint64_t ordinal = *input.runtimeStreamOrdinal;
     output << "    loom_runtime_stream_enabled_" << ordinal << " = 0;\n"
@@ -812,13 +812,13 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
   renderInputCounters(output, inputs, facts.selectedClock);
   for (const auto &[ordinal, input] : llvm::enumerate(inputs)) {
     output << "  always_ff @(posedge " << facts.selectedClock << ") begin\n"
-           << "    if (loom_inputs_enabled && loom_debug_verbose >= 3) "
+           << "    if (loom_inputs_enabled && loom_verbose_level >= 3) "
               "$display(\"[loom][rtl][input] ordinal="
            << ordinal << " cycle=%0d valid=%0d ready=%0d index=%0d\", "
            << "loom_cycle, " << input->port.prefix << "_valid, "
            << input->port.prefix << "_ready, loom_input_index_" << ordinal
            << ");\n"
-           << "    if (loom_inputs_enabled && loom_debug_verbose >= 2 && "
+           << "    if (loom_inputs_enabled && loom_verbose_level >= 2 && "
            << input->port.prefix << "_valid && " << input->port.prefix
            << "_ready) $display(\"[loom][rtl][input] ordinal=" << ordinal
            << " accepted_cycle=%0d\", loom_cycle);\n"
@@ -875,7 +875,7 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
          << "      loom_completion_seen <= '0;\n"
          << "      loom_retired <= 0;\n"
          << "    end else if (loom_inputs_enabled) begin\n"
-         << "      if (loom_debug_verbose >= 3) $display("
+         << "      if (loom_verbose_level >= 3) $display("
             "\"[loom][rtl][progress] cycle=%0d completion_seen=%b "
             "completion_fire=%b\", loom_cycle, loom_completion_seen, "
             "loom_completion_fire);\n"
@@ -887,7 +887,7 @@ renderMappedRtlTestbench(const MappedRtlInvocationFacts &facts,
          << "_ready) loom_launch_cycle <= loom_cycle;\n"
          << "      if (!loom_retired && &(loom_completion_seen | "
             "loom_completion_fire)) begin\n"
-         << "        if (loom_debug_verbose >= 1) $display("
+         << "        if (loom_verbose_level >= 1) $display("
             "\"[loom][rtl][progress] retired_cycle=%0d\", loom_cycle);\n"
          << "        loom_retired <= 1;\n"
          << "        loom_retirement_cycle <= loom_cycle;\n"

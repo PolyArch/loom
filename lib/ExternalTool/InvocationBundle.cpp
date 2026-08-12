@@ -4,6 +4,7 @@
 
 #include "Common/ArtifactText.h"
 #include "Common/BlobDigest.h"
+#include "Common/DiagnosticVerbosity.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
@@ -1652,6 +1653,28 @@ llvm::Expected<PreparedExternalToolInvocation>
 finalizeExternalToolInvocationBundle(
     llvm::StringRef bundleRoot,
     const ExternalToolInvocationBundleSpec &specification) {
+  std::uint64_t previousDiagnosticOrdinal = 0;
+  bool hasPreviousDiagnosticOrdinal = false;
+  for (const std::uint64_t ordinal : specification.diagnosticCommandOrdinals) {
+    if (ordinal >= specification.commands.size())
+      return bundleError("diagnostic command ordinal is out of range");
+    if (hasPreviousDiagnosticOrdinal && previousDiagnosticOrdinal >= ordinal)
+      return bundleError(
+          "diagnostic command ordinals are not canonical sorted-unique");
+    previousDiagnosticOrdinal = ordinal;
+    hasPreviousDiagnosticOrdinal = true;
+    if (specification.commands[ordinal].empty() ||
+        !llvm::is_contained(specification.toolProducedExecutables,
+                            specification.commands[ordinal].front()))
+      return bundleError(
+          "diagnostic command is not a tool-produced executable");
+  }
+  for (const std::vector<std::string> &command : specification.commands)
+    for (const std::string &argument : command)
+      if (isDiagnosticVerbosityBinding(argument))
+        return bundleError(
+            "diagnostic verbosity is owned by invocation finalization");
+
   if (llvm::Error error = validateSpecification(specification))
     return error;
   if (llvm::Error error = validateBundleRootSpelling(bundleRoot))
@@ -1663,7 +1686,10 @@ finalizeExternalToolInvocationBundle(
   if (!std::filesystem::is_directory(root.parent_path(), statusError) ||
       statusError)
     return bundleError("bundle parent must be an existing directory");
-  const InvocationManifestData manifest = makeManifest(specification);
+  InvocationManifestData manifest = makeManifest(specification);
+  if (std::optional<std::string> argument = diagnosticVerbosityArgument())
+    for (const std::uint64_t ordinal : specification.diagnosticCommandOrdinals)
+      manifest.commands[ordinal].push_back(*argument);
 
   llvm::Expected<std::filesystem::path> staging = createStagingDirectory(root);
   if (!staging)

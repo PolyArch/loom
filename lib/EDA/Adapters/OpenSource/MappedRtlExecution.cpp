@@ -14,7 +14,6 @@ namespace {
 constexpr std::uint64_t kDefaultCycleLimit = 1'000'000;
 constexpr std::uint64_t kDefaultBuildJobs = 4;
 constexpr std::uint64_t kMaximumBuildJobs = 256;
-constexpr std::uint64_t kMaximumDebugVerbosity = 3;
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(
@@ -81,6 +80,16 @@ namespacedBundlePath(llvm::StringRef path, llvm::StringRef pathNamespace) {
 llvm::Expected<MappedRtlExecutionAttemptOptions>
 resolveMappedRtlExecutionAttemptOptions(
     const external_tool::LocalToolConfig &localConfig) {
+  const auto &provider = external_tool::verilatorProvider();
+  const auto configured = localConfig.tools.find(provider.binding.key);
+  if (configured != localConfig.tools.end()) {
+    for (const auto &option : configured->second.providerOptions) {
+      if (option.first != "max_cycles" && option.first != "build_jobs")
+        return invalid(
+            llvm::Twine("verilator.provider_options contains unknown field ") +
+            option.first.str());
+    }
+  }
   auto cycleLimit =
       positiveOption(localConfig, "max_cycles", kDefaultCycleLimit,
                      std::numeric_limits<std::uint64_t>::max());
@@ -90,21 +99,8 @@ resolveMappedRtlExecutionAttemptOptions(
     return llvm::joinErrors(
         cycleLimit ? llvm::Error::success() : cycleLimit.takeError(),
         buildJobs ? llvm::Error::success() : buildJobs.takeError());
-  std::uint64_t verbosity = 0;
-  const auto &provider = external_tool::verilatorProvider();
-  const auto configured = localConfig.tools.find(provider.binding.key);
-  if (configured != localConfig.tools.end()) {
-    if (const llvm::json::Value *value =
-            configured->second.providerOptions.get("debug_verbose")) {
-      const std::optional<std::uint64_t> parsed = value->getAsUINT64();
-      if (!parsed || *parsed > kMaximumDebugVerbosity)
-        return invalid("verilator.provider_options.debug_verbose must be an "
-                       "unsigned integer from zero through three");
-      verbosity = *parsed;
-    }
-  }
   return MappedRtlExecutionAttemptOptions{
-      *cycleLimit, *buildJobs, verbosity,
+      *cycleLimit, *buildJobs,
       configured == localConfig.tools.end()
           ? std::vector<std::string>{}
           : configured->second.inheritEnvironment};

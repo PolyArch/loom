@@ -142,6 +142,10 @@ struct ExternalToolInvocationBundleSpec {
   /// Canonical work-relative programs that a preceding frozen-tool command
   /// must create before a later command may execute them.
   std::vector<std::string> toolProducedExecutables = {};
+  /// Sorted-unique command ordinals that consume the Common-owned diagnostic
+  /// verbosity. Finalization mechanically appends the presentation argument.
+  /// This invocation-local projection metadata is not serialized.
+  std::vector<std::uint64_t> diagnosticCommandOrdinals = {};
 };
 
 enum class InvocationCompletionStatus {

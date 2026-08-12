@@ -50,7 +50,6 @@ struct MappedRtlExecutionBundleProjection final {
 struct MappedRtlExecutionAttemptOptions final {
   std::uint64_t cycleLimit = 0;
   std::uint64_t buildJobs = 0;
-  std::uint64_t debugVerbosity = 0;
   std::vector<std::string> inheritedEnvironment;
 };
 

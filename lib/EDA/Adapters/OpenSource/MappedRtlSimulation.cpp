@@ -180,10 +180,6 @@ prepareProvider(const EvaluationRequest &request,
                std::make_move_iterator(bundle.semanticInputs.end()));
 
   const std::string executable = tool->executable;
-  std::vector<std::string> simulationCommand{bundle.simulatorExecutablePath};
-  if (options->debugVerbosity != 0)
-    simulationCommand.push_back("+LOOM_DEBUG_VERBOSE=" +
-                                std::to_string(options->debugVerbosity));
   ExternalToolInvocationBundleSpec specification{
       closure->semanticContract,
       std::move(*tool),
@@ -191,13 +187,14 @@ prepareProvider(const EvaluationRequest &request,
       std::move(*runtime),
       containerProvider.versionProbe,
       {{executable, "-f", bundle.standaloneVerilatorDriverPath},
-       std::move(simulationCommand)},
+       {bundle.simulatorExecutablePath}},
       std::move(inheritEnvironment),
       {bundle.resultPath},
       std::move(files),
       {},
       {},
       {bundle.simulatorExecutablePath}};
+  specification.diagnosticCommandOrdinals = {1};
   auto prepared = finalizeExternalToolInvocationBundle(
       context.bundleDestination, specification);
   if (!prepared)

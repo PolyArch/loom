@@ -72,10 +72,10 @@ class CommandCacheError(RuntimeError):
 
 
 def _verbosity() -> int:
-    try:
-        return max(0, int(os.environ.get(VERBOSITY_ENVIRONMENT, "0")))
-    except ValueError:
+    value = os.environ.get(VERBOSITY_ENVIRONMENT, "0")
+    if re.fullmatch(r"[0-9]+", value) is None:
         return 0
+    return min(3, int(value))
 
 
 def _diagnostic(level: int, event: str, detail: str = "") -> None:

@@ -1,4 +1,4 @@
-# RUN: env LOOM_DEBUG_VERBOSE=3 %loom-system-candidate-state-test graph-binding > %t.out 2> %t.log
+# RUN: env LOOM_VERBOSE_LEVEL=3 %loom-system-candidate-state-test graph-binding > %t.out 2> %t.log
 # RUN: rg '"event":"negotiation_iteration".*"stage":"system_pnr"' %t.log
 # RUN: rg '"event":"capacity_conflict".*"fixed_terminal_cut_certificate":true.*"stage":"system_pnr"' %t.log
 # RUN: rg '"event":"capacity_conflict".*"logical_nets":\[.*"amount":[1-9][0-9]*.*"source_endpoint":[0-9]+.*"stage":"system_pnr"' %t.log
