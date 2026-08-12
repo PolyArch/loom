@@ -66,13 +66,19 @@ candidate order, random draws, external-tool inputs, termination, normalized
 results, Artifact bytes, or identity. A subsystem specification owns its event
 vocabulary and the detail emitted at each shared level.
 
-An external process or generated simulation harness cannot implicitly inherit
-the host binding. When its diagnostics are requested, the owning execution
-configuration explicitly projects the numeric level through the external
-command using the same `LOOM_VERBOSE_LEVEL` spelling. That projection remains
-nonsemantic unless the external provider documents that the option changes
-results, in which case it is not a diagnostic option and must enter the exact
-semantic execution configuration.
+Any diagnostic useful across inputs, production runs, performance analysis, or
+future investigations is maintained infrastructure and uses this binding.
+Narrow probes introduced only to inspect one exceptional input are not part of
+the diagnostic interface and are removed when that investigation closes.
+
+An external process or generated simulation harness cannot parse an
+independent binding or accept a provider-specific verbosity option. Its owner
+mechanically projects the numeric value already parsed by Common through the
+external command using the same `LOOM_VERBOSE_LEVEL` spelling. Level zero is
+omitted. This presentation-only projection is excluded from semantic execution
+configuration and result-cache identity. An external option that can change
+results is not diagnostic verbosity and must instead have a distinct typed
+owner in the exact semantic execution configuration.
 
 `loom-opt` is the canonical developer-only MLIR pass runner. Other focused
 developer executables are justified only by a real input protocol,

@@ -108,9 +108,11 @@ One Common-owned `LOOM_VERBOSE_LEVEL` therefore supplies the closed levels zero
 through three. Each subsystem still owns its event vocabulary and may use only
 the levels it needs. ResolvedConfig ownership was rejected because diagnostic
 presentation cannot change semantic identity or reproducibility.
-Implicit propagation into external processes was also rejected: an external
-bundle receives a level only through its explicit execution option, so host
-environment state cannot silently change prepared invocation contents.
+Implicit propagation and provider-authored verbosity were also rejected. An
+external owner mechanically projects the Common-parsed value through the one
+shared spelling, while cache normalization excludes that presentation-only
+argument. This preserves one operator control without allowing host state to
+become a second semantic execution input.
 
 ## Why Vertical Closure Comes Before Breadth
 

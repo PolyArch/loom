@@ -690,9 +690,12 @@ Level one reports cache availability, hit, miss, discard, and publication
 failures; level two additionally reports successful publication. The cache
 does not parse a second environment binding, and the verbosity level never
 enters prepared invocation semantics or the cache key. Diagnostics explicitly
-projected into an external command, including an RTL simulation plusarg, use
-the same spelling but remain an exact caller-provided execution option; a
-prepared external invocation never inherits the host binding implicitly.
+projected into an external command, including an RTL simulation plusarg, are
+mechanically derived from the Common-owned value and use the same spelling.
+The external-tool cache normalizer removes exactly this closed presentation
+argument before hashing command configuration. A caller or provider cannot
+independently author it, and a prepared external invocation never inherits the
+host binding implicitly.
 
 Absolute bundle and executable paths, binding-source choice, module
 initialization paths, requested or loaded module aliases, local external-file
