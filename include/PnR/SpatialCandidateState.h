@@ -51,6 +51,21 @@ struct SpatialCandidateInitialization final {
   llvm::ArrayRef<PnrIndex> memoryExposureSelections;
 };
 
+/// Cold reconstruction of every route-derived Mapping fact for the current
+/// RouteTrees. It is independent of commit-time caches and is therefore valid
+/// while an enclosing move still owns provisional routes.
+struct SpatialCandidateRouteProjection final {
+  std::uint64_t unroutedObligationCount = 0;
+  std::uint64_t routeCapacityOveruse = 0;
+  std::uint64_t tagResidentCapacityOveruse = 0;
+  std::uint64_t tagUnassignedCount = 0;
+  std::uint64_t tagConflictCount = 0;
+  std::uint64_t hardProgressViolation = 0;
+  std::uint64_t totalSelectedTraversalClaim = 0;
+  bool routeTerminalsCompatible = false;
+  bool selectedHandshakeAcyclic = false;
+};
+
 class SpatialCandidateState;
 class SpatialCandidateScratch;
 class SpatialActionDomainScratch;
@@ -261,7 +276,6 @@ public:
                                const llvm::APInt &value) const {
     return tagAssignments_.domainValueConflicts(domain, value);
   }
-
   llvm::Error verify() const;
   llvm::Expected<SpatialMoveTransaction>
   beginMove(SpatialCandidateScratch &scratch LLVM_LIFETIME_BOUND) &;
@@ -345,6 +359,8 @@ private:
   PnrIndex terminalEndpoint(FrozenSpatialTerminalBinding binding) const;
   std::uint32_t
   terminalPayloadWidth(FrozenSpatialTerminalBinding binding) const;
+  llvm::Expected<SpatialCandidateRouteProjection> projectVerifiedRoutes(
+      llvm::ArrayRef<const RouteTreeState *> routeTrees) const;
 
   FrozenSpatialPnrProblemHandle problem_;
   std::vector<SpatialComputeBindingSelection> computeBindings_;
@@ -409,6 +425,7 @@ public:
   llvm::Error ripUpRouteSubtree(PnrIndex logicalNet,
                                 PnrIndex subtreeRootEndpoint);
   llvm::Error ripUpWholeRoute(PnrIndex logicalNet);
+  llvm::Expected<SpatialCandidateRouteProjection> projectCurrentRoutes() const;
 
   llvm::Expected<bool> close();
   llvm::ArrayRef<PnrIndex> cycleWitness() const;

@@ -279,7 +279,7 @@ const RouteTreeNode &RouteTreeState::node(PnrIndex slot) const {
 llvm::Error RouteTreeState::verify() const {
   if (activeTransaction_)
     return routeTreeError("cannot verify while a transaction is active");
-  return verifyState();
+  return verifyState(false);
 }
 
 llvm::Error RouteTreeState::verifyReplicationBranches() const {
@@ -321,7 +321,8 @@ llvm::Error RouteTreeState::verifyReplicationBranches() const {
   return llvm::Error::success();
 }
 
-llvm::Error RouteTreeState::verifyState() const {
+llvm::Error
+RouteTreeState::verifyState(bool allowRetainedInactiveStorage) const {
   if (llvm::Error error = verifyReplicationBranches())
     return error;
   if (!endpointSlots_.empty() &&
@@ -393,7 +394,8 @@ llvm::Error RouteTreeState::verifyState() const {
           binding.previousAtNode != getInvalidPnrIndex() ||
           binding.nextAtNode != getInvalidPnrIndex())
         return routeTreeError("explicit unrouted state retains sink binding");
-    if (!nodes_.empty() || !freeSlots_.empty() || !endpointSlots_.empty())
+    if (!allowRetainedInactiveStorage &&
+        (!nodes_.empty() || !freeSlots_.empty() || !endpointSlots_.empty()))
       return routeTreeError("explicit unrouted state retains route storage");
     return llvm::Error::success();
   }
@@ -1068,7 +1070,7 @@ llvm::Error RouteTreeTransaction::ripUpWholeNet() {
 llvm::Error RouteTreeTransaction::verify() const {
   if (!state_)
     return routeTreeError("transaction is no longer active");
-  return state_->verifyState();
+  return state_->verifyState(true);
 }
 
 llvm::Expected<llvm::ArrayRef<RouteTreeTraversalDelta>>
@@ -1139,7 +1141,7 @@ RouteTreeTransaction::preparedState() const {
   if (!prepared_)
     return routeTreeError("transaction has not been prepared");
   if (state_->isRouted())
-    if (llvm::Error error = state_->verifyState())
+    if (llvm::Error error = state_->verifyState(false))
       return error;
   return state_.get();
 }

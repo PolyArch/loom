@@ -1567,6 +1567,43 @@ void loom::test::exercisePathFinderFixedTerminalCutRejection(
     fail("PathFinder lost its fixed-terminal capacity-cut certificate");
   if (candidate.totalSelectedTraversalClaim() != routeClaim)
     fail("fixed-terminal cut rejection changed the candidate route overlay");
+
+  pnr::SpatialActionExecutorScratch executor;
+  requireSuccess(executor.prepare(candidate));
+  const pnr::SpatialMappingAction globalRouting =
+      pnr::SpatialTransportRoutingAction{pnr::SpatialGlobalRoutingAction{}};
+  auto searchProbe = executor.probe(candidate, globalRouting);
+  if (searchProbe)
+    fail("Spatial search accepted a fixed-terminal capacity cut");
+  bool observedSearchRejection = false;
+  llvm::handleAllErrors(
+      searchProbe.takeError(),
+      [&](const pnr::SpatialActionTransitionFailure &failure) {
+        observedSearchRejection =
+            failure.kind() ==
+            pnr::SpatialActionTransitionFailureKind::IntrinsicInvalid;
+      });
+  if (!observedSearchRejection)
+    fail("Spatial search promoted a fixed-terminal cut to an internal error");
+
+  auto closureProbe = executor.probe(
+      candidate, globalRouting,
+      pnr::SpatialActionExecutionContext::FinalClosure);
+  if (closureProbe)
+    fail("Spatial final closure accepted a fixed-terminal capacity cut");
+  bool observedClosureCertificate = false;
+  llvm::handleAllErrors(
+      closureProbe.takeError(),
+      [&](const pnr::SpatialPathFinderClosureFailure &failure) {
+        observedClosureCertificate =
+            failure.kind() == pnr::SpatialPathFinderClosureFailure::Kind::
+                                  FixedTerminalCapacityCut &&
+            failure.certificateCapacity() != pnr::getInvalidPnrIndex() &&
+            failure.mandatoryUsage() > failure.physicalCapacity() &&
+            !failure.forcedLogicalNets().empty();
+      });
+  if (!observedClosureCertificate)
+    fail("Spatial final closure lost its fixed-terminal cut certificate");
   requireSuccess(routeCosts.resetFromCandidate());
   for (pnr::PnrIndex capacity = 0;
        capacity < candidate.problem().resources().capacityDimensions().size();

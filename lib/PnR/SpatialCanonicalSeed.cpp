@@ -3,11 +3,42 @@
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialRouteCostState.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
+#include <memory>
 #include <utility>
 
 using namespace loom::pnr;
+
+namespace {
+
+llvm::Expected<bool> retainRolledBackInitializer(llvm::Error error) {
+  bool recoverable = false;
+  llvm::Error unhandled = llvm::handleErrors(
+      std::move(error),
+      [&](std::unique_ptr<EndpointRouteSearchFailure> failure) -> llvm::Error {
+        switch (failure->kind()) {
+        case EndpointRouteSearchFailureKind::Unreachable:
+        case EndpointRouteSearchFailureKind::WorkLimit:
+          recoverable = true;
+          return llvm::Error::success();
+        case EndpointRouteSearchFailureKind::Invalid:
+        case EndpointRouteSearchFailureKind::ArithmeticOverflow:
+          return llvm::Error(std::move(failure));
+        }
+        llvm_unreachable("unknown endpoint route failure kind");
+      },
+      [&](const SpatialPathFinderClosureFailure &) -> llvm::Error {
+        recoverable = true;
+        return llvm::Error::success();
+      });
+  if (unhandled)
+    return std::move(unhandled);
+  return recoverable;
+}
+
+} // namespace
 
 llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
     FrozenSpatialPnrProblemHandle problem, std::uint32_t attemptOrdinal,
@@ -43,8 +74,20 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
       SpatialRoutingClosureRequirement::PolicyAdmittedTemporary);
   workSummary.endpointExpansions = router.endpointExpansionCount();
   workSummary.negotiationIterations = router.negotiationIterationCount();
-  if (!routing)
-    return routing.takeError();
+  if (!routing) {
+    const bool admitsUnrouted = llvm::is_contained(
+        candidate->problem().config().policy().temporaryViolations.admitted,
+        ResolvedPnrViolationKind::UnroutedObligation);
+    if (!admitsUnrouted)
+      return routing.takeError();
+    auto retained = retainRolledBackInitializer(routing.takeError());
+    if (!retained)
+      return retained.takeError();
+    if (!*retained)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "initial Spatial routing failure has no classification");
+  }
   if (llvm::Error error = candidate->verify())
     return std::move(error);
   return SpatialPathFinderSeed{std::move(candidate), attemptOrdinal};

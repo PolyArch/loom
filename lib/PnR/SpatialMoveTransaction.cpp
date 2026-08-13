@@ -144,8 +144,7 @@ void emitHandshakeCycle(const FrozenSpatialPnrProblem &problem,
                 continue;
               const auto fragmentArcs =
                   problem.handshake().fragmentArcOrdinals().slice(
-                      fragment.contributionOffset,
-                      fragment.contributionCount);
+                      fragment.contributionOffset, fragment.contributionCount);
               if (!llvm::binary_search(fragmentArcs, arc))
                 continue;
               ++contributionCount;
@@ -817,6 +816,28 @@ llvm::Error SpatialMoveTransaction::ripUpWholeRoute(PnrIndex logicalNet) {
   if (!transaction)
     return transaction.takeError();
   return (*transaction)->ripUpWholeNet();
+}
+
+llvm::Expected<SpatialCandidateRouteProjection>
+SpatialMoveTransaction::projectCurrentRoutes() const {
+  if (llvm::Error error = ensureCollecting())
+    return std::move(error);
+
+  std::vector<const RouteTreeState *> routes;
+  routes.reserve(state_->routeTrees_.size());
+  for (PnrIndex logicalNet = 0; logicalNet < state_->routeTrees_.size();
+       ++logicalNet) {
+    const RouteTreeState *route = state_->routeTrees_[logicalNet].get();
+    if (scratch_->routeTransactions_[logicalNet]) {
+      if (llvm::Error error =
+              scratch_->routeTransactions_[logicalNet]->verify())
+        return std::move(error);
+    } else if (llvm::Error error = route->verify()) {
+      return std::move(error);
+    }
+    routes.push_back(route);
+  }
+  return state_->projectVerifiedRoutes(routes);
 }
 
 llvm::Error SpatialMoveTransaction::validateAffectedState() const {

@@ -99,6 +99,38 @@ SpatialRouteResourceState::create(const FrozenSpatialPnrProblem &problem) {
       totalCapacityOveruseRaw);
 }
 
+llvm::Expected<SpatialRouteResourceState>
+SpatialRouteResourceState::projectVerifiedRoutes(
+    const FrozenSpatialPnrProblem &problem,
+    llvm::ArrayRef<const RouteTreeState *> routeTrees) {
+  auto state = create(problem);
+  if (!state)
+    return state.takeError();
+  if (routeTrees.size() != state->logicalNetCount_)
+    return routeResourceError(
+        "route count does not match the frozen logical nets");
+
+  for (PnrIndex logicalNet = 0; logicalNet < state->logicalNetCount_;
+       ++logicalNet) {
+    const RouteTreeState *route = routeTrees[logicalNet];
+    if (!route || &route->routingGraph() != &problem.routing())
+      return routeResourceError(
+          "RouteTree does not belong to the frozen routing graph");
+    for (const RouteTreeNode &node : route->nodeStorage()) {
+      if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+        continue;
+      if (node.parentArc >= problem.routing().routingArcs().size())
+        return routeResourceError("RouteTree parent arc is out of range");
+      const PnrIndex traversal =
+          problem.routing().routingArcs()[node.parentArc].traversal;
+      if (llvm::Error error =
+              state->applyTraversalDelta(logicalNet, traversal, 0, 1))
+        return std::move(error);
+    }
+  }
+  return state;
+}
+
 PnrIndex
 SpatialRouteResourceState::routeClaimSelectionCount(PnrIndex claim) const {
   assert(claim < claimSelectionCounts_.size());
@@ -268,83 +300,20 @@ llvm::Error SpatialRouteResourceState::verify(
           static_cast<std::size_t>(logicalNetCount_) * routeClaimWordCount_)
     return routeResourceError("state dimensions disagree with the freeze");
 
-  std::vector<PnrIndex> expectedRefcounts(netClaimRefcounts_.size(), 0);
-  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
-    if (!routeTrees[logicalNet])
-      return routeResourceError("logical net has no RouteTree state");
-    for (const RouteTreeNode &node : routeTrees[logicalNet]->nodeStorage()) {
-      if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
-        continue;
-      if (node.parentArc >= problem_->routing().routingArcs().size())
-        return routeResourceError("RouteTree parent arc is out of range");
-      const PnrIndex traversal =
-          problem_->routing().routingArcs()[node.parentArc].traversal;
-      if (traversal >= problem_->routing().traversals().size())
-        return routeResourceError("RouteTree traversal is out of range");
-      const FrozenSpatialTraversal &traversalRecord =
-          problem_->routing().traversals()[traversal];
-      for (PnrIndex claim : problem_->routing().traversalClaimKeys().slice(
-               traversalRecord.routeClaimOffset,
-               traversalRecord.routeClaimCount)) {
-        PnrIndex &refcount = expectedRefcounts[netClaimCell(logicalNet, claim)];
-        if (refcount == std::numeric_limits<PnrIndex>::max())
-          return routeResourceError(
-              "rebuilt route claim refcount overflows PnrIndex");
-        ++refcount;
-      }
-    }
-  }
+  std::vector<const RouteTreeState *> rawRoutes;
+  rawRoutes.reserve(routeTrees.size());
+  for (const RouteTreeStateHandle &route : routeTrees)
+    rawRoutes.push_back(route.get());
+  auto expected = projectVerifiedRoutes(*problem_, rawRoutes);
+  if (!expected)
+    return expected.takeError();
 
-  std::vector<PnrIndex> expectedSelections(routeClaimCount_, 0);
-  std::vector<std::uint64_t> expectedActiveBits(netClaimActiveBits_.size(), 0);
-  std::vector<std::uint64_t> expectedUsage;
-  expectedUsage.reserve(problem_->resources().capacityDimensions().size());
-  for (const FrozenSpatialCapacityDimension &dimension :
-       problem_->resources().capacityDimensions())
-    expectedUsage.push_back(dimension.initialOccupancy);
-  std::uint64_t expectedTotal = 0;
-  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
-    for (PnrIndex claim = 0; claim < routeClaimCount_; ++claim) {
-      if (expectedRefcounts[netClaimCell(logicalNet, claim)] == 0)
-        continue;
-      expectedActiveBits[static_cast<std::size_t>(logicalNet) *
-                             routeClaimWordCount_ +
-                         claim / 64] |= std::uint64_t{1} << (claim % 64);
-      if (expectedSelections[claim] == std::numeric_limits<PnrIndex>::max())
-        return routeResourceError(
-            "rebuilt route claim selection count overflows PnrIndex");
-      ++expectedSelections[claim];
-      const FrozenSpatialRouteClaim &record =
-          problem_->routing().routeClaims()[claim];
-      if (llvm::Error error =
-              checkedAdd(expectedUsage[record.capacityDimension], record.amount,
-                         "rebuilt raw route capacity usage"))
-        return error;
-      if (llvm::Error error =
-              checkedAdd(expectedTotal, record.qCost,
-                         "rebuilt selected traversal claim cost"))
-        return error;
-    }
-  }
-
-  std::uint64_t expectedCapacityOveruse = 0;
-  const auto dimensions = problem_->resources().capacityDimensions();
-  for (PnrIndex capacity = 0; capacity < dimensions.size(); ++capacity) {
-    const std::uint64_t overuse =
-        expectedUsage[capacity] > dimensions[capacity].capacity
-            ? expectedUsage[capacity] - dimensions[capacity].capacity
-            : 0;
-    if (llvm::Error error = checkedAdd(expectedCapacityOveruse, overuse,
-                                       "rebuilt raw route capacity overuse"))
-      return error;
-  }
-
-  if (netClaimRefcounts_ != expectedRefcounts ||
-      netClaimActiveBits_ != expectedActiveBits ||
-      claimSelectionCounts_ != expectedSelections ||
-      capacityUsageRaw_ != expectedUsage ||
-      totalCapacityOveruseRaw_ != expectedCapacityOveruse ||
-      totalSelectedTraversalClaim_ != expectedTotal)
+  if (netClaimRefcounts_ != expected->netClaimRefcounts_ ||
+      netClaimActiveBits_ != expected->netClaimActiveBits_ ||
+      claimSelectionCounts_ != expected->claimSelectionCounts_ ||
+      capacityUsageRaw_ != expected->capacityUsageRaw_ ||
+      totalCapacityOveruseRaw_ != expected->totalCapacityOveruseRaw_ ||
+      totalSelectedTraversalClaim_ != expected->totalSelectedTraversalClaim_)
     return routeResourceError(
         "incremental occupancy disagrees with the selected RouteTrees");
   return llvm::Error::success();

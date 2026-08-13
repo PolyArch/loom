@@ -1031,6 +1031,11 @@ void completeCandidateRoundTrip(
     requireSuccess(tagScratch.prepare(*problem));
     auto move = take(candidate->beginMove(tagScratch));
     requireSuccess(move.ripUpWholeRoute(0));
+    const auto provisional = take(move.projectCurrentRoutes());
+    if (candidate->unroutedObligationCount() != 0 ||
+        provisional.unroutedObligationCount !=
+            problem->transfers().logicalNets()[0].sinkCount)
+      fail("active Spatial move did not project its provisional RouteTree");
     if (!take(move.close()))
       fail("Physical Tag rollback fixture closed a handshake cycle");
     if (!candidate->tagSegments(0).empty() || !candidate->tagValues(0).empty())

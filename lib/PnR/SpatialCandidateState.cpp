@@ -3,6 +3,7 @@
 #include "SpatialBindingRelationModel.h"
 #include "SpatialCandidateStateInternal.h"
 #include "SpatialMemoryConstraintModel.h"
+#include "SpatialProgressAnalysis.h"
 #include "SpatialRouteConstraintModel.h"
 
 #include "llvm/ADT/DenseSet.h"
@@ -86,6 +87,64 @@ llvm::Error addInitialHandshakeSelections(
     return candidateError(
         "initial selections close a combinational handshake cycle");
   return transaction->commit();
+}
+
+llvm::Expected<bool> projectHandshakeSelections(
+    FrozenSpatialHandshakeIndexHandle handshakeOwner,
+    const FrozenSpatialPnrProblem &problem,
+    llvm::ArrayRef<SpatialComputeBindingSelection> computeBindings,
+    llvm::ArrayRef<PnrIndex> portAttachments,
+    llvm::ArrayRef<PnrIndex> memoryOperationPlans,
+    llvm::ArrayRef<const RouteTreeState *> routes) {
+  auto handshake = HandshakeCandidateState::create(std::move(handshakeOwner));
+  if (!handshake)
+    return handshake.takeError();
+  HandshakeCandidateScratch scratch;
+  if (llvm::Error error = scratch.prepare(problem.handshake()))
+    return std::move(error);
+  auto transaction = (*handshake)->beginTransaction(scratch);
+  if (!transaction)
+    return transaction.takeError();
+
+  for (const SpatialComputeBindingSelection &binding : computeBindings)
+    if (llvm::Error error = transaction->addFragments(
+            computePlacementFragments(problem.handshake(), binding.placement)))
+      return std::move(error);
+  for (PnrIndex plan : memoryOperationPlans)
+    if (llvm::Error error = transaction->addFragments(
+            memoryPlanFragments(problem.handshake(), plan)))
+      return std::move(error);
+  for (PnrIndex option : portAttachments)
+    if (std::optional<PnrIndex> traversal =
+            attachmentTraversal(problem.ports(), option))
+      if (llvm::Error error = transaction->addTraversalUses(*traversal, 1))
+        return std::move(error);
+
+  std::vector<PnrIndex> traversalUses(problem.routing().traversals().size(), 0);
+  for (const RouteTreeState *route : routes) {
+    if (!route || &route->routingGraph() != &problem.routing())
+      return candidateError(
+          "projected RouteTree does not belong to the frozen routing graph");
+    for (const RouteTreeNode &node : route->nodeStorage()) {
+      if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+        continue;
+      if (node.parentArc >= problem.routing().routingArcs().size())
+        return candidateError("projected RouteTree arc is out of range");
+      const PnrIndex traversal =
+          problem.routing().routingArcs()[node.parentArc].traversal;
+      if (traversal >= traversalUses.size())
+        return candidateError("projected RouteTree traversal is out of range");
+      if (llvm::Error error =
+              increment(traversalUses[traversal], 1, "handshake traversal"))
+        return std::move(error);
+    }
+  }
+  for (PnrIndex traversal = 0; traversal < traversalUses.size(); ++traversal)
+    if (traversalUses[traversal] != 0)
+      if (llvm::Error error = transaction->addTraversalUses(
+              traversal, traversalUses[traversal]))
+        return std::move(error);
+  return transaction->close();
 }
 
 } // namespace
@@ -658,6 +717,77 @@ const RouteTreeState &
 SpatialCandidateState::routeTree(PnrIndex logicalNet) const {
   assert(logicalNet < routeTrees_.size());
   return *routeTrees_[logicalNet];
+}
+
+llvm::Expected<SpatialCandidateRouteProjection>
+SpatialCandidateState::projectVerifiedRoutes(
+    llvm::ArrayRef<const RouteTreeState *> routes) const {
+  if (routes.size() != routeTrees_.size())
+    return candidateError("projected route count does not match the candidate");
+  std::uint64_t unrouted = 0;
+  bool routeTerminalsCompatible = true;
+  const auto logicalNets = problem_->transfers().logicalNets();
+  for (PnrIndex logicalNet = 0; logicalNet < routes.size(); ++logicalNet) {
+    if (!routes[logicalNet] ||
+        &routes[logicalNet]->routingGraph() != &problem_->routing())
+      return candidateError(
+          "projected RouteTree does not belong to the candidate");
+    if (!routes[logicalNet]->isUnrouted()) {
+      const RouteTreeState &route = *routes[logicalNet];
+      routeTerminalsCompatible &=
+          route.sourceEndpoint() == logicalNetSourceEndpoint(logicalNet);
+      for (PnrIndex sink = 0; sink < logicalNets[logicalNet].sinkCount; ++sink)
+        routeTerminalsCompatible &= route.sinkEndpoint(sink) ==
+                                    logicalNetSinkEndpoint(logicalNet, sink);
+      continue;
+    }
+    if (logicalNets[logicalNet].sinkCount >
+        std::numeric_limits<std::uint64_t>::max() - unrouted)
+      return candidateError(
+          "projected unrouted obligation count overflows u64");
+    unrouted += logicalNets[logicalNet].sinkCount;
+  }
+
+  auto routeResources =
+      SpatialRouteResourceState::projectVerifiedRoutes(*problem_, routes);
+  if (!routeResources)
+    return routeResources.takeError();
+  auto tags = tagAssignments_.projectVerifiedRoutes(routes);
+  if (!tags)
+    return tags.takeError();
+  auto handshakeOwner = std::shared_ptr<const FrozenSpatialHandshakeIndex>(
+      problem_, &problem_->handshake());
+  auto handshakeAcyclic = projectHandshakeSelections(
+      std::move(handshakeOwner), *problem_, computeBindings_, portAttachments_,
+      memoryOperationPlans_, routes);
+  if (!handshakeAcyclic)
+    return handshakeAcyclic.takeError();
+  std::uint64_t hardProgressViolation = 0;
+  switch (problem_->progressClosure().kind) {
+  case ::loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet: {
+    auto count = spatialCandidateClosedWaitCount(*this);
+    if (!count)
+      return count.takeError();
+    hardProgressViolation = *count;
+    break;
+  }
+  case ::loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet:
+    hardProgressViolation = 1;
+    break;
+  case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:
+    return candidateError("projected Spatial progress proof is unavailable");
+  }
+
+  return SpatialCandidateRouteProjection{
+      unrouted,
+      routeResources->totalCapacityOveruseRaw(),
+      tags->residentCapacityOveruse,
+      tags->unassignedCount,
+      tags->conflictCount,
+      hardProgressViolation,
+      routeResources->totalSelectedTraversalClaim(),
+      routeTerminalsCompatible,
+      *handshakeAcyclic};
 }
 
 llvm::Error

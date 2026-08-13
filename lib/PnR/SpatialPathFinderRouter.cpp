@@ -51,6 +51,7 @@ namespace {
 enum class RankTrendTransition : std::uint8_t {
   Equal,
   Improved,
+  Ineligible,
   Regressed,
 };
 
@@ -118,6 +119,35 @@ encodeSelectedOrdinalRanges(llvm::ArrayRef<std::uint8_t> selected) {
     begin = end;
   }
   return ranges;
+}
+
+struct ProjectionDisposition final {
+  bool violationsZero = true;
+  bool temporaryAdmitted = false;
+};
+
+llvm::Expected<ProjectionDisposition>
+classifyProjection(const SpatialCandidateState &candidate,
+                   const SpatialCandidateRouteProjection &projection,
+                   SpatialRoutingClosureRequirement closureRequirement) {
+  ProjectionDisposition result;
+  result.temporaryAdmitted =
+      closureRequirement ==
+      SpatialRoutingClosureRequirement::PolicyAdmittedTemporary;
+  const auto admitted =
+      candidate.problem().config().policy().temporaryViolations.admitted;
+  for (std::uint32_t ordinal = 0;
+       ordinal != loom::resolvedPnrViolationKindCount; ++ordinal) {
+    const auto kind = static_cast<loom::ResolvedPnrViolationKind>(ordinal);
+    auto value = spatialMappingViolationValue(candidate, projection, kind);
+    if (!value)
+      return value.takeError();
+    if (*value == 0)
+      continue;
+    result.violationsZero = false;
+    result.temporaryAdmitted &= llvm::is_contained(admitted, kind);
+  }
+  return result;
 }
 
 } // namespace
@@ -276,8 +306,11 @@ llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
               logicalNet, attachment, path.drop_front(pathBegin), sink))
         return error;
     }
-    if (llvm::Error error = costs.updateSelectedLogicalNetClaims(
-            candidate.logicalNetRouteClaimBits(logicalNet)))
+    auto restored = projectLogicalNet(candidate, costs, logicalNet);
+    if (!restored)
+      return restored.takeError();
+    if (llvm::Error error =
+            costs.updateSelectedLogicalNetClaims(activeClaimBits_))
       return error;
     if (llvm::Error error = costs.acceptSelectedLogicalNet())
       return error;
@@ -899,23 +932,15 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
   if (costs.selectedLogicalNet())
     return pathFinderError("route costs already have a selected logical net");
 
-  const auto allRouted = [&candidate] {
-    for (PnrIndex logicalNet = 0;
-         logicalNet < candidate.problem().transfers().logicalNets().size();
-         ++logicalNet)
-      if (candidate.routeTree(logicalNet).isUnrouted())
-        return false;
-    return true;
-  };
-  if (allRouted() && !costs.hasCapacityOveruse())
+  auto initialProjection = move.projectCurrentRoutes();
+  if (!initialProjection)
+    return initialProjection.takeError();
+  if (initialProjection->routeTerminalsCompatible &&
+      initialProjection->selectedHandshakeAcyclic &&
+      initialProjection->unroutedObligationCount == 0 &&
+      initialProjection->routeCapacityOveruse == 0)
     return SpatialPathFinderClosureResult{0, true};
 
-  const bool admitsTemporaryCapacity =
-      closureRequirement ==
-          SpatialRoutingClosureRequirement::PolicyAdmittedTemporary &&
-      llvm::is_contained(
-          candidate.problem().config().policy().temporaryViolations.admitted,
-          ResolvedPnrViolationKind::CapacityOveruse);
   std::optional<dse::ObjectiveVector> bestRankObjective;
   std::optional<dse::ObjectiveVector> previousRankObjective;
   std::optional<dse::ObjectiveVector> bestTemporaryObjective;
@@ -923,6 +948,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
   std::size_t trendHead = 0;
   std::size_t trendCount = 0;
   std::uint64_t trendImprovedCount = 0;
+  std::uint64_t trendIneligibleCount = 0;
   std::uint64_t trendRegressedCount = 0;
   const std::uint64_t initialEndpointExpansions =
       netRouter_.endpointExpansionCount();
@@ -1038,7 +1064,13 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     }
 
     const std::uint64_t completedIterations = iteration + 1;
+    auto projection = move.projectCurrentRoutes();
+    if (!projection)
+      return projection.takeError();
     const bool hasCapacityOveruse = costs.hasCapacityOveruse();
+    if (hasCapacityOveruse != (projection->routeCapacityOveruse != 0))
+      return pathFinderError(
+          "working route capacity disagrees with the provisional RouteTrees");
     CapacityConflictAnalysis conflictAnalysis;
     if (hasCapacityOveruse) {
       auto analyzed = analyzeCapacityConflicts(candidate, costs, iteration,
@@ -1050,9 +1082,21 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     const std::uint64_t capacityConflicts = conflictAnalysis.conflictCount;
     debugStatistics.capacityConflicts += capacityConflicts;
     bool selectedRankImproved = false;
-    if (hasCapacityOveruse) {
+    bool temporaryAdmitted = false;
+    bool mappingViolationsZero = false;
+    const bool selectedRankEligible = projection->routeTerminalsCompatible &&
+                                      projection->selectedHandshakeAcyclic;
+    std::optional<RankTrendTransition> rankTrendTransition;
+    if (selectedRankEligible) {
+      auto disposition =
+          classifyProjection(candidate, *projection, closureRequirement);
+      if (!disposition)
+        return disposition.takeError();
+      temporaryAdmitted = disposition->temporaryAdmitted;
+      mappingViolationsZero = disposition->violationsZero;
       auto objective =
-          candidate.problem().objectiveProgram().evaluate(candidate);
+          candidate.problem().objectiveProgram().evaluateSpatialProjection(
+              candidate, *projection);
       if (!objective)
         return objective.takeError();
       selectedRankImproved = !bestRankObjective;
@@ -1077,31 +1121,14 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                 *objective, {}, *previousRankObjective, {});
         if (!comparison)
           return comparison.takeError();
-        const RankTrendTransition transition =
+        rankTrendTransition =
             *comparison < 0   ? RankTrendTransition::Improved
             : *comparison > 0 ? RankTrendTransition::Regressed
                               : RankTrendTransition::Equal;
-        if (trendCount == trendWindow) {
-          const auto evicted = static_cast<RankTrendTransition>(
-              rankTrendTransitions_[trendHead]);
-          trendImprovedCount -=
-              evicted == RankTrendTransition::Improved ? 1 : 0;
-          trendRegressedCount -=
-              evicted == RankTrendTransition::Regressed ? 1 : 0;
-        } else {
-          ++trendCount;
-        }
-        rankTrendTransitions_[trendHead] =
-            static_cast<std::uint8_t>(transition);
-        trendHead = (trendHead + 1) % trendWindow;
-        trendImprovedCount +=
-            transition == RankTrendTransition::Improved ? 1 : 0;
-        trendRegressedCount +=
-            transition == RankTrendTransition::Regressed ? 1 : 0;
       }
       previousRankObjective = *objective;
 
-      if (admitsTemporaryCapacity) {
+      if (temporaryAdmitted) {
         bool replace = !bestTemporaryObjective;
         if (bestTemporaryObjective) {
           auto comparison =
@@ -1117,6 +1144,32 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           bestTemporaryObjective = std::move(*objective);
         }
       }
+    } else {
+      ++consecutiveNoProgressIterations;
+      rankTrendTransition = RankTrendTransition::Ineligible;
+    }
+    if (rankTrendTransition) {
+      if (trendCount == trendWindow) {
+        const auto evicted = static_cast<RankTrendTransition>(
+            rankTrendTransitions_[trendHead]);
+        trendImprovedCount -=
+            evicted == RankTrendTransition::Improved ? 1 : 0;
+        trendIneligibleCount -=
+            evicted == RankTrendTransition::Ineligible ? 1 : 0;
+        trendRegressedCount -=
+            evicted == RankTrendTransition::Regressed ? 1 : 0;
+      } else {
+        ++trendCount;
+      }
+      rankTrendTransitions_[trendHead] =
+          static_cast<std::uint8_t>(*rankTrendTransition);
+      trendHead = (trendHead + 1) % trendWindow;
+      trendImprovedCount +=
+          *rankTrendTransition == RankTrendTransition::Improved ? 1 : 0;
+      trendIneligibleCount +=
+          *rankTrendTransition == RankTrendTransition::Ineligible ? 1 : 0;
+      trendRegressedCount +=
+          *rankTrendTransition == RankTrendTransition::Regressed ? 1 : 0;
     }
     loom::mapping_debug::emit(
         loom::mapping_debug::Level::Decision,
@@ -1132,6 +1185,22 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           fields["capacity_conflict_events_omitted"] =
               capacityConflicts - conflictAnalysis.diagnosticConflictCount;
           fields["capacity_closed"] = !hasCapacityOveruse;
+          fields["mapping_closed"] = mappingViolationsZero;
+          fields["route_terminals_compatible"] =
+              projection->routeTerminalsCompatible;
+          fields["selected_handshake_acyclic"] =
+              projection->selectedHandshakeAcyclic;
+          fields["unrouted_obligations"] = projection->unroutedObligationCount;
+          fields["route_capacity_overuse"] = projection->routeCapacityOveruse;
+          fields["tag_resident_capacity_overuse"] =
+              projection->tagResidentCapacityOveruse;
+          fields["tag_unassigned"] = projection->tagUnassignedCount;
+          fields["tag_conflicts"] = projection->tagConflictCount;
+          fields["hard_progress_violations"] =
+              projection->hardProgressViolation;
+          fields["selected_traversal_claim"] =
+              projection->totalSelectedTraversalClaim;
+          fields["temporary_admitted"] = temporaryAdmitted;
           fields["selected_rank_improved"] = selectedRankImproved;
           fields["consecutive_no_progress_iterations"] =
               consecutiveNoProgressIterations;
@@ -1140,13 +1209,41 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           fields["no_progress_trend_window"] = limits.noProgressTrendWindow;
           fields["rank_trend_transition_count"] = trendCount;
           fields["rank_trend_improved_count"] = trendImprovedCount;
+          fields["rank_trend_ineligible_count"] = trendIneligibleCount;
           fields["rank_trend_regressed_count"] = trendRegressedCount;
           fields["a_star_expansions"] =
               netRouter_.endpointExpansionCount() - initialEndpointExpansions;
         });
-    if (!hasCapacityOveruse) {
+    const bool routingClosed = projection->routeTerminalsCompatible &&
+                               projection->selectedHandshakeAcyclic &&
+                               projection->unroutedObligationCount == 0 &&
+                               !hasCapacityOveruse;
+    if (routingClosed) {
       emitStatistics("closed");
       return SpatialPathFinderClosureResult{completedIterations, true};
+    }
+    if (!hasCapacityOveruse) {
+      if (bestTemporaryObjective) {
+        if (llvm::Error error = restoreCapturedRoutes(move, candidate, costs))
+          return std::move(error);
+        emitStatistics("temporary_mapping");
+        return SpatialPathFinderClosureResult{completedIterations, false};
+      }
+      emitStatistics(
+          !projection->routeTerminalsCompatible  ? "route_terminal_mismatch"
+          : projection->selectedHandshakeAcyclic ? "mapping_nonclosure"
+                                                 : "selected_handshake_cycle");
+      if (!projection->routeTerminalsCompatible)
+        return pathFinderError(
+            "provisional RouteTree terminals disagree with the candidate");
+      if (!projection->selectedHandshakeAcyclic)
+        return llvm::make_error<SpatialPathFinderClosureFailure>(
+            SpatialPathFinderClosureFailure::Kind::
+                SelectedCombinationalHandshakeCycle,
+            "Spatial PathFinder selected a combinational handshake cycle");
+      return llvm::make_error<SpatialPathFinderClosureFailure>(
+          SpatialPathFinderClosureFailure::Kind::NonClosure,
+          "Spatial PathFinder closed route capacity without Mapping closure");
     }
     if (conflictAnalysis.hasCertificate()) {
       loom::mapping_debug::emit(
@@ -1182,7 +1279,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     }
     if (consecutiveNoProgressIterations >= limits.noProgressIterationLimit &&
         trendCount == trendWindow &&
-        trendImprovedCount <= trendRegressedCount) {
+        trendImprovedCount <= trendRegressedCount + trendIneligibleCount) {
       loom::mapping_debug::emit(
           loom::mapping_debug::Level::Decision,
           loom::mapping_debug::Stage::SpatialPnr,
@@ -1197,6 +1294,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                 limits.noProgressIterationLimit;
             fields["no_progress_trend_window"] = limits.noProgressTrendWindow;
             fields["rank_trend_improved_count"] = trendImprovedCount;
+            fields["rank_trend_ineligible_count"] = trendIneligibleCount;
             fields["rank_trend_regressed_count"] = trendRegressedCount;
             fields["temporary_return"] = bestTemporaryObjective.has_value();
           });

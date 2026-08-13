@@ -76,6 +76,12 @@ deriveCanonicalSpatialTagAssignments(
     const FrozenSpatialPnrProblem &problem,
     llvm::ArrayRef<const RouteTreeState *> routes);
 
+struct SpatialTagAssignmentSummary final {
+  std::uint64_t unassignedCount = 0;
+  std::uint64_t conflictCount = 0;
+  std::uint64_t residentCapacityOveruse = 0;
+};
+
 /// Reusable transaction storage for route-local Physical Tag updates. The
 /// storage is prepared once per Frozen model and retains prior net buffers so
 /// repeated route moves can reuse capacity.
@@ -130,6 +136,8 @@ private:
   static llvm::Expected<SpatialTagAssignmentState>
   create(const FrozenSpatialPnrProblem &problem,
          llvm::ArrayRef<RouteTreeStateHandle> routes);
+  llvm::Expected<SpatialTagAssignmentSummary>
+  projectVerifiedRoutes(llvm::ArrayRef<const RouteTreeState *> routes) const;
   llvm::Error verify(llvm::ArrayRef<RouteTreeStateHandle> routes) const;
   llvm::Error stageRouteUpdates(
       llvm::ArrayRef<RouteTreeStateHandle> routes,

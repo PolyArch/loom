@@ -14,6 +14,7 @@
 
 namespace loom::pnr {
 
+class SpatialCandidateState;
 class SpatialMoveTransaction;
 
 /// Worker-local exact occupancy induced by selected RouteTrees. One dense
@@ -43,6 +44,10 @@ public:
   llvm::Error verify(llvm::ArrayRef<RouteTreeStateHandle> routeTrees) const;
 
 private:
+  static llvm::Expected<SpatialRouteResourceState>
+  projectVerifiedRoutes(const FrozenSpatialPnrProblem &problem,
+                        llvm::ArrayRef<const RouteTreeState *> routeTrees);
+
   SpatialRouteResourceState(const FrozenSpatialPnrProblem &problem,
                             PnrIndex logicalNetCount, PnrIndex routeClaimCount,
                             std::size_t routeClaimWordCount,
@@ -79,6 +84,7 @@ private:
   std::uint64_t totalCapacityOveruseRaw_ = 0;
   std::uint64_t totalSelectedTraversalClaim_ = 0;
 
+  friend class SpatialCandidateState;
   friend class SpatialMoveTransaction;
 };
 

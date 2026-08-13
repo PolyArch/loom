@@ -22,6 +22,7 @@ namespace loom::pnr {
 class FrozenSpatialPnrProblem;
 class FrozenSystemPnrProblem;
 class SpatialCandidateState;
+struct SpatialCandidateRouteProjection;
 class SystemCandidateState;
 
 struct SpatialMappingTraversalClaimContribution final {
@@ -80,6 +81,10 @@ bool spatialMappingViolationAvailable(ResolvedPnrViolationKind kind);
 llvm::Expected<std::uint64_t>
 spatialMappingViolationValue(const SpatialCandidateState &candidate,
                              ResolvedPnrViolationKind kind);
+llvm::Expected<std::uint64_t>
+spatialMappingViolationValue(const SpatialCandidateState &candidate,
+                             const SpatialCandidateRouteProjection &projection,
+                             ResolvedPnrViolationKind kind);
 
 /// Returns true exactly when every Mapping-owned final violation projection is
 /// zero. This is the shared semantic closure predicate used by search and final
@@ -112,6 +117,9 @@ public:
 
   llvm::Expected<dse::ObjectiveVector>
   evaluate(const SpatialCandidateState &candidate) const;
+  llvm::Expected<dse::ObjectiveVector> evaluateSpatialProjection(
+      const SpatialCandidateState &candidate,
+      const SpatialCandidateRouteProjection &projection) const;
   llvm::Expected<dse::ObjectiveVector>
   evaluate(const SystemCandidateState &candidate) const;
   llvm::Expected<dse::ObjectiveVector>

@@ -191,7 +191,7 @@ private:
 
   PnrIndex arcSourceEndpoint(PnrIndex arc) const;
   llvm::Error verifyReplicationBranches() const;
-  llvm::Error verifyState() const;
+  llvm::Error verifyState(bool allowRetainedInactiveStorage) const;
 
   FrozenSpatialRoutingGraphHandle graph_;
   PnrIndex sourceEndpoint_ = getInvalidPnrIndex();

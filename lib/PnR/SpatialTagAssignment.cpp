@@ -645,11 +645,31 @@ llvm::Error verifyRelations(const TagStateStorage &storage) {
   return llvm::Error::success();
 }
 
+llvm::Expected<SpatialTagContinuityProjection>
+deriveVerifiedSpatialTagContinuity(const RouteTreeState &route) {
+  SpatialTagContinuityProjection result;
+  SpatialTagContinuityScratch scratch;
+  if (llvm::Error error =
+          ::loom::pnr::detail::rebuildSpatialTagContinuityUnchecked(
+              route, result, scratch))
+    return std::move(error);
+  return result;
+}
+
+enum class RouteReadMode : std::uint8_t {
+  Stable,
+  AlreadyVerified,
+};
+
 llvm::Expected<std::unique_ptr<TagStateStorage>>
 buildStorage(const FrozenSpatialPnrProblem &problem,
-             llvm::ArrayRef<const RouteTreeState *> routes) {
+             llvm::ArrayRef<const RouteTreeState *> routes,
+             const std::vector<TagNetState> *oldNets = nullptr,
+             RouteReadMode routeReadMode = RouteReadMode::Stable) {
   if (routes.size() != problem.transfers().logicalNets().size())
     return invalid("route count does not match the frozen logical nets");
+  if (oldNets && oldNets->size() != routes.size())
+    return invalid("preserved assignment count does not match the routes");
   auto storage = std::make_unique<TagStateStorage>();
   storage->problem = &problem;
   storage->constraints = &problem.tagConstraints();
@@ -663,14 +683,17 @@ buildStorage(const FrozenSpatialPnrProblem &problem,
     if (!routes[logicalNet] ||
         &routes[logicalNet]->routingGraph() != &problem.routing())
       return invalid("route does not belong to the frozen routing graph");
-    auto continuity = deriveSpatialTagContinuity(*routes[logicalNet]);
+    auto continuity =
+        routeReadMode == RouteReadMode::Stable
+            ? deriveSpatialTagContinuity(*routes[logicalNet])
+            : deriveVerifiedSpatialTagContinuity(*routes[logicalNet]);
     if (!continuity)
       return continuity.takeError();
     storage->nets[logicalNet].continuity = std::move(*continuity);
   }
   for (PnrIndex equalityClass = 0;
        equalityClass < storage->constraints->classCount(); ++equalityClass)
-    if (llvm::Error error = buildClass(*storage, equalityClass, nullptr))
+    if (llvm::Error error = buildClass(*storage, equalityClass, oldNets))
       return std::move(error);
   if (llvm::Error error = verifyRelations(*storage))
     return std::move(error);
@@ -890,6 +913,18 @@ bool SpatialTagAssignmentState::domainValueConflicts(
     PnrIndex domain, const llvm::APInt &value) const {
   assert(domain < storage_->occupancy.size());
   return storage_->occupancy[domain].lookup(value) > 1;
+}
+
+llvm::Expected<SpatialTagAssignmentSummary>
+SpatialTagAssignmentState::projectVerifiedRoutes(
+    llvm::ArrayRef<const RouteTreeState *> routes) const {
+  auto projected = buildStorage(*storage_->problem, routes, &storage_->nets,
+                                RouteReadMode::AlreadyVerified);
+  if (!projected)
+    return projected.takeError();
+  return SpatialTagAssignmentSummary{(*projected)->unassignedCount,
+                                     (*projected)->conflictCount,
+                                     (*projected)->residentCapacityOveruse};
 }
 
 llvm::Error SpatialTagAssignmentState::stageRouteUpdates(

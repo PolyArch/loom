@@ -75,7 +75,8 @@ llvm::Expected<bool> classifyRetainableRouteFailure(llvm::Error failure) {
   return retainable;
 }
 
-llvm::Error classifyTransitionFailure(llvm::Error failure) {
+llvm::Error classifyTransitionFailure(llvm::Error failure,
+                                      SpatialActionExecutionContext context) {
   return llvm::handleErrors(
       std::move(failure),
       [&](const EndpointRouteSearchFailure &routeFailure) -> llvm::Error {
@@ -101,7 +102,8 @@ llvm::Error classifyTransitionFailure(llvm::Error failure) {
         llvm::raw_string_ostream stream(message);
         closureFailure.log(stream);
         if (closureFailure.kind() ==
-            SpatialPathFinderClosureFailure::Kind::FixedTerminalCapacityCut)
+                SpatialPathFinderClosureFailure::Kind::FixedTerminalCapacityCut &&
+            context == SpatialActionExecutionContext::FinalClosure)
           return llvm::make_error<SpatialPathFinderClosureFailure>(
               closureFailure.kind(), stream.str(),
               closureFailure.certificateCapacity(),
@@ -1404,10 +1406,10 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
             : SpatialRoutingClosureRequirement::PolicyAdmittedTemporary);
     if (!closure)
       return restoreAfterFailure(
-          move, classifyTransitionFailure(closure.takeError()));
+          move, classifyTransitionFailure(closure.takeError(), context));
   } else if (llvm::Error error = routeAffectedNets(move, candidate)) {
-    return restoreAfterFailure(move,
-                               classifyTransitionFailure(std::move(error)));
+    return restoreAfterFailure(
+        move, classifyTransitionFailure(std::move(error), context));
   }
 
   auto closed = move.close();

@@ -724,6 +724,23 @@ to update only affected costs. The cost cache does not copy per-net claim
 ownership and can be deleted and rebuilt without changing the candidate. This
 keeps one authority while allowing contiguous, allocation-free A* hot paths.
 
+Negotiated routing mutates Route Trees inside one atomic Mapping transaction,
+so committed occupancy, Tag, and handshake caches intentionally remain at the
+pre-Action state until close. Ranking an intermediate iterate through those
+caches would make route changes invisible to the formal objective and could
+retain a combinationally cyclic overlay. The iteration boundary therefore
+uses the existing cold owner projections over the provisional Route Trees.
+This is slower than reading caches but occurs once per complete negotiated
+iteration, keeps the transaction atomic, and provides an exact oracle for the
+incremental state applied at commit.
+
+A structurally invalid provisional overlay has no Mapping objective rank, but
+it still consumes negotiated-routing work. Recording that boundary as an
+explicit ineligible trend event prevents a selected handshake cycle from
+evading the configured no-progress bound while multiplicative pressure grows.
+It does not invent a score for the invalid overlay or let it displace a legal
+temporary iterate.
+
 Objective facts also do not imply one universal scalar. Final ordering, Pareto
 dominance, and annealing energy ask different questions. They share the same
 central dimensions and exact normalized codes, but derive a lexicographic

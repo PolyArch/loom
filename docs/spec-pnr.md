@@ -1818,42 +1818,57 @@ momentum.
 
 Both negotiation algorithms share one outcome protocol. An iteration is
 eligible only after every participating net and claim aggregation completes.
-A zero negotiated violation vector returns immediately. A non-closed iterate
-may be retained only when all remaining violations are admitted by
-`TemporaryViolationPolicy`; it is ranked through the existing
-`SelectedObjectiveClosure` using route-related Mapping `V/G`, not A* cost or
-private prices. Equal rank retains the earlier canonical iterate. Work
-exhaustion is not infeasibility.
+At that boundary the Mapping owners cold-project the current provisional Route
+Trees into exact unrouted obligations, raw route occupancy, Physical Tag
+state, progress, selected traversal claims, and selected combinational
+handshake state. These facts must describe the provisional overlay rather than
+the committed candidate caches. A combinationally cyclic overlay is
+structurally ineligible: it cannot close, enter selected-rank comparisons, or
+be retained as a temporary iterate. Negotiated route closure returns when all
+sink obligations have complete terminal-compatible Route Trees and raw route
+capacity overuse is zero, but only after the structural check. Tag assignment,
+tag residency, and progress remain visible in the exact projection and are
+owned by the enclosing Mapping closure rather than duplicated by the routing
+kernel. A non-closed iterate may be retained only when all remaining Mapping
+violations are admitted by `TemporaryViolationPolicy`; it is ranked through
+the existing `SelectedObjectiveClosure` using the exact provisional Mapping
+`V/G`, not A* cost or private prices. Equal rank retains the earlier canonical
+iterate. Work exhaustion is not infeasibility.
 
 Every complete non-closed iteration also participates in the explicit
-no-progress work bound. The first such iteration establishes the retained best
-selected rank, the previous rank, and a zero iterations-since-best count. A
-later iteration resets that count to zero only when
-`SelectedObjectiveClosure` ranks its objective vector strictly before the
-retained best vector; otherwise it increments the count. Independently, its
-rank relative to the immediately previous iteration contributes one exact
-`Improved | Equal | Regressed` transition to a fixed trailing window. Both
-comparisons use the selected total ordering without a candidate-key tie break.
-A physically different route at equal rank is therefore `Equal`. A* cost,
-negotiated prices, route signatures, elapsed time, epsilon comparisons, and
-private conflict counts are never progress authorities.
+no-progress work bound. The first structurally eligible iteration establishes
+the retained best selected rank, the previous eligible rank, and a zero
+iterations-since-best count. A later eligible iteration resets that count to
+zero only when `SelectedObjectiveClosure` ranks its objective vector strictly
+before the retained best vector; otherwise it increments the count. Its rank
+relative to the immediately previous eligible iteration contributes one exact
+`Improved | Equal | Regressed` transition to a fixed trailing window. A
+structurally ineligible iteration cannot enter either objective comparison; it
+increments the iterations-since-best count and contributes one `Ineligible`
+transition instead. Both objective comparisons use the selected total ordering
+without a candidate-key tie break. A physically different route at equal rank
+is therefore `Equal`. A* cost, negotiated prices, route signatures, elapsed
+time, epsilon comparisons, and private conflict counts are never progress
+authorities.
 
 No-progress exhaustion occurs only when all of these conditions hold:
 
 ```text
 iterations_since_best >= no_progress_iteration_limit
 trailing_transition_count == no_progress_trend_window
-trailing_improved_count <= trailing_regressed_count
+trailing_improved_count <= trailing_regressed_count + trailing_ineligible_count
 ```
 
 Both limits are positive, and `no_progress_trend_window <=
 no_progress_iteration_limit`. A net-improving recent trend therefore keeps
 search alive even while it recovers from an earlier regression; flat,
-regressing, and balanced oscillating windows become typed `NoProgress` work
-exhaustion after the explicit patience. This outcome is not convergence,
-success, or proof of infeasibility. An exact fixed-terminal capacity-cut
-certificate takes precedence when both are available from the same completed
-iteration. Exhausting either the no-progress bound or the absolute
+regressing, structurally ineligible, and balanced oscillating windows become
+typed `NoProgress` work exhaustion after the explicit patience. A cyclic
+overlay therefore cannot evade the bound while negotiated pressure grows.
+This outcome is not convergence, success, or proof of infeasibility. An exact
+fixed-terminal capacity-cut certificate takes precedence when both are
+available from the same completed iteration. Exhausting either the no-progress
+bound or the absolute
 `negotiation_iteration_limit` returns the best admissible temporary iterate
 only for a non-final Action; otherwise it returns typed non-closure and rolls
 back. Final global closure never returns a temporary iterate. There is no

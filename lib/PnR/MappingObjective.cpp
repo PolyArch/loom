@@ -152,6 +152,34 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
   llvm_unreachable("unknown Mapping violation kind");
 }
 
+llvm::Expected<std::uint64_t> loom::pnr::spatialMappingViolationValue(
+    const SpatialCandidateState &candidate,
+    const SpatialCandidateRouteProjection &projection,
+    ResolvedPnrViolationKind kind) {
+  switch (kind) {
+  case ResolvedPnrViolationKind::UnroutedObligation:
+    return projection.unroutedObligationCount;
+  case ResolvedPnrViolationKind::CapacityOveruse: {
+    std::uint64_t total = candidate.atomicCapacityOveruse();
+    if (projection.routeCapacityOveruse >
+        std::numeric_limits<std::uint64_t>::max() - total)
+      return objectiveError("Spatial CapacityOveruse exceeds u64");
+    total += projection.routeCapacityOveruse;
+    if (projection.tagResidentCapacityOveruse >
+        std::numeric_limits<std::uint64_t>::max() - total)
+      return objectiveError("Spatial CapacityOveruse exceeds u64");
+    return total + projection.tagResidentCapacityOveruse;
+  }
+  case ResolvedPnrViolationKind::TagUnassigned:
+    return projection.tagUnassignedCount;
+  case ResolvedPnrViolationKind::TagConflict:
+    return projection.tagConflictCount;
+  case ResolvedPnrViolationKind::HardProgressViolation:
+    return projection.hardProgressViolation;
+  }
+  llvm_unreachable("unknown Mapping violation kind");
+}
+
 llvm::Expected<bool> loom::pnr::spatialMappingViolationsAreZero(
     const SpatialCandidateState &candidate) {
   for (std::uint32_t ordinal = 0; ordinal != resolvedPnrViolationKindCount;
@@ -273,6 +301,35 @@ llvm::Expected<dse::ObjectiveVector> MappingObjectiveProgram::evaluate(
     if ((selectedMeasures_ & (UINT64_C(1) << ordinal)) != 0)
       measures[ordinal] = spatialMappingMeasureValue(
           candidate, static_cast<MappingMeasureKind>(ordinal));
+  dse::ObjectiveVector result = program_.makeVector();
+  if (llvm::Error error = program_.evaluate({violations, measures, {}}, result))
+    return std::move(error);
+  return result;
+}
+
+llvm::Expected<dse::ObjectiveVector>
+MappingObjectiveProgram::evaluateSpatialProjection(
+    const SpatialCandidateState &candidate,
+    const SpatialCandidateRouteProjection &projection) const {
+  std::array<std::uint64_t, resolvedPnrViolationKindCount> violations{};
+  for (std::uint32_t ordinal = 0; ordinal != violations.size(); ++ordinal) {
+    if ((selectedViolations_ & (UINT64_C(1) << ordinal)) == 0)
+      continue;
+    auto value = spatialMappingViolationValue(
+        candidate, projection, static_cast<ResolvedPnrViolationKind>(ordinal));
+    if (!value)
+      return value.takeError();
+    violations[ordinal] = *value;
+  }
+  std::array<std::uint64_t, mappingMeasureKindCount> measures{};
+  for (std::uint32_t ordinal = 0; ordinal != measures.size(); ++ordinal) {
+    if ((selectedMeasures_ & (UINT64_C(1) << ordinal)) == 0)
+      continue;
+    if (static_cast<MappingMeasureKind>(ordinal) !=
+        MappingMeasureKind::TotalSelectedTraversalClaim)
+      llvm_unreachable("unknown Mapping measure kind");
+    measures[ordinal] = projection.totalSelectedTraversalClaim;
+  }
   dse::ObjectiveVector result = program_.makeVector();
   if (llvm::Error error = program_.evaluate({violations, measures, {}}, result))
     return std::move(error);
