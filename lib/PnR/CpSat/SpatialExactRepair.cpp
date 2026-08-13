@@ -1055,10 +1055,8 @@ SpatialExactRepairScratch::repairTransportClosure(
                   actionExecutor_.negotiationIterationCount());
   };
 
-  auto initialClosureRank = spatialTransportClosureRank(candidate);
-  if (!initialClosureRank)
-    return executedResult(SpatialExactRepairResultKind::InternalError,
-                          llvm::toString(initialClosureRank.takeError()));
+  const dse::ObjectiveVector initialObjective =
+      actionExecutor_.currentObjective();
 
   while (solverCalls < solverCallLimit) {
     auto solved =
@@ -1307,17 +1305,18 @@ SpatialExactRepairScratch::repairTransportClosure(
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(std::move(error)));
       }
-      auto closureRank = spatialTransportClosureRank(candidate);
-      if (!closureRank) {
-        llvm::Error error = closureRank.takeError();
+      auto selectedRank = candidate.problem().objectiveProgram().compareSelectedRank(
+          probe->objective(), {}, initialObjective, {});
+      if (!selectedRank) {
+        llvm::Error error = selectedRank.takeError();
         if (llvm::Error discardError = probe->discard())
           error = llvm::joinErrors(std::move(error), std::move(discardError));
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(std::move(error)));
       }
-      const bool closureRankImproved = *closureRank < *initialClosureRank;
+      const bool selectedRankImproved = *selectedRank < 0;
       if (!assignmentRealized || candidate.atomicCapacityOveruse() != 0 ||
-          *primaryWitnessLive || !closureRankImproved) {
+          *primaryWitnessLive || !selectedRankImproved) {
         rejectAssignment = true;
         loom::mapping_debug::emit(
             loom::mapping_debug::Level::Decision,
@@ -1332,22 +1331,16 @@ SpatialExactRepairScratch::repairTransportClosure(
               fields["atomic_capacity_overuse"] =
                   candidate.atomicCapacityOveruse();
               fields["primary_witness_eliminated"] = !*primaryWitnessLive;
-              fields["closure_rank_improved"] = closureRankImproved;
-              fields["initial_unrouted_obligations"] =
-                  initialClosureRank->unroutedObligationCount;
-              fields["initial_capacity_overuse"] =
-                  initialClosureRank->capacityOveruse;
-              fields["initial_tag_unassigned"] =
-                  initialClosureRank->tagUnassignedCount;
-              fields["initial_tag_conflicts"] =
-                  initialClosureRank->tagConflictCount;
-              fields["candidate_unrouted_obligations"] =
-                  closureRank->unroutedObligationCount;
-              fields["candidate_capacity_overuse"] =
-                  closureRank->capacityOveruse;
-              fields["candidate_tag_unassigned"] =
-                  closureRank->tagUnassignedCount;
-              fields["candidate_tag_conflicts"] = closureRank->tagConflictCount;
+              fields["selected_rank_improved"] = selectedRankImproved;
+              llvm::json::Array initialCodes;
+              for (std::uint64_t code : initialObjective.codes())
+                initialCodes.push_back(code);
+              fields["initial_objective_codes"] = std::move(initialCodes);
+              llvm::json::Array candidateCodes;
+              for (std::uint64_t code : probe->objective().codes())
+                candidateCodes.push_back(code);
+              fields["candidate_objective_codes"] =
+                  std::move(candidateCodes);
             });
         if (llvm::Error error = probe->discard())
           return executedResult(SpatialExactRepairResultKind::InternalError,

@@ -67,7 +67,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSpatialPnrCandidateGeneratorKind,
     "mapping.root_complete_spatial_pnr",
-    "loom.mapping.root_complete_spatial_pnr.generator.v4",
+    "loom.mapping.root_complete_spatial_pnr.generator.v5",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{

@@ -274,7 +274,8 @@ llvm::Error SpatialPathFinderRouterScratch::captureCurrentRoutes(
 llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
     SpatialMoveTransaction &move, SpatialCandidateState &candidate,
     SpatialRouteCostState &costs, llvm::ArrayRef<PnrIndex> logicalNets,
-    const SpatialTransportClosureRank &expected) {
+    const dse::ObjectiveVector &expectedObjective,
+    const SpatialCandidateRouteProjection &expectedProjection) {
   const FrozenSpatialRoutingGraph &routing = candidate.problem().routing();
   const auto arcs = routing.routingArcs();
   std::size_t sinkPath = 0;
@@ -348,12 +349,33 @@ llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
   auto restoredProjection = move.projectCurrentRoutes();
   if (!restoredProjection)
     return restoredProjection.takeError();
-  auto restored = spatialTransportClosureRank(candidate, *restoredProjection);
+  auto restored = candidate.problem().objectiveProgram().evaluateSpatialProjection(
+      candidate, *restoredProjection);
   if (!restored)
     return restored.takeError();
-  if (!(*restored == expected))
+  if (restored->codes() != expectedObjective.codes())
     return pathFinderError(
-        "captured temporary routes did not restore their closure rank");
+        "captured temporary routes did not restore their objective vector");
+  if (restoredProjection->unroutedObligationCount !=
+          expectedProjection.unroutedObligationCount ||
+      restoredProjection->routeCapacityOveruse !=
+          expectedProjection.routeCapacityOveruse ||
+      restoredProjection->tagResidentCapacityOveruse !=
+          expectedProjection.tagResidentCapacityOveruse ||
+      restoredProjection->tagUnassignedCount !=
+          expectedProjection.tagUnassignedCount ||
+      restoredProjection->tagConflictCount !=
+          expectedProjection.tagConflictCount ||
+      restoredProjection->hardProgressViolation !=
+          expectedProjection.hardProgressViolation ||
+      restoredProjection->totalSelectedTraversalClaim !=
+          expectedProjection.totalSelectedTraversalClaim ||
+      restoredProjection->routeTerminalsCompatible !=
+          expectedProjection.routeTerminalsCompatible ||
+      restoredProjection->selectedHandshakeAcyclic !=
+          expectedProjection.selectedHandshakeAcyclic)
+    return pathFinderError(
+        "captured temporary routes did not restore their Mapping projection");
   return llvm::Error::success();
 }
 
@@ -1076,10 +1098,11 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
   auto initialRegion = projectRoutingRegion(candidate, costs, logicalNets);
   if (!initialRegion)
     return initialRegion.takeError();
-  auto initialClosureRank =
-      spatialTransportClosureRank(candidate, *initialProjection);
-  if (!initialClosureRank)
-    return initialClosureRank.takeError();
+  auto initialObjective =
+      candidate.problem().objectiveProgram().evaluateSpatialProjection(
+          candidate, *initialProjection);
+  if (!initialObjective)
+    return initialObjective.takeError();
   if (initialProjection->routeTerminalsCompatible &&
       initialProjection->selectedHandshakeAcyclic &&
       initialRegion->unroutedObligationCount == 0 &&
@@ -1088,22 +1111,12 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
 
   const bool regionalRouting = !logicalNets.empty();
   std::optional<dse::ObjectiveVector> bestRankObjective;
-  std::optional<SpatialTransportClosureRank> bestRankClosure;
   std::optional<dse::ObjectiveVector> previousRankObjective;
-  std::optional<SpatialTransportClosureRank> previousRankClosure;
   std::optional<dse::ObjectiveVector> bestTemporaryObjective;
-  std::optional<SpatialTransportClosureRank> bestTemporaryClosure;
-  const auto compareClosureRank =
-      [&](const SpatialTransportClosureRank &leftClosure,
-          const dse::ObjectiveVector &leftObjective,
-          const SpatialTransportClosureRank &rightClosure,
+  std::optional<SpatialCandidateRouteProjection> bestTemporaryProjection;
+  const auto compareSelectedRank =
+      [&](const dse::ObjectiveVector &leftObjective,
           const dse::ObjectiveVector &rightObjective) -> llvm::Expected<int> {
-    if (regionalRouting) {
-      if (leftClosure < rightClosure)
-        return -1;
-      if (rightClosure < leftClosure)
-        return 1;
-    }
     return candidate.problem().objectiveProgram().compareSelectedRank(
         leftObjective, {}, rightObjective, {});
   };
@@ -1233,9 +1246,10 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     auto region = projectRoutingRegion(candidate, costs, logicalNets);
     if (!region)
       return region.takeError();
-    auto closureRank = spatialTransportClosureRank(candidate, *projection);
-    if (!closureRank)
-      return closureRank.takeError();
+    auto capacityOveruse = spatialMappingViolationValue(
+        candidate, *projection, ResolvedPnrViolationKind::CapacityOveruse);
+    if (!capacityOveruse)
+      return capacityOveruse.takeError();
     const bool hasCapacityOveruse = region->routeCapacityOveruse != 0;
     if (logicalNets.empty() &&
         hasCapacityOveruse != (projection->routeCapacityOveruse != 0))
@@ -1252,6 +1266,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     const std::uint64_t capacityConflicts = conflictAnalysis.conflictCount;
     debugStatistics.capacityConflicts += capacityConflicts;
     bool selectedRankImproved = false;
+    bool selectedRankImprovedFromInitial = false;
     bool temporaryAdmitted = false;
     bool mappingViolationsZero = false;
     const bool selectedRankEligible = projection->routeTerminalsCompatible &&
@@ -1271,14 +1286,13 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         return objective.takeError();
       selectedRankImproved = !bestRankObjective;
       if (bestRankObjective) {
-        auto comparison = compareClosureRank(
-            *closureRank, *objective, *bestRankClosure, *bestRankObjective);
+        auto comparison =
+            compareSelectedRank(*objective, *bestRankObjective);
         if (!comparison)
           return comparison.takeError();
         selectedRankImproved = *comparison < 0;
       }
       if (selectedRankImproved) {
-        bestRankClosure = *closureRank;
         bestRankObjective = *objective;
         consecutiveNoProgressIterations = 0;
       } else {
@@ -1286,24 +1300,26 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       }
 
       if (previousRankObjective) {
-        auto comparison = compareClosureRank(
-            *closureRank, *objective, *previousRankClosure,
-            *previousRankObjective);
+        auto comparison =
+            compareSelectedRank(*objective, *previousRankObjective);
         if (!comparison)
           return comparison.takeError();
         rankTrendTransition = *comparison < 0   ? RankTrendTransition::Improved
                               : *comparison > 0 ? RankTrendTransition::Regressed
                                                 : RankTrendTransition::Equal;
       }
-      previousRankClosure = *closureRank;
       previousRankObjective = *objective;
+
+      auto initialComparison = compareSelectedRank(*objective, *initialObjective);
+      if (!initialComparison)
+        return initialComparison.takeError();
+      selectedRankImprovedFromInitial = *initialComparison < 0;
 
       if (temporaryAdmitted) {
         bool replace = !bestTemporaryObjective;
         if (bestTemporaryObjective) {
-          auto comparison = compareClosureRank(
-              *closureRank, *objective, *bestTemporaryClosure,
-              *bestTemporaryObjective);
+          auto comparison =
+              compareSelectedRank(*objective, *bestTemporaryObjective);
           if (!comparison)
             return comparison.takeError();
           replace = *comparison < 0;
@@ -1311,7 +1327,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         if (replace) {
           if (llvm::Error error = captureCurrentRoutes(candidate, logicalNets))
             return std::move(error);
-          bestTemporaryClosure = *closureRank;
+          bestTemporaryProjection = *projection;
           bestTemporaryObjective = std::move(*objective);
         }
       }
@@ -1361,8 +1377,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           fields["selected_handshake_acyclic"] =
               projection->selectedHandshakeAcyclic;
           fields["unrouted_obligations"] =
-              closureRank->unroutedObligationCount;
-          fields["capacity_overuse"] = closureRank->capacityOveruse;
+              projection->unroutedObligationCount;
+          fields["capacity_overuse"] = *capacityOveruse;
           fields["route_capacity_overuse"] =
               projection->routeCapacityOveruse;
           fields["regional_unrouted_obligations"] =
@@ -1391,12 +1407,11 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           fields["a_star_expansions"] =
               netRouter_.endpointExpansionCount() - initialEndpointExpansions;
         });
-    const bool closureRankImproved = *closureRank < *initialClosureRank;
     const bool routingClosed =
         projection->routeTerminalsCompatible &&
         projection->selectedHandshakeAcyclic &&
         region->unroutedObligationCount == 0 && !hasCapacityOveruse &&
-        (!regionalRouting || closureRankImproved);
+        (!regionalRouting || selectedRankImprovedFromInitial);
     if (routingClosed) {
       emitStatistics("closed");
       return SpatialPathFinderClosureResult{completedIterations, true};
@@ -1405,7 +1420,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       if (bestTemporaryObjective) {
         if (llvm::Error error =
                 restoreCapturedRoutes(move, candidate, costs, logicalNets,
-                                      *bestTemporaryClosure))
+                                      *bestTemporaryObjective,
+                                      *bestTemporaryProjection))
           return std::move(error);
         emitStatistics("temporary_mapping");
         return SpatialPathFinderClosureResult{completedIterations, false};
@@ -1443,7 +1459,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       if (bestTemporaryObjective) {
         if (llvm::Error error =
                 restoreCapturedRoutes(move, candidate, costs, logicalNets,
-                                      *bestTemporaryClosure))
+                                      *bestTemporaryObjective,
+                                      *bestTemporaryProjection))
           return std::move(error);
         emitStatistics("fixed_terminal_cut_temporary");
         return SpatialPathFinderClosureResult{completedIterations, false};
@@ -1484,7 +1501,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       if (bestTemporaryObjective) {
         if (llvm::Error error =
                 restoreCapturedRoutes(move, candidate, costs, logicalNets,
-                                      *bestTemporaryClosure))
+                                      *bestTemporaryObjective,
+                                      *bestTemporaryProjection))
           return std::move(error);
         emitStatistics("no_progress_temporary");
         return SpatialPathFinderClosureResult{completedIterations, false};
@@ -1499,7 +1517,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       if (bestTemporaryObjective) {
         if (llvm::Error error =
                 restoreCapturedRoutes(move, candidate, costs, logicalNets,
-                                      *bestTemporaryClosure))
+                                      *bestTemporaryObjective,
+                                      *bestTemporaryProjection))
           return std::move(error);
         emitStatistics("temporary_capacity");
         return SpatialPathFinderClosureResult{completedIterations, false};

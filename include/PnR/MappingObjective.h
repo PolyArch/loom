@@ -10,7 +10,6 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -66,29 +65,6 @@ struct MappingMeasureDescriptor final {
   llvm::StringRef spelling;
 };
 
-struct SpatialTransportClosureRank final {
-  std::uint64_t unroutedObligationCount = 0;
-  std::uint64_t capacityOveruse = 0;
-  std::uint64_t tagUnassignedCount = 0;
-  std::uint64_t tagConflictCount = 0;
-
-  friend bool operator<(const SpatialTransportClosureRank &left,
-                        const SpatialTransportClosureRank &right) {
-    return std::tie(left.unroutedObligationCount, left.capacityOveruse,
-                    left.tagUnassignedCount, left.tagConflictCount) <
-           std::tie(right.unroutedObligationCount, right.capacityOveruse,
-                    right.tagUnassignedCount, right.tagConflictCount);
-  }
-
-  friend bool operator==(const SpatialTransportClosureRank &left,
-                         const SpatialTransportClosureRank &right) {
-    return std::tie(left.unroutedObligationCount, left.capacityOveruse,
-                    left.tagUnassignedCount, left.tagConflictCount) ==
-           std::tie(right.unroutedObligationCount, right.capacityOveruse,
-                    right.tagUnassignedCount, right.tagConflictCount);
-  }
-};
-
 const MappingObjectiveRegistryDescriptor &mappingObjectiveRegistryDescriptor();
 llvm::ArrayRef<MappingViolationDescriptor> mappingViolationDescriptors();
 llvm::ArrayRef<MappingMeasureDescriptor> mappingMeasureDescriptors();
@@ -109,15 +85,6 @@ llvm::Expected<std::uint64_t>
 spatialMappingViolationValue(const SpatialCandidateState &candidate,
                              const SpatialCandidateRouteProjection &projection,
                              ResolvedPnrViolationKind kind);
-
-/// Projects the global transport-closure rank from Mapping-owned violation
-/// values. A repair region limits mutations; it never narrows this rank's
-/// measurement domain.
-llvm::Expected<SpatialTransportClosureRank>
-spatialTransportClosureRank(const SpatialCandidateState &candidate);
-llvm::Expected<SpatialTransportClosureRank> spatialTransportClosureRank(
-    const SpatialCandidateState &candidate,
-    const SpatialCandidateRouteProjection &projection);
 
 /// Returns true exactly when every Mapping-owned final violation projection is
 /// zero. This is the shared semantic closure predicate used by search and final

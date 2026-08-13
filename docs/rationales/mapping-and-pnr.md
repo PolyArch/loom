@@ -732,18 +732,17 @@ no-progress bound proves nothing about future iterations; it only prevents an
 explicitly bounded search from repeatedly spending the dominant all-net route
 work without improving its exact closure rank.
 
-Regional routing cannot use only the selected whole-design objective as its
-first retained-iterate key because that objective need not make transport
-closure lexicographically monotonic. It also cannot measure only capacities
-touched by the candidate's current regional routes: moving those routes away
-from an overused capacity would remove that capacity from the measurement even
-when fixed outside routes preserve the violation. The region therefore limits
-mutations and defines local route closure, while the existing global
-Mapping-owned transport violations define the leading rank. Outside
-contributions remain constant unless the regional mutation actually affects
-them, so strict tuple improvement cannot be manufactured by changing the
-measurement domain. The ordinary Mapping objective remains the tie break and
-the sole configurable candidate-ranking owner.
+Regional routing cannot measure only capacities touched by the candidate's
+current regional routes: moving those routes away from an overused capacity
+would remove that capacity from the measurement even when fixed outside routes
+preserve the violation. A separate global tuple avoids that defect but creates
+a second ordering owner. In particular, lexicographically prioritizing
+unrouted obligations can accept a sequence that reduces unrouted sinks while
+increasing capacity overuse far beyond the selected Mapping rank. The region
+therefore limits mutations and defines local route closure, while the existing
+global `SelectedObjectiveClosure` remains the sole retained-iterate and repair
+acceptance order. Strict improvement in that finite order prevents witness
+exchange without duplicating objective policy.
 
 Dispatching bounded repair only when the retained candidate already reports
 route-capacity overuse is incomplete. A candidate can retain unrouted

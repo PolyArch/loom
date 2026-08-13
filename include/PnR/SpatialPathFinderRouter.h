@@ -12,9 +12,11 @@
 #include <system_error>
 #include <vector>
 
-namespace loom::pnr {
+namespace loom::dse {
+class ObjectiveVector;
+}
 
-struct SpatialTransportClosureRank;
+namespace loom::pnr {
 
 struct SpatialPathFinderRoutingLimits final {
   std::uint64_t endpointExpansionLimit = 0;
@@ -184,7 +186,9 @@ private:
                                     SpatialCandidateState &candidate,
                                     SpatialRouteCostState &costs,
                                     llvm::ArrayRef<PnrIndex> logicalNets,
-                                    const SpatialTransportClosureRank &expected);
+                                    const dse::ObjectiveVector &expectedObjective,
+                                    const SpatialCandidateRouteProjection
+                                        &expectedProjection);
   llvm::Expected<CapacityConflictAnalysis>
   analyzeCapacityConflicts(const SpatialCandidateState &candidate,
                            const SpatialRouteCostState &costs,
