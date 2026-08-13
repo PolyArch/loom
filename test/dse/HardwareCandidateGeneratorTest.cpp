@@ -84,8 +84,7 @@ struct Fixture final {
 };
 
 loom::fabric::FinalizedFabricRoot
-generateBuiltinSystem(Fixture &fixture,
-                      loom::adg::BuiltinTargetPreset preset,
+generateBuiltinSystem(Fixture &fixture, loom::adg::BuiltinTargetPreset preset,
                       const loom::adg::BuiltinTargetScale &scale) {
   const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(preset);
   auto config = take(loom::dse::resolveFabricTemplateConfig(
@@ -129,8 +128,7 @@ importBuiltinModule(const loom::fabric::FinalizedFabricRoot &system,
 }
 
 void parameterizedTemplateScale(
-    Fixture &fixture,
-    const loom::fabric::FinalizedFabricRoot &defaultSystem) {
+    Fixture &fixture, const loom::fabric::FinalizedFabricRoot &defaultSystem) {
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.hardwareTarget.templateIdentity =
       loom::adg::builtinSmallTarget.templateIdentity.str();
@@ -140,6 +138,7 @@ void parameterizedTemplateScale(
   auto &scale = resolved.hardwareTarget.parameters;
   scale = loom::adg::builtinSmallTarget.scale;
   scale.accCoreCount = 2;
+  scale.meshDimension = 5;
   scale.spatialPeCount = 13;
   scale.temporalPeCount = 5;
   scale.temporalResidentContexts = 3;
@@ -160,15 +159,22 @@ void parameterizedTemplateScale(
   require(system.view().accCoreOccurrences().size() == scale.accCoreCount,
           "resolved AccCore count did not reach the System artifact");
   auto module = importBuiltinModule(system, fixture);
+  const std::uint64_t expectedMeshLinkFifos =
+      16 * scale.meshDimension * (scale.meshDimension - 1);
+  const std::uint64_t expectedAdapterFifos =
+      3 * (scale.spatialMemoryCount + scale.temporalMemoryCount) +
+      2 * scale.gatewayCount;
+  require(module.view().fifoOccurrences().size() ==
+              expectedMeshLinkFifos + expectedAdapterFifos,
+          "resolved mesh dimension did not reach the Module topology");
   std::uint64_t instructionContexts = 0;
   for (const auto &pe : module.view().peOccurrences())
     instructionContexts += module.view().inventorySize(
         loom::fabric::FabricInventoryOwnerRef::of(pe),
         loom::fabric::FabricInventoryKind::InstructionContext);
   const std::uint64_t expectedContexts =
-      scale.spatialPeCount +
-      static_cast<std::uint64_t>(scale.temporalPeCount) *
-          scale.temporalResidentContexts;
+      scale.spatialPeCount + static_cast<std::uint64_t>(scale.temporalPeCount) *
+                                 scale.temporalResidentContexts;
   require(instructionContexts == expectedContexts,
           "resolved PE scale did not reach the Module context inventory");
 }
@@ -442,15 +448,19 @@ void spatialAttachmentRewrite(
   auto child = take(
       loom::fabric::importEntireFabricRoot(outputs.front(), fixture.store));
   auto systemView = take(loom::fabric::requireSystemRoot(child.view()));
-  auto selected = systemView.spatialCoreTarget(target);
-  require(selected.has_value(),
-          "replaced AccCore has no imported SpatialCore target");
-  require(selected->dependencyOrdinal < child.view().importedModules().size(),
-          "replaced AccCore has an invalid dependency ordinal");
-  require(
-      child.view().importedModules()[selected->dependencyOrdinal].identity() ==
-          replacementModule.view().identity(),
-      "ReplaceSpatialAttachment retained the previous Module identity");
+  std::uint64_t replacementCount = 0;
+  for (auto core : child.view().accCoreOccurrences()) {
+    auto selected = systemView.spatialCoreTarget(core);
+    require(selected.has_value(),
+            "replaced System has an AccCore without a SpatialCore target");
+    require(selected->dependencyOrdinal < child.directDependencies().size(),
+            "replaced AccCore has an invalid dependency ordinal");
+    replacementCount +=
+        child.directDependencies()[selected->dependencyOrdinal].root ==
+        replacementModule.reference();
+  }
+  require(replacementCount == 1,
+          "ReplaceSpatialAttachment did not select one replacement Module");
 }
 
 bool sameTransportShape(const loom::fabric::FabricArtifactView &view,

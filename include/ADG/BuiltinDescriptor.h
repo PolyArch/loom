@@ -11,6 +11,7 @@ enum class BuiltinTargetPreset : std::uint8_t { Small, Default, Large };
 
 struct BuiltinTargetScale final {
   std::uint32_t accCoreCount;
+  std::uint32_t meshDimension;
   std::uint32_t spatialPeCount;
   std::uint32_t temporalPeCount;
   std::uint32_t spatialMemoryCount;
@@ -21,9 +22,9 @@ struct BuiltinTargetScale final {
 };
 
 constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
-  return scale.accCoreCount != 0 && scale.spatialPeCount != 0 &&
-         scale.temporalPeCount != 0 && scale.spatialMemoryCount != 0 &&
-         scale.temporalMemoryCount != 0 &&
+  return scale.accCoreCount != 0 && scale.meshDimension > 1 &&
+         scale.spatialPeCount != 0 && scale.temporalPeCount != 0 &&
+         scale.spatialMemoryCount != 0 && scale.temporalMemoryCount != 0 &&
          scale.temporalResidentContexts != 0 && scale.gatewayCount != 0 &&
          scale.memoryCapacityBytes != 0;
 }
@@ -41,25 +42,25 @@ inline constexpr BuiltinTargetDescriptor builtinSmallTarget{
     BuiltinTargetPreset::Small,
     "small",
     "loom.adg.builtin.small",
-    3,
+    4,
     0,
-    {4, 12, 4, 1, 1, 2, 2, 64 * 1024}};
+    {4, 4, 12, 4, 1, 1, 2, 2, 64 * 1024}};
 
 inline constexpr BuiltinTargetDescriptor builtinDefaultTarget{
     BuiltinTargetPreset::Default,
     "default",
     "loom.adg.builtin.default",
-    3,
+    4,
     0,
-    {8, 27, 9, 2, 2, 4, 4, 256 * 1024}};
+    {8, 6, 27, 9, 2, 2, 4, 4, 256 * 1024}};
 
 inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
     BuiltinTargetPreset::Large,
     "large",
     "loom.adg.builtin.large",
-    3,
+    4,
     0,
-    {16, 48, 16, 4, 4, 8, 8, 1024 * 1024}};
+    {16, 8, 48, 16, 4, 4, 8, 8, 1024 * 1024}};
 
 constexpr const BuiltinTargetDescriptor &
 getBuiltinTargetDescriptor(BuiltinTargetPreset preset) {

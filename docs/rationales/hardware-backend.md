@@ -870,7 +870,7 @@ capability authority.
 
 The fixed analysis facts and the provider resource binding are distinct but
 both have one owner. The model descriptor fixes method, activity basis,
-coverage, and uncertainty; its ResolvedConfig 4.0 component view fixes the
+coverage, and uncertainty; its ResolvedConfig 5.0 component view fixes the
 actual Voltus build, complete PGV member fingerprints, and exact ordered PGV
 entrypoints. Entrypoints reference members rather than duplicating their
 fingerprints. This keeps local paths out of semantic identity without letting

@@ -156,6 +156,36 @@ struct FuDistribution final {
   std::vector<std::optional<std::uint32_t>> loopOrdinal;
 };
 
+struct DistributedCellCursor final {
+  std::uint64_t cell = 0;
+  std::uint64_t cellCount = 0;
+  std::uint64_t cellStride = 0;
+  std::uint64_t remainder = 0;
+  std::uint64_t remainderStride = 0;
+  std::uint64_t attachmentCount = 0;
+  std::uint64_t offset = 0;
+
+  DistributedCellCursor(std::uint64_t cellCount,
+                        std::uint64_t attachmentCount,
+                        std::uint64_t offset = 0)
+      : cellCount(cellCount), cellStride(cellCount / attachmentCount),
+        remainderStride(cellCount % attachmentCount),
+        attachmentCount(attachmentCount), offset(offset) {}
+
+  std::uint64_t next() {
+    const std::uint64_t result =
+        cell >= cellCount - offset ? cell - (cellCount - offset)
+                                   : cell + offset;
+    cell += cellStride;
+    remainder += remainderStride;
+    if (remainder >= attachmentCount) {
+      ++cell;
+      remainder -= attachmentCount;
+    }
+    return result;
+  }
+};
+
 FuDistribution makeFuDistribution(std::uint32_t count,
                                   std::uint32_t &nextLoopOrdinal) {
   FuDistribution distribution{
@@ -265,18 +295,6 @@ llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
   return pe.close();
 }
 
-std::uint32_t builtinMeshDimension(BuiltinTargetPreset preset) {
-  switch (preset) {
-  case BuiltinTargetPreset::Small:
-    return 4;
-  case BuiltinTargetPreset::Default:
-    return 6;
-  case BuiltinTargetPreset::Large:
-    return 8;
-  }
-  llvm_unreachable("unknown builtin target preset");
-}
-
 std::uint32_t builtinTemporalTagWidth(std::uint32_t residentContexts) {
   return std::max(1U, llvm::Log2_64_Ceil(residentContexts));
 }
@@ -335,44 +353,61 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   if (!temporalMemory)
     return temporalMemory.takeError();
 
-  const std::uint32_t meshDimension =
-      builtinMeshDimension(descriptor.preset);
-  const std::size_t meshCellCount =
-      static_cast<std::size_t>(meshDimension) * meshDimension;
+  const std::uint32_t meshDimension = scale.meshDimension;
+  const std::uint64_t meshCellCount =
+      static_cast<std::uint64_t>(meshDimension) * meshDimension;
+  const std::uint64_t halfMesh = meshCellCount / 2;
+  const std::uint64_t oneThirdMesh = meshCellCount / 3;
+  const std::uint64_t twoThirdsMesh = meshCellCount - oneThirdMesh;
   std::vector<MeshCellAttachmentSpec> spatialAttachmentSpecs;
   std::vector<MeshCellAttachmentSpec> temporalAttachmentSpecs;
-  std::size_t spatialCellCursor = 0;
-  std::size_t temporalCellCursor = 0;
-  auto appendAttachment =
-      [&](std::vector<MeshCellAttachmentSpec> &attachments,
-          std::size_t &cellCursor, std::vector<PortType> inputTypes,
-          std::vector<PortType> outputTypes) {
-        const std::size_t cell = cellCursor++ % meshCellCount;
-        const std::size_t ordinal = attachments.size();
-        attachments.push_back(
-            {static_cast<std::uint32_t>(cell % meshDimension),
-             static_cast<std::uint32_t>(cell / meshDimension),
-             std::move(inputTypes), std::move(outputTypes)});
-        return ordinal;
-      };
+  DistributedCellCursor spatialPeCells(meshCellCount, scale.spatialPeCount);
+  DistributedCellCursor spatialMemoryFirstCells(
+      meshCellCount, scale.spatialMemoryCount);
+  DistributedCellCursor spatialMemorySecondCells(
+      meshCellCount, scale.spatialMemoryCount, halfMesh);
+  DistributedCellCursor moduleGatewayCells(meshCellCount, scale.gatewayCount);
+  DistributedCellCursor s2tSpatialCells(meshCellCount, scale.gatewayCount,
+                                        oneThirdMesh);
+  DistributedCellCursor t2sSpatialCells(meshCellCount, scale.gatewayCount,
+                                        twoThirdsMesh);
+  DistributedCellCursor temporalPeCells(meshCellCount, scale.temporalPeCount);
+  DistributedCellCursor temporalMemoryFirstCells(
+      meshCellCount, scale.temporalMemoryCount);
+  DistributedCellCursor temporalMemorySecondCells(
+      meshCellCount, scale.temporalMemoryCount, halfMesh);
+  DistributedCellCursor temporalGatewayCells(meshCellCount,
+                                             scale.gatewayCount,
+                                             oneThirdMesh);
+  auto appendAttachment = [&](std::vector<MeshCellAttachmentSpec> &attachments,
+                              DistributedCellCursor &cellCursor,
+                              std::vector<PortType> inputTypes,
+                              std::vector<PortType> outputTypes) {
+    const std::uint64_t cell = cellCursor.next();
+    const std::size_t ordinal = attachments.size();
+    attachments.push_back({static_cast<std::uint32_t>(cell % meshDimension),
+                           static_cast<std::uint32_t>(cell / meshDimension),
+                           std::move(inputTypes), std::move(outputTypes)});
+    return ordinal;
+  };
   auto appendMemoryAttachments =
       [&](std::vector<MeshCellAttachmentSpec> &attachments,
-          std::size_t &cellCursor, const MemorySpec &memory,
+          DistributedCellCursor &firstCells,
+          DistributedCellCursor &secondCells, const MemorySpec &memory,
           const PortType &linkType) -> llvm::Expected<MemoryMeshAttachments> {
     const llvm::ArrayRef<PortType> inputTypes =
         memory.inputTypes().drop_front();
     const llvm::ArrayRef<PortType> outputTypes = memory.outputTypes();
     if (inputTypes.empty() || outputTypes.empty())
-      return invalid(
-          "builtin memory requires transport inputs and outputs");
+      return invalid("builtin memory requires transport inputs and outputs");
     const std::size_t firstInputCount = (inputTypes.size() + 1) / 2;
     const std::size_t firstOutputCount = (outputTypes.size() + 1) / 2;
-    const std::size_t first = appendAttachment(
-        attachments, cellCursor,
-        std::vector<PortType>(firstInputCount, linkType),
-        std::vector<PortType>(firstOutputCount, linkType));
+    const std::size_t first =
+        appendAttachment(attachments, firstCells,
+                         std::vector<PortType>(firstInputCount, linkType),
+                         std::vector<PortType>(firstOutputCount, linkType));
     const std::size_t second = appendAttachment(
-        attachments, cellCursor,
+        attachments, secondCells,
         std::vector<PortType>(inputTypes.size() - firstInputCount, linkType),
         std::vector<PortType>(outputTypes.size() - firstOutputCount, linkType));
     return MemoryMeshAttachments{first, second, firstInputCount,
@@ -381,14 +416,15 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
 
   std::vector<std::size_t> spatialPeAttachments;
   for (std::uint32_t site = 0; site != scale.spatialPeCount; ++site)
-    spatialPeAttachments.push_back(appendAttachment(
-        spatialAttachmentSpecs, spatialCellCursor,
-        std::vector<PortType>(5, *bits128),
-        std::vector<PortType>(4, *bits128)));
+    spatialPeAttachments.push_back(
+        appendAttachment(spatialAttachmentSpecs, spatialPeCells,
+                         std::vector<PortType>(5, *bits128),
+                         std::vector<PortType>(4, *bits128)));
   std::vector<MemoryMeshAttachments> spatialMemoryAttachments;
   for (std::uint32_t memory = 0; memory != scale.spatialMemoryCount; ++memory) {
     auto attachments = appendMemoryAttachments(
-        spatialAttachmentSpecs, spatialCellCursor, *spatialMemory, *bits128);
+        spatialAttachmentSpecs, spatialMemoryFirstCells,
+        spatialMemorySecondCells, *spatialMemory, *bits128);
     if (!attachments)
       return attachments.takeError();
     spatialMemoryAttachments.push_back(*attachments);
@@ -398,39 +434,41 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   std::vector<std::size_t> t2sSpatialAttachments;
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
     moduleGatewayAttachments.push_back(appendAttachment(
-        spatialAttachmentSpecs, spatialCellCursor, {*bits128}, {*bits128}));
+        spatialAttachmentSpecs, moduleGatewayCells, {*bits128}, {*bits128}));
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
     s2tSpatialAttachments.push_back(appendAttachment(
-        spatialAttachmentSpecs, spatialCellCursor, {*bits128}, {}));
+        spatialAttachmentSpecs, s2tSpatialCells, {*bits128}, {}));
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
     t2sSpatialAttachments.push_back(appendAttachment(
-        spatialAttachmentSpecs, spatialCellCursor, {}, {*bits128}));
+        spatialAttachmentSpecs, t2sSpatialCells, {}, {*bits128}));
 
   std::vector<std::size_t> temporalPeAttachments;
   for (std::uint32_t site = 0; site != scale.temporalPeCount; ++site)
-    temporalPeAttachments.push_back(appendAttachment(
-        temporalAttachmentSpecs, temporalCellCursor,
-        std::vector<PortType>(5, *tagged128),
-        std::vector<PortType>(4, *tagged128)));
+    temporalPeAttachments.push_back(
+        appendAttachment(temporalAttachmentSpecs, temporalPeCells,
+                         std::vector<PortType>(5, *tagged128),
+                         std::vector<PortType>(4, *tagged128)));
   std::vector<MemoryMeshAttachments> temporalMemoryAttachments;
   for (std::uint32_t memory = 0; memory != scale.temporalMemoryCount;
        ++memory) {
-    auto attachments = appendMemoryAttachments(
-        temporalAttachmentSpecs, temporalCellCursor, *temporalMemory,
-        *tagged128);
+    auto attachments =
+        appendMemoryAttachments(temporalAttachmentSpecs,
+                                temporalMemoryFirstCells,
+                                temporalMemorySecondCells, *temporalMemory,
+                                *tagged128);
     if (!attachments)
       return attachments.takeError();
     temporalMemoryAttachments.push_back(*attachments);
   }
   std::vector<std::size_t> temporalGatewayAttachments;
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
-    temporalGatewayAttachments.push_back(appendAttachment(
-        temporalAttachmentSpecs, temporalCellCursor, {*tagged128},
-        {*tagged128}));
+    temporalGatewayAttachments.push_back(
+        appendAttachment(temporalAttachmentSpecs, temporalGatewayCells,
+                         {*tagged128}, {*tagged128}));
 
-  auto spatialNetworkSpec = MeshSwitchNetworkSpec::spatial(
-      meshDimension, meshDimension, 2, *bits128,
-      std::move(spatialAttachmentSpecs));
+  auto spatialNetworkSpec =
+      MeshSwitchNetworkSpec::spatial(meshDimension, meshDimension, 2, *bits128,
+                                     std::move(spatialAttachmentSpecs));
   if (!spatialNetworkSpec)
     return spatialNetworkSpec.takeError();
   auto spatialNetwork = spatial->addMeshSwitchNetwork(*spatialNetworkSpec);
@@ -457,9 +495,9 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     auto attachment = spatialNetwork->attachment(spatialPeAttachments[site]);
     if (!attachment)
       return attachment.takeError();
-    auto pe = spatial->addPe(
-        attachment->inputs(),
-        PeSpec::spatial(spatialPeInputs, spatialPeOutputs));
+    auto pe =
+        spatial->addPe(attachment->inputs(),
+                       PeSpec::spatial(spatialPeInputs, spatialPeOutputs));
     if (!pe)
       return pe.takeError();
     if (llvm::Error error = addFuCatalog(*pe, site, spatialDistribution))
@@ -497,21 +535,17 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     std::vector<SpatialValue> routedOutputs;
     for (SpatialValue output : outputs->values()) {
       auto fifo = spatial->addFifo(
-          output,
-          FifoSpec{*bits128, scale.temporalResidentContexts, true});
+          output, FifoSpec{*bits128, scale.temporalResidentContexts, false});
       if (!fifo)
         return fifo.takeError();
       routedOutputs.push_back(fifo->value());
     }
-    const std::size_t split =
-        spatialMemoryAttachments[memory].firstOutputCount;
-    if (llvm::Error error =
-            first->connectOutputs(
-                llvm::ArrayRef<SpatialValue>(routedOutputs).take_front(split)))
+    const std::size_t split = spatialMemoryAttachments[memory].firstOutputCount;
+    if (llvm::Error error = first->connectOutputs(
+            llvm::ArrayRef<SpatialValue>(routedOutputs).take_front(split)))
       return std::move(error);
-    if (llvm::Error error =
-            second->connectOutputs(
-                llvm::ArrayRef<SpatialValue>(routedOutputs).drop_front(split)))
+    if (llvm::Error error = second->connectOutputs(
+            llvm::ArrayRef<SpatialValue>(routedOutputs).drop_front(split)))
       return std::move(error);
   }
 
@@ -524,14 +558,13 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       TemporalRegisterFifoParameters{scale.temporalResidentContexts,
                                      scale.temporalResidentContexts, 2}};
   for (std::uint32_t site = 0; site != scale.temporalPeCount; ++site) {
-    auto attachment =
-        temporalNetwork->attachment(temporalPeAttachments[site]);
+    auto attachment = temporalNetwork->attachment(temporalPeAttachments[site]);
     if (!attachment)
       return attachment.takeError();
-    auto pe = spatial->addPe(
-        attachment->inputs(),
-        PeSpec::temporal(temporalPeInputs, temporalPeOutputs,
-                         temporalParameters));
+    auto pe =
+        spatial->addPe(attachment->inputs(),
+                       PeSpec::temporal(temporalPeInputs, temporalPeOutputs,
+                                        temporalParameters));
     if (!pe)
       return pe.takeError();
     if (llvm::Error error = addFuCatalog(*pe, site, temporalDistribution))
@@ -570,21 +603,18 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     std::vector<SpatialValue> routedOutputs;
     for (SpatialValue output : outputs->values()) {
       auto fifo = spatial->addFifo(
-          output,
-          FifoSpec{*tagged128, scale.temporalResidentContexts, true});
+          output, FifoSpec{*tagged128, scale.temporalResidentContexts, false});
       if (!fifo)
         return fifo.takeError();
       routedOutputs.push_back(fifo->value());
     }
     const std::size_t split =
         temporalMemoryAttachments[memory].firstOutputCount;
-    if (llvm::Error error =
-            first->connectOutputs(
-                llvm::ArrayRef<SpatialValue>(routedOutputs).take_front(split)))
+    if (llvm::Error error = first->connectOutputs(
+            llvm::ArrayRef<SpatialValue>(routedOutputs).take_front(split)))
       return std::move(error);
-    if (llvm::Error error =
-            second->connectOutputs(
-                llvm::ArrayRef<SpatialValue>(routedOutputs).drop_front(split)))
+    if (llvm::Error error = second->connectOutputs(
+            llvm::ArrayRef<SpatialValue>(routedOutputs).drop_front(split)))
       return std::move(error);
   }
 
@@ -610,9 +640,9 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     if (llvm::Error error =
             temporalAttachment->connectOutputs({tagged->value()}))
       return std::move(error);
-    auto t2sOutputs = spatial->addBoundary(
-        temporalAttachment->inputs(),
-        BoundarySpec::t2s(*tagged128, {*bits128}));
+    auto t2sOutputs =
+        spatial->addBoundary(temporalAttachment->inputs(),
+                             BoundarySpec::t2s(*tagged128, {*bits128}));
     if (!t2sOutputs)
       return t2sOutputs.takeError();
     auto t2sAttachment =
@@ -622,8 +652,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     std::vector<SpatialValue> routedOutputs;
     for (SpatialValue output : t2sOutputs->values()) {
       auto fifo = spatial->addFifo(
-          output,
-          FifoSpec{*bits128, scale.temporalResidentContexts, false});
+          output, FifoSpec{*bits128, scale.temporalResidentContexts, false});
       if (!fifo)
         return fifo.takeError();
       routedOutputs.push_back(fifo->value());
@@ -976,8 +1005,8 @@ expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset) {
 llvm::Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset,
                          const BuiltinTargetScale &scale) {
-  return expandBuiltinSpatialCoreImpl(design,
-                                      getBuiltinTargetDescriptor(preset), scale);
+  return expandBuiltinSpatialCoreImpl(
+      design, getBuiltinTargetDescriptor(preset), scale);
 }
 
 llvm::Expected<SystemBuilder>

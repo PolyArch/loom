@@ -13,7 +13,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.fabric_template_generator.config.2.0";
+    "loom.fabric_template_generator.config.3.0";
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
     {CandidateGeneratorOutputSlotRef(0), "fabric", PlanValueRole::CandidateSet,
@@ -57,6 +57,7 @@ encodeConfig(loom::adg::BuiltinTargetPreset preset,
   appendU32(bytes, descriptor.schemaMajor);
   appendU32(bytes, descriptor.schemaMinor);
   appendU32(bytes, scale.accCoreCount);
+  appendU32(bytes, scale.meshDimension);
   appendU32(bytes, scale.spatialPeCount);
   appendU32(bytes, scale.temporalPeCount);
   appendU32(bytes, scale.spatialMemoryCount);
@@ -72,8 +73,7 @@ struct DecodedConfig final {
   loom::adg::BuiltinTargetScale scale;
 };
 
-llvm::Expected<DecodedConfig>
-decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
+llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   if (bytes.size() < 4)
     return invalid("truncated template descriptor identity length");
   std::uint32_t size = 0;
@@ -84,7 +84,7 @@ decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid("truncated template descriptor identity");
   llvm::StringRef identity(reinterpret_cast<const char *>(bytes.data()), size);
   bytes = bytes.drop_front(size);
-  if (bytes.size() != 44)
+  if (bytes.size() != 48)
     return invalid("template descriptor and scale are not canonical");
   std::uint32_t major = 0;
   std::uint32_t minor = 0;
@@ -102,13 +102,14 @@ decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   };
   loom::adg::BuiltinTargetScale scale{readU32(), readU32(), readU32(),
                                       readU32(), readU32(), readU32(),
-                                      readU32(), 0};
+                                      readU32(), readU32(), 0};
   for (std::uint8_t byte : bytes)
     scale.memoryCapacityBytes = (scale.memoryCapacityBytes << 8) | byte;
   if (!loom::adg::isValidBuiltinTargetScale(scale))
-    return invalid("all template scale values must be positive");
-  const auto *descriptor = loom::adg::findBuiltinTargetDescriptor(
-      identity, major, minor);
+    return invalid("mesh dimension must exceed one and all other template "
+                   "scale values must be positive");
+  const auto *descriptor =
+      loom::adg::findBuiltinTargetDescriptor(identity, major, minor);
   if (descriptor)
     return DecodedConfig{descriptor->preset, scale};
   return invalid(
@@ -127,7 +128,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     fabricTemplateCandidateGeneratorKind,
     "fabric_template",
-    "loom.fabric_template.generator.v2",
+    "loom.fabric_template.generator.v3",
     {},
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -148,8 +149,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       binding.configDigest());
   if (!config)
     return config.takeError();
-  auto result = loom::adg::buildBuiltinTarget(store, config->preset(),
-                                               config->scale());
+  auto result =
+      loom::adg::buildBuiltinTarget(store, config->preset(), config->scale());
   if (!result)
     return result.takeError();
   std::vector<ArtifactRootReference> outputs;
@@ -185,18 +186,17 @@ llvm::ArrayRef<std::uint8_t> resolvedFabricTemplateConfigSchemaBytes() {
 llvm::Expected<ResolvedFabricTemplateConfigView>
 resolveFabricTemplateConfig(loom::adg::BuiltinTargetPreset preset) {
   const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(preset);
-  return resolveFabricTemplateConfig(
-      descriptor.templateIdentity, descriptor.schemaMajor,
-      descriptor.schemaMinor, descriptor.scale);
+  return resolveFabricTemplateConfig(descriptor.templateIdentity,
+                                     descriptor.schemaMajor,
+                                     descriptor.schemaMinor, descriptor.scale);
 }
 
-llvm::Expected<ResolvedFabricTemplateConfigView>
-resolveFabricTemplateConfig(llvm::StringRef templateIdentity,
-                            std::uint32_t schemaMajor,
-                            std::uint32_t schemaMinor,
-                            const loom::adg::BuiltinTargetScale &scale) {
+llvm::Expected<ResolvedFabricTemplateConfigView> resolveFabricTemplateConfig(
+    llvm::StringRef templateIdentity, std::uint32_t schemaMajor,
+    std::uint32_t schemaMinor, const loom::adg::BuiltinTargetScale &scale) {
   if (!loom::adg::isValidBuiltinTargetScale(scale))
-    return invalid("all template scale values must be positive");
+    return invalid("mesh dimension must exceed one and all other template "
+                   "scale values must be positive");
   const auto *descriptor = loom::adg::findBuiltinTargetDescriptor(
       templateIdentity, schemaMajor, schemaMinor);
   if (!descriptor)
@@ -212,11 +212,10 @@ resolveFabricTemplateConfig(llvm::StringRef templateIdentity,
 
 llvm::Expected<ResolvedFabricTemplateConfigView>
 projectResolvedFabricTemplateConfigView(const ResolvedConfig &config) {
-  return resolveFabricTemplateConfig(
-      config.hardwareTarget.templateIdentity,
-      config.hardwareTarget.schemaVersion.major,
-      config.hardwareTarget.schemaVersion.minor,
-      config.hardwareTarget.parameters);
+  return resolveFabricTemplateConfig(config.hardwareTarget.templateIdentity,
+                                     config.hardwareTarget.schemaVersion.major,
+                                     config.hardwareTarget.schemaVersion.minor,
+                                     config.hardwareTarget.parameters);
 }
 
 llvm::Expected<ResolvedFabricTemplateConfigView>

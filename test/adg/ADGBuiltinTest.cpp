@@ -88,13 +88,14 @@ void builtinPresetsExpandThroughPublicBuilder() {
     require(
         test,
         descriptor.scale.accCoreCount == expected.accCores &&
+            descriptor.scale.meshDimension == expected.meshDimension &&
             descriptor.scale.spatialPeCount == expected.spatialPes &&
             descriptor.scale.temporalPeCount == expected.temporalPes &&
             descriptor.scale.spatialMemoryCount == expected.spatialMemories &&
             descriptor.scale.temporalMemoryCount == expected.temporalMemories,
         "builtin descriptor changed its scale contract");
-    require(test, descriptor.schemaMajor == 3 && descriptor.schemaMinor == 0,
-            "builtin descriptor did not select the buffered gateway recipe");
+    require(test, descriptor.schemaMajor == 4 && descriptor.schemaMinor == 0,
+            "builtin descriptor did not select the parameterized mesh recipe");
 
     auto target =
         take(test, loom::adg::buildBuiltinTarget(store, expected.preset));
@@ -326,7 +327,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
                     expected.spatialMemories + expected.temporalMemories,
             "builtin SpatialCore lost its PE or memory scale");
     const std::uint64_t expectedMeshLinkFifos =
-        16 * expected.meshDimension * (expected.meshDimension - 1);
+        16 * descriptor.scale.meshDimension *
+        (descriptor.scale.meshDimension - 1);
     const std::uint64_t expectedAdapterFifos =
         3 * (expected.spatialMemories + expected.temporalMemories) +
         2 * descriptor.scale.gatewayCount;
@@ -358,9 +360,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
       require(test, continuity.has_value(),
               "builtin boundary lost its tag continuity kind");
       configuredWriters +=
-          continuity->kind == loom::fabric::
-                                  FabricBoundaryTagContinuityKind::
-                                      ConfigurableWriter;
+          continuity->kind ==
+          loom::fabric::FabricBoundaryTagContinuityKind::ConfigurableWriter;
       tagRemovers += continuity->kind ==
                      loom::fabric::FabricBoundaryTagContinuityKind::Remover;
       const auto boundaryOwner =
@@ -369,9 +370,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
       for (const auto &connection : module.view().pointConnections()) {
         if (connection.source.owner != boundaryOwner)
           continue;
-        const auto *fifo =
-            std::get_if<loom::fabric::FabricFifoOccurrenceRef>(
-                &connection.destination.owner.payload);
+        const auto *fifo = std::get_if<loom::fabric::FabricFifoOccurrenceRef>(
+            &connection.destination.owner.payload);
         require(test, fifo != nullptr && !outputFifo.has_value(),
                 "builtin gateway boundary does not feed one exact FIFO");
         outputFifo = *fifo;
@@ -384,8 +384,7 @@ void builtinPresetsExpandThroughPublicBuilder() {
                 &traversal.payload);
         require(test,
                 !fifo || fifo->owner != *outputFifo ||
-                    fifo->mode !=
-                        loom::fabric::FabricFifoTraversalMode::Bypass,
+                    fifo->mode != loom::fabric::FabricFifoTraversalMode::Bypass,
                 "builtin gateway FIFO admits a combinational bypass");
       }
     }
@@ -418,8 +417,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
     }
     require(test,
             interiorTransitSwitches >=
-                2 * (expected.meshDimension - 2) *
-                    (expected.meshDimension - 2),
+                2 * (descriptor.scale.meshDimension - 2) *
+                    (descriptor.scale.meshDimension - 2),
             "builtin lost an interior 8x8 transit switch");
     for (const auto memory : module.view().memoryOccurrences()) {
       const auto memoryOwner =

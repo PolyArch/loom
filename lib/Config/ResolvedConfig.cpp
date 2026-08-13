@@ -386,8 +386,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
 
   auto parametersOrErr = ClosedMapping::parse(
       fieldsOrErr->at("parameters"), "hardware_target.parameters",
-      {"acc_core_count", "spatial_pe_count", "temporal_pe_count",
-       "spatial_memory_count", "temporal_memory_count",
+      {"acc_core_count", "mesh_dimension", "spatial_pe_count",
+       "temporal_pe_count", "spatial_memory_count", "temporal_memory_count",
        "temporal_resident_contexts", "gateway_count", "memory_capacity_bytes"});
   if (!parametersOrErr)
     return parametersOrErr.takeError();
@@ -401,6 +401,7 @@ parseHardwareTarget(const ConfigSyntax *node) {
     return static_cast<std::uint32_t>(*valueOrErr);
   };
   auto accCores = positiveU32("acc_core_count");
+  auto meshDimension = positiveU32("mesh_dimension");
   auto spatialPes = positiveU32("spatial_pe_count");
   auto temporalPes = positiveU32("temporal_pe_count");
   auto spatialMemories = positiveU32("spatial_memory_count");
@@ -412,6 +413,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
                          "hardware_target.parameters.memory_capacity_bytes");
   if (!accCores)
     return accCores.takeError();
+  if (!meshDimension)
+    return meshDimension.takeError();
   if (!spatialPes)
     return spatialPes.takeError();
   if (!temporalPes)
@@ -430,7 +433,7 @@ parseHardwareTarget(const ConfigSyntax *node) {
   return loom::ResolvedHardwareTargetConfig{
       *templateOrErr,
       {*majorOrErr, *minorOrErr},
-      {*accCores, *spatialPes, *temporalPes, *spatialMemories,
+      {*accCores, *meshDimension, *spatialPes, *temporalPes, *spatialMemories,
        *temporalMemories, *residentContexts, *gateways, *memoryCapacity}};
 }
 
@@ -1620,12 +1623,14 @@ llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
     return diagnostic("config_missing_required_profile",
                       "hardware_target.template_identity");
   const loom::adg::BuiltinTargetScale &scale = config.hardwareTarget.parameters;
-  if (scale.accCoreCount == 0 || scale.spatialPeCount == 0 ||
-      scale.temporalPeCount == 0 || scale.spatialMemoryCount == 0 ||
-      scale.temporalMemoryCount == 0 || scale.temporalResidentContexts == 0 ||
-      scale.gatewayCount == 0 || scale.memoryCapacityBytes == 0)
+  if (scale.accCoreCount == 0 || scale.meshDimension <= 1 ||
+      scale.spatialPeCount == 0 || scale.temporalPeCount == 0 ||
+      scale.spatialMemoryCount == 0 || scale.temporalMemoryCount == 0 ||
+      scale.temporalResidentContexts == 0 || scale.gatewayCount == 0 ||
+      scale.memoryCapacityBytes == 0)
     return diagnostic("config_range_violation", "hardware_target.parameters",
-                      "all target scale values must be positive");
+                      "mesh_dimension must exceed one and all other target "
+                      "scale values must be positive");
   if (config.dse.structuredOwnership.scopeExpansionLimit == 0 ||
       config.dse.schedule.scopeExpansionLimit == 0 ||
       config.dse.memoryCommunication.scopeExpansionLimit == 0 ||

@@ -541,12 +541,15 @@ BuiltinTargetPreset = Small | Default | Large
 ```
 
 The `Small`, `Default`, and `Large` builtin descriptors use schema version
-`3.0`. Their prior recipes are not retained as compatibility expansions.
-Version 3 replaces runtime tag-token gateway inputs with Mapping-configured tag
-writers, derives the minimum positive tag width from resident route capacity,
-and places non-bypassable elastic storage in both cross-schedule directions.
-Reusing version 2 would let the same template key denote incompatible Fabric
-identity and handshake behavior.
+`4.0`. Their prior recipes are not retained as compatibility expansions.
+Version 3 replaced runtime tag-token gateway inputs with Mapping-configured tag
+writers, derived the minimum positive tag width from resident route capacity,
+and placed non-bypassable elastic storage in both cross-schedule directions.
+Version 4 makes the mesh dimension a required typed scale parameter rather than
+a hidden preset choice, distributes each attachment class across the complete
+mesh, and makes memory response queues non-bypassable. Reusing an earlier
+version would let the same template key denote incompatible Fabric identity,
+handshake behavior, or topology.
 
 The public builtin boundary is:
 
@@ -637,32 +640,37 @@ a tagged Temporal network connected only through explicit Fabric boundaries.
 This is an authoring recipe, not a second topology schema: expansion produces
 ordinary explicit Fabric resources and connections.
 
-Each preset constructs distinct overlaid untagged Spatial and tagged Temporal
-two-lane-per-direction mesh networks through `addMeshSwitchNetwork`. The
+Each resolved scale constructs distinct overlaid untagged Spatial and tagged
+Temporal two-lane-per-direction mesh networks through `addMeshSwitchNetwork`. The
 Temporal tag width is `max(1, ceil(log2(temporalResidentContexts)))`; resident
 context count separately owns PE, switch-table, memory, and buffer capacity.
 Cross-schedule ingress uses a Mapping-configured tag writer and both directions
 contain one non-bypassable FIFO, so the two meshes cannot form a combinational
-ready/valid cycle. The authoring dimensions are `4 x 4` for `Small`, `6 x 6`
-for `Default`, and
-`8 x 8` for `Large`. These dimensions generate graph topology only; they do
-not become semantic coordinates. Interior transit switches are `8 x 8`, edge
-and corner transit switches are smaller, and every local attachment switch is
-at most `8 x 8`.
+ready/valid cycle. The required `meshDimension` scale field exceeds one and is
+the common width and height of both meshes. Its preset defaults are `4`, `6`,
+and `8` for `Small`, `Default`, and `Large`, respectively. The dimension
+generates graph topology only; it does not become a semantic coordinate.
+Interior transit switches are `8 x 8`, edge and corner transit switches are
+smaller, and every local attachment switch is at most `8 x 8`.
 
 PEs, memory operation ports, cross-schedule boundaries, and Module transport
-boundaries attach through distributed local banks. Every memory occurrence
-uses transport banks at more than one mesh cell; its manager capability remains
-direct. No switch is incident to all PEs, memories, or gateways, and no
-schedule-wide crossbar exists. The recipe retains finite shared links and
-local injection/ejection contention, so a known legal Mapping witness does not
-turn the hardware into a fully connected or workload-specific fixture.
+boundaries attach through distributed local banks. Each resource class is
+distributed independently across the complete mesh instead of inheriting a
+prefix from Builder construction order. Every memory occurrence uses two
+transport banks separated by half the mesh cell domain, and every response
+passes through a non-bypassable FIFO before network injection; its manager
+capability remains direct. No switch is incident to all PEs, memories, or
+gateways, and no schedule-wide crossbar exists. The recipe retains finite
+shared links and local injection/ejection contention, so a known legal Mapping
+witness does not turn the hardware into a fully connected or workload-specific
+fixture.
 
 The initial scale anchors are:
 
 | property                         | `Small` | `Default` | `Large` |
 | -------------------------------- | ------: | --------: | ------: |
 | AccCore occurrences              |       4 |         8 |      16 |
+| mesh width and height            |       4 |         6 |       8 |
 | PE occurrences per SpatialCore   |      16 |        36 |      64 |
 | Spatial : Temporal PE ratio      |    12:4 |      27:9 |   48:16 |
 | memory occurrences per core      |       2 |         4 |       8 |

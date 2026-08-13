@@ -496,7 +496,7 @@ implementation semantic identity rather than a mutable invocation option or
 another field in `RailAnalysisModelConfig`.
 
 Its resolved config-view schema 3.0 consumes exactly one typed provider binding
-from ResolvedConfig 4.0:
+from ResolvedConfig 5.0:
 
 ```text
 CadenceVoltusStaticRailProviderBinding {
@@ -2539,7 +2539,7 @@ configuration roots:
 ```text
 FabricTemplateConfig {
   template_descriptor_ref
-  owner_typed_parameters
+  owner_typed_parameters including builtin mesh dimension
 }
 
 SpatialTopologyRewriteConfig {
