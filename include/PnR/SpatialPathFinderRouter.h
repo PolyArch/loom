@@ -171,10 +171,12 @@ private:
                          const SpatialRouteCostState &costs,
                          llvm::ArrayRef<PnrIndex> logicalNets,
                          llvm::ArrayRef<RouteCost> evaluationPriorities);
-  llvm::Error captureCurrentRoutes(const SpatialCandidateState &candidate);
+  llvm::Error captureCurrentRoutes(const SpatialCandidateState &candidate,
+                                   llvm::ArrayRef<PnrIndex> logicalNets);
   llvm::Error restoreCapturedRoutes(SpatialMoveTransaction &move,
                                     SpatialCandidateState &candidate,
-                                    SpatialRouteCostState &costs);
+                                    SpatialRouteCostState &costs,
+                                    llvm::ArrayRef<PnrIndex> logicalNets);
   llvm::Expected<CapacityConflictAnalysis>
   analyzeCapacityConflicts(const SpatialCandidateState &candidate,
                            const SpatialRouteCostState &costs,

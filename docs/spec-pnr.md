@@ -2929,6 +2929,14 @@ result reuse. OR-Tools branch count, conflict count, wall time, and
 cancellation controls may interrupt execution, but an interrupted repair
 cannot change the original candidate.
 
+`max_region_decisions` bounds each complete witness region.
+`max_solver_calls` bounds the complete exact-repair work of one restart,
+including every repair invocation caused by a later global-closure failure.
+Global closure and repair alternate until closure succeeds, a typed repair
+result prevents continuation, or that restart-wide solver-call budget is
+exhausted. A successful repair must consume at least one solver call, so the
+sequence is finite without another policy limit.
+
 The solver assignment is diffed against the candidate and rebuilt as one
 canonical ephemeral `ActionBatch` containing only the three existing Action
 variants. One `MoveTransaction` applies the batch atomically. Mapping hard
@@ -2952,6 +2960,17 @@ encoded, SearchEnergy is the primary objective and mutation count is the
 secondary objective through a checked lexicographic integer composition.
 Overflow makes that optional SearchEnergy encoding unsupported; it never drops
 mutation count or silently changes objective order.
+
+A reconstructed transport assignment is accepted when it realizes the exact
+region assignment, preserves atomic capacity, and moves the first canonical
+transport-witness key strictly forward or eliminates it. Witness keys are
+ordered by the closed Mapping violation-kind order and then by canonical
+witness ordinal. Other later transport violations outside the fixed region may
+remain. They are owned by the next global closure or canonical repair
+invocation, and the complete final Mapping verifier remains the publication
+authority. The selected total ordering does not veto a region-feasible
+assignment unless its exact selected SearchEnergy was encoded in the repair
+model.
 
 Every solver call uses one worker, the fixed restart-derived seed, integer
 decision and objective encodings, and the complete explicit `CpSat_1_0`

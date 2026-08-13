@@ -36,6 +36,7 @@ enum class SpatialActionTransitionFailureKind : std::uint8_t {
 
 enum class SpatialActionExecutionContext : std::uint8_t {
   Search,
+  ExactRepair,
   FinalClosure,
 };
 

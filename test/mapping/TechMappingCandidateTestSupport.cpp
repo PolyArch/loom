@@ -577,8 +577,14 @@ void loom::test::exerciseCapacityOveruseCandidate(
                                                         {},
                                                         {}}));
   pnr::SpatialExactRepairScratch exactRepair;
-  const pnr::SpatialExactRepairResult repaired =
-      take(exactRepair.repair(*repairCandidate, 0));
+  pnr::DeterministicPnrRandomStream exactRepairStream =
+      pnr::DeterministicPnrRandomStream::create(
+          problem->config().policy().determinism.masterSeed, 0,
+          pnr::PnrRandomStreamPurpose::ExactRepair);
+  const pnr::SpatialExactRepairResult repaired = take(exactRepair.repair(
+      *repairCandidate, 0,
+      problem->config().policy().search.exactRepair.maxSolverCalls,
+      exactRepairStream));
   if (repaired.kind != pnr::SpatialExactRepairResultKind::Repaired ||
       repaired.regionDecisions == 0 || repaired.solverCalls == 0 ||
       repaired.actionCount == 0 ||
@@ -829,8 +835,14 @@ void loom::test::exerciseCapacityExactRepairNoMutation(
       problem, {{*overused}, {}, attachments, boundaries, {}, {}, {}, {}}));
   const std::uint64_t initialOveruse = candidate->atomicCapacityOveruse();
   pnr::SpatialExactRepairScratch repair;
-  const pnr::SpatialExactRepairResult outcome =
-      take(repair.repair(*candidate, 0));
+  pnr::DeterministicPnrRandomStream exactRepairStream =
+      pnr::DeterministicPnrRandomStream::create(
+          problem->config().policy().determinism.masterSeed, 0,
+          pnr::PnrRandomStreamPurpose::ExactRepair);
+  const pnr::SpatialExactRepairResult outcome = take(repair.repair(
+      *candidate, 0,
+      problem->config().policy().search.exactRepair.maxSolverCalls,
+      exactRepairStream));
   if (outcome.kind != expected)
     fail("bounded exact repair returned the wrong non-repaired outcome");
   if (candidate->atomicCapacityOveruse() != initialOveruse)
@@ -976,8 +988,7 @@ void loom::test::exerciseCanonicalCandidateInitialization(
         binding.placement != attemptZero.placement ||
         binding.instructionContext != attemptZero.instructionContext)
       fail("canonical initializer returned an unstable compute choice");
-    const auto &placement =
-        realizations.computePlacements()[binding.placement];
+    const auto &placement = realizations.computePlacements()[binding.placement];
     if (binding.instructionContext < placement.contextOffset ||
         binding.instructionContext >=
             placement.contextOffset + placement.contextCount)
@@ -997,10 +1008,8 @@ void loom::test::exerciseCanonicalCandidateInitialization(
     const pnr::PnrIndex placement = first->memoryBinding(index).placement;
     if (placement < record.placementOffset ||
         placement >= record.placementOffset + record.placementCount ||
-        placement !=
-            second->memoryBinding(index).placement ||
-        placement !=
-            canonicalAttempt.candidate->memoryBinding(index).placement)
+        placement != second->memoryBinding(index).placement ||
+        placement != canonicalAttempt.candidate->memoryBinding(index).placement)
       fail("canonical initializer returned an unstable memory choice");
   }
   const auto attachmentOptions = problem->ports().attachmentOptions();
@@ -1586,9 +1595,9 @@ void loom::test::exercisePathFinderFixedTerminalCutRejection(
   if (!observedSearchRejection)
     fail("Spatial search promoted a fixed-terminal cut to an internal error");
 
-  auto closureProbe = executor.probe(
-      candidate, globalRouting,
-      pnr::SpatialActionExecutionContext::FinalClosure);
+  auto closureProbe =
+      executor.probe(candidate, globalRouting,
+                     pnr::SpatialActionExecutionContext::FinalClosure);
   if (closureProbe)
     fail("Spatial final closure accepted a fixed-terminal capacity cut");
   bool observedClosureCertificate = false;

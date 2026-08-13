@@ -51,6 +51,77 @@ template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
   return values.capacity() * sizeof(T);
 }
 
+bool containsOrdinal(PnrIndex offset, PnrIndex count, PnrIndex ordinal) {
+  return ordinal >= offset && ordinal - offset < count;
+}
+
+struct TransportWitness final {
+  ResolvedPnrViolationKind kind;
+  PnrIndex ordinal;
+};
+
+bool transportWitnessLess(TransportWitness lhs, TransportWitness rhs) {
+  const auto lhsKind = static_cast<std::uint32_t>(lhs.kind);
+  const auto rhsKind = static_cast<std::uint32_t>(rhs.kind);
+  return lhsKind != rhsKind ? lhsKind < rhsKind : lhs.ordinal < rhs.ordinal;
+}
+
+llvm::Expected<std::optional<TransportWitness>>
+firstTransportWitness(const SpatialCandidateState &candidate) {
+  const FrozenSpatialPnrProblem &problem = candidate.problem();
+  const auto &transfers = problem.transfers();
+  const auto &routing = problem.routing();
+  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+       ++logicalNet)
+    if (!candidate.routeTree(logicalNet).isRouted())
+      return TransportWitness{ResolvedPnrViolationKind::UnroutedObligation,
+                              transfers.logicalNets()[logicalNet].sinkOffset};
+
+  const PnrIndex capacityCount =
+      static_cast<PnrIndex>(problem.resources().capacityDimensions().size());
+  for (PnrIndex capacity = 0;
+       capacity < problem.resources().capacityDimensions().size(); ++capacity)
+    if (candidate.routeCapacityOveruseRaw(capacity) != 0)
+      return TransportWitness{ResolvedPnrViolationKind::CapacityOveruse,
+                              capacity};
+  for (PnrIndex domain = 0;
+       domain < routing.tagContinuity().matchDomains().size(); ++domain) {
+    if (candidate.tagDomainResidentCapacityOveruse(domain) == 0)
+      continue;
+    auto ordinal = checkedPnrIndexAdd({"SpatialExactRepair", "transportWitness",
+                                       "Action", PnrCapacityMeasure::Index},
+                                      capacityCount, domain);
+    if (!ordinal)
+      return ordinal.takeError();
+    return TransportWitness{ResolvedPnrViolationKind::CapacityOveruse,
+                            *ordinal};
+  }
+
+  PnrIndex globalSegment = 0;
+  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+       ++logicalNet)
+    for (const auto &value : candidate.tagValues(logicalNet)) {
+      if (!value)
+        return TransportWitness{ResolvedPnrViolationKind::TagUnassigned,
+                                globalSegment};
+      if (globalSegment == getPnrIndexMax())
+        return invocationError("Physical Tag segment ordinal overflows");
+      ++globalSegment;
+    }
+  for (PnrIndex domain = 0;
+       domain < routing.tagContinuity().matchDomains().size(); ++domain)
+    if (candidate.tagDomainConflictCount(domain) != 0)
+      return TransportWitness{ResolvedPnrViolationKind::TagConflict, domain};
+
+  if (candidate.unroutedObligationCount() != 0 ||
+      candidate.routeCapacityOveruse() != 0 ||
+      candidate.tagResidentCapacityOveruse() != 0 ||
+      candidate.tagUnassignedCount() != 0 || candidate.tagConflictCount() != 0)
+    return invocationError(
+        "transport violation aggregates have no canonical witness");
+  return std::optional<TransportWitness>();
+}
+
 llvm::Expected<std::uint64_t>
 countRegionDecisions(llvm::ArrayRef<PnrIndex> decisions,
                      llvm::ArrayRef<PnrIndex> affectedNets,
@@ -145,21 +216,25 @@ addMutationCountObjective(CpModelBuilder &model,
 
 } // namespace
 
-llvm::Expected<SpatialExactRepairResult>
-SpatialExactRepairScratch::repair(SpatialCandidateState &candidate,
-                                  std::uint64_t restartOrdinal) {
+llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
+    SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
+    std::uint64_t solverCallLimit,
+    DeterministicPnrRandomStream &exactRepairStream) {
   const FrozenSpatialPnrProblem &problem = candidate.problem();
   const ResolvedPnrExactRepairPolicy &policy =
       problem.config().policy().search.exactRepair;
   if (policy.kind != ResolvedPnrExactRepairKind::CpSat)
     return invocationError("CpSat_1_0 is not selected by SearchPolicy");
+  if (solverCallLimit == 0 || solverCallLimit > policy.maxSolverCalls)
+    return invocationError("solver-call limit exceeds SearchPolicy");
   if (candidate.atomicCapacityOveruse() == 0 &&
       (candidate.unroutedObligationCount() != 0 ||
        candidate.routeCapacityOveruse() != 0 ||
        candidate.tagResidentCapacityOveruse() != 0 ||
        candidate.tagUnassignedCount() != 0 ||
        candidate.tagConflictCount() != 0))
-    return repairTransportClosure(candidate, restartOrdinal);
+    return repairTransportClosure(candidate, restartOrdinal, solverCallLimit,
+                                  exactRepairStream);
   if (candidate.atomicCapacityOveruse() == 0)
     return result(SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
                   "candidate has no supported exact-repair witness");
@@ -266,7 +341,12 @@ SpatialExactRepairScratch::repair(SpatialCandidateState &candidate,
     return regionDecisionCount.takeError();
   if (*regionDecisionCount > policy.maxRegionDecisions)
     return result(SpatialExactRepairResultKind::RegionTooLarge,
-                  *regionDecisionCount);
+                  *regionDecisionCount, 0, 0,
+                  (llvm::Twine("exact-repair region has ") +
+                   llvm::Twine(*regionDecisionCount) +
+                   " decisions, exceeding policy limit " +
+                   llvm::Twine(policy.maxRegionDecisions))
+                      .str());
   if (decisions_.size() > static_cast<std::size_t>(INT_MAX))
     return result(SpatialExactRepairResultKind::UnsupportedEncoding,
                   *regionDecisionCount, 0, 0,
@@ -357,15 +437,11 @@ SpatialExactRepairScratch::repair(SpatialCandidateState &candidate,
   if (!mutationCount)
     return mutationCount.takeError();
 
-  DeterministicPnrRandomStream exactRepairStream =
-      DeterministicPnrRandomStream::create(
-          problem.config().policy().determinism.masterSeed, restartOrdinal,
-          PnrRandomStreamPurpose::ExactRepair);
   const std::int32_t solverSeed =
       detail::projectCpSatRandomSeed(exactRepairStream.nextU64());
   auto solved = detail::solveCanonicalCpSat(model.Build(), canonicalVariables,
                                             mutationCount->index(),
-                                            policy.maxSolverCalls, solverSeed);
+                                            solverCallLimit, solverSeed);
   if (!solved)
     return result(SpatialExactRepairResultKind::InternalError,
                   *regionDecisionCount, 0, 0,
@@ -479,7 +555,9 @@ SpatialExactRepairScratch::repair(SpatialCandidateState &candidate,
 
 llvm::Expected<SpatialExactRepairResult>
 SpatialExactRepairScratch::repairTransportClosure(
-    SpatialCandidateState &candidate, std::uint64_t restartOrdinal) {
+    SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
+    std::uint64_t solverCallLimit,
+    DeterministicPnrRandomStream &exactRepairStream) {
   const FrozenSpatialPnrProblem &problem = candidate.problem();
   const ResolvedPnrExactRepairPolicy &policy =
       problem.config().policy().search.exactRepair;
@@ -490,70 +568,16 @@ SpatialExactRepairScratch::repairTransportClosure(
   const auto &ports = problem.ports();
   const auto &transfers = problem.transfers();
 
-  capacityWitnesses_.clear();
   const PnrIndex capacityCount =
       static_cast<PnrIndex>(problem.resources().capacityDimensions().size());
-  for (PnrIndex capacity = 0;
-       capacity < problem.resources().capacityDimensions().size(); ++capacity)
-    if (candidate.routeCapacityOveruseRaw(capacity) != 0)
-      capacityWitnesses_.push_back(capacity);
-  for (PnrIndex domain = 0;
-       domain < routing.tagContinuity().matchDomains().size(); ++domain)
-    if (candidate.tagDomainResidentCapacityOveruse(domain) != 0) {
-      auto witness =
-          checkedPnrIndexAdd({"SpatialExactRepair", "capacityWitnesses",
-                              "Action", PnrCapacityMeasure::Index},
-                             capacityCount, domain);
-      if (!witness)
-        return witness.takeError();
-      capacityWitnesses_.push_back(*witness);
-    }
-  if (capacityWitnesses_.empty() && candidate.unroutedObligationCount() == 0 &&
-      candidate.tagUnassignedCount() == 0 && candidate.tagConflictCount() == 0)
-    return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                  "transport repair has no canonical witness");
-
-  ResolvedPnrViolationKind primaryWitnessKind =
-      ResolvedPnrViolationKind::UnroutedObligation;
-  PnrIndex primaryWitnessOrdinal = 0;
-  bool primaryWitnessFound = false;
-  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
-       ++logicalNet)
-    if (!candidate.routeTree(logicalNet).isRouted()) {
-      primaryWitnessOrdinal = transfers.logicalNets()[logicalNet].sinkOffset;
-      primaryWitnessFound = true;
-      break;
-    }
-  if (!primaryWitnessFound && !capacityWitnesses_.empty()) {
-    primaryWitnessKind = ResolvedPnrViolationKind::CapacityOveruse;
-    primaryWitnessOrdinal = capacityWitnesses_.front();
-    primaryWitnessFound = true;
-  }
-  PnrIndex globalSegment = 0;
-  for (PnrIndex logicalNet = 0;
-       !primaryWitnessFound && logicalNet < transfers.logicalNets().size();
-       ++logicalNet)
-    for (const auto &value : candidate.tagValues(logicalNet)) {
-      if (!value) {
-        primaryWitnessKind = ResolvedPnrViolationKind::TagUnassigned;
-        primaryWitnessOrdinal = globalSegment;
-        primaryWitnessFound = true;
-        break;
-      }
-      ++globalSegment;
-    }
-  for (PnrIndex domain = 0;
-       !primaryWitnessFound &&
-       domain < routing.tagContinuity().matchDomains().size();
-       ++domain)
-    if (candidate.tagDomainConflictCount(domain) != 0) {
-      primaryWitnessKind = ResolvedPnrViolationKind::TagConflict;
-      primaryWitnessOrdinal = domain;
-      primaryWitnessFound = true;
-    }
-  if (!primaryWitnessFound)
+  auto primaryWitness = firstTransportWitness(candidate);
+  if (!primaryWitness)
+    return primaryWitness.takeError();
+  if (!*primaryWitness)
     return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
                   "transport repair could not locate its primary witness");
+  const ResolvedPnrViolationKind primaryWitnessKind = (*primaryWitness)->kind;
+  const PnrIndex primaryWitnessOrdinal = (*primaryWitness)->ordinal;
 
   decisionIncluded_.assign(bindings.decisionCount(), 0);
   relationIncluded_.assign(relationModel.relations().size(), 0);
@@ -631,35 +655,13 @@ SpatialExactRepairScratch::repairTransportClosure(
     return llvm::Error::success();
   };
 
-  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
-       ++logicalNet) {
-    bool unresolved = !candidate.routeTree(logicalNet).isRouted();
-    const auto tagValues = candidate.tagValues(logicalNet);
-    for (PnrIndex segment = 0; segment < tagValues.size(); ++segment) {
-      if (!tagValues[segment]) {
-        unresolved = true;
-        continue;
-      }
-      if (llvm::any_of(candidate.tagSegmentDomains(logicalNet, segment),
-                       [&](PnrIndex domain) {
-                         return candidate.tagDomainValueConflicts(
-                             domain, *tagValues[segment]);
-                       }))
-        unresolved = true;
-    }
-    if (unresolved)
-      if (llvm::Error error = addWitnessNet(logicalNet))
-        return std::move(error);
-  }
-
   const auto capacityClaimOffsets = routing.capacityRouteClaimOffsets();
   const auto capacityClaims = routing.capacityRouteClaims();
-  for (PnrIndex capacity : capacityWitnesses_) {
+  const auto addCapacityWitness = [&](PnrIndex capacity) -> llvm::Error {
     if (capacity >= capacityCount) {
       const PnrIndex domain = capacity - capacityCount;
       if (domain >= routing.tagContinuity().matchDomains().size())
-        return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                      "tag-table witness is out of range");
+        return invocationError("tag-table witness is out of range");
       for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
            ++logicalNet) {
         const auto values = candidate.tagValues(logicalNet);
@@ -667,15 +669,15 @@ SpatialExactRepairScratch::repairTransportClosure(
           if (llvm::is_contained(
                   candidate.tagSegmentDomains(logicalNet, segment), domain)) {
             if (llvm::Error error = addWitnessNet(logicalNet))
-              return std::move(error);
+              return error;
             break;
           }
       }
-      continue;
+      return llvm::Error::success();
     }
     if (capacity + 1 >= capacityClaimOffsets.size())
-      return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                    "route witness has no capacity-to-claim incidence");
+      return invocationError(
+          "route witness has no capacity-to-claim incidence");
     const auto witnessClaims = capacityClaims.slice(
         capacityClaimOffsets[capacity],
         capacityClaimOffsets[capacity + 1] - capacityClaimOffsets[capacity]);
@@ -687,12 +689,84 @@ SpatialExactRepairScratch::repairTransportClosure(
       });
       if (contributes)
         if (llvm::Error error = addWitnessNet(logicalNet))
-          return std::move(error);
+          return error;
     }
+    return llvm::Error::success();
+  };
+
+  switch (primaryWitnessKind) {
+  case ResolvedPnrViolationKind::UnroutedObligation: {
+    bool found = false;
+    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+         ++logicalNet) {
+      const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
+      if (!containsOrdinal(net.sinkOffset, net.sinkCount,
+                           primaryWitnessOrdinal))
+        continue;
+      if (llvm::Error error = addWitnessNet(logicalNet))
+        return std::move(error);
+      found = true;
+      break;
+    }
+    if (!found)
+      return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                    "unrouted witness is out of range");
+    break;
+  }
+  case ResolvedPnrViolationKind::CapacityOveruse:
+    if (llvm::Error error = addCapacityWitness(primaryWitnessOrdinal))
+      return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                    llvm::toString(std::move(error)));
+    break;
+  case ResolvedPnrViolationKind::TagUnassigned: {
+    PnrIndex ordinal = 0;
+    bool found = false;
+    for (PnrIndex logicalNet = 0;
+         logicalNet < transfers.logicalNets().size() && !found; ++logicalNet)
+      for (const auto &value : candidate.tagValues(logicalNet)) {
+        if (ordinal == primaryWitnessOrdinal) {
+          if (value)
+            return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                          "unassigned-tag witness is no longer live");
+          if (llvm::Error error = addWitnessNet(logicalNet))
+            return std::move(error);
+          found = true;
+          break;
+        }
+        ++ordinal;
+      }
+    if (!found)
+      return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                    "unassigned-tag witness is out of range");
+    break;
+  }
+  case ResolvedPnrViolationKind::TagConflict: {
+    const PnrIndex domain = primaryWitnessOrdinal;
+    if (domain >= routing.tagContinuity().matchDomains().size())
+      return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                    "tag-conflict witness is out of range");
+    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+         ++logicalNet) {
+      const auto values = candidate.tagValues(logicalNet);
+      for (PnrIndex segment = 0; segment < values.size(); ++segment) {
+        if (!values[segment] ||
+            !llvm::is_contained(
+                candidate.tagSegmentDomains(logicalNet, segment), domain) ||
+            !candidate.tagDomainValueConflicts(domain, *values[segment]))
+          continue;
+        if (llvm::Error error = addWitnessNet(logicalNet))
+          return std::move(error);
+        break;
+      }
+    }
+    break;
+  }
+  case ResolvedPnrViolationKind::HardProgressViolation:
+    llvm_unreachable("hard progress is not a transport exact-repair witness");
   }
   if (affectedNets_.empty())
     return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                  "route-capacity witness has no contributing logical net");
+                  "transport witness has no contributing logical net");
 
   for (std::size_t cursor = 0; cursor < decisionQueue_.size(); ++cursor) {
     const PnrIndex decision = decisionQueue_[cursor];
@@ -783,7 +857,12 @@ SpatialExactRepairScratch::repairTransportClosure(
       decisions_.size() + affectedNets_.size();
   if (regionDecisionCount > policy.maxRegionDecisions)
     return result(SpatialExactRepairResultKind::RegionTooLarge,
-                  regionDecisionCount);
+                  regionDecisionCount, 0, 0,
+                  (llvm::Twine("exact-repair region has ") +
+                   llvm::Twine(regionDecisionCount) +
+                   " decisions, exceeding policy limit " +
+                   llvm::Twine(policy.maxRegionDecisions))
+                      .str());
   if (decisions_.empty() ||
       decisions_.size() > static_cast<std::size_t>(INT_MAX))
     return result(SpatialExactRepairResultKind::UnsupportedEncoding,
@@ -908,10 +987,6 @@ SpatialExactRepairScratch::repairTransportClosure(
   if (llvm::Error error = actionExecutor_.prepare(candidate))
     return result(SpatialExactRepairResultKind::InternalError,
                   regionDecisionCount, 0, 0, llvm::toString(std::move(error)));
-  DeterministicPnrRandomStream exactRepairStream =
-      DeterministicPnrRandomStream::create(
-          problem.config().policy().determinism.masterSeed, restartOrdinal,
-          PnrRandomStreamPurpose::ExactRepair);
   const std::int32_t solverSeed =
       detail::projectCpSatRandomSeed(exactRepairStream.nextU64());
   std::uint64_t solverCalls = 0;
@@ -926,10 +1001,10 @@ SpatialExactRepairScratch::repairTransportClosure(
                   actionExecutor_.negotiationIterationCount());
   };
 
-  while (solverCalls < policy.maxSolverCalls) {
+  while (solverCalls < solverCallLimit) {
     auto solved = detail::solveCanonicalCpSat(
         model.Build(), canonicalVariables, mutationCount->index(),
-        policy.maxSolverCalls - solverCalls, solverSeed);
+        solverCallLimit - solverCalls, solverSeed);
     if (!solved)
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             llvm::toString(solved.takeError()));
@@ -989,37 +1064,9 @@ SpatialExactRepairScratch::repairTransportClosure(
               SpatialMemoryBindingAction{realization, choice.placement}});
       }
     }
-    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
-         ++logicalNet) {
-      if (candidate.routeTree(logicalNet).isRouted())
-        continue;
-      const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
-      for (PnrIndex sink = 0; sink < net.sinkCount; ++sink)
-        actions_.push_back(
-            SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
-                ResolvedPnrViolationKind::UnroutedObligation,
-                net.sinkOffset + sink}});
-    }
-    for (PnrIndex witness : capacityWitnesses_)
-      actions_.push_back(
-          SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
-              ResolvedPnrViolationKind::CapacityOveruse, witness}});
-    PnrIndex globalSegment = 0;
-    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
-         ++logicalNet)
-      for (const auto &value : candidate.tagValues(logicalNet)) {
-        if (!value)
-          actions_.push_back(
-              SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
-                  ResolvedPnrViolationKind::TagUnassigned, globalSegment}});
-        ++globalSegment;
-      }
-    for (PnrIndex domain = 0;
-         domain < routing.tagContinuity().matchDomains().size(); ++domain)
-      if (candidate.tagDomainConflictCount(domain) != 0)
-        actions_.push_back(
-            SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
-                ResolvedPnrViolationKind::TagConflict, domain}});
+    actions_.push_back(
+        SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
+            primaryWitnessKind, primaryWitnessOrdinal}});
     for (auto [local, decision] : llvm::enumerate(decisions_)) {
       const std::int64_t selected = solved->assignment[local];
       if (decision < portOffset)
@@ -1059,7 +1106,6 @@ SpatialExactRepairScratch::repairTransportClosure(
           fields["witness_kind"] =
               static_cast<std::uint32_t>(primaryWitnessKind);
           fields["witness_ordinal"] = primaryWitnessOrdinal;
-          fields["capacity_witness_count"] = capacityWitnesses_.size();
           fields["region_decisions"] = regionDecisionCount;
           fields["mutation_count"] = *solved->objectiveValue;
           fields["action_count"] = lastActionCount;
@@ -1119,7 +1165,7 @@ SpatialExactRepairScratch::repairTransportClosure(
         });
 
     auto probe = actionExecutor_.probeBatch(
-        candidate, actions_, SpatialActionExecutionContext::FinalClosure);
+        candidate, actions_, SpatialActionExecutionContext::ExactRepair);
     bool rejectAssignment = false;
     bool fixedTerminalCut = false;
     bool routeWorkUnknown = false;
@@ -1177,13 +1223,40 @@ SpatialExactRepairScratch::repairTransportClosure(
           break;
         }
       }
+      auto remainingWitness = firstTransportWitness(candidate);
+      if (!remainingWitness) {
+        llvm::Error error = remainingWitness.takeError();
+        if (llvm::Error discardError = probe->discard())
+          error = llvm::joinErrors(std::move(error), std::move(discardError));
+        return executedResult(SpatialExactRepairResultKind::InternalError,
+                              llvm::toString(std::move(error)));
+      }
+      const bool primaryWitnessAdvanced =
+          !*remainingWitness ||
+          transportWitnessLess(**primaryWitness, **remainingWitness);
       if (!assignmentRealized || candidate.atomicCapacityOveruse() != 0 ||
-          candidate.routeCapacityOveruse() != 0 ||
-          candidate.tagResidentCapacityOveruse() != 0 ||
-          candidate.unroutedObligationCount() != 0 ||
-          candidate.tagUnassignedCount() != 0 ||
-          candidate.tagConflictCount() != 0) {
+          !primaryWitnessAdvanced) {
         rejectAssignment = true;
+        loom::mapping_debug::emit(
+            loom::mapping_debug::Level::Decision,
+            loom::mapping_debug::Stage::SpatialPnr,
+            loom::mapping_debug::Event::MappingFailure,
+            [&](llvm::json::Object &fields) {
+              fields["search_scope"] = "route_exact_repair";
+              fields["operation"] = "assignment_acceptance";
+              fields["restart"] = restartOrdinal;
+              fields["assignment"] = assignmentOrdinal;
+              fields["assignment_realized"] = assignmentRealized;
+              fields["atomic_capacity_overuse"] =
+                  candidate.atomicCapacityOveruse();
+              fields["primary_witness_advanced"] = primaryWitnessAdvanced;
+              if (*remainingWitness) {
+                fields["remaining_witness_kind"] =
+                    static_cast<std::uint32_t>((*remainingWitness)->kind);
+                fields["remaining_witness_ordinal"] =
+                    (*remainingWitness)->ordinal;
+              }
+            });
         if (llvm::Error error = probe->discard())
           return executedResult(SpatialExactRepairResultKind::InternalError,
                                 llvm::toString(std::move(error)));
@@ -1206,7 +1279,6 @@ SpatialExactRepairScratch::repairTransportClosure(
               fields["witness_kind"] =
                   static_cast<std::uint32_t>(primaryWitnessKind);
               fields["witness_ordinal"] = primaryWitnessOrdinal;
-              fields["capacity_witness_count"] = capacityWitnesses_.size();
               fields["solver_calls"] = solverCalls;
             });
         return executedResult(SpatialExactRepairResultKind::Repaired);
@@ -1225,7 +1297,6 @@ SpatialExactRepairScratch::repairTransportClosure(
           fields["witness_kind"] =
               static_cast<std::uint32_t>(primaryWitnessKind);
           fields["witness_ordinal"] = primaryWitnessOrdinal;
-          fields["capacity_witness_count"] = capacityWitnesses_.size();
           fields["solver_calls"] = solverCalls;
           fields["fixed_terminal_cut"] = fixedTerminalCut;
           fields["route_work_unknown"] = routeWorkUnknown;
@@ -1300,8 +1371,7 @@ std::size_t SpatialExactRepairScratch::retainedStorageBytes() const {
          retainedBytes(decisionIncluded_) + retainedBytes(relationIncluded_) +
          retainedBytes(netIncluded_) + retainedBytes(decisionQueue_) +
          retainedBytes(decisions_) + retainedBytes(relations_) +
-         retainedBytes(affectedNets_) + retainedBytes(capacityWitnesses_) +
-         retainedBytes(routeCutLogicalNets_) +
+         retainedBytes(affectedNets_) + retainedBytes(routeCutLogicalNets_) +
          retainedBytes(routeCutDecisionLocals_) +
          retainedBytes(decisionVariables_) + retainedBytes(legalValueOffsets_) +
          retainedBytes(legalValues_) + retainedBytes(elementValues_) +

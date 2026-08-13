@@ -103,9 +103,9 @@ llvm::Error classifyTransitionFailure(llvm::Error failure,
         std::string message;
         llvm::raw_string_ostream stream(message);
         closureFailure.log(stream);
-        if (closureFailure.kind() ==
-                SpatialPathFinderClosureFailure::Kind::FixedTerminalCapacityCut &&
-            context == SpatialActionExecutionContext::FinalClosure)
+        if (closureFailure.kind() == SpatialPathFinderClosureFailure::Kind::
+                                         FixedTerminalCapacityCut &&
+            context != SpatialActionExecutionContext::Search)
           return llvm::make_error<SpatialPathFinderClosureFailure>(
               closureFailure.kind(), stream.str(),
               closureFailure.certificateCapacity(),
@@ -1311,8 +1311,7 @@ llvm::Error SpatialActionExecutorScratch::reconcileBindingRelations(
       [&](llvm::json::Object &fields) {
         fields["operation"] = "binding_attachment_reconciliation";
         fields["changed_root_count"] = changedBindingRoots_.size();
-        fields["released_attachment_count"] =
-            relationDecisionQueue_.size();
+        fields["released_attachment_count"] = relationDecisionQueue_.size();
       });
 
   fixedRelationChoices_ = candidate.bindingRelationChoices_;
@@ -1463,9 +1462,8 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
   if (llvm::Error error = reconcileBindingRelations(move, candidate))
     return restoreAfterFailure(move, std::move(error));
 
-  if (globalRouting_ ||
-      (context == SpatialActionExecutionContext::FinalClosure &&
-       !affectedNets_.empty())) {
+  if (globalRouting_ || (context != SpatialActionExecutionContext::Search &&
+                         !affectedNets_.empty())) {
     const auto &routing = candidate.problem().config().policy().search.routing;
     llvm::sort(affectedNets_);
     auto closure = router_.routeToClosureInMove(

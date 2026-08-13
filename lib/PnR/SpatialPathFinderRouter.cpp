@@ -206,16 +206,17 @@ llvm::Error SpatialPathFinderRouterScratch::prepare(
 }
 
 llvm::Error SpatialPathFinderRouterScratch::captureCurrentRoutes(
-    const SpatialCandidateState &candidate) {
+    const SpatialCandidateState &candidate,
+    llvm::ArrayRef<PnrIndex> logicalNets) {
   capturedSinkPathOffsets_.clear();
   capturedForwardArcs_.clear();
   capturedSinkPathOffsets_.push_back(0);
   const FrozenSpatialRoutingGraph &routing = candidate.problem().routing();
   const auto arcs = routing.routingArcs();
   const auto arcSources = routing.arcSources();
-  for (PnrIndex logicalNet = 0;
-       logicalNet < candidate.problem().transfers().logicalNets().size();
-       ++logicalNet) {
+  const auto captureLogicalNet = [&](PnrIndex logicalNet) -> llvm::Error {
+    if (logicalNet >= candidate.problem().transfers().logicalNets().size())
+      return pathFinderError("temporary routing region contains a foreign net");
     const RouteTreeState &tree = candidate.routeTree(logicalNet);
     if (!tree.isRouted())
       return pathFinderError("temporary iterate contains an unrouted net");
@@ -252,19 +253,31 @@ llvm::Error SpatialPathFinderRouterScratch::captureCurrentRoutes(
                                   reversePath_.rbegin(), reversePath_.rend());
       capturedSinkPathOffsets_.push_back(capturedForwardArcs_.size());
     }
+    return llvm::Error::success();
+  };
+  if (logicalNets.empty()) {
+    for (PnrIndex logicalNet = 0;
+         logicalNet < candidate.problem().transfers().logicalNets().size();
+         ++logicalNet)
+      if (llvm::Error error = captureLogicalNet(logicalNet))
+        return error;
+  } else {
+    for (PnrIndex logicalNet : logicalNets)
+      if (llvm::Error error = captureLogicalNet(logicalNet))
+        return error;
   }
   return llvm::Error::success();
 }
 
 llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
     SpatialMoveTransaction &move, SpatialCandidateState &candidate,
-    SpatialRouteCostState &costs) {
+    SpatialRouteCostState &costs, llvm::ArrayRef<PnrIndex> logicalNets) {
   const FrozenSpatialRoutingGraph &routing = candidate.problem().routing();
   const auto arcs = routing.routingArcs();
   std::size_t sinkPath = 0;
-  for (PnrIndex logicalNet = 0;
-       logicalNet < candidate.problem().transfers().logicalNets().size();
-       ++logicalNet) {
+  const auto restoreLogicalNet = [&](PnrIndex logicalNet) -> llvm::Error {
+    if (logicalNet >= candidate.problem().transfers().logicalNets().size())
+      return pathFinderError("captured routing region contains a foreign net");
     auto projection = projectLogicalNet(candidate, costs, logicalNet);
     if (!projection)
       return projection.takeError();
@@ -314,6 +327,18 @@ llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
       return error;
     if (llvm::Error error = costs.acceptSelectedLogicalNet())
       return error;
+    return llvm::Error::success();
+  };
+  if (logicalNets.empty()) {
+    for (PnrIndex logicalNet = 0;
+         logicalNet < candidate.problem().transfers().logicalNets().size();
+         ++logicalNet)
+      if (llvm::Error error = restoreLogicalNet(logicalNet))
+        return error;
+  } else {
+    for (PnrIndex logicalNet : logicalNets)
+      if (llvm::Error error = restoreLogicalNet(logicalNet))
+        return error;
   }
   if (sinkPath + 1 != capturedSinkPathOffsets_.size())
     return pathFinderError("captured route path domain has trailing entries");
@@ -1142,10 +1167,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                 *objective, {}, *previousRankObjective, {});
         if (!comparison)
           return comparison.takeError();
-        rankTrendTransition =
-            *comparison < 0   ? RankTrendTransition::Improved
-            : *comparison > 0 ? RankTrendTransition::Regressed
-                              : RankTrendTransition::Equal;
+        rankTrendTransition = *comparison < 0   ? RankTrendTransition::Improved
+                              : *comparison > 0 ? RankTrendTransition::Regressed
+                                                : RankTrendTransition::Equal;
       }
       previousRankObjective = *objective;
 
@@ -1160,7 +1184,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           replace = *comparison < 0;
         }
         if (replace) {
-          if (llvm::Error error = captureCurrentRoutes(candidate))
+          if (llvm::Error error = captureCurrentRoutes(candidate, logicalNets))
             return std::move(error);
           bestTemporaryObjective = std::move(*objective);
         }
@@ -1171,10 +1195,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     }
     if (rankTrendTransition) {
       if (trendCount == trendWindow) {
-        const auto evicted = static_cast<RankTrendTransition>(
-            rankTrendTransitions_[trendHead]);
-        trendImprovedCount -=
-            evicted == RankTrendTransition::Improved ? 1 : 0;
+        const auto evicted =
+            static_cast<RankTrendTransition>(rankTrendTransitions_[trendHead]);
+        trendImprovedCount -= evicted == RankTrendTransition::Improved ? 1 : 0;
         trendIneligibleCount -=
             evicted == RankTrendTransition::Ineligible ? 1 : 0;
         trendRegressedCount -=
@@ -1245,7 +1268,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     }
     if (!hasCapacityOveruse) {
       if (bestTemporaryObjective) {
-        if (llvm::Error error = restoreCapturedRoutes(move, candidate, costs))
+        if (llvm::Error error =
+                restoreCapturedRoutes(move, candidate, costs, logicalNets))
           return std::move(error);
         emitStatistics("temporary_mapping");
         return SpatialPathFinderClosureResult{completedIterations, false};
@@ -1281,7 +1305,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
             fields["temporary_return"] = bestTemporaryObjective.has_value();
           });
       if (bestTemporaryObjective) {
-        if (llvm::Error error = restoreCapturedRoutes(move, candidate, costs))
+        if (llvm::Error error =
+                restoreCapturedRoutes(move, candidate, costs, logicalNets))
           return std::move(error);
         emitStatistics("fixed_terminal_cut_temporary");
         return SpatialPathFinderClosureResult{completedIterations, false};
@@ -1320,7 +1345,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
             fields["temporary_return"] = bestTemporaryObjective.has_value();
           });
       if (bestTemporaryObjective) {
-        if (llvm::Error error = restoreCapturedRoutes(move, candidate, costs))
+        if (llvm::Error error =
+                restoreCapturedRoutes(move, candidate, costs, logicalNets))
           return std::move(error);
         emitStatistics("no_progress_temporary");
         return SpatialPathFinderClosureResult{completedIterations, false};
@@ -1333,7 +1359,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     }
     if (completedIterations == limits.iterationLimit) {
       if (bestTemporaryObjective) {
-        if (llvm::Error error = restoreCapturedRoutes(move, candidate, costs))
+        if (llvm::Error error =
+                restoreCapturedRoutes(move, candidate, costs, logicalNets))
           return std::move(error);
         emitStatistics("temporary_capacity");
         return SpatialPathFinderClosureResult{completedIterations, false};

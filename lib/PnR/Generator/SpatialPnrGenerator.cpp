@@ -312,89 +312,125 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
         InternalSpatialPnrGenerationReason::AccountingOverflow,
         std::move(accounting), std::move(error));
 
-  const bool hasAtomicCapacityOveruse =
-      seed->candidate->atomicCapacityOveruse() != 0;
-  const bool hasTransportClosureViolation =
-      seed->candidate->unroutedObligationCount() != 0 ||
-      seed->candidate->routeCapacityOveruse() != 0 ||
-      seed->candidate->tagResidentCapacityOveruse() != 0 ||
-      seed->candidate->tagUnassignedCount() != 0 ||
-      seed->candidate->tagConflictCount() != 0;
-  if (hasAtomicCapacityOveruse &&
-      search.exactRepair.kind == ResolvedPnrExactRepairKind::Disabled)
-    return {SpatialRestartDisposition::Incomplete,
-            std::move(accounting),
-            nullptr,
-            false,
-            InternalSpatialPnrGenerationReason::ExactRepair,
-            "candidate retained atomic CapacityOveruse while exact repair is "
-            "disabled"};
-  if (hasAtomicCapacityOveruse ||
-      (hasTransportClosureViolation &&
-       search.exactRepair.kind != ResolvedPnrExactRepairKind::Disabled)) {
-    accounting.exactRepairInvocations = 1;
-    auto repaired = repair.repair(*seed->candidate, attempt);
-    if (!repaired)
-      return restartInternal(InternalSpatialPnrGenerationReason::ExactRepair,
-                             std::move(accounting), repaired.takeError());
-    if (llvm::Error error = checkedAdd(repaired->regionDecisions,
-                                       accounting.exactRepairRegionDecisions,
-                                       "exact-repair region decisions"))
-      return restartInternal(
-          InternalSpatialPnrGenerationReason::AccountingOverflow,
-          std::move(accounting), std::move(error));
-    if (llvm::Error error =
-            checkedAdd(repaired->solverCalls, accounting.exactRepairSolverCalls,
-                       "exact-repair solver calls"))
-      return restartInternal(
-          InternalSpatialPnrGenerationReason::AccountingOverflow,
-          std::move(accounting), std::move(error));
-    if (llvm::Error error = checkedAdd(repaired->endpointExpansions,
-                                       accounting.endpointExpansionSlots,
-                                       "exact-repair endpoint expansions"))
-      return restartInternal(
-          InternalSpatialPnrGenerationReason::AccountingOverflow,
-          std::move(accounting), std::move(error));
-    if (llvm::Error error = checkedAdd(repaired->negotiationIterations,
-                                       accounting.negotiationIterationSlots,
-                                       "exact-repair negotiation iterations"))
-      return restartInternal(
-          InternalSpatialPnrGenerationReason::AccountingOverflow,
-          std::move(accounting), std::move(error));
-    switch (repaired->kind) {
-    case SpatialExactRepairResultKind::Repaired:
-      break;
-    case SpatialExactRepairResultKind::UnknownBudgetExhausted:
-    case SpatialExactRepairResultKind::RegionTooLarge:
-      return {SpatialRestartDisposition::Incomplete,
-              std::move(accounting),
-              nullptr,
-              true,
-              InternalSpatialPnrGenerationReason::ExactRepair,
-              std::move(repaired->detail)};
-    case SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary:
-    case SpatialExactRepairResultKind::UnsupportedEncoding:
-      return {SpatialRestartDisposition::Incomplete,
-              std::move(accounting),
-              nullptr,
-              false,
-              InternalSpatialPnrGenerationReason::ExactRepair,
-              std::move(repaired->detail)};
-    case SpatialExactRepairResultKind::InternalError:
-      return restartInternal(InternalSpatialPnrGenerationReason::ExactRepair,
-                             std::move(accounting), repaired->detail);
-    }
-    if (seed->candidate->atomicCapacityOveruse() != 0)
-      return {SpatialRestartDisposition::Incomplete,
-              std::move(accounting),
-              nullptr,
-              false,
-              InternalSpatialPnrGenerationReason::ExactRepair,
-              "bounded exact repair left atomic CapacityOveruse unresolved"};
-  }
+  const auto hasTransportClosureViolation = [&]() {
+    return seed->candidate->unroutedObligationCount() != 0 ||
+           seed->candidate->routeCapacityOveruse() != 0 ||
+           seed->candidate->tagResidentCapacityOveruse() != 0 ||
+           seed->candidate->tagUnassignedCount() != 0 ||
+           seed->candidate->tagConflictCount() != 0;
+  };
+  const bool exactRepairEnabled =
+      search.exactRepair.kind != ResolvedPnrExactRepairKind::Disabled;
+  DeterministicPnrRandomStream exactRepairStream =
+      DeterministicPnrRandomStream::create(
+          problem->config().policy().determinism.masterSeed, attempt,
+          PnrRandomStreamPurpose::ExactRepair);
+  bool transportRepairRequested = false;
+  bool finalClosureRequired = !annealed->exactClosureReached;
 
-  if (!annealed->exactClosureReached) {
-    accounting.finalClosureAttempts = 1;
+  while (true) {
+    const bool hasAtomicCapacityOveruse =
+        seed->candidate->atomicCapacityOveruse() != 0;
+    const bool hasTransportViolation = hasTransportClosureViolation();
+    if (!hasAtomicCapacityOveruse && !hasTransportViolation &&
+        !finalClosureRequired)
+      break;
+    if (hasAtomicCapacityOveruse && !exactRepairEnabled)
+      return {SpatialRestartDisposition::Incomplete,
+              std::move(accounting),
+              nullptr,
+              false,
+              InternalSpatialPnrGenerationReason::ExactRepair,
+              "candidate retained atomic CapacityOveruse while exact repair "
+              "is disabled"};
+
+    if (hasAtomicCapacityOveruse || transportRepairRequested) {
+      transportRepairRequested = false;
+      if (accounting.exactRepairSolverCalls >=
+          search.exactRepair.maxSolverCalls)
+        return {SpatialRestartDisposition::Incomplete,
+                std::move(accounting),
+                nullptr,
+                true,
+                InternalSpatialPnrGenerationReason::ExactRepair,
+                "restart exact repair exhausted its solver-call budget"};
+      if (llvm::Error error = checkedAdd(1, accounting.exactRepairInvocations,
+                                         "exact-repair invocations"))
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::AccountingOverflow,
+            std::move(accounting), std::move(error));
+      const std::uint64_t remainingSolverCalls =
+          search.exactRepair.maxSolverCalls - accounting.exactRepairSolverCalls;
+      auto repaired = repair.repair(*seed->candidate, attempt,
+                                    remainingSolverCalls, exactRepairStream);
+      if (!repaired)
+        return restartInternal(InternalSpatialPnrGenerationReason::ExactRepair,
+                               std::move(accounting), repaired.takeError());
+      if (repaired->solverCalls > remainingSolverCalls)
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::ExactRepair,
+            std::move(accounting),
+            "exact repair exceeded the restart solver-call budget");
+      if (llvm::Error error = checkedAdd(repaired->regionDecisions,
+                                         accounting.exactRepairRegionDecisions,
+                                         "exact-repair region decisions"))
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::AccountingOverflow,
+            std::move(accounting), std::move(error));
+      if (llvm::Error error = checkedAdd(repaired->solverCalls,
+                                         accounting.exactRepairSolverCalls,
+                                         "exact-repair solver calls"))
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::AccountingOverflow,
+            std::move(accounting), std::move(error));
+      if (llvm::Error error = checkedAdd(repaired->endpointExpansions,
+                                         accounting.endpointExpansionSlots,
+                                         "exact-repair endpoint expansions"))
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::AccountingOverflow,
+            std::move(accounting), std::move(error));
+      if (llvm::Error error = checkedAdd(repaired->negotiationIterations,
+                                         accounting.negotiationIterationSlots,
+                                         "exact-repair negotiation iterations"))
+        return restartInternal(
+            InternalSpatialPnrGenerationReason::AccountingOverflow,
+            std::move(accounting), std::move(error));
+      switch (repaired->kind) {
+      case SpatialExactRepairResultKind::Repaired:
+        if (repaired->solverCalls == 0)
+          return restartInternal(
+              InternalSpatialPnrGenerationReason::ExactRepair,
+              std::move(accounting),
+              "successful exact repair consumed no solver call");
+        finalClosureRequired = true;
+        continue;
+      case SpatialExactRepairResultKind::UnknownBudgetExhausted:
+      case SpatialExactRepairResultKind::RegionTooLarge:
+        return {SpatialRestartDisposition::Incomplete,
+                std::move(accounting),
+                nullptr,
+                true,
+                InternalSpatialPnrGenerationReason::ExactRepair,
+                std::move(repaired->detail)};
+      case SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary:
+      case SpatialExactRepairResultKind::UnsupportedEncoding:
+        return {SpatialRestartDisposition::Incomplete,
+                std::move(accounting),
+                nullptr,
+                false,
+                InternalSpatialPnrGenerationReason::ExactRepair,
+                std::move(repaired->detail)};
+      case SpatialExactRepairResultKind::InternalError:
+        return restartInternal(InternalSpatialPnrGenerationReason::ExactRepair,
+                               std::move(accounting), repaired->detail);
+      }
+    }
+
+    if (llvm::Error error = checkedAdd(1, accounting.finalClosureAttempts,
+                                       "final-closure attempts"))
+      return restartInternal(
+          InternalSpatialPnrGenerationReason::AccountingOverflow,
+          std::move(accounting), std::move(error));
     llvm::Error closureError = finalClosure.run(*seed->candidate);
     if (llvm::Error error = checkedAdd(finalClosure.endpointExpansionCount(),
                                        accounting.endpointExpansionSlots,
@@ -408,18 +444,23 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
       return restartInternal(
           InternalSpatialPnrGenerationReason::AccountingOverflow,
           std::move(accounting), std::move(error));
-    if (closureError) {
-      AttemptFailure failure = classifyAttemptFailure(std::move(closureError));
-      if (failure.kind == AttemptFailureKind::Internal)
-        return restartInternal(InternalSpatialPnrGenerationReason::FinalClosure,
-                               std::move(accounting), failure.diagnostic);
+    if (!closureError) {
+      finalClosureRequired = false;
+      continue;
+    }
+
+    AttemptFailure failure = classifyAttemptFailure(std::move(closureError));
+    if (failure.kind == AttemptFailureKind::Internal)
+      return restartInternal(InternalSpatialPnrGenerationReason::FinalClosure,
+                             std::move(accounting), failure.diagnostic);
+    if (!exactRepairEnabled || !hasTransportClosureViolation())
       return {SpatialRestartDisposition::Incomplete,
               std::move(accounting),
               nullptr,
               failure.kind == AttemptFailureKind::SemanticLimit,
               InternalSpatialPnrGenerationReason::FinalClosure,
               std::move(failure.diagnostic)};
-    }
+    transportRepairRequested = true;
   }
 
   if (llvm::Error error = seed->candidate->verify())
