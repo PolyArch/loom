@@ -842,6 +842,7 @@ SpatialPathFinderRouterScratch::projectLogicalNet(
 
 llvm::Error SpatialPathFinderRouterScratch::buildCanonicalNetOrder(
     const SpatialCandidateState &candidate, const SpatialRouteCostState &costs,
+    llvm::ArrayRef<PnrIndex> logicalNets,
     llvm::ArrayRef<RouteCost> evaluationPriorities) {
   const std::size_t logicalNetCount =
       candidate.problem().transfers().logicalNets().size();
@@ -850,7 +851,16 @@ llvm::Error SpatialPathFinderRouterScratch::buildCanonicalNetOrder(
     return pathFinderError("evaluation-priority vector has the wrong width");
 
   netOrder_.clear();
-  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount; ++logicalNet) {
+  if (!logicalNets.empty()) {
+    for (auto [ordinal, logicalNet] : llvm::enumerate(logicalNets)) {
+      if (logicalNet >= logicalNetCount)
+        return pathFinderError("routing region contains a foreign logical net");
+      if (ordinal != 0 && logicalNets[ordinal - 1] >= logicalNet)
+        return pathFinderError(
+            "routing region is not in canonical unique order");
+    }
+  }
+  const auto append = [&](PnrIndex logicalNet) -> llvm::Error {
     auto projection = projectLogicalNet(candidate, costs, logicalNet);
     if (!projection)
       return projection.takeError();
@@ -858,6 +868,16 @@ llvm::Error SpatialPathFinderRouterScratch::buildCanonicalNetOrder(
         {projection->routeStateRank, projection->conflictPressure,
          evaluationPriorities.empty() ? 0 : evaluationPriorities[logicalNet],
          logicalNet});
+    return llvm::Error::success();
+  };
+  if (logicalNets.empty()) {
+    for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount; ++logicalNet)
+      if (llvm::Error error = append(logicalNet))
+        return error;
+  } else {
+    for (PnrIndex logicalNet : logicalNets)
+      if (llvm::Error error = append(logicalNet))
+        return error;
   }
   llvm::sort(netOrder_, [](const NetOrderEntry &lhs, const NetOrderEntry &rhs) {
     if (lhs.routeStateRank != rhs.routeStateRank)
@@ -884,7 +904,7 @@ SpatialPathFinderRouterScratch::routeToClosure(
     return moveOrError.takeError();
   SpatialMoveTransaction move = std::move(*moveOrError);
 
-  auto result = routeToClosureInMove(move, candidate, costs, limits,
+  auto result = routeToClosureInMove(move, candidate, costs, limits, {},
                                      evaluationPriorities, closureRequirement);
   if (!result)
     return rollbackIteration(move, costs, result.takeError());
@@ -907,6 +927,7 @@ llvm::Expected<SpatialPathFinderClosureResult>
 SpatialPathFinderRouterScratch::routeToClosureInMove(
     SpatialMoveTransaction &move, SpatialCandidateState &candidate,
     SpatialRouteCostState &costs, SpatialPathFinderRoutingLimits limits,
+    llvm::ArrayRef<PnrIndex> logicalNets,
     llvm::ArrayRef<RouteCost> evaluationPriorities,
     SpatialRoutingClosureRequirement closureRequirement) {
   if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
@@ -978,8 +999,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     const std::uint64_t sessionIteration = negotiationIterationCount_;
     ++negotiationIterationCount_;
     ++debugStatistics.negotiatedIterations;
-    if (llvm::Error error =
-            buildCanonicalNetOrder(candidate, costs, evaluationPriorities))
+    if (llvm::Error error = buildCanonicalNetOrder(
+            candidate, costs, logicalNets, evaluationPriorities))
       return std::move(error);
 
     constraintSweepNets_.clear();

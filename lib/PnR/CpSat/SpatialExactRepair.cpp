@@ -739,8 +739,37 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
                             "route repair assignment has the wrong size");
 
     actions_.clear();
-    actions_.push_back(
-        SpatialTransportRoutingAction{SpatialGlobalRoutingAction{}});
+    for (PnrIndex logicalNet = 0;
+         logicalNet < transfers.logicalNets().size(); ++logicalNet) {
+      if (candidate.routeTree(logicalNet).isRouted())
+        continue;
+      const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
+      for (PnrIndex sink = 0; sink < net.sinkCount; ++sink)
+        actions_.push_back(SpatialTransportRoutingAction{
+            SpatialWitnessRegionRoutingAction{
+                ResolvedPnrViolationKind::UnroutedObligation,
+                net.sinkOffset + sink}});
+    }
+    for (PnrIndex witness : capacityWitnesses_)
+      actions_.push_back(SpatialTransportRoutingAction{
+          SpatialWitnessRegionRoutingAction{
+              ResolvedPnrViolationKind::CapacityOveruse, witness}});
+    PnrIndex globalSegment = 0;
+    for (PnrIndex logicalNet = 0;
+         logicalNet < transfers.logicalNets().size(); ++logicalNet)
+      for (const auto &value : candidate.tagValues(logicalNet)) {
+        if (!value)
+          actions_.push_back(SpatialTransportRoutingAction{
+              SpatialWitnessRegionRoutingAction{
+                  ResolvedPnrViolationKind::TagUnassigned, globalSegment}});
+        ++globalSegment;
+      }
+    for (PnrIndex domain = 0;
+         domain < routing.tagContinuity().matchDomains().size(); ++domain)
+      if (candidate.tagDomainConflictCount(domain) != 0)
+        actions_.push_back(SpatialTransportRoutingAction{
+            SpatialWitnessRegionRoutingAction{
+                ResolvedPnrViolationKind::TagConflict, domain}});
     for (auto [local, decision] : llvm::enumerate(decisions_)) {
       const std::int64_t selected = solved->assignment[local];
       if (selected < 0)

@@ -1394,12 +1394,17 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
   if (llvm::Error error = reconcileBindingRelations(move, candidate))
     return restoreAfterFailure(move, std::move(error));
 
-  if (globalRouting_) {
+  if (globalRouting_ ||
+      (context == SpatialActionExecutionContext::FinalClosure &&
+       !affectedNets_.empty())) {
     const auto &routing = candidate.problem().config().policy().search.routing;
+    llvm::sort(affectedNets_);
     auto closure = router_.routeToClosureInMove(
         move, candidate, *routeCosts_,
         {routing.endpointExpansionLimit, routing.negotiationIterationLimit,
          routing.noProgressIterationLimit, routing.noProgressTrendWindow},
+        globalRouting_ ? llvm::ArrayRef<PnrIndex>{}
+                       : llvm::ArrayRef<PnrIndex>(affectedNets_),
         {},
         context == SpatialActionExecutionContext::FinalClosure
             ? SpatialRoutingClosureRequirement::Final

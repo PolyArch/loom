@@ -96,11 +96,13 @@ public:
                  SpatialRoutingClosureRequirement closureRequirement =
                      SpatialRoutingClosureRequirement::Final);
 
-  /// Applies global negotiation inside an already active Mapping move. The
-  /// caller owns close, objective evaluation, and commit or rollback.
+  /// Applies negotiated routing inside an already active Mapping move. The
+  /// caller owns close, objective evaluation, and commit or rollback. An
+  /// empty logical-net region selects the complete frozen net domain.
   llvm::Expected<SpatialPathFinderClosureResult> routeToClosureInMove(
       SpatialMoveTransaction &move, SpatialCandidateState &candidate,
       SpatialRouteCostState &costs, SpatialPathFinderRoutingLimits limits,
+      llvm::ArrayRef<PnrIndex> logicalNets,
       llvm::ArrayRef<RouteCost> evaluationPriorities,
       SpatialRoutingClosureRequirement closureRequirement =
           SpatialRoutingClosureRequirement::Final);
@@ -167,6 +169,7 @@ private:
   llvm::Error
   buildCanonicalNetOrder(const SpatialCandidateState &candidate,
                          const SpatialRouteCostState &costs,
+                         llvm::ArrayRef<PnrIndex> logicalNets,
                          llvm::ArrayRef<RouteCost> evaluationPriorities);
   llvm::Error captureCurrentRoutes(const SpatialCandidateState &candidate);
   llvm::Error restoreCapturedRoutes(SpatialMoveTransaction &move,
