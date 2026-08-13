@@ -812,6 +812,30 @@ routing ownership. The locality refinement instead composes the two existing
 facts needed for a useful seed: exact resident-context identity and exact
 frozen connectivity.
 
+Schedule is also a physical seed property rather than an interchangeable
+placement label. A Temporal placement terminates the configured instruction
+and operand paths in resident state, while a Spatial placement may leave the
+selected local endpoint, FU, and switch path in one combinational handshake
+component. A relation-satisfying assignment that begins with Spatial
+occurrences merely because they have lower canonical ordinals can therefore
+create a handshake cycle before the annealer receives its first Candidate.
+Preferring Temporal occurrences for independent roots uses the schedule already
+owned by Fabric to seek a stateful initial witness. It does not make Temporal a
+hard requirement: constrained roots retain their witness, every Spatial choice
+remains in the Candidate action domain, and final cost and legality remain
+schedule-neutral except for the resource contracts those placements actually
+expose.
+
+Memory roots need the same treatment. Canonical memory enumeration groups
+occurrences by construction order, so retaining the first ordinal can bind
+unrelated roots to one Spatial bank even when stateful Temporal banks are
+available. The initializer first prefers Temporal memory and then distributes
+equal-schedule choices by exact occurrence selection count. That count is a
+seed heuristic, not a capacity claim: sharing remains legal, and the resource
+model and router still own the consequences of sharing. This is the minimum
+additional ranking needed to prevent enumeration order from acting as an
+undocumented architecture policy.
+
 The hard relation solver's baseline assignment is a feasibility witness, not a
 physical ranking. In the canonical restart, using each baseline ordinal as the
 locality tie origin would let propagation order permute otherwise equal

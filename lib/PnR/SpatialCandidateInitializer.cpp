@@ -100,7 +100,11 @@ struct PreferredRootAssignment final {
   std::vector<PnrIndex> choices;
   std::uint64_t assignmentAttempts = 0;
   std::uint64_t changedComputeRoots = 0;
+  std::uint64_t selectedTemporalComputeRoots = 0;
   std::uint64_t maximumContextSelections = 0;
+  std::uint64_t changedMemoryRoots = 0;
+  std::uint64_t selectedTemporalMemoryRoots = 0;
+  std::uint64_t maximumMemorySelections = 0;
   std::uint64_t topologyScoredRoots = 0;
   std::uint64_t topologyBoundaryAnchorIncidences = 0;
   std::uint64_t topologyHopSum = 0;
@@ -453,7 +457,7 @@ llvm::Expected<ComputeTopologyScores> scoreComputeTopologyChoices(
   return result;
 }
 
-llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
+llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     const FrozenSpatialPnrProblem &problem, std::uint32_t attemptOrdinal,
     detail::InitializerRelationSolver &solver,
     detail::InitializerRelationSolveResult baseline,
@@ -473,11 +477,18 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
         loom::mapping_debug::Stage::SpatialPnr,
         loom::mapping_debug::Event::ContextChoice,
         [&](llvm::json::Object &fields) {
-          fields["operation"] = "initializer_context_preference";
+          fields["operation"] = "initializer_root_preference";
           fields["attempt"] = attemptOrdinal;
           fields["changed_compute_roots"] = result.changedComputeRoots;
+          fields["selected_temporal_compute_roots"] =
+              result.selectedTemporalComputeRoots;
           fields["maximum_context_selections"] =
               result.maximumContextSelections;
+          fields["changed_memory_roots"] = result.changedMemoryRoots;
+          fields["selected_temporal_memory_roots"] =
+              result.selectedTemporalMemoryRoots;
+          fields["maximum_memory_selections"] =
+              result.maximumMemorySelections;
           fields["topology_scored_roots"] = result.topologyScoredRoots;
           fields["topology_boundary_anchor_incidences"] =
               result.topologyBoundaryAnchorIncidences;
@@ -517,6 +528,14 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
     const auto &context = contexts[choice.instructionContext];
     return ContextKey{context.pe.id(), context.ordinal};
   };
+  const auto computeSchedule =
+      [&](const detail::SpatialComputeBindingChoice &choice)
+      -> llvm::Expected<::fabric::Schedule> {
+    if (choice.placement >= realizations.computePlacements().size())
+      return initializerError(
+          "compute preference resolved a foreign placement");
+    return realizations.computePlacements()[choice.placement].schedule;
+  };
   const auto participatesInHardRelation = [&](PnrIndex decision) {
     return llvm::any_of(bindings.decisionRelations(decision),
                         [&](PnrIndex relation) {
@@ -541,6 +560,11 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
     auto key = contextKey(choices[selected]);
     if (!key)
       return key.takeError();
+    auto schedule = computeSchedule(choices[selected]);
+    if (!schedule)
+      return schedule.takeError();
+    result.selectedTemporalComputeRoots +=
+        *schedule == ::fabric::Schedule::Temporal;
     std::uint64_t &count = selectedCounts[*key];
     if (count == std::numeric_limits<std::uint64_t>::max())
       return initializerError("compute preference count overflows u64");
@@ -578,9 +602,14 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
         topologyScores->activeBoundaryAnchorIncidences;
 
     PnrIndex selected = baselineChoice;
-    std::uint64_t selectedCount = std::numeric_limits<std::uint64_t>::max();
+    auto selectedScore = std::make_tuple(
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint8_t>::max(), true,
+        std::numeric_limits<std::uint64_t>::max(), choices.size());
     std::uint64_t selectedDistance = std::numeric_limits<std::uint64_t>::max();
     bool selectedUnreachable = true;
+    std::uint64_t selectedCount = std::numeric_limits<std::uint64_t>::max();
+    bool selectedTemporal = false;
     const PnrIndex origin = preferenceOrigin(baselineChoice);
     for (std::size_t rank = 0; rank != choices.size(); ++rank) {
       const PnrIndex local = static_cast<PnrIndex>(
@@ -593,15 +622,20 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
           found == selectedCounts.end() ? 0 : found->second;
       const bool unreachable = topologyScores->unreachable[local] != 0;
       const std::uint64_t distance = topologyScores->distances[local];
-      const bool betterTopology =
-          selectedUnreachable != unreachable
-              ? !unreachable
-              : !unreachable && distance < selectedDistance;
-      if (count < selectedCount || (count == selectedCount && betterTopology)) {
+      auto schedule = computeSchedule(choices[local]);
+      if (!schedule)
+        return schedule.takeError();
+      const bool temporal = *schedule == ::fabric::Schedule::Temporal;
+      const auto score = std::make_tuple(
+          count, static_cast<std::uint8_t>(temporal ? 0 : 1), unreachable,
+          unreachable ? std::uint64_t{0} : distance, rank);
+      if (score < selectedScore) {
         selected = local;
+        selectedScore = score;
         selectedCount = count;
         selectedDistance = distance;
         selectedUnreachable = unreachable;
+        selectedTemporal = temporal;
       }
     }
     fixedChoices[realization] = selected;
@@ -615,6 +649,7 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
     result.maximumContextSelections =
         std::max(result.maximumContextSelections, ++count);
     result.changedComputeRoots += selected != baselineChoice;
+    result.selectedTemporalComputeRoots += selectedTemporal;
     if (topologyScores->activeIncidences != 0) {
       if (selectedUnreachable) {
         if (result.topologyUnreachableSelections ==
@@ -643,6 +678,7 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
           fields["baseline_choice"] = baselineChoice;
           fields["selected_choice"] = selected;
           fields["selected_count_before"] = selectedCount;
+          fields["selected_temporal"] = selectedTemporal;
           fields["topology_incidence_count"] = topologyScores->activeIncidences;
           fields["topology_boundary_anchor_incidence_count"] =
               topologyScores->activeBoundaryAnchorIncidences;
@@ -655,8 +691,105 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
   }
 
   const PnrIndex memoryOffset = bindings.computeDecisionCount();
-  for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount(); ++memory)
-    fixedChoices[memoryOffset + memory] = result.choices[memoryOffset + memory];
+  using MemoryKey = ::loom::fabric::FabricEntityId;
+  std::map<MemoryKey, std::uint64_t> selectedMemoryCounts;
+  const auto memoryPlacement =
+      [&](const detail::SpatialMemoryBindingChoice &choice)
+      -> llvm::Expected<const FrozenSpatialMemoryPlacement *> {
+    if (choice.placement >= realizations.memoryPlacements().size())
+      return initializerError(
+          "memory preference resolved a foreign placement");
+    return &realizations.memoryPlacements()[choice.placement];
+  };
+  const auto countMemory = [&](const FrozenSpatialMemoryPlacement &placement)
+      -> llvm::Error {
+    std::uint64_t &count = selectedMemoryCounts[placement.memory.id()];
+    if (count == std::numeric_limits<std::uint64_t>::max())
+      return initializerError("memory preference count overflows u64");
+    result.maximumMemorySelections =
+        std::max(result.maximumMemorySelections, ++count);
+    result.selectedTemporalMemoryRoots +=
+        placement.schedule == ::fabric::Schedule::Temporal;
+    return llvm::Error::success();
+  };
+
+  for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount(); ++memory) {
+    const PnrIndex decision = memoryOffset + memory;
+    if (!participatesInHardRelation(decision))
+      continue;
+    const auto choices = bindings.memoryChoices(memory);
+    const PnrIndex selected = result.choices[decision];
+    if (selected >= choices.size())
+      return initializerError(
+          "root relation baseline selected a foreign memory choice");
+    auto placement = memoryPlacement(choices[selected]);
+    if (!placement)
+      return placement.takeError();
+    fixedChoices[decision] = selected;
+    if (llvm::Error error = countMemory(**placement))
+      return std::move(error);
+  }
+
+  for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount(); ++memory) {
+    const PnrIndex decision = memoryOffset + memory;
+    if (fixedChoices[decision] != getInvalidPnrIndex())
+      continue;
+    const auto choices = bindings.memoryChoices(memory);
+    const PnrIndex baselineChoice = result.choices[decision];
+    if (choices.empty() || baselineChoice >= choices.size())
+      return initializerError(
+          "root relation baseline selected a foreign memory choice");
+
+    PnrIndex selected = baselineChoice;
+    auto selectedScore = std::make_tuple(
+        std::numeric_limits<std::uint8_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(), choices.size());
+    std::uint64_t selectedCount = std::numeric_limits<std::uint64_t>::max();
+    bool selectedTemporal = false;
+    const PnrIndex origin = preferenceOrigin(baselineChoice);
+    for (std::size_t rank = 0; rank != choices.size(); ++rank) {
+      const PnrIndex local = static_cast<PnrIndex>(
+          (static_cast<std::size_t>(origin) + rank) % choices.size());
+      auto placement = memoryPlacement(choices[local]);
+      if (!placement)
+        return placement.takeError();
+      const auto found = selectedMemoryCounts.find((*placement)->memory.id());
+      const std::uint64_t count =
+          found == selectedMemoryCounts.end() ? 0 : found->second;
+      const bool temporal =
+          (*placement)->schedule == ::fabric::Schedule::Temporal;
+      const auto score = std::make_tuple(
+          static_cast<std::uint8_t>(temporal ? 0 : 1), count, rank);
+      if (score < selectedScore) {
+        selected = local;
+        selectedScore = score;
+        selectedCount = count;
+        selectedTemporal = temporal;
+      }
+    }
+    auto placement = memoryPlacement(choices[selected]);
+    if (!placement)
+      return placement.takeError();
+    fixedChoices[decision] = selected;
+    result.changedMemoryRoots += selected != baselineChoice;
+    if (llvm::Error error = countMemory(**placement))
+      return std::move(error);
+    loom::mapping_debug::emit(
+        loom::mapping_debug::Level::Detail,
+        loom::mapping_debug::Stage::SpatialPnr,
+        loom::mapping_debug::Event::ContextChoice,
+        [&](llvm::json::Object &fields) {
+          fields["operation"] = "initializer_memory_root_choice";
+          fields["attempt"] = attemptOrdinal;
+          fields["realization"] = memory;
+          fields["baseline_choice"] = baselineChoice;
+          fields["selected_choice"] = selected;
+          fields["selected_count_before"] = selectedCount;
+          fields["selected_temporal"] = selectedTemporal;
+          fields["memory_ref"] =
+              loom::fabric::printFabricRef((*placement)->memory);
+        });
+  }
 
   const auto &ports = problem.ports();
   const auto attachmentOptions = ports.attachmentOptions();
@@ -905,7 +1038,8 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
       return std::move(error);
   }
 
-  if (result.changedComputeRoots == 0 && result.changedPortAttachments == 0 &&
+  if (result.changedComputeRoots == 0 && result.changedMemoryRoots == 0 &&
+      result.changedPortAttachments == 0 &&
       result.changedGraphBoundaryAttachments == 0) {
     emitPreference();
     return result;
@@ -1527,7 +1661,7 @@ loom::pnr::createSpatialCandidateInitializerAttempt(
   if (!relationChoices)
     return relationChoices.takeError();
 
-  auto preferred = preferLeastSelectedComputeContexts(
+  auto preferred = preferScheduleAwareRootPlacements(
       *problem, attemptOrdinal, relationSolver, std::move(*relationChoices),
       policy.search.initializer.assignmentAttemptLimitPerSeed);
   if (!preferred)

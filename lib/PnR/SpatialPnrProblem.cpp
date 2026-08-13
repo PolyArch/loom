@@ -1229,6 +1229,11 @@ private:
         if (!definition || *definition != realization.engine ||
             !domainContains(placementDomain, memory))
           continue;
+        const std::optional<::fabric::Schedule> schedule =
+            fabric.memorySchedule(memory);
+        if (!schedule)
+          return invalid(
+              "a Fabric memory occurrence has no scheduling contract");
 
         bool actorsAdmitted = true;
         for (const TechMemoryActorView &actor : realization.actors) {
@@ -1251,7 +1256,8 @@ private:
         if (llvm::Error error = preflightAppend(
                 placementCountContext, result.memoryPlacements_.size(), 1))
           return error;
-        result.memoryPlacements_.push_back({*realizationIndex, memory});
+        result.memoryPlacements_.push_back(
+            {*realizationIndex, memory, *schedule});
       }
       const std::size_t placementCountValue =
           result.memoryPlacements_.size() - *placementOffset;

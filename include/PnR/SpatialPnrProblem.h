@@ -55,6 +55,7 @@ struct FrozenSpatialComputeRealization final {
 struct FrozenSpatialMemoryPlacement final {
   PnrIndex realization = 0;
   ::loom::fabric::FabricMemoryOccurrenceRef memory;
+  ::fabric::Schedule schedule = ::fabric::Schedule::Spatial;
 };
 
 struct FrozenSpatialMemoryActorBinding final {

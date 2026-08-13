@@ -969,15 +969,19 @@ void loom::test::exerciseCanonicalCandidateInitialization(
     const auto &binding = first->computeBinding(index);
     const auto &repeat = second->computeBinding(index);
     const auto &attemptZero = canonicalAttempt.candidate->computeBinding(index);
-    if (binding.placement != record.placementOffset ||
-        binding.instructionContext !=
-            realizations.computePlacements()[record.placementOffset]
-                .contextOffset ||
+    if (binding.placement < record.placementOffset ||
+        binding.placement >= record.placementOffset + record.placementCount ||
         binding.placement != repeat.placement ||
         binding.instructionContext != repeat.instructionContext ||
         binding.placement != attemptZero.placement ||
         binding.instructionContext != attemptZero.instructionContext)
-      fail("canonical initializer changed compute choice order");
+      fail("canonical initializer returned an unstable compute choice");
+    const auto &placement =
+        realizations.computePlacements()[binding.placement];
+    if (binding.instructionContext < placement.contextOffset ||
+        binding.instructionContext >=
+            placement.contextOffset + placement.contextCount)
+      fail("canonical initializer returned a foreign instruction context");
     const auto envelopeOffsets =
         problem->capacity().computeInstructionContextEnvelopeOffsets();
     for (pnr::PnrIndex envelope = envelopeOffsets[binding.instructionContext];
@@ -990,12 +994,14 @@ void loom::test::exerciseCanonicalCandidateInitialization(
   for (pnr::PnrIndex index = 0;
        index < realizations.memoryRealizations().size(); ++index) {
     const auto &record = realizations.memoryRealizations()[index];
-    if (first->memoryBinding(index).placement != record.placementOffset ||
-        first->memoryBinding(index).placement !=
+    const pnr::PnrIndex placement = first->memoryBinding(index).placement;
+    if (placement < record.placementOffset ||
+        placement >= record.placementOffset + record.placementCount ||
+        placement !=
             second->memoryBinding(index).placement ||
-        first->memoryBinding(index).placement !=
+        placement !=
             canonicalAttempt.candidate->memoryBinding(index).placement)
-      fail("canonical initializer changed memory choice order");
+      fail("canonical initializer returned an unstable memory choice");
   }
   const auto attachmentOptions = problem->ports().attachmentOptions();
   const auto &relations = problem->bindingRelations();

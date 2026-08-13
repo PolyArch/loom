@@ -687,7 +687,7 @@ public:
         if (!placementIndex)
           return placementIndex.takeError();
         realizations.memoryPlacements_.push_back(
-            {*realizationIndex, placement.memory});
+            {*realizationIndex, placement.memory, placement.schedule});
         for (auto [demandOrdinal, demand] : llvm::enumerate(ownerDemands))
           demands[demand].domains.push_back(
               {*placementIndex, std::move(options[demandOrdinal])});

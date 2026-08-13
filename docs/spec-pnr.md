@@ -2362,21 +2362,21 @@ resident-context `Disjoint` relation before caller-authored equality or
 disjoint constraints are applied.
 
 Before dependent decisions become active, one exact preference refinement may
-replace the baseline choices of independent compute roots. The refinement uses
-this closed protocol. Its circular tie origin is local choice ordinal zero for
-seed attempt zero and the root's diversified baseline choice for every later
-attempt. The canonical attempt therefore cannot inherit an incidental
-permutation from hard-relation propagation, while diversified attempts retain
-their deterministic variation.
+replace the baseline choices of independent compute and memory roots. The
+refinement uses this closed protocol. Its circular tie origin is local choice
+ordinal zero for seed attempt zero and the root's diversified baseline choice
+for every later attempt. The canonical attempt therefore cannot inherit an
+incidental permutation from hard-relation propagation, while diversified
+attempts retain their deterministic variation.
 
 1. a compute root participating in any constraint-owned relation retains its
    baseline choice;
-2. memory roots retain their baseline choices;
-3. process every remaining compute root in canonical owner order and consider
+2. process every remaining compute root in canonical owner order and consider
    only choices whose exact `InstructionContextRef` is not retained or already
    preferred by another compute root, as required by the global `Disjoint`
-   relation;
-4. minimize the sum of directed frozen-topology hop
+   relation. Among choices with the same selected-context count, prefer a
+   Temporal placement over a Spatial placement, then minimize the sum of
+   directed frozen-topology hop
    distances to active topology anchors joined to this root by a logical net.
    An active anchor is either an already processed compute root or a directly
    incident graph-boundary terminal. For a compute-compute incidence, the
@@ -2388,7 +2388,12 @@ their deterministic variation.
    unreachable incidence ranks after every finite distance but does not remove
    the choice. If there is no active anchor, or scores remain equal, use
    circular canonical choice order beginning at the attempt's tie origin;
-5. any attachment root participating in a constraint-owned relation retains
+3. a memory root participating in any constraint-owned relation retains its
+   baseline choice. Process every remaining memory root in canonical owner
+   order, prefer a Temporal placement over a Spatial placement, then prefer
+   the exact memory occurrence with the least current selection count. Ties
+   use circular canonical choice order beginning at the attempt's tie origin;
+4. any attachment root participating in a constraint-owned relation retains
    its baseline choice. Process every other occurrence-relative
    `PortAttachment` root in canonical demand order and every other
    graph-boundary attachment root in canonical boundary order. Restrict a
@@ -2399,22 +2404,25 @@ their deterministic variation.
    opposite selected terminals that are unreachable, then by their total
    directed hop distance, then by the current selected-attachment count. Ties
    use circular canonical choice order beginning at the attempt's tie origin;
-6. invoke the same root relation solver once with the preferred compute and
-   attachment roots fixed, so placement compatibility and every hard
+5. invoke the same root relation solver once with the preferred compute,
+   memory, and attachment roots fixed, so placement compatibility and every hard
    attachment relation are re-established by their existing owner; and
-7. if the preferred fixed roots have no complete assignment within the
+6. if the preferred fixed roots have no complete assignment within the
    remaining initializer work, retain the complete baseline assignment.
 
 The unselected-context restriction is a consequence of the hard resident-slot
 relation, not a load-balancing heuristic or a duplicate capacity authority.
-Frozen-topology distance and selected-attachment endpoint count are only
-deterministic search preferences. They cannot prove infeasibility. The distance
+Schedule preference, exact-memory selection count, frozen-topology distance,
+and selected-attachment endpoint count are only deterministic search
+preferences. They cannot prove infeasibility or remove a legal choice. The
+schedule of each placement is copied from the immutable Fabric model. Distance
 and endpoint identity use the same immutable endpoint, arc, payload-width, and
 attachment domains already owned by the FrozenModel; they ignore mutable route
-costs and resource occupancy and therefore do not form a second router or
-crosspoint model. Resource contracts remain the owners of runtime pipeline,
-queue, endpoint, and routing capacity after resident contexts have been
-assigned. The refinement consumes no PRNG words beyond the baseline solve.
+costs and resource occupancy and therefore do not form a second router,
+crosspoint model, or schedule authority. Resource contracts remain the owners
+of runtime pipeline, queue, endpoint, and routing capacity after resident
+contexts have been assigned. The refinement consumes no PRNG words beyond the
+baseline solve.
 Every relation assignment attempted by either solve consumes one initializer
 work unit under the single shared limit. A work-limit stop without an already
 complete baseline is incomplete initialization, not infeasibility. The
