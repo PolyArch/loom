@@ -2139,7 +2139,7 @@ selection remain SystemMapping decisions.
 Spatial and System PnR have distinct component-view descriptors:
 
 ```text
-loom.spatial_pnr.config.8.0
+loom.spatial_pnr.config.9.0
 loom.system_pnr.config.4.0
 ```
 
@@ -2148,13 +2148,15 @@ Spatial or System policy domain. Their exact descriptor bytes are the ASCII
 bytes shown above without a trailing zero. A digest from one view kind cannot
 be adopted as the other.
 
-Spatial version 8.0 retains 7.0's bounded canonical fixing, exact regional
-progress, and Action-local negotiated-routing state, but removes the private
-transport-closure ordering. Regional routing and exact transport repair now
-use the selected total ordering over the global Mapping projection. A repair
-region limits mutations and local routing completion; it neither narrows the
-objective domain nor defines another order over Mapping violations. System PnR
-does not consume this protocol and retains version 4.0.
+Spatial version 9.0 retains 8.0's selected global Mapping order, bounded
+canonical fixing, exact regional progress, and Action-local
+negotiated-routing state. It incompatibly defines an ordinary failed
+transport probe's no-good over its exact transport observation: compute
+placement, memory placement, and attachment option. Instruction contexts
+remain typed solver decisions and participate in every applicable hard
+relation, but legal zero-overuse contexts at one compute placement cannot
+cause duplicate route probes. System PnR does not consume this protocol and
+retains version 4.0.
 
 Each resolved view is self-contained:
 
@@ -2909,7 +2911,7 @@ class.
 
 ### Bounded Exact Repair
 
-Loom builds one required in-process C++ OR-Tools `CpSat_2_0` adapter pinned to
+Loom builds one required in-process C++ OR-Tools `CpSat_3_0` adapter pinned to
 OR-Tools v9.15 commit
 `551ad10d94835c99e5e1e684500d3db398c0e345`. SearchPolicy decides whether a
 candidate has bounded exact-repair work; adapter availability is not a runtime
@@ -2969,10 +2971,15 @@ sequence is finite without another policy limit.
 Transport repair first fixes every region variable to its current typed choice
 and proves that complete assignment with one solver call. When regional
 negotiated routing eliminates the opening witness, no canonical extraction is
-needed because the fixed assignment is already unique. A failed route probe
-adds the ordinary assignment or fixed-terminal-cut no-good to the unfixed
-model; only then does canonical mutation enumeration begin. Both paths consume
-the same restart-wide solver-call budget and use the same exact model.
+needed because the fixed assignment is already unique. An ordinary failed
+route probe adds a no-good over the exact transport observation: each compute
+placement and the exact memory-placement and attachment choices. Compute
+instruction contexts remain in the typed assignment and every applicable hard
+relation, but all admitted contexts have zero atomic overuse and placement owns
+their transport terminals and handshake fragments. A fixed-terminal cut
+instead adds the exact terminal-choice no-good from its certificate. Only then
+does canonical mutation enumeration begin. Both paths consume the same
+restart-wide solver-call budget and use the same exact model.
 
 The solver assignment is diffed against the candidate and rebuilt as one
 canonical ephemeral `ActionBatch` containing only the three existing Action
@@ -3018,7 +3025,7 @@ assignments inside the bounded model; the selected total ordering remains the
 exact post-reconstruction acceptance authority.
 
 Every solver call uses one worker, the fixed restart-derived seed, integer
-decision and objective encodings, and the complete explicit `CpSat_2_0`
+decision and objective encodings, and the complete explicit `CpSat_3_0`
 parameter record. The adapter does not request an unordered solution pool.
 Only `OPTIMAL` and `INFEASIBLE` are proof-bearing statuses. `FEASIBLE` is an
 unproven incumbent, `UNKNOWN` is unproven termination, and `MODEL_INVALID` is
@@ -3029,7 +3036,7 @@ restart-local `ExactRepair` stream before its first solver call. Its OR-Tools
 `random_seed` is the nonnegative signed integer formed by the low 31 bits of
 that word. Every optimization and feasibility call in the same invocation
 reuses that seed and consumes no further PRNG words. The complete
-`CpSat_2_0` parameter construction starts from the pinned v9.15 protobuf
+`CpSat_3_0` parameter construction starts from the pinned v9.15 protobuf
 defaults and applies exactly these overrides:
 
 ```text
@@ -3050,21 +3057,30 @@ particular, the adapter sets no solver wall-time, deterministic-time, branch,
 conflict, or incumbent limit. Loom's owner-local solver-call budget and the
 outer execution controls remain the only corresponding limits.
 
-Canonical extraction is one fixed protocol:
+Spatial 9.0 canonical extraction is one fixed protocol:
 
 1. solve the exact selected repair objective, when present, and require
    `OPTIMAL`; a pure feasibility model must likewise return `OPTIMAL`;
 2. fix the proven objective value in the model;
-3. visit decision variables in canonical typed decision-key order;
-4. visit each variable once, replace the already-fixed objective with that
-   variable as an exact minimization objective, require `OPTIMAL`, and fix the
-   returned value; and
+3. visit decision variables in canonical typed decision-key order and form the
+   longest consecutive block whose exact mixed-radix lexicographic objective,
+   including its complete minimum and maximum activity, is representable in
+   signed 64-bit integers;
+4. replace the already-fixed objective with that block objective, require
+   `OPTIMAL`, fix every returned block value, and repeat from the next variable;
+   a block containing one typed variable is always representable; and
 5. require one complete assignment, then rebuild and verify it through the
    ordinary Mapping and exact Evaluation owners.
 
-This consumes one initial solve plus one solve per canonical variable,
-independent of legal-domain cardinality, and yields the lexicographically
-smallest assignment among exact optimum, or among exact feasible assignments
+For a block with canonical variables `x[0..n)`, coefficient `c[n-1] = 1`,
+and `c[i] = c[i+1] * (max(x[i+1]) - min(x[i+1]) + 1)`, minimizing
+`sum(c[i] * x[i])` is exactly lexicographic minimization. The adapter checks
+every coefficient, term, and prefix activity with wide arithmetic before
+emitting an integer objective. It starts another block instead of saturating,
+truncating, or approximating on overflow. Solver-call work is one initial proof
+plus one call per representable canonical block, independent of the number of
+values inside each block. The result is the lexicographically smallest
+assignment among exact optimum, or among exact feasible assignments
 when no objective is present. A `FEASIBLE`,
 `UNKNOWN`, execution interruption, or exhaustion of `max_solver_calls` at any
 point returns `UnknownBudgetExhausted` before mutation. The order in which

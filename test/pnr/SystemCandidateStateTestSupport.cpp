@@ -276,35 +276,11 @@ loom::pnr::test::buildSystemCandidateSpatialModule(loom::ArtifactStore &store,
 }
 
 loom::ResolvedConfig loom::pnr::test::buildSystemCandidateResolvedConfig() {
-  loom::ResolvedObjectiveCatalogs catalogs;
-  constexpr std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
-  catalogs.dimensions = {
-      {loom::ResolvedMappingViolationObjectiveSource{
-           loom::ResolvedPnrViolationKind::UnroutedObligation},
-       loom::ResolvedObjectiveDirection::Minimize,
-       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
-       maximum},
-      {loom::ResolvedMappingViolationObjectiveSource{
-           loom::ResolvedPnrViolationKind::CapacityOveruse},
-       loom::ResolvedObjectiveDirection::Minimize,
-       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
-       maximum},
-      {loom::ResolvedMappingMeasureObjectiveSource{static_cast<std::uint32_t>(
-           loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim)},
-       loom::ResolvedObjectiveDirection::Minimize,
-       loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
-       maximum},
-  };
-  catalogs.weightedLevels = {{{{0, 1}, {1, 1}, {2, 1}}}};
-  catalogs.totalOrderings = {{{0}}};
-
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
-  resolved.dse.objectiveCatalogs = std::move(catalogs);
   resolved.dse.techMapping.candidatePublicationLimit = 1;
   resolved.dse.spatialPnr.temporaryViolations.admitted = {
       loom::ResolvedPnrViolationKind::UnroutedObligation,
       loom::ResolvedPnrViolationKind::CapacityOveruse};
-  resolved.dse.spatialPnr.objectiveSelection = {0, 0, {}};
   auto &search = resolved.dse.spatialPnr.search;
   search.initializer.seedAttemptCount = 1;
   search.routing.negotiationIterationLimit = 8;
@@ -319,7 +295,6 @@ loom::ResolvedConfig loom::pnr::test::buildSystemCandidateResolvedConfig() {
   resolved.dse.systemPnr.temporaryViolations.admitted = {
       loom::ResolvedPnrViolationKind::UnroutedObligation,
       loom::ResolvedPnrViolationKind::CapacityOveruse};
-  resolved.dse.systemPnr.objectiveSelection = {0, 0, {}};
   auto &systemSearch = resolved.dse.systemPnr.search;
   systemSearch.initializer.seedAttemptCount = 1;
   systemSearch.routing.negotiationIterationLimit = 8;

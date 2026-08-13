@@ -4,6 +4,7 @@
 #include "ortools/sat/sat_parameters.pb.h"
 
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
@@ -21,7 +22,7 @@ namespace {
 llvm::Error protocolError(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
-      "invalid CpSat_2_0 request: %s", message.str().c_str());
+      "invalid CpSat_3_0 request: %s", message.str().c_str());
 }
 
 bool contains(const IntegerVariableProto &variable, std::int64_t value) {
@@ -91,11 +92,61 @@ void fixVariable(CpModelProto &model, int variable, std::int64_t value) {
   constraint->add_domain(value);
 }
 
-void minimizeVariable(CpModelProto &model, int variable) {
+std::optional<std::vector<std::int64_t>>
+canonicalBlockCoefficients(
+    llvm::ArrayRef<CpSatCanonicalVariable> variables) {
+  assert(!variables.empty());
+  std::vector<std::int64_t> coefficients(variables.size(), 1);
+  for (std::size_t index = variables.size() - 1; index != 0; --index) {
+    const auto values = variables[index].legalValues;
+    const __int128 radix = static_cast<__int128>(values.back()) -
+                               static_cast<__int128>(values.front()) +
+                           1;
+    const __int128 coefficient =
+        static_cast<__int128>(coefficients[index]) * radix;
+    if (coefficient > std::numeric_limits<std::int64_t>::max())
+      return std::nullopt;
+    coefficients[index - 1] = static_cast<std::int64_t>(coefficient);
+  }
+
+  std::int64_t minimum = 0;
+  std::int64_t maximum = 0;
+  for (auto [variable, coefficient] :
+       llvm::zip_equal(variables, coefficients)) {
+    const __int128 minimumTerm = static_cast<__int128>(coefficient) *
+                                 variable.legalValues.front();
+    const __int128 maximumTerm = static_cast<__int128>(coefficient) *
+                                 variable.legalValues.back();
+    if (minimumTerm < std::numeric_limits<std::int64_t>::min() ||
+        minimumTerm > std::numeric_limits<std::int64_t>::max() ||
+        maximumTerm < std::numeric_limits<std::int64_t>::min() ||
+        maximumTerm > std::numeric_limits<std::int64_t>::max())
+      return std::nullopt;
+    const __int128 nextMinimum = minimum + minimumTerm;
+    const __int128 nextMaximum = maximum + maximumTerm;
+    if (nextMinimum < std::numeric_limits<std::int64_t>::min() ||
+        nextMinimum > std::numeric_limits<std::int64_t>::max() ||
+        nextMaximum < std::numeric_limits<std::int64_t>::min() ||
+        nextMaximum > std::numeric_limits<std::int64_t>::max())
+      return std::nullopt;
+    minimum = static_cast<std::int64_t>(nextMinimum);
+    maximum = static_cast<std::int64_t>(nextMaximum);
+  }
+  return coefficients;
+}
+
+void minimizeCanonicalBlock(
+    CpModelProto &model,
+    llvm::ArrayRef<CpSatCanonicalVariable> variables,
+    llvm::ArrayRef<std::int64_t> coefficients) {
+  assert(variables.size() == coefficients.size());
   CpObjectiveProto *objective = model.mutable_objective();
   objective->Clear();
-  objective->add_vars(variable);
-  objective->add_coeffs(1);
+  for (auto [variable, coefficient] :
+       llvm::zip_equal(variables, coefficients)) {
+    objective->add_vars(variable.protoIndex);
+    objective->add_coeffs(coefficient);
+  }
 }
 
 SatParameters parameters(std::int32_t randomSeed) {
@@ -206,9 +257,22 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
 
   std::vector<std::int64_t> assignment;
   assignment.reserve(variables.size());
-  for (const CpSatCanonicalVariable &variable : variables) {
+  for (std::size_t begin = 0; begin != variables.size();) {
+    std::size_t end = begin + 1;
+    auto coefficients = canonicalBlockCoefficients(variables.slice(begin, 1));
+    assert(coefficients && "one canonical variable must be int64 encodable");
+    while (end != variables.size()) {
+      auto extended =
+          canonicalBlockCoefficients(variables.slice(begin, end - begin + 1));
+      if (!extended)
+        break;
+      coefficients = std::move(extended);
+      ++end;
+    }
+
     CpModelProto trial = working;
-    minimizeVariable(trial, variable.protoIndex);
+    minimizeCanonicalBlock(trial, variables.slice(begin, end - begin),
+                           *coefficients);
     std::optional<CpSolverResponse> response = solve(trial, state);
     if (!response)
       return unknown(state.calls);
@@ -223,15 +287,19 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
     case CpSatProofStatus::InternalError:
       return protocolError("OR-Tools rejected a canonical minimization model");
     }
-    if (variable.protoIndex >= response->solution_size())
-      return protocolError("optimal response omitted a canonical variable");
-    const std::int64_t value = response->solution(variable.protoIndex);
-    if (!std::binary_search(variable.legalValues.begin(),
-                            variable.legalValues.end(), value))
-      return protocolError("optimal response selected an illegal value");
     working = std::move(trial);
-    fixVariable(working, variable.protoIndex, value);
-    assignment.push_back(value);
+    for (const CpSatCanonicalVariable &variable :
+         variables.slice(begin, end - begin)) {
+      if (variable.protoIndex >= response->solution_size())
+        return protocolError("optimal response omitted a canonical variable");
+      const std::int64_t value = response->solution(variable.protoIndex);
+      if (!std::binary_search(variable.legalValues.begin(),
+                              variable.legalValues.end(), value))
+        return protocolError("optimal response selected an illegal value");
+      fixVariable(working, variable.protoIndex, value);
+      assignment.push_back(value);
+    }
+    begin = end;
   }
   return CpSatCanonicalResult{CpSatCanonicalResultKind::Assignment,
                               std::move(assignment), objectiveValue,

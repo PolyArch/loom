@@ -267,7 +267,7 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
   const ResolvedPnrExactRepairPolicy &policy =
       problem.config().policy().search.exactRepair;
   if (policy.kind != ResolvedPnrExactRepairKind::CpSat)
-    return invocationError("CpSat_2_0 is not selected by SearchPolicy");
+    return invocationError("CpSat_3_0 is not selected by SearchPolicy");
   if (solverCallLimit == 0 || solverCallLimit > policy.maxSolverCalls)
     return invocationError("solver-call limit exceeds SearchPolicy");
   if (candidate.atomicCapacityOveruse() == 0 &&
@@ -919,6 +919,8 @@ SpatialExactRepairScratch::repairTransportClosure(
   CpModelBuilder model;
   std::vector<IntVar> variables;
   variables.reserve(decisions_.size());
+  std::vector<IntVar> transportObservationVariables;
+  transportObservationVariables.reserve(decisions_.size());
   decisionVariables_.assign(bindings.decisionCount(), -1);
   legalValueOffsets_.clear();
   legalValueOffsets_.reserve(decisions_.size() + 1);
@@ -968,6 +970,19 @@ SpatialExactRepairScratch::repairTransportClosure(
         llvm::ArrayRef(legalValues_).slice(begin, legalValues_.size() - begin));
     decisionVariables_[decision] = static_cast<int>(variables.size());
     variables.push_back(model.NewIntVar(domain));
+    if (decision < computeCount) {
+      const auto choices = bindings.computeChoices(decision);
+      elementValues_.clear();
+      elementValues_.reserve(choices.size());
+      for (const detail::SpatialComputeBindingChoice &choice : choices)
+        elementValues_.push_back(choice.placement);
+      const IntVar placement =
+          model.NewIntVar(Domain::FromValues(elementValues_));
+      model.AddElement(variables.back(), elementValues_, placement);
+      transportObservationVariables.push_back(placement);
+    } else {
+      transportObservationVariables.push_back(variables.back());
+    }
   }
 
   std::vector<detail::CpSatCanonicalVariable> canonicalVariables;
@@ -1443,7 +1458,24 @@ SpatialExactRepairScratch::repairTransportClosure(
             "repair region");
       model.AddForbiddenAssignments(cutVariables).AddTuple(elementValues_);
     } else {
-      model.AddForbiddenAssignments(variables).AddTuple(solved->assignment);
+      elementValues_.clear();
+      elementValues_.reserve(decisions_.size());
+      for (auto [local, decision] : llvm::enumerate(decisions_)) {
+        const std::int64_t selected = solved->assignment[local];
+        if (decision < computeCount) {
+          const auto choices = bindings.computeChoices(decision);
+          if (selected < 0 ||
+              static_cast<std::size_t>(selected) >= choices.size())
+            return executedResult(
+                SpatialExactRepairResultKind::InternalError,
+                "route repair cannot project a compute observation");
+          elementValues_.push_back(choices[selected].placement);
+        } else {
+          elementValues_.push_back(selected);
+        }
+      }
+      model.AddForbiddenAssignments(transportObservationVariables)
+          .AddTuple(elementValues_);
     }
     proveCurrentAssignment = false;
     ++assignmentOrdinal;

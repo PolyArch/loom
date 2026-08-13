@@ -58,7 +58,7 @@ llvm::Error validateSpatialConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialPnrCandidateGeneratorKind,
     "mapping.spatial_pnr",
-    "loom.mapping.spatial_pnr.generator.v5",
+    "loom.mapping.spatial_pnr.generator.v6",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{

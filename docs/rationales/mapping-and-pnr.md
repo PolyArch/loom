@@ -566,10 +566,13 @@ region is the complete exact problem.
 
 The adapter uses one worker and one restart-local seed for the entire repair
 invocation. Consuming one ExactRepair word rather than one word per solver call
-keeps canonical fixing independent of region size. Each canonical variable is
-minimized once after the primary optimum is fixed, so solver-call work scales
-with decision count rather than the cardinality of physical-choice domains.
-The low 31-bit projection matches OR-Tools' signed seed field without
+keeps canonical fixing independent of region size. Consecutive canonical
+variables are packed into the longest exactly representable mixed-radix
+objective after the primary optimum is fixed. This preserves the same
+lexicographic proof while solver-call work scales with representable integer
+blocks rather than individual decisions or physical-choice cardinality.
+Overflow starts another exact block; it never changes the order. The low
+31-bit projection matches OR-Tools' signed seed field without
 implementation-defined narrowing. Solver time and search counters remain
 execution behavior rather than semantic work; only Loom's region-decision and
 solver-call budgets can alter the formal repair result.
@@ -743,6 +746,17 @@ therefore limits mutations and defines local route closure, while the existing
 global `SelectedObjectiveClosure` remains the sole retained-iterate and repair
 acceptance order. Strict improvement in that finite order prevents witness
 exchange without duplicating objective policy.
+
+Canonical exact-repair enumeration also cannot distinguish candidates only by
+an instruction-context ordinal when the compute placement is unchanged. The
+route kernel observes placement-owned terminals and handshake fragments, while
+the repair model already excludes every context with atomic overuse and keeps
+all context relations exact. Re-probing each such context repeats the same
+transport experiment and consumes bounded solver and routing work without
+adding a candidate distinction. Ordinary failed route-probe no-goods are
+therefore stated over the mechanically derived transport observation, while
+the full typed assignment remains the hard-constraint witness and committed
+result.
 
 Dispatching bounded repair only when the retained candidate already reports
 route-capacity overuse is incomplete. A candidate can retain unrouted

@@ -59,11 +59,11 @@ void equivalentOptimaUseCanonicalAssignment() {
           "equivalent optimum did not use lexicographically first values");
   require(result.objectiveValue && *result.objectiveValue == 1,
           "exact optimum value was not preserved");
-  require(result.solverCalls == 3,
+  require(result.solverCalls == 2,
           "canonical extraction consumed the wrong solver-call count");
 }
 
-void wideDomainsConsumeOneCallPerVariable() {
+void wideDomainsShareOneCanonicalBlock() {
   using namespace loom::pnr::detail;
   using namespace operations_research;
   using namespace operations_research::sat;
@@ -88,7 +88,7 @@ void wideDomainsConsumeOneCallPerVariable() {
   require(llvm::ArrayRef(result.assignment) ==
               llvm::ArrayRef<std::int64_t>({3072, 3072}),
           "wide canonical domains did not select the lexicographic minimum");
-  require(result.solverCalls == 3,
+  require(result.solverCalls == 2,
           "wide domains changed the canonical solver-call count");
 }
 
@@ -108,14 +108,39 @@ void solverCallBudgetLeavesNoPartialAssignment() {
       {y.index(), binaryValues},
   }};
   const CpSatCanonicalResult result = take(solveCanonicalCpSat(
-      model.Build(), variables, std::nullopt, /*maxSolverCalls=*/2,
+      model.Build(), variables, std::nullopt, /*maxSolverCalls=*/1,
       /*randomSeed=*/19));
   require(result.kind == CpSatCanonicalResultKind::UnknownBudgetExhausted,
           "solver-call exhaustion was treated as a proof");
   require(result.assignment.empty(),
           "solver-call exhaustion exposed a partial assignment");
-  require(result.solverCalls == 2,
+  require(result.solverCalls == 1,
           "solver-call budget was not consumed exactly");
+}
+
+void overflowingRadixStartsAnotherCanonicalBlock() {
+  using namespace loom::pnr::detail;
+  using namespace operations_research;
+  using namespace operations_research::sat;
+
+  constexpr std::int64_t wideValue = INT64_C(4000000000);
+  CpModelBuilder model;
+  const std::vector<std::int64_t> values{0, wideValue};
+  const IntVar x = model.NewIntVar(Domain::FromValues(values));
+  const IntVar y = model.NewIntVar(Domain::FromValues(values));
+  const std::array<CpSatCanonicalVariable, 2> variables{{
+      {x.index(), values},
+      {y.index(), values},
+  }};
+  const CpSatCanonicalResult result = take(solveCanonicalCpSat(
+      model.Build(), variables, std::nullopt, /*maxSolverCalls=*/3,
+      /*randomSeed=*/37));
+  require(result.kind == CpSatCanonicalResultKind::Assignment &&
+              llvm::ArrayRef(result.assignment) ==
+                  llvm::ArrayRef<std::int64_t>({0, 0}),
+          "overflow split changed the canonical assignment");
+  require(result.solverCalls == 3,
+          "overflow split used the wrong canonical block count");
 }
 
 void fixedAssignmentConsumesOneCall() {
@@ -209,8 +234,9 @@ void seedProjectionIsUnsignedAndStable() {
 
 int main() {
   equivalentOptimaUseCanonicalAssignment();
-  wideDomainsConsumeOneCallPerVariable();
+  wideDomainsShareOneCanonicalBlock();
   solverCallBudgetLeavesNoPartialAssignment();
+  overflowingRadixStartsAnotherCanonicalBlock();
   fixedAssignmentConsumesOneCall();
   localInfeasibilityIsProofBearingButNotGlobal();
   nonProofStatusesFailClosed();
