@@ -32,30 +32,72 @@ struct PeBindingGroup final {
 
 struct PeSelectorUse final {
   ::loom::fabric::FabricPeSelectorPayload selector;
+  std::uint64_t realization = 0;
   std::uint64_t routeOrdinal = 0;
   std::uint64_t nodeOrdinal = 0;
 };
 
+using ActorRealizationMap = std::map<std::uint64_t, std::uint64_t>;
+
 void appendSelectorUse(
     const std::optional<::loom::fabric::FabricPhysicalTraversalRef> &traversal,
-    std::uint64_t routeOrdinal, std::uint64_t nodeOrdinal,
-    std::vector<PeSelectorUse> &uses) {
+    std::uint64_t realization, std::uint64_t routeOrdinal,
+    std::uint64_t nodeOrdinal, std::vector<PeSelectorUse> &uses) {
   if (!traversal)
     return;
   const auto *selector =
       std::get_if<::loom::fabric::FabricPeSelectorPayload>(&traversal->payload);
   if (selector)
-    uses.push_back({*selector, routeOrdinal, nodeOrdinal});
+    uses.push_back({*selector, realization, routeOrdinal, nodeOrdinal});
 }
 
-std::vector<PeSelectorUse>
-collectSelectorUses(llvm::ArrayRef<SpatialRouteTreeView> routes) {
+llvm::Expected<std::uint64_t>
+realizationOf(const ActorRealizationMap &realizations,
+              const ::dataflow::ActorRef &actor) {
+  const auto found = realizations.find(actor.entity.value());
+  if (found == realizations.end())
+    return invalid("PE selector terminal has no compute realization");
+  return found->second;
+}
+
+llvm::Expected<std::vector<PeSelectorUse>>
+collectSelectorUses(const TechMappingView &techMapping,
+                    llvm::ArrayRef<SpatialRouteTreeView> routes) {
+  ActorRealizationMap realizationByActor;
+  for (const TechComputeRealizationView &realization :
+       techMapping.computeRealizations())
+    for (const TechComputeActorView &actor : realization.actors)
+      if (!realizationByActor
+               .try_emplace(actor.actor.entity.value(), realization.entityId)
+               .second)
+        return invalid("compute actor belongs to multiple realizations");
+
   std::vector<PeSelectorUse> result;
   for (auto [routeOrdinal, route] : llvm::enumerate(routes)) {
-    appendSelectorUse(route.localTraversal, routeOrdinal, 0, result);
-    for (const SpatialRouteSinkView &sink : route.sinks)
-      appendSelectorUse(sink.localTraversal, routeOrdinal, sink.nodeOrdinal,
+    if (route.localTraversal) {
+      const auto *producer =
+          std::get_if<::dataflow::ActorTokenResultRef>(&route.logicalNet);
+      if (!producer)
+        return invalid("graph boundary producer selects a PE traversal");
+      auto realization = realizationOf(realizationByActor, producer->actor);
+      if (!realization)
+        return realization.takeError();
+      appendSelectorUse(route.localTraversal, *realization, routeOrdinal, 0,
                         result);
+    }
+    for (const SpatialRouteSinkView &sink : route.sinks) {
+      if (!sink.localTraversal)
+        continue;
+      const auto *consumer =
+          std::get_if<::dataflow::ActorTokenOperandRef>(&sink.sink);
+      if (!consumer)
+        return invalid("graph boundary consumer selects a PE traversal");
+      auto realization = realizationOf(realizationByActor, consumer->actor);
+      if (!realization)
+        return realization.takeError();
+      appendSelectorUse(sink.localTraversal, *realization, routeOrdinal,
+                        sink.nodeOrdinal, result);
+    }
   }
   return result;
 }
@@ -85,7 +127,8 @@ groupBindings(const ::loom::fabric::FabricArtifactView &fabric,
 llvm::Expected<std::optional<PeSelectorUse>>
 findSelectorUse(const ::loom::fabric::FabricArtifactView &fabric,
                 llvm::ArrayRef<PeSelectorUse> uses,
-                const ::loom::fabric::FabricFuOccurrencePortRef &port) {
+                const ::loom::fabric::FabricFuOccurrencePortRef &port,
+                std::uint64_t realization) {
   const auto pe = fabric.parentPeOf(port.fu);
   const auto fixed = fabric.fuOccurrenceTransportEndpoint(port);
   if (!pe || !fixed)
@@ -93,7 +136,7 @@ findSelectorUse(const ::loom::fabric::FabricArtifactView &fabric,
 
   std::optional<PeSelectorUse> result;
   for (const PeSelectorUse &use : uses) {
-    if (use.selector.owner != *pe)
+    if (use.realization != realization || use.selector.owner != *pe)
       continue;
     const bool matches =
         port.direction == ::loom::fabric::FabricPortDirection::Input
@@ -101,8 +144,17 @@ findSelectorUse(const ::loom::fabric::FabricArtifactView &fabric,
             : use.selector.source == *fixed;
     if (!matches)
       continue;
+    if (result && result->selector == use.selector &&
+        result->routeOrdinal == use.routeOrdinal &&
+        result->nodeOrdinal == use.nodeOrdinal)
+      continue;
     if (result)
-      return invalid("one active FU port selects multiple PE boundary routes");
+      return invalid("one active FU port selects multiple PE boundary routes "
+                     "at route " +
+                     llvm::Twine(result->routeOrdinal) + " node " +
+                     llvm::Twine(result->nodeOrdinal) + " and route " +
+                     llvm::Twine(use.routeOrdinal) + " node " +
+                     llvm::Twine(use.nodeOrdinal));
     result = use;
   }
   return result;
@@ -158,7 +210,8 @@ appendSpatialPeFields(const ::loom::fabric::FabricArtifactView &fabric,
         ::loom::fabric::FabricPeConfigurationFieldKind::Activation) {
       selected = ::loom::fabric::FabricPeActive{binding.occurrence};
     } else if (field.port && field.port->fu == binding.occurrence) {
-      auto use = findSelectorUse(fabric, selectorUses, *field.port);
+      auto use = findSelectorUse(fabric, selectorUses, *field.port,
+                                 binding.realization);
       if (!use)
         return use.takeError();
       if (*use) {
@@ -208,8 +261,8 @@ temporalOperandSelection(
     llvm::ArrayRef<SpatialPhysicalTagSegmentView> tagSegments,
     llvm::ArrayRef<PeSelectorUse> selectorUses,
     const ::loom::fabric::FabricFuOccurrencePortRef &port,
-    std::uint32_t tagWidth) {
-  auto use = findSelectorUse(fabric, selectorUses, port);
+    std::uint64_t realization, std::uint32_t tagWidth) {
+  auto use = findSelectorUse(fabric, selectorUses, port, realization);
   if (!use)
     return use.takeError();
   if (!*use)
@@ -241,8 +294,8 @@ temporalResultSelection(
     llvm::ArrayRef<SpatialPhysicalTagSegmentView> tagSegments,
     llvm::ArrayRef<PeSelectorUse> selectorUses,
     const ::loom::fabric::FabricFuOccurrencePortRef &port,
-    std::uint32_t tagWidth) {
-  auto use = findSelectorUse(fabric, selectorUses, port);
+    std::uint64_t realization, std::uint32_t tagWidth) {
+  auto use = findSelectorUse(fabric, selectorUses, port, realization);
   if (!use)
     return use.takeError();
   if (!*use)
@@ -300,7 +353,7 @@ appendTemporalPeField(const ::loom::fabric::FabricArtifactView &fabric,
           fabric, routes, resourceUses, tagSegments, selectorUses,
           {binding->occurrence, ::loom::fabric::FabricPortDirection::Input,
            input},
-          layout.tagWidthBits);
+          binding->realization, layout.tagWidthBits);
       if (!selection)
         return selection.takeError();
       row.operandSelections.push_back(std::move(*selection));
@@ -311,7 +364,7 @@ appendTemporalPeField(const ::loom::fabric::FabricArtifactView &fabric,
           fabric, routes, resourceUses, tagSegments, selectorUses,
           {binding->occurrence, ::loom::fabric::FabricPortDirection::Output,
            output},
-          layout.tagWidthBits);
+          binding->realization, layout.tagWidthBits);
       if (!selection)
         return selection.takeError();
       row.resultSelections.push_back(std::move(*selection));
@@ -335,6 +388,7 @@ appendTemporalPeField(const ::loom::fabric::FabricArtifactView &fabric,
 llvm::Expected<std::vector<ConfiguredHardwareFieldValueView>>
 deriveConfiguredPeFields(
     const ::loom::fabric::FabricArtifactView &fabric,
+    const TechMappingView &techMapping,
     llvm::ArrayRef<SpatialComputeBindingView> bindings,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses,
@@ -342,13 +396,15 @@ deriveConfiguredPeFields(
   auto groups = groupBindings(fabric, bindings);
   if (!groups)
     return groups.takeError();
-  const std::vector<PeSelectorUse> selectorUses = collectSelectorUses(routes);
+  auto selectorUses = collectSelectorUses(techMapping, routes);
+  if (!selectorUses)
+    return selectorUses.takeError();
   std::vector<ConfiguredHardwareFieldValueView> fields;
   for (const PeBindingGroup &group : *groups) {
     const auto schedule = fabric.peSchedule(group.pe);
     if (schedule == ::fabric::Schedule::Spatial) {
       if (llvm::Error error =
-              appendSpatialPeFields(fabric, group, selectorUses, fields))
+              appendSpatialPeFields(fabric, group, *selectorUses, fields))
         return std::move(error);
       continue;
     }
@@ -356,7 +412,7 @@ deriveConfiguredPeFields(
       return invalid("configured PE has an unknown schedule");
     if (llvm::Error error =
             appendTemporalPeField(fabric, group, routes, resourceUses,
-                                  physicalTagSegments, selectorUses, fields))
+                                  physicalTagSegments, *selectorUses, fields))
       return std::move(error);
   }
   return fields;

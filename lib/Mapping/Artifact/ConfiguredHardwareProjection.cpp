@@ -220,8 +220,8 @@ deriveConfiguredHardwareProjection(
     }
   }
 
-  auto peFields = deriveConfiguredPeFields(fabric, bindings, routes,
-                                           resourceUses, physicalTagSegments);
+  auto peFields = deriveConfiguredPeFields(
+      fabric, techMapping, bindings, routes, resourceUses, physicalTagSegments);
   if (!peFields)
     return peFields.takeError();
   fields.insert(fields.end(), std::make_move_iterator(peFields->begin()),

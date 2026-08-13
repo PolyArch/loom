@@ -37,6 +37,7 @@ llvm::Expected<llvm::APInt> resolveConfiguredHardwarePhysicalTag(
 llvm::Expected<std::vector<ConfiguredHardwareFieldValueView>>
 deriveConfiguredPeFields(
     const ::loom::fabric::FabricArtifactView &fabric,
+    const TechMappingView &techMapping,
     llvm::ArrayRef<SpatialComputeBindingView> bindings,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses,
