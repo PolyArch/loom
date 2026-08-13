@@ -714,6 +714,15 @@ no-progress bound proves nothing about future iterations; it only prevents an
 explicitly bounded search from repeatedly spending the dominant all-net route
 work without improving the Mapping-owned selected rank.
 
+Dispatching bounded repair only when the retained candidate already reports
+route-capacity overuse is incomplete. A candidate can retain unrouted
+obligations while a final routing attempt discovers and rolls back an exact
+fixed-terminal cut; after rollback there is no resident overuse to trigger a
+capacity-only dispatcher. The unresolved obligation is already the durable
+Mapping witness. Using every unresolved transport-closure witness as a repair
+root lets the same closed region vary placement and attachments, while keeping
+the conditional cut as a no-good for only the rejected terminal assignment.
+
 Comparing only against the historical best gives useful patience, but a short
 regression can be necessary before negotiated routing improves again. A second
 exact comparison against the immediately previous rank captures that local

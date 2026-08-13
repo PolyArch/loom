@@ -2899,6 +2899,15 @@ canonical unresolved Mapping or Evaluation witness. The ephemeral inputs are
 `FrozenModel`, resolved `C`, current `CandidateState`, the closed conflict
 region, and the exact Evaluation model and constraint identities.
 
+A Spatial transport repair region may be rooted by any unresolved transport
+closure witness: `UnroutedObligation`, route-resource `CapacityOveruse`,
+resident Physical Tag `CapacityOveruse`, `TagUnassigned`, or `TagConflict`.
+The region includes the implicated route-equality closure, terminal
+attachments, owning realizations, and their binding relations. When exact
+repair is selected, an exact fixed-terminal capacity cut rejects only that
+terminal assignment inside the repair search. It cannot terminate the outer
+candidate before the bounded repair has considered its complete region.
+
 Region closure includes affected realizations, nets and route branches,
 attachments, contexts, tags, buffers, memory and service bindings,
 `ResourceUse`, constraint groups, and conflicting occupancy. Outside decisions
