@@ -23,6 +23,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
@@ -92,8 +93,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
             descriptor.scale.spatialMemoryCount == expected.spatialMemories &&
             descriptor.scale.temporalMemoryCount == expected.temporalMemories,
         "builtin descriptor changed its scale contract");
-    require(test, descriptor.schemaMajor == 2 && descriptor.schemaMinor == 0,
-            "builtin descriptor did not select the distributed recipe");
+    require(test, descriptor.schemaMajor == 3 && descriptor.schemaMinor == 0,
+            "builtin descriptor did not select the buffered gateway recipe");
 
     auto target =
         take(test, loom::adg::buildBuiltinTarget(store, expected.preset));
@@ -333,6 +334,65 @@ void builtinPresetsExpandThroughPublicBuilder() {
             module.view().fifoOccurrences().size() ==
                 expectedMeshLinkFifos + expectedAdapterFifos,
             "builtin did not emit one FIFO per mesh link and width adapter");
+    const std::uint32_t expectedTagWidth = std::max(
+        1U, llvm::Log2_64_Ceil(descriptor.scale.temporalResidentContexts));
+    std::size_t taggedEndpoints = 0;
+    for (const auto &endpoint : module.view().transportEndpoints()) {
+      const auto dataPath = module.view().transportEndpointDataPath(endpoint);
+      require(test, dataPath.has_value(),
+              "builtin transport endpoint lost its data path");
+      if (dataPath->kind != ::fabric::DataPathKind::BitsTag)
+        continue;
+      ++taggedEndpoints;
+      require(test, dataPath->tagWidthBits == expectedTagWidth,
+              "builtin temporal endpoint does not use the minimum tag width");
+    }
+    require(test, taggedEndpoints != 0,
+            "builtin emitted no tagged temporal endpoint");
+
+    std::size_t configuredWriters = 0;
+    std::size_t tagRemovers = 0;
+    for (const auto boundary : module.view().boundaryOccurrences()) {
+      const auto continuity =
+          module.view().boundaryTagContinuityPoint(boundary);
+      require(test, continuity.has_value(),
+              "builtin boundary lost its tag continuity kind");
+      configuredWriters +=
+          continuity->kind == loom::fabric::
+                                  FabricBoundaryTagContinuityKind::
+                                      ConfigurableWriter;
+      tagRemovers += continuity->kind ==
+                     loom::fabric::FabricBoundaryTagContinuityKind::Remover;
+      const auto boundaryOwner =
+          loom::fabric::FabricTransportEndpointOwnerRef::of(boundary);
+      std::optional<loom::fabric::FabricFifoOccurrenceRef> outputFifo;
+      for (const auto &connection : module.view().pointConnections()) {
+        if (connection.source.owner != boundaryOwner)
+          continue;
+        const auto *fifo =
+            std::get_if<loom::fabric::FabricFifoOccurrenceRef>(
+                &connection.destination.owner.payload);
+        require(test, fifo != nullptr && !outputFifo.has_value(),
+                "builtin gateway boundary does not feed one exact FIFO");
+        outputFifo = *fifo;
+      }
+      require(test, outputFifo.has_value(),
+              "builtin gateway boundary has no output FIFO");
+      for (const auto &traversal : module.view().admittedTraversals()) {
+        const auto *fifo =
+            std::get_if<loom::fabric::FabricFifoTraversalPayload>(
+                &traversal.payload);
+        require(test,
+                !fifo || fifo->owner != *outputFifo ||
+                    fifo->mode !=
+                        loom::fabric::FabricFifoTraversalMode::Bypass,
+                "builtin gateway FIFO admits a combinational bypass");
+      }
+    }
+    require(test,
+            configuredWriters == descriptor.scale.gatewayCount &&
+                tagRemovers == descriptor.scale.gatewayCount,
+            "builtin cross-schedule gateway inventory changed unexpectedly");
     std::size_t interiorTransitSwitches = 0;
     for (const auto occurrence : module.view().switchOccurrences()) {
       const auto owner =

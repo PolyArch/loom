@@ -12,7 +12,7 @@
 
 // JSON-DAG: "hardware_target"
 // JSON-DAG: "template_identity": "loom.adg.builtin.default"
-// JSON-DAG: "schema_major": 2
+// JSON-DAG: "schema_major": 3
 // JSON-DAG: "schema_minor": 0
 // JSON-DAG: "acc_core_count": 8
 // JSON-DAG: "spatial_pe_count": 27

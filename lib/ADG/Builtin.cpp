@@ -9,6 +9,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/CheckedArithmetic.h"
+#include "llvm/Support/MathExtras.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -276,6 +277,10 @@ std::uint32_t builtinMeshDimension(BuiltinTargetPreset preset) {
   llvm_unreachable("unknown builtin target preset");
 }
 
+std::uint32_t builtinTemporalTagWidth(std::uint32_t residentContexts) {
+  return std::max(1U, llvm::Log2_64_Ceil(residentContexts));
+}
+
 struct MemoryMeshAttachments final {
   std::size_t first;
   std::size_t second;
@@ -289,13 +294,12 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
                              const BuiltinTargetScale &scale) {
   if (!isValidBuiltinTargetScale(scale))
     return invalid("all builtin target scale values must be positive");
-  auto tagBits = PortType::bits(scale.temporalResidentContexts);
-  if (!tagBits)
-    return tagBits.takeError();
+  const std::uint32_t temporalTagWidth =
+      builtinTemporalTagWidth(scale.temporalResidentContexts);
   auto bits128 = PortType::bits(128);
   if (!bits128)
     return bits128.takeError();
-  auto tagged128 = PortType::taggedBits(128, scale.temporalResidentContexts);
+  auto tagged128 = PortType::taggedBits(128, temporalTagWidth);
   if (!tagged128)
     return tagged128.takeError();
 
@@ -325,7 +329,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     return spatialMemory.takeError();
   auto temporalMemory = makeGeneral64LocalMemory(
       {scale.memoryCapacityBytes, *memoryInterface,
-       TemporalMemoryParameters{scale.temporalResidentContexts,
+       TemporalMemoryParameters{temporalTagWidth,
                                 scale.temporalResidentContexts},
        true});
   if (!temporalMemory)
@@ -397,10 +401,10 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
         spatialAttachmentSpecs, spatialCellCursor, {*bits128}, {*bits128}));
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
     s2tSpatialAttachments.push_back(appendAttachment(
-        spatialAttachmentSpecs, spatialCellCursor, {*bits128, *bits128}, {}));
+        spatialAttachmentSpecs, spatialCellCursor, {*bits128}, {}));
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
     t2sSpatialAttachments.push_back(appendAttachment(
-        spatialAttachmentSpecs, spatialCellCursor, {}, {*bits128, *bits128}));
+        spatialAttachmentSpecs, spatialCellCursor, {}, {*bits128}));
 
   std::vector<std::size_t> temporalPeAttachments;
   for (std::uint32_t site = 0; site != scale.temporalPeCount; ++site)
@@ -595,14 +599,20 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       return temporalAttachment.takeError();
     auto outputs = spatial->addBoundary(
         spatialAttachment->inputs(),
-        BoundarySpec::s2t(*bits128, *tagBits, *tagged128));
+        BoundarySpec::s2tWithConfiguredTag(*bits128, *tagged128));
     if (!outputs)
       return outputs.takeError();
-    if (llvm::Error error = temporalAttachment->connectOutputs(outputs->values()))
+    auto tagged = spatial->addFifo(
+        outputs->values().front(),
+        FifoSpec{*tagged128, scale.temporalResidentContexts, false});
+    if (!tagged)
+      return tagged.takeError();
+    if (llvm::Error error =
+            temporalAttachment->connectOutputs({tagged->value()}))
       return std::move(error);
     auto t2sOutputs = spatial->addBoundary(
         temporalAttachment->inputs(),
-        BoundarySpec::t2s(*tagged128, {*bits128, *tagBits}));
+        BoundarySpec::t2s(*tagged128, {*bits128}));
     if (!t2sOutputs)
       return t2sOutputs.takeError();
     auto t2sAttachment =
@@ -613,7 +623,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     for (SpatialValue output : t2sOutputs->values()) {
       auto fifo = spatial->addFifo(
           output,
-          FifoSpec{*bits128, scale.temporalResidentContexts, true});
+          FifoSpec{*bits128, scale.temporalResidentContexts, false});
       if (!fifo)
         return fifo.takeError();
       routedOutputs.push_back(fifo->value());

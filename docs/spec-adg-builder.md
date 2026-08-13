@@ -541,9 +541,12 @@ BuiltinTargetPreset = Small | Default | Large
 ```
 
 The `Small`, `Default`, and `Large` builtin descriptors use schema version
-`2.0`. Their prior `1.x` recipe neither materialized complete symbolic slot and
-Reset facts nor provided a bounded distributed interconnect, and is not
-retained as a compatibility expansion.
+`3.0`. Their prior recipes are not retained as compatibility expansions.
+Version 3 replaces runtime tag-token gateway inputs with Mapping-configured tag
+writers, derives the minimum positive tag width from resident route capacity,
+and places non-bypassable elastic storage in both cross-schedule directions.
+Reusing version 2 would let the same template key denote incompatible Fabric
+identity and handshake behavior.
 
 The public builtin boundary is:
 
@@ -635,8 +638,13 @@ This is an authoring recipe, not a second topology schema: expansion produces
 ordinary explicit Fabric resources and connections.
 
 Each preset constructs distinct overlaid untagged Spatial and tagged Temporal
-two-lane-per-direction mesh networks through `addMeshSwitchNetwork`. Their
-authoring dimensions are `4 x 4` for `Small`, `6 x 6` for `Default`, and
+two-lane-per-direction mesh networks through `addMeshSwitchNetwork`. The
+Temporal tag width is `max(1, ceil(log2(temporalResidentContexts)))`; resident
+context count separately owns PE, switch-table, memory, and buffer capacity.
+Cross-schedule ingress uses a Mapping-configured tag writer and both directions
+contain one non-bypassable FIFO, so the two meshes cannot form a combinational
+ready/valid cycle. The authoring dimensions are `4 x 4` for `Small`, `6 x 6`
+for `Default`, and
 `8 x 8` for `Large`. These dimensions generate graph topology only; they do
 not become semantic coordinates. Interior transit switches are `8 x 8`, edge
 and corner transit switches are smaller, and every local attachment switch is
