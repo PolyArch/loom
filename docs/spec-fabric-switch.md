@@ -231,6 +231,13 @@ not its SRAM address layout. ConfigurationABI may place its bits only through
 the one direct field; it cannot create per-output or per-entry fields whose
 independent values bypass route-table validation.
 
+Configured-hardware projection groups selected RouteTree traversals by the
+Physical Tag of their continuity segment, orders active rows by unsigned tag,
+and fills the remaining rows with `Unused`. The Fabric codec validates the
+table bound, tag width and uniqueness, admitted crosspoints, and per-output
+fan-in before ConfigurationABI assigns a physical layout. Neither Mapping nor
+a backend stores an independent route-row selection.
+
 ### Handshake Dependency Projection
 
 `connectivity_table` declares capability and contributes no active arc by
@@ -318,6 +325,15 @@ Its normalized resource projection is linear in physical connectivity:
 * every spatial traversal belongs to the switch's one static-configuration
   requester; and
 * temporal patterns sourced by one input share that input's requester.
+
+The schedule determines when those service claims constrain Mapping. Spatial
+traversals are resident selections, so their implied claims participate in
+static route capacity closure. Temporal traversal patterns instead describe
+runtime service eligibility: different resident tag rows may select the same
+physical input or output, and same-cycle demand is resolved by the declared
+GrantPolicy. Static Mapping capacity therefore does not sum every resident
+Temporal row as simultaneous port occupancy. The independent resident limit is
+`route_table_size`, and exceeding it is `CapacityOveruse`.
 
 For a spatial switch, Mapping selects the exact active traversal set before
 execution. Its capacity closure forbids two selected inputs from consuming the

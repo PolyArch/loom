@@ -354,6 +354,9 @@ llvm::Expected<FrozenResourceCapacityIndex> freezeResourceCapacityIndex(
     FrozenResourceCapacityTraversal frozen{
         source.namespaceOrdinal, source.traversal, {}};
     for (const auto &use : found->impliedUses) {
+      if (use.occupancyKind ==
+          ::loom::fabric::FabricTraversalUseOccupancyKind::RuntimeService)
+        continue;
       const ResourceCapacityUseProjection selected{
           source.namespaceOrdinal, use.pattern, {}};
       auto resolved = resolvePattern(namespaces, selected);

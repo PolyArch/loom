@@ -55,7 +55,7 @@ private:
   std::vector<PnrIndex> decisions_;
   std::vector<PnrIndex> relations_;
   std::vector<PnrIndex> affectedNets_;
-  std::vector<PnrIndex> routeCapacityWitnesses_;
+  std::vector<PnrIndex> capacityWitnesses_;
   std::vector<PnrIndex> routeCutLogicalNets_;
   std::vector<PnrIndex> routeCutDecisionLocals_;
   std::vector<int> decisionVariables_;

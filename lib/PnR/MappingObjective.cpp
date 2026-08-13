@@ -124,7 +124,13 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
       return llvm::createStringError(
           std::make_error_code(std::errc::value_too_large),
           "Spatial CapacityOveruse exceeds u64");
-    return atomic + route;
+    const std::uint64_t staticOveruse = atomic + route;
+    const std::uint64_t resident = candidate.tagResidentCapacityOveruse();
+    if (resident > std::numeric_limits<std::uint64_t>::max() - staticOveruse)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::value_too_large),
+          "Spatial CapacityOveruse exceeds u64");
+    return staticOveruse + resident;
   }
   case ResolvedPnrViolationKind::TagUnassigned:
     return candidate.tagUnassignedCount();

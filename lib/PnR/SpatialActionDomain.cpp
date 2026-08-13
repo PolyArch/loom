@@ -392,8 +392,7 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
            slot != routeSubtreeSlots_.rend(); ++slot) {
         const RouteTreeNode &node = route.nodeStorage()[*slot];
         bool hasSink = node.sinkObligationCount != 0;
-        for (PnrIndex child = node.firstChild;
-             child != getInvalidPnrIndex();
+        for (PnrIndex child = node.firstChild; child != getInvalidPnrIndex();
              child = route.nodeStorage()[child].nextSibling)
           hasSink |= routeSubtreeHasSink_[child] != 0;
         routeSubtreeHasSink_[*slot] = hasSink;
@@ -431,6 +430,24 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
       if (llvm::Error error = appendWitness(
               ResolvedPnrViolationKind::CapacityOveruse, capacity))
         return error;
+  const PnrIndex capacityDomainOffset = static_cast<PnrIndex>(
+      preparedProblem_->resources().capacityDimensions().size());
+  for (PnrIndex domain = 0;
+       domain <
+       preparedProblem_->routing().tagContinuity().matchDomains().size();
+       ++domain) {
+    if (candidate.tagDomainResidentCapacityOveruse(domain) == 0)
+      continue;
+    auto witness =
+        checkedPnrIndexAdd({"SpatialActionDomain", "capacityWitnesses",
+                            "Action", PnrCapacityMeasure::Index},
+                           capacityDomainOffset, domain);
+    if (!witness)
+      return witness.takeError();
+    if (llvm::Error error =
+            appendWitness(ResolvedPnrViolationKind::CapacityOveruse, *witness))
+      return error;
+  }
 
   std::size_t globalSegment = 0;
   for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
@@ -673,7 +690,8 @@ std::size_t SpatialActionDomainScratch::retainedStorageBytes() const {
          retainedBytes(transportChoices_) + retainedBytes(resourceAnchors_) +
          retainedBytes(resourceChoices_) + retainedBytes(relationChoices_) +
          retainedBytes(logicalMemoryChoices_) +
-         retainedBytes(routeRootEndpoints_) + retainedBytes(routeSubtreeSlots_) +
+         retainedBytes(routeRootEndpoints_) +
+         retainedBytes(routeSubtreeSlots_) +
          retainedBytes(routeSubtreeHasSink_) +
          (memoryConstraintScratch_
               ? memoryConstraintScratch_->retainedStorageBytes()

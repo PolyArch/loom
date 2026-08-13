@@ -35,6 +35,10 @@ llvm::Error verifyRoutingClosure(const SpatialCandidateState &candidate) {
     return llvm::make_error<SpatialGlobalRoutingClosureFailure>(
         SpatialGlobalRoutingClosureFailureKind::RouteCapacityOveruse,
         "Global Action left route-resource overuse");
+  if (candidate.tagResidentCapacityOveruse() != 0)
+    return llvm::make_error<SpatialGlobalRoutingClosureFailure>(
+        SpatialGlobalRoutingClosureFailureKind::TagResidentCapacityOveruse,
+        "Global Action left Physical Tag table overuse");
   if (candidate.tagUnassignedCount() != 0)
     return llvm::make_error<SpatialGlobalRoutingClosureFailure>(
         SpatialGlobalRoutingClosureFailureKind::TagUnassigned,

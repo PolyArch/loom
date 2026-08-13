@@ -31,6 +31,13 @@ struct FabricBoundaryConfiguration final {
   std::vector<FabricBoundaryTagRewrite> tagRewrites;
 };
 
+/// One active Temporal switch table row. Traversals sharing the tag form the
+/// row's spatial crosspoint selection.
+struct FabricTemporalSwitchRouteEntry final {
+  llvm::APInt tag;
+  std::vector<FabricPhysicalTraversalRef> selectedTraversals;
+};
+
 enum class FabricSemanticFieldRelationKind : std::uint8_t {
   None,
   Finite,
@@ -85,6 +92,10 @@ llvm::Expected<CanonicalSemanticBytes> encodeFabricFifoConfiguration(
 llvm::Expected<CanonicalSemanticBytes> encodeSpatialSwitchConfiguration(
     const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
     llvm::ArrayRef<FabricPhysicalTraversalRef> selectedTraversals);
+
+llvm::Expected<CanonicalSemanticBytes> encodeTemporalSwitchConfiguration(
+    const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
+    llvm::ArrayRef<FabricTemporalSwitchRouteEntry> entries);
 
 llvm::Expected<CanonicalSemanticBytes> encodeFabricBoundaryConfiguration(
     const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,

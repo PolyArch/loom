@@ -612,6 +612,14 @@ occupancy. A memory `UsePattern` may claim request tracking, a port, and
 response holding in one indivisible envelope. Assigning one global label is
 arbitrary; assigning several labels counts the same atomic use several times.
 
+A Temporal switch makes the lifetime distinction concrete. Its input/output
+UsePatterns specify per-cycle service and arbitration, while its route table
+specifies which tag-keyed routes may reside simultaneously. Summing every
+resident route's service claims would falsely prohibit legal time sharing;
+ignoring route-table rows would accept hardware that cannot hold the Mapping.
+Fabric therefore projects runtime service and Mapping residency separately,
+and both feed the same final `CapacityOveruse` only at their actual lifetime.
+
 Mapping consequently owns one `CapacityOveruse` magnitude over exact raw
 capacity queries. Owner-typed witnesses retain the detail required to report or
 repair an operand queue, service slot, route, or operation stage without making
@@ -886,6 +894,14 @@ only one typed sharing slot, so the existing resource behavior remains intact
 while the value still has an exact owner codec. This also lets strict import
 rebuild local interference directly from routes and reject collisions without
 trusting PnR's removable coloring cache.
+
+Tag width and resident table depth are different hardware axes. A wide tag can
+name many values without allocating `2^T` rows, while a deep table can retain
+only its declared number of continuity segments. Keeping row capacity on the
+Fabric match domain lets rerouting change residency without creating another
+tag namespace or duplicating switch configuration. The configured-hardware
+codec then groups traversals by the one origin value and independently checks
+the derived table during strict Mapping import.
 
 ## Why Mapping Owns The Configured Hardware Projection
 

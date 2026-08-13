@@ -1335,6 +1335,9 @@ private:
         return routeClaimOffset.takeError();
       std::vector<PnrIndex> traversalClaimKeys;
       for (const FabricTraversalUseView &use : traversal.impliedUses) {
+        if (use.occupancyKind ==
+            FabricTraversalUseOccupancyKind::RuntimeService)
+          continue;
         const auto patternFound =
             patternByCanonicalRef.find(refKey(use.pattern));
         if (patternFound == patternByCanonicalRef.end())

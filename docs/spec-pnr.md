@@ -2037,6 +2037,23 @@ every segment's allowed match domains and builds local interference from
 co-residency and incompatible interpretation. Switch rows, operand matches,
 memory rows, and encoded tag fields are derived from the one origin value.
 
+An owner-wide match domain may also expose a bounded resident-entry capacity.
+Each distinct continuity segment intersecting that domain requires one active
+row, independent of its chosen tag value. PnR maintains the exact segment-row
+incidence across route transactions; excess Temporal switch rows or boundary
+rewrite rows contribute to `CapacityOveruse`, while equal tag values in one
+domain remain the separate `TagConflict` violation. Runtime service claims of
+a Temporal switch do not become resident route claims: they are evaluated per
+event under the Fabric-owned GrantPolicy. Spatial switch traversal claims
+remain Mapping-resident.
+
+Strict SpatialMapping import rebuilds continuity domains and tag collisions
+from RouteTrees, then derives the complete configured-hardware projection.
+The Fabric-owned switch and boundary codecs independently reject excess rows,
+invalid tags, and illegal crosspoints before the Mapping artifact is sealed.
+PnR's incremental residency cache is therefore removable search state, not a
+second legality authority.
+
 Each residual external Temporal memory operand or result role is an independent
 continuity endpoint. PnR derives that role's input match or output write from
 the corresponding real writer or ingress assignment. It does not introduce a
@@ -2510,9 +2527,11 @@ The five violation magnitudes have these exact owners:
   state occupancy that may coexist for one exact owner state and capacity
   dimension. Pipeline or result holding, event-relative claim overlap, FIFO or
   operand-buffer occupancy, enqueue or dequeue service slots, memory-service
-  outstanding capacity, context capacity, and route-resource capacity are not
-  separate Mapping violation kinds. Their exact Fabric owner and typed witness
-  remain available for diagnostics and focused repair.
+  outstanding capacity, context capacity, route-resource capacity, and bounded
+  resident tag-table capacity are not separate Mapping violation kinds. Their
+  exact Fabric owner and typed witness remain available for diagnostics and
+  focused repair. Runtime service opportunities are counted only in their
+  event-relative overlap envelope, never once per resident Temporal route row.
 * `TagUnassigned` is the checked count of required Physical Tag assignment
   origins without a selected canonical value.
 * `TagConflict` is the checked count of exact local interference relations

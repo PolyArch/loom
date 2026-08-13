@@ -359,7 +359,7 @@ FabricArtifactView::semanticFieldRelation(
       const std::uint64_t width = entryCount * entryWidth;
       if (llvm::Error error = validateBitCarrier(value, width))
         return error;
-      std::set<std::uint64_t> tags;
+      std::set<std::vector<std::uint8_t>> tags;
       for (std::uint64_t entry = 0; entry < entryCount; ++entry) {
         const std::uint64_t base = entry * entryWidth;
         const bool valid =
@@ -385,11 +385,13 @@ FabricArtifactView::semanticFieldRelation(
         if (schedule == ::fabric::Schedule::Temporal) {
           if (!selected)
             return rejected("active temporal switch row selects no route");
-          std::uint64_t tag = 0;
+          std::vector<std::uint8_t> tag(
+              static_cast<std::size_t>((tagWidth + 7) / 8), 0);
           for (std::uint64_t tagBit = 0; tagBit < tagWidth; ++tagBit)
-            tag |= static_cast<std::uint64_t>(bit(value, base + 1 + tagBit))
-                   << tagBit;
-          if (!tags.insert(tag).second)
+            if (bit(value, base + 1 + tagBit))
+              tag[static_cast<std::size_t>(tagBit / 8)] |=
+                  static_cast<std::uint8_t>(1U << (tagBit % 8));
+          if (!tags.insert(std::move(tag)).second)
             return rejected("temporal switch rows repeat a tag");
         }
       }
@@ -482,6 +484,77 @@ llvm::Expected<CanonicalSemanticBytes> encodeSpatialSwitchConfiguration(
   return encoded;
 }
 
+llvm::Expected<CanonicalSemanticBytes> encodeTemporalSwitchConfiguration(
+    const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
+    llvm::ArrayRef<FabricTemporalSwitchRouteEntry> entries) {
+  const FabricInventoryOwnerRef &owner = field.owner.catalog();
+  if (owner.kind() != FabricInventoryOwnerKind::SwitchOccurrence ||
+      field.ordinal != 0)
+    return rejected("switch codec received a non-switch route field");
+  const auto sw = std::get<FabricSwitchOccurrenceRef>(owner.payload);
+  if (fabric.switchSchedule(sw) != ::fabric::Schedule::Temporal)
+    return rejected("Temporal switch codec received a Spatial switch");
+  const FabricTransportEndpointRef first{
+      FabricTransportEndpointOwnerRef::of(sw), 0};
+  const auto path = fabric.transportEndpointDataPath(first);
+  if (!path || path->tagWidthBits == 0)
+    return rejected("Temporal switch codec cannot resolve its tag width");
+
+  std::vector<FabricTemporalSwitchRouteEntry> rows(entries.begin(),
+                                                   entries.end());
+  for (const FabricTemporalSwitchRouteEntry &entry : rows) {
+    if (entry.tag.getBitWidth() != path->tagWidthBits)
+      return rejected("Temporal switch route tag has the wrong width");
+    if (entry.selectedTraversals.empty())
+      return rejected("Temporal switch route entry selects no traversal");
+  }
+  llvm::sort(rows, [](const auto &lhs, const auto &rhs) {
+    return lhs.tag.ult(rhs.tag);
+  });
+  if (rows.size() > fabric.switchRouteTableSize(sw))
+    return rejected("Temporal switch route set exceeds its resident table");
+
+  const std::vector<SwitchCrosspoint> crosspoints =
+      switchCrosspoints(fabric, sw);
+  const std::uint64_t rowWidth = 1 + path->tagWidthBits + crosspoints.size();
+  const std::uint64_t width = fabric.switchRouteTableSize(sw) * rowWidth;
+  std::vector<std::uint8_t> carrier = zeroBits(width);
+  for (const auto &[row, entry] : llvm::enumerate(rows)) {
+    if (row != 0 && rows[row - 1].tag == entry.tag)
+      return rejected("Temporal switch route entries repeat a tag");
+    const std::uint64_t base = row * rowWidth;
+    setBit(carrier, base);
+    for (std::uint64_t tagBit = 0; tagBit < path->tagWidthBits; ++tagBit)
+      if (entry.tag[tagBit])
+        setBit(carrier, base + 1 + tagBit);
+    for (const FabricPhysicalTraversalRef &traversal :
+         entry.selectedTraversals) {
+      const auto *payload =
+          std::get_if<FabricSwitchTraversalPayload>(&traversal.payload);
+      if (!payload || payload->owner != sw)
+        return rejected("Temporal switch codec received a foreign traversal");
+      const auto found = llvm::find_if(crosspoints, [&](const auto &candidate) {
+        return candidate.input == payload->input &&
+               candidate.output == payload->output;
+      });
+      if (found == crosspoints.end())
+        return rejected(
+            "Temporal switch codec received an unadmitted traversal");
+      setBit(carrier,
+             base + 1 + path->tagWidthBits +
+                 static_cast<std::uint64_t>(found - crosspoints.begin()));
+    }
+  }
+  CanonicalSemanticBytes encoded(std::move(carrier));
+  mlir::MLIRContext context;
+  auto relation = fabric.semanticFieldRelation(field, context);
+  if (!relation)
+    return relation.takeError();
+  if (llvm::Error error = relation->validateSemanticValue(encoded.bytes()))
+    return std::move(error);
+  return encoded;
+}
+
 llvm::Expected<CanonicalSemanticBytes> encodeFabricBoundaryConfiguration(
     const FabricArtifactView &fabric, const FabricSemanticConfigFieldRef &field,
     std::optional<FabricBoundaryConfiguration> activeConfiguration) {
@@ -504,9 +577,8 @@ llvm::Expected<CanonicalSemanticBytes> encodeFabricBoundaryConfiguration(
   switch (point->kind) {
   case Kind::TokenWriter:
   case Kind::Remover:
-    if (activeConfiguration &&
-        (activeConfiguration->configuredTag ||
-         !activeConfiguration->tagRewrites.empty()))
+    if (activeConfiguration && (activeConfiguration->configuredTag ||
+                                !activeConfiguration->tagRewrites.empty()))
       return rejected("payload-free boundary received configuration payload");
     encoded = tagged(activeConfiguration ? 1 : 0);
     break;

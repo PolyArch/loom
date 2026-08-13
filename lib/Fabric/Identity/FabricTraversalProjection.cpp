@@ -83,14 +83,18 @@ switchActivation(FabricSwitchOccurrenceRef owner, FabricOrdinal requester) {
           FabricInventoryOwnerRef::of(owner), requester};
 }
 
-llvm::Error appendImpliedUse(const FabricArtifactView &view,
-                             const FabricUsePatternRef &pattern,
-                             FabricTraversalActivationGroupView activation,
-                             FabricPhysicalTraversalView &traversal) {
+llvm::Error
+appendImpliedUse(const FabricArtifactView &view,
+                 const FabricUsePatternRef &pattern,
+                 FabricTraversalActivationGroupView activation,
+                 FabricPhysicalTraversalView &traversal,
+                 FabricTraversalUseOccupancyKind occupancyKind =
+                     FabricTraversalUseOccupancyKind::MappingResident) {
   if (llvm::Error error =
           appendPatternStates(view, pattern, traversal.resourceStates))
     return error;
-  traversal.impliedUses.push_back({pattern, std::move(activation)});
+  traversal.impliedUses.push_back(
+      {pattern, std::move(activation), occupancyKind});
   return llvm::Error::success();
 }
 
@@ -335,9 +339,13 @@ projectFabricTraversal(const FabricArtifactView &view,
           FabricUsePatternOwnerRef(resourceOwner), pattern->ordinal()};
       const FabricOrdinal requester =
           contract->usePattern(*pattern).requester.ordinal();
+      const auto occupancyKind =
+          view.switchSchedule(payload.owner) == ::fabric::Schedule::Temporal
+              ? FabricTraversalUseOccupancyKind::RuntimeService
+              : FabricTraversalUseOccupancyKind::MappingResident;
       if (llvm::Error error = appendImpliedUse(
               view, patternRef, switchActivation(payload.owner, requester),
-              result))
+              result, occupancyKind))
         return std::move(error);
     }
     break;

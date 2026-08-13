@@ -16,6 +16,7 @@ namespace loom::pnr {
 enum class SpatialGlobalRoutingClosureFailureKind : std::uint8_t {
   UnroutedObligation,
   RouteCapacityOveruse,
+  TagResidentCapacityOveruse,
   TagUnassigned,
   TagConflict,
 };
@@ -39,7 +40,7 @@ private:
 };
 
 /// Executes one final Global TransportRoutingAction through the ordinary
-/// Spatial Action transaction. This owner closes only route, route-capacity,
+/// Spatial Action transaction. This owner closes route, resident capacity,
 /// and route-derived tag state; complete final verification additionally
 /// requires every other Mapping violation owner.
 class SpatialGlobalRoutingClosureScratch final {

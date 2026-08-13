@@ -235,6 +235,8 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
             use.activationGroup.ordinal != pattern.requester.ordinal())
           return invalid(
               "a switch requester activation disagrees with its pattern");
+      if (use.occupancyKind == FabricTraversalUseOccupancyKind::RuntimeService)
+        continue;
       const std::string activation = activationKey(use.activationGroup);
       auto activationPosition = capacityActivations.find(activation);
       if (activationPosition == capacityActivations.end()) {

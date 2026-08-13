@@ -248,6 +248,12 @@ public:
   std::uint64_t tagConflictCount() const {
     return tagAssignments_.conflictCount();
   }
+  std::uint64_t tagResidentCapacityOveruse() const {
+    return tagAssignments_.residentCapacityOveruse();
+  }
+  std::uint64_t tagDomainResidentCapacityOveruse(PnrIndex domain) const {
+    return tagAssignments_.domainResidentCapacityOveruse(domain);
+  }
   std::uint64_t tagDomainConflictCount(PnrIndex domain) const {
     return tagAssignments_.domainConflictCount(domain);
   }

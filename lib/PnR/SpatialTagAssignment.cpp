@@ -72,8 +72,7 @@ void normalizeValues(std::vector<llvm::APInt> &values) {
     value = canonicalUnsigned(value);
   llvm::sort(values, unsignedLess);
   values.erase(std::unique(values.begin(), values.end(),
-                           [](const llvm::APInt &lhs,
-                              const llvm::APInt &rhs) {
+                           [](const llvm::APInt &lhs, const llvm::APInt &rhs) {
                              return compareUnsigned(lhs, rhs) == 0;
                            }),
                values.end());
@@ -82,10 +81,10 @@ void normalizeValues(std::vector<llvm::APInt> &values) {
 bool equalUnsignedValues(llvm::ArrayRef<llvm::APInt> lhs,
                          llvm::ArrayRef<llvm::APInt> rhs) {
   return lhs.size() == rhs.size() &&
-         llvm::equal(lhs, rhs, [](const llvm::APInt &left,
-                                  const llvm::APInt &right) {
-           return compareUnsigned(left, right) == 0;
-         });
+         llvm::equal(lhs, rhs,
+                     [](const llvm::APInt &left, const llvm::APInt &right) {
+                       return compareUnsigned(left, right) == 0;
+                     });
 }
 
 bool containsValue(llvm::ArrayRef<llvm::APInt> values,
@@ -264,9 +263,11 @@ struct SpatialTagAssignmentStateStorage final {
   const SpatialTagConstraintModel *constraints = nullptr;
   std::vector<SpatialTagNetState> nets;
   std::vector<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy;
+  std::vector<PnrIndex> residentCounts;
   std::vector<std::uint8_t> classBuilt;
   std::uint64_t unassignedCount = 0;
   std::uint64_t conflictCount = 0;
+  std::uint64_t residentCapacityOveruse = 0;
 };
 
 } // namespace loom::pnr::detail
@@ -284,11 +285,81 @@ llvm::ArrayRef<PnrIndex> segmentDomains(const TagNetState &net,
       offsets[segment], offsets[segment + 1] - offsets[segment]);
 }
 
+std::uint64_t residentOveruse(PnrIndex count,
+                              std::optional<std::uint64_t> capacity) {
+  return capacity && count > *capacity ? count - *capacity : 0;
+}
+
+llvm::Error addDomainResidency(TagStateStorage &storage,
+                               llvm::ArrayRef<PnrIndex> domains) {
+  const auto matchDomains =
+      storage.problem->routing().tagContinuity().matchDomains();
+  std::uint64_t addedOveruse = 0;
+  for (PnrIndex domain : domains) {
+    if (domain >= storage.residentCounts.size() ||
+        domain >= matchDomains.size())
+      return invalid("segment names an out-of-range tag match domain");
+    const PnrIndex count = storage.residentCounts[domain];
+    if (count >= getInvalidPnrIndex() - PnrIndex{1})
+      return invalid("tag match-domain residency overflows PnrIndex");
+    const auto capacity = matchDomains[domain].residentEntryCapacity;
+    addedOveruse +=
+        residentOveruse(count + 1, capacity) - residentOveruse(count, capacity);
+  }
+  if (addedOveruse > std::numeric_limits<std::uint64_t>::max() -
+                         storage.residentCapacityOveruse)
+    return invalid("tag match-domain capacity overuse exceeds u64");
+  for (PnrIndex domain : domains)
+    ++storage.residentCounts[domain];
+  storage.residentCapacityOveruse += addedOveruse;
+  return llvm::Error::success();
+}
+
+void removeDomainResidency(TagStateStorage &storage,
+                           llvm::ArrayRef<PnrIndex> domains) noexcept {
+  const auto matchDomains =
+      storage.problem->routing().tagContinuity().matchDomains();
+  for (PnrIndex domain : domains) {
+    assert(domain < storage.residentCounts.size() &&
+           domain < matchDomains.size());
+    const PnrIndex count = storage.residentCounts[domain];
+    assert(count != 0);
+    const auto capacity = matchDomains[domain].residentEntryCapacity;
+    const std::uint64_t removedOveruse =
+        residentOveruse(count, capacity) - residentOveruse(count - 1, capacity);
+    assert(removedOveruse <= storage.residentCapacityOveruse);
+    storage.residentCapacityOveruse -= removedOveruse;
+    --storage.residentCounts[domain];
+  }
+}
+
+llvm::Error addSegmentState(TagStateStorage &storage,
+                            llvm::ArrayRef<PnrIndex> domains,
+                            const std::optional<llvm::APInt> &value) {
+  if (llvm::Error error =
+          addAssignment(storage.occupancy, storage.unassignedCount,
+                        storage.conflictCount, domains, value))
+    return error;
+  if (llvm::Error error = addDomainResidency(storage, domains)) {
+    removeAssignment(storage.occupancy, storage.unassignedCount,
+                     storage.conflictCount, domains, value);
+    return error;
+  }
+  return llvm::Error::success();
+}
+
+void removeSegmentState(TagStateStorage &storage,
+                        llvm::ArrayRef<PnrIndex> domains,
+                        const std::optional<llvm::APInt> &value) noexcept {
+  removeDomainResidency(storage, domains);
+  removeAssignment(storage.occupancy, storage.unassignedCount,
+                   storage.conflictCount, domains, value);
+}
+
 void removeNet(TagStateStorage &storage, const TagNetState &net) noexcept {
   for (PnrIndex segment = 0; segment < net.values.size(); ++segment)
-    removeAssignment(storage.occupancy, storage.unassignedCount,
-                     storage.conflictCount, segmentDomains(net, segment),
-                     net.values[segment]);
+    removeSegmentState(storage, segmentDomains(net, segment),
+                       net.values[segment]);
 }
 
 std::optional<llvm::APInt>
@@ -325,9 +396,8 @@ llvm::Error buildNet(TagStateStorage &storage, PnrIndex logicalNet,
       return;
     for (PnrIndex segment = 0; segment < result.values.size(); ++segment)
       if (added[segment])
-        removeAssignment(storage.occupancy, storage.unassignedCount,
-                         storage.conflictCount, segmentDomains(result, segment),
-                         result.values[segment]);
+        removeSegmentState(storage, segmentDomains(result, segment),
+                           result.values[segment]);
   });
 
   const auto logicalNets = storage.problem->transfers().logicalNets();
@@ -401,9 +471,8 @@ llvm::Error buildNet(TagStateStorage &storage, PnrIndex logicalNet,
       if (value == getInvalidPnrIndex())
         continue;
       result.values[segment] = (*requiredValues)[value];
-      if (llvm::Error error = addAssignment(
-              storage.occupancy, storage.unassignedCount, storage.conflictCount,
-              segmentDomains(result, segment), result.values[segment]))
+      if (llvm::Error error = addSegmentState(
+              storage, segmentDomains(result, segment), result.values[segment]))
         return error;
       added[segment] = 1;
     }
@@ -433,9 +502,8 @@ llvm::Error buildNet(TagStateStorage &storage, PnrIndex logicalNet,
       if (!result.values[segment])
         return unsupported(
             "tag equality set cannot color one continuity segment");
-      if (llvm::Error error = addAssignment(
-              storage.occupancy, storage.unassignedCount, storage.conflictCount,
-              domains, result.values[segment]))
+      if (llvm::Error error =
+              addSegmentState(storage, domains, result.values[segment]))
         return error;
       added[segment] = 1;
     }
@@ -463,9 +531,8 @@ llvm::Error buildNet(TagStateStorage &storage, PnrIndex logicalNet,
       selected = std::move(*chosen);
     }
     result.values[ordinal] = std::move(selected);
-    if (llvm::Error error = addAssignment(
-            storage.occupancy, storage.unassignedCount, storage.conflictCount,
-            domains, result.values[ordinal]))
+    if (llvm::Error error =
+            addSegmentState(storage, domains, result.values[ordinal]))
       return error;
     added[ordinal] = 1;
   }
@@ -589,6 +656,8 @@ buildStorage(const FrozenSpatialPnrProblem &problem,
   storage->nets.resize(routes.size());
   storage->occupancy.resize(
       problem.routing().tagContinuity().matchDomains().size());
+  storage->residentCounts.assign(
+      problem.routing().tagContinuity().matchDomains().size(), 0);
   storage->classBuilt.assign(storage->constraints->classCount(), 0);
   for (PnrIndex logicalNet = 0; logicalNet < routes.size(); ++logicalNet) {
     if (!routes[logicalNet] ||
@@ -702,6 +771,7 @@ loom::pnr::deriveCanonicalSpatialTagAssignments(
 
   result.unassignedCount_ = (*storage)->unassignedCount;
   result.conflictCount_ = (*storage)->conflictCount;
+  result.residentCapacityOveruse_ = (*storage)->residentCapacityOveruse;
   return result;
 }
 
@@ -788,6 +858,20 @@ std::uint64_t SpatialTagAssignmentState::unassignedCount() const {
 
 std::uint64_t SpatialTagAssignmentState::conflictCount() const {
   return storage_->conflictCount;
+}
+
+std::uint64_t SpatialTagAssignmentState::residentCapacityOveruse() const {
+  return storage_->residentCapacityOveruse;
+}
+
+std::uint64_t SpatialTagAssignmentState::domainResidentCapacityOveruse(
+    PnrIndex domain) const {
+  assert(domain < storage_->residentCounts.size());
+  const auto matchDomains =
+      storage_->problem->routing().tagContinuity().matchDomains();
+  assert(domain < matchDomains.size());
+  return residentOveruse(storage_->residentCounts[domain],
+                         matchDomains[domain].residentEntryCapacity);
 }
 
 std::uint64_t
@@ -913,10 +997,9 @@ void SpatialTagAssignmentState::rollback(
     std::swap(storage_->nets[logicalNet], transaction.stagedNets[logicalNet]);
     const TagNetState &restored = storage_->nets[logicalNet];
     for (PnrIndex segment = 0; segment < restored.values.size(); ++segment)
-      llvm::cantFail(addAssignment(
-          storage_->occupancy, storage_->unassignedCount,
-          storage_->conflictCount, ::segmentDomains(restored, segment),
-          restored.values[segment]));
+      llvm::cantFail(addSegmentState(*storage_,
+                                     ::segmentDomains(restored, segment),
+                                     restored.values[segment]));
   }
   for (PnrIndex logicalNet : transaction.touchedRoutes)
     storage_->classBuilt[storage_->constraints->classOfNet(logicalNet)] = 1;
@@ -932,8 +1015,10 @@ llvm::Error SpatialTagAssignmentState::verify(
     return invalid("candidate route count changed after Tag initialization");
   std::vector<llvm::DenseMap<llvm::APInt, PnrIndex>> expectedOccupancy(
       storage_->occupancy.size());
+  std::vector<PnrIndex> expectedResidentCounts(storage_->occupancy.size(), 0);
   std::uint64_t expectedUnassigned = 0;
   std::uint64_t expectedConflicts = 0;
+  std::uint64_t expectedResidentOveruse = 0;
   const auto logicalNets = storage_->problem->transfers().logicalNets();
   const FrozenConstraintShard &tagConstraints =
       storage_->problem->constraints().shard(
@@ -1010,10 +1095,27 @@ llvm::Error SpatialTagAssignmentState::verify(
               addAssignment(expectedOccupancy, expectedUnassigned,
                             expectedConflicts, domains, net.values[segment]))
         return error;
+      for (PnrIndex domain : domains) {
+        if (expectedResidentCounts[domain] >=
+            getInvalidPnrIndex() - PnrIndex{1})
+          return invalid("tag match-domain residency overflows PnrIndex");
+        ++expectedResidentCounts[domain];
+      }
     }
   }
+  for (PnrIndex domain = 0; domain < expectedResidentCounts.size(); ++domain) {
+    const std::uint64_t overuse =
+        residentOveruse(expectedResidentCounts[domain],
+                        matchDomains[domain].residentEntryCapacity);
+    if (overuse >
+        std::numeric_limits<std::uint64_t>::max() - expectedResidentOveruse)
+      return invalid("tag match-domain capacity overuse exceeds u64");
+    expectedResidentOveruse += overuse;
+  }
   if (expectedUnassigned != storage_->unassignedCount ||
-      expectedConflicts != storage_->conflictCount)
+      expectedConflicts != storage_->conflictCount ||
+      expectedResidentCounts != storage_->residentCounts ||
+      expectedResidentOveruse != storage_->residentCapacityOveruse)
     return invalid("cached Physical Tag violation counts have drifted");
   for (PnrIndex domain = 0; domain < storage_->occupancy.size(); ++domain) {
     if (storage_->occupancy[domain].size() != expectedOccupancy[domain].size())

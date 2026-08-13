@@ -400,10 +400,34 @@ llvm::Error SpatialActionExecutorScratch::markWitnessRegion(
     }
     return executorError("unrouted witness ordinal is out of range");
   case ResolvedPnrViolationKind::CapacityOveruse: {
-    const PnrIndex capacity = action.witnessOrdinal;
     const auto &routing = problem.routing();
-    if (capacity >= problem.resources().capacityDimensions().size() ||
-        candidate_->routeCapacityOveruseRaw(capacity) == 0)
+    const PnrIndex capacityCount =
+        static_cast<PnrIndex>(problem.resources().capacityDimensions().size());
+    if (action.witnessOrdinal >= capacityCount) {
+      const PnrIndex domain = action.witnessOrdinal - capacityCount;
+      if (domain >= routing.tagContinuity().matchDomains().size() ||
+          candidate_->tagDomainResidentCapacityOveruse(domain) == 0)
+        return executorError("tag-table capacity witness is no longer live");
+      bool marked = false;
+      for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+           ++logicalNet) {
+        const auto values = candidate_->tagValues(logicalNet);
+        for (PnrIndex segment = 0; segment < values.size(); ++segment) {
+          if (!llvm::is_contained(
+                  candidate_->tagSegmentDomains(logicalNet, segment), domain))
+            continue;
+          if (llvm::Error error = markNet(logicalNet))
+            return error;
+          marked = true;
+          break;
+        }
+      }
+      if (!marked)
+        return executorError("tag-table capacity witness has no selected net");
+      return llvm::Error::success();
+    }
+    const PnrIndex capacity = action.witnessOrdinal;
+    if (candidate_->routeCapacityOveruseRaw(capacity) == 0)
       return executorError("route-capacity witness is no longer live");
     const auto claims = routing.capacityRouteClaims().slice(
         routing.capacityRouteClaimOffsets()[capacity],

@@ -49,6 +49,9 @@ public:
   llvm::ArrayRef<PnrIndex> domainSegments(PnrIndex domain) const;
   std::uint64_t unassignedCount() const { return unassignedCount_; }
   std::uint64_t conflictCount() const { return conflictCount_; }
+  std::uint64_t residentCapacityOveruse() const {
+    return residentCapacityOveruse_;
+  }
 
 private:
   std::vector<PnrIndex> netSegmentOffsets_;
@@ -60,6 +63,7 @@ private:
   std::vector<PnrIndex> domainSegments_;
   std::uint64_t unassignedCount_ = 0;
   std::uint64_t conflictCount_ = 0;
+  std::uint64_t residentCapacityOveruse_ = 0;
 
   friend llvm::Expected<SpatialTagAssignmentProjection>
   deriveCanonicalSpatialTagAssignments(
@@ -115,6 +119,8 @@ public:
   std::uint64_t unassignedCount() const;
   std::uint64_t conflictCount() const;
   std::uint64_t domainConflictCount(PnrIndex domain) const;
+  std::uint64_t residentCapacityOveruse() const;
+  std::uint64_t domainResidentCapacityOveruse(PnrIndex domain) const;
   bool domainValueConflicts(PnrIndex domain, const llvm::APInt &value) const;
 
 private:

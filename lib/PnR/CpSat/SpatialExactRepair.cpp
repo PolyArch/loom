@@ -79,7 +79,8 @@ SpatialExactRepairScratch::repairCapacityOveruse(
   if (policy.kind != ResolvedPnrExactRepairKind::CpSat)
     return invocationError("CpSat_1_0 is not selected by SearchPolicy");
   if (candidate.atomicCapacityOveruse() == 0 &&
-      candidate.routeCapacityOveruse() != 0)
+      (candidate.routeCapacityOveruse() != 0 ||
+       candidate.tagResidentCapacityOveruse() != 0))
     return repairRouteCapacityOveruse(candidate, restartOrdinal);
   if (candidate.atomicCapacityOveruse() == 0)
     return result(SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
@@ -406,14 +407,27 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
   const auto &ports = problem.ports();
   const auto &transfers = problem.transfers();
 
-  routeCapacityWitnesses_.clear();
+  capacityWitnesses_.clear();
+  const PnrIndex capacityCount =
+      static_cast<PnrIndex>(problem.resources().capacityDimensions().size());
   for (PnrIndex capacity = 0;
        capacity < problem.resources().capacityDimensions().size(); ++capacity)
     if (candidate.routeCapacityOveruseRaw(capacity) != 0)
-      routeCapacityWitnesses_.push_back(capacity);
-  if (routeCapacityWitnesses_.empty())
+      capacityWitnesses_.push_back(capacity);
+  for (PnrIndex domain = 0;
+       domain < routing.tagContinuity().matchDomains().size(); ++domain)
+    if (candidate.tagDomainResidentCapacityOveruse(domain) != 0) {
+      auto witness =
+          checkedPnrIndexAdd({"SpatialExactRepair", "capacityWitnesses",
+                              "Action", PnrCapacityMeasure::Index},
+                             capacityCount, domain);
+      if (!witness)
+        return witness.takeError();
+      capacityWitnesses_.push_back(*witness);
+    }
+  if (capacityWitnesses_.empty())
     return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                  "route CapacityOveruse has no canonical witness");
+                  "resident CapacityOveruse has no canonical witness");
 
   decisionIncluded_.assign(bindings.decisionCount(), 0);
   relationIncluded_.assign(relationModel.relations().size(), 0);
@@ -459,7 +473,25 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
 
   const auto capacityClaimOffsets = routing.capacityRouteClaimOffsets();
   const auto capacityClaims = routing.capacityRouteClaims();
-  for (PnrIndex capacity : routeCapacityWitnesses_) {
+  for (PnrIndex capacity : capacityWitnesses_) {
+    if (capacity >= capacityCount) {
+      const PnrIndex domain = capacity - capacityCount;
+      if (domain >= routing.tagContinuity().matchDomains().size())
+        return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                      "tag-table witness is out of range");
+      for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+           ++logicalNet) {
+        const auto values = candidate.tagValues(logicalNet);
+        for (PnrIndex segment = 0; segment < values.size(); ++segment)
+          if (llvm::is_contained(
+                  candidate.tagSegmentDomains(logicalNet, segment), domain)) {
+            if (llvm::Error error = addNet(logicalNet))
+              return std::move(error);
+            break;
+          }
+      }
+      continue;
+    }
     if (capacity + 1 >= capacityClaimOffsets.size())
       return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
                     "route witness has no capacity-to-claim incidence");
@@ -740,8 +772,8 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
           fields["search_scope"] = "route_exact_repair";
           fields["restart"] = restartOrdinal;
           fields["assignment"] = assignmentOrdinal;
-          fields["capacity_ref"] = routeCapacityWitnesses_.front();
-          fields["capacity_witness_count"] = routeCapacityWitnesses_.size();
+          fields["capacity_ref"] = capacityWitnesses_.front();
+          fields["capacity_witness_count"] = capacityWitnesses_.size();
           fields["region_decisions"] = regionDecisionCount;
           fields["action_count"] = lastActionCount;
           fields["solver_calls"] = solverCalls;
@@ -825,6 +857,7 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
       rejectAssignment = true;
     } else if (candidate.atomicCapacityOveruse() != 0 ||
                candidate.routeCapacityOveruse() != 0 ||
+               candidate.tagResidentCapacityOveruse() != 0 ||
                candidate.unroutedObligationCount() != 0) {
       rejectAssignment = true;
       if (llvm::Error error = probe->discard())
@@ -846,9 +879,9 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
                                   fields["assignment"] = assignmentOrdinal;
                                   fields["accepted"] = true;
                                   fields["capacity_ref"] =
-                                      routeCapacityWitnesses_.front();
+                                      capacityWitnesses_.front();
                                   fields["capacity_witness_count"] =
-                                      routeCapacityWitnesses_.size();
+                                      capacityWitnesses_.size();
                                   fields["solver_calls"] = solverCalls;
                                 });
       return executedResult(SpatialExactRepairResultKind::Repaired);
@@ -863,8 +896,8 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
           fields["restart"] = restartOrdinal;
           fields["assignment"] = assignmentOrdinal;
           fields["accepted"] = false;
-          fields["capacity_ref"] = routeCapacityWitnesses_.front();
-          fields["capacity_witness_count"] = routeCapacityWitnesses_.size();
+          fields["capacity_ref"] = capacityWitnesses_.front();
+          fields["capacity_witness_count"] = capacityWitnesses_.size();
           fields["solver_calls"] = solverCalls;
           fields["fixed_terminal_cut"] = fixedTerminalCut;
           fields["cut_logical_net_count"] = routeCutLogicalNets_.size();
@@ -937,7 +970,7 @@ std::size_t SpatialExactRepairScratch::retainedStorageBytes() const {
          retainedBytes(decisionIncluded_) + retainedBytes(relationIncluded_) +
          retainedBytes(netIncluded_) + retainedBytes(decisionQueue_) +
          retainedBytes(decisions_) + retainedBytes(relations_) +
-         retainedBytes(affectedNets_) + retainedBytes(routeCapacityWitnesses_) +
+         retainedBytes(affectedNets_) + retainedBytes(capacityWitnesses_) +
          retainedBytes(routeCutLogicalNets_) +
          retainedBytes(routeCutDecisionLocals_) +
          retainedBytes(decisionVariables_) + retainedBytes(legalValueOffsets_) +

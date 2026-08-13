@@ -20,7 +20,8 @@ projectPhysicalTagMatchDomain(const FabricArtifactView &view,
       return std::nullopt;
     return FabricPhysicalTagMatchDomainView{
         FabricPhysicalTagMatchDomainKind::TemporalPeIngress,
-        FabricInventoryOwnerRef::of(owner), endpoint, path->tagWidthBits};
+        FabricInventoryOwnerRef::of(owner), endpoint, path->tagWidthBits,
+        std::nullopt};
   }
   case FabricTransportEndpointOwnerKind::FabricMemoryOccurrence: {
     const auto owner =
@@ -29,14 +30,16 @@ projectPhysicalTagMatchDomain(const FabricArtifactView &view,
       return std::nullopt;
     return FabricPhysicalTagMatchDomainView{
         FabricPhysicalTagMatchDomainKind::TemporalMemoryIngress,
-        FabricInventoryOwnerRef::of(owner), endpoint, path->tagWidthBits};
+        FabricInventoryOwnerRef::of(owner), endpoint, path->tagWidthBits,
+        std::nullopt};
   }
   case FabricTransportEndpointOwnerKind::FabricSwitchOccurrence: {
     const auto owner =
         std::get<FabricSwitchOccurrenceRef>(endpoint.owner.payload);
     return FabricPhysicalTagMatchDomainView{
         FabricPhysicalTagMatchDomainKind::TemporalSwitchTable,
-        FabricInventoryOwnerRef::of(owner), std::nullopt, path->tagWidthBits};
+        FabricInventoryOwnerRef::of(owner), std::nullopt, path->tagWidthBits,
+        view.switchRouteTableSize(owner)};
   }
   case FabricTransportEndpointOwnerKind::FabricBoundaryOccurrence: {
     const auto owner =
@@ -46,7 +49,8 @@ projectPhysicalTagMatchDomain(const FabricArtifactView &view,
       return std::nullopt;
     return FabricPhysicalTagMatchDomainView{
         FabricPhysicalTagMatchDomainKind::BoundaryLookup,
-        FabricInventoryOwnerRef::of(owner), std::nullopt, path->tagWidthBits};
+        FabricInventoryOwnerRef::of(owner), std::nullopt, path->tagWidthBits,
+        view.boundaryLookupTableSize(owner)};
   }
   case FabricTransportEndpointOwnerKind::SpatialCoreOccurrence:
   case FabricTransportEndpointOwnerKind::FabricFuOccurrence:

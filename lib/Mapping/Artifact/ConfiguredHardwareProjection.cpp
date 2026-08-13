@@ -31,6 +31,12 @@ struct SlotKey final {
   }
 };
 
+struct RouteTraversalUse final {
+  ::loom::fabric::FabricPhysicalTraversalRef traversal;
+  std::uint64_t routeOrdinal = 0;
+  std::uint64_t nodeOrdinal = 0;
+};
+
 const SpatialComputeBindingView *
 findBinding(llvm::ArrayRef<SpatialComputeBindingView> bindings,
             std::uint64_t realization) {
@@ -63,17 +69,17 @@ SlotKey key(const ::loom::fabric::FabricConfigurationSlotRef &slot) {
   return {::loom::fabric::canonicalFabricBytes(slot)};
 }
 
-void appendRouteTraversals(
-    const SpatialRouteTreeView &route,
-    std::vector<::loom::fabric::FabricPhysicalTraversalRef> &result) {
+void appendRouteTraversals(const SpatialRouteTreeView &route,
+                           std::uint64_t routeOrdinal,
+                           std::vector<RouteTraversalUse> &result) {
   if (route.localTraversal)
-    result.push_back(*route.localTraversal);
+    result.push_back({*route.localTraversal, routeOrdinal, 0});
   for (const SpatialRouteNodeView &node : route.nodes)
     if (node.incomingTraversal)
-      result.push_back(*node.incomingTraversal);
+      result.push_back({*node.incomingTraversal, routeOrdinal, node.ordinal});
   for (const SpatialRouteSinkView &sink : route.sinks)
     if (sink.localTraversal)
-      result.push_back(*sink.localTraversal);
+      result.push_back({*sink.localTraversal, routeOrdinal, sink.nodeOrdinal});
 }
 
 } // namespace
@@ -225,13 +231,16 @@ deriveConfiguredHardwareProjection(
       fabric, routes, resourceUses, physicalTagSegments);
   if (!boundaryFields)
     return boundaryFields.takeError();
-  fields.insert(fields.end(),
-                std::make_move_iterator(boundaryFields->begin()),
+  fields.insert(fields.end(), std::make_move_iterator(boundaryFields->begin()),
                 std::make_move_iterator(boundaryFields->end()));
 
+  std::vector<RouteTraversalUse> routeTraversals;
+  for (const auto &[routeOrdinal, route] : llvm::enumerate(routes))
+    appendRouteTraversals(route, routeOrdinal, routeTraversals);
   std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversals;
-  for (const SpatialRouteTreeView &route : routes)
-    appendRouteTraversals(route, traversals);
+  traversals.reserve(routeTraversals.size());
+  for (const RouteTraversalUse &use : routeTraversals)
+    traversals.push_back(use.traversal);
   llvm::sort(traversals, [](const auto &lhs, const auto &rhs) {
     return ::loom::fabric::canonicalFabricBytes(lhs) <
            ::loom::fabric::canonicalFabricBytes(rhs);
@@ -257,8 +266,36 @@ deriveConfiguredHardwareProjection(
     auto slot = resolveConfiguredHardwareSlot(fabric, field);
     if (!slot)
       return slot.takeError();
-    auto value = ::loom::fabric::encodeSpatialSwitchConfiguration(fabric, field,
-                                                                  selected);
+    const auto encodeSwitch =
+        [&]() -> llvm::Expected<::loom::CanonicalSemanticBytes> {
+      if (fabric.switchSchedule(sw) != ::fabric::Schedule::Temporal)
+        return ::loom::fabric::encodeSpatialSwitchConfiguration(fabric, field,
+                                                                selected);
+      std::vector<::loom::fabric::FabricTemporalSwitchRouteEntry> entries;
+      for (const RouteTraversalUse &use : routeTraversals) {
+        const auto *payload =
+            std::get_if<::loom::fabric::FabricSwitchTraversalPayload>(
+                &use.traversal.payload);
+        if (!payload || payload->owner != sw)
+          continue;
+        auto tag = resolveConfiguredHardwarePhysicalTag(
+            fabric, routes, resourceUses, physicalTagSegments, use.routeOrdinal,
+            use.nodeOrdinal);
+        if (!tag)
+          return tag.takeError();
+        auto found = llvm::find_if(
+            entries, [&](const auto &entry) { return entry.tag == *tag; });
+        if (found == entries.end()) {
+          entries.push_back({std::move(*tag), {use.traversal}});
+          continue;
+        }
+        if (!llvm::is_contained(found->selectedTraversals, use.traversal))
+          found->selectedTraversals.push_back(use.traversal);
+      }
+      return ::loom::fabric::encodeTemporalSwitchConfiguration(fabric, field,
+                                                               entries);
+    };
+    auto value = encodeSwitch();
     if (!value)
       return value.takeError();
     fields.push_back({std::move(*slot), std::move(*value)});

@@ -986,6 +986,10 @@ void spatialSwitchConnectivityBecomesTraversals() {
                     loom::fabric::FabricInventoryOwnerRef::of(payload.owner) &&
                 use.activationGroup.ordinal == 0,
             "spatial switch traversal escaped its configuration requester");
+    require(test,
+            use.occupancyKind ==
+                loom::fabric::FabricTraversalUseOccupancyKind::MappingResident,
+            "spatial switch traversal lost its resident capacity role");
   }
   require(test, spatialTraversalCount == 3 && connectivity == 7,
           "spatial switch resource projection changed its traversal domain");
@@ -1036,6 +1040,10 @@ void spatialSwitchConnectivityBecomesTraversals() {
                     loom::fabric::FabricInventoryOwnerRef::of(payload.owner) &&
                 use.activationGroup.ordinal == payload.input,
             "temporal switch traversal changed its requester activation");
+    require(test,
+            use.occupancyKind ==
+                loom::fabric::FabricTraversalUseOccupancyKind::RuntimeService,
+            "temporal switch traversal became resident port occupancy");
     const ::fabric::ResourceContract *contract =
         temporalFinalized.view().resourceContract(use.pattern.owner.catalog());
     require(test, contract && use.pattern.ordinal < contract->usePatternCount(),
@@ -1059,6 +1067,38 @@ void spatialSwitchConnectivityBecomesTraversals() {
           inputZeroActivation && inputOneActivation &&
               *inputZeroActivation != *inputOneActivation,
           "independent switch requesters were merged into one activation");
+
+  const auto temporalSwitch =
+      temporalFinalized.view().switchOccurrences().front();
+  const loom::fabric::FabricSemanticConfigFieldRef field{
+      loom::fabric::FabricConfigurationOwnerRef(
+          loom::fabric::FabricInventoryOwnerRef::of(temporalSwitch)),
+      0};
+  std::vector<loom::fabric::FabricPhysicalTraversalRef> selected;
+  for (const auto &traversal : temporalFinalized.view().physicalTraversals()) {
+    const auto *payload =
+        std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
+            &traversal.reference.payload);
+    if (payload && payload->owner == temporalSwitch && payload->input == 0)
+      selected.push_back(traversal.reference);
+  }
+  const auto encoded =
+      take(test, loom::fabric::encodeTemporalSwitchConfiguration(
+                     temporalFinalized.view(), field,
+                     {loom::fabric::FabricTemporalSwitchRouteEntry{
+                         llvm::APInt(4, 3), selected}}));
+  auto relation = take(
+      test, temporalFinalized.view().semanticFieldRelation(field, context()));
+  if (llvm::Error error = relation.validateSemanticValue(encoded.bytes()))
+    fail(test, llvm::toString(std::move(error)));
+  expectRejected(test,
+                 loom::fabric::encodeTemporalSwitchConfiguration(
+                     temporalFinalized.view(), field,
+                     {loom::fabric::FabricTemporalSwitchRouteEntry{
+                          llvm::APInt(4, 3), selected},
+                      loom::fabric::FabricTemporalSwitchRouteEntry{
+                          llvm::APInt(4, 3), selected}}),
+                 "repeat a tag");
 }
 
 void fuCapabilityTemplatesComeFromThePhysicalGraph() {

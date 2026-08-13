@@ -147,11 +147,13 @@ struct FabricPhysicalTagMatchDomainView final {
   FabricInventoryOwnerRef owner;
   std::optional<FabricTransportEndpointRef> ingress;
   std::uint32_t tagWidthBits = 0;
+  std::optional<std::uint64_t> residentEntryCapacity;
 
   friend bool operator==(const FabricPhysicalTagMatchDomainView &lhs,
                          const FabricPhysicalTagMatchDomainView &rhs) {
     return lhs.kind == rhs.kind && lhs.owner == rhs.owner &&
-           lhs.ingress == rhs.ingress && lhs.tagWidthBits == rhs.tagWidthBits;
+           lhs.ingress == rhs.ingress && lhs.tagWidthBits == rhs.tagWidthBits &&
+           lhs.residentEntryCapacity == rhs.residentEntryCapacity;
   }
 };
 
@@ -219,9 +221,18 @@ struct FabricTraversalActivationGroupView final {
   }
 };
 
+/// Whether an implied traversal use consumes Mapping-resident capacity or
+/// describes a runtime service opportunity selected by an arbiter.
+enum class FabricTraversalUseOccupancyKind : std::uint8_t {
+  MappingResident,
+  RuntimeService,
+};
+
 struct FabricTraversalUseView final {
   FabricUsePatternRef pattern;
   FabricTraversalActivationGroupView activationGroup;
+  FabricTraversalUseOccupancyKind occupancyKind =
+      FabricTraversalUseOccupancyKind::MappingResident;
 };
 
 enum class FabricFuConfigurationStorageMode : std::uint32_t {

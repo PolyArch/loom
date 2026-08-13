@@ -315,7 +315,8 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
   const bool hasAtomicCapacityOveruse =
       seed->candidate->atomicCapacityOveruse() != 0;
   const bool hasRouteCapacityOveruse =
-      seed->candidate->routeCapacityOveruse() != 0;
+      seed->candidate->routeCapacityOveruse() != 0 ||
+      seed->candidate->tagResidentCapacityOveruse() != 0;
   if (hasAtomicCapacityOveruse &&
       search.exactRepair.kind == ResolvedPnrExactRepairKind::Disabled)
     return {SpatialRestartDisposition::Incomplete,
