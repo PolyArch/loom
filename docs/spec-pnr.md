@@ -2932,6 +2932,17 @@ feasibility. When required `Q` is not exactly encodable, Mapping-feasible
 assignments are reconstructed in canonical order and checked by the exact
 full Evaluation model under its deterministic evaluation budget.
 
+Every exact-repair model minimizes the exact count of region decisions whose
+local choice differs from the current CandidateState. This mutation-count
+objective is repair locality, not candidate rank or a new objective dimension.
+It makes the unchanged assignment the first exact probe and, after a no-good,
+selects the smallest available perturbation before canonical extraction. If an
+exactly representable selected SearchEnergy is also encoded, SearchEnergy is
+the primary objective and mutation count is the secondary objective through a
+checked lexicographic integer composition. Overflow makes that optional
+SearchEnergy encoding unsupported; it never drops mutation count or silently
+changes objective order.
+
 Every solver call uses one worker, the fixed restart-derived seed, integer
 decision and objective encodings, and the complete explicit `CpSat_1_0`
 parameter record. The adapter does not request an unordered solution pool.

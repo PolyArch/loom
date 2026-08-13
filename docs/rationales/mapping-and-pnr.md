@@ -522,6 +522,16 @@ Bounded exact repair is a final focused solver for a small unresolved closure,
 not a global replacement for annealing and routing. It consumes an explicit
 bounded problem and cannot publish a best-so-far invalid Mapping.
 
+Raw local-choice order is insufficient as the repair objective. In a coupled
+placement and attachment region, its lexicographically first assignment can
+move every realization merely because early physical occurrences have smaller
+ordinals. That spends bounded solver calls on a broad perturbation unrelated to
+the witness. Exact repair therefore minimizes the number of region decisions
+changed from the current candidate before canonical extraction. This does not
+rank publishable Mappings; it only gives the bounded repair neighborhood a
+stable locality rule and preserves the current assignment as the initial exact
+probe.
+
 Generic sink-subset proposals were rejected. Their powerset is large, their
 container representation is unstable, and they add no essential routing
 operation. Whole-net, one-sink, existing-subtree, witness-closure, and global
