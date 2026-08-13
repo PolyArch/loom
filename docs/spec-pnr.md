@@ -2935,13 +2935,14 @@ full Evaluation model under its deterministic evaluation budget.
 Every exact-repair model minimizes the exact count of region decisions whose
 local choice differs from the current CandidateState. This mutation-count
 objective is repair locality, not candidate rank or a new objective dimension.
-It makes the unchanged assignment the first exact probe and, after a no-good,
-selects the smallest available perturbation before canonical extraction. If an
-exactly representable selected SearchEnergy is also encoded, SearchEnergy is
-the primary objective and mutation count is the secondary objective through a
-checked lexicographic integer composition. Overflow makes that optional
-SearchEnergy encoding unsupported; it never drops mutation count or silently
-changes objective order.
+It preserves the unchanged assignment when it satisfies every encoded
+constraint and otherwise selects the smallest available perturbation before
+canonical extraction. After a no-good, the same rule selects the next smallest
+perturbation. If an exactly representable selected SearchEnergy is also
+encoded, SearchEnergy is the primary objective and mutation count is the
+secondary objective through a checked lexicographic integer composition.
+Overflow makes that optional SearchEnergy encoding unsupported; it never drops
+mutation count or silently changes objective order.
 
 Every solver call uses one worker, the fixed restart-derived seed, integer
 decision and objective encodings, and the complete explicit `CpSat_1_0`
