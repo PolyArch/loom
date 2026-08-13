@@ -224,7 +224,7 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
   const ResolvedPnrExactRepairPolicy &policy =
       problem.config().policy().search.exactRepair;
   if (policy.kind != ResolvedPnrExactRepairKind::CpSat)
-    return invocationError("CpSat_1_0 is not selected by SearchPolicy");
+    return invocationError("CpSat_2_0 is not selected by SearchPolicy");
   if (solverCallLimit == 0 || solverCallLimit > policy.maxSolverCalls)
     return invocationError("solver-call limit exceeds SearchPolicy");
   if (candidate.atomicCapacityOveruse() == 0 &&

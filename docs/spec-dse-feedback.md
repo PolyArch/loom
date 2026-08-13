@@ -1687,8 +1687,11 @@ scope. A caller that needs another selected multi-graph cover still invokes
 the ordinary TechMapping owner explicitly.
 
 The built-in root-complete Spatial PnR generator composes the next boundary in
-the same typed plan. It consumes the finite TechMapping output and the same
-exact Fabric Artifact. Each `T` already binds one unique Canonical Dataflow
+the same typed plan. Its implementation semantic identity is
+`loom.mapping.root_complete_spatial_pnr.generator.v2`; the direct constrained
+Spatial provider uses `loom.mapping.spatial_pnr.generator.v2`. Both identities
+select the Spatial 5.0 search semantics. It consumes the finite TechMapping
+output and the same exact Fabric Artifact. Each `T` already binds one unique Canonical Dataflow
 identity, so the descriptor strictly recovers `D` from `T` instead of accepting
 a second `D` slot. It mechanically publishes the exact empty Spatial
 MappingConstraintSet for `D/T/F` through the constraint owner, then delegates

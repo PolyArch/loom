@@ -6,6 +6,7 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/Support/Error.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -20,7 +21,7 @@ namespace {
 llvm::Error protocolError(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
-      "invalid CpSat_1_0 request: %s", message.str().c_str());
+      "invalid CpSat_2_0 request: %s", message.str().c_str());
 }
 
 bool contains(const IntegerVariableProto &variable, std::int64_t value) {
@@ -74,6 +75,13 @@ void fixVariable(CpModelProto &model, int variable, std::int64_t value) {
   constraint->add_coeffs(1);
   constraint->add_domain(value);
   constraint->add_domain(value);
+}
+
+void minimizeVariable(CpModelProto &model, int variable) {
+  CpObjectiveProto *objective = model.mutable_objective();
+  objective->Clear();
+  objective->add_vars(variable);
+  objective->add_coeffs(1);
 }
 
 SatParameters parameters(std::int32_t randomSeed) {
@@ -191,32 +199,31 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
   std::vector<std::int64_t> assignment;
   assignment.reserve(variables.size());
   for (const CpSatCanonicalVariable &variable : variables) {
-    bool fixed = false;
-    for (std::int64_t value : variable.legalValues) {
-      CpModelProto trial = working;
-      fixVariable(trial, variable.protoIndex, value);
-      std::optional<CpSolverResponse> response = solve(trial, state);
-      if (!response)
-        return unknown(state.calls);
-      switch (classifyCpSatProofStatus(response->status())) {
-      case CpSatProofStatus::Optimal:
-        working = std::move(trial);
-        assignment.push_back(value);
-        fixed = true;
-        break;
-      case CpSatProofStatus::Infeasible:
-        continue;
-      case CpSatProofStatus::Unknown:
-        return unknown(state.calls);
-      case CpSatProofStatus::InternalError:
-        return protocolError("OR-Tools rejected a canonical fixing model");
-      }
-      if (fixed)
-        break;
-    }
-    if (!fixed)
+    CpModelProto trial = working;
+    minimizeVariable(trial, variable.protoIndex);
+    std::optional<CpSolverResponse> response = solve(trial, state);
+    if (!response)
+      return unknown(state.calls);
+    switch (classifyCpSatProofStatus(response->status())) {
+    case CpSatProofStatus::Optimal:
+      break;
+    case CpSatProofStatus::Infeasible:
       return protocolError(
-          "proven model lost all values during canonical extraction");
+          "proven model became infeasible during canonical extraction");
+    case CpSatProofStatus::Unknown:
+      return unknown(state.calls);
+    case CpSatProofStatus::InternalError:
+      return protocolError("OR-Tools rejected a canonical minimization model");
+    }
+    if (variable.protoIndex >= response->solution_size())
+      return protocolError("optimal response omitted a canonical variable");
+    const std::int64_t value = response->solution(variable.protoIndex);
+    if (!std::binary_search(variable.legalValues.begin(),
+                            variable.legalValues.end(), value))
+      return protocolError("optimal response selected an illegal value");
+    working = std::move(trial);
+    fixVariable(working, variable.protoIndex, value);
+    assignment.push_back(value);
   }
   return CpSatCanonicalResult{CpSatCanonicalResultKind::Assignment,
                               std::move(assignment), objectiveValue,

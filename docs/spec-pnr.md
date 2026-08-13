@@ -46,6 +46,16 @@ A level-two `mapping_failure` for `route_whole_net` carries the closed
 human-readable explanation from that same failed search. The logger observes
 the returned failure and does not repeat or extend the route search.
 
+After parallel Spatial restart work joins, level one emits each non-candidate
+restart in canonical ordinal order. The event carries `failure_scope =
+"restart"`, `restart_ordinal`, closed `closure_status` and
+`termination_owner` spellings, the semantic-limit bit, the restart diagnostic,
+and restart-local work accounting. The root-complete adapter separately emits
+one `failure_scope = "invocation"` event for an incomplete or proven-infeasible
+TechMapping invocation. Its diagnostic represents the returned typed reason;
+among matching restarts, a prepared candidate takes precedence over a seed
+that never formed candidate state.
+
 Every event is one line-atomic JSON object on stderr. It contains
 `schema = "loom.mapping.debug.1"`, numeric `level`, closed ASCII `event` and
 `stage` spellings, and an invocation-local `sequence`. Events add the stable
@@ -2125,7 +2135,7 @@ selection remain SystemMapping decisions.
 Spatial and System PnR have distinct component-view descriptors:
 
 ```text
-loom.spatial_pnr.config.4.0
+loom.spatial_pnr.config.5.0
 loom.system_pnr.config.4.0
 ```
 
@@ -2133,6 +2143,10 @@ They use the same field types and codecs but project the independently selected
 Spatial or System policy domain. Their exact descriptor bytes are the ASCII
 bytes shown above without a trailing zero. A digest from one view kind cannot
 be adopted as the other.
+
+Spatial version 5.0 incompatibly replaces 4.0's value-by-value canonical
+fixing and whole-design judgment during regional transport repair. System PnR
+does not consume either protocol and retains version 4.0.
 
 Each resolved view is self-contained:
 
@@ -2887,7 +2901,7 @@ class.
 
 ### Bounded Exact Repair
 
-Loom builds one required in-process C++ OR-Tools `CpSat_1_0` adapter pinned to
+Loom builds one required in-process C++ OR-Tools `CpSat_2_0` adapter pinned to
 OR-Tools v9.15 commit
 `551ad10d94835c99e5e1e684500d3db398c0e345`. SearchPolicy decides whether a
 candidate has bounded exact-repair work; adapter availability is not a runtime
@@ -2914,6 +2928,13 @@ attachments, contexts, tags, buffers, memory and service bindings,
 are fixed and their claims are subtracted from available capacity. If the
 complete closure exceeds `max_region_decisions`, the result is
 `RegionTooLarge`; truncation is forbidden.
+
+Negotiated routing for a nonempty repair region closes only that region's
+unrouted obligations and capacities touched by its selected routes. Fixed
+outside routes still consume those capacities. An unrelated outside transport
+violation cannot make the region non-closed; it remains owned by the next
+canonical witness. Empty-region routing is the full-design closure and retains
+the complete Mapping predicate.
 
 The repair policy owns exactly two semantic work limits:
 
@@ -2973,7 +2994,7 @@ assignment unless its exact selected SearchEnergy was encoded in the repair
 model.
 
 Every solver call uses one worker, the fixed restart-derived seed, integer
-decision and objective encodings, and the complete explicit `CpSat_1_0`
+decision and objective encodings, and the complete explicit `CpSat_2_0`
 parameter record. The adapter does not request an unordered solution pool.
 Only `OPTIMAL` and `INFEASIBLE` are proof-bearing statuses. `FEASIBLE` is an
 unproven incumbent, `UNKNOWN` is unproven termination, and `MODEL_INVALID` is
@@ -2984,7 +3005,7 @@ restart-local `ExactRepair` stream before its first solver call. Its OR-Tools
 `random_seed` is the nonnegative signed integer formed by the low 31 bits of
 that word. Every optimization and feasibility call in the same invocation
 reuses that seed and consumes no further PRNG words. The complete
-`CpSat_1_0` parameter construction starts from the pinned v9.15 protobuf
+`CpSat_2_0` parameter construction starts from the pinned v9.15 protobuf
 defaults and applies exactly these overrides:
 
 ```text
@@ -3011,14 +3032,16 @@ Canonical extraction is one fixed protocol:
    `OPTIMAL`; a pure feasibility model must likewise return `OPTIMAL`;
 2. fix the proven objective value in the model;
 3. visit decision variables in canonical typed decision-key order;
-4. test each variable's legal values in canonical order using pure feasibility
-   calls, fixing the first value that returns `OPTIMAL` and skipping values
-   that return `INFEASIBLE`; and
+4. visit each variable once, replace the already-fixed objective with that
+   variable as an exact minimization objective, require `OPTIMAL`, and fix the
+   returned value; and
 5. require one complete assignment, then rebuild and verify it through the
    ordinary Mapping and exact Evaluation owners.
 
-This yields the lexicographically smallest assignment among exact optimum, or
-among exact feasible assignments when no objective is present. A `FEASIBLE`,
+This consumes one initial solve plus one solve per canonical variable,
+independent of legal-domain cardinality, and yields the lexicographically
+smallest assignment among exact optimum, or among exact feasible assignments
+when no objective is present. A `FEASIBLE`,
 `UNKNOWN`, execution interruption, or exhaustion of `max_solver_calls` at any
 point returns `UnknownBudgetExhausted` before mutation. The order in which
 OR-Tools discovers incumbents is never observable.

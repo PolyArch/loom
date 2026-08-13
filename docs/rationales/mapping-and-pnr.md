@@ -549,12 +549,13 @@ region is the complete exact problem.
 
 The adapter uses one worker and one restart-local seed for the entire repair
 invocation. Consuming one ExactRepair word rather than one word per solver call
-keeps the canonical fixing protocol from making later variable choices depend
-on how many earlier values were infeasible. The low 31-bit projection matches
-OR-Tools' signed seed field without implementation-defined narrowing. Solver
-time and search counters remain execution behavior rather than semantic work;
-only Loom's region-decision and solver-call budgets can alter the formal repair
-result.
+keeps canonical fixing independent of region size. Each canonical variable is
+minimized once after the primary optimum is fixed, so solver-call work scales
+with decision count rather than the cardinality of physical-choice domains.
+The low 31-bit projection matches OR-Tools' signed seed field without
+implementation-defined narrowing. Solver time and search counters remain
+execution behavior rather than semantic work; only Loom's region-decision and
+solver-call budgets can alter the formal repair result.
 
 ## Why Selected Handshake Legality Is Incremental
 

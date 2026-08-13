@@ -1345,6 +1345,16 @@ void artifactRoundTripAndReferenceValidation() {
 
   loom::pnr::SpatialPathFinderRouterScratch negotiatedRouter;
   requireSuccess(negotiatedRouter.prepare(*frozen));
+  if (routedCandidate->unroutedObligationCount() == 0)
+    fail("regional PathFinder fixture has no fixed outside violation");
+  auto regionalMove = take(routedCandidate->beginMove(routedCandidateScratch));
+  const std::array<loom::pnr::PnrIndex, 1> regionalNets{*multicastNet};
+  auto regionalClosure = negotiatedRouter.routeToClosureInMove(
+      regionalMove, *routedCandidate, routedCostState, {1, 1, 1, 1},
+      regionalNets, {});
+  if (!regionalClosure || !regionalClosure->capacityClosed)
+    fail("regional PathFinder inherited an outside transport violation");
+  regionalMove.rollback();
   auto failedIteration =
       negotiatedRouter.routeToClosure(*routedCandidate, routedCandidateScratch,
                                       routedCostState, {1, 1, 1, 1}, {});

@@ -163,6 +163,11 @@ private:
     }
   };
 
+  struct RoutingRegionProjection final {
+    std::uint64_t unroutedObligationCount = 0;
+    std::uint64_t routeCapacityOveruse = 0;
+  };
+
   llvm::Expected<NetProjection>
   projectLogicalNet(const SpatialCandidateState &candidate,
                     const SpatialRouteCostState &costs, PnrIndex logicalNet);
@@ -182,6 +187,10 @@ private:
                            const SpatialRouteCostState &costs,
                            std::uint64_t iteration,
                            std::uint64_t sessionIteration);
+  llvm::Expected<RoutingRegionProjection>
+  projectRoutingRegion(const SpatialCandidateState &candidate,
+                       const SpatialRouteCostState &costs,
+                       llvm::ArrayRef<PnrIndex> logicalNets);
   void beginProjection();
 
   SpatialNetRouterScratch netRouter_;
@@ -191,6 +200,7 @@ private:
   std::vector<std::uint64_t> capacityEpochs_;
   std::vector<RouteCost> capacityNetQCosts_;
   std::vector<PnrIndex> touchedCapacities_;
+  std::vector<std::uint8_t> regionalCapacityMarks_;
   std::vector<PnrIndex> constraintSweepNets_;
   std::vector<std::size_t> capturedSinkPathOffsets_;
   std::vector<PnrIndex> capturedForwardArcs_;

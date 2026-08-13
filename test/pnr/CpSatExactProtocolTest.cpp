@@ -9,7 +9,9 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <numeric>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -57,8 +59,37 @@ void equivalentOptimaUseCanonicalAssignment() {
           "equivalent optimum did not use lexicographically first values");
   require(result.objectiveValue && *result.objectiveValue == 1,
           "exact optimum value was not preserved");
-  require(result.solverCalls == 4,
+  require(result.solverCalls == 3,
           "canonical extraction consumed the wrong solver-call count");
+}
+
+void wideDomainsConsumeOneCallPerVariable() {
+  using namespace loom::pnr::detail;
+  using namespace operations_research;
+  using namespace operations_research::sat;
+
+  CpModelBuilder model;
+  const IntVar x = model.NewIntVar(Domain(0, 4095));
+  const IntVar y = model.NewIntVar(Domain(0, 4095));
+  model.AddGreaterOrEqual(x, 3072);
+  model.AddGreaterOrEqual(y, x);
+
+  std::vector<std::int64_t> values(4096);
+  std::iota(values.begin(), values.end(), 0);
+  const std::array<CpSatCanonicalVariable, 2> variables{{
+      {x.index(), values},
+      {y.index(), values},
+  }};
+  const CpSatCanonicalResult result = take(solveCanonicalCpSat(
+      model.Build(), variables, std::nullopt, /*maxSolverCalls=*/3,
+      /*randomSeed=*/29));
+  require(result.kind == CpSatCanonicalResultKind::Assignment,
+          "wide canonical domains did not produce an assignment");
+  require(llvm::ArrayRef(result.assignment) ==
+              llvm::ArrayRef<std::int64_t>({3072, 3072}),
+          "wide canonical domains did not select the lexicographic minimum");
+  require(result.solverCalls == 3,
+          "wide domains changed the canonical solver-call count");
 }
 
 void solverCallBudgetLeavesNoPartialAssignment() {
@@ -145,6 +176,7 @@ void seedProjectionIsUnsignedAndStable() {
 
 int main() {
   equivalentOptimaUseCanonicalAssignment();
+  wideDomainsConsumeOneCallPerVariable();
   solverCallBudgetLeavesNoPartialAssignment();
   localInfeasibilityIsProofBearingButNotGlobal();
   nonProofStatusesFailClosed();

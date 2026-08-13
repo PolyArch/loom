@@ -47,6 +47,8 @@ struct CpSatCanonicalResult final {
 /// Solves one exact CP-SAT model and extracts the lexicographically first
 /// assignment in the supplied typed variable/value order. The objective, when
 /// present, must be the single integer variable named by objectiveVariable.
+/// Canonical extraction consumes one solve per variable, independent of the
+/// cardinality of its legal-value domain.
 llvm::Expected<CpSatCanonicalResult>
 solveCanonicalCpSat(const operations_research::sat::CpModelProto &model,
                     llvm::ArrayRef<CpSatCanonicalVariable> variables,

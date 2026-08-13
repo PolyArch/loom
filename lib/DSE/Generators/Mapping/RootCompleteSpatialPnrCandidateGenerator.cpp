@@ -67,7 +67,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSpatialPnrCandidateGeneratorKind,
     "mapping.root_complete_spatial_pnr",
-    "loom.mapping.root_complete_spatial_pnr.generator.v1",
+    "loom.mapping.root_complete_spatial_pnr.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -168,8 +168,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorWorkUnitSummary> workSummary =
       spatialPnrCandidateGeneratorWorkSummary({});
-  for (const auto indexedTech : llvm::enumerate(
-           inputBindings[TechMappingCandidatesInput].artifacts)) {
+  for (const auto indexedTech :
+       llvm::enumerate(inputBindings[TechMappingCandidatesInput].artifacts)) {
     const std::size_t techOrdinal = indexedTech.index();
     const ArtifactRootReference &techReference = indexedTech.value();
     auto tech = ::loom::mapping::importTechMapping(techReference, store);
@@ -212,10 +212,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       return constraints.takeError();
 
     ::loom::pnr::SpatialPnrGenerationOutcome outcome =
-        ::loom::pnr::generateSpatialMappings({dataflow, tech->view(),
-                                              fabric->view(), *config,
-                                              constraints->view(), store,
-                                              defaultCandidateWorkerCount()});
+        ::loom::pnr::generateSpatialMappings(
+            {dataflow, tech->view(), fabric->view(), *config,
+             constraints->view(), store, defaultCandidateWorkerCount()});
     const auto invocationWorkSummary = std::visit(
         [](const auto &value) {
           return spatialPnrCandidateGeneratorWorkSummary(value.accounting);
@@ -239,6 +238,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
           ::loom::mapping_debug::Stage::SpatialPnr,
           ::loom::mapping_debug::Event::MappingFailure,
           [&](llvm::json::Object &fields) {
+            fields["failure_scope"] = "invocation";
             fields["closure_status"] = "proven_infeasible";
             fields["tech_mapping_ordinal"] =
                 static_cast<std::uint64_t>(techOrdinal);
@@ -256,6 +256,34 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                                  SemanticLimitReached
               ? CandidateGeneratorIncompleteReason::SemanticLimitReached
               : CandidateGeneratorIncompleteReason::ProofNotEstablished;
+      ::loom::mapping_debug::emit(
+          ::loom::mapping_debug::Level::Summary,
+          ::loom::mapping_debug::Stage::SpatialPnr,
+          ::loom::mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["failure_scope"] = "invocation";
+            fields["closure_status"] =
+                partial->reason ==
+                        ::loom::pnr::IncompleteSpatialPnrGenerationReason::
+                            SemanticLimitReached
+                    ? "semantic_limit_reached"
+                    : "proof_not_established";
+            fields["tech_mapping_ordinal"] =
+                static_cast<std::uint64_t>(techOrdinal);
+            fields["tech_mapping"] =
+                formatArtifactIdentityHex(techReference.artifact);
+            fields["diagnostic"] = partial->diagnostic;
+            fields["seed_attempts"] = partial->accounting.seedAttemptSlots;
+            fields["prepared_seeds"] = partial->accounting.preparedSeeds;
+            fields["exact_repair_invocations"] =
+                partial->accounting.exactRepairInvocations;
+            fields["exact_repair_region_decisions"] =
+                partial->accounting.exactRepairRegionDecisions;
+            fields["exact_repair_solver_calls"] =
+                partial->accounting.exactRepairSolverCalls;
+            fields["final_closure_attempts"] =
+                partial->accounting.finalClosureAttempts;
+          });
       return CandidateGeneratorProviderResult{
           incomplete(reason, std::move(outputs)), std::move(workSummary)};
     }
