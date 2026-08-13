@@ -1,5 +1,7 @@
 #include "PnR/SpatialActionExecutor.h"
 
+#include "Common/MappingDebugLog.h"
+
 #include "InitializerRelationSolver.h"
 #include "SpatialBindingRelationModel.h"
 #include "SpatialMemoryCompatibility.h"
@@ -1229,22 +1231,89 @@ llvm::Error SpatialActionExecutorScratch::reconcileBindingRelations(
 
   const detail::SpatialBindingRelationModel &bindings =
       candidate.problem().bindingRelations();
-  relationDecisionQueue_ = changedBindingRoots_;
+  const FrozenSpatialPortIndex &ports = candidate.problem().ports();
+  const auto enqueueAttachment = [&](PnrIndex demand) -> llvm::Error {
+    if (demand >= ports.portDemands().size())
+      return executorError("binding root owns a foreign PortDemand");
+    const PnrIndex decision = bindings.portDecisionOffset() + demand;
+    if (decision >= relationDecisionMarks_.size())
+      return executorError("PortDemand relation decision is out of range");
+
+    const FrozenSpatialPortDemand &record = ports.portDemands()[demand];
+    const PnrIndex placement =
+        record.kind == FrozenSpatialPortDemandKind::Compute
+            ? candidate.computeBinding(record.realization).placement
+            : candidate.memoryBinding(record.realization).placement;
+    const PnrIndex option = candidate.portAttachment(demand);
+    if (option >= ports.attachmentOptions().size())
+      return executorError("PortDemand selected a foreign attachment");
+    const FrozenSpatialAttachmentOption &attachment =
+        ports.attachmentOptions()[option];
+    if (attachment.ownerKind !=
+            FrozenSpatialAttachmentOwnerKind::PlacementDomain ||
+        attachment.owner >= ports.placementDomains().size())
+      return executorError("PortDemand attachment owner is malformed");
+    if (ports.placementDomains()[attachment.owner].placement == placement ||
+        relationDecisionMarks_[decision])
+      return llvm::Error::success();
+    relationDecisionMarks_[decision] = 1;
+    relationDecisionQueue_.push_back(decision);
+    return llvm::Error::success();
+  };
+
+  const auto computeOffsets = ports.computeRealizationDemandOffsets();
+  const auto memoryOffsets = ports.memoryRealizationDemandOffsets();
+  for (PnrIndex decision : changedBindingRoots_) {
+    if (decision < bindings.computeDecisionCount()) {
+      if (decision + 1 >= computeOffsets.size())
+        return executorError("compute PortDemand reverse index is malformed");
+      for (PnrIndex demand : ports.computeRealizationDemands().slice(
+               computeOffsets[decision],
+               computeOffsets[decision + 1] - computeOffsets[decision]))
+        if (llvm::Error error = enqueueAttachment(demand))
+          return error;
+      continue;
+    }
+    const PnrIndex realization = decision - bindings.computeDecisionCount();
+    if (realization + 1 >= memoryOffsets.size())
+      return executorError("memory PortDemand reverse index is malformed");
+    for (PnrIndex demand : ports.memoryRealizationDemands().slice(
+             memoryOffsets[realization],
+             memoryOffsets[realization + 1] - memoryOffsets[realization]))
+      if (llvm::Error error = enqueueAttachment(demand))
+        return error;
+  }
+
   for (std::size_t cursor = 0; cursor < relationDecisionQueue_.size();
        ++cursor) {
     const PnrIndex decision = relationDecisionQueue_[cursor];
-    for (PnrIndex relation : bindings.decisionRelations(decision))
+    for (PnrIndex relation : bindings.decisionRelations(decision)) {
+      if (bindings.relationIsStructural(relation))
+        continue;
       for (const detail::InitializerRelationMember &member :
            bindings.relations().members(
                bindings.relations().relations()[relation])) {
         if (member.decision >= relationDecisionMarks_.size())
           return executorError("binding relation member is out of range");
-        if (relationDecisionMarks_[member.decision])
+        if (member.decision < bindings.portDecisionOffset() ||
+            relationDecisionMarks_[member.decision])
           continue;
         relationDecisionMarks_[member.decision] = 1;
         relationDecisionQueue_.push_back(member.decision);
       }
+    }
   }
+
+  loom::mapping_debug::emit(
+      loom::mapping_debug::Level::Decision,
+      loom::mapping_debug::Stage::SpatialPnr,
+      loom::mapping_debug::Event::ContextChoice,
+      [&](llvm::json::Object &fields) {
+        fields["operation"] = "binding_attachment_reconciliation";
+        fields["changed_root_count"] = changedBindingRoots_.size();
+        fields["released_attachment_count"] =
+            relationDecisionQueue_.size();
+      });
 
   fixedRelationChoices_ = candidate.bindingRelationChoices_;
   for (PnrIndex decision : relationDecisionQueue_)
