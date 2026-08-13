@@ -111,6 +111,36 @@ AccCore = InstructionCore + SpatialCore
 SpatialCore = arbitrary-topology CGRA described by fabric.module
 ```
 
+This model denotes a modern heterogeneous spatial-accelerator SoC rather than
+a uniform array with a host wrapper. A conforming complete System provides
+all of these architectural roles through explicit Fabric owners:
+
+* stored-program control in the HostCore and each AccCore InstructionCore;
+* heterogeneous spatial and time-multiplexed compute tiles with locally
+  configured operation capability;
+* distributed local memories and explicit data-movement or memory-service
+  paths, so external memory is not the implicit operand store of every tile;
+* programmable local interconnect inside each SpatialCore and explicit
+  accelerator-side System transport among cores, services, and memory; and
+* exact configuration, runtime arbitration, and progress contracts for every
+  shared physical resource.
+
+The roles are architectural, not a mandated floorplan or a requirement that
+every SpatialCore contain both scheduling styles. A heterogeneous System may
+combine different Module templates, and each Module may specialize its
+compute, memory, and transport mixture. Hardware DSE searches compositions of
+these existing typed roles; it cannot replace them with an application name,
+an opaque accelerator class, or an unconstrained property bag.
+
+Independent physical facts remain independent typed parameters. In
+particular, tag width, Temporal PE instruction residency, Temporal switch
+route-table depth, Temporal memory operation residency, operand-buffer depth,
+register-FIFO shape, link width and lane count, and topology dimensions are
+not aliases for one generic temporal scale. A template may deliberately
+derive two values from one higher-level authoring choice only when its
+versioned schema owns that derivation. ResolvedConfig contains the resulting
+complete values, and generated Fabric remains the final hardware truth.
+
 The same entities form two weakly coupled execution domains:
 
 ```text
@@ -318,6 +348,16 @@ boundary, and instantiation resources. `fabric.fu` is a configurable physical
 subgraph inside a PE. Hardware parameters describe immutable capability;
 software configuration selects one supported effective function. Physical
 configuration encoding belongs to ConfigurationABI rather than Fabric.
+
+A Temporal switch exposes three distinct facts. Its route table owns bounded
+resident configuration rows selected by Physical Tag. Its input and output
+service states own per-cycle transfer capacity. Its GrantPolicy owns which
+eligible runtime requester receives a contended service. SpatialMapping must
+fit the configured tag-route rows within resident capacity and preserve each
+row's static crosspoint legality; it must not sum mutually exclusive runtime
+requests as permanently concurrent occupancy merely because their routes are
+simultaneously resident. Simulation and RTL apply the service capacity and
+grant policy to the actual execution trace.
 
 The ADG Builder contract is specified by
 [ADG Builder](spec-adg-builder.md). Fabric-to-RTL ownership is specified by

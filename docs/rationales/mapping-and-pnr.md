@@ -816,20 +816,24 @@ Attachment roots expose the same issue one level below placement. If two
 inputs or outputs of `dataflow.sync`, `dataflow.mux`, `dataflow.demux`, or
 another variadic operation both take the first occurrence-relative attachment,
 the initial route duplicates a physical endpoint even when the selected FU and
-PE expose enough distinct ports. The same ordinal collapse can make independent
-graph ingress or egress nets share one boundary endpoint while other legal
-boundary endpoints remain unused. Enumerating port permutations is
+PE expose enough distinct ports. Enumerating port permutations is
 functionally redundant, but collapsing simultaneous logical terminals onto one
 endpoint is not. Opcode-specific permutation tables would duplicate operation
-semantics, treating graph boundaries as a separate initializer mechanism would
-duplicate attachment policy, and hard endpoint disjointness would incorrectly
-reject legal temporal sharing. The initializer instead prefers the
-least-selected exact endpoint in every unconstrained attachment root's legal
-domain; occurrence-relative roots additionally restrict that domain to the
-already selected placement. It retains constrained baselines and asks the same
-relation solver to validate the complete preferred root assignment. This
-generic preference canonicalizes the useful distinct subset without making
-endpoint counts a capacity authority or changing the legal domain.
+semantics, and hard endpoint disjointness would incorrectly reject legal
+temporal sharing. The initializer instead prefers the least-selected exact
+endpoint in every unconstrained occurrence-relative root's selected-placement
+domain.
+
+Graph boundaries have an additional essential distinction: they are the
+remaining endpoint of an already selected logical-net terminal relation. A
+pure load-balancing rule can select an unused but disconnected boundary face,
+or a distant face that creates avoidable cut pressure. Their preference
+therefore uses the frozen directed topology first: minimize unreachable
+opposite terminals, then total hop distance, and only then endpoint selection
+count. This is not a second attachment mechanism; both root kinds retain their
+existing legal domains, constrained baselines, and the same relation-solver
+validation. It is the minimum topology-aware ranking needed to avoid creating
+an invalid seed while keeping endpoint counts out of capacity authority.
 
 Local-memory byte offsets need a finite search representation. Enumerating
 every fitting byte would make a 4 GiB region contribute billions of choices

@@ -2376,10 +2376,12 @@ their deterministic variation.
    `PortAttachment` root in canonical demand order and every other
    graph-boundary attachment root in canonical boundary order. Restrict a
    `PortAttachment` root's preference candidates to attachment options owned
-   by the already selected realization placement; a graph-boundary root uses
-   its existing legal attachment domain. Choose an exact physical endpoint
-   with the least current selected-attachment count. Ties use circular
-   canonical choice order beginning at the attempt's tie origin;
+   by the already selected realization placement, then choose an exact
+   physical endpoint with the least current selected-attachment count. For a
+   graph-boundary root, score its existing legal domain first by the count of
+   opposite selected terminals that are unreachable, then by their total
+   directed hop distance, then by the current selected-attachment count. Ties
+   use circular canonical choice order beginning at the attempt's tie origin;
 6. invoke the same root relation solver once with the preferred compute and
    attachment roots fixed, so placement compatibility and every hard
    attachment relation are re-established by their existing owner; and

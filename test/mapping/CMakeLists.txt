@@ -24,6 +24,7 @@ add_library(loom-tech-mapping-artifact-test-support STATIC
 
 target_include_directories(loom-tech-mapping-artifact-test-support PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
+  ${LOOM_SOURCE_DIR}/lib/PnR
 )
 
 add_executable(loom-tech-mapping-artifact-test
@@ -102,6 +103,7 @@ target_include_directories(loom-configured-hardware-projection-test PRIVATE
 
 target_include_directories(loom-spatial-mapping-artifact-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
+  ${LOOM_SOURCE_DIR}/lib/PnR
 )
 
 target_link_libraries(loom-mapping-artifact-test PRIVATE

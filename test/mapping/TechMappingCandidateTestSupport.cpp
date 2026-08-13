@@ -24,6 +24,7 @@
 #include "PnR/SpatialPathFinderRouter.h"
 #include "PnR/SpatialRouteCostState.h"
 #include "ResourceCapacityVerification.h"
+#include "SpatialBindingRelationModel.h"
 #include "SpatialMappingCapacityVerification.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -38,6 +39,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -996,6 +998,39 @@ void loom::test::exerciseCanonicalCandidateInitialization(
       fail("canonical initializer changed memory choice order");
   }
   const auto attachmentOptions = problem->ports().attachmentOptions();
+  const auto &relations = problem->bindingRelations();
+  std::map<pnr::PnrIndex, std::uint64_t> endpointSelectionCounts;
+  const auto participatesInHardRelation = [&](pnr::PnrIndex decision) {
+    return llvm::any_of(relations.decisionRelations(decision),
+                        [&](pnr::PnrIndex relation) {
+                          return relations.relationIsConstraint(relation);
+                        });
+  };
+  const auto verifyLeastSelected = [&](pnr::PnrIndex decision,
+                                       pnr::PnrIndex selected,
+                                       llvm::ArrayRef<pnr::PnrIndex> choices,
+                                       const auto &isEligible) {
+    if (!participatesInHardRelation(decision)) {
+      std::uint64_t minimum = std::numeric_limits<std::uint64_t>::max();
+      for (pnr::PnrIndex option : choices) {
+        if (option >= attachmentOptions.size() || !isEligible(option))
+          continue;
+        const auto found =
+            endpointSelectionCounts.find(attachmentOptions[option].endpoint);
+        minimum = std::min(minimum, found == endpointSelectionCounts.end()
+                                        ? 0
+                                        : found->second);
+      }
+      const auto found =
+          endpointSelectionCounts.find(attachmentOptions[selected].endpoint);
+      const std::uint64_t selectedCount =
+          found == endpointSelectionCounts.end() ? 0 : found->second;
+      if (minimum == std::numeric_limits<std::uint64_t>::max() ||
+          selectedCount != minimum)
+        fail("canonical initializer did not select a least-used endpoint");
+    }
+    ++endpointSelectionCounts[attachmentOptions[selected].endpoint];
+  };
   for (pnr::PnrIndex demand = 0; demand < problem->ports().portDemands().size();
        ++demand) {
     const auto &record = problem->ports().portDemands()[demand];
@@ -1026,6 +1061,17 @@ void loom::test::exerciseCanonicalCandidateInitialization(
     if (attachmentOptions[selected].endpoint >=
         problem->routing().routingEndpoints().size())
       fail("canonical initializer selected a foreign attachment endpoint");
+    verifyLeastSelected(
+        relations.portDecisionOffset() + demand, selected,
+        relations.portAttachmentChoices(demand), [&](pnr::PnrIndex option) {
+          const auto &candidate = attachmentOptions[option];
+          return candidate.ownerKind ==
+                     pnr::FrozenSpatialAttachmentOwnerKind::PlacementDomain &&
+                 candidate.owner < problem->ports().placementDomains().size() &&
+                 problem->ports()
+                         .placementDomains()[candidate.owner]
+                         .placement == placement;
+        });
   }
   for (pnr::PnrIndex boundary = 0;
        boundary < problem->ports().graphBoundaries().size(); ++boundary) {

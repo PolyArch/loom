@@ -48,6 +48,48 @@ dialect are explained by
 [Fabric And ADG Construction](fabric-and-adg.md). The full-stack machine model
 depends on that one hardware authority rather than restating its ownership.
 
+## Why The Architecture Is Heterogeneous And Tiled
+
+The machine model distills a common structure from production and research
+spatial accelerators rather than copying one product. AMD Versal combines
+stored-program processing, programmable logic, tiled AI engines with local
+memory, and a programmable NoC. Plasticine separates pipelined compute units
+from banked scratchpad and address-generation units on a hierarchical spatial
+interconnect. Tenstorrent exposes tile-local SRAM and explicit NoC data
+movement, with data-movement processors distinct from cooperative compute
+processors. Gemmini demonstrates why a generated accelerator must remain in a
+complete SoC and software stack, while DSAGEN demonstrates that a small
+composable set of spatial primitives can support hardware/software co-design.
+
+Their shared lesson is not that Loom needs vendor-specific tile kinds. It is
+that control, compute, local storage, data movement, and interconnect are
+independent physical roles whose composition determines application quality.
+`HostCore`, `InstructionCore`, `SpatialCore`, PE, memory, boundary, switch,
+service, and transport already express those roles. New application-named
+hardware objects would increase conceptual surface without adding an essential
+distinction.
+
+The same evidence rejects one generic size knob. Compute residency, routing
+table depth, tag namespace, buffering, memory concurrency, and network shape
+have different area, latency, throughput, and mapping effects. Coupling them
+may be a convenient preset recipe, but exposing only the coupled value makes
+Hardware DSE unable to repair the actual bottleneck. Versioned builtin schemas
+therefore expose independent physical axes and may offer presets only as fully
+resolved starting points.
+
+Primary architecture references:
+
+* AMD, *Versal Adaptive SoC AI Engine Architecture Manual* (AM009), 2026.
+* AMD, *Versal Programmable Network on Chip Product Guide* (PG313), 2023.
+* R. Prabhakar et al., *Plasticine: A Reconfigurable Architecture for
+  Parallel Patterns*, ISCA 2017.
+* Tenstorrent, *TT-Metalium Memory from a Kernel Developer's Perspective* and
+  data-movement kernel documentation.
+* H. Genc et al., *Gemmini: Enabling Systematic Deep-Learning Architecture
+  Evaluation via Full-Stack Integration*, DAC 2021.
+* J. Weng et al., *DSAGEN: Synthesizing Programmable Spatial Accelerators*,
+  ISCA 2020.
+
 ## Why Host And Accelerator Domains Are A Partition
 
 The intended system weakly couples a HostCore domain to a heterogeneous

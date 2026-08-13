@@ -662,8 +662,6 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
   const auto attachmentOptions = ports.attachmentOptions();
   const auto placementDomains = ports.placementDomains();
   std::map<PnrIndex, std::uint64_t> endpointSelectionCounts;
-  std::vector<std::map<PnrIndex, std::uint64_t>> logicalNetEndpointSelections(
-      problem.transfers().logicalNets().size());
   const auto countEndpoint = [&](PnrIndex option) -> llvm::Error {
     if (option >= attachmentOptions.size())
       return initializerError(
@@ -710,14 +708,9 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
     auto placement = selectedPlacement(ports.portDemands()[demand]);
     if (!placement)
       return placement.takeError();
-    const PnrIndex logicalNet = ports.portDemands()[demand].logicalNet;
-    if (logicalNet >= logicalNetEndpointSelections.size())
-      return initializerError(
-          "port preference names a foreign logical net");
 
     PnrIndex selected = getInvalidPnrIndex();
-    auto selectedScore = std::make_tuple(
-        std::numeric_limits<std::uint64_t>::max(),
+    auto selectedScore = std::make_pair(
         std::numeric_limits<std::uint64_t>::max(), choices.size());
     const PnrIndex origin = preferenceOrigin(baselineChoice);
     for (std::size_t rank = 0; rank < choices.size(); ++rank) {
@@ -740,14 +733,7 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
       const auto found = endpointSelectionCounts.find(record.endpoint);
       const std::uint64_t count =
           found == endpointSelectionCounts.end() ? 0 : found->second;
-      const auto &sameNetSelections =
-          logicalNetEndpointSelections[logicalNet];
-      const bool hasSameNetSelection = !sameNetSelections.empty();
-      const bool reusesSameNetEndpoint =
-          sameNetSelections.find(record.endpoint) != sameNetSelections.end();
-      const std::uint64_t affinityPenalty =
-          hasSameNetSelection && !reusesSameNetEndpoint ? 1 : 0;
-      const auto score = std::make_tuple(affinityPenalty, count, rank);
+      const auto score = std::make_pair(count, rank);
       if (score < selectedScore) {
         selected = local;
         selectedScore = score;
@@ -760,9 +746,6 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
     result.changedPortAttachments += selected != baselineChoice;
     if (llvm::Error error = countEndpoint(choices[selected]))
       return std::move(error);
-    const PnrIndex selectedEndpoint =
-        attachmentOptions[choices[selected]].endpoint;
-    ++logicalNetEndpointSelections[logicalNet][selectedEndpoint];
   }
 
   for (PnrIndex boundary = 0; boundary < bindings.graphBoundaryDecisionCount();
@@ -890,7 +873,6 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
     auto selectedScore = std::make_tuple(
         std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(), choices.size());
     const PnrIndex origin = preferenceOrigin(baselineChoice);
     for (std::size_t rank = 0; rank < choices.size(); ++rank) {
@@ -901,8 +883,7 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
         return initializerError(
             "attachment preference graph-boundary choice is out of range");
       const FrozenSpatialAttachmentOption &record = attachmentOptions[option];
-      if (record.ownerKind !=
-              FrozenSpatialAttachmentOwnerKind::GraphBoundary ||
+      if (record.ownerKind != FrozenSpatialAttachmentOwnerKind::GraphBoundary ||
           record.owner != boundary)
         return initializerError(
             "attachment preference graph-boundary owner is malformed");
@@ -911,16 +892,8 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
       const auto found = endpointSelectionCounts.find(record.endpoint);
       const std::uint64_t count =
           found == endpointSelectionCounts.end() ? 0 : found->second;
-      const auto &sameNetSelections =
-          logicalNetEndpointSelections[boundaryRecord.logicalNet];
-      const bool hasSameNetSelection = !sameNetSelections.empty();
-      const bool reusesSameNetEndpoint =
-          sameNetSelections.find(record.endpoint) != sameNetSelections.end();
-      const std::uint64_t affinityPenalty =
-          hasSameNetSelection && !reusesSameNetEndpoint ? 1 : 0;
       const auto score = std::make_tuple(unreachableCounts[local],
-                                         affinityPenalty, count,
-                                         distanceSums[local], rank);
+                                         distanceSums[local], count, rank);
       if (score < selectedScore) {
         selected = local;
         selectedScore = score;
@@ -930,9 +903,6 @@ llvm::Expected<PreferredRootAssignment> preferLeastSelectedComputeContexts(
     result.changedGraphBoundaryAttachments += selected != baselineChoice;
     if (llvm::Error error = countEndpoint(choices[selected]))
       return std::move(error);
-    const PnrIndex selectedEndpoint =
-        attachmentOptions[choices[selected]].endpoint;
-    ++logicalNetEndpointSelections[boundaryRecord.logicalNet][selectedEndpoint];
   }
 
   if (result.changedComputeRoots == 0 && result.changedPortAttachments == 0 &&
