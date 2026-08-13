@@ -572,13 +572,19 @@ buildBuiltinTarget(ArtifactStore, BuiltinTargetPreset)
   -> Expected<FinalizedFabricDesign>
 buildBuiltinTarget(ArtifactStore, BuiltinTargetPreset, BuiltinTargetScale)
   -> Expected<FinalizedFabricDesign>
+buildBuiltinTarget(ArtifactStore, StringRef templateIdentity,
+                   uint32 schemaMajor, uint32 schemaMinor,
+                   BuiltinTargetScale)
+  -> Expected<FinalizedFabricDesign>
 ```
 
 The parameterized expansion calls are the resolved authoring boundary. The
 preset-only calls mechanically supply the descriptor's default scale. The
 template identity and version select the topology recipe while the complete
 typed scale controls every resource multiplicity and capacity; a resolved
-scale is never discarded in favor of preset defaults. SpatialCore
+scale is never discarded in favor of preset defaults. The identity/version
+overload is the consumer boundary for ResolvedConfig: it requires an exact
+registered descriptor and then applies the supplied scale. SpatialCore
 expansion returns its open typed root and default result sequence. The caller
 may add ordinary resources and close it with that or a replacement result
 sequence. After that Module is independently finalized and published, System

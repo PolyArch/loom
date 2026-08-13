@@ -7,7 +7,8 @@
 //
 // CLI shape mirrors loom-raise / loom-adg:
 //
-//     loom-pre-mapping --builtin=small|default|large --artifact-store=<dir>
+//     loom-pre-mapping --artifact-store=<dir>
+//                      [--loom-accel-profile=<preset-or-path>]
 //                      --counts=<counts.json>
 //                      [--whole-callable-spatial=<symbol>]
 //                      [--operation-spatial=<symbol>
@@ -75,11 +76,6 @@ namespace {
                                             ::llvm::cl::init("-"));
 
 ::llvm::cl::opt<std::string>
-    builtinName("builtin", ::llvm::cl::desc("builtin Fabric target preset"),
-                ::llvm::cl::value_desc("small|default|large"),
-                ::llvm::cl::Required);
-
-::llvm::cl::opt<std::string>
     artifactStorePath("artifact-store",
                       ::llvm::cl::desc("existing ArtifactStore directory"),
                       ::llvm::cl::value_desc("path"), ::llvm::cl::Required);
@@ -98,6 +94,11 @@ namespace {
 ::llvm::cl::opt<std::string> rootReferenceFilename(
     "root-reference",
     ::llvm::cl::desc("optional canonical Dataflow root-reference JSON output"),
+    ::llvm::cl::value_desc("filename"), ::llvm::cl::init(""));
+
+::llvm::cl::opt<std::string> fabricRootReferenceFilename(
+    "fabric-root-reference",
+    ::llvm::cl::desc("optional exact Fabric root-reference JSON output"),
     ::llvm::cl::value_desc("filename"), ::llvm::cl::init(""));
 
 ::llvm::cl::opt<std::string> applicationEntry(
@@ -340,9 +341,6 @@ int main(int argc, char **argv) {
       "candidate. Emits the finalized Canonical Dataflow module and "
       "structured graph/actor counts.\n");
 
-  auto preset = loom::adg::parseBuiltinTargetPreset(builtinName);
-  if (!preset)
-    return reportError(preset.takeError());
   ::llvm::Expected<loom::ResolvedConfig> config =
       loom::resolveConfigProfile(accelerationProfile);
   if (!config)
@@ -363,7 +361,11 @@ int main(int argc, char **argv) {
     return reportError(::llvm::createStringError(
         error, "cannot create BlobStore directory: %s", blobPath.c_str()));
   const loom::BlobStore blobs(blobPath);
-  auto design = loom::adg::buildBuiltinTarget(store, *preset);
+  auto design = loom::adg::buildBuiltinTarget(
+      store, config->hardwareTarget.templateIdentity,
+      config->hardwareTarget.schemaVersion.major,
+      config->hardwareTarget.schemaVersion.minor,
+      config->hardwareTarget.parameters);
   if (!design)
     return reportError(design.takeError());
   if (design->roots().size() != 1)
@@ -717,6 +719,11 @@ int main(int argc, char **argv) {
             applicationWorkloadSetFilename, workloads))
       return reportError(std::move(error));
   }
+
+  if (!fabricRootReferenceFilename.empty())
+    if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
+            fabricRootReferenceFilename, design->roots().front().reference()))
+      return reportError(std::move(error));
 
   return 0;
 }

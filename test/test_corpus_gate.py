@@ -1513,7 +1513,6 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertIn(f"-fuse-ld={self.tool_paths['lld']}", linked[0])
         self.assertIn("-ffat-lto-objects", invocations[0])
         for line in pre_mapped:
-            self.assertIn("--builtin=small", line)
             self.assertIn("--artifact-store=", line)
             self.assertIn("--counts=", line)
             self.assertRegex(line, r"\S+/program\.ll ")
@@ -1579,7 +1578,6 @@ class InventoryAggregationTest(CorpusGateTestBase):
         self.assertEqual(len(linked), 1)
         self.assertEqual(len(simulated), 1)
         for line in simulated:
-            self.assertIn("--builtin=small", line)
             self.assertNotIn("--native-llvm=", line)
             self.assertIn("--canonical-output=", line)
             self.assertIn("--output=", line)

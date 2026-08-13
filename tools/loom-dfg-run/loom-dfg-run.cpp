@@ -49,11 +49,6 @@ llvm::cl::opt<std::string>
                      llvm::cl::Required);
 
 llvm::cl::opt<std::string>
-    builtinName("builtin", llvm::cl::desc("builtin Fabric target preset"),
-                llvm::cl::value_desc("small|default|large"),
-                llvm::cl::Required);
-
-llvm::cl::opt<std::string>
     artifactStorePath("artifact-store",
                       llvm::cl::desc("ArtifactStore directory"),
                       llvm::cl::value_desc("path"), llvm::cl::Required);
@@ -551,9 +546,6 @@ int main(int argc, char **argv) {
     return reportError(
         invalid("max-simulation-wall-seconds must be finite and positive"));
 
-  auto preset = loom::adg::parseBuiltinTargetPreset(builtinName);
-  if (!preset)
-    return reportError(preset.takeError());
   llvm::Expected<loom::ResolvedConfig> config =
       loom::resolveConfigProfile(accelerationProfile);
   if (!config)
@@ -565,7 +557,11 @@ int main(int argc, char **argv) {
     return reportError(
         invalid("cannot create BlobStore directory: " + error.message()));
   const loom::BlobStore blobs(blobPath);
-  auto design = loom::adg::buildBuiltinTarget(store, *preset);
+  auto design = loom::adg::buildBuiltinTarget(
+      store, config->hardwareTarget.templateIdentity,
+      config->hardwareTarget.schemaVersion.major,
+      config->hardwareTarget.schemaVersion.minor,
+      config->hardwareTarget.parameters);
   if (!design)
     return reportError(design.takeError());
   if (design->roots().size() != 1)

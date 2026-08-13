@@ -63,32 +63,25 @@ int main(int argc, char **argv) {
         llvm::inconvertibleErrorCode(),
         "exactly one of --builtin and --config is required"));
 
-  loom::adg::BuiltinTargetPreset preset;
-  loom::adg::BuiltinTargetScale scale;
-  if (!builtinName.empty()) {
-    auto parsed = loom::adg::parseBuiltinTargetPreset(builtinName);
-    if (!parsed)
-      return reportError(parsed.takeError());
-    preset = *parsed;
-    scale = loom::adg::getBuiltinTargetDescriptor(preset).scale;
-  } else {
+  loom::ArtifactStore store(artifactStorePath);
+  llvm::Expected<loom::adg::FinalizedFabricDesign> design = [&]() {
+    if (!builtinName.empty()) {
+      auto preset = loom::adg::parseBuiltinTargetPreset(builtinName);
+      if (!preset)
+        return llvm::Expected<loom::adg::FinalizedFabricDesign>(
+            preset.takeError());
+      return loom::adg::buildBuiltinTarget(store, *preset);
+    }
     auto config = loom::loadResolvedConfig(configPath);
     if (!config)
-      return reportError(config.takeError());
-    const auto *descriptor = loom::adg::findBuiltinTargetDescriptor(
-        config->hardwareTarget.templateIdentity,
+      return llvm::Expected<loom::adg::FinalizedFabricDesign>(
+          config.takeError());
+    return loom::adg::buildBuiltinTarget(
+        store, config->hardwareTarget.templateIdentity,
         config->hardwareTarget.schemaVersion.major,
-        config->hardwareTarget.schemaVersion.minor);
-    if (!descriptor)
-      return reportError(llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "resolved hardware target is not a registered builtin template"));
-    preset = descriptor->preset;
-    scale = config->hardwareTarget.parameters;
-  }
-
-  loom::ArtifactStore store(artifactStorePath);
-  auto design = loom::adg::buildBuiltinTarget(store, preset, scale);
+        config->hardwareTarget.schemaVersion.minor,
+        config->hardwareTarget.parameters);
+  }();
   if (!design)
     return reportError(design.takeError());
   if (design->roots().size() != 1)

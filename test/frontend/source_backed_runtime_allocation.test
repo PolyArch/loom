@@ -1,6 +1,6 @@
-# RUN: %loom-small-cc -emit-llvm -S -O1 -gline-tables-only %S/Inputs/source_backed_runtime_allocation.c -o %t.ll
+# RUN: %loom-riscv64-cc -emit-llvm -S -O1 -gline-tables-only %S/Inputs/source_backed_runtime_allocation.c -o %t.ll
 # RUN: mkdir -p %t.store
-# RUN: loom-dfg-run --builtin=small --artifact-store=%t.store \
+# RUN: loom-dfg-run --artifact-store=%t.store \
 # RUN:   --candidate-jobs=4 \
 # RUN:   --canonical-output=%t.mlir --output=%t.json %t.ll
 # RUN: %python -c "import json; p=json.load(open(r'%t.json')); assert p['status']=='pass'; assert p['graphs'] == 1; assert p['dynamic_calls'] > 0; assert p['memory_bytes_compared'] >= 64; assert p['event_count'] > 0"

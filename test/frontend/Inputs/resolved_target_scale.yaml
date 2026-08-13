@@ -1,0 +1,14 @@
+hardware_target:
+  template_identity: loom.adg.builtin.default
+  schema_major: 4
+  schema_minor: 0
+  parameters:
+    acc_core_count: 8
+    mesh_dimension: 6
+    spatial_pe_count: 31
+    temporal_pe_count: 11
+    spatial_memory_count: 2
+    temporal_memory_count: 2
+    temporal_resident_contexts: 4
+    gateway_count: 4
+    memory_capacity_bytes: 262144

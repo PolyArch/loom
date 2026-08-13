@@ -1,9 +1,9 @@
-# RUN: %loom-small-cc -emit-llvm -S -O1 -gline-tables-only -fno-math-errno %S/../app/attention/main_func.c -o %t.ll
+# RUN: %loom-riscv64-cc -emit-llvm -S -O1 -gline-tables-only -fno-math-errno %S/../app/attention/main_func.c -o %t.ll
 # RUN: %loom-raise %t.ll -o %t.s0.mlir
 # RUN: loom-source-backed-attention-channel-test %t.s0.mlir %t.channel.mlir
 # RUN: FileCheck %s --input-file=%t.channel.mlir --check-prefix=DATAFLOW
 # RUN: mkdir -p %t.store
-# RUN: loom-dfg-run --builtin=small --artifact-store=%t.store \
+# RUN: loom-dfg-run --artifact-store=%t.store \
 # RUN:   --candidate-jobs=4 --operator-protocol-symbol=attention_kernel \
 # RUN:   --expected-entry-result=0 --canonical-output=%t.runner.mlir \
 # RUN:   --output=%t.json %t.ll

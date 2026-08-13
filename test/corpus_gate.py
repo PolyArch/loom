@@ -6,8 +6,8 @@ stages consume ProgramWorkloadInventory rows. Both are derived by
 test/corpus_inventory.py and run through production compiler tools:
 
 - stage ``llvm``: loom-cc/loom-c++ compiles each source to LLVM IR for the
-  exact builtin Fabric InstructionCore target; the emitted module must carry
-  the exact target triple and DataLayout.
+  exact shared InstructionCore target; the emitted module must carry the exact
+  target triple and DataLayout.
 - stage ``s0``: additionally loom-raise produces the initial Structured
   Program candidate and loom-raise-opt parses and verifies it; the S0 module
   must carry the exact target triple attribute.
@@ -95,7 +95,7 @@ from corpus_workload_provider import (  # noqa: E402
 )
 
 
-# The exact builtin Fabric InstructionCore target profile. Every corpus
+# The exact shared InstructionCore target profile. Every corpus
 # source is compiled with exactly these flags and every emitted module is
 # checked for exactly these target facts. The .ll triple and DataLayout are
 # the pinned LLVM forms produced by clang for this target; the MLIR attribute
@@ -122,10 +122,6 @@ TARGET_CODE_MODEL = "medany"
 LLVM_TRIPLE_LINE = 'target triple = "riscv64-unknown-unknown-elf"'
 LLVM_DATALAYOUT_LINE = 'target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"'
 MLIR_TRIPLE_ATTRIBUTE = 'llvm.target_triple = "riscv64-unknown-unknown-elf"'
-
-# The one exact builtin Fabric target preset resolved by the d0 stage through
-# loom-pre-mapping.
-BUILTIN_TARGET_PRESET = "small"
 
 STAGES = ("llvm", "s0", "d0", "dfg-sim")
 WORKLOAD_STAGES = frozenset({"s0", "d0", "dfg-sim"})
@@ -550,7 +546,6 @@ def pre_mapping_command(
 ) -> list[str]:
     command = [
         toolchain.pre_mapping,
-        f"--builtin={BUILTIN_TARGET_PRESET}",
         f"--artifact-store={store_dir}",
         f"--counts={counts}",
         f"--candidate-jobs={candidate_jobs}",
@@ -562,7 +557,7 @@ def pre_mapping_command(
         f"--operator-protocol-symbol={symbol}" for symbol in protocol_symbols
     ]
     if config_path is not None:
-        command.insert(2, f"--loom-accel-profile={config_path}")
+        command.insert(1, f"--loom-accel-profile={config_path}")
     return command
 
 
@@ -581,7 +576,6 @@ def dfg_sim_command(
 ) -> list[str]:
     command = [
         toolchain.dfg_run,
-        f"--builtin={BUILTIN_TARGET_PRESET}",
         f"--artifact-store={store_dir}",
         f"--canonical-output={d0_module}",
         f"--output={report}",
@@ -601,7 +595,7 @@ def dfg_sim_command(
             f"--expected-entry-result={expected_entry_result}",
         )
     if config_path is not None:
-        command.insert(2, f"--loom-accel-profile={config_path}")
+        command.insert(1, f"--loom-accel-profile={config_path}")
     return command
 
 
@@ -1731,7 +1725,7 @@ def main(argv: Sequence[str]) -> int:
         human_header=(
             f"[corpus-gate] stage={args.stage} target={TARGET_TRIPLE} "
             f"march={TARGET_MARCH} mabi={TARGET_MABI} "
-            f"code-model={TARGET_CODE_MODEL} builtin={BUILTIN_TARGET_PRESET} "
+            f"code-model={TARGET_CODE_MODEL} "
             f"candidate-jobs={args.candidate_jobs} "
             f"dfg-limits={dfg_limits.max_wavefront_steps}/"
             f"{dfg_limits.max_event_count}/{dfg_limits.max_capture_bytes} "
@@ -1742,7 +1736,6 @@ def main(argv: Sequence[str]) -> int:
             f"gcc-toolchain={toolchain.gcc_toolchain}"
         ),
         target={
-            "builtin_preset": BUILTIN_TARGET_PRESET,
             "code_model": TARGET_CODE_MODEL,
             "datalayout": LLVM_DATALAYOUT_LINE,
             "gcc_toolchain": str(toolchain.gcc_toolchain),

@@ -1,0 +1,21 @@
+# RUN: rm -rf %t && mkdir -p %t/default-store %t/adg-store %t/pre-store
+# RUN: loom-config-test --resolved-json > %t/default.json
+# RUN: loom-adg --config=%t/default.json --artifact-store=%t/default-store \
+# RUN:   --output=%t/default --root-reference=%t/default-root.json > /dev/null
+# RUN: loom-adg --config=%S/Inputs/resolved_target_scale.yaml \
+# RUN:   --artifact-store=%t/adg-store --output=%t/target \
+# RUN:   --root-reference=%t/target-root.json > /dev/null
+# RUN: not cmp %t/default-root.json %t/target-root.json
+# RUN: %loom-riscv64-cc -emit-llvm -S -O1 -gline-tables-only \
+# RUN:   %S/../app/vecadd/main_func.c -o %t/vecadd.ll
+# RUN: loom-pre-mapping \
+# RUN:   --loom-accel-profile=%S/Inputs/resolved_target_scale.yaml \
+# RUN:   --artifact-store=%t/pre-store --counts=%t/counts.json \
+# RUN:   --candidate-jobs=4 --operator-protocol-symbol=vecadd \
+# RUN:   --fabric-root-reference=%t/pre-root.json \
+# RUN:   -o %t/vecadd.mlir %t/vecadd.ll
+# RUN: cmp %t/target-root.json %t/pre-root.json
+# RUN: FileCheck %s --input-file=%t/counts.json
+
+# CHECK-DAG: "actors": {{[1-9][0-9]*}}
+# CHECK-DAG: "graphs": {{[1-9][0-9]*}}

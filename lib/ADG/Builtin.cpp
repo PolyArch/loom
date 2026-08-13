@@ -1059,4 +1059,17 @@ buildBuiltinTarget(const loom::ArtifactStore &store, BuiltinTargetPreset preset,
   return std::move(systemDesign).finalize();
 }
 
+llvm::Expected<FinalizedFabricDesign>
+buildBuiltinTarget(const loom::ArtifactStore &store,
+                   llvm::StringRef templateIdentity,
+                   std::uint32_t schemaMajor, std::uint32_t schemaMinor,
+                   const BuiltinTargetScale &scale) {
+  const BuiltinTargetDescriptor *descriptor = findBuiltinTargetDescriptor(
+      templateIdentity, schemaMajor, schemaMinor);
+  if (!descriptor)
+    return invalid("resolved hardware target is not a registered builtin "
+                   "template");
+  return buildBuiltinTarget(store, descriptor->preset, scale);
+}
+
 } // namespace loom::adg

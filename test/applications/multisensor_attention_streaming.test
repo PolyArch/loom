@@ -1,7 +1,7 @@
-# RUN: %loom-small-cc -emit-llvm -S -O1 -ffp-contract=off -fno-math-errno \
+# RUN: %loom-riscv64-cc -emit-llvm -S -O1 -ffp-contract=off -fno-math-errno \
 # RUN:   -gline-tables-only %S/loom-multisensor-attention/main.c -o %t.ll
 # RUN: mkdir -p %t.store
-# RUN: loom-dfg-run --builtin=small --artifact-store=%t.store \
+# RUN: loom-dfg-run --artifact-store=%t.store \
 # RUN:   --candidate-jobs=4 --operator-protocol-symbol=project_audio \
 # RUN:   --operator-protocol-symbol=project_imu \
 # RUN:   --operator-protocol-symbol=fuse_attention \

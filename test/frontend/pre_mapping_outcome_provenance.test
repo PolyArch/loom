@@ -1,14 +1,14 @@
-# RUN: %loom-small-cc -emit-llvm -S -O1 -gline-tables-only \
+# RUN: %loom-riscv64-cc -emit-llvm -S -O1 -gline-tables-only \
 # RUN:   %S/../app/vecadd/main_func.c -o %t.vecadd.ll
 # RUN: mkdir -p %t.incomplete.store
-# RUN: not loom-pre-mapping --builtin=small \
+# RUN: not loom-pre-mapping \
 # RUN:   --artifact-store=%t.incomplete.store \
 # RUN:   --loom-accel-profile=%S/Inputs/dataflow_semantic_limit.yaml \
 # RUN:   --candidate-jobs=4 --counts=%t.incomplete.json \
 # RUN:   -o %t.incomplete.mlir %t.vecadd.ll 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=INCOMPLETE
 # RUN: mkdir -p %t.no-feasible.store
-# RUN: not loom-dfg-run --builtin=small \
+# RUN: not loom-dfg-run \
 # RUN:   --artifact-store=%t.no-feasible.store --candidate-jobs=4 \
 # RUN:   --output=%t.no-feasible.json %S/Inputs/no_feasible_readcycle.ll 2>&1 \
 # RUN:   | FileCheck %s --check-prefix=NO-FEASIBLE

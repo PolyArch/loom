@@ -1,6 +1,6 @@
-# RUN: %loom-small-cc -std=c++17 -emit-llvm -S -O1 -gline-tables-only %S/../app/spmm/main_func.cpp -o %t.ll
+# RUN: %loom-riscv64-cc -std=c++17 -emit-llvm -S -O1 -gline-tables-only %S/../app/spmm/main_func.cpp -o %t.ll
 # RUN: mkdir -p %t.store
-# RUN: loom-dfg-run --builtin=small --artifact-store=%t.store \
+# RUN: loom-dfg-run --artifact-store=%t.store \
 # RUN:   --candidate-jobs=4 --operator-protocol-symbol=spmm_kernel \
 # RUN:   --expected-entry-result=0 --canonical-output=%t.mlir \
 # RUN:   --output=%t.json %t.ll

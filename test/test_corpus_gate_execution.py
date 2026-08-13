@@ -139,7 +139,6 @@ class CommandConstructionTest(CorpusGateTestBase):
             command,
             [
                 self.tool_paths["dfg_run"],
-                "--builtin=small",
                 f"--loom-accel-profile={config}",
                 f"--artifact-store={self.out_dir / 'store'}",
                 f"--canonical-output={self.out_dir / 'program.dfg.mlir'}",

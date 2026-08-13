@@ -198,6 +198,9 @@ select different search policies and objective closures without introducing a
 second schema. Fabric template expansion consumes the resolved template
 identity, schema version, and complete typed parameter record. Preset defaults
 are authoring provenance and cannot replace those resolved parameters.
+Compiler and execution tools that consume a ResolvedConfig have no second
+builtin-preset selector. When they expose a Fabric root reference, it is a
+projection of the target built from that exact resolved record.
 
 The Structured ownership generator policy owns:
 

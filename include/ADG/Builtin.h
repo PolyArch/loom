@@ -53,6 +53,11 @@ buildBuiltinTarget(const loom::ArtifactStore &store,
 llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store, BuiltinTargetPreset preset,
                    const BuiltinTargetScale &scale);
+llvm::Expected<FinalizedFabricDesign>
+buildBuiltinTarget(const loom::ArtifactStore &store,
+                   llvm::StringRef templateIdentity,
+                   std::uint32_t schemaMajor, std::uint32_t schemaMinor,
+                   const BuiltinTargetScale &scale);
 
 } // namespace loom::adg
 
