@@ -3,6 +3,7 @@
 #include "Common/MappingDebugLog.h"
 #include "CpSatExactProtocol.h"
 #include "SpatialBindingRelationModel.h"
+#include "SpatialRouteConstraintModel.h"
 
 #include "ortools/sat/cp_model.h"
 
@@ -17,6 +18,7 @@
 #include <optional>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 using namespace loom;
 using namespace loom::pnr;
@@ -68,23 +70,99 @@ countRegionDecisions(llvm::ArrayRef<PnrIndex> decisions,
   return count + affectedNets.size();
 }
 
+llvm::Expected<PnrIndex>
+currentBindingChoice(const SpatialCandidateState &candidate,
+                     const detail::SpatialBindingRelationModel &bindings,
+                     PnrIndex decision) {
+  if (decision < bindings.computeDecisionCount()) {
+    const SpatialComputeBindingSelection &selected =
+        candidate.computeBinding(decision);
+    const auto choice = bindings.computeChoiceOrdinal(
+        decision, selected.placement, selected.instructionContext);
+    if (!choice)
+      return invocationError("compute binding has no relation-domain choice");
+    return *choice;
+  }
+
+  if (decision < bindings.portDecisionOffset()) {
+    const PnrIndex realization = decision - bindings.computeDecisionCount();
+    const auto choice = bindings.memoryChoiceOrdinal(
+        realization, candidate.memoryBinding(realization).placement);
+    if (!choice)
+      return invocationError("memory binding has no relation-domain choice");
+    return *choice;
+  }
+
+  if (decision < bindings.graphBoundaryDecisionOffset()) {
+    const PnrIndex demand = decision - bindings.portDecisionOffset();
+    const auto choice = bindings.portAttachmentChoiceOrdinal(
+        demand, candidate.portAttachment(demand));
+    if (!choice)
+      return invocationError("PortDemand has no relation-domain choice");
+    return *choice;
+  }
+
+  const PnrIndex boundary = decision - bindings.graphBoundaryDecisionOffset();
+  if (boundary >= bindings.graphBoundaryDecisionCount())
+    return invocationError("binding decision is out of range");
+  const auto choice = bindings.graphBoundaryAttachmentChoiceOrdinal(
+      boundary, candidate.graphBoundaryAttachment(boundary));
+  if (!choice)
+    return invocationError("graph boundary has no relation-domain choice");
+  return *choice;
+}
+
+llvm::Expected<IntVar>
+addMutationCountObjective(CpModelBuilder &model,
+                          llvm::ArrayRef<IntVar> variables,
+                          const SpatialCandidateState &candidate,
+                          const detail::SpatialBindingRelationModel &bindings,
+                          llvm::ArrayRef<PnrIndex> decisions) {
+  if (variables.size() != decisions.size())
+    return invocationError(
+        "mutation objective variable and decision counts disagree");
+  if (decisions.size() > static_cast<std::size_t>(INT64_MAX))
+    return invocationError("mutation objective domain is not encodable");
+
+  std::vector<BoolVar> changed;
+  changed.reserve(decisions.size());
+  for (auto [local, decision] : llvm::enumerate(decisions)) {
+    auto current = currentBindingChoice(candidate, bindings, decision);
+    if (!current)
+      return current.takeError();
+    const BoolVar differs = model.NewBoolVar();
+    model.AddNotEqual(variables[local], *current).OnlyEnforceIf(differs);
+    model.AddEquality(variables[local], *current).OnlyEnforceIf(differs.Not());
+    changed.push_back(differs);
+  }
+
+  const IntVar mutationCount =
+      model.NewIntVar(Domain(0, static_cast<std::int64_t>(decisions.size())));
+  model.AddEquality(mutationCount, LinearExpr::Sum(changed));
+  model.Minimize(mutationCount);
+  return mutationCount;
+}
+
 } // namespace
 
 llvm::Expected<SpatialExactRepairResult>
-SpatialExactRepairScratch::repairCapacityOveruse(
-    SpatialCandidateState &candidate, std::uint64_t restartOrdinal) {
+SpatialExactRepairScratch::repair(SpatialCandidateState &candidate,
+                                  std::uint64_t restartOrdinal) {
   const FrozenSpatialPnrProblem &problem = candidate.problem();
   const ResolvedPnrExactRepairPolicy &policy =
       problem.config().policy().search.exactRepair;
   if (policy.kind != ResolvedPnrExactRepairKind::CpSat)
     return invocationError("CpSat_1_0 is not selected by SearchPolicy");
   if (candidate.atomicCapacityOveruse() == 0 &&
-      (candidate.routeCapacityOveruse() != 0 ||
-       candidate.tagResidentCapacityOveruse() != 0))
-    return repairRouteCapacityOveruse(candidate, restartOrdinal);
+      (candidate.unroutedObligationCount() != 0 ||
+       candidate.routeCapacityOveruse() != 0 ||
+       candidate.tagResidentCapacityOveruse() != 0 ||
+       candidate.tagUnassignedCount() != 0 ||
+       candidate.tagConflictCount() != 0))
+    return repairTransportClosure(candidate, restartOrdinal);
   if (candidate.atomicCapacityOveruse() == 0)
     return result(SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
-                  "candidate has no CapacityOveruse witness");
+                  "candidate has no supported exact-repair witness");
 
   const detail::SpatialBindingRelationModel &bindings =
       problem.bindingRelations();
@@ -274,6 +352,11 @@ SpatialExactRepairScratch::repairCapacityOveruse(
     }
   }
 
+  auto mutationCount = addMutationCountObjective(model, variables, candidate,
+                                                 bindings, decisions_);
+  if (!mutationCount)
+    return mutationCount.takeError();
+
   DeterministicPnrRandomStream exactRepairStream =
       DeterministicPnrRandomStream::create(
           problem.config().policy().determinism.masterSeed, restartOrdinal,
@@ -281,8 +364,8 @@ SpatialExactRepairScratch::repairCapacityOveruse(
   const std::int32_t solverSeed =
       detail::projectCpSatRandomSeed(exactRepairStream.nextU64());
   auto solved = detail::solveCanonicalCpSat(model.Build(), canonicalVariables,
-                                            std::nullopt, policy.maxSolverCalls,
-                                            solverSeed);
+                                            mutationCount->index(),
+                                            policy.maxSolverCalls, solverSeed);
   if (!solved)
     return result(SpatialExactRepairResultKind::InternalError,
                   *regionDecisionCount, 0, 0,
@@ -395,7 +478,7 @@ SpatialExactRepairScratch::repairCapacityOveruse(
 }
 
 llvm::Expected<SpatialExactRepairResult>
-SpatialExactRepairScratch::repairRouteCapacityOveruse(
+SpatialExactRepairScratch::repairTransportClosure(
     SpatialCandidateState &candidate, std::uint64_t restartOrdinal) {
   const FrozenSpatialPnrProblem &problem = candidate.problem();
   const ResolvedPnrExactRepairPolicy &policy =
@@ -425,9 +508,52 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
         return witness.takeError();
       capacityWitnesses_.push_back(*witness);
     }
-  if (capacityWitnesses_.empty())
+  if (capacityWitnesses_.empty() && candidate.unroutedObligationCount() == 0 &&
+      candidate.tagUnassignedCount() == 0 && candidate.tagConflictCount() == 0)
     return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                  "resident CapacityOveruse has no canonical witness");
+                  "transport repair has no canonical witness");
+
+  ResolvedPnrViolationKind primaryWitnessKind =
+      ResolvedPnrViolationKind::UnroutedObligation;
+  PnrIndex primaryWitnessOrdinal = 0;
+  bool primaryWitnessFound = false;
+  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+       ++logicalNet)
+    if (!candidate.routeTree(logicalNet).isRouted()) {
+      primaryWitnessOrdinal = transfers.logicalNets()[logicalNet].sinkOffset;
+      primaryWitnessFound = true;
+      break;
+    }
+  if (!primaryWitnessFound && !capacityWitnesses_.empty()) {
+    primaryWitnessKind = ResolvedPnrViolationKind::CapacityOveruse;
+    primaryWitnessOrdinal = capacityWitnesses_.front();
+    primaryWitnessFound = true;
+  }
+  PnrIndex globalSegment = 0;
+  for (PnrIndex logicalNet = 0;
+       !primaryWitnessFound && logicalNet < transfers.logicalNets().size();
+       ++logicalNet)
+    for (const auto &value : candidate.tagValues(logicalNet)) {
+      if (!value) {
+        primaryWitnessKind = ResolvedPnrViolationKind::TagUnassigned;
+        primaryWitnessOrdinal = globalSegment;
+        primaryWitnessFound = true;
+        break;
+      }
+      ++globalSegment;
+    }
+  for (PnrIndex domain = 0;
+       !primaryWitnessFound &&
+       domain < routing.tagContinuity().matchDomains().size();
+       ++domain)
+    if (candidate.tagDomainConflictCount(domain) != 0) {
+      primaryWitnessKind = ResolvedPnrViolationKind::TagConflict;
+      primaryWitnessOrdinal = domain;
+      primaryWitnessFound = true;
+    }
+  if (!primaryWitnessFound)
+    return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                  "transport repair could not locate its primary witness");
 
   decisionIncluded_.assign(bindings.decisionCount(), 0);
   relationIncluded_.assign(relationModel.relations().size(), 0);
@@ -436,6 +562,17 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
   decisions_.clear();
   relations_.clear();
   affectedNets_.clear();
+
+  const PnrIndex computeCount = bindings.computeDecisionCount();
+  const PnrIndex memoryOffset = computeCount;
+  const PnrIndex portOffset = bindings.portDecisionOffset();
+  const PnrIndex boundaryOffset = bindings.graphBoundaryDecisionOffset();
+  const auto computeDemandOffsets = ports.computeRealizationDemandOffsets();
+  const auto memoryDemandOffsets = ports.memoryRealizationDemandOffsets();
+  if (computeDemandOffsets.size() != computeCount + 1 ||
+      memoryDemandOffsets.size() != bindings.memoryDecisionCount() + 1)
+    return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                  "realization PortDemand reverse index is malformed");
 
   const auto addDecision = [&](PnrIndex decision) -> llvm::Error {
     if (decision >= decisionIncluded_.size())
@@ -446,12 +583,18 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
     }
     return llvm::Error::success();
   };
-  const auto addNet = [&](PnrIndex logicalNet) -> llvm::Error {
+  const auto addRoutingNet = [&](PnrIndex logicalNet) -> llvm::Error {
     if (logicalNet >= netIncluded_.size())
       return invocationError("route repair logical net is out of range");
-    if (!netIncluded_[logicalNet]) {
-      netIncluded_[logicalNet] = 1;
-      affectedNets_.push_back(logicalNet);
+    for (PnrIndex member :
+         problem.routeConstraints().equalityClosure(logicalNet)) {
+      if (member >= netIncluded_.size())
+        return invocationError(
+            "route equality closure contains a foreign logical net");
+      if (!netIncluded_[member]) {
+        netIncluded_[member] = 1;
+        affectedNets_.push_back(member);
+      }
     }
     return llvm::Error::success();
   };
@@ -470,6 +613,44 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
     }
     llvm_unreachable("unknown frozen terminal binding kind");
   };
+  const auto addWitnessNet = [&](PnrIndex logicalNet) -> llvm::Error {
+    if (llvm::Error error = addRoutingNet(logicalNet))
+      return error;
+    for (PnrIndex member :
+         problem.routeConstraints().equalityClosure(logicalNet)) {
+      if (llvm::Error error =
+              addTerminal(transfers.logicalNetSourceBindings()[member]))
+        return error;
+      const FrozenSpatialLogicalNet &net = transfers.logicalNets()[member];
+      for (FrozenSpatialTerminalBinding sink :
+           transfers.logicalNetSinkBindings().slice(net.sinkOffset,
+                                                    net.sinkCount))
+        if (llvm::Error error = addTerminal(sink))
+          return error;
+    }
+    return llvm::Error::success();
+  };
+
+  for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+       ++logicalNet) {
+    bool unresolved = !candidate.routeTree(logicalNet).isRouted();
+    const auto tagValues = candidate.tagValues(logicalNet);
+    for (PnrIndex segment = 0; segment < tagValues.size(); ++segment) {
+      if (!tagValues[segment]) {
+        unresolved = true;
+        continue;
+      }
+      if (llvm::any_of(candidate.tagSegmentDomains(logicalNet, segment),
+                       [&](PnrIndex domain) {
+                         return candidate.tagDomainValueConflicts(
+                             domain, *tagValues[segment]);
+                       }))
+        unresolved = true;
+    }
+    if (unresolved)
+      if (llvm::Error error = addWitnessNet(logicalNet))
+        return std::move(error);
+  }
 
   const auto capacityClaimOffsets = routing.capacityRouteClaimOffsets();
   const auto capacityClaims = routing.capacityRouteClaims();
@@ -485,7 +666,7 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
         for (PnrIndex segment = 0; segment < values.size(); ++segment)
           if (llvm::is_contained(
                   candidate.tagSegmentDomains(logicalNet, segment), domain)) {
-            if (llvm::Error error = addNet(logicalNet))
+            if (llvm::Error error = addWitnessNet(logicalNet))
               return std::move(error);
             break;
           }
@@ -505,7 +686,7 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
                candidate.logicalNetRouteClaimRefcount(logicalNet, claim) != 0;
       });
       if (contributes)
-        if (llvm::Error error = addNet(logicalNet))
+        if (llvm::Error error = addWitnessNet(logicalNet))
           return std::move(error);
     }
   }
@@ -513,65 +694,86 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
     return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
                   "route-capacity witness has no contributing logical net");
 
-  std::size_t netCursor = 0;
-  std::size_t decisionCursor = 0;
-  while (netCursor != affectedNets_.size() ||
-         decisionCursor != decisionQueue_.size()) {
-    while (netCursor != affectedNets_.size()) {
-      const PnrIndex logicalNet = affectedNets_[netCursor++];
-      if (llvm::Error error =
-              addTerminal(transfers.logicalNetSourceBindings()[logicalNet]))
-        return std::move(error);
-      const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
-      for (FrozenSpatialTerminalBinding sink :
-           transfers.logicalNetSinkBindings().slice(net.sinkOffset,
-                                                    net.sinkCount))
-        if (llvm::Error error = addTerminal(sink))
-          return std::move(error);
-    }
-    while (decisionCursor != decisionQueue_.size()) {
-      const PnrIndex decision = decisionQueue_[decisionCursor++];
-      if (decision < bindings.portDecisionOffset())
-        return result(SpatialExactRepairResultKind::UnsupportedEncoding,
-                      decisionQueue_.size(), 0, 0,
-                      "route repair escaped the fixed realization boundary");
-      if (decision < bindings.graphBoundaryDecisionOffset()) {
-        const PnrIndex demand = decision - bindings.portDecisionOffset();
-        if (llvm::Error error = addNet(ports.portDemands()[demand].logicalNet))
-          return std::move(error);
+  for (std::size_t cursor = 0; cursor < decisionQueue_.size(); ++cursor) {
+    const PnrIndex decision = decisionQueue_[cursor];
+    if (decision < portOffset) {
+      llvm::ArrayRef<PnrIndex> ownedDemands;
+      if (decision < computeCount) {
+        ownedDemands = ports.computeRealizationDemands().slice(
+            computeDemandOffsets[decision], computeDemandOffsets[decision + 1] -
+                                                computeDemandOffsets[decision]);
       } else {
-        const PnrIndex boundary =
-            decision - bindings.graphBoundaryDecisionOffset();
-        if (boundary >= ports.graphBoundaries().size())
+        const PnrIndex realization = decision - memoryOffset;
+        ownedDemands = ports.memoryRealizationDemands().slice(
+            memoryDemandOffsets[realization],
+            memoryDemandOffsets[realization + 1] -
+                memoryDemandOffsets[realization]);
+      }
+      for (PnrIndex demand : ownedDemands) {
+        if (demand >= ports.portDemands().size())
           return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                        "route repair boundary decision is out of range");
+                        "realization owns a foreign PortDemand");
+        if (llvm::Error error = addDecision(portOffset + demand))
+          return std::move(error);
         if (llvm::Error error =
-                addNet(ports.graphBoundaries()[boundary].logicalNet))
+                addRoutingNet(ports.portDemands()[demand].logicalNet))
           return std::move(error);
       }
-      for (PnrIndex relation : bindings.decisionRelations(decision)) {
-        if (!bindings.relationRequiresRouteRepairEncoding(relation))
-          continue;
-        if (relation >= relationIncluded_.size())
-          return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                        "route repair relation is out of range");
-        if (!relationIncluded_[relation]) {
-          relationIncluded_[relation] = 1;
-          relations_.push_back(relation);
-        }
-        const detail::InitializerRelationRecord &record =
-            relationModel.relations()[relation];
-        for (const detail::InitializerRelationMember &member :
-             relationModel.members(record))
-          if (llvm::Error error = addDecision(member.decision))
-            return std::move(error);
-      }
+    } else if (decision < boundaryOffset) {
+      const PnrIndex demand = decision - portOffset;
+      if (demand >= ports.portDemands().size())
+        return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                      "route repair PortDemand is out of range");
+      const FrozenSpatialPortDemand &record = ports.portDemands()[demand];
+      const PnrIndex owner = record.kind == FrozenSpatialPortDemandKind::Compute
+                                 ? record.realization
+                                 : memoryOffset + record.realization;
+      if (llvm::Error error = addDecision(owner))
+        return std::move(error);
+      if (llvm::Error error = addRoutingNet(record.logicalNet))
+        return std::move(error);
+    } else {
+      const PnrIndex boundary = decision - boundaryOffset;
+      if (boundary >= ports.graphBoundaries().size())
+        return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                      "route repair boundary decision is out of range");
+      if (llvm::Error error =
+              addRoutingNet(ports.graphBoundaries()[boundary].logicalNet))
+        return std::move(error);
+    }
+
+    for (PnrIndex relation : bindings.decisionRelations(decision)) {
+      const bool closesRegion = decision < portOffset
+                                    ? bindings.relationIsConstraint(relation)
+                                    : !bindings.relationIsStructural(relation);
+      if (!closesRegion)
+        continue;
+      if (relation >= relationModel.relations().size())
+        return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                      "route repair relation is out of range");
+      const detail::InitializerRelationRecord &record =
+          relationModel.relations()[relation];
+      for (const detail::InitializerRelationMember &member :
+           relationModel.members(record))
+        if (llvm::Error error = addDecision(member.decision))
+          return std::move(error);
     }
   }
   decisions_ = decisionQueue_;
   llvm::sort(decisions_);
-  llvm::sort(relations_);
   llvm::sort(affectedNets_);
+
+  for (PnrIndex decision : decisions_)
+    for (PnrIndex relation : bindings.decisionRelations(decision)) {
+      if (relation >= relationIncluded_.size())
+        return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                      "route repair relation is out of range");
+      if (!relationIncluded_[relation]) {
+        relationIncluded_[relation] = 1;
+        relations_.push_back(relation);
+      }
+    }
+  llvm::sort(relations_);
 
   if (affectedNets_.size() >
       std::numeric_limits<std::uint64_t>::max() - decisions_.size())
@@ -586,7 +788,11 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
       decisions_.size() > static_cast<std::size_t>(INT_MAX))
     return result(SpatialExactRepairResultKind::UnsupportedEncoding,
                   regionDecisionCount, 0, 0,
-                  "route attachment decision domain is not CP-SAT encodable");
+                  "route repair decision domain is not CP-SAT encodable");
+  if (bindings.deferredProjection())
+    return result(SpatialExactRepairResultKind::UnsupportedEncoding,
+                  regionDecisionCount, 0, 0,
+                  "route repair has an unencoded constraint projection");
 
   CpModelBuilder model;
   std::vector<IntVar> variables;
@@ -596,36 +802,33 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
   legalValueOffsets_.reserve(decisions_.size() + 1);
   legalValueOffsets_.push_back(0);
   legalValues_.clear();
+  const auto contextOveruse =
+      problem.capacity().computeInstructionContextOveruse();
 
   for (PnrIndex decision : decisions_) {
     const std::size_t begin = legalValues_.size();
-    if (decision < bindings.graphBoundaryDecisionOffset()) {
-      const PnrIndex demand = decision - bindings.portDecisionOffset();
-      const FrozenSpatialPortDemand &record = ports.portDemands()[demand];
-      const PnrIndex placement =
-          record.kind == FrozenSpatialPortDemandKind::Compute
-              ? candidate.computeBinding(record.realization).placement
-              : candidate.memoryBinding(record.realization).placement;
-      const auto choices = bindings.portAttachmentChoices(demand);
-      for (auto [ordinal, option] : llvm::enumerate(choices)) {
-        if (option >= ports.attachmentOptions().size())
+    if (decision < computeCount) {
+      const auto choices = bindings.computeChoices(decision);
+      for (auto [ordinal, choice] : llvm::enumerate(choices)) {
+        if (choice.instructionContext >= contextOveruse.size())
           return result(SpatialExactRepairResultKind::InternalError,
                         regionDecisionCount, 0, 0,
-                        "route repair attachment option is out of range");
-        const FrozenSpatialAttachmentOption &attachment =
-            ports.attachmentOptions()[option];
-        if (attachment.ownerKind !=
-                FrozenSpatialAttachmentOwnerKind::PlacementDomain ||
-            attachment.owner >= ports.placementDomains().size())
-          return result(SpatialExactRepairResultKind::InternalError,
-                        regionDecisionCount, 0, 0,
-                        "route repair attachment owner is malformed");
-        if (ports.placementDomains()[attachment.owner].placement == placement)
+                        "route repair compute choice has no capacity value");
+        if (contextOveruse[choice.instructionContext] == 0)
           legalValues_.push_back(static_cast<std::int64_t>(ordinal));
       }
+    } else if (decision < portOffset) {
+      const PnrIndex realization = decision - memoryOffset;
+      const auto choices = bindings.memoryChoices(realization);
+      for (std::size_t ordinal = 0; ordinal < choices.size(); ++ordinal)
+        legalValues_.push_back(static_cast<std::int64_t>(ordinal));
+    } else if (decision < boundaryOffset) {
+      const PnrIndex demand = decision - portOffset;
+      const auto choices = bindings.portAttachmentChoices(demand);
+      for (std::size_t ordinal = 0; ordinal < choices.size(); ++ordinal)
+        legalValues_.push_back(static_cast<std::int64_t>(ordinal));
     } else {
-      const PnrIndex boundary =
-          decision - bindings.graphBoundaryDecisionOffset();
+      const PnrIndex boundary = decision - boundaryOffset;
       const auto choices = bindings.graphBoundaryAttachmentChoices(boundary);
       for (std::size_t ordinal = 0; ordinal < choices.size(); ++ordinal)
         legalValues_.push_back(static_cast<std::int64_t>(ordinal));
@@ -633,7 +836,7 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
     if (legalValues_.size() == begin)
       return result(SpatialExactRepairResultKind::UnsupportedEncoding,
                     regionDecisionCount, 0, 0,
-                    "route repair attachment has no fixed-boundary choice");
+                    "route repair decision has no legal choice");
     if (legalValues_.size() > getPnrIndexMax())
       return result(SpatialExactRepairResultKind::UnsupportedEncoding,
                     regionDecisionCount, 0, 0,
@@ -661,20 +864,28 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
     projections.reserve(record.memberCount);
     for (const detail::InitializerRelationMember &member :
          relationModel.members(record)) {
-      if (member.decision >= decisionVariables_.size() ||
-          decisionVariables_[member.decision] < 0)
+      if (member.decision >= decisionVariables_.size())
         return result(SpatialExactRepairResultKind::InternalError,
                       regionDecisionCount, 0, 0,
-                      "route repair relation escaped its closed region");
+                      "route repair relation member is out of range");
+      if (decisionVariables_[member.decision] < 0) {
+        auto selected =
+            currentBindingChoice(candidate, bindings, member.decision);
+        if (!selected)
+          return selected.takeError();
+        projections.push_back(
+            model.NewConstant(relationModel.projectedValue(member, *selected)));
+        continue;
+      }
+
       const std::size_t local =
           static_cast<std::size_t>(decisionVariables_[member.decision]);
+      const auto offsets = relationModel.decisionChoiceOffsets();
+      const PnrIndex choiceCount =
+          offsets[member.decision + 1] - offsets[member.decision];
       elementValues_.clear();
-      const auto legal =
-          llvm::ArrayRef(legalValues_)
-              .slice(legalValueOffsets_[local],
-                     legalValueOffsets_[local + 1] - legalValueOffsets_[local]);
-      elementValues_.reserve(legal.size());
-      for (std::int64_t choice : legal)
+      elementValues_.reserve(choiceCount);
+      for (PnrIndex choice = 0; choice < choiceCount; ++choice)
         elementValues_.push_back(relationModel.projectedValue(member, choice));
       const IntVar projection =
           model.NewIntVar(Domain::FromValues(elementValues_));
@@ -688,6 +899,11 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
       model.AddAllDifferent(projections);
     }
   }
+
+  auto mutationCount = addMutationCountObjective(model, variables, candidate,
+                                                 bindings, decisions_);
+  if (!mutationCount)
+    return mutationCount.takeError();
 
   if (llvm::Error error = actionExecutor_.prepare(candidate))
     return result(SpatialExactRepairResultKind::InternalError,
@@ -712,7 +928,7 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
 
   while (solverCalls < policy.maxSolverCalls) {
     auto solved = detail::solveCanonicalCpSat(
-        model.Build(), canonicalVariables, std::nullopt,
+        model.Build(), canonicalVariables, mutationCount->index(),
         policy.maxSolverCalls - solverCalls, solverSeed);
     if (!solved)
       return executedResult(SpatialExactRepairResultKind::InternalError,
@@ -722,11 +938,11 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
       if (sawUnknownAssignment)
         return executedResult(
             SpatialExactRepairResultKind::UnknownBudgetExhausted,
-            "fixed-boundary attachment assignments were exhausted after at "
+            "bounded route-repair assignments were exhausted after at "
             "least one route probe reached its work limit");
       return executedResult(
           SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary,
-          "fixed-boundary attachment assignments were exhausted without an "
+          "bounded route-repair assignments were exhausted without an "
           "exact route closure");
     }
     if (solved->kind ==
@@ -737,46 +953,79 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
     if (solved->assignment.size() != decisions_.size())
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             "route repair assignment has the wrong size");
+    if (!solved->objectiveValue || *solved->objectiveValue < 0)
+      return executedResult(
+          SpatialExactRepairResultKind::InternalError,
+          "route repair omitted its mutation-count objective");
 
     actions_.clear();
-    for (PnrIndex logicalNet = 0;
-         logicalNet < transfers.logicalNets().size(); ++logicalNet) {
+    for (auto [local, decision] : llvm::enumerate(decisions_)) {
+      const std::int64_t selected = solved->assignment[local];
+      if (selected < 0)
+        return executedResult(SpatialExactRepairResultKind::InternalError,
+                              "route repair selected a negative choice");
+      if (decision < computeCount) {
+        const auto choices = bindings.computeChoices(decision);
+        if (static_cast<std::size_t>(selected) >= choices.size())
+          return executedResult(SpatialExactRepairResultKind::InternalError,
+                                "route repair compute choice is invalid");
+        const detail::SpatialComputeBindingChoice &choice = choices[selected];
+        const SpatialComputeBindingSelection &current =
+            candidate.computeBinding(decision);
+        if (current.placement != choice.placement ||
+            current.instructionContext != choice.instructionContext)
+          actions_.push_back(
+              SpatialRealizationBindingAction{SpatialComputeBindingAction{
+                  decision, choice.placement, choice.instructionContext}});
+      } else if (decision < portOffset) {
+        const PnrIndex realization = decision - memoryOffset;
+        const auto choices = bindings.memoryChoices(realization);
+        if (static_cast<std::size_t>(selected) >= choices.size())
+          return executedResult(SpatialExactRepairResultKind::InternalError,
+                                "route repair memory choice is invalid");
+        const detail::SpatialMemoryBindingChoice &choice = choices[selected];
+        if (candidate.memoryBinding(realization).placement != choice.placement)
+          actions_.push_back(SpatialRealizationBindingAction{
+              SpatialMemoryBindingAction{realization, choice.placement}});
+      }
+    }
+    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+         ++logicalNet) {
       if (candidate.routeTree(logicalNet).isRouted())
         continue;
       const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
       for (PnrIndex sink = 0; sink < net.sinkCount; ++sink)
-        actions_.push_back(SpatialTransportRoutingAction{
-            SpatialWitnessRegionRoutingAction{
+        actions_.push_back(
+            SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
                 ResolvedPnrViolationKind::UnroutedObligation,
                 net.sinkOffset + sink}});
     }
     for (PnrIndex witness : capacityWitnesses_)
-      actions_.push_back(SpatialTransportRoutingAction{
-          SpatialWitnessRegionRoutingAction{
+      actions_.push_back(
+          SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
               ResolvedPnrViolationKind::CapacityOveruse, witness}});
     PnrIndex globalSegment = 0;
-    for (PnrIndex logicalNet = 0;
-         logicalNet < transfers.logicalNets().size(); ++logicalNet)
+    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+         ++logicalNet)
       for (const auto &value : candidate.tagValues(logicalNet)) {
         if (!value)
-          actions_.push_back(SpatialTransportRoutingAction{
-              SpatialWitnessRegionRoutingAction{
+          actions_.push_back(
+              SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
                   ResolvedPnrViolationKind::TagUnassigned, globalSegment}});
         ++globalSegment;
       }
     for (PnrIndex domain = 0;
          domain < routing.tagContinuity().matchDomains().size(); ++domain)
       if (candidate.tagDomainConflictCount(domain) != 0)
-        actions_.push_back(SpatialTransportRoutingAction{
-            SpatialWitnessRegionRoutingAction{
+        actions_.push_back(
+            SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
                 ResolvedPnrViolationKind::TagConflict, domain}});
     for (auto [local, decision] : llvm::enumerate(decisions_)) {
       const std::int64_t selected = solved->assignment[local];
-      if (selected < 0)
-        return executedResult(SpatialExactRepairResultKind::InternalError,
-                              "route repair selected a negative choice");
-      if (decision < bindings.graphBoundaryDecisionOffset()) {
-        const PnrIndex demand = decision - bindings.portDecisionOffset();
+      if (decision < portOffset)
+        continue;
+      if (decision < boundaryOffset) {
+        const PnrIndex demand = decision - portOffset;
         const auto choices = bindings.portAttachmentChoices(demand);
         if (static_cast<std::size_t>(selected) >= choices.size())
           return executedResult(SpatialExactRepairResultKind::InternalError,
@@ -786,8 +1035,7 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
           actions_.push_back(SpatialResourceAllocationAction{
               SpatialPortAttachmentAction{demand, option}});
       } else {
-        const PnrIndex boundary =
-            decision - bindings.graphBoundaryDecisionOffset();
+        const PnrIndex boundary = decision - boundaryOffset;
         const auto choices = bindings.graphBoundaryAttachmentChoices(boundary);
         if (static_cast<std::size_t>(selected) >= choices.size())
           return executedResult(
@@ -808,9 +1056,12 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
           fields["search_scope"] = "route_exact_repair";
           fields["restart"] = restartOrdinal;
           fields["assignment"] = assignmentOrdinal;
-          fields["capacity_ref"] = capacityWitnesses_.front();
+          fields["witness_kind"] =
+              static_cast<std::uint32_t>(primaryWitnessKind);
+          fields["witness_ordinal"] = primaryWitnessOrdinal;
           fields["capacity_witness_count"] = capacityWitnesses_.size();
           fields["region_decisions"] = regionDecisionCount;
+          fields["mutation_count"] = *solved->objectiveValue;
           fields["action_count"] = lastActionCount;
           fields["solver_calls"] = solverCalls;
         });
@@ -819,34 +1070,52 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
         loom::mapping_debug::Stage::SpatialPnr,
         loom::mapping_debug::Event::ContextChoice,
         [&](llvm::json::Object &fields) {
-          llvm::json::Array selectedTerminals;
+          llvm::json::Array selectedDecisions;
           for (auto [local, decision] : llvm::enumerate(decisions_)) {
             const std::int64_t selected = solved->assignment[local];
-            llvm::json::Object terminal;
-            terminal["decision"] = decision;
-            terminal["choice"] = selected;
-            PnrIndex option = getInvalidPnrIndex();
-            if (decision < bindings.graphBoundaryDecisionOffset()) {
-              const PnrIndex demand = decision - bindings.portDecisionOffset();
-              terminal["kind"] = "port_attachment";
-              terminal["anchor"] = demand;
-              option = bindings.portAttachmentChoices(demand)[selected];
+            llvm::json::Object selectedDecision;
+            selectedDecision["decision"] = decision;
+            selectedDecision["choice"] = selected;
+            if (decision < computeCount) {
+              const detail::SpatialComputeBindingChoice &choice =
+                  bindings.computeChoices(decision)[selected];
+              selectedDecision["kind"] = "compute_binding";
+              selectedDecision["anchor"] = decision;
+              selectedDecision["placement"] = choice.placement;
+              selectedDecision["instruction_context"] =
+                  choice.instructionContext;
+            } else if (decision < portOffset) {
+              const PnrIndex realization = decision - memoryOffset;
+              const detail::SpatialMemoryBindingChoice &choice =
+                  bindings.memoryChoices(realization)[selected];
+              selectedDecision["kind"] = "memory_binding";
+              selectedDecision["anchor"] = realization;
+              selectedDecision["placement"] = choice.placement;
+            } else if (decision < boundaryOffset) {
+              const PnrIndex demand = decision - portOffset;
+              const PnrIndex option =
+                  bindings.portAttachmentChoices(demand)[selected];
+              selectedDecision["kind"] = "port_attachment";
+              selectedDecision["anchor"] = demand;
+              selectedDecision["attachment_option"] = option;
+              selectedDecision["endpoint"] =
+                  ports.attachmentOptions()[option].endpoint;
             } else {
-              const PnrIndex boundary =
-                  decision - bindings.graphBoundaryDecisionOffset();
-              terminal["kind"] = "graph_boundary_attachment";
-              terminal["anchor"] = boundary;
-              option =
+              const PnrIndex boundary = decision - boundaryOffset;
+              const PnrIndex option =
                   bindings.graphBoundaryAttachmentChoices(boundary)[selected];
+              selectedDecision["kind"] = "graph_boundary_attachment";
+              selectedDecision["anchor"] = boundary;
+              selectedDecision["attachment_option"] = option;
+              selectedDecision["endpoint"] =
+                  ports.attachmentOptions()[option].endpoint;
             }
-            terminal["attachment_option"] = option;
-            terminal["endpoint"] = ports.attachmentOptions()[option].endpoint;
-            selectedTerminals.push_back(std::move(terminal));
+            selectedDecisions.push_back(std::move(selectedDecision));
           }
           fields["search_scope"] = "route_exact_repair";
           fields["restart"] = restartOrdinal;
           fields["assignment"] = assignmentOrdinal;
-          fields["terminals"] = std::move(selectedTerminals);
+          fields["decisions"] = std::move(selectedDecisions);
         });
 
     auto probe = actionExecutor_.probeBatch(
@@ -892,36 +1161,56 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
         sawUnknownAssignment = true;
       }
       rejectAssignment = true;
-    } else if (candidate.atomicCapacityOveruse() != 0 ||
-               candidate.routeCapacityOveruse() != 0 ||
-               candidate.tagResidentCapacityOveruse() != 0 ||
-               candidate.unroutedObligationCount() != 0) {
-      rejectAssignment = true;
-      if (llvm::Error error = probe->discard())
-        return executedResult(SpatialExactRepairResultKind::InternalError,
-                              llvm::toString(std::move(error)));
     } else {
-      if (llvm::Error error = probe->commit())
-        return executedResult(SpatialExactRepairResultKind::InternalError,
-                              llvm::toString(std::move(error)));
-      if (llvm::Error error = candidate.verify())
-        return executedResult(SpatialExactRepairResultKind::InternalError,
-                              llvm::toString(std::move(error)));
-      loom::mapping_debug::emit(loom::mapping_debug::Level::Decision,
-                                loom::mapping_debug::Stage::SpatialPnr,
-                                loom::mapping_debug::Event::ActionOutcome,
-                                [&](llvm::json::Object &fields) {
-                                  fields["search_scope"] = "route_exact_repair";
-                                  fields["restart"] = restartOrdinal;
-                                  fields["assignment"] = assignmentOrdinal;
-                                  fields["accepted"] = true;
-                                  fields["capacity_ref"] =
-                                      capacityWitnesses_.front();
-                                  fields["capacity_witness_count"] =
-                                      capacityWitnesses_.size();
-                                  fields["solver_calls"] = solverCalls;
-                                });
-      return executedResult(SpatialExactRepairResultKind::Repaired);
+      bool assignmentRealized = true;
+      for (auto [local, decision] : llvm::enumerate(decisions_)) {
+        auto realized = currentBindingChoice(candidate, bindings, decision);
+        if (!realized) {
+          if (llvm::Error error = probe->discard())
+            return executedResult(SpatialExactRepairResultKind::InternalError,
+                                  llvm::toString(std::move(error)));
+          return executedResult(SpatialExactRepairResultKind::InternalError,
+                                llvm::toString(realized.takeError()));
+        }
+        if (*realized != static_cast<PnrIndex>(solved->assignment[local])) {
+          assignmentRealized = false;
+          break;
+        }
+      }
+      if (!assignmentRealized || candidate.atomicCapacityOveruse() != 0 ||
+          candidate.routeCapacityOveruse() != 0 ||
+          candidate.tagResidentCapacityOveruse() != 0 ||
+          candidate.unroutedObligationCount() != 0 ||
+          candidate.tagUnassignedCount() != 0 ||
+          candidate.tagConflictCount() != 0) {
+        rejectAssignment = true;
+        if (llvm::Error error = probe->discard())
+          return executedResult(SpatialExactRepairResultKind::InternalError,
+                                llvm::toString(std::move(error)));
+      } else {
+        if (llvm::Error error = probe->commit())
+          return executedResult(SpatialExactRepairResultKind::InternalError,
+                                llvm::toString(std::move(error)));
+        if (llvm::Error error = candidate.verify())
+          return executedResult(SpatialExactRepairResultKind::InternalError,
+                                llvm::toString(std::move(error)));
+        loom::mapping_debug::emit(
+            loom::mapping_debug::Level::Decision,
+            loom::mapping_debug::Stage::SpatialPnr,
+            loom::mapping_debug::Event::ActionOutcome,
+            [&](llvm::json::Object &fields) {
+              fields["search_scope"] = "route_exact_repair";
+              fields["restart"] = restartOrdinal;
+              fields["assignment"] = assignmentOrdinal;
+              fields["accepted"] = true;
+              fields["witness_kind"] =
+                  static_cast<std::uint32_t>(primaryWitnessKind);
+              fields["witness_ordinal"] = primaryWitnessOrdinal;
+              fields["capacity_witness_count"] = capacityWitnesses_.size();
+              fields["solver_calls"] = solverCalls;
+            });
+        return executedResult(SpatialExactRepairResultKind::Repaired);
+      }
     }
 
     loom::mapping_debug::emit(
@@ -933,7 +1222,9 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
           fields["restart"] = restartOrdinal;
           fields["assignment"] = assignmentOrdinal;
           fields["accepted"] = false;
-          fields["capacity_ref"] = capacityWitnesses_.front();
+          fields["witness_kind"] =
+              static_cast<std::uint32_t>(primaryWitnessKind);
+          fields["witness_ordinal"] = primaryWitnessOrdinal;
           fields["capacity_witness_count"] = capacityWitnesses_.size();
           fields["solver_calls"] = solverCalls;
           fields["fixed_terminal_cut"] = fixedTerminalCut;
@@ -953,8 +1244,7 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
                 : bindings.graphBoundaryDecisionOffset() + binding.index;
         const auto found = llvm::lower_bound(decisions_, decision);
         if (found == decisions_.end() || *found != decision)
-          return invocationError(
-              "fixed-terminal cut escaped the exact repair region");
+          return llvm::Error::success();
         routeCutDecisionLocals_.push_back(
             static_cast<PnrIndex>(found - decisions_.begin()));
         return llvm::Error::success();
@@ -991,8 +1281,10 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
         elementValues_.push_back(solved->assignment[local]);
       }
       if (cutVariables.empty())
-        return executedResult(SpatialExactRepairResultKind::InternalError,
-                              "fixed-terminal cut has no terminal decision");
+        return executedResult(
+            SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary,
+            "fixed-terminal cut has no variable terminal in the bounded "
+            "repair region");
       model.AddForbiddenAssignments(cutVariables).AddTuple(elementValues_);
     } else {
       model.AddForbiddenAssignments(variables).AddTuple(solved->assignment);

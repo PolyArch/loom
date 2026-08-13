@@ -578,7 +578,7 @@ void loom::test::exerciseCapacityOveruseCandidate(
                                                         {}}));
   pnr::SpatialExactRepairScratch exactRepair;
   const pnr::SpatialExactRepairResult repaired =
-      take(exactRepair.repairCapacityOveruse(*repairCandidate, 0));
+      take(exactRepair.repair(*repairCandidate, 0));
   if (repaired.kind != pnr::SpatialExactRepairResultKind::Repaired ||
       repaired.regionDecisions == 0 || repaired.solverCalls == 0 ||
       repaired.actionCount == 0 ||
@@ -830,7 +830,7 @@ void loom::test::exerciseCapacityExactRepairNoMutation(
   const std::uint64_t initialOveruse = candidate->atomicCapacityOveruse();
   pnr::SpatialExactRepairScratch repair;
   const pnr::SpatialExactRepairResult outcome =
-      take(repair.repairCapacityOveruse(*candidate, 0));
+      take(repair.repair(*candidate, 0));
   if (outcome.kind != expected)
     fail("bounded exact repair returned the wrong non-repaired outcome");
   if (candidate->atomicCapacityOveruse() != initialOveruse)

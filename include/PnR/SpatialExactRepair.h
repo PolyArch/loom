@@ -31,21 +31,20 @@ struct SpatialExactRepairResult final {
   std::string detail;
 };
 
-/// Worker-local bounded exact repair scratch for the complete
-/// relation-connected compute-binding region of one canonical CapacityOveruse
-/// witness. Witness domains without a total exact encoding fail closed.
+/// Worker-local bounded exact repair scratch for one complete
+/// dependency-closed Spatial Mapping violation region. Witness domains without
+/// a total exact encoding fail closed.
 class SpatialExactRepairScratch final {
 public:
   llvm::Expected<SpatialExactRepairResult>
-  repairCapacityOveruse(SpatialCandidateState &candidate,
-                        std::uint64_t restartOrdinal);
+  repair(SpatialCandidateState &candidate, std::uint64_t restartOrdinal);
 
   std::size_t retainedStorageBytes() const;
 
 private:
   llvm::Expected<SpatialExactRepairResult>
-  repairRouteCapacityOveruse(SpatialCandidateState &candidate,
-                             std::uint64_t restartOrdinal);
+  repairTransportClosure(SpatialCandidateState &candidate,
+                         std::uint64_t restartOrdinal);
 
   SpatialActionExecutorScratch actionExecutor_;
   std::vector<std::uint8_t> decisionIncluded_;

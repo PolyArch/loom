@@ -315,7 +315,7 @@ loom::ResolvedConfig loom::pnr::test::buildSystemCandidateResolvedConfig() {
   search.annealing.coolingRatio = {1, 2};
   search.annealing.proposalsPerLevelBase = 1;
   search.annealing.proposalsPerMovableDecision = 0;
-  search.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
+  search.exactRepair = {loom::ResolvedPnrExactRepairKind::CpSat, 256, 1024};
   resolved.dse.systemPnr.temporaryViolations.admitted = {
       loom::ResolvedPnrViolationKind::UnroutedObligation,
       loom::ResolvedPnrViolationKind::CapacityOveruse};

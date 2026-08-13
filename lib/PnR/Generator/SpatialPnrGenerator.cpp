@@ -314,9 +314,12 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
 
   const bool hasAtomicCapacityOveruse =
       seed->candidate->atomicCapacityOveruse() != 0;
-  const bool hasRouteCapacityOveruse =
+  const bool hasTransportClosureViolation =
+      seed->candidate->unroutedObligationCount() != 0 ||
       seed->candidate->routeCapacityOveruse() != 0 ||
-      seed->candidate->tagResidentCapacityOveruse() != 0;
+      seed->candidate->tagResidentCapacityOveruse() != 0 ||
+      seed->candidate->tagUnassignedCount() != 0 ||
+      seed->candidate->tagConflictCount() != 0;
   if (hasAtomicCapacityOveruse &&
       search.exactRepair.kind == ResolvedPnrExactRepairKind::Disabled)
     return {SpatialRestartDisposition::Incomplete,
@@ -327,10 +330,10 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
             "candidate retained atomic CapacityOveruse while exact repair is "
             "disabled"};
   if (hasAtomicCapacityOveruse ||
-      (hasRouteCapacityOveruse &&
+      (hasTransportClosureViolation &&
        search.exactRepair.kind != ResolvedPnrExactRepairKind::Disabled)) {
     accounting.exactRepairInvocations = 1;
-    auto repaired = repair.repairCapacityOveruse(*seed->candidate, attempt);
+    auto repaired = repair.repair(*seed->candidate, attempt);
     if (!repaired)
       return restartInternal(InternalSpatialPnrGenerationReason::ExactRepair,
                              std::move(accounting), repaired.takeError());
