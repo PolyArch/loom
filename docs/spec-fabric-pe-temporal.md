@@ -373,8 +373,8 @@ capacity are available. Shared-pool exhaustion and route backpressure remain
 real dependencies in the final progress and deadlock closure.
 
 The temporal-PE schema uniquely owns the typed `ResourceState` values for
-resident contexts, logical operand/result queues, register FIFOs, and shared
-dispatch capacity; their canonical initial states; capacity dimensions;
+resident contexts, logical operand queues, register FIFOs, and shared dispatch
+capacity; their canonical initial states; capacity dimensions;
 owner-defined atomic resource transitions; atomic UsePatterns; stable typed
 requester order; and exact GrantPolicy or exact refinement domains. One actor
 transition may atomically commit all required queue-head removals while
@@ -463,6 +463,21 @@ depth, extra port, banking scheme, reservation, or virtual channel is
 forbidden. A future multiported or reserved organization requires an explicit
 typed Fabric parameter or refinement.
 
+## Handshake Dependency Projection
+
+Every selected ingress boundary-to-FU traversal terminates at a logical
+operand queue. Because dequeue eligibility observes only the cycle-start queue
+head and an enqueue commits at the PE clock boundary, that traversal contributes
+neither a boundary-input-valid to FU-input-valid dependency nor an
+FU-input-ready to boundary-input-ready dependency. The operand queue is the
+stateful break in both directions; selector configuration does not bypass it.
+
+A selected FU-to-boundary result traversal is transparent. Its result-valid
+and ready dependencies pass through the PE selector, while the selected
+operation's Fabric-owned result-holding state supplies the registered boundary.
+The PE does not own a second implicit result queue. An explicit register-FIFO
+route remains a stateful break under the register-FIFO contract above.
+
 ## Mapping Ownership
 
 TechMapping selects the FU structural/capability template and exact ordered
@@ -485,10 +500,10 @@ readiness, state transition, commit, publication, and retirement semantics.
 No whole-FU or whole-context macro firing is introduced.
 
 A context may be handed off or reconfigured only after its actor transitions
-have retired, its logical operand and result queues are empty, and its
-stateful actors have satisfied their declared self-reset contracts. The active
-result route supplies the configured Physical Tag; a dynamic firing does not
-invent a separate tag identity.
+have retired, its logical operand queues and operation result-holding states are
+empty, and its stateful actors have satisfied their declared self-reset
+contracts. The active result route supplies the configured Physical Tag; a
+dynamic firing does not invent a separate tag identity.
 
 ## Dispatch Condition
 

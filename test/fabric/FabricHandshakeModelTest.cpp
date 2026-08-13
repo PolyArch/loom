@@ -784,7 +784,7 @@ void oneToOneBoundariesUseDirectHandshake() {
           "fixture did not validate all one-to-one boundary forms");
 }
 
-void registerFifoPathsAreRegisteredBreaks() {
+void temporalPeQueuesAndRegisterFifosAreRegisteredBreaks() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   ArtifactStore store(directory.path());
@@ -872,6 +872,51 @@ void registerFifoPathsAreRegisteredBreaks() {
     model = &candidate;
   }
   require(test, model != nullptr, "fixture has no PE handshake owner");
+  const auto peEndpointOwner =
+      loom::fabric::FabricTransportEndpointOwnerRef::of(pe);
+  std::size_t ingressSelectors = 0;
+  std::size_t egressSelectors = 0;
+  for (const auto &traversal : finalized.view().physicalTraversals()) {
+    if (traversal.reference.kind() !=
+        FabricPhysicalTraversalKind::PeSelectorTraversal)
+      continue;
+    const auto &payload = std::get<loom::fabric::FabricPeSelectorPayload>(
+        traversal.reference.payload);
+    require(test, payload.owner == pe && traversal.sources.size() == 1 &&
+                      traversal.destinations.size() == 1,
+            "temporal PE selector has an invalid owner or endpoint shape");
+    FabricHandshakeSelection selection;
+    selection.traversals.push_back(traversal.reference);
+    ResolvedHandshakeActivation activation =
+        take(test, loom::fabric::resolveSelectedHandshake(*model, selection));
+    if (payload.source.owner == peEndpointOwner) {
+      ++ingressSelectors;
+      require(test, activation.arcOrdinals().empty(),
+              "temporal operand queue did not break ingress handshake");
+      continue;
+    }
+    ++egressSelectors;
+    require(test, activation.arcOrdinals().size() == 2,
+            "temporal result selector lost its direct handshake relation");
+    require(test,
+            hasPath(*model, activation,
+                    node(test, *model,
+                         {traversal.sources.front(),
+                          HandshakeSignalKind::Valid}),
+                    node(test, *model,
+                         {traversal.destinations.front(),
+                          HandshakeSignalKind::Valid})) &&
+                hasPath(*model, activation,
+                        node(test, *model,
+                             {traversal.destinations.front(),
+                              HandshakeSignalKind::Ready}),
+                        node(test, *model,
+                             {traversal.sources.front(),
+                              HandshakeSignalKind::Ready})),
+            "temporal result selector is not transparent");
+  }
+  require(test, ingressSelectors == 4 && egressSelectors == 1,
+          "temporal PE selector inventory changed unexpectedly");
   for (const FabricPhysicalTraversalRef &path : paths) {
     FabricHandshakeSelection selection;
     selection.traversals.push_back(path);
@@ -1262,7 +1307,7 @@ int main() {
   selectedGlobalCycleUsesExactTraversalSelection();
   atomicBoundarySelectionActivatesWholeOwner();
   oneToOneBoundariesUseDirectHandshake();
-  registerFifoPathsAreRegisteredBreaks();
+  temporalPeQueuesAndRegisterFifosAreRegisteredBreaks();
   memoryOperationPlanOwnsAtomicBoundaryAndRegisteredBreak();
   fuSelectionUsesExactActorPortCorrespondence();
   fullWidthDirectSyncIsAcyclic();

@@ -630,10 +630,13 @@ compilePointModel(const FabricArtifactView &view,
 }
 
 llvm::Expected<HandshakeOwnerModel>
-compilePeModel(FabricPeOccurrenceRef owner,
+compilePeModel(const FabricArtifactView &view, FabricPeOccurrenceRef owner,
                llvm::ArrayRef<const FabricPhysicalTraversalView *>
                    traversals) {
   detail::HandshakeOwnerModelBuilder builder(FabricHandshakeOwner::pe(owner));
+  const bool temporal = view.peSchedule(owner) == ::fabric::Schedule::Temporal;
+  const FabricTransportEndpointOwnerRef peEndpointOwner =
+      FabricTransportEndpointOwnerRef::of(owner);
   for (const FabricPhysicalTraversalView *traversalPointer : traversals) {
     const FabricPhysicalTraversalView &traversal = *traversalPointer;
     auto traversalOwner = ownerOfTraversal(traversal.reference);
@@ -646,6 +649,10 @@ compilePeModel(FabricPeOccurrenceRef owner,
     }
     if (traversal.sources.size() != 1 || traversal.destinations.size() != 1)
       return invalid("PE selector traversal has invalid endpoint cardinality");
+    if (temporal && traversal.sources.front().owner == peEndpointOwner) {
+      builder.addFragment(traversalSelector(traversal.reference), {});
+      continue;
+    }
     addDirectTraversal(builder, traversalSelector(traversal.reference),
                        traversal.sources.front(),
                        traversal.destinations.front(),
@@ -1057,7 +1064,8 @@ compileHandshakeOwnerModels(const FabricArtifactView &view) {
   }
   for (FabricPeOccurrenceRef owner : view.peOccurrences()) {
     auto model = compilePeModel(
-        owner, traversalIndex.forOwner(FabricHandshakeOwner::pe(owner)));
+        view, owner,
+        traversalIndex.forOwner(FabricHandshakeOwner::pe(owner)));
     if (!model)
       return model.takeError();
     if (!model->fragments().empty())
