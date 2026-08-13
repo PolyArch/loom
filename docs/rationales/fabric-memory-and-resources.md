@@ -262,7 +262,7 @@ Every selected buffered FIFO is a complete ready/valid combinational isolation
 point, while every selected bypass is transparent in both directions.
 
 This changes both cycle timing and which selected configurations are legal, so
-it cannot reinterpret a 3.x Fabric Artifact in place. `loom.fabric 4.0` owns
+it cannot reinterpret a 3.x Fabric Artifact in place. Version 4.0 introduced
 the complete isolation contract and rejects 3.x roots through the existing
 exact-version dependency and import boundary.
 

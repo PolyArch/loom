@@ -6,6 +6,8 @@
 #include "Fabric/IR/MemoryServiceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
@@ -77,22 +79,13 @@ bool roleOwnsMessageTerminal(
 
 llvm::Expected<bool>
 messagePayloadCompatible(const CanonicalServiceCapabilityRecord &capability,
-                         mlir::Type payload) {
+                         mlir::Type payload,
+                         const ::loom::PointerLayout *pointerLayout) {
   const auto *domain =
       std::get_if<MessageTransferCapabilityDomain>(&capability.domain());
   if (!domain)
     return false;
-  auto wanted = ::dataflow::encodeCanonicalType(payload);
-  if (!wanted)
-    return wanted.takeError();
-  for (mlir::Type candidate : domain->payloadTypes()) {
-    auto encoded = ::dataflow::encodeCanonicalType(candidate);
-    if (!encoded)
-      return encoded.takeError();
-    if (encoded->bytes() == wanted->bytes())
-      return true;
-  }
-  return false;
+  return domain->admits(payload, pointerLayout);
 }
 
 struct ResolvedOperationMember final {
@@ -586,6 +579,13 @@ projectSystemMessageTerminalEndpointDomains(
       ServiceKind::MessageTransfer, leg.ordinal);
   if (!direction)
     return direction.takeError();
+  std::optional<::loom::PointerLayout> pointerLayout;
+  if (auto pointer = mlir::dyn_cast<mlir::LLVM::LLVMPointerType>(payload)) {
+    auto resolved = dataflow.pointerLayout(pointer.getAddressSpace());
+    if (!resolved)
+      return resolved.takeError();
+    pointerLayout = *resolved;
+  }
   std::vector<SystemMessageTerminalEndpointDomainView> result;
   for (const auto endpoint : fabric.artifact().systemServiceEndpoints()) {
     const auto *endpointOwner = fabric.serviceEndpointOwner(endpoint);
@@ -609,7 +609,8 @@ projectSystemMessageTerminalEndpointDomains(
     if (fabric.artifact().transportEndpointDirection(bound) !=
         expectedDirection)
       return invalid("message service endpoint has the wrong direction");
-    auto compatible = messagePayloadCompatible(**capability, payload);
+    auto compatible = messagePayloadCompatible(
+        **capability, payload, pointerLayout ? &*pointerLayout : nullptr);
     if (!compatible)
       return compatible.takeError();
     result.push_back({bound, *compatible});

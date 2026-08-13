@@ -94,7 +94,7 @@ void builtinPresetsExpandThroughPublicBuilder() {
             descriptor.scale.spatialMemoryCount == expected.spatialMemories &&
             descriptor.scale.temporalMemoryCount == expected.temporalMemories,
         "builtin descriptor changed its scale contract");
-    require(test, descriptor.schemaMajor == 4 && descriptor.schemaMinor == 0,
+    require(test, descriptor.schemaMajor == 4 && descriptor.schemaMinor == 1,
             "builtin descriptor did not select the parameterized mesh recipe");
 
     auto target =
@@ -273,6 +273,28 @@ void builtinPresetsExpandThroughPublicBuilder() {
                   capabilities->capabilities().front().kind() ==
                       dataflow::semantics::ServiceKind::MessageTransfer,
               "builtin message endpoint has a foreign capability");
+      const auto *messageDomain =
+          std::get_if<loom::fabric::MessageTransferCapabilityDomain>(
+              &capabilities->capabilities().front().domain());
+      require(test, messageDomain && messageDomain->fixedVectors(),
+              "builtin message endpoint lost its fixed-vector domain");
+      mlir::MLIRContext messageContext(mlir::MLIRContext::Threading::DISABLED);
+      require(
+          test,
+          take(test,
+               messageDomain->admits(mlir::VectorType::get(
+                   {2, 2}, mlir::IntegerType::get(&messageContext, 8)))) &&
+              take(test,
+                   messageDomain->admits(mlir::VectorType::get(
+                       {4}, mlir::IntegerType::get(&messageContext, 1)))) &&
+              take(test, messageDomain->admits(mlir::VectorType::get(
+                             {4}, mlir::Float32Type::get(&messageContext)))) &&
+              !take(test,
+                    messageDomain->admits(mlir::VectorType::get(
+                        {17}, mlir::IntegerType::get(&messageContext, 8)))) &&
+              messageDomain->pointerFormats().contains(loom::PointerLayout{
+                  0, 64, 64, loom::PointerLayoutKind::StableIntegral}),
+          "builtin message endpoint has the wrong payload domain");
       const auto *owner = systemView.serviceEndpointOwner(endpoint);
       require(test, owner, "builtin message endpoint has no owner");
       if (std::holds_alternative<loom::fabric::HostCoreOccurrenceRef>(

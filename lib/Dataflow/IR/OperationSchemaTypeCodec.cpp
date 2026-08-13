@@ -158,7 +158,8 @@ llvm::Expected<Type> decodeType(Reader &reader, MLIRContext *context,
 
 llvm::Expected<SmallVector<std::int64_t>> decodeShape(Reader &reader,
                                                       bool requirePositive) {
-  auto rank = readCount(reader, "type rank", 8);
+  auto rank =
+      readCount(reader, "type rank", dataflow::canonicalTypeMaximumRank);
   if (!rank)
     return rank.takeError();
   if (requirePositive && *rank == 0)
@@ -310,7 +311,8 @@ llvm::Expected<Type> decodeType(Reader &reader, MLIRContext *context,
 
 llvm::Expected<std::uint64_t> validateShape(Reader &reader,
                                             bool requirePositive) {
-  auto rank = readCount(reader, "type rank", 8);
+  auto rank =
+      readCount(reader, "type rank", dataflow::canonicalTypeMaximumRank);
   if (!rank)
     return rank.takeError();
   if (requirePositive && *rank == 0)

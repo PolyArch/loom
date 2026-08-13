@@ -1,7 +1,7 @@
 hardware_target:
   template_identity: loom.adg.builtin.default
   schema_major: 4
-  schema_minor: 0
+  schema_minor: 1
   parameters:
     acc_core_count: 8
     mesh_dimension: 6

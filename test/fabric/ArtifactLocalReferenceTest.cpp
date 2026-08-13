@@ -26,7 +26,7 @@ static_assert(fabricArtifactLocalReferenceKindOrdinal(
                   FabricArtifactLocalReferenceKind::
                       FabricMemoryEngineTemplateInternalConnectionRef) == 49);
 static_assert(fabricArtifactSchema.version.major == 4);
-static_assert(fabricArtifactSchema.version.minor == 0);
+static_assert(fabricArtifactSchema.version.minor == 1);
 
 namespace {
 
@@ -68,7 +68,8 @@ void requireTypedRoundTrip(const ArtifactIdentity &artifact,
 
 void testGeneratedCatalog() {
   const auto catalog = fabricArtifactLocalReferenceKindCatalog();
-  require(catalog.size() == 50, "loom.fabric 4.0 must register 50 local kinds");
+  require(catalog.size() == 50,
+          "current loom.fabric must register 50 local kinds");
 
   std::set<std::string> targets;
   for (std::size_t index = 0; index < catalog.size(); ++index) {

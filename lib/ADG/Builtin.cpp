@@ -2,8 +2,10 @@
 
 #include "ADG/FuLibrary.h"
 #include "ADG/MemoryLibrary.h"
+#include "CatalogCapabilities.h"
 
 #include "Dataflow/IR/DataflowEnums.h"
+#include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/IR/ResourceContract.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -165,17 +167,16 @@ struct DistributedCellCursor final {
   std::uint64_t attachmentCount = 0;
   std::uint64_t offset = 0;
 
-  DistributedCellCursor(std::uint64_t cellCount,
-                        std::uint64_t attachmentCount,
+  DistributedCellCursor(std::uint64_t cellCount, std::uint64_t attachmentCount,
                         std::uint64_t offset = 0)
       : cellCount(cellCount), cellStride(cellCount / attachmentCount),
         remainderStride(cellCount % attachmentCount),
         attachmentCount(attachmentCount), offset(offset) {}
 
   std::uint64_t next() {
-    const std::uint64_t result =
-        cell >= cellCount - offset ? cell - (cellCount - offset)
-                                   : cell + offset;
+    const std::uint64_t result = cell >= cellCount - offset
+                                     ? cell - (cellCount - offset)
+                                     : cell + offset;
     cell += cellStride;
     remainder += remainderStride;
     if (remainder >= attachmentCount) {
@@ -205,12 +206,8 @@ FuDistribution makeFuDistribution(std::uint32_t count,
 
 VectorStructuralFuParameters builtinVectorStructuralParameters() {
   const ::fabric::IntegerWidthSet integerWidths =
-      ::fabric::IntegerWidthSet::get(
-          {::fabric::IntegerWidth::I8, ::fabric::IntegerWidth::I16,
-           ::fabric::IntegerWidth::I32, ::fabric::IntegerWidth::I64});
-  const ::fabric::FloatFormatSet floatFormats = ::fabric::FloatFormatSet::get(
-      {::fabric::FloatFormat::F16, ::fabric::FloatFormat::BF16,
-       ::fabric::FloatFormat::F32, ::fabric::FloatFormat::F64});
+      detail::catalogOrdinaryIntegerWidths();
+  const ::fabric::FloatFormatSet floatFormats = detail::catalogFloatFormats();
   return {128, 128, 64,
           ::fabric::FixedVectorSliceAlignMergeParams{
               integerWidths, floatFormats, 128, 128, 3,
@@ -362,8 +359,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   std::vector<MeshCellAttachmentSpec> spatialAttachmentSpecs;
   std::vector<MeshCellAttachmentSpec> temporalAttachmentSpecs;
   DistributedCellCursor spatialPeCells(meshCellCount, scale.spatialPeCount);
-  DistributedCellCursor spatialMemoryFirstCells(
-      meshCellCount, scale.spatialMemoryCount);
+  DistributedCellCursor spatialMemoryFirstCells(meshCellCount,
+                                                scale.spatialMemoryCount);
   DistributedCellCursor spatialMemorySecondCells(
       meshCellCount, scale.spatialMemoryCount, halfMesh);
   DistributedCellCursor moduleGatewayCells(meshCellCount, scale.gatewayCount);
@@ -372,12 +369,11 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   DistributedCellCursor t2sSpatialCells(meshCellCount, scale.gatewayCount,
                                         twoThirdsMesh);
   DistributedCellCursor temporalPeCells(meshCellCount, scale.temporalPeCount);
-  DistributedCellCursor temporalMemoryFirstCells(
-      meshCellCount, scale.temporalMemoryCount);
+  DistributedCellCursor temporalMemoryFirstCells(meshCellCount,
+                                                 scale.temporalMemoryCount);
   DistributedCellCursor temporalMemorySecondCells(
       meshCellCount, scale.temporalMemoryCount, halfMesh);
-  DistributedCellCursor temporalGatewayCells(meshCellCount,
-                                             scale.gatewayCount,
+  DistributedCellCursor temporalGatewayCells(meshCellCount, scale.gatewayCount,
                                              oneThirdMesh);
   auto appendAttachment = [&](std::vector<MeshCellAttachmentSpec> &attachments,
                               DistributedCellCursor &cellCursor,
@@ -392,8 +388,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   };
   auto appendMemoryAttachments =
       [&](std::vector<MeshCellAttachmentSpec> &attachments,
-          DistributedCellCursor &firstCells,
-          DistributedCellCursor &secondCells, const MemorySpec &memory,
+          DistributedCellCursor &firstCells, DistributedCellCursor &secondCells,
+          const MemorySpec &memory,
           const PortType &linkType) -> llvm::Expected<MemoryMeshAttachments> {
     const llvm::ArrayRef<PortType> inputTypes =
         memory.inputTypes().drop_front();
@@ -451,11 +447,9 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   std::vector<MemoryMeshAttachments> temporalMemoryAttachments;
   for (std::uint32_t memory = 0; memory != scale.temporalMemoryCount;
        ++memory) {
-    auto attachments =
-        appendMemoryAttachments(temporalAttachmentSpecs,
-                                temporalMemoryFirstCells,
-                                temporalMemorySecondCells, *temporalMemory,
-                                *tagged128);
+    auto attachments = appendMemoryAttachments(
+        temporalAttachmentSpecs, temporalMemoryFirstCells,
+        temporalMemorySecondCells, *temporalMemory, *tagged128);
     if (!attachments)
       return attachments.takeError();
     temporalMemoryAttachments.push_back(*attachments);
@@ -860,14 +854,14 @@ expandBuiltinSystemImpl(DesignBuilder &design,
   clockMembers.push_back(memoryEndpoint->domainMember());
 
   mlir::MLIRContext messageTypeContext;
+  auto fixedVectors = loom::fabric::FixedVectorMessagePayloadDomain::create(
+      detail::catalogFixedVectorElementTypes(messageTypeContext), 128,
+      dataflow::canonicalTypeMaximumRank);
+  if (!fixedVectors)
+    return fixedVectors.takeError();
   auto messageDomain = loom::fabric::MessageTransferCapabilityDomain::create(
-      {mlir::NoneType::get(&messageTypeContext),
-       mlir::IntegerType::get(&messageTypeContext, 1),
-       mlir::IntegerType::get(&messageTypeContext, 8),
-       mlir::IntegerType::get(&messageTypeContext, 16),
-       mlir::IntegerType::get(&messageTypeContext, 32),
-       mlir::IntegerType::get(&messageTypeContext, 64),
-       mlir::IndexType::get(&messageTypeContext)});
+      detail::catalogScalarPayloadTypes(messageTypeContext),
+      std::move(*fixedVectors), detail::catalogPointerFormats());
   if (!messageDomain)
     return messageDomain.takeError();
   auto initiateCapability =
@@ -1061,11 +1055,10 @@ buildBuiltinTarget(const loom::ArtifactStore &store, BuiltinTargetPreset preset,
 
 llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store,
-                   llvm::StringRef templateIdentity,
-                   std::uint32_t schemaMajor, std::uint32_t schemaMinor,
-                   const BuiltinTargetScale &scale) {
-  const BuiltinTargetDescriptor *descriptor = findBuiltinTargetDescriptor(
-      templateIdentity, schemaMajor, schemaMinor);
+                   llvm::StringRef templateIdentity, std::uint32_t schemaMajor,
+                   std::uint32_t schemaMinor, const BuiltinTargetScale &scale) {
+  const BuiltinTargetDescriptor *descriptor =
+      findBuiltinTargetDescriptor(templateIdentity, schemaMajor, schemaMinor);
   if (!descriptor)
     return invalid("resolved hardware target is not a registered builtin "
                    "template");

@@ -357,6 +357,24 @@ serviceCapabilityIntrinsic(const CanonicalServiceCapabilityRecord &capability) {
       if (llvm::Error error = appendExpectedBytes(
               intrinsic, dataflow::encodeCanonicalType(type)))
         return std::move(error);
+    appendU32(intrinsic, message->fixedVectors().has_value());
+    if (message->fixedVectors()) {
+      appendU64(intrinsic, message->fixedVectors()->elementTypes().size());
+      for (Type type : message->fixedVectors()->elementTypes())
+        if (llvm::Error error = appendExpectedBytes(
+                intrinsic, dataflow::encodeCanonicalType(type)))
+          return std::move(error);
+      appendU64(intrinsic, message->fixedVectors()->maximumPayloadBits());
+      appendU32(intrinsic, message->fixedVectors()->maximumRank());
+    }
+    appendU64(intrinsic, message->pointerFormats().size());
+    for (const ::fabric::PointerFormat &format :
+         message->pointerFormats().formats()) {
+      appendU32(intrinsic, format.addressSpace);
+      appendU32(intrinsic, format.representationBits);
+      appendU32(intrinsic, format.addressBits);
+      appendEnum(intrinsic, format.kind);
+    }
   } else if (const auto *addressed =
                  std::get_if<AddressedMemoryCapabilityDomain>(
                      &capability.domain())) {

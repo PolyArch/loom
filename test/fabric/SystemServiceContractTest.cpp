@@ -1,6 +1,7 @@
 #include "Fabric/IR/SystemServiceContract.h"
 
 #include "Fabric/IR/FabricDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -186,15 +187,61 @@ CanonicalServiceCapabilityRecord capability(
 void checkCapabilityCatalog(mlir::MLIRContext &context) {
   constexpr llvm::StringLiteral test = "Canonical Service capability catalog";
   using Kind = dataflow::semantics::ServiceKind;
+  auto fixedVectors = take(test, FixedVectorMessagePayloadDomain::create(
+                                     {mlir::IntegerType::get(&context, 1),
+                                      mlir::IntegerType::get(&context, 8),
+                                      mlir::Float32Type::get(&context)},
+                                     128, 2));
+  auto messageDomain = take(
+      test, MessageTransferCapabilityDomain::create(
+                {mlir::IntegerType::get(&context, 32)}, std::move(fixedVectors),
+                ::fabric::PointerFormatRelation::get(
+                    {{0, 64, 64, loom::PointerLayoutKind::StableIntegral}})));
+  const auto pointer = mlir::LLVM::LLVMPointerType::get(&context);
+  const loom::PointerLayout pointerLayout{
+      0, 64, 64, loom::PointerLayoutKind::StableIntegral};
+  const loom::PointerLayout foreignPointerLayout{
+      0, 32, 32, loom::PointerLayoutKind::StableIntegral};
+  if (!take(test, messageDomain.admits(mlir::IntegerType::get(&context, 32))) ||
+      !take(test, messageDomain.admits(mlir::VectorType::get(
+                      {2, 2}, mlir::IntegerType::get(&context, 8)))) ||
+      !take(test, messageDomain.admits(mlir::VectorType::get(
+                      {4}, mlir::IntegerType::get(&context, 1)))) ||
+      !take(test, messageDomain.admits(mlir::VectorType::get(
+                      {4}, mlir::Float32Type::get(&context)))) ||
+      !take(test, messageDomain.admits(pointer, &pointerLayout)))
+    fail(test, "fixed-vector message domain rejected an admitted payload");
+  if (take(test, messageDomain.admits(mlir::VectorType::get(
+                     {2}, mlir::IntegerType::get(&context, 16)))) ||
+      take(test, messageDomain.admits(mlir::VectorType::get(
+                     {5}, mlir::Float32Type::get(&context)))) ||
+      take(test, messageDomain.admits(mlir::VectorType::get(
+                     {1, 1, 4}, mlir::IntegerType::get(&context, 8)))))
+    fail(test, "fixed-vector message domain admitted an unsupported payload");
+  if (take(test, messageDomain.admits(pointer, &foreignPointerLayout)))
+    fail(test, "message pointer domain admitted an unsupported layout");
+  expectRejected(test, messageDomain.admits(pointer));
   CanonicalServiceCapabilityRecord message = take(
       test, CanonicalServiceCapabilityRecord::create(
                 Kind::MessageTransfer, CanonicalServiceEndpointRole::Initiate,
-                take(test, MessageTransferCapabilityDomain::create(
-                               {mlir::VectorType::get(
-                                   {4}, mlir::Float32Type::get(&context))})),
-                rate()));
+                std::move(messageDomain), rate()));
   CanonicalServiceCapabilitySet messageCapabilities =
       take(test, CanonicalServiceCapabilitySet::create({std::move(message)}));
+  std::vector<std::uint8_t> messageBytes =
+      take(test, encodeCanonicalServiceCapabilitySet(messageCapabilities));
+  auto decodedMessages =
+      take(test, decodeCanonicalServiceCapabilitySet(messageBytes, &context));
+  if (take(test, encodeCanonicalServiceCapabilitySet(decodedMessages)) !=
+          messageBytes ||
+      decodedMessages.capabilities().size() != 1)
+    fail(test, "fixed-vector message domain changed during strict roundtrip");
+  const auto *decodedDomain = std::get_if<MessageTransferCapabilityDomain>(
+      &decodedMessages.capabilities().front().domain());
+  if (!decodedDomain || !decodedDomain->fixedVectors() ||
+      !decodedDomain->pointerFormats().contains(pointerLayout) ||
+      !take(test, decodedDomain->admits(mlir::VectorType::get(
+                      {2, 2}, mlir::IntegerType::get(&context, 8)))))
+    fail(test, "fixed-vector message domain was lost during strict roundtrip");
 
   std::vector<CanonicalServiceCapabilityRecord> records;
   for (Kind kind : {Kind::MemoryRead, Kind::MemoryWrite, Kind::MemoryAtomicRmw,
@@ -249,8 +296,6 @@ void checkCapabilityCatalog(mlir::MLIRContext &context) {
                       capability(Kind::MemoryWrite,
                                  CanonicalServiceEndpointRole::Initiate)}));
 
-  std::vector<std::uint8_t> messageBytes =
-      take(test, encodeCanonicalServiceCapabilitySet(messageCapabilities));
   SystemServiceEndpointOwnerRef endpointOwner =
       take(test, SystemServiceEndpointOwnerRef::create(
                      FabricInventoryOwnerRef::of(AccCoreOccurrenceRef(12))));
@@ -422,8 +467,9 @@ void checkOwnerAndTransform(mlir::MLIRContext &context) {
 
 int main() {
   mlir::DialectRegistry registry;
-  registry.insert<::fabric::FabricDialect>();
+  registry.insert<::fabric::FabricDialect, mlir::LLVM::LLVMDialect>();
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadDialect<mlir::LLVM::LLVMDialect>();
   checkCapabilityCatalog(context);
   checkOwnerAndTransform(context);
   return EXIT_SUCCESS;

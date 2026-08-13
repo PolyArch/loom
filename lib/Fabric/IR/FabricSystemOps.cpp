@@ -181,6 +181,17 @@ LogicalResult SystemServiceEndpointOp::verify() {
         return emitOpError("message payload width ")
                << *width << " exceeds carrier width " << *carrierWidth;
     }
+    if (domain.fixedVectors() &&
+        domain.fixedVectors()->maximumPayloadBits() > *carrierWidth)
+      return emitOpError("fixed-vector message payload width ")
+             << domain.fixedVectors()->maximumPayloadBits()
+             << " exceeds carrier width " << *carrierWidth;
+    for (const ::fabric::PointerFormat &format :
+         domain.pointerFormats().formats())
+      if (format.representationBits > *carrierWidth)
+        return emitOpError("pointer message payload width ")
+               << format.representationBits << " exceeds carrier width "
+               << *carrierWidth;
   }
   return success();
 }

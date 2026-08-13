@@ -26,7 +26,7 @@ HardwareImplementation {
 }
 ```
 
-`fabric_ref` is an exact `loom.fabric 4.0` System root and
+`fabric_ref` is an exact `loom.fabric 4.1` System root and
 `configuration_abi_ref` is an exact `loom.configuration_abi 3.0` root bound to
 that same System. Imported Module internals referenced by interfaces, activity,
 configuration, memory, recipe, or external bindings use exact

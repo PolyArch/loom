@@ -85,20 +85,74 @@ private:
   ServiceProgress progress_;
 };
 
+class FixedVectorMessagePayloadDomain final {
+public:
+  static llvm::Expected<FixedVectorMessagePayloadDomain>
+  create(llvm::ArrayRef<mlir::Type> elementTypes,
+         std::uint64_t maximumPayloadBits, std::uint32_t maximumRank);
+  static llvm::Expected<FixedVectorMessagePayloadDomain>
+  fromCanonical(llvm::ArrayRef<mlir::Type> elementTypes,
+                std::uint64_t maximumPayloadBits, std::uint32_t maximumRank);
+
+  llvm::ArrayRef<mlir::Type> elementTypes() const { return elementTypes_; }
+  std::uint64_t maximumPayloadBits() const { return maximumPayloadBits_; }
+  std::uint32_t maximumRank() const { return maximumRank_; }
+  llvm::Expected<bool> admits(mlir::Type payloadType) const;
+
+private:
+  FixedVectorMessagePayloadDomain(
+      std::vector<mlir::Type> elementTypes,
+      std::vector<std::vector<std::uint8_t>> canonicalElementTypes,
+      std::uint64_t maximumPayloadBits, std::uint32_t maximumRank)
+      : elementTypes_(std::move(elementTypes)),
+        canonicalElementTypes_(std::move(canonicalElementTypes)),
+        maximumPayloadBits_(maximumPayloadBits), maximumRank_(maximumRank) {}
+
+  std::vector<mlir::Type> elementTypes_;
+  std::vector<std::vector<std::uint8_t>> canonicalElementTypes_;
+  std::uint64_t maximumPayloadBits_;
+  std::uint32_t maximumRank_;
+};
+
 class MessageTransferCapabilityDomain {
 public:
   static llvm::Expected<MessageTransferCapabilityDomain>
-  create(llvm::ArrayRef<mlir::Type> payloadTypes);
+  create(llvm::ArrayRef<mlir::Type> payloadTypes,
+         std::optional<FixedVectorMessagePayloadDomain> fixedVectors =
+             std::nullopt,
+         ::fabric::PointerFormatRelation pointerFormats = {});
   static llvm::Expected<MessageTransferCapabilityDomain>
-  fromCanonical(llvm::ArrayRef<mlir::Type> payloadTypes);
+  fromCanonical(llvm::ArrayRef<mlir::Type> payloadTypes,
+                std::optional<FixedVectorMessagePayloadDomain> fixedVectors =
+                    std::nullopt,
+                ::fabric::PointerFormatRelation pointerFormats = {});
 
   llvm::ArrayRef<mlir::Type> payloadTypes() const { return payloadTypes_; }
+  const std::optional<FixedVectorMessagePayloadDomain> &fixedVectors() const {
+    return fixedVectors_;
+  }
+  const ::fabric::PointerFormatRelation &pointerFormats() const {
+    return pointerFormats_;
+  }
+  llvm::Expected<bool>
+  admits(mlir::Type payloadType,
+         const ::loom::PointerLayout *pointerLayout = nullptr) const;
 
 private:
-  explicit MessageTransferCapabilityDomain(std::vector<mlir::Type> payloadTypes)
-      : payloadTypes_(std::move(payloadTypes)) {}
+  MessageTransferCapabilityDomain(
+      std::vector<mlir::Type> payloadTypes,
+      std::vector<std::vector<std::uint8_t>> canonicalPayloadTypes,
+      std::optional<FixedVectorMessagePayloadDomain> fixedVectors,
+      ::fabric::PointerFormatRelation pointerFormats)
+      : payloadTypes_(std::move(payloadTypes)),
+        canonicalPayloadTypes_(std::move(canonicalPayloadTypes)),
+        fixedVectors_(std::move(fixedVectors)),
+        pointerFormats_(std::move(pointerFormats)) {}
 
   std::vector<mlir::Type> payloadTypes_;
+  std::vector<std::vector<std::uint8_t>> canonicalPayloadTypes_;
+  std::optional<FixedVectorMessagePayloadDomain> fixedVectors_;
+  ::fabric::PointerFormatRelation pointerFormats_;
 };
 
 class AddressedMemoryCapabilityDomain {
@@ -225,16 +279,16 @@ decodeCanonicalServiceCapabilitySet(llvm::ArrayRef<std::uint8_t> bytes,
 /// leg. Service schema semantics remain owned by Dataflow.
 class ServiceLegCarrierAttachmentRecord {
 public:
-  static llvm::Expected<ServiceLegCarrierAttachmentRecord> create(
-      FabricMemoryEndpointRef endpoint,
-      dataflow::semantics::ServiceKind kind,
-      dataflow::StructuralOrdinal legOrdinal,
-      std::vector<FabricTransportEndpointRef> carriers);
-  static llvm::Expected<ServiceLegCarrierAttachmentRecord> fromCanonical(
-      FabricMemoryEndpointRef endpoint,
-      dataflow::semantics::ServiceKind kind,
-      dataflow::StructuralOrdinal legOrdinal,
-      std::vector<FabricTransportEndpointRef> carriers);
+  static llvm::Expected<ServiceLegCarrierAttachmentRecord>
+  create(FabricMemoryEndpointRef endpoint,
+         dataflow::semantics::ServiceKind kind,
+         dataflow::StructuralOrdinal legOrdinal,
+         std::vector<FabricTransportEndpointRef> carriers);
+  static llvm::Expected<ServiceLegCarrierAttachmentRecord>
+  fromCanonical(FabricMemoryEndpointRef endpoint,
+                dataflow::semantics::ServiceKind kind,
+                dataflow::StructuralOrdinal legOrdinal,
+                std::vector<FabricTransportEndpointRef> carriers);
 
   const FabricMemoryEndpointRef &endpoint() const { return endpoint_; }
   dataflow::semantics::ServiceKind kind() const { return kind_; }
@@ -245,12 +299,11 @@ public:
 
 private:
   ServiceLegCarrierAttachmentRecord(
-      FabricMemoryEndpointRef endpoint,
-      dataflow::semantics::ServiceKind kind,
+      FabricMemoryEndpointRef endpoint, dataflow::semantics::ServiceKind kind,
       dataflow::StructuralOrdinal legOrdinal,
       std::vector<FabricTransportEndpointRef> carriers)
-      : endpoint_(std::move(endpoint)), kind_(kind),
-        legOrdinal_(legOrdinal), carriers_(std::move(carriers)) {}
+      : endpoint_(std::move(endpoint)), kind_(kind), legOrdinal_(legOrdinal),
+        carriers_(std::move(carriers)) {}
 
   FabricMemoryEndpointRef endpoint_;
   dataflow::semantics::ServiceKind kind_;

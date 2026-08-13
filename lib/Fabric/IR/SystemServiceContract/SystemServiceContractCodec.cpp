@@ -215,6 +215,26 @@ encodeCapability(const CanonicalServiceCapabilityRecord &capability) {
         return encoded.takeError();
       writer.blob(encoded->bytes());
     }
+    writer.u32(message->fixedVectors().has_value() ? 1 : 0);
+    if (message->fixedVectors()) {
+      writer.u64(message->fixedVectors()->elementTypes().size());
+      for (mlir::Type type : message->fixedVectors()->elementTypes()) {
+        auto encoded = dataflow::encodeCanonicalType(type);
+        if (!encoded)
+          return encoded.takeError();
+        writer.blob(encoded->bytes());
+      }
+      writer.u64(message->fixedVectors()->maximumPayloadBits());
+      writer.u32(message->fixedVectors()->maximumRank());
+    }
+    writer.u64(message->pointerFormats().size());
+    for (const ::fabric::PointerFormat &format :
+         message->pointerFormats().formats()) {
+      writer.u32(format.addressSpace);
+      writer.u32(format.representationBits);
+      writer.u32(format.addressBits);
+      writer.u32(static_cast<std::uint32_t>(format.kind));
+    }
   } else if (const auto *addressed =
                  std::get_if<AddressedMemoryCapabilityDomain>(
                      &capability.domain())) {
@@ -289,7 +309,74 @@ decodeCapability(llvm::ArrayRef<std::uint8_t> bytes,
         return type.takeError();
       payloads.push_back(*type);
     }
-    auto message = MessageTransferCapabilityDomain::fromCanonical(payloads);
+    auto fixedVectorsPresent =
+        reader.tag(2, "fixed-vector message domain presence");
+    if (!fixedVectorsPresent)
+      return fixedVectorsPresent.takeError();
+    std::optional<FixedVectorMessagePayloadDomain> fixedVectors;
+    if (*fixedVectorsPresent == 1) {
+      auto elementCount = reader.count(8, "fixed-vector message element count");
+      if (!elementCount)
+        return elementCount.takeError();
+      std::vector<mlir::Type> elements;
+      elements.reserve(static_cast<std::size_t>(*elementCount));
+      for (std::uint64_t index = 0; index < *elementCount; ++index) {
+        auto typeBytes = reader.blob("fixed-vector message element type");
+        if (!typeBytes)
+          return typeBytes.takeError();
+        auto type = dataflow::decodeCanonicalType(*typeBytes, context);
+        if (!type)
+          return type.takeError();
+        elements.push_back(*type);
+      }
+      auto maximumPayloadBits =
+          reader.u64("fixed-vector message maximum payload bits");
+      if (!maximumPayloadBits)
+        return maximumPayloadBits.takeError();
+      auto maximumRank = reader.u32("fixed-vector message maximum rank");
+      if (!maximumRank)
+        return maximumRank.takeError();
+      auto decoded = FixedVectorMessagePayloadDomain::fromCanonical(
+          elements, *maximumPayloadBits, *maximumRank);
+      if (!decoded)
+        return decoded.takeError();
+      fixedVectors = std::move(*decoded);
+    }
+    auto pointerFormatCount = reader.count(16, "message pointer-format count");
+    if (!pointerFormatCount)
+      return pointerFormatCount.takeError();
+    ::fabric::PointerFormatRelation pointerFormats;
+    std::optional<::fabric::PointerFormat> previousPointerFormat;
+    for (std::uint64_t index = 0; index < *pointerFormatCount; ++index) {
+      auto addressSpace = reader.u32("message pointer address space");
+      if (!addressSpace)
+        return addressSpace.takeError();
+      auto representationBits =
+          reader.u32("message pointer representation bits");
+      if (!representationBits)
+        return representationBits.takeError();
+      auto addressBits = reader.u32("message pointer address bits");
+      if (!addressBits)
+        return addressBits.takeError();
+      auto kind = reader.tag(
+          static_cast<std::uint32_t>(::loom::PointerLayoutKind::ExternalState) +
+              1,
+          "message pointer layout kind");
+      if (!kind)
+        return kind.takeError();
+      const ::fabric::PointerFormat format{
+          *addressSpace, *representationBits, *addressBits,
+          static_cast<::loom::PointerLayoutKind>(*kind)};
+      if (previousPointerFormat && !(previousPointerFormat.value() < format))
+        return malformed("message pointer-format domain is not sorted and "
+                         "unique");
+      if (!pointerFormats.insert(format))
+        return malformed("message pointer-format domain contains an invalid "
+                         "format");
+      previousPointerFormat = format;
+    }
+    auto message = MessageTransferCapabilityDomain::fromCanonical(
+        payloads, std::move(fixedVectors), std::move(pointerFormats));
     if (!message)
       return message.takeError();
     domain.emplace(std::move(*message));

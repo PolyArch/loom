@@ -356,8 +356,8 @@ For `instantiate`, each child handle must belong to `target` and each parent
 handle must belong to the receiving builder. The bindings must form the exact
 total same-kind correspondence required by `docs/spec-fabric-instantiate.md`.
 The target's effective handles come from `domainSlots`; this does not make its
-shorthand an instance-binding default. The two-argument overload is not
-retained for `loom.fabric 4.0`, and an empty binding range is invalid for every
+shorthand an instance-binding default. Version 4.0 removed the two-argument
+overload, and an empty binding range is invalid for every
 Module target.
 
 `ModuleDomainSlotHandle` is local to the open SpatialCoreBuilder and cannot
@@ -541,7 +541,7 @@ BuiltinTargetPreset = Small | Default | Large
 ```
 
 The `Small`, `Default`, and `Large` builtin descriptors use schema version
-`4.0`. Their prior recipes are not retained as compatibility expansions.
+`4.1`. Their prior recipes are not retained as compatibility expansions.
 Version 3 replaced runtime tag-token gateway inputs with Mapping-configured tag
 writers, derived the minimum positive tag width from resident route capacity,
 and placed non-bypassable elastic storage in both cross-schedule directions.
@@ -550,6 +550,15 @@ a hidden preset choice, distributes each attachment class across the complete
 mesh, and makes memory response queues non-bypassable. Reusing an earlier
 version would let the same template key denote incompatible Fabric identity,
 handshake behavior, or topology.
+Version 4.1 derives every execution endpoint's message payload capability from
+the same scalar and fixed-vector element catalog used by the builtin operation
+families. Its 128-bit fixed-vector family includes signless `i1` masks and the
+ordinary integer and floating element types, with the canonical type codec's
+maximum fixed rank. It also reuses the builtin stable-integral pointer-format
+catalog, so application DataLayout-derived 32- and 64-bit address-space-zero
+pointer values cross root-thread boundaries without treating pointer types as
+integers. This closes System transfer for every builtin-computable payload
+shape without enumerating shapes or treating equal widths as equal types.
 
 The public builtin boundary is:
 
@@ -1288,7 +1297,7 @@ structural templates, not one shared token-control circuit.
 
 ### Builtin Payload And Type Floor
 
-The version 2 Small, Default, and Large policy explicitly passes a 128-bit
+The Small, Default, and Large policy explicitly passes a 128-bit
 ordinary PE and intra-SpatialCore data-transport payload capacity to the typed
 recipes above. This shared catalog value is not a Fabric-root field, ADG
 Builder default, or Loom-wide maximum. Narrower scalar values
@@ -1313,8 +1322,9 @@ lane modes:
 2xf64
 ```
 
-Smaller lane counts and any fixed rank fitting the same typed lane capacities
-are represented by their exact standard MLIR vector types. The actor type
+The System message-transfer floor also includes `i1` mask vectors through 128
+lanes. Smaller lane counts and any fixed rank fitting the same typed lane
+capacities are represented by their exact standard MLIR vector types. The actor type
 mechanically determines the active lane count; no independent vector-size
 attribute or operation-name suffix exists. Shape-sensitive operations such as
 reductions or shuffles require an explicit typed capability and cannot be

@@ -10,11 +10,11 @@ identity, finalization, and publication.
 The current persistent family is:
 
 ```text
-loom.fabric 4.0
+loom.fabric 4.1
 
 ArtifactSchemaDescriptor {
   identity = "loom.fabric"
-  version = 4.0
+  version = 4.1
 }
 
 FabricRoot =
@@ -28,12 +28,28 @@ memory-plane, connection, identity, and root contracts while changing one
 execution invariant: a selected Buffered `fabric.fifo` cuts both forward-valid
 and backward-ready combinational dependencies, and a cycle-start-full queue
 does not admit an enqueue from current-cycle downstream readiness. A Fabric
-owner accepts and emits only the exact `loom.fabric 4.0` descriptor; there is
+Version 4.0 accepted and emitted only its exact descriptor; there was
 no 3.x compatibility owner, fallback importer, in-place upgrade, or alternate
 identity path. Reinterpreting a 3.x FIFO would change selected handshake-cycle
 legality and cycle timing. The RootRelative memory index-width relation
 introduced in 2.0 and the exact System service-endpoint attachment introduced
 in 3.0 remain part of this boundary.
+
+Version 4.1 is a compatible extension of the message-transfer capability
+domain. In addition to its canonical finite set of exact payload types, a
+message endpoint may carry one canonical fixed-vector family and one canonical
+finite set of exact stable-integral pointer formats. The vector family stores
+exact scalar element types, a positive maximum row-major-flattened payload
+width, and a positive maximum rank no greater than the canonical type codec's
+rank limit. A concrete vector is admitted exactly when it is fixed, has
+positive dimensions, uses one listed element type, stays within both bounds,
+and has a canonical type encoding. A pointer is admitted exactly when the
+application module's DataLayout-derived address space, representation width,
+address width, and layout kind equal one listed format. Neither family infers
+semantic compatibility from equal widths or replaces exact scalar entries.
+The new family and pointer-format fields are appended to the message-domain
+wire record; all earlier 4.0 field tags and meanings are unchanged. The current
+owner accepts and emits only the exact `loom.fabric 4.1` descriptor.
 
 The 4.0 `fabric.system.connection` relation retains both its Transport and
 MemoryService variants from 3.0. These remain required operation-service
@@ -82,7 +98,7 @@ dependency, it stores the dependency-table ordinal plus that owner's canonical
 local target bytes. This compact form mechanically recovers the complete
 `ArtifactReference<T>` and does not create another reference authority.
 
-The dependency-role catalog remains unchanged in `loom.fabric 4.0`:
+The dependency-role catalog remains unchanged in `loom.fabric 4.1`:
 
 ```text
 ImportedModule       = 0
@@ -100,19 +116,19 @@ no accepted artifact family, schema version, root kind, owner-local target
 kind, or dependency-use contract in schema 4.x. It is therefore not an enabled
 dependency role and cannot appear in a canonical Fabric root.
 
-The enabled schema-4.0 dependency contracts are exact:
+The enabled schema-4.1 dependency contracts are exact:
 
 ```text
 ImportedModule:
-  owner schema = loom.fabric 4.0
+  owner schema = loom.fabric 4.1
   required root = Module
 
 RefinedSystem:
-  owner schema = loom.fabric 4.0
+  owner schema = loom.fabric 4.1
   required root = System
 ```
 
-A `loom.fabric 3.x` Module has no 4.0 dependency contract and is rejected
+A `loom.fabric 3.x` or 4.0 Module has no 4.1 dependency contract and is rejected
 rather than republished under a new identity without exact finalization.
 Likewise, a `RefinedSystem` dependency cannot cross a Fabric schema version or
 name a Module or InterconnectImplementation root. A later compatible Fabric

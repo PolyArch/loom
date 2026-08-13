@@ -13,6 +13,8 @@
 
 namespace dataflow {
 
+inline constexpr std::uint32_t canonicalTypeMaximumRank = 8;
+
 /// Encodes and strictly imports the registry-owned persistent identity of one
 /// operation schema. Dense OperationSchemaId values never enter these bytes.
 llvm::Expected<loom::CanonicalSemanticBytes>

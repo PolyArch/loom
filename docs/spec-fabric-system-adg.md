@@ -161,7 +161,7 @@ AccCore = InstructionCore + SpatialCore
 ```
 
 Both HostCore and AccCore InstructionCore use one closed Architectural
-Contract. `loom.fabric 4.0` has one ISA variant, `RiscV`; adding another ISA is
+Contract. `loom.fabric 4.1` has one ISA variant, `RiscV`; adding another ISA is
 a schema change rather than an open string or opaque payload:
 
 ```text
@@ -1088,6 +1088,21 @@ consistency-domain reference is present exactly when required by the selected
 service kind or accepted actor contract. Fields not owned by that service kind
 are absent rather than populated with defaults.
 
+The `MessageTransfer` domain owns a non-empty canonical set of exact payload
+types and may additionally own one fixed-vector family and a finite exact
+`PointerFormatRelation`. The vector family contains a non-empty canonical set
+of exact scalar integer or floating element types, a positive maximum
+flattened payload width, and a positive maximum fixed rank bounded by the
+canonical type codec. Admission compares exact canonical element types and
+checked row-major flattened width; it does not enumerate shapes, collapse
+equal-width element types, or admit scalable vectors. A pointer payload is
+admitted only when its address space and the application module's exact
+DataLayout-derived representation width, address width, and stable-integral
+layout kind match one listed pointer format. `!llvm.ptr<AS>` alone supplies no
+width and no fallback target layout is legal. The exact payload set remains
+authoritative for non-pointer scalars and for any deliberately listed vector
+outside the family.
+
 `fabric.system.service_endpoint` is the sole System-level physical owner of an
 operation-service endpoint. Its owner is exactly one `HostCoreOccurrenceRef`,
 `AccCoreOccurrenceRef`, `SystemMemoryServiceRef`,
@@ -1106,7 +1121,8 @@ manager endpoint and `Serve` is a subordinate endpoint.
 
 A message endpoint has exactly one physical carrier type, either
 `!fabric.bits<W>` or `!fabric.bits_tag<W,T>`. The carrier must represent every
-admitted payload type under the canonical low-bit-aligned transport rule. A
+admitted payload type and pointer representation under the canonical
+low-bit-aligned transport rule. A
 System service memory endpoint has no carrier type because its beat width and
 accepted operation domain are already owned by its capabilities. An attached
 occurrence memory endpoint likewise remains on the memory plane and reuses the
@@ -1321,7 +1337,7 @@ complete typed facts used by RTL and constraint derivation.
 
 Every stateful imported Module owner obtains exactly one effective Clock and
 the Reset coverage required by its exact resource contract through the slot
-relation. `loom.fabric 4.0` admits no implicit resetless stateful owner. A
+relation. `loom.fabric 4.1` admits no implicit resetless stateful owner. A
 backend cannot supply a default Reset contract or infer one from Clock
 membership.
 

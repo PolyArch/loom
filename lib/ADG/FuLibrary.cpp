@@ -81,25 +81,6 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "adg_fu_library_invalid: " + message);
 }
 
-::fabric::IntegerWidthSet ordinaryIntegerWidths() {
-  return ::fabric::IntegerWidthSet::get(
-      {::fabric::IntegerWidth::I8, ::fabric::IntegerWidth::I16,
-       ::fabric::IntegerWidth::I32, ::fabric::IntegerWidth::I64});
-}
-
-::fabric::IntegerWidthSet logicIntegerWidths() {
-  return ::fabric::IntegerWidthSet::get(
-      {::fabric::IntegerWidth::I1, ::fabric::IntegerWidth::I8,
-       ::fabric::IntegerWidth::I16, ::fabric::IntegerWidth::I32,
-       ::fabric::IntegerWidth::I64});
-}
-
-::fabric::FloatFormatSet floatFormats() {
-  return ::fabric::FloatFormatSet::get(
-      {::fabric::FloatFormat::F16, ::fabric::FloatFormat::BF16,
-       ::fabric::FloatFormat::F32, ::fabric::FloatFormat::F64});
-}
-
 ::fabric::IntegerPredicateSet integerPredicates() {
   using P = mlir::arith::CmpIPredicate;
   return ::fabric::IntegerPredicateSet::get({P::eq, P::ne, P::slt, P::sle,
@@ -352,8 +333,9 @@ SelectableResource scalarInteger(ImplementationFamilyId family,
                                  std::vector<std::uint32_t> inputs,
                                  bool logic = false) {
   return {family,
-          ::fabric::ScalarIntegerParams{logic ? logicIntegerWidths()
-                                              : ordinaryIntegerWidths()},
+          ::fabric::ScalarIntegerParams{
+              logic ? detail::catalogLogicIntegerWidths()
+                    : detail::catalogOrdinaryIntegerWidths()},
           std::move(inputs)};
 }
 
@@ -363,19 +345,22 @@ SelectableResource scalarFloat(ImplementationFamilyId family,
   if (comparisons)
     return {family,
             ::fabric::ScalarFloatCompareMinMaxParams{
-                floatFormats(), floatCompareBehavior(), floatPredicates()},
+                detail::catalogFloatFormats(), floatCompareBehavior(),
+                floatPredicates()},
             std::move(inputs)};
-  return {family,
-          ::fabric::ScalarFloatParams{
-              floatFormats(), ::fabric::FloatBehaviorProfile::strictIEEE()},
-          std::move(inputs)};
+  return {
+      family,
+      ::fabric::ScalarFloatParams{detail::catalogFloatFormats(),
+                                  ::fabric::FloatBehaviorProfile::strictIEEE()},
+      std::move(inputs)};
 }
 
 SelectableResource scalarSpecialMath(ImplementationFamilyId family,
                                      std::vector<std::uint32_t> inputs) {
   return {family,
           ::fabric::ScalarSpecialMathParams{
-              floatFormats(), ::fabric::FloatBehaviorProfile::strictIEEE(),
+              detail::catalogFloatFormats(),
+              ::fabric::FloatBehaviorProfile::strictIEEE(),
               SpecialMathAccuracyTier::CorrectlyRounded},
           std::move(inputs)};
 }
@@ -407,13 +392,15 @@ llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
       scalarInteger(ImplementationFamilyId::ScalarIntegerLogic, {0, 1}, true));
   resources.push_back(
       scalarInteger(ImplementationFamilyId::ScalarIntegerShift, {0, 1}));
-  resources.push_back({ImplementationFamilyId::ScalarIntegerCompareMinMax,
-                       ::fabric::ScalarIntegerCompareMinMaxParams{
-                           ordinaryIntegerWidths(), integerPredicates()},
-                       {0, 1}});
+  resources.push_back(
+      {ImplementationFamilyId::ScalarIntegerCompareMinMax,
+       ::fabric::ScalarIntegerCompareMinMaxParams{
+           detail::catalogOrdinaryIntegerWidths(), integerPredicates()},
+       {0, 1}});
   resources.push_back(
       {ImplementationFamilyId::ScalarValueSelect,
-       ::fabric::ScalarValueSelectParams{logicIntegerWidths(), floatFormats()},
+       ::fabric::ScalarValueSelectParams{detail::catalogLogicIntegerWidths(),
+                                         detail::catalogFloatFormats()},
        {2, 0, 1}});
   resources.push_back({ImplementationFamilyId::ScalarIntegerCast,
                        ::fabric::ScalarIntegerCastParams{
@@ -421,7 +408,8 @@ llvm::Error addCoreAluFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
                        {0}});
   resources.push_back({ImplementationFamilyId::ScalarBitReinterpret,
                        ::fabric::ScalarBitReinterpretParams{
-                           ordinaryIntegerWidths(), floatFormats()},
+                           detail::catalogOrdinaryIntegerWidths(),
+                           detail::catalogFloatFormats()},
                        {0}});
   resources.push_back(
       scalarFloat(ImplementationFamilyId::ScalarFloatSign, {0}));
@@ -519,9 +507,10 @@ llvm::Error addMacFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
     return fmaAddendValue.takeError();
 
   const auto integerParams =
-      ::fabric::ScalarIntegerParams{ordinaryIntegerWidths()};
-  const auto floatParams = ::fabric::ScalarFloatParams{
-      floatFormats(), ::fabric::FloatBehaviorProfile::strictIEEE()};
+      ::fabric::ScalarIntegerParams{detail::catalogOrdinaryIntegerWidths()};
+  const auto floatParams =
+      ::fabric::ScalarFloatParams{detail::catalogFloatFormats(),
+                                  ::fabric::FloatBehaviorProfile::strictIEEE()};
   const auto operationSpec = [&](ImplementationFamilyId family,
                                  const FamilyCapabilityParams &parameters) {
     return OperationCapabilitySpec{
@@ -796,10 +785,11 @@ llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
                                    loopControlResourceContract(family)};
   };
   const auto streamSpec = [&](::dataflow::StreamStepKind step) {
-    return operationSpec(ImplementationFamilyId::LoopStream,
-                         ::fabric::LoopStreamParams{ordinaryIntegerWidths(),
-                                                    step, integerPredicates()},
-                         {*bits128, *bits1});
+    return operationSpec(
+        ImplementationFamilyId::LoopStream,
+        ::fabric::LoopStreamParams{detail::catalogOrdinaryIntegerWidths(), step,
+                                   integerPredicates()},
+        {*bits128, *bits1});
   };
   const auto tokenSpec = [&](ImplementationFamilyId family,
                              std::vector<PortType> results) {
@@ -982,8 +972,8 @@ llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
   auto vector = PortType::bits(parameters.vectorPayloadBits);
   if (!vector)
     return vector.takeError();
-  const auto integer = ordinaryIntegerWidths();
-  const auto floating = floatFormats();
+  const auto integer = detail::catalogOrdinaryIntegerWidths();
+  const auto floating = detail::catalogFloatFormats();
   const auto strict = ::fabric::FloatBehaviorProfile::strictIEEE();
   const std::uint32_t capacity = parameters.vectorPayloadBits;
   std::vector<SelectableResource> resources = {
@@ -997,7 +987,8 @@ llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
        ::fabric::FixedVectorIntegerParams{integer, capacity},
        {0}},
       {ImplementationFamilyId::FixedVectorIntegerLogic,
-       ::fabric::FixedVectorIntegerParams{logicIntegerWidths(), capacity},
+       ::fabric::FixedVectorIntegerParams{detail::catalogLogicIntegerWidths(),
+                                          capacity},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorIntegerShift,
        ::fabric::FixedVectorIntegerParams{integer, capacity},
@@ -1007,8 +998,8 @@ llvm::Error addVectorComputeFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
            integer, integerPredicates(), capacity},
        {0, 1}},
       {ImplementationFamilyId::FixedVectorValueSelect,
-       ::fabric::FixedVectorValueSelectParams{logicIntegerWidths(), floating,
-                                              capacity},
+       ::fabric::FixedVectorValueSelectParams{
+           detail::catalogLogicIntegerWidths(), floating, capacity},
        {3, 0, 1}},
       {ImplementationFamilyId::FixedVectorIntegerMultiply,
        ::fabric::FixedVectorIntegerParams{integer, capacity},
@@ -1121,8 +1112,8 @@ llvm::Error addVectorAdapterFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs) {
   auto bits1 = PortType::bits(1);
   if (!bits1)
     return bits1.takeError();
-  const ::fabric::FixedVectorAdapterParams parameters{logicIntegerWidths(),
-                                                      floatFormats(), 128};
+  const ::fabric::FixedVectorAdapterParams parameters{
+      detail::catalogLogicIntegerWidths(), detail::catalogFloatFormats(), 128};
   auto maximumLaneCount =
       ::fabric::maximumFixedVectorAdapterLaneCount(parameters);
   if (!maximumLaneCount)

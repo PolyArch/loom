@@ -43,7 +43,7 @@ inline constexpr BuiltinTargetDescriptor builtinSmallTarget{
     "small",
     "loom.adg.builtin.small",
     4,
-    0,
+    1,
     {4, 4, 12, 4, 1, 1, 2, 2, 64 * 1024}};
 
 inline constexpr BuiltinTargetDescriptor builtinDefaultTarget{
@@ -51,7 +51,7 @@ inline constexpr BuiltinTargetDescriptor builtinDefaultTarget{
     "default",
     "loom.adg.builtin.default",
     4,
-    0,
+    1,
     {8, 6, 27, 9, 2, 2, 4, 4, 256 * 1024}};
 
 inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
@@ -59,7 +59,7 @@ inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
     "large",
     "loom.adg.builtin.large",
     4,
-    0,
+    1,
     {16, 8, 48, 16, 4, 4, 8, 8, 1024 * 1024}};
 
 constexpr const BuiltinTargetDescriptor &

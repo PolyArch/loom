@@ -129,7 +129,7 @@ GEP to explicit DataLayout-derived integer address arithmetic uses existing
 bounded relations. A future address-generation resource can add one typed
 bound and one Direct carrier when that distinction is physically required.
 
-These rules close invariants retained by `loom.fabric 4.0` rather than
+These rules close invariants introduced by Version 4.0 rather than
 preserving the incomplete implementation as a compatible behavior. The generic
 relation already rejected a missing total projector and stated that poison
 creates no mode. Consequently, a GEP capability with no bounded projector and

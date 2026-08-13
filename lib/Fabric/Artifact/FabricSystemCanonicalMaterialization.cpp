@@ -337,8 +337,19 @@ remapCapability(const CanonicalServiceCapabilityRecord &capability,
   std::optional<CanonicalServiceCapabilityDomain> domain;
   if (const auto *message =
           std::get_if<MessageTransferCapabilityDomain>(&capability.domain())) {
-    auto mapped =
-        MessageTransferCapabilityDomain::fromCanonical(message->payloadTypes());
+    std::optional<FixedVectorMessagePayloadDomain> fixedVectors;
+    if (message->fixedVectors()) {
+      auto mapped = FixedVectorMessagePayloadDomain::fromCanonical(
+          message->fixedVectors()->elementTypes(),
+          message->fixedVectors()->maximumPayloadBits(),
+          message->fixedVectors()->maximumRank());
+      if (!mapped)
+        return mapped.takeError();
+      fixedVectors = std::move(*mapped);
+    }
+    auto mapped = MessageTransferCapabilityDomain::fromCanonical(
+        message->payloadTypes(), std::move(fixedVectors),
+        message->pointerFormats());
     if (!mapped)
       return mapped.takeError();
     domain.emplace(std::in_place_type<MessageTransferCapabilityDomain>,

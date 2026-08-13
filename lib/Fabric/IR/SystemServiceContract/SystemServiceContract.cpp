@@ -1,10 +1,13 @@
 #include "Fabric/IR/SystemServiceContract.h"
 
+#include "Common/VectorWidth.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
+
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 
 #include <algorithm>
 #include <limits>
@@ -39,6 +42,86 @@ llvm::Expected<std::vector<std::uint8_t>> canonicalTypeBytes(mlir::Type type) {
     return encoded.takeError();
   return std::vector<std::uint8_t>(encoded->bytes().begin(),
                                    encoded->bytes().end());
+}
+
+struct CanonicalTypeSet final {
+  std::vector<mlir::Type> types;
+  std::vector<std::vector<std::uint8_t>> bytes;
+};
+
+llvm::Expected<CanonicalTypeSet>
+normalizeTypes(llvm::ArrayRef<mlir::Type> types, llvm::StringRef field) {
+  if (types.empty())
+    return invalid(field + " must not be empty");
+  std::vector<std::pair<std::vector<std::uint8_t>, mlir::Type>> ordered;
+  ordered.reserve(types.size());
+  for (mlir::Type type : types) {
+    auto bytes = canonicalTypeBytes(type);
+    if (!bytes)
+      return bytes.takeError();
+    ordered.emplace_back(std::move(*bytes), type);
+  }
+  llvm::sort(ordered, [](const auto &left, const auto &right) {
+    return left.first < right.first;
+  });
+  CanonicalTypeSet result;
+  result.types.reserve(ordered.size());
+  result.bytes.reserve(ordered.size());
+  for (const auto &[bytes, type] : ordered) {
+    if (!result.bytes.empty() && result.bytes.back() == bytes)
+      continue;
+    result.types.push_back(type);
+    result.bytes.push_back(bytes);
+  }
+  return result;
+}
+
+llvm::Expected<CanonicalTypeSet>
+adoptCanonicalTypes(llvm::ArrayRef<mlir::Type> types, llvm::StringRef field) {
+  if (types.empty())
+    return invalid(field + " must not be empty");
+  CanonicalTypeSet result;
+  result.types.assign(types.begin(), types.end());
+  result.bytes.reserve(types.size());
+  for (mlir::Type type : types) {
+    auto bytes = canonicalTypeBytes(type);
+    if (!bytes)
+      return bytes.takeError();
+    if (!result.bytes.empty() && result.bytes.back() >= *bytes)
+      return invalid(field + " is not sorted and unique");
+    result.bytes.push_back(std::move(*bytes));
+  }
+  return result;
+}
+
+llvm::Error validateFixedVectorElements(const CanonicalTypeSet &elements,
+                                        std::uint64_t maximumPayloadBits,
+                                        std::uint32_t maximumRank) {
+  if (maximumPayloadBits == 0)
+    return invalid("fixed-vector message payload width must be positive");
+  if (maximumRank == 0 || maximumRank > dataflow::canonicalTypeMaximumRank)
+    return invalid("fixed-vector message rank exceeds the canonical type "
+                   "domain");
+  for (mlir::Type type : elements.types) {
+    const auto integer = mlir::dyn_cast<mlir::IntegerType>(type);
+    const auto floating = mlir::dyn_cast<mlir::FloatType>(type);
+    if (!integer && !floating)
+      return invalid("fixed-vector message element is not an integer or "
+                     "floating type");
+    if (type.getIntOrFloatBitWidth() > maximumPayloadBits)
+      return invalid("fixed-vector message element exceeds payload width");
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<bool>
+containsCanonicalType(llvm::ArrayRef<std::vector<std::uint8_t>> canonicalTypes,
+                      mlir::Type type) {
+  auto canonical = canonicalTypeBytes(type);
+  if (!canonical)
+    return canonical.takeError();
+  return std::binary_search(canonicalTypes.begin(), canonicalTypes.end(),
+                            *canonical);
 }
 
 bool requiresConsistency(
@@ -124,53 +207,115 @@ llvm::Expected<ServiceRateContractRecord> ServiceRateContractRecord::create(
 
 llvm::Expected<MessageTransferCapabilityDomain>
 MessageTransferCapabilityDomain::create(
-    llvm::ArrayRef<mlir::Type> payloadTypes) {
-  if (payloadTypes.empty())
-    return invalid("message payload domain must not be empty");
-  std::vector<std::pair<std::vector<std::uint8_t>, mlir::Type>> ordered;
-  ordered.reserve(payloadTypes.size());
-  for (mlir::Type type : payloadTypes) {
-    auto bytes = canonicalTypeBytes(type);
-    if (!bytes)
-      return bytes.takeError();
-    ordered.emplace_back(std::move(*bytes), type);
-  }
-  llvm::sort(ordered, [](const auto &left, const auto &right) {
-    return left.first < right.first;
-  });
-  std::vector<mlir::Type> normalized;
-  normalized.reserve(ordered.size());
-  for (const auto &[bytes, type] : ordered) {
-    if (!normalized.empty()) {
-      auto previous = canonicalTypeBytes(normalized.back());
-      if (!previous)
-        return previous.takeError();
-      if (*previous == bytes)
-        continue;
-    }
-    normalized.push_back(type);
-  }
-  return MessageTransferCapabilityDomain(std::move(normalized));
+    llvm::ArrayRef<mlir::Type> payloadTypes,
+    std::optional<FixedVectorMessagePayloadDomain> fixedVectors,
+    ::fabric::PointerFormatRelation pointerFormats) {
+  auto normalized = normalizeTypes(payloadTypes, "message payload domain");
+  if (!normalized)
+    return normalized.takeError();
+  if (!pointerFormats.valid())
+    return invalid("message pointer-format relation is malformed");
+  if (llvm::any_of(normalized->types, [](mlir::Type type) {
+        return mlir::isa<mlir::LLVM::LLVMPointerType>(type);
+      }))
+    return invalid("scalar pointer message payloads require a pointer-format "
+                   "relation");
+  return MessageTransferCapabilityDomain(
+      std::move(normalized->types), std::move(normalized->bytes),
+      std::move(fixedVectors), std::move(pointerFormats));
 }
 
 llvm::Expected<MessageTransferCapabilityDomain>
 MessageTransferCapabilityDomain::fromCanonical(
-    llvm::ArrayRef<mlir::Type> payloadTypes) {
-  if (payloadTypes.empty())
-    return invalid("message payload domain must not be empty");
-  std::vector<std::uint8_t> previous;
-  bool hasPrevious = false;
-  for (mlir::Type type : payloadTypes) {
-    auto bytes = canonicalTypeBytes(type);
-    if (!bytes)
-      return bytes.takeError();
-    if (hasPrevious && previous >= *bytes)
-      return invalid("message payload domain is not sorted and unique");
-    previous = std::move(*bytes);
-    hasPrevious = true;
-  }
+    llvm::ArrayRef<mlir::Type> payloadTypes,
+    std::optional<FixedVectorMessagePayloadDomain> fixedVectors,
+    ::fabric::PointerFormatRelation pointerFormats) {
+  auto canonical = adoptCanonicalTypes(payloadTypes, "message payload domain");
+  if (!canonical)
+    return canonical.takeError();
+  if (!pointerFormats.valid())
+    return invalid("message pointer-format relation is malformed");
+  if (llvm::any_of(canonical->types, [](mlir::Type type) {
+        return mlir::isa<mlir::LLVM::LLVMPointerType>(type);
+      }))
+    return invalid("scalar pointer message payloads require a pointer-format "
+                   "relation");
   return MessageTransferCapabilityDomain(
-      std::vector<mlir::Type>(payloadTypes.begin(), payloadTypes.end()));
+      std::move(canonical->types), std::move(canonical->bytes),
+      std::move(fixedVectors), std::move(pointerFormats));
+}
+
+llvm::Expected<bool> MessageTransferCapabilityDomain::admits(
+    mlir::Type payloadType, const ::loom::PointerLayout *pointerLayout) const {
+  if (auto pointer = mlir::dyn_cast<mlir::LLVM::LLVMPointerType>(payloadType)) {
+    if (!pointerLayout)
+      return invalid("pointer message payload has no resolved layout");
+    if (pointer.getAddressSpace() != pointerLayout->addressSpace)
+      return invalid("pointer message payload disagrees with its layout");
+    return pointerFormats_.contains(*pointerLayout);
+  }
+  if (pointerLayout)
+    return invalid("non-pointer message payload has a pointer layout");
+  auto exact = containsCanonicalType(canonicalPayloadTypes_, payloadType);
+  if (!exact || *exact || !fixedVectors_)
+    return exact;
+  return fixedVectors_->admits(payloadType);
+}
+
+llvm::Expected<FixedVectorMessagePayloadDomain>
+FixedVectorMessagePayloadDomain::create(llvm::ArrayRef<mlir::Type> elementTypes,
+                                        std::uint64_t maximumPayloadBits,
+                                        std::uint32_t maximumRank) {
+  auto normalized =
+      normalizeTypes(elementTypes, "fixed-vector message element domain");
+  if (!normalized)
+    return normalized.takeError();
+  if (llvm::Error error = validateFixedVectorElements(
+          *normalized, maximumPayloadBits, maximumRank))
+    return std::move(error);
+  return FixedVectorMessagePayloadDomain(std::move(normalized->types),
+                                         std::move(normalized->bytes),
+                                         maximumPayloadBits, maximumRank);
+}
+
+llvm::Expected<FixedVectorMessagePayloadDomain>
+FixedVectorMessagePayloadDomain::fromCanonical(
+    llvm::ArrayRef<mlir::Type> elementTypes, std::uint64_t maximumPayloadBits,
+    std::uint32_t maximumRank) {
+  auto canonical =
+      adoptCanonicalTypes(elementTypes, "fixed-vector message element domain");
+  if (!canonical)
+    return canonical.takeError();
+  if (llvm::Error error = validateFixedVectorElements(
+          *canonical, maximumPayloadBits, maximumRank))
+    return std::move(error);
+  return FixedVectorMessagePayloadDomain(std::move(canonical->types),
+                                         std::move(canonical->bytes),
+                                         maximumPayloadBits, maximumRank);
+}
+
+llvm::Expected<bool>
+FixedVectorMessagePayloadDomain::admits(mlir::Type payloadType) const {
+  const auto vector = mlir::dyn_cast<mlir::VectorType>(payloadType);
+  if (!vector || vector.isScalable() || vector.getRank() == 0 ||
+      static_cast<std::uint32_t>(vector.getRank()) > maximumRank_ ||
+      llvm::any_of(vector.getShape(),
+                   [](std::int64_t extent) { return extent <= 0; }))
+    return false;
+  auto element =
+      containsCanonicalType(canonicalElementTypes_, vector.getElementType());
+  if (!element || !*element)
+    return element;
+  auto width = loom::getFixedVectorBitWidth(
+      vector, vector.getElementType().getIntOrFloatBitWidth());
+  if (!width)
+    return width.takeError();
+  if (*width > maximumPayloadBits_)
+    return false;
+  auto canonical = dataflow::encodeCanonicalType(vector);
+  if (!canonical)
+    return canonical.takeError();
+  return true;
 }
 
 llvm::Expected<AddressedMemoryCapabilityDomain>
