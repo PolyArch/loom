@@ -2152,7 +2152,7 @@ selection remain SystemMapping decisions.
 Spatial and System PnR have distinct component-view descriptors:
 
 ```text
-loom.spatial_pnr.config.10.0
+loom.spatial_pnr.config.11.0
 loom.system_pnr.config.4.0
 ```
 
@@ -2161,16 +2161,19 @@ Spatial or System policy domain. Their exact descriptor bytes are the ASCII
 bytes shown above without a trailing zero. A digest from one view kind cannot
 be adopted as the other.
 
-Spatial version 10.0 retains 9.0's selected global Mapping order, bounded
-canonical fixing, transport-observation no-goods, and Action-local negotiated
-routing state. It incompatibly requires an exact-repair route probe to close
-its complete nonempty region before the assignment may enter selected-rank
-acceptance. A policy-admitted temporary iterate remains available to ordinary
-search, but cannot stand in for exact regional closure or hide a
-fixed-terminal capacity certificate from the repair model. It also restores
-the complete ready multicast target frontier while carrying causal buffering
-as a target-local route predicate. System PnR does not consume this protocol
-and retains version 4.0.
+Spatial version 11.0 retains 10.0's selected global Mapping order, bounded
+canonical fixing, exact regional closure, complete ready multicast frontier,
+and target-local causal buffering. It incompatibly makes route-conflict
+closure local to the exact assignment whose transaction discovered it. A
+failed assignment rolls back both its route overlay and that derived closure;
+the next assignment begins from the same canonical witness, ownership,
+relation, and route-equality region. The regional decision limit applies to
+each assignment's complete closure, and repair accounting reports the maximum
+closure observed by the invocation instead of the union of mutually exclusive
+route histories. It also replaces point terminal-assignment cut no-goods with
+certificate-sink reachability escape constraints and bounds canonical packing
+with the pinned solver's integer-expression validator. System PnR does not
+consume this protocol and retains version 4.0.
 
 Each resolved view is self-contained:
 
@@ -2942,9 +2945,10 @@ closure witness: `UnroutedObligation`, route-resource `CapacityOveruse`,
 resident Physical Tag `CapacityOveruse`, `TagUnassigned`, or `TagConflict`.
 The region includes the implicated route-equality closure, terminal
 attachments, owning realizations, and their binding relations. When exact
-repair is selected, an exact fixed-terminal capacity cut rejects only that
-terminal assignment inside the repair search. It cannot terminate the outer
-candidate before the bounded repair has considered its complete region.
+repair is selected, an exact fixed-terminal capacity cut rejects only
+assignments for which its separating reachability proof remains valid. It
+cannot terminate the outer candidate before the bounded repair has considered
+its complete region.
 
 Region closure includes affected realizations, nets and route branches,
 attachments, contexts, tags, buffers, memory and service bindings,
@@ -2952,6 +2956,27 @@ attachments, contexts, tags, buffers, memory and service bindings,
 are fixed and their claims are subtracted from available capacity. If the
 complete closure exceeds `max_region_decisions`, the result is
 `RegionTooLarge`; truncation is forbidden.
+
+The canonical repair-model region is derived once from the opening witness,
+route-equality closure, ownership, and binding relations. Negotiated routing
+may extend one assignment's route transaction with nets that conflict with its
+provisional routes. That route-conflict closure is complete for that assignment
+but is not a new model-region owner: accepting the assignment commits it, while
+rejecting the assignment discards it with the route transaction. A later
+assignment derives its own conflict closure from the unchanged canonical
+region. Mutually exclusive route histories are never unioned into subsequent
+assignments.
+
+A fixed-terminal capacity-cut certificate identifies the capacity and, for
+each forced logical net, one canonical sink unreachable from that net's source
+after every positive-claim traversal for the capacity is removed. If a
+certificate source or witness sink is outside the canonical model region,
+repair derives a larger region from exactly those terminal pairs, their owning
+decisions and binding relations, and the implicated route-equality closure.
+Other sinks are not made model-region owners merely because they belong to the
+same multicast net. Certificate-derived region growth is monotonic and consumes
+the same restart-wide region and solver-call limits; repeating a certificate
+that adds no terminal decision is an internal inconsistency.
 
 Negotiated routing for a nonempty repair region closes only that region's
 unrouted obligations and capacities touched by its selected routes. Fixed
@@ -2978,7 +3003,10 @@ result reuse. OR-Tools branch count, conflict count, wall time, and
 cancellation controls may interrupt execution, but an interrupted repair
 cannot change the original candidate.
 
-`max_region_decisions` bounds each complete witness region.
+`max_region_decisions` bounds the canonical model decisions plus the complete
+route-conflict closure of each assignment. The invocation's reported region
+decision count is the maximum such count it observed, not a sum or union across
+assignments.
 `max_solver_calls` bounds the complete exact-repair work of one restart,
 including every repair invocation caused by a later global-closure failure.
 Global closure and repair alternate until closure succeeds, a typed repair
@@ -2995,9 +3023,15 @@ placement and the exact memory-placement and attachment choices. Compute
 instruction contexts remain in the typed assignment and every applicable hard
 relation, but all admitted contexts have zero atomic overuse and placement owns
 their transport terminals and handshake fragments. A fixed-terminal cut
-instead adds the exact terminal-choice no-good from its certificate. Only then
-does canonical mutation enumeration begin. Both paths consume the same
-restart-wide solver-call budget and use the same exact model.
+instead adds one Boolean escape expression per certified net. Its value is
+defined by an allowed-assignment table over the source and witness-sink choices:
+true exactly when the selected endpoints are connected in the frozen
+payload-compatible routing graph after every positive-claim traversal for the
+certified capacity is removed. At least one certified net must escape. This
+removes every assignment for which the same separating proof remains valid,
+without claiming that an escaping pair is otherwise routable. Only then does
+canonical mutation enumeration begin. Both paths consume the same restart-wide
+solver-call budget and use the same exact model.
 
 The solver assignment is diffed against the candidate and rebuilt as one
 canonical ephemeral `ActionBatch` containing only the three existing Action
@@ -3078,7 +3112,7 @@ particular, the adapter sets no solver wall-time, deterministic-time, branch,
 conflict, or incumbent limit. Loom's owner-local solver-call budget and the
 outer execution controls remain the only corresponding limits.
 
-Spatial 10.0 canonical extraction is one fixed protocol:
+Spatial 11.0 canonical extraction is one fixed protocol:
 
 1. solve the exact selected repair objective, when present, and require
    `OPTIMAL`; a pure feasibility model must likewise return `OPTIMAL`;
@@ -3092,6 +3126,15 @@ Spatial 10.0 canonical extraction is one fixed protocol:
    a block containing one typed variable is always representable; and
 5. require one complete assignment, then rebuild and verify it through the
    ordinary Mapping and exact Evaluation owners.
+
+Consecutive canonical variables share one mixed-radix minimization block only
+when the pinned CP-SAT integer-expression validator proves the complete linear
+objective range safe. Language-level `int64` representability is insufficient:
+the objective minimum, maximum, and their difference must satisfy the solver's
+symmetric integer safety bounds. The first variable that would make a block
+unsafe begins the next block. A single canonical variable is required to be
+safe by the admitted variable-domain contract. Block splitting changes only
+solver-call accounting; it preserves the same lexicographic assignment.
 
 For a block with canonical variables `x[0..n)`, coefficient `c[n-1] = 1`,
 and `c[i] = c[i+1] * (max(x[i+1]) - min(x[i+1]) + 1)`, minimizing

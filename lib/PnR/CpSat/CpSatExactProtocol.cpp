@@ -1,5 +1,6 @@
 #include "CpSatExactProtocol.h"
 
+#include "ortools/sat/cp_model_checker.h"
 #include "ortools/sat/cp_model_solver.h"
 #include "ortools/sat/sat_parameters.pb.h"
 
@@ -93,15 +94,14 @@ void fixVariable(CpModelProto &model, int variable, std::int64_t value) {
 }
 
 std::optional<std::vector<std::int64_t>>
-canonicalBlockCoefficients(
-    llvm::ArrayRef<CpSatCanonicalVariable> variables) {
+canonicalBlockCoefficients(const CpModelProto &model,
+                           llvm::ArrayRef<CpSatCanonicalVariable> variables) {
   assert(!variables.empty());
   std::vector<std::int64_t> coefficients(variables.size(), 1);
   for (std::size_t index = variables.size() - 1; index != 0; --index) {
     const auto values = variables[index].legalValues;
     const __int128 radix = static_cast<__int128>(values.back()) -
-                               static_cast<__int128>(values.front()) +
-                           1;
+                           static_cast<__int128>(values.front()) + 1;
     const __int128 coefficient =
         static_cast<__int128>(coefficients[index]) * radix;
     if (coefficient > std::numeric_limits<std::int64_t>::max())
@@ -109,36 +109,18 @@ canonicalBlockCoefficients(
     coefficients[index - 1] = static_cast<std::int64_t>(coefficient);
   }
 
-  std::int64_t minimum = 0;
-  std::int64_t maximum = 0;
-  for (auto [variable, coefficient] :
-       llvm::zip_equal(variables, coefficients)) {
-    const __int128 minimumTerm = static_cast<__int128>(coefficient) *
-                                 variable.legalValues.front();
-    const __int128 maximumTerm = static_cast<__int128>(coefficient) *
-                                 variable.legalValues.back();
-    if (minimumTerm < std::numeric_limits<std::int64_t>::min() ||
-        minimumTerm > std::numeric_limits<std::int64_t>::max() ||
-        maximumTerm < std::numeric_limits<std::int64_t>::min() ||
-        maximumTerm > std::numeric_limits<std::int64_t>::max())
-      return std::nullopt;
-    const __int128 nextMinimum = minimum + minimumTerm;
-    const __int128 nextMaximum = maximum + maximumTerm;
-    if (nextMinimum < std::numeric_limits<std::int64_t>::min() ||
-        nextMinimum > std::numeric_limits<std::int64_t>::max() ||
-        nextMaximum < std::numeric_limits<std::int64_t>::min() ||
-        nextMaximum > std::numeric_limits<std::int64_t>::max())
-      return std::nullopt;
-    minimum = static_cast<std::int64_t>(nextMinimum);
-    maximum = static_cast<std::int64_t>(nextMaximum);
-  }
+  std::vector<int> protoIndices;
+  protoIndices.reserve(variables.size());
+  for (const CpSatCanonicalVariable &variable : variables)
+    protoIndices.push_back(variable.protoIndex);
+  if (PossibleIntegerOverflow(model, protoIndices, coefficients))
+    return std::nullopt;
   return coefficients;
 }
 
-void minimizeCanonicalBlock(
-    CpModelProto &model,
-    llvm::ArrayRef<CpSatCanonicalVariable> variables,
-    llvm::ArrayRef<std::int64_t> coefficients) {
+void minimizeCanonicalBlock(CpModelProto &model,
+                            llvm::ArrayRef<CpSatCanonicalVariable> variables,
+                            llvm::ArrayRef<std::int64_t> coefficients) {
   assert(variables.size() == coefficients.size());
   CpObjectiveProto *objective = model.mutable_objective();
   objective->Clear();
@@ -216,6 +198,9 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
     std::int32_t randomSeed) {
   if (maxSolverCalls == 0)
     return protocolError("solver-call budget must be positive");
+  if (const std::string validation = ValidateCpModel(model);
+      !validation.empty())
+    return protocolError("exact repair model is invalid: " + validation);
   if (llvm::Error error = validateVariables(model, variables))
     return std::move(error);
   if (model.has_objective() != objectiveVariable.has_value())
@@ -242,7 +227,8 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
   case CpSatProofStatus::Unknown:
     return unknown(state.calls);
   case CpSatProofStatus::InternalError:
-    return protocolError("OR-Tools rejected the exact repair model");
+    return protocolError("OR-Tools rejected the exact repair model: " +
+                         initial->solution_info());
   case CpSatProofStatus::Optimal:
     break;
   }
@@ -259,11 +245,12 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
   assignment.reserve(variables.size());
   for (std::size_t begin = 0; begin != variables.size();) {
     std::size_t end = begin + 1;
-    auto coefficients = canonicalBlockCoefficients(variables.slice(begin, 1));
+    auto coefficients =
+        canonicalBlockCoefficients(working, variables.slice(begin, 1));
     assert(coefficients && "one canonical variable must be int64 encodable");
     while (end != variables.size()) {
-      auto extended =
-          canonicalBlockCoefficients(variables.slice(begin, end - begin + 1));
+      auto extended = canonicalBlockCoefficients(
+          working, variables.slice(begin, end - begin + 1));
       if (!extended)
         break;
       coefficients = std::move(extended);
@@ -285,7 +272,9 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
     case CpSatProofStatus::Unknown:
       return unknown(state.calls);
     case CpSatProofStatus::InternalError:
-      return protocolError("OR-Tools rejected a canonical minimization model");
+      return protocolError(
+          "OR-Tools rejected a canonical minimization model: " +
+          response->solution_info());
     }
     working = std::move(trial);
     for (const CpSatCanonicalVariable &variable :

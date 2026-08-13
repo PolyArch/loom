@@ -36,6 +36,11 @@ struct SpatialPathFinderClosureResult final {
   bool capacityClosed = false;
 };
 
+struct SpatialFixedTerminalCutNet final {
+  PnrIndex logicalNet = 0;
+  PnrIndex unreachableSink = 0;
+};
+
 class SpatialPathFinderClosureFailure final
     : public llvm::ErrorInfo<SpatialPathFinderClosureFailure> {
 public:
@@ -53,7 +58,7 @@ public:
       Kind kind, std::string message,
       PnrIndex certificateCapacity = getInvalidPnrIndex(),
       std::uint64_t mandatoryUsage = 0, std::uint64_t physicalCapacity = 0,
-      std::vector<PnrIndex> forcedLogicalNets = {},
+      std::vector<SpatialFixedTerminalCutNet> forcedNetCuts = {},
       std::uint64_t regionalLogicalNetCount = 0,
       std::uint64_t regionalLogicalNetLimit = 0);
 
@@ -61,8 +66,8 @@ public:
   PnrIndex certificateCapacity() const { return certificateCapacity_; }
   std::uint64_t mandatoryUsage() const { return mandatoryUsage_; }
   std::uint64_t physicalCapacity() const { return physicalCapacity_; }
-  llvm::ArrayRef<PnrIndex> forcedLogicalNets() const {
-    return forcedLogicalNets_;
+  llvm::ArrayRef<SpatialFixedTerminalCutNet> forcedNetCuts() const {
+    return forcedNetCuts_;
   }
   std::uint64_t regionalLogicalNetCount() const {
     return regionalLogicalNetCount_;
@@ -79,7 +84,7 @@ private:
   PnrIndex certificateCapacity_;
   std::uint64_t mandatoryUsage_;
   std::uint64_t physicalCapacity_;
-  std::vector<PnrIndex> forcedLogicalNets_;
+  std::vector<SpatialFixedTerminalCutNet> forcedNetCuts_;
   std::uint64_t regionalLogicalNetCount_;
   std::uint64_t regionalLogicalNetLimit_;
 };
@@ -241,8 +246,8 @@ private:
   std::vector<std::uint8_t> cutSeenEndpoints_;
   std::vector<PnrIndex> cutWorklist_;
   std::vector<PnrIndex> cutContributingNets_;
-  std::vector<PnrIndex> cutForcedNets_;
-  std::vector<PnrIndex> cutCertificateForcedNets_;
+  std::vector<SpatialFixedTerminalCutNet> cutForcedNetCuts_;
+  std::vector<SpatialFixedTerminalCutNet> cutCertificateForcedNetCuts_;
   std::vector<std::uint32_t> cutPayloadWidths_;
   std::vector<std::uint64_t> cutMinimumClaims_;
   std::vector<std::uint8_t> rankTrendTransitions_;

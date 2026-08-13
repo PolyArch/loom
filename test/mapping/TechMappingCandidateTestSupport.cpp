@@ -1570,7 +1570,7 @@ void loom::test::exercisePathFinderFixedTerminalCutRejection(
                                   FixedTerminalCapacityCut &&
             failure.certificateCapacity() != pnr::getInvalidPnrIndex() &&
             failure.mandatoryUsage() > failure.physicalCapacity() &&
-            !failure.forcedLogicalNets().empty();
+            !failure.forcedNetCuts().empty();
       });
   if (!observedFixedCut)
     fail("PathFinder lost its fixed-terminal capacity-cut certificate");
@@ -1609,7 +1609,7 @@ void loom::test::exercisePathFinderFixedTerminalCutRejection(
                                   FixedTerminalCapacityCut &&
             failure.certificateCapacity() != pnr::getInvalidPnrIndex() &&
             failure.mandatoryUsage() > failure.physicalCapacity() &&
-            !failure.forcedLogicalNets().empty();
+            !failure.forcedNetCuts().empty();
       });
   if (!observedClosureCertificate)
     fail("Spatial final closure lost its fixed-terminal cut certificate");
@@ -1628,10 +1628,42 @@ void loom::test::exercisePathFinderFixedTerminalCutRejection(
                                   FixedTerminalCapacityCut &&
             failure.certificateCapacity() != pnr::getInvalidPnrIndex() &&
             failure.mandatoryUsage() > failure.physicalCapacity() &&
-            !failure.forcedLogicalNets().empty();
+            !failure.forcedNetCuts().empty();
       });
   if (!observedRepairCertificate)
     fail("Spatial exact repair lost its fixed-terminal cut certificate");
+
+  const std::uint64_t preRepairRouteClaim =
+      candidate.totalSelectedTraversalClaim();
+  const std::uint64_t preRepairViolations =
+      take(pnr::spatialMappingViolationValue(
+          candidate, ResolvedPnrViolationKind::UnroutedObligation)) +
+      take(pnr::spatialMappingViolationValue(
+          candidate, ResolvedPnrViolationKind::CapacityOveruse));
+  pnr::SpatialExactRepairScratch exactRepair;
+  pnr::DeterministicPnrRandomStream exactRepairStream =
+      pnr::DeterministicPnrRandomStream::create(
+          candidate.problem().config().policy().determinism.masterSeed, 0,
+          pnr::PnrRandomStreamPurpose::ExactRepair);
+  const pnr::SpatialExactRepairResult exactOutcome = take(exactRepair.repair(
+      candidate, 0,
+      candidate.problem().config().policy().search.exactRepair.maxSolverCalls,
+      exactRepairStream));
+  if (exactOutcome.kind == pnr::SpatialExactRepairResultKind::InternalError ||
+      exactOutcome.kind ==
+          pnr::SpatialExactRepairResultKind::UnsupportedEncoding ||
+      exactOutcome.solverCalls < 2)
+    fail("fixed-terminal cut did not enter bounded exact escape repair");
+  if (exactOutcome.kind != pnr::SpatialExactRepairResultKind::Repaired) {
+    const std::uint64_t postRepairViolations =
+        take(pnr::spatialMappingViolationValue(
+            candidate, ResolvedPnrViolationKind::UnroutedObligation)) +
+        take(pnr::spatialMappingViolationValue(
+            candidate, ResolvedPnrViolationKind::CapacityOveruse));
+    if (candidate.totalSelectedTraversalClaim() != preRepairRouteClaim ||
+        postRepairViolations != preRepairViolations)
+      fail("failed exact escape repair changed the Spatial candidate");
+  }
   requireSuccess(routeCosts.resetFromCandidate());
   for (pnr::PnrIndex capacity = 0;
        capacity < candidate.problem().resources().capacityDimensions().size();

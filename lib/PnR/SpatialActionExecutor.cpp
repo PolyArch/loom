@@ -111,8 +111,9 @@ llvm::Error classifyTransitionFailure(llvm::Error failure,
               closureFailure.certificateCapacity(),
               closureFailure.mandatoryUsage(),
               closureFailure.physicalCapacity(),
-              std::vector<PnrIndex>(closureFailure.forcedLogicalNets().begin(),
-                                    closureFailure.forcedLogicalNets().end()),
+              std::vector<SpatialFixedTerminalCutNet>(
+                  closureFailure.forcedNetCuts().begin(),
+                  closureFailure.forcedNetCuts().end()),
               closureFailure.regionalLogicalNetCount(),
               closureFailure.regionalLogicalNetLimit());
         if (closureFailure.kind() ==
@@ -123,8 +124,9 @@ llvm::Error classifyTransitionFailure(llvm::Error failure,
               closureFailure.certificateCapacity(),
               closureFailure.mandatoryUsage(),
               closureFailure.physicalCapacity(),
-              std::vector<PnrIndex>(closureFailure.forcedLogicalNets().begin(),
-                                    closureFailure.forcedLogicalNets().end()),
+              std::vector<SpatialFixedTerminalCutNet>(
+                  closureFailure.forcedNetCuts().begin(),
+                  closureFailure.forcedNetCuts().end()),
               closureFailure.regionalLogicalNetCount(),
               closureFailure.regionalLogicalNetLimit());
         return llvm::make_error<SpatialActionTransitionFailure>(

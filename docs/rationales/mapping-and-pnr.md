@@ -542,6 +542,15 @@ repair therefore projects its canonical affected-net set into ordinary
 WholeNet Actions; the executor still owns routing, while the repair model
 remains the sole owner of its bounded region.
 
+Route conflicts discovered while probing an exact assignment are different
+from that canonical model region. They depend on provisional paths selected by
+the assignment's transaction, so retaining their union after rollback makes a
+failed route history an independent region owner. It also makes later
+assignments reroute nets that their own paths may never touch. The router
+therefore closes conflicts transitively inside each probe, while rejection
+discards both the route overlay and its derived closure. The repair invocation
+retains only the largest observed closure size for deterministic accounting.
+
 Raw local-choice order is insufficient as the repair objective. In a coupled
 placement and attachment region, its lexicographically first assignment can
 move every realization merely because early physical occurrences have smaller
@@ -572,6 +581,13 @@ upstream solver heuristic or version-internal ordering from selecting a
 different persistent Mapping. A local infeasible repair region proves only
 infeasibility under its fixed boundary; it is not global proof unless the
 region is the complete exact problem.
+
+Canonical mixed-radix packing uses the pinned solver's own exact
+integer-expression overflow predicate. Checking only C++ `int64` bounds can
+still create an objective that CP-SAT rejects because the solver reserves a
+symmetric safety margin for negation and bound differences. Splitting before
+that boundary preserves canonical order while keeping every optimization model
+inside the same validator that will execute it.
 
 The adapter uses one worker and one restart-local seed for the entire repair
 invocation. Consuming one ExactRepair word rather than one word per solver call
@@ -756,6 +772,15 @@ no-progress bound proves nothing about future iterations; it only prevents an
 explicitly bounded search from repeatedly spending the dominant all-net route
 work without improving its exact closure rank.
 
+Enumerating one exact terminal assignment at a time throws away most of the
+cut proof. The proof remains valid for every source and witness-sink choice pair
+that is still disconnected after the capacity's claiming traversals are
+removed. Exact repair therefore encodes that frozen-topology reachability
+relation directly and requires at least one certified pair to cross the cut.
+The relation is a necessary escape condition, not a solver-private routing
+model: negotiated routing remains the sole authority for complete multicast,
+capacity, tag, and handshake closure.
+
 Regional routing cannot measure only capacities touched by the candidate's
 current regional routes: moving those routes away from an overused capacity
 would remove that capacity from the measurement even when fixed outside routes
@@ -786,7 +811,8 @@ fixed-terminal cut; after rollback there is no resident overuse to trigger a
 capacity-only dispatcher. The unresolved obligation is already the durable
 Mapping witness. Using every unresolved transport-closure witness as a repair
 root lets the same closed region vary placement and attachments, while keeping
-the conditional cut as a no-good for only the rejected terminal assignment.
+the conditional cut as a reachability constraint over exactly the certified
+source and witness-sink choices.
 
 Comparing only against the historical best gives useful patience, but a short
 regression can be necessary before negotiated routing improves again. A second

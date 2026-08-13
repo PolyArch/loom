@@ -143,6 +143,31 @@ void overflowingRadixStartsAnotherCanonicalBlock() {
           "overflow split used the wrong canonical block count");
 }
 
+void solverSafeRangeStartsAnotherCanonicalBlock() {
+  using namespace loom::pnr::detail;
+  using namespace operations_research;
+  using namespace operations_research::sat;
+
+  constexpr std::int64_t wideValue = INT64_C(3000000000);
+  CpModelBuilder model;
+  const std::vector<std::int64_t> values{0, wideValue};
+  const IntVar x = model.NewIntVar(Domain::FromValues(values));
+  const IntVar y = model.NewIntVar(Domain::FromValues(values));
+  const std::array<CpSatCanonicalVariable, 2> variables{{
+      {x.index(), values},
+      {y.index(), values},
+  }};
+  const CpSatCanonicalResult result = take(solveCanonicalCpSat(
+      model.Build(), variables, std::nullopt, /*maxSolverCalls=*/3,
+      /*randomSeed=*/41));
+  require(result.kind == CpSatCanonicalResultKind::Assignment &&
+              llvm::ArrayRef(result.assignment) ==
+                  llvm::ArrayRef<std::int64_t>({0, 0}),
+          "solver-safe split changed the canonical assignment");
+  require(result.solverCalls == 3,
+          "solver-safe split used the wrong canonical block count");
+}
+
 void fixedAssignmentConsumesOneCall() {
   using namespace loom::pnr::detail;
   using namespace operations_research;
@@ -237,6 +262,7 @@ int main() {
   wideDomainsShareOneCanonicalBlock();
   solverCallBudgetLeavesNoPartialAssignment();
   overflowingRadixStartsAnotherCanonicalBlock();
+  solverSafeRangeStartsAnotherCanonicalBlock();
   fixedAssignmentConsumesOneCall();
   localInfeasibilityIsProofBearingButNotGlobal();
   nonProofStatusesFailClosed();

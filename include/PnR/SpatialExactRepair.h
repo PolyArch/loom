@@ -50,6 +50,12 @@ private:
                          std::uint64_t solverCallLimit,
                          DeterministicPnrRandomStream &exactRepairStream);
 
+  llvm::Expected<SpatialExactRepairResult> repairTransportClosureRegion(
+      SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
+      std::uint64_t solverCallLimit, std::int32_t solverSeed,
+      llvm::ArrayRef<SpatialFixedTerminalCutNet> certificateSeedCuts,
+      bool &requiresRegionExpansion);
+
   SpatialActionExecutorScratch actionExecutor_;
   std::vector<std::uint8_t> decisionIncluded_;
   std::vector<std::uint8_t> relationIncluded_;
@@ -58,8 +64,11 @@ private:
   std::vector<PnrIndex> decisions_;
   std::vector<PnrIndex> relations_;
   std::vector<PnrIndex> affectedNets_;
-  std::vector<PnrIndex> routeCutLogicalNets_;
-  std::vector<PnrIndex> routeCutDecisionLocals_;
+  std::vector<SpatialFixedTerminalCutNet> routeCutNetCuts_;
+  std::vector<std::uint8_t> routeCutBlockedTraversals_;
+  std::vector<std::uint8_t> routeCutReachableEndpoints_;
+  std::vector<PnrIndex> routeCutWorklist_;
+  PnrIndex routeCutCapacity_ = getInvalidPnrIndex();
   std::vector<int> decisionVariables_;
   std::vector<PnrIndex> legalValueOffsets_;
   std::vector<std::int64_t> legalValues_;

@@ -15,6 +15,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -25,13 +26,13 @@ char SpatialPathFinderClosureFailure::ID;
 SpatialPathFinderClosureFailure::SpatialPathFinderClosureFailure(
     Kind kind, std::string message, PnrIndex certificateCapacity,
     std::uint64_t mandatoryUsage, std::uint64_t physicalCapacity,
-    std::vector<PnrIndex> forcedLogicalNets,
+    std::vector<SpatialFixedTerminalCutNet> forcedNetCuts,
     std::uint64_t regionalLogicalNetCount,
     std::uint64_t regionalLogicalNetLimit)
     : kind_(kind), message_(std::move(message)),
       certificateCapacity_(certificateCapacity),
       mandatoryUsage_(mandatoryUsage), physicalCapacity_(physicalCapacity),
-      forcedLogicalNets_(std::move(forcedLogicalNets)),
+      forcedNetCuts_(std::move(forcedNetCuts)),
       regionalLogicalNetCount_(regionalLogicalNetCount),
       regionalLogicalNetLimit_(regionalLogicalNetLimit) {}
 
@@ -107,6 +108,70 @@ resourceOwnerForState(const FrozenSpatialResourceIndex &resources,
         state - record.stateOffset < record.stateCount)
       return static_cast<PnrIndex>(owner);
   return std::nullopt;
+}
+
+llvm::json::Object encodeProducerReference(
+    const dataflow::CanonicalGraphProducerEndpointRef &producer) {
+  llvm::json::Object result;
+  std::visit(
+      [&](const auto &endpoint) {
+        using Endpoint = std::decay_t<decltype(endpoint)>;
+        if constexpr (std::is_same_v<Endpoint, dataflow::ActorTokenResultRef>) {
+          result["kind"] = "actor_result";
+          result["owner"] = endpoint.actor.entity.value();
+          result["ordinal"] = endpoint.ordinal;
+        } else {
+          std::visit(
+              [&](const auto &ingress) {
+                using Ingress = std::decay_t<decltype(ingress)>;
+                result["owner"] = ingress.graph.entity.value();
+                if constexpr (std::is_same_v<Ingress,
+                                             dataflow::GraphStartTokenRef>) {
+                  result["kind"] = "graph_start";
+                } else if constexpr (std::is_same_v<
+                                         Ingress,
+                                         dataflow::GraphValueInputTokenRef>) {
+                  result["kind"] = "graph_value_input";
+                  result["ordinal"] = ingress.ordinal;
+                } else {
+                  result["kind"] = "graph_stream_input";
+                  result["ordinal"] = ingress.ordinal;
+                }
+              },
+              endpoint);
+        }
+      },
+      producer);
+  return result;
+}
+
+llvm::json::Object
+encodeLogicalNetDetail(const SpatialCandidateState &candidate,
+                       PnrIndex logicalNet) {
+  const FrozenSpatialPnrProblem &problem = candidate.problem();
+  const auto &routing = problem.routing();
+  const FrozenSpatialLogicalNet &net =
+      problem.transfers().logicalNets()[logicalNet];
+  const PnrIndex source = candidate.logicalNetSourceEndpoint(logicalNet);
+  llvm::json::Object result;
+  result["logical_net"] = logicalNet;
+  result["producer"] = encodeProducerReference(net.producer);
+  result["source_endpoint"] = source;
+  result["source_endpoint_ref"] = loom::fabric::printFabricRef(
+      routing.routingEndpoints()[source].reference);
+  llvm::json::Array sinks;
+  for (PnrIndex sink = 0; sink < net.sinkCount; ++sink) {
+    const PnrIndex endpoint =
+        candidate.logicalNetSinkEndpoint(logicalNet, sink);
+    llvm::json::Object row;
+    row["endpoint"] = endpoint;
+    row["endpoint_ref"] = loom::fabric::printFabricRef(
+        routing.routingEndpoints()[endpoint].reference);
+    row["sink"] = sink;
+    sinks.push_back(std::move(row));
+  }
+  result["sinks"] = std::move(sinks);
+  return result;
 }
 
 llvm::json::Array
@@ -197,10 +262,10 @@ llvm::Error SpatialPathFinderRouterScratch::prepare(
   cutWorklist_.reserve(problem.routing().routingEndpoints().size());
   cutContributingNets_.clear();
   cutContributingNets_.reserve(logicalNetCount);
-  cutForcedNets_.clear();
-  cutForcedNets_.reserve(logicalNetCount);
-  cutCertificateForcedNets_.clear();
-  cutCertificateForcedNets_.reserve(logicalNetCount);
+  cutForcedNetCuts_.clear();
+  cutForcedNetCuts_.reserve(logicalNetCount);
+  cutCertificateForcedNetCuts_.clear();
+  cutCertificateForcedNetCuts_.reserve(logicalNetCount);
   cutPayloadWidths_.clear();
   cutPayloadWidths_.reserve(logicalNetCount);
   cutMinimumClaims_.clear();
@@ -405,7 +470,7 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
   const bool emitDetails =
       loom::mapping_debug::enabled(loom::mapping_debug::Level::Detail);
   CapacityConflictAnalysis analysis;
-  cutCertificateForcedNets_.clear();
+  cutCertificateForcedNetCuts_.clear();
 
   std::optional<PnrIndex> selectedConflictCapacity;
   for (PnrIndex capacity = 0; capacity < resources.capacityDimensions().size();
@@ -447,7 +512,7 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
     std::fill(cutSeenTraversals_.begin(), cutSeenTraversals_.end(), 0);
     std::fill(cutSeenEndpoints_.begin(), cutSeenEndpoints_.end(), 0);
     cutContributingNets_.clear();
-    cutForcedNets_.clear();
+    cutForcedNetCuts_.clear();
     std::uint64_t derivedUsage = capacityRecord.initialOccupancy;
     for (PnrIndex logicalNet = 0;
          logicalNet < problem.transfers().logicalNets().size(); ++logicalNet) {
@@ -629,7 +694,7 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
         }
       }
 
-      bool separatingCut = false;
+      std::optional<PnrIndex> unreachableSink;
       const PnrIndex sinkCount =
           problem.transfers().logicalNets()[logicalNet].sinkCount;
       for (PnrIndex sink = 0; sink < sinkCount; ++sink) {
@@ -637,9 +702,10 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
             candidate.logicalNetSinkEndpoint(logicalNet, sink);
         if (endpoint >= cutReachableEndpoints_.size())
           return pathFinderError("cut sink endpoint is out of range");
-        separatingCut |= !cutReachableEndpoints_[endpoint];
+        if (!cutReachableEndpoints_[endpoint] && !unreachableSink)
+          unreachableSink = sink;
       }
-      if (separatingCut) {
+      if (unreachableSink) {
         if (minimumClaim == std::numeric_limits<std::uint64_t>::max())
           return pathFinderError(
               "separating capacity cut has no positive compatible claim");
@@ -648,7 +714,7 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
           return pathFinderError("mandatory capacity usage exceeds u64");
         mandatoryUsage += minimumClaim;
         ++forcedNetCount;
-        cutForcedNets_.push_back(logicalNet);
+        cutForcedNetCuts_.push_back({logicalNet, *unreachableSink});
       }
 
       if (emitDetails) {
@@ -685,7 +751,9 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
                   encodeSelectedOrdinalRanges(cutReachableEndpoints_);
               fields["reachable_sinks"] = std::move(reachableSinks);
               fields["unreachable_sinks"] = std::move(unreachableSinks);
-              fields["separating_cut"] = separatingCut;
+              fields["separating_cut"] = unreachableSink.has_value();
+              if (unreachableSink)
+                fields["certificate_sink"] = *unreachableSink;
             });
       }
       if (mandatoryUsage > physicalCapacity)
@@ -697,7 +765,7 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
       analysis.certificateCapacity = capacity;
       analysis.mandatoryUsage = mandatoryUsage;
       analysis.physicalCapacity = physicalCapacity;
-      cutCertificateForcedNets_ = cutForcedNets_;
+      cutCertificateForcedNetCuts_ = cutForcedNetCuts_;
     }
 
     constexpr std::uint64_t decisionConflictEventLimit = 16;
@@ -736,21 +804,44 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
       }
       llvm::json::Array traversals;
       llvm::json::Array endpoints;
+      llvm::json::Array logicalNetDetails;
+      llvm::json::Array traversalDetails;
+      llvm::json::Array endpointDetails;
+      if (emitDetails)
+        for (PnrIndex logicalNet : cutContributingNets_)
+          logicalNetDetails.push_back(
+              encodeLogicalNetDetail(candidate, logicalNet));
       std::uint64_t traversalCount = 0;
       std::uint64_t endpointCount = 0;
       for (PnrIndex traversal = 0; traversal < cutSeenTraversals_.size();
            ++traversal)
         if (cutSeenTraversals_[traversal]) {
           ++traversalCount;
-          if (traversals.size() < sampleLimit)
+          if (traversals.size() < sampleLimit) {
             traversals.push_back(traversal);
+            if (emitDetails) {
+              llvm::json::Object row;
+              row["ref"] = loom::fabric::printFabricRef(
+                  routing.traversals()[traversal].reference);
+              row["traversal"] = traversal;
+              traversalDetails.push_back(std::move(row));
+            }
+          }
         }
       for (PnrIndex endpoint = 0; endpoint < cutSeenEndpoints_.size();
            ++endpoint)
         if (cutSeenEndpoints_[endpoint]) {
           ++endpointCount;
-          if (endpoints.size() < sampleLimit)
+          if (endpoints.size() < sampleLimit) {
             endpoints.push_back(endpoint);
+            if (emitDetails) {
+              llvm::json::Object row;
+              row["endpoint"] = endpoint;
+              row["ref"] = loom::fabric::printFabricRef(
+                  routing.routingEndpoints()[endpoint].reference);
+              endpointDetails.push_back(std::move(row));
+            }
+          }
         }
       const std::optional<PnrIndex> state =
           resourceStateForCapacity(resources, capacity);
@@ -798,9 +889,12 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
             }
             if (emitDetails) {
               fields["logical_nets"] = std::move(logicalNets);
+              fields["logical_net_details"] = std::move(logicalNetDetails);
               fields["claims"] = std::move(claims);
               fields["traversals"] = std::move(traversals);
+              fields["traversal_details"] = std::move(traversalDetails);
               fields["endpoints"] = std::move(endpoints);
+              fields["endpoint_details"] = std::move(endpointDetails);
             } else {
               fields["logical_net_sample"] = std::move(logicalNets);
               fields["claim_sample"] = std::move(claims);
@@ -976,7 +1070,8 @@ SpatialPathFinderRouterScratch::expandExactRegionalConflictClosure(
             SpatialPathFinderClosureFailure::Kind::RegionalLimit,
             "Spatial PathFinder conflict closure exceeds its regional "
             "logical-net limit",
-            getInvalidPnrIndex(), 0, 0, std::vector<PnrIndex>{},
+            getInvalidPnrIndex(), 0, 0,
+            std::vector<SpatialFixedTerminalCutNet>{},
             routingRegionNets_.size(), logicalNetLimit);
     }
   }
@@ -1202,7 +1297,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       return llvm::make_error<SpatialPathFinderClosureFailure>(
           SpatialPathFinderClosureFailure::Kind::RegionalLimit,
           "Spatial PathFinder routing region exceeds its logical-net limit",
-          getInvalidPnrIndex(), 0, 0, std::vector<PnrIndex>{},
+          getInvalidPnrIndex(), 0, 0, std::vector<SpatialFixedTerminalCutNet>{},
           routingRegionNets_.size(), exactRegionalLogicalNetLimit);
   } else if (exactRegionalLogicalNetLimit != 0) {
     return pathFinderError(
@@ -1629,7 +1724,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
               " greater than capacity " +
               std::to_string(conflictAnalysis.physicalCapacity),
           conflictAnalysis.certificateCapacity, conflictAnalysis.mandatoryUsage,
-          conflictAnalysis.physicalCapacity, cutCertificateForcedNets_);
+          conflictAnalysis.physicalCapacity, cutCertificateForcedNetCuts_);
     }
     if (consecutiveNoProgressIterations >= limits.noProgressIterationLimit &&
         trendCount == trendWindow &&
@@ -1762,8 +1857,8 @@ std::size_t SpatialPathFinderRouterScratch::retainedStorageBytes() const {
          retainedBytes(cutReachableEndpoints_) +
          retainedBytes(cutSeenTraversals_) + retainedBytes(cutSeenEndpoints_) +
          retainedBytes(cutWorklist_) + retainedBytes(cutContributingNets_) +
-         retainedBytes(cutForcedNets_) +
-         retainedBytes(cutCertificateForcedNets_) +
+         retainedBytes(cutForcedNetCuts_) +
+         retainedBytes(cutCertificateForcedNetCuts_) +
          retainedBytes(cutPayloadWidths_) + retainedBytes(cutMinimumClaims_) +
          retainedBytes(rankTrendTransitions_) +
          retainedBytes(cutTouchedClaims_) +
