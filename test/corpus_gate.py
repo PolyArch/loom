@@ -122,6 +122,15 @@ TARGET_CODE_MODEL = "medany"
 LLVM_TRIPLE_LINE = 'target triple = "riscv64-unknown-unknown-elf"'
 LLVM_DATALAYOUT_LINE = 'target datalayout = "e-m:e-p:64:64-i64:64-i128:128-n32:64-S128"'
 MLIR_TRIPLE_ATTRIBUTE = 'llvm.target_triple = "riscv64-unknown-unknown-elf"'
+PRE_MAPPING_COUNT_FIELDS = (
+    "actors",
+    "central_generate_input_artifacts",
+    "central_generate_invocations",
+    "central_generate_lineage_edges",
+    "central_generate_output_artifacts",
+    "central_plan_executions",
+    "graphs",
+)
 
 STAGES = ("llvm", "s0", "d0", "dfg-sim")
 WORKLOAD_STAGES = frozenset({"s0", "d0", "dfg-sim"})
@@ -656,14 +665,14 @@ def parse_d0_counts(path: Path) -> tuple[dict[str, int] | None, str | None]:
         return None, f"malformed pre-Mapping counts {path}: {exc}"
     if not isinstance(payload, dict):
         return None, f"pre-Mapping counts are not a JSON object: {path}"
-    expected_fields = {"graphs", "actors"}
+    expected_fields = set(PRE_MAPPING_COUNT_FIELDS)
     if set(payload) != expected_fields:
         return None, (
             "pre-Mapping counts contain missing or unexpected fields "
             f"(expected {sorted(expected_fields)}): {path}"
         )
     counts: dict[str, int] = {}
-    for key in ("graphs", "actors"):
+    for key in PRE_MAPPING_COUNT_FIELDS:
         value = payload.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             return None, (

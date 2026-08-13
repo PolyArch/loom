@@ -484,7 +484,9 @@ class NoFailureAsPassTest(CorpusGateTestBase):
 
     def test_d0_counts_reject_undeclared_fields(self) -> None:
         counts = self.work / "counts.json"
-        counts.write_text('{"actors": 0, "graphs": 0, "other": 0}\n')
+        payload = {field: 0 for field in corpus_gate.PRE_MAPPING_COUNT_FIELDS}
+        payload["other"] = 0
+        counts.write_text(json.dumps(payload) + "\n")
         parsed, defect = corpus_gate.parse_d0_counts(counts)
         self.assertIsNone(parsed)
         self.assertIn("unexpected fields", defect)

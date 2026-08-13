@@ -185,7 +185,19 @@ VALID_LL = (
 )
 VALID_S0 = f"module attributes {{{corpus_gate.MLIR_TRIPLE_ATTRIBUTE}}} {{\n}}\n"
 VALID_D0 = VALID_S0
-VALID_COUNTS = '{"actors": 3, "graphs": 1}\n'
+VALID_COUNT_VALUES = {
+    "actors": 3,
+    "central_generate_input_artifacts": 4,
+    "central_generate_invocations": 6,
+    "central_generate_lineage_edges": 5,
+    "central_generate_output_artifacts": 7,
+    "central_plan_executions": 2,
+    "graphs": 1,
+}
+VALID_COUNTS = json.dumps(VALID_COUNT_VALUES, sort_keys=True) + "\n"
+GRAPH_FREE_COUNTS = json.dumps(
+    {**VALID_COUNT_VALUES, "actors": 0, "graphs": 0}, sort_keys=True
+) + "\n"
 VALID_DFG_REPORT = (
     json.dumps(
         {
@@ -418,7 +430,7 @@ if bitcode_output:
         handle.write(b"stub bitcode")
 if counts:
     if os.environ.get("STUB_GRAPH_FREE"):
-        content = '{"actors": 0, "graphs": 0}\\n'
+        content = GRAPH_FREE_COUNTS
     else:
         content = (
             "garbage\\n"
@@ -476,6 +488,7 @@ class CorpusGateTestBase(unittest.TestCase):
             .replace("VALID_S0", repr(VALID_S0))
             .replace("VALID_D0", repr(VALID_D0))
             .replace("VALID_COUNTS", repr(VALID_COUNTS))
+            .replace("GRAPH_FREE_COUNTS", repr(GRAPH_FREE_COUNTS))
             .replace("VALID_DFG_REPORT", repr(VALID_DFG_REPORT))
         )
         self.tool_paths: dict[str, str] = {}
