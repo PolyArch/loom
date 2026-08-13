@@ -118,6 +118,39 @@ void solverCallBudgetLeavesNoPartialAssignment() {
           "solver-call budget was not consumed exactly");
 }
 
+void fixedAssignmentConsumesOneCall() {
+  using namespace loom::pnr::detail;
+  using namespace operations_research;
+  using namespace operations_research::sat;
+
+  CpModelBuilder model;
+  const IntVar x = model.NewIntVar(Domain(0, 4095));
+  const IntVar y = model.NewIntVar(Domain(0, 4095));
+  const IntVar objective = model.NewIntVar(Domain(0, 8190));
+  model.AddGreaterOrEqual(y, x);
+  model.AddEquality(objective, x + y);
+  model.Minimize(objective);
+
+  std::vector<std::int64_t> values(4096);
+  std::iota(values.begin(), values.end(), 0);
+  const std::array<CpSatCanonicalVariable, 2> variables{{
+      {x.index(), values},
+      {y.index(), values},
+  }};
+  const std::array<std::int64_t, 2> assignment{3072, 3072};
+  const CpSatCanonicalResult result = take(solveFixedCpSatAssignment(
+      model.Build(), variables, assignment, objective.index(),
+      /*maxSolverCalls=*/1, /*randomSeed=*/31));
+  require(result.kind == CpSatCanonicalResultKind::Assignment,
+          "fixed assignment did not produce a proof-bearing result");
+  require(llvm::ArrayRef(result.assignment) == llvm::ArrayRef(assignment),
+          "fixed assignment values were not preserved");
+  require(result.objectiveValue && *result.objectiveValue == 6144,
+          "fixed assignment objective was not exact");
+  require(result.solverCalls == 1,
+          "fixed assignment consumed more than one solver call");
+}
+
 void localInfeasibilityIsProofBearingButNotGlobal() {
   using namespace loom::pnr::detail;
   using namespace operations_research;
@@ -178,6 +211,7 @@ int main() {
   equivalentOptimaUseCanonicalAssignment();
   wideDomainsConsumeOneCallPerVariable();
   solverCallBudgetLeavesNoPartialAssignment();
+  fixedAssignmentConsumesOneCall();
   localInfeasibilityIsProofBearingButNotGlobal();
   nonProofStatusesFailClosed();
   seedProjectionIsUnsignedAndStable();

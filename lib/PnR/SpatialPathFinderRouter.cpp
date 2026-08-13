@@ -1072,8 +1072,33 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     return SpatialPathFinderClosureResult{0, true};
 
   std::optional<dse::ObjectiveVector> bestRankObjective;
+  std::optional<RoutingRegionProjection> bestRankRegion;
   std::optional<dse::ObjectiveVector> previousRankObjective;
+  std::optional<RoutingRegionProjection> previousRankRegion;
   std::optional<dse::ObjectiveVector> bestTemporaryObjective;
+  std::optional<RoutingRegionProjection> bestTemporaryRegion;
+  const bool regionalRouting = !logicalNets.empty();
+  const auto compareClosureRank =
+      [&](const RoutingRegionProjection &leftRegion,
+          const dse::ObjectiveVector &leftObjective,
+          const RoutingRegionProjection &rightRegion,
+          const dse::ObjectiveVector &rightObjective) -> llvm::Expected<int> {
+    if (regionalRouting) {
+      if (leftRegion.unroutedObligationCount !=
+          rightRegion.unroutedObligationCount)
+        return leftRegion.unroutedObligationCount <
+                       rightRegion.unroutedObligationCount
+                   ? -1
+                   : 1;
+      if (leftRegion.routeCapacityOveruse != rightRegion.routeCapacityOveruse)
+        return leftRegion.routeCapacityOveruse <
+                       rightRegion.routeCapacityOveruse
+                   ? -1
+                   : 1;
+    }
+    return candidate.problem().objectiveProgram().compareSelectedRank(
+        leftObjective, {}, rightObjective, {});
+  };
   std::uint64_t consecutiveNoProgressIterations = 0;
   std::size_t trendHead = 0;
   std::size_t trendCount = 0;
@@ -1235,14 +1260,14 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         return objective.takeError();
       selectedRankImproved = !bestRankObjective;
       if (bestRankObjective) {
-        auto comparison =
-            candidate.problem().objectiveProgram().compareSelectedRank(
-                *objective, {}, *bestRankObjective, {});
+        auto comparison = compareClosureRank(
+            *region, *objective, *bestRankRegion, *bestRankObjective);
         if (!comparison)
           return comparison.takeError();
         selectedRankImproved = *comparison < 0;
       }
       if (selectedRankImproved) {
+        bestRankRegion = *region;
         bestRankObjective = *objective;
         consecutiveNoProgressIterations = 0;
       } else {
@@ -1250,23 +1275,23 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       }
 
       if (previousRankObjective) {
-        auto comparison =
-            candidate.problem().objectiveProgram().compareSelectedRank(
-                *objective, {}, *previousRankObjective, {});
+        auto comparison = compareClosureRank(
+            *region, *objective, *previousRankRegion, *previousRankObjective);
         if (!comparison)
           return comparison.takeError();
         rankTrendTransition = *comparison < 0   ? RankTrendTransition::Improved
                               : *comparison > 0 ? RankTrendTransition::Regressed
                                                 : RankTrendTransition::Equal;
       }
+      previousRankRegion = *region;
       previousRankObjective = *objective;
 
       if (temporaryAdmitted) {
         bool replace = !bestTemporaryObjective;
         if (bestTemporaryObjective) {
           auto comparison =
-              candidate.problem().objectiveProgram().compareSelectedRank(
-                  *objective, {}, *bestTemporaryObjective, {});
+              compareClosureRank(*region, *objective, *bestTemporaryRegion,
+                                 *bestTemporaryObjective);
           if (!comparison)
             return comparison.takeError();
           replace = *comparison < 0;
@@ -1274,6 +1299,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         if (replace) {
           if (llvm::Error error = captureCurrentRoutes(candidate, logicalNets))
             return std::move(error);
+          bestTemporaryRegion = *region;
           bestTemporaryObjective = std::move(*objective);
         }
       }
@@ -1442,7 +1468,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       emitStatistics("no_progress");
       return llvm::make_error<SpatialPathFinderClosureFailure>(
           SpatialPathFinderClosureFailure::Kind::NoProgress,
-          "Spatial PathFinder exhausted its selected-rank no-progress limit "
+          "Spatial PathFinder exhausted its closure-rank no-progress limit "
           "before capacity closure");
     }
     if (completedIterations == limits.iterationLimit) {

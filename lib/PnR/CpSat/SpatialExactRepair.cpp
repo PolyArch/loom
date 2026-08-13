@@ -17,6 +17,7 @@
 #include <limits>
 #include <optional>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -60,10 +61,110 @@ struct TransportWitness final {
   PnrIndex ordinal;
 };
 
-bool transportWitnessLess(TransportWitness lhs, TransportWitness rhs) {
-  const auto lhsKind = static_cast<std::uint32_t>(lhs.kind);
-  const auto rhsKind = static_cast<std::uint32_t>(rhs.kind);
-  return lhsKind != rhsKind ? lhsKind < rhsKind : lhs.ordinal < rhs.ordinal;
+struct TransportClosureRank final {
+  std::uint64_t unroutedObligationCount = 0;
+  std::uint64_t capacityOveruse = 0;
+  std::uint64_t tagUnassignedCount = 0;
+  std::uint64_t tagConflictCount = 0;
+};
+
+bool operator<(const TransportClosureRank &left,
+               const TransportClosureRank &right) {
+  return std::tie(left.unroutedObligationCount, left.capacityOveruse,
+                  left.tagUnassignedCount, left.tagConflictCount) <
+         std::tie(right.unroutedObligationCount, right.capacityOveruse,
+                  right.tagUnassignedCount, right.tagConflictCount);
+}
+
+llvm::Expected<TransportClosureRank>
+projectTransportClosureRank(const SpatialCandidateState &candidate,
+                            llvm::ArrayRef<PnrIndex> logicalNets,
+                            std::vector<std::uint8_t> &capacityMarks,
+                            std::vector<std::uint8_t> &tagDomainMarks) {
+  const FrozenSpatialPnrProblem &problem = candidate.problem();
+  const auto &routing = problem.routing();
+  const auto &resources = problem.resources();
+  const auto &transfers = problem.transfers();
+  capacityMarks.assign(resources.capacityDimensions().size(), 0);
+  tagDomainMarks.assign(routing.tagContinuity().matchDomains().size(), 0);
+
+  const auto add = [](std::uint64_t &sum, std::uint64_t value) -> llvm::Error {
+    if (value > std::numeric_limits<std::uint64_t>::max() - sum)
+      return invocationError("transport closure rank overflows u64");
+    sum += value;
+    return llvm::Error::success();
+  };
+
+  TransportClosureRank rank;
+  for (PnrIndex logicalNet : logicalNets) {
+    if (logicalNet >= transfers.logicalNets().size())
+      return invocationError(
+          "transport closure region contains a foreign logical net");
+    const RouteTreeState &tree = candidate.routeTree(logicalNet);
+    if (tree.isUnrouted()) {
+      if (llvm::Error error =
+              add(rank.unroutedObligationCount,
+                  transfers.logicalNets()[logicalNet].sinkCount))
+        return std::move(error);
+    } else {
+      for (const RouteTreeNode &node : tree.nodeStorage()) {
+        if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+          continue;
+        if (node.parentArc >= routing.routingArcs().size())
+          return invocationError(
+              "transport closure RouteTree arc is out of range");
+        const PnrIndex traversal =
+            routing.routingArcs()[node.parentArc].traversal;
+        if (traversal >= routing.traversals().size())
+          return invocationError(
+              "transport closure RouteTree traversal is out of range");
+        const FrozenSpatialTraversal &record = routing.traversals()[traversal];
+        for (PnrIndex claim : routing.traversalClaimKeys().slice(
+                 record.routeClaimOffset, record.routeClaimCount)) {
+          if (claim >= routing.routeClaims().size())
+            return invocationError(
+                "transport closure route claim is out of range");
+          const PnrIndex capacity =
+              routing.routeClaims()[claim].capacityDimension;
+          if (capacity >= capacityMarks.size())
+            return invocationError(
+                "transport closure route capacity is out of range");
+          capacityMarks[capacity] = 1;
+        }
+      }
+    }
+
+    const auto values = candidate.tagValues(logicalNet);
+    for (PnrIndex segment = 0; segment < values.size(); ++segment) {
+      if (!values[segment])
+        if (llvm::Error error = add(rank.tagUnassignedCount, 1))
+          return std::move(error);
+      for (PnrIndex domain : candidate.tagSegmentDomains(logicalNet, segment)) {
+        if (domain >= tagDomainMarks.size())
+          return invocationError(
+              "transport closure tag domain is out of range");
+        tagDomainMarks[domain] = 1;
+      }
+    }
+  }
+
+  for (PnrIndex capacity = 0; capacity < capacityMarks.size(); ++capacity)
+    if (capacityMarks[capacity])
+      if (llvm::Error error = add(rank.capacityOveruse,
+                                  candidate.routeCapacityOveruseRaw(capacity)))
+        return std::move(error);
+  for (PnrIndex domain = 0; domain < tagDomainMarks.size(); ++domain) {
+    if (!tagDomainMarks[domain])
+      continue;
+    if (llvm::Error error =
+            add(rank.capacityOveruse,
+                candidate.tagDomainResidentCapacityOveruse(domain)))
+      return std::move(error);
+    if (llvm::Error error = add(rank.tagConflictCount,
+                                candidate.tagDomainConflictCount(domain)))
+      return std::move(error);
+  }
+  return rank;
 }
 
 llvm::Expected<std::optional<TransportWitness>>
@@ -120,6 +221,54 @@ firstTransportWitness(const SpatialCandidateState &candidate) {
     return invocationError(
         "transport violation aggregates have no canonical witness");
   return std::optional<TransportWitness>();
+}
+
+llvm::Expected<bool>
+transportWitnessIsLive(const SpatialCandidateState &candidate,
+                       TransportWitness witness) {
+  const FrozenSpatialPnrProblem &problem = candidate.problem();
+  const auto &transfers = problem.transfers();
+  const auto &routing = problem.routing();
+  switch (witness.kind) {
+  case ResolvedPnrViolationKind::UnroutedObligation:
+    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+         ++logicalNet) {
+      const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
+      if (containsOrdinal(net.sinkOffset, net.sinkCount, witness.ordinal))
+        return candidate.routeTree(logicalNet).isUnrouted();
+    }
+    return invocationError("unrouted witness is out of range");
+  case ResolvedPnrViolationKind::CapacityOveruse: {
+    const PnrIndex capacityCount =
+        static_cast<PnrIndex>(problem.resources().capacityDimensions().size());
+    if (witness.ordinal < capacityCount)
+      return candidate.routeCapacityOveruseRaw(witness.ordinal) != 0;
+    const PnrIndex domain = witness.ordinal - capacityCount;
+    if (domain >= routing.tagContinuity().matchDomains().size())
+      return invocationError("resident-row witness is out of range");
+    return candidate.tagDomainResidentCapacityOveruse(domain) != 0;
+  }
+  case ResolvedPnrViolationKind::TagUnassigned: {
+    PnrIndex ordinal = 0;
+    for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
+         ++logicalNet)
+      for (const auto &value : candidate.tagValues(logicalNet)) {
+        if (ordinal == witness.ordinal)
+          return !value.has_value();
+        if (ordinal == getPnrIndexMax())
+          return invocationError("Physical Tag segment ordinal overflows");
+        ++ordinal;
+      }
+    return invocationError("unassigned-tag witness is out of range");
+  }
+  case ResolvedPnrViolationKind::TagConflict:
+    if (witness.ordinal >= routing.tagContinuity().matchDomains().size())
+      return invocationError("tag-conflict witness is out of range");
+    return candidate.tagDomainConflictCount(witness.ordinal) != 0;
+  case ResolvedPnrViolationKind::HardProgressViolation:
+    return invocationError("hard progress is not a transport witness");
+  }
+  llvm_unreachable("unknown Spatial transport witness kind");
 }
 
 llvm::Expected<std::uint64_t>
@@ -993,6 +1142,17 @@ SpatialExactRepairScratch::repairTransportClosure(
   std::uint64_t assignmentOrdinal = 0;
   std::uint64_t lastActionCount = 0;
   bool sawUnknownAssignment = false;
+  bool proveCurrentAssignment = true;
+  std::vector<std::int64_t> currentAssignment;
+  currentAssignment.reserve(decisions_.size());
+  for (PnrIndex decision : decisions_) {
+    auto current = currentBindingChoice(candidate, bindings, decision);
+    if (!current)
+      return result(SpatialExactRepairResultKind::InternalError,
+                    regionDecisionCount, 0, 0,
+                    llvm::toString(current.takeError()));
+    currentAssignment.push_back(static_cast<std::int64_t>(*current));
+  }
 
   const auto executedResult = [&](SpatialExactRepairResultKind kind,
                                   std::string detail = {}) {
@@ -1001,15 +1161,33 @@ SpatialExactRepairScratch::repairTransportClosure(
                   actionExecutor_.negotiationIterationCount());
   };
 
+  std::vector<std::uint8_t> capacityMarks;
+  std::vector<std::uint8_t> tagDomainMarks;
+  auto initialClosureRank = projectTransportClosureRank(
+      candidate, affectedNets_, capacityMarks, tagDomainMarks);
+  if (!initialClosureRank)
+    return executedResult(SpatialExactRepairResultKind::InternalError,
+                          llvm::toString(initialClosureRank.takeError()));
+
   while (solverCalls < solverCallLimit) {
-    auto solved = detail::solveCanonicalCpSat(
-        model.Build(), canonicalVariables, mutationCount->index(),
-        solverCallLimit - solverCalls, solverSeed);
+    auto solved =
+        proveCurrentAssignment
+            ? detail::solveFixedCpSatAssignment(
+                  model.Build(), canonicalVariables, currentAssignment,
+                  mutationCount->index(), solverCallLimit - solverCalls,
+                  solverSeed)
+            : detail::solveCanonicalCpSat(
+                  model.Build(), canonicalVariables, mutationCount->index(),
+                  solverCallLimit - solverCalls, solverSeed);
     if (!solved)
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             llvm::toString(solved.takeError()));
     solverCalls += solved->solverCalls;
     if (solved->kind == detail::CpSatCanonicalResultKind::Infeasible) {
+      if (proveCurrentAssignment)
+        return executedResult(
+            SpatialExactRepairResultKind::InternalError,
+            "current route-repair assignment violates its exact model");
       if (sawUnknownAssignment)
         return executedResult(
             SpatialExactRepairResultKind::UnknownBudgetExhausted,
@@ -1032,6 +1210,10 @@ SpatialExactRepairScratch::repairTransportClosure(
       return executedResult(
           SpatialExactRepairResultKind::InternalError,
           "route repair omitted its mutation-count objective");
+    if (proveCurrentAssignment && *solved->objectiveValue != 0)
+      return executedResult(
+          SpatialExactRepairResultKind::InternalError,
+          "current route-repair assignment has nonzero mutation count");
 
     actions_.clear();
     for (auto [local, decision] : llvm::enumerate(decisions_)) {
@@ -1223,19 +1405,27 @@ SpatialExactRepairScratch::repairTransportClosure(
           break;
         }
       }
-      auto remainingWitness = firstTransportWitness(candidate);
-      if (!remainingWitness) {
-        llvm::Error error = remainingWitness.takeError();
+      auto primaryWitnessLive =
+          transportWitnessIsLive(candidate, **primaryWitness);
+      if (!primaryWitnessLive) {
+        llvm::Error error = primaryWitnessLive.takeError();
         if (llvm::Error discardError = probe->discard())
           error = llvm::joinErrors(std::move(error), std::move(discardError));
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(std::move(error)));
       }
-      const bool primaryWitnessAdvanced =
-          !*remainingWitness ||
-          transportWitnessLess(**primaryWitness, **remainingWitness);
+      auto closureRank = projectTransportClosureRank(
+          candidate, affectedNets_, capacityMarks, tagDomainMarks);
+      if (!closureRank) {
+        llvm::Error error = closureRank.takeError();
+        if (llvm::Error discardError = probe->discard())
+          error = llvm::joinErrors(std::move(error), std::move(discardError));
+        return executedResult(SpatialExactRepairResultKind::InternalError,
+                              llvm::toString(std::move(error)));
+      }
+      const bool closureRankImproved = *closureRank < *initialClosureRank;
       if (!assignmentRealized || candidate.atomicCapacityOveruse() != 0 ||
-          !primaryWitnessAdvanced) {
+          *primaryWitnessLive || !closureRankImproved) {
         rejectAssignment = true;
         loom::mapping_debug::emit(
             loom::mapping_debug::Level::Decision,
@@ -1249,13 +1439,23 @@ SpatialExactRepairScratch::repairTransportClosure(
               fields["assignment_realized"] = assignmentRealized;
               fields["atomic_capacity_overuse"] =
                   candidate.atomicCapacityOveruse();
-              fields["primary_witness_advanced"] = primaryWitnessAdvanced;
-              if (*remainingWitness) {
-                fields["remaining_witness_kind"] =
-                    static_cast<std::uint32_t>((*remainingWitness)->kind);
-                fields["remaining_witness_ordinal"] =
-                    (*remainingWitness)->ordinal;
-              }
+              fields["primary_witness_eliminated"] = !*primaryWitnessLive;
+              fields["closure_rank_improved"] = closureRankImproved;
+              fields["initial_unrouted_obligations"] =
+                  initialClosureRank->unroutedObligationCount;
+              fields["initial_capacity_overuse"] =
+                  initialClosureRank->capacityOveruse;
+              fields["initial_tag_unassigned"] =
+                  initialClosureRank->tagUnassignedCount;
+              fields["initial_tag_conflicts"] =
+                  initialClosureRank->tagConflictCount;
+              fields["candidate_unrouted_obligations"] =
+                  closureRank->unroutedObligationCount;
+              fields["candidate_capacity_overuse"] =
+                  closureRank->capacityOveruse;
+              fields["candidate_tag_unassigned"] =
+                  closureRank->tagUnassignedCount;
+              fields["candidate_tag_conflicts"] = closureRank->tagConflictCount;
             });
         if (llvm::Error error = probe->discard())
           return executedResult(SpatialExactRepairResultKind::InternalError,
@@ -1360,6 +1560,7 @@ SpatialExactRepairScratch::repairTransportClosure(
     } else {
       model.AddForbiddenAssignments(variables).AddTuple(solved->assignment);
     }
+    proveCurrentAssignment = false;
     ++assignmentOrdinal;
   }
   return executedResult(SpatialExactRepairResultKind::UnknownBudgetExhausted,

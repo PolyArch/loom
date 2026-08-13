@@ -93,13 +93,13 @@ private:
                      SpatialMoveTransaction move,
                      dse::ObjectiveVector objective,
                      dse::ObjectiveSignedDifference energyDifference,
-                     bool globalRouting, bool semanticChange);
+                     bool negotiatedRouting, bool semanticChange);
 
   SpatialActionExecutorScratch *owner_ = nullptr;
   SpatialMoveTransaction move_;
   dse::ObjectiveVector objective_;
   dse::ObjectiveSignedDifference energyDifference_;
-  bool globalRouting_ = false;
+  bool negotiatedRouting_ = false;
   bool semanticChange_ = true;
 
   friend class SpatialActionExecutorScratch;

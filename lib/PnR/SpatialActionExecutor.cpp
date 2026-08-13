@@ -160,17 +160,17 @@ SpatialActionExecutorScratch::~SpatialActionExecutorScratch() = default;
 SpatialActionProbe::SpatialActionProbe(
     SpatialActionExecutorScratch &owner, SpatialMoveTransaction move,
     dse::ObjectiveVector objective,
-    dse::ObjectiveSignedDifference energyDifference, bool globalRouting,
+    dse::ObjectiveSignedDifference energyDifference, bool negotiatedRouting,
     bool semanticChange)
     : owner_(&owner), move_(std::move(move)), objective_(std::move(objective)),
-      energyDifference_(energyDifference), globalRouting_(globalRouting),
-      semanticChange_(semanticChange) {}
+      energyDifference_(energyDifference),
+      negotiatedRouting_(negotiatedRouting), semanticChange_(semanticChange) {}
 
 SpatialActionProbe::SpatialActionProbe(SpatialActionProbe &&other) noexcept
     : owner_(other.owner_), move_(std::move(other.move_)),
       objective_(std::move(other.objective_)),
       energyDifference_(other.energyDifference_),
-      globalRouting_(other.globalRouting_),
+      negotiatedRouting_(other.negotiatedRouting_),
       semanticChange_(other.semanticChange_) {
   other.owner_ = nullptr;
 }
@@ -186,10 +186,13 @@ llvm::Error SpatialActionProbe::commit() {
   SpatialActionExecutorScratch *owner = owner_;
   if (llvm::Error error = move_.commit())
     return error;
+  llvm::Error synchronization = negotiatedRouting_
+                                    ? owner->routeCosts_->resetFromCandidate()
+                                    : llvm::Error::success();
   owner->currentObjective_ = objective_;
   owner->activeProbe_ = false;
   owner_ = nullptr;
-  return llvm::Error::success();
+  return synchronization;
 }
 
 llvm::Error SpatialActionProbe::discard() {
@@ -198,9 +201,9 @@ llvm::Error SpatialActionProbe::discard() {
   SpatialActionExecutorScratch *owner = owner_;
   move_.rollback();
   llvm::Error synchronization =
-      globalRouting_ ? owner->routeCosts_->resetFromCandidate()
-                     : owner->routeCosts_->synchronizeCandidateTraversals(
-                           owner->routeCostTraversals_);
+      negotiatedRouting_ ? owner->routeCosts_->resetFromCandidate()
+                         : owner->routeCosts_->synchronizeCandidateTraversals(
+                               owner->routeCostTraversals_);
   owner->activeProbe_ = false;
   owner_ = nullptr;
   return synchronization;
@@ -1462,8 +1465,10 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
   if (llvm::Error error = reconcileBindingRelations(move, candidate))
     return restoreAfterFailure(move, std::move(error));
 
-  if (globalRouting_ || (context != SpatialActionExecutionContext::Search &&
-                         !affectedNets_.empty())) {
+  const bool negotiatedRouting =
+      globalRouting_ || (context != SpatialActionExecutionContext::Search &&
+                         !affectedNets_.empty());
+  if (negotiatedRouting) {
     const auto &routing = candidate.problem().config().policy().search.routing;
     llvm::sort(affectedNets_);
     auto closure = router_.routeToClosureInMove(
@@ -1516,7 +1521,7 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
 
   activeProbe_ = true;
   return SpatialActionProbe(*this, std::move(move), std::move(objective),
-                            difference, globalRouting_, semanticChange);
+                            difference, negotiatedRouting, semanticChange);
 }
 
 std::size_t SpatialActionExecutorScratch::retainedStorageBytes() const {

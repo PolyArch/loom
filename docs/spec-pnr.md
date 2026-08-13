@@ -1840,26 +1840,30 @@ capacity overuse is zero, but only after the structural check. Tag assignment,
 tag residency, and progress remain visible in the exact projection and are
 owned by the enclosing Mapping closure rather than duplicated by the routing
 kernel. A non-closed iterate may be retained only when all remaining Mapping
-violations are admitted by `TemporaryViolationPolicy`; it is ranked through
-the existing `SelectedObjectiveClosure` using the exact provisional Mapping
-`V/G`, not A* cost or private prices. Equal rank retains the earlier canonical
-iterate. Work exhaustion is not infeasibility.
+violations are admitted by `TemporaryViolationPolicy`. Full-design routing
+ranks it through the existing `SelectedObjectiveClosure` using the exact
+provisional Mapping `V/G`, not A* cost or private prices. A nonempty regional
+routing action first compares its exact regional closure tuple
+`(unrouted_obligations, raw_route_capacity_overuse)` in that order, then uses
+the same selected Mapping rank as the tie break. This tuple is the invocation's
+existing closure contract, not another objective or configurable score. Equal
+closure rank retains the earlier canonical iterate. Work exhaustion is not
+infeasibility.
 
 Every complete non-closed iteration also participates in the explicit
 no-progress work bound. The first structurally eligible iteration establishes
-the retained best selected rank, the previous eligible rank, and a zero
+the retained best closure rank, the previous eligible rank, and a zero
 iterations-since-best count. A later eligible iteration resets that count to
-zero only when `SelectedObjectiveClosure` ranks its objective vector strictly
-before the retained best vector; otherwise it increments the count. Its rank
-relative to the immediately previous eligible iteration contributes one exact
-`Improved | Equal | Regressed` transition to a fixed trailing window. A
-structurally ineligible iteration cannot enter either objective comparison; it
-increments the iterations-since-best count and contributes one `Ineligible`
-transition instead. Both objective comparisons use the selected total ordering
-without a candidate-key tie break. A physically different route at equal rank
-is therefore `Equal`. A* cost, negotiated prices, route signatures, elapsed
-time, epsilon comparisons, and private conflict counts are never progress
-authorities.
+zero only when the full-design or regional closure rank defined above is
+strictly better than the retained best; otherwise it increments the count. Its
+rank relative to the immediately previous eligible iteration contributes one
+exact `Improved | Equal | Regressed` transition to a fixed trailing window. A
+structurally ineligible iteration cannot enter either comparison; it increments
+the iterations-since-best count and contributes one `Ineligible` transition
+instead. The selected total-ordering tie break uses no candidate key. A
+physically different route at equal rank is therefore `Equal`. A* cost,
+negotiated prices, route signatures, elapsed time, epsilon comparisons, and
+private conflict counts are never progress authorities.
 
 No-progress exhaustion occurs only when all of these conditions hold:
 
@@ -2135,7 +2139,7 @@ selection remain SystemMapping decisions.
 Spatial and System PnR have distinct component-view descriptors:
 
 ```text
-loom.spatial_pnr.config.5.0
+loom.spatial_pnr.config.6.0
 loom.system_pnr.config.4.0
 ```
 
@@ -2144,9 +2148,11 @@ Spatial or System policy domain. Their exact descriptor bytes are the ASCII
 bytes shown above without a trailing zero. A digest from one view kind cannot
 be adopted as the other.
 
-Spatial version 5.0 incompatibly replaces 4.0's value-by-value canonical
-fixing and whole-design judgment during regional transport repair. System PnR
-does not consume either protocol and retains version 4.0.
+Spatial version 6.0 retains 5.0's bounded canonical fixing, but incompatibly
+defines regional routing and transport-repair closure ranks, replaces
+witness-ordinal progression with exact regional progress, and isolates
+negotiated-routing state at every Action boundary. System PnR does not consume
+these protocols and retains version 4.0.
 
 Each resolved view is self-contained:
 
@@ -2958,6 +2964,14 @@ result prevents continuation, or that restart-wide solver-call budget is
 exhausted. A successful repair must consume at least one solver call, so the
 sequence is finite without another policy limit.
 
+Transport repair first fixes every region variable to its current typed choice
+and proves that complete assignment with one solver call. When regional
+negotiated routing eliminates the opening witness, no canonical extraction is
+needed because the fixed assignment is already unique. A failed route probe
+adds the ordinary assignment or fixed-terminal-cut no-good to the unfixed
+model; only then does canonical mutation enumeration begin. Both paths consume
+the same restart-wide solver-call budget and use the same exact model.
+
 The solver assignment is diffed against the candidate and rebuilt as one
 canonical ephemeral `ActionBatch` containing only the three existing Action
 variants. One `MoveTransaction` applies the batch atomically. Mapping hard
@@ -2983,15 +2997,33 @@ Overflow makes that optional SearchEnergy encoding unsupported; it never drops
 mutation count or silently changes objective order.
 
 A reconstructed transport assignment is accepted when it realizes the exact
-region assignment, preserves atomic capacity, and moves the first canonical
-transport-witness key strictly forward or eliminates it. Witness keys are
-ordered by the closed Mapping violation-kind order and then by canonical
-witness ordinal. Other later transport violations outside the fixed region may
-remain. They are owned by the next global closure or canonical repair
-invocation, and the complete final Mapping verifier remains the publication
-authority. The selected total ordering does not veto a region-feasible
-assignment unless its exact selected SearchEnergy was encoded in the repair
-model.
+region assignment, preserves atomic capacity, and eliminates the exact typed
+transport witness that opened the region. It must also strictly improve this
+lexicographic transport-closure tuple:
+
+```text
+(unrouted_obligations,
+ route_capacity_overuse + tag_resident_capacity_overuse,
+ tag_unassigned,
+ tag_conflict)
+```
+
+Each component is projected only from logical nets in the fixed repair region.
+Capacity and match-domain components include the complete occupancy of every
+physical dimension touched by those nets, so fixed outside users remain
+visible without making unrelated dimensions part of the repair. The tuple is
+the existing Mapping violation algebra in canonical kind order, not a
+configurable score or candidate objective. It prevents capacity and Physical
+Tag repairs from exchanging violations indefinitely.
+
+Other transport violations outside the fixed region may remain, regardless of
+their canonical ordinals. They are owned by the next global closure or
+canonical repair invocation, and the restart-wide solver-call budget keeps
+that sequence finite. Witness ordinal is identity and diagnostic order, not a
+progress objective. The complete final Mapping verifier remains the
+publication authority. The selected total ordering does not veto a
+region-feasible assignment unless its exact selected SearchEnergy was encoded
+in the repair model.
 
 Every solver call uses one worker, the fixed restart-derived seed, integer
 decision and objective encodings, and the complete explicit `CpSat_2_0`

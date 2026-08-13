@@ -55,6 +55,17 @@ solveCanonicalCpSat(const operations_research::sat::CpModelProto &model,
                     std::optional<int> objectiveVariable,
                     std::uint64_t maxSolverCalls, std::int32_t randomSeed);
 
+/// Proves one complete supplied assignment with a single solver call. The
+/// assignment uses the same typed variable/value order as canonical
+/// extraction and is returned only when the fixed model is proof-bearing.
+llvm::Expected<CpSatCanonicalResult>
+solveFixedCpSatAssignment(const operations_research::sat::CpModelProto &model,
+                          llvm::ArrayRef<CpSatCanonicalVariable> variables,
+                          llvm::ArrayRef<std::int64_t> assignment,
+                          std::optional<int> objectiveVariable,
+                          std::uint64_t maxSolverCalls,
+                          std::int32_t randomSeed);
+
 } // namespace loom::pnr::detail
 
 #endif // LOOM_LIB_PNR_CPSATEXACTPROTOCOL_H

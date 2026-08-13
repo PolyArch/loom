@@ -522,6 +522,17 @@ Bounded exact repair is a final focused solver for a small unresolved closure,
 not a global replacement for annealing and routing. It consumes an explicit
 bounded problem and cannot publish a best-so-far invalid Mapping.
 
+Canonical witness ordinal identifies which violation opened a repair region;
+it is not a quality measure. Requiring the next witness ordinal to increase
+rejects a repair that removes the original physical conflict but exposes a
+lower-numbered conflict elsewhere. Repair therefore requires elimination of
+the opening typed witness and strict improvement of the existing Mapping
+transport-violation tuple projected over the fixed region. The tuple prevents
+capacity and Physical Tag repairs from exchanging one violation for an earlier
+kind and cycling. Remaining violations outside the region retain their
+ordinary Mapping owners. This regional projection is not a private score: it
+uses the canonical Mapping violation kinds and their ordinary physical owners.
+
 Raw local-choice order is insufficient as the repair objective. In a coupled
 placement and attachment region, its lexicographically first assignment can
 move every realization merely because early physical occurrences have smaller
@@ -531,6 +542,12 @@ changed from the current candidate before canonical extraction. This does not
 rank publishable Mappings; it only gives the bounded repair neighborhood a
 stable locality rule and preserves the current assignment as the initial exact
 probe.
+
+The initial exact probe fixes the complete current region assignment and proves
+it with one solver call. Transport closure often needs a different RouteTree
+without a placement or attachment mutation, so extracting each already fixed
+variable canonically adds no information. If that route probe fails, its
+ordinary no-good reopens the same exact model for canonical mutation search.
 
 Generic sink-subset proposals were rejected. Their powerset is large, their
 container representation is unstable, and they add no essential routing
@@ -713,7 +730,15 @@ The exact cut and the no-progress work bound answer different questions. The
 cut proves that one fixed-terminal routing subproblem cannot close. The
 no-progress bound proves nothing about future iterations; it only prevents an
 explicitly bounded search from repeatedly spending the dominant all-net route
-work without improving the Mapping-owned selected rank.
+work without improving its exact closure rank.
+
+Regional routing cannot use the whole-design objective as its first retained
+iterate key. A changed regional route can abandon an outside conflict while
+reducing the capacities it actually owns; the full Mapping projection still
+observes that outside conflict. Ranking the exact regional unrouted and raw
+overuse tuple first aligns temporary retention with the same predicate that
+ends the regional routing invocation. The ordinary Mapping objective remains
+the tie break and the sole candidate-ranking owner.
 
 Dispatching bounded repair only when the retained candidate already reports
 route-capacity overuse is incomplete. A candidate can retain unrouted

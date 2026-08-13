@@ -69,6 +69,20 @@ llvm::Error validateVariable(const CpModelProto &model,
   return llvm::Error::success();
 }
 
+llvm::Error
+validateVariables(const CpModelProto &model,
+                  llvm::ArrayRef<CpSatCanonicalVariable> variables) {
+  llvm::BitVector observedVariables(model.variables_size());
+  for (const CpSatCanonicalVariable &variable : variables) {
+    if (llvm::Error error = validateVariable(model, variable))
+      return error;
+    if (observedVariables.test(variable.protoIndex))
+      return protocolError("canonical variable is duplicated");
+    observedVariables.set(variable.protoIndex);
+  }
+  return llvm::Error::success();
+}
+
 void fixVariable(CpModelProto &model, int variable, std::int64_t value) {
   LinearConstraintProto *constraint = model.add_constraints()->mutable_linear();
   constraint->add_vars(variable);
@@ -151,14 +165,8 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
     std::int32_t randomSeed) {
   if (maxSolverCalls == 0)
     return protocolError("solver-call budget must be positive");
-  llvm::BitVector observedVariables(model.variables_size());
-  for (const CpSatCanonicalVariable &variable : variables) {
-    if (llvm::Error error = validateVariable(model, variable))
-      return std::move(error);
-    if (observedVariables.test(variable.protoIndex))
-      return protocolError("canonical variable is duplicated");
-    observedVariables.set(variable.protoIndex);
-  }
+  if (llvm::Error error = validateVariables(model, variables))
+    return std::move(error);
   if (model.has_objective() != objectiveVariable.has_value())
     return protocolError("objective-variable presence disagrees with model");
   if (objectiveVariable) {
@@ -228,4 +236,33 @@ llvm::Expected<CpSatCanonicalResult> loom::pnr::detail::solveCanonicalCpSat(
   return CpSatCanonicalResult{CpSatCanonicalResultKind::Assignment,
                               std::move(assignment), objectiveValue,
                               state.calls};
+}
+
+llvm::Expected<CpSatCanonicalResult>
+loom::pnr::detail::solveFixedCpSatAssignment(
+    const CpModelProto &model, llvm::ArrayRef<CpSatCanonicalVariable> variables,
+    llvm::ArrayRef<std::int64_t> assignment,
+    std::optional<int> objectiveVariable, std::uint64_t maxSolverCalls,
+    std::int32_t randomSeed) {
+  if (variables.size() != assignment.size())
+    return protocolError("fixed assignment variable and value counts disagree");
+  if (llvm::Error error = validateVariables(model, variables))
+    return std::move(error);
+
+  CpModelProto fixed = model;
+  for (std::size_t index = 0; index < variables.size(); ++index) {
+    const CpSatCanonicalVariable &variable = variables[index];
+    const std::int64_t value = assignment[index];
+    if (!std::binary_search(variable.legalValues.begin(),
+                            variable.legalValues.end(), value))
+      return protocolError("fixed assignment selected an illegal value");
+    fixVariable(fixed, variable.protoIndex, value);
+  }
+  auto solved = solveCanonicalCpSat(fixed, {}, objectiveVariable,
+                                    maxSolverCalls, randomSeed);
+  if (!solved)
+    return solved.takeError();
+  if (solved->kind == CpSatCanonicalResultKind::Assignment)
+    solved->assignment.assign(assignment.begin(), assignment.end());
+  return solved;
 }
