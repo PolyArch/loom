@@ -82,6 +82,16 @@ struct EndpointRouteSearchRequest final {
   /// tree, but may not leave one source and re-enter another source: doing so
   /// would satisfy a path predicate before the branch's actual divergence.
   bool forbidSourceReentry = false;
+  /// Empty means no target requires the monotonic traversal predicate.
+  /// Otherwise this canonical target-parallel array contains only zero or
+  /// one, and a target is eligible only after the predicate is satisfied when
+  /// its entry is one.
+  llvm::ArrayRef<std::uint8_t> targetRequiresTraversal;
+  /// Empty means every endpoint is admissible. Otherwise paths may neither
+  /// begin at nor enter endpoints named by this dense mask. The reverse
+  /// heuristic deliberately ignores the mask and remains an admissible lower
+  /// bound.
+  llvm::ArrayRef<std::uint64_t> forbiddenEndpointBits;
 };
 
 struct EndpointRouteSearchResult final {
@@ -138,6 +148,7 @@ private:
   PnrIndex searchEndpoint(PnrIndex searchState) const;
   bool searchRequirementMet(PnrIndex searchState) const;
   bool isTarget(PnrIndex endpoint) const;
+  bool targetRequiresTraversal(PnrIndex endpoint) const;
   bool isSource(PnrIndex endpoint) const;
   PnrIndex targetPreferenceRank(PnrIndex endpoint) const;
   bool arcEligible(PnrIndex arc, const EndpointRouteSearchRequest &request,
@@ -175,6 +186,7 @@ private:
   std::vector<std::uint64_t> targetEpochs_;
   std::vector<std::uint64_t> sourceEpochs_;
   std::vector<PnrIndex> targetPreferenceRanks_;
+  std::vector<std::uint8_t> targetRequiresTraversal_;
   std::vector<PnrIndex> sourceReplicationGroups_;
   std::vector<PnrIndex> heap_;
   std::vector<PnrIndex> heapPositions_;

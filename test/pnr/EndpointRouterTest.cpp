@@ -109,7 +109,9 @@ request(const Fixture &fixture, llvm::ArrayRef<PnrIndex> sources,
           {},
           lowerBoundCostRevision,
           {},
-          false};
+          false,
+          {},
+          {}};
 }
 
 void arbitraryTopologyAndCanonicalTieBreak() {
@@ -193,6 +195,8 @@ void requiredTraversalProductState() {
 
   auto constrained =
       request(fixture, sources, sourceGroups, targets, targetRanks, 1, 64);
+  const std::array<std::uint8_t, 1> targetRequiresTraversal{{1}};
+  constrained.targetRequiresTraversal = targetRequiresTraversal;
   constrained.requiredTraversalBits = required;
   const auto result = take(__func__, scratch.search(constrained));
   requirePath(__func__, result, 0, 4, 3, expected);
@@ -204,6 +208,27 @@ void requiredTraversalProductState() {
   constrained.eligibleTraversalBits = excludesRequired;
   expectFailure(__func__, scratch.search(constrained),
                 EndpointRouteSearchFailureKind::Unreachable);
+
+  const std::array<PnrIndex, 2> mixedTargets{{3, 4}};
+  const std::array<PnrIndex, 2> mixedRanks{{0, 1}};
+  const std::array<std::uint8_t, 2> mixedRequirements{{1, 0}};
+  auto mixed =
+      request(fixture, sources, sourceGroups, mixedTargets, mixedRanks, 1, 64);
+  mixed.targetRequiresTraversal = mixedRequirements;
+  mixed.requiredTraversalBits = required;
+  const std::array<PnrIndex, 3> unrestrictedTargetPath{{1, 3, 5}};
+  requirePath(__func__, take(__func__, scratch.search(mixed)), 0, 4, 3,
+              unrestrictedTargetPath);
+
+  auto blockedTransit =
+      request(fixture, sources, sourceGroups, targets, targetRanks, 1, 64);
+  const std::array<std::uint64_t, 1> forbiddenEndpointThree{{
+      std::uint64_t{1} << 3,
+  }};
+  blockedTransit.forbiddenEndpointBits = forbiddenEndpointThree;
+  const std::array<PnrIndex, 3> alternatePath{{1, 4, 6}};
+  requirePath(__func__, take(__func__, scratch.search(blockedTransit)), 0, 4, 3,
+              alternatePath);
 }
 
 void checkedCostAndAdmissibility() {

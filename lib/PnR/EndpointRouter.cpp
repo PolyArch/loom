@@ -203,6 +203,7 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   targetEpochs_.assign(endpointCount, 0);
   sourceEpochs_.assign(endpointCount, 0);
   targetPreferenceRanks_.assign(endpointCount, 0);
+  targetRequiresTraversal_.assign(endpointCount, 0);
   sourceReplicationGroups_.assign(endpointCount, getInvalidPnrIndex());
   heap_.clear();
   heap_.reserve(searchStateCount);
@@ -393,6 +394,12 @@ bool EndpointRouteSearchScratch::isTarget(PnrIndex endpoint) const {
   return targetEpochs_[endpoint] == targetGeneration_;
 }
 
+bool EndpointRouteSearchScratch::targetRequiresTraversal(
+    PnrIndex endpoint) const {
+  assert(isTarget(endpoint));
+  return targetRequiresTraversal_[endpoint] != 0;
+}
+
 bool EndpointRouteSearchScratch::isSource(PnrIndex endpoint) const {
   return sourceEpochs_[endpoint] == sourceGeneration_;
 }
@@ -557,20 +564,30 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
     return invalid(
         "source replication and target preference arrays must match their "
         "endpoint domains");
+  if (!request.targetRequiresTraversal.empty() &&
+      request.targetRequiresTraversal.size() != request.targetEndpoints.size())
+    return invalid(
+        "target traversal requirements must match the target endpoint domain");
   if (!isCanonicalEndpointSet(request.sourceEndpoints) ||
       !isCanonicalEndpointSet(request.targetEndpoints))
     return invalid("source and target endpoint sets must be sorted and unique");
   if (request.lowerBoundArcCosts.size() != graph_.arcs.size() ||
       request.currentArcCosts.size() != graph_.arcs.size())
     return invalid("lower-bound and current cost arrays must contain E rows");
+  const std::size_t endpointCount =
+      static_cast<std::size_t>(graph_.endpointCount);
   const std::size_t traversalWords =
       (graph_.traversalReplicationGroups.size() + 63) / 64;
+  const std::size_t endpointWords = (endpointCount + 63) / 64;
   if (!request.eligibleTraversalBits.empty() &&
       request.eligibleTraversalBits.size() != traversalWords)
     return invalid("eligible traversal mask has the wrong width");
   if (!request.requiredTraversalBits.empty() &&
       request.requiredTraversalBits.size() != traversalWords)
     return invalid("required traversal mask has the wrong width");
+  if (!request.forbiddenEndpointBits.empty() &&
+      request.forbiddenEndpointBits.size() != endpointWords)
+    return invalid("forbidden endpoint mask has the wrong width");
   if (!request.eligibleTraversalBits.empty() &&
       graph_.traversalReplicationGroups.size() % 64 != 0) {
     const std::uint64_t paddingMask = ~(
@@ -587,6 +604,12 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
     if ((request.requiredTraversalBits.back() & paddingMask) != 0)
       return invalid("required traversal mask has nonzero padding");
   }
+  if (!request.forbiddenEndpointBits.empty() && endpointCount % 64 != 0) {
+    const std::uint64_t paddingMask =
+        ~((std::uint64_t{1} << (endpointCount % 64)) - 1);
+    if ((request.forbiddenEndpointBits.back() & paddingMask) != 0)
+      return invalid("forbidden endpoint mask has nonzero padding");
+  }
   if (!request.requiredTraversalBits.empty()) {
     bool hasRequiredTraversal = false;
     for (std::uint64_t word : request.requiredTraversalBits)
@@ -594,6 +617,17 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
     if (!hasRequiredTraversal)
       return invalid("required traversal mask names no traversal");
   }
+  bool anyTargetRequiresTraversal = false;
+  for (std::uint8_t required : request.targetRequiresTraversal) {
+    if (required > 1)
+      return invalid("target traversal requirement is not boolean");
+    anyTargetRequiresTraversal |= required != 0;
+  }
+  if (anyTargetRequiresTraversal && request.requiredTraversalBits.empty())
+    return invalid(
+        "a target traversal requirement has no required traversal mask");
+  if (!anyTargetRequiresTraversal && !request.requiredTraversalBits.empty())
+    return invalid("required traversal mask has no target requirement");
   if (request.endpointExpansionLimit == 0)
     return invalid("endpoint expansion limit must be positive");
   for (PnrIndex endpoint : request.sourceEndpoints)
@@ -612,10 +646,13 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   }
 
   beginTargetGeneration();
-  for (auto [target, rank] : llvm::zip_equal(request.targetEndpoints,
-                                             request.targetPreferenceRanks)) {
+  for (auto [ordinal, target] : llvm::enumerate(request.targetEndpoints)) {
     targetEpochs_[target] = targetGeneration_;
-    targetPreferenceRanks_[target] = rank;
+    targetPreferenceRanks_[target] = request.targetPreferenceRanks[ordinal];
+    targetRequiresTraversal_[target] =
+        request.targetRequiresTraversal.empty()
+            ? 0
+            : request.targetRequiresTraversal[ordinal];
   }
   if (!loadCachedHeuristic(request)) {
     if (llvm::Error error = buildHeuristic(request))
@@ -631,6 +668,10 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
            request.sourceEndpoints, request.sourceReplicationGroups)) {
     sourceEpochs_[source] = sourceGeneration_;
     sourceReplicationGroups_[source] = replicationGroup;
+    if (!request.forbiddenEndpointBits.empty() &&
+        (request.forbiddenEndpointBits[source / 64] &
+         (std::uint64_t{1} << (source % 64))) != 0)
+      continue;
     const RouteCost lowerBound = heuristic(source);
     if (lowerBound == routeCostInfinity)
       continue;
@@ -663,7 +704,7 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
     const RouteCost endpointDistance = distances_[state];
     const bool requirementMet = searchRequirementMet(state);
     if (isTarget(endpoint) &&
-        (request.requiredTraversalBits.empty() || requirementMet)) {
+        (!targetRequiresTraversal(endpoint) || requirementMet)) {
       if (endpointDistance < bestCost ||
           (endpointDistance == bestCost &&
            (bestTargetState == invalidIndex ||
@@ -683,6 +724,10 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
       if (!arcEligible(arc, request, true))
         continue;
       const PnrIndex successor = graph_.arcs[arc].target;
+      if (!request.forbiddenEndpointBits.empty() &&
+          (request.forbiddenEndpointBits[successor / 64] &
+           (std::uint64_t{1} << (successor % 64))) != 0)
+        continue;
       if (request.forbidSourceReentry && isSource(successor) &&
           successor != endpoint)
         continue;
@@ -716,14 +761,40 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
     }
   }
 
-  if (bestTargetState == invalidIndex)
+  if (bestTargetState == invalidIndex) {
+    const std::size_t targetRequiringTraversalCount =
+        llvm::count_if(request.targetRequiresTraversal,
+                       [](std::uint8_t required) { return required != 0; });
+    const std::size_t sourceTargetOverlapCount =
+        llvm::count_if(request.targetEndpoints, [&](PnrIndex target) {
+          return llvm::binary_search(request.sourceEndpoints, target);
+        });
+    std::size_t eligibleRequiredTraversalCount = 0;
+    for (std::size_t traversal = 0;
+         traversal != graph_.traversalReplicationGroups.size(); ++traversal) {
+      const std::uint64_t bit = std::uint64_t{1} << (traversal % 64);
+      if (traversal / 64 < request.requiredTraversalBits.size() &&
+          (request.requiredTraversalBits[traversal / 64] & bit) != 0 &&
+          (request.eligibleTraversalBits.empty() ||
+           (request.eligibleTraversalBits[traversal / 64] & bit) != 0))
+        ++eligibleRequiredTraversalCount;
+    }
     return failure(
         EndpointRouteSearchFailureKind::Unreachable,
         "no eligible route connects the endpoint sets (source_count=",
         request.sourceEndpoints.size(),
         ", target_count=", request.targetEndpoints.size(),
+        ", source_target_overlap_count=", sourceTargetOverlapCount,
+        ", target_requiring_traversal_count=", targetRequiringTraversalCount,
+        ", eligible_required_traversal_count=", eligibleRequiredTraversalCount,
         ", first_source=", request.sourceEndpoints.front(),
-        ", first_target=", request.targetEndpoints.front(), ")");
+        ", first_target=", request.targetEndpoints.front(),
+        ", first_target_requires_traversal=",
+        request.targetRequiresTraversal.empty()
+            ? 0
+            : request.targetRequiresTraversal.front(),
+        ")");
+  }
 
   path_.clear();
   PnrIndex state = bestTargetState;
@@ -758,6 +829,7 @@ std::size_t EndpointRouteSearchScratch::retainedStorageBytes() const {
          targetEpochs_.capacity() * sizeof(std::uint64_t) +
          sourceEpochs_.capacity() * sizeof(std::uint64_t) +
          targetPreferenceRanks_.capacity() * sizeof(PnrIndex) +
+         targetRequiresTraversal_.capacity() * sizeof(std::uint8_t) +
          sourceReplicationGroups_.capacity() * sizeof(PnrIndex) +
          heap_.capacity() * sizeof(PnrIndex) +
          heapPositions_.capacity() * sizeof(PnrIndex) +

@@ -27,6 +27,7 @@ struct SpatialPathFinderRoutingLimits final {
 
 enum class SpatialRoutingClosureRequirement : std::uint8_t {
   PolicyAdmittedTemporary,
+  ExactRegional,
   Final,
 };
 
@@ -41,6 +42,7 @@ public:
   enum class Kind {
     NonClosure,
     NoProgress,
+    RegionalLimit,
     FixedTerminalCapacityCut,
     SelectedCombinationalHandshakeCycle,
   };
@@ -51,7 +53,9 @@ public:
       Kind kind, std::string message,
       PnrIndex certificateCapacity = getInvalidPnrIndex(),
       std::uint64_t mandatoryUsage = 0, std::uint64_t physicalCapacity = 0,
-      std::vector<PnrIndex> forcedLogicalNets = {});
+      std::vector<PnrIndex> forcedLogicalNets = {},
+      std::uint64_t regionalLogicalNetCount = 0,
+      std::uint64_t regionalLogicalNetLimit = 0);
 
   Kind kind() const { return kind_; }
   PnrIndex certificateCapacity() const { return certificateCapacity_; }
@@ -59,6 +63,12 @@ public:
   std::uint64_t physicalCapacity() const { return physicalCapacity_; }
   llvm::ArrayRef<PnrIndex> forcedLogicalNets() const {
     return forcedLogicalNets_;
+  }
+  std::uint64_t regionalLogicalNetCount() const {
+    return regionalLogicalNetCount_;
+  }
+  std::uint64_t regionalLogicalNetLimit() const {
+    return regionalLogicalNetLimit_;
   }
   void log(llvm::raw_ostream &stream) const override;
   std::error_code convertToErrorCode() const override;
@@ -70,6 +80,8 @@ private:
   std::uint64_t mandatoryUsage_;
   std::uint64_t physicalCapacity_;
   std::vector<PnrIndex> forcedLogicalNets_;
+  std::uint64_t regionalLogicalNetCount_;
+  std::uint64_t regionalLogicalNetLimit_;
 };
 
 /// Worker-local deterministic PathFinder closure scratch. One invocation uses
@@ -109,7 +121,8 @@ public:
       llvm::ArrayRef<PnrIndex> logicalNets,
       llvm::ArrayRef<RouteCost> evaluationPriorities,
       SpatialRoutingClosureRequirement closureRequirement =
-          SpatialRoutingClosureRequirement::Final);
+          SpatialRoutingClosureRequirement::Final,
+      std::uint64_t exactRegionalLogicalNetLimit = 0);
 
   llvm::Expected<RouteCost>
   routeWholeNetInMove(SpatialMoveTransaction &move,
@@ -139,6 +152,12 @@ public:
   }
   std::uint64_t negotiationIterationCount() const {
     return negotiationIterationCount_;
+  }
+  std::uint64_t regionalLogicalNetCount() const {
+    return routingRegionNets_.size();
+  }
+  llvm::ArrayRef<PnrIndex> regionalLogicalNets() const {
+    return routingRegionNets_;
   }
   std::size_t retainedStorageBytes() const;
 
@@ -182,13 +201,11 @@ private:
                          llvm::ArrayRef<RouteCost> evaluationPriorities);
   llvm::Error captureCurrentRoutes(const SpatialCandidateState &candidate,
                                    llvm::ArrayRef<PnrIndex> logicalNets);
-  llvm::Error restoreCapturedRoutes(SpatialMoveTransaction &move,
-                                    SpatialCandidateState &candidate,
-                                    SpatialRouteCostState &costs,
-                                    llvm::ArrayRef<PnrIndex> logicalNets,
-                                    const dse::ObjectiveVector &expectedObjective,
-                                    const SpatialCandidateRouteProjection
-                                        &expectedProjection);
+  llvm::Error restoreCapturedRoutes(
+      SpatialMoveTransaction &move, SpatialCandidateState &candidate,
+      SpatialRouteCostState &costs, llvm::ArrayRef<PnrIndex> logicalNets,
+      const dse::ObjectiveVector &expectedObjective,
+      const SpatialCandidateRouteProjection &expectedProjection);
   llvm::Expected<CapacityConflictAnalysis>
   analyzeCapacityConflicts(const SpatialCandidateState &candidate,
                            const SpatialRouteCostState &costs,
@@ -198,6 +215,10 @@ private:
   projectRoutingRegion(const SpatialCandidateState &candidate,
                        const SpatialRouteCostState &costs,
                        llvm::ArrayRef<PnrIndex> logicalNets);
+  llvm::Expected<bool>
+  expandExactRegionalConflictClosure(const SpatialCandidateState &candidate,
+                                     const SpatialRouteCostState &costs,
+                                     std::uint64_t logicalNetLimit);
   void beginProjection();
 
   SpatialNetRouterScratch netRouter_;
@@ -208,6 +229,8 @@ private:
   std::vector<RouteCost> capacityNetQCosts_;
   std::vector<PnrIndex> touchedCapacities_;
   std::vector<std::uint8_t> regionalCapacityMarks_;
+  std::vector<std::uint8_t> routingRegionNetMarks_;
+  std::vector<PnrIndex> routingRegionNets_;
   std::vector<PnrIndex> constraintSweepNets_;
   std::vector<std::size_t> capturedSinkPathOffsets_;
   std::vector<PnrIndex> capturedForwardArcs_;

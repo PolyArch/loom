@@ -112,7 +112,21 @@ llvm::Error classifyTransitionFailure(llvm::Error failure,
               closureFailure.mandatoryUsage(),
               closureFailure.physicalCapacity(),
               std::vector<PnrIndex>(closureFailure.forcedLogicalNets().begin(),
-                                    closureFailure.forcedLogicalNets().end()));
+                                    closureFailure.forcedLogicalNets().end()),
+              closureFailure.regionalLogicalNetCount(),
+              closureFailure.regionalLogicalNetLimit());
+        if (closureFailure.kind() ==
+                SpatialPathFinderClosureFailure::Kind::RegionalLimit &&
+            context == SpatialActionExecutionContext::ExactRepair)
+          return llvm::make_error<SpatialPathFinderClosureFailure>(
+              closureFailure.kind(), stream.str(),
+              closureFailure.certificateCapacity(),
+              closureFailure.mandatoryUsage(),
+              closureFailure.physicalCapacity(),
+              std::vector<PnrIndex>(closureFailure.forcedLogicalNets().begin(),
+                                    closureFailure.forcedLogicalNets().end()),
+              closureFailure.regionalLogicalNetCount(),
+              closureFailure.regionalLogicalNetLimit());
         return llvm::make_error<SpatialActionTransitionFailure>(
             closureFailure.kind() ==
                         SpatialPathFinderClosureFailure::Kind::NonClosure ||
@@ -1433,13 +1447,14 @@ SpatialActionExecutorScratch::probe(SpatialCandidateState &candidate,
                                     const SpatialMappingAction &action,
                                     SpatialActionExecutionContext context) {
   return probeBatch(candidate, llvm::ArrayRef<SpatialMappingAction>(&action, 1),
-                    context);
+                    context, 0);
 }
 
 llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
     SpatialCandidateState &candidate,
     llvm::ArrayRef<SpatialMappingAction> actions,
-    SpatialActionExecutionContext context) {
+    SpatialActionExecutionContext context,
+    std::uint64_t exactRegionalLogicalNetLimit) {
   if (activeProbe_)
     return executorError("another Action probe is active");
   if (candidate_ != &candidate || !routeCosts_ || !currentObjective_)
@@ -1471,16 +1486,24 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
   if (negotiatedRouting) {
     const auto &routing = candidate.problem().config().policy().search.routing;
     llvm::sort(affectedNets_);
+    const SpatialRoutingClosureRequirement closureRequirement = [&] {
+      switch (context) {
+      case SpatialActionExecutionContext::Search:
+        return SpatialRoutingClosureRequirement::PolicyAdmittedTemporary;
+      case SpatialActionExecutionContext::ExactRepair:
+        return SpatialRoutingClosureRequirement::ExactRegional;
+      case SpatialActionExecutionContext::FinalClosure:
+        return SpatialRoutingClosureRequirement::Final;
+      }
+      llvm_unreachable("unknown Spatial Action execution context");
+    }();
     auto closure = router_.routeToClosureInMove(
         move, candidate, *routeCosts_,
         {routing.endpointExpansionLimit, routing.negotiationIterationLimit,
          routing.noProgressIterationLimit, routing.noProgressTrendWindow},
         globalRouting_ ? llvm::ArrayRef<PnrIndex>{}
                        : llvm::ArrayRef<PnrIndex>(affectedNets_),
-        {},
-        context == SpatialActionExecutionContext::FinalClosure
-            ? SpatialRoutingClosureRequirement::Final
-            : SpatialRoutingClosureRequirement::PolicyAdmittedTemporary);
+        {}, closureRequirement, exactRegionalLogicalNetLimit);
     if (!closure)
       return restoreAfterFailure(
           move, classifyTransitionFailure(closure.takeError(), context));

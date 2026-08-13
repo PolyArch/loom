@@ -3,6 +3,7 @@
 #include "Common/MappingDebugLog.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "PnR/MappingObjective.h"
+#include "SpatialRouteConstraintModel.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -24,11 +25,15 @@ char SpatialPathFinderClosureFailure::ID;
 SpatialPathFinderClosureFailure::SpatialPathFinderClosureFailure(
     Kind kind, std::string message, PnrIndex certificateCapacity,
     std::uint64_t mandatoryUsage, std::uint64_t physicalCapacity,
-    std::vector<PnrIndex> forcedLogicalNets)
+    std::vector<PnrIndex> forcedLogicalNets,
+    std::uint64_t regionalLogicalNetCount,
+    std::uint64_t regionalLogicalNetLimit)
     : kind_(kind), message_(std::move(message)),
       certificateCapacity_(certificateCapacity),
       mandatoryUsage_(mandatoryUsage), physicalCapacity_(physicalCapacity),
-      forcedLogicalNets_(std::move(forcedLogicalNets)) {}
+      forcedLogicalNets_(std::move(forcedLogicalNets)),
+      regionalLogicalNetCount_(regionalLogicalNetCount),
+      regionalLogicalNetLimit_(regionalLogicalNetLimit) {}
 
 void SpatialPathFinderClosureFailure::log(llvm::raw_ostream &stream) const {
   stream << message_;
@@ -39,6 +44,8 @@ std::error_code SpatialPathFinderClosureFailure::convertToErrorCode() const {
   case Kind::NonClosure:
   case Kind::NoProgress:
     return std::make_error_code(std::errc::resource_unavailable_try_again);
+  case Kind::RegionalLimit:
+    return std::make_error_code(std::errc::value_too_large);
   case Kind::FixedTerminalCapacityCut:
     return std::make_error_code(std::errc::address_not_available);
   case Kind::SelectedCombinationalHandshakeCycle:
@@ -171,6 +178,9 @@ llvm::Error SpatialPathFinderRouterScratch::prepare(
   touchedCapacities_.clear();
   touchedCapacities_.reserve(capacityCount);
   regionalCapacityMarks_.assign(capacityCount, 0);
+  routingRegionNetMarks_.assign(logicalNetCount, 0);
+  routingRegionNets_.clear();
+  routingRegionNets_.reserve(logicalNetCount);
   constraintSweepNets_.clear();
   constraintSweepNets_.reserve(logicalNetCount);
   capturedSinkPathOffsets_.clear();
@@ -349,8 +359,9 @@ llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
   auto restoredProjection = move.projectCurrentRoutes();
   if (!restoredProjection)
     return restoredProjection.takeError();
-  auto restored = candidate.problem().objectiveProgram().evaluateSpatialProjection(
-      candidate, *restoredProjection);
+  auto restored =
+      candidate.problem().objectiveProgram().evaluateSpatialProjection(
+          candidate, *restoredProjection);
   if (!restored)
     return restored.takeError();
   if (restored->codes() != expectedObjective.codes())
@@ -902,6 +913,78 @@ SpatialPathFinderRouterScratch::projectRoutingRegion(
   return projection;
 }
 
+llvm::Expected<bool>
+SpatialPathFinderRouterScratch::expandExactRegionalConflictClosure(
+    const SpatialCandidateState &candidate, const SpatialRouteCostState &costs,
+    std::uint64_t logicalNetLimit) {
+  if (!preparedProblem_)
+    return pathFinderError("scratch is not prepared");
+  const FrozenSpatialRoutingGraph &routing = preparedProblem_->routing();
+  const FrozenSpatialResourceIndex &resources = preparedProblem_->resources();
+  bool expanded = false;
+  for (PnrIndex logicalNet = 0;
+       logicalNet < preparedProblem_->transfers().logicalNets().size();
+       ++logicalNet) {
+    bool contributes = false;
+    for (const RouteTreeNode &node :
+         candidate.routeTree(logicalNet).nodeStorage()) {
+      if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+        continue;
+      if (node.parentArc >= routing.routingArcs().size())
+        return pathFinderError(
+            "conflict closure RouteTree arc is out of range");
+      const PnrIndex traversal =
+          routing.routingArcs()[node.parentArc].traversal;
+      if (traversal >= routing.traversals().size())
+        return pathFinderError(
+            "conflict closure RouteTree traversal is out of range");
+      const FrozenSpatialTraversal &record = routing.traversals()[traversal];
+      for (PnrIndex claim : routing.traversalClaimKeys().slice(
+               record.routeClaimOffset, record.routeClaimCount)) {
+        if (claim >= routing.routeClaims().size())
+          return pathFinderError(
+              "conflict closure route claim is out of range");
+        const PnrIndex capacity =
+            routing.routeClaims()[claim].capacityDimension;
+        if (capacity >= regionalCapacityMarks_.size() ||
+            capacity >= resources.capacityDimensions().size())
+          return pathFinderError("conflict closure capacity is out of range");
+        if (regionalCapacityMarks_[capacity] &&
+            costs.workingCapacityUsageRaw(capacity) >
+                resources.capacityDimensions()[capacity].capacity) {
+          contributes = true;
+          break;
+        }
+      }
+      if (contributes)
+        break;
+    }
+    if (!contributes)
+      continue;
+    for (PnrIndex member :
+         preparedProblem_->routeConstraints().equalityClosure(logicalNet)) {
+      if (member >= routingRegionNetMarks_.size())
+        return pathFinderError(
+            "conflict closure contains a foreign logical net");
+      if (routingRegionNetMarks_[member])
+        continue;
+      routingRegionNetMarks_[member] = 1;
+      routingRegionNets_.push_back(member);
+      expanded = true;
+      if (routingRegionNets_.size() > logicalNetLimit)
+        return llvm::make_error<SpatialPathFinderClosureFailure>(
+            SpatialPathFinderClosureFailure::Kind::RegionalLimit,
+            "Spatial PathFinder conflict closure exceeds its regional "
+            "logical-net limit",
+            getInvalidPnrIndex(), 0, 0, std::vector<PnrIndex>{},
+            routingRegionNets_.size(), logicalNetLimit);
+    }
+  }
+  if (expanded)
+    llvm::sort(routingRegionNets_);
+  return expanded;
+}
+
 void SpatialPathFinderRouterScratch::beginProjection() {
   ++projectionEpoch_;
   if (projectionEpoch_ == 0) {
@@ -1068,7 +1151,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     SpatialRouteCostState &costs, SpatialPathFinderRoutingLimits limits,
     llvm::ArrayRef<PnrIndex> logicalNets,
     llvm::ArrayRef<RouteCost> evaluationPriorities,
-    SpatialRoutingClosureRequirement closureRequirement) {
+    SpatialRoutingClosureRequirement closureRequirement,
+    std::uint64_t exactRegionalLogicalNetLimit) {
   if (!preparedProblem_ || preparedProblem_ != &candidate.problem())
     return pathFinderError("scratch is not prepared for the candidate freeze");
   if (!costs.isBoundTo(candidate))
@@ -1092,10 +1176,48 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
   if (costs.selectedLogicalNet())
     return pathFinderError("route costs already have a selected logical net");
 
+  const bool regionalRouting = !logicalNets.empty();
+  routingRegionNets_.clear();
+  std::fill(routingRegionNetMarks_.begin(), routingRegionNetMarks_.end(), 0);
+  if (regionalRouting) {
+    if (closureRequirement == SpatialRoutingClosureRequirement::ExactRegional &&
+        exactRegionalLogicalNetLimit == 0)
+      return pathFinderError(
+          "exact regional routing requires a logical-net limit");
+    if (closureRequirement != SpatialRoutingClosureRequirement::ExactRegional &&
+        exactRegionalLogicalNetLimit != 0)
+      return pathFinderError(
+          "only exact regional routing may carry a logical-net limit");
+    for (PnrIndex logicalNet : logicalNets) {
+      if (logicalNet >= routingRegionNetMarks_.size())
+        return pathFinderError("routing region contains a foreign logical net");
+      if (routingRegionNetMarks_[logicalNet])
+        return pathFinderError("routing region repeats a logical net");
+      routingRegionNetMarks_[logicalNet] = 1;
+      routingRegionNets_.push_back(logicalNet);
+    }
+    llvm::sort(routingRegionNets_);
+    if (routingRegionNets_.size() > exactRegionalLogicalNetLimit &&
+        closureRequirement == SpatialRoutingClosureRequirement::ExactRegional)
+      return llvm::make_error<SpatialPathFinderClosureFailure>(
+          SpatialPathFinderClosureFailure::Kind::RegionalLimit,
+          "Spatial PathFinder routing region exceeds its logical-net limit",
+          getInvalidPnrIndex(), 0, 0, std::vector<PnrIndex>{},
+          routingRegionNets_.size(), exactRegionalLogicalNetLimit);
+  } else if (exactRegionalLogicalNetLimit != 0) {
+    return pathFinderError(
+        "full-design routing cannot carry a regional logical-net limit");
+  }
+  const auto activeLogicalNets = [&]() -> llvm::ArrayRef<PnrIndex> {
+    return regionalRouting ? llvm::ArrayRef<PnrIndex>(routingRegionNets_)
+                           : llvm::ArrayRef<PnrIndex>{};
+  };
+
   auto initialProjection = move.projectCurrentRoutes();
   if (!initialProjection)
     return initialProjection.takeError();
-  auto initialRegion = projectRoutingRegion(candidate, costs, logicalNets);
+  auto initialRegion =
+      projectRoutingRegion(candidate, costs, activeLogicalNets());
   if (!initialRegion)
     return initialRegion.takeError();
   auto initialObjective =
@@ -1109,7 +1231,6 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       initialRegion->routeCapacityOveruse == 0)
     return SpatialPathFinderClosureResult{0, true};
 
-  const bool regionalRouting = !logicalNets.empty();
   std::optional<dse::ObjectiveVector> bestRankObjective;
   std::optional<dse::ObjectiveVector> previousRankObjective;
   std::optional<dse::ObjectiveVector> bestTemporaryObjective;
@@ -1155,7 +1276,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     ++negotiationIterationCount_;
     ++debugStatistics.negotiatedIterations;
     if (llvm::Error error = buildCanonicalNetOrder(
-            candidate, costs, logicalNets, evaluationPriorities))
+            candidate, costs, activeLogicalNets(), evaluationPriorities))
       return std::move(error);
 
     constraintSweepNets_.clear();
@@ -1243,7 +1364,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     auto projection = move.projectCurrentRoutes();
     if (!projection)
       return projection.takeError();
-    auto region = projectRoutingRegion(candidate, costs, logicalNets);
+    auto region = projectRoutingRegion(candidate, costs, activeLogicalNets());
     if (!region)
       return region.takeError();
     auto capacityOveruse = spatialMappingViolationValue(
@@ -1262,6 +1383,42 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       if (!analyzed)
         return analyzed.takeError();
       conflictAnalysis = *analyzed;
+      if (regionalRouting &&
+          closureRequirement ==
+              SpatialRoutingClosureRequirement::ExactRegional) {
+        const std::uint64_t previousNetCount = routingRegionNets_.size();
+        auto expanded = expandExactRegionalConflictClosure(
+            candidate, costs, exactRegionalLogicalNetLimit);
+        if (!expanded)
+          return expanded.takeError();
+        if (*expanded) {
+          loom::mapping_debug::emit(
+              loom::mapping_debug::Level::Decision,
+              loom::mapping_debug::Stage::SpatialPnr,
+              loom::mapping_debug::Event::ActionProposal,
+              [&](llvm::json::Object &fields) {
+                fields["search_scope"] = "route_conflict_closure";
+                fields["iteration"] = iteration;
+                fields["session_iteration"] = sessionIteration;
+                fields["previous_logical_net_count"] = previousNetCount;
+                fields["logical_net_count"] = routingRegionNets_.size();
+                fields["logical_net_limit"] = exactRegionalLogicalNetLimit;
+              });
+          bestRankObjective.reset();
+          previousRankObjective.reset();
+          bestTemporaryObjective.reset();
+          bestTemporaryProjection.reset();
+          consecutiveNoProgressIterations = 0;
+          trendHead = 0;
+          trendCount = 0;
+          trendImprovedCount = 0;
+          trendIneligibleCount = 0;
+          trendRegressedCount = 0;
+          if (llvm::Error error = costs.advancePathFinderIteration())
+            return std::move(error);
+          continue;
+        }
+      }
     }
     const std::uint64_t capacityConflicts = conflictAnalysis.conflictCount;
     debugStatistics.capacityConflicts += capacityConflicts;
@@ -1286,8 +1443,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         return objective.takeError();
       selectedRankImproved = !bestRankObjective;
       if (bestRankObjective) {
-        auto comparison =
-            compareSelectedRank(*objective, *bestRankObjective);
+        auto comparison = compareSelectedRank(*objective, *bestRankObjective);
         if (!comparison)
           return comparison.takeError();
         selectedRankImproved = *comparison < 0;
@@ -1310,7 +1466,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       }
       previousRankObjective = *objective;
 
-      auto initialComparison = compareSelectedRank(*objective, *initialObjective);
+      auto initialComparison =
+          compareSelectedRank(*objective, *initialObjective);
       if (!initialComparison)
         return initialComparison.takeError();
       selectedRankImprovedFromInitial = *initialComparison < 0;
@@ -1325,7 +1482,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           replace = *comparison < 0;
         }
         if (replace) {
-          if (llvm::Error error = captureCurrentRoutes(candidate, logicalNets))
+          if (llvm::Error error =
+                  captureCurrentRoutes(candidate, activeLogicalNets()))
             return std::move(error);
           bestTemporaryProjection = *projection;
           bestTemporaryObjective = std::move(*objective);
@@ -1376,11 +1534,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
               projection->routeTerminalsCompatible;
           fields["selected_handshake_acyclic"] =
               projection->selectedHandshakeAcyclic;
-          fields["unrouted_obligations"] =
-              projection->unroutedObligationCount;
+          fields["unrouted_obligations"] = projection->unroutedObligationCount;
           fields["capacity_overuse"] = *capacityOveruse;
-          fields["route_capacity_overuse"] =
-              projection->routeCapacityOveruse;
+          fields["route_capacity_overuse"] = projection->routeCapacityOveruse;
           fields["regional_unrouted_obligations"] =
               region->unroutedObligationCount;
           fields["regional_route_capacity_overuse"] =
@@ -1418,10 +1574,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     }
     if (!hasCapacityOveruse) {
       if (bestTemporaryObjective) {
-        if (llvm::Error error =
-                restoreCapturedRoutes(move, candidate, costs, logicalNets,
-                                      *bestTemporaryObjective,
-                                      *bestTemporaryProjection))
+        if (llvm::Error error = restoreCapturedRoutes(
+                move, candidate, costs, activeLogicalNets(),
+                *bestTemporaryObjective, *bestTemporaryProjection))
           return std::move(error);
         emitStatistics("temporary_mapping");
         return SpatialPathFinderClosureResult{completedIterations, false};
@@ -1457,10 +1612,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
             fields["temporary_return"] = bestTemporaryObjective.has_value();
           });
       if (bestTemporaryObjective) {
-        if (llvm::Error error =
-                restoreCapturedRoutes(move, candidate, costs, logicalNets,
-                                      *bestTemporaryObjective,
-                                      *bestTemporaryProjection))
+        if (llvm::Error error = restoreCapturedRoutes(
+                move, candidate, costs, activeLogicalNets(),
+                *bestTemporaryObjective, *bestTemporaryProjection))
           return std::move(error);
         emitStatistics("fixed_terminal_cut_temporary");
         return SpatialPathFinderClosureResult{completedIterations, false};
@@ -1499,10 +1653,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
             fields["temporary_return"] = bestTemporaryObjective.has_value();
           });
       if (bestTemporaryObjective) {
-        if (llvm::Error error =
-                restoreCapturedRoutes(move, candidate, costs, logicalNets,
-                                      *bestTemporaryObjective,
-                                      *bestTemporaryProjection))
+        if (llvm::Error error = restoreCapturedRoutes(
+                move, candidate, costs, activeLogicalNets(),
+                *bestTemporaryObjective, *bestTemporaryProjection))
           return std::move(error);
         emitStatistics("no_progress_temporary");
         return SpatialPathFinderClosureResult{completedIterations, false};
@@ -1515,10 +1668,9 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     }
     if (completedIterations == limits.iterationLimit) {
       if (bestTemporaryObjective) {
-        if (llvm::Error error =
-                restoreCapturedRoutes(move, candidate, costs, logicalNets,
-                                      *bestTemporaryObjective,
-                                      *bestTemporaryProjection))
+        if (llvm::Error error = restoreCapturedRoutes(
+                move, candidate, costs, activeLogicalNets(),
+                *bestTemporaryObjective, *bestTemporaryProjection))
           return std::move(error);
         emitStatistics("temporary_capacity");
         return SpatialPathFinderClosureResult{completedIterations, false};
@@ -1601,6 +1753,8 @@ std::size_t SpatialPathFinderRouterScratch::retainedStorageBytes() const {
          retainedBytes(capacityEpochs_) + retainedBytes(capacityNetQCosts_) +
          retainedBytes(touchedCapacities_) +
          retainedBytes(regionalCapacityMarks_) +
+         retainedBytes(routingRegionNetMarks_) +
+         retainedBytes(routingRegionNets_) +
          retainedBytes(constraintSweepNets_) +
          retainedBytes(capturedSinkPathOffsets_) +
          retainedBytes(capturedForwardArcs_) + retainedBytes(reversePath_) +

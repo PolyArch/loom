@@ -896,8 +896,7 @@ SpatialExactRepairScratch::repairTransportClosure(
       std::numeric_limits<std::uint64_t>::max() - decisions_.size())
     return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
                   "route repair region decision count overflows");
-  const std::uint64_t regionDecisionCount =
-      decisions_.size() + affectedNets_.size();
+  std::uint64_t regionDecisionCount = decisions_.size() + affectedNets_.size();
   if (regionDecisionCount > policy.maxRegionDecisions)
     return result(SpatialExactRepairResultKind::RegionTooLarge,
                   regionDecisionCount, 0, 0,
@@ -1150,9 +1149,9 @@ SpatialExactRepairScratch::repairTransportClosure(
               SpatialMemoryBindingAction{realization, choice.placement}});
       }
     }
-    actions_.push_back(
-        SpatialTransportRoutingAction{SpatialWitnessRegionRoutingAction{
-            primaryWitnessKind, primaryWitnessOrdinal}});
+    for (PnrIndex logicalNet : affectedNets_)
+      actions_.push_back(SpatialTransportRoutingAction{
+          SpatialWholeNetRoutingAction{logicalNet}});
     for (auto [local, decision] : llvm::enumerate(decisions_)) {
       const std::int64_t selected = solved->assignment[local];
       if (decision < portOffset)
@@ -1253,9 +1252,29 @@ SpatialExactRepairScratch::repairTransportClosure(
         });
 
     auto probe = actionExecutor_.probeBatch(
-        candidate, actions_, SpatialActionExecutionContext::ExactRepair);
+        candidate, actions_, SpatialActionExecutionContext::ExactRepair,
+        policy.maxRegionDecisions - decisions_.size());
+    for (PnrIndex logicalNet : actionExecutor_.regionalLogicalNets()) {
+      if (logicalNet >= netIncluded_.size())
+        return executedResult(SpatialExactRepairResultKind::InternalError,
+                              "route conflict closure contains a foreign "
+                              "logical net");
+      if (!netIncluded_[logicalNet]) {
+        netIncluded_[logicalNet] = 1;
+        affectedNets_.push_back(logicalNet);
+      }
+    }
+    llvm::sort(affectedNets_);
+    if (affectedNets_.size() >
+        std::numeric_limits<std::uint64_t>::max() - decisions_.size())
+      return executedResult(SpatialExactRepairResultKind::InternalError,
+                            "route conflict closure decision count "
+                            "overflows");
+    regionDecisionCount = decisions_.size() + affectedNets_.size();
     bool rejectAssignment = false;
     bool fixedTerminalCut = false;
+    bool regionalLimit = false;
+    std::uint64_t rejectedRegionDecisionCount = regionDecisionCount;
     bool routeWorkUnknown = false;
     routeCutLogicalNets_.clear();
     if (!probe) {
@@ -1264,6 +1283,17 @@ SpatialExactRepairScratch::repairTransportClosure(
       llvm::Error unhandled = llvm::handleErrors(
           probe.takeError(),
           [&](const SpatialPathFinderClosureFailure &failure) -> llvm::Error {
+            if (failure.kind() ==
+                SpatialPathFinderClosureFailure::Kind::RegionalLimit) {
+              if (failure.regionalLogicalNetCount() >
+                  std::numeric_limits<std::uint64_t>::max() - decisions_.size())
+                return invocationError(
+                    "route conflict closure decision count overflows");
+              regionalLimit = true;
+              rejectedRegionDecisionCount =
+                  decisions_.size() + failure.regionalLogicalNetCount();
+              return llvm::Error::success();
+            }
             if (failure.kind() != SpatialPathFinderClosureFailure::Kind::
                                       FixedTerminalCapacityCut) {
               std::string message;
@@ -1273,7 +1303,9 @@ SpatialExactRepairScratch::repairTransportClosure(
                   failure.kind(), stream.str(), failure.certificateCapacity(),
                   failure.mandatoryUsage(), failure.physicalCapacity(),
                   std::vector<PnrIndex>(failure.forcedLogicalNets().begin(),
-                                        failure.forcedLogicalNets().end()));
+                                        failure.forcedLogicalNets().end()),
+                  failure.regionalLogicalNetCount(),
+                  failure.regionalLogicalNetLimit());
             }
             fixedTerminalCut = true;
             routeCutLogicalNets_.assign(failure.forcedLogicalNets().begin(),
@@ -1320,8 +1352,9 @@ SpatialExactRepairScratch::repairTransportClosure(
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(std::move(error)));
       }
-      auto selectedRank = candidate.problem().objectiveProgram().compareSelectedRank(
-          probe->objective(), {}, initialObjective, {});
+      auto selectedRank =
+          candidate.problem().objectiveProgram().compareSelectedRank(
+              probe->objective(), {}, initialObjective, {});
       if (!selectedRank) {
         llvm::Error error = selectedRank.takeError();
         if (llvm::Error discardError = probe->discard())
@@ -1354,8 +1387,7 @@ SpatialExactRepairScratch::repairTransportClosure(
               llvm::json::Array candidateCodes;
               for (std::uint64_t code : probe->objective().codes())
                 candidateCodes.push_back(code);
-              fields["candidate_objective_codes"] =
-                  std::move(candidateCodes);
+              fields["candidate_objective_codes"] = std::move(candidateCodes);
             });
         if (llvm::Error error = probe->discard())
           return executedResult(SpatialExactRepairResultKind::InternalError,
@@ -1399,12 +1431,20 @@ SpatialExactRepairScratch::repairTransportClosure(
           fields["witness_ordinal"] = primaryWitnessOrdinal;
           fields["solver_calls"] = solverCalls;
           fields["fixed_terminal_cut"] = fixedTerminalCut;
+          fields["regional_limit"] = regionalLimit;
+          fields["region_decisions"] = rejectedRegionDecisionCount;
           fields["route_work_unknown"] = routeWorkUnknown;
           fields["cut_logical_net_count"] = routeCutLogicalNets_.size();
         });
     if (!rejectAssignment)
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             "route repair lost its assignment outcome");
+    if (regionalLimit)
+      return result(SpatialExactRepairResultKind::RegionTooLarge,
+                    rejectedRegionDecisionCount, solverCalls, lastActionCount,
+                    "route conflict closure exceeds max_region_decisions",
+                    actionExecutor_.endpointExpansionCount(),
+                    actionExecutor_.negotiationIterationCount());
     if (fixedTerminalCut) {
       routeCutDecisionLocals_.clear();
       const auto addCutTerminal =

@@ -62,6 +62,8 @@ SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   targetEndpoints_.reserve(maximumSinkCount);
   targetPreferenceRanks_.clear();
   targetPreferenceRanks_.reserve(maximumSinkCount);
+  targetRequiresTraversal_.clear();
+  targetRequiresTraversal_.reserve(maximumSinkCount);
   targetObligationByEndpoint_.assign(endpointCount, getInvalidPnrIndex());
   unresolvedSinks_.assign(maximumSinkCount, 0);
   prospectiveClaimBits_.assign(
@@ -76,6 +78,7 @@ SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem) {
       bufferedTraversalBits_[traversal / 64] |= std::uint64_t{1}
                                                 << (traversal % 64);
   }
+  forbiddenEndpointBits_.assign((endpointCount + 63) / 64, 0);
   endpointMarks_.assign(endpointCount, 0);
   subtreeWorklist_.clear();
   subtreeWorklist_.reserve(endpointCount);
@@ -140,14 +143,14 @@ SpatialNetRouterScratch::collectSourceFrontier(const RouteTreeState &tree,
   return llvm::Error::success();
 }
 
-llvm::Expected<bool> SpatialNetRouterScratch::collectTargetFrontier(
+llvm::Error SpatialNetRouterScratch::collectTargetFrontier(
     const SpatialCandidateState &candidate, PnrIndex logicalNet,
     PnrIndex sinkCount) {
   targetCandidates_.clear();
   targetEndpoints_.clear();
   targetPreferenceRanks_.clear();
-  std::optional<PnrIndex> selectedSink;
-  bool requiresBufferedTraversal = false;
+  targetRequiresTraversal_.clear();
+  std::fill(forbiddenEndpointBits_.begin(), forbiddenEndpointBits_.end(), 0);
   for (PnrIndex sink = 0; sink < sinkCount; ++sink) {
     if (!unresolvedSinks_[sink])
       continue;
@@ -164,33 +167,60 @@ llvm::Expected<bool> SpatialNetRouterScratch::collectTargetFrontier(
         break;
       }
     }
-    if (!ready)
+    if (!ready) {
+      const FrozenSpatialLogicalNet &net =
+          candidate.problem().transfers().logicalNets()[logicalNet];
+      auto localBoundary = spatialTerminalProvidesLocalProgressBoundary(
+          candidate, candidate.problem()
+                         .transfers()
+                         .logicalNetSinkBindings()[net.sinkOffset + sink]);
+      if (!localBoundary)
+        return localBoundary.takeError();
+      if (!*localBoundary) {
+        const PnrIndex endpoint =
+            candidate.logicalNetSinkEndpoint(logicalNet, sink);
+        if (endpoint / 64 >= forbiddenEndpointBits_.size())
+          return netRouterError("blocked sink endpoint is out of range");
+        forbiddenEndpointBits_[endpoint / 64] |= std::uint64_t{1}
+                                                 << (endpoint % 64);
+      }
       continue;
-    selectedSink = sink;
-    requiresBufferedTraversal = !prerequisites->empty();
+    }
+    bool requiresBufferedTraversal = !prerequisites->empty();
     if (requiresBufferedTraversal) {
       const FrozenSpatialLogicalNet &net =
           candidate.problem().transfers().logicalNets()[logicalNet];
       auto localBoundary = spatialTerminalProvidesLocalProgressBoundary(
-          candidate,
-          candidate.problem().transfers().logicalNetSinkBindings()[
-              net.sinkOffset + sink]);
+          candidate, candidate.problem()
+                         .transfers()
+                         .logicalNetSinkBindings()[net.sinkOffset + sink]);
       if (!localBoundary)
         return localBoundary.takeError();
       requiresBufferedTraversal = !*localBoundary;
     }
-    break;
+    targetCandidates_.push_back(
+        {candidate.logicalNetSinkEndpoint(logicalNet, sink), sink,
+         requiresBufferedTraversal});
   }
-  if (!selectedSink)
+  if (targetCandidates_.empty())
     return netRouterError(
         "unresolved sink dependencies contain no routable frontier");
-  const PnrIndex endpoint =
-      candidate.logicalNetSinkEndpoint(logicalNet, *selectedSink);
-  targetCandidates_.push_back({endpoint, *selectedSink});
-  targetEndpoints_.push_back(endpoint);
-  targetPreferenceRanks_.push_back(*selectedSink);
-  targetObligationByEndpoint_[endpoint] = *selectedSink;
-  return requiresBufferedTraversal;
+  llvm::sort(targetCandidates_,
+             [](const TargetCandidate &lhs, const TargetCandidate &rhs) {
+               return std::make_tuple(lhs.endpoint, !lhs.requiresTraversal,
+                                      lhs.sinkObligation) <
+                      std::make_tuple(rhs.endpoint, !rhs.requiresTraversal,
+                                      rhs.sinkObligation);
+             });
+  for (const TargetCandidate &target : targetCandidates_) {
+    if (!targetEndpoints_.empty() && targetEndpoints_.back() == target.endpoint)
+      continue;
+    targetEndpoints_.push_back(target.endpoint);
+    targetPreferenceRanks_.push_back(target.sinkObligation);
+    targetRequiresTraversal_.push_back(target.requiresTraversal);
+    targetObligationByEndpoint_[target.endpoint] = target.sinkObligation;
+  }
+  return llvm::Error::success();
 }
 
 llvm::Error
@@ -430,18 +460,19 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
 
     if (llvm::Error error = collectSourceFrontier(tree, source))
       return std::move(error);
-    auto requiresBufferedTraversal =
-        collectTargetFrontier(candidate, logicalNet, net.sinkCount);
-    if (!requiresBufferedTraversal)
-      return requiresBufferedTraversal.takeError();
-    if (*requiresBufferedTraversal &&
+    if (llvm::Error error =
+            collectTargetFrontier(candidate, logicalNet, net.sinkCount))
+      return std::move(error);
+    const bool requiresBufferedTraversal =
+        llvm::is_contained(targetRequiresTraversal_, std::uint8_t{1});
+    if (requiresBufferedTraversal &&
         llvm::all_of(bufferedTraversalBits_,
                      [](std::uint64_t word) { return word == 0; }))
       return unreachable(
           "a causal multicast branch requires buffered ingress, but the "
           "Fabric exposes no buffered FIFO traversal");
     const llvm::ArrayRef<std::uint64_t> requiredTraversals =
-        *requiresBufferedTraversal
+        requiresBufferedTraversal
             ? llvm::ArrayRef<std::uint64_t>(bufferedTraversalBits_)
             : llvm::ArrayRef<std::uint64_t>();
     auto result = endpointSearch_.search(
@@ -450,7 +481,8 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
          costs.currentArcCosts(), candidate.logicalNetPayloadWidth(logicalNet),
          0, endpointExpansionLimit, *eligibleTraversals,
          costs.lowerBoundCostRevision(), requiredTraversals,
-         *requiresBufferedTraversal});
+         requiresBufferedTraversal, targetRequiresTraversal_,
+         forbiddenEndpointBits_});
     if (!result)
       return result.takeError();
 
@@ -465,7 +497,15 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
     }
     const llvm::ArrayRef<PnrIndex> branch =
         result->forwardArcs.drop_front(pathBegin);
-    if (*requiresBufferedTraversal) {
+    const auto selectedTarget =
+        llvm::lower_bound(targetEndpoints_, result->target);
+    if (selectedTarget == targetEndpoints_.end() ||
+        *selectedTarget != result->target)
+      return netRouterError("route search selected a foreign target endpoint");
+    const bool selectedRequiresTraversal =
+        targetRequiresTraversal_[selectedTarget - targetEndpoints_.begin()] !=
+        0;
+    if (selectedRequiresTraversal) {
       bool branchBuffered = false;
       for (PnrIndex arc : branch) {
         if (arc >= routing.routingArcs().size())
@@ -516,10 +556,12 @@ std::size_t SpatialNetRouterScratch::retainedStorageBytes() const {
          retainedBytes(sourceReplicationGroups_) +
          retainedBytes(targetCandidates_) + retainedBytes(targetEndpoints_) +
          retainedBytes(targetPreferenceRanks_) +
+         retainedBytes(targetRequiresTraversal_) +
          retainedBytes(targetObligationByEndpoint_) +
          retainedBytes(unresolvedSinks_) +
          retainedBytes(prospectiveClaimBits_) +
-         retainedBytes(bufferedTraversalBits_) + retainedBytes(endpointMarks_) +
+         retainedBytes(bufferedTraversalBits_) +
+         retainedBytes(forbiddenEndpointBits_) + retainedBytes(endpointMarks_) +
          retainedBytes(subtreeWorklist_) +
          routeConstraints_->retainedStorageBytes();
 }

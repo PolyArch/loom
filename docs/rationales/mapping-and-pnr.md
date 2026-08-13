@@ -526,12 +526,21 @@ Canonical witness ordinal identifies which violation opened a repair region;
 it is not a quality measure. Requiring the next witness ordinal to increase
 rejects a repair that removes the original physical conflict but exposes a
 lower-numbered conflict elsewhere. Repair therefore requires elimination of
-the opening typed witness and strict improvement of the existing Mapping
-transport-violation tuple projected over the fixed region. The tuple prevents
-capacity and Physical Tag repairs from exchanging one violation for an earlier
-kind and cycling. Remaining violations outside the region retain their
-ordinary Mapping owners. This regional projection is not a private score: it
-uses the canonical Mapping violation kinds and their ordinary physical owners.
+the opening typed witness, exact closure of the bounded routing region, and
+strict improvement under the selected global Mapping order. A temporary
+regional iterate is useful to ordinary search but cannot prove that the repair
+region closed. Keeping that distinction prevents capacity and Physical Tag
+repairs from exchanging one witness for a worse set of violations without
+creating a repair-private score. Remaining violations outside the region
+retain their ordinary Mapping owners.
+
+The repair model and the Action transaction must route the same dependency
+closure. Reconstructing a WitnessRegion Action from only the opening witness
+after the repair owner has already expanded realization, relation, and
+ownership dependencies would create a second, narrower region owner. The
+repair therefore projects its canonical affected-net set into ordinary
+WholeNet Actions; the executor still owns routing, while the repair model
+remains the sole owner of its bounded region.
 
 Raw local-choice order is insufficient as the repair objective. In a coupled
 placement and attachment region, its lexicographically first assignment can
@@ -675,6 +684,18 @@ relations. Treating every cycle as a deadlock would reject ordinary streaming
 loops, while treating it as safe would hide real closed waits. Failing closed
 for unsupported cyclic proofs therefore preserves one progress authority
 without inventing either answer.
+
+Progress dependencies restrict targets, not the entire multicast search. The
+router retains every currently ready sink in one target frontier and carries a
+target-local Buffered FIFO predicate in the existing two-state endpoint
+search. Selecting only the first ready sink would make frozen sink order a
+routing heuristic and could strand a feasible tree after an avoidable branch
+choice. When several obligations share an endpoint, the strongest predicate
+dominates because its route also serves obligations that need no progress
+boundary. Conversely, a not-ready dependent sink without a local progress
+boundary cannot be a transit node for an earlier branch. Allowing that transit
+would silently give the sink a place in the single-parent RouteTree before its
+causal branch can establish a Buffered FIFO after divergence.
 
 The earlier eight-entry objective registry was removed rather than retained as
 aliases. Aliases would allow central DSE to weight one physical counterexample

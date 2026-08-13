@@ -1603,9 +1603,22 @@ a strictly smaller `g` replaces a predecessor; equal `g` does not. Stale heap
 entries are discarded, and a target is accepted only when popped.
 
 For a multi-sink net, the router repeatedly performs one multi-source,
-multi-target search from legal branch points in the existing tree to all
-unresolved sink domains. It collects every equal-best target until the minimum
-open `f` exceeds the best target cost, then uses:
+multi-target search from legal branch points in the existing tree to every
+currently ready unresolved sink domain. A sink is ready when all of its frozen
+progress prerequisites have already joined the tree. Each target carries its
+own monotonic traversal predicate: an ordinary target accepts either product
+state, while a dependent target without a local progress boundary accepts only
+a state that selected a Buffered FIFO after leaving the tree. A shared target
+endpoint takes the strongest predicate among its ready obligations. The router
+forbids the endpoint of every not-ready dependent sink without a local progress
+boundary from serving as an intermediate node. Otherwise an earlier branch
+could absorb that endpoint into the tree before its prerequisite is routed,
+after which the single-parent RouteTree could not establish the required
+Buffered FIFO after divergence. The reverse heuristic may ignore this
+endpoint mask because the resulting distance remains an admissible lower
+bound. The search collects every equal-best eligible target until the minimum
+open `f` exceeds
+the best target cost, then uses:
 
 ```text
 (total_branch_cost ascending,
@@ -2139,7 +2152,7 @@ selection remain SystemMapping decisions.
 Spatial and System PnR have distinct component-view descriptors:
 
 ```text
-loom.spatial_pnr.config.9.0
+loom.spatial_pnr.config.10.0
 loom.system_pnr.config.4.0
 ```
 
@@ -2148,15 +2161,16 @@ Spatial or System policy domain. Their exact descriptor bytes are the ASCII
 bytes shown above without a trailing zero. A digest from one view kind cannot
 be adopted as the other.
 
-Spatial version 9.0 retains 8.0's selected global Mapping order, bounded
-canonical fixing, exact regional progress, and Action-local
-negotiated-routing state. It incompatibly defines an ordinary failed
-transport probe's no-good over its exact transport observation: compute
-placement, memory placement, and attachment option. Instruction contexts
-remain typed solver decisions and participate in every applicable hard
-relation, but legal zero-overuse contexts at one compute placement cannot
-cause duplicate route probes. System PnR does not consume this protocol and
-retains version 4.0.
+Spatial version 10.0 retains 9.0's selected global Mapping order, bounded
+canonical fixing, transport-observation no-goods, and Action-local negotiated
+routing state. It incompatibly requires an exact-repair route probe to close
+its complete nonempty region before the assignment may enter selected-rank
+acceptance. A policy-admitted temporary iterate remains available to ordinary
+search, but cannot stand in for exact regional closure or hide a
+fixed-terminal capacity certificate from the repair model. It also restores
+the complete ready multicast target frontier while carrying causal buffering
+as a target-local route predicate. System PnR does not consume this protocol
+and retains version 4.0.
 
 Each resolved view is self-contained:
 
@@ -2941,10 +2955,14 @@ complete closure exceeds `max_region_decisions`, the result is
 
 Negotiated routing for a nonempty repair region closes only that region's
 unrouted obligations and capacities touched by its selected routes. Fixed
-outside routes still consume those capacities. An unrelated outside transport
-violation cannot make the region non-closed; it remains owned by the next
-canonical witness. Empty-region routing is the full-design closure and retains
-the complete Mapping predicate.
+outside routes still consume those capacities. Policy-admitted temporary
+iterates are ordinary search results, not exact-repair results: a repair probe
+that exhausts regional closure work is rejected without entering selected-rank
+acceptance, and a fixed-terminal capacity cut is returned to the repair model
+even when routing observed an earlier temporary iterate. An unrelated outside
+transport violation cannot make the region non-closed; it remains owned by the
+next canonical witness. Empty-region routing is the full-design closure and
+retains the complete Mapping predicate.
 
 The repair policy owns exactly two semantic work limits:
 
@@ -2983,7 +3001,10 @@ restart-wide solver-call budget and use the same exact model.
 
 The solver assignment is diffed against the candidate and rebuilt as one
 canonical ephemeral `ActionBatch` containing only the three existing Action
-variants. One `MoveTransaction` applies the batch atomically. Mapping hard
+variants. Its transport Actions are the exact canonical net set already owned
+by the closed repair region; the Action executor does not derive a narrower
+region again from only the opening witness. One `MoveTransaction` applies the
+batch atomically. Mapping hard
 constraints and the exactly representable WeightedLevel selected by
 `SelectedObjectiveClosure.selected_search_energy` may enter the solver.
 TotalOrdering and
@@ -3057,7 +3078,7 @@ particular, the adapter sets no solver wall-time, deterministic-time, branch,
 conflict, or incumbent limit. Loom's owner-local solver-call budget and the
 outer execution controls remain the only corresponding limits.
 
-Spatial 9.0 canonical extraction is one fixed protocol:
+Spatial 10.0 canonical extraction is one fixed protocol:
 
 1. solve the exact selected repair objective, when present, and require
    `OPTIMAL`; a pure feasibility model must likewise return `OPTIMAL`;

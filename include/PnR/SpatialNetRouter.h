@@ -70,13 +70,13 @@ private:
   struct TargetCandidate final {
     PnrIndex endpoint = 0;
     PnrIndex sinkObligation = 0;
+    bool requiresTraversal = false;
   };
 
   llvm::Error collectSourceFrontier(const RouteTreeState &tree,
                                     PnrIndex unroutedSource);
-  llvm::Expected<bool>
-  collectTargetFrontier(const SpatialCandidateState &candidate,
-                        PnrIndex logicalNet, PnrIndex sinkCount);
+  llvm::Error collectTargetFrontier(const SpatialCandidateState &candidate,
+                                    PnrIndex logicalNet, PnrIndex sinkCount);
   llvm::Error addPathClaims(const FrozenSpatialRoutingGraph &routing,
                             llvm::ArrayRef<PnrIndex> forwardArcs);
   llvm::Error collectCurrentClaims(const RouteTreeState &tree);
@@ -94,10 +94,12 @@ private:
   std::vector<TargetCandidate> targetCandidates_;
   std::vector<PnrIndex> targetEndpoints_;
   std::vector<PnrIndex> targetPreferenceRanks_;
+  std::vector<std::uint8_t> targetRequiresTraversal_;
   std::vector<PnrIndex> targetObligationByEndpoint_;
   std::vector<std::uint8_t> unresolvedSinks_;
   std::vector<std::uint64_t> prospectiveClaimBits_;
   std::vector<std::uint64_t> bufferedTraversalBits_;
+  std::vector<std::uint64_t> forbiddenEndpointBits_;
   std::vector<std::uint64_t> endpointMarks_;
   std::vector<PnrIndex> subtreeWorklist_;
   std::uint64_t endpointMarkEpoch_ = 0;

@@ -881,7 +881,9 @@ loom::pnr::detail::buildSystemServiceRoutes(
              eligibleTraversals,
              std::nullopt,
              {},
-             false});
+             false,
+             {},
+             {}});
         const std::uint64_t consumed = search.endpointExpansionCount();
         if (consumed >
             std::numeric_limits<std::uint64_t>::max() - endpointExpansions)

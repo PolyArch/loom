@@ -122,7 +122,8 @@ public:
   probeBatch(SpatialCandidateState &candidate,
              llvm::ArrayRef<SpatialMappingAction> actions,
              SpatialActionExecutionContext context =
-                 SpatialActionExecutionContext::Search);
+                 SpatialActionExecutionContext::Search,
+             std::uint64_t exactRegionalLogicalNetLimit = 0);
 
   const dse::ObjectiveVector &currentObjective() const;
   std::uint64_t endpointExpansionCount() const {
@@ -136,6 +137,12 @@ public:
   }
   std::uint64_t negotiationIterationCount() const {
     return router_.negotiationIterationCount();
+  }
+  std::uint64_t regionalLogicalNetCount() const {
+    return router_.regionalLogicalNetCount();
+  }
+  llvm::ArrayRef<PnrIndex> regionalLogicalNets() const {
+    return router_.regionalLogicalNets();
   }
   std::size_t retainedStorageBytes() const;
 

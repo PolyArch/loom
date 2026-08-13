@@ -1613,6 +1613,25 @@ void loom::test::exercisePathFinderFixedTerminalCutRejection(
       });
   if (!observedClosureCertificate)
     fail("Spatial final closure lost its fixed-terminal cut certificate");
+
+  auto repairProbe =
+      executor.probe(candidate, globalRouting,
+                     pnr::SpatialActionExecutionContext::ExactRepair);
+  if (repairProbe)
+    fail("Spatial exact repair accepted a fixed-terminal capacity cut");
+  bool observedRepairCertificate = false;
+  llvm::handleAllErrors(
+      repairProbe.takeError(),
+      [&](const pnr::SpatialPathFinderClosureFailure &failure) {
+        observedRepairCertificate =
+            failure.kind() == pnr::SpatialPathFinderClosureFailure::Kind::
+                                  FixedTerminalCapacityCut &&
+            failure.certificateCapacity() != pnr::getInvalidPnrIndex() &&
+            failure.mandatoryUsage() > failure.physicalCapacity() &&
+            !failure.forcedLogicalNets().empty();
+      });
+  if (!observedRepairCertificate)
+    fail("Spatial exact repair lost its fixed-terminal cut certificate");
   requireSuccess(routeCosts.resetFromCandidate());
   for (pnr::PnrIndex capacity = 0;
        capacity < candidate.problem().resources().capacityDimensions().size();

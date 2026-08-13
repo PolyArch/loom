@@ -58,7 +58,7 @@ llvm::Error validateSpatialConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialPnrCandidateGeneratorKind,
     "mapping.spatial_pnr",
-    "loom.mapping.spatial_pnr.generator.v6",
+    "loom.mapping.spatial_pnr.generator.v7",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -259,10 +259,9 @@ resolveSpatialPnrCandidateGeneratorBinding(
       constraints->view().fabricIdentity() != fabric->view().identity())
     return invalidOutcome("D/T/F/K binding has inconsistent artifact owners");
 
-  return ::loom::pnr::generateSpatialMappings({*dataflow, tech->view(),
-                                               fabric->view(), *config,
-                                               constraints->view(), store,
-                                               candidateWorkerCount});
+  return ::loom::pnr::generateSpatialMappings(
+      {*dataflow, tech->view(), fabric->view(), *config, constraints->view(),
+       store, candidateWorkerCount});
 }
 
 } // namespace loom::dse
