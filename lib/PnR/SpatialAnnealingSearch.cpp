@@ -698,6 +698,12 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateState &candidate,
           fields["realization_choices"] = domain.realizationChoices.size();
           fields["routing_choices"] = domain.transportChoices.size();
           fields["resource_choices"] = domain.resourceChoices.size();
+          fields["atomic_capacity_overuse"] =
+              candidate.atomicCapacityOveruse();
+          fields["route_capacity_overuse"] =
+              candidate.routeCapacityOveruse();
+          fields["tag_resident_capacity_overuse"] =
+              candidate.tagResidentCapacityOveruse();
           fields["violation_values"] = std::move(violationValues);
           fields["objective_codes"] = std::move(objectiveCodes);
           fields["exact_closure"] = statistics.exactClosureReached;
