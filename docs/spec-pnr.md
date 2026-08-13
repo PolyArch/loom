@@ -1936,6 +1936,12 @@ returns typed non-closure and rolls back. Checked routing-cost overflow remains
 an Action failure when no earlier exact certificate applies; saturation, wrap,
 dynamic rescaling, and treating overflow as infeasibility remain forbidden.
 
+The test visits every overused capacity in the active routing region in frozen
+capacity ordinal order and stops at the first exact certificate. Absence of a
+certificate for one overused capacity does not authorize skipping the others.
+Conflict-event sampling is diagnostic only: verbosity and sample limits cannot
+change which capacities are tested or which certificate is selected.
+
 Only the selected overlay is applied once through `MoveTransaction`.
 PathFinder pressure/history, Dual prices/directions, best-iterate metadata,
 and iteration traces are discarded on commit or rollback.

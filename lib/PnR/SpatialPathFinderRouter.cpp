@@ -11,7 +11,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
-#include <array>
 #include <limits>
 #include <optional>
 #include <string>
@@ -242,6 +241,8 @@ llvm::Error SpatialPathFinderRouterScratch::prepare(
   capacityNetQCosts_.assign(capacityCount, 0);
   touchedCapacities_.clear();
   touchedCapacities_.reserve(capacityCount);
+  conflictCapacities_.clear();
+  conflictCapacities_.reserve(capacityCount);
   regionalCapacityMarks_.assign(capacityCount, 0);
   routingRegionNetMarks_.assign(logicalNetCount, 0);
   routingRegionNets_.clear();
@@ -472,7 +473,7 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
   CapacityConflictAnalysis analysis;
   cutCertificateForcedNetCuts_.clear();
 
-  std::optional<PnrIndex> selectedConflictCapacity;
+  conflictCapacities_.clear();
   for (PnrIndex capacity = 0; capacity < resources.capacityDimensions().size();
        ++capacity) {
     if (!regionalCapacityMarks_[capacity])
@@ -483,17 +484,10 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
     if (analysis.conflictCount == std::numeric_limits<std::uint64_t>::max())
       return pathFinderError("capacity conflict count overflows u64");
     ++analysis.conflictCount;
-    if (!selectedConflictCapacity ||
-        usage < costs.workingCapacityUsageRaw(*selectedConflictCapacity) ||
-        (usage == costs.workingCapacityUsageRaw(*selectedConflictCapacity) &&
-         capacity < *selectedConflictCapacity))
-      selectedConflictCapacity = capacity;
+    conflictCapacities_.push_back(capacity);
   }
-  if (!selectedConflictCapacity)
-    return analysis;
 
-  const std::array<PnrIndex, 1> conflictCapacities{*selectedConflictCapacity};
-  for (PnrIndex capacity : conflictCapacities) {
+  for (PnrIndex capacity : conflictCapacities_) {
     const std::uint64_t usage = costs.workingCapacityUsageRaw(capacity);
     const auto &capacityRecord = resources.capacityDimensions()[capacity];
     const std::uint64_t physicalCapacity = capacityRecord.capacity;
@@ -1847,6 +1841,7 @@ std::size_t SpatialPathFinderRouterScratch::retainedStorageBytes() const {
          retainedBytes(activeClaimBits_) + retainedBytes(claimEpochs_) +
          retainedBytes(capacityEpochs_) + retainedBytes(capacityNetQCosts_) +
          retainedBytes(touchedCapacities_) +
+         retainedBytes(conflictCapacities_) +
          retainedBytes(regionalCapacityMarks_) +
          retainedBytes(routingRegionNetMarks_) +
          retainedBytes(routingRegionNets_) +

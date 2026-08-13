@@ -233,6 +233,7 @@ private:
   std::vector<std::uint64_t> capacityEpochs_;
   std::vector<RouteCost> capacityNetQCosts_;
   std::vector<PnrIndex> touchedCapacities_;
+  std::vector<PnrIndex> conflictCapacities_;
   std::vector<std::uint8_t> regionalCapacityMarks_;
   std::vector<std::uint8_t> routingRegionNetMarks_;
   std::vector<PnrIndex> routingRegionNets_;

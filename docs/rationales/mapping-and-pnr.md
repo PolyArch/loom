@@ -772,6 +772,14 @@ no-progress bound proves nothing about future iterations; it only prevents an
 explicitly bounded search from repeatedly spending the dominant all-net route
 work without improving its exact closure rank.
 
+One negotiated iterate can overuse many capacities. Testing only a
+usage-selected conflict makes that incidental selection another semantic owner
+and can miss a proof already present elsewhere in the same frozen state. The
+router instead visits regional conflicts in frozen capacity ordinal order and
+returns the first exact certificate. The ordinal is already owned by the
+frozen resource index, so certificate selection needs no additional heuristic
+or configuration.
+
 Enumerating one exact terminal assignment at a time throws away most of the
 cut proof. The proof remains valid for every source and witness-sink choice pair
 that is still disconnected after the capacity's claiming traversals are
