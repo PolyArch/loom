@@ -701,6 +701,7 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
   std::uint64_t solverCalls = 0;
   std::uint64_t assignmentOrdinal = 0;
   std::uint64_t lastActionCount = 0;
+  bool sawUnknownAssignment = false;
 
   const auto executedResult = [&](SpatialExactRepairResultKind kind,
                                   std::string detail = {}) {
@@ -717,11 +718,17 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             llvm::toString(solved.takeError()));
     solverCalls += solved->solverCalls;
-    if (solved->kind == detail::CpSatCanonicalResultKind::Infeasible)
+    if (solved->kind == detail::CpSatCanonicalResultKind::Infeasible) {
+      if (sawUnknownAssignment)
+        return executedResult(
+            SpatialExactRepairResultKind::UnknownBudgetExhausted,
+            "fixed-boundary attachment assignments were exhausted after at "
+            "least one route probe reached its work limit");
       return executedResult(
           SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary,
           "fixed-boundary attachment assignments were exhausted without an "
           "exact route closure");
+    }
     if (solved->kind ==
         detail::CpSatCanonicalResultKind::UnknownBudgetExhausted)
       return executedResult(
@@ -817,6 +824,7 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
         candidate, actions_, SpatialActionExecutionContext::FinalClosure);
     bool rejectAssignment = false;
     bool fixedTerminalCut = false;
+    bool routeWorkUnknown = false;
     routeCutLogicalNets_.clear();
     if (!probe) {
       std::string detail;
@@ -850,10 +858,10 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(std::move(unhandled)));
       if (transitionFailure &&
-          *transitionFailure == SpatialActionTransitionFailureKind::WorkLimit)
-        return executedResult(
-            SpatialExactRepairResultKind::UnknownBudgetExhausted,
-            std::move(detail));
+          *transitionFailure == SpatialActionTransitionFailureKind::WorkLimit) {
+        routeWorkUnknown = true;
+        sawUnknownAssignment = true;
+      }
       rejectAssignment = true;
     } else if (candidate.atomicCapacityOveruse() != 0 ||
                candidate.routeCapacityOveruse() != 0 ||
@@ -900,6 +908,7 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
           fields["capacity_witness_count"] = capacityWitnesses_.size();
           fields["solver_calls"] = solverCalls;
           fields["fixed_terminal_cut"] = fixedTerminalCut;
+          fields["route_work_unknown"] = routeWorkUnknown;
           fields["cut_logical_net_count"] = routeCutLogicalNets_.size();
         });
     if (!rejectAssignment)
