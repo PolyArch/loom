@@ -212,6 +212,8 @@ llvm::Error SpatialActionProbe::discard() {
       negotiatedRouting_ ? owner->routeCosts_->resetFromCandidate()
                          : owner->routeCosts_->synchronizeCandidateTraversals(
                                owner->routeCostTraversals_);
+  if (!synchronization && !negotiatedRouting_)
+    synchronization = owner->routeCosts_->synchronizeCandidateTags();
   owner->activeProbe_ = false;
   owner_ = nullptr;
   return synchronization;
@@ -1541,6 +1543,8 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
                               move.touchedRouteTraversals().end());
   if (llvm::Error error =
           routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_))
+    return restoreAfterFailure(move, std::move(error));
+  if (llvm::Error error = routeCosts_->synchronizeCandidateTags())
     return restoreAfterFailure(move, std::move(error));
 
   const bool semanticChange = move.hasSemanticChange();

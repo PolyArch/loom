@@ -49,6 +49,8 @@ llvm::StringRef spelling(Event event) {
     return "cut_analysis";
   case Event::TopologyQuality:
     return "topology_quality";
+  case Event::TagDomainPressure:
+    return "tag_domain_pressure";
   case Event::ArithmeticFailure:
     return "arithmetic_failure";
   case Event::MappingFailure:

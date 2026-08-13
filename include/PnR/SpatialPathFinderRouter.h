@@ -200,6 +200,9 @@ private:
   struct RoutingRegionState final {
     std::uint64_t unroutedObligationCount = 0;
     std::uint64_t routeCapacityOveruse = 0;
+    std::uint64_t tagResidentCapacityOveruse = 0;
+    std::uint64_t tagUnassignedCount = 0;
+    std::uint64_t tagConflictCount = 0;
   };
 
   llvm::Expected<NetProjection>
@@ -230,6 +233,8 @@ private:
   expandExactRegionalConflictClosure(const SpatialCandidateState &candidate,
                                      const SpatialRouteCostState &costs,
                                      std::uint64_t logicalNetLimit);
+  llvm::Expected<bool>
+  expandRoutingRelationClosure(std::uint64_t logicalNetLimit);
   void beginProjection();
 
   SpatialNetRouterScratch netRouter_;
@@ -241,6 +246,7 @@ private:
   std::vector<PnrIndex> touchedCapacities_;
   std::vector<PnrIndex> conflictCapacities_;
   std::vector<std::uint8_t> regionalCapacityMarks_;
+  std::vector<std::uint8_t> regionalTagDomainMarks_;
   std::vector<std::uint8_t> routingRegionNetMarks_;
   std::vector<PnrIndex> routingRegionNets_;
   std::vector<PnrIndex> constraintSweepNets_;

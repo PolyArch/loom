@@ -15,6 +15,11 @@
 
 namespace loom::pnr {
 
+struct SpatialTagDomainUse final {
+  PnrIndex domain = 0;
+  std::uint64_t segmentCount = 0;
+};
+
 /// Worker-local PathFinder cost projection over one exact Spatial candidate.
 /// Persistent references never enter this state. The candidate remains the
 /// sole owner of per-net active claims; this derived overlay borrows that view.
@@ -31,7 +36,13 @@ public:
                                llvm::ArrayRef<std::uint64_t> activeClaimBits);
   llvm::Error
   updateSelectedLogicalNetClaims(llvm::ArrayRef<std::uint64_t> claimBits);
+  llvm::Error updateSelectedLogicalNetTagUses(
+      const SpatialTagContinuityProjection &continuity);
   llvm::Error acceptSelectedLogicalNet();
+  llvm::Error
+  synchronizeTagProjection(const SpatialTagAssignmentSummary &summary,
+                           llvm::ArrayRef<PnrIndex> changedLogicalNets = {});
+  llvm::Error synchronizeCandidateTags();
   llvm::Error
   synchronizeCandidateTraversals(llvm::ArrayRef<PnrIndex> traversals);
   llvm::Error resetFromCandidate();
@@ -45,6 +56,18 @@ public:
   std::uint64_t workingCapacityUsageRaw(PnrIndex capacityDimension) const;
   RouteCost capacityOveruseCost(PnrIndex capacityDimension) const;
   bool hasCapacityOveruse() const;
+  bool hasTagPressureViolation() const;
+  bool arcHasTagPressure(PnrIndex arc) const;
+  bool logicalNetHasTagPressure(PnrIndex logicalNet) const;
+  RouteCost logicalNetTagPressure(PnrIndex logicalNet) const;
+  std::uint64_t logicalNetTagUnassignedCount(PnrIndex logicalNet) const;
+  llvm::ArrayRef<SpatialTagDomainUse>
+  logicalNetTagDomainUses(PnrIndex logicalNet) const;
+  std::uint64_t workingTagDomainUsage(PnrIndex domain) const;
+  std::uint64_t tagDomainEncodingCapacity(PnrIndex domain) const;
+  std::optional<std::uint64_t> tagDomainResidentCapacity(PnrIndex domain) const;
+  std::uint64_t tagDomainResidentOveruse(PnrIndex domain) const;
+  std::uint64_t tagDomainConflictCount(PnrIndex domain) const;
   bool isBoundTo(const SpatialCandidateState &candidate) const {
     return candidate_ == &candidate;
   }
@@ -77,6 +100,26 @@ private:
   std::uint64_t capacityUsageForCost(PnrIndex capacityDimension,
                                      bool stagedUsage) const;
   RouteCost claimOveruseForCost(PnrIndex claim, bool stagedClaims) const;
+  llvm::Expected<RouteCost> computeArcCost(PnrIndex arc, bool dynamicCost,
+                                           bool stagedClaims,
+                                           bool stagedTags) const;
+  llvm::Expected<RouteCost>
+  computeArcCost(PnrIndex arc, std::uint64_t presentPressure,
+                 llvm::ArrayRef<std::uint64_t> routeHistoryPressure,
+                 llvm::ArrayRef<std::uint64_t> residentHistoryPressure,
+                 llvm::ArrayRef<std::uint64_t> encodingHistoryPressure) const;
+  llvm::Expected<RouteCost>
+  computeTagDomainCost(PnrIndex domain, bool resident, bool dynamicCost,
+                       bool stagedTags, std::uint64_t presentPressure,
+                       std::uint64_t historyPressure) const;
+  llvm::Error
+  replaceSelectedTagUses(llvm::ArrayRef<SpatialTagDomainUse> replacement);
+  llvm::Error stageTagUses(llvm::ArrayRef<SpatialTagDomainUse> uses,
+                           bool restore);
+  llvm::Error rebuildTagProjectionFromCandidate(bool resetHistory);
+  llvm::Error recomputeAllArcCosts(bool resetTagHistory);
+  std::uint64_t tagUsageForCost(PnrIndex domain, bool stagedTags) const;
+  std::uint64_t encodingPressureRaw(PnrIndex domain, bool stagedTags) const;
   llvm::ArrayRef<std::uint64_t> logicalNetClaimBits(PnrIndex logicalNet) const;
 
   const SpatialCandidateState *candidate_ = nullptr;
@@ -98,17 +141,39 @@ private:
   std::vector<RouteCost> currentArcCosts_;
   std::vector<std::uint64_t> selectedLogicalNetClaimBits_;
 
+  std::vector<std::vector<SpatialTagDomainUse>> logicalNetTagUses_;
+  std::vector<std::uint64_t> logicalNetTagUnassignedCounts_;
+  std::vector<SpatialTagDomainUse> selectedLogicalNetTagUses_;
+  std::vector<std::uint64_t> workingTagDomainUsage_;
+  std::vector<std::uint64_t> tagDomainConflictCounts_;
+  std::vector<std::uint64_t> tagResidentHistoryPressure_;
+  std::vector<std::uint64_t> tagEncodingHistoryPressure_;
+  std::vector<RouteCost> tagResidentOveruseCosts_;
+  std::vector<RouteCost> tagEncodingPressureCosts_;
+  std::vector<PnrIndex> tagDomainArcOffsets_;
+  std::vector<PnrIndex> tagDomainArcs_;
+
   std::vector<std::uint64_t> capacityUpdateEpochs_;
   std::vector<std::uint64_t> claimUpdateEpochs_;
   std::vector<std::uint64_t> traversalUpdateEpochs_;
+  std::vector<std::uint64_t> arcUpdateEpochs_;
   std::vector<std::uint64_t> stagedCapacityUsageRaw_;
   std::vector<std::uint64_t> stagedHistoryPressure_;
+  std::vector<std::uint64_t> stagedTagResidentHistoryPressure_;
+  std::vector<std::uint64_t> stagedTagEncodingHistoryPressure_;
   std::vector<RouteCost> stagedCapacityOveruseCosts_;
   std::vector<RouteCost> stagedClaimOveruseCosts_;
   std::vector<RouteCost> stagedTraversalCosts_;
+  std::vector<std::uint64_t> tagDomainUpdateEpochs_;
+  std::vector<std::uint64_t> stagedTagDomainUsage_;
+  std::vector<RouteCost> stagedTagResidentOveruseCosts_;
+  std::vector<RouteCost> stagedTagEncodingPressureCosts_;
+  std::vector<RouteCost> stagedArcCosts_;
   std::vector<PnrIndex> affectedCapacities_;
   std::vector<PnrIndex> affectedClaims_;
   std::vector<PnrIndex> affectedTraversals_;
+  std::vector<PnrIndex> affectedTagDomains_;
+  std::vector<PnrIndex> affectedTagArcs_;
   std::uint64_t updateEpoch_ = 0;
 };
 

@@ -352,25 +352,49 @@ void loom::test::exerciseSpatialTagConstraintRelations(
     fail("tag equality relation did not constrain the selected value sets");
 
   const auto disjoint = buildConstraints("disjoint", true);
+  auto disjointResolved = buildSpatialPnrTestResolvedConfig();
+  disjointResolved.dse.objectiveCatalogs = resolvedBuiltinObjectiveCatalogs();
+  disjointResolved.dse.spatialPnr.objectiveSelection = {0, 2, {}};
+  disjointResolved.dse.spatialPnr.temporaryViolations.admitted.push_back(
+      ResolvedPnrViolationKind::TagUnassigned);
+  const auto disjointPnrConfig =
+      take(pnr::projectResolvedSpatialPnrConfigView(disjointResolved));
   auto disjointProblem = take(pnr::freezeSpatialPnrProblem(
-      dataflow, techMapping, fabric, pnrConfig, disjoint.view()));
+      dataflow, techMapping, fabric, disjointPnrConfig, disjoint.view()));
   pnr::SpatialPathFinderSeedWorkSummary disjointWork;
   auto disjointSeed = take(
       pnr::createCanonicalPathFinderSpatialSeed(disjointProblem, disjointWork));
+  requireSuccess(disjointSeed.candidate->verify());
+  if (disjointSeed.candidate->tagUnassignedCount() == 0)
+    fail("singleton Physical Tag domains satisfied a disjoint relation");
+  const std::uint64_t originalUnassigned =
+      disjointSeed.candidate->tagUnassignedCount();
+  auto disjointCosts =
+      take(pnr::SpatialRouteCostState::create(*disjointSeed.candidate));
+  std::uint64_t attributedUnassigned = 0;
+  for (pnr::PnrIndex logicalNet = 0; logicalNet < nets.size(); ++logicalNet)
+    attributedUnassigned +=
+        disjointCosts.logicalNetTagUnassignedCount(logicalNet);
+  if (attributedUnassigned != originalUnassigned ||
+      !disjointCosts.hasTagPressureViolation())
+    fail("PathFinder did not attribute unassigned Physical Tags to their "
+         "logical nets");
   pnr::SpatialGlobalRoutingClosureScratch closure;
   llvm::Error rejected = closure.run(*disjointSeed.candidate);
   if (!rejected)
     fail("singleton Physical Tag domains satisfied a disjoint relation");
-  bool observedUnassigned = false;
+  bool observedBoundedFailure = false;
   llvm::handleAllErrors(
       std::move(rejected),
-      [&](const pnr::SpatialGlobalRoutingClosureFailure &failure) {
-        observedUnassigned =
+      [&](const pnr::SpatialActionTransitionFailure &failure) {
+        observedBoundedFailure =
             failure.kind() ==
-            pnr::SpatialGlobalRoutingClosureFailureKind::TagUnassigned;
+            pnr::SpatialActionTransitionFailureKind::WorkLimit;
       });
-  if (!observedUnassigned)
-    fail("tag disjointness rejection lost its typed unassigned witness");
+  if (!observedBoundedFailure ||
+      disjointSeed.candidate->tagUnassignedCount() != originalUnassigned)
+    fail("tag disjointness rejection lost its bounded failure or mutated the "
+         "candidate");
 }
 
 loom::ResolvedConfig loom::test::buildSpatialPnrTestResolvedConfig() {

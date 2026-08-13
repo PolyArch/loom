@@ -820,6 +820,18 @@ llvm::Error SpatialMoveTransaction::ripUpWholeRoute(PnrIndex logicalNet) {
 
 llvm::Expected<SpatialCandidateRouteProjection>
 SpatialMoveTransaction::projectCurrentRoutes() const {
+  return projectCurrentRoutesImpl(nullptr);
+}
+
+llvm::Expected<SpatialCandidateRouteProjection>
+SpatialMoveTransaction::projectCurrentRoutes(
+    SpatialTagAssignmentSummary &tagSummary) const {
+  return projectCurrentRoutesImpl(&tagSummary);
+}
+
+llvm::Expected<SpatialCandidateRouteProjection>
+SpatialMoveTransaction::projectCurrentRoutesImpl(
+    SpatialTagAssignmentSummary *tagSummary) const {
   if (llvm::Error error = ensureCollecting())
     return std::move(error);
 
@@ -837,7 +849,7 @@ SpatialMoveTransaction::projectCurrentRoutes() const {
     }
     routes.push_back(route);
   }
-  return state_->projectVerifiedRoutes(routes);
+  return state_->projectVerifiedRoutes(routes, tagSummary);
 }
 
 llvm::Error SpatialMoveTransaction::validateAffectedState() const {

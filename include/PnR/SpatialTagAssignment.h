@@ -80,6 +80,12 @@ struct SpatialTagAssignmentSummary final {
   std::uint64_t unassignedCount = 0;
   std::uint64_t conflictCount = 0;
   std::uint64_t residentCapacityOveruse = 0;
+  std::vector<std::uint64_t> domainResidentCounts;
+  std::vector<std::uint64_t> domainConflictCounts;
+  std::vector<std::size_t> netDomainUseOffsets;
+  std::vector<PnrIndex> netDomainUseDomains;
+  std::vector<std::uint64_t> netDomainUseCounts;
+  std::vector<std::uint64_t> netUnassignedCounts;
 };
 
 /// Reusable transaction storage for route-local Physical Tag updates. The
@@ -126,6 +132,7 @@ public:
   std::uint64_t conflictCount() const;
   std::uint64_t domainConflictCount(PnrIndex domain) const;
   std::uint64_t residentCapacityOveruse() const;
+  std::uint64_t domainResidentCount(PnrIndex domain) const;
   std::uint64_t domainResidentCapacityOveruse(PnrIndex domain) const;
   bool domainValueConflicts(PnrIndex domain, const llvm::APInt &value) const;
 
@@ -137,7 +144,8 @@ private:
   create(const FrozenSpatialPnrProblem &problem,
          llvm::ArrayRef<RouteTreeStateHandle> routes);
   llvm::Expected<SpatialTagAssignmentSummary>
-  projectVerifiedRoutes(llvm::ArrayRef<const RouteTreeState *> routes) const;
+  projectVerifiedRoutes(llvm::ArrayRef<const RouteTreeState *> routes,
+                        bool includeDomainDetails = false) const;
   llvm::Error verify(llvm::ArrayRef<RouteTreeStateHandle> routes) const;
   llvm::Error stageRouteUpdates(
       llvm::ArrayRef<RouteTreeStateHandle> routes,

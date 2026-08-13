@@ -721,7 +721,8 @@ SpatialCandidateState::routeTree(PnrIndex logicalNet) const {
 
 llvm::Expected<SpatialCandidateRouteProjection>
 SpatialCandidateState::projectVerifiedRoutes(
-    llvm::ArrayRef<const RouteTreeState *> routes) const {
+    llvm::ArrayRef<const RouteTreeState *> routes,
+    SpatialTagAssignmentSummary *tagSummary) const {
   if (routes.size() != routeTrees_.size())
     return candidateError("projected route count does not match the candidate");
   std::uint64_t unrouted = 0;
@@ -752,9 +753,16 @@ SpatialCandidateState::projectVerifiedRoutes(
       SpatialRouteResourceState::projectVerifiedRoutes(*problem_, routes);
   if (!routeResources)
     return routeResources.takeError();
-  auto tags = tagAssignments_.projectVerifiedRoutes(routes);
+  auto tags =
+      tagAssignments_.projectVerifiedRoutes(routes, tagSummary != nullptr);
   if (!tags)
     return tags.takeError();
+  const std::uint64_t tagResidentCapacityOveruse =
+      tags->residentCapacityOveruse;
+  const std::uint64_t tagUnassignedCount = tags->unassignedCount;
+  const std::uint64_t tagConflictCount = tags->conflictCount;
+  if (tagSummary)
+    *tagSummary = std::move(*tags);
   auto handshakeOwner = std::shared_ptr<const FrozenSpatialHandshakeIndex>(
       problem_, &problem_->handshake());
   auto handshakeAcyclic = projectHandshakeSelections(
@@ -781,9 +789,9 @@ SpatialCandidateState::projectVerifiedRoutes(
   return SpatialCandidateRouteProjection{
       unrouted,
       routeResources->totalCapacityOveruseRaw(),
-      tags->residentCapacityOveruse,
-      tags->unassignedCount,
-      tags->conflictCount,
+      tagResidentCapacityOveruse,
+      tagUnassignedCount,
+      tagConflictCount,
       hardProgressViolation,
       routeResources->totalSelectedTraversalClaim(),
       routeTerminalsCompatible,

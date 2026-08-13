@@ -281,6 +281,15 @@ SpatialNetRouterScratch::collectCurrentClaims(const RouteTreeState &tree) {
   return llvm::Error::success();
 }
 
+llvm::Error
+SpatialNetRouterScratch::updateCurrentTagUses(const RouteTreeState &tree,
+                                              SpatialRouteCostState &costs) {
+  if (llvm::Error error = detail::rebuildSpatialTagContinuityUnchecked(
+          tree, tagContinuity_, tagContinuityScratch_))
+    return error;
+  return costs.updateSelectedLogicalNetTagUses(tagContinuity_);
+}
+
 void SpatialNetRouterScratch::beginEndpointMarks() {
   ++endpointMarkEpoch_;
   if (endpointMarkEpoch_ == 0) {
@@ -453,6 +462,9 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
   if (llvm::Error error =
           costs.updateSelectedLogicalNetClaims(prospectiveClaimBits_))
     return std::move(error);
+  if (llvm::Error error =
+          updateCurrentTagUses(candidate.routeTree(logicalNet), costs))
+    return std::move(error);
 
   PnrIndex unresolvedCount = 0;
   for (PnrIndex sink = 0; sink < net.sinkCount; ++sink)
@@ -595,6 +607,9 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
     if (llvm::Error error =
             costs.updateSelectedLogicalNetClaims(prospectiveClaimBits_))
       return std::move(error);
+    if (llvm::Error error =
+            updateCurrentTagUses(candidate.routeTree(logicalNet), costs))
+      return std::move(error);
     unresolvedSinks_[sink] = 0;
     --unresolvedCount;
     totalCost = *nextTotal;
@@ -615,6 +630,8 @@ std::size_t SpatialNetRouterScratch::retainedStorageBytes() const {
          retainedBytes(bufferedTraversalBits_) +
          retainedBytes(forbiddenEndpointBits_) + retainedBytes(endpointMarks_) +
          retainedBytes(subtreeWorklist_) +
+         tagContinuity_.retainedStorageBytes() +
+         tagContinuityScratch_.retainedStorageBytes() +
          private_->routeConstraints.retainedStorageBytes() +
          private_->routeTreePruning.retainedStorageBytes();
 }

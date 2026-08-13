@@ -32,6 +32,7 @@ add_mlir_library(LoomPnR
   SpatialNetRouter.cpp
   SpatialPnrCapacityIndex.cpp
   SpatialPathFinderRouter.cpp
+  SpatialPathFinderRoutingRegion.cpp
   SpatialPnrHandshakeIndex.cpp
   SpatialPnrMemoryIndex.cpp
   SpatialPnrPortIndex.cpp
@@ -47,6 +48,7 @@ add_mlir_library(LoomPnR
   SpatialTagAssignment.cpp
   SpatialTagConstraintModel.cpp
   SpatialTagContinuity.cpp
+  SpatialTagPressureDiagnostic.cpp
   System/SystemPnrGraphDomain.cpp
   System/SystemPnrSearchDomain.cpp
   System/SystemPnrServiceDomain.cpp

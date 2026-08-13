@@ -36,6 +36,11 @@ public:
   llvm::ArrayRef<PnrIndex> classMembers(PnrIndex equalityClass) const;
   llvm::ArrayRef<PnrIndex> classDisjointGroups(PnrIndex equalityClass) const;
   llvm::ArrayRef<PnrIndex> disjointGroupMembers(PnrIndex group) const;
+  bool netHasRelations(PnrIndex logicalNet) const {
+    const PnrIndex equalityClass = classOfNet(logicalNet);
+    return classMembers(equalityClass).size() > 1 ||
+           !classDisjointGroups(equalityClass).empty();
+  }
 
 private:
   std::vector<PnrIndex> netClasses_;

@@ -266,6 +266,9 @@ public:
   std::uint64_t tagResidentCapacityOveruse() const {
     return tagAssignments_.residentCapacityOveruse();
   }
+  std::uint64_t tagDomainResidentCount(PnrIndex domain) const {
+    return tagAssignments_.domainResidentCount(domain);
+  }
   std::uint64_t tagDomainResidentCapacityOveruse(PnrIndex domain) const {
     return tagAssignments_.domainResidentCapacityOveruse(domain);
   }
@@ -360,7 +363,8 @@ private:
   std::uint32_t
   terminalPayloadWidth(FrozenSpatialTerminalBinding binding) const;
   llvm::Expected<SpatialCandidateRouteProjection> projectVerifiedRoutes(
-      llvm::ArrayRef<const RouteTreeState *> routeTrees) const;
+      llvm::ArrayRef<const RouteTreeState *> routeTrees,
+      SpatialTagAssignmentSummary *tagSummary = nullptr) const;
 
   FrozenSpatialPnrProblemHandle problem_;
   std::vector<SpatialComputeBindingSelection> computeBindings_;
@@ -426,6 +430,8 @@ public:
                                 PnrIndex subtreeRootEndpoint);
   llvm::Error ripUpWholeRoute(PnrIndex logicalNet);
   llvm::Expected<SpatialCandidateRouteProjection> projectCurrentRoutes() const;
+  llvm::Expected<SpatialCandidateRouteProjection>
+  projectCurrentRoutes(SpatialTagAssignmentSummary &tagSummary) const;
 
   llvm::Expected<bool> close();
   llvm::ArrayRef<PnrIndex> cycleWitness() const;
@@ -438,6 +444,8 @@ private:
   SpatialMoveTransaction(SpatialCandidateStateHandle state,
                          SpatialCandidateScratch &scratch);
 
+  llvm::Expected<SpatialCandidateRouteProjection>
+  projectCurrentRoutesImpl(SpatialTagAssignmentSummary *tagSummary) const;
   llvm::Error ensureCollecting() const;
   llvm::Expected<RouteTreeTransaction *> routeTransaction(PnrIndex logicalNet);
   void recordCompute(PnrIndex realization);

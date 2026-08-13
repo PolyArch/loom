@@ -887,6 +887,12 @@ std::uint64_t SpatialTagAssignmentState::residentCapacityOveruse() const {
   return storage_->residentCapacityOveruse;
 }
 
+std::uint64_t
+SpatialTagAssignmentState::domainResidentCount(PnrIndex domain) const {
+  assert(domain < storage_->residentCounts.size());
+  return storage_->residentCounts[domain];
+}
+
 std::uint64_t SpatialTagAssignmentState::domainResidentCapacityOveruse(
     PnrIndex domain) const {
   assert(domain < storage_->residentCounts.size());
@@ -917,14 +923,52 @@ bool SpatialTagAssignmentState::domainValueConflicts(
 
 llvm::Expected<SpatialTagAssignmentSummary>
 SpatialTagAssignmentState::projectVerifiedRoutes(
-    llvm::ArrayRef<const RouteTreeState *> routes) const {
+    llvm::ArrayRef<const RouteTreeState *> routes,
+    bool includeDomainDetails) const {
   auto projected = buildStorage(*storage_->problem, routes, &storage_->nets,
                                 RouteReadMode::AlreadyVerified);
   if (!projected)
     return projected.takeError();
-  return SpatialTagAssignmentSummary{(*projected)->unassignedCount,
-                                     (*projected)->conflictCount,
-                                     (*projected)->residentCapacityOveruse};
+  SpatialTagAssignmentSummary summary;
+  summary.unassignedCount = (*projected)->unassignedCount;
+  summary.conflictCount = (*projected)->conflictCount;
+  summary.residentCapacityOveruse = (*projected)->residentCapacityOveruse;
+  if (!includeDomainDetails)
+    return summary;
+  summary.domainResidentCounts.reserve((*projected)->residentCounts.size());
+  summary.domainConflictCounts.reserve((*projected)->occupancy.size());
+  for (PnrIndex domain = 0; domain < (*projected)->residentCounts.size();
+       ++domain) {
+    summary.domainResidentCounts.push_back(
+        (*projected)->residentCounts[domain]);
+    std::uint64_t conflicts = 0;
+    for (const auto &entry : (*projected)->occupancy[domain])
+      conflicts += entry.second - 1;
+    summary.domainConflictCounts.push_back(conflicts);
+  }
+
+  summary.netDomainUseOffsets.reserve((*projected)->nets.size() + 1);
+  summary.netUnassignedCounts.reserve((*projected)->nets.size());
+  summary.netDomainUseOffsets.push_back(0);
+  std::vector<PnrIndex> localDomains;
+  for (const TagNetState &net : (*projected)->nets) {
+    summary.netUnassignedCounts.push_back(llvm::count_if(
+        net.values, [](const auto &value) { return !value.has_value(); }));
+    localDomains.assign(net.continuity.segmentDomains().begin(),
+                        net.continuity.segmentDomains().end());
+    llvm::sort(localDomains);
+    for (std::size_t begin = 0; begin < localDomains.size();) {
+      std::size_t end = begin + 1;
+      while (end < localDomains.size() &&
+             localDomains[end] == localDomains[begin])
+        ++end;
+      summary.netDomainUseDomains.push_back(localDomains[begin]);
+      summary.netDomainUseCounts.push_back(end - begin);
+      begin = end;
+    }
+    summary.netDomainUseOffsets.push_back(summary.netDomainUseDomains.size());
+  }
+  return summary;
 }
 
 llvm::Error SpatialTagAssignmentState::stageRouteUpdates(

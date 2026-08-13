@@ -33,6 +33,7 @@ enum class Event : std::uint8_t {
   NetRoute,
   CutAnalysis,
   TopologyQuality,
+  TagDomainPressure,
   ArithmeticFailure,
   MappingFailure,
 };

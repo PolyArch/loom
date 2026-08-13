@@ -63,6 +63,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <utility>
@@ -855,15 +856,41 @@ void completeCandidateRoundTrip(
     selectLegalTemporalBinding(*candidate, candidateScratch, boundaryWrapped);
     if (forceTagConflict) {
       auto costs = take(loom::pnr::SpatialRouteCostState::create(*candidate));
-      loom::pnr::SpatialPathFinderRouterScratch router;
+      loom::pnr::SpatialNetRouterScratch router;
       requireSuccess(router.prepare(*problem));
-      take(router.routeToClosure(
-          *candidate, candidateScratch, costs,
-          {pnrConfig.policy().search.routing.endpointExpansionLimit,
-           pnrConfig.policy().search.routing.negotiationIterationLimit,
-           pnrConfig.policy().search.routing.noProgressIterationLimit,
-           pnrConfig.policy().search.routing.noProgressTrendWindow},
-          {}));
+      std::vector<loom::pnr::PnrIndex> logicalNets(
+          problem->transfers().logicalNets().size());
+      std::iota(logicalNets.begin(), logicalNets.end(), 0);
+      requireSuccess(router.beginConstraintSweep(logicalNets));
+      auto move = take(candidate->beginMove(candidateScratch));
+      for (loom::pnr::PnrIndex logicalNet : logicalNets) {
+        requireSuccess(costs.selectLogicalNet(logicalNet));
+        take(router.routeWholeNet(
+            move, *candidate, costs, logicalNet,
+            pnrConfig.policy().search.routing.endpointExpansionLimit));
+        requireSuccess(costs.acceptSelectedLogicalNet());
+        requireSuccess(router.finishConstraintNet(logicalNet));
+      }
+      if (!take(move.close()))
+        fail("conflicting tag fixture closed a selected handshake cycle");
+      requireSuccess(move.commit());
+      requireSuccess(costs.resetFromCandidate());
+      if (candidate->tagConflictCount() == 0)
+        fail("conflicting tag fixture did not construct a collision");
+      if (!costs.hasTagPressureViolation())
+        fail("PathFinder cost state ignored a committed tag collision");
+      const std::vector<loom::pnr::RouteCost> baselineTagCosts(
+          costs.currentArcCosts().begin(), costs.currentArcCosts().end());
+      requireSuccess(costs.advancePathFinderIteration());
+      if (!llvm::any_of(
+              llvm::zip_equal(baselineTagCosts, costs.currentArcCosts()),
+              [](const auto &entry) {
+                return std::get<1>(entry) > std::get<0>(entry);
+              }))
+        fail("PathFinder did not raise cost around a conflicting tag domain");
+      requireSuccess(costs.resetFromCandidate());
+      if (!llvm::equal(baselineTagCosts, costs.currentArcCosts()))
+        fail("PathFinder reset retained tag-domain history pressure");
     }
   } else {
     loom::pnr::SpatialPathFinderSeedWorkSummary firstWork;
@@ -903,16 +930,16 @@ void completeCandidateRoundTrip(
     llvm::Error rejectedClosure = globalRoutingClosure.run(*candidate);
     if (!rejectedClosure)
       fail("global routing closure accepted conflicting Physical Tags");
-    bool observedTagConflict = false;
+    bool observedBoundedFailure = false;
     llvm::handleAllErrors(
         std::move(rejectedClosure),
-        [&](const loom::pnr::SpatialGlobalRoutingClosureFailure &failure) {
-          observedTagConflict =
+        [&](const loom::pnr::SpatialActionTransitionFailure &failure) {
+          observedBoundedFailure =
               failure.kind() ==
-              loom::pnr::SpatialGlobalRoutingClosureFailureKind::TagConflict;
+              loom::pnr::SpatialActionTransitionFailureKind::WorkLimit;
         });
-    if (!observedTagConflict)
-      fail("global routing closure lost its typed TagConflict witness");
+    if (!observedBoundedFailure)
+      fail("global routing closure lost its bounded tag-conflict failure");
     if (candidate->totalSelectedTraversalClaim() != selectedTraversalClaim ||
         candidate->unroutedObligationCount() != unroutedObligations ||
         candidate->tagConflictCount() != tagConflicts)

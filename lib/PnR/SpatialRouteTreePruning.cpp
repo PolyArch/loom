@@ -5,6 +5,7 @@
 #include "PnR/SpatialRouteCostState.h"
 #include "SpatialProgressAnalysis.h"
 #include "SpatialRouteConstraintModel.h"
+#include "SpatialTagConstraintModel.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -77,6 +78,15 @@ bool SpatialRouteTreePruningScratch::traversalOverused(
       break;
     }
   }
+  if (!traversalOveruse_[traversal])
+    for (PnrIndex arc : routing.traversalArcs().slice(
+             routing.traversalArcOffsets()[traversal],
+             routing.traversalArcOffsets()[traversal + 1] -
+                 routing.traversalArcOffsets()[traversal]))
+      if (costs.arcHasTagPressure(arc)) {
+        traversalOveruse_[traversal] = 1;
+        break;
+      }
   return traversalOveruse_[traversal] != 0;
 }
 
@@ -96,8 +106,14 @@ SpatialRouteTreePruningScratch::project(const SpatialCandidateState &candidate,
   const FrozenSpatialLogicalNet &net =
       candidate.problem().transfers().logicalNets()[logicalNet];
   const RouteTreeState &tree = candidate.routeTree(logicalNet);
-  if (tree.isUnrouted() || !costs.hasCapacityOveruse() ||
-      !candidate.problem().routeConstraints().netRelations(logicalNet).empty())
+  if (tree.isUnrouted() ||
+      (!costs.hasCapacityOveruse() && !costs.hasTagPressureViolation()) ||
+      !candidate.problem()
+           .routeConstraints()
+           .netRelations(logicalNet)
+           .empty() ||
+      candidate.problem().tagConstraints().netHasRelations(logicalNet) ||
+      costs.logicalNetTagUnassignedCount(logicalNet) != 0)
     return SpatialNegotiatedRoutePlan{SpatialNegotiatedRouteScope::WholeNet,
                                       {}};
   if (tree.sourceEndpoint() != candidate.logicalNetSourceEndpoint(logicalNet))

@@ -3,6 +3,7 @@
 
 #include "PnR/EndpointRouter.h"
 #include "PnR/SpatialRouteCostState.h"
+#include "PnR/SpatialTagContinuity.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -101,6 +102,8 @@ private:
   llvm::Error addPathClaims(const FrozenSpatialRoutingGraph &routing,
                             llvm::ArrayRef<PnrIndex> forwardArcs);
   llvm::Error collectCurrentClaims(const RouteTreeState &tree);
+  llvm::Error updateCurrentTagUses(const RouteTreeState &tree,
+                                   SpatialRouteCostState &costs);
   llvm::Expected<RouteCost>
   routeSelectedSinks(SpatialMoveTransaction &move,
                      const SpatialCandidateState &candidate,
@@ -123,6 +126,8 @@ private:
   std::vector<std::uint64_t> forbiddenEndpointBits_;
   std::vector<std::uint64_t> endpointMarks_;
   std::vector<PnrIndex> subtreeWorklist_;
+  SpatialTagContinuityProjection tagContinuity_;
+  SpatialTagContinuityScratch tagContinuityScratch_;
   std::uint64_t endpointMarkEpoch_ = 0;
   std::unique_ptr<detail::SpatialNetRouterPrivate> private_;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;

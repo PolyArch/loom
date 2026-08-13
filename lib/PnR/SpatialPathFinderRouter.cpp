@@ -3,7 +3,7 @@
 #include "Common/MappingDebugLog.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "PnR/MappingObjective.h"
-#include "SpatialRouteConstraintModel.h"
+#include "SpatialTagPressureDiagnostic.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -243,6 +243,8 @@ llvm::Error SpatialPathFinderRouterScratch::prepare(
   conflictCapacities_.clear();
   conflictCapacities_.reserve(capacityCount);
   regionalCapacityMarks_.assign(capacityCount, 0);
+  regionalTagDomainMarks_.assign(
+      problem.routing().tagContinuity().matchDomains().size(), 0);
   routingRegionNetMarks_.assign(logicalNetCount, 0);
   routingRegionNets_.clear();
   routingRegionNets_.reserve(logicalNetCount);
@@ -421,9 +423,13 @@ llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
   }
   if (sinkPath + 1 != capturedSinkPathOffsets_.size())
     return pathFinderError("captured route path domain has trailing entries");
-  auto restoredProjection = move.projectCurrentRoutes();
+  SpatialTagAssignmentSummary restoredTagSummary;
+  auto restoredProjection = move.projectCurrentRoutes(restoredTagSummary);
   if (!restoredProjection)
     return restoredProjection.takeError();
+  if (llvm::Error error =
+          costs.synchronizeTagProjection(restoredTagSummary, logicalNets))
+    return error;
   auto restored =
       candidate.problem().objectiveProgram().evaluateSpatialProjection(
           candidate, *restoredProjection);
@@ -930,11 +936,18 @@ SpatialPathFinderRouterScratch::projectRoutingRegion(
   const auto &routing = problem.routing();
   const auto &resources = problem.resources();
   std::fill(regionalCapacityMarks_.begin(), regionalCapacityMarks_.end(), 0);
+  std::fill(regionalTagDomainMarks_.begin(), regionalTagDomainMarks_.end(), 0);
 
   RoutingRegionState projection;
   const auto projectNet = [&](PnrIndex logicalNet) -> llvm::Error {
     if (logicalNet >= problem.transfers().logicalNets().size())
       return pathFinderError("routing region contains a foreign logical net");
+    const std::uint64_t unassigned =
+        costs.logicalNetTagUnassignedCount(logicalNet);
+    if (unassigned > std::numeric_limits<std::uint64_t>::max() -
+                         projection.tagUnassignedCount)
+      return pathFinderError("regional unassigned tag count overflows u64");
+    projection.tagUnassignedCount += unassigned;
     const RouteTreeState &tree = candidate.routeTree(logicalNet);
     if (tree.isUnrouted()) {
       const std::uint64_t sinkCount =
@@ -967,11 +980,19 @@ SpatialPathFinderRouterScratch::projectRoutingRegion(
         regionalCapacityMarks_[capacity] = 1;
       }
     }
+    for (const SpatialTagDomainUse &use :
+         costs.logicalNetTagDomainUses(logicalNet)) {
+      if (use.domain >= regionalTagDomainMarks_.size())
+        return pathFinderError("regional tag domain is out of range");
+      regionalTagDomainMarks_[use.domain] = 1;
+    }
     return llvm::Error::success();
   };
 
   if (logicalNets.empty()) {
     std::fill(regionalCapacityMarks_.begin(), regionalCapacityMarks_.end(), 1);
+    std::fill(regionalTagDomainMarks_.begin(), regionalTagDomainMarks_.end(),
+              1);
     for (PnrIndex logicalNet = 0;
          logicalNet < problem.transfers().logicalNets().size(); ++logicalNet)
       if (llvm::Error error = projectNet(logicalNet))
@@ -997,79 +1018,20 @@ SpatialPathFinderRouterScratch::projectRoutingRegion(
       return pathFinderError("regional route-capacity overuse overflows u64");
     projection.routeCapacityOveruse += overuse;
   }
-  return projection;
-}
-
-llvm::Expected<bool>
-SpatialPathFinderRouterScratch::expandExactRegionalConflictClosure(
-    const SpatialCandidateState &candidate, const SpatialRouteCostState &costs,
-    std::uint64_t logicalNetLimit) {
-  if (!preparedProblem_)
-    return pathFinderError("scratch is not prepared");
-  const FrozenSpatialRoutingGraph &routing = preparedProblem_->routing();
-  const FrozenSpatialResourceIndex &resources = preparedProblem_->resources();
-  bool expanded = false;
-  for (PnrIndex logicalNet = 0;
-       logicalNet < preparedProblem_->transfers().logicalNets().size();
-       ++logicalNet) {
-    bool contributes = false;
-    for (const RouteTreeNode &node :
-         candidate.routeTree(logicalNet).nodeStorage()) {
-      if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
-        continue;
-      if (node.parentArc >= routing.routingArcs().size())
-        return pathFinderError(
-            "conflict closure RouteTree arc is out of range");
-      const PnrIndex traversal =
-          routing.routingArcs()[node.parentArc].traversal;
-      if (traversal >= routing.traversals().size())
-        return pathFinderError(
-            "conflict closure RouteTree traversal is out of range");
-      const FrozenSpatialTraversal &record = routing.traversals()[traversal];
-      for (PnrIndex claim : routing.traversalClaimKeys().slice(
-               record.routeClaimOffset, record.routeClaimCount)) {
-        if (claim >= routing.routeClaims().size())
-          return pathFinderError(
-              "conflict closure route claim is out of range");
-        const PnrIndex capacity =
-            routing.routeClaims()[claim].capacityDimension;
-        if (capacity >= regionalCapacityMarks_.size() ||
-            capacity >= resources.capacityDimensions().size())
-          return pathFinderError("conflict closure capacity is out of range");
-        if (regionalCapacityMarks_[capacity] &&
-            costs.workingCapacityUsageRaw(capacity) >
-                resources.capacityDimensions()[capacity].capacity) {
-          contributes = true;
-          break;
-        }
-      }
-      if (contributes)
-        break;
-    }
-    if (!contributes)
+  for (PnrIndex domain = 0; domain < regionalTagDomainMarks_.size(); ++domain) {
+    if (!regionalTagDomainMarks_[domain])
       continue;
-    for (PnrIndex member :
-         preparedProblem_->routeConstraints().equalityClosure(logicalNet)) {
-      if (member >= routingRegionNetMarks_.size())
-        return pathFinderError(
-            "conflict closure contains a foreign logical net");
-      if (routingRegionNetMarks_[member])
-        continue;
-      routingRegionNetMarks_[member] = 1;
-      routingRegionNets_.push_back(member);
-      expanded = true;
-      if (routingRegionNets_.size() > logicalNetLimit)
-        return llvm::make_error<SpatialPathFinderClosureFailure>(
-            SpatialPathFinderClosureFailure::Kind::RegionalLimit,
-            "Spatial PathFinder conflict closure exceeds its regional "
-            "logical-net limit",
-            SpatialFixedTerminalCutCertificate{}, 0, 0,
-            routingRegionNets_.size(), logicalNetLimit);
-    }
+    const std::uint64_t resident = costs.tagDomainResidentOveruse(domain);
+    const std::uint64_t conflicts = costs.tagDomainConflictCount(domain);
+    if (resident > std::numeric_limits<std::uint64_t>::max() -
+                       projection.tagResidentCapacityOveruse ||
+        conflicts > std::numeric_limits<std::uint64_t>::max() -
+                        projection.tagConflictCount)
+      return pathFinderError("regional tag pressure overflows u64");
+    projection.tagResidentCapacityOveruse += resident;
+    projection.tagConflictCount += conflicts;
   }
-  if (expanded)
-    llvm::sort(routingRegionNets_);
-  return expanded;
+  return projection;
 }
 
 void SpatialPathFinderRouterScratch::beginProjection() {
@@ -1140,6 +1102,14 @@ SpatialPathFinderRouterScratch::projectLogicalNet(
     if (!term)
       return term.takeError();
     auto next = accumulateRouteCost(conflictPressure, *term);
+    if (!next)
+      return next.takeError();
+    conflictPressure = *next;
+  }
+  if (costs.logicalNetHasTagPressure(logicalNet)) {
+    contributesToViolation = true;
+    auto next = accumulateRouteCost(conflictPressure,
+                                    costs.logicalNetTagPressure(logicalNet));
     if (!next)
       return next.takeError();
     conflictPressure = *next;
@@ -1295,14 +1265,25 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     return pathFinderError(
         "full-design routing cannot carry a regional logical-net limit");
   }
+  if (regionalRouting) {
+    auto expanded = expandRoutingRelationClosure(
+        closureRequirement == SpatialRoutingClosureRequirement::ExactRegional
+            ? exactRegionalLogicalNetLimit
+            : 0);
+    if (!expanded)
+      return expanded.takeError();
+  }
   const auto activeLogicalNets = [&]() -> llvm::ArrayRef<PnrIndex> {
     return regionalRouting ? llvm::ArrayRef<PnrIndex>(routingRegionNets_)
                            : llvm::ArrayRef<PnrIndex>{};
   };
 
-  auto initialProjection = move.projectCurrentRoutes();
+  SpatialTagAssignmentSummary initialTagSummary;
+  auto initialProjection = move.projectCurrentRoutes(initialTagSummary);
   if (!initialProjection)
     return initialProjection.takeError();
+  if (llvm::Error error = costs.synchronizeTagProjection(initialTagSummary))
+    return std::move(error);
   auto initialRegion =
       projectRoutingRegion(candidate, costs, activeLogicalNets());
   if (!initialRegion)
@@ -1315,7 +1296,10 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
   if (initialProjection->routeTerminalsCompatible &&
       initialProjection->selectedHandshakeAcyclic &&
       initialRegion->unroutedObligationCount == 0 &&
-      initialRegion->routeCapacityOveruse == 0)
+      initialRegion->routeCapacityOveruse == 0 &&
+      initialRegion->tagResidentCapacityOveruse == 0 &&
+      initialRegion->tagUnassignedCount == 0 &&
+      initialRegion->tagConflictCount == 0)
     return SpatialPathFinderClosureResult{0, true};
 
   std::optional<dse::ObjectiveVector> bestRankObjective;
@@ -1505,9 +1489,13 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
     }
 
     const std::uint64_t completedIterations = iteration + 1;
-    auto projection = move.projectCurrentRoutes();
+    SpatialTagAssignmentSummary tagSummary;
+    auto projection = move.projectCurrentRoutes(tagSummary);
     if (!projection)
       return projection.takeError();
+    if (llvm::Error error =
+            costs.synchronizeTagProjection(tagSummary, activeLogicalNets()))
+      return std::move(error);
     auto region = projectRoutingRegion(candidate, costs, activeLogicalNets());
     if (!region)
       return region.takeError();
@@ -1515,18 +1503,31 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         candidate, *projection, ResolvedPnrViolationKind::CapacityOveruse);
     if (!capacityOveruse)
       return capacityOveruse.takeError();
-    const bool hasCapacityOveruse = region->routeCapacityOveruse != 0;
+    const bool hasRouteCapacityOveruse = region->routeCapacityOveruse != 0;
+    const bool hasTagCapacityOveruse = region->tagResidentCapacityOveruse != 0;
+    const bool hasTagEncodingViolation =
+        region->tagUnassignedCount != 0 || region->tagConflictCount != 0;
+    const bool hasCapacityOveruse = hasRouteCapacityOveruse ||
+                                    hasTagCapacityOveruse ||
+                                    hasTagEncodingViolation;
     if (logicalNets.empty() &&
-        hasCapacityOveruse != (projection->routeCapacityOveruse != 0))
+        hasRouteCapacityOveruse != (projection->routeCapacityOveruse != 0))
       return pathFinderError(
           "working route capacity disagrees with the provisional RouteTrees");
+    if (logicalNets.empty() &&
+        region->tagUnassignedCount != projection->tagUnassignedCount)
+      return pathFinderError(
+          "working unassigned tags disagree with the provisional RouteTrees");
     CapacityConflictAnalysis conflictAnalysis;
-    if (hasCapacityOveruse) {
+    if (hasRouteCapacityOveruse) {
       auto analyzed = analyzeCapacityConflicts(candidate, costs, iteration,
                                                sessionIteration);
       if (!analyzed)
         return analyzed.takeError();
       conflictAnalysis = *analyzed;
+    }
+    if (hasRouteCapacityOveruse || hasTagCapacityOveruse ||
+        hasTagEncodingViolation) {
       if (regionalRouting &&
           closureRequirement ==
               SpatialRoutingClosureRequirement::ExactRegional) {
@@ -1564,7 +1565,10 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         }
       }
     }
-    const std::uint64_t capacityConflicts = conflictAnalysis.conflictCount;
+    const std::uint64_t tagPressureEvents = reportSpatialTagDomainPressure(
+        candidate, costs, tagSummary, iteration, sessionIteration);
+    const std::uint64_t capacityConflicts =
+        conflictAnalysis.conflictCount + tagPressureEvents;
     debugStatistics.capacityConflicts += capacityConflicts;
     bool selectedRankImproved = false;
     bool selectedRankImprovedFromInitial = false;
@@ -1671,7 +1675,12 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
           fields["capacity_conflict_events"] =
               conflictAnalysis.diagnosticConflictCount;
           fields["capacity_conflict_events_omitted"] =
-              capacityConflicts - conflictAnalysis.diagnosticConflictCount;
+              conflictAnalysis.conflictCount -
+              conflictAnalysis.diagnosticConflictCount;
+          fields["tag_domain_pressure_events"] = tagPressureEvents;
+          fields["route_capacity_closed"] = !hasRouteCapacityOveruse;
+          fields["tag_capacity_closed"] = !hasTagCapacityOveruse;
+          fields["tag_encoding_closed"] = !hasTagEncodingViolation;
           fields["capacity_closed"] = !hasCapacityOveruse;
           fields["mapping_closed"] = mappingViolationsZero;
           fields["route_terminals_compatible"] =
@@ -1685,6 +1694,10 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
               region->unroutedObligationCount;
           fields["regional_route_capacity_overuse"] =
               region->routeCapacityOveruse;
+          fields["regional_tag_resident_capacity_overuse"] =
+              region->tagResidentCapacityOveruse;
+          fields["regional_tag_unassigned"] = region->tagUnassignedCount;
+          fields["regional_tag_conflicts"] = region->tagConflictCount;
           fields["tag_resident_capacity_overuse"] =
               projection->tagResidentCapacityOveruse;
           fields["tag_unassigned"] = projection->tagUnassignedCount;
@@ -1900,6 +1913,7 @@ std::size_t SpatialPathFinderRouterScratch::retainedStorageBytes() const {
          retainedBytes(touchedCapacities_) +
          retainedBytes(conflictCapacities_) +
          retainedBytes(regionalCapacityMarks_) +
+         retainedBytes(regionalTagDomainMarks_) +
          retainedBytes(routingRegionNetMarks_) +
          retainedBytes(routingRegionNets_) +
          retainedBytes(constraintSweepNets_) +
