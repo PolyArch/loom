@@ -97,6 +97,12 @@ void emit(Level minimum, Stage stage, Event event,
 
 void MappingRunStatistics::emit(Stage stage,
                                 llvm::StringRef closureStatus) const {
+  emit(stage, closureStatus, {});
+}
+
+void MappingRunStatistics::emit(
+    Stage stage, llvm::StringRef closureStatus,
+    llvm::function_ref<void(llvm::json::Object &)> buildFields) const {
   mapping_debug::emit(Level::Summary, stage, Event::Statistics,
                       [&](llvm::json::Object &fields) {
                         fields["candidate_rows"] = candidateRows;
@@ -111,6 +117,8 @@ void MappingRunStatistics::emit(Stage stage,
                         fields["capacity_conflicts"] = capacityConflicts;
                         fields["arithmetic_failures"] = arithmeticFailures;
                         fields["closure_status"] = closureStatus;
+                        if (buildFields)
+                          buildFields(fields);
                       });
 }
 

@@ -1339,10 +1339,18 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
   const std::uint64_t initialEndpointExpansions =
       netRouter_.endpointExpansionCount();
   loom::mapping_debug::MappingRunStatistics debugStatistics;
+  std::uint64_t preservedNetRoutes = 0;
+  std::uint64_t selectedSinkRoutes = 0;
+  std::uint64_t wholeNetRoutes = 0;
   const auto emitStatistics = [&](llvm::StringRef status) {
     debugStatistics.aStarExpansions =
         netRouter_.endpointExpansionCount() - initialEndpointExpansions;
-    debugStatistics.emit(loom::mapping_debug::Stage::SpatialPnr, status);
+    debugStatistics.emit(loom::mapping_debug::Stage::SpatialPnr, status,
+                         [&](llvm::json::Object &fields) {
+                           fields["preserved_net_routes"] = preservedNetRoutes;
+                           fields["selected_sink_routes"] = selectedSinkRoutes;
+                           fields["whole_net_routes"] = wholeNetRoutes;
+                         });
   };
 
   for (std::uint64_t iteration = 0; iteration < limits.iterationLimit;
@@ -1376,15 +1384,56 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       return std::move(error);
 
     for (const NetOrderEntry &entry : netOrder_) {
+      auto routePlan =
+          netRouter_.planNegotiatedRoute(candidate, costs, entry.logicalNet);
+      if (!routePlan)
+        return routePlan.takeError();
+      const FrozenSpatialLogicalNet &logicalNet =
+          candidate.problem().transfers().logicalNets()[entry.logicalNet];
+      if (routePlan->scope == detail::SpatialNegotiatedRouteScope::Preserve) {
+        ++preservedNetRoutes;
+        loom::mapping_debug::emit(
+            loom::mapping_debug::Level::Detail,
+            loom::mapping_debug::Stage::SpatialPnr,
+            loom::mapping_debug::Event::NetRoute,
+            [&](llvm::json::Object &fields) {
+              fields["iteration"] = iteration;
+              fields["session_iteration"] = sessionIteration;
+              fields["logical_net"] = entry.logicalNet;
+              fields["route_cost"] = 0;
+              fields["route_scope"] = "preserved";
+              fields["source_endpoint"] =
+                  candidate.logicalNetSourceEndpoint(entry.logicalNet);
+              fields["sink_count"] = logicalNet.sinkCount;
+              fields["rerouted_sink_count"] = 0;
+              fields["preserved_sink_count"] = logicalNet.sinkCount;
+            });
+        if (llvm::Error error =
+                netRouter_.finishConstraintNet(entry.logicalNet))
+          return std::move(error);
+        continue;
+      }
       auto projection = projectLogicalNet(candidate, costs, entry.logicalNet);
       if (!projection)
         return projection.takeError();
       if (llvm::Error error =
               costs.selectLogicalNet(entry.logicalNet, activeClaimBits_))
         return std::move(error);
+      const bool selectedSinks =
+          routePlan->scope ==
+          detail::SpatialNegotiatedRouteScope::SelectedSinks;
+      if (selectedSinks)
+        ++selectedSinkRoutes;
+      else
+        ++wholeNetRoutes;
       auto route =
-          netRouter_.routeWholeNet(move, candidate, costs, entry.logicalNet,
-                                   limits.endpointExpansionLimit);
+          selectedSinks
+              ? netRouter_.routeSinkSet(
+                    move, candidate, costs, entry.logicalNet,
+                    routePlan->sinkObligations, limits.endpointExpansionLimit)
+              : netRouter_.routeWholeNet(move, candidate, costs,
+                                         entry.logicalNet,
+                                         limits.endpointExpansionLimit);
       if (!route) {
         llvm::Error routeFailure = route.takeError();
         bool emittedTypedFailure = false;
@@ -1403,7 +1452,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                       fields["iteration"] = iteration;
                       fields["session_iteration"] = sessionIteration;
                       fields["logical_net"] = entry.logicalNet;
-                      fields["operation"] = "route_whole_net";
+                      fields["operation"] =
+                          selectedSinks ? "route_sink_set" : "route_whole_net";
                       fields["failure_kind"] =
                           stringifyEndpointRouteSearchFailureKind(
                               failure.kind());
@@ -1414,16 +1464,17 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
               });
         }
         if (!emittedTypedFailure)
-          loom::mapping_debug::emit(loom::mapping_debug::Level::Decision,
-                                    loom::mapping_debug::Stage::SpatialPnr,
-                                    loom::mapping_debug::Event::MappingFailure,
-                                    [&](llvm::json::Object &fields) {
-                                      fields["iteration"] = iteration;
-                                      fields["session_iteration"] =
-                                          sessionIteration;
-                                      fields["logical_net"] = entry.logicalNet;
-                                      fields["operation"] = "route_whole_net";
-                                    });
+          loom::mapping_debug::emit(
+              loom::mapping_debug::Level::Decision,
+              loom::mapping_debug::Stage::SpatialPnr,
+              loom::mapping_debug::Event::MappingFailure,
+              [&](llvm::json::Object &fields) {
+                fields["iteration"] = iteration;
+                fields["session_iteration"] = sessionIteration;
+                fields["logical_net"] = entry.logicalNet;
+                fields["operation"] =
+                    selectedSinks ? "route_sink_set" : "route_whole_net";
+              });
         emitStatistics("route_failure");
         return routeFailure;
       }
@@ -1436,12 +1487,18 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
             fields["session_iteration"] = sessionIteration;
             fields["logical_net"] = entry.logicalNet;
             fields["route_cost"] = *route;
+            fields["route_scope"] =
+                selectedSinks ? "selected_sinks" : "whole_net";
             fields["source_endpoint"] =
                 candidate.logicalNetSourceEndpoint(entry.logicalNet);
-            fields["sink_count"] = candidate.problem()
-                                       .transfers()
-                                       .logicalNets()[entry.logicalNet]
-                                       .sinkCount;
+            fields["sink_count"] = logicalNet.sinkCount;
+            fields["rerouted_sink_count"] =
+                selectedSinks ? routePlan->sinkObligations.size()
+                              : logicalNet.sinkCount;
+            fields["preserved_sink_count"] =
+                selectedSinks
+                    ? logicalNet.sinkCount - routePlan->sinkObligations.size()
+                    : 0;
           });
       if (llvm::Error error = costs.acceptSelectedLogicalNet())
         return std::move(error);

@@ -1942,6 +1942,21 @@ certificate for one overused capacity does not authorize skipping the others.
 Conflict-event sampling is diagnostic only: verbosity and sample limits cannot
 change which capacities are tested or which certificate is selected.
 
+Within a negotiated iteration, a complete terminal-compatible RouteTree whose
+net participates in no cross-net route-set relation is pruned at sink-obligation
+granularity. A sink is selected when its source-to-sink branch contains a
+positive claim on a currently overused capacity. The selection is closed over
+causal successors that lack a local progress boundary. Selected sinks are
+ripped up in sink ordinal order and rerouted from the retained RouteTree;
+unselected branches preserve their exact traversal set and occupancy. A net
+with no selected sink is left unchanged.
+
+An unrouted or terminal-incompatible net, a net with a cross-net
+route-set relation, and a net processed while route capacity is already closed
+uses whole-net routing. Selecting every sink also reduces to whole-net routing.
+These fallbacks keep route-set coordination, tag residency, multicast progress,
+and handshake closure under the existing whole-net authority.
+
 Only the selected overlay is applied once through `MoveTransaction`.
 PathFinder pressure/history, Dual prices/directions, best-iterate metadata,
 and iteration traces are discarded on commit or rollback.

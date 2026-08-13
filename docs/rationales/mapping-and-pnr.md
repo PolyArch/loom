@@ -780,6 +780,21 @@ returns the first exact certificate. The ordinal is already owned by the
 frozen resource index, so certificate selection needs no additional heuristic
 or configuration.
 
+Whole-net rip-up discards legal multicast branches whenever any branch of the
+net contributes to congestion. That is unnecessary route work and removes
+stable attachment points that the next A* search could reuse. The branch
+projection therefore marks exactly the sink paths that traverse a currently
+overused positive claim, closes that set over causal successors, and reuses the
+remaining RouteTree. Route claims remain atomic per net: after pruning, the
+existing claim-bit projection recomputes retained occupancy before any new path
+is installed.
+
+Branch preservation is not allowed to become a second closure algorithm. Nets
+whose endpoints changed or whose route sets participate in cross-net relations
+still use whole-net routing. Whole-net routing also remains the fallback after
+route capacity closes, because Loom must still explore tag, progress, and
+handshake legality that fixed-endpoint FPGA routing does not model.
+
 Enumerating one exact terminal assignment at a time throws away most of the
 cut proof. The proof remains valid for every source and witness-sink choice pair
 that is still disconnected after the capacity's claiming traversals are

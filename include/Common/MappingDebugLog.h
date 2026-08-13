@@ -59,6 +59,8 @@ struct MappingRunStatistics final {
   std::uint64_t arithmeticFailures = 0;
 
   void emit(Stage stage, llvm::StringRef closureStatus) const;
+  void emit(Stage stage, llvm::StringRef closureStatus,
+            llvm::function_ref<void(llvm::json::Object &)> buildFields) const;
 };
 
 } // namespace loom::mapping_debug

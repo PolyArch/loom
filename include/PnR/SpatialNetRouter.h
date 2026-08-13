@@ -15,8 +15,19 @@
 namespace loom::pnr {
 
 namespace detail {
-class SpatialRouteConstraintScratch;
-}
+class SpatialNetRouterPrivate;
+
+enum class SpatialNegotiatedRouteScope : std::uint8_t {
+  Preserve,
+  SelectedSinks,
+  WholeNet,
+};
+
+struct SpatialNegotiatedRoutePlan final {
+  SpatialNegotiatedRouteScope scope = SpatialNegotiatedRouteScope::WholeNet;
+  llvm::ArrayRef<PnrIndex> sinkObligations;
+};
+} // namespace detail
 
 /// Worker-local whole-net routing scratch. The selected logical net must
 /// already be excluded from the supplied cost state. RouteTree and resource
@@ -36,6 +47,10 @@ public:
   llvm::Error beginConstraintSweep(llvm::ArrayRef<PnrIndex> logicalNets);
   llvm::Error finishConstraintNet(PnrIndex logicalNet);
 
+  llvm::Expected<detail::SpatialNegotiatedRoutePlan>
+  planNegotiatedRoute(const SpatialCandidateState &candidate,
+                      const SpatialRouteCostState &costs, PnrIndex logicalNet);
+
   llvm::Expected<RouteCost>
   routeWholeNet(SpatialMoveTransaction &move,
                 const SpatialCandidateState &candidate,
@@ -49,6 +64,12 @@ public:
       SpatialMoveTransaction &move, const SpatialCandidateState &candidate,
       SpatialRouteCostState &costs, PnrIndex logicalNet, PnrIndex rootEndpoint,
       std::uint64_t endpointExpansionLimit);
+  llvm::Expected<RouteCost>
+  routeSinkSet(SpatialMoveTransaction &move,
+               const SpatialCandidateState &candidate,
+               SpatialRouteCostState &costs, PnrIndex logicalNet,
+               llvm::ArrayRef<PnrIndex> sinkObligations,
+               std::uint64_t endpointExpansionLimit);
 
   std::uint64_t endpointExpansionCount() const {
     return endpointSearch_.endpointExpansionCount();
@@ -103,7 +124,7 @@ private:
   std::vector<std::uint64_t> endpointMarks_;
   std::vector<PnrIndex> subtreeWorklist_;
   std::uint64_t endpointMarkEpoch_ = 0;
-  std::unique_ptr<detail::SpatialRouteConstraintScratch> routeConstraints_;
+  std::unique_ptr<detail::SpatialNetRouterPrivate> private_;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
 };
 
