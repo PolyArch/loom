@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <set>
 #include <utility>
 #include <variant>
 
@@ -624,6 +625,83 @@ SpatialBindingRelationModel::create(
     }
     relationInputs.push_back(std::move(residentContexts));
     relationRoles.push_back(SpatialBindingRelationRole::Structural);
+  }
+
+  if (memoryDecisionCount > 1) {
+    std::map<ProjectionKey, std::vector<PnrIndex>> spatialPortUsers;
+    for (PnrIndex realization = 0; realization < memoryDecisionCount;
+         ++realization) {
+      const FrozenSpatialMemoryRealization &record =
+          realizations.memoryRealizations()[realization];
+      const auto placements = realizations.memoryPlacements().slice(
+          record.placementOffset, record.placementCount);
+      const ::fabric::Schedule schedule = placements.front().schedule;
+      if (llvm::any_of(placements, [&](const auto &placement) {
+            return placement.schedule != schedule;
+          }))
+        return invalid(Projection::MemoryPlacement,
+                       "one memory realization crosses scheduling domains");
+      if (schedule != ::fabric::Schedule::Spatial)
+        continue;
+      std::set<ProjectionKey> selectedPorts;
+      for (const FrozenSpatialMemoryActorBinding &actor :
+           realizations.memoryActors().slice(record.actorOffset,
+                                             record.actorCount)) {
+        const ProjectionKey key = canonicalFabricBytes(actor.operationPort);
+        if (!selectedPorts.insert(key).second)
+          return invalid(Projection::MemoryOperationPort,
+                         "a Spatial memory realization repeats an operation "
+                         "port");
+      }
+      for (const ProjectionKey &port : selectedPorts)
+        spatialPortUsers[port].push_back(realization);
+    }
+
+    for (const auto &[port, users] : spatialPortUsers) {
+      (void)port;
+      if (users.size() < 2)
+        continue;
+      InitializerRelationInput staticRows;
+      staticRows.kind = InitializerRelationKind::Disjoint;
+      staticRows.members.reserve(users.size());
+      std::map<ProjectionKey, PnrIndex> occurrenceValues;
+      for (PnrIndex realization : users) {
+        InitializerRelationMemberInput member;
+        member.decision = memoryDecisionOffset + realization;
+        const auto choices = llvm::ArrayRef(memoryChoices)
+                                 .slice(memoryChoiceOffsets[realization],
+                                        memoryChoiceOffsets[realization + 1] -
+                                            memoryChoiceOffsets[realization]);
+        member.projectedValues.reserve(choices.size());
+        for (const SpatialMemoryBindingChoice &choice : choices) {
+          if (choice.placement >= realizations.memoryPlacements().size())
+            return invalid(Projection::MemoryPlacement,
+                           "memory choice names a foreign placement");
+          const FrozenSpatialMemoryPlacement &placement =
+              realizations.memoryPlacements()[choice.placement];
+          if (placement.schedule != ::fabric::Schedule::Spatial)
+            return invalid(Projection::MemoryPlacement,
+                           "a static memory relation has a Temporal choice");
+          const ProjectionKey occurrence =
+              canonicalFabricBytes(placement.memory);
+          auto found = occurrenceValues.find(occurrence);
+          if (found == occurrenceValues.end()) {
+            if (occurrenceValues.size() == getPnrIndexMax())
+              return invalid(Projection::MemoryOperationPort,
+                             "memory occurrence relation overflows PnrIndex");
+            found =
+                occurrenceValues
+                    .try_emplace(occurrence,
+                                 static_cast<PnrIndex>(occurrenceValues.size()))
+                    .first;
+          }
+          member.projectedValues.push_back(found->second);
+        }
+        staticRows.members.push_back(std::move(member));
+      }
+      relationInputs.push_back(std::move(staticRows));
+      relationRoles.push_back(SpatialBindingRelationRole::Structural);
+    }
   }
 
   const auto attachmentDecision = [&](FrozenSpatialTerminalBinding binding)

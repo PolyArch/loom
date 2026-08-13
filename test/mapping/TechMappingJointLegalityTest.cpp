@@ -6,8 +6,11 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
+#include "PnR/PnrConfig.h"
+#include "PnR/SpatialPnrGenerator.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -305,6 +308,50 @@ void memoryScheduleOwnsJointAdmission() {
   }
 }
 
+void spatialMemoryRowsAreOccurrenceUnique() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto dataflowArtifact = buildTwoLoadDataflow(context);
+  const auto fabric = buildMemoryFabric(store, false);
+  const auto outcome = generate(dataflowArtifact, fabric, store);
+  const auto *generated =
+      std::get_if<loom::mapping::GeneratedTechMappings>(&outcome);
+  if (!generated)
+    fail("Spatial memory fixture produced no TechMapping candidates");
+
+  std::optional<loom::mapping::FinalizedTechMapping> selected;
+  for (const auto &reference : generated->candidates) {
+    auto candidate = take(loom::mapping::importTechMapping(reference, store));
+    const auto realizations = candidate.view().memoryRealizations();
+    if (realizations.size() != 2 ||
+        !llvm::all_of(realizations,
+                      [](const auto &row) { return row.actors.size() == 1; }))
+      continue;
+    selected.emplace(std::move(candidate));
+    break;
+  }
+  if (!selected)
+    fail("Spatial memory fixture has no two-row TechMapping candidate");
+
+  const auto dataflow = take(dataflowArtifact.view());
+  auto constraints =
+      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+          dataflow, selected->view(), fabric.view(), store));
+  const auto config = take(loom::pnr::projectResolvedSpatialPnrConfigView(
+      loom::defaultResolvedConfig()));
+  auto spatial = loom::pnr::generateSpatialMappings(
+      {dataflow, selected->view(), fabric.view(), config, constraints.view(),
+       store, 1});
+  const auto *infeasible =
+      std::get_if<loom::pnr::ProvenInfeasibleSpatialMapping>(&spatial);
+  if (!infeasible)
+    fail("two static memory rows shared one physical configuration row");
+  if (infeasible->accounting.endpointExpansionSlots != 0 ||
+      infeasible->accounting.negotiationIterationSlots != 0)
+    fail("static memory row conflict reached transport search");
+}
+
 void broadcastPreservesProducerIdentity() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
@@ -327,6 +374,7 @@ void broadcastPreservesProducerIdentity() {
 
 int main() {
   memoryScheduleOwnsJointAdmission();
+  spatialMemoryRowsAreOccurrenceUnique();
   broadcastPreservesProducerIdentity();
   llvm::outs() << "tech mapping joint legality tests passed\n";
   return 0;

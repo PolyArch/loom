@@ -233,6 +233,8 @@ target_link_libraries(loom-tech-mapping-search-test PRIVATE
 target_link_libraries(loom-tech-mapping-joint-legality-test PRIVATE
   LoomADGBuilder
   LoomMappingArtifact
+  LoomPnR
+  LoomPnRGenerator
   LoomTechMapping
   MLIRArithDialect
   MLIRDataflow
