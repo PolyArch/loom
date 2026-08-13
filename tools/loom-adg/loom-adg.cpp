@@ -3,9 +3,11 @@
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Config/ResolvedConfig.h"
+#include "Fabric/Artifact/FabricTopologyQuality.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -43,6 +45,11 @@ llvm::cl::opt<std::string> moduleRootReferencePath(
     "module-root-reference",
     llvm::cl::desc("optional canonical imported Module root-reference JSON "
                    "output"),
+    llvm::cl::value_desc("path"), llvm::cl::init(""));
+
+llvm::cl::opt<std::string> topologyQualityPath(
+    "topology-quality",
+    llvm::cl::desc("optional derived topology-quality JSON output"),
     llvm::cl::value_desc("path"), llvm::cl::init(""));
 
 int reportError(llvm::Error error) {
@@ -105,9 +112,24 @@ int main(int argc, char **argv) {
           llvm::inconvertibleErrorCode(),
           "builtin System does not have exactly one imported Module"));
     if (llvm::Error error = loom::writeArtifactRootReferenceJsonFile(
-            moduleRootReferencePath,
-            root.directDependencies().front().root))
+            moduleRootReferencePath, root.directDependencies().front().root))
       return reportError(std::move(error));
+  }
+  if (!topologyQualityPath.empty()) {
+    auto quality =
+        loom::fabric::analyzeFabricTopologyQualityClosure(root.view());
+    if (!quality)
+      return reportError(quality.takeError());
+    std::error_code error;
+    llvm::raw_fd_ostream output(topologyQualityPath, error,
+                                llvm::sys::fs::OF_Text);
+    if (error)
+      return reportError(llvm::createStringError(
+          error, "cannot open topology-quality output '%s'",
+          topologyQualityPath.c_str()));
+    if (llvm::Error writeError =
+            loom::fabric::writeFabricTopologyQualityJson(*quality, output))
+      return reportError(std::move(writeError));
   }
 
   llvm::outs() << loom::formatArtifactIdentityHex(root.reference().artifact)

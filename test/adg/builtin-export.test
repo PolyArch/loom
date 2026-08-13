@@ -11,13 +11,18 @@
 # RUN: loom-config-test --resolved-json > %t/config.json
 # RUN: loom-adg --config=%t/config.json --artifact-store=%t/store \
 # RUN:   --output=%t/configured --root-reference=%t/system.json \
-# RUN:   --module-root-reference=%t/module.json > /dev/null
+# RUN:   --module-root-reference=%t/module.json \
+# RUN:   --topology-quality=%t/topology.json > /dev/null
 # RUN: FileCheck %s --check-prefix=SYSTEM-ROOT < %t/system.json
 # RUN: FileCheck %s --check-prefix=MODULE-ROOT < %t/module.json
+# RUN: FileCheck %s --check-prefix=TOPOLOGY < %t/topology.json
 
 # IDENTITY: {{^[0-9a-f]{64}$}}
 # SYSTEM-ROOT: "schema":"loom.fabric"
 # MODULE-ROOT: "schema":"loom.fabric"
+# TOPOLOGY: "schema":"loom.fabric.topology_quality.1"
+# TOPOLOGY: "root_kind":"system"
+# TOPOLOGY: "root_kind":"module"
 
 # MLIR: fabric.system
 # MLIR: fabric.system.acc_core

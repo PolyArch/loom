@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/MappingDebugLog.h"
+#include "FabricTopologyQualityDiagnostic.h"
 #include "InitializerRelationSolver.h"
 #include "PnR/FrozenConstraintIndex.h"
 #include "PnR/MappingObjective.h"
@@ -605,6 +606,12 @@ accumulateRestartAccounting(const SpatialPnrGenerationAccounting &source,
 SpatialPnrGenerationOutcome
 generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   SpatialPnrGenerationAccounting accounting;
+  auto topology = analyzeAndEmitFabricTopologyQuality(
+      inputs.fabric, mapping_debug::Stage::SpatialPnr);
+  if (!topology)
+    return InvalidSpatialPnrGeneration{
+        InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
+        llvm::toString(topology.takeError())};
   auto problem =
       freezeSpatialPnrProblem(inputs.dataflow, inputs.techMapping,
                               inputs.fabric, inputs.config, inputs.constraints);

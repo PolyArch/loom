@@ -7,6 +7,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Artifact/FabricTopologyQuality.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 
@@ -102,6 +103,26 @@ void builtinPresetsExpandThroughPublicBuilder() {
     require(test, target.roots().size() == 1,
             "builtin expansion did not publish one System root");
     const auto &root = target.roots().front();
+
+    const auto requireRoutableTerminals = [&](const auto &report) {
+      for (const auto &owner : report.owners) {
+        if (owner.portCount() == 0)
+          continue;
+        require(test, owner.unreachablePortCount == 0,
+                "builtin terminal has an unreachable transport port");
+        require(test, owner.routingResourceCount() != 0,
+                "builtin terminal reaches no routing resource");
+        require(test, owner.directResourceCount() == 0,
+                "builtin terminal is fixed directly to another resource");
+      }
+    };
+    requireRoutableTerminals(
+        take(test, loom::fabric::analyzeFabricTopologyQuality(root.view())));
+    require(test, root.view().importedModules().size() == 1,
+            "builtin System lost its imported Module view");
+    requireRoutableTerminals(
+        take(test, loom::fabric::analyzeFabricTopologyQuality(
+                       root.view().importedModules().front())));
     require(
         test,
         root.view().rootKind() == loom::fabric::FabricRootKind::System &&

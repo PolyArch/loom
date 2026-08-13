@@ -5,6 +5,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Artifact/FabricTopologyQuality.h"
 
 #include "mlir/IR/MLIRContext.h"
 
@@ -103,6 +104,88 @@ void spatialBackedgesEnableCyclicTopology() {
           finalized.roots().size() == 1 &&
               !finalized.roots().front().view().admittedTraversals().empty(),
           "resolved SpatialCore cycle did not finalize as explicit topology");
+}
+
+void topologyQualityClassifiesDirectPeBinding() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  const PortType bits32 = take(test, PortType::bits(32));
+
+  DesignBuilder design(store);
+  auto spatial = take(
+      test, design.createSpatialCore("direct-pe-chain", {bits32}, {bits32}));
+  auto first = take(test, spatial.addPe({take(test, spatial.input(0))},
+                                        PeSpec::spatial({bits32}, {bits32})));
+  auto firstFu = take(test, first.addFu({take(test, first.input(0))},
+                                        FuSpec{{bits32}, {bits32}}));
+  auto firstAdd = take(
+      test, firstFu.addOperation(
+                {take(test, firstFu.input(0)), take(test, firstFu.input(0))},
+                integerCapability(
+                    ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                    ::dataflow::OperationSchemaId::ArithAddI, bits32)));
+  if (llvm::Error error = firstFu.addCapabilityTemplate(
+          FuCapabilityTemplateSpec{{firstAdd}, {}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = firstFu.close({take(test, firstAdd.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = first.close())
+    fail(test, llvm::toString(std::move(error)));
+
+  auto second = take(test, spatial.addPe({take(test, first.output(0))},
+                                         PeSpec::spatial({bits32}, {bits32})));
+  auto secondFu = take(test, second.addFu({take(test, second.input(0))},
+                                          FuSpec{{bits32}, {bits32}}));
+  auto secondAdd = take(
+      test, secondFu.addOperation(
+                {take(test, secondFu.input(0)), take(test, secondFu.input(0))},
+                integerCapability(
+                    ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                    ::dataflow::OperationSchemaId::ArithAddI, bits32)));
+  if (llvm::Error error = secondFu.addCapabilityTemplate(
+          FuCapabilityTemplateSpec{{secondAdd}, {}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = secondFu.close({take(test, secondAdd.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = second.close())
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = spatial.close({take(test, second.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+
+  auto finalized = take(test, std::move(design).finalize());
+  auto quality = take(test, loom::fabric::analyzeFabricTopologyQuality(
+                                finalized.roots().front().view()));
+  require(test, quality.owners.size() == 2,
+          "direct PE chain did not expose both terminal owners");
+  for (const auto &owner : quality.owners)
+    require(test,
+            owner.portCount() == 2 && owner.routingResourceCount() == 0 &&
+                owner.directResourceCount() == 1 &&
+                owner.boundaryPortCount == 1 && owner.unreachablePortCount == 0,
+            "direct PE chain has the wrong exact connectivity ratios");
+  const auto distributions =
+      loom::fabric::summarizeFabricTopologyQuality(quality);
+  require(test, distributions.size() == 1,
+          "direct PE chain did not produce one terminal distribution");
+  const auto &distribution = distributions.front();
+  require(test,
+          distribution.kind ==
+                  loom::fabric::FabricTopologyTerminalKind::ProcessingElement &&
+              distribution.ownerCount == 2 &&
+              distribution.minimumPortCount.value == 2 &&
+              distribution.minimumPortCount.owners.size() == 2 &&
+              distribution.maximumPortCount.value == 2 &&
+              distribution.maximumPortCount.owners.size() == 2 &&
+              distribution.minimumRoutingRatio &&
+              distribution.minimumRoutingRatio->numerator == 0 &&
+              distribution.minimumRoutingRatio->denominator == 1 &&
+              distribution.minimumRoutingRatio->owners.size() == 2 &&
+              distribution.maximumDirectRatio &&
+              distribution.maximumDirectRatio->numerator == 1 &&
+              distribution.maximumDirectRatio->denominator == 2 &&
+              distribution.maximumDirectRatio->owners.size() == 2,
+          "direct PE chain lost tied topology outliers");
 }
 
 void routedFuLibraryBuildsHeterogeneousBoundaries() {
@@ -413,6 +496,7 @@ void heterogeneousSystemFinalizes() {
 void runTopologyTests() {
   fuBackedgesAreExplicitAndResolved();
   spatialBackedgesEnableCyclicTopology();
+  topologyQualityClassifiesDirectPeBinding();
   routedFuLibraryBuildsHeterogeneousBoundaries();
   heterogeneousSystemFinalizes();
 }

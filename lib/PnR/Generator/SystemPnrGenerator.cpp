@@ -1,6 +1,8 @@
 #include "PnR/System/SystemPnrGenerator.h"
 
 #include "Common/ArtifactLocalReference.h"
+#include "Common/MappingDebugLog.h"
+#include "FabricTopologyQualityDiagnostic.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "PnR/System/SystemActionExecutor.h"
@@ -192,6 +194,12 @@ llvm::Error accumulateActionProbe(const SystemActionProbeAccounting &source,
 SystemPnrGenerationOutcome
 generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
   SystemPnrGenerationAccounting accounting;
+  auto topology = analyzeAndEmitFabricTopologyQuality(
+      inputs.fabric.artifact(), mapping_debug::Stage::SystemPnr);
+  if (!topology)
+    return InvalidSystemPnrGeneration{
+        InvalidSystemPnrGenerationReason::FrozenInput, accounting,
+        llvm::toString(topology.takeError())};
   auto problem = freezeSystemPnrProblem(inputs.dataflow, inputs.fabric,
                                         inputs.searchDomain, inputs.config,
                                         inputs.constraints, inputs.store);

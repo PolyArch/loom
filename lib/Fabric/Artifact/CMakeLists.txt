@@ -11,6 +11,7 @@ add_mlir_library(LoomFabricArtifact
   FabricSystemCanonicalMaterialization.cpp
   FabricSystemServiceLegCarrier.cpp
   FabricSystemValidation.cpp
+  FabricTopologyQuality.cpp
   FabricArtifactDependencyClosure.cpp
   FabricArtifactLocalReference.cpp
   FabricClockResetValidation.cpp

@@ -3,6 +3,7 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
+#include "HardwareTopologyQuality.h"
 
 #include <array>
 #include <cstdint>
@@ -158,6 +159,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   outputs.reserve(result->roots().size());
   lineage.reserve(result->roots().size());
   for (const loom::fabric::FinalizedFabricRoot &root : result->roots()) {
+    if (llvm::Error error = validateHardwareTopologyQuality(root.view()))
+      return std::move(error);
     outputs.push_back(root.reference());
     lineage.push_back(CandidateGeneratorLineageEdge{
         CandidateGeneratorLineageEdgeKind::MechanicalDerivation,

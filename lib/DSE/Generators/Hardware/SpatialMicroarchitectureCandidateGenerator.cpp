@@ -1,4 +1,5 @@
 #include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
+#include "HardwareTopologyQuality.h"
 
 #include "ADG/Builder.h"
 #include "Common/ArtifactStore.h"
@@ -150,6 +151,9 @@ materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
   if (finalized->roots().size() != 1)
     return invalid(
         "one microarchitecture decision did not finalize one Module child");
+  if (llvm::Error error =
+          validateHardwareTopologyQuality(finalized->roots().front().view()))
+    return std::move(error);
   return std::optional<loom::fabric::FinalizedFabricRoot>(
       finalized->roots().front());
 }
