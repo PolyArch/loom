@@ -2,6 +2,7 @@
 
 #include "Common/MappingDebugLog.h"
 #include "CpSatExactProtocol.h"
+#include "PnR/MappingObjective.h"
 #include "SpatialBindingRelationModel.h"
 #include "SpatialRouteConstraintModel.h"
 
@@ -17,7 +18,6 @@
 #include <limits>
 #include <optional>
 #include <system_error>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -60,112 +60,6 @@ struct TransportWitness final {
   ResolvedPnrViolationKind kind;
   PnrIndex ordinal;
 };
-
-struct TransportClosureRank final {
-  std::uint64_t unroutedObligationCount = 0;
-  std::uint64_t capacityOveruse = 0;
-  std::uint64_t tagUnassignedCount = 0;
-  std::uint64_t tagConflictCount = 0;
-};
-
-bool operator<(const TransportClosureRank &left,
-               const TransportClosureRank &right) {
-  return std::tie(left.unroutedObligationCount, left.capacityOveruse,
-                  left.tagUnassignedCount, left.tagConflictCount) <
-         std::tie(right.unroutedObligationCount, right.capacityOveruse,
-                  right.tagUnassignedCount, right.tagConflictCount);
-}
-
-llvm::Expected<TransportClosureRank>
-projectTransportClosureRank(const SpatialCandidateState &candidate,
-                            llvm::ArrayRef<PnrIndex> logicalNets,
-                            std::vector<std::uint8_t> &capacityMarks,
-                            std::vector<std::uint8_t> &tagDomainMarks) {
-  const FrozenSpatialPnrProblem &problem = candidate.problem();
-  const auto &routing = problem.routing();
-  const auto &resources = problem.resources();
-  const auto &transfers = problem.transfers();
-  capacityMarks.assign(resources.capacityDimensions().size(), 0);
-  tagDomainMarks.assign(routing.tagContinuity().matchDomains().size(), 0);
-
-  const auto add = [](std::uint64_t &sum, std::uint64_t value) -> llvm::Error {
-    if (value > std::numeric_limits<std::uint64_t>::max() - sum)
-      return invocationError("transport closure rank overflows u64");
-    sum += value;
-    return llvm::Error::success();
-  };
-
-  TransportClosureRank rank;
-  for (PnrIndex logicalNet : logicalNets) {
-    if (logicalNet >= transfers.logicalNets().size())
-      return invocationError(
-          "transport closure region contains a foreign logical net");
-    const RouteTreeState &tree = candidate.routeTree(logicalNet);
-    if (tree.isUnrouted()) {
-      if (llvm::Error error =
-              add(rank.unroutedObligationCount,
-                  transfers.logicalNets()[logicalNet].sinkCount))
-        return std::move(error);
-    } else {
-      for (const RouteTreeNode &node : tree.nodeStorage()) {
-        if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
-          continue;
-        if (node.parentArc >= routing.routingArcs().size())
-          return invocationError(
-              "transport closure RouteTree arc is out of range");
-        const PnrIndex traversal =
-            routing.routingArcs()[node.parentArc].traversal;
-        if (traversal >= routing.traversals().size())
-          return invocationError(
-              "transport closure RouteTree traversal is out of range");
-        const FrozenSpatialTraversal &record = routing.traversals()[traversal];
-        for (PnrIndex claim : routing.traversalClaimKeys().slice(
-                 record.routeClaimOffset, record.routeClaimCount)) {
-          if (claim >= routing.routeClaims().size())
-            return invocationError(
-                "transport closure route claim is out of range");
-          const PnrIndex capacity =
-              routing.routeClaims()[claim].capacityDimension;
-          if (capacity >= capacityMarks.size())
-            return invocationError(
-                "transport closure route capacity is out of range");
-          capacityMarks[capacity] = 1;
-        }
-      }
-    }
-
-    const auto values = candidate.tagValues(logicalNet);
-    for (PnrIndex segment = 0; segment < values.size(); ++segment) {
-      if (!values[segment])
-        if (llvm::Error error = add(rank.tagUnassignedCount, 1))
-          return std::move(error);
-      for (PnrIndex domain : candidate.tagSegmentDomains(logicalNet, segment)) {
-        if (domain >= tagDomainMarks.size())
-          return invocationError(
-              "transport closure tag domain is out of range");
-        tagDomainMarks[domain] = 1;
-      }
-    }
-  }
-
-  for (PnrIndex capacity = 0; capacity < capacityMarks.size(); ++capacity)
-    if (capacityMarks[capacity])
-      if (llvm::Error error = add(rank.capacityOveruse,
-                                  candidate.routeCapacityOveruseRaw(capacity)))
-        return std::move(error);
-  for (PnrIndex domain = 0; domain < tagDomainMarks.size(); ++domain) {
-    if (!tagDomainMarks[domain])
-      continue;
-    if (llvm::Error error =
-            add(rank.capacityOveruse,
-                candidate.tagDomainResidentCapacityOveruse(domain)))
-      return std::move(error);
-    if (llvm::Error error = add(rank.tagConflictCount,
-                                candidate.tagDomainConflictCount(domain)))
-      return std::move(error);
-  }
-  return rank;
-}
 
 llvm::Expected<std::optional<TransportWitness>>
 firstTransportWitness(const SpatialCandidateState &candidate) {
@@ -1161,10 +1055,7 @@ SpatialExactRepairScratch::repairTransportClosure(
                   actionExecutor_.negotiationIterationCount());
   };
 
-  std::vector<std::uint8_t> capacityMarks;
-  std::vector<std::uint8_t> tagDomainMarks;
-  auto initialClosureRank = projectTransportClosureRank(
-      candidate, affectedNets_, capacityMarks, tagDomainMarks);
+  auto initialClosureRank = spatialTransportClosureRank(candidate);
   if (!initialClosureRank)
     return executedResult(SpatialExactRepairResultKind::InternalError,
                           llvm::toString(initialClosureRank.takeError()));
@@ -1289,6 +1180,8 @@ SpatialExactRepairScratch::repairTransportClosure(
               static_cast<std::uint32_t>(primaryWitnessKind);
           fields["witness_ordinal"] = primaryWitnessOrdinal;
           fields["region_decisions"] = regionDecisionCount;
+          fields["binding_decision_count"] = decisions_.size();
+          fields["affected_logical_net_count"] = affectedNets_.size();
           fields["mutation_count"] = *solved->objectiveValue;
           fields["action_count"] = lastActionCount;
           fields["solver_calls"] = solverCalls;
@@ -1414,8 +1307,7 @@ SpatialExactRepairScratch::repairTransportClosure(
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(std::move(error)));
       }
-      auto closureRank = projectTransportClosureRank(
-          candidate, affectedNets_, capacityMarks, tagDomainMarks);
+      auto closureRank = spatialTransportClosureRank(candidate);
       if (!closureRank) {
         llvm::Error error = closureRank.takeError();
         if (llvm::Error discardError = probe->discard())

@@ -14,6 +14,8 @@
 
 namespace loom::pnr {
 
+struct SpatialTransportClosureRank;
+
 struct SpatialPathFinderRoutingLimits final {
   std::uint64_t endpointExpansionLimit = 0;
   std::uint64_t iterationLimit = 0;
@@ -163,7 +165,7 @@ private:
     }
   };
 
-  struct RoutingRegionProjection final {
+  struct RoutingRegionState final {
     std::uint64_t unroutedObligationCount = 0;
     std::uint64_t routeCapacityOveruse = 0;
   };
@@ -181,13 +183,14 @@ private:
   llvm::Error restoreCapturedRoutes(SpatialMoveTransaction &move,
                                     SpatialCandidateState &candidate,
                                     SpatialRouteCostState &costs,
-                                    llvm::ArrayRef<PnrIndex> logicalNets);
+                                    llvm::ArrayRef<PnrIndex> logicalNets,
+                                    const SpatialTransportClosureRank &expected);
   llvm::Expected<CapacityConflictAnalysis>
   analyzeCapacityConflicts(const SpatialCandidateState &candidate,
                            const SpatialRouteCostState &costs,
                            std::uint64_t iteration,
                            std::uint64_t sessionIteration);
-  llvm::Expected<RoutingRegionProjection>
+  llvm::Expected<RoutingRegionState>
   projectRoutingRegion(const SpatialCandidateState &candidate,
                        const SpatialRouteCostState &costs,
                        llvm::ArrayRef<PnrIndex> logicalNets);

@@ -1489,6 +1489,14 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
         move, classifyTransitionFailure(std::move(error), context));
   }
 
+  std::optional<SpatialCandidateRouteProjection> negotiatedProjection;
+  if (negotiatedRouting) {
+    auto projected = move.projectCurrentRoutes();
+    if (!projected)
+      return restoreAfterFailure(move, projected.takeError());
+    negotiatedProjection = std::move(*projected);
+  }
+
   auto closed = move.close();
   if (!closed)
     return restoreAfterFailure(move, closed.takeError());
@@ -1497,6 +1505,21 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
         move, llvm::make_error<SpatialActionTransitionFailure>(
                   SpatialActionTransitionFailureKind::IntrinsicInvalid,
                   "Spatial Action selected a combinational handshake cycle"));
+  if (negotiatedProjection &&
+      (candidate.unroutedObligationCount() !=
+           negotiatedProjection->unroutedObligationCount ||
+       candidate.routeCapacityOveruse() !=
+           negotiatedProjection->routeCapacityOveruse ||
+       candidate.tagResidentCapacityOveruse() !=
+           negotiatedProjection->tagResidentCapacityOveruse ||
+       candidate.tagUnassignedCount() !=
+           negotiatedProjection->tagUnassignedCount ||
+       candidate.tagConflictCount() != negotiatedProjection->tagConflictCount ||
+       candidate.totalSelectedTraversalClaim() !=
+           negotiatedProjection->totalSelectedTraversalClaim))
+    return restoreAfterFailure(
+        move, executorError(
+                  "closed route-derived state disagrees with its RouteTrees"));
   routeCostTraversals_.assign(move.touchedRouteTraversals().begin(),
                               move.touchedRouteTraversals().end());
   if (llvm::Error error =

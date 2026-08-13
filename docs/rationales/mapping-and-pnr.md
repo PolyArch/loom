@@ -732,13 +732,18 @@ no-progress bound proves nothing about future iterations; it only prevents an
 explicitly bounded search from repeatedly spending the dominant all-net route
 work without improving its exact closure rank.
 
-Regional routing cannot use the whole-design objective as its first retained
-iterate key. A changed regional route can abandon an outside conflict while
-reducing the capacities it actually owns; the full Mapping projection still
-observes that outside conflict. Ranking the exact regional unrouted and raw
-overuse tuple first aligns temporary retention with the same predicate that
-ends the regional routing invocation. The ordinary Mapping objective remains
-the tie break and the sole candidate-ranking owner.
+Regional routing cannot use only the selected whole-design objective as its
+first retained-iterate key because that objective need not make transport
+closure lexicographically monotonic. It also cannot measure only capacities
+touched by the candidate's current regional routes: moving those routes away
+from an overused capacity would remove that capacity from the measurement even
+when fixed outside routes preserve the violation. The region therefore limits
+mutations and defines local route closure, while the existing global
+Mapping-owned transport violations define the leading rank. Outside
+contributions remain constant unless the regional mutation actually affects
+them, so strict tuple improvement cannot be manufactured by changing the
+measurement domain. The ordinary Mapping objective remains the tie break and
+the sole configurable candidate-ranking owner.
 
 Dispatching bounded repair only when the retained candidate already reports
 route-capacity overuse is incomplete. A candidate can retain unrouted

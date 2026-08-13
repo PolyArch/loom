@@ -1843,12 +1843,15 @@ kernel. A non-closed iterate may be retained only when all remaining Mapping
 violations are admitted by `TemporaryViolationPolicy`. Full-design routing
 ranks it through the existing `SelectedObjectiveClosure` using the exact
 provisional Mapping `V/G`, not A* cost or private prices. A nonempty regional
-routing action first compares its exact regional closure tuple
-`(unrouted_obligations, raw_route_capacity_overuse)` in that order, then uses
-the same selected Mapping rank as the tie break. This tuple is the invocation's
-existing closure contract, not another objective or configurable score. Equal
-closure rank retains the earlier canonical iterate. Work exhaustion is not
-infeasibility.
+routing action first compares the exact global transport-closure tuple
+`(unrouted_obligations, capacity_overuse, tag_unassigned, tag_conflict)` in
+that order, then uses the same selected Mapping rank as the tie break. Every
+component is mechanically projected from the existing Mapping violation
+owners; `capacity_overuse` includes atomic, route, and resident-tag capacity.
+The nonempty region limits which nets and bindings the Action may mutate and
+defines local route closure, but never narrows the tuple's measurement domain.
+Equal closure rank retains the earlier canonical iterate. Work exhaustion is
+not infeasibility.
 
 Every complete non-closed iteration also participates in the explicit
 no-progress work bound. The first structurally eligible iteration establishes
@@ -2139,7 +2142,7 @@ selection remain SystemMapping decisions.
 Spatial and System PnR have distinct component-view descriptors:
 
 ```text
-loom.spatial_pnr.config.6.0
+loom.spatial_pnr.config.7.0
 loom.system_pnr.config.4.0
 ```
 
@@ -2148,11 +2151,13 @@ Spatial or System policy domain. Their exact descriptor bytes are the ASCII
 bytes shown above without a trailing zero. A digest from one view kind cannot
 be adopted as the other.
 
-Spatial version 6.0 retains 5.0's bounded canonical fixing, but incompatibly
-defines regional routing and transport-repair closure ranks, replaces
-witness-ordinal progression with exact regional progress, and isolates
-negotiated-routing state at every Action boundary. System PnR does not consume
-these protocols and retains version 4.0.
+Spatial version 7.0 retains 6.0's bounded canonical fixing, exact regional
+progress, and Action-local negotiated-routing state, but incompatibly defines
+regional routing and transport repair through the global Mapping-owned
+transport-closure tuple. A repair region limits mutations and local routing
+completion; it cannot remove outside violations from the rank by moving its
+routes away from the capacities that originally formed the witness. System PnR
+does not consume this protocol and retains version 4.0.
 
 Each resolved view is self-contained:
 

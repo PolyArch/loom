@@ -180,6 +180,61 @@ llvm::Expected<std::uint64_t> loom::pnr::spatialMappingViolationValue(
   llvm_unreachable("unknown Mapping violation kind");
 }
 
+llvm::Expected<SpatialTransportClosureRank>
+loom::pnr::spatialTransportClosureRank(
+    const SpatialCandidateState &candidate) {
+  SpatialTransportClosureRank rank;
+  auto project = [&](ResolvedPnrViolationKind kind,
+                     std::uint64_t &value) -> llvm::Error {
+    auto projected = spatialMappingViolationValue(candidate, kind);
+    if (!projected)
+      return projected.takeError();
+    value = *projected;
+    return llvm::Error::success();
+  };
+  if (llvm::Error error = project(ResolvedPnrViolationKind::UnroutedObligation,
+                                  rank.unroutedObligationCount))
+    return std::move(error);
+  if (llvm::Error error = project(ResolvedPnrViolationKind::CapacityOveruse,
+                                  rank.capacityOveruse))
+    return std::move(error);
+  if (llvm::Error error = project(ResolvedPnrViolationKind::TagUnassigned,
+                                  rank.tagUnassignedCount))
+    return std::move(error);
+  if (llvm::Error error = project(ResolvedPnrViolationKind::TagConflict,
+                                  rank.tagConflictCount))
+    return std::move(error);
+  return rank;
+}
+
+llvm::Expected<SpatialTransportClosureRank>
+loom::pnr::spatialTransportClosureRank(
+    const SpatialCandidateState &candidate,
+    const SpatialCandidateRouteProjection &projection) {
+  SpatialTransportClosureRank rank;
+  auto project = [&](ResolvedPnrViolationKind kind,
+                     std::uint64_t &value) -> llvm::Error {
+    auto projected = spatialMappingViolationValue(candidate, projection, kind);
+    if (!projected)
+      return projected.takeError();
+    value = *projected;
+    return llvm::Error::success();
+  };
+  if (llvm::Error error = project(ResolvedPnrViolationKind::UnroutedObligation,
+                                  rank.unroutedObligationCount))
+    return std::move(error);
+  if (llvm::Error error = project(ResolvedPnrViolationKind::CapacityOveruse,
+                                  rank.capacityOveruse))
+    return std::move(error);
+  if (llvm::Error error = project(ResolvedPnrViolationKind::TagUnassigned,
+                                  rank.tagUnassignedCount))
+    return std::move(error);
+  if (llvm::Error error = project(ResolvedPnrViolationKind::TagConflict,
+                                  rank.tagConflictCount))
+    return std::move(error);
+  return rank;
+}
+
 llvm::Expected<bool> loom::pnr::spatialMappingViolationsAreZero(
     const SpatialCandidateState &candidate) {
   for (std::uint32_t ordinal = 0; ordinal != resolvedPnrViolationKindCount;
