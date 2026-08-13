@@ -2,6 +2,7 @@
 
 #include "SystemCandidateServiceResolver.h"
 
+#include "Common/MappingDebugLog.h"
 #include "PnR/EndpointRouter.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -863,6 +864,8 @@ loom::pnr::detail::buildSystemServiceRoutes(
           return std::move(error);
       std::optional<RouteProbe> bestProbe;
       std::string lastRouteDiagnostic;
+      std::optional<EndpointRouteSearchFailureKind> lastRouteFailureKind;
+      std::vector<PnrIndex> lastRouteSources;
       const auto tryProbe =
           [&](llvm::ArrayRef<PnrIndex> sources,
               llvm::ArrayRef<PnrIndex> sourceGroups,
@@ -894,6 +897,8 @@ loom::pnr::detail::buildSystemServiceRoutes(
           return llvm::handleErrors(
               routed.takeError(),
               [&](const EndpointRouteSearchFailure &failure) -> llvm::Error {
+                lastRouteFailureKind = failure.kind();
+                lastRouteSources.assign(sources.begin(), sources.end());
                 lastRouteDiagnostic.clear();
                 llvm::raw_string_ostream stream(lastRouteDiagnostic);
                 failure.log(stream);
@@ -901,6 +906,20 @@ loom::pnr::detail::buildSystemServiceRoutes(
                 if (failure.kind() ==
                     EndpointRouteSearchFailureKind::Unreachable)
                   return llvm::Error::success();
+                mapping_debug::emit(
+                    mapping_debug::Level::Decision,
+                    mapping_debug::Stage::SystemPnr,
+                    mapping_debug::Event::MappingFailure,
+                    [&](llvm::json::Object &fields) {
+                      fields["operation"] = "route_whole_net";
+                      fields["logical_leg"] = legOrdinal;
+                      fields["service_context"] = leg.serviceContext;
+                      fields["sink_terminal"] = activeSink.terminal;
+                      fields["failure_kind"] =
+                          stringifyEndpointRouteSearchFailureKind(
+                              failure.kind());
+                      fields["diagnostic"] = lastRouteDiagnostic;
+                    });
                 return llvm::make_error<EndpointRouteSearchFailure>(
                     failure.kind(), lastRouteDiagnostic);
               });
@@ -937,12 +956,35 @@ loom::pnr::detail::buildSystemServiceRoutes(
             return std::move(error);
         }
       }
-      if (!bestProbe)
+      if (!bestProbe) {
+        mapping_debug::emit(mapping_debug::Level::Decision,
+                            mapping_debug::Stage::SystemPnr,
+                            mapping_debug::Event::MappingFailure,
+                            [&](llvm::json::Object &fields) {
+                              fields["operation"] = "route_whole_net";
+                              fields["logical_leg"] = legOrdinal;
+                              fields["service_context"] = leg.serviceContext;
+                              fields["sink_terminal"] = activeSink.terminal;
+                              if (lastRouteFailureKind)
+                                fields["failure_kind"] =
+                                    stringifyEndpointRouteSearchFailureKind(
+                                        *lastRouteFailureKind);
+                              fields["diagnostic"] = lastRouteDiagnostic;
+                              llvm::json::Array sources;
+                              for (PnrIndex endpoint : lastRouteSources)
+                                sources.push_back(endpoint);
+                              fields["source_endpoints"] = std::move(sources);
+                              llvm::json::Array sinks;
+                              for (PnrIndex endpoint : activeSink.endpoints)
+                                sinks.push_back(endpoint);
+                              fields["sink_endpoints"] = std::move(sinks);
+                            });
         return llvm::make_error<detail::SystemCandidateInfeasible>(
             ("cannot route frozen service leg " + llvm::Twine(legOrdinal) +
              " in context " + llvm::Twine(leg.serviceContext) + ": " +
              lastRouteDiagnostic)
                 .str());
+      }
 
       PnrIndex sourceNode = 0;
       if (nodes.empty()) {

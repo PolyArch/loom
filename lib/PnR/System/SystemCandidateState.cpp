@@ -619,7 +619,8 @@ solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
   const auto validate =
       [&](llvm::ArrayRef<PnrIndex> choices) -> llvm::Expected<bool> {
     const std::size_t threadCount = problem->threadDecisions().size();
-    const auto emitChoice = [&](llvm::StringRef status) {
+    const auto emitChoice = [&](llvm::StringRef status,
+                                llvm::StringRef diagnostic = {}) {
       mapping_debug::emit(
           mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
           mapping_debug::Event::ContextChoice, [&](llvm::json::Object &fields) {
@@ -634,6 +635,8 @@ solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
             fields["thread_choices"] = std::move(threadChoices);
             fields["graph_choices"] = std::move(graphChoices);
             fields["status"] = status;
+            if (!diagnostic.empty())
+              fields["diagnostic"] = diagnostic;
           });
     };
     std::uint64_t candidateEndpointExpansions = 0;
@@ -661,13 +664,18 @@ solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
       return true;
     }
     bool infeasible = false;
+    std::string diagnostic;
     llvm::Error remaining = llvm::handleErrors(
         candidate.takeError(),
-        [&](const detail::SystemCandidateInfeasible &) { infeasible = true; },
+        [&](const detail::SystemCandidateInfeasible &failure) {
+          infeasible = true;
+          diagnostic = errorMessage(failure);
+        },
         [&](const detail::SystemRoutingClosureFailure &failure) -> llvm::Error {
           if (failure.kind() == detail::SystemRoutingClosureFailureKind::
                                     FixedTerminalCapacityCut) {
             infeasible = true;
+            diagnostic = errorMessage(failure);
             return llvm::Error::success();
           }
           return llvm::make_error<detail::SystemRoutingClosureFailure>(
@@ -679,7 +687,7 @@ solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
       return llvm::createStringError(
           llvm::inconvertibleErrorCode(),
           "System candidate rejection lost its cause");
-    emitChoice("rejected");
+    emitChoice("rejected", diagnostic);
     return false;
   };
   auto solved = solve(solver, validate);
@@ -771,6 +779,19 @@ llvm::Expected<SystemCandidateStateHandle> initializeSystemCandidateWithClosure(
   if (llvm::Error error = detail::verifySystemServiceTargetDomains(
           *problem, threadChoices, graphChoices))
     return std::move(error);
+  for (PnrIndex leg = 0; leg < problem->serviceLegs().size(); ++leg) {
+    const FrozenSystemServiceLeg &record = problem->serviceLegs()[leg];
+    auto source = detail::resolveSystemServiceTerminalDomain(
+        *problem, leg, record.sourceTerminal, threadChoices, graphChoices);
+    if (!source)
+      return source.takeError();
+    for (PnrIndex terminal : problem->serviceLegSinkTerminals(leg)) {
+      auto sink = detail::resolveSystemServiceTerminalDomain(
+          *problem, leg, terminal, threadChoices, graphChoices);
+      if (!sink)
+        return sink.takeError();
+    }
+  }
   auto targets =
       selectCanonicalServiceTargets(*problem, threadChoices, graphChoices);
   if (!targets)

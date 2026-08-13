@@ -16,6 +16,8 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+
 #include <algorithm>
 #include <cassert>
 #include <map>
@@ -179,6 +181,7 @@ struct FrozenSystemRoutingData final {
 
 struct MergedServiceTerminal final {
   ::loom::mapping::SystemTransferTerminalKey key;
+  std::vector<::loom::fabric::FabricTransportEndpointRef> boundEndpoints;
   std::vector<::loom::fabric::FabricTransportEndpointRef> endpoints;
 };
 
@@ -350,6 +353,8 @@ llvm::Expected<FrozenSystemRoutingData> freezeSystemRouting(
     const SystemPnrSearchDomainView &searchDomain,
     llvm::ArrayRef<FrozenSystemServiceContext> serviceContexts,
     llvm::ArrayRef<FrozenSystemThreadExecutionDecision> threadDecisions,
+    llvm::ArrayRef<PnrIndex> threadChoiceCatalogOrdinals,
+    llvm::ArrayRef<::loom::fabric::AccCoreOccurrenceRef> accCores,
     llvm::ArrayRef<FrozenSystemGraphExecutionDecision> graphDecisions) {
   FrozenSystemRoutingData result;
   auto topology = freezeEndpointRoutingTopology(fabric.artifact());
@@ -409,7 +414,38 @@ llvm::Expected<FrozenSystemRoutingData> freezeSystemRouting(
       std::vector<PnrIndex> choices;
     };
     std::map<std::string, OwnerGroup> groups;
-    for (const auto &endpoint : domain.endpoints) {
+    const auto addOwner = [&](FrozenSystemTransferTerminalOwner owner) {
+      const auto ownerBytes = std::visit(
+          [](const auto value) {
+            return ::loom::fabric::canonicalFabricBytes(value);
+          },
+          owner);
+      groups.try_emplace(bytesKey(ownerBytes),
+                         OwnerGroup{std::move(owner), {}});
+    };
+    if (ownerDependency) {
+      if (ownerDependency->fixedHost) {
+        if (fabric.artifact().hostCoreOccurrences().size() != 1)
+          return invalid(
+              "message runtime terminal has no unique HostCore owner");
+        addOwner(fabric.artifact().hostCoreOccurrences().front());
+      } else {
+        if (ownerDependency->threadDecision >= threadDecisions.size())
+          return invalid("message terminal has a foreign owner decision");
+        const auto &decision = threadDecisions[ownerDependency->threadDecision];
+        if (decision.choiceOffset > threadChoiceCatalogOrdinals.size() ||
+            decision.choiceCount >
+                threadChoiceCatalogOrdinals.size() - decision.choiceOffset)
+          return invalid("message terminal owner domain is out of range");
+        for (PnrIndex core : threadChoiceCatalogOrdinals.slice(
+                 decision.choiceOffset, decision.choiceCount)) {
+          if (core >= accCores.size())
+            return invalid("message terminal owner names a foreign AccCore");
+          addOwner(accCores[core]);
+        }
+      }
+    }
+    for (const auto &endpoint : domain.boundEndpoints) {
       auto found = endpointOrdinals.find(
           bytesKey(::loom::fabric::canonicalFabricBytes(endpoint)));
       if (found == endpointOrdinals.end())
@@ -439,9 +475,16 @@ llvm::Expected<FrozenSystemRoutingData> freezeSystemRouting(
             return ::loom::fabric::canonicalFabricBytes(value);
           },
           executionOwner);
-      auto [group, inserted] = groups.try_emplace(
-          bytesKey(ownerBytes), OwnerGroup{executionOwner, {}});
-      group->second.choices.push_back(found->second);
+      auto group = groups.find(bytesKey(ownerBytes));
+      if (ownerDependency && group == groups.end())
+        continue;
+      if (group == groups.end())
+        group = groups
+                    .try_emplace(bytesKey(ownerBytes),
+                                 OwnerGroup{executionOwner, {}})
+                    .first;
+      if (llvm::is_contained(domain.endpoints, endpoint))
+        group->second.choices.push_back(found->second);
     }
     for (auto &[key, group] : groups) {
       (void)key;
@@ -507,14 +550,26 @@ llvm::Expected<FrozenSystemRoutingData> freezeSystemRouting(
           dataflow.identity(), row.terminal);
       if (!terminalBytes)
         return terminalBytes.takeError();
-      auto [position, inserted] = terminals.try_emplace(
-          bytesKey(*terminalBytes), MergedServiceTerminal{row.terminal, {}});
+      auto [position, inserted] =
+          terminals.try_emplace(bytesKey(*terminalBytes),
+                                MergedServiceTerminal{row.terminal, {}, {}});
+      if (const auto *bound =
+              std::get_if<SystemMessageTerminalEndpoint>(&row.boundEndpoint))
+        position->second.boundEndpoints.push_back(bound->endpoint);
       position->second.endpoints.insert(
           position->second.endpoints.end(),
           row.compatibleTransportEndpoints.begin(),
           row.compatibleTransportEndpoints.end());
     }
     for (auto &[key, terminal] : terminals) {
+      llvm::sort(terminal.boundEndpoints,
+                 [](const auto &left, const auto &right) {
+                   return ::loom::fabric::canonicalFabricBytes(left) <
+                          ::loom::fabric::canonicalFabricBytes(right);
+                 });
+      terminal.boundEndpoints.erase(std::unique(terminal.boundEndpoints.begin(),
+                                                terminal.boundEndpoints.end()),
+                                    terminal.boundEndpoints.end());
       llvm::sort(terminal.endpoints, [](const auto &left, const auto &right) {
         return ::loom::fabric::canonicalFabricBytes(left) <
                ::loom::fabric::canonicalFabricBytes(right);
@@ -669,6 +724,154 @@ llvm::Expected<FrozenSystemRoutingData> freezeSystemRouting(
     }
   }
   return result;
+}
+
+llvm::StringLiteral pointerLayoutKindName(::loom::PointerLayoutKind kind) {
+  switch (kind) {
+  case ::loom::PointerLayoutKind::StableIntegral:
+    return "stable_integral";
+  case ::loom::PointerLayoutKind::NonIntegral:
+    return "non_integral";
+  case ::loom::PointerLayoutKind::Unstable:
+    return "unstable";
+  case ::loom::PointerLayoutKind::ExternalState:
+    return "external_state";
+  }
+  llvm_unreachable("unknown pointer layout kind");
+}
+
+llvm::Expected<std::string> describeMessagePayload(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::mapping::SystemTransferTerminalKey &terminal) {
+  const auto &leg =
+      std::holds_alternative<::loom::mapping::SystemTransferSourceTerminalKey>(
+          terminal)
+          ? std::get<::loom::mapping::SystemTransferSourceTerminalKey>(terminal)
+                .leg
+          : std::get<::loom::mapping::SystemTransferSinkTerminalKey>(terminal)
+                .leg;
+  const auto *producer =
+      std::get_if<::loom::mapping::TransferObligationFamilyKey>(
+          &leg.obligation);
+  if (!producer)
+    return invalid("message terminal belongs to a non-transfer obligation");
+  auto resolved = dataflow.resolve(*producer);
+  if (!resolved)
+    return resolved.takeError();
+
+  std::string description;
+  llvm::raw_string_ostream stream(description);
+  resolved->payloadType.print(stream);
+  if (const auto pointer =
+          mlir::dyn_cast<mlir::LLVM::LLVMPointerType>(resolved->payloadType)) {
+    auto layout = dataflow.pointerLayout(pointer.getAddressSpace());
+    if (!layout)
+      return layout.takeError();
+    stream << " [pointer_layout={address_space=" << layout->addressSpace
+           << ", representation_bits=" << layout->representationBits
+           << ", address_bits=" << layout->addressBits
+           << ", kind=" << pointerLayoutKindName(layout->kind) << "}]";
+  }
+  stream.flush();
+  return description;
+}
+
+llvm::Error validateStaticMessageTerminalSupport(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const FrozenSystemRoutingData &routing,
+    llvm::ArrayRef<FrozenSystemThreadExecutionDecision> threadDecisions,
+    llvm::ArrayRef<PnrIndex> threadChoiceCatalogOrdinals,
+    llvm::ArrayRef<::loom::fabric::AccCoreOccurrenceRef> accCores) {
+  std::vector<std::vector<std::uint8_t>> supportedChoices;
+  supportedChoices.reserve(threadDecisions.size());
+  for (const FrozenSystemThreadExecutionDecision &decision : threadDecisions)
+    supportedChoices.emplace_back(decision.choiceCount, 1);
+  std::vector<std::set<std::string>> constrainingPayloads(
+      threadDecisions.size());
+
+  std::vector<std::uint8_t> referenced(routing.terminals.size(), 0);
+  for (const FrozenSystemServiceLeg &leg : routing.legs) {
+    if (!std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
+            leg.key.obligation))
+      continue;
+    if (leg.sourceTerminal >= referenced.size() ||
+        leg.sinkOffset > routing.legSinks.size() ||
+        leg.sinkCount > routing.legSinks.size() - leg.sinkOffset)
+      return invalid("message service leg has an invalid terminal range");
+    referenced[leg.sourceTerminal] = 1;
+    for (PnrIndex terminal : llvm::ArrayRef(routing.legSinks)
+                                 .slice(leg.sinkOffset, leg.sinkCount)) {
+      if (terminal >= referenced.size())
+        return invalid("message service leg names a foreign sink terminal");
+      referenced[terminal] = 1;
+    }
+  }
+
+  for (const auto &[terminalOrdinal, terminal] :
+       llvm::enumerate(routing.terminals)) {
+    if (!referenced[terminalOrdinal])
+      continue;
+    auto payload = describeMessagePayload(dataflow, terminal.key);
+    if (!payload)
+      return payload.takeError();
+    if (terminal.ownerDomainOffset > routing.ownerDomains.size() ||
+        terminal.ownerDomainCount >
+            routing.ownerDomains.size() - terminal.ownerDomainOffset)
+      return invalid("message terminal has an invalid owner-domain range");
+    const auto ownerDomains =
+        llvm::ArrayRef(routing.ownerDomains)
+            .slice(terminal.ownerDomainOffset, terminal.ownerDomainCount);
+    const auto hasEndpoint = [&](const auto &owner) {
+      const auto found = llvm::find_if(ownerDomains, [&](const auto &domain) {
+        return domain.owner == owner;
+      });
+      return found != ownerDomains.end() && found->endpointChoiceCount != 0;
+    };
+    if (terminal.fixedHostOwner) {
+      if (!llvm::any_of(ownerDomains, [&](const auto &domain) {
+            return std::holds_alternative<
+                       ::loom::fabric::HostCoreOccurrenceRef>(domain.owner) &&
+                   domain.endpointChoiceCount != 0;
+          }))
+        return infeasible(llvm::Twine("message terminal payload ") + *payload +
+                          " has no compatible HostCore endpoint");
+      continue;
+    }
+    if (terminal.ownerThreadDecision >= threadDecisions.size())
+      return invalid("message terminal has a foreign owner decision");
+    const auto &decision = threadDecisions[terminal.ownerThreadDecision];
+    if (decision.choiceOffset > threadChoiceCatalogOrdinals.size() ||
+        decision.choiceCount >
+            threadChoiceCatalogOrdinals.size() - decision.choiceOffset)
+      return invalid("message terminal owner choice range is invalid");
+    auto support =
+        llvm::MutableArrayRef(supportedChoices[terminal.ownerThreadDecision]);
+    for (PnrIndex choice = 0; choice < decision.choiceCount; ++choice) {
+      const PnrIndex core =
+          threadChoiceCatalogOrdinals[decision.choiceOffset + choice];
+      if (core >= accCores.size())
+        return invalid("message terminal owner choice names a foreign core");
+      const bool admitted =
+          hasEndpoint(FrozenSystemTransferTerminalOwner{accCores[core]});
+      support[choice] &= admitted;
+      if (!admitted)
+        constrainingPayloads[terminal.ownerThreadDecision].insert(*payload);
+    }
+  }
+
+  for (const auto &[decision, support] : llvm::enumerate(supportedChoices))
+    if (!support.empty() &&
+        llvm::none_of(support, [](std::uint8_t value) { return value != 0; })) {
+      std::string diagnostic;
+      llvm::raw_string_ostream stream(diagnostic);
+      stream << "message terminal capability support eliminates every AccCore "
+                "choice for thread decision "
+             << decision << "; payloads constraining AccCore choices: ";
+      llvm::interleaveComma(constrainingPayloads[decision], stream);
+      stream.flush();
+      return infeasible(diagnostic);
+    }
+  return llvm::Error::success();
 }
 
 llvm::Error validateInputs(
@@ -1541,11 +1744,15 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       catalogs->spatialCatalog, *constraintIndex);
   if (!memoryBindings)
     return memoryBindings.takeError();
-  auto routing =
-      freezeSystemRouting(dataflow, fabric, searchDomain, *serviceContexts,
-                          decisions->threads, decisions->graphs);
+  auto routing = freezeSystemRouting(
+      dataflow, fabric, searchDomain, *serviceContexts, decisions->threads,
+      decisions->threadChoices, catalogs->cores, decisions->graphs);
   if (!routing)
     return routing.takeError();
+  if (llvm::Error error = validateStaticMessageTerminalSupport(
+          dataflow, *routing, decisions->threads, decisions->threadChoices,
+          catalogs->cores))
+    return std::move(error);
   auto instructionUsePatterns =
       freezeInstructionUsePatterns(fabric, catalogs->cores);
   if (!instructionUsePatterns)

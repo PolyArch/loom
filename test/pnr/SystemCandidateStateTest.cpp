@@ -88,6 +88,30 @@ void requireFailureContains(llvm::Expected<T> value,
 }
 
 template <typename T>
+void requireProvenInfeasibleFreeze(llvm::Expected<T> value,
+                                   llvm::StringRef diagnostic) {
+  if (value)
+    fail("statically infeasible System input unexpectedly froze");
+  bool matched = false;
+  llvm::Error remaining = llvm::handleErrors(
+      value.takeError(), [&](const loom::pnr::SystemPnrFreezeFailure &failure) {
+        matched = true;
+        require(failure.kind() ==
+                    loom::pnr::SystemPnrFreezeFailureKind::ProvenInfeasible,
+                "static System failure has the wrong kind");
+        std::string actual;
+        llvm::raw_string_ostream stream(actual);
+        failure.log(stream);
+        stream.flush();
+        require(llvm::StringRef(actual).contains(diagnostic),
+                "static System failure diagnostic changed: " + actual);
+      });
+  if (remaining)
+    fail(llvm::toString(std::move(remaining)));
+  require(matched, "static System failure lost its typed cause");
+}
+
+template <typename T>
 void requireUnsupported(
     llvm::Expected<T> value,
     loom::pnr::UnsupportedSystemPnrSearchDomainReason expectedReason,
@@ -214,6 +238,7 @@ mlir::OwningOpRef<mlir::ModuleOp> buildSystemConstraintModule(
     mlir::MLIRContext &context, const loom::ArtifactIdentity &dataflowIdentity,
     const loom::ArtifactIdentity &fabricIdentity,
     llvm::ArrayRef<dataflow::RootThreadLaunchRef> roots) {
+  context.loadDialect<::mapping::MappingDialect>();
   mlir::OpBuilder builder(&context);
   auto module = mlir::ModuleOp::create(builder.getUnknownLoc());
   builder.setInsertionPointToStart(module.getBody());
@@ -1249,6 +1274,102 @@ void graphBindingWorkflow() {
           "frozen System target catalogs are incomplete");
   require(!problem->serviceLegs().empty(),
           "frozen System problem lost its service legs");
+
+  for (const auto &[terminalOrdinal, terminal] :
+       llvm::enumerate(problem->serviceTerminals())) {
+    const auto &leg =
+        std::holds_alternative<loom::mapping::SystemTransferSourceTerminalKey>(
+            terminal.key)
+            ? std::get<loom::mapping::SystemTransferSourceTerminalKey>(
+                  terminal.key)
+                  .leg
+            : std::get<loom::mapping::SystemTransferSinkTerminalKey>(
+                  terminal.key)
+                  .leg;
+    if (!std::holds_alternative<loom::mapping::TransferObligationFamilyKey>(
+            leg.obligation))
+      continue;
+    const auto domains = problem->serviceTerminalOwnerDomains(
+        static_cast<loom::pnr::PnrIndex>(terminalOrdinal));
+    if (terminal.fixedHostOwner) {
+      require(domains.size() == 1 &&
+                  std::holds_alternative<loom::fabric::HostCoreOccurrenceRef>(
+                      domains.front().owner),
+              "host message terminal lost its exact owner domain");
+      continue;
+    }
+    require(terminal.ownerThreadDecision < problem->threadDecisions().size(),
+            "message terminal has no valid owner decision");
+    const auto ownerChoices =
+        problem->threadChoiceCatalogOrdinals(terminal.ownerThreadDecision);
+    require(domains.size() == ownerChoices.size(),
+            "message terminal owner domains diverged from its thread domain");
+    for (loom::pnr::PnrIndex coreOrdinal : ownerChoices) {
+      require(coreOrdinal < problem->accCores().size(),
+              "message terminal owner choice is outside the core catalog");
+      const auto core = problem->accCores()[coreOrdinal];
+      const auto domain = llvm::find_if(domains, [&](const auto &candidate) {
+        const auto *owner =
+            std::get_if<loom::fabric::AccCoreOccurrenceRef>(&candidate.owner);
+        return owner && *owner == core;
+      });
+      require(domain != domains.end(),
+              "message terminal omitted a legal execution owner");
+    }
+  }
+
+  std::optional<loom::mapping::SystemTransferTerminalKey>
+      restrictedMessageTerminal;
+  for (const auto &service : searchDomain.serviceObligations()) {
+    if (!std::holds_alternative<loom::mapping::TransferObligationFamilyKey>(
+            service.key))
+      continue;
+    for (const auto &row : service.transferTerminalCompatibility) {
+      const auto *bound = std::get_if<loom::pnr::SystemMessageTerminalEndpoint>(
+          &row.boundEndpoint);
+      if (!bound)
+        continue;
+      const auto *endpoint =
+          std::get_if<loom::fabric::SystemServiceEndpointRef>(
+              &bound->endpoint.owner.payload);
+      if (!endpoint)
+        continue;
+      const auto *owner = system.serviceEndpointOwner(*endpoint);
+      if (!owner || !std::holds_alternative<loom::fabric::AccCoreOccurrenceRef>(
+                        owner->owner().payload))
+        continue;
+      restrictedMessageTerminal = row.terminal;
+      break;
+    }
+    if (restrictedMessageTerminal)
+      break;
+  }
+  require(restrictedMessageTerminal.has_value(),
+          "message fixture has no AccCore-owned terminal row");
+  auto restrictedModule = buildSystemConstraintModule(
+      context, dataflow.identity(), system.artifact().identity(), roots);
+  auto restrictedRoot = llvm::cast<::mapping::ConstraintsSystemOp>(
+      restrictedModule->getBody()->front());
+  mlir::OpBuilder restrictedBuilder(&context);
+  addSystemRestriction(
+      restrictedBuilder, restrictedRoot,
+      ::mapping::SystemConstraintProjection::TransferTerminalAttachment,
+      transferTerminalAttr(&context, dataflow.identity(),
+                           *restrictedMessageTerminal),
+      {});
+  auto restrictedConstraints =
+      take(loom::mapping::finalizeSystemMappingConstraintSet(
+          restrictedRoot, dataflow, system, store));
+  auto restrictedPartition =
+      take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
+          dataflow, restrictedConstraints.view().rootThreadLaunches()));
+  auto restrictedDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      dataflow, system, config, restrictedConstraints, restrictedPartition,
+      loom::pnr::SystemHierarchicalGraphSearchInput{spatialMappings}, store));
+  requireProvenInfeasibleFreeze(
+      loom::pnr::freezeSystemPnrProblem(dataflow, system, restrictedDomain,
+                                        config, restrictedConstraints, store),
+      "payloads constraining AccCore choices: none");
 
   auto first = take(loom::pnr::initializeCanonicalSystemCandidate(problem));
   auto second = take(loom::pnr::initializeCanonicalSystemCandidate(problem));
