@@ -2018,7 +2018,12 @@ prerequisite sink actor can causally reach the dependent sink actor, the
 dependent route branch must traverse a `fabric.fifo[buffered]` after it
 diverges from the prerequisite branch. A Buffered FIFO on their shared prefix
 does not release the atomic fork. A bypass traversal supplies no progress
-boundary. These route dependencies are one identity-free Mapping-owned
+boundary. Frozen PnR mechanically projects each dependency into attachment
+choice compatibility: two sinks may share a routing endpoint only when the
+dependent choice itself supplies a Buffered local traversal. The relation is
+consumed by initialization, ordinary actions, exact route repair, and final
+candidate verification without becoming another actor-reachability owner.
+These route dependencies are one identity-free Mapping-owned
 projection consumed by both PnR and final verification; neither consumer may
 reconstruct a private reachability rule. With these conditions, topological
 induction establishes that some enabled actor can retire under fair execution.

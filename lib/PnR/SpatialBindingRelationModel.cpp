@@ -2,6 +2,7 @@
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "SpatialProgressAnalysis.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -579,7 +580,7 @@ SpatialBindingRelationModel::create(
   }
 
   std::vector<InitializerRelationInput> relationInputs;
-  std::vector<std::uint8_t> constraintRelations;
+  std::vector<SpatialBindingRelationRole> relationRoles;
   if (computeDecisionCount > 1) {
     const auto contexts = realizations.computeInstructionContexts();
     std::vector<PnrIndex> contextValues(contexts.size());
@@ -622,7 +623,121 @@ SpatialBindingRelationModel::create(
       residentContexts.members.push_back(std::move(member));
     }
     relationInputs.push_back(std::move(residentContexts));
-    constraintRelations.push_back(0);
+    relationRoles.push_back(SpatialBindingRelationRole::Structural);
+  }
+
+  const auto attachmentDecision = [&](FrozenSpatialTerminalBinding binding)
+      -> llvm::Expected<PnrIndex> {
+    if (binding.kind == FrozenSpatialTerminalBindingKind::PortDemand) {
+      if (binding.index >= ports.portDemands().size())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "progress dependency names a foreign PortDemand");
+      return portDecisionOffset + binding.index;
+    }
+    if (binding.index >= ports.graphBoundaries().size())
+      return invalid(Projection::SpatialTransferAttachment,
+                     "progress dependency names a foreign graph boundary");
+    return graphBoundaryDecisionOffset + binding.index;
+  };
+  const auto endpointRelationMember =
+      [&](PnrIndex decision, bool dependent)
+      -> llvm::Expected<InitializerRelationMemberInput> {
+    InitializerRelationMemberInput member;
+    member.decision = decision;
+    llvm::ArrayRef<PnrIndex> choices;
+    if (decision < graphBoundaryDecisionOffset) {
+      if (decision < portDecisionOffset)
+        return invalid(Projection::SpatialTransferAttachment,
+                       "progress dependency names a non-attachment decision");
+      const PnrIndex demand = decision - portDecisionOffset;
+      choices = llvm::ArrayRef(attachmentChoices)
+                    .slice(portAttachmentChoiceOffsets[demand],
+                           portAttachmentChoiceOffsets[demand + 1] -
+                               portAttachmentChoiceOffsets[demand]);
+    } else {
+      const PnrIndex boundary = decision - graphBoundaryDecisionOffset;
+      if (boundary >= ports.graphBoundaries().size())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "progress dependency boundary decision is out of range");
+      choices = llvm::ArrayRef(attachmentChoices)
+                    .slice(graphBoundaryAttachmentChoiceOffsets[boundary],
+                           graphBoundaryAttachmentChoiceOffsets[boundary + 1] -
+                               graphBoundaryAttachmentChoiceOffsets[boundary]);
+    }
+    if (routing.routingEndpoints().size() >= getPnrIndexMax())
+      return invalid(Projection::SpatialTransferAttachment,
+                     "progress relation endpoint domain overflows PnrIndex");
+    const PnrIndex bufferedLocalValue =
+        static_cast<PnrIndex>(routing.routingEndpoints().size());
+    member.projectedValues.reserve(choices.size());
+    for (PnrIndex option : choices) {
+      if (option >= ports.attachmentOptions().size())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "progress dependency attachment option is out of range");
+      auto buffered = spatialAttachmentProvidesLocalProgressBoundary(
+          ports, routing, option);
+      if (!buffered)
+        return buffered.takeError();
+      member.projectedValues.push_back(
+          dependent && *buffered ? bufferedLocalValue
+                                 : ports.attachmentOptions()[option].endpoint);
+    }
+    return member;
+  };
+
+  const auto progressOffsets = transfers.sinkProgressDependencyOffsets();
+  const auto progressDependencies = transfers.sinkProgressDependencies();
+  if (progressOffsets.size() != transfers.logicalNetSinks().size() + 1)
+    return invalid(Projection::SpatialTransferAttachment,
+                   "progress dependency CSR has the wrong shape");
+  for (const FrozenSpatialLogicalNet &net : transfers.logicalNets()) {
+    for (PnrIndex dependent = 0; dependent < net.sinkCount; ++dependent) {
+      const PnrIndex globalDependent = net.sinkOffset + dependent;
+      if (globalDependent + 1 >= progressOffsets.size() ||
+          progressOffsets[globalDependent] >
+              progressOffsets[globalDependent + 1] ||
+          progressOffsets[globalDependent + 1] > progressDependencies.size())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "progress dependency CSR is inconsistent");
+      auto dependentDecision = attachmentDecision(
+          transfers.logicalNetSinkBindings()[globalDependent]);
+      if (!dependentDecision)
+        return dependentDecision.takeError();
+      for (PnrIndex prerequisite : progressDependencies.slice(
+               progressOffsets[globalDependent],
+               progressOffsets[globalDependent + 1] -
+                   progressOffsets[globalDependent])) {
+        if (prerequisite >= net.sinkCount || prerequisite == dependent)
+          return invalid(Projection::SpatialTransferAttachment,
+                         "progress dependency sink ordinal is invalid");
+        auto prerequisiteDecision = attachmentDecision(
+            transfers.logicalNetSinkBindings()[net.sinkOffset + prerequisite]);
+        if (!prerequisiteDecision)
+          return prerequisiteDecision.takeError();
+        auto prerequisiteMember =
+            endpointRelationMember(*prerequisiteDecision, false);
+        if (!prerequisiteMember)
+          return prerequisiteMember.takeError();
+        auto dependentMember = endpointRelationMember(*dependentDecision, true);
+        if (!dependentMember)
+          return dependentMember.takeError();
+        bool conflictPossible = false;
+        for (PnrIndex prerequisiteValue : prerequisiteMember->projectedValues)
+          if (llvm::is_contained(dependentMember->projectedValues,
+                                 prerequisiteValue)) {
+            conflictPossible = true;
+            break;
+          }
+        if (!conflictPossible)
+          continue;
+        InitializerRelationInput separation;
+        separation.kind = InitializerRelationKind::Disjoint;
+        separation.members.push_back(std::move(*prerequisiteMember));
+        separation.members.push_back(std::move(*dependentMember));
+        relationInputs.push_back(std::move(separation));
+        relationRoles.push_back(SpatialBindingRelationRole::Progress);
+      }
+    }
   }
   std::optional<Projection> deferredProjection;
   for (std::size_t projectionOrdinal = 0;
@@ -766,7 +881,7 @@ SpatialBindingRelationModel::create(
           }
         }
         relationInputs.push_back(std::move(input));
-        constraintRelations.push_back(1);
+        relationRoles.push_back(SpatialBindingRelationRole::Constraint);
       }
       return llvm::Error::success();
     };
@@ -827,14 +942,14 @@ SpatialBindingRelationModel::create(
     compatibility.members.push_back(std::move(root));
     compatibility.members.push_back(std::move(attachment));
     relationInputs.push_back(std::move(compatibility));
-    constraintRelations.push_back(0);
+    relationRoles.push_back(SpatialBindingRelationRole::Structural);
   }
 
   auto relations = InitializerRelationModel::create(
       std::move(decisionChoiceCounts), std::move(relationInputs));
   if (!relations)
     return relations.takeError();
-  if (constraintRelations.size() != relations->relations().size())
+  if (relationRoles.size() != relations->relations().size())
     return invalid(Projection::SpatialTransferAttachment,
                    "relation ownership projection is incomplete");
   return std::shared_ptr<const SpatialBindingRelationModel>(
@@ -847,7 +962,7 @@ SpatialBindingRelationModel::create(
           std::move(graphBoundaryAttachmentChoiceOffsets),
           std::move(attachmentChoices),
           std::move(attachmentOptionChoiceOrdinals),
-          std::move(constraintRelations), deferredProjection));
+          std::move(relationRoles), deferredProjection));
 }
 
 llvm::ArrayRef<SpatialComputeBindingChoice>

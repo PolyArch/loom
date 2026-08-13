@@ -11,7 +11,18 @@
 namespace loom::pnr {
 
 class FrozenSpatialPnrProblem;
+class FrozenSpatialPortIndex;
+class FrozenSpatialRoutingGraph;
 class SpatialCandidateState;
+struct FrozenSpatialTerminalBinding;
+
+llvm::Expected<bool> spatialAttachmentProvidesLocalProgressBoundary(
+    const FrozenSpatialPortIndex &ports,
+    const FrozenSpatialRoutingGraph &routing, PnrIndex attachmentOption);
+
+llvm::Expected<bool> spatialTerminalProvidesLocalProgressBoundary(
+    const SpatialCandidateState &candidate,
+    FrozenSpatialTerminalBinding terminal);
 
 llvm::Expected<llvm::ArrayRef<PnrIndex>>
 spatialSinkProgressDependencies(const FrozenSpatialPnrProblem &problem,

@@ -550,7 +550,7 @@ SpatialExactRepairScratch::repairRouteCapacityOveruse(
           return std::move(error);
       }
       for (PnrIndex relation : bindings.decisionRelations(decision)) {
-        if (!bindings.relationIsConstraint(relation))
+        if (!bindings.relationRequiresRouteRepairEncoding(relation))
           continue;
         if (relation >= relationIncluded_.size())
           return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,

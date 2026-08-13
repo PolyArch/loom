@@ -168,6 +168,17 @@ llvm::Expected<bool> SpatialNetRouterScratch::collectTargetFrontier(
       continue;
     selectedSink = sink;
     requiresBufferedTraversal = !prerequisites->empty();
+    if (requiresBufferedTraversal) {
+      const FrozenSpatialLogicalNet &net =
+          candidate.problem().transfers().logicalNets()[logicalNet];
+      auto localBoundary = spatialTerminalProvidesLocalProgressBoundary(
+          candidate,
+          candidate.problem().transfers().logicalNetSinkBindings()[
+              net.sinkOffset + sink]);
+      if (!localBoundary)
+        return localBoundary.takeError();
+      requiresBufferedTraversal = !*localBoundary;
+    }
     break;
   }
   if (!selectedSink)

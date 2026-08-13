@@ -54,6 +54,40 @@ llvm::Expected<PnrIndex> parentSlot(const RouteTreeState &tree, PnrIndex slot) {
 
 } // namespace
 
+llvm::Expected<bool> loom::pnr::spatialAttachmentProvidesLocalProgressBoundary(
+    const FrozenSpatialPortIndex &ports,
+    const FrozenSpatialRoutingGraph &routing, PnrIndex attachmentOption) {
+  if (attachmentOption >= ports.attachmentOptions().size())
+    return invalid("attachment option is out of range");
+  const auto traversal =
+      ports.attachmentOptions()[attachmentOption].localTraversal;
+  if (!traversal)
+    return false;
+  if (*traversal >= routing.traversals().size())
+    return invalid("attachment local traversal is out of range");
+  return isBufferedTraversal(routing, *traversal);
+}
+
+llvm::Expected<bool> loom::pnr::spatialTerminalProvidesLocalProgressBoundary(
+    const SpatialCandidateState &candidate,
+    FrozenSpatialTerminalBinding terminal) {
+  PnrIndex option = 0;
+  switch (terminal.kind) {
+  case FrozenSpatialTerminalBindingKind::PortDemand:
+    if (terminal.index >= candidate.problem().ports().portDemands().size())
+      return invalid("terminal PortDemand is out of range");
+    option = candidate.portAttachment(terminal.index);
+    break;
+  case FrozenSpatialTerminalBindingKind::GraphBoundary:
+    if (terminal.index >= candidate.problem().ports().graphBoundaries().size())
+      return invalid("terminal graph boundary is out of range");
+    option = candidate.graphBoundaryAttachment(terminal.index);
+    break;
+  }
+  return spatialAttachmentProvidesLocalProgressBoundary(
+      candidate.problem().ports(), candidate.problem().routing(), option);
+}
+
 llvm::Expected<llvm::ArrayRef<PnrIndex>>
 loom::pnr::spatialSinkProgressDependencies(
     const FrozenSpatialPnrProblem &problem, PnrIndex logicalNet,
@@ -85,6 +119,17 @@ llvm::Expected<bool> loom::pnr::spatialRouteProgressDependencySatisfied(
     return dependencies.takeError();
   if (!llvm::is_contained(*dependencies, prerequisiteSink))
     return invalid("sink pair is not a frozen progress dependency");
+
+  const FrozenSpatialLogicalNet &net =
+      candidate.problem().transfers().logicalNets()[logicalNet];
+  auto localBoundary = spatialTerminalProvidesLocalProgressBoundary(
+      candidate,
+      candidate.problem().transfers().logicalNetSinkBindings()[
+          net.sinkOffset + dependentSink]);
+  if (!localBoundary)
+    return localBoundary.takeError();
+  if (*localBoundary)
+    return true;
 
   const RouteTreeState &tree = candidate.routeTree(logicalNet);
   const auto prerequisiteEndpoint = tree.sinkEndpoint(prerequisiteSink);

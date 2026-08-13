@@ -854,7 +854,9 @@ endpoint is not. Opcode-specific permutation tables would duplicate operation
 semantics, and hard endpoint disjointness would incorrectly reject legal
 temporal sharing. The initializer instead prefers the least-selected exact
 endpoint in every unconstrained occurrence-relative root's selected-placement
-domain.
+domain. The sole hard pairwise exception is derived from the shared progress
+projection: two causally ordered multicast sinks may share an endpoint only
+when the dependent attachment has its own Buffered local traversal.
 
 Graph boundaries have an additional essential distinction: they are the
 remaining endpoint of an already selected logical-net terminal relation. A

@@ -24,6 +24,12 @@ struct SpatialMemoryBindingChoice final {
   PnrIndex placement = 0;
 };
 
+enum class SpatialBindingRelationRole : std::uint8_t {
+  Structural,
+  Constraint,
+  Progress,
+};
+
 class SpatialBindingRelationModel final {
 public:
   static llvm::Expected<std::shared_ptr<const SpatialBindingRelationModel>>
@@ -77,7 +83,10 @@ public:
                                        PnrIndex option) const;
   llvm::ArrayRef<PnrIndex> decisionRelations(PnrIndex decision) const;
   bool relationIsConstraint(PnrIndex relation) const {
-    return constraintRelations_[relation] != 0;
+    return relationRoles_[relation] == SpatialBindingRelationRole::Constraint;
+  }
+  bool relationRequiresRouteRepairEncoding(PnrIndex relation) const {
+    return relationRoles_[relation] != SpatialBindingRelationRole::Structural;
   }
   bool relationSatisfied(PnrIndex relation,
                          llvm::ArrayRef<PnrIndex> choices) const {
@@ -104,7 +113,7 @@ private:
       std::vector<PnrIndex> graphBoundaryAttachmentChoiceOffsets,
       std::vector<PnrIndex> attachmentChoices,
       std::vector<PnrIndex> attachmentOptionChoiceOrdinals,
-      std::vector<std::uint8_t> constraintRelations,
+      std::vector<SpatialBindingRelationRole> relationRoles,
       std::optional<::mapping::SpatialConstraintProjection> deferredProjection)
       : relations_(std::move(relations)),
         computeChoiceOffsets_(std::move(computeChoiceOffsets)),
@@ -120,7 +129,7 @@ private:
         attachmentChoices_(std::move(attachmentChoices)),
         attachmentOptionChoiceOrdinals_(
             std::move(attachmentOptionChoiceOrdinals)),
-        constraintRelations_(std::move(constraintRelations)),
+        relationRoles_(std::move(relationRoles)),
         deferredProjection_(deferredProjection) {}
 
   InitializerRelationModel relations_;
@@ -134,7 +143,7 @@ private:
   std::vector<PnrIndex> graphBoundaryAttachmentChoiceOffsets_;
   std::vector<PnrIndex> attachmentChoices_;
   std::vector<PnrIndex> attachmentOptionChoiceOrdinals_;
-  std::vector<std::uint8_t> constraintRelations_;
+  std::vector<SpatialBindingRelationRole> relationRoles_;
   std::optional<::mapping::SpatialConstraintProjection> deferredProjection_;
 };
 
