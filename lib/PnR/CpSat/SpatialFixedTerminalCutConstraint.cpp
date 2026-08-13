@@ -22,14 +22,14 @@ llvm::Error cutConstraintError(const llvm::Twine &detail) {
 
 } // namespace
 
-llvm::Expected<bool>
+llvm::Expected<SpatialFixedTerminalCutConstraintResult>
 loom::pnr::detail::addSpatialFixedTerminalCutEscapeConstraint(
     CpModelBuilder &model, const SpatialCandidateState &candidate,
     const SpatialBindingRelationModel &bindings,
     llvm::ArrayRef<IntVar> variables, llvm::ArrayRef<int> decisionVariables,
     llvm::ArrayRef<PnrIndex> legalValueOffsets,
-    llvm::ArrayRef<std::int64_t> legalValues, PnrIndex capacity,
-    llvm::ArrayRef<SpatialFixedTerminalCutNet> cuts,
+    llvm::ArrayRef<std::int64_t> legalValues,
+    const SpatialFixedTerminalCutCertificate &certificate,
     std::vector<std::uint8_t> &blockedTraversals_,
     std::vector<std::uint8_t> &reachableEndpoints_,
     std::vector<PnrIndex> &worklist_) {
@@ -37,6 +37,9 @@ loom::pnr::detail::addSpatialFixedTerminalCutEscapeConstraint(
   const FrozenSpatialRoutingGraph &routing = problem.routing();
   const FrozenSpatialPortIndex &ports = problem.ports();
   const FrozenSpatialTransferIndex &transfers = problem.transfers();
+  const PnrIndex capacity = certificate.capacity;
+  const llvm::ArrayRef<SpatialFixedTerminalCutNet> cuts =
+      certificate.forcedNetCuts;
   if (capacity >= problem.resources().capacityDimensions().size())
     return cutConstraintError("capacity is out of range");
   if (cuts.empty())
@@ -151,6 +154,7 @@ loom::pnr::detail::addSpatialFixedTerminalCutEscapeConstraint(
 
   std::vector<BoolVar> escapedCuts;
   escapedCuts.reserve(cuts.size());
+  bool currentAssignmentEscapes = false;
   for (const SpatialFixedTerminalCutNet &cut : cuts) {
     if (cut.logicalNet >= transfers.logicalNets().size())
       return cutConstraintError("logical net is out of range");
@@ -170,7 +174,7 @@ loom::pnr::detail::addSpatialFixedTerminalCutEscapeConstraint(
     if (!sinkLocal)
       return sinkLocal.takeError();
     if (!*sourceLocal || !*sinkLocal)
-      return false;
+      return SpatialFixedTerminalCutConstraintResult{};
     auto sourceValues = legalDomain(**sourceLocal);
     if (!sourceValues)
       return sourceValues.takeError();
@@ -181,6 +185,14 @@ loom::pnr::detail::addSpatialFixedTerminalCutEscapeConstraint(
     const auto sinkChoices = terminalChoices(sinkBinding);
     const std::uint32_t payloadWidth =
         candidate.logicalNetPayloadWidth(cut.logicalNet);
+    if (llvm::Error error = markReachable(
+            candidate.logicalNetSourceEndpoint(cut.logicalNet), payloadWidth))
+      return std::move(error);
+    const PnrIndex currentSink =
+        candidate.logicalNetSinkEndpoint(cut.logicalNet, cut.unreachableSink);
+    if (currentSink >= reachableEndpoints_.size())
+      return cutConstraintError("current sink endpoint is out of range");
+    currentAssignmentEscapes |= reachableEndpoints_[currentSink] != 0;
     const BoolVar escaped = model.NewBoolVar();
     escapedCuts.push_back(escaped);
 
@@ -226,5 +238,6 @@ loom::pnr::detail::addSpatialFixedTerminalCutEscapeConstraint(
     }
   }
   model.AddAtLeastOne(escapedCuts);
-  return true;
+  return SpatialFixedTerminalCutConstraintResult{true,
+                                                 currentAssignmentEscapes};
 }

@@ -58,6 +58,55 @@ bool containsOrdinal(PnrIndex offset, PnrIndex count, PnrIndex ordinal) {
   return ordinal >= offset && ordinal - offset < count;
 }
 
+bool cutNetLess(const SpatialFixedTerminalCutNet &left,
+                const SpatialFixedTerminalCutNet &right) {
+  return std::tie(left.logicalNet, left.unreachableSink) <
+         std::tie(right.logicalNet, right.unreachableSink);
+}
+
+bool cutCertificateLess(const SpatialFixedTerminalCutCertificate &left,
+                        const SpatialFixedTerminalCutCertificate &right) {
+  if (left.capacity != right.capacity)
+    return left.capacity < right.capacity;
+  return std::lexicographical_compare(
+      left.forcedNetCuts.begin(), left.forcedNetCuts.end(),
+      right.forcedNetCuts.begin(), right.forcedNetCuts.end(), cutNetLess);
+}
+
+bool cutCertificateEqual(const SpatialFixedTerminalCutCertificate &left,
+                         const SpatialFixedTerminalCutCertificate &right) {
+  return !cutCertificateLess(left, right) && !cutCertificateLess(right, left);
+}
+
+bool insertCutCertificate(
+    std::vector<SpatialFixedTerminalCutCertificate> &certificates,
+    SpatialFixedTerminalCutCertificate certificate) {
+  llvm::sort(certificate.forcedNetCuts, cutNetLess);
+  certificate.forcedNetCuts.erase(
+      std::unique(certificate.forcedNetCuts.begin(),
+                  certificate.forcedNetCuts.end(),
+                  [](const SpatialFixedTerminalCutNet &left,
+                     const SpatialFixedTerminalCutNet &right) {
+                    return !cutNetLess(left, right) && !cutNetLess(right, left);
+                  }),
+      certificate.forcedNetCuts.end());
+  const auto found =
+      llvm::lower_bound(certificates, certificate, cutCertificateLess);
+  if (found != certificates.end() && cutCertificateEqual(*found, certificate))
+    return false;
+  certificates.insert(found, std::move(certificate));
+  return true;
+}
+
+std::size_t retainedCertificateBytes(
+    const std::vector<SpatialFixedTerminalCutCertificate> &certificates) {
+  std::size_t bytes =
+      certificates.capacity() * sizeof(SpatialFixedTerminalCutCertificate);
+  for (const SpatialFixedTerminalCutCertificate &certificate : certificates)
+    bytes += retainedBytes(certificate.forcedNetCuts);
+  return bytes;
+}
+
 struct TransportWitness final {
   ResolvedPnrViolationKind kind;
   PnrIndex ordinal;
@@ -605,7 +654,7 @@ SpatialExactRepairScratch::repairTransportClosure(
     DeterministicPnrRandomStream &exactRepairStream) {
   const std::int32_t solverSeed =
       detail::projectCpSatRandomSeed(exactRepairStream.nextU64());
-  std::vector<SpatialFixedTerminalCutNet> certificateSeedCuts;
+  std::vector<SpatialFixedTerminalCutCertificate> certificates;
   std::uint64_t maximumRegionDecisionCount = 0;
   std::uint64_t totalSolverCalls = 0;
   std::uint64_t totalEndpointExpansions = 0;
@@ -622,7 +671,7 @@ SpatialExactRepairScratch::repairTransportClosure(
     bool requiresRegionExpansion = false;
     auto attempt = repairTransportClosureRegion(
         candidate, restartOrdinal, solverCallLimit - totalSolverCalls,
-        solverSeed, certificateSeedCuts, requiresRegionExpansion);
+        solverSeed, certificates, requiresRegionExpansion);
     if (!attempt)
       return attempt.takeError();
     maximumRegionDecisionCount =
@@ -644,26 +693,13 @@ SpatialExactRepairScratch::repairTransportClosure(
       return std::move(*attempt);
     }
 
-    bool addedSeed = false;
-    for (const SpatialFixedTerminalCutNet &cut : routeCutNetCuts_) {
-      const auto less = [](const SpatialFixedTerminalCutNet &left,
-                           const SpatialFixedTerminalCutNet &right) {
-        return std::tie(left.logicalNet, left.unreachableSink) <
-               std::tie(right.logicalNet, right.unreachableSink);
-      };
-      const auto found = llvm::lower_bound(certificateSeedCuts, cut, less);
-      if (found == certificateSeedCuts.end() || less(cut, *found) ||
-          less(*found, cut)) {
-        certificateSeedCuts.insert(found, cut);
-        addedSeed = true;
-      }
-    }
-    if (!addedSeed)
+    if (learnedCutCertificates_.size() <= certificates.size())
       return result(
           SpatialExactRepairResultKind::InternalError,
           maximumRegionDecisionCount, totalSolverCalls, attempt->actionCount,
           "fixed-terminal cut cannot expand its bounded repair region",
           totalEndpointExpansions, totalNegotiationIterations);
+    certificates = learnedCutCertificates_;
   }
 
   return result(SpatialExactRepairResultKind::UnknownBudgetExhausted,
@@ -677,7 +713,7 @@ llvm::Expected<SpatialExactRepairResult>
 SpatialExactRepairScratch::repairTransportClosureRegion(
     SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
     std::uint64_t solverCallLimit, std::int32_t solverSeed,
-    llvm::ArrayRef<SpatialFixedTerminalCutNet> certificateSeedCuts,
+    llvm::ArrayRef<SpatialFixedTerminalCutCertificate> certificates,
     bool &requiresRegionExpansion) {
   requiresRegionExpansion = false;
   const FrozenSpatialPnrProblem &problem = candidate.problem();
@@ -708,6 +744,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
   decisions_.clear();
   relations_.clear();
   affectedNets_.clear();
+  learnedCutCertificates_.assign(certificates.begin(), certificates.end());
 
   const PnrIndex computeCount = bindings.computeDecisionCount();
   const PnrIndex memoryOffset = computeCount;
@@ -902,10 +939,11 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
   case ResolvedPnrViolationKind::HardProgressViolation:
     llvm_unreachable("hard progress is not a transport exact-repair witness");
   }
-  for (const SpatialFixedTerminalCutNet &cut : certificateSeedCuts)
-    if (llvm::Error error = addCertificateCut(cut))
-      return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                    llvm::toString(std::move(error)));
+  for (const SpatialFixedTerminalCutCertificate &certificate : certificates)
+    for (const SpatialFixedTerminalCutNet &cut : certificate.forcedNetCuts)
+      if (llvm::Error error = addCertificateCut(cut))
+        return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
+                      llvm::toString(std::move(error)));
   if (affectedNets_.empty())
     return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
                   "transport witness has no contributing logical net");
@@ -1141,6 +1179,25 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
   if (!mutationCount)
     return mutationCount.takeError();
 
+  bool currentAssignmentSatisfiesCertificates = true;
+  for (const SpatialFixedTerminalCutCertificate &certificate : certificates) {
+    auto encoded = detail::addSpatialFixedTerminalCutEscapeConstraint(
+        model, candidate, bindings, variables, decisionVariables_,
+        legalValueOffsets_, legalValues_, certificate,
+        routeCutBlockedTraversals_, routeCutReachableEndpoints_,
+        routeCutWorklist_);
+    if (!encoded)
+      return result(SpatialExactRepairResultKind::InternalError,
+                    canonicalRegionDecisionCount, 0, 0,
+                    llvm::toString(encoded.takeError()));
+    if (!encoded->encoded)
+      return result(SpatialExactRepairResultKind::InternalError,
+                    canonicalRegionDecisionCount, 0, 0,
+                    "retained fixed-terminal cut is outside its rebuilt "
+                    "repair region");
+    currentAssignmentSatisfiesCertificates &= encoded->currentAssignmentEscapes;
+  }
+
   if (llvm::Error error = actionExecutor_.prepare(candidate))
     return result(SpatialExactRepairResultKind::InternalError,
                   canonicalRegionDecisionCount, 0, 0,
@@ -1151,7 +1208,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
   std::uint64_t maximumObservedRegionDecisionCount =
       canonicalRegionDecisionCount;
   bool sawUnknownAssignment = false;
-  bool proveCurrentAssignment = true;
+  bool proveCurrentAssignment = currentAssignmentSatisfiesCertificates;
   std::vector<std::int64_t> currentAssignment;
   currentAssignment.reserve(decisions_.size());
   for (PnrIndex decision : decisions_) {
@@ -1378,8 +1435,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     bool regionalLimit = false;
     std::uint64_t rejectedRegionDecisionCount = assignmentRegionDecisionCount;
     bool routeWorkUnknown = false;
-    routeCutNetCuts_.clear();
-    routeCutCapacity_ = getInvalidPnrIndex();
+    routeCutCertificate_ = {};
     if (!probe) {
       std::string detail;
       std::optional<SpatialActionTransitionFailureKind> transitionFailure;
@@ -1403,18 +1459,13 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
               llvm::raw_string_ostream stream(message);
               failure.log(stream);
               return llvm::make_error<SpatialPathFinderClosureFailure>(
-                  failure.kind(), stream.str(), failure.certificateCapacity(),
+                  failure.kind(), stream.str(), failure.certificate(),
                   failure.mandatoryUsage(), failure.physicalCapacity(),
-                  std::vector<SpatialFixedTerminalCutNet>(
-                      failure.forcedNetCuts().begin(),
-                      failure.forcedNetCuts().end()),
                   failure.regionalLogicalNetCount(),
                   failure.regionalLogicalNetLimit());
             }
             fixedTerminalCut = true;
-            routeCutCapacity_ = failure.certificateCapacity();
-            routeCutNetCuts_.assign(failure.forcedNetCuts().begin(),
-                                    failure.forcedNetCuts().end());
+            routeCutCertificate_ = failure.certificate();
             return llvm::Error::success();
           },
           [&](const SpatialActionTransitionFailure &failure) -> llvm::Error {
@@ -1539,7 +1590,8 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
           fields["regional_limit"] = regionalLimit;
           fields["region_decisions"] = rejectedRegionDecisionCount;
           fields["route_work_unknown"] = routeWorkUnknown;
-          fields["cut_logical_net_count"] = routeCutNetCuts_.size();
+          fields["cut_logical_net_count"] =
+              routeCutCertificate_.forcedNetCuts.size();
         });
     if (!rejectAssignment)
       return executedResult(SpatialExactRepairResultKind::InternalError,
@@ -1551,15 +1603,19 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                     actionExecutor_.endpointExpansionCount(),
                     actionExecutor_.negotiationIterationCount());
     if (fixedTerminalCut) {
+      if (!insertCutCertificate(learnedCutCertificates_, routeCutCertificate_))
+        return executedResult(
+            SpatialExactRepairResultKind::InternalError,
+            "negotiated routing repeated an active fixed-terminal cut");
       auto encoded = detail::addSpatialFixedTerminalCutEscapeConstraint(
           model, candidate, bindings, variables, decisionVariables_,
-          legalValueOffsets_, legalValues_, routeCutCapacity_, routeCutNetCuts_,
+          legalValueOffsets_, legalValues_, routeCutCertificate_,
           routeCutBlockedTraversals_, routeCutReachableEndpoints_,
           routeCutWorklist_);
       if (!encoded)
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(encoded.takeError()));
-      if (!*encoded) {
+      if (!encoded->encoded) {
         requiresRegionExpansion = true;
         return executedResult(
             SpatialExactRepairResultKind::RegionInfeasibleUnderFixedBoundary,
@@ -1597,7 +1653,9 @@ std::size_t SpatialExactRepairScratch::retainedStorageBytes() const {
          retainedBytes(decisionIncluded_) + retainedBytes(relationIncluded_) +
          retainedBytes(netIncluded_) + retainedBytes(decisionQueue_) +
          retainedBytes(decisions_) + retainedBytes(relations_) +
-         retainedBytes(affectedNets_) + retainedBytes(routeCutNetCuts_) +
+         retainedBytes(affectedNets_) +
+         retainedBytes(routeCutCertificate_.forcedNetCuts) +
+         retainedCertificateBytes(learnedCutCertificates_) +
          retainedBytes(routeCutBlockedTraversals_) +
          retainedBytes(routeCutReachableEndpoints_) +
          retainedBytes(routeCutWorklist_) + retainedBytes(decisionVariables_) +

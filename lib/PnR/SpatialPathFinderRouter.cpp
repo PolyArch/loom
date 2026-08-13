@@ -23,15 +23,14 @@ using namespace loom::pnr;
 char SpatialPathFinderClosureFailure::ID;
 
 SpatialPathFinderClosureFailure::SpatialPathFinderClosureFailure(
-    Kind kind, std::string message, PnrIndex certificateCapacity,
+    Kind kind, std::string message,
+    SpatialFixedTerminalCutCertificate certificate,
     std::uint64_t mandatoryUsage, std::uint64_t physicalCapacity,
-    std::vector<SpatialFixedTerminalCutNet> forcedNetCuts,
     std::uint64_t regionalLogicalNetCount,
     std::uint64_t regionalLogicalNetLimit)
     : kind_(kind), message_(std::move(message)),
-      certificateCapacity_(certificateCapacity),
-      mandatoryUsage_(mandatoryUsage), physicalCapacity_(physicalCapacity),
-      forcedNetCuts_(std::move(forcedNetCuts)),
+      certificate_(std::move(certificate)), mandatoryUsage_(mandatoryUsage),
+      physicalCapacity_(physicalCapacity),
       regionalLogicalNetCount_(regionalLogicalNetCount),
       regionalLogicalNetLimit_(regionalLogicalNetLimit) {}
 
@@ -1064,8 +1063,7 @@ SpatialPathFinderRouterScratch::expandExactRegionalConflictClosure(
             SpatialPathFinderClosureFailure::Kind::RegionalLimit,
             "Spatial PathFinder conflict closure exceeds its regional "
             "logical-net limit",
-            getInvalidPnrIndex(), 0, 0,
-            std::vector<SpatialFixedTerminalCutNet>{},
+            SpatialFixedTerminalCutCertificate{}, 0, 0,
             routingRegionNets_.size(), logicalNetLimit);
     }
   }
@@ -1291,8 +1289,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
       return llvm::make_error<SpatialPathFinderClosureFailure>(
           SpatialPathFinderClosureFailure::Kind::RegionalLimit,
           "Spatial PathFinder routing region exceeds its logical-net limit",
-          getInvalidPnrIndex(), 0, 0, std::vector<SpatialFixedTerminalCutNet>{},
-          routingRegionNets_.size(), exactRegionalLogicalNetLimit);
+          SpatialFixedTerminalCutCertificate{}, 0, 0, routingRegionNets_.size(),
+          exactRegionalLogicalNetLimit);
   } else if (exactRegionalLogicalNetLimit != 0) {
     return pathFinderError(
         "full-design routing cannot carry a regional logical-net limit");
@@ -1774,8 +1772,10 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
               std::to_string(conflictAnalysis.mandatoryUsage) +
               " greater than capacity " +
               std::to_string(conflictAnalysis.physicalCapacity),
-          conflictAnalysis.certificateCapacity, conflictAnalysis.mandatoryUsage,
-          conflictAnalysis.physicalCapacity, cutCertificateForcedNetCuts_);
+          SpatialFixedTerminalCutCertificate{
+              conflictAnalysis.certificateCapacity,
+              cutCertificateForcedNetCuts_},
+          conflictAnalysis.mandatoryUsage, conflictAnalysis.physicalCapacity);
     }
     if (consecutiveNoProgressIterations >= limits.noProgressIterationLimit &&
         trendCount == trendWindow &&

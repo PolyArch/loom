@@ -804,6 +804,20 @@ The relation is a necessary escape condition, not a solver-private routing
 model: negotiated routing remains the sole authority for complete multicast,
 capacity, tag, and handshake closure.
 
+Expanding a bounded region must not discard cut facts learned by the smaller
+model. A terminal pair alone explains which decisions enter the larger region,
+but it cannot reconstruct which traversals the proof removed; the capacity is
+part of the certificate identity. Exact repair therefore carries the capacity
+and complete canonical terminal-pair set together and re-encodes every retained
+escape constraint after rebuilding. The prior route probe already proved that
+its provisional assignment violates the new constraint. When the unchanged
+candidate has the same terminal choices, proving that fixed assignment again
+would spend a solver call only to rediscover the known fact, so canonical
+extraction resumes directly. A certificate learned from a different
+provisional assignment may still admit the unchanged candidate; in that case
+the initial fixed-assignment proof remains required. Negotiated routing still
+decides whether either resulting assignment actually closes.
+
 Regional routing cannot measure only capacities touched by the candidate's
 current regional routes: moving those routes away from an overused capacity
 would remove that capacity from the measurement even when fixed outside routes

@@ -16,16 +16,21 @@
 
 namespace loom::pnr::detail {
 
-/// Returns false when a certificate terminal is outside the bounded model.
-llvm::Expected<bool> addSpatialFixedTerminalCutEscapeConstraint(
+struct SpatialFixedTerminalCutConstraintResult final {
+  bool encoded = false;
+  bool currentAssignmentEscapes = false;
+};
+
+llvm::Expected<SpatialFixedTerminalCutConstraintResult>
+addSpatialFixedTerminalCutEscapeConstraint(
     operations_research::sat::CpModelBuilder &model,
     const SpatialCandidateState &candidate,
     const SpatialBindingRelationModel &bindings,
     llvm::ArrayRef<operations_research::sat::IntVar> variables,
     llvm::ArrayRef<int> decisionVariables,
     llvm::ArrayRef<PnrIndex> legalValueOffsets,
-    llvm::ArrayRef<std::int64_t> legalValues, PnrIndex capacity,
-    llvm::ArrayRef<SpatialFixedTerminalCutNet> cuts,
+    llvm::ArrayRef<std::int64_t> legalValues,
+    const SpatialFixedTerminalCutCertificate &certificate,
     std::vector<std::uint8_t> &blockedTraversals,
     std::vector<std::uint8_t> &reachableEndpoints,
     std::vector<PnrIndex> &worklist);

@@ -53,7 +53,7 @@ private:
   llvm::Expected<SpatialExactRepairResult> repairTransportClosureRegion(
       SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
       std::uint64_t solverCallLimit, std::int32_t solverSeed,
-      llvm::ArrayRef<SpatialFixedTerminalCutNet> certificateSeedCuts,
+      llvm::ArrayRef<SpatialFixedTerminalCutCertificate> certificates,
       bool &requiresRegionExpansion);
 
   SpatialActionExecutorScratch actionExecutor_;
@@ -64,11 +64,11 @@ private:
   std::vector<PnrIndex> decisions_;
   std::vector<PnrIndex> relations_;
   std::vector<PnrIndex> affectedNets_;
-  std::vector<SpatialFixedTerminalCutNet> routeCutNetCuts_;
+  SpatialFixedTerminalCutCertificate routeCutCertificate_;
+  std::vector<SpatialFixedTerminalCutCertificate> learnedCutCertificates_;
   std::vector<std::uint8_t> routeCutBlockedTraversals_;
   std::vector<std::uint8_t> routeCutReachableEndpoints_;
   std::vector<PnrIndex> routeCutWorklist_;
-  PnrIndex routeCutCapacity_ = getInvalidPnrIndex();
   std::vector<int> decisionVariables_;
   std::vector<PnrIndex> legalValueOffsets_;
   std::vector<std::int64_t> legalValues_;

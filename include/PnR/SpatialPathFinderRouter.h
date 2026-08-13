@@ -41,6 +41,11 @@ struct SpatialFixedTerminalCutNet final {
   PnrIndex unreachableSink = 0;
 };
 
+struct SpatialFixedTerminalCutCertificate final {
+  PnrIndex capacity = getInvalidPnrIndex();
+  std::vector<SpatialFixedTerminalCutNet> forcedNetCuts;
+};
+
 class SpatialPathFinderClosureFailure final
     : public llvm::ErrorInfo<SpatialPathFinderClosureFailure> {
 public:
@@ -56,18 +61,20 @@ public:
 
   SpatialPathFinderClosureFailure(
       Kind kind, std::string message,
-      PnrIndex certificateCapacity = getInvalidPnrIndex(),
+      SpatialFixedTerminalCutCertificate certificate = {},
       std::uint64_t mandatoryUsage = 0, std::uint64_t physicalCapacity = 0,
-      std::vector<SpatialFixedTerminalCutNet> forcedNetCuts = {},
       std::uint64_t regionalLogicalNetCount = 0,
       std::uint64_t regionalLogicalNetLimit = 0);
 
   Kind kind() const { return kind_; }
-  PnrIndex certificateCapacity() const { return certificateCapacity_; }
+  const SpatialFixedTerminalCutCertificate &certificate() const {
+    return certificate_;
+  }
+  PnrIndex certificateCapacity() const { return certificate_.capacity; }
   std::uint64_t mandatoryUsage() const { return mandatoryUsage_; }
   std::uint64_t physicalCapacity() const { return physicalCapacity_; }
   llvm::ArrayRef<SpatialFixedTerminalCutNet> forcedNetCuts() const {
-    return forcedNetCuts_;
+    return certificate_.forcedNetCuts;
   }
   std::uint64_t regionalLogicalNetCount() const {
     return regionalLogicalNetCount_;
@@ -81,10 +88,9 @@ public:
 private:
   Kind kind_;
   std::string message_;
-  PnrIndex certificateCapacity_;
+  SpatialFixedTerminalCutCertificate certificate_;
   std::uint64_t mandatoryUsage_;
   std::uint64_t physicalCapacity_;
-  std::vector<SpatialFixedTerminalCutNet> forcedNetCuts_;
   std::uint64_t regionalLogicalNetCount_;
   std::uint64_t regionalLogicalNetLimit_;
 };

@@ -2173,7 +2173,7 @@ selection remain SystemMapping decisions.
 Spatial and System PnR have distinct component-view descriptors:
 
 ```text
-loom.spatial_pnr.config.11.0
+loom.spatial_pnr.config.12.0
 loom.system_pnr.config.4.0
 ```
 
@@ -2195,6 +2195,15 @@ route histories. It also replaces point terminal-assignment cut no-goods with
 certificate-sink reachability escape constraints and bounds canonical packing
 with the pinned solver's integer-expression validator. System PnR does not
 consume this protocol and retains version 4.0.
+
+Spatial version 12.0 retains 11.0's complete search and Mapping semantics. It
+incompatibly makes exact fixed-terminal certificates monotonic across bounded
+region rebuilds: capacity plus the complete terminal-pair set is retained and
+re-encoded, an active certificate cannot be learned twice, and the rebuilt
+model omits a fixed-assignment proof only when the retained constraints
+mechanically reject that assignment. This changes deterministic solver-call
+and routing-work consumption. System PnR does not consume this protocol and
+retains version 4.0.
 
 Each resolved view is self-contained:
 
@@ -2996,8 +3005,15 @@ repair derives a larger region from exactly those terminal pairs, their owning
 decisions and binding relations, and the implicated route-equality closure.
 Other sinks are not made model-region owners merely because they belong to the
 same multicast net. Certificate-derived region growth is monotonic and consumes
-the same restart-wide region and solver-call limits; repeating a certificate
-that adds no terminal decision is an internal inconsistency.
+the same restart-wide region and solver-call limits. Every certificate already
+proved in the invocation remains an escape constraint when that larger model is
+rebuilt; its capacity and complete canonical terminal-pair set are one typed
+identity and cannot be reduced to region seeds. The rebuilt model begins
+canonical extraction only when the retained constraints mechanically exclude
+the current assignment; otherwise that assignment retains its initial exact
+proof. Repeating an identical certificate after its escape constraint is
+active, or requesting region growth with no new terminal decision, is an
+internal inconsistency.
 
 Negotiated routing for a nonempty repair region closes only that region's
 unrouted obligations and capacities touched by its selected routes. Fixed
@@ -3133,7 +3149,7 @@ particular, the adapter sets no solver wall-time, deterministic-time, branch,
 conflict, or incumbent limit. Loom's owner-local solver-call budget and the
 outer execution controls remain the only corresponding limits.
 
-Spatial 11.0 canonical extraction is one fixed protocol:
+Spatial 12.0 canonical extraction is one fixed protocol:
 
 1. solve the exact selected repair objective, when present, and require
    `OPTIMAL`; a pure feasibility model must likewise return `OPTIMAL`;
