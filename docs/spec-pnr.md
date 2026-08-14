@@ -2419,15 +2419,16 @@ strict_implementation  CpSat(2048, 16384)
 The two `CpSat` values are `max_region_decisions` and `max_solver_calls`.
 Every initial profile admits all five Mapping violation descriptors as
 temporary and requires all five to be zero at finalization. Its selected
-closure contains one Minimize dimension per violation and one for
-`TotalSelectedTraversalClaim`, each with origin `0`, quantum `1`, and bounds
-`[0, UINT64_MAX]`. Final total ordering first compares one equal-weight level
-over all violations, then the traversal-claim level. Search energy is a third
-level containing every violation with weight `4294967296` and traversal claim
-with weight `1`; the checked `uint128` accumulator covers the complete declared
-domain. Focused-closure dimensions and Evaluation bindings are initially empty.
-The resolver emits all three levels explicitly and canonicalizes their weights;
-PnR does not synthesize them.
+closure contains one Minimize dimension per violation and one each for
+`StaticSchedulePressure` and `TotalSelectedTraversalClaim`, with origin `0`,
+quantum `1`, and bounds `[0, UINT64_MAX]`. Final total ordering first compares
+one equal-weight level over all violations, then the static-schedule level,
+then the traversal-claim level. Search energy contains every violation and
+`StaticSchedulePressure` with weight `4294967296` and traversal claim with
+weight `1`; the checked `uint128` accumulator covers the complete declared
+domain. Focused-closure dimensions and Evaluation bindings are initially
+empty. The resolver emits all four levels explicitly and canonicalizes their
+weights; PnR does not synthesize them.
 
 ### Deterministic Initialization And Action Proposal
 
@@ -2465,10 +2466,13 @@ attempts retain their deterministic variation.
 2. process every remaining compute root in canonical owner order and consider
    only choices whose exact `InstructionContextRef` is not retained or already
    preferred by another compute root, as required by the global `Disjoint`
-   relation. Among choices with the same selected-context count, prefer a
-   Temporal placement over a Spatial placement, then minimize the sum of
-   directed frozen-topology hop
-   distances to active topology anchors joined to this root by a logical net.
+   relation. Among choices with the same selected-context count, first minimize
+   the choice's actor contribution to `StaticSchedulePressure`. Equal-pressure
+   choices prefer a Temporal placement because its resident state is the safer
+   initial handshake witness. Then minimize the sum of directed frozen-topology
+   hop distances to active topology anchors joined to this root by a logical
+   net, weighting each actor-to-actor incidence by one plus its static critical
+   edge weight.
    An active anchor is either an already processed compute root or a directly
    incident graph-boundary terminal. For a compute-compute incidence, the
    distance is the minimum number of payload-compatible
@@ -2481,9 +2485,11 @@ attempts retain their deterministic variation.
    circular canonical choice order beginning at the attempt's tie origin;
 3. a memory root participating in any constraint-owned relation retains its
    baseline choice. Process every remaining memory root in canonical owner
-   order, prefer a Temporal placement over a Spatial placement, then prefer
-   the exact memory occurrence with the least current selection count. Ties
-   use circular canonical choice order beginning at the attempt's tie origin;
+   order, first minimize the choice's actor contribution to
+   `StaticSchedulePressure`. Equal-pressure choices prefer a Temporal placement,
+   then the exact memory occurrence with the least current selection count.
+   Ties use circular canonical choice order beginning at the attempt's tie
+   origin;
 4. any attachment root participating in a constraint-owned relation retains
    its baseline choice. Process every other occurrence-relative
    `PortAttachment` root in canonical demand order and every other
@@ -2503,7 +2509,8 @@ attempts retain their deterministic variation.
 
 The unselected-context restriction is a consequence of the hard resident-slot
 relation, not a load-balancing heuristic or a duplicate capacity authority.
-Schedule preference, exact-memory selection count, frozen-topology distance,
+Static schedule pressure, its critical-edge distance weight, equal-pressure
+Temporal preference, exact-memory selection count, frozen-topology distance,
 and selected-attachment endpoint count are only deterministic search
 preferences. They cannot prove infeasibility or remove a legal choice. The
 schedule of each placement is copied from the immutable Fabric model. Distance
@@ -2602,19 +2609,21 @@ HardProgressViolation
 ```
 
 The typed static registry descriptor identity is
-`loom.mapping.pnr.objective`, version 2.0. A
+`loom.mapping.pnr.objective`, version 2.1. A
 `MappingViolationDescriptorRef` is that descriptor plus the zero-based ordinal
 in the closed catalog order shown above; it is not a string key. Each
 descriptor owns one exact nonnegative integer magnitude. Mapping also owns the
-initial closed domain-independent `G` catalog, which contains exactly:
+closed domain-independent `G` catalog, which contains exactly:
 
 ```text
 TotalSelectedTraversalClaim
+StaticSchedulePressure
 ```
 
 `MappingMeasureDescriptorRef` uses the same registry descriptor and a
 zero-based owner-local ordinal in this separate typed catalog. Version 2.0 has
-the single ordinal zero.
+ordinal zero. Version 2.1 appends `StaticSchedulePressure` at ordinal one and
+does not reinterpret the prior descriptor.
 
 The five violation magnitudes have these exact owners:
 
@@ -2658,7 +2667,7 @@ capacity magnitude. A service latency, throughput, power, or quality shortfall
 belongs to exact `K` admission or Evaluation. A proven permanent wait belongs
 only to `HardProgressViolation`. There is no `ResourceTimeOverbooking`,
 `BufferOveruse`, or `HardServiceContractShortfall` alias or compatibility
-projection in registry 2.0.
+projection in registry 2.1.
 
 `TotalSelectedTraversalClaim` is the checked sum of `q_cost` over every unique
 selected traversal claim envelope in the candidate. One shared Route Tree
@@ -2666,6 +2675,55 @@ prefix contributes once, regardless of sink count. A selected traversal with
 no claim contributes
 zero. PathFinder pressure, history, dual price, A* queue state, proposal count,
 and search order are scratch and never enter `G`.
+
+`StaticSchedulePressure` is a Mapping-owned, removable structural projection
+from the exact canonical Dataflow, TechMapping grouping, and selected
+Fabric-owned schedules. It is neither a dynamic execution count nor a latency,
+throughput, energy, or quality estimate. It cannot replace an Evaluation
+observation or prove a Mapping infeasible.
+
+For each covered graph, form the actor dependency multigraph from canonical
+actor-result to actor-operand edges. An edge into the `Next` semantic operand
+of `dataflow.carry` is a feedback edge. Remove those feedback edges and condense
+every remaining strongly connected component. The resulting DAG gives a
+deterministic total analysis even for a canonical graph that retains another
+cycle; each component's path weight is its actor count.
+
+The graph-critical length of an actor or inter-component edge is the maximum
+weighted source-to-sink path length when it lies on at least one such maximum
+path, and zero otherwise. For each removed feedback edge from producer `p` to
+carry `c`, its recurrence length is the maximum weighted path from the
+component containing `c` to the component containing `p`. That length
+contributes to every actor and inter-component edge on at least one maximum
+path and to the removed feedback edge itself. A feedback edge with no such
+path contributes zero. Contributions from distinct feedback edges are added,
+so an actor or edge on nested or overlapping recurrence paths receives their
+combined structural criticality. All additions are checked in `uint64`.
+
+The exact actor placement contribution is:
+
+```text
+Spatial schedule: 1 for dataflow.stream, dataflow.carry,
+                  dataflow.invariant, or dataflow.gate; 0 otherwise
+Temporal schedule: graph-critical length + recurrence-critical length
+```
+
+The four named operations are the explicit graph-temporal state carriers from
+canonical Dataflow. Actor kind is deliberately absent from this rule: a memory
+actor on a critical path may prefer Spatial placement, and a noncritical
+compute actor may time-share a Temporal placement. Source loop depth, source
+operation position, simulator activity, and a compute-versus-memory heuristic
+must not be reconstructed as another schedule owner.
+
+For every canonical actor-to-actor edge whose producer and consumer belong to
+different TechMapping realizations, add its graph-critical plus
+recurrence-critical weight when the two selected realizations have different
+Fabric schedules. Edges absorbed inside one realization contribute zero.
+`StaticSchedulePressure` is the checked sum of all actor placement and
+cross-schedule edge contributions. Spatial CandidateState maintains the exact
+sum incrementally. A System candidate sums the graph-local pressure of the
+SpatialMapping selected by each exact graph-execution decision; a mapping that
+covers several graphs is not charged for an unrelated graph choice.
 
 Evaluation owns `MetricKind`, `MetricObservation`, and typed findings for `Q`.
 Structural invalidity, a `K` failure, or a base-verifier failure is never

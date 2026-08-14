@@ -301,8 +301,9 @@ The designated default profile is `balanced_explore`. Its initial PnR policy
 uses `PathFinder` with the `Multiplicative` price kernel, admits every closed
 Mapping violation kind only as a temporary search state, gives every admitted
 violation a positive SearchEnergy term, orders the complete violation vector
-before `TotalSelectedTraversalClaim`, selects no focused-closure metric or
-route-guidance binding, and enables bounded `CpSat` repair. All numeric values,
+before `StaticSchedulePressure` and then `TotalSelectedTraversalClaim`, selects
+no focused-closure metric or route-guidance binding, and enables bounded
+`CpSat` repair. All numeric values,
 including seeds, proposal weights, semantic work limits, cooling parameters,
 PathFinder pressure parameters, and repair bounds, are emitted explicitly by
 the 3.0 resolver. No PnR kernel supplies a missing value or chooses a profile

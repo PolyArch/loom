@@ -977,28 +977,37 @@ facts needed for a useful seed: exact resident-context identity and exact
 frozen connectivity.
 
 Schedule is also a physical seed property rather than an interchangeable
-placement label. A Temporal placement terminates the configured instruction
-and operand paths in resident state, while a Spatial placement may leave the
+placement label. A Temporal placement terminates configured instruction and
+operand paths in resident state, while a Spatial placement may leave the
 selected local endpoint, FU, and switch path in one combinational handshake
-component. A relation-satisfying assignment that begins with Spatial
-occurrences merely because they have lower canonical ordinals can therefore
-create a handshake cycle before the annealer receives its first Candidate.
-Preferring Temporal occurrences for independent roots uses the schedule already
-owned by Fabric to seek a stateful initial witness. It does not make Temporal a
-hard requirement: constrained roots retain their witness, every Spatial choice
-remains in the Candidate action domain, and final cost and legality remain
-schedule-neutral except for the resource contracts those placements actually
-expose.
+component. This makes Temporal the safer tie-break for a relation-satisfying
+initial witness, but it does not justify preferring every independent actor or
+memory operation in Temporal hardware. Doing so turns the handshake safeguard
+into an undocumented architecture policy and can concentrate a complete
+application in a smaller tagged network.
 
-Memory roots need the same treatment. Canonical memory enumeration groups
-occurrences by construction order, so retaining the first ordinal can bind
-unrelated roots to one Spatial bank even when stateful Temporal banks are
-available. The initializer first prefers Temporal memory and then distributes
-equal-schedule choices by exact occurrence selection count. That count is a
-seed heuristic, not a capacity claim: sharing remains legal, and the resource
-model and router still own the consequences of sharing. This is the minimum
-additional ranking needed to prevent enumeration order from acting as an
-undocumented architecture policy.
+The schedule ranking instead uses canonical Dataflow structure. Cutting the
+typed `dataflow.carry` feedback operands exposes graph and recurrence longest
+paths without reconstructing a source loop tree. Actors on overlapping
+recurrences accumulate pressure, which is the structural signal expected for
+nested, throughput-sensitive work. Explicit stream, carry, invariant, and gate
+actors retain a small preference for Temporal state. A critical compute or
+memory actor prefers Spatial dedication, while a noncritical actor can
+time-share. Critical edges also discourage an artificial Spatial/Temporal
+boundary in the middle of a recurrence path. Equal structural pressure still
+prefers Temporal, preserving the original seed-safety motivation without
+overriding the software structure.
+
+Three simpler policies fail. Inverting the old ranking to prefer every Spatial
+occurrence merely moves the same architecture bias. Classifying compute as
+Spatial and memory or control as Temporal rejects hot memory and cold compute
+without evidence. Simulator counts or measured runtime are circular inputs to
+the first legal Mapping and belong to Evaluation after execution. Static
+schedule pressure is therefore intentionally a removable Mapping search
+measure, not a performance claim. Canonical memory enumeration is still
+neutralized by distributing equal-pressure choices by exact occurrence
+selection count; sharing legality and capacity remain owned by the resource
+model.
 
 The hard relation solver's baseline assignment is a feasibility witness, not a
 physical ranking. In the canonical restart, using each baseline ordinal as the
