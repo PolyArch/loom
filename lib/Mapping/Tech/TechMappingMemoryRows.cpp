@@ -427,6 +427,47 @@ llvm::Error emitInternalEdgeSubsets(
   return llvm::Error::success();
 }
 
+/// Whether every selected actor presents a distinguishable ingress arrival on
+/// each shared operation-port endpoint. Two actors on one port whose same
+/// endpoint is driven by one producer carry one tag, which the Temporal row
+/// matcher cannot separate. A producer already eligible to become an internal
+/// engine edge never reaches the ingress and is excluded.
+llvm::Expected<bool> temporalIngressProducersAreDistinct(
+    const TechMappingGenerationInputs &inputs,
+    llvm::ArrayRef<const MemoryActorOption *> selection) {
+  using IngressKey =
+      std::tuple<std::uint64_t, std::uint64_t, std::vector<std::uint8_t>>;
+  std::set<IngressKey> arrivals;
+  for (const MemoryActorOption *option : selection) {
+    for (auto [argumentOrdinal, endpoint] :
+         llvm::enumerate(option->actor.operandPorts)) {
+      const ::dataflow::ActorTokenOperandRef consumer{
+          option->actor.actor,
+          option->operandOperationOrdinals[argumentOrdinal]};
+      auto producer = inputs.dataflow.graphProducer(
+          ::dataflow::CanonicalGraphConsumerEndpointRef{consumer});
+      if (!producer) {
+        llvm::consumeError(producer.takeError());
+        continue;
+      }
+      const auto *actorProducer =
+          std::get_if<::dataflow::ActorTokenResultRef>(&*producer);
+      if (actorProducer && findActor(selection, actorProducer->actor))
+        continue;
+      auto producerKey = ::dataflow::encodeDataflowReference(
+          inputs.dataflow.identity(), *producer);
+      if (!producerKey)
+        return producerKey.takeError();
+      if (!arrivals
+               .emplace(option->actor.operationPort.ordinal, endpoint.ordinal,
+                        std::move(*producerKey))
+               .second)
+        return false;
+    }
+  }
+  return true;
+}
+
 llvm::Error emitCanonicalMemorySelections(
     const TechMappingGenerationInputs &inputs,
     ::loom::fabric::FabricMemoryEngineTemplateRef engine,
@@ -477,6 +518,16 @@ llvm::Error emitCanonicalMemorySelections(
     if (engineRecord.schedule == ::fabric::Schedule::Temporal) {
       capacityAdmitted = engineRecord.residentContextCount &&
                          selection.size() <= *engineRecord.residentContextCount;
+      // A Temporal engine selects one resident row by matching the tag that
+      // arrives on the row's ingress endpoint, so two rows sharing one
+      // operation port must present different tags there. A tag belongs to the
+      // producing software edge, so two actors fed by one producer on the same
+      // role of the same port always arrive with the same tag and no Mapping
+      // can separate them. Such actors are not co-residents of one port.
+      auto distinct = temporalIngressProducersAreDistinct(inputs, selection);
+      if (!distinct)
+        return distinct.takeError();
+      capacityAdmitted = capacityAdmitted && *distinct;
     } else {
       std::vector<std::uint64_t> selectedPorts;
       selectedPorts.reserve(selection.size());

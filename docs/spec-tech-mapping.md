@@ -139,9 +139,21 @@ port or capability alternative whose actor-contract domain, access domain,
 payload and endpoint widths, role map, or operation-pattern relation does not
 admit the exact Dataflow memory actor is not a `MatchRowSeed` and consumes no
 match-row attempt. Once an exact alternative is selected, joint spatial-port
-or temporal-residency capacity, graph-boundary correspondence, and selected
+or temporal-residency capacity, temporal ingress distinguishability,
+graph-boundary correspondence, and selected
 internal-edge closure remain row-admission checks; each failure there is one
-charged seed rejection. The generator and independent verifier must consume
+charged seed rejection.
+
+Temporal ingress distinguishability is the row-local consequence of the
+Fabric-owned row architecture: a Temporal engine selects one resident row by
+matching the tag that arrives on that row's ingress endpoint, so two rows on
+one operation port must present different tags there. A tag belongs to the
+producing software edge, so two actors whose same operation-port endpoint is
+driven by one producer always arrive together and no Mapping decision can
+separate them. Such actors are not admitted into one row. A producer that is
+itself a selected actor of the row never reaches the ingress and is excluded
+from the test. This reads the Dataflow edge relation the generator already
+consumes; it reads no tag assignment, route, or occurrence count. The generator and independent verifier must consume
 the same sealed memory-operation-port relation rather than reconstructing any
 part of it in Mapping.
 
@@ -213,7 +225,8 @@ The production search is deterministic and lazy:
 4. visit that actor's remaining rows in canonical row order;
 5. factor independent actor-row incidence components and search each component
    independently, expanding each component's partial covers by ascending
-   demand estimate and then canonical row order, where the demand estimate is
+   demand estimate, then ascending operation-port imbalance of the selected
+   rows, then canonical row order, where the demand estimate is
    the selected rows unioned with one remaining compatible row for every
    uncovered actor; and
 6. enumerate the canonical lazy product of component covers without
@@ -232,11 +245,18 @@ finalized, and published before it enters the output set. A publication slot
 is consumed before Artifact-identity deduplication, so cache state cannot
 change the formal prefix.
 
-Candidates are ordered by ascending realization demand, then by the
+Candidates are ordered by ascending realization demand, then by ascending
+operation-port imbalance, then by the
 lexicographic sequence of selected canonical row keys after component-product
 normalization. Realization demand is the selected row count: one FU capability
-instance per compute row and one Memory Operation Engine per memory row. It is
-a property of the cover alone. The generator still cannot read occurrence
+instance per compute row and one Memory Operation Engine per memory row.
+Operation-port imbalance is the largest number of memory rows that select one
+exact (engine template, operation port) pair. One engine holds one configured
+operation per physical operation port, so rows that select one port compete for
+occurrences only with each other; concentrating a cover on the first canonical
+port collapses the placeable supply to the occurrence count while the other
+ports of the same template stay idle. Both terms are properties of the cover
+alone. The generator still cannot read occurrence
 counts, coordinates, or any other physical inventory fact, and demand order
 neither admits nor rejects a row.
 

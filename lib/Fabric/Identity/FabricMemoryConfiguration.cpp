@@ -908,8 +908,16 @@ FabricMemoryConfigurationSchemaView::encode(
                             external->tag.getRawData() + wordCount);
             if (!temporalInputMatches
                      .insert({external->endpoint, std::move(tagWords)})
-                     .second)
-              return rejected("Temporal memory repeats an ingress tag match");
+                     .second) {
+              std::string tagText;
+              llvm::raw_string_ostream tagStream(tagText);
+              external->tag.print(tagStream, /*isSigned=*/false);
+              return rejected(
+                  "Temporal memory repeats an ingress tag match: endpoint " +
+                  llvm::Twine(external->endpoint) + " role " +
+                  llvm::Twine(roleOrdinal) + " tag " + tagText +
+                  " is already matched by another configured operation row");
+            }
           }
         } else {
           const FabricOrdinal connection =

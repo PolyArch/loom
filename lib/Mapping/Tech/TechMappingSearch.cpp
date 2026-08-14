@@ -55,10 +55,31 @@ struct IncidenceComponent final {
   std::vector<std::size_t> rows;
 };
 
+// A Memory Operation Engine holds one configured operation per exact physical
+// operation port, so the placeable slots of one engine template are its
+// occurrences multiplied by the operation ports its rows select. Rows that
+// select one port therefore compete for occurrences with each other alone.
+// Canonical row keys put the first operation port of the first template ahead
+// of every alternative, so a cover of equal realization demand still lands
+// every row on one port and collapses that supply to the occurrence count.
+// Port classes are the distinct (engine template, operation port) pairs the
+// derived rows select; balancing rows across them uses only the template
+// inventory each row already names.
+using PortClassCounts = std::vector<std::uint32_t>;
+
+std::uint32_t portClassImbalance(const PortClassCounts &counts) {
+  std::uint32_t maximum = 0;
+  for (std::uint32_t count : counts)
+    maximum = std::max(maximum, count);
+  return maximum;
+}
+
 struct ComponentSearchState final {
   ActorMask covered;
   std::vector<std::size_t> selectedRows;
   std::vector<std::size_t> lowerBound;
+  PortClassCounts portClasses;
+  std::uint32_t portImbalance = 0;
 };
 
 // A cover's row count is the number of physical realizations SpatialMapping
@@ -75,6 +96,8 @@ struct ComponentStateGreater final {
                   const ComponentSearchState &rhs) const {
     if (lhs.lowerBound.size() != rhs.lowerBound.size())
       return lhs.lowerBound.size() > rhs.lowerBound.size();
+    if (lhs.portImbalance != rhs.portImbalance)
+      return lhs.portImbalance > rhs.portImbalance;
     if (lhs.lowerBound != rhs.lowerBound)
       return lhs.lowerBound > rhs.lowerBound;
     return lhs.selectedRows > rhs.selectedRows;
@@ -134,10 +157,13 @@ public:
                        llvm::ArrayRef<std::vector<std::size_t>> rowsByActor,
                        llvm::ArrayRef<ActorMask> rowMasks,
                        llvm::ArrayRef<std::size_t> actorLocalSlots,
+                       llvm::ArrayRef<std::vector<std::uint32_t>> rowPortClasses,
+                       std::size_t portClassCount,
                        const ResolvedTechMappingConfigView &config,
                        TechMappingGenerationAccounting &accounting)
       : domain_(domain), component_(component), rowsByActor_(rowsByActor),
         rowMasks_(rowMasks), actorLocalSlots_(actorLocalSlots),
+        rowPortClasses_(rowPortClasses), portClassCount_(portClassCount),
         componentMask_(actorMaskWordCount(component.actors.size()), 0),
         config_(config), accounting_(accounting) {
     for (std::size_t actor = 0; actor < component_.actors.size(); ++actor)
@@ -230,6 +256,9 @@ private:
   void addRow(ComponentSearchState &state, std::size_t row) const {
     state.selectedRows.insert(llvm::lower_bound(state.selectedRows, row), row);
     mergeMask(state.covered, rowMasks_[row]);
+    for (std::uint32_t portClass : rowPortClasses_[row])
+      ++state.portClasses[portClass];
+    state.portImbalance = portClassImbalance(state.portClasses);
   }
 
   bool consumeExpansion() {
@@ -286,7 +315,11 @@ private:
   void initialize() {
     initialized_ = true;
     ComponentSearchState initial{
-        ActorMask(actorMaskWordCount(component_.actors.size()), 0), {}, {}};
+        ActorMask(actorMaskWordCount(component_.actors.size()), 0),
+        {},
+        {},
+        PortClassCounts(portClassCount_, 0),
+        0};
     const PropagationResult propagation = propagate(initial);
     if (propagation == PropagationResult::LimitReached) {
       seal();
@@ -332,6 +365,8 @@ private:
   llvm::ArrayRef<std::vector<std::size_t>> rowsByActor_;
   llvm::ArrayRef<ActorMask> rowMasks_;
   llvm::ArrayRef<std::size_t> actorLocalSlots_;
+  llvm::ArrayRef<std::vector<std::uint32_t>> rowPortClasses_;
+  std::size_t portClassCount_ = 0;
   ActorMask componentMask_;
   const ResolvedTechMappingConfigView &config_;
   TechMappingGenerationAccounting &accounting_;
@@ -488,6 +523,27 @@ searchTechMatchCovers(const TechMatchDomain &domain,
     for (std::size_t actor : row.actorSlots)
       rowsByActor[actor].push_back(rowIndex);
 
+  std::map<std::pair<std::uint64_t, std::uint64_t>, std::uint32_t> portClasses;
+  std::vector<std::vector<std::uint32_t>> rowPortClasses(domain.rows.size());
+  for (auto [rowIndex, row] : llvm::enumerate(domain.rows)) {
+    const auto *memory = std::get_if<TechMemoryRealizationView>(&row.realization);
+    if (!memory)
+      continue;
+    for (const TechMemoryActorView &actor : memory->actors) {
+      const auto key =
+          std::make_pair(static_cast<std::uint64_t>(
+                             actor.operationPort.engine.id()),
+                         actor.operationPort.ordinal);
+      const std::uint32_t ordinal = portClasses
+                                        .try_emplace(key, static_cast<uint32_t>(
+                                                              portClasses.size()))
+                                        .first->second;
+      if (!llvm::is_contained(rowPortClasses[rowIndex], ordinal))
+        rowPortClasses[rowIndex].push_back(ordinal);
+    }
+    llvm::sort(rowPortClasses[rowIndex]);
+  }
+
   for (const IncidenceComponent &component : incidence) {
     const std::size_t words = actorMaskWordCount(component.actors.size());
     for (auto [local, actor] : llvm::enumerate(component.actors))
@@ -504,8 +560,8 @@ searchTechMatchCovers(const TechMatchDomain &domain,
   for (const IncidenceComponent &component : incidence) {
     LazyComponentCovers lazy;
     lazy.cursor = std::make_unique<ComponentCoverCursor>(
-        domain, component, rowsByActor, rowMasks, actorLocalSlots, config,
-        accounting);
+        domain, component, rowsByActor, rowMasks, actorLocalSlots,
+        rowPortClasses, portClasses.size(), config, accounting);
     ComponentAdvance first = lazy.cursor->next();
     if (lazy.cursor->truncated())
       result.exhausted = false;
