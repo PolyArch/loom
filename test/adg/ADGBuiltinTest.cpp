@@ -372,9 +372,13 @@ void builtinPresetsExpandThroughPublicBuilder() {
     const std::uint64_t expectedMeshLinkFifos =
         16 * descriptor.scale.meshDimension *
         (descriptor.scale.meshDimension - 1);
+    // Spatial-to-Temporal converters are sized by the Temporal PE count, not
+    // by the SpatialCore's external module gateway width.
+    const std::uint64_t expectedDomainConverters =
+        descriptor.scale.temporalPeCount;
     const std::uint64_t expectedAdapterFifos =
         3 * (expected.spatialMemories + expected.temporalMemories) +
-        2 * descriptor.scale.gatewayCount;
+        2 * expectedDomainConverters;
     require(test,
             module.view().fifoOccurrences().size() ==
                 expectedMeshLinkFifos + expectedAdapterFifos,
@@ -432,8 +436,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
       }
     }
     require(test,
-            configuredWriters == descriptor.scale.gatewayCount &&
-                tagRemovers == descriptor.scale.gatewayCount,
+            configuredWriters == expectedDomainConverters &&
+                tagRemovers == expectedDomainConverters,
             "builtin cross-schedule gateway inventory changed unexpectedly");
     std::size_t interiorTransitSwitches = 0;
     for (const auto occurrence : module.view().switchOccurrences()) {

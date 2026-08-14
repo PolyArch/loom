@@ -1264,11 +1264,30 @@ void artifactRoundTripAndReferenceValidation() {
     observedRipUpCostChange |= baseline != current;
   if (!observedRipUpCostChange)
     fail("PathFinder route-cost overlay did not reprice the rip-up closure");
+  // Selecting a net withdraws both its atomic claims and its tag-domain uses.
+  // A prospective claim install therefore restores the claim contribution
+  // alone; nets whose route crosses a tagged domain keep the tag contribution
+  // withdrawn until their owner replaces it. The reversible joint under test
+  // is the claim install itself, so compare it against its own installed
+  // costs rather than the pre-selection baseline.
+  const std::vector<loom::pnr::RouteCost> rippedCosts(
+      routeCostState.currentArcCosts().begin(),
+      routeCostState.currentArcCosts().end());
   requireSuccess(
       routeCostState.updateSelectedLogicalNetClaims(activeClaimBits));
-  if (!llvm::equal(routeCostState.currentArcCosts(), baselineCosts))
+  const std::vector<loom::pnr::RouteCost> installedCosts(
+      routeCostState.currentArcCosts().begin(),
+      routeCostState.currentArcCosts().end());
+  if (llvm::equal(installedCosts, rippedCosts))
     fail("PathFinder route-cost overlay did not price a prospective install");
+  for (loom::pnr::PnrIndex capacity = 0; capacity < baselineUsage.size();
+       ++capacity)
+    if (routeCostState.workingCapacityUsageRaw(capacity) !=
+        baselineUsage[capacity])
+      fail("PathFinder prospective install did not restore claim occupancy");
   requireSuccess(routeCostState.updateSelectedLogicalNetClaims({}));
+  if (!llvm::equal(routeCostState.currentArcCosts(), rippedCosts))
+    fail("PathFinder prospective rip-up did not reverse its install");
   for (loom::pnr::PnrIndex capacity = 0; capacity < baselineUsage.size();
        ++capacity)
     if (routeCostState.workingCapacityUsageRaw(capacity) !=

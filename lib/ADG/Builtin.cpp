@@ -354,8 +354,6 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   const std::uint64_t meshCellCount =
       static_cast<std::uint64_t>(meshDimension) * meshDimension;
   const std::uint64_t halfMesh = meshCellCount / 2;
-  const std::uint64_t oneThirdMesh = meshCellCount / 3;
-  const std::uint64_t twoThirdsMesh = meshCellCount - oneThirdMesh;
   std::vector<MeshCellAttachmentSpec> spatialAttachmentSpecs;
   std::vector<MeshCellAttachmentSpec> temporalAttachmentSpecs;
   DistributedCellCursor spatialPeCells(meshCellCount, scale.spatialPeCount);
@@ -363,18 +361,26 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
                                                 scale.spatialMemoryCount);
   DistributedCellCursor spatialMemorySecondCells(
       meshCellCount, scale.spatialMemoryCount, halfMesh);
+  // Module gateways are the SpatialCore's external boundary width, which the
+  // System interconnect owns. Spatial-to-Temporal converters are the only path
+  // between the two overlaid meshes, so their count must instead track the
+  // compute that generates cross-domain traffic. Sizing both from one
+  // parameter left a converter pair per external port while cross-domain
+  // dataflow edges grew with the mesh area, and every mixed-schedule mapping
+  // funnelled through those few cells. One converter pair per Temporal PE lets
+  // the Temporal domain absorb one cross-domain stream per PE, and placing
+  // them on the same distributed phase as the PEs keeps each conversion local.
+  const std::uint32_t domainConverterCount = scale.temporalPeCount;
   DistributedCellCursor moduleGatewayCells(meshCellCount, scale.gatewayCount);
-  DistributedCellCursor s2tSpatialCells(meshCellCount, scale.gatewayCount,
-                                        oneThirdMesh);
-  DistributedCellCursor t2sSpatialCells(meshCellCount, scale.gatewayCount,
-                                        twoThirdsMesh);
+  DistributedCellCursor s2tSpatialCells(meshCellCount, domainConverterCount);
+  DistributedCellCursor t2sSpatialCells(meshCellCount, domainConverterCount);
   DistributedCellCursor temporalPeCells(meshCellCount, scale.temporalPeCount);
   DistributedCellCursor temporalMemoryFirstCells(meshCellCount,
                                                  scale.temporalMemoryCount);
   DistributedCellCursor temporalMemorySecondCells(
       meshCellCount, scale.temporalMemoryCount, halfMesh);
-  DistributedCellCursor temporalGatewayCells(meshCellCount, scale.gatewayCount,
-                                             oneThirdMesh);
+  DistributedCellCursor temporalGatewayCells(meshCellCount,
+                                             domainConverterCount);
   auto appendAttachment = [&](std::vector<MeshCellAttachmentSpec> &attachments,
                               DistributedCellCursor &cellCursor,
                               std::vector<PortType> inputTypes,
@@ -431,10 +437,12 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
     moduleGatewayAttachments.push_back(appendAttachment(
         spatialAttachmentSpecs, moduleGatewayCells, {*bits128}, {*bits128}));
-  for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
+  for (std::uint32_t converter = 0; converter != domainConverterCount;
+       ++converter)
     s2tSpatialAttachments.push_back(appendAttachment(
         spatialAttachmentSpecs, s2tSpatialCells, {*bits128}, {}));
-  for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
+  for (std::uint32_t converter = 0; converter != domainConverterCount;
+       ++converter)
     t2sSpatialAttachments.push_back(appendAttachment(
         spatialAttachmentSpecs, t2sSpatialCells, {}, {*bits128}));
 
@@ -455,7 +463,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     temporalMemoryAttachments.push_back(*attachments);
   }
   std::vector<std::size_t> temporalGatewayAttachments;
-  for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
+  for (std::uint32_t converter = 0; converter != domainConverterCount;
+       ++converter)
     temporalGatewayAttachments.push_back(
         appendAttachment(temporalAttachmentSpecs, temporalGatewayCells,
                          {*tagged128}, {*tagged128}));
@@ -612,13 +621,14 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       return std::move(error);
   }
 
-  for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway) {
+  for (std::uint32_t converter = 0; converter != domainConverterCount;
+       ++converter) {
     auto spatialAttachment =
-        spatialNetwork->attachment(s2tSpatialAttachments[gateway]);
+        spatialNetwork->attachment(s2tSpatialAttachments[converter]);
     if (!spatialAttachment)
       return spatialAttachment.takeError();
     auto temporalAttachment =
-        temporalNetwork->attachment(temporalGatewayAttachments[gateway]);
+        temporalNetwork->attachment(temporalGatewayAttachments[converter]);
     if (!temporalAttachment)
       return temporalAttachment.takeError();
     auto outputs = spatial->addBoundary(
@@ -640,7 +650,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     if (!t2sOutputs)
       return t2sOutputs.takeError();
     auto t2sAttachment =
-        spatialNetwork->attachment(t2sSpatialAttachments[gateway]);
+        spatialNetwork->attachment(t2sSpatialAttachments[converter]);
     if (!t2sAttachment)
       return t2sAttachment.takeError();
     std::vector<SpatialValue> routedOutputs;

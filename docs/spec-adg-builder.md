@@ -671,7 +671,19 @@ smaller, and every local attachment switch is at most `8 x 8`.
 PEs, memory operation ports, cross-schedule boundaries, and Module transport
 boundaries attach through distributed local banks. Each resource class is
 distributed independently across the complete mesh instead of inheriting a
-prefix from Builder construction order. Every memory occurrence uses two
+prefix from Builder construction order.
+
+The Spatial and Temporal meshes carry different transport kinds, so a
+cross-schedule boundary pair is the only path between them. That pair is
+therefore sized by the compute that produces cross-schedule dataflow, not by
+the SpatialCore's external transport width: the recipe emits one
+Spatial-to-Temporal and one Temporal-to-Spatial boundary per Temporal PE
+occurrence, on the same distributed phase as the Temporal PEs. The Temporal
+domain can then absorb one cross-schedule stream per PE, and a conversion stays
+inside the neighborhood that needs it. Sizing the pair by the Module gateway
+anchor instead makes the two meshes effectively disconnected once a Mapping
+places one graph across both schedules, because the mesh area and its resident
+compute grow while that anchor does not. Every memory occurrence uses two
 transport banks separated by half the mesh cell domain, and every response
 passes through a non-bypassable FIFO before network injection; its manager
 capability remains direct. No switch is incident to all PEs, memories, or
@@ -691,7 +703,8 @@ The initial scale anchors are:
 | memory occurrences per core      |       2 |         4 |       8 |
 | Spatial : Temporal memory ratio  |     1:1 |       2:2 |     4:4 |
 | Temporal resident-context anchor |       2 |         4 |       8 |
-| cross-schedule gateway anchor    |       2 |         4 |       8 |
+| Module transport gateway anchor  |       2 |         4 |       8 |
+| cross-schedule boundary pairs    |       4 |         9 |      16 |
 
 These values are resolved inputs to one template, not fields persisted in
 Fabric in addition to the resources they generate. Exact per-helper resource
