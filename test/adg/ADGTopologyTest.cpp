@@ -186,6 +186,145 @@ void topologyQualityClassifiesDirectPeBinding() {
               distribution.maximumDirectRatio->denominator == 2 &&
               distribution.maximumDirectRatio->owners.size() == 2,
           "direct PE chain lost tied topology outliers");
+  require(test,
+          quality.schedules.size() == 2 &&
+              quality.schedules.front().schedule ==
+                  ::fabric::Schedule::Spatial &&
+              quality.schedules.front().peCount == 2 &&
+              quality.schedules.front().memoryCount == 0 &&
+              quality.schedules.front().nearestSameSchedulePe.subjectCount ==
+                  2 &&
+              quality.schedules.front()
+                      .nearestSameSchedulePe.reachableSubjectCount == 2 &&
+              quality.schedules.front().nearestSameSchedulePe.minimum &&
+              quality.schedules.front().nearestSameSchedulePe.minimum->hops ==
+                  1 &&
+              quality.schedules.front().nearestSameSchedulePe.maximum &&
+              quality.schedules.front().nearestSameSchedulePe.maximum->hops ==
+                  1 &&
+              quality.schedules.front()
+                      .nearestMatchingMemory.unreachableSubjects.size() == 2,
+          "direct PE chain lost its exact schedule-locality distribution");
+  require(test,
+          quality.capabilities.size() == 1 &&
+              quality.capabilities.front().schema ==
+                  ::dataflow::OperationSchemaId::ArithAddI &&
+              quality.capabilities.front().supportingPes.size() == 2 &&
+              quality.capabilities.front().spatialPeCount == 2 &&
+              quality.capabilities.front().temporalPeCount == 0 &&
+              quality.capabilities.front().coverage.minimum &&
+              quality.capabilities.front().coverage.minimum->hops == 0 &&
+              quality.capabilities.front().coverage.maximum &&
+              quality.capabilities.front().coverage.maximum->hops == 0 &&
+              quality.capabilities.front().supportingPeer.minimum &&
+              quality.capabilities.front().supportingPeer.minimum->hops == 1,
+          "direct PE chain lost its operation-capability distribution");
+}
+
+void topologyQualityExposesScheduleMismatchAndCapabilityConcentration() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  const PortType bits0 = take(test, PortType::bits(0));
+  const PortType bits32 = take(test, PortType::bits(32));
+  const PortType tagged32 = take(test, PortType::taggedBits(32, 4));
+  const PortType memory32 =
+      take(test, PortType::memory({PortType::kDynamicExtent}, bits32));
+
+  DesignBuilder design(store);
+  auto module = take(test, design.createSpatialCore(
+                               "pathological-schedule",
+                               {tagged32, memory32, bits32, bits0},
+                               {tagged32}));
+  auto temporal = take(
+      test, module.addPe(
+                {take(test, module.input(0))},
+                PeSpec::temporal(
+                    {bits32}, {tagged32},
+                    TemporalPeParameters{
+                        4, FuConfigurationMode::PerInstruction,
+                        ::fabric::OperandBufferMode::PerInstruction, 4,
+                        std::nullopt})));
+  auto temporalFu = take(test, temporal.addFu(
+                                   {take(test, temporal.input(0))},
+                                   FuSpec{{bits32}, {bits32}}));
+  auto temporalAdd = take(
+      test, temporalFu.addOperation(
+                {take(test, temporalFu.input(0)),
+                 take(test, temporalFu.input(0))},
+                integerCapability(
+                    ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+                    ::dataflow::OperationSchemaId::ArithAddI, bits32)));
+  if (llvm::Error error = temporalFu.addCapabilityTemplate(
+          FuCapabilityTemplateSpec{{temporalAdd}, {}}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error =
+          temporalFu.close({take(test, temporalAdd.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  if (llvm::Error error = temporal.close())
+    fail(test, llvm::toString(std::move(error)));
+
+  ::fabric::MemoryConnectivityDeclaration memoryConnectivity;
+  memoryConnectivity.operationPorts = {
+      {{{managerMemoryTarget(0)}}}};
+  auto memory = take(
+      test,
+      MemorySpec::create(
+          {memory32, bits32, bits0}, {bits32, bits0}, {0}, {},
+          MemoryEngineSpec::spatial({loadPortDeclaration()}), std::nullopt,
+          take(test, MemoryConnectivitySpec::create(
+                         std::move(memoryConnectivity)))));
+  auto memoryOutputs = take(test, module.addMemory(
+                                      {take(test, module.input(1)),
+                                       take(test, module.input(2)),
+                                       take(test, module.input(3))},
+                                      memory));
+  if (llvm::Error error = module.close(
+          {take(test, temporal.output(0))}))
+    fail(test, llvm::toString(std::move(error)));
+  (void)memoryOutputs;
+
+  auto finalized = take(test, std::move(design).finalize());
+  auto quality = take(test, loom::fabric::analyzeFabricTopologyQuality(
+                                finalized.roots().front().view()));
+  require(test,
+          quality.schedules.size() == 2 &&
+              quality.schedules.front().schedule ==
+                  ::fabric::Schedule::Spatial &&
+              quality.schedules.front().peCount == 0 &&
+              quality.schedules.front().memoryCount == 1 &&
+              quality.schedules.back().schedule ==
+                  ::fabric::Schedule::Temporal &&
+              quality.schedules.back().peCount == 1 &&
+              quality.schedules.back().memoryCount == 0 &&
+              quality.schedules.back()
+                      .nearestMatchingMemory.unreachableSubjects.size() == 1 &&
+              quality.schedules.back()
+                      .nearestOtherScheduleMemory.unreachableSubjects.size() ==
+                  1,
+          "schedule mismatch was not exposed as exact supply and locality");
+  require(test,
+          quality.capabilities.size() == 1 &&
+              quality.capabilities.front().supportingPes.size() == 1 &&
+              quality.capabilities.front().spatialPeCount == 0 &&
+              quality.capabilities.front().temporalPeCount == 1 &&
+              quality.capabilities.front().coverage.subjectCount == 1 &&
+              quality.capabilities.front().coverage.maximum &&
+              quality.capabilities.front().coverage.maximum->hops == 0 &&
+              quality.capabilities.front()
+                      .supportingPeer.unreachableSubjects.size() == 1,
+          "singleton capability concentration was not exposed exactly");
+  const auto dseQuality =
+      loom::fabric::projectFabricTopologyDseQuality(quality);
+  require(test,
+          dseQuality.unscheduledMemoryCount == 0 &&
+              dseQuality.scheduleSupplyGap == 2 &&
+              dseQuality.matchingMemoryUnreachablePeCount == 1 &&
+              dseQuality.matchingMemoryTotalReachableHops == 0 &&
+              dseQuality.capabilityCoverageUnreachablePeCount == 0 &&
+              dseQuality.capabilityCoverageTotalReachableHops == 0 &&
+              dseQuality.isolatedCapabilitySupportingPeCount == 1,
+          "pathological topology lost its exact additive DSE projection");
 }
 
 void routedFuLibraryBuildsHeterogeneousBoundaries() {
@@ -497,6 +636,7 @@ void runTopologyTests() {
   fuBackedgesAreExplicitAndResolved();
   spatialBackedgesEnableCyclicTopology();
   topologyQualityClassifiesDirectPeBinding();
+  topologyQualityExposesScheduleMismatchAndCapabilityConcentration();
   routedFuLibraryBuildsHeterogeneousBoundaries();
   heterogeneousSystemFinalizes();
 }

@@ -4,6 +4,7 @@
 #include "Fabric/Identity/FabricRefText.h"
 
 #include "Common/ArtifactText.h"
+#include "Fabric/IR/FabricEnums.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -12,6 +13,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -149,6 +151,41 @@ void writeRatioExtreme(
   });
 }
 
+void writePeArray(llvm::json::OStream &json,
+                  llvm::ArrayRef<FabricPeOccurrenceRef> pes) {
+  for (FabricPeOccurrenceRef pe : pes)
+    json.value(printFabricRef(pe));
+}
+
+void writeHopExtreme(llvm::json::OStream &json, llvm::StringRef name,
+                     const std::optional<FabricTopologyHopExtreme> &extreme) {
+  if (!extreme) {
+    json.attribute(name, nullptr);
+    return;
+  }
+  json.attributeObject(name, [&] {
+    json.attribute("hops", extreme->hops);
+    json.attributeArray("subjects",
+                        [&] { writePeArray(json, extreme->subjects); });
+  });
+}
+
+void writeHopDistribution(llvm::json::OStream &json, llvm::StringRef name,
+                          const FabricTopologyHopDistribution &distribution) {
+  json.attributeObject(name, [&] {
+    json.attribute("subject_count", distribution.subjectCount);
+    json.attribute("reachable_subject_count",
+                   distribution.reachableSubjectCount);
+    json.attribute("total_reachable_hops",
+                   distribution.totalReachableHops);
+    json.attributeArray("unreachable_subjects", [&] {
+      writePeArray(json, distribution.unreachableSubjects);
+    });
+    writeHopExtreme(json, "minimum", distribution.minimum);
+    writeHopExtreme(json, "maximum", distribution.maximum);
+  });
+}
+
 struct EndpointGraph final {
   std::vector<FabricTransportEndpointRef> endpoints;
   std::vector<FabricPortDirection> directions;
@@ -156,6 +193,15 @@ struct EndpointGraph final {
   std::vector<std::vector<std::size_t>> incoming;
   std::set<CanonicalKey> moduleBoundaryAttachments;
   std::map<CanonicalKey, std::size_t> ordinals;
+};
+
+using EndpointDistance = std::optional<std::uint64_t>;
+
+struct ModuleQualityInventory final {
+  std::vector<FabricPeOccurrenceRef> pes;
+  std::vector<FabricMemoryOccurrenceRef> memories;
+  std::map<CanonicalKey, std::vector<std::size_t>> endpointsByOwner;
+  std::map<CanonicalKey, std::size_t> peOrdinals;
 };
 
 llvm::Expected<EndpointGraph>
@@ -211,6 +257,273 @@ buildEndpointGraph(const FabricArtifactView &fabric) {
        fabric.moduleBoundaryTransportAttachments())
     graph.moduleBoundaryAttachments.insert(key(attachment.endpoint));
   return graph;
+}
+
+ModuleQualityInventory buildModuleQualityInventory(
+    const FabricArtifactView &fabric, const EndpointGraph &graph) {
+  ModuleQualityInventory inventory;
+  inventory.pes.assign(fabric.peOccurrences().begin(),
+                       fabric.peOccurrences().end());
+  inventory.memories.assign(fabric.memoryOccurrences().begin(),
+                            fabric.memoryOccurrences().end());
+  llvm::sort(inventory.pes, [](const auto &lhs, const auto &rhs) {
+    return canonicalFabricBytes(lhs) < canonicalFabricBytes(rhs);
+  });
+  llvm::sort(inventory.memories, [](const auto &lhs, const auto &rhs) {
+    return canonicalFabricBytes(lhs) < canonicalFabricBytes(rhs);
+  });
+  for (auto [ordinal, pe] : llvm::enumerate(inventory.pes))
+    inventory.peOrdinals.emplace(canonicalFabricBytes(pe), ordinal);
+  for (auto [ordinal, endpoint] : llvm::enumerate(graph.endpoints))
+    inventory.endpointsByOwner[key(endpoint.owner)].push_back(ordinal);
+  return inventory;
+}
+
+std::vector<std::uint64_t>
+undirectedEndpointDistances(const EndpointGraph &graph,
+                            llvm::ArrayRef<std::size_t> starts,
+                            const CanonicalKey &sourceOwner) {
+  constexpr std::uint64_t unreachable =
+      std::numeric_limits<std::uint64_t>::max();
+  std::vector<std::uint64_t> distance(graph.endpoints.size(), unreachable);
+  std::deque<std::size_t> pending;
+  for (std::size_t start : starts) {
+    distance[start] = 0;
+    pending.push_back(start);
+  }
+  while (!pending.empty()) {
+    const std::size_t current = pending.front();
+    pending.pop_front();
+    const FabricTransportEndpointOwnerRef &owner =
+        graph.endpoints[current].owner;
+    if (key(owner) != sourceOwner && !isTransparent(owner.kind()) &&
+        owner.kind() !=
+            FabricTransportEndpointOwnerKind::FabricSwitchOccurrence)
+      continue;
+    const auto include = [&](std::size_t next) {
+      if (distance[next] != unreachable)
+        return;
+      distance[next] = distance[current] + 1;
+      pending.push_back(next);
+    };
+    for (std::size_t next : graph.outgoing[current])
+      include(next);
+    for (std::size_t next : graph.incoming[current])
+      include(next);
+  }
+  return distance;
+}
+
+llvm::Expected<std::vector<std::vector<std::uint64_t>>>
+buildPeDistanceRows(const EndpointGraph &graph,
+                    const ModuleQualityInventory &inventory) {
+  std::vector<std::vector<std::uint64_t>> rows;
+  rows.reserve(inventory.pes.size());
+  for (FabricPeOccurrenceRef pe : inventory.pes) {
+    const CanonicalKey peKey =
+        key(FabricTransportEndpointOwnerRef::of(pe));
+    const auto starts = inventory.endpointsByOwner.find(peKey);
+    if (starts == inventory.endpointsByOwner.end())
+      return invalid("a Module PE has no canonical transport endpoints");
+    rows.push_back(
+        undirectedEndpointDistances(graph, starts->second, peKey));
+  }
+  return rows;
+}
+
+llvm::Expected<llvm::ArrayRef<std::uint64_t>>
+peDistanceRow(const ModuleQualityInventory &inventory,
+              llvm::ArrayRef<std::vector<std::uint64_t>> rows,
+              FabricPeOccurrenceRef pe) {
+  const auto ordinal = inventory.peOrdinals.find(canonicalFabricBytes(pe));
+  if (ordinal == inventory.peOrdinals.end() || ordinal->second >= rows.size())
+    return invalid("a Module PE is absent from the locality inventory");
+  return llvm::ArrayRef<std::uint64_t>(rows[ordinal->second]);
+}
+
+template <typename Ref>
+EndpointDistance nearestOwnerDistance(
+    const ModuleQualityInventory &inventory,
+    llvm::ArrayRef<std::uint64_t> distances, llvm::ArrayRef<Ref> targets,
+    const std::optional<CanonicalKey> &excluded = std::nullopt) {
+  constexpr std::uint64_t unreachable =
+      std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t best = unreachable;
+  for (const Ref &target : targets) {
+    const CanonicalKey targetKey =
+        key(FabricTransportEndpointOwnerRef::of(target));
+    if (excluded && targetKey == *excluded)
+      continue;
+    const auto endpoints = inventory.endpointsByOwner.find(targetKey);
+    if (endpoints == inventory.endpointsByOwner.end())
+      continue;
+    for (std::size_t endpoint : endpoints->second)
+      best = std::min(best, distances[endpoint]);
+  }
+  if (best == unreachable)
+    return std::nullopt;
+  return best;
+}
+
+void includeHopDistance(FabricTopologyHopDistribution &distribution,
+                        FabricPeOccurrenceRef subject,
+                        EndpointDistance distance) {
+  ++distribution.subjectCount;
+  if (!distance) {
+    distribution.unreachableSubjects.push_back(subject);
+    return;
+  }
+  ++distribution.reachableSubjectCount;
+  distribution.totalReachableHops += *distance;
+  if (!distribution.minimum || *distance < distribution.minimum->hops)
+    distribution.minimum = FabricTopologyHopExtreme{*distance, {subject}};
+  else if (*distance == distribution.minimum->hops)
+    distribution.minimum->subjects.push_back(subject);
+  if (!distribution.maximum || *distance > distribution.maximum->hops)
+    distribution.maximum = FabricTopologyHopExtreme{*distance, {subject}};
+  else if (*distance == distribution.maximum->hops)
+    distribution.maximum->subjects.push_back(subject);
+}
+
+llvm::Expected<std::vector<FabricTopologyScheduleQuality>>
+analyzeScheduleQuality(const FabricArtifactView &fabric,
+                       const ModuleQualityInventory &inventory,
+                       llvm::ArrayRef<std::vector<std::uint64_t>>
+                           distanceRows) {
+  constexpr ::fabric::Schedule schedules[] = {::fabric::Schedule::Spatial,
+                                               ::fabric::Schedule::Temporal};
+  std::vector<FabricTopologyScheduleQuality> result;
+  result.reserve(std::size(schedules));
+  for (::fabric::Schedule schedule : schedules) {
+    FabricTopologyScheduleQuality quality{
+        schedule, 0, 0, 0, {}, {}, {}, {}};
+    std::vector<FabricPeOccurrenceRef> samePes;
+    std::vector<FabricPeOccurrenceRef> otherPes;
+    std::vector<FabricMemoryOccurrenceRef> sameMemories;
+    std::vector<FabricMemoryOccurrenceRef> otherMemories;
+    for (FabricPeOccurrenceRef pe : inventory.pes) {
+      const auto ownerSchedule = fabric.peSchedule(pe);
+      if (!ownerSchedule)
+        return invalid("a Module PE has no scheduling domain");
+      (*ownerSchedule == schedule ? samePes : otherPes).push_back(pe);
+    }
+    for (FabricMemoryOccurrenceRef memory : inventory.memories) {
+      const auto ownerSchedule = fabric.memorySchedule(memory);
+      if (!ownerSchedule)
+        continue;
+      (*ownerSchedule == schedule ? sameMemories : otherMemories)
+          .push_back(memory);
+    }
+    quality.peCount = samePes.size();
+    quality.memoryCount = sameMemories.size();
+    for (FabricSwitchOccurrenceRef sw : fabric.switchOccurrences()) {
+      const auto ownerSchedule = fabric.switchSchedule(sw);
+      if (!ownerSchedule)
+        return invalid("a Module switch has no scheduling domain");
+      quality.switchCount += *ownerSchedule == schedule;
+    }
+    for (FabricPeOccurrenceRef pe : samePes) {
+      const CanonicalKey peKey =
+          key(FabricTransportEndpointOwnerRef::of(pe));
+      auto distances = peDistanceRow(inventory, distanceRows, pe);
+      if (!distances)
+        return distances.takeError();
+      includeHopDistance(
+          quality.nearestSameSchedulePe, pe,
+          nearestOwnerDistance(inventory, *distances,
+                               llvm::ArrayRef(samePes), peKey));
+      includeHopDistance(
+          quality.nearestOtherSchedulePe, pe,
+          nearestOwnerDistance(inventory, *distances,
+                               llvm::ArrayRef(otherPes)));
+      includeHopDistance(
+          quality.nearestMatchingMemory, pe,
+          nearestOwnerDistance(inventory, *distances,
+                               llvm::ArrayRef(sameMemories)));
+      includeHopDistance(
+          quality.nearestOtherScheduleMemory, pe,
+          nearestOwnerDistance(inventory, *distances,
+                               llvm::ArrayRef(otherMemories)));
+    }
+    result.push_back(std::move(quality));
+  }
+  return result;
+}
+
+llvm::Expected<std::vector<FabricTopologyCapabilityQuality>>
+analyzeCapabilityQuality(const FabricArtifactView &fabric,
+                         const ModuleQualityInventory &inventory,
+                         llvm::ArrayRef<std::vector<std::uint64_t>>
+                             distanceRows) {
+  std::vector<std::set<CanonicalKey>> supportingKeys(
+      ::dataflow::operationSchemaCount());
+  for (FabricFuOccurrenceRef fu : fabric.fuOccurrences()) {
+    const auto parent = fabric.parentPeOf(fu);
+    const auto definition = fabric.fuTemplateOf(fu);
+    if (!parent || !definition)
+      return invalid("a Module FU lost its PE or template owner");
+    std::set<::dataflow::OperationSchemaId> schemas;
+    for (const FabricFuCapabilityTemplateRecord &row :
+         fabric.fuCapabilityTemplates(*definition)) {
+      for (const FabricFuTemplateNodeRef &node : row.activeNodes) {
+        if (node.node != FabricFuNodeKind::Op)
+          continue;
+        const ResolvedFabricOpCapabilityView *capability =
+            fabric.resolvedFabricOpCapability(node);
+        if (!capability)
+          return invalid("an active FU operation has no resolved capability");
+        schemas.insert(capability->enabledOperationSchemas.begin(),
+                       capability->enabledOperationSchemas.end());
+      }
+    }
+    for (::dataflow::OperationSchemaId schema : schemas)
+      supportingKeys[static_cast<std::size_t>(schema)].insert(
+          canonicalFabricBytes(*parent));
+  }
+
+  std::vector<FabricTopologyCapabilityQuality> result;
+  for (std::uint32_t ordinal = 0;
+       ordinal != ::dataflow::operationSchemaCount(); ++ordinal) {
+    if (supportingKeys[ordinal].empty())
+      continue;
+    FabricTopologyCapabilityQuality quality{
+        static_cast<::dataflow::OperationSchemaId>(ordinal), {}, 0, 0, {}, {}};
+    for (FabricPeOccurrenceRef pe : inventory.pes) {
+      if (supportingKeys[ordinal].count(canonicalFabricBytes(pe)))
+        quality.supportingPes.push_back(pe);
+    }
+    for (FabricPeOccurrenceRef pe : quality.supportingPes) {
+      const auto schedule = fabric.peSchedule(pe);
+      if (!schedule)
+        return invalid("a capability-supporting PE has no scheduling domain");
+      if (*schedule == ::fabric::Schedule::Spatial)
+        ++quality.spatialPeCount;
+      else
+        ++quality.temporalPeCount;
+    }
+    for (FabricPeOccurrenceRef pe : inventory.pes) {
+      const CanonicalKey peKey =
+          key(FabricTransportEndpointOwnerRef::of(pe));
+      auto distances = peDistanceRow(inventory, distanceRows, pe);
+      if (!distances)
+        return distances.takeError();
+      includeHopDistance(
+          quality.coverage, pe,
+          nearestOwnerDistance(inventory, *distances,
+                               llvm::ArrayRef(quality.supportingPes)));
+      if (supportingKeys[ordinal].count(canonicalFabricBytes(pe)))
+        includeHopDistance(
+            quality.supportingPeer, pe,
+            nearestOwnerDistance(inventory, *distances,
+                                 llvm::ArrayRef(quality.supportingPes), peKey));
+    }
+    result.push_back(std::move(quality));
+  }
+  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
+    return ::dataflow::operationSchemaSpelling(lhs.schema) <
+           ::dataflow::operationSchemaSpelling(rhs.schema);
+  });
+  return result;
 }
 
 struct EndpointTraversalScratch final {
@@ -336,7 +649,7 @@ analyzeFabricTopologyQuality(const FabricArtifactView &fabric) {
     return key(lhs.second) < key(rhs.second);
   });
 
-  FabricTopologyQualityReport report{fabric.identity(), rootKind, {}};
+  FabricTopologyQualityReport report{fabric.identity(), rootKind, {}, 0, {}, {}};
   report.owners.reserve(subjects.size());
   EndpointTraversalScratch scratch(graph->endpoints.size());
   for (const auto &[kind, subject] : subjects) {
@@ -364,6 +677,24 @@ analyzeFabricTopologyQuality(const FabricArtifactView &fabric) {
     sortUniqueOwners(owner.distinctRoutingResources);
     sortUniqueOwners(owner.distinctDirectResources);
     report.owners.push_back(std::move(owner));
+  }
+  if (rootKind == FabricRootKind::Module) {
+    const ModuleQualityInventory inventory =
+        buildModuleQualityInventory(fabric, *graph);
+    auto distanceRows = buildPeDistanceRows(*graph, inventory);
+    if (!distanceRows)
+      return distanceRows.takeError();
+    for (FabricMemoryOccurrenceRef memory : inventory.memories)
+      report.unscheduledMemoryCount += !fabric.memorySchedule(memory);
+    auto schedules = analyzeScheduleQuality(fabric, inventory, *distanceRows);
+    if (!schedules)
+      return schedules.takeError();
+    report.schedules = std::move(*schedules);
+    auto capabilities =
+        analyzeCapabilityQuality(fabric, inventory, *distanceRows);
+    if (!capabilities)
+      return capabilities.takeError();
+    report.capabilities = std::move(*capabilities);
   }
   return report;
 }
@@ -423,6 +754,31 @@ summarizeFabricTopologyQuality(const FabricTopologyQualityReport &report) {
   return result;
 }
 
+FabricTopologyDseQuality projectFabricTopologyDseQuality(
+    const FabricTopologyQualityReport &report) {
+  FabricTopologyDseQuality result;
+  result.unscheduledMemoryCount = report.unscheduledMemoryCount;
+  for (const FabricTopologyScheduleQuality &schedule : report.schedules) {
+    if ((schedule.peCount == 0) != (schedule.memoryCount == 0))
+      result.scheduleSupplyGap +=
+          schedule.peCount == 0 ? schedule.memoryCount : schedule.peCount;
+    result.matchingMemoryUnreachablePeCount +=
+        schedule.nearestMatchingMemory.unreachableSubjects.size();
+    result.matchingMemoryTotalReachableHops +=
+        schedule.nearestMatchingMemory.totalReachableHops;
+  }
+  for (const FabricTopologyCapabilityQuality &capability :
+       report.capabilities) {
+    result.capabilityCoverageUnreachablePeCount +=
+        capability.coverage.unreachableSubjects.size();
+    result.capabilityCoverageTotalReachableHops +=
+        capability.coverage.totalReachableHops;
+    result.isolatedCapabilitySupportingPeCount +=
+        capability.supportingPeer.unreachableSubjects.size();
+  }
+  return result;
+}
+
 llvm::Error writeFabricTopologyQualityJson(
     llvm::ArrayRef<FabricTopologyQualityReport> reports,
     llvm::raw_ostream &output) {
@@ -432,12 +788,55 @@ llvm::Error writeFabricTopologyQualityJson(
   llvm::json::OStream json(output);
   json.object([&] {
     json.attribute("schema", "loom.fabric.topology_quality.1");
+    json.attribute("schema_version", "1.1");
     json.attributeArray("roots", [&] {
       for (const FabricTopologyQualityReport &report : reports) {
         json.object([&] {
           json.attribute("artifact",
                          formatArtifactIdentityHex(report.artifact));
           json.attribute("root_kind", fabricRefKeyword(report.rootKind));
+          json.attribute("unscheduled_memory_count",
+                         report.unscheduledMemoryCount);
+          json.attributeArray("schedule_distributions", [&] {
+            for (const FabricTopologyScheduleQuality &schedule :
+                 report.schedules) {
+              json.object([&] {
+                json.attribute("schedule",
+                               ::fabric::stringifySchedule(schedule.schedule));
+                json.attribute("pe_count", schedule.peCount);
+                json.attribute("memory_count", schedule.memoryCount);
+                json.attribute("switch_count", schedule.switchCount);
+                writeHopDistribution(json, "nearest_same_schedule_pe",
+                                     schedule.nearestSameSchedulePe);
+                writeHopDistribution(json, "nearest_other_schedule_pe",
+                                     schedule.nearestOtherSchedulePe);
+                writeHopDistribution(json, "nearest_matching_memory",
+                                     schedule.nearestMatchingMemory);
+                writeHopDistribution(json, "nearest_other_schedule_memory",
+                                     schedule.nearestOtherScheduleMemory);
+              });
+            }
+          });
+          json.attributeArray("capability_distributions", [&] {
+            for (const FabricTopologyCapabilityQuality &capability :
+                 report.capabilities) {
+              json.object([&] {
+                json.attribute(
+                    "schema",
+                    ::dataflow::operationSchemaSpelling(capability.schema));
+                json.attributeArray("supporting_pes", [&] {
+                  writePeArray(json, capability.supportingPes);
+                });
+                json.attribute("spatial_pe_count",
+                               capability.spatialPeCount);
+                json.attribute("temporal_pe_count",
+                               capability.temporalPeCount);
+                writeHopDistribution(json, "coverage", capability.coverage);
+                writeHopDistribution(json, "supporting_peer",
+                                     capability.supportingPeer);
+              });
+            }
+          });
           json.attributeArray("terminal_distributions", [&] {
             for (const FabricTopologyKindDistribution &distribution :
                  summarizeFabricTopologyQuality(report)) {

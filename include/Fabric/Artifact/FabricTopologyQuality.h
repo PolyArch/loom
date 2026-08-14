@@ -3,6 +3,8 @@
 
 #include "Fabric/Identity/FabricRefImport.h"
 
+#include "Dataflow/IR/OperationSchema.h"
+
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -63,12 +65,76 @@ struct FabricTopologyOwnerQuality final {
   }
 };
 
+/// Exact hop extrema over PE subjects. A hop is one canonical physical
+/// traversal after direction is erased solely for locality measurement. The
+/// routability owner retains the directed graph; this projection does not
+/// admit a route.
+struct FabricTopologyHopExtreme final {
+  std::uint64_t hops = 0;
+  std::vector<FabricPeOccurrenceRef> subjects;
+};
+
+/// Threshold-free nearest-target distribution over one declared PE subject
+/// set. Unreachable subjects remain explicit instead of receiving a sentinel
+/// distance. The total is over reachable subjects only.
+struct FabricTopologyHopDistribution final {
+  std::uint64_t subjectCount = 0;
+  std::uint64_t reachableSubjectCount = 0;
+  std::uint64_t totalReachableHops = 0;
+  std::vector<FabricPeOccurrenceRef> unreachableSubjects;
+  std::optional<FabricTopologyHopExtreme> minimum;
+  std::optional<FabricTopologyHopExtreme> maximum;
+};
+
+/// Schedule supply and physical locality for one Module scheduling domain.
+/// Same-schedule PE distance excludes the subject itself. Matching-memory
+/// distance considers only memories with an operation engine in this domain.
+struct FabricTopologyScheduleQuality final {
+  ::fabric::Schedule schedule;
+  std::uint64_t peCount = 0;
+  std::uint64_t memoryCount = 0;
+  std::uint64_t switchCount = 0;
+  FabricTopologyHopDistribution nearestSameSchedulePe;
+  FabricTopologyHopDistribution nearestOtherSchedulePe;
+  FabricTopologyHopDistribution nearestMatchingMemory;
+  FabricTopologyHopDistribution nearestOtherScheduleMemory;
+};
+
+/// Physical distribution of one registered operation schema. `coverage`
+/// measures every PE to its nearest supporting PE, while `supportingPeer`
+/// measures each supporter to another supporter. Together with the exact
+/// supporter inventory these distinguish broad coverage from a tight cluster.
+struct FabricTopologyCapabilityQuality final {
+  ::dataflow::OperationSchemaId schema;
+  std::vector<FabricPeOccurrenceRef> supportingPes;
+  std::uint64_t spatialPeCount = 0;
+  std::uint64_t temporalPeCount = 0;
+  FabricTopologyHopDistribution coverage;
+  FabricTopologyHopDistribution supportingPeer;
+};
+
+/// Exact additive projection suitable for hardware-candidate ranking. Every
+/// component retains a distinct physical meaning; callers choose ordering and
+/// weights in the resolved objective policy rather than collapsing them here.
+struct FabricTopologyDseQuality final {
+  std::uint64_t unscheduledMemoryCount = 0;
+  std::uint64_t scheduleSupplyGap = 0;
+  std::uint64_t matchingMemoryUnreachablePeCount = 0;
+  std::uint64_t matchingMemoryTotalReachableHops = 0;
+  std::uint64_t capabilityCoverageUnreachablePeCount = 0;
+  std::uint64_t capabilityCoverageTotalReachableHops = 0;
+  std::uint64_t isolatedCapabilitySupportingPeCount = 0;
+};
+
 /// Rebuildable connectivity report for one exact canonical Fabric root. It is
 /// diagnostic and DSE input, never another artifact or topology authority.
 struct FabricTopologyQualityReport final {
   ArtifactIdentity artifact;
   FabricRootKind rootKind;
   std::vector<FabricTopologyOwnerQuality> owners;
+  std::uint64_t unscheduledMemoryCount = 0;
+  std::vector<FabricTopologyScheduleQuality> schedules;
+  std::vector<FabricTopologyCapabilityQuality> capabilities;
 };
 
 struct FabricTopologyCountExtreme final {
@@ -110,6 +176,9 @@ analyzeFabricTopologyQualityClosure(const FabricArtifactView &fabric);
 
 std::vector<FabricTopologyKindDistribution>
 summarizeFabricTopologyQuality(const FabricTopologyQualityReport &report);
+
+FabricTopologyDseQuality
+projectFabricTopologyDseQuality(const FabricTopologyQualityReport &report);
 
 /// Deterministic JSON projection of the derived report closure. Reference
 /// spellings and integer ratio components remain exact; consumers never parse

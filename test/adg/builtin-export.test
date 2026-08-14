@@ -21,6 +21,7 @@
 # SYSTEM-ROOT: "schema":"loom.fabric"
 # MODULE-ROOT: "schema":"loom.fabric"
 # TOPOLOGY: "schema":"loom.fabric.topology_quality.1"
+# TOPOLOGY: "schema_version":"1.1"
 # TOPOLOGY: "root_kind":"system"
 # TOPOLOGY: "root_kind":"module"
 

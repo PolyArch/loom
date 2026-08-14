@@ -1,6 +1,7 @@
 #include "FabricTopologyQualityDiagnostic.h"
 
 #include "Common/ArtifactText.h"
+#include "Fabric/IR/FabricEnums.h"
 #include "Fabric/Identity/FabricRefText.h"
 
 #include "llvm/Support/JSON.h"
@@ -16,6 +17,36 @@ ownerArray(llvm::ArrayRef<fabric::FabricTransportEndpointOwnerRef> owners) {
   for (const auto &owner : owners)
     result.emplace_back(fabric::printFabricRef(owner));
   return result;
+}
+
+llvm::json::Array
+peArray(llvm::ArrayRef<fabric::FabricPeOccurrenceRef> pes) {
+  llvm::json::Array result;
+  for (fabric::FabricPeOccurrenceRef pe : pes)
+    result.emplace_back(fabric::printFabricRef(pe));
+  return result;
+}
+
+void emitHopDistribution(
+    llvm::json::Object &fields, llvm::StringRef prefix,
+    const fabric::FabricTopologyHopDistribution &distribution) {
+  fields[(prefix + "_subject_count").str()] = distribution.subjectCount;
+  fields[(prefix + "_reachable_subject_count").str()] =
+      distribution.reachableSubjectCount;
+  fields[(prefix + "_total_reachable_hops").str()] =
+      distribution.totalReachableHops;
+  fields[(prefix + "_unreachable_subjects").str()] =
+      peArray(distribution.unreachableSubjects);
+  if (distribution.minimum) {
+    fields[(prefix + "_minimum_hops").str()] = distribution.minimum->hops;
+    fields[(prefix + "_minimum_subjects").str()] =
+        peArray(distribution.minimum->subjects);
+  }
+  if (distribution.maximum) {
+    fields[(prefix + "_maximum_hops").str()] = distribution.maximum->hops;
+    fields[(prefix + "_maximum_subjects").str()] =
+        peArray(distribution.maximum->subjects);
+  }
 }
 
 } // namespace
@@ -43,6 +74,8 @@ analyzeAndEmitFabricTopologyQuality(const fabric::FabricArtifactView &fabric,
   }
 
   const std::string artifact = formatArtifactIdentityHex(report->artifact);
+  const fabric::FabricTopologyDseQuality dseQuality =
+      fabric::projectFabricTopologyDseQuality(*report);
   mapping_debug::emit(
       mapping_debug::Level::Summary, stage,
       mapping_debug::Event::TopologyQuality, [&](llvm::json::Object &fields) {
@@ -56,6 +89,21 @@ analyzeAndEmitFabricTopologyQuality(const fabric::FabricArtifactView &fabric,
         fields["boundary_port_count"] = boundaryPortCount;
         fields["unreachable_port_count"] = unreachablePortCount;
         fields["direct_binding_owner_count"] = directBindingOwners;
+        fields["unscheduled_memory_count"] = report->unscheduledMemoryCount;
+        fields["schedule_distribution_count"] = report->schedules.size();
+        fields["capability_distribution_count"] =
+            report->capabilities.size();
+        fields["schedule_supply_gap"] = dseQuality.scheduleSupplyGap;
+        fields["matching_memory_unreachable_pe_count"] =
+            dseQuality.matchingMemoryUnreachablePeCount;
+        fields["matching_memory_total_reachable_hops"] =
+            dseQuality.matchingMemoryTotalReachableHops;
+        fields["capability_coverage_unreachable_pe_count"] =
+            dseQuality.capabilityCoverageUnreachablePeCount;
+        fields["capability_coverage_total_reachable_hops"] =
+            dseQuality.capabilityCoverageTotalReachableHops;
+        fields["isolated_capability_supporting_pe_count"] =
+            dseQuality.isolatedCapabilitySupportingPeCount;
       });
 
   const auto emitRatio = [](llvm::json::Object &fields, llvm::StringRef prefix,
@@ -91,6 +139,46 @@ analyzeAndEmitFabricTopologyQuality(const fabric::FabricArtifactView &fabric,
                     distribution.minimumDirectRatio);
           emitRatio(fields, "maximum_direct_ratio",
                     distribution.maximumDirectRatio);
+        });
+  }
+
+  for (const fabric::FabricTopologyScheduleQuality &schedule :
+       report->schedules) {
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, stage,
+        mapping_debug::Event::TopologyQuality, [&](llvm::json::Object &fields) {
+          fields["scope"] = "schedule_distribution";
+          fields["artifact"] = artifact;
+          fields["schedule"] = ::fabric::stringifySchedule(schedule.schedule);
+          fields["pe_count"] = schedule.peCount;
+          fields["memory_count"] = schedule.memoryCount;
+          fields["switch_count"] = schedule.switchCount;
+          emitHopDistribution(fields, "nearest_same_schedule_pe",
+                              schedule.nearestSameSchedulePe);
+          emitHopDistribution(fields, "nearest_other_schedule_pe",
+                              schedule.nearestOtherSchedulePe);
+          emitHopDistribution(fields, "nearest_matching_memory",
+                              schedule.nearestMatchingMemory);
+          emitHopDistribution(fields, "nearest_other_schedule_memory",
+                              schedule.nearestOtherScheduleMemory);
+        });
+  }
+
+  for (const fabric::FabricTopologyCapabilityQuality &capability :
+       report->capabilities) {
+    mapping_debug::emit(
+        mapping_debug::Level::Summary, stage,
+        mapping_debug::Event::TopologyQuality, [&](llvm::json::Object &fields) {
+          fields["scope"] = "capability_distribution";
+          fields["artifact"] = artifact;
+          fields["operation_schema"] =
+              ::dataflow::operationSchemaSpelling(capability.schema);
+          fields["supporting_pes"] = peArray(capability.supportingPes);
+          fields["spatial_pe_count"] = capability.spatialPeCount;
+          fields["temporal_pe_count"] = capability.temporalPeCount;
+          emitHopDistribution(fields, "coverage", capability.coverage);
+          emitHopDistribution(fields, "supporting_peer",
+                              capability.supportingPeer);
         });
   }
 
