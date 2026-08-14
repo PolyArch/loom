@@ -435,9 +435,33 @@ llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
           candidate, *restoredProjection);
   if (!restored)
     return restored.takeError();
-  if (restored->codes() != expectedObjective.codes())
+  if (restored->codes() != expectedObjective.codes()) {
+    loom::mapping_debug::emit(
+        loom::mapping_debug::Level::Decision,
+        loom::mapping_debug::Stage::SpatialPnr,
+        loom::mapping_debug::Event::MappingFailure,
+        [&](llvm::json::Object &fields) {
+          llvm::json::Array expectedCodes;
+          for (std::uint64_t code : expectedObjective.codes())
+            expectedCodes.push_back(code);
+          llvm::json::Array restoredCodes;
+          for (std::uint64_t code : restored->codes())
+            restoredCodes.push_back(code);
+          fields["operation"] = "captured_route_objective_restore";
+          fields["expected_codes"] = std::move(expectedCodes);
+          fields["restored_codes"] = std::move(restoredCodes);
+          fields["expected_selected_traversal_claim"] =
+              expectedProjection.totalSelectedTraversalClaim;
+          fields["restored_selected_traversal_claim"] =
+              restoredProjection->totalSelectedTraversalClaim;
+          fields["logical_net_count"] =
+              logicalNets.empty()
+                  ? candidate.problem().transfers().logicalNets().size()
+                  : logicalNets.size();
+        });
     return pathFinderError(
         "captured temporary routes did not restore their objective vector");
+  }
   if (restoredProjection->unroutedObligationCount !=
           expectedProjection.unroutedObligationCount ||
       restoredProjection->routeCapacityOveruse !=

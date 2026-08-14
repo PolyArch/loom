@@ -500,7 +500,8 @@ traversal source must equal the parent endpoint. Sink endpoints are derived
 from their attached node; a zero-length route attaches directly to the root.
 One physical endpoint cannot appear as two nodes, structurally excluding
 reconvergence. Shared trunks appear once, and fanout is legal only where
-Fabric explicitly supports it.
+Fabric explicitly supports it. Every leaf carries at least one sink attachment;
+a sink-free branch is not part of a legal RouteTree.
 
 Canonical node ordinals use depth-first preorder from the root, with children
 ordered by the full physical-traversal semantic key. Sink attachments are

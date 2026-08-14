@@ -43,6 +43,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -1609,6 +1610,55 @@ void artifactRoundTripAndReferenceValidation() {
   if (!routeTree->isUnrouted())
     fail("route-tree whole-net rip-up retained committed state");
   requireSuccess(routeTree->verify());
+
+  std::optional<std::array<loom::pnr::PnrIndex, 2>> routeChain;
+  for (loom::pnr::PnrIndex first = 0;
+       first < frozen->routing().routingArcs().size() && !routeChain; ++first) {
+    const loom::pnr::PnrIndex chainSource =
+        frozen->routing().arcSources()[first];
+    const loom::pnr::PnrIndex middle =
+        frozen->routing().routingArcs()[first].target;
+    for (loom::pnr::PnrIndex second = offsets[middle];
+         second < offsets[middle + 1]; ++second) {
+      const loom::pnr::PnrIndex chainTarget =
+          frozen->routing().routingArcs()[second].target;
+      if (chainTarget != chainSource && chainTarget != middle) {
+        routeChain = std::array<loom::pnr::PnrIndex, 2>{first, second};
+        break;
+      }
+    }
+  }
+  if (!routeChain)
+    fail("builtin SpatialCore has no two-arc route-chain anchor");
+  auto chainOwner = std::shared_ptr<const loom::pnr::FrozenSpatialRoutingGraph>(
+      frozen, &frozen->routing());
+  auto chainTree =
+      take(loom::pnr::RouteTreeState::create(std::move(chainOwner), 1));
+  const loom::pnr::PnrIndex chainSource =
+      frozen->routing().arcSources()[(*routeChain)[0]];
+  const loom::pnr::PnrIndex chainMiddle =
+      frozen->routing().routingArcs()[(*routeChain)[0]].target;
+  const loom::pnr::PnrIndex chainTarget =
+      frozen->routing().routingArcs()[(*routeChain)[1]].target;
+  {
+    loom::pnr::RouteTreeTransactionScratch chainScratch;
+    auto chainTransaction = take(chainTree->beginTransaction(chainScratch));
+    requireSuccess(chainTransaction.bindSource(chainSource));
+    requireSuccess(chainTransaction.bindSink(0, chainTarget));
+    requireSuccess(chainTransaction.attachPath(
+        chainSource, {(*routeChain)[0], (*routeChain)[1]}, 0));
+    requireSuccess(chainTransaction.commit());
+  }
+  {
+    loom::pnr::RouteTreeTransactionScratch pruneScratch;
+    auto prune = take(chainTree->beginTransaction(pruneScratch));
+    requireSuccess(prune.ripUpSubtree(chainTarget));
+    if (chainTree->findNode(chainMiddle) || !chainTree->findNode(chainSource) ||
+        chainTree->activeNodeCount() != 1)
+      fail("RouteTree subtree rip-up retained a sink-free ancestor chain");
+    prune.rollback();
+  }
+  requireSuccess(chainTree->verify());
 
   const auto replicationGroups = frozen->routing().traversalReplicationGroups();
   if (replicationGroups.size() != frozen->routing().traversals().size())

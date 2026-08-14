@@ -479,6 +479,11 @@ RouteTreeState::verifyState(bool allowRetainedInactiveStorage) const {
       return routeTreeError("sink obligation is absent from node metadata");
   }
 
+  for (const RouteTreeNode &node : nodes_)
+    if (node.isActive() && node.firstChild == getInvalidPnrIndex() &&
+        node.sinkObligationCount == 0)
+      return routeTreeError("route tree retains a sink-free leaf");
+
   std::vector<std::uint8_t> childReferences(nodes_.size(), 0);
   for (std::size_t parentSlot = 0; parentSlot < nodes_.size(); ++parentSlot) {
     const RouteTreeNode &parent = nodes_[parentSlot];
@@ -1028,8 +1033,21 @@ llvm::Error RouteTreeTransaction::ripUpSubtree(PnrIndex subtreeRootEndpoint) {
       obligation = next;
     }
   }
-  const PnrIndex parent = parentSlot(*subtreeRoot);
-  detachNode(*subtreeRoot, parent);
+  PnrIndex detachedRoot = *subtreeRoot;
+  PnrIndex retainedParent = parentSlot(detachedRoot);
+  while (retainedParent != *root) {
+    const RouteTreeNode &childNode = state_->nodes_[detachedRoot];
+    const RouteTreeNode &parentNode = state_->nodes_[retainedParent];
+    if (parentNode.sinkObligationCount != 0 ||
+        parentNode.firstChild != detachedRoot ||
+        childNode.previousSibling != getInvalidPnrIndex() ||
+        childNode.nextSibling != getInvalidPnrIndex())
+      break;
+    scratch_->worklist_.push_back(retainedParent);
+    detachedRoot = retainedParent;
+    retainedParent = parentSlot(detachedRoot);
+  }
+  detachNode(detachedRoot, retainedParent);
   for (PnrIndex slot : scratch_->worklist_)
     removeNode(slot);
   return llvm::Error::success();
