@@ -2513,14 +2513,24 @@ attempts retain their deterministic variation.
    unreachable incidence ranks after every finite distance but does not remove
    the choice. If there is no active anchor, or scores remain equal, use
    circular canonical choice order beginning at the attempt's tie origin;
-3. a memory root participating in any constraint-owned relation retains its
+3. after every compute root has a preferred choice, revisit unconstrained
+   compute roots once in canonical owner order. Keep each root on its already
+   selected schedule and temporarily release only its current instruction
+   context. Rank same-schedule choices by selected-context count, unreachable
+   incidence, and weighted directed hop distance to every now-selected compute
+   neighbor and directly incident graph-boundary domain. Ties use circular
+   canonical choice order beginning at the attempt's tie origin. Commit the
+   selected context before visiting the next root. This complete-neighborhood
+   refinement cannot change `StaticSchedulePressure` or relax resident-context
+   disjointness;
+4. a memory root participating in any constraint-owned relation retains its
    baseline choice. Process every remaining memory root in canonical owner
    order, first minimize the choice's actor contribution to
    `StaticSchedulePressure`. Equal-pressure choices prefer a Temporal placement,
    then the exact memory occurrence with the least current selection count.
    Ties use circular canonical choice order beginning at the attempt's tie
    origin;
-4. any attachment root participating in a constraint-owned relation retains
+5. any attachment root participating in a constraint-owned relation retains
    its baseline choice. Process every other occurrence-relative
    `PortAttachment` root in canonical demand order and every other
    graph-boundary attachment root in canonical boundary order. Restrict a
@@ -2531,14 +2541,18 @@ attempts retain their deterministic variation.
    opposite selected terminals that are unreachable, then by their total
    directed hop distance, then by the current selected-attachment count. Ties
    use circular canonical choice order beginning at the attempt's tie origin;
-5. invoke the same root relation solver once with the preferred compute,
+6. invoke the same root relation solver once with the preferred compute,
    memory, and attachment roots fixed, so placement compatibility and every hard
    attachment relation are re-established by their existing owner; and
-6. if the preferred fixed roots have no complete assignment within the
+7. if the preferred fixed roots have no complete assignment within the
    remaining initializer work, retain the complete baseline assignment.
 
 The unselected-context restriction is a consequence of the hard resident-slot
 relation, not a load-balancing heuristic or a duplicate capacity authority.
+The complete-neighborhood pass preserves the first pass's schedule choice
+because schedule pressure already owns that decision; it refines only the
+physical occurrence and instruction context using anchors that did not yet
+exist when an earlier root was first visited.
 Static schedule pressure, its critical-edge distance weight, equal-pressure
 Temporal preference, exact-memory selection count, frozen-topology distance,
 and selected-attachment endpoint count are only deterministic search

@@ -976,6 +976,19 @@ routing ownership. The locality refinement instead composes the two existing
 facts needed for a useful seed: exact resident-context identity and exact
 frozen connectivity.
 
+Canonical owner order necessarily hides a root's not-yet-processed compute
+neighbors during the first preference pass. Reversing the order only moves
+that blind spot, and mixing partial-neighbor schedule pressure into the same
+greedy choice can worsen the complete schedule objective. Once every compute
+root has a choice, the initializer therefore performs one bounded coordinate
+pass over unconstrained roots. It holds each root's selected schedule fixed,
+temporarily releases its current instruction context, and ranks only
+same-schedule choices against all selected neighbors and boundary anchors.
+This preserves the structural schedule objective and hard context
+disjointness while removing the canonical-order locality bias. A separate
+iterative placer was rejected because it would need another convergence rule,
+work budget, and mutable placement authority before routing has begun.
+
 Schedule is also a physical seed property rather than an interchangeable
 placement label. A Temporal placement terminates configured instruction and
 operand paths in resident state, while a Spatial placement may leave the

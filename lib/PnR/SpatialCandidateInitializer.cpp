@@ -110,6 +110,9 @@ struct PreferredRootAssignment final {
   std::uint64_t topologyBoundaryAnchorIncidences = 0;
   std::uint64_t topologyHopSum = 0;
   std::uint64_t topologyUnreachableSelections = 0;
+  std::uint64_t topologyRefinedComputeRoots = 0;
+  std::uint64_t topologyRefinementHopSum = 0;
+  std::uint64_t topologyRefinementUnreachableSelections = 0;
   std::uint64_t changedPortAttachments = 0;
   std::uint64_t changedGraphBoundaryAttachments = 0;
   std::uint64_t maximumEndpointSelections = 0;
@@ -521,6 +524,12 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           fields["topology_hop_sum"] = result.topologyHopSum;
           fields["topology_unreachable_selections"] =
               result.topologyUnreachableSelections;
+          fields["topology_refined_compute_roots"] =
+              result.topologyRefinedComputeRoots;
+          fields["topology_refinement_hop_sum"] =
+              result.topologyRefinementHopSum;
+          fields["topology_refinement_unreachable_selections"] =
+              result.topologyRefinementUnreachableSelections;
           fields["changed_port_attachments"] = result.changedPortAttachments;
           fields["changed_graph_boundary_attachments"] =
               result.changedGraphBoundaryAttachments;
@@ -724,6 +733,89 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           fields["fu_ref"] = loom::fabric::printFabricRef(placement.fu);
         });
   }
+
+  for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
+       ++realization) {
+    if (participatesInHardRelation(realization))
+      continue;
+    const auto choices = bindings.computeChoices(realization);
+    const PnrIndex current = fixedChoices[realization];
+    if (current >= choices.size())
+      return initializerError(
+          "topology refinement has a foreign compute choice");
+    auto currentKey = contextKey(choices[current]);
+    if (!currentKey)
+      return currentKey.takeError();
+    auto count = selectedCounts.find(*currentKey);
+    if (count == selectedCounts.end() || count->second == 0)
+      return initializerError(
+          "topology refinement lost its current instruction context");
+    --count->second;
+
+    auto currentSchedule = computeSchedule(choices[current]);
+    if (!currentSchedule)
+      return currentSchedule.takeError();
+    auto topologyScores = scoreComputeTopologyChoices(
+        problem, realization, choices, selectedChoiceOrdinals,
+        *topologyIncidences, hopDistances, hopWorklist, fixedOptionScratch);
+    if (!topologyScores)
+      return topologyScores.takeError();
+    PnrIndex selected = current;
+    auto selectedScore = std::make_tuple(
+        std::numeric_limits<std::uint64_t>::max(), true,
+        std::numeric_limits<std::uint64_t>::max(), choices.size());
+    std::uint64_t selectedDistance = 0;
+    bool selectedUnreachable = false;
+    const PnrIndex origin = preferenceOrigin(current);
+    for (std::size_t rank = 0; rank != choices.size(); ++rank) {
+      const PnrIndex local = static_cast<PnrIndex>(
+          (static_cast<std::size_t>(origin) + rank) % choices.size());
+      auto schedule = computeSchedule(choices[local]);
+      if (!schedule)
+        return schedule.takeError();
+      if (*schedule != *currentSchedule)
+        continue;
+      auto key = contextKey(choices[local]);
+      if (!key)
+        return key.takeError();
+      const auto found = selectedCounts.find(*key);
+      const std::uint64_t selectedCount =
+          found == selectedCounts.end() ? 0 : found->second;
+      const bool unreachable = topologyScores->unreachable[local] != 0;
+      const std::uint64_t distance = topologyScores->distances[local];
+      const auto score =
+          std::make_tuple(selectedCount, unreachable,
+                          unreachable ? std::uint64_t{0} : distance, rank);
+      if (score < selectedScore) {
+        selected = local;
+        selectedScore = score;
+        selectedDistance = distance;
+        selectedUnreachable = unreachable;
+      }
+    }
+    fixedChoices[realization] = selected;
+    selectedChoiceOrdinals[realization] = selected;
+    auto selectedKey = contextKey(choices[selected]);
+    if (!selectedKey)
+      return selectedKey.takeError();
+    std::uint64_t &selectedCount = selectedCounts[*selectedKey];
+    if (selectedCount == std::numeric_limits<std::uint64_t>::max())
+      return initializerError("topology refinement count overflows u64");
+    ++selectedCount;
+    result.topologyRefinedComputeRoots += selected != current;
+    result.topologyRefinementUnreachableSelections += selectedUnreachable;
+    if (!selectedUnreachable) {
+      if (selectedDistance > std::numeric_limits<std::uint64_t>::max() -
+                                 result.topologyRefinementHopSum)
+        return initializerError("topology refinement hop sum exceeds u64");
+      result.topologyRefinementHopSum += selectedDistance;
+    }
+  }
+  result.changedComputeRoots = 0;
+  for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
+       ++realization)
+    result.changedComputeRoots +=
+        fixedChoices[realization] != result.choices[realization];
 
   const PnrIndex memoryOffset = bindings.computeDecisionCount();
   using MemoryKey = ::loom::fabric::FabricEntityId;
