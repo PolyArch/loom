@@ -1667,7 +1667,7 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   for (loom::pnr::PnrIndex plan = domain.planOffset;
        plan != domain.planOffset + domain.planCount; ++plan) {
     const auto &planRecord = problem->handshake().memoryOperationPlans()[plan];
-    if (temporal && planRecord.residentContext != 1)
+    if (planRecord.temporalResident != temporal)
       continue;
     auto move = take(candidate->beginMove(candidateScratch));
     requireSuccess(
@@ -1754,11 +1754,14 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
   if (operationPortUseCount != 1 || localServiceUseCount != 1)
     fail("strict SpatialMapping round trip lost a memory ResourceUse");
   if (temporal) {
+    // Resident contexts of one operation port are interchangeable, so the
+    // ordinal is derived from the canonical order of the actors that resolve
+    // to the port. This fixture places one actor there, which takes the first.
     const auto *context =
         std::get_if<loom::fabric::FabricMemoryOperationContextRef>(
             &operation.placement);
-    if (!context || context->ordinal != 1)
-      fail("Temporal memory placement lost its selected resident context");
+    if (!context || context->ordinal != 0)
+      fail("Temporal memory placement lost its derived resident context");
     if (context->ordinal >= active->operationRows.size() ||
         !active->operationRows[context->ordinal])
       fail("Temporal memory configuration selected the wrong resident row");

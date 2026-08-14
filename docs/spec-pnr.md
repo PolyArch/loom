@@ -1154,6 +1154,28 @@ returns `ProvenInfeasible` with zero assignment or routing work. ResourceUse
 capacity, configuration equality, event separation, or endpoint sharing cannot
 relax this relation because none creates an instruction-memory row.
 
+Memory Realization roots carry the corresponding relation for Memory Operation
+Engines. One engine holds one configured operation per exact physical operation
+port, so every pair of realizations whose actors select the same template
+operation port participates in one `Disjoint` relation projected through the
+selected `FabricMemoryOccurrenceRef`. The relation is the same under both
+schedules: a Spatial port carries one static row, and a Temporal port carries
+resident rows that the owning realization partitions among its own actors. A
+Spatial realization additionally cannot repeat one operation port across its
+actors, because it has no second row to hold the repeat.
+
+The Temporal resident-context ordinal is not a search decision. Every context
+of one operation port exposes the same capability, use patterns, and handshake
+fragments, so enumerating ordinals multiplies the operation-plan domain by the
+context count while offering nothing to distinguish the alternatives. The
+operation-plan domain therefore ranges over use patterns alone, and
+materialization derives each ordinal from the canonical order of the actors
+that resolve to the exact port. TechMapping already admits at most
+`num_context` actors per Temporal realization and the relation above keeps a
+second realization off that port, so the derived ordinal is always in range and
+the Fabric rule that one placement holds one configured operation holds by
+construction.
+
 System `H` factorizes parameterized binding relations into finite atoms for
 search. The candidate cannot synthesize new Presburger predicates or alter a
 logical domain. Finalization reconstructs the closed persistent

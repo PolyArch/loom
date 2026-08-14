@@ -628,7 +628,13 @@ SpatialBindingRelationModel::create(
   }
 
   if (memoryDecisionCount > 1) {
-    std::map<ProjectionKey, std::vector<PnrIndex>> spatialPortUsers;
+    // One Memory Operation Engine holds one configured operation per exact
+    // physical operation port: a Spatial port carries one static row, and a
+    // Temporal port carries one resident row per context that the owning
+    // realization partitions among its own actors. Two realizations therefore
+    // cannot share one occurrence-relative port under either schedule, and the
+    // relation is the same for both.
+    std::map<ProjectionKey, std::vector<PnrIndex>> operationPortUsers;
     for (PnrIndex realization = 0; realization < memoryDecisionCount;
          ++realization) {
       const FrozenSpatialMemoryRealization &record =
@@ -641,29 +647,28 @@ SpatialBindingRelationModel::create(
           }))
         return invalid(Projection::MemoryPlacement,
                        "one memory realization crosses scheduling domains");
-      if (schedule != ::fabric::Schedule::Spatial)
-        continue;
       std::set<ProjectionKey> selectedPorts;
       for (const FrozenSpatialMemoryActorBinding &actor :
            realizations.memoryActors().slice(record.actorOffset,
                                              record.actorCount)) {
         const ProjectionKey key = canonicalFabricBytes(actor.operationPort);
-        if (!selectedPorts.insert(key).second)
+        if (!selectedPorts.insert(key).second &&
+            schedule == ::fabric::Schedule::Spatial)
           return invalid(Projection::MemoryOperationPort,
                          "a Spatial memory realization repeats an operation "
                          "port");
       }
       for (const ProjectionKey &port : selectedPorts)
-        spatialPortUsers[port].push_back(realization);
+        operationPortUsers[port].push_back(realization);
     }
 
-    for (const auto &[port, users] : spatialPortUsers) {
+    for (const auto &[port, users] : operationPortUsers) {
       (void)port;
       if (users.size() < 2)
         continue;
-      InitializerRelationInput staticRows;
-      staticRows.kind = InitializerRelationKind::Disjoint;
-      staticRows.members.reserve(users.size());
+      InitializerRelationInput operationRows;
+      operationRows.kind = InitializerRelationKind::Disjoint;
+      operationRows.members.reserve(users.size());
       std::map<ProjectionKey, PnrIndex> occurrenceValues;
       for (PnrIndex realization : users) {
         InitializerRelationMemberInput member;
@@ -679,9 +684,6 @@ SpatialBindingRelationModel::create(
                            "memory choice names a foreign placement");
           const FrozenSpatialMemoryPlacement &placement =
               realizations.memoryPlacements()[choice.placement];
-          if (placement.schedule != ::fabric::Schedule::Spatial)
-            return invalid(Projection::MemoryPlacement,
-                           "a static memory relation has a Temporal choice");
           const ProjectionKey occurrence =
               canonicalFabricBytes(placement.memory);
           auto found = occurrenceValues.find(occurrence);
@@ -697,9 +699,9 @@ SpatialBindingRelationModel::create(
           }
           member.projectedValues.push_back(found->second);
         }
-        staticRows.members.push_back(std::move(member));
+        operationRows.members.push_back(std::move(member));
       }
-      relationInputs.push_back(std::move(staticRows));
+      relationInputs.push_back(std::move(operationRows));
       relationRoles.push_back(SpatialBindingRelationRole::Structural);
     }
   }

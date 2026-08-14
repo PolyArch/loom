@@ -583,23 +583,26 @@ private:
               checked(planCountContext, result_.memoryOperationPlans_.size());
           if (!planOffset)
             return planOffset.takeError();
-          const std::uint64_t contextCount =
-              *schedule == ::fabric::Schedule::Temporal
-                  ? fabric.memoryResidentContextCount(placement.memory)
-                  : 1;
-          if (contextCount == 0)
+          // Every resident context of one Temporal operation port exposes the
+          // same capability, use patterns, and handshake fragments; only the
+          // ordinal differs. Enumerating them multiplied this decision domain
+          // by the context count without offering the search one distinguishing
+          // fact, and left nothing that forced two actors on one port apart.
+          // The domain therefore covers use patterns alone and materialization
+          // derives each ordinal from the canonical order of the actors that
+          // resolve to the exact port. Resolution here uses the first context
+          // as the representative placement.
+          const bool temporalResident =
+              *schedule == ::fabric::Schedule::Temporal;
+          if (temporalResident &&
+              fabric.memoryResidentContextCount(placement.memory) == 0)
             return invalid("Temporal memory has no resident context");
-          for (std::uint64_t contextOrdinal = 0; contextOrdinal < contextCount;
-               ++contextOrdinal) {
-            const std::optional<std::uint64_t> residentContext =
-                *schedule == ::fabric::Schedule::Temporal
-                    ? std::optional<std::uint64_t>(contextOrdinal)
-                    : std::nullopt;
-            const FabricMemoryHandshakePlacement operationPlacement =
-                residentContext ? FabricMemoryHandshakePlacement(
-                                      FabricMemoryOperationContextRef{
-                                          port, *residentContext})
-                                : FabricMemoryHandshakePlacement(port);
+          const FabricMemoryHandshakePlacement operationPlacement =
+              temporalResident
+                  ? FabricMemoryHandshakePlacement(
+                        FabricMemoryOperationContextRef{port, 0})
+                  : FabricMemoryHandshakePlacement(port);
+          {
             for (::fabric::UsePatternKey pattern :
                  alternative->admissibleUsePatterns) {
               const FabricUsePatternRef usePattern{
@@ -637,8 +640,8 @@ private:
                   result_.memoryPlanFragments_.end(), fragments.begin(),
                   fragments.end());
               result_.memoryOperationPlans_.push_back(
-                  {usePatternOrdinal->second, residentContext, *fragmentOffset,
-                   *fragmentCount});
+                  {usePatternOrdinal->second, temporalResident,
+                   *fragmentOffset, *fragmentCount});
             }
           }
           const std::size_t planCountValue =

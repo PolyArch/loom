@@ -203,20 +203,35 @@ materializeMemoryBindings(mlir::OpBuilder &builder, mlir::Location location,
   return llvm::Error::success();
 }
 
+/// Assigns the exact resident-context ordinal of one Temporal memory
+/// operation. Contexts of one operation port are interchangeable, so the
+/// search does not choose among them; the ordinal is the position of this
+/// actor among the actors that resolve to the exact port, in the canonical
+/// realization and actor order this materializer already walks. That makes the
+/// Fabric-owned rule that one placement holds one configured operation hold by
+/// construction.
+using MemoryResidentContextCursor =
+    std::map<std::vector<std::uint8_t>, std::uint64_t>;
+
 llvm::Expected<mlir::Attribute> materializeMemoryPlacement(
     mlir::MLIRContext *context,
     ::loom::fabric::FabricMemoryOccurrenceRef occurrence,
     const FrozenSpatialMemoryActorBinding &actor,
-    const FrozenSpatialMemoryOperationHandshakePlan &plan) {
+    const FrozenSpatialMemoryOperationHandshakePlan &plan,
+    MemoryResidentContextCursor &residentContexts) {
   const ::loom::fabric::FabricMemoryOperationPortRef port{
       occurrence, actor.operationPort.ordinal};
-  if (plan.residentContext)
+  if (!plan.temporalResident)
     return mlir::Attribute(
-        fabricAttr<::mapping::FabricMemoryOperationContextRefAttr>(
-            context, ::loom::fabric::FabricMemoryOperationContextRef{
-                         port, *plan.residentContext}));
+        fabricAttr<::mapping::FabricMemoryOperationPortRefAttr>(context, port));
+  std::uint64_t &next =
+      residentContexts[::loom::fabric::canonicalFabricBytes(port)];
+  if (next == std::numeric_limits<std::uint64_t>::max())
+    return invalid("Temporal memory resident-context ordinal overflows u64");
   return mlir::Attribute(
-      fabricAttr<::mapping::FabricMemoryOperationPortRefAttr>(context, port));
+      fabricAttr<::mapping::FabricMemoryOperationContextRefAttr>(
+          context,
+          ::loom::fabric::FabricMemoryOperationContextRef{port, next++}));
 }
 
 llvm::Expected<mlir::Attribute>
@@ -257,6 +272,7 @@ materializeMemoryEngineBindings(mlir::OpBuilder &builder,
   const auto &realizations = problem.realizations();
   const auto &memory = problem.memory();
   const auto plans = problem.handshake().memoryOperationPlans();
+  MemoryResidentContextCursor residentContexts;
   for (PnrIndex realizationOrdinal = 0;
        realizationOrdinal < realizations.memoryRealizations().size();
        ++realizationOrdinal) {
@@ -293,8 +309,10 @@ materializeMemoryEngineBindings(mlir::OpBuilder &builder,
           builder.getContext(), dataflowIdentity, actor.actor);
       if (!actorAttr)
         return actorAttr.takeError();
-      auto operationPlacement = materializeMemoryPlacement(
-          builder.getContext(), placement.memory, actor, plans[planOrdinal]);
+      auto operationPlacement =
+          materializeMemoryPlacement(builder.getContext(), placement.memory,
+                                     actor, plans[planOrdinal],
+                                     residentContexts);
       if (!operationPlacement)
         return operationPlacement.takeError();
       if (actorOrdinal + 1 >= memory.actorUseOffsets().size())

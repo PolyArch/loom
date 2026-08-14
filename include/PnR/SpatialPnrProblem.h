@@ -821,7 +821,11 @@ struct FrozenSpatialMemoryOperationHandshakeDomain final {
 
 struct FrozenSpatialMemoryOperationHandshakePlan final {
   PnrIndex usePattern = 0;
-  std::optional<std::uint64_t> residentContext;
+  /// Whether the plan lands on a Temporal resident context. The exact context
+  /// ordinal is not a search decision: contexts of one operation port are
+  /// interchangeable, so materialization derives it from the canonical order
+  /// of the actors that resolve to that port.
+  bool temporalResident = false;
   PnrIndex fragmentOffset = 0;
   PnrIndex fragmentCount = 0;
 };
