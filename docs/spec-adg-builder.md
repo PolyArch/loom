@@ -1548,6 +1548,12 @@ deterministic elaboration only. There is no generic hardware action language,
 mutable candidate graph, caller-authored property bag, or DSE-only
 construction path.
 
+A caller that requires a verified candidate without an Artifact takes the
+`VerifiedFabricClosure` owned by
+[Finalization And Publication](spec-fabric-artifact.md#finalization-and-publication)
+and does not publish it. The Builder gains no second finalization path from
+that choice.
+
 ## Conformance Anchors
 
 The stable Builder anchors are deliberately small:
