@@ -1086,6 +1086,27 @@ transport endpoint is a mechanical projection of that value until a remover or
 rewriter ends the segment. Persisting those projections would create several
 editable copies of one decision.
 
+Coloring the complete current interference graph after a route transaction was
+chosen over preserving greedy per-net assignments. Incremental preservation
+makes legal low colors depend on route-edit history and can leave collisions
+that disappear under a different net order. A global deterministic coloring
+keeps CandidateState as the only search owner and lets the existing route
+transaction provide atomic commit and rollback. Small connected components use
+bounded exact coloring because local restrictions can make greedy selection
+miss an available coloring. Large components use deterministic
+minimum-incremental-conflict coloring because exhaustive search would make one
+route proposal unbounded. Both policies prefer low unsigned values and retain
+typed violations when the hardware namespace is insufficient.
+
+The coloring components follow physical interpretation continuity, not logical
+stream identity. In particular, a `t2t` boundary consumes one local tag and
+writes another, so its two sides may reuse independent palettes. Adding an
+equality relation across that boundary would erase the hardware's intended
+recoloring capability; treating every logical net as globally unique would do
+the same across all disconnected domains. Conversely, two segments that share
+a match domain must still receive distinct values whenever their uses may
+overlap.
+
 The assignment is a separate stateless Fabric UsePattern because adding it to
 an operation, queue, or transfer pattern would duplicate that pattern's claims
 and commit transition in Mapping. The endpoint-owned assignment pattern carries

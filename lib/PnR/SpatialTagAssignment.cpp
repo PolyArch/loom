@@ -1,5 +1,6 @@
 #include "PnR/SpatialTagAssignment.h"
 
+#include "SpatialTagColoring.h"
 #include "SpatialTagConstraintModel.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -12,6 +13,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <numeric>
 #include <optional>
 #include <system_error>
 #include <tuple>
@@ -33,6 +35,12 @@ constexpr PnrCapacityContext segmentOffsetContext{
     PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext incidenceCountContext{
     tagAssignment, "segment_domains", "segment_domain_incidence",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext colorIntervalCountContext{
+    tagAssignment, "color_intervals", "tag_color_intervals",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext matchDomainCountContext{
+    tagAssignment, "match_domains", "tag_match_domains",
     PnrCapacityMeasure::Count};
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -109,13 +117,22 @@ bool isFree(llvm::ArrayRef<PnrIndex> domains, const llvm::APInt &value,
   });
 }
 
+std::uint64_t
+conflictCost(llvm::ArrayRef<PnrIndex> domains, const llvm::APInt &value,
+             llvm::ArrayRef<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy) {
+  return llvm::count_if(domains, [&](PnrIndex domain) {
+    return occupancy[domain].lookup(value) != 0;
+  });
+}
+
 llvm::Expected<std::optional<llvm::APInt>>
 chooseValue(std::uint32_t tagWidthBits, llvm::ArrayRef<PnrIndex> domains,
             const std::optional<llvm::ArrayRef<SpatialConstraintDomainValue>>
                 &restriction,
             llvm::ArrayRef<llvm::APInt> forbidden,
             llvm::ArrayRef<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy) {
-  std::optional<llvm::APInt> firstAllowed;
+  std::optional<llvm::APInt> bestAllowed;
+  std::uint64_t bestCost = std::numeric_limits<std::uint64_t>::max();
   const auto considerRange = [&](llvm::APInt candidate,
                                  const llvm::APInt *upper)
       -> llvm::Expected<std::optional<llvm::APInt>> {
@@ -129,9 +146,12 @@ chooseValue(std::uint32_t tagWidthBits, llvm::ArrayRef<PnrIndex> domains,
         candidate = std::move(*next);
         continue;
       }
-      if (!firstAllowed)
-        firstAllowed = candidate;
-      if (isFree(domains, candidate, occupancy))
+      const std::uint64_t cost = conflictCost(domains, candidate, occupancy);
+      if (cost < bestCost) {
+        bestAllowed = candidate;
+        bestCost = cost;
+      }
+      if (cost == 0)
         return std::optional<llvm::APInt>(std::move(candidate));
       auto next = nextUnsigned(candidate);
       if (!next)
@@ -147,7 +167,7 @@ chooseValue(std::uint32_t tagWidthBits, llvm::ArrayRef<PnrIndex> domains,
       return selected.takeError();
     if (*selected)
       return std::move(*selected);
-    return std::move(firstAllowed);
+    return std::move(bestAllowed);
   }
 
   for (const SpatialConstraintDomainValue &domainValue : *restriction) {
@@ -164,7 +184,7 @@ chooseValue(std::uint32_t tagWidthBits, llvm::ArrayRef<PnrIndex> domains,
                                                    interval->lower))
       break;
   }
-  return std::move(firstAllowed);
+  return std::move(bestAllowed);
 }
 
 llvm::Expected<PnrIndex> checkedIndex(PnrCapacityContext context,
@@ -609,6 +629,135 @@ llvm::Error buildClass(TagStateStorage &storage, PnrIndex equalityClass,
   return llvm::Error::success();
 }
 
+llvm::Error colorIndependentNets(TagStateStorage &storage,
+                                 std::vector<PnrIndex> *builtNets = nullptr) {
+  if (storage.constraints->hasRelations())
+    return invalid("independent coloring received related logical nets");
+  if (storage.unassignedCount != 0 || storage.conflictCount != 0 ||
+      storage.residentCapacityOveruse != 0 ||
+      llvm::any_of(storage.residentCounts,
+                   [](PnrIndex count) { return count != 0; }) ||
+      llvm::any_of(storage.occupancy,
+                   [](const auto &domain) { return !domain.empty(); }))
+    return invalid("independent coloring requires empty assignment state");
+
+  std::vector<::loom::pnr::detail::SpatialTagColoringVertex> vertices;
+  std::vector<PnrIndex> domainOffsets;
+  std::vector<PnrIndex> domains;
+  std::vector<PnrIndex> intervalOffsets;
+  std::vector<::loom::pnr::detail::SpatialTagColoringInterval> intervals;
+  domainOffsets.push_back(0);
+  intervalOffsets.push_back(0);
+  const auto logicalNets = storage.problem->transfers().logicalNets();
+  const FrozenConstraintShard &tagConstraints =
+      storage.problem->constraints().shard(
+          ::mapping::SpatialConstraintProjection::NetAssignedTagValues);
+  for (PnrIndex logicalNet = 0; logicalNet < storage.nets.size();
+       ++logicalNet) {
+    const auto restriction = tagConstraints.restrictedDomain(
+        SpatialConstraintSubject{logicalNets[logicalNet].producer});
+    std::vector<::loom::pnr::detail::SpatialTagColoringInterval> localIntervals;
+    if (restriction)
+      for (const SpatialConstraintDomainValue &value : *restriction) {
+        const auto *interval =
+            std::get_if<SpatialConstraintUnsignedInterval>(&value);
+        if (!interval)
+          return invalid("tag restriction contains a non-interval value");
+        localIntervals.push_back({interval->lower, interval->upper});
+      }
+    const TagNetState &net = storage.nets[logicalNet];
+    for (PnrIndex segment = 0; segment < net.continuity.segments().size();
+         ++segment) {
+      vertices.push_back({net.continuity.segments()[segment].tagWidthBits,
+                          restriction.has_value()});
+      const auto localDomains = segmentDomains(net, segment);
+      if (llvm::Error error = preflightPnrIndexCapacity(
+              incidenceCountContext, domains.size() + localDomains.size()))
+        return error;
+      domains.insert(domains.end(), localDomains.begin(), localDomains.end());
+      auto domainEnd = checkedIndex(incidenceCountContext, domains.size());
+      if (!domainEnd)
+        return domainEnd.takeError();
+      domainOffsets.push_back(*domainEnd);
+
+      if (llvm::Error error = preflightPnrIndexCapacity(
+              colorIntervalCountContext,
+              intervals.size() + localIntervals.size()))
+        return error;
+      intervals.insert(intervals.end(), localIntervals.begin(),
+                       localIntervals.end());
+      auto intervalEnd =
+          checkedIndex(colorIntervalCountContext, intervals.size());
+      if (!intervalEnd)
+        return intervalEnd.takeError();
+      intervalOffsets.push_back(*intervalEnd);
+    }
+  }
+  if (llvm::Error error =
+          preflightPnrIndexCapacity(segmentCountContext, vertices.size()))
+    return error;
+  auto domainCount = checkedIndex(
+      matchDomainCountContext,
+      storage.problem->routing().tagContinuity().matchDomains().size());
+  if (!domainCount)
+    return domainCount.takeError();
+  auto coloring = ::loom::pnr::detail::colorSpatialTagInterference(
+      {vertices, domainOffsets, domains, intervalOffsets, intervals,
+       *domainCount});
+  if (!coloring)
+    return coloring.takeError();
+  if (coloring->values.size() != vertices.size())
+    return invalid("independent tag coloring returned the wrong width");
+
+  std::vector<std::pair<PnrIndex, PnrIndex>> added;
+  added.reserve(vertices.size());
+  bool committed = false;
+  const llvm::scope_exit rollback([&] {
+    if (committed)
+      return;
+    for (const auto &[logicalNet, segment] : llvm::reverse(added))
+      removeSegmentState(storage,
+                         segmentDomains(storage.nets[logicalNet], segment),
+                         storage.nets[logicalNet].values[segment]);
+  });
+  std::size_t vertex = 0;
+  for (PnrIndex logicalNet = 0; logicalNet < storage.nets.size();
+       ++logicalNet) {
+    TagNetState &net = storage.nets[logicalNet];
+    net.values.assign(net.continuity.segments().size(), std::nullopt);
+    for (PnrIndex segment = 0; segment < net.values.size(); ++segment) {
+      net.values[segment] = coloring->values[vertex++];
+      if (llvm::Error error = addSegmentState(
+              storage, segmentDomains(net, segment), net.values[segment]))
+        return error;
+      added.emplace_back(logicalNet, segment);
+    }
+  }
+  if (storage.unassignedCount != coloring->unassignedCount ||
+      storage.conflictCount != coloring->conflictCount)
+    return invalid("independent tag coloring summary is inconsistent");
+  std::fill(storage.classBuilt.begin(), storage.classBuilt.end(), 1);
+  if (builtNets)
+    for (PnrIndex logicalNet = 0; logicalNet < storage.nets.size();
+         ++logicalNet)
+      builtNets->push_back(logicalNet);
+  committed = true;
+  return llvm::Error::success();
+}
+
+llvm::Error buildAssignments(TagStateStorage &storage,
+                             const std::vector<TagNetState> *oldNets,
+                             std::vector<PnrIndex> *builtNets = nullptr) {
+  if (!storage.constraints->hasRelations())
+    return colorIndependentNets(storage, builtNets);
+  for (PnrIndex equalityClass = 0;
+       equalityClass < storage.constraints->classCount(); ++equalityClass)
+    if (llvm::Error error =
+            buildClass(storage, equalityClass, oldNets, builtNets))
+      return error;
+  return llvm::Error::success();
+}
+
 llvm::Error verifyRelations(const TagStateStorage &storage) {
   if (!storage.constraints->hasRelations())
     return llvm::Error::success();
@@ -691,10 +840,8 @@ buildStorage(const FrozenSpatialPnrProblem &problem,
       return continuity.takeError();
     storage->nets[logicalNet].continuity = std::move(*continuity);
   }
-  for (PnrIndex equalityClass = 0;
-       equalityClass < storage->constraints->classCount(); ++equalityClass)
-    if (llvm::Error error = buildClass(*storage, equalityClass, oldNets))
-      return std::move(error);
+  if (llvm::Error error = buildAssignments(*storage, oldNets))
+    return std::move(error);
   if (llvm::Error error = verifyRelations(*storage))
     return std::move(error);
   return storage;
@@ -998,24 +1145,11 @@ llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
         !routeTransactions[logicalNet])
       return invalid("touched route does not belong to the frozen problem");
 
-  std::vector<PnrIndex> affectedClasses;
-  affectedClasses.reserve(transaction.routedNets.size());
-  for (PnrIndex logicalNet : transaction.routedNets)
-    affectedClasses.push_back(storage_->constraints->classOfNet(logicalNet));
-  llvm::sort(affectedClasses);
-  affectedClasses.erase(
-      std::unique(affectedClasses.begin(), affectedClasses.end()),
-      affectedClasses.end());
-  transaction.touchedRoutes.clear();
-  for (PnrIndex equalityClass : affectedClasses) {
-    const auto members = storage_->constraints->classMembers(equalityClass);
-    transaction.touchedRoutes.insert(transaction.touchedRoutes.end(),
-                                     members.begin(), members.end());
-  }
-  llvm::sort(transaction.touchedRoutes);
-  transaction.touchedRoutes.erase(std::unique(transaction.touchedRoutes.begin(),
-                                              transaction.touchedRoutes.end()),
-                                  transaction.touchedRoutes.end());
+  transaction.touchedRoutes.resize(storage_->nets.size());
+  std::iota(transaction.touchedRoutes.begin(), transaction.touchedRoutes.end(),
+            PnrIndex{0});
+  std::vector<PnrIndex> affectedClasses(storage_->constraints->classCount());
+  std::iota(affectedClasses.begin(), affectedClasses.end(), PnrIndex{0});
 
   transaction.active = true;
   transaction.rebuiltNets.clear();
@@ -1040,13 +1174,11 @@ llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
           transaction.stagedNets[logicalNet].continuity;
     }
   }
-  for (PnrIndex equalityClass : affectedClasses)
-    if (llvm::Error error =
-            buildClass(*storage_, equalityClass, &transaction.stagedNets,
-                       &transaction.rebuiltNets)) {
-      rollback(scratch);
-      return error;
-    }
+  if (llvm::Error error = buildAssignments(*storage_, &transaction.stagedNets,
+                                           &transaction.rebuiltNets)) {
+    rollback(scratch);
+    return error;
+  }
   if (llvm::Error error = verifyRelations(*storage_)) {
     rollback(scratch);
     return error;

@@ -2105,6 +2105,36 @@ every segment's allowed match domains and builds local interference from
 co-residency and incompatible interpretation. Switch rows, operand matches,
 memory rows, and encoded tag fields are derived from the one origin value.
 
+In the absence of authored tag-value equality or disjointness relations, PnR
+colors that interference globally for the candidate. One vertex represents one
+maximal continuity segment. Vertices belong to the same coloring component
+exactly when shared Fabric match domains connect them transitively; disconnected
+components may reuse the same low unsigned values. A `t2t` rewriter ends the
+input continuity segment and starts an independently colored output segment, so
+it is the legal mechanism for local palette reuse across a temporal route.
+Neither route order nor logical-net order creates an additional continuity or
+uniqueness relation.
+
+Components of at most 64 vertices use deterministic saturation-ordered exact
+backtracking. The search considers the lowest `component_vertex_count` allowed
+and width-representable values of each vertex; this prefix is complete because
+at most one value per other component vertex can prevent a recoloring. One
+global recoloring invocation performs at most 1,048,576 exact assignment
+attempts. A larger component, an exhausted exact-work allowance, or a proven
+uncolorable component uses deterministic saturation ordering and selects the
+lowest allowed value with minimum incremental match-domain conflict. An empty
+allowed set remains `TagUnassigned`; insufficient representable values remain
+`TagConflict`. Authored equality and disjointness relations retain their exact
+relation solver rather than entering this relation-free component coloring.
+
+Every accepted or staged route change rebuilds the complete candidate tag
+coloring atomically. The rebuilt values, occupancy, resident-row counts, and
+violations live only in CandidateState and commit or roll back with the route
+transaction. This global rebuild removes historical net-order bias while
+preserving a single decision owner. Strict SpatialMapping import still derives
+the final continuity and interference independently from the persisted routes
+and origin assignments.
+
 An owner-wide match domain may also expose a bounded resident-entry capacity.
 Each distinct continuity segment intersecting that domain requires one active
 row, independent of its chosen tag value. PnR maintains the exact segment-row
