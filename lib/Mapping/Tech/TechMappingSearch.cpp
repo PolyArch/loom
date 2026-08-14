@@ -61,9 +61,20 @@ struct ComponentSearchState final {
   std::vector<std::size_t> lowerBound;
 };
 
+// A cover's row count is the number of physical realizations SpatialMapping
+// must place: one FU capability instance per compute row and one Memory
+// Operation Engine per memory row. Ordering partial states by canonical row
+// keys alone selects the cover whose rows have the smallest keys, which is
+// systematically the cover that binds one actor per realization and therefore
+// demands the most occurrences. `lowerBound` already holds the selected rows
+// unioned with one compatible row for every uncovered actor, so its size is a
+// realization-demand estimate that the search can minimize first. This uses no
+// occurrence count, coordinate, or other physical inventory fact.
 struct ComponentStateGreater final {
   bool operator()(const ComponentSearchState &lhs,
                   const ComponentSearchState &rhs) const {
+    if (lhs.lowerBound.size() != rhs.lowerBound.size())
+      return lhs.lowerBound.size() > rhs.lowerBound.size();
     if (lhs.lowerBound != rhs.lowerBound)
       return lhs.lowerBound > rhs.lowerBound;
     return lhs.selectedRows > rhs.selectedRows;
@@ -397,6 +408,16 @@ struct ProductState final {
 struct ProductGreater final {
   const std::vector<LazyComponentCovers> *components;
 
+  std::size_t rowCount(const ProductState &state) const {
+    std::size_t count = 0;
+    for (std::size_t component = 0; component < components->size();
+         ++component)
+      count += (*components)[component]
+                   .discovered[componentIndex(state.indices, component)]
+                   .size();
+    return count;
+  }
+
   std::vector<const TechMatchRow *>
   differingRows(const ProductState &selected, const ProductState &other) const {
     std::vector<const TechMatchRow *> rows;
@@ -414,6 +435,10 @@ struct ProductGreater final {
   }
 
   bool operator()(const ProductState &lhs, const ProductState &rhs) const {
+    const std::size_t lhsCount = rowCount(lhs);
+    const std::size_t rhsCount = rowCount(rhs);
+    if (lhsCount != rhsCount)
+      return lhsCount > rhsCount;
     const std::vector<const TechMatchRow *> lhsRows = differingRows(lhs, rhs);
     const std::vector<const TechMatchRow *> rhsRows = differingRows(rhs, lhs);
     std::size_t lhsRow = 0;

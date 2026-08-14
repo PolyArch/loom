@@ -75,8 +75,8 @@ void completedProductSurvivesExpansionLimit() {
   if (result.exhausted)
     fail("a reached expansion limit was reported as exhaustive");
   if (result.covers.size() != 2 ||
-      coverKey(result.covers[0]) != std::vector<std::uint8_t>({0, 1, 2, 4}) ||
-      coverKey(result.covers[1]) != std::vector<std::uint8_t>({0, 3, 4}))
+      coverKey(result.covers[0]) != std::vector<std::uint8_t>({0, 3, 4}) ||
+      coverKey(result.covers[1]) != std::vector<std::uint8_t>({0, 1, 2, 4}))
     fail("a completed component product was discarded at the expansion limit");
 }
 

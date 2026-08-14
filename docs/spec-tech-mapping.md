@@ -212,7 +212,10 @@ The production search is deterministic and lazy:
    breaking ties by canonical `ActorRef`;
 4. visit that actor's remaining rows in canonical row order;
 5. factor independent actor-row incidence components and search each component
-   independently; and
+   independently, expanding each component's partial covers by ascending
+   demand estimate and then canonical row order, where the demand estimate is
+   the selected rows unioned with one remaining compatible row for every
+   uncovered actor; and
 6. enumerate the canonical lazy product of component covers without
    materializing the Cartesian product.
 
@@ -229,11 +232,25 @@ finalized, and published before it enters the output set. A publication slot
 is consumed before Artifact-identity deduplication, so cache state cannot
 change the formal prefix.
 
-The candidate order is the lexicographic sequence of selected canonical row
-keys after component-product normalization. The same exact inputs, component
-view, and limits therefore produce the same candidate prefix independent of
-worker count, completion order, container layout, cache population, or host
-timing.
+Candidates are ordered by ascending realization demand, then by the
+lexicographic sequence of selected canonical row keys after component-product
+normalization. Realization demand is the selected row count: one FU capability
+instance per compute row and one Memory Operation Engine per memory row. It is
+a property of the cover alone. The generator still cannot read occurrence
+counts, coordinates, or any other physical inventory fact, and demand order
+neither admits nor rejects a row.
+
+Row-key order alone is not a neutral tie-break here. Single-actor rows and the
+first canonical operation port of the first canonical template hold the
+smallest keys, so a key-ordered prefix systematically leads with the cover that
+binds one actor per realization on one template. That cover maximizes the
+occurrence demand every downstream SpatialMapping must satisfy, and a Fabric
+that cannot supply one occurrence per actor rejects it before placement even
+when a grouped cover of the same actors fits. Demand order leads with the cover
+that asks for the fewest engines instead. Both orders are total and derived
+only from the derived row prefix, so the same exact inputs, component view, and
+limits produce the same candidate prefix independent of worker count,
+completion order, container layout, cache population, or host timing.
 
 The generator does not promise exhaustive enumeration. Even independent
 binary row choices grow exponentially, so complete enumeration is not a

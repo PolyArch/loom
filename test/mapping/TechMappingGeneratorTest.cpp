@@ -1008,8 +1008,13 @@ void multiActorMemoryRowsCompeteWithSingletonCover() {
   std::vector<CandidateKey> candidateKeys;
   for (const auto &reference : generated->candidates)
     candidateKeys.push_back(candidateKey(reference, dataflow, store));
-  if (!llvm::is_sorted(candidateKeys))
-    fail("generated candidates do not follow canonical row-key order");
+  if (!llvm::is_sorted(candidateKeys,
+                       [](const CandidateKey &lhs, const CandidateKey &rhs) {
+                         if (lhs.size() != rhs.size())
+                           return lhs.size() < rhs.size();
+                         return lhs < rhs;
+                       }))
+    fail("generated candidates do not follow realization-demand order");
 
   loom::ResolvedConfig prefixResolved = loom::defaultResolvedConfig();
   prefixResolved.dse.techMapping.candidatePublicationLimit = 1;
@@ -1024,21 +1029,17 @@ void multiActorMemoryRowsCompeteWithSingletonCover() {
           candidateKeys.front())
     fail("candidate publication limit did not preserve the canonical prefix");
 
-  bool foundGrouped = false;
-  for (const auto &reference : generated->candidates) {
-    auto candidate = take(loom::mapping::importTechMapping(reference, store));
-    if (candidate.view().memoryRealizations().size() != 1)
-      continue;
-    const auto &realization = candidate.view().memoryRealizations().front();
-    if (realization.actors.size() == 2) {
-      loom::test::exerciseSpatialMemoryOperationPortRelations(
-          context, dataflow, candidate.view(), fabric.view(), store);
-      foundGrouped = true;
-      break;
-    }
-  }
-  if (!foundGrouped)
-    fail("memory actor grouping was absent from the exact-cover domain");
+  // Realization demand is the number of physical engines SpatialMapping must
+  // place. A grouped two-actor memory row demands one Operation Engine where
+  // the singleton cover demands two, so demand order must present it first.
+  auto leading =
+      take(loom::mapping::importTechMapping(generated->candidates.front(),
+                                            store));
+  if (leading.view().memoryRealizations().size() != 1 ||
+      leading.view().memoryRealizations().front().actors.size() != 2)
+    fail("realization-demand order did not lead with the grouped memory row");
+  loom::test::exerciseSpatialMemoryOperationPortRelations(
+      context, dataflow, leading.view(), fabric.view(), store);
 }
 
 void internalMemoryEdgeIsAnExplicitCandidateChoice() {

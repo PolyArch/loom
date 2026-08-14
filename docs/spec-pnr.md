@@ -2496,13 +2496,25 @@ attempts retain their deterministic variation.
 2. process every remaining compute root in canonical owner order and consider
    only choices whose exact `InstructionContextRef` is not retained or already
    preferred by another compute root, as required by the global `Disjoint`
-   relation. Among choices with the same selected-context count, first minimize
-   the choice's actor contribution to `StaticSchedulePressure`. Equal-pressure
-   choices prefer a Temporal placement because its resident state is the safer
-   initial handshake witness. Then minimize the sum of directed frozen-topology
-   hop distances to active topology anchors joined to this root by a logical
-   net, weighting each actor-to-actor incidence by one plus its static critical
-   edge weight.
+   relation. Among choices with the same selected-context count, rank an
+   unreachable incidence after every finite distance, then minimize the
+   choice's occurrence-priced distance, then its PE occurrence selection count,
+   then the choice's actor contribution to `StaticSchedulePressure`.
+   Equal-pressure choices prefer a Temporal placement because its resident
+   state is the safer initial handshake witness.
+
+   The distance term is the sum of directed frozen-topology hop distances to
+   active topology anchors joined to this root by a logical net, weighting each
+   actor-to-actor incidence by one plus its static critical edge weight. Its
+   occurrence price is one plus the number of compute roots already preferred
+   on the candidate placement's exact `FabricPeOccurrenceRef`. Every resident
+   context of one Temporal PE shares that PE's physical operand and result
+   ports and the switch domain attached to them, so an unpriced distance term
+   would keep selecting the same occurrence until its resident contexts were
+   exhausted, and an unweighted occurrence count would discard locality
+   entirely. Pricing distance by occupancy keeps locality while the occurrence
+   is lightly loaded and yields to a farther occurrence as it fills.
+
    An active anchor is either an already processed compute root or a directly
    incident graph-boundary terminal. For a compute-compute incidence, the
    distance is the minimum number of payload-compatible
@@ -2510,26 +2522,29 @@ attempts retain their deterministic variation.
    two candidate placements. For a graph-boundary incidence, use the boundary
    root's existing legal attachment domain and the candidate placement's
    admitted attachment endpoints without selecting the boundary root. An
-   unreachable incidence ranks after every finite distance but does not remove
-   the choice. If there is no active anchor, or scores remain equal, use
-   circular canonical choice order beginning at the attempt's tie origin;
+   unreachable incidence does not remove the choice. If there is no active
+   anchor, or scores remain equal, use circular canonical choice order
+   beginning at the attempt's tie origin;
 3. after every compute root has a preferred choice, revisit unconstrained
    compute roots once in canonical owner order. Keep each root on its already
    selected schedule and temporarily release only its current instruction
-   context. Rank same-schedule choices by selected-context count, unreachable
-   incidence, and weighted directed hop distance to every now-selected compute
-   neighbor and directly incident graph-boundary domain. Ties use circular
-   canonical choice order beginning at the attempt's tie origin. Commit the
-   selected context before visiting the next root. This complete-neighborhood
-   refinement cannot change `StaticSchedulePressure` or relax resident-context
-   disjointness;
+   context and its contribution to that context's PE occurrence count. Rank
+   same-schedule choices by selected-context count, unreachable incidence,
+   occurrence-priced weighted directed hop distance to every now-selected
+   compute neighbor and directly incident graph-boundary domain, and then PE
+   occurrence selection count. Ties use circular canonical choice order
+   beginning at the attempt's tie origin. Commit the selected context before
+   visiting the next root. This complete-neighborhood refinement cannot change
+   `StaticSchedulePressure` or relax resident-context disjointness;
 4. a memory root participating in any constraint-owned relation retains its
    baseline choice. Process every remaining memory root in canonical owner
-   order, first minimize the choice's actor contribution to
-   `StaticSchedulePressure`. Equal-pressure choices prefer a Temporal placement,
-   then the exact memory occurrence with the least current selection count.
-   Ties use circular canonical choice order beginning at the attempt's tie
-   origin;
+   order, first minimize the exact memory occurrence's current selection count,
+   then the choice's actor contribution to `StaticSchedulePressure`.
+   Equal-pressure choices prefer a Temporal placement. A Spatial Memory
+   Operation Engine serves one static realization per operation port, so
+   occurrence count is the physical pressure the seed spreads before it
+   optimizes schedule quality. Ties use circular canonical choice order
+   beginning at the attempt's tie origin;
 5. any attachment root participating in a constraint-owned relation retains
    its baseline choice. Process every other occurrence-relative
    `PortAttachment` root in canonical demand order and every other
@@ -2554,8 +2569,9 @@ because schedule pressure already owns that decision; it refines only the
 physical occurrence and instruction context using anchors that did not yet
 exist when an earlier root was first visited.
 Static schedule pressure, its critical-edge distance weight, equal-pressure
-Temporal preference, exact-memory selection count, frozen-topology distance,
-and selected-attachment endpoint count are only deterministic search
+Temporal preference, PE and memory occurrence selection counts, the
+occurrence price applied to frozen-topology distance, and selected-attachment
+endpoint count are only deterministic search
 preferences. They cannot prove infeasibility or remove a legal choice. The
 schedule of each placement is copied from the immutable Fabric model. Distance
 and endpoint identity use the same immutable endpoint, arc, payload-width, and

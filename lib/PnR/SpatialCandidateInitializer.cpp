@@ -103,9 +103,12 @@ struct PreferredRootAssignment final {
   std::uint64_t changedComputeRoots = 0;
   std::uint64_t selectedTemporalComputeRoots = 0;
   std::uint64_t maximumContextSelections = 0;
+  std::uint64_t maximumComputeOccurrenceSelections = 0;
+  std::uint64_t distinctComputeOccurrences = 0;
   std::uint64_t changedMemoryRoots = 0;
   std::uint64_t selectedTemporalMemoryRoots = 0;
   std::uint64_t maximumMemorySelections = 0;
+  std::uint64_t distinctMemoryOccurrences = 0;
   std::uint64_t topologyScoredRoots = 0;
   std::uint64_t topologyBoundaryAnchorIncidences = 0;
   std::uint64_t topologyHopSum = 0;
@@ -514,10 +517,16 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
               result.selectedTemporalComputeRoots;
           fields["maximum_context_selections"] =
               result.maximumContextSelections;
+          fields["maximum_compute_occurrence_selections"] =
+              result.maximumComputeOccurrenceSelections;
+          fields["distinct_compute_occurrences"] =
+              result.distinctComputeOccurrences;
           fields["changed_memory_roots"] = result.changedMemoryRoots;
           fields["selected_temporal_memory_roots"] =
               result.selectedTemporalMemoryRoots;
           fields["maximum_memory_selections"] = result.maximumMemorySelections;
+          fields["distinct_memory_occurrences"] =
+              result.distinctMemoryOccurrences;
           fields["topology_scored_roots"] = result.topologyScoredRoots;
           fields["topology_boundary_anchor_incidences"] =
               result.topologyBoundaryAnchorIncidences;
@@ -542,7 +551,9 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
 
   using ContextKey =
       std::pair<::loom::fabric::FabricEntityId, ::loom::fabric::FabricOrdinal>;
+  using OccurrenceKey = ::loom::fabric::FabricEntityId;
   std::map<ContextKey, std::uint64_t> selectedCounts;
+  std::map<OccurrenceKey, std::uint64_t> selectedOccurrenceCounts;
   std::vector<PnrIndex> fixedChoices(bindings.decisionCount(),
                                      getInvalidPnrIndex());
   const auto &realizations = problem.realizations();
@@ -563,13 +574,77 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     const auto &context = contexts[choice.instructionContext];
     return ContextKey{context.pe.id(), context.ordinal};
   };
-  const auto computeSchedule =
+  const auto computePlacement =
       [&](const detail::SpatialComputeBindingChoice &choice)
-      -> llvm::Expected<::fabric::Schedule> {
+      -> llvm::Expected<const FrozenSpatialComputePlacement *> {
     if (choice.placement >= realizations.computePlacements().size())
       return initializerError(
           "compute preference resolved a foreign placement");
-    return realizations.computePlacements()[choice.placement].schedule;
+    return &realizations.computePlacements()[choice.placement];
+  };
+  const auto computeSchedule =
+      [&](const detail::SpatialComputeBindingChoice &choice)
+      -> llvm::Expected<::fabric::Schedule> {
+    auto placement = computePlacement(choice);
+    if (!placement)
+      return placement.takeError();
+    return (*placement)->schedule;
+  };
+  // The scarce physical compute resource is the PE occurrence: every resident
+  // context inside one Temporal PE shares that PE's operand and result ports
+  // and the switch domain attached to them. Counting selections per resident
+  // context reports no pressure until a PE is completely full, which lets
+  // canonical enumeration order bind an entire graph to the first few PE
+  // occurrences of an arbitrarily large Fabric. Occurrence load prices the
+  // frozen-topology distance of every choice on that occurrence, so a locality
+  // preference degrades as the occurrence fills instead of collapsing onto it.
+  // Resident-context exclusivity remains the hard relation owned by the
+  // relation solver, and occurrence load remains a search preference that
+  // cannot prove infeasibility or remove a legal choice.
+  const auto countComputeOccurrence =
+      [&](const detail::SpatialComputeBindingChoice &choice) -> llvm::Error {
+    auto placement = computePlacement(choice);
+    if (!placement)
+      return placement.takeError();
+    std::uint64_t &count =
+        selectedOccurrenceCounts[(*placement)->parentPe.id()];
+    if (count == std::numeric_limits<std::uint64_t>::max())
+      return initializerError("compute occurrence count overflows u64");
+    result.maximumComputeOccurrenceSelections =
+        std::max(result.maximumComputeOccurrenceSelections, ++count);
+    return llvm::Error::success();
+  };
+  const auto releaseComputeOccurrence =
+      [&](const detail::SpatialComputeBindingChoice &choice) -> llvm::Error {
+    auto placement = computePlacement(choice);
+    if (!placement)
+      return placement.takeError();
+    auto found = selectedOccurrenceCounts.find((*placement)->parentPe.id());
+    if (found == selectedOccurrenceCounts.end() || found->second == 0)
+      return initializerError(
+          "topology refinement lost its current compute occurrence");
+    --found->second;
+    return llvm::Error::success();
+  };
+  const auto computeOccurrenceLoad =
+      [&](const detail::SpatialComputeBindingChoice &choice)
+      -> llvm::Expected<std::uint64_t> {
+    auto placement = computePlacement(choice);
+    if (!placement)
+      return placement.takeError();
+    const auto found =
+        selectedOccurrenceCounts.find((*placement)->parentPe.id());
+    return found == selectedOccurrenceCounts.end() ? std::uint64_t{0}
+                                                   : found->second;
+  };
+  const auto pricedDistance =
+      [&](std::uint64_t distance,
+          std::uint64_t load) -> llvm::Expected<std::uint64_t> {
+    const std::uint64_t price = load + 1;
+    if (distance != 0 &&
+        price > std::numeric_limits<std::uint64_t>::max() / distance)
+      return initializerError("occurrence-priced distance exceeds u64");
+    return distance * price;
   };
   const auto participatesInHardRelation = [&](PnrIndex decision) {
     return llvm::any_of(bindings.decisionRelations(decision),
@@ -605,6 +680,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       return initializerError("compute preference count overflows u64");
     result.maximumContextSelections =
         std::max(result.maximumContextSelections, ++count);
+    if (llvm::Error error = countComputeOccurrence(choices[selected]))
+      return std::move(error);
   }
 
   for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
@@ -638,13 +715,16 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
 
     PnrIndex selected = baselineChoice;
     auto selectedScore = std::make_tuple(
+        std::numeric_limits<std::uint64_t>::max(), true,
         std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint8_t>::max(), true,
-        std::numeric_limits<std::uint64_t>::max(), choices.size());
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint8_t>::max(), choices.size());
     std::uint64_t selectedDistance = std::numeric_limits<std::uint64_t>::max();
     bool selectedUnreachable = true;
     std::uint64_t selectedCount = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t selectedOccurrenceLoad =
+        std::numeric_limits<std::uint64_t>::max();
     std::uint64_t selectedSchedulePressure =
         std::numeric_limits<std::uint64_t>::max();
     bool selectedTemporal = false;
@@ -658,8 +738,14 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       const auto found = selectedCounts.find(*key);
       const std::uint64_t count =
           found == selectedCounts.end() ? 0 : found->second;
+      auto occurrenceLoad = computeOccurrenceLoad(choices[local]);
+      if (!occurrenceLoad)
+        return occurrenceLoad.takeError();
       const bool unreachable = topologyScores->unreachable[local] != 0;
       const std::uint64_t distance = topologyScores->distances[local];
+      auto locality = pricedDistance(distance, *occurrenceLoad);
+      if (!locality)
+        return locality.takeError();
       auto schedule = computeSchedule(choices[local]);
       if (!schedule)
         return schedule.takeError();
@@ -668,12 +754,14 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           problem.schedulePressure().computePlacementContribution(
               choices[local].placement);
       const auto score = std::make_tuple(
-          count, schedulePressure, static_cast<std::uint8_t>(temporal ? 0 : 1),
-          unreachable, unreachable ? std::uint64_t{0} : distance, rank);
+          count, unreachable, unreachable ? std::uint64_t{0} : *locality,
+          *occurrenceLoad, schedulePressure,
+          static_cast<std::uint8_t>(temporal ? 0 : 1), rank);
       if (score < selectedScore) {
         selected = local;
         selectedScore = score;
         selectedCount = count;
+        selectedOccurrenceLoad = *occurrenceLoad;
         selectedSchedulePressure = schedulePressure;
         selectedDistance = distance;
         selectedUnreachable = unreachable;
@@ -690,6 +778,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       return initializerError("compute preference count overflows u64");
     result.maximumContextSelections =
         std::max(result.maximumContextSelections, ++count);
+    if (llvm::Error error = countComputeOccurrence(choices[selected]))
+      return std::move(error);
     result.changedComputeRoots += selected != baselineChoice;
     result.selectedTemporalComputeRoots += selectedTemporal;
     if (topologyScores->activeIncidences != 0) {
@@ -720,6 +810,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           fields["baseline_choice"] = baselineChoice;
           fields["selected_choice"] = selected;
           fields["selected_count_before"] = selectedCount;
+          fields["selected_occurrence_load_before"] = selectedOccurrenceLoad;
+          fields["pe_ref"] = loom::fabric::printFabricRef(placement.parentPe);
           fields["selected_static_schedule_pressure"] =
               selectedSchedulePressure;
           fields["selected_temporal"] = selectedTemporal;
@@ -751,6 +843,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       return initializerError(
           "topology refinement lost its current instruction context");
     --count->second;
+    if (llvm::Error error = releaseComputeOccurrence(choices[current]))
+      return std::move(error);
 
     auto currentSchedule = computeSchedule(choices[current]);
     if (!currentSchedule)
@@ -763,6 +857,7 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     PnrIndex selected = current;
     auto selectedScore = std::make_tuple(
         std::numeric_limits<std::uint64_t>::max(), true,
+        std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(), choices.size());
     std::uint64_t selectedDistance = 0;
     bool selectedUnreachable = false;
@@ -781,11 +876,17 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       const auto found = selectedCounts.find(*key);
       const std::uint64_t selectedCount =
           found == selectedCounts.end() ? 0 : found->second;
+      auto occurrenceLoad = computeOccurrenceLoad(choices[local]);
+      if (!occurrenceLoad)
+        return occurrenceLoad.takeError();
       const bool unreachable = topologyScores->unreachable[local] != 0;
       const std::uint64_t distance = topologyScores->distances[local];
-      const auto score =
-          std::make_tuple(selectedCount, unreachable,
-                          unreachable ? std::uint64_t{0} : distance, rank);
+      auto locality = pricedDistance(distance, *occurrenceLoad);
+      if (!locality)
+        return locality.takeError();
+      const auto score = std::make_tuple(
+          selectedCount, unreachable,
+          unreachable ? std::uint64_t{0} : *locality, *occurrenceLoad, rank);
       if (score < selectedScore) {
         selected = local;
         selectedScore = score;
@@ -802,6 +903,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     if (selectedCount == std::numeric_limits<std::uint64_t>::max())
       return initializerError("topology refinement count overflows u64");
     ++selectedCount;
+    if (llvm::Error error = countComputeOccurrence(choices[selected]))
+      return std::move(error);
     result.topologyRefinedComputeRoots += selected != current;
     result.topologyRefinementUnreachableSelections += selectedUnreachable;
     if (!selectedUnreachable) {
@@ -869,8 +972,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     PnrIndex selected = baselineChoice;
     auto selectedScore = std::make_tuple(
         std::numeric_limits<std::uint64_t>::max(),
-        std::numeric_limits<std::uint8_t>::max(),
-        std::numeric_limits<std::uint64_t>::max(), choices.size());
+        std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint8_t>::max(), choices.size());
     std::uint64_t selectedCount = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t selectedSchedulePressure =
         std::numeric_limits<std::uint64_t>::max();
@@ -890,8 +993,11 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       const std::uint64_t schedulePressure =
           problem.schedulePressure().memoryPlacementContribution(
               choices[local].placement);
+      // A Spatial memory occurrence serves one static realization per
+      // operation port, so occurrence load is the physical pressure the seed
+      // must spread before it optimizes schedule quality.
       const auto score = std::make_tuple(
-          schedulePressure, static_cast<std::uint8_t>(temporal ? 0 : 1), count,
+          count, schedulePressure, static_cast<std::uint8_t>(temporal ? 0 : 1),
           rank);
       if (score < selectedScore) {
         selected = local;
@@ -926,6 +1032,12 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
               loom::fabric::printFabricRef((*placement)->memory);
         });
   }
+
+  for (const auto &[occurrence, count] : selectedOccurrenceCounts) {
+    (void)occurrence;
+    result.distinctComputeOccurrences += count != 0;
+  }
+  result.distinctMemoryOccurrences = selectedMemoryCounts.size();
 
   const auto &ports = problem.ports();
   const auto attachmentOptions = ports.attachmentOptions();
