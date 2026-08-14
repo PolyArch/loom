@@ -57,6 +57,7 @@ struct SpatialCatalogEntry final {
   ::loom::mapping::FinalizedSpatialMapping mapping;
   std::uint64_t moduleDependencyOrdinal = 0;
   std::vector<::dataflow::GraphRef> covers;
+  std::vector<std::uint64_t> graphStaticSchedulePressures;
 };
 
 struct FlatSpatialReopenCatalogEntry final {

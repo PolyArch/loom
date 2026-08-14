@@ -4,6 +4,7 @@
 #include "SpatialCandidateStateInternal.h"
 #include "SpatialMemoryConstraintModel.h"
 #include "SpatialRouteConstraintModel.h"
+#include "StaticSchedulePressure.h"
 
 #include "Common/MappingDebugLog.h"
 #include "Fabric/Identity/FabricRefText.h"
@@ -178,7 +179,8 @@ SpatialMoveTransaction::SpatialMoveTransaction(
     SpatialCandidateStateHandle state, SpatialCandidateScratch &scratch)
     : state_(std::move(state)), scratch_(&scratch),
       initialUnroutedObligationCount_(state_->unroutedObligationCount_),
-      initialAtomicCapacityOveruse_(state_->atomicCapacityOveruse_) {
+      initialAtomicCapacityOveruse_(state_->atomicCapacityOveruse_),
+      initialStaticSchedulePressure_(state_->staticSchedulePressure_) {
   state_->activeTransaction_ = this;
   scratch_->activeTransaction_ = this;
 }
@@ -191,7 +193,8 @@ SpatialMoveTransaction::SpatialMoveTransaction(
       tagDeltasCollected_(other.tagDeltasCollected_),
       routeViolationApplied_(other.routeViolationApplied_),
       initialUnroutedObligationCount_(other.initialUnroutedObligationCount_),
-      initialAtomicCapacityOveruse_(other.initialAtomicCapacityOveruse_) {
+      initialAtomicCapacityOveruse_(other.initialAtomicCapacityOveruse_),
+      initialStaticSchedulePressure_(other.initialStaticSchedulePressure_) {
   other.scratch_ = nullptr;
   if (state_)
     state_->activeTransaction_ = this;
@@ -477,6 +480,11 @@ llvm::Error SpatialMoveTransaction::setComputeBinding(
           realization, placement, instructionContext);
   if (!relationChoice)
     return candidateError("new compute binding has no relation-domain choice");
+  auto schedulePressure =
+      detail::projectStaticSchedulePressureAfterComputeChange(
+          *state_, realization, placement);
+  if (!schedulePressure)
+    return schedulePressure.takeError();
 
   recordCompute(realization);
   markCompute(realization);
@@ -513,6 +521,7 @@ llvm::Error SpatialMoveTransaction::setComputeBinding(
     return error;
   state_->computeBindings_[realization] = {placement, instructionContext};
   state_->bindingRelationChoices_[realization] = *relationChoice;
+  state_->staticSchedulePressure_ = *schedulePressure;
   return llvm::Error::success();
 }
 
@@ -534,12 +543,18 @@ llvm::Error SpatialMoveTransaction::setMemoryBinding(PnrIndex realization,
                                                                placement);
   if (!relationChoice)
     return candidateError("new memory binding has no relation-domain choice");
+  auto schedulePressure =
+      detail::projectStaticSchedulePressureAfterMemoryChange(
+          *state_, realization, placement);
+  if (!schedulePressure)
+    return schedulePressure.takeError();
   recordMemory(realization);
   markMemory(realization);
   state_->memoryBindings_[realization].placement = placement;
   state_->bindingRelationChoices_[state_->problem_->bindingRelations()
                                       .computeDecisionCount() +
                                   realization] = *relationChoice;
+  state_->staticSchedulePressure_ = *schedulePressure;
   return llvm::Error::success();
 }
 
@@ -1120,6 +1135,7 @@ void SpatialMoveTransaction::rollback() noexcept {
     }
   }
   state_->atomicCapacityOveruse_ = initialAtomicCapacityOveruse_;
+  state_->staticSchedulePressure_ = initialStaticSchedulePressure_;
   finish();
 }
 

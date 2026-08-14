@@ -31,6 +31,7 @@ namespace detail {
 class SpatialBindingRelationModel;
 class SpatialMemoryConstraintModel;
 class SpatialRouteConstraintModel;
+class SpatialSchedulePressureIndex;
 class SpatialTagConstraintModel;
 } // namespace detail
 
@@ -985,6 +986,9 @@ public:
   const FrozenSpatialCapacityIndex &capacity() const { return capacity_; }
   const FrozenSpatialRoutingGraph &routing() const { return routing_; }
   const FrozenSpatialHandshakeIndex &handshake() const { return handshake_; }
+  const detail::SpatialSchedulePressureIndex &schedulePressure() const {
+    return *schedulePressure_;
+  }
   const ::loom::mapping::MappingProgressClosure &progressClosure() const {
     return progressClosure_;
   }
@@ -1014,6 +1018,8 @@ private:
       FrozenSpatialPortIndex ports, FrozenSpatialResourceIndex resources,
       FrozenSpatialCapacityIndex capacity, FrozenSpatialRoutingGraph routing,
       FrozenSpatialHandshakeIndex handshake,
+      std::shared_ptr<const detail::SpatialSchedulePressureIndex>
+          schedulePressure,
       ::loom::mapping::MappingProgressClosure progressClosure,
       std::shared_ptr<const detail::SpatialBindingRelationModel>
           bindingRelations,
@@ -1035,6 +1041,7 @@ private:
         transfers_(std::move(transfers)), ports_(std::move(ports)),
         resources_(std::move(resources)), capacity_(std::move(capacity)),
         routing_(std::move(routing)), handshake_(std::move(handshake)),
+        schedulePressure_(std::move(schedulePressure)),
         progressClosure_(progressClosure),
         bindingRelations_(std::move(bindingRelations)),
         memoryConstraints_(std::move(memoryConstraints)),
@@ -1057,6 +1064,7 @@ private:
   FrozenSpatialCapacityIndex capacity_;
   FrozenSpatialRoutingGraph routing_;
   FrozenSpatialHandshakeIndex handshake_;
+  std::shared_ptr<const detail::SpatialSchedulePressureIndex> schedulePressure_;
   ::loom::mapping::MappingProgressClosure progressClosure_;
   std::shared_ptr<const detail::SpatialBindingRelationModel> bindingRelations_;
   std::shared_ptr<const detail::SpatialMemoryConstraintModel>

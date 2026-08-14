@@ -5,6 +5,7 @@
 #include "SpatialMemoryConstraintModel.h"
 #include "SpatialProgressAnalysis.h"
 #include "SpatialRouteConstraintModel.h"
+#include "StaticSchedulePressure.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -466,7 +467,7 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
       std::move(logicalMemoryBindings), std::move(memoryUseDispatches),
       std::move(memoryExposureSelections), std::move(routeTrees),
       std::move(*handshake), std::move(*routeResources),
-      std::move(*tagAssignments), unroutedObligationCount, 0));
+      std::move(*tagAssignments), unroutedObligationCount, 0, 0));
   for (PnrIndex index = 0; index < candidate->computeBindings_.size(); ++index)
     if (llvm::Error error = candidate->validateComputeBinding(index))
       return std::move(error);
@@ -504,6 +505,10 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   if (!capacityOveruse)
     return capacityOveruse.takeError();
   candidate->atomicCapacityOveruse_ = *capacityOveruse;
+  auto schedulePressure = detail::measureStaticSchedulePressure(*candidate);
+  if (!schedulePressure)
+    return schedulePressure.takeError();
+  candidate->staticSchedulePressure_ = *schedulePressure;
   if (llvm::Error error = candidate->verify())
     return std::move(error);
   return candidate;
@@ -1066,6 +1071,12 @@ llvm::Error SpatialCandidateState::verify() const {
   if (atomicCapacityOveruse_ != *expectedCapacityOveruse)
     return candidateError(
         "capacity overuse diverges from selected resource envelopes");
+  auto expectedSchedulePressure = detail::measureStaticSchedulePressure(*this);
+  if (!expectedSchedulePressure)
+    return expectedSchedulePressure.takeError();
+  if (staticSchedulePressure_ != *expectedSchedulePressure)
+    return candidateError(
+        "static schedule pressure diverges from selected bindings");
   if (llvm::Error error = verifyResourceTimeEnvelopeSelections())
     return error;
   if (llvm::Error error = routeResources_.verify(routeTrees_))

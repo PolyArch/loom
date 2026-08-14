@@ -6,6 +6,7 @@
 #include "SpatialBindingRelationModel.h"
 #include "SpatialMemoryCompatibility.h"
 #include "SpatialMemoryConstraintModel.h"
+#include "StaticSchedulePressure.h"
 
 #include "Fabric/Identity/FabricRefText.h"
 
@@ -122,6 +123,7 @@ struct ComputeTopologyIncidence final {
   PnrIndex candidateDemand = 0;
   PnrIndex neighborDemand = 0;
   std::uint32_t payloadWidthBits = 0;
+  std::uint64_t distanceWeight = 1;
   bool candidateIsSource = false;
 };
 
@@ -166,6 +168,22 @@ buildComputeTopologyIncidences(const FrozenSpatialPnrProblem &problem) {
         net.sinkCount > sinks.size() - net.sinkOffset)
       return initializerError("logical-net sink binding domain is malformed");
     for (PnrIndex sinkOrdinal = 0; sinkOrdinal < net.sinkCount; ++sinkOrdinal) {
+      const auto graphSinks = transfers.logicalNetSinks();
+      if (net.sinkOffset + sinkOrdinal >= graphSinks.size())
+        return initializerError("logical-net sink inventory is malformed");
+      std::uint64_t distanceWeight = 1;
+      if (const auto *producer =
+              std::get_if<::dataflow::ActorTokenResultRef>(&net.producer))
+        if (const auto *consumer =
+                std::get_if<::dataflow::ActorTokenOperandRef>(
+                    &graphSinks[net.sinkOffset + sinkOrdinal])) {
+          const std::uint64_t critical =
+              problem.schedulePressure().edgeWeight(*producer, *consumer);
+          if (critical == std::numeric_limits<std::uint64_t>::max())
+            return initializerError(
+                "topology preference critical edge weight exceeds u64");
+          distanceWeight += critical;
+        }
       const FrozenSpatialTerminalBinding sink =
           sinks[net.sinkOffset + sinkOrdinal];
       const FrozenSpatialPortDemand *sinkDemand = nullptr;
@@ -190,10 +208,11 @@ buildComputeTopologyIncidences(const FrozenSpatialPnrProblem &problem) {
               "compute-neighbor terminal payload widths disagree");
         result[sourceDemand->realization].push_back(
             {sinkDemand->realization, getInvalidPnrIndex(), source.index,
-             sink.index, sourceDemand->payloadWidthBits, true});
+             sink.index, sourceDemand->payloadWidthBits, distanceWeight, true});
         result[sinkDemand->realization].push_back(
             {sourceDemand->realization, getInvalidPnrIndex(), sink.index,
-             source.index, sourceDemand->payloadWidthBits, false});
+             source.index, sourceDemand->payloadWidthBits, distanceWeight,
+             false});
         continue;
       }
 
@@ -206,7 +225,8 @@ buildComputeTopologyIncidences(const FrozenSpatialPnrProblem &problem) {
               "graph-ingress terminal payload widths disagree");
         result[sinkDemand->realization].push_back(
             {getInvalidPnrIndex(), source.index, sink.index,
-             getInvalidPnrIndex(), sinkDemand->payloadWidthBits, false});
+             getInvalidPnrIndex(), sinkDemand->payloadWidthBits, distanceWeight,
+             false});
         continue;
       }
 
@@ -219,7 +239,8 @@ buildComputeTopologyIncidences(const FrozenSpatialPnrProblem &problem) {
               "graph-egress terminal payload widths disagree");
         result[sourceDemand->realization].push_back(
             {getInvalidPnrIndex(), sink.index, source.index,
-             getInvalidPnrIndex(), sourceDemand->payloadWidthBits, true});
+             getInvalidPnrIndex(), sourceDemand->payloadWidthBits,
+             distanceWeight, true});
       }
     }
   }
@@ -444,10 +465,16 @@ llvm::Expected<ComputeTopologyScores> scoreComputeTopologyChoices(
         result.unreachable[localChoice] = 1;
         continue;
       }
-      if (minimum > std::numeric_limits<std::uint64_t>::max() -
-                        result.distances[localChoice])
+      if (minimum != 0 &&
+          incidence.distanceWeight >
+              std::numeric_limits<std::uint64_t>::max() / minimum)
+        return initializerError(
+            "topology preference weighted distance exceeds u64");
+      const std::uint64_t weighted = minimum * incidence.distanceWeight;
+      if (weighted > std::numeric_limits<std::uint64_t>::max() -
+                         result.distances[localChoice])
         return initializerError("topology preference distance exceeds u64");
-      result.distances[localChoice] += minimum;
+      result.distances[localChoice] += weighted;
     }
     if (result.activeIncidences == std::numeric_limits<std::uint64_t>::max())
       return initializerError(
@@ -487,8 +514,7 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           fields["changed_memory_roots"] = result.changedMemoryRoots;
           fields["selected_temporal_memory_roots"] =
               result.selectedTemporalMemoryRoots;
-          fields["maximum_memory_selections"] =
-              result.maximumMemorySelections;
+          fields["maximum_memory_selections"] = result.maximumMemorySelections;
           fields["topology_scored_roots"] = result.topologyScoredRoots;
           fields["topology_boundary_anchor_incidences"] =
               result.topologyBoundaryAnchorIncidences;
@@ -604,11 +630,14 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     PnrIndex selected = baselineChoice;
     auto selectedScore = std::make_tuple(
         std::numeric_limits<std::uint64_t>::max(),
+        std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint8_t>::max(), true,
         std::numeric_limits<std::uint64_t>::max(), choices.size());
     std::uint64_t selectedDistance = std::numeric_limits<std::uint64_t>::max();
     bool selectedUnreachable = true;
     std::uint64_t selectedCount = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t selectedSchedulePressure =
+        std::numeric_limits<std::uint64_t>::max();
     bool selectedTemporal = false;
     const PnrIndex origin = preferenceOrigin(baselineChoice);
     for (std::size_t rank = 0; rank != choices.size(); ++rank) {
@@ -626,13 +655,17 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       if (!schedule)
         return schedule.takeError();
       const bool temporal = *schedule == ::fabric::Schedule::Temporal;
+      const std::uint64_t schedulePressure =
+          problem.schedulePressure().computePlacementContribution(
+              choices[local].placement);
       const auto score = std::make_tuple(
-          count, static_cast<std::uint8_t>(temporal ? 0 : 1), unreachable,
-          unreachable ? std::uint64_t{0} : distance, rank);
+          count, schedulePressure, static_cast<std::uint8_t>(temporal ? 0 : 1),
+          unreachable, unreachable ? std::uint64_t{0} : distance, rank);
       if (score < selectedScore) {
         selected = local;
         selectedScore = score;
         selectedCount = count;
+        selectedSchedulePressure = schedulePressure;
         selectedDistance = distance;
         selectedUnreachable = unreachable;
         selectedTemporal = temporal;
@@ -678,6 +711,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           fields["baseline_choice"] = baselineChoice;
           fields["selected_choice"] = selected;
           fields["selected_count_before"] = selectedCount;
+          fields["selected_static_schedule_pressure"] =
+              selectedSchedulePressure;
           fields["selected_temporal"] = selectedTemporal;
           fields["topology_incidence_count"] = topologyScores->activeIncidences;
           fields["topology_boundary_anchor_incidence_count"] =
@@ -697,12 +732,11 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       [&](const detail::SpatialMemoryBindingChoice &choice)
       -> llvm::Expected<const FrozenSpatialMemoryPlacement *> {
     if (choice.placement >= realizations.memoryPlacements().size())
-      return initializerError(
-          "memory preference resolved a foreign placement");
+      return initializerError("memory preference resolved a foreign placement");
     return &realizations.memoryPlacements()[choice.placement];
   };
-  const auto countMemory = [&](const FrozenSpatialMemoryPlacement &placement)
-      -> llvm::Error {
+  const auto countMemory =
+      [&](const FrozenSpatialMemoryPlacement &placement) -> llvm::Error {
     std::uint64_t &count = selectedMemoryCounts[placement.memory.id()];
     if (count == std::numeric_limits<std::uint64_t>::max())
       return initializerError("memory preference count overflows u64");
@@ -742,9 +776,12 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
 
     PnrIndex selected = baselineChoice;
     auto selectedScore = std::make_tuple(
+        std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint8_t>::max(),
         std::numeric_limits<std::uint64_t>::max(), choices.size());
     std::uint64_t selectedCount = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t selectedSchedulePressure =
+        std::numeric_limits<std::uint64_t>::max();
     bool selectedTemporal = false;
     const PnrIndex origin = preferenceOrigin(baselineChoice);
     for (std::size_t rank = 0; rank != choices.size(); ++rank) {
@@ -758,12 +795,17 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           found == selectedMemoryCounts.end() ? 0 : found->second;
       const bool temporal =
           (*placement)->schedule == ::fabric::Schedule::Temporal;
+      const std::uint64_t schedulePressure =
+          problem.schedulePressure().memoryPlacementContribution(
+              choices[local].placement);
       const auto score = std::make_tuple(
-          static_cast<std::uint8_t>(temporal ? 0 : 1), count, rank);
+          schedulePressure, static_cast<std::uint8_t>(temporal ? 0 : 1), count,
+          rank);
       if (score < selectedScore) {
         selected = local;
         selectedScore = score;
         selectedCount = count;
+        selectedSchedulePressure = schedulePressure;
         selectedTemporal = temporal;
       }
     }
@@ -785,6 +827,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           fields["baseline_choice"] = baselineChoice;
           fields["selected_choice"] = selected;
           fields["selected_count_before"] = selectedCount;
+          fields["selected_static_schedule_pressure"] =
+              selectedSchedulePressure;
           fields["selected_temporal"] = selectedTemporal;
           fields["memory_ref"] =
               loom::fabric::printFabricRef((*placement)->memory);
@@ -891,8 +935,7 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           "attachment preference graph-boundary baseline is out of range");
     const FrozenSpatialGraphBoundary &boundaryRecord =
         ports.graphBoundaries()[boundary];
-    if (boundaryRecord.logicalNet >=
-        problem.transfers().logicalNets().size())
+    if (boundaryRecord.logicalNet >= problem.transfers().logicalNets().size())
       return initializerError(
           "attachment preference graph boundary names a foreign logical net");
 
@@ -994,8 +1037,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           ++unreachableCounts[local];
           continue;
         }
-        if (distance > std::numeric_limits<std::uint64_t>::max() -
-                           distanceSums[local])
+        if (distance >
+            std::numeric_limits<std::uint64_t>::max() - distanceSums[local])
           return initializerError(
               "attachment preference boundary distance exceeds u64");
         distanceSums[local] += distance;

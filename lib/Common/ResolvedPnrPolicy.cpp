@@ -192,13 +192,14 @@ ResolvedPnrPolicyConfig resolvedBuiltinPnrPolicy(ResolvedProfilePreset preset) {
               0, ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
               ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
           allTemporaryViolations(),
-          ResolvedPnrObjectiveSelection{0, 2, {}},
+          ResolvedPnrObjectiveSelection{0, 3, {}},
           {}};
 }
 
 ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   ResolvedObjectiveCatalogs catalogs;
-  catalogs.dimensions.reserve(resolvedPnrViolationKindCount + 1);
+  catalogs.dimensions.reserve(resolvedPnrViolationKindCount +
+                              mappingMeasureKindCount);
   for (std::uint32_t ordinal = 0; ordinal != resolvedPnrViolationKindCount;
        ++ordinal)
     catalogs.dimensions.push_back(
@@ -207,14 +208,16 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
          ResolvedObjectiveDirection::Minimize, resolvedObjectiveInteger(0),
          resolvedObjectiveInteger(1), 0,
          std::numeric_limits<std::uint64_t>::max()});
-  catalogs.dimensions.push_back({ResolvedMappingMeasureObjectiveSource{0},
-                                 ResolvedObjectiveDirection::Minimize,
-                                 resolvedObjectiveInteger(0),
-                                 resolvedObjectiveInteger(1), 0,
-                                 std::numeric_limits<std::uint64_t>::max()});
+  for (std::uint32_t ordinal = 0; ordinal != mappingMeasureKindCount; ++ordinal)
+    catalogs.dimensions.push_back(
+        {ResolvedMappingMeasureObjectiveSource{ordinal},
+         ResolvedObjectiveDirection::Minimize, resolvedObjectiveInteger(0),
+         resolvedObjectiveInteger(1), 0,
+         std::numeric_limits<std::uint64_t>::max()});
 
   ResolvedWeightedObjectiveLevel closure;
   ResolvedWeightedObjectiveLevel traversal;
+  ResolvedWeightedObjectiveLevel schedule;
   ResolvedWeightedObjectiveLevel energy;
   for (std::uint32_t dimension = 0; dimension != resolvedPnrViolationKindCount;
        ++dimension) {
@@ -223,9 +226,12 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   }
   traversal.terms.push_back({resolvedPnrViolationKindCount, 1});
   energy.terms.push_back({resolvedPnrViolationKindCount, 1});
-  catalogs.weightedLevels = {std::move(traversal), std::move(closure),
-                             std::move(energy)};
-  catalogs.totalOrderings.push_back({{1, 0}});
+  const std::uint32_t scheduleDimension = resolvedPnrViolationKindCount + 1;
+  schedule.terms.push_back({scheduleDimension, 1});
+  energy.terms.push_back({scheduleDimension, UINT64_C(4294967296)});
+  catalogs.weightedLevels = {std::move(traversal), std::move(schedule),
+                             std::move(closure), std::move(energy)};
+  catalogs.totalOrderings.push_back({{2, 1, 0}});
   return catalogs;
 }
 

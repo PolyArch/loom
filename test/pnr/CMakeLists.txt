@@ -102,6 +102,22 @@ target_link_libraries(loom-pnr-config-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-pnr-static-schedule-pressure-test
+  StaticSchedulePressureTest.cpp
+)
+
+target_include_directories(loom-pnr-static-schedule-pressure-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/PnR
+)
+
+target_link_libraries(loom-pnr-static-schedule-pressure-test PRIVATE
+  LoomPnR
+  MLIRDataflow
+  MLIRIR
+  MLIRParser
+  LLVMSupport
+)
+
 add_executable(loom-pnr-incremental-topology-test
   ../TestAllocationProbe.cpp
   IncrementalTopologicalOrderTest.cpp

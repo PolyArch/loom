@@ -520,7 +520,7 @@ detail::negotiateSystemServiceRoutes(
     if (!traversalClaim)
       return traversalClaim.takeError();
     auto objective = problem.objectiveProgram().evaluateSystemProjection(
-        problem, capacity->total, *traversalClaim);
+        problem, graphChoices, capacity->total, *traversalClaim);
     if (!objective)
       return objective.takeError();
     bool selectedRankImproved = !bestRankObjective;

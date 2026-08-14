@@ -229,6 +229,8 @@ public:
   }
   llvm::ArrayRef<PnrIndex> threadChoiceCatalogOrdinals(PnrIndex decision) const;
   llvm::ArrayRef<PnrIndex> graphChoiceCatalogOrdinals(PnrIndex decision) const;
+  llvm::ArrayRef<std::uint64_t>
+  graphChoiceStaticSchedulePressures(PnrIndex decision) const;
   llvm::ArrayRef<PnrIndex> graphThreadOverlaps(PnrIndex decision) const;
   llvm::ArrayRef<PnrIndex> serviceLegSinkTerminals(PnrIndex leg) const;
   PnrIndex accCoreTargetClass(PnrIndex core) const;
@@ -256,6 +258,7 @@ private:
       std::vector<PnrIndex> threadChoiceCatalogOrdinals,
       std::vector<FrozenSystemGraphExecutionDecision> graphDecisions,
       std::vector<PnrIndex> graphChoiceCatalogOrdinals,
+      std::vector<std::uint64_t> graphChoiceStaticSchedulePressures,
       std::vector<PnrIndex> graphThreadOverlapOffsets,
       std::vector<PnrIndex> graphThreadOverlaps,
       FrozenEndpointRoutingTopology routingTopology,
@@ -293,6 +296,7 @@ private:
   std::vector<PnrIndex> threadChoiceCatalogOrdinals_;
   std::vector<FrozenSystemGraphExecutionDecision> graphDecisions_;
   std::vector<PnrIndex> graphChoiceCatalogOrdinals_;
+  std::vector<std::uint64_t> graphChoiceStaticSchedulePressures_;
   std::vector<PnrIndex> graphThreadOverlapOffsets_;
   std::vector<PnrIndex> graphThreadOverlaps_;
   FrozenEndpointRoutingTopology routingTopology_;

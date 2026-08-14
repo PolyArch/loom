@@ -231,7 +231,8 @@ void paretoRetainsEveryNondominatedCandidate() {
     std::vector<std::uint64_t> violations(resolvedPnrViolationKindCount, 0);
     violations[0] = violation;
     ObjectiveVector vector = program.makeVector();
-    requireSuccess(program.evaluate({violations, {&traversal, 1}, {}}, vector));
+    const std::array<std::uint64_t, 2> measures = {traversal, 0};
+    requireSuccess(program.evaluate({violations, measures, {}}, vector));
     return CandidateObjectiveVector{candidate, std::move(vector)};
   };
   std::vector<CandidateObjectiveVector> objectives;

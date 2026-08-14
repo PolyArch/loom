@@ -13,7 +13,7 @@
 // JSON-DAG: "hardware_target"
 // JSON-DAG: "template_identity": "loom.adg.builtin.default"
 // JSON-DAG: "schema_major": 4
-// JSON-DAG: "schema_minor": 0
+// JSON-DAG: "schema_minor": 1
 // JSON-DAG: "acc_core_count": 8
 // JSON-DAG: "mesh_dimension": 6
 // JSON-DAG: "spatial_pe_count": 27
@@ -46,7 +46,7 @@
 // JSON-DAG: "max_region_decisions": 256
 // JSON-DAG: "max_solver_calls": 1024
 // JSON-DAG: "selected_total_ordering": 0
-// JSON-DAG: "selected_search_energy": 2
+// JSON-DAG: "selected_search_energy": 3
 // JSON-NOT: "config_id"
 // JSON-NOT: "global"
 // JSON-NOT: "ranking_policy"

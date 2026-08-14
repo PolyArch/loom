@@ -27,7 +27,7 @@ using namespace loom::pnr;
 namespace {
 
 constexpr MappingObjectiveRegistryDescriptor registry{
-    "loom.mapping.pnr.objective", 2, 0};
+    "loom.mapping.pnr.objective", 2, 1};
 
 constexpr std::array<MappingViolationDescriptor, resolvedPnrViolationKindCount>
     violations{{
@@ -200,6 +200,8 @@ loom::pnr::spatialMappingMeasureValue(const SpatialCandidateState &candidate,
   switch (kind) {
   case MappingMeasureKind::TotalSelectedTraversalClaim:
     return candidate.totalSelectedTraversalClaim();
+  case MappingMeasureKind::StaticSchedulePressure:
+    return candidate.staticSchedulePressure();
   }
   llvm_unreachable("unknown Mapping measure kind");
 }
@@ -233,12 +235,29 @@ loom::pnr::systemMappingViolationValue(const SystemCandidateState &candidate,
 llvm::Expected<std::uint64_t>
 loom::pnr::systemMappingMeasureValue(const SystemCandidateState &candidate,
                                      MappingMeasureKind kind) {
-  if (kind != MappingMeasureKind::TotalSelectedTraversalClaim)
-    llvm_unreachable("unknown Mapping measure kind");
-  return detail::measureSystemServiceRouteTraversalClaim(
-      candidate.problem().routingTopology(),
-      {candidate.serviceRoutes(), candidate.serviceRouteNodes(),
-       candidate.serviceRouteSinks()});
+  switch (kind) {
+  case MappingMeasureKind::TotalSelectedTraversalClaim:
+    return detail::measureSystemServiceRouteTraversalClaim(
+        candidate.problem().routingTopology(),
+        {candidate.serviceRoutes(), candidate.serviceRouteNodes(),
+         candidate.serviceRouteSinks()});
+  case MappingMeasureKind::StaticSchedulePressure: {
+    std::uint64_t total = 0;
+    for (PnrIndex decision = 0;
+         decision < candidate.problem().graphDecisions().size(); ++decision) {
+      const auto pressures =
+          candidate.problem().graphChoiceStaticSchedulePressures(decision);
+      const PnrIndex choice = candidate.graphChoice(decision);
+      if (choice >= pressures.size())
+        return objectiveError("System graph choice pressure is out of range");
+      if (llvm::Error error = checkedAdd(total, pressures[choice],
+                                         "System StaticSchedulePressure"))
+        return std::move(error);
+    }
+    return total;
+  }
+  }
+  llvm_unreachable("unknown Mapping measure kind");
 }
 
 llvm::Expected<MappingObjectiveProgram>
@@ -325,10 +344,14 @@ MappingObjectiveProgram::evaluateSpatialProjection(
   for (std::uint32_t ordinal = 0; ordinal != measures.size(); ++ordinal) {
     if ((selectedMeasures_ & (UINT64_C(1) << ordinal)) == 0)
       continue;
-    if (static_cast<MappingMeasureKind>(ordinal) !=
-        MappingMeasureKind::TotalSelectedTraversalClaim)
-      llvm_unreachable("unknown Mapping measure kind");
-    measures[ordinal] = projection.totalSelectedTraversalClaim;
+    switch (static_cast<MappingMeasureKind>(ordinal)) {
+    case MappingMeasureKind::TotalSelectedTraversalClaim:
+      measures[ordinal] = projection.totalSelectedTraversalClaim;
+      break;
+    case MappingMeasureKind::StaticSchedulePressure:
+      measures[ordinal] = candidate.staticSchedulePressure();
+      break;
+    }
   }
   dse::ObjectiveVector result = program_.makeVector();
   if (llvm::Error error = program_.evaluate({violations, measures, {}}, result))
@@ -342,13 +365,14 @@ MappingObjectiveProgram::evaluate(const SystemCandidateState &candidate) const {
       candidate, MappingMeasureKind::TotalSelectedTraversalClaim);
   if (!traversalClaim)
     return traversalClaim.takeError();
-  return evaluateSystemProjection(candidate.problem(),
+  return evaluateSystemProjection(candidate.problem(), candidate.graphChoices(),
                                   candidate.capacityOveruse(), *traversalClaim);
 }
 
 llvm::Expected<dse::ObjectiveVector>
 MappingObjectiveProgram::evaluateSystemProjection(
-    const FrozenSystemPnrProblem &problem, std::uint64_t capacityOveruse,
+    const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<PnrIndex> graphChoices, std::uint64_t capacityOveruse,
     std::uint64_t totalSelectedTraversalClaim) const {
   std::array<std::uint64_t, resolvedPnrViolationKindCount> violations{};
   for (std::uint32_t ordinal = 0; ordinal != violations.size(); ++ordinal) {
@@ -387,10 +411,26 @@ MappingObjectiveProgram::evaluateSystemProjection(
   for (std::uint32_t ordinal = 0; ordinal != measures.size(); ++ordinal) {
     if ((selectedMeasures_ & (UINT64_C(1) << ordinal)) == 0)
       continue;
-    if (static_cast<MappingMeasureKind>(ordinal) !=
-        MappingMeasureKind::TotalSelectedTraversalClaim)
-      llvm_unreachable("unknown Mapping measure kind");
-    measures[ordinal] = totalSelectedTraversalClaim;
+    switch (static_cast<MappingMeasureKind>(ordinal)) {
+    case MappingMeasureKind::TotalSelectedTraversalClaim:
+      measures[ordinal] = totalSelectedTraversalClaim;
+      break;
+    case MappingMeasureKind::StaticSchedulePressure: {
+      if (graphChoices.size() != problem.graphDecisions().size())
+        return objectiveError("System graph choice pressure is incomplete");
+      for (PnrIndex decision = 0; decision < graphChoices.size(); ++decision) {
+        const auto pressures =
+            problem.graphChoiceStaticSchedulePressures(decision);
+        if (graphChoices[decision] >= pressures.size())
+          return objectiveError("System graph choice pressure is out of range");
+        if (llvm::Error error =
+                checkedAdd(measures[ordinal], pressures[graphChoices[decision]],
+                           "System StaticSchedulePressure"))
+          return std::move(error);
+      }
+      break;
+    }
+    }
   }
   dse::ObjectiveVector result = program_.makeVector();
   if (llvm::Error error = program_.evaluate({violations, measures, {}}, result))

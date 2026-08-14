@@ -49,6 +49,7 @@ add_mlir_library(LoomPnR
   SpatialTagConstraintModel.cpp
   SpatialTagContinuity.cpp
   SpatialTagPressureDiagnostic.cpp
+  StaticSchedulePressure.cpp
   System/SystemPnrGraphDomain.cpp
   System/SystemPnrSearchDomain.cpp
   System/SystemPnrServiceDomain.cpp

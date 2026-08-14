@@ -616,7 +616,7 @@ pnr::ResolvedPnrConfigView spatialConfig(llvm::StringRef test) {
   config.dse.spatialPnr.temporaryViolations.admitted = {
       ResolvedPnrViolationKind::UnroutedObligation,
       ResolvedPnrViolationKind::CapacityOveruse};
-  config.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 1;
+  config.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 2;
   return take(test, pnr::projectResolvedSpatialPnrConfigView(config));
 }
 

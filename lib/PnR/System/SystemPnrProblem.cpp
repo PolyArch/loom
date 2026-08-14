@@ -1113,6 +1113,39 @@ buildDecisions(const SystemPnrSearchDomainView &searchDomain,
   return result;
 }
 
+llvm::Expected<std::vector<std::uint64_t>> buildGraphChoiceSchedulePressures(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const Catalogs &catalogs, const Decisions &decisions) {
+  if (catalogs.spatialCatalog.size() != catalogs.mappings.size())
+    return invalid("SpatialMapping pressure catalog has the wrong width");
+  std::vector<std::uint64_t> result;
+  result.reserve(decisions.graphChoices.size());
+  for (const FrozenSystemGraphExecutionDecision &decision : decisions.graphs) {
+    auto graph = dataflow.resolve(decision.launch);
+    if (!graph)
+      return graph.takeError();
+    for (PnrIndex mapping :
+         llvm::ArrayRef(decisions.graphChoices)
+             .slice(decision.choiceOffset, decision.choiceCount)) {
+      if (mapping >= catalogs.spatialCatalog.size())
+        return invalid("graph choice pressure names a foreign mapping");
+      const detail::SpatialCatalogEntry &entry =
+          catalogs.spatialCatalog[mapping];
+      if (entry.covers.size() != entry.graphStaticSchedulePressures.size())
+        return invalid("SpatialMapping graph pressure has the wrong width");
+      const auto covered = llvm::find(entry.covers, *graph);
+      if (covered == entry.covers.end())
+        return invalid("graph choice pressure is absent from its mapping");
+      result.push_back(
+          entry.graphStaticSchedulePressures[static_cast<std::size_t>(
+              covered - entry.covers.begin())]);
+    }
+  }
+  if (result.size() != decisions.graphChoices.size())
+    return invalid("graph choice pressure projection is incomplete");
+  return result;
+}
+
 llvm::ArrayRef<PnrIndex> choiceSlice(llvm::ArrayRef<PnrIndex> choices,
                                      PnrIndex offset, PnrIndex count) {
   return choices.slice(offset, count);
@@ -1574,6 +1607,7 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
     std::vector<PnrIndex> threadChoiceCatalogOrdinals,
     std::vector<FrozenSystemGraphExecutionDecision> graphDecisions,
     std::vector<PnrIndex> graphChoiceCatalogOrdinals,
+    std::vector<std::uint64_t> graphChoiceStaticSchedulePressures,
     std::vector<PnrIndex> graphThreadOverlapOffsets,
     std::vector<PnrIndex> graphThreadOverlaps,
     FrozenEndpointRoutingTopology routingTopology,
@@ -1608,6 +1642,8 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
       threadChoiceCatalogOrdinals_(std::move(threadChoiceCatalogOrdinals)),
       graphDecisions_(std::move(graphDecisions)),
       graphChoiceCatalogOrdinals_(std::move(graphChoiceCatalogOrdinals)),
+      graphChoiceStaticSchedulePressures_(
+          std::move(graphChoiceStaticSchedulePressures)),
       graphThreadOverlapOffsets_(std::move(graphThreadOverlapOffsets)),
       graphThreadOverlaps_(std::move(graphThreadOverlaps)),
       routingTopology_(std::move(routingTopology)),
@@ -1641,6 +1677,15 @@ FrozenSystemPnrProblem::graphChoiceCatalogOrdinals(PnrIndex decision) const {
   const auto &record = graphDecisions_[decision];
   return choiceSlice(graphChoiceCatalogOrdinals_, record.choiceOffset,
                      record.choiceCount);
+}
+
+llvm::ArrayRef<std::uint64_t>
+FrozenSystemPnrProblem::graphChoiceStaticSchedulePressures(
+    PnrIndex decision) const {
+  assert(decision < graphDecisions_.size());
+  const auto &record = graphDecisions_[decision];
+  return llvm::ArrayRef(graphChoiceStaticSchedulePressures_)
+      .slice(record.choiceOffset, record.choiceCount);
 }
 
 llvm::ArrayRef<PnrIndex>
@@ -1712,6 +1757,10 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
   auto decisions = buildDecisions(searchDomain, *catalogs);
   if (!decisions)
     return decisions.takeError();
+  auto graphChoiceSchedulePressures =
+      buildGraphChoiceSchedulePressures(dataflow, *catalogs, *decisions);
+  if (!graphChoiceSchedulePressures)
+    return graphChoiceSchedulePressures.takeError();
   std::vector<::dataflow::GraphRef> coveredGraphs;
   std::set<std::uint64_t> coveredGraphEntities;
   for (const FrozenSystemGraphExecutionDecision &decision : decisions->graphs) {
@@ -1782,7 +1831,8 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       std::move(catalogs->coreTargetClasses), std::move(catalogs->mappings),
       std::move(catalogs->mappingTargetClasses), std::move(decisions->threads),
       std::move(decisions->threadChoices), std::move(decisions->graphs),
-      std::move(decisions->graphChoices), std::move(overlapOffsets),
+      std::move(decisions->graphChoices),
+      std::move(*graphChoiceSchedulePressures), std::move(overlapOffsets),
       std::move(overlaps), std::move(routing->topology),
       std::move(routing->terminals), std::move(routing->ownerDomains),
       std::move(routing->endpointChoices), std::move(serviceDomains),

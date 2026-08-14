@@ -97,18 +97,18 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
 
   loom::ResolvedConfig unselectedChange = base;
   auto &catalogs = unselectedChange.dse.objectiveCatalogs;
-  catalogs.dimensions.push_back({loom::ResolvedMappingMeasureObjectiveSource{0},
+  catalogs.dimensions.push_back({loom::ResolvedMappingMeasureObjectiveSource{1},
                                  loom::ResolvedObjectiveDirection::Maximize,
                                  loom::resolvedObjectiveInteger(0),
                                  loom::resolvedObjectiveInteger(1), 0,
                                  UINT64_MAX});
   const std::uint32_t unselectedDimension =
       static_cast<std::uint32_t>(catalogs.dimensions.size() - 1);
-  catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 1,
+  catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 2,
                                  {{{unselectedDimension, 1}}});
-  catalogs.totalOrderings.front().weightedLevels = {2, 0};
-  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 3;
-  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 3;
+  catalogs.totalOrderings.front().weightedLevels = {3, 1, 0};
+  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 4;
+  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 4;
 
   const loom::pnr::ResolvedPnrConfigView unselectedView =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(unselectedChange));
@@ -173,7 +173,7 @@ void routingKernelsConsumeTheProjectedOwnerRecord() {
 void mappingObjectiveRegistryIsClosedAndTyped() {
   const auto &registry = loom::pnr::mappingObjectiveRegistryDescriptor();
   require(registry.identity == "loom.mapping.pnr.objective" &&
-              registry.schemaMajor == 2 && registry.schemaMinor == 0,
+              registry.schemaMajor == 2 && registry.schemaMinor == 1,
           "Mapping objective registry has the wrong identity");
 
   const auto violations = loom::pnr::mappingViolationDescriptors();
@@ -190,9 +190,11 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
       "Mapping violation registry changed the canonical catalog order");
 
   const auto measures = loom::pnr::mappingMeasureDescriptors();
-  require(measures.size() == 1 &&
+  require(measures.size() == 2 &&
               measures.front().kind ==
-                  loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim,
+                  loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim &&
+              measures.back().kind ==
+                  loom::pnr::MappingMeasureKind::StaticSchedulePressure,
           "Mapping measure registry does not own the closed catalog");
 }
 
@@ -211,7 +213,7 @@ void resolvedConfigUsesTheIndependentViolationCatalog() {
 
 void objectiveArithmeticIsPreflightedByThePnrView() {
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
-  auto &energy = config.dse.objectiveCatalogs.weightedLevels[2];
+  auto &energy = config.dse.objectiveCatalogs.weightedLevels[3];
   energy.terms[0].weight = UINT64_MAX;
   energy.terms[1].weight = UINT64_MAX - 1;
   requireRejected(loom::pnr::projectResolvedSpatialPnrConfigView(config),

@@ -212,6 +212,9 @@ public:
     return unroutedObligationCount_;
   }
   std::uint64_t atomicCapacityOveruse() const { return atomicCapacityOveruse_; }
+  std::uint64_t staticSchedulePressure() const {
+    return staticSchedulePressure_;
+  }
   std::uint64_t routeCapacityOveruse() const {
     return routeResources_.totalCapacityOveruseRaw();
   }
@@ -302,7 +305,7 @@ private:
       SpatialRouteResourceState routeResources,
       SpatialTagAssignmentState tagAssignments,
       std::uint64_t unroutedObligationCount,
-      std::uint64_t atomicCapacityOveruse)
+      std::uint64_t atomicCapacityOveruse, std::uint64_t staticSchedulePressure)
       : problem_(std::move(problem)),
         computeBindings_(std::move(computeBindings)),
         memoryBindings_(std::move(memoryBindings)),
@@ -317,7 +320,8 @@ private:
         routeResources_(std::move(routeResources)),
         tagAssignments_(std::move(tagAssignments)),
         unroutedObligationCount_(unroutedObligationCount),
-        atomicCapacityOveruse_(atomicCapacityOveruse) {}
+        atomicCapacityOveruse_(atomicCapacityOveruse),
+        staticSchedulePressure_(staticSchedulePressure) {}
 
   llvm::Error validateComputeBinding(PnrIndex realization) const;
   llvm::Error validateMemoryBinding(PnrIndex realization) const;
@@ -391,6 +395,7 @@ private:
   SpatialTagAssignmentState tagAssignments_;
   std::uint64_t unroutedObligationCount_ = 0;
   std::uint64_t atomicCapacityOveruse_ = 0;
+  std::uint64_t staticSchedulePressure_ = 0;
   SpatialMoveTransaction *activeTransaction_ = nullptr;
 
   friend class SpatialActionDomainScratch;
@@ -486,6 +491,7 @@ private:
   bool routeViolationApplied_ = false;
   std::uint64_t initialUnroutedObligationCount_ = 0;
   std::uint64_t initialAtomicCapacityOveruse_ = 0;
+  std::uint64_t initialStaticSchedulePressure_ = 0;
 
   friend class SpatialCandidateState;
   friend class SpatialCandidateScratch;

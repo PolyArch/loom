@@ -11,6 +11,7 @@
 #include "SpatialPnrTransferIndex.h"
 #include "SpatialRouteConstraintModel.h"
 #include "SpatialTagConstraintModel.h"
+#include "StaticSchedulePressure.h"
 
 #include "Common/ComponentViewDigest.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -318,6 +319,10 @@ public:
         buildRealizations(dataflow, techMapping, fabric, *constraints);
     if (!realizations)
       return realizations.takeError();
+    auto schedulePressure = detail::SpatialSchedulePressureIndex::build(
+        dataflow, techMapping, *realizations);
+    if (!schedulePressure)
+      return schedulePressure.takeError();
     auto memory = FrozenSpatialMemoryIndexBuilder::build(dataflow, techMapping,
                                                          fabric, *realizations);
     if (!memory)
@@ -382,7 +387,8 @@ public:
         std::move(workBudget), std::move(*constraints),
         std::move(*realizations), std::move(*memory), std::move(*transfers),
         std::move(*ports), std::move(*resources), std::move(*capacity),
-        std::move(*routing), std::move(*handshake), std::move(*progressClosure),
+        std::move(*routing), std::move(*handshake),
+        std::move(*schedulePressure), std::move(*progressClosure),
         std::move(*bindingRelations), std::move(*memoryConstraints),
         std::move(*tagConstraints), std::move(*routeConstraints), cacheKey));
   }

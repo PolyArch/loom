@@ -25,6 +25,7 @@ LOOM_MAPPING_VIOLATION(HardProgressViolation, 4, "HardProgressViolation",
 
 LOOM_MAPPING_MEASURE(TotalSelectedTraversalClaim, 0,
                      "TotalSelectedTraversalClaim")
+LOOM_MAPPING_MEASURE(StaticSchedulePressure, 1, "StaticSchedulePressure")
 
 #undef LOOM_MAPPING_MEASURE
 #undef LOOM_MAPPING_VIOLATION

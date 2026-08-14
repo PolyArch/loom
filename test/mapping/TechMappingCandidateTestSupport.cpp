@@ -354,7 +354,7 @@ void loom::test::exerciseSpatialTagConstraintRelations(
   const auto disjoint = buildConstraints("disjoint", true);
   auto disjointResolved = buildSpatialPnrTestResolvedConfig();
   disjointResolved.dse.objectiveCatalogs = resolvedBuiltinObjectiveCatalogs();
-  disjointResolved.dse.spatialPnr.objectiveSelection = {0, 2, {}};
+  disjointResolved.dse.spatialPnr.objectiveSelection = {0, 3, {}};
   disjointResolved.dse.spatialPnr.temporaryViolations.admitted.push_back(
       ResolvedPnrViolationKind::TagUnassigned);
   const auto disjointPnrConfig =

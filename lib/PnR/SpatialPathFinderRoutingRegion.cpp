@@ -148,7 +148,10 @@ SpatialPathFinderRouterScratch::expandExactRegionalConflictClosure(
   auto relationExpanded = expandRoutingRelationClosure(logicalNetLimit);
   if (!relationExpanded)
     return relationExpanded.takeError();
-  return expanded || *relationExpanded;
+  const bool closureExpanded = expanded || *relationExpanded;
+  if (closureExpanded)
+    llvm::sort(routingRegionNets_);
+  return closureExpanded;
 }
 
 } // namespace loom::pnr

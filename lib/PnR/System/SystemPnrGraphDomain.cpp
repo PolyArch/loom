@@ -1,3 +1,4 @@
+#include "../StaticSchedulePressure.h"
 #include "SystemPnrSearchDomainInternal.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -204,6 +205,7 @@ importSpatialCatalog(llvm::ArrayRef<ArtifactRootReference> references,
           "SpatialMapping Fabric is not attached to a System AccCore");
 
     std::optional<std::uint64_t> moduleDependencyOrdinal;
+    const ::loom::fabric::FabricArtifactView *spatialModule = nullptr;
     for (auto [ordinal, module] :
          llvm::enumerate(system.artifact().importedModules())) {
       if (module.identity() != spatial->view().fabricIdentity())
@@ -212,6 +214,7 @@ importSpatialCatalog(llvm::ArrayRef<ArtifactRootReference> references,
         return invalid(
             "System imports one SpatialMapping Module more than once");
       moduleDependencyOrdinal = ordinal;
+      spatialModule = &module;
     }
     if (!moduleDependencyOrdinal)
       return invalid("SpatialMapping Module dependency does not resolve");
@@ -227,10 +230,15 @@ importSpatialCatalog(llvm::ArrayRef<ArtifactRootReference> references,
         tech->view().fabricIdentity() != spatial->view().fabricIdentity())
       return invalid(
           "SpatialMapping catalog has inconsistent TechMapping lineage");
+    auto pressures = projectStaticSchedulePressureByGraph(
+        dataflow, tech->view(), *spatialModule, spatial->view());
+    if (!pressures)
+      return pressures.takeError();
     result.push_back(
         {reference, std::move(*spatial), *moduleDependencyOrdinal,
          std::vector<::dataflow::GraphRef>(tech->view().covers().begin(),
-                                           tech->view().covers().end())});
+                                           tech->view().covers().end()),
+         std::move(*pressures)});
   }
   return result;
 }

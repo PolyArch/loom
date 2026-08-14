@@ -4,6 +4,7 @@
 #include "Common/ResolvedPnrPolicy.h"
 #include "DSE/Objective.h"
 #include "Dataflow/IR/DataflowStructuralRefs.h"
+#include "PnR/PnrIndex.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
@@ -124,6 +125,7 @@ public:
   evaluate(const SystemCandidateState &candidate) const;
   llvm::Expected<dse::ObjectiveVector>
   evaluateSystemProjection(const FrozenSystemPnrProblem &problem,
+                           llvm::ArrayRef<PnrIndex> graphChoices,
                            std::uint64_t capacityOveruse,
                            std::uint64_t totalSelectedTraversalClaim) const;
   llvm::Expected<dse::ObjectiveWideValue>
