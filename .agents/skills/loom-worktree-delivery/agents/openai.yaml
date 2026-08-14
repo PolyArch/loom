@@ -1,0 +1,4 @@
+interface:
+  display_name: "Loom Worktree Delivery"
+  short_description: "Deliver an isolated Loom change through a worktree"
+  default_prompt: "Use $loom-worktree-delivery to implement and deliver this bounded Loom change in an isolated worktree."
