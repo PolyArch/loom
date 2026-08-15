@@ -1541,6 +1541,16 @@ System generator derives a fresh System draft from one finalized parent and an
 explicit finite Module candidate set. Every decision uses this public typed
 surface and the ordinary Fabric finalizer.
 
+An FU-inventory replacement names a target PE and a nonempty ordered list of
+exact FU occurrences from the same finalized parent Module. A prototype may
+belong to any PE in that Module. Derivation maps the prototype PE's input
+arguments to the target PE's input arguments by ordinal and requires the two
+input inventories to have identical cardinality and types. The copied FU keeps
+its complete typed capability, internal topology, resource contract, and
+result types; an incompatible prototype rejects the draft. This permits a
+finite DSE neighborhood to redistribute an existing capability without
+inventing a capability or retaining a cross-PE SSA reference.
+
 Derivation is failure-atomic. A complete accepted child publishes one ordinary
 Fabric root and one descriptor-owned lineage contribution. A rejected draft
 publishes no child, cannot mutate its parent, and leaves no DSE-only Fabric
@@ -1610,6 +1620,8 @@ The stable Builder anchors are deliberately small:
 19. Each topology and microarchitecture decision either finalizes one exact
     Module child through the public Builder path or publishes nothing; parent
     identity and content remain unchanged after both success and rejection.
+    An FU-inventory decision can copy a shape-compatible FU prototype between
+    two PEs in the same parent and rejects an incompatible PE input inventory.
 20. System composition can add, remove, and replace heterogeneous AccCore
     occurrences while preserving ISA/ABI cohort, attachment, transport,
     service, and occurrence-qualified resource invariants through ordinary

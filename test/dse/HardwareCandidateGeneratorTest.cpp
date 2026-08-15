@@ -14,6 +14,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -345,6 +346,84 @@ microarchitectureRewrite(Fixture &fixture,
       fixture.store));
 }
 
+bool hasSpecialMath(const loom::fabric::FabricArtifactView &view,
+                    loom::fabric::FabricFuOccurrenceRef fu) {
+  const auto definition = view.fuTemplateOf(fu);
+  if (!definition)
+    fail("FU occurrence has no template");
+  return llvm::any_of(
+      view.resolvedFabricOpCapabilities(*definition),
+      [](const auto &operation) {
+        return ::fabric::implementationFamily(operation.implementationFamily)
+                   .typedAdmissionProvider ==
+               ::fabric::TypedAdmissionProviderId::ScalarSpecialMathAdmission;
+      });
+}
+
+std::uint64_t
+specialMathContextCount(const loom::fabric::FabricArtifactView &view) {
+  std::uint64_t result = 0;
+  for (const auto pe : view.peOccurrences()) {
+    bool capable = false;
+    for (const auto fu : view.fuOccurrences())
+      capable |= view.parentPeOf(fu) == pe && hasSpecialMath(view, fu);
+    if (capable)
+      result += view.peResidentContextCount(pe);
+  }
+  return result;
+}
+
+void redistributeFuCapability(Fixture &fixture,
+                              const loom::fabric::FinalizedFabricRoot &module) {
+  std::optional<loom::fabric::FabricPeOccurrenceRef> target;
+  std::optional<loom::fabric::FabricFuOccurrenceRef> prototype;
+  for (const auto pe : module.view().peOccurrences()) {
+    if (module.view().peSchedule(pe) != ::fabric::Schedule::Temporal)
+      continue;
+    bool capable = false;
+    for (const auto fu : module.view().fuOccurrences()) {
+      if (module.view().parentPeOf(fu) != pe ||
+          !hasSpecialMath(module.view(), fu))
+        continue;
+      capable = true;
+      prototype = fu;
+    }
+    if (!capable && !target)
+      target = pe;
+  }
+  require(target && prototype,
+          "builtin Module lacks distinct Temporal capability sites");
+
+  std::vector<loom::fabric::FabricFuOccurrenceRef> inventory;
+  for (const auto fu : module.view().fuOccurrences())
+    if (module.view().parentPeOf(fu) == target)
+      inventory.push_back(fu);
+  inventory.push_back(*prototype);
+  std::vector<loom::dse::SpatialMicroarchitectureDecisionDomain> domains = {
+      loom::dse::ChangeFuInventoryDomain{*target, {inventory}}};
+  auto config =
+      take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(domains, 1));
+  auto inputs =
+      take(loom::dse::bindSpatialMicroarchitectureCandidateGeneratorInputs(
+          {module.reference()}));
+  auto binding =
+      take(loom::dse::resolveSpatialMicroarchitectureCandidateGeneratorBinding(
+          config));
+  auto result = take(loom::dse::invokeCandidateGenerator(
+      inputs, binding, fixture.store, fixture.blobs));
+  const auto &outputs = completed(result).outputBindings.front().artifacts;
+  require(outputs.size() == 1,
+          "cross-PE FU inventory decision did not produce one child");
+  auto child = take(
+      loom::fabric::importEntireFabricRoot(outputs.front(), fixture.store));
+  require(child.view().fuOccurrences().size() ==
+              module.view().fuOccurrences().size() + 1,
+          "cross-PE FU inventory decision did not retain and add capabilities");
+  require(specialMathContextCount(child.view()) >
+              specialMathContextCount(module.view()),
+          "cross-PE FU inventory decision did not redistribute capability");
+}
+
 void systemCompositionRewrite(Fixture &fixture,
                               const loom::fabric::FinalizedFabricRoot &system,
                               const loom::fabric::FinalizedFabricRoot &module) {
@@ -587,6 +666,7 @@ int main() {
   topologyRewrite(fixture, module);
   occurrenceInventoryRewrite(fixture, module);
   auto replacementModule = microarchitectureRewrite(fixture, module);
+  redistributeFuCapability(fixture, module);
   systemCompositionRewrite(fixture, system, module);
   spatialAttachmentRewrite(fixture, system, replacementModule);
   transportResourceRewrite(fixture, system, module);

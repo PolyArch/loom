@@ -2657,6 +2657,11 @@ one-exact-parent decision rule. Its closed decision union is `ChangePeKind`,
 `ChangeFifoBypassCapability`. The referenced Fabric owners define every typed
 parameter domain. The generator cannot create an operation capability, memory
 contract, scheduling rule, or bypass meaning outside those domains.
+`ChangeFuInventory` may select FU prototypes from any PE in the exact parent
+Module; the ADG Builder admits only prototypes whose parent-PE input inventory
+can be mapped to the target PE exactly by ordinal and type. The decision thus
+redistributes existing typed capabilities without a private capability codec
+or an implicit builtin-template rewrite.
 
 The system-composition generator consumes a finite canonical set of exact
 `fabric.system` parents and an explicit canonical set of admissible finalized

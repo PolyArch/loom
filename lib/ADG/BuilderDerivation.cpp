@@ -611,16 +611,28 @@ llvm::Error SpatialCoreBuilder::replaceFuInventory(
   auto targetPe = mlir::cast<::fabric::PeOp>(*targetOperation);
 
   std::vector<::fabric::FuOp> prototypeOps;
+  std::vector<::fabric::PeOp> prototypePes;
   prototypeOps.reserve(prototypes.size());
+  prototypePes.reserve(prototypes.size());
   for (const auto &prototype : prototypes) {
     auto operation = moduleOccurrence((*root)->operation,
                                       *(*root)->derivedParent, prototype);
     if (!operation)
       return operation.takeError();
     auto fu = mlir::cast<::fabric::FuOp>(*operation);
-    if (fu->getParentOp() != targetPe.getOperation())
-      return invalid("FU inventory prototype belongs to a foreign PE");
+    auto prototypePe = mlir::dyn_cast<::fabric::PeOp>(fu->getParentOp());
+    if (!prototypePe)
+      return invalid("FU inventory prototype has no parent PE");
+    mlir::Block &targetInputs = targetPe.getBody().front();
+    mlir::Block &prototypeInputs = prototypePe.getBody().front();
+    if (targetInputs.getNumArguments() != prototypeInputs.getNumArguments())
+      return invalid("FU inventory prototype PE has a different input count");
+    for (auto [targetInput, prototypeInput] :
+         llvm::zip(targetInputs.getArguments(), prototypeInputs.getArguments()))
+      if (targetInput.getType() != prototypeInput.getType())
+        return invalid("FU inventory prototype PE has a different input type");
     prototypeOps.push_back(fu);
+    prototypePes.push_back(prototypePe);
   }
 
   std::vector<mlir::Operation *> oldFus;
@@ -631,8 +643,12 @@ llvm::Error SpatialCoreBuilder::replaceFuInventory(
     return invalid("target PE has no FU inventory");
 
   mlir::Operation *insertion = oldFus.front();
-  for (::fabric::FuOp prototype : prototypeOps) {
+  for (auto [prototype, prototypePe] : llvm::zip(prototypeOps, prototypePes)) {
     mlir::IRMapping mapping;
+    for (auto [prototypeInput, targetInput] :
+         llvm::zip(prototypePe.getBody().front().getArguments(),
+                   targetPe.getBody().front().getArguments()))
+      mapping.map(prototypeInput, targetInput);
     mlir::Operation *clone = prototype->clone(mapping);
     insertion->getBlock()->getOperations().insert(insertion->getIterator(),
                                                   clone);
