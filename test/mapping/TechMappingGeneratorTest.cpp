@@ -14,6 +14,9 @@
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
 
+#include "TechMappingCandidateDomain.h"
+
+#include "../InternalMemoryEdgeTestSupport.h"
 #include "SpatialMemoryConstraintTestSupport.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -36,6 +39,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -52,6 +56,20 @@ template <typename T> T take(llvm::Expected<T> value) {
     fail(llvm::toString(value.takeError()));
   return std::move(*value);
 }
+
+struct PollStopSource final {
+  mutable std::uint64_t pollsBeforeStop;
+
+  static bool query(const void *context) {
+    auto &source = *static_cast<const PollStopSource *>(context);
+    if (source.pollsBeforeStop == 0)
+      return true;
+    --source.pollsBeforeStop;
+    return false;
+  }
+
+  loom::ExecutionControlView control() const { return {this, query}; }
+};
 
 class TemporaryDirectory final {
 public:
@@ -340,6 +358,36 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
 }
 
 dataflow::CanonicalDataflowArtifact
+buildMemoryControlFanoutDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @load_then_parallel_store(
+      %start: none, %load_index: index, %first_store_index: index,
+      %second_store_index: index, %first_value: i32, %second_value: i32,
+      %load_memory: memref<4xi32>, %first_store_memory: memref<4xi32>,
+      %second_store_memory: memref<4xi32>) -> i32
+      attributes {input_segments = array<i32: 5, 0, 3>,
+                  result_segments = array<i32: 1, 0, 0>} {
+    %loaded, %load_done =
+        dataflow.load %load_memory[%load_index] %start : memref<4xi32>
+    %first_done = dataflow.store
+        %first_store_memory[%first_store_index] %first_value %load_done
+        : memref<4xi32>
+    %second_done = dataflow.store
+        %second_store_memory[%second_store_index] %second_value %load_done
+        : memref<4xi32>
+    dataflow.graph.return values(%loaded : i32) streams() memories()
+        complete(%first_done, %second_done : none, none)
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse memory-control-fanout Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
 buildUnsupportedDataflow(mlir::MLIRContext &context) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
@@ -555,166 +603,59 @@ buildTokenSyncFabric(loom::ArtifactStore &store, std::size_t laneCount = 4) {
   return design.roots().front();
 }
 
-fabric::UnsignedDomain singletonDomain(std::uint64_t value) {
-  return take(fabric::UnsignedDomain::fromCanonical({{value, value}}));
-}
-
-fabric::ResourceContract memoryPortResourceContract() {
-  fabric::ResourceContractDeclaration declaration;
-  declaration.states = {fabric::ResourceStateDeclaration{
-      fabric::StateKey(0),
-      {{fabric::CapacityDimensionKey(0), fabric::CapacityUnits(1),
-        fabric::CapacityUnits(0)}}}};
-  declaration.requesters = {fabric::RequesterKey(0)};
-  declaration.eligibilityCount = 1;
-  declaration.eventCount = 2;
-  declaration.timingContracts = {{fabric::TimingContractKey(0), {0, 1}}};
-  declaration.usePatterns = {
-      {fabric::UsePatternKey(0),
-       fabric::RequesterKey(0),
-       fabric::EligibilityKey(0),
-       fabric::EventKey(0),
-       fabric::EventKey(1),
-       std::nullopt,
-       fabric::TimingContractKey(0),
-       {{fabric::ClaimKey(0), fabric::StateKey(0),
-         fabric::CapacityDimensionKey(0), fabric::CapacityUnits(1)}},
-       {{{fabric::ClaimKey(0)}}}}};
-  return take(fabric::ResourceContract::create(std::move(declaration)));
-}
-
-fabric::MemoryOperationPortDeclaration memoryPort(bool reads) {
-  auto alignment = take(fabric::AlignmentDomain::create(
-      take(fabric::UnsignedDomain::fromCanonical({{0, 63}}))));
-  auto read = take(
-      fabric::ClosedEnumDomain<fabric::ReadSubwordSemantics>::fromCanonical(
-          {reads ? fabric::ReadSubwordSemantics::ZeroExtend
-                 : fabric::ReadSubwordSemantics::NotApplicable}));
-  auto write = take(
-      fabric::ClosedEnumDomain<fabric::WriteSubwordSemantics>::fromCanonical(
-          {reads ? fabric::WriteSubwordSemantics::NotApplicable
-                 : fabric::WriteSubwordSemantics::ByteEnable}));
-  auto address =
-      take(fabric::MemoryAddressDomain::rootRelative(singletonDomain(64)));
-  auto access = take(fabric::MemoryAccessClass::create(
-      dataflow::semantics::MemoryAccessForm::Element, singletonDomain(32),
-      singletonDomain(1),
-      {{dataflow::semantics::MemoryMaskForm::Absent,
-        fabric::InactiveLaneSemantics::NotApplicable},
-       {dataflow::semantics::MemoryMaskForm::Dynamic,
-        reads ? fabric::InactiveLaneSemantics::SuppressAndZeroFill
-              : fabric::InactiveLaneSemantics::Suppress}},
-      std::move(alignment), std::move(read), std::move(write),
-      std::move(address)));
-  auto accessDomain = take(
-      fabric::ParameterizedMemoryAccessDomain::create({std::move(access)}));
-  fabric::MemoryActorContractClause plain =
-      fabric::LoadStorePlainContractClause{{false}};
-  auto actorDomain = take(fabric::MemoryActorContractDomain::create(
-      reads ? dataflow::OperationSchemaId::DataflowLoad
-            : dataflow::OperationSchemaId::DataflowStore,
-      {plain}));
-
-  fabric::MemoryCapabilityAlternativeRecord alternative{
-      std::move(actorDomain),
-      reads
-          ? std::vector<
-                fabric::MemoryRoleEndpointBindingRecord>{{dataflow::semantics::
-                                                              ServiceValueRole::
-                                                                  Address,
-                                                          0},
-                                                         {dataflow::semantics::
-                                                              ServiceValueRole::
-                                                                  Data,
-                                                          7},
-                                                         {dataflow::semantics::
-                                                              ServiceValueRole::
-                                                                  Mask,
-                                                          1},
-                                                         {dataflow::semantics::
-                                                              ServiceValueRole::
-                                                                  Control,
-                                                          2},
-                                                         {dataflow::semantics::
-                                                              ServiceValueRole::
-                                                                  Completion,
-                                                          8}}
-          : std::vector<
-                fabric::MemoryRoleEndpointBindingRecord>{{dataflow::semantics::
-                                                              ServiceValueRole::
-                                                                  Address,
-                                                          3},
-                                                         {dataflow::semantics::
-                                                              ServiceValueRole::
-                                                                  Data,
-                                                          4},
-                                                         {dataflow::semantics::
-                                                              ServiceValueRole::
-                                                                  Mask,
-                                                          5},
-                                                         {dataflow::semantics::
-                                                              ServiceValueRole::
-                                                                  Control,
-                                                          6},
-                                                         {dataflow::semantics::
-                                                              ServiceValueRole::
-                                                                  Completion,
-                                                          9}},
-      std::move(accessDomain),
-      {fabric::UsePatternKey(0)}};
-  return {reads ? std::vector<std::uint64_t>{0, 1, 2, 7, 8}
-                : std::vector<std::uint64_t>{3, 4, 5, 6, 9},
-          memoryPortResourceContract(),
-          {{fabric::MemoryPortTransactionProjection::Direct}},
-          {std::move(alternative)}};
-}
-
 loom::fabric::FinalizedFabricRoot
-buildInternalMemoryEdgeFabric(loom::ArtifactStore &store) {
-  using loom::adg::MemoryConnectivitySpec;
-  using loom::adg::MemoryEngineSpec;
-  using loom::adg::MemorySpec;
+buildBranchingTokenSyncFabric(loom::ArtifactStore &store) {
+  using loom::adg::DesignBuilder;
+  using loom::adg::FuCapabilityTemplateSpec;
+  using loom::adg::FuSpec;
+  using loom::adg::OperationCapabilitySpec;
+  using loom::adg::PeSpec;
   using loom::adg::PortType;
 
-  const auto bits8 = take(PortType::bits(8));
-  const auto manager =
-      take(PortType::memory({PortType::kDynamicExtent}, bits8));
-  std::vector<PortType> inputs{manager};
-  for (std::uint32_t width : {64u, 4u, 0u, 64u, 128u, 4u, 0u})
-    inputs.push_back(take(PortType::bits(width)));
-  std::vector<PortType> outputs;
-  for (std::uint32_t width : {128u, 0u, 0u})
-    outputs.push_back(take(PortType::bits(width)));
-
-  fabric::MemoryDispatchTarget managerTarget(
-      std::in_place_type<fabric::ManagerMemoryDispatchTarget>,
-      fabric::ManagerMemoryDispatchTarget{0});
-  fabric::MemoryConnectivityDeclaration connectivity;
-  fabric::MemoryOperationPortDispatchDeclaration readDispatch;
-  readDispatch.capabilityTargetDomains = {{managerTarget}};
-  fabric::MemoryOperationPortDispatchDeclaration writeDispatch;
-  writeDispatch.capabilityTargetDomains = {{managerTarget}};
-  connectivity.operationPorts = {std::move(readDispatch),
-                                 std::move(writeDispatch)};
-  connectivity.internalConnections = {{8, 6}};
-  auto spec = take(MemorySpec::create(
-      inputs, outputs, {0}, {},
-      MemoryEngineSpec::spatial({memoryPort(true), memoryPort(false)}),
-      std::nullopt,
-      take(MemoryConnectivitySpec::create(std::move(connectivity)))));
-
-  loom::adg::DesignBuilder builder(store);
+  const PortType bits128 = take(PortType::bits(128));
+  const std::vector<PortType> inputs(2, bits128);
+  const std::vector<PortType> outputs(4, bits128);
+  DesignBuilder builder(store);
   auto spatial =
-      take(builder.createSpatialCore("memory-internal-edge", inputs, outputs));
-  std::vector<loom::adg::SpatialValue> inputValues;
+      take(builder.createSpatialCore("branching-token-sync", inputs, outputs));
+  std::vector<loom::adg::SpatialValue> spatialInputs;
   for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
-    inputValues.push_back(take(spatial.input(ordinal)));
-  auto memoryOutputs = take(spatial.addMemory(inputValues, spec));
-  if (llvm::Error error = spatial.close(memoryOutputs.values()))
+    spatialInputs.push_back(take(spatial.input(ordinal)));
+  auto pe =
+      take(spatial.addPe(spatialInputs, PeSpec::spatial(inputs, outputs)));
+  std::vector<loom::adg::PeValue> peInputs;
+  for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
+    peInputs.push_back(take(pe.input(ordinal)));
+
+  auto fu = take(pe.addFu(peInputs, FuSpec{inputs, outputs}));
+  std::vector<loom::adg::FuValue> fuInputs;
+  for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
+    fuInputs.push_back(take(fu.input(ordinal)));
+  auto operation = take(fu.addOperation(
+      fuInputs, OperationCapabilitySpec{
+                    ::fabric::ImplementationFamilyId::TokenSync,
+                    ::fabric::RoutedTokenParams{128, 2},
+                    {::dataflow::OperationSchemaId::DataflowSync},
+                    inputs,
+                    ::fabric::oneCycleElasticOperationResourceContract()}));
+  if (llvm::Error error =
+          fu.addCapabilityTemplate(FuCapabilityTemplateSpec{{operation}, {}}))
+    fail(llvm::toString(std::move(error)));
+  const auto completion = take(operation.output(0));
+  const auto value = take(operation.output(1));
+  if (llvm::Error error = fu.close({completion, completion, value, value}))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = pe.close())
+    fail(llvm::toString(std::move(error)));
+
+  std::vector<loom::adg::SpatialValue> spatialOutputs;
+  for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal)
+    spatialOutputs.push_back(take(pe.output(ordinal)));
+  if (llvm::Error error = spatial.close(spatialOutputs))
     fail(llvm::toString(std::move(error)));
   auto design = take(std::move(builder).finalize());
   if (design.roots().size() != 1)
-    fail("internal-edge Fabric did not publish exactly one root");
+    fail("branching token-sync Fabric did not publish exactly one root");
   return design.roots().front();
 }
 
@@ -844,7 +785,10 @@ void serialTopologyPrunesIndependentActorScale() {
   const auto elapsed = std::chrono::steady_clock::now() - start;
   const auto *incomplete =
       std::get_if<loom::mapping::IncompleteTechMappingGeneration>(&outcome);
-  if (!incomplete || incomplete->accounting.matchRowAttempts != 1000)
+  if (!incomplete || incomplete->accounting.matchRowAttempts != 1000 ||
+      incomplete->accounting.matchRowFirstVisits != 1000 ||
+      incomplete->accounting.matchRowCursorResumptions == 0 ||
+      incomplete->accounting.matchRowReplayVisits != 0)
     fail("independent-actor scale fixture did not stop at its semantic limit");
   if (elapsed >= std::chrono::seconds(10))
     fail("independent actors caused factorial serial-topology enumeration");
@@ -876,6 +820,46 @@ void wideTokenSyncUsesFamilyCorrespondenceDomain() {
     fail("wide token sync did not produce its unique family correspondence");
   if (elapsed >= std::chrono::seconds(5))
     fail("wide token sync enumerated a factorial port-map product");
+}
+
+void branchingFuBoundariesEnumerateLegalCorrespondences() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto dataflowArtifact = buildSingleSyncDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  const auto fabric = buildBranchingTokenSyncFabric(store);
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.techMapping.candidatePublicationLimit = 8;
+  const auto config =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  const std::array<dataflow::GraphRef, 1> covers = {
+      dataflow.graphs().front().ref};
+  const auto outcome = loom::mapping::generateTechMappings(
+      {dataflow, covers, fabric.view(), config, store});
+  const auto *generated =
+      std::get_if<loom::mapping::GeneratedTechMappings>(&outcome);
+  if (!generated || generated->candidates.size() != 4 ||
+      generated->accounting.matchRowAttempts != 4 ||
+      generated->termination !=
+          loom::mapping::TechMappingGenerationTermination::SearchExhausted)
+    fail("branching FU boundaries did not publish four exhaustive choices");
+
+  std::set<std::vector<std::uint8_t>> rowKeys;
+  for (const auto &candidateRoot : generated->candidates) {
+    const auto candidate =
+        take(loom::mapping::importTechMapping(candidateRoot, store));
+    const auto realizations = candidate.view().computeRealizations();
+    if (realizations.size() != 1 || realizations.front().actors.size() != 1 ||
+        realizations.front().boundaries.size() != 4)
+      fail("branching FU candidate lost its complete correspondence");
+    rowKeys.insert(take(loom::mapping::canonicalTechMatchRowKey(
+        realizations.front(), dataflow.identity())));
+  }
+  if (rowKeys.size() != 4)
+    fail("branching FU boundary choices collapsed to duplicate rows");
 }
 
 void unrelatedBuiltinOperationsDoNotConsumeSeedBudget() {
@@ -977,6 +961,46 @@ void forcedComputeAndMemoryRowsPublishDeterministically() {
     fail("identical invocation changed its canonical finite prefix");
 }
 
+void mixedRowFamiliesCannotStarveMemory() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto dataflowArtifact = buildMixedDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  const auto fabric = buildSmallFabric(store);
+  const std::array<dataflow::GraphRef, 1> covers = {
+      dataflow.graphs().front().ref};
+  const auto defaultConfig =
+      take(loom::mapping::projectResolvedTechMappingConfigView(
+          loom::defaultResolvedConfig()));
+  const loom::mapping::TechMappingGenerationInputs defaultInputs{
+      dataflow, covers, fabric.view(), defaultConfig, store};
+
+  const auto computeFamilies = loom::mapping::detail::deriveComputeRowFamilies(
+      defaultInputs, dataflow.actors());
+  const auto memoryFamilies = loom::mapping::detail::deriveMemoryRowFamilies(
+      defaultInputs, dataflow.actors());
+  if (computeFamilies.empty() || memoryFamilies.empty())
+    fail("mixed row-family fixture omitted one row kind");
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.techMapping.matchRowAttemptLimit =
+      computeFamilies.size() + memoryFamilies.size();
+  const auto config =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  const loom::mapping::TechMappingGenerationInputs inputs{
+      dataflow, covers, fabric.view(), config, store};
+  loom::mapping::TechMappingGenerationAccounting accounting;
+  const auto domain = take(loom::mapping::detail::deriveTechMatchDomain(
+      inputs, dataflow.actors(), accounting));
+  if (!llvm::any_of(domain.rows, [](const auto &candidate) {
+        return std::holds_alternative<loom::mapping::TechMemoryRealizationView>(
+            candidate.realization);
+      }))
+    fail("compute row families starved the memory row family");
+}
+
 void multiActorMemoryRowsCompeteWithSingletonCover() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
@@ -1032,9 +1056,8 @@ void multiActorMemoryRowsCompeteWithSingletonCover() {
   // Realization demand is the number of physical engines SpatialMapping must
   // place. A grouped two-actor memory row demands one Operation Engine where
   // the singleton cover demands two, so demand order must present it first.
-  auto leading =
-      take(loom::mapping::importTechMapping(generated->candidates.front(),
-                                            store));
+  auto leading = take(
+      loom::mapping::importTechMapping(generated->candidates.front(), store));
   if (leading.view().memoryRealizations().size() != 1 ||
       leading.view().memoryRealizations().front().actors.size() != 2)
     fail("realization-demand order did not lead with the grouped memory row");
@@ -1049,7 +1072,8 @@ void internalMemoryEdgeIsAnExplicitCandidateChoice() {
   auto dataflowArtifact = buildMemoryChainDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
-  const auto fabric = buildInternalMemoryEdgeFabric(store);
+  const auto fabric = loom::test::buildInternalMemoryEdgeFabric(
+      store, fabric::Schedule::Spatial);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 8;
@@ -1089,6 +1113,112 @@ void internalMemoryEdgeIsAnExplicitCandidateChoice() {
   if (!externalNetCount || !internalNetCount ||
       *internalNetCount + 1 != *externalNetCount)
     fail("memory internal edge did not remove exactly one residual net");
+}
+
+void temporalIngressUsesSelectedInternalEdges() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto dataflowArtifact = buildMemoryControlFanoutDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  const auto fabric = loom::test::buildInternalMemoryEdgeFabric(
+      store, fabric::Schedule::Temporal);
+
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.techMapping.candidatePublicationLimit = 16;
+  const auto config =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  const std::array<dataflow::GraphRef, 1> covers = {
+      dataflow.graphs().front().ref};
+  const loom::mapping::TechMappingGenerationInputs inputs{
+      dataflow, covers, fabric.view(), config, store};
+  loom::mapping::TechMappingGenerationAccounting rowAccounting;
+  const auto domain = take(loom::mapping::detail::deriveTechMatchDomain(
+      inputs, dataflow.actors(), rowAccounting));
+
+  std::vector<loom::mapping::TechMemoryInternalEdgeView> eligibleEdges;
+  std::vector<std::vector<std::uint8_t>> actualRowKeys;
+  std::optional<loom::mapping::TechMemoryRealizationView> oracleBase;
+  for (const auto &candidate : domain.rows) {
+    const auto *realization =
+        std::get_if<loom::mapping::TechMemoryRealizationView>(
+            &candidate.realization);
+    if (!realization || realization->actors.size() != 3)
+      continue;
+    if (!oracleBase)
+      oracleBase = *realization;
+    for (const auto &edge : realization->internalEdges)
+      if (!llvm::any_of(eligibleEdges, [&](const auto &candidate) {
+            return candidate.producer == edge.producer &&
+                   candidate.consumer == edge.consumer &&
+                   candidate.connection == edge.connection;
+          }))
+        eligibleEdges.push_back(edge);
+    actualRowKeys.push_back(take(loom::mapping::canonicalTechMatchRowKey(
+        *realization, dataflow.identity())));
+  }
+  if (!oracleBase || eligibleEdges.size() != 2)
+    fail("Temporal internal-edge oracle did not recover its finite domain");
+  std::vector<std::vector<std::uint8_t>> oracleRowKeys;
+  for (std::uint64_t subset = 0;
+       subset < (std::uint64_t{1} << eligibleEdges.size()); ++subset) {
+    auto realization = *oracleBase;
+    realization.internalEdges.clear();
+    for (std::size_t edge = 0; edge < eligibleEdges.size(); ++edge)
+      if ((subset & (std::uint64_t{1} << edge)) != 0)
+        realization.internalEdges.push_back(eligibleEdges[edge]);
+    const auto legality =
+        take(loom::mapping::deriveTechMemoryInternalConnectionLegality(
+            realization.internalEdges, dataflow.identity()));
+    if (legality !=
+        loom::mapping::TechMemoryInternalConnectionLegality::Admissible)
+      continue;
+    if (!take(loom::mapping::techMemoryExternalIngressesAreDistinct(realization,
+                                                                    dataflow)))
+      continue;
+    oracleRowKeys.push_back(take(loom::mapping::canonicalTechMatchRowKey(
+        realization, dataflow.identity())));
+  }
+  llvm::sort(actualRowKeys);
+  llvm::sort(oracleRowKeys);
+  if (actualRowKeys != oracleRowKeys)
+    fail("constrained internal-edge cursor changed the exhaustive ordered "
+         "row prefix");
+
+  const auto outcome = loom::mapping::generateTechMappings(inputs);
+  const auto *generated =
+      std::get_if<loom::mapping::GeneratedTechMappings>(&outcome);
+  if (!generated)
+    fail("Temporal memory-control fanout produced no TechMapping candidate");
+
+  bool foundGrouped = false;
+  bool verifierRejectedExternalDuplicate = false;
+  for (const auto &reference : generated->candidates) {
+    auto candidate = take(loom::mapping::importTechMapping(reference, store));
+    for (const auto &realization : candidate.view().memoryRealizations()) {
+      if (realization.actors.size() != 3)
+        continue;
+      foundGrouped = true;
+      if (realization.internalEdges.empty())
+        fail("Temporal row hid an external duplicate behind an unselected "
+             "internal edge");
+      loom::mapping::TechMemoryRealizationView external = realization;
+      external.internalEdges.clear();
+      llvm::Error rejected = loom::mapping::verifyTechMemoryRealizationClosure(
+          external, dataflow, fabric.view());
+      if (!rejected)
+        fail("independent verifier admitted duplicate Temporal ingress");
+      verifierRejectedExternalDuplicate |=
+          llvm::toString(std::move(rejected))
+              .find("external ingress relation is not distinguishable") !=
+          std::string::npos;
+    }
+  }
+  if (!foundGrouped)
+    fail("Temporal ingress test did not retain a grouped memory realization");
+  if (!verifierRejectedExternalDuplicate)
+    fail("independent verifier did not report Temporal ingress ambiguity");
 }
 
 void semanticLimitsDoNotBecomeInfeasibilityProofs() {
@@ -1254,7 +1384,8 @@ void nonmatchingMemoryCapabilityDoesNotEnterSeedDomain() {
   auto dataflowArtifact = buildUnsupportedMemoryDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
-  const auto fabric = buildInternalMemoryEdgeFabric(store);
+  const auto fabric = loom::test::buildInternalMemoryEdgeFabric(
+      store, fabric::Schedule::Spatial);
 
   loom::ResolvedConfig limited = loom::defaultResolvedConfig();
   limited.dse.techMapping.matchRowAttemptLimit = 1;
@@ -1339,6 +1470,52 @@ void malformedGraphCoversReturnTypedInvalidOutcomes() {
     fail("duplicate graph cover did not return typed Invalid");
 }
 
+void interruptionReturnsProviderOwnedSearchSnapshot() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeContext();
+  auto dataflowArtifact = buildSingleSyncDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  const auto fabric = buildSmallFabric(store);
+  const auto config = take(loom::mapping::projectResolvedTechMappingConfigView(
+      loom::defaultResolvedConfig()));
+  const std::array<dataflow::GraphRef, 1> covers = {
+      dataflow.graphs().front().ref};
+
+  PollStopSource immediate{0};
+  const auto admission = loom::mapping::generateTechMappings(
+      {dataflow, covers, fabric.view(), config, store, immediate.control()});
+  const auto *admissionInterrupted =
+      std::get_if<loom::mapping::InterruptedTechMappingGeneration>(&admission);
+  if (!admissionInterrupted ||
+      admissionInterrupted->snapshot.stage !=
+          loom::mapping::TechMappingInterruptionStage::InputAdmission ||
+      admissionInterrupted->snapshot.frontier.matchRowAttempts != 0 ||
+      admissionInterrupted->snapshot.bestCanonicalRank ||
+      admissionInterrupted->snapshot.closureResidual.uncoveredActors !=
+          dataflow.actors().size() ||
+      admissionInterrupted->snapshot.closureResidual.retainedCandidates != 0 ||
+      !admissionInterrupted->candidates.empty())
+    fail("input interruption did not preserve its typed closure snapshot");
+
+  PollStopSource afterAdmission{1};
+  const auto derivation = loom::mapping::generateTechMappings(
+      {dataflow, covers, fabric.view(), config, store,
+       afterAdmission.control()});
+  const auto *derivationInterrupted =
+      std::get_if<loom::mapping::InterruptedTechMappingGeneration>(&derivation);
+  if (!derivationInterrupted ||
+      derivationInterrupted->snapshot.stage !=
+          loom::mapping::TechMappingInterruptionStage::MatchRowDerivation ||
+      loom::mapping::techMappingInterruptionStageSpelling(
+          derivationInterrupted->snapshot.stage) != "match_row_derivation" ||
+      derivationInterrupted->snapshot.closureResidual.uncoveredActors !=
+          dataflow.actors().size())
+    fail(
+        "row derivation did not observe its cooperative interruption boundary");
+}
+
 } // namespace
 
 int main() {
@@ -1346,10 +1523,13 @@ int main() {
   matchRowLimitPreservesGlobalActorOrder();
   serialTopologyPrunesIndependentActorScale();
   wideTokenSyncUsesFamilyCorrespondenceDomain();
+  branchingFuBoundariesEnumerateLegalCorrespondences();
   unrelatedBuiltinOperationsDoNotConsumeSeedBudget();
+  mixedRowFamiliesCannotStarveMemory();
   forcedComputeAndMemoryRowsPublishDeterministically();
   multiActorMemoryRowsCompeteWithSingletonCover();
   internalMemoryEdgeIsAnExplicitCandidateChoice();
+  temporalIngressUsesSelectedInternalEdges();
   semanticLimitsDoNotBecomeInfeasibilityProofs();
   completedCoverSurvivesExpansionLimit();
   deadResultDerivesPhysicalDiscardWithoutSoftwareBoundary();
@@ -1357,6 +1537,7 @@ int main() {
   nonmatchingMemoryCapabilityDoesNotEnterSeedDomain();
   publicationLimitDoesNotTruncateComponentProofs();
   malformedGraphCoversReturnTypedInvalidOutcomes();
+  interruptionReturnsProviderOwnedSearchSnapshot();
   llvm::outs() << "tech mapping generator tests passed\n";
   return 0;
 }

@@ -1,7 +1,7 @@
 #ifndef LOOM_LIB_PNR_SPATIALPROGRESSANALYSIS_H
 #define LOOM_LIB_PNR_SPATIALPROGRESSANALYSIS_H
 
-#include "PnR/PnrIndex.h"
+#include "PnR/SpatialPnrProblem.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -10,27 +10,26 @@
 
 namespace loom::pnr {
 
-class FrozenSpatialPnrProblem;
 class FrozenSpatialPortIndex;
 class FrozenSpatialRoutingGraph;
 class SpatialCandidateState;
 struct FrozenSpatialTerminalBinding;
 
 llvm::Expected<bool> spatialAttachmentProvidesLocalProgressBoundary(
-    const FrozenSpatialPortIndex &ports,
-    const FrozenSpatialRoutingGraph &routing, PnrIndex attachmentOption);
+    const FrozenSpatialPortIndex &ports, PnrIndex attachmentOption);
 
 llvm::Expected<bool> spatialTerminalProvidesLocalProgressBoundary(
     const SpatialCandidateState &candidate,
     FrozenSpatialTerminalBinding terminal);
 
-llvm::Expected<llvm::ArrayRef<PnrIndex>>
+llvm::Expected<llvm::ArrayRef<FrozenSpatialProgressPrerequisite>>
 spatialSinkProgressDependencies(const FrozenSpatialPnrProblem &problem,
                                 PnrIndex logicalNet, PnrIndex dependentSink);
 
 llvm::Expected<bool> spatialRouteProgressDependencySatisfied(
     const SpatialCandidateState &candidate, PnrIndex logicalNet,
-    PnrIndex prerequisiteSink, PnrIndex dependentSink);
+    const FrozenSpatialProgressPrerequisite &prerequisite,
+    PnrIndex dependentSink);
 
 llvm::Expected<std::uint64_t>
 spatialCandidateClosedWaitCount(const SpatialCandidateState &candidate);

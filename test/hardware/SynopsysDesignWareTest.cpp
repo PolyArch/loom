@@ -466,8 +466,9 @@ void exactOccurrenceBindingAndDeterminism(const std::filesystem::path &root) {
                      std::move(payloads)));
   HardwareImplementationDraft draft{
       fabric.system.reference(),
+      take(test, loom::hardware::test::requireSingleSpatialCoreOccurrence(
+                     fabric.system)),
       abi.reference(),
-      {},
       std::move(representation),
       std::nullopt,
       {},

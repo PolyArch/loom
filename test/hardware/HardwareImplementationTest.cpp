@@ -192,6 +192,7 @@ struct Fixture final {
   loom::fabric::FinalizedFabricRoot module;
   loom::fabric::FinalizedFabricRoot system;
   FinalizedConfigurationABI abi;
+  loom::fabric::SpatialCoreOccurrenceRef subject;
   loom::fabric::FabricPhysicalOccurrenceOwnerRef firstOwner;
   loom::fabric::FabricSpatialAttachmentEndpointRef firstDataEndpoint;
   ProgrammingUnitRef firstProgrammingUnit;
@@ -201,6 +202,7 @@ struct MemoryFixture final {
   loom::fabric::FinalizedFabricRoot module;
   loom::fabric::FinalizedFabricRoot system;
   FinalizedConfigurationABI abi;
+  loom::fabric::SpatialCoreOccurrenceRef subject;
   loom::fabric::FabricPhysicalOccurrenceOwnerRef memory;
   loom::fabric::FabricPhysicalOccurrenceOwnerRef nonMemory;
 };
@@ -228,6 +230,12 @@ MemoryFixture makeMemoryFixture(llvm::StringRef test,
   inputs.reserve(memory.inputTypes().size());
   for (std::size_t ordinal = 0; ordinal < memory.inputTypes().size(); ++ordinal)
     inputs.push_back(take(test, spatial.input(ordinal)));
+  require(test, !inputs.empty(), "memory fixture has no input for its FIFO");
+  inputs.front() =
+      take(test, spatial.addFifo(
+                     inputs.front(), loom::adg::FifoSpec{
+                                         memory.inputTypes().front(), 1, false}))
+          .value();
   auto outputs = take(test, spatial.addMemory(inputs, memory));
   if (llvm::Error error = spatial.close(outputs.values()))
     fail(test, llvm::toString(std::move(error)));
@@ -278,12 +286,21 @@ MemoryFixture makeMemoryFixture(llvm::StringRef test,
       take(test, loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(
                      loom::fabric::SpatialCoreInternalOccurrenceRef{
                          spatialCore, std::move(target)}));
+  require(test, !module.view().fifoOccurrences().empty(),
+          "memory fixture Module has no non-memory physical owner");
+  auto localNonMemory =
+      take(test, loom::fabric::FabricModulePhysicalOwnerRef::create(
+                     module.view().fifoOccurrences().front()));
+  auto nonMemoryTarget =
+      take(test, loom::fabric::FabricModulePhysicalTargetRef::create(
+                     std::move(localNonMemory)));
   auto nonMemory =
       take(test, loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(
-                     loom::fabric::FabricInventoryOwnerRef::of(
-                         systemView.artifact().accCoreOccurrences().front())));
+                     loom::fabric::SpatialCoreInternalOccurrenceRef{
+                         spatialCore, std::move(nonMemoryTarget)}));
   return MemoryFixture{std::move(module), std::move(system), std::move(abi),
-                       std::move(physicalMemory), std::move(nonMemory)};
+                       spatialCore, std::move(physicalMemory),
+                       std::move(nonMemory)};
 }
 
 Fixture makeFixture(llvm::StringRef test, const ArtifactStore &artifacts,
@@ -303,7 +320,26 @@ Fixture makeFixture(llvm::StringRef test, const ArtifactStore &artifacts,
   auto systemView = take(test, loom::fabric::requireSystemRoot(system.view()));
   require(test, !systemView.spatialAttachments().empty(),
           "fixture System has no spatial attachment endpoints");
-  const auto endpoint = systemView.spatialAttachments().front().spatialEndpoint;
+  const ProgrammingUnitOccurrenceScope scope =
+      deriveProgrammingUnitOccurrenceScope(unit);
+  require(test,
+          !scope.includesDirectSystemResources && scope.spatialCores.size() == 1,
+          "fixture programming unit is not SpatialCore-local");
+  const loom::fabric::SpatialCoreOccurrenceRef subject =
+      scope.spatialCores.front();
+  const auto attachment = llvm::find_if(
+      systemView.spatialAttachments(), [&](const auto &candidate) {
+        const auto *transport = candidate.spatialEndpoint.transport();
+        return transport &&
+               transport->owner.kind() == loom::fabric::
+                                                FabricTransportEndpointOwnerKind::
+                                                    SpatialCoreOccurrence &&
+               std::get<loom::fabric::SpatialCoreOccurrenceRef>(
+                   transport->owner.payload) == subject;
+      });
+  require(test, attachment != systemView.spatialAttachments().end(),
+          "fixture subject has no transport attachment");
+  const auto endpoint = attachment->spatialEndpoint;
   require(
       test,
       endpoint.plane() ==
@@ -312,8 +348,9 @@ Fixture makeFixture(llvm::StringRef test, const ArtifactStore &artifacts,
   const auto firstOwner = unit.exactFabricResourceClosure.front();
   ProgrammingUnitRef programmingUnit{abi.reference(), unit.id};
   return Fixture{std::move(module), std::move(system),
-                 std::move(abi),    firstOwner,
-                 endpoint,          std::move(programmingUnit)};
+                 std::move(abi),    subject,
+                 firstOwner,        endpoint,
+                 std::move(programmingUnit)};
 }
 
 ImplementationRepresentationRoot
@@ -448,8 +485,8 @@ HardwareImplementationDraft basicDraft(llvm::StringRef test,
                                        const BlobStore &blobs) {
   return HardwareImplementationDraft{
       fixture.system.reference(),
+      fixture.subject,
       fixture.abi.reference(),
-      {},
       makeRepresentation(test, blobs),
       std::nullopt,
       {{ImplementationDataInterfaceRef{fixture.firstDataEndpoint},
@@ -519,8 +556,8 @@ HardwareImplementationDraft memoryDraft(llvm::StringRef test,
   }
   return HardwareImplementationDraft{
       fixture.system.reference(),
+      fixture.subject,
       fixture.abi.reference(),
-      {},
       makeMemoryRepresentation(test, blobs),
       std::nullopt,
       {},
@@ -570,11 +607,11 @@ void systemRootAndTypedRepresentationRoundTrip(const ArtifactStore &artifacts,
   require(__func__, first.reference() == second.reference(),
           "authoring order changed HardwareImplementation identity");
   require(__func__,
-          first.reference().schemaVersion == SchemaVersion{3, 0} &&
+          first.reference().schemaVersion == SchemaVersion{4, 0} &&
               first.implementation().fabric() == fixture.system.reference() &&
               first.implementation().representationRoot().variant ==
                   RepresentationRootVariant::Rtl,
-          "finalized root did not retain the exact schema-3.0 owners");
+          "finalized root did not retain the exact schema-4.0 owners");
   const FinalizedHardwareImplementation imported =
       take(__func__,
            importHardwareImplementation(first.reference(), artifacts, blobs));
@@ -671,14 +708,10 @@ void typedInterfaceReferencesRemainPhysical(const ArtifactStore &artifacts,
       systemView.spatialAttachments().back().spatialEndpoint;
   foreign.interfaces.front().semanticRef =
       ImplementationDataInterfaceRef{otherEndpoint};
-  const FinalizedHardwareImplementation distinct =
-      take(__func__, finalizeHardwareImplementation(std::move(foreign),
-                                                    artifacts, blobs));
-  require(__func__,
-          std::get<ImplementationDataInterfaceRef>(
-              distinct.implementation().interfaces().front().semanticRef)
-                  .endpoint == otherEndpoint,
-          "physical boundary was reduced to a Module-local reference");
+  expectError(__func__,
+              finalizeHardwareImplementation(std::move(foreign), artifacts,
+                                             blobs),
+              "outside the implementation SpatialCore occurrence");
 
   HardwareImplementationDraft wrongPlane = basicDraft(__func__, fixture, blobs);
   wrongPlane.interfaces.front().semanticRef =
@@ -920,7 +953,7 @@ void ownerLocalReferencesAreExactAndBounded(const ArtifactStore &artifacts,
   expectError(__func__,
               decodeHardwareImplementationLocalReference<
                   HardwareImplementationActivityPointRef>(wrongSchema),
-              "loom.hardware_implementation 3.0");
+              "loom.hardware_implementation 4.0");
 
   EncodedArtifactLocalReference malformed = wrongKind;
   malformed.payload.pop_back();
@@ -973,42 +1006,88 @@ void repeatedModuleImportsKeepPhysicalExternalBindings(
               firstClosure.front() != secondClosure.front(),
           "two Module imports collapsed their physical resource owners");
   const ExternalImplementationContractCatalog catalog = makeExternalCatalog();
-  HardwareImplementationDraft draft = basicDraft(__func__, fixture, blobs);
-  draft.representationRoot = makeInstanceRepresentation(__func__, blobs);
-  draft.externalImplementationBindings = {
-      {"vendor.nonmemory",
-       {{"library", ExplicitFileDependency{fingerprint("first.lib")}}},
-       {firstClosure.front()},
-       {{RepresentationObjectKind::Instance, "top.u0"}},
-       std::nullopt},
-      {"vendor.nonmemory",
-       {{"library", ExplicitFileDependency{fingerprint("second.lib")}}},
-       {secondClosure.front()},
-       {{RepresentationObjectKind::Instance, "top.u1"}},
-       std::nullopt}};
-  HardwareImplementationDraft reordered = draft;
-  std::reverse(reordered.externalImplementationBindings.begin(),
-               reordered.externalImplementationBindings.end());
-  HardwareImplementationDraft collapsed = draft;
-  collapsed.externalImplementationBindings.back().fabricResourceRefs = {
+  const auto system =
+      take(__func__, loom::fabric::requireSystemRoot(fixture.system.view()));
+  const auto makeDraft = [&](const ProgrammingUnit &unit) {
+    const ProgrammingUnitOccurrenceScope scope =
+        deriveProgrammingUnitOccurrenceScope(unit);
+    require(__func__,
+            !scope.includesDirectSystemResources &&
+                scope.spatialCores.size() == 1,
+            "programming unit is not occurrence-local");
+    const loom::fabric::SpatialCoreOccurrenceRef subject =
+        scope.spatialCores.front();
+    const auto attachment = llvm::find_if(
+        system.spatialAttachments(), [&](const auto &candidate) {
+          const auto *transport = candidate.spatialEndpoint.transport();
+          return transport &&
+                 transport->owner.kind() ==
+                     loom::fabric::FabricTransportEndpointOwnerKind::
+                         SpatialCoreOccurrence &&
+                 std::get<loom::fabric::SpatialCoreOccurrenceRef>(
+                     transport->owner.payload) == subject;
+        });
+    require(__func__, attachment != system.spatialAttachments().end(),
+            "SpatialCore occurrence has no transport attachment");
+    HardwareImplementationDraft draft{
+        fixture.system.reference(),
+        subject,
+        fixture.abi.reference(),
+        makeInstanceRepresentation(__func__, blobs),
+        std::nullopt,
+        {{ImplementationDataInterfaceRef{attachment->spatialEndpoint},
+          {RepresentationObjectKind::Port, "top.a"},
+          std::nullopt},
+         {ImplementationConfigurationInterfaceRef{
+              ProgrammingUnitRef{fixture.abi.reference(), unit.id}},
+          {RepresentationObjectKind::Port, "top.a"},
+          std::nullopt}},
+        {{{RepresentationObjectKind::Module, "top"},
+          unit.exactFabricResourceClosure.front()}},
+        {},
+        {}};
+    draft.externalImplementationBindings = {
+        {"vendor.nonmemory",
+         {{"library", ExplicitFileDependency{fingerprint("shared.lib")}}},
+         {unit.exactFabricResourceClosure.front()},
+         {{RepresentationObjectKind::Instance, "top.u0"}},
+         std::nullopt}};
+    return draft;
+  };
+
+  HardwareImplementationDraft firstDraft =
+      makeDraft(fixture.abi.abi().programmingUnits().front());
+  HardwareImplementationDraft secondDraft =
+      makeDraft(fixture.abi.abi().programmingUnits().back());
+  HardwareImplementationDraft aliasedDraft = secondDraft;
+  aliasedDraft.externalImplementationBindings.front().fabricResourceRefs = {
       firstClosure.front()};
 
-  const FinalizedHardwareImplementation first =
-      take(__func__, finalizeHardwareImplementation(std::move(draft), catalog,
-                                                    artifacts, blobs));
-  const FinalizedHardwareImplementation second =
-      take(__func__, finalizeHardwareImplementation(std::move(reordered),
-                                                    catalog, artifacts, blobs));
-  const FinalizedHardwareImplementation aliased =
-      take(__func__, finalizeHardwareImplementation(std::move(collapsed),
-                                                    catalog, artifacts, blobs));
-  require(__func__, first.reference() == second.reference(),
-          "external binding authoring order changed identity");
-  require(__func__, first.reference() != aliased.reference(),
-          "distinct physical Module imports collapsed to local identity");
+  const FinalizedHardwareImplementation first = take(
+      __func__, finalizeHardwareImplementation(std::move(firstDraft), catalog,
+                                               artifacts, blobs));
+  const FinalizedHardwareImplementation second = take(
+      __func__, finalizeHardwareImplementation(std::move(secondDraft), catalog,
+                                               artifacts, blobs));
+  require(__func__, first.reference() != second.reference(),
+          "distinct SpatialCore occurrences collapsed to one implementation");
   require(__func__,
-          first.implementation().externalImplementationBindings().size() == 2,
-          "distinct physical external bindings were deduplicated");
+          first.implementation().subject() != second.implementation().subject(),
+          "distinct Module imports collapsed their occurrence subjects");
+  require(__func__,
+          first.implementation()
+                  .externalImplementationBindings()
+                  .front()
+                  .fabricResourceRefs.front() == firstClosure.front() &&
+              second.implementation()
+                      .externalImplementationBindings()
+                      .front()
+                      .fabricResourceRefs.front() == secondClosure.front(),
+          "occurrence-local implementations lost their physical bindings");
+  expectError(__func__,
+              finalizeHardwareImplementation(std::move(aliasedDraft), catalog,
+                                             artifacts, blobs),
+              "outside the implementation SpatialCore occurrence");
 }
 
 void memoryMacrosUsePhysicalOccurrencesAndDenseBindings(
@@ -1079,7 +1158,7 @@ void foreignAndDuplicateMemoryBindingsAreRejected(
   expectError(__func__,
               finalizeHardwareImplementation(std::move(foreign), catalog,
                                              artifacts, blobs),
-              "SpatialCore has no imported Module target");
+              "outside the implementation SpatialCore occurrence");
 
   HardwareImplementationDraft duplicate = memoryDraft(__func__, fixture, blobs);
   duplicate.memoryMacroBindings.push_back(
@@ -1129,8 +1208,8 @@ void physicalIndexClosesEveryFinalizerLocator(const ArtifactStore &artifacts,
                                        "chip.external"};
   HardwareImplementationDraft draft{
       fixture.system.reference(),
+      fixture.subject,
       fixture.abi.reference(),
-      {},
       makeAsicPhysicalRepresentation(__func__, blobs),
       platform.reference(),
       {{ImplementationDataInterfaceRef{dataEndpoint}, data, std::nullopt}},

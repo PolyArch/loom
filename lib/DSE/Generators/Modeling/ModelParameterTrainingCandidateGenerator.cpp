@@ -313,7 +313,8 @@ llvm::Error validateTargetKeys(const ImportedPartition &training,
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeFpaProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                   const ResolvedCandidateGeneratorBinding &binding,
-                  const ArtifactStore &store, const BlobStore &blobs) {
+                  const ArtifactStore &store, const BlobStore &blobs,
+                  const ExecutionControlView &) {
   auto resolved = adoptResolvedDeterministicGbdtTrainingConfigView(
       configSchemaBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -432,7 +433,8 @@ llvm::Error validateSystemRuntimeTargetKeys(
 llvm::Expected<CandidateGeneratorProviderResult> invokeSystemRuntimeProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, const BlobStore &blobs) {
+    const ArtifactStore &store, const BlobStore &blobs,
+    const ExecutionControlView &) {
   auto resolved = adoptResolvedDeterministicGbdtTrainingConfigView(
       configSchemaBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());

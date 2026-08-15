@@ -105,7 +105,7 @@ set(LOOM_TEST_DEPENDS
   loom-dse-fpa-ground-truth-collection-test
   loom-dse-joint-design-exploration-test
   loom-dse-production-candidate-generator-registration-test
-  loom-dse-portable-system-rtl-generator-test
+  loom-dse-portable-spatial-core-rtl-generator-test
   loom-dse-evidence-obligation-test
   loom-dse-promotion-acquisition-execution-test
   loom-dse-resolved-config-view-test
@@ -166,6 +166,7 @@ set(LOOM_TEST_DEPENDS
   loom-fabric-memory-role-bindings-test
   loom-fabric-memory-configuration-test
   loom-fabric-memory-consistency-contract-test
+  loom-fabric-physical-timing-profile-test
   loom-fabric-physical-identity-test
   loom-fabric-system-physical-identity-test
   loom-fabric-physical-tag-test
@@ -215,6 +216,7 @@ set(LOOM_TEST_DEPENDS
   loom-mapping-progress-test
   loom-spatial-candidate-workflow-test
   loom-pnr-endpoint-router-test
+  loom-pnr-spatial-physical-timing-test
   loom-pnr-config-test
   loom-pnr-deterministic-search-protocol-test
   loom-pnr-initializer-relation-solver-test

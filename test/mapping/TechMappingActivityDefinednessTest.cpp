@@ -279,10 +279,17 @@ struct DerivedRows final {
   std::uint64_t capabilityRejections = 0;
 };
 
-DerivedRows deriveRows(dataflow::CanonicalDataflowArtifact &artifact,
-                       dataflow::OperationSchemaId schema,
-                       const loom::fabric::FinalizedFabricRoot &fabric,
-                       loom::ArtifactStore &store) {
+struct CollectedRows final {
+  dataflow::CanonicalDataflowProgramView dataflow;
+  dataflow::CanonicalActorView actor;
+  std::vector<loom::mapping::detail::TechMatchRow> rows;
+  std::uint64_t capabilityRejections = 0;
+};
+
+CollectedRows collectRows(dataflow::CanonicalDataflowArtifact &artifact,
+                          dataflow::OperationSchemaId schema,
+                          const loom::fabric::FinalizedFabricRoot &fabric,
+                          loom::ArtifactStore &store) {
   const auto view = take(artifact.view());
   const dataflow::CanonicalActorView *selected = nullptr;
   for (const auto &actor : view.actors())
@@ -302,14 +309,28 @@ DerivedRows deriveRows(dataflow::CanonicalDataflowArtifact &artifact,
   const std::array<dataflow::ActorRef, 1> actorRefs = {selected->ref};
   loom::mapping::TechMappingGenerationAccounting accounting;
   loom::mapping::detail::TechMatchRowCollector collector(actorRefs, 64,
-                                                         accounting);
-  if (llvm::Error error = loom::mapping::detail::deriveComputeRows(
-          {view, covers, fabricView, config, store}, actors, collector))
-    fail(llvm::toString(std::move(error)));
-  const auto rows = take(collector.takeRows());
-  return {rows.size(), collector.rejectionCount(
-                           loom::mapping::detail::TechMatchSeedRejectionReason::
-                               CapabilityInadmissible)};
+                                                         accounting, {});
+  const loom::mapping::TechMappingGenerationInputs inputs{
+      view, covers, fabricView, config, store};
+  const auto families =
+      loom::mapping::detail::deriveComputeRowFamilies(inputs, actors);
+  for (const auto family : families)
+    if (llvm::Error error = loom::mapping::detail::deriveComputeRows(
+            inputs, actors, family, collector))
+      fail(llvm::toString(std::move(error)));
+  auto rows = take(collector.takeRows());
+  return {view, *selected, std::move(rows),
+          collector.rejectionCount(
+              loom::mapping::detail::TechMatchSeedRejectionReason::
+                  CapabilityInadmissible)};
+}
+
+DerivedRows deriveRows(dataflow::CanonicalDataflowArtifact &artifact,
+                       dataflow::OperationSchemaId schema,
+                       const loom::fabric::FinalizedFabricRoot &fabric,
+                       loom::ArtifactStore &store) {
+  CollectedRows collected = collectRows(artifact, schema, fabric, store);
+  return {collected.rows.size(), collected.capabilityRejections};
 }
 
 void activityProofGatesProspectiveSeeds(llvm::StringRef storeRoot) {
@@ -367,6 +388,53 @@ void activityProofGatesProspectiveSeeds(llvm::StringRef storeRoot) {
   if (rejectedSerialize.rows != 0 ||
       rejectedSerialize.capabilityRejections == 0)
     fail("legacy one-cycle serialize contract was admitted");
+
+  auto defined = parallelizeDataflow(context, true);
+  auto unproved = parallelizeDataflow(context, false);
+  CollectedRows definedRows = collectRows(
+      defined, dataflow::OperationSchemaId::DataflowParallelize, fabric, store);
+  if (definedRows.rows.empty())
+    fail("strict-import fixture has no valid physical correspondence");
+  take(dataflow::publishCanonicalDataflow(unproved, store));
+  auto unprovedView = take(unproved.view());
+  const dataflow::CanonicalActorView *unprovedActor = nullptr;
+  for (const auto &actor : unprovedView.actors())
+    if (dataflow::requireOperationSchema(actor.op) ==
+        dataflow::OperationSchemaId::DataflowParallelize) {
+      unprovedActor = &actor;
+      break;
+    }
+  if (!unprovedActor)
+    fail("strict-import fixture lost its unproved adapter");
+
+  auto forged = definedRows.rows.front();
+  auto *realization = std::get_if<loom::mapping::TechComputeRealizationView>(
+      &forged.realization);
+  if (!realization || realization->actors.size() != 1)
+    fail("strict-import fixture did not select one compute actor");
+  const dataflow::ActorRef definedActor = realization->actors.front().actor;
+  realization->actors.front().actor = unprovedActor->ref;
+  for (auto &boundary : realization->boundaries) {
+    if (boundary.actor != definedActor)
+      fail("strict-import fixture has a foreign boundary actor");
+    boundary.actor = unprovedActor->ref;
+  }
+
+  const auto strictConfig =
+      take(loom::mapping::projectResolvedTechMappingConfigView(
+          loom::defaultResolvedConfig()));
+  const std::array<dataflow::GraphRef, 1> strictCovers = {unprovedActor->graph};
+  const std::array<const loom::mapping::detail::TechMatchRow *, 1> forgedRows =
+      {&forged};
+  auto imported = loom::mapping::detail::materializeTechMappingCandidate(
+      {unprovedView, strictCovers, fabric.view(), strictConfig, store},
+      forgedRows);
+  if (imported)
+    fail("strict import trusted a forged unproved adapter row");
+  const std::string diagnostic = llvm::toString(imported.takeError());
+  if (diagnostic.find("activity definedness") == std::string::npos)
+    fail("strict import rejected the forged row after the activity joint: " +
+         diagnostic);
 }
 
 } // namespace

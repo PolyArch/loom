@@ -9,7 +9,9 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/IR/ResourceContract.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingClosureProjection.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/System/SystemActionDomain.h"
@@ -56,6 +58,48 @@ void require(bool condition, const llvm::Twine &message) {
 void requireSuccess(llvm::Error error) {
   if (error)
     fail(llvm::toString(std::move(error)));
+}
+
+void verifyProgressGrantPolicyContrast(
+    const loom::pnr::SystemCandidateState &candidate,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow) {
+  require(!dataflow.rootThreadLaunches().empty() &&
+              !candidate.problem().accCores().empty(),
+          "progress grant-policy fixture has no execution root");
+  const ::dataflow::RootThreadLaunchRef root =
+      dataflow.rootThreadLaunches().front().ref;
+  const ::dataflow::RootThreadBoundaryTransferRef startTransfer(
+      ::dataflow::RootThreadStartTransferRef{root});
+  const ::dataflow::EventFamilyKey trigger(::dataflow::StaticTransferEventRef(
+      ::dataflow::ConsumedTransferEventRef{::dataflow::CanonicalSinkTerminalRef(
+          ::dataflow::RootThreadBoundarySinkRef{startTransfer})}));
+  auto model =
+      take(loom::mapping::freezeMappingProgressModel(dataflow, {trigger}));
+  const auto project =
+      [&](loom::mapping::MappingResourceGrantPolicyKind policy) {
+        loom::mapping::MappingProgressProjection projection;
+        projection.basis = {
+            loom::mapping::MappingDataflowProgressBasisKind::Acyclic};
+        for (std::uint32_t requester : {UINT32_C(0), UINT32_C(1)})
+          projection.resourceActivations.push_back(
+              {loom::mapping::InstructionExecutionContextKey{
+                   candidate.problem().accCores().front()},
+               {},
+               {trigger},
+               {},
+               {},
+               {"grant-policy-contrast", requester, policy}});
+        return take(
+            loom::mapping::deriveMappingProgressClosure(model, projection));
+      };
+  require(project(loom::mapping::MappingResourceGrantPolicyKind::FixedPriority)
+                  .kind ==
+              loom::mapping::MappingProgressClosureKind::ProofNotEstablished,
+          "fixed-priority contention was published as starvation-free");
+  require(
+      project(loom::mapping::MappingResourceGrantPolicyKind::RoundRobin).kind ==
+          loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet,
+      "round-robin contention did not establish progress");
 }
 
 void verifySelectedRouteCapacity(
@@ -303,7 +347,7 @@ loom::ResolvedConfig loom::pnr::test::buildSystemCandidateResolvedConfig() {
   systemSearch.annealing.fallbackTemperature = 1;
   systemSearch.annealing.minimumTemperature = 1;
   systemSearch.annealing.coolingRatio = {1, 2};
-  systemSearch.annealing.proposalsPerLevelBase = 1;
+  systemSearch.annealing.proposalsPerLevelBase = 2;
   systemSearch.annealing.proposalsPerMovableDecision = 0;
   systemSearch.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
   return resolved;
@@ -748,6 +792,7 @@ void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
     const loom::mapping::SystemMappingConstraintSetView &emptyConstraints,
     ArtifactStore &store, mlir::MLIRContext &context,
     std::size_t expectedServiceCount) {
+  verifyProgressGrantPolicyContrast(candidate, dataflow);
   verifySelectedRouteCapacity(candidate);
   verifySystemImportedCapacityWorkflow(candidate);
   auto finalized = take(finalizeSystemMappingCandidate(
@@ -766,6 +811,13 @@ void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
                   candidate.instructionResourceUses().size() +
                       candidate.serviceResourceUses().size(),
           "full SystemMapping finalization or replay lost closure");
+  auto physicalClosure = take(loom::mapping::projectSystemMappingClosure(
+      dataflow, fabric, imported.view(), store));
+  const auto strictProgress =
+      take(loom::mapping::deriveSystemMappingProgressClosure(dataflow, fabric,
+                                                             physicalClosure));
+  require(strictProgress.kind == candidate.progressClosure().kind,
+          "candidate and strict System progress projections diverged");
 
   auto draft = take(materializeSystemCandidateDraft(candidate, context));
   require(std::holds_alternative<loom::mapping::VerifiedSystemMappingBase>(
@@ -1142,6 +1194,13 @@ void loom::pnr::test::verifySystemResourceAction(
       if (route.leg != leg)
         require(sameRoute(*candidate, *probe->candidate, route.leg),
                 "local routing Action changed an unrelated service leg");
+    require(probe->mutation.domain ==
+                    SystemActionMutationDomain::TransportRouting &&
+                probe->mutation.threadDecisions.empty() &&
+                probe->mutation.graphDecisions.empty() &&
+                llvm::all_of(probe->mutation.serviceLegs,
+                             [&](PnrIndex changed) { return changed == leg; }),
+            "local routing transaction recorded the wrong dependency cone");
     const auto repairedPaths = sinkPaths(*probe->candidate);
     for (const auto &[terminal, path] : outsidePaths) {
       const auto found = repairedPaths.find(terminal);
@@ -1191,6 +1250,13 @@ void loom::pnr::test::verifySystemResourceAction(
               accounting.endpointExpansions == 0 &&
               accounting.negotiationIterations == 0,
           "resource Action consumed unrelated binding or routing work");
+  require(probe.mutation.domain ==
+                  SystemActionMutationDomain::ResourceAllocation &&
+              probe.mutation.threadDecisions.empty() &&
+              probe.mutation.graphDecisions.empty() &&
+              probe.mutation.serviceLegs.empty() &&
+              !probe.mutation.serviceResourceUses.empty(),
+          "resource transaction recorded the wrong dependency cone");
   if (llvm::Error error = probe.candidate->verify())
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error = candidate->verify())
@@ -1217,24 +1283,68 @@ void loom::pnr::test::verifySystemFixedTerminalCutAndAnnealing(
                         work, SystemActionExecutionContext::FinalClosure);
   require(!probe, "strict global Action ignored a fixed-terminal cut");
   bool typedFixedTerminalCut = false;
+  bool typedReopenWitness = false;
+  std::optional<SystemUpstreamReopenWitness> reopenWitness;
   llvm::Error failure = llvm::handleErrors(
       probe.takeError(),
       [&](const SystemActionTransitionFailure &transitionFailure) {
         typedFixedTerminalCut =
             transitionFailure.kind() ==
             SystemActionTransitionFailureKind::IntrinsicInvalid;
+        typedReopenWitness =
+            transitionFailure.reopenWitness().has_value() &&
+            !transitionFailure.reopenWitness()->graphDecisions.empty();
+        reopenWitness = transitionFailure.reopenWitness();
       });
   if (failure)
     fail(llvm::toString(std::move(failure)));
-  require(typedFixedTerminalCut && work.negotiationIterations == 1,
-          "fixed-terminal cut lost its intrinsic Action failure kind");
+  require(typedFixedTerminalCut && typedReopenWitness &&
+              work.negotiationIterations == 1,
+          "fixed-terminal cut lost its typed upstream reopen witness");
 
+  auto coupledProbe = take(probeSystemAction(
+      candidate, objective,
+      SystemMappingAction{SystemExecutionBindingReopenAction{
+          reopenWitness->capacityCell, reopenWitness->graphDecisions}},
+      work));
+  require(coupledProbe.mutation.domain ==
+                  SystemActionMutationDomain::ExecutionBinding &&
+              !coupledProbe.mutation.graphDecisions.empty() &&
+              coupledProbe.candidate->capacityOveruse() == 0,
+          "coupled binding transaction did not close its witness cone");
+  if (llvm::Error error = coupledProbe.candidate->verify())
+    fail(llvm::toString(std::move(error)));
+
+  auto reopened = candidate;
+  SystemAnnealingSearchScratch reopenSearch;
+  const auto reopenStatistics = take(reopenSearch.run(reopened, 0));
+  require(reopenStatistics.upstreamReopenWitnessCount != 0 &&
+              reopenStatistics.upstreamReopenActionProposalCount != 0 &&
+              reopenStatistics.upstreamReopenAcceptedActionCount != 0,
+          "fixed-terminal cut did not reopen the graph-binding domain");
+  require(reopened->capacityOveruse() == 0 &&
+              reopened->graphChoices() != candidate->graphChoices(),
+          "upstream reopen retained the fixed SpatialMapping conflict");
+
+  auto baselineObjective =
+      take(problem->objectiveProgram().evaluate(*baseline));
+  const bool baselineCapacityClosed = baseline->capacityOveruse() == 0;
   auto annealed = baseline;
   SystemAnnealingSearchScratch annealing;
   const auto statistics = take(annealing.run(annealed, 0));
   require(statistics.calibrationProposalSlots == 1 &&
-              statistics.annealingBaseProposalSlots == 1,
+              statistics.annealingBaseProposalSlots == 2,
           "System annealing diagnostic fixture consumed unexpected work");
+  if (baselineCapacityClosed) {
+    require(annealed->capacityOveruse() == 0,
+            "System annealing discarded its capacity-closed incumbent");
+    auto annealedObjective =
+        take(problem->objectiveProgram().evaluate(*annealed));
+    const int comparison = take(problem->objectiveProgram().compareSelectedRank(
+        annealedObjective, {}, baselineObjective, {}));
+    require(comparison <= 0,
+            "System annealing replaced its incumbent with a worse rank");
+  }
   if (llvm::Error error = annealed->verify())
     fail(llvm::toString(std::move(error)));
 }
@@ -1262,8 +1372,8 @@ void loom::pnr::test::verifySystemResourceActionWorkflow(
   auto searchDomain = take(projectSystemPnrSearchDomain(
       dataflow, system, config, constraints, partition,
       SystemHierarchicalGraphSearchInput{{spatialMapping}}, store));
-  auto problem = take(freezeSystemPnrProblem(dataflow, system, searchDomain,
-                                             config, constraints, store));
+  auto problem = take(freezeSystemPnrProblemWithNormalizedTiming(
+      dataflow, system, searchDomain, config, constraints, store));
   const auto selectable =
       llvm::find_if(problem->memoryServiceBindings(), [](const auto &binding) {
         return llvm::any_of(binding.usePatternDomains, [](const auto &domain) {
@@ -1334,7 +1444,7 @@ void loom::pnr::test::verifySystemResourceActionWorkflow(
     auto dualSearchDomain = take(projectSystemPnrSearchDomain(
         dataflow, system, dualConfig, constraints, partition,
         SystemHierarchicalGraphSearchInput{{spatialMapping}}, store));
-    auto dualProblem = take(freezeSystemPnrProblem(
+    auto dualProblem = take(freezeSystemPnrProblemWithNormalizedTiming(
         dataflow, system, dualSearchDomain, dualConfig, constraints, store));
     auto dualCandidate =
         take(initializeSystemCandidate(dualProblem, trial, graphChoices));

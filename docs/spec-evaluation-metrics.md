@@ -8,7 +8,7 @@ artifact or report schema.
 
 ## Ownership
 
-The exact Evaluation registry schema 2.1 owns every `MetricKind`,
+The exact Evaluation registry schema 3.0 owns every `MetricKind`,
 `FindingKind`, `EvaluationConditionKind`, case, model, scope-form, and related
 registry ordinal. Its typed Metric and Finding registries are the semantic
 source of truth for compilation analysis, Mapping guidance, simulation, RTL
@@ -251,7 +251,7 @@ a private bound check or widen it. The five prediction-error kinds use
 `ClosedDecimalInterval[0,2]`.
 
 Every registered MetricKind has a nonempty scope-form table. Evaluation
-registry 2.1 gives each initial metric one owner-defined form at
+registry 3.0 gives each initial metric one owner-defined form at
 `ScopeFormRef(0)`:
 
 ```text
@@ -278,7 +278,7 @@ locally. A later clock-domain-specific form uses an exact target pattern rather
 than changing form 0. An empty scope-form table, an unknown form ordinal, or a
 model capability naming a form not owned by the MetricKind is invalid.
 
-The Evaluation registry 2.1 requirements are exact: `CycleCount` form 0 and
+The Evaluation registry 3.0 requirements are exact: `CycleCount` form 0 and
 `ClockPeriod` form 0 use `ExactCaseUniqueReferenceCycle`; every other form 0
 uses `NotRequired`. These descriptor fields, not duplicated switches in model
 registration or Request validation, control admissibility.
@@ -437,7 +437,7 @@ concrete witness instance remains owned by the referenced
 their Finding-registry-owned inline occurrence codecs and have no terminal
 witness codec.
 
-Evaluation registry 2.1 reserves finding ordinal `0` for
+Evaluation registry 3.0 reserves finding ordinal `0` for
 `functional_mismatch`. Its only
 scope form is `WholeExactCase`, and its occurrence schema is
 `evaluation.functional_mismatch.1.0`. The occurrence is a zero-field typed
@@ -563,7 +563,7 @@ For a Base pattern stored by a case signature, the pattern's exact
 patterns retain the explicit signature because their registry owners can serve
 more than one case.
 
-Evaluation registry 2.1 has these condition kinds:
+Evaluation registry 3.0 has these condition kinds:
 
 ```text
 ProcessCorner {
@@ -638,7 +638,7 @@ must prove that its model accepts the selected payload kind, window, coverage,
 and exact source-to-target lineage. Missing targets in a partial summary are
 unknown and cannot be interpreted as zero or filled by a hidden default.
 
-Evaluation registry 2.1 contains the typed `ExecutionActivity` source form.
+Evaluation registry 3.0 contains the typed `ExecutionActivity` source form.
 Consuming it requires an activity-summary adopter for
 `loom.simulation_execution 1.0`, an ordinal resolver, same-Request validation,
 and exact source-to-target lineage validation. The SimulationExecution root,
@@ -654,7 +654,7 @@ transition density is nonnegative and is measured per selected clock. An
 assumption requiring richer activity must use an exact execution summary or be
 introduced later as a new typed condition, never as an opaque property bag.
 
-`Quantile` is request-specific and Metric-only in Evaluation registry 2.1. Its
+`Quantile` is request-specific and Metric-only in Evaluation registry 3.0. Its
 probability is in `[0,1]`. Sample aggregation uses nearest-rank semantics:
 after canonical sorting of a nonempty sample set, `q = 0` selects the first
 sample and otherwise selects zero-based index `ceil(q * N) - 1`. A different
@@ -666,7 +666,7 @@ MetricRequest condition set and is rejected in Base and FindingRequest
 condition sets before request canonicalization. Finding descriptors and models
 cannot widen that location set through their capability tables.
 
-The other six kinds are Base-only in Evaluation registry 2.1. Their assignment
+The other six kinds are Base-only in Evaluation registry 3.0. Their assignment
 keys are, respectively, target, power domain, thermal domain or root, clock
 domain, ordered clock pair, and activity target. `Quantile` has one empty
 assignment key within its containing request.
@@ -799,7 +799,7 @@ Metric, finding, scope, condition, Decimal, and result encodings are reusable
 value schemas inside `evaluation.request.1.0` and
 `evaluation.evidence.1.0`. Standalone query wires have their own exact roots:
 `evaluation.metric_query 1.0` and `evaluation.finding_query 1.0`. Those wire
-owners carry Evaluation registry 2.1 kind and scope-form references without
+owners carry Evaluation registry 3.0 kind and scope-form references without
 owning or renumbering the referenced registries. `ExactRatio` is the same
 canonical scalar wire wherever an exact typed reference-cycle coordinate or
 phase is required, including `SimulationExecution`; consumers must not

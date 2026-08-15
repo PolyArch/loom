@@ -29,7 +29,7 @@ llvm::Expected<BuiltinTargetPreset> parseBuiltinTargetPreset(llvm::StringRef);
 llvm::Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset);
 llvm::Expected<BuiltinSpatialCoreExpansion>
-expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset,
+expandBuiltinSpatialCore(DesignBuilder &design,
                          const BuiltinTargetScale &scale);
 
 /// Expands the System recipe around an independently finalized SpatialCore.
@@ -39,8 +39,7 @@ llvm::Expected<SystemBuilder>
 expandBuiltinSystem(DesignBuilder &design, BuiltinTargetPreset preset,
                     const loom::fabric::FinalizedFabricRoot &spatialCore);
 llvm::Expected<SystemBuilder>
-expandBuiltinSystem(DesignBuilder &design, BuiltinTargetPreset preset,
-                    const BuiltinTargetScale &scale,
+expandBuiltinSystem(DesignBuilder &design, const BuiltinTargetScale &scale,
                     const loom::fabric::FinalizedFabricRoot &spatialCore);
 
 /// Expands and finalizes the selected descriptor through the same public ADG
@@ -51,13 +50,12 @@ llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store,
                    BuiltinTargetPreset preset);
 llvm::Expected<FinalizedFabricDesign>
-buildBuiltinTarget(const loom::ArtifactStore &store, BuiltinTargetPreset preset,
+buildBuiltinTarget(const loom::ArtifactStore &store,
                    const BuiltinTargetScale &scale);
 llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store,
-                   llvm::StringRef templateIdentity,
-                   std::uint32_t schemaMajor, std::uint32_t schemaMinor,
-                   const BuiltinTargetScale &scale);
+                   llvm::StringRef templateIdentity, std::uint32_t schemaMajor,
+                   std::uint32_t schemaMinor, const BuiltinTargetScale &scale);
 
 } // namespace loom::adg
 

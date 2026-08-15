@@ -698,8 +698,8 @@ publishPlacedImplementation(
   return hardware::finalizeHardwareImplementation(
       hardware::HardwareImplementationDraft{
           source->implementation().fabric(),
+          source->implementation().subject(),
           source->implementation().configurationAbi(),
-          source->implementation().interconnectImplementations().vec(),
           std::move(*representation),
           source->implementation().implementationPlatform(),
           std::move(interfaces), std::move(activityPoints),

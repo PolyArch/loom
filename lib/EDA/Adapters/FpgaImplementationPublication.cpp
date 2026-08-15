@@ -266,8 +266,8 @@ publishRepresentation(const FinalizedHardwareImplementation &source,
   return finalizeHardwareImplementation(
       HardwareImplementationDraft{
           source.implementation().fabric(),
+          source.implementation().subject(),
           source.implementation().configurationAbi(),
-          source.implementation().interconnectImplementations().vec(),
           std::move(*representation), implementationPlatform,
           std::move(projected->interfaces),
           std::move(projected->activityPoints),

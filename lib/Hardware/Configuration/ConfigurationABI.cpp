@@ -1197,6 +1197,29 @@ encodeField(const ConfigurationFieldEncoding &field,
 
 } // namespace
 
+ProgrammingUnitOccurrenceScope
+deriveProgrammingUnitOccurrenceScope(const ProgrammingUnit &unit) {
+  ProgrammingUnitOccurrenceScope result;
+  for (const fabric::FabricPhysicalOccurrenceOwnerRef &owner :
+       unit.exactFabricResourceClosure) {
+    if (owner.kind() !=
+        fabric::FabricPhysicalOccurrenceOwnerKind::SpatialCoreInternal) {
+      result.includesDirectSystemResources = true;
+      continue;
+    }
+    const auto &spatialCore =
+        std::get<fabric::SpatialCoreInternalOccurrenceRef>(owner.payload())
+            .spatialCore;
+    if (!llvm::is_contained(result.spatialCores, spatialCore))
+      result.spatialCores.push_back(spatialCore);
+  }
+  llvm::sort(result.spatialCores, [](const auto &lhs, const auto &rhs) {
+    return fabric::canonicalFabricBytes(lhs) <
+           fabric::canonicalFabricBytes(rhs);
+  });
+  return result;
+}
+
 const ProgrammingUnit *
 ConfigurationABI::findProgrammingUnit(ProgrammingUnitId id) const {
   if (id >= programmingUnits_.size())

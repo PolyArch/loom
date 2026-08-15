@@ -149,6 +149,18 @@ makeSingleSpatialCoreSystem(const fabric::FinalizedFabricRoot &module,
   return makeSpatialCoreSystem(module, store, 1);
 }
 
+llvm::Expected<fabric::SpatialCoreOccurrenceRef>
+requireSingleSpatialCoreOccurrence(
+    const fabric::FinalizedFabricRoot &systemRoot) {
+  auto system = fabric::requireSystemRoot(systemRoot.view());
+  if (!system)
+    return system.takeError();
+  if (system->artifact().accCoreOccurrences().size() != 1)
+    return invalid("test System does not contain exactly one SpatialCore");
+  return fabric::SpatialCoreOccurrenceRef{
+      system->artifact().accCoreOccurrences().front()};
+}
+
 llvm::Expected<fabric::FabricPhysicalConfigurationFieldRef>
 qualifyPhysicalConfigurationField(
     const fabric::FabricPhysicalOccurrenceOwnerRef &owner,

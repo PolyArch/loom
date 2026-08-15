@@ -20,6 +20,7 @@
 #include "Mapping/Tech/TechMappingGenerator.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
+#include "PnR/SpatialPhysicalTiming.h"
 #include "PnR/SpatialPnrGenerator.h"
 #include "PnR/System/SystemMappingMaterializer.h"
 #include "PnR/System/SystemPnrProblem.h"
@@ -111,32 +112,6 @@ void requireProvenInfeasibleFreeze(llvm::Expected<T> value,
   require(matched, "static System failure lost its typed cause");
 }
 
-template <typename T>
-void requireUnsupported(
-    llvm::Expected<T> value,
-    loom::pnr::UnsupportedSystemPnrSearchDomainReason expectedReason,
-    llvm::StringRef diagnostic) {
-  if (value)
-    fail("unsupported System search-domain input unexpectedly succeeded");
-  bool matched = false;
-  llvm::Error remaining = llvm::handleErrors(
-      value.takeError(),
-      [&](const loom::pnr::UnsupportedSystemPnrSearchDomain &error) {
-        matched = true;
-        require(error.reason() == expectedReason,
-                "unsupported System search-domain reason changed");
-        std::string actual;
-        llvm::raw_string_ostream stream(actual);
-        error.log(stream);
-        stream.flush();
-        require(llvm::StringRef(actual).contains(diagnostic),
-                "unsupported System search-domain diagnostic changed");
-      });
-  if (remaining)
-    fail(llvm::toString(std::move(remaining)));
-  require(matched, "System search-domain failure lost its typed reason");
-}
-
 void requireVerificationFailureContains(mlir::Operation *operation,
                                         llvm::StringRef expected) {
   std::vector<std::string> diagnostics;
@@ -152,28 +127,6 @@ void requireVerificationFailureContains(mlir::Operation *operation,
                          return llvm::StringRef(diagnostic).contains(expected);
                        }),
           "adverse SystemMapping diagnostic changed");
-}
-
-std::vector<std::uint8_t>
-replaceEvery(llvm::ArrayRef<std::uint8_t> bytes,
-             llvm::ArrayRef<std::uint8_t> original,
-             llvm::ArrayRef<std::uint8_t> replacement) {
-  require(!original.empty() && original.size() == replacement.size(),
-          "wire replacement fixture has incompatible fields");
-  std::vector<std::uint8_t> result(bytes.begin(), bytes.end());
-  std::size_t replacements = 0;
-  auto cursor = result.begin();
-  while (cursor != result.end()) {
-    auto found =
-        std::search(cursor, result.end(), original.begin(), original.end());
-    if (found == result.end())
-      break;
-    std::copy(replacement.begin(), replacement.end(), found);
-    cursor = found + replacement.size();
-    ++replacements;
-  }
-  require(replacements != 0, "wire replacement fixture found no field");
-  return result;
 }
 
 std::string identityAttr(const loom::ArtifactIdentity &identity) {
@@ -445,17 +398,26 @@ generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
   }();
   const auto spatialConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
+  const auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          module.view()));
   auto spatialOutcome = loom::pnr::generateSpatialMappings(
-      {dataflow, tech.view(), module.view(), spatialConfig, constraints.view(),
-       store});
+      {dataflow, tech.view(), module.view(), physicalTiming, spatialConfig,
+       constraints.view(), store});
   const auto *spatialCandidates =
       std::get_if<loom::pnr::GeneratedSpatialMappings>(&spatialOutcome);
   if (!spatialCandidates)
     std::visit(
         [&](const auto &outcome) {
           using Outcome = std::decay_t<decltype(outcome)>;
-          if constexpr (!std::is_same_v<Outcome,
-                                        loom::pnr::GeneratedSpatialMappings>)
+          if constexpr (std::is_same_v<
+                            Outcome,
+                            loom::pnr::InterruptedSpatialPnrGeneration>)
+            fail("SpatialMapping fixture was interrupted at " +
+                 loom::pnr::spatialPnrInterruptionStageSpelling(
+                     outcome.snapshot.stage));
+          else if constexpr (!std::is_same_v<
+                                 Outcome, loom::pnr::GeneratedSpatialMappings>)
             fail("SpatialMapping fixture did not produce one candidate: " +
                  outcome.diagnostic);
         },
@@ -515,31 +477,6 @@ void memoryServiceWorkflow() {
   auto memoryPartition =
       take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
           memoryDataflow, memoryConstraints.view().rootThreadLaunches()));
-  auto memorySpatial =
-      take(loom::mapping::importSpatialMapping(memoryMapping, store));
-  loom::ArtifactRootReference memoryTechReference{
-      loom::mapping::mappingArtifactSchema.identity.str(),
-      loom::mapping::mappingArtifactSchema.version,
-      memorySpatial.view().techMappingIdentity()};
-  auto memoryTech =
-      take(loom::mapping::importTechMapping(memoryTechReference, store));
-  auto memorySpatialConstraints =
-      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
-          memoryDataflow, memoryTech.view(), primaryModule.view(), store));
-  auto memorySpatialConfig =
-      take(loom::pnr::projectResolvedSpatialPnrConfigView(memoryResolved));
-  requireUnsupported(
-      loom::pnr::projectSystemPnrSearchDomain(
-          memoryDataflow, endpointSystem, config, memoryConstraints,
-          memoryPartition,
-          loom::pnr::SystemFlatGraphSearchInput{
-              {{memoryTechReference, memorySpatialConfig,
-                memorySpatialConstraints.reference()}},
-              {}},
-          store),
-      loom::pnr::UnsupportedSystemPnrSearchDomainReason::
-          FlatOperationServiceDomainProjectionUnavailable,
-      "flat operation-service compatibility projection is not implemented");
   auto memorySearchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
       memoryDataflow, endpointSystem, config, memoryConstraints,
       memoryPartition,
@@ -679,9 +616,10 @@ void memoryServiceWorkflow() {
            loom::fabric::canonicalFabricBytes(right);
   });
 
-  auto bindingProblem = take(loom::pnr::freezeSystemPnrProblem(
-      memoryDataflow, endpointSystem, memorySearchDomain, config,
-      memoryConstraints, store));
+  auto bindingProblem =
+      take(loom::pnr::freezeSystemPnrProblemWithNormalizedTiming(
+          memoryDataflow, endpointSystem, memorySearchDomain, config,
+          memoryConstraints, store));
   std::vector<std::uint32_t> operationLegWidths;
   for (const auto &leg : bindingProblem->serviceLegs())
     if (std::holds_alternative<
@@ -1146,27 +1084,12 @@ void graphBindingWorkflow() {
       take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
 
   std::vector<loom::ArtifactRootReference> spatialMappings;
-  std::vector<loom::pnr::FlatSpatialReopenProblem> flatProblems;
-  const auto spatialConfig =
-      take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
   for (const auto &dependency : systemRoot.directDependencies()) {
     auto module =
         take(loom::fabric::importEntireFabricRoot(dependency.root, store));
     auto spatialReference =
         generateSpatialMapping(dataflow, module, resolved, store);
     spatialMappings.push_back(spatialReference);
-    auto spatial =
-        take(loom::mapping::importSpatialMapping(spatialReference, store));
-    loom::ArtifactRootReference techReference{
-        loom::mapping::mappingArtifactSchema.identity.str(),
-        loom::mapping::mappingArtifactSchema.version,
-        spatial.view().techMappingIdentity()};
-    auto tech = take(loom::mapping::importTechMapping(techReference, store));
-    auto spatialConstraints =
-        take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
-            dataflow, tech.view(), module.view(), store));
-    flatProblems.push_back({std::move(techReference), spatialConfig,
-                            spatialConstraints.reference()});
   }
   std::vector<dataflow::RootThreadLaunchRef> roots;
   for (const dataflow::CanonicalRootThreadLaunchView &root :
@@ -1177,93 +1100,16 @@ void graphBindingWorkflow() {
           dataflow, system, roots, store));
   auto partition = take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
       dataflow, constraints.view().rootThreadLaunches()));
-  auto reversedProblems = flatProblems;
-  auto reversedSeeds = spatialMappings;
-  std::reverse(reversedProblems.begin(), reversedProblems.end());
-  std::reverse(reversedSeeds.begin(), reversedSeeds.end());
-  auto flatDomain = take(loom::pnr::projectSystemPnrSearchDomain(
-      dataflow, system, config, constraints, partition,
-      loom::pnr::SystemFlatGraphSearchInput{reversedProblems, reversedSeeds},
-      store));
-  auto canonicalFlatDomain = take(loom::pnr::projectSystemPnrSearchDomain(
-      dataflow, system, config, constraints, partition,
-      loom::pnr::SystemFlatGraphSearchInput{flatProblems, spatialMappings},
-      store));
-  require(flatDomain.canonicalViewBytes() ==
-              canonicalFlatDomain.canonicalViewBytes(),
-          "flat problem or seed authoring order changed canonical H");
-  auto adoptedFlat = take(loom::pnr::adoptSystemPnrSearchDomain(
-      loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-      flatDomain.canonicalViewBytes(), flatDomain.digest(), store));
-  require(adoptedFlat.canonicalViewBytes() == flatDomain.canonicalViewBytes(),
-          "strict H adoption changed a valid flat graph domain");
-  for (const auto &binding : flatDomain.bindings()) {
-    if (!std::holds_alternative<dataflow::RootedGraphLaunchRef>(binding.key))
-      continue;
-    for (const auto &atom : binding.atoms) {
-      const auto *flat =
-          std::get_if<loom::pnr::SystemFlatGraphBindingDomain>(&atom.domain);
-      require(flat && flat->exactSpatialReopenProblems.size() == 2 &&
-                  flat->compatibleImmutableSeeds.size() == 2,
-              "flat graph atom lost its exact covered problems or seeds");
-    }
-  }
-  requireFailureContains(
-      loom::pnr::projectSystemPnrSearchDomain(
-          dataflow, system, config, constraints, partition,
-          loom::pnr::SystemFlatGraphSearchInput{}, store),
-      "flat graph search requires at least one reopen problem");
-  auto wrongConfigProblems = flatProblems;
-  wrongConfigProblems.front().spatialConfig = config;
-  requireFailureContains(
-      loom::pnr::projectSystemPnrSearchDomain(
-          dataflow, system, config, constraints, partition,
-          loom::pnr::SystemFlatGraphSearchInput{wrongConfigProblems, {}},
-          store),
-      "non-Spatial resolved config");
-  auto mismatchedConstraintProblems = flatProblems;
-  mismatchedConstraintProblems.front().spatialConstraintReference =
-      flatProblems.back().spatialConstraintReference;
-  requireFailureContains(loom::pnr::projectSystemPnrSearchDomain(
-                             dataflow, system, config, constraints, partition,
-                             loom::pnr::SystemFlatGraphSearchInput{
-                                 mismatchedConstraintProblems, {}},
-                             store),
-                         "Spatial MappingConstraintSet has foreign T/F owners");
-  requireFailureContains(
-      loom::pnr::projectSystemPnrSearchDomain(
-          dataflow, system, config, constraints, partition,
-          loom::pnr::SystemFlatGraphSearchInput{{flatProblems.front()},
-                                                {spatialMappings.back()}},
-          store),
-      "flat seed does not match a listed reopen problem");
-  auto singleFlatDomain = take(loom::pnr::projectSystemPnrSearchDomain(
-      dataflow, system, config, constraints, partition,
-      loom::pnr::SystemFlatGraphSearchInput{{flatProblems.front()},
-                                            {spatialMappings.front()}},
-      store));
-  auto mismatchedFlatBytes =
-      replaceEvery(singleFlatDomain.canonicalViewBytes(),
-                   loom::encodeArtifactRootReference(
-                       flatProblems.front().spatialConstraintReference),
-                   loom::encodeArtifactRootReference(
-                       flatProblems.back().spatialConstraintReference));
-  auto mismatchedFlatDigest =
-      take(loom::pnr::computeSystemPnrSearchDomainDigest(
-          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-          mismatchedFlatBytes));
-  requireFailureContains(
-      loom::pnr::adoptSystemPnrSearchDomain(
-          loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes(),
-          mismatchedFlatBytes, mismatchedFlatDigest, store),
-      "Spatial MappingConstraintSet has foreign T/F owners");
   auto searchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
       dataflow, system, config, constraints, partition,
       loom::pnr::SystemHierarchicalGraphSearchInput{spatialMappings}, store));
   require(!searchDomain.serviceObligations().empty(),
           "System route fixture has no service obligation");
+  auto physicalTimingProfiles =
+      take(loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(system));
   auto problem = take(loom::pnr::freezeSystemPnrProblem(
-      dataflow, system, searchDomain, config, constraints, store));
+      dataflow, system, physicalTimingProfiles, searchDomain, config,
+      constraints, store));
 
   require(problem->threadDecisions().size() == 2 &&
               problem->graphDecisions().size() == 4,
@@ -1272,6 +1118,41 @@ void graphBindingWorkflow() {
               problem->spatialMappings().size() == 2 &&
               problem->targetClasses().size() == 2,
           "frozen System target catalogs are incomplete");
+  require(problem->spatialMappingWorstRouteArrivalDelayQuanta().size() ==
+                  problem->spatialMappings().size() &&
+              problem->spatialMappingTotalRouteNegativeSlackQuanta().size() ==
+                  problem->spatialMappings().size() &&
+              problem->spatialMappingPhysicalTimingProfileDigests().size() ==
+                  problem->spatialMappings().size() &&
+              problem->spatialMappingPhysicalTimingProfileKinds().size() ==
+                  problem->spatialMappings().size(),
+          "frozen System physical timing catalog is incomplete");
+  for (const auto &[mappingOrdinal, reference] :
+       llvm::enumerate(problem->spatialMappings())) {
+    auto mapping = take(loom::mapping::importSpatialMapping(reference, store));
+    const auto profile =
+        llvm::find_if(physicalTimingProfiles, [&](const auto &candidate) {
+          return candidate.fabricIdentity() == mapping.view().fabricIdentity();
+        });
+    require(profile != physicalTimingProfiles.end(),
+            "persistent SpatialMapping has no matching timing profile");
+    const auto cold =
+        take(loom::pnr::detail::projectSpatialMappingPhysicalTiming(
+            mapping.view(), *profile));
+    require(cold.worstArrivalDelayQuanta ==
+                    problem->spatialMappingWorstRouteArrivalDelayQuanta()
+                        [mappingOrdinal] &&
+                cold.totalNegativeSlackQuanta ==
+                    problem->spatialMappingTotalRouteNegativeSlackQuanta()
+                        [mappingOrdinal] &&
+                profile->digest().bytes() ==
+                    problem->spatialMappingPhysicalTimingProfileDigests()
+                        [mappingOrdinal] &&
+                profile->kind() ==
+                    problem->spatialMappingPhysicalTimingProfileKinds()
+                        [mappingOrdinal],
+            "frozen System timing diverged from cold persistent replay");
+  }
   require(!problem->serviceLegs().empty(),
           "frozen System problem lost its service legs");
 
@@ -1366,10 +1247,11 @@ void graphBindingWorkflow() {
   auto restrictedDomain = take(loom::pnr::projectSystemPnrSearchDomain(
       dataflow, system, config, restrictedConstraints, restrictedPartition,
       loom::pnr::SystemHierarchicalGraphSearchInput{spatialMappings}, store));
-  requireProvenInfeasibleFreeze(
-      loom::pnr::freezeSystemPnrProblem(dataflow, system, restrictedDomain,
-                                        config, restrictedConstraints, store),
-      "payloads constraining AccCore choices: none");
+  requireProvenInfeasibleFreeze(loom::pnr::freezeSystemPnrProblem(
+                                    dataflow, system, physicalTimingProfiles,
+                                    restrictedDomain, config,
+                                    restrictedConstraints, store),
+                                "payloads constraining AccCore choices: none");
 
   auto first = take(loom::pnr::initializeCanonicalSystemCandidate(problem));
   auto second = take(loom::pnr::initializeCanonicalSystemCandidate(problem));

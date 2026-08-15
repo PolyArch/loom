@@ -438,8 +438,8 @@ publishInnovusPhysicalImplementation(
                               binding.representationLocator});
 
   HardwareImplementationDraft draft{input.fabric(),
+                                    input.subject(),
                                     input.configurationAbi(),
-                                    input.interconnectImplementations().vec(),
                                     std::move(*representation),
                                     input.implementationPlatform(),
                                     input.interfaces().vec(),

@@ -64,10 +64,11 @@ constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {
       PlanValueRole::CandidateSet, &::loom::mapping::mappingArtifactSchema,
       PlanValueCardinality::FiniteSet}}};
 
-constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 3> workUnits = {{
+constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 4> workUnits = {{
     {CandidateGeneratorWorkUnitRef(0), "match_row_attempt"},
     {CandidateGeneratorWorkUnitRef(1), "partial_cover_expansion"},
-    {CandidateGeneratorWorkUnitRef(2), "publication_slot"},
+    {CandidateGeneratorWorkUnitRef(2), "candidate_evaluation"},
+    {CandidateGeneratorWorkUnitRef(3), "publication_slot"},
 }};
 
 llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
@@ -83,17 +84,19 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, const BlobStore &blobs);
+    const ArtifactStore &store, const BlobStore &blobs,
+    const ExecutionControlView &executionControl);
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, const BlobStore &blobs);
+    const ArtifactStore &store, const BlobStore &blobs,
+    const ExecutionControlView &executionControl);
 
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteTechMappingCandidateGeneratorKind,
     "mapping.root_complete_tech_mapping",
-    "loom.mapping.root_complete_tech_mapping.generator.v1",
+    "loom.mapping.root_complete_tech_mapping.generator.v4",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -108,7 +111,7 @@ const CandidateGeneratorDescriptor descriptor{
 const CandidateGeneratorDescriptor applicationGraphDescriptor{
     applicationGraphTechMappingCandidateGeneratorKind,
     "mapping.application_graph_tech_mapping",
-    "loom.mapping.application_graph_tech_mapping.generator.v2",
+    "loom.mapping.application_graph_tech_mapping.generator.v5",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -139,8 +142,24 @@ accumulate(const ::loom::mapping::TechMappingGenerationAccounting &source,
                      "match-row attempt"))
     return error;
   if (llvm::Error error =
+          accumulate(source.matchRowFirstVisits, target.matchRowFirstVisits,
+                     "match-row first visit"))
+    return error;
+  if (llvm::Error error = accumulate(source.matchRowCursorResumptions,
+                                     target.matchRowCursorResumptions,
+                                     "match-row cursor resumption"))
+    return error;
+  if (llvm::Error error =
+          accumulate(source.matchRowReplayVisits, target.matchRowReplayVisits,
+                     "match-row replay visit"))
+    return error;
+  if (llvm::Error error =
           accumulate(source.partialCoverExpansions,
                      target.partialCoverExpansions, "partial-cover expansion"))
+    return error;
+  if (llvm::Error error =
+          accumulate(source.candidateEvaluations, target.candidateEvaluations,
+                     "candidate evaluation"))
     return error;
   return accumulate(source.publicationSlots, target.publicationSlots,
                     "publication slot");
@@ -153,12 +172,14 @@ std::vector<CandidateGeneratorWorkUnitSummary> workSummary(
        accounting.matchRowAttempts},
       {CandidateGeneratorWorkUnitRef(1), accounting.partialCoverExpansions,
        accounting.partialCoverExpansions},
-      {CandidateGeneratorWorkUnitRef(2), accounting.publicationSlots,
+      {CandidateGeneratorWorkUnitRef(2), accounting.candidateEvaluations,
+       accounting.candidateEvaluations},
+      {CandidateGeneratorWorkUnitRef(3), accounting.publicationSlots,
        accounting.publicationSlots},
   };
 }
 
-llvm::Expected<std::optional<CandidateGeneratorProviderResult>>
+llvm::Expected<std::optional<CandidateGeneratorIncompleteReason>>
 consumeTechMappingOutcome(
     ::loom::mapping::TechMappingGenerationOutcome outcome,
     ::loom::mapping::TechMappingGenerationAccounting &accounting,
@@ -183,6 +204,10 @@ consumeTechMappingOutcome(
           {}});
       outputs.push_back(std::move(candidate));
     }
+    if (generated->termination ==
+        ::loom::mapping::TechMappingGenerationTermination::SemanticLimitReached)
+      return std::optional<CandidateGeneratorIncompleteReason>{
+          CandidateGeneratorIncompleteReason::SemanticLimitReached};
     return std::nullopt;
   }
   if (std::holds_alternative<::loom::mapping::ProvenInfeasibleTechMapping>(
@@ -190,13 +215,23 @@ consumeTechMappingOutcome(
     return std::nullopt;
   if (std::holds_alternative<::loom::mapping::IncompleteTechMappingGeneration>(
           outcome))
-    return std::optional<CandidateGeneratorProviderResult>{
-        CandidateGeneratorProviderResult{
-            IncompleteCandidateGeneratorResult{
-                CandidateGeneratorIncompleteReason::ProofNotEstablished,
-                {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
-                std::move(lineage)},
-            workSummary(accounting)}};
+    return std::optional<CandidateGeneratorIncompleteReason>{
+        CandidateGeneratorIncompleteReason::ProofNotEstablished};
+  if (auto *interrupted =
+          std::get_if<::loom::mapping::InterruptedTechMappingGeneration>(
+              &outcome)) {
+    for (ArtifactRootReference &candidate : interrupted->candidates) {
+      lineage.push_back(CandidateGeneratorLineageEdge{
+          CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+          CandidateGeneratorOutputSlotRef(0),
+          candidate,
+          {},
+          {}});
+      outputs.push_back(std::move(candidate));
+    }
+    return std::optional<CandidateGeneratorIncompleteReason>{
+        CandidateGeneratorIncompleteReason::CancelledOrTimeout};
+  }
   if (const auto *invalid =
           std::get_if<::loom::mapping::InvalidTechMappingGeneration>(&outcome))
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -213,7 +248,8 @@ consumeTechMappingOutcome(
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &store) {
+               const ArtifactStore &store,
+               const ExecutionControlView &executionControl) {
   auto config = ::loom::mapping::adoptResolvedTechMappingConfigView(
       ::loom::mapping::resolvedTechMappingConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -228,6 +264,16 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorLineageEdge> lineage;
   ::loom::mapping::TechMappingGenerationAccounting accounting;
+  std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
+  const auto rememberIncomplete =
+      [&](CandidateGeneratorIncompleteReason reason) {
+        if (!incompleteReason ||
+            reason == CandidateGeneratorIncompleteReason::CancelledOrTimeout ||
+            (*incompleteReason !=
+                 CandidateGeneratorIncompleteReason::CancelledOrTimeout &&
+             reason == CandidateGeneratorIncompleteReason::ProofNotEstablished))
+          incompleteReason = reason;
+      };
   for (const ArtifactRootReference &dataflowReference :
        inputBindings[DataflowCandidatesInput].artifacts) {
     auto artifact =
@@ -244,16 +290,27 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     completeCover.reserve(dataflow->graphs().size());
     for (const ::dataflow::CanonicalGraphView &graph : dataflow->graphs())
       completeCover.push_back(graph.ref);
-    auto terminal = consumeTechMappingOutcome(
-        ::loom::mapping::generateTechMappings(
-            {*dataflow, completeCover, fabric->view(), *config, store}),
-        accounting, outputs, lineage);
-    if (!terminal)
-      return terminal.takeError();
-    if (*terminal)
-      return std::move(**terminal);
+    auto incomplete =
+        consumeTechMappingOutcome(::loom::mapping::generateTechMappings(
+                                      {*dataflow, completeCover, fabric->view(),
+                                       *config, store, executionControl}),
+                                  accounting, outputs, lineage);
+    if (!incomplete)
+      return incomplete.takeError();
+    if (*incomplete)
+      rememberIncomplete(**incomplete);
+    if (incompleteReason ==
+        CandidateGeneratorIncompleteReason::CancelledOrTimeout)
+      break;
   }
 
+  if (incompleteReason)
+    return CandidateGeneratorProviderResult{
+        IncompleteCandidateGeneratorResult{
+            *incompleteReason,
+            {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
+            std::move(lineage)},
+        workSummary(accounting)};
   return CandidateGeneratorProviderResult{
       CompletedCandidateGeneratorResult{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
@@ -264,14 +321,16 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, const BlobStore &) {
-  return invokeProvider(inputBindings, binding, store);
+    const ArtifactStore &store, const BlobStore &,
+    const ExecutionControlView &executionControl) {
+  return invokeProvider(inputBindings, binding, store, executionControl);
 }
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, const BlobStore &) {
+    const ArtifactStore &store, const BlobStore &,
+    const ExecutionControlView &executionControl) {
   auto config = ::loom::mapping::adoptResolvedTechMappingConfigView(
       ::loom::mapping::resolvedTechMappingConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -312,8 +371,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
   const bool attached = llvm::any_of(
       system->artifact().accCoreOccurrences(), [&](const auto core) {
         auto target = system->spatialCoreTarget(core);
-        return target && target->dependencyOrdinal <
-                             system->artifact().importedModules().size() &&
+        return target &&
+               target->dependencyOrdinal <
+                   system->artifact().importedModules().size() &&
                system->artifact()
                        .importedModules()[target->dependencyOrdinal]
                        .identity() == fabric->view().identity();
@@ -348,17 +408,38 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorLineageEdge> lineage;
   ::loom::mapping::TechMappingGenerationAccounting accounting;
+  std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
+  const auto rememberIncomplete =
+      [&](CandidateGeneratorIncompleteReason reason) {
+        if (!incompleteReason ||
+            reason == CandidateGeneratorIncompleteReason::CancelledOrTimeout ||
+            (*incompleteReason !=
+                 CandidateGeneratorIncompleteReason::CancelledOrTimeout &&
+             reason == CandidateGeneratorIncompleteReason::ProofNotEstablished))
+          incompleteReason = reason;
+      };
   for (const ::dataflow::GraphRef &graph : graphs) {
     const std::array cover = {graph};
-    auto terminal = consumeTechMappingOutcome(
-        ::loom::mapping::generateTechMappings(
-            {*dataflow, cover, fabric->view(), *config, store}),
-        accounting, outputs, lineage);
-    if (!terminal)
-      return terminal.takeError();
-    if (*terminal)
-      return std::move(**terminal);
+    auto incomplete =
+        consumeTechMappingOutcome(::loom::mapping::generateTechMappings(
+                                      {*dataflow, cover, fabric->view(),
+                                       *config, store, executionControl}),
+                                  accounting, outputs, lineage);
+    if (!incomplete)
+      return incomplete.takeError();
+    if (*incomplete)
+      rememberIncomplete(**incomplete);
+    if (incompleteReason ==
+        CandidateGeneratorIncompleteReason::CancelledOrTimeout)
+      break;
   }
+  if (incompleteReason)
+    return CandidateGeneratorProviderResult{
+        IncompleteCandidateGeneratorResult{
+            *incompleteReason,
+            {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
+            std::move(lineage)},
+        workSummary(accounting)};
   return CandidateGeneratorProviderResult{
       CompletedCandidateGeneratorResult{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
@@ -430,7 +511,8 @@ bindApplicationGraphTechMappingCandidateGeneratorInputs(
     const ArtifactRootReference &dataflow,
     const ArtifactRootReference &systemConstraints,
     const ArtifactRootReference &fabric) {
-  if (llvm::Error error = registerApplicationGraphTechMappingCandidateGenerator())
+  if (llvm::Error error =
+          registerApplicationGraphTechMappingCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
       {CandidateGeneratorInputSlotRef(ApplicationDataflowInput), {dataflow}},
@@ -447,7 +529,8 @@ bindApplicationGraphTechMappingCandidateGeneratorInputs(
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolveApplicationGraphTechMappingCandidateGeneratorBinding(
     const ::loom::mapping::ResolvedTechMappingConfigView &config) {
-  if (llvm::Error error = registerApplicationGraphTechMappingCandidateGenerator())
+  if (llvm::Error error =
+          registerApplicationGraphTechMappingCandidateGenerator())
     return std::move(error);
   return ResolvedCandidateGeneratorBinding::get(
       applicationGraphDescriptor.reference(), config.canonicalViewBytes(),

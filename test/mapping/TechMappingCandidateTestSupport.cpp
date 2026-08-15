@@ -354,7 +354,7 @@ void loom::test::exerciseSpatialTagConstraintRelations(
   const auto disjoint = buildConstraints("disjoint", true);
   auto disjointResolved = buildSpatialPnrTestResolvedConfig();
   disjointResolved.dse.objectiveCatalogs = resolvedBuiltinObjectiveCatalogs();
-  disjointResolved.dse.spatialPnr.objectiveSelection = {0, 3, {}};
+  disjointResolved.dse.spatialPnr.objectiveSelection = {0, 2};
   disjointResolved.dse.spatialPnr.temporaryViolations.admitted.push_back(
       ResolvedPnrViolationKind::TagUnassigned);
   const auto disjointPnrConfig =
@@ -406,13 +406,16 @@ loom::ResolvedConfig loom::test::buildSpatialPnrTestResolvedConfig() {
         ResolvedPnrViolationKind::UnroutedObligation,
         ResolvedPnrViolationKind::CapacityOveruse,
     };
-    policy->objectiveSelection = {0, 0, {}};
+    policy->objectiveSelection = {0, 0};
   }
   return config;
 }
 
+namespace {
+
 loom::adg::FinalizedFabricDesign
-loom::test::buildTemporalCapacityFabric(const ArtifactStore &store) {
+buildTemporalComputeFabric(const loom::ArtifactStore &store,
+                           bool routeThroughPackedSwitch) {
   using namespace loom::adg;
 
   DesignBuilder design(store);
@@ -420,8 +423,9 @@ loom::test::buildTemporalCapacityFabric(const ArtifactStore &store) {
   const PortType tagged128 = take(PortType::taggedBits(128, 4));
   const std::vector<PortType> moduleInputs(10, tagged128);
   const std::vector<PortType> moduleOutputs(8, tagged128);
-  auto spatial = take(design.createSpatialCore("capacity-envelope",
-                                               moduleInputs, moduleOutputs));
+  auto spatial = take(design.createSpatialCore(
+      routeThroughPackedSwitch ? "switch-row-packing" : "capacity-envelope",
+      moduleInputs, moduleOutputs));
 
   std::vector<SpatialValue> outputs;
   outputs.reserve(moduleOutputs.size());
@@ -430,6 +434,18 @@ loom::test::buildTemporalCapacityFabric(const ArtifactStore &store) {
     peInputs.reserve(5);
     for (unsigned input = 0; input != 5; ++input)
       peInputs.push_back(take(spatial.input(peOrdinal * 5 + input)));
+    if (routeThroughPackedSwitch) {
+      const std::vector<PortType> switchTypes(5, tagged128);
+      const std::vector<std::uint32_t> switchInputsByPriority{0, 1, 2, 3, 4};
+      const std::vector<std::vector<std::uint32_t>> sourcesByOutput(
+          5, switchInputsByPriority);
+      auto switched = take(spatial.addSwitch(
+          peInputs,
+          SwitchSpec::temporal(
+              switchTypes, switchTypes, sourcesByOutput, 2,
+              ::fabric::TemporalSwitchFixedPriority{switchInputsByPriority})));
+      peInputs.assign(switched.values().begin(), switched.values().end());
+    }
     const ::fabric::OperandBufferMode mode =
         peOrdinal == 0 ? ::fabric::OperandBufferMode::AllFuShare
                        : ::fabric::OperandBufferMode::PerInstruction;
@@ -451,6 +467,18 @@ loom::test::buildTemporalCapacityFabric(const ArtifactStore &store) {
   }
   requireSuccess(spatial.close(outputs));
   return take(std::move(design).finalize());
+}
+
+} // namespace
+
+loom::adg::FinalizedFabricDesign
+loom::test::buildTemporalCapacityFabric(const ArtifactStore &store) {
+  return buildTemporalComputeFabric(store, false);
+}
+
+loom::adg::FinalizedFabricDesign
+loom::test::buildTemporalSwitchPackingFabric(const ArtifactStore &store) {
+  return buildTemporalComputeFabric(store, true);
 }
 
 void loom::test::exerciseHandshakeCandidateRefcounts(
@@ -590,12 +618,14 @@ void loom::test::exerciseCapacityOveruseCandidate(
                                                         {},
                                                         {},
                                                         {},
+                                                        {},
                                                         {}}));
   auto repairCandidate =
       take(pnr::SpatialCandidateState::create(problem, {{*overused},
                                                         {},
                                                         initialAttachments,
                                                         boundaryAttachments,
+                                                        {},
                                                         {},
                                                         {},
                                                         {},
@@ -789,7 +819,9 @@ void loom::test::exerciseCapacityOveruseCandidate(
   requireContextEnvelopeState(*overused, false);
   requireContextEnvelopeState(legal, true);
   if (actionExecutor.retainedStorageBytes() != retainedActionExecutorBytes)
-    fail("warmed Spatial Action execution grew worker-local storage");
+    fail("warmed Spatial Action execution changed worker-local storage from " +
+         std::to_string(retainedActionExecutorBytes) + " to " +
+         std::to_string(actionExecutor.retainedStorageBytes()));
 
   pnr::SpatialCandidateScratch scratch;
   requireSuccess(scratch.prepare(*problem));
@@ -856,7 +888,7 @@ void loom::test::exerciseCapacityExactRepairNoMutation(
     boundaries.push_back(boundary.attachmentOptionOffset);
 
   auto candidate = take(pnr::SpatialCandidateState::create(
-      problem, {{*overused}, {}, attachments, boundaries, {}, {}, {}, {}}));
+      problem, {{*overused}, {}, attachments, boundaries, {}, {}, {}, {}, {}}));
   const std::uint64_t initialOveruse = candidate->atomicCapacityOveruse();
   pnr::SpatialExactRepairScratch repair;
   pnr::DeterministicPnrRandomStream exactRepairStream =
@@ -1458,12 +1490,12 @@ void loom::test::exerciseSpatialAnnealingReplay(
   auto annealedFirst = take(pnr::createCanonicalSpatialCandidate(problem));
   auto annealedReplay = take(pnr::createCanonicalSpatialCandidate(problem));
   pnr::SpatialAnnealingSearchScratch firstSearch;
-  const auto firstStatistics = take(firstSearch.run(*annealedFirst, 0));
+  const auto firstStatistics = take(firstSearch.run(annealedFirst, 0));
   const std::size_t warmStorage = firstSearch.retainedStorageBytes();
   pnr::SpatialAnnealingSearchScratch independentSearch;
   const auto replayStatistics =
-      warmScratch ? take(firstSearch.run(*annealedReplay, 0))
-                  : take(independentSearch.run(*annealedReplay, 0));
+      warmScratch ? take(firstSearch.run(annealedReplay, 0))
+                  : take(independentSearch.run(annealedReplay, 0));
   if (!(firstStatistics == replayStatistics))
     fail("Spatial annealing replay changed its search statistics");
   if (warmScratch && firstSearch.retainedStorageBytes() != warmStorage)
@@ -1473,14 +1505,14 @@ void loom::test::exerciseSpatialAnnealingReplay(
   if (firstStatistics.calibrationProposalSlots != 0 &&
       firstStatistics.calibrationProposalSlots != configuredCalibration)
     fail("Spatial annealing changed its fixed calibration schedule");
-  if (!firstStatistics.exactClosureReached &&
-      (firstStatistics.minimumTemperatureLevelCount != 1 ||
-       firstStatistics.calibrationProposalSlots != configuredCalibration))
+  if (firstStatistics.minimumTemperatureLevelCount != 1 ||
+      firstStatistics.calibrationProposalSlots != configuredCalibration)
     fail("Spatial annealing did not execute its exact fixed schedule");
-  if (firstStatistics.calibrationProposalSlots == 0 &&
-      (firstStatistics.minimumTemperatureLevelCount != 0 ||
-       firstStatistics.annealingProposalSlots != 0))
-    fail("entry-closed Spatial annealing consumed schedule work");
+  if (firstStatistics.exactClosureReached &&
+      !firstStatistics.bestFeasibleIncumbentRestored)
+    fail("Spatial annealing did not restore its best feasible incumbent");
+  if (firstStatistics.acceptedWorseningActionCount == 0)
+    fail("Spatial annealing never traversed an accepted worsening state");
 
   const auto requireSameCandidate = [&](const pnr::SpatialCandidateState &lhs,
                                         const pnr::SpatialCandidateState &rhs) {
@@ -1550,7 +1582,7 @@ void loom::test::exerciseSpatialAnnealingReplay(
   requireSameCandidate(*annealedFirst, *annealedReplay);
 
   auto foreignSeed = firstSearch.run(
-      *annealedReplay,
+      annealedReplay,
       problem->config().policy().search.initializer.seedAttemptCount);
   if (foreignSeed)
     fail("Spatial annealing accepted an out-of-range seed ordinal");

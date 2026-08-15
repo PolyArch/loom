@@ -1,7 +1,12 @@
 #include "PnR/SpatialRouteCostState.h"
 
 #include "Common/MappingDebugLog.h"
+#include "SpatialPhysicalTiming.h"
+#include "SpatialSwitchRowPacking.h"
 
+#include "Fabric/Identity/FabricTemporalSwitchRoute.h"
+
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -10,11 +15,45 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <system_error>
 #include <utility>
 
 using namespace loom;
 using namespace loom::pnr;
+
+struct loom::pnr::detail::SpatialRouteCostSwitchRowState final {
+  bool enabled = false;
+  std::vector<std::vector<SpatialTemporalSwitchSegmentDemand>> netDemands;
+  std::vector<std::uint8_t> netDemandsSettled;
+  std::vector<SpatialTemporalSwitchSegmentDemand> selectedNetDemands;
+
+  std::size_t retainedStorageBytes() const {
+    std::size_t bytes = netDemands.capacity() *
+                        sizeof(std::vector<SpatialTemporalSwitchSegmentDemand>);
+    for (const auto &demands : netDemands) {
+      bytes += demands.capacity() * sizeof(SpatialTemporalSwitchSegmentDemand);
+      for (const auto &demand : demands) {
+        bytes += demand.signatures.capacity() *
+                 sizeof(SpatialTemporalSwitchInputSignature);
+        for (const auto &signature : demand.signatures)
+          bytes += signature.outputs.capacity() *
+                   sizeof(::loom::fabric::FabricOrdinal);
+      }
+    }
+    bytes += netDemandsSettled.capacity() * sizeof(std::uint8_t);
+    bytes += selectedNetDemands.capacity() *
+             sizeof(SpatialTemporalSwitchSegmentDemand);
+    for (const auto &demand : selectedNetDemands) {
+      bytes += demand.signatures.capacity() *
+               sizeof(SpatialTemporalSwitchInputSignature);
+      for (const auto &signature : demand.signatures)
+        bytes += signature.outputs.capacity() *
+                 sizeof(::loom::fabric::FabricOrdinal);
+    }
+    return bytes;
+  }
+};
 
 namespace {
 
@@ -50,6 +89,11 @@ std::uint64_t saturatedAdd(std::uint64_t lhs, std::uint64_t rhs) {
 
 } // namespace
 
+SpatialRouteCostState::SpatialRouteCostState(
+    SpatialRouteCostState &&) noexcept = default;
+
+SpatialRouteCostState::~SpatialRouteCostState() = default;
+
 llvm::Expected<SpatialRouteCostState>
 SpatialRouteCostState::create(const SpatialCandidateState &candidate) {
   const auto *policy = std::get_if<ResolvedPathFinderPolicy>(
@@ -72,6 +116,8 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate) {
   SpatialRouteCostState state;
   state.candidate_ = &candidate;
   state.problem_ = &problem;
+  state.switchRows_ =
+      std::make_unique<detail::SpatialRouteCostSwitchRowState>();
   state.policy_ = *policy;
   state.logicalNetCount_ =
       static_cast<PnrIndex>(problem.transfers().logicalNets().size());
@@ -133,6 +179,11 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate) {
 
   const auto matchDomains = problem.routing().tagContinuity().matchDomains();
   const std::size_t tagDomainCount = matchDomains.size();
+  state.switchRows_->enabled =
+      llvm::any_of(matchDomains, [](const auto &domain) {
+        return domain.kind == ::loom::fabric::FabricPhysicalTagMatchDomainKind::
+                                  TemporalSwitchTable;
+      });
   state.logicalNetTagUses_.resize(state.logicalNetCount_);
   state.logicalNetTagUnassignedCounts_.assign(state.logicalNetCount_, 0);
   state.workingTagDomainUsage_.assign(tagDomainCount, 0);
@@ -338,7 +389,7 @@ SpatialRouteCostState::logicalNetTagPressure(PnrIndex logicalNet) const {
     const RouteCost domainPressure = std::max(
         tagResidentOveruseCosts_[domain], tagEncodingPressureCosts_[domain]);
     auto term = normalizedRouteClaimCost(
-        use.segmentCount,
+        use.marginalResidentCount,
         std::max<std::uint64_t>(1, tagDomainEncodingCapacity(domain)));
     if (!term)
       return routeCostInfinity;
@@ -478,7 +529,8 @@ llvm::Error
 SpatialRouteCostState::stageTagUses(llvm::ArrayRef<SpatialTagDomainUse> uses,
                                     bool restore) {
   for (const SpatialTagDomainUse &use : uses) {
-    if (use.domain >= workingTagDomainUsage_.size() || use.segmentCount == 0)
+    if (use.domain >= workingTagDomainUsage_.size() ||
+        use.marginalResidentCount == 0)
       return routeCostStateError("logical-net tag use is out of range");
     if (tagDomainUpdateEpochs_[use.domain] != updateEpoch_) {
       tagDomainUpdateEpochs_[use.domain] = updateEpoch_;
@@ -487,13 +539,14 @@ SpatialRouteCostState::stageTagUses(llvm::ArrayRef<SpatialTagDomainUse> uses,
     }
     std::uint64_t &usage = stagedTagDomainUsage_[use.domain];
     if (restore) {
-      if (use.segmentCount > std::numeric_limits<std::uint64_t>::max() - usage)
+      if (use.marginalResidentCount >
+          std::numeric_limits<std::uint64_t>::max() - usage)
         return routeCostStateError("restored tag-domain usage overflows u64");
-      usage += use.segmentCount;
+      usage += use.marginalResidentCount;
     } else {
-      if (use.segmentCount > usage)
+      if (use.marginalResidentCount > usage)
         return routeCostStateError("excluded tag-domain usage underflows u64");
-      usage -= use.segmentCount;
+      usage -= use.marginalResidentCount;
     }
   }
   return llvm::Error::success();
@@ -811,6 +864,18 @@ SpatialRouteCostState::selectLogicalNet(std::optional<PnrIndex> logicalNet) {
   if (logicalNet == selectedLogicalNet_)
     return llvm::Error::success();
 
+  std::uint64_t physicalCriticality = 0;
+  if (logicalNet) {
+    auto timing = detail::projectSpatialLogicalNetPhysicalTiming(
+        *problem_, *logicalNet, candidate_->routeTree(*logicalNet),
+        candidate_->registerFifoTransfer(*logicalNet),
+        candidate_->portAttachmentSelections(),
+        candidate_->graphBoundaryAttachmentSelections());
+    if (!timing)
+      return timing.takeError();
+    physicalCriticality = timing->structuralCriticality;
+  }
+
   beginUpdate();
   if (selectedLogicalNet_) {
     if (llvm::Error error = stageClaimBits(selectedLogicalNetClaimBits_, false))
@@ -836,7 +901,10 @@ SpatialRouteCostState::selectLogicalNet(std::optional<PnrIndex> logicalNet) {
   std::fill(selectedLogicalNetClaimBits_.begin(),
             selectedLogicalNetClaimBits_.end(), 0);
   selectedLogicalNetTagUses_.clear();
+  if (switchRows_)
+    switchRows_->selectedNetDemands.clear();
   selectedLogicalNet_ = logicalNet;
+  lowerBoundCostRevision_ = physicalCriticality;
   return llvm::Error::success();
 }
 
@@ -850,6 +918,14 @@ llvm::Error SpatialRouteCostState::selectLogicalNet(
       activeClaimBits.size() != routeClaimWordCount_)
     return routeCostStateError("active claim bitset has the wrong width");
 
+  auto timing = detail::projectSpatialLogicalNetPhysicalTiming(
+      *problem_, logicalNet, candidate_->routeTree(logicalNet),
+      candidate_->registerFifoTransfer(logicalNet),
+      candidate_->portAttachmentSelections(),
+      candidate_->graphBoundaryAttachmentSelections());
+  if (!timing)
+    return timing.takeError();
+
   beginUpdate();
   if (llvm::Error error = stageClaimBits(activeClaimBits, false))
     return error;
@@ -859,7 +935,10 @@ llvm::Error SpatialRouteCostState::selectLogicalNet(
     return error;
   std::fill(selectedLogicalNetClaimBits_.begin(),
             selectedLogicalNetClaimBits_.end(), 0);
+  if (switchRows_)
+    switchRows_->selectedNetDemands.clear();
   selectedLogicalNet_ = logicalNet;
+  lowerBoundCostRevision_ = timing->structuralCriticality;
   return llvm::Error::success();
 }
 
@@ -904,7 +983,7 @@ llvm::Error SpatialRouteCostState::replaceSelectedTagUses(
           replacement, selectedLogicalNetTagUses_,
           [](const SpatialTagDomainUse &lhs, const SpatialTagDomainUse &rhs) {
             return lhs.domain == rhs.domain &&
-                   lhs.segmentCount == rhs.segmentCount;
+                   lhs.marginalResidentCount == rhs.marginalResidentCount;
           }))
     return llvm::Error::success();
   beginUpdate();
@@ -919,22 +998,129 @@ llvm::Error SpatialRouteCostState::replaceSelectedTagUses(
 }
 
 llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
+    const RouteTreeState &route,
     const SpatialTagContinuityProjection &continuity) {
   if (!selectedLogicalNet_)
     return routeCostStateError(
         "prospective tag uses require one selected logical net");
-  std::vector<PnrIndex> domains(continuity.segmentDomains().begin(),
-                                continuity.segmentDomains().end());
-  llvm::sort(domains);
-  std::vector<SpatialTagDomainUse> uses;
-  for (std::size_t begin = 0; begin < domains.size();) {
-    std::size_t end = begin + 1;
-    while (end < domains.size() && domains[end] == domains[begin])
-      ++end;
-    uses.push_back({domains[begin], end - begin});
-    begin = end;
+  if (switchRows_ && !switchRows_->enabled) {
+    std::vector<PnrIndex> domains(continuity.segmentDomains().begin(),
+                                  continuity.segmentDomains().end());
+    llvm::sort(domains);
+    std::vector<SpatialTagDomainUse> uses;
+    for (std::size_t begin = 0; begin < domains.size();) {
+      std::size_t end = begin + 1;
+      while (end < domains.size() && domains[end] == domains[begin])
+        ++end;
+      uses.push_back({domains[begin], end - begin});
+      begin = end;
+    }
+    return replaceSelectedTagUses(uses);
   }
-  return replaceSelectedTagUses(uses);
+  if (!switchRows_ || switchRows_->netDemands.size() != logicalNetCount_ ||
+      switchRows_->netDemandsSettled.size() != logicalNetCount_)
+    return routeCostStateError("Temporal switch row projection is unavailable");
+  const auto domains = problem_->routing().tagContinuity().matchDomains();
+  std::map<PnrIndex, std::uint64_t> marginalRows;
+  const auto segmentOffsets = continuity.segmentDomainOffsets();
+  const auto segmentDomains = continuity.segmentDomains();
+  for (PnrIndex segment = 0; segment < continuity.segments().size(); ++segment)
+    for (PnrIndex incidence = segmentOffsets[segment];
+         incidence < segmentOffsets[segment + 1]; ++incidence) {
+      const PnrIndex domain = segmentDomains[incidence];
+      if (domain >= domains.size())
+        return routeCostStateError("prospective tag domain is out of range");
+      if (domains[domain].kind !=
+          ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable)
+        ++marginalRows[domain];
+    }
+
+  using Demand = detail::SpatialTemporalSwitchSegmentDemand;
+  struct CandidateDemand final {
+    const Demand *route = nullptr;
+    std::optional<llvm::APInt> tag;
+  };
+  std::vector<std::vector<CandidateDemand>> baseDemands(domains.size());
+  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
+    if (logicalNet == *selectedLogicalNet_)
+      continue;
+    const auto values = candidate_->tagValues(logicalNet);
+    for (const Demand &demand : switchRows_->netDemands[logicalNet]) {
+      if (demand.domain >= domains.size() ||
+          (switchRows_->netDemandsSettled[logicalNet] &&
+           demand.segment >= values.size()))
+        return routeCostStateError("settled switch row demand is out of range");
+      baseDemands[demand.domain].push_back(
+          {&demand, switchRows_->netDemandsSettled[logicalNet]
+                        ? values[demand.segment]
+                        : std::nullopt});
+    }
+  }
+
+  auto prospective = detail::deriveSpatialTemporalSwitchSegmentDemands(
+      *problem_, *selectedLogicalNet_, route, continuity);
+  if (!prospective)
+    return prospective.takeError();
+  std::vector<std::vector<const Demand *>> prospectiveDemands(domains.size());
+  for (const Demand &demand : *prospective) {
+    if (demand.domain >= prospectiveDemands.size())
+      return routeCostStateError("prospective switch demand is out of range");
+    prospectiveDemands[demand.domain].push_back(&demand);
+  }
+
+  auto projectRows = [&](llvm::ArrayRef<CandidateDemand> candidates)
+      -> llvm::Expected<
+          std::vector<::loom::fabric::FabricTemporalSwitchCandidateRouteRow>> {
+    std::vector<
+        std::vector<::loom::fabric::FabricTemporalSwitchRouteSignatureView>>
+        signatureStorage;
+    signatureStorage.reserve(candidates.size());
+    for (const CandidateDemand &candidate : candidates) {
+      if (!candidate.route)
+        return routeCostStateError("switch row demand has no route");
+      signatureStorage.emplace_back();
+      auto &signatures = signatureStorage.back();
+      signatures.reserve(candidate.route->signatures.size());
+      for (const detail::SpatialTemporalSwitchInputSignature &signature :
+           candidate.route->signatures)
+        signatures.push_back(
+            {signature.occurrence, signature.input, signature.outputs});
+    }
+    std::vector<::loom::fabric::FabricTemporalSwitchCandidateRouteDemandView>
+        views;
+    views.reserve(candidates.size());
+    for (auto [ordinal, signatures] : llvm::enumerate(signatureStorage))
+      views.push_back({{signatures}, candidates[ordinal].tag});
+    return ::loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(views);
+  };
+
+  for (PnrIndex domain = 0; domain < prospectiveDemands.size(); ++domain) {
+    if (prospectiveDemands[domain].empty())
+      continue;
+    auto baseRows = projectRows(baseDemands[domain]);
+    if (!baseRows)
+      return baseRows.takeError();
+    std::vector<CandidateDemand> combined = baseDemands[domain];
+    combined.reserve(combined.size() + prospectiveDemands[domain].size());
+    for (const Demand *demand : prospectiveDemands[domain])
+      combined.push_back({demand, std::nullopt});
+    auto combinedRows = projectRows(combined);
+    if (!combinedRows)
+      return combinedRows.takeError();
+    if (combinedRows->size() < baseRows->size())
+      return routeCostStateError(
+          "Fabric switch row projection reduced settled row occupancy");
+    marginalRows[domain] += combinedRows->size() - baseRows->size();
+  }
+  std::vector<SpatialTagDomainUse> uses;
+  uses.reserve(marginalRows.size());
+  for (const auto &[domain, count] : marginalRows)
+    if (count != 0)
+      uses.push_back({domain, count});
+  if (llvm::Error error = replaceSelectedTagUses(uses))
+    return error;
+  switchRows_->selectedNetDemands = std::move(*prospective);
+  return llvm::Error::success();
 }
 
 llvm::Error SpatialRouteCostState::acceptSelectedLogicalNet() {
@@ -943,6 +1129,11 @@ llvm::Error SpatialRouteCostState::acceptSelectedLogicalNet() {
   std::fill(selectedLogicalNetClaimBits_.begin(),
             selectedLogicalNetClaimBits_.end(), 0);
   logicalNetTagUses_[*selectedLogicalNet_] = selectedLogicalNetTagUses_;
+  if (switchRows_ && switchRows_->enabled)
+    switchRows_->netDemands[*selectedLogicalNet_] =
+        std::move(switchRows_->selectedNetDemands);
+  if (switchRows_ && switchRows_->enabled)
+    switchRows_->netDemandsSettled[*selectedLogicalNet_] = 0;
   selectedLogicalNetTagUses_.clear();
   selectedLogicalNet_.reset();
   return llvm::Error::success();
@@ -992,11 +1183,14 @@ llvm::Error SpatialRouteCostState::synchronizeTagProjection(
   if (summary.domainResidentCounts.size() != domainCount ||
       summary.domainConflictCounts.size() != domainCount ||
       summary.netDomainUseOffsets.size() != logicalNetCount_ + 1 ||
-      summary.netDomainUseDomains.size() != summary.netDomainUseCounts.size() ||
+      summary.netDomainUseDomains.size() !=
+          summary.netDomainMarginalResidentCounts.size() ||
       summary.netUnassignedCounts.size() != logicalNetCount_ ||
       summary.netDomainUseOffsets.back() != summary.netDomainUseDomains.size())
     return routeCostStateError("tag projection dimensions are inconsistent");
 
+  if (llvm::Error error = synchronizeCandidateSwitchRows(changedLogicalNets))
+    return error;
   tagDomainConflictCounts_ = summary.domainConflictCounts;
   logicalNetTagUnassignedCounts_ = summary.netUnassignedCounts;
   const auto updateLogicalNet = [&](PnrIndex logicalNet) -> llvm::Error {
@@ -1009,31 +1203,26 @@ llvm::Error SpatialRouteCostState::synchronizeTagProjection(
     uses.reserve(end - begin);
     for (std::size_t incidence = begin; incidence < end; ++incidence) {
       const PnrIndex domain = summary.netDomainUseDomains[incidence];
-      const std::uint64_t count = summary.netDomainUseCounts[incidence];
+      const std::uint64_t count =
+          summary.netDomainMarginalResidentCounts[incidence];
       if (domain >= domainCount || count == 0)
         return routeCostStateError("tag projection use is out of range");
       uses.push_back({domain, count});
     }
     return llvm::Error::success();
   };
-  if (changedLogicalNets.empty()) {
-    for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet)
-      if (llvm::Error error = updateLogicalNet(logicalNet))
-        return error;
-  } else {
-    for (PnrIndex logicalNet : changedLogicalNets)
-      if (llvm::Error error = updateLogicalNet(logicalNet))
-        return error;
-  }
+  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet)
+    if (llvm::Error error = updateLogicalNet(logicalNet))
+      return error;
   beginUpdate();
   for (PnrIndex domain = 0; domain < domainCount; ++domain) {
+    if (workingTagDomainUsage_[domain] == summary.domainResidentCounts[domain])
+      continue;
     tagDomainUpdateEpochs_[domain] = updateEpoch_;
     stagedTagDomainUsage_[domain] = summary.domainResidentCounts[domain];
     affectedTagDomains_.push_back(domain);
   }
-  if (llvm::Error error = finishUpdate())
-    return error;
-  return recomputeAllArcCosts(false);
+  return finishUpdate();
 }
 
 llvm::Error SpatialRouteCostState::synchronizeCandidateTags() {
@@ -1043,34 +1232,161 @@ llvm::Error SpatialRouteCostState::synchronizeCandidateTags() {
   return rebuildTagProjectionFromCandidate(false);
 }
 
+llvm::Error SpatialRouteCostState::rebuildSwitchRowProjectionFromCandidate() {
+  if (!switchRows_)
+    return routeCostStateError("Temporal switch row storage is unavailable");
+  if (!switchRows_->enabled)
+    return llvm::Error::success();
+  switchRows_->netDemands.assign(logicalNetCount_, {});
+  switchRows_->netDemandsSettled.assign(logicalNetCount_, 0);
+  return synchronizeCandidateSwitchRows({});
+}
+
+llvm::Error SpatialRouteCostState::synchronizeCandidateSwitchRows(
+    llvm::ArrayRef<PnrIndex> changedLogicalNets) {
+  if (!switchRows_)
+    return routeCostStateError("Temporal switch row storage is unavailable");
+  switchRows_->selectedNetDemands.clear();
+  if (!switchRows_->enabled)
+    return llvm::Error::success();
+  if (switchRows_->netDemands.size() != logicalNetCount_ ||
+      switchRows_->netDemandsSettled.size() != logicalNetCount_)
+    return routeCostStateError(
+        "Temporal switch row demand domain has the wrong width");
+
+  std::vector<std::pair<
+      PnrIndex, std::vector<detail::SpatialTemporalSwitchSegmentDemand>>>
+      replacements;
+  replacements.reserve(changedLogicalNets.empty() ? logicalNetCount_
+                                                  : changedLogicalNets.size());
+  SpatialTagContinuityProjection continuity;
+  SpatialTagContinuityScratch continuityScratch;
+  const auto append = [&](PnrIndex logicalNet) -> llvm::Error {
+    if (logicalNet >= logicalNetCount_)
+      return routeCostStateError(
+          "changed switch row logical net is out of range");
+    const RouteTreeState &route = candidate_->routeTree(logicalNet);
+    if (llvm::Error error = detail::rebuildSpatialTagContinuityUnchecked(
+            route, continuity, continuityScratch))
+      return error;
+    auto demands = detail::deriveSpatialTemporalSwitchSegmentDemands(
+        *problem_, logicalNet, route, continuity);
+    if (!demands)
+      return demands.takeError();
+    replacements.emplace_back(logicalNet, std::move(*demands));
+    return llvm::Error::success();
+  };
+  if (changedLogicalNets.empty()) {
+    for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet)
+      if (llvm::Error error = append(logicalNet))
+        return error;
+  } else {
+    for (PnrIndex logicalNet : changedLogicalNets)
+      if (llvm::Error error = append(logicalNet))
+        return error;
+  }
+  for (auto &replacement : replacements) {
+    switchRows_->netDemands[replacement.first] = std::move(replacement.second);
+    switchRows_->netDemandsSettled[replacement.first] = 1;
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error
 SpatialRouteCostState::rebuildTagProjectionFromCandidate(bool resetHistory) {
+  if (llvm::Error error = rebuildSwitchRowProjectionFromCandidate())
+    return error;
   const std::size_t domainCount = workingTagDomainUsage_.size();
   std::fill(workingTagDomainUsage_.begin(), workingTagDomainUsage_.end(), 0);
+  if (!switchRows_->enabled) {
+    for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
+      std::vector<PnrIndex> domains;
+      const auto segments = candidate_->tagSegments(logicalNet);
+      logicalNetTagUnassignedCounts_[logicalNet] =
+          llvm::count_if(candidate_->tagValues(logicalNet),
+                         [](const auto &value) { return !value.has_value(); });
+      for (PnrIndex segment = 0; segment < segments.size(); ++segment) {
+        const auto local = candidate_->tagSegmentDomains(logicalNet, segment);
+        domains.insert(domains.end(), local.begin(), local.end());
+      }
+      llvm::sort(domains);
+      auto &uses = logicalNetTagUses_[logicalNet];
+      uses.clear();
+      for (std::size_t begin = 0; begin < domains.size();) {
+        std::size_t end = begin + 1;
+        while (end < domains.size() && domains[end] == domains[begin])
+          ++end;
+        if (domains[begin] >= domainCount)
+          return routeCostStateError("candidate tag domain is out of range");
+        const std::uint64_t count = end - begin;
+        uses.push_back({domains[begin], count});
+        workingTagDomainUsage_[domains[begin]] += count;
+        begin = end;
+      }
+    }
+    for (PnrIndex domain = 0; domain < domainCount; ++domain) {
+      if (workingTagDomainUsage_[domain] !=
+          candidate_->tagDomainResidentCount(domain))
+        return routeCostStateError(
+            "candidate tag-domain usage disagrees with segment incidence");
+      tagDomainConflictCounts_[domain] =
+          candidate_->tagDomainConflictCount(domain);
+    }
+    return recomputeAllArcCosts(resetHistory);
+  }
+  std::vector<llvm::DenseMap<llvm::APInt, std::vector<PnrIndex>>> assignedRows(
+      domainCount);
+  std::vector<std::map<PnrIndex, std::uint64_t>> marginalRows(logicalNetCount_);
+  const auto matchDomains = problem_->routing().tagContinuity().matchDomains();
   for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
-    std::vector<PnrIndex> domains;
     const auto segments = candidate_->tagSegments(logicalNet);
-    logicalNetTagUnassignedCounts_[logicalNet] =
-        llvm::count_if(candidate_->tagValues(logicalNet),
-                       [](const auto &value) { return !value.has_value(); });
+    const auto values = candidate_->tagValues(logicalNet);
+    logicalNetTagUnassignedCounts_[logicalNet] = 0;
     for (PnrIndex segment = 0; segment < segments.size(); ++segment) {
       const auto local = candidate_->tagSegmentDomains(logicalNet, segment);
-      domains.insert(domains.end(), local.begin(), local.end());
+      if (segment >= values.size())
+        return routeCostStateError("candidate tag value inventory is short");
+      if (!values[segment])
+        ++logicalNetTagUnassignedCounts_[logicalNet];
+      for (PnrIndex domain : local) {
+        if (domain >= domainCount)
+          return routeCostStateError("candidate tag domain is out of range");
+        const bool packedSwitch =
+            matchDomains[domain].kind ==
+            ::loom::fabric::FabricPhysicalTagMatchDomainKind::
+                TemporalSwitchTable;
+        if (values[segment] && packedSwitch) {
+          assignedRows[domain][*values[segment]].push_back(logicalNet);
+        } else {
+          if (workingTagDomainUsage_[domain] ==
+              std::numeric_limits<std::uint64_t>::max())
+            return routeCostStateError("candidate tag usage overflows u64");
+          ++workingTagDomainUsage_[domain];
+          ++marginalRows[logicalNet][domain];
+        }
+      }
     }
-    llvm::sort(domains);
+  }
+  for (PnrIndex domain = 0; domain < domainCount; ++domain)
+    for (auto &entry : assignedRows[domain]) {
+      if (workingTagDomainUsage_[domain] ==
+          std::numeric_limits<std::uint64_t>::max())
+        return routeCostStateError("candidate tag usage overflows u64");
+      ++workingTagDomainUsage_[domain];
+      auto &logicalNets = entry.second;
+      llvm::sort(logicalNets);
+      logicalNets.erase(std::unique(logicalNets.begin(), logicalNets.end()),
+                        logicalNets.end());
+      if (logicalNets.size() == 1)
+        ++marginalRows[logicalNets.front()][domain];
+    }
+  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
     auto &uses = logicalNetTagUses_[logicalNet];
     uses.clear();
-    for (std::size_t begin = 0; begin < domains.size();) {
-      std::size_t end = begin + 1;
-      while (end < domains.size() && domains[end] == domains[begin])
-        ++end;
-      if (domains[begin] >= domainCount)
-        return routeCostStateError("candidate tag domain is out of range");
-      const std::uint64_t count = end - begin;
-      uses.push_back({domains[begin], count});
-      workingTagDomainUsage_[domains[begin]] += count;
-      begin = end;
-    }
+    uses.reserve(marginalRows[logicalNet].size());
+    for (const auto &[domain, count] : marginalRows[logicalNet])
+      if (count != 0)
+        uses.push_back({domain, count});
   }
   for (PnrIndex domain = 0; domain < domainCount; ++domain) {
     if (workingTagDomainUsage_[domain] !=
@@ -1128,6 +1444,11 @@ llvm::Error SpatialRouteCostState::resetFromCandidate() {
   if (llvm::Error error = candidate_->verify())
     return error;
 
+  return resetFromVerifiedCandidate();
+}
+
+llvm::Error SpatialRouteCostState::resetFromVerifiedCandidate() {
+
   beginUpdate();
   const auto capacities = problem_->resources().capacityDimensions();
   for (PnrIndex capacity = 0; capacity < capacities.size(); ++capacity) {
@@ -1177,6 +1498,7 @@ llvm::Error SpatialRouteCostState::resetFromCandidate() {
             selectedLogicalNetClaimBits_.end(), 0);
   selectedLogicalNetTagUses_.clear();
   selectedLogicalNet_.reset();
+  lowerBoundCostRevision_ = 0;
   return rebuildTagProjectionFromCandidate(true);
 }
 
@@ -1303,7 +1625,8 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
 }
 
 std::size_t SpatialRouteCostState::retainedStorageBytes() const {
-  return retainedBytes(workingCapacityUsageRaw_) +
+  return (switchRows_ ? switchRows_->retainedStorageBytes() : 0) +
+         retainedBytes(workingCapacityUsageRaw_) +
          retainedBytes(historyPressure_) +
          retainedBytes(capacityOveruseCosts_) +
          retainedBytes(currentClaimOveruseCosts_) +

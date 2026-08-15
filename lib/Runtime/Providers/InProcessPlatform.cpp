@@ -202,11 +202,20 @@ InProcessRuntimeProvider::readImplementationIdentity(
   auto device = state_->device(handle);
   if (!device)
     return device.takeError();
+  auto ordinal = decodeU64(endpoint.payload);
+  if (!ordinal)
+    return ordinal.takeError();
+  if (*ordinal >= (*device)->config.hardwareImplementations.size())
+    return invalid("identity endpoint is outside the device implementation "
+                   "set");
   ++state_->statistics.identityReadCount;
+  const ArtifactIdentity &implementation =
+      (*device)->config.hardwareImplementations[static_cast<std::size_t>(
+          *ordinal)];
   if ((*device)->config.failures.identityMismatchAfterRecoveryReset &&
       (*device)->resetCount >= 2)
-    return foreignIdentity((*device)->config.hardwareImplementation);
-  return (*device)->config.hardwareImplementation;
+    return foreignIdentity(implementation);
+  return implementation;
 }
 
 llvm::Expected<BlobDigest> InProcessRuntimeProvider::readTrustedAttestation(

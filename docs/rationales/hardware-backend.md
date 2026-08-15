@@ -149,7 +149,7 @@ therefore have a dedicated vendor-provider implementation while related simple
 integer families share one provider, without creating per-operation semantic
 registries.
 
-## Why A Common CIRCT Skeleton Comes First
+## Why A Common SpatialCore CIRCT Skeleton Comes First
 
 Fabric lowering needs one target-independent structural form before portable,
 ASIC-library, or FPGA-device choices diverge. CIRCT HW, Comb, and Seq already
@@ -166,20 +166,21 @@ implementation-family binding. The selected provider replaces it with portable
 logic, a vendor primitive, or a contract-bound external module. Every Loom
 abstract generated leaf must be gone before SystemVerilog export.
 
-The export-complete skeleton is System-rooted because only the System closes
-physical occurrences, concrete clock/reset contracts, external interfaces,
-and interconnect. Lowering a Module definition remains useful, but it is a
-slot-parameterized internal fragment. Publishing it as a complete
-implementation would force the backend to invent the concrete domains and
-would alias state when the same definition is instantiated twice.
+The current export-complete product is rooted at one exact SpatialCore
+occurrence selected through its enclosing System. That subject closes the
+physical occurrences, concrete clock/reset contracts, and external attachment
+interfaces that the implemented RTL provider actually emits. HostCore,
+InstructionCore, and System interconnect remain outside this product. Lowering
+a Module definition remains useful as an occurrence-parameterized internal
+fragment, but publishing it as a complete implementation would invent concrete
+domains and alias state when the same definition is instantiated twice.
 
-Reuse is therefore decided by one derived complete specialization key rather
-than by Module identity alone or by pessimistically cloning every occurrence.
-Two occurrences may share a definition only when their ABI projection, bound
-domain contracts, recipes, external implementations, and memory choices are
-equal. This preserves occurrence identity at the instances, avoids recompiling
-genuinely equal implementations, and prevents a shared HDL definition from
-hiding per-occurrence choices.
+Every HardwareImplementation therefore names one occurrence-qualified subject.
+Two occurrences importing the same Module still produce distinct implementation
+artifacts and interface ownership. An RTL compiler may internally deduplicate
+identical definitions as a removable optimization, but that optimization is
+not an artifact identity, a cross-occurrence product, or evidence that System
+interconnect has been implemented.
 
 The reusable skeleton contains the complete Fabric configuration domain rather
 than one workload's Mapping selection. Mapping verification separately proves
@@ -189,12 +190,14 @@ into RTL lowering would either make the implementation workload-specific or
 create a second owner for route and selector choices; both would defeat the
 Fabric and ConfigurationABI boundary.
 
-An architecture-only skeleton therefore still contains every PE, FU, switch,
-FIFO, boundary, memory resource, point connection, and configuration decoder.
-Inactive values keep unselected resources inert; they do not license the
-backend to omit those resources. A configured mapped implementation may
-specialize constants after proving equivalence, but it remains a derived form
-of the same complete skeleton rather than a different topology owner.
+An architecture-only SpatialCore skeleton therefore still contains every PE,
+FU, switch, FIFO, boundary, memory resource, point connection, and
+configuration decoder in that occurrence closure. Inactive values keep
+unselected resources inert; they do not license the backend to omit those
+resources. A configured mapped implementation may specialize constants after
+proving equivalence, but it remains a derived form of the same subject-rooted
+skeleton rather than a different topology owner. A future System interconnect
+implementation is a separate product with its own provider and evidence scope.
 
 Lowering the complete design through Handshake or DC-SC would add another
 authority for scheduling, buffering, progress, and resource sharing that Fabric
@@ -870,7 +873,7 @@ capability authority.
 
 The fixed analysis facts and the provider resource binding are distinct but
 both have one owner. The model descriptor fixes method, activity basis,
-coverage, and uncertainty; its ResolvedConfig 5.0 component view fixes the
+coverage, and uncertainty; its ResolvedConfig 6.0 component view fixes the
 actual Voltus build, complete PGV member fingerprints, and exact ordered PGV
 entrypoints. Entrypoints reference members rather than duplicating their
 fingerprints. This keeps local paths out of semantic identity without letting

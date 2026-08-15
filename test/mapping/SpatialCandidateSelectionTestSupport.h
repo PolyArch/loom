@@ -14,6 +14,7 @@ namespace loom::test {
 
 llvm::Error selectReachableGraphBoundaries(
     pnr::SpatialCandidateState &candidate, pnr::SpatialMoveTransaction &move,
-    llvm::ArrayRef<pnr::PnrIndex> selectedPortAttachments = {});
+    llvm::ArrayRef<pnr::PnrIndex> selectedPortAttachments = {},
+    bool requireDistinctEndpoints = false);
 
 } // namespace loom::test

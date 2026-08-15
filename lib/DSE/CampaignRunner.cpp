@@ -97,8 +97,7 @@ ancestorNodes(const ResolvedDsePlan &plan) {
       std::vector<PlanOutputRef> outputs;
       if (const auto *output = std::get_if<PlanOutputRef>(&binding))
         outputs.push_back(*output);
-      else if (const auto *join =
-                   std::get_if<BoundedPlanOutputJoin>(&binding))
+      else if (const auto *join = std::get_if<BoundedPlanOutputJoin>(&binding))
         outputs = join->outputs;
       for (PlanOutputRef output : outputs) {
         if (output.producerNodeOrdinal >= nodeOrdinal)
@@ -218,6 +217,8 @@ llvm::Expected<std::optional<std::uint64_t>>
 remainingPlanWorkUnits(const ResolvedDsePlan &plan,
                        const IncompleteDsePlanExecution &incomplete,
                        llvm::ArrayRef<JournalWorkUnitRecord> records) {
+  if (!incomplete.executionStopped())
+    return std::uint64_t{0};
   std::uint64_t total = 0;
   for (std::uint64_t ordinal = incomplete.nodeOrdinal();
        ordinal < plan.nodes().size(); ++ordinal) {
@@ -236,7 +237,7 @@ remainingPlanWorkUnits(const ResolvedDsePlan &plan,
       return invalid("remaining Promote node lost its candidate input");
     auto candidates = exactCandidateCount(
         promote.inputBindings()[descriptor->candidateInputSlot.ordinal()],
-        incomplete.completedPrefix());
+        incomplete.availableExecution());
     if (!candidates)
       return candidates.takeError();
     if (!*candidates)

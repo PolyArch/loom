@@ -12,7 +12,7 @@
 namespace loom::mapping {
 namespace {
 
-constexpr llvm::StringLiteral descriptor = "loom.tech_mapping.config.1.0";
+constexpr llvm::StringLiteral descriptor = "loom.tech_mapping.config.2.0";
 
 llvm::ArrayRef<std::uint8_t> descriptorBytes() {
   return {reinterpret_cast<const std::uint8_t *>(descriptor.data()),
@@ -46,7 +46,7 @@ llvm::ArrayRef<std::uint8_t> resolvedTechMappingConfigSchemaDescriptorBytes() {
 }
 
 ResolvedTechMappingConfigView::ResolvedTechMappingConfigView(
-    std::array<std::uint64_t, 3> limits)
+    std::array<std::uint64_t, 4> limits)
     : limits_(limits) {
   for (auto [ordinal, value] : llvm::enumerate(limits_))
     writeU64(value, llvm::MutableArrayRef(bytes_).slice(ordinal * 8, 8));
@@ -64,9 +64,10 @@ ComponentViewDigest ResolvedTechMappingConfigView::digest() const {
 
 llvm::Expected<ResolvedTechMappingConfigView>
 projectResolvedTechMappingConfigView(const ResolvedConfig &config) {
-  const std::array<std::uint64_t, 3> limits = {
+  const std::array<std::uint64_t, 4> limits = {
       config.dse.techMapping.matchRowAttemptLimit,
       config.dse.techMapping.partialCoverExpansionLimit,
+      config.dse.techMapping.candidateEvaluationLimit,
       config.dse.techMapping.candidatePublicationLimit};
   if (llvm::Error error = validateLimits(limits))
     return std::move(error);
@@ -81,18 +82,19 @@ adoptResolvedTechMappingConfigView(
   if (schemaDescriptorBytes != descriptorBytes())
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "tech_mapping_config_descriptor_mismatch: "
-                                   "expected exact 1.0 descriptor");
-  if (canonicalViewBytes.size() != 24)
+                                   "expected exact 2.0 descriptor");
+  if (canonicalViewBytes.size() != 32)
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
-        "tech_mapping_config_bytes_invalid: expected three u64be fields");
+        "tech_mapping_config_bytes_invalid: expected four u64be fields");
   if (llvm::Error error = validateComponentViewDigest(
           schemaDescriptorBytes, canonicalViewBytes, digest))
     return std::move(error);
-  const std::array<std::uint64_t, 3> limits = {
+  const std::array<std::uint64_t, 4> limits = {
       readU64(canonicalViewBytes.slice(0, 8)),
       readU64(canonicalViewBytes.slice(8, 8)),
-      readU64(canonicalViewBytes.slice(16, 8))};
+      readU64(canonicalViewBytes.slice(16, 8)),
+      readU64(canonicalViewBytes.slice(24, 8))};
   if (llvm::Error error = validateLimits(limits))
     return std::move(error);
   return ResolvedTechMappingConfigView(limits);

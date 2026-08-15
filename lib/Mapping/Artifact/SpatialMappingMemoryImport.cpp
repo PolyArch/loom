@@ -1,5 +1,7 @@
 #include "SpatialMappingMemoryImport.h"
 
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
+
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/IR/MemoryPortTransaction.h"
@@ -13,6 +15,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -93,6 +96,17 @@ const TechMemoryActorView *findActor(const TechMemoryRealizationView &owner,
     return candidate.actor == actor;
   });
   return found == owner.actors.end() ? nullptr : &*found;
+}
+
+const SpatialMemoryOperationView *
+findOperation(const SpatialMemoryEngineBindingView &owner,
+              ::dataflow::ActorRef actor) {
+  auto found = llvm::find_if(owner.operations, [&](const auto &candidate) {
+    return std::visit(
+        [&](const auto &selected) { return selected.actor == actor; },
+        candidate);
+  });
+  return found == owner.operations.end() ? nullptr : &*found;
 }
 
 struct MemoryActorProjection final {
@@ -1106,6 +1120,80 @@ deriveMemoryResourceUseRequirements(
   return result;
 }
 
+llvm::Error verifyTemporalMemoryOccurrenceClosure(
+    llvm::ArrayRef<SpatialMemoryEngineBindingView> engines,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  std::map<std::uint64_t, const SpatialMemoryEngineBindingView *> engineById;
+  for (const SpatialMemoryEngineBindingView &engine : engines)
+    if (!engineById.emplace(engine.realization, &engine).second)
+      return invalid("duplicate memory realization binding");
+
+  using OccurrenceKey = std::vector<std::uint8_t>;
+  using IngressKey = std::vector<std::uint8_t>;
+  std::map<OccurrenceKey, std::uint64_t> nextResidentContext;
+  std::set<std::pair<OccurrenceKey, IngressKey>> claimedIngresses;
+
+  // This is the same canonical realization-and-actor walk used by the
+  // materializer. A Temporal row is owned by the occurrence, not by a port.
+  for (const TechMemoryRealizationView &realization :
+       techMapping.memoryRealizations()) {
+    auto foundEngine = engineById.find(realization.entityId);
+    if (foundEngine == engineById.end())
+      return invalid("Temporal memory closure has no realization binding");
+    const SpatialMemoryEngineBindingView &engine = *foundEngine->second;
+    auto schedule = fabric.memorySchedule(engine.occurrence);
+    if (!schedule)
+      return invalid("memory occurrence has no scheduling contract");
+    if (*schedule != ::fabric::Schedule::Temporal)
+      continue;
+
+    const OccurrenceKey occurrence =
+        ::loom::fabric::canonicalFabricBytes(engine.occurrence);
+    auto ingresses = deriveTechMemoryExternalIngresses(realization, dataflow);
+    if (!ingresses)
+      return ingresses.takeError();
+    for (const TechMemoryExternalIngressView &ingress : *ingresses) {
+      auto key =
+          canonicalTechMemoryExternalIngressKey(ingress, dataflow.identity());
+      if (!key)
+        return key.takeError();
+      if (!claimedIngresses.emplace(occurrence, std::move(*key)).second)
+        return invalid("Temporal memory occurrence repeats an external "
+                       "ingress relation");
+    }
+
+    std::uint64_t &next = nextResidentContext[occurrence];
+    const std::uint64_t capacity =
+        fabric.memoryResidentContextCount(engine.occurrence);
+    for (const TechMemoryActorView &actor : realization.actors) {
+      const SpatialMemoryOperationView *operation =
+          findOperation(engine, actor.actor);
+      if (!operation)
+        return invalid("Temporal memory closure has no actor operation");
+      const auto &placement = std::visit(
+          [](const auto &selected)
+              -> const SpatialMemoryOperationPlacementView & {
+            return selected.placement;
+          },
+          *operation);
+      const auto *context =
+          std::get_if<::loom::fabric::FabricMemoryOperationContextRef>(
+              &placement);
+      if (!context)
+        return invalid("Temporal memory operation has no resident context");
+      if (next >= capacity)
+        return invalid("Temporal memory occurrence exceeds its row capacity");
+      if (context->ordinal != next)
+        return invalid("Temporal memory row ordinal is not occurrence-global "
+                       "canonical order");
+      ++next;
+    }
+  }
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Expected<ImportedSpatialMemoryView> importSpatialMemoryView(
@@ -1149,6 +1237,9 @@ llvm::Expected<ImportedSpatialMemoryView> importSpatialMemoryView(
   }
   if (result.engineBindings.size() != techMapping.memoryRealizations().size())
     return invalid("SpatialMapping omits a Tech memory realization");
+  if (llvm::Error error = verifyTemporalMemoryOccurrenceClosure(
+          result.engineBindings, dataflow, techMapping, fabric))
+    return std::move(error);
   auto requiredUses = deriveMemoryResourceUseRequirements(
       result.engineBindings, result.memoryBindings, dataflow, techMapping,
       fabric);
@@ -1171,6 +1262,10 @@ deriveSpatialMemoryHandshakeSelections(
         findRealization(techMapping, engine.realization);
     if (!realization || realization->actors.size() != engine.operations.size())
       return invalid("memory handshake selection has incomplete realization");
+    auto roleDemands = deriveSpatialMemoryActorRoleDemands(
+        dataflow, techMapping, fabric, *realization, engine.occurrence);
+    if (!roleDemands)
+      return roleDemands.takeError();
     for (const SpatialMemoryOperationView &operation : engine.operations) {
       const auto actor = std::visit(
           [](const auto &selected) { return selected.actor; }, operation);
@@ -1183,6 +1278,12 @@ deriveSpatialMemoryHandshakeSelections(
       const TechMemoryActorView *techActor = findActor(*realization, actor);
       if (!techActor)
         return invalid("memory handshake actor has no Tech realization");
+      const auto roleDemand = llvm::find_if(
+          *roleDemands, [&](const SpatialMemoryActorRoleDemandView &candidate) {
+            return candidate.actor == actor;
+          });
+      if (roleDemand == roleDemands->end())
+        return invalid("memory handshake actor has no role demand");
       auto projection = projectMemoryActor(dataflow, actor);
       if (!projection)
         return projection.takeError();
@@ -1210,7 +1311,8 @@ deriveSpatialMemoryHandshakeSelections(
                                 ? projection->access->maskForm()
                                 : ::dataflow::semantics::MemoryMaskForm::Absent;
       auto selected = ::loom::fabric::makeMemoryHandshakeSelection(
-          fabric, placement, capability, selectedUse->useSite, maskForm);
+          fabric, placement, capability, selectedUse->useSite, maskForm,
+          roleDemand->sources, roleDemand->destinations);
       if (!selected)
         return selected.takeError();
       result.push_back(std::move(*selected));

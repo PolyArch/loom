@@ -26,6 +26,14 @@ bool contains(PnrIndex offset, PnrIndex count, PnrIndex value) {
   return value >= offset && value - offset < count;
 }
 
+llvm::Error checkedAdd(std::uint64_t &value, std::uint64_t amount,
+                       llvm::StringRef subject) {
+  if (amount > std::numeric_limits<std::uint64_t>::max() - value)
+    return candidateError(subject + " overflows u64");
+  value += amount;
+  return llvm::Error::success();
+}
+
 } // namespace
 
 PnrIndex
@@ -139,6 +147,8 @@ llvm::Error SpatialCandidateState::rebuildResourceTimeEnvelopeSelections() {
   activeResourceTimeEnvelopeBits_.assign(
       envelopeCount / bitsPerWord + (envelopeCount % bitsPerWord != 0), 0);
   activeResourceTimeEnvelopeCount_ = 0;
+  resourceReleaseLatencyCycles_ = 0;
+  resourceMinimumInitiationIntervalCycles_ = 1;
   for (PnrIndex envelope = 0; envelope < resourceTimeEnvelopeRefcounts_.size();
        ++envelope) {
     if (resourceTimeEnvelopeRefcounts_[envelope] == 0)
@@ -150,6 +160,15 @@ llvm::Error SpatialCandidateState::rebuildResourceTimeEnvelopeSelections() {
         std::numeric_limits<PnrIndex>::max())
       return candidateError("active resource-time envelope count overflows");
     ++activeResourceTimeEnvelopeCount_;
+    const FrozenSpatialResourceTimeEnvelope &record =
+        problem_->capacity().resourceTimeEnvelopes()[envelope];
+    if (llvm::Error error = checkedAdd(
+            resourceReleaseLatencyCycles_, record.releaseLatencyCycles,
+            "resource release latency"))
+      return error;
+    resourceMinimumInitiationIntervalCycles_ =
+        std::max(resourceMinimumInitiationIntervalCycles_,
+                 record.minimumInitiationIntervalCycles);
   }
   return llvm::Error::success();
 }
@@ -168,39 +187,92 @@ SpatialCandidateState::verifyResourceTimeEnvelopeSelections() const {
     return candidateError("active resource-time bitset has the wrong shape");
   std::vector<std::uint64_t> expectedBits(expectedWordCount, 0);
   PnrIndex expectedCount = 0;
+  std::uint64_t expectedRelease = 0;
+  std::uint64_t expectedInterval = 1;
   for (PnrIndex envelope = 0; envelope < expected->size(); ++envelope) {
     if ((*expected)[envelope] == 0)
       continue;
     expectedBits[envelope / bitsPerWord] |= UINT64_C(1)
                                             << (envelope % bitsPerWord);
     ++expectedCount;
+    const FrozenSpatialResourceTimeEnvelope &record =
+        problem_->capacity().resourceTimeEnvelopes()[envelope];
+    if (llvm::Error error = checkedAdd(expectedRelease,
+                                       record.releaseLatencyCycles,
+                                       "resource release latency"))
+      return error;
+    expectedInterval =
+        std::max(expectedInterval, record.minimumInitiationIntervalCycles);
   }
   if (expectedBits != activeResourceTimeEnvelopeBits_ ||
-      expectedCount != activeResourceTimeEnvelopeCount_)
+      expectedCount != activeResourceTimeEnvelopeCount_ ||
+      expectedRelease != resourceReleaseLatencyCycles_ ||
+      expectedInterval != resourceMinimumInitiationIntervalCycles_)
     return candidateError(
         "active resource-time bitset diverges from envelope refcounts");
   return llvm::Error::success();
 }
 
-void SpatialCandidateState::applyResourceTimeEnvelopeDelta(PnrIndex envelope,
-                                                           bool add) noexcept {
-  assert(envelope < resourceTimeEnvelopeRefcounts_.size());
+llvm::Error
+SpatialCandidateState::applyResourceTimeEnvelopeDelta(PnrIndex envelope,
+                                                      bool add) {
+  if (envelope >= resourceTimeEnvelopeRefcounts_.size())
+    return candidateError("resource-time envelope is out of range");
   PnrIndex &refcount = resourceTimeEnvelopeRefcounts_[envelope];
   const std::size_t word = envelope / bitsPerWord;
   const std::uint64_t mask = UINT64_C(1) << (envelope % bitsPerWord);
+  const FrozenSpatialResourceTimeEnvelope &record =
+      problem_->capacity().resourceTimeEnvelopes()[envelope];
   if (add) {
-    assert(refcount != std::numeric_limits<PnrIndex>::max());
+    if (refcount == std::numeric_limits<PnrIndex>::max())
+      return candidateError("resource-time envelope refcount overflows");
+    if (refcount == 0) {
+      std::uint64_t release = resourceReleaseLatencyCycles_;
+      if (llvm::Error error = checkedAdd(release, record.releaseLatencyCycles,
+                                         "resource release latency"))
+        return error;
+      if (activeResourceTimeEnvelopeCount_ ==
+          std::numeric_limits<PnrIndex>::max())
+        return candidateError("active resource-time envelope count overflows");
+      resourceReleaseLatencyCycles_ = release;
+      resourceMinimumInitiationIntervalCycles_ =
+          std::max(resourceMinimumInitiationIntervalCycles_,
+                   record.minimumInitiationIntervalCycles);
+    }
     if (refcount++ == 0) {
       activeResourceTimeEnvelopeBits_[word] |= mask;
       ++activeResourceTimeEnvelopeCount_;
     }
-    return;
+    return llvm::Error::success();
   }
-  assert(refcount != 0);
+  if (refcount == 0)
+    return candidateError("resource-time envelope refcount underflows");
+  if (refcount == 1) {
+    if (resourceReleaseLatencyCycles_ < record.releaseLatencyCycles ||
+        activeResourceTimeEnvelopeCount_ == 0)
+      return candidateError("resource-time envelope totals underflow");
+  }
   if (--refcount == 0) {
     activeResourceTimeEnvelopeBits_[word] &= ~mask;
     --activeResourceTimeEnvelopeCount_;
+    resourceReleaseLatencyCycles_ -= record.releaseLatencyCycles;
+    if (resourceMinimumInitiationIntervalCycles_ != 1 &&
+        record.minimumInitiationIntervalCycles ==
+            resourceMinimumInitiationIntervalCycles_) {
+      resourceMinimumInitiationIntervalCycles_ = 1;
+      for (PnrIndex active = 0;
+           active < resourceTimeEnvelopeRefcounts_.size(); ++active) {
+        if (resourceTimeEnvelopeRefcounts_[active] == 0)
+          continue;
+        resourceMinimumInitiationIntervalCycles_ = std::max(
+            resourceMinimumInitiationIntervalCycles_,
+            problem_->capacity()
+                .resourceTimeEnvelopes()[active]
+                .minimumInitiationIntervalCycles);
+      }
+    }
   }
+  return llvm::Error::success();
 }
 
 llvm::Error SpatialCandidateState::replaceResourceTimeEnvelopeSlice(
@@ -227,11 +299,14 @@ llvm::Error SpatialCandidateState::replaceResourceTimeEnvelopeSlice(
   for (PnrIndex envelope = oldOffset; envelope != oldOffset + oldCount;
        ++envelope)
     if (!contains(newOffset, newCount, envelope))
-      applyResourceTimeEnvelopeDelta(envelope, false);
+      if (llvm::Error error =
+              applyResourceTimeEnvelopeDelta(envelope, false))
+        return error;
   for (PnrIndex envelope = newOffset; envelope != newOffset + newCount;
        ++envelope)
     if (!contains(oldOffset, oldCount, envelope))
-      applyResourceTimeEnvelopeDelta(envelope, true);
+      if (llvm::Error error = applyResourceTimeEnvelopeDelta(envelope, true))
+        return error;
   return llvm::Error::success();
 }
 
@@ -248,8 +323,11 @@ llvm::Error SpatialCandidateState::replaceResourceTimeEnvelope(
                          std::numeric_limits<PnrIndex>::max())
     return candidateError("resource-time envelope refcount overflows");
   if (oldEnvelope)
-    applyResourceTimeEnvelopeDelta(*oldEnvelope, false);
+    if (llvm::Error error =
+            applyResourceTimeEnvelopeDelta(*oldEnvelope, false))
+      return error;
   if (newEnvelope)
-    applyResourceTimeEnvelopeDelta(*newEnvelope, true);
+    if (llvm::Error error = applyResourceTimeEnvelopeDelta(*newEnvelope, true))
+      return error;
   return llvm::Error::success();
 }

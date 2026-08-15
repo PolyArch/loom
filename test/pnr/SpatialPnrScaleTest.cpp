@@ -370,6 +370,7 @@ ScaleObservation observeSpatialPnr(
     const dataflow::CanonicalDataflowProgramView &dataflow,
     const loom::mapping::TechMappingView &tech,
     const loom::fabric::FabricArtifactView &fabric,
+    const loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
     const loom::pnr::ResolvedPnrConfigView &config,
     const loom::mapping::SpatialMappingConstraintSetView &constraints,
     const loom::ArtifactStore &store,
@@ -377,7 +378,7 @@ ScaleObservation observeSpatialPnr(
   const std::uint64_t cpuStart = processCpuNanoseconds();
   const auto wallStart = std::chrono::steady_clock::now();
   outcome = loom::pnr::generateSpatialMappings(
-      {dataflow, tech, fabric, config, constraints, store, 2});
+      {dataflow, tech, fabric, physicalTiming, config, constraints, store, 2});
   const auto wallEnd = std::chrono::steady_clock::now();
   return {static_cast<std::uint64_t>(
               std::chrono::duration_cast<std::chrono::nanoseconds>(wallEnd -
@@ -419,6 +420,13 @@ std::string spatialOutcomeDiagnostic(
                                Outcome,
                                loom::pnr::ProvenInfeasibleSpatialMapping>)
           return "proven infeasible: " + value.diagnostic;
+        else if constexpr (std::is_same_v<
+                               Outcome,
+                               loom::pnr::InterruptedSpatialPnrGeneration>)
+          return (llvm::Twine("interrupted at ") +
+                  loom::pnr::spatialPnrInterruptionStageSpelling(
+                      value.snapshot.stage))
+              .str();
         else {
           std::string result;
           if constexpr (
@@ -454,15 +462,18 @@ void regularMeshProducesTypedOutcome() {
       take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
           dataflow, tech.view(), fabric.view(), store));
   auto config = scalePnrConfig();
+  auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fabric.view()));
   loom::pnr::SpatialPnrGenerationOutcome outcome;
   const ScaleObservation observation =
-      observeSpatialPnr(dataflow, tech.view(), fabric.view(), config,
-                        constraints.view(), store, outcome);
+      observeSpatialPnr(dataflow, tech.view(), fabric.view(), physicalTiming,
+                        config, constraints.view(), store, outcome);
   const auto *generated =
       std::get_if<loom::pnr::GeneratedSpatialMappings>(&outcome);
   if (!generated || generated->candidates.empty() ||
       generated->termination !=
-          loom::pnr::SpatialPnrGenerationTermination::FixedAttemptsCompleted)
+          loom::pnr::PnrGenerationTermination::FixedAttemptsCompleted)
     fail("regular finite-degree mesh produced no completed Mapping: " +
          spatialOutcomeDiagnostic(outcome));
   for (const auto &reference : generated->candidates) {
@@ -517,10 +528,13 @@ void irregularMeshProvesResidentContextPigeonhole() {
       take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
           dataflow, tech.view(), fabric.view(), store));
   auto config = scalePnrConfig();
+  auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fabric.view()));
   loom::pnr::SpatialPnrGenerationOutcome outcome;
   const ScaleObservation observation =
-      observeSpatialPnr(dataflow, tech.view(), fabric.view(), config,
-                        constraints.view(), store, outcome);
+      observeSpatialPnr(dataflow, tech.view(), fabric.view(), physicalTiming,
+                        config, constraints.view(), store, outcome);
   const auto *proof =
       std::get_if<loom::pnr::ProvenInfeasibleSpatialMapping>(&outcome);
   if (!proof)
@@ -565,15 +579,18 @@ void irregularMeshProducesTypedOutcome() {
       take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
           dataflow, tech.view(), fabric.view(), store));
   auto config = scalePnrConfig();
+  auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fabric.view()));
   loom::pnr::SpatialPnrGenerationOutcome outcome;
   const ScaleObservation observation =
-      observeSpatialPnr(dataflow, tech.view(), fabric.view(), config,
-                        constraints.view(), store, outcome);
+      observeSpatialPnr(dataflow, tech.view(), fabric.view(), physicalTiming,
+                        config, constraints.view(), store, outcome);
   const auto *generated =
       std::get_if<loom::pnr::GeneratedSpatialMappings>(&outcome);
   if (!generated || generated->candidates.empty() ||
       generated->termination !=
-          loom::pnr::SpatialPnrGenerationTermination::FixedAttemptsCompleted)
+          loom::pnr::PnrGenerationTermination::FixedAttemptsCompleted)
     fail("feasible irregular mesh produced no completed Mapping: " +
          spatialOutcomeDiagnostic(outcome));
   for (const auto &reference : generated->candidates) {

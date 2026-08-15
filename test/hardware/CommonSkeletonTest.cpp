@@ -3,10 +3,10 @@
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
 #include "Hardware/RTL/Specialization.h"
-#include "Hardware/RTL/SystemImplementation.h"
-#include "Hardware/RTL/SystemSkeleton.h"
+#include "Hardware/RTL/SpatialCoreImplementation.h"
 
 #include "ConfigurationABITestSupport.h"
+#include "CommonSkeletonStructuralToolArtifacts.h"
 #include "ConfigurationTransportTestSupport.h"
 #include "PortableProviderTestSupport.h"
 
@@ -69,6 +69,11 @@ using loom::hardware::rtl::ResolvedFabricPhysicalOperation;
 void require(llvm::StringRef test, bool condition, llvm::StringRef message) {
   if (!condition)
     fail(test, message.str());
+}
+
+void requireSuccess(llvm::StringRef test, llvm::Error error) {
+  if (error)
+    fail(test, llvm::toString(std::move(error)));
 }
 
 template <typename T> T take(llvm::StringRef test, llvm::Expected<T> value) {
@@ -355,7 +360,8 @@ FinalizedFabricRoot makeTemporalHierarchyFabric(llvm::StringRef test,
           PeSpec::temporal(
               {bits8, bits8}, {tagged8x2},
               TemporalPeParameters{2, FuConfigurationMode::PerInstruction,
-                                   ::fabric::OperandBufferMode::PerInputPort, 2,
+                                   ::fabric::OperandBufferMode::PerInstruction,
+                                   1,
                                    TemporalRegisterFifoParameters{1, 2, 2}})));
   auto fu =
       take(test, pe.addFu({take(test, pe.input(0)), take(test, pe.input(1))},
@@ -684,8 +690,9 @@ SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
   loom::BlobStore blobs(blobRoot.string());
   const auto implementation = take(
       test,
-      loom::hardware::rtl::finalizePortableSystemHardwareImplementation(
-          context, fabric.abi, providers, externalContracts, store, blobs));
+      loom::hardware::rtl::finalizePortableSpatialCoreHardwareImplementation(
+          context, fabric.abi, fabric.spatialCore, providers,
+          externalContracts, store, blobs));
   std::size_t dataInterfaces = 0;
   std::size_t memoryInterfaces = 0;
   for (const auto &interface : implementation.implementation().interfaces()) {
@@ -708,7 +715,7 @@ SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
       });
   require(test,
           dataInterfaces == expectedData && memoryInterfaces == expectedMemory,
-          "System HardwareImplementation omitted a spatial attachment");
+          "SpatialCore HardwareImplementation omitted a local attachment");
   return result;
 }
 
@@ -716,6 +723,8 @@ struct TemporalToolArtifact final {
   std::string systemVerilog;
   loom::hardware::test::PortableConfigurationTarget target;
   std::vector<std::uint8_t> activeImage;
+  std::vector<std::uint8_t> atomicFanoutImage;
+  std::vector<std::uint8_t> dispatchImage;
 };
 
 TemporalToolArtifact temporalHierarchyBuildsStructuralSkeleton() {
@@ -764,23 +773,33 @@ TemporalToolArtifact temporalHierarchyBuildsStructuralSkeleton() {
               schema.layout().outputPortCount == 1,
           "temporal hierarchy fixture changed its direct-carrier shape");
 
-  const auto routeInput = [&](std::uint32_t port) {
+  const auto routeInput = [&](std::uint32_t port, std::uint64_t tag = 1) {
     return loom::fabric::FabricTemporalPeOperandSelection{
         loom::fabric::FabricTemporalPeSelectorKind::Route,
         loom::fabric::FabricTemporalPeSelectorTarget{
             loom::fabric::FabricTemporalPePortTarget{port}},
-        llvm::APInt(schema.layout().tagWidthBits, 1)};
+        llvm::APInt(schema.layout().tagWidthBits, tag)};
   };
-  loom::fabric::FabricTemporalPeResultSelection routeOutput{
-      loom::fabric::FabricTemporalPeSelectorKind::Route,
-      loom::fabric::FabricTemporalPeSelectorTarget{
-          loom::fabric::FabricTemporalPePortTarget{0}},
-      llvm::APInt(schema.layout().tagWidthBits, 2)};
+  const auto routeOutput = [&](std::uint64_t tag) {
+    return loom::fabric::FabricTemporalPeResultSelection{
+        loom::fabric::FabricTemporalPeSelectorKind::Route,
+        loom::fabric::FabricTemporalPeSelectorTarget{
+            loom::fabric::FabricTemporalPePortTarget{0}},
+        llvm::APInt(schema.layout().tagWidthBits, tag)};
+  };
   loom::fabric::FabricTemporalPeActive active;
   active.rows.resize(schema.layout().contextCount);
   active.rows.front() = loom::fabric::FabricTemporalPeInstructionEntry{
-      fu, {routeInput(0), routeInput(1)}, {routeOutput}};
+      fu, {routeInput(0), routeInput(1)}, {routeOutput(2)}};
   auto peSemantic = take(test, schema.encode(active));
+  loom::fabric::FabricTemporalPeActive atomicFanout = active;
+  atomicFanout.rows[1] = loom::fabric::FabricTemporalPeInstructionEntry{
+      fu, {routeInput(0), routeInput(1)}, {routeOutput(3)}};
+  auto atomicFanoutSemantic = take(test, schema.encode(atomicFanout));
+  loom::fabric::FabricTemporalPeActive dispatch = active;
+  dispatch.rows[1] = loom::fabric::FabricTemporalPeInstructionEntry{
+      fu, {routeInput(0, 3), routeInput(1, 3)}, {routeOutput(3)}};
+  auto dispatchSemantic = take(test, schema.encode(dispatch));
 
   std::vector<loom::hardware::SemanticConfigurationValue> values;
   const auto pePhysical =
@@ -824,16 +843,34 @@ TemporalToolArtifact temporalHierarchyBuildsStructuralSkeleton() {
       fabric.operations.front().capability->configurationFieldSchema.empty(),
       "fixed add fixture unexpectedly requires operation configuration");
 
-  return TemporalToolArtifact{
-      std::move(conformance.systemVerilog),
+  const auto target =
       take(test, loom::hardware::test::derivePortableConfigurationTarget(
-                     fabric.abi, fabric.spatialCore, owner->id)),
-      take(test, fabric.abi.abi().encode(owner->id, values))};
+                     fabric.abi, fabric.spatialCore, owner->id));
+  auto activeImage = take(test, fabric.abi.abi().encode(owner->id, values));
+  std::vector<loom::hardware::SemanticConfigurationValue> atomicValues =
+      values;
+  atomicValues.front().value.assign(atomicFanoutSemantic.bytes().begin(),
+                                    atomicFanoutSemantic.bytes().end());
+  const auto secondFuSlot =
+      take(test, loom::fabric::qualifyFabricConfigurationSlot(
+                     fuPhysical, loom::fabric::InstructionContextRef{pe, 1}));
+  atomicValues.push_back(
+      {secondFuSlot, std::vector<std::uint8_t>(fuSemantic.bytes().begin(),
+                                               fuSemantic.bytes().end())});
+  auto atomicFanoutImage =
+      take(test, fabric.abi.abi().encode(owner->id, atomicValues));
+  atomicValues.front().value.assign(dispatchSemantic.bytes().begin(),
+                                    dispatchSemantic.bytes().end());
+  auto dispatchImage =
+      take(test, fabric.abi.abi().encode(owner->id, atomicValues));
+  return TemporalToolArtifact{std::move(conformance.systemVerilog), target,
+                              std::move(activeImage),
+                              std::move(atomicFanoutImage),
+                              std::move(dispatchImage)};
 }
 
 struct RepeatedSpatialCoreToolArtifact final {
   std::string systemVerilog;
-  std::string systemRootVerilog;
   loom::hardware::test::PortableConfigurationTarget target;
   std::vector<std::uint8_t> activeImage;
 };
@@ -948,54 +985,39 @@ repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
               systemProviders))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog systemContracts;
-  auto systemSkeleton = take(
-      test, loom::hardware::rtl::buildPortableSystemRootCirctSkeleton(
-                systemContext, fabric.abi, systemProviders, systemContracts));
-  require(test,
-          systemSkeleton.spatialDefinitionCount == 1 &&
-              systemSkeleton.spatialInstanceCount == 2,
-          "System hierarchy did not share the repeated SpatialCore definition");
-  auto systemRootVerilog =
-      take(test, loom::hardware::rtl::lowerAndExportSpecializedSystemVerilog(
-                     *systemSkeleton.module));
-  const auto implementation = take(
-      test, loom::hardware::rtl::finalizePortableSystemHardwareImplementation(
-                systemContext, fabric.abi, systemProviders, systemContracts,
-                store, blobs));
-  require(
-      test,
-      implementation.implementation().representationRoot().top ==
-          loom::hardware::RepresentationLocator{
-              loom::hardware::RepresentationObjectKind::Module, "loom_system"},
-      "System HardwareImplementation changed its root module");
-  std::size_t clockInterfaces = 0;
-  std::size_t resetInterfaces = 0;
-  std::size_t configurationInterfaces = 0;
-  for (const auto &interface : implementation.implementation().interfaces()) {
-    clockInterfaces +=
-        std::holds_alternative<loom::hardware::ImplementationClockInterfaceRef>(
-            interface.semanticRef);
-    resetInterfaces +=
-        std::holds_alternative<loom::hardware::ImplementationResetInterfaceRef>(
-            interface.semanticRef);
-    configurationInterfaces += std::holds_alternative<
-        loom::hardware::ImplementationConfigurationInterfaceRef>(
-        interface.semanticRef);
+  std::vector<loom::hardware::FinalizedHardwareImplementation>
+      implementations;
+  for (const auto core : system.artifact().accCoreOccurrences()) {
+    const loom::fabric::SpatialCoreOccurrenceRef subject{core};
+    auto implementation = take(
+        test,
+        loom::hardware::rtl::
+            finalizePortableSpatialCoreHardwareImplementation(
+                systemContext, fabric.abi, subject, systemProviders,
+                systemContracts, store, blobs));
+    require(test,
+            implementation.implementation().subject() == subject &&
+                implementation.implementation().representationRoot().top ==
+                    loom::hardware::RepresentationLocator{
+                        loom::hardware::RepresentationObjectKind::Module,
+                        "loom_module"},
+            "SpatialCore HardwareImplementation changed its exact subject");
+    const auto imported =
+        take(test, loom::hardware::importHardwareImplementation(
+                       implementation.reference(), store, blobs));
+    require(test,
+            imported.canonicalBytes().bytes() ==
+                implementation.canonicalBytes().bytes(),
+            "SpatialCore HardwareImplementation did not round-trip");
+    implementations.push_back(std::move(implementation));
   }
   require(test,
-          clockInterfaces == 1 && resetInterfaces == 1 &&
-              configurationInterfaces ==
-                  fabric.abi.abi().programmingUnits().size(),
-          "System HardwareImplementation lost a SpatialCore interface");
-  const auto imported =
-      take(test, loom::hardware::importHardwareImplementation(
-                     implementation.reference(), store, blobs));
-  require(test,
-          imported.canonicalBytes().bytes() ==
-              implementation.canonicalBytes().bytes(),
-          "System HardwareImplementation did not round-trip");
-  return {std::move(*referenceSystemVerilog), std::move(systemRootVerilog),
-          referenceConfiguration->target, referenceConfiguration->route};
+          implementations.size() == 2 &&
+              implementations.front().reference() !=
+                  implementations.back().reference(),
+          "occurrence-scoped implementations did not retain distinct owners");
+  return {std::move(*referenceSystemVerilog), referenceConfiguration->target,
+          referenceConfiguration->route};
 }
 
 void configurationAbiIncludesFuTopology() {
@@ -1392,8 +1414,8 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
                   "rtl/internal_module.sv", rtlDigest}}));
   loom::hardware::HardwareImplementationDraft implementationDraft{
       fabric.system.reference(),
+      fabric.spatialCore,
       fabric.abi.reference(),
-      {},
       std::move(representation),
       std::nullopt,
       std::move(interfaces),
@@ -1427,230 +1449,6 @@ InternalToolArtifact internalOperationBuildsStructuralSkeleton() {
               implementation.canonicalBytes().bytes(),
           "internal RTL HardwareImplementation did not round-trip");
   return InternalToolArtifact{systemVerilog, std::move(configuration)};
-}
-
-void writeBoundaryToolArtifacts(const std::filesystem::path &root,
-                                llvm::StringRef systemVerilog) {
-  std::filesystem::create_directories(root);
-  std::ofstream(root / "loom_module.sv") << systemVerilog.str();
-  std::ofstream testbench(root / "testbench.sv");
-  testbench << R"sv(
-module testbench;
-  logic        clock;
-  logic        reset;
-  logic [31:0] input_0_data;
-  logic        input_0_valid;
-  logic [3:0]  input_1_data;
-  logic [4:0]  input_1_tag;
-  logic        input_1_valid;
-  logic        output_0_ready;
-  logic        output_1_ready;
-  logic        input_0_ready;
-  logic        input_1_ready;
-  logic [15:0] output_0_data;
-  logic        output_0_valid;
-  logic [2:0]  output_1_tag;
-  logic        output_1_valid;
-  integer      control;
-
-)sv";
-  testbench << loom::hardware::test::portableAxiLiteSignalDeclarations();
-  testbench << R"sv(
-
-  loom_module dut(.*);
-
-  initial begin
-    clock = 0;
-    reset = 0;
-)sv";
-  testbench << loom::hardware::test::portableAxiLiteInitialization();
-  testbench << R"sv(
-    for (control = 0; control < 16; control = control + 1) begin
-      input_0_data = 32'hcafe0000 ^ control;
-      input_0_valid = control[3];
-      input_1_data = control[3:0];
-      input_1_tag = 5'h18 ^ control[4:0];
-      input_1_valid = control[2];
-      output_0_ready = control[1];
-      output_1_ready = control[0];
-      #1;
-      if (input_0_ready !== output_0_ready ||
-          input_1_ready !== output_1_ready ||
-          output_0_data !== input_0_data[15:0] ||
-          output_0_valid !== input_0_valid ||
-          output_1_tag !== input_1_tag[2:0] ||
-          output_1_valid !== input_1_valid)
-        $fatal(1, "Module boundary passthrough changed transport semantics");
-    end
-    $finish;
-  end
-endmodule
-)sv";
-  std::ofstream(root / "common_skeleton.ys") << R"ys(
-read_verilog -sv loom_module.sv
-hierarchy -check -top loom_module
-check -assert
-select -assert-none loom_module/t:$*latch* loom_module/t:$_*LATCH* loom_module/t:$mem*
-synth -top loom_module
-check -assert
-select -assert-none loom_module/t:$*latch* loom_module/t:$_*LATCH* loom_module/t:$mem*
-)ys";
-}
-
-void writeSpatialHierarchyToolArtifacts(const std::filesystem::path &root,
-                                        const SpatialToolArtifact &artifact) {
-  std::filesystem::create_directories(root);
-  std::ofstream(root / "spatial_hierarchy_module.sv") << artifact.systemVerilog;
-  std::ofstream testbench(root / "spatial_hierarchy_testbench.sv");
-  testbench << R"sv(
-module spatial_hierarchy_testbench;
-  logic clock;
-  logic reset;
-)sv";
-  testbench << loom::hardware::test::portableAxiLiteSignalDeclarations()
-            << "\n";
-  testbench << R"sv(  loom_module dut(
-    .clock(clock),
-    .reset(reset),
-    .cfg_awaddr(cfg_awaddr),
-    .cfg_awvalid(cfg_awvalid),
-    .cfg_awready(cfg_awready),
-    .cfg_wdata(cfg_wdata),
-    .cfg_wstrb(cfg_wstrb),
-    .cfg_wvalid(cfg_wvalid),
-    .cfg_wready(cfg_wready),
-    .cfg_bresp(cfg_bresp),
-    .cfg_bvalid(cfg_bvalid),
-    .cfg_bready(cfg_bready),
-    .cfg_araddr(cfg_araddr),
-    .cfg_arvalid(cfg_arvalid),
-    .cfg_arready(cfg_arready),
-    .cfg_rdata(cfg_rdata),
-    .cfg_rresp(cfg_rresp),
-    .cfg_rvalid(cfg_rvalid),
-    .cfg_rready(cfg_rready)
-  );
-
-  always #5 clock = ~clock;
-)sv";
-  testbench << loom::hardware::test::portableAxiLiteDriverTasks();
-  testbench << loom::hardware::test::portableCycleWatchdog();
-  testbench << R"sv(
-
-  initial begin
-    clock = 0;
-    reset = 1;
-)sv";
-  testbench << loom::hardware::test::portableAxiLiteInitialization();
-  testbench << R"sv(
-    repeat (2) @(posedge clock);
-    @(negedge clock);
-    reset = 0;
-)sv";
-  for (const auto &[target, image] : artifact.inactiveConfigurations)
-    testbench << take(
-        "writeSpatialHierarchyToolArtifacts",
-        loom::hardware::test::portableAxiLiteProgramAndVerify(target, image));
-  testbench << R"sv(    cfg_read(32'hfffffff0, cfg_readback, cfg_read_response);
-    if (cfg_read_response !== 2'b11)
-      $fatal(1, "unmapped configuration read did not return DECERR");
-    $finish;
-  end
-endmodule
-)sv";
-  std::ofstream(root / "spatial_hierarchy.ys") << R"ys(
-read_verilog -sv spatial_hierarchy_module.sv
-hierarchy -check -top loom_module
-check -assert
-proc
-synth -top loom_module
-check -assert
-select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
-)ys";
-}
-
-void writeRepeatedSpatialCoreToolArtifacts(
-    const std::filesystem::path &root,
-    const RepeatedSpatialCoreToolArtifact &artifact) {
-  std::filesystem::create_directories(root);
-  std::ofstream(root / "repeated_spatial_core_module.sv")
-      << artifact.systemVerilog;
-  std::ofstream(root / "repeated_spatial_core_system.sv")
-      << artifact.systemRootVerilog;
-  std::ofstream testbench(root / "repeated_spatial_core_testbench.sv");
-  testbench << R"sv(
-module repeated_spatial_core_testbench;
-  logic clock;
-  logic reset;
-)sv";
-  testbench << loom::hardware::test::portableAxiLiteSignalDeclarations();
-  testbench << R"sv(
-  logic cfg_awready_0, cfg_awready_1;
-  logic cfg_wready_0, cfg_wready_1;
-  logic [1:0] cfg_bresp_0, cfg_bresp_1;
-  logic cfg_bvalid_0, cfg_bvalid_1;
-  logic cfg_arready_0, cfg_arready_1;
-  logic [31:0] cfg_rdata_0, cfg_rdata_1;
-  logic [1:0] cfg_rresp_0, cfg_rresp_1;
-  logic cfg_rvalid_0, cfg_rvalid_1;
-
-  loom_module core_0(
-    .clock(clock), .reset(reset),
-    .cfg_awaddr(cfg_awaddr), .cfg_awvalid(cfg_awvalid),
-    .cfg_awready(cfg_awready_0), .cfg_wdata(cfg_wdata),
-    .cfg_wstrb(cfg_wstrb), .cfg_wvalid(cfg_wvalid),
-    .cfg_wready(cfg_wready_0), .cfg_bresp(cfg_bresp_0),
-    .cfg_bvalid(cfg_bvalid_0), .cfg_bready(cfg_bready),
-    .cfg_araddr(cfg_araddr), .cfg_arvalid(cfg_arvalid),
-    .cfg_arready(cfg_arready_0), .cfg_rdata(cfg_rdata_0),
-    .cfg_rresp(cfg_rresp_0), .cfg_rvalid(cfg_rvalid_0),
-    .cfg_rready(cfg_rready));
-  loom_module core_1(
-    .clock(clock), .reset(reset),
-    .cfg_awaddr(cfg_awaddr), .cfg_awvalid(cfg_awvalid),
-    .cfg_awready(cfg_awready_1), .cfg_wdata(cfg_wdata),
-    .cfg_wstrb(cfg_wstrb), .cfg_wvalid(cfg_wvalid),
-    .cfg_wready(cfg_wready_1), .cfg_bresp(cfg_bresp_1),
-    .cfg_bvalid(cfg_bvalid_1), .cfg_bready(cfg_bready),
-    .cfg_araddr(cfg_araddr), .cfg_arvalid(cfg_arvalid),
-    .cfg_arready(cfg_arready_1), .cfg_rdata(cfg_rdata_1),
-    .cfg_rresp(cfg_rresp_1), .cfg_rvalid(cfg_rvalid_1),
-    .cfg_rready(cfg_rready));
-
-  always_comb begin
-    cfg_awready = cfg_awready_0 & cfg_awready_1;
-    cfg_wready = cfg_wready_0 & cfg_wready_1;
-    cfg_bvalid = cfg_bvalid_0 & cfg_bvalid_1;
-    cfg_bresp = cfg_bresp_0 | cfg_bresp_1;
-    cfg_arready = cfg_arready_0 & cfg_arready_1;
-    cfg_rvalid = cfg_rvalid_0 & cfg_rvalid_1;
-    cfg_rresp = cfg_rresp_0 | cfg_rresp_1;
-    cfg_rdata = (cfg_rdata_0 === cfg_rdata_1) ? cfg_rdata_0 : 32'hx;
-  end
-
-  always #5 clock = ~clock;
-)sv";
-  testbench << loom::hardware::test::portableAxiLiteDriverTasks();
-  testbench << loom::hardware::test::portableCycleWatchdog();
-  testbench << R"sv(
-
-  initial begin
-    clock = 0;
-    reset = 1;
-)sv";
-  testbench << loom::hardware::test::portableAxiLiteInitialization();
-  testbench << R"sv(
-    repeat (2) @(posedge clock);
-    @(negedge clock);
-    reset = 0;
-)sv";
-  testbench << take("writeRepeatedSpatialCoreToolArtifacts",
-                    loom::hardware::test::portableAxiLiteProgramAndVerify(
-                        artifact.target, artifact.activeImage));
-  testbench << R"sv(    $finish;
-  end
-endmodule
-)sv";
 }
 
 void writeInternalToolArtifacts(const std::filesystem::path &root,
@@ -1865,6 +1663,71 @@ module temporal_testbench;
 )sv";
   testbench << take("writeTemporalToolArtifacts",
                     loom::hardware::test::portableAxiLiteProgramAndVerify(
+                        artifact.target, artifact.atomicFanoutImage));
+  testbench << R"sv(    @(negedge clock);
+    input_0_data = 8'd5;
+    input_1_data = 8'd7;
+    input_0_tag = 2'd1;
+    input_1_tag = 2'd1;
+    input_0_valid = 1;
+    input_1_valid = 1;
+    #1;
+    check(input_0_ready && input_1_ready,
+          "Atomic fanout did not admit two empty queue sets");
+    @(posedge clock);
+    @(negedge clock);
+    input_0_valid = 0;
+    input_1_valid = 0;
+    while (!output_0_valid)
+      @(posedge clock);
+    #1;
+    check(output_0_data == 8'd12 &&
+              (output_0_tag == 2'd2 || output_0_tag == 2'd3),
+          "Atomic fanout produced the wrong first resident result");
+
+    @(negedge clock);
+    input_0_data = 8'd10;
+    input_1_data = 8'd20;
+    input_0_valid = 1;
+    input_1_valid = 1;
+    #1;
+    check(!input_0_ready && !input_1_ready,
+          "Atomic fanout accepted a ready subset of matching queues");
+    repeat (2) begin
+      @(posedge clock);
+      #1;
+      check(!input_0_ready && !input_1_ready && output_0_valid &&
+                output_0_data == 8'd12,
+            "Stalled atomic fanout changed partial queue state");
+    end
+
+    @(negedge clock);
+    output_0_ready = 1;
+    #1;
+    begin : wait_for_atomic_replacement
+      integer wait_cycles;
+      wait_cycles = 0;
+      while (!(input_0_ready && input_1_ready)) begin
+        @(negedge clock);
+        #1;
+        wait_cycles = wait_cycles + 1;
+        if (wait_cycles == 32)
+          $fatal(1, "Atomic fanout did not retry as one transfer");
+      end
+    end
+    @(posedge clock);
+    @(negedge clock);
+    input_0_valid = 0;
+    input_1_valid = 0;
+    repeat (12) @(posedge clock);
+    #1;
+    check(!output_0_valid,
+          "Atomic fanout did not drain every resident result");
+    output_0_ready = 0;
+
+)sv";
+  testbench << take("writeTemporalToolArtifacts",
+                    loom::hardware::test::portableAxiLiteProgramAndVerify(
                         artifact.target, artifact.activeImage));
   testbench << R"sv(    input_0_tag = 2'd3;
     input_0_valid = 1;
@@ -1934,6 +1797,45 @@ module temporal_testbench;
       end
     join
     check(!output_0_valid, "Temporal result stream did not terminate");
+)sv";
+  testbench << take("writeTemporalToolArtifacts",
+                    loom::hardware::test::portableAxiLiteProgramAndVerify(
+                        artifact.target, artifact.dispatchImage));
+  testbench << R"sv(    @(negedge clock);
+    input_0_data = 8'd9;
+    input_1_data = 8'd4;
+    input_0_tag = 2'd3;
+    input_1_tag = 2'd3;
+    input_0_valid = 1;
+    input_1_valid = 1;
+    begin : wait_for_context_one_ingress
+      integer wait_cycles;
+      wait_cycles = 0;
+      while (!(input_0_ready && input_1_ready)) begin
+        @(negedge clock);
+        #1;
+        wait_cycles = wait_cycles + 1;
+        if (wait_cycles == 8)
+          $fatal(1, "Runnable context was blocked by an idle context");
+      end
+    end
+    @(posedge clock);
+    @(negedge clock);
+    input_0_valid = 0;
+    input_1_valid = 0;
+    begin : wait_for_context_one_result
+      integer wait_cycles;
+      wait_cycles = 0;
+      while (!output_0_valid) begin
+        @(posedge clock);
+        #1;
+        wait_cycles = wait_cycles + 1;
+        if (wait_cycles == 8)
+          $fatal(1, "Idle context retained the dispatch cursor");
+      end
+    end
+    check(output_0_data == 8'd13 && output_0_tag == 2'd3,
+          "Context dispatch selected the wrong resident row");
     $finish;
   end
 endmodule
@@ -1967,9 +1869,17 @@ int main(int argc, char **argv) {
   const InternalToolArtifact internal =
       internalOperationBuildsStructuralSkeleton();
   if (argc == 2) {
-    writeBoundaryToolArtifacts(argv[1], systemVerilog);
-    writeSpatialHierarchyToolArtifacts(argv[1], spatial);
-    writeRepeatedSpatialCoreToolArtifacts(argv[1], repeated);
+    requireSuccess(
+        "main", loom::hardware::test::writeBoundaryStructuralToolArtifacts(
+                    argv[1], systemVerilog));
+    requireSuccess(
+        "main", loom::hardware::test::writeSpatialHierarchyToolArtifacts(
+                    argv[1], spatial.systemVerilog,
+                    spatial.inactiveConfigurations));
+    requireSuccess(
+        "main", loom::hardware::test::writeRepeatedSpatialCoreToolArtifacts(
+                    argv[1], repeated.systemVerilog, repeated.target,
+                    repeated.activeImage));
     writeInternalToolArtifacts(argv[1], internal);
     writeTemporalToolArtifacts(argv[1], temporal);
   }

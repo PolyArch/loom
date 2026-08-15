@@ -196,7 +196,7 @@ class InvocationManifest final {
 public:
   static constexpr llvm::StringLiteral schemaIdentity =
       "loom.dse.invocation_manifest";
-  static constexpr SchemaVersion schemaVersion{1, 1};
+  static constexpr SchemaVersion schemaVersion{1, 2};
 
   static llvm::Expected<InvocationManifest>
   get(DseRunClosure closure, std::uint64_t occurrenceOrdinal,

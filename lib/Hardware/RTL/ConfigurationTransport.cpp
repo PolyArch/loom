@@ -135,26 +135,12 @@ derivePortableConfigurationTransportLayout(
   std::vector<PendingUnit> selected;
   for (const ProgrammingUnit &unit :
        configurationAbi.abi().programmingUnits()) {
-    bool ownsSelectedCore = false;
-    bool ownsAnotherCore = false;
-    bool ownsDirectSystemResource = false;
-    for (const fabric::FabricPhysicalOccurrenceOwnerRef &owner :
-         unit.exactFabricResourceClosure) {
-      if (owner.kind() !=
-          fabric::FabricPhysicalOccurrenceOwnerKind::SpatialCoreInternal) {
-        ownsDirectSystemResource = true;
-        continue;
-      }
-      const auto &internal =
-          std::get<fabric::SpatialCoreInternalOccurrenceRef>(owner.payload());
-      if (internal.spatialCore == spatialCore)
-        ownsSelectedCore = true;
-      else
-        ownsAnotherCore = true;
-    }
-    if (!ownsSelectedCore)
+    const ProgrammingUnitOccurrenceScope scope =
+        deriveProgrammingUnitOccurrenceScope(unit);
+    if (!llvm::is_contained(scope.spatialCores, spatialCore))
       continue;
-    if (ownsAnotherCore || ownsDirectSystemResource)
+    if (scope.spatialCores.size() != 1 ||
+        scope.includesDirectSystemResources)
       return unsupported(
           "a programming unit selected by the local transport crosses its "
           "SpatialCore occurrence");

@@ -255,7 +255,7 @@ performance comparisons.
 
 ### Persistent Capability Schema
 
-`loom.fabric 4.1` persists one closed typed relation. It does not persist an
+`loom.fabric 5.0` persists one closed typed relation. It does not persist an
 exact actor geometry per alternative and does not replace domain records with
 counts or generic integer properties.
 
@@ -326,7 +326,7 @@ ordinary non-pointer data point remains distinct from every pointer format.
 `ReadSubwordSemantics`, `WriteSubwordSemantics`, and
 `InactiveLaneSemantics` are Fabric-owned closed enums because they state
 physical guarantees. Their semantic values and stable wire tags in
-`loom.fabric 4.1` are:
+`loom.fabric 5.0` are:
 
 ```text
 ReadSubwordSemantics  = NotApplicable(0) | Exact(1) | ZeroExtend(2)
@@ -336,7 +336,7 @@ InactiveLaneSemantics = NotApplicable(0) | Suppress(1)
 ```
 
 These tags were introduced by `loom.fabric 1.0` and retain the same values
-through `loom.fabric 4.1`. They do not inherit C++ enum
+through `loom.fabric 5.0`. They do not inherit C++ enum
 ordinals, source declaration order, or printer spelling. A codec must reject
 an unknown tag rather than preserve it as an opaque future value.
 
@@ -503,7 +503,7 @@ repeat it. Plain access derives alignment one for this compatibility query;
 atomic actors use their exact declared source alignment. Thus actor semantics
 and physical alignment capability each have one owner.
 
-The Fabric-owned clause tags are stable `loom.fabric 4.1` wire values:
+The Fabric-owned clause tags are stable `loom.fabric 5.0` wire values:
 
 ```text
 LoadStorePlain(0)
@@ -554,7 +554,7 @@ MemoryPortTransactionProjection =
 ```
 
 The projection tags above were introduced by `loom.fabric 1.0` and retain the
-same values through `loom.fabric 4.1`. They do
+same values through `loom.fabric 5.0`. They do
 not inherit a C++ enum ordinal or printer spelling, and an unknown tag is
 invalid.
 
@@ -627,7 +627,7 @@ matcher and one ordered operand queue for every externally supplied input
 role. SpatialMapping must assign nonconflicting Physical Tags to every
 may-overlap incompatible interpretation in that ingress's local match domain.
 Active output roles within one capability alternative remain injective under
-`loom.fabric 4.1`. Reusing one tagged egress across different resident rows
+`loom.fabric 5.0`. Reusing one tagged egress across different resident rows
 remains legal under the existing Temporal grant, tag, and capacity contracts,
 but
 serializing several result roles of one firing onto one egress would require
@@ -1053,6 +1053,17 @@ must therefore be unique within that local match domain. Tags may be reused
 across disjoint ingress domains. The selected operation kind and capability
 alternative are configured row state, not runtime match fields.
 
+The occurrence-wide operation table, external ingress keys, and internal-edge
+exclusions enter Mapping only through the Spatial memory-demand functions
+defined by `spec-pnr.md`. They are mechanically rebuilt from the exact Tech
+Memory Realizations and selected occurrence. They assign row ordinals globally
+across all operation ports, enforce the one occurrence capacity `K`, and
+reject two rows with the same external ingress key on that occurrence.
+Generator admission, PnR, strict verification, materialization, and configured-
+hardware projection consume the same derivation. Unlike Temporal PE operand
+ingress, a Memory ingress never fanouts: one accepted token resolves to exactly
+one row and service role.
+
 Different operands or results of one actor may use different Physical Tags.
 For example, one vector-read row may match address, mask, and control on tags
 `1`, `7`, and `3`, then write data and done with tags `5` and `6`. The row fires
@@ -1168,6 +1179,15 @@ holding state must implement the declared backpressure and fanout contract.
 Queue depths and multicast holding capacity are Fabric facts, never simulator
 or Mapping defaults.
 
+A Temporal operand queue accepts an external or internal token only while its
+registered occupancy is empty. Dequeue changes that occupancy at the clock
+boundary and reopens ingress in the following cycle; it does not create a
+same-cycle replacement path from service or result readiness to input
+readiness. Consequently a Temporal input `ready` depends on the configured
+match and registered queue capacity, never on manager arbitration, Local
+Memory Service readiness, or result retirement. This registered boundary is
+part of the Operation Engine contract, not an optional throughput convention.
+
 Each memory-operation port and the optional Local Memory Service own distinct,
 complete `ResourceContractRecord` values. A port pattern claims only
 port-owned contexts, operand/result holding state, issue state, and retirement
@@ -1184,6 +1204,14 @@ the port contract. Mapping selects compatible port and service patterns and
 emits their ordinary typed `ResourceUse` records; it cannot synthesize a
 cross-owner pattern or generic arbiter graph. Queue contents, occupancy,
 outstanding transactions, and grant cursors are nonpersistent execution state.
+
+The CGRA execution-plan importer must compare every selected operation
+activation's complete `roleSources` and `roleDestinations` against the shared
+Spatial memory-demand functions. It carries each selected template-relative
+internal edge only after resolving the exact occurrence-local connection
+ordinal. A missing, reordered, foreign, or open role/connection is rejected at
+plan construction or runtime admission; execution never treats it as an
+ordinary residual route by approximation.
 
 One accepted actor firing selects exactly one declared memory-operation port
 use pattern. Its exact transaction projection produces either one Direct child
@@ -1231,6 +1259,34 @@ first enters explicit holding state that preserves the complete packet and
 multicast. A store retirement remains one ordered `done` event. An unselected
 canonical edge remains an external point-to-point obligation and must be routed
 through explicit Fabric resources.
+
+Every selected internal connection is closed within one configured occurrence.
+It has exactly one distinct producing row and role and at least one consuming
+row and role. Several consumers may name the same connection, but several
+producer selections may not; repeating the same logical producer for several
+consumers remains one producer. An unused connection has neither producer nor
+consumer. Configuration import rejects an open producer, an open consumer, or
+multiple producers instead of completing the relation by convention.
+
+For connection `c`, let `match[i]` select each configured destination operand
+queue. Its ingress is one atomic fanout:
+
+```text
+ready(c) = any(match) AND AND_i(!match[i] OR queue_empty[i])
+fire(c)  = source_valid(c) AND ready(c)
+```
+
+Every matching queue enqueues only on the common `fire(c)`. External result
+destinations and every selected internal connection participate in the same
+source publication tuple, so a blocked external result or any full internal
+queue prevents all destinations from consuming that result.
+
+Execution derives an internal transfer directly from that selected connection
+and merges its destination queues with any residual external sinks of the same
+Canonical result. The resulting publication uses one readiness conjunction and
+one token commit. It does not synthesize a RouteTree, Physical Tag, or private
+connection selector. Runtime admission independently checks that each source
+and destination role names exactly the carried occurrence-local connection.
 
 ## Local Memory Service
 
@@ -1497,6 +1553,8 @@ The selected actor roles and capability alternative provide the semantic type
 check. A Temporal internal edge addresses the destination row directly and
 therefore does not transport or compare the external Physical Tag. The
 relation is eligibility only; Mapping owns the selected sink-to-source edges.
+The occurrence-global closure rule above is reconstructed from selected rows;
+an ordinal is not a reusable point-to-point channel per operation port.
 
 The persistent wire uses `u64be` counts and ordinals and `u32be` closed-union
 tags. Match-field widths are fixed by the schema above and therefore need no

@@ -1,7 +1,7 @@
 //===- TemporalOperandBuffer.cpp - Temporal-PE operand-buffer contract ----===//
 //
-// Derives the exact operand-buffer resource contract of one temporal PE from its
-// two Fabric hardware parameters. The canonical logical-queue domain, the
+// Derives the exact operand-buffer resource contract of one temporal PE from
+// its two Fabric hardware parameters. The canonical logical-queue domain, the
 // mode-derived allocation units, the entry pool and per-queue queue state, the
 // two one-slot services, the two durable queue transitions, and the round-robin
 // grant relation are all mechanical consequences of `operand_buffer_mode` and
@@ -35,7 +35,8 @@ llvm::Error rejected(TemporalOperandBufferViolation violation,
                      const llvm::Twine &message) {
   return llvm::make_error<TemporalOperandBufferError>(
       violation,
-      (getTemporalOperandBufferViolationName(violation) + ": " + message).str());
+      (getTemporalOperandBufferViolationName(violation) + ": " + message)
+          .str());
 }
 
 // The largest derived key domain is the state inventory, which holds one queue
@@ -75,15 +76,14 @@ struct KeyLayout {
 };
 
 KeyLayout layoutOf(const TemporalOperandBufferContract &contract) {
-  return KeyLayout{
-      contract.allocationUnitCount(),
-      static_cast<std::uint32_t>(contract.logicalQueues().size())};
+  return KeyLayout{contract.allocationUnitCount(),
+                   static_cast<std::uint32_t>(contract.logicalQueues().size())};
 }
 
 // One `OperandEntryPool` state. Its occupancy is durable operand-buffer state
 // that only a committed transition changes, so no pattern claims it.
 ResourceStateDeclaration declareEntryPool(StateKey state,
-                                         CapacityUnits entries) {
+                                          CapacityUnits entries) {
   return ResourceStateDeclaration{
       state,
       {CapacityDimensionDeclaration{
@@ -91,9 +91,9 @@ ResourceStateDeclaration declareEntryPool(StateKey state,
           entries, CapacityUnits(0)}}};
 }
 
-// One `OperandQueue` state, empty after reset. A single logical queue can hold at
-// most the entries its allocation unit pools, which is the derived bound below
-// rather than a second hardware parameter.
+// One `OperandQueue` state, empty after reset. A single logical queue can hold
+// at most the entries its allocation unit pools, which is the derived bound
+// below rather than a second hardware parameter.
 ResourceStateDeclaration declareQueue(StateKey state, CapacityUnits entries) {
   return ResourceStateDeclaration{
       state,
@@ -191,11 +191,9 @@ TemporalOperandBufferContract::create(
     for (std::size_t fu = 0; fu != declaration.fuInputCounts.size(); ++fu)
       for (std::uint32_t input = 0; input != declaration.fuInputCounts[fu];
            ++input)
-        queues.push_back(
-            LogicalOperandQueueKey{InstructionContextRef{declaration.pe,
-                                                         context},
-                                   static_cast<FabricOrdinal>(fu),
-                                   static_cast<FabricOrdinal>(input)});
+        queues.push_back(LogicalOperandQueueKey{
+            InstructionContextRef{declaration.pe, context},
+            static_cast<FabricOrdinal>(fu), static_cast<FabricOrdinal>(input)});
 
   // The total mechanical projection onto allocation units.
   std::vector<OperandAllocationUnit> units;
@@ -218,9 +216,8 @@ TemporalOperandBufferContract::create(
                                     static_cast<FabricOrdinal>(input)});
     }
     for (std::size_t queue = 0; queue != queues.size(); ++queue)
-      unitOfQueue[queue] =
-          bankOfFu[queues[queue].fuOccurrence] +
-          static_cast<std::uint32_t>(queues[queue].fuInput);
+      unitOfQueue[queue] = bankOfFu[queues[queue].fuOccurrence] +
+                           static_cast<std::uint32_t>(queues[queue].fuInput);
     break;
   }
   case OperandBufferMode::AllFuShare:
@@ -232,8 +229,8 @@ TemporalOperandBufferContract::create(
   const std::uint32_t unitCount = static_cast<std::uint32_t>(units.size());
   const std::uint32_t queueTotal = static_cast<std::uint32_t>(queues.size());
 
-  // The queues each allocation unit pools, in canonical order. This is the cycle
-  // a contended service filters the canonical requester order to.
+  // The queues each allocation unit pools, in canonical order. This is the
+  // cycle a contended service filters the canonical requester order to.
   std::vector<Span> unitSpans(unitCount);
   for (std::uint32_t queue = 0; queue != queueTotal; ++queue)
     ++unitSpans[unitOfQueue[queue]].count;
@@ -255,7 +252,8 @@ TemporalOperandBufferContract::create(
   ResourceContractDeclaration contract;
   contract.states.reserve(3 * static_cast<std::size_t>(unitCount) + queueTotal);
   for (std::uint32_t unit = 0; unit != unitCount; ++unit)
-    contract.states.push_back(declareEntryPool(layout.entryPool(unit), entries));
+    contract.states.push_back(
+        declareEntryPool(layout.entryPool(unit), entries));
   for (std::uint32_t queue = 0; queue != queueTotal; ++queue)
     contract.states.push_back(declareQueue(layout.queue(queue), entries));
   for (std::uint32_t unit = 0; unit != unitCount; ++unit)
@@ -264,7 +262,8 @@ TemporalOperandBufferContract::create(
     contract.states.push_back(declareService(layout.dequeueService(unit)));
 
   // One append and one remove transition per logical queue.
-  contract.resourceTransitions.reserve(2 * static_cast<std::size_t>(queueTotal));
+  contract.resourceTransitions.reserve(2 *
+                                       static_cast<std::size_t>(queueTotal));
   for (std::uint32_t transition = 0; transition != 2 * queueTotal; ++transition)
     contract.resourceTransitions.push_back(ResourceTransitionKey(transition));
 
@@ -308,14 +307,12 @@ TemporalOperandBufferContract::create(
   contract.usePatterns.reserve(2 * static_cast<std::size_t>(queueTotal));
   for (std::uint32_t queue = 0; queue != queueTotal; ++queue)
     contract.usePatterns.push_back(servicePattern(
-        layout.enqueue(queue), queue,
-        layout.enqueueService(unitOfQueue[queue]),
+        layout.enqueue(queue), queue, layout.enqueueService(unitOfQueue[queue]),
         OperandBufferEligibility::FreeEntryAfterCycleStartDequeue,
         OperandBufferEvent::EnqueueCommit, layout.append(queue)));
   for (std::uint32_t queue = 0; queue != queueTotal; ++queue)
     contract.usePatterns.push_back(servicePattern(
-        layout.dequeue(queue), queue,
-        layout.dequeueService(unitOfQueue[queue]),
+        layout.dequeue(queue), queue, layout.dequeueService(unitOfQueue[queue]),
         OperandBufferEligibility::CycleStartHeadPresent,
         OperandBufferEvent::DequeueCommit, layout.remove(queue)));
 
@@ -345,12 +342,13 @@ TemporalOperandBufferContract::create(
   derived.entryCapacity_ = entries;
   derived.mode_ = declaration.mode;
 
-  // Every admitted concurrent commit set must leave the pool inside its declared
-  // bounds. `O - D + E` is linear in `O` with `D` and `E` in `{0, 1}`, so the
-  // only occupancies that can break `0 <= O - D + E <= capacity` are the two
-  // extremes and their neighbours; checking those with all four selections is a
-  // complete case analysis rather than a sample. The one comparison covers both
-  // directions, because an underflowed unsigned result also exceeds capacity.
+  // Every admitted concurrent commit set must leave the pool inside its
+  // declared bounds. `O - D + E` is linear in `O` with `D` and `E` in `{0, 1}`,
+  // so the only occupancies that can break `0 <= O - D + E <= capacity` are the
+  // two extremes and their neighbours; checking those with all four selections
+  // is a complete case analysis rather than a sample. The one comparison covers
+  // both directions, because an underflowed unsigned result also exceeds
+  // capacity.
   const std::uint32_t capacity = entries.value();
   const std::uint32_t probes[] = {0, 1, capacity - 1, capacity};
   for (std::uint32_t occupancy : probes)
@@ -387,8 +385,8 @@ llvm::ArrayRef<std::uint32_t>
 TemporalOperandBufferContract::queuesOf(std::uint32_t unit) const {
   assert(unit < unitSpans_.size() && "undeclared allocation unit");
   const Span span = unitSpans_[unit];
-  return llvm::ArrayRef<std::uint32_t>(unitQueues_).slice(span.first,
-                                                          span.count);
+  return llvm::ArrayRef<std::uint32_t>(unitQueues_)
+      .slice(span.first, span.count);
 }
 
 StateKey
@@ -467,6 +465,20 @@ CapacityUnits TemporalOperandBufferContract::occupancyAfter(
 }
 
 bool TemporalOperandBufferContract::admitsActorDequeueSet(
+    llvm::ArrayRef<std::uint32_t> queues) const {
+  std::vector<bool> served(units_.size(), false);
+  for (std::uint32_t queue : queues) {
+    if (queue >= unitOfQueue_.size())
+      return false;
+    const std::uint32_t unit = unitOfQueue_[queue];
+    if (served[unit])
+      return false;
+    served[unit] = true;
+  }
+  return true;
+}
+
+bool TemporalOperandBufferContract::admitsIngressEnqueueSet(
     llvm::ArrayRef<std::uint32_t> queues) const {
   std::vector<bool> served(units_.size(), false);
   for (std::uint32_t queue : queues) {

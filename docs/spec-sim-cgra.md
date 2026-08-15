@@ -82,6 +82,15 @@ one-enqueue/one-dequeue service contract, and canonical grant state. The
 simulator must not supply the former implicit depth 2 or any other capacity,
 port, or priority default.
 
+For a temporal PE, the frozen execution plan also consumes the exact active
+context-evaluation domains derived from compute bindings and the PE
+ResourceContract. The runtime projects each ready actor request to its
+candidate's next round-robin PE-clock slot. The cursor advances with the
+Fabric-owned evaluation opportunity rather than actor commit, so an active but
+idle context may consume one fair slot but cannot hold the cursor. Operation
+ResourceContracts remain the sole owner of actual actor-transition grants and
+commits; the simulator has no second readiness scheduler.
+
 ## Event Model
 
 CGRA-sim and DFG-sim share the dependency-driven progress protocol defined by
@@ -161,6 +170,21 @@ Fabric operation port and use pattern. It distinguishes element, contiguous,
 and indexed accesses even at equal payload width; consumes a dynamic mask as
 one ordinary token; suppresses inactive-lane requests; zero-fills inactive
 load lanes; and completes an all-zero mask without a service transaction.
+
+The frozen execution plan consumes each exact Memory activation from the
+SpatialMapping handshake projection. Its placement, capability, use pattern,
+mask form, external role endpoints, and internal-connection relation must
+match one operation exactly, and every projected activation must be consumed.
+The simulator does not infer a second role grouping from logical edges or from
+an operation-port owner.
+
+The frozen transport plan likewise derives every Temporal switch activation
+from the shared packed-row projection. It assigns a dense execution-local
+identity to each exact `(configured row, input)` instance and records the exact
+selected traversal-use slice on every incoming Route Tree node. Execution
+groups physical actions by that dense identity. The broader Fabric requester
+group remains the resource-arbitration key and never causes actions from
+different rows to fire atomically.
 
 A declared use pattern may issue several internal lane or beat transactions.
 CGRA-sim models their resource conflicts and timing, assembles active load

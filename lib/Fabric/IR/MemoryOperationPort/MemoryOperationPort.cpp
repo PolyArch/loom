@@ -826,4 +826,12 @@ MemoryOperationPortRecord::matchingCapabilities(
   return matches;
 }
 
+llvm::Expected<std::optional<std::uint32_t>>
+projectMemoryOperationIssueLatency(const MemoryOperationPortRecord &record,
+                                   UsePatternKey pattern) {
+  if (pattern.ordinal() >= record.resourceContract().usePatternCount())
+    return invalid("memory operation issue timing names an absent use pattern");
+  return record.resourceContract().usePatternTiming(pattern).commitLatencyCycles;
+}
+
 } // namespace fabric

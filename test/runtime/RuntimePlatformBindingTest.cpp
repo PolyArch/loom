@@ -200,8 +200,11 @@ Fixture makeFixture(llvm::StringRef test, const ArtifactStore &artifacts,
   auto implementation = take(
       test, finalizeHardwareImplementation(
                 HardwareImplementationDraft{system.reference(),
+                                            take(test,
+                                                 hardware::test::
+                                                     requireSingleSpatialCoreOccurrence(
+                                                         system)),
                                             abi.reference(),
-                                            {},
                                             makeRepresentation(test, blobs),
                                             std::nullopt,
                                             std::move(interfaces),

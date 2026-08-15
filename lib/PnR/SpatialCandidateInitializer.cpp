@@ -4,13 +4,15 @@
 #include "InitializerChoiceOrder.h"
 #include "InitializerRelationSolver.h"
 #include "SpatialBindingRelationModel.h"
+#include "SpatialCandidateLocalTransferPreference.h"
+#include "SpatialCandidateTopologyPreference.h"
+#include "SpatialLocalTransferIndex.h"
 #include "SpatialMemoryCompatibility.h"
 #include "SpatialMemoryConstraintModel.h"
 #include "StaticSchedulePressure.h"
 
 #include "Fabric/Identity/FabricRefText.h"
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
@@ -118,377 +120,11 @@ struct PreferredRootAssignment final {
   std::uint64_t topologyRefinementUnreachableSelections = 0;
   std::uint64_t changedPortAttachments = 0;
   std::uint64_t changedGraphBoundaryAttachments = 0;
+  std::uint64_t structurallyAdjustedRootPreferences = 0;
   std::uint64_t maximumEndpointSelections = 0;
   bool applied = false;
   llvm::StringRef status = "unchanged";
 };
-
-struct ComputeTopologyIncidence final {
-  PnrIndex neighbor = getInvalidPnrIndex();
-  PnrIndex graphBoundary = getInvalidPnrIndex();
-  PnrIndex candidateDemand = 0;
-  PnrIndex neighborDemand = 0;
-  std::uint32_t payloadWidthBits = 0;
-  std::uint64_t distanceWeight = 1;
-  bool candidateIsSource = false;
-};
-
-struct ComputeTopologyScores final {
-  std::vector<std::uint64_t> distances;
-  std::vector<std::uint8_t> unreachable;
-  std::uint64_t activeIncidences = 0;
-  std::uint64_t activeBoundaryAnchorIncidences = 0;
-};
-
-llvm::Expected<std::vector<std::vector<ComputeTopologyIncidence>>>
-buildComputeTopologyIncidences(const FrozenSpatialPnrProblem &problem) {
-  const auto &transfers = problem.transfers();
-  const auto &ports = problem.ports();
-  const auto nets = transfers.logicalNets();
-  const auto sources = transfers.logicalNetSourceBindings();
-  const auto sinks = transfers.logicalNetSinkBindings();
-  const auto demands = ports.portDemands();
-  const PnrIndex computeCount =
-      problem.bindingRelations().computeDecisionCount();
-  if (sources.size() != nets.size())
-    return initializerError("logical-net source binding domain is malformed");
-
-  std::vector<std::vector<ComputeTopologyIncidence>> result(computeCount);
-  for (PnrIndex logicalNet = 0; logicalNet < nets.size(); ++logicalNet) {
-    const FrozenSpatialTerminalBinding source = sources[logicalNet];
-    const FrozenSpatialPortDemand *sourceDemand = nullptr;
-    if (source.kind == FrozenSpatialTerminalBindingKind::PortDemand) {
-      if (source.index >= demands.size())
-        return initializerError(
-            "logical-net source PortDemand is out of range");
-      sourceDemand = &demands[source.index];
-      if (sourceDemand->kind != FrozenSpatialPortDemandKind::Compute ||
-          sourceDemand->realization >= computeCount)
-        sourceDemand = nullptr;
-    } else if (source.index >= ports.graphBoundaries().size()) {
-      return initializerError(
-          "logical-net source graph boundary is out of range");
-    }
-    const FrozenSpatialLogicalNet &net = nets[logicalNet];
-    if (net.sinkOffset > sinks.size() ||
-        net.sinkCount > sinks.size() - net.sinkOffset)
-      return initializerError("logical-net sink binding domain is malformed");
-    for (PnrIndex sinkOrdinal = 0; sinkOrdinal < net.sinkCount; ++sinkOrdinal) {
-      const auto graphSinks = transfers.logicalNetSinks();
-      if (net.sinkOffset + sinkOrdinal >= graphSinks.size())
-        return initializerError("logical-net sink inventory is malformed");
-      std::uint64_t distanceWeight = 1;
-      if (const auto *producer =
-              std::get_if<::dataflow::ActorTokenResultRef>(&net.producer))
-        if (const auto *consumer =
-                std::get_if<::dataflow::ActorTokenOperandRef>(
-                    &graphSinks[net.sinkOffset + sinkOrdinal])) {
-          const std::uint64_t critical =
-              problem.schedulePressure().edgeWeight(*producer, *consumer);
-          if (critical == std::numeric_limits<std::uint64_t>::max())
-            return initializerError(
-                "topology preference critical edge weight exceeds u64");
-          distanceWeight += critical;
-        }
-      const FrozenSpatialTerminalBinding sink =
-          sinks[net.sinkOffset + sinkOrdinal];
-      const FrozenSpatialPortDemand *sinkDemand = nullptr;
-      if (sink.kind == FrozenSpatialTerminalBindingKind::PortDemand) {
-        if (sink.index >= demands.size())
-          return initializerError(
-              "logical-net sink PortDemand is out of range");
-        sinkDemand = &demands[sink.index];
-        if (sinkDemand->kind != FrozenSpatialPortDemandKind::Compute ||
-            sinkDemand->realization >= computeCount)
-          sinkDemand = nullptr;
-      } else if (sink.index >= ports.graphBoundaries().size()) {
-        return initializerError(
-            "logical-net sink graph boundary is out of range");
-      }
-
-      if (sourceDemand && sinkDemand) {
-        if (sinkDemand->realization == sourceDemand->realization)
-          continue;
-        if (sinkDemand->payloadWidthBits != sourceDemand->payloadWidthBits)
-          return initializerError(
-              "compute-neighbor terminal payload widths disagree");
-        result[sourceDemand->realization].push_back(
-            {sinkDemand->realization, getInvalidPnrIndex(), source.index,
-             sink.index, sourceDemand->payloadWidthBits, distanceWeight, true});
-        result[sinkDemand->realization].push_back(
-            {sourceDemand->realization, getInvalidPnrIndex(), sink.index,
-             source.index, sourceDemand->payloadWidthBits, distanceWeight,
-             false});
-        continue;
-      }
-
-      if (!sourceDemand && sinkDemand &&
-          source.kind == FrozenSpatialTerminalBindingKind::GraphBoundary) {
-        const FrozenSpatialGraphBoundary &boundary =
-            ports.graphBoundaries()[source.index];
-        if (boundary.payloadWidthBits != sinkDemand->payloadWidthBits)
-          return initializerError(
-              "graph-ingress terminal payload widths disagree");
-        result[sinkDemand->realization].push_back(
-            {getInvalidPnrIndex(), source.index, sink.index,
-             getInvalidPnrIndex(), sinkDemand->payloadWidthBits, distanceWeight,
-             false});
-        continue;
-      }
-
-      if (sourceDemand && !sinkDemand &&
-          sink.kind == FrozenSpatialTerminalBindingKind::GraphBoundary) {
-        const FrozenSpatialGraphBoundary &boundary =
-            ports.graphBoundaries()[sink.index];
-        if (boundary.payloadWidthBits != sourceDemand->payloadWidthBits)
-          return initializerError(
-              "graph-egress terminal payload widths disagree");
-        result[sourceDemand->realization].push_back(
-            {getInvalidPnrIndex(), sink.index, source.index,
-             getInvalidPnrIndex(), sourceDemand->payloadWidthBits,
-             distanceWeight, true});
-      }
-    }
-  }
-  return result;
-}
-
-llvm::Expected<llvm::ArrayRef<FrozenSpatialAttachmentOption>>
-attachmentOptionsForPlacement(const FrozenSpatialPnrProblem &problem,
-                              PnrIndex demandOrdinal, PnrIndex placement) {
-  const auto &ports = problem.ports();
-  const auto demands = ports.portDemands();
-  const auto domains = ports.placementDomains();
-  const auto options = ports.attachmentOptions();
-  if (demandOrdinal >= demands.size())
-    return initializerError("topology preference names a foreign PortDemand");
-  const FrozenSpatialPortDemand &demand = demands[demandOrdinal];
-  if (demand.placementDomainOffset > domains.size() ||
-      demand.placementDomainCount >
-          domains.size() - demand.placementDomainOffset)
-    return initializerError(
-        "topology preference PortDemand domain is malformed");
-  for (const FrozenSpatialPortPlacementDomain &domain : domains.slice(
-           demand.placementDomainOffset, demand.placementDomainCount)) {
-    if (domain.placement != placement)
-      continue;
-    if (domain.attachmentOptionOffset > options.size() ||
-        domain.attachmentOptionCount >
-            options.size() - domain.attachmentOptionOffset)
-      return initializerError(
-          "topology preference attachment domain is malformed");
-    return options.slice(domain.attachmentOptionOffset,
-                         domain.attachmentOptionCount);
-  }
-  return initializerError(
-      "topology preference placement has no attachment domain");
-}
-
-llvm::Error fillTopologyHopDistances(
-    const FrozenSpatialPnrProblem &problem,
-    llvm::ArrayRef<FrozenSpatialAttachmentOption> fixedOptions,
-    std::uint32_t payloadWidthBits, bool forward,
-    std::vector<std::uint32_t> &distances, std::vector<PnrIndex> &worklist) {
-  const FrozenSpatialRoutingGraph &routing = problem.routing();
-  const auto endpoints = routing.routingEndpoints();
-  const auto arcs = routing.routingArcs();
-  const auto arcSources = routing.arcSources();
-  const auto adjacency = routing.adjacencyOffsets();
-  const auto reverseAdjacency = routing.reverseAdjacencyOffsets();
-  const auto reverseArcs = routing.reverseArcOrdinals();
-  constexpr std::uint32_t unreachable =
-      std::numeric_limits<std::uint32_t>::max();
-  distances.assign(endpoints.size(), unreachable);
-  worklist.clear();
-  for (const FrozenSpatialAttachmentOption &option : fixedOptions) {
-    if (option.endpoint >= endpoints.size())
-      return initializerError(
-          "topology preference attachment endpoint is out of range");
-    if (distances[option.endpoint] == 0)
-      continue;
-    distances[option.endpoint] = 0;
-    worklist.push_back(option.endpoint);
-  }
-  if (worklist.empty())
-    return initializerError("topology preference has no fixed endpoints");
-
-  for (std::size_t cursor = 0; cursor < worklist.size(); ++cursor) {
-    const PnrIndex endpoint = worklist[cursor];
-    if (distances[endpoint] == unreachable - 1)
-      return initializerError("topology preference hop distance overflows u32");
-    const std::uint32_t nextDistance = distances[endpoint] + 1;
-    if (forward) {
-      if (endpoint + 1 >= adjacency.size())
-        return initializerError(
-            "topology preference forward adjacency is malformed");
-      for (PnrIndex arc = adjacency[endpoint]; arc < adjacency[endpoint + 1];
-           ++arc) {
-        if (arc >= arcs.size() || arcs[arc].target >= distances.size())
-          return initializerError(
-              "topology preference forward arc is malformed");
-        if (arcs[arc].payloadCapacityBits < payloadWidthBits ||
-            distances[arcs[arc].target] != unreachable)
-          continue;
-        distances[arcs[arc].target] = nextDistance;
-        worklist.push_back(arcs[arc].target);
-      }
-      continue;
-    }
-
-    if (endpoint + 1 >= reverseAdjacency.size())
-      return initializerError(
-          "topology preference reverse adjacency is malformed");
-    for (PnrIndex entry = reverseAdjacency[endpoint];
-         entry < reverseAdjacency[endpoint + 1]; ++entry) {
-      if (entry >= reverseArcs.size() || reverseArcs[entry] >= arcs.size() ||
-          reverseArcs[entry] >= arcSources.size())
-        return initializerError("topology preference reverse arc is malformed");
-      const PnrIndex arc = reverseArcs[entry];
-      const PnrIndex source = arcSources[arc];
-      if (source >= distances.size())
-        return initializerError(
-            "topology preference reverse source is malformed");
-      if (arcs[arc].payloadCapacityBits < payloadWidthBits ||
-          distances[source] != unreachable)
-        continue;
-      distances[source] = nextDistance;
-      worklist.push_back(source);
-    }
-  }
-  return llvm::Error::success();
-}
-
-llvm::Expected<ComputeTopologyScores> scoreComputeTopologyChoices(
-    const FrozenSpatialPnrProblem &problem, PnrIndex realization,
-    llvm::ArrayRef<detail::SpatialComputeBindingChoice> choices,
-    llvm::ArrayRef<PnrIndex> selectedChoiceOrdinals,
-    llvm::ArrayRef<std::vector<ComputeTopologyIncidence>> incidences,
-    std::vector<std::uint32_t> &hopDistances,
-    std::vector<PnrIndex> &hopWorklist,
-    std::vector<FrozenSpatialAttachmentOption> &fixedOptionScratch) {
-  ComputeTopologyScores result;
-  result.distances.assign(choices.size(), 0);
-  result.unreachable.assign(choices.size(), 0);
-  if (realization >= incidences.size())
-    return initializerError("topology preference realization is out of range");
-  const auto &bindings = problem.bindingRelations();
-
-  for (const ComputeTopologyIncidence &incidence : incidences[realization]) {
-    llvm::ArrayRef<FrozenSpatialAttachmentOption> fixedOptions;
-    if (incidence.graphBoundary != getInvalidPnrIndex()) {
-      if (incidence.graphBoundary >= problem.ports().graphBoundaries().size())
-        return initializerError(
-            "topology preference graph boundary is out of range");
-      fixedOptionScratch.clear();
-      for (PnrIndex option :
-           bindings.graphBoundaryAttachmentChoices(incidence.graphBoundary)) {
-        if (option >= problem.ports().attachmentOptions().size())
-          return initializerError(
-              "topology preference graph-boundary option is out of range");
-        const FrozenSpatialAttachmentOption &record =
-            problem.ports().attachmentOptions()[option];
-        if (record.ownerKind !=
-                FrozenSpatialAttachmentOwnerKind::GraphBoundary ||
-            record.owner != incidence.graphBoundary)
-          return initializerError(
-              "topology preference graph-boundary owner is malformed");
-        fixedOptionScratch.push_back(record);
-      }
-      fixedOptions = fixedOptionScratch;
-      if (result.activeBoundaryAnchorIncidences ==
-          std::numeric_limits<std::uint64_t>::max())
-        return initializerError(
-            "topology boundary-anchor incidence count exceeds u64");
-      ++result.activeBoundaryAnchorIncidences;
-    } else {
-      if (incidence.neighbor >= selectedChoiceOrdinals.size())
-        return initializerError("topology preference neighbor is out of range");
-      const PnrIndex neighborChoice =
-          selectedChoiceOrdinals[incidence.neighbor];
-      if (neighborChoice == getInvalidPnrIndex())
-        continue;
-      const auto neighborChoices = bindings.computeChoices(incidence.neighbor);
-      if (neighborChoice >= neighborChoices.size())
-        return initializerError(
-            "topology preference neighbor choice is out of range");
-      auto selectedOptions = attachmentOptionsForPlacement(
-          problem, incidence.neighborDemand,
-          neighborChoices[neighborChoice].placement);
-      if (!selectedOptions)
-        return selectedOptions.takeError();
-      fixedOptions = *selectedOptions;
-    }
-    if (llvm::Error error = fillTopologyHopDistances(
-            problem, fixedOptions, incidence.payloadWidthBits,
-            !incidence.candidateIsSource, hopDistances, hopWorklist))
-      return std::move(error);
-
-    llvm::DenseMap<PnrIndex, PnrIndex> placementDomains;
-    const auto &ports = problem.ports();
-    if (incidence.candidateDemand >= ports.portDemands().size())
-      return initializerError(
-          "topology preference candidate demand is out of range");
-    const FrozenSpatialPortDemand &demand =
-        ports.portDemands()[incidence.candidateDemand];
-    const auto domains = ports.placementDomains();
-    if (demand.placementDomainOffset > domains.size() ||
-        demand.placementDomainCount >
-            domains.size() - demand.placementDomainOffset)
-      return initializerError(
-          "topology preference candidate domain is malformed");
-    for (PnrIndex local = 0; local < demand.placementDomainCount; ++local) {
-      const PnrIndex domainOrdinal = demand.placementDomainOffset + local;
-      const PnrIndex placement = domains[domainOrdinal].placement;
-      if (!placementDomains.try_emplace(placement, domainOrdinal).second)
-        return initializerError(
-            "topology preference candidate placement is duplicated");
-    }
-
-    constexpr std::uint32_t unreachable =
-        std::numeric_limits<std::uint32_t>::max();
-    const auto options = ports.attachmentOptions();
-    for (std::size_t localChoice = 0; localChoice < choices.size();
-         ++localChoice) {
-      const auto found = placementDomains.find(choices[localChoice].placement);
-      if (found == placementDomains.end())
-        return initializerError(
-            "topology preference choice has no candidate attachment domain");
-      const FrozenSpatialPortPlacementDomain &domain = domains[found->second];
-      if (domain.attachmentOptionOffset > options.size() ||
-          domain.attachmentOptionCount >
-              options.size() - domain.attachmentOptionOffset)
-        return initializerError(
-            "topology preference candidate attachments are malformed");
-      std::uint32_t minimum = unreachable;
-      for (const FrozenSpatialAttachmentOption &option : options.slice(
-               domain.attachmentOptionOffset, domain.attachmentOptionCount)) {
-        if (option.endpoint >= hopDistances.size())
-          return initializerError(
-              "topology preference candidate endpoint is out of range");
-        minimum = std::min(minimum, hopDistances[option.endpoint]);
-      }
-      if (minimum == unreachable) {
-        result.unreachable[localChoice] = 1;
-        continue;
-      }
-      if (minimum != 0 &&
-          incidence.distanceWeight >
-              std::numeric_limits<std::uint64_t>::max() / minimum)
-        return initializerError(
-            "topology preference weighted distance exceeds u64");
-      const std::uint64_t weighted = minimum * incidence.distanceWeight;
-      if (weighted > std::numeric_limits<std::uint64_t>::max() -
-                         result.distances[localChoice])
-        return initializerError("topology preference distance exceeds u64");
-      result.distances[localChoice] += weighted;
-    }
-    if (result.activeIncidences == std::numeric_limits<std::uint64_t>::max())
-      return initializerError(
-          "topology preference incidence count exceeds u64");
-    ++result.activeIncidences;
-  }
-  return result;
-}
 
 llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     const FrozenSpatialPnrProblem &problem, std::uint32_t attemptOrdinal,
@@ -542,6 +178,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           fields["changed_port_attachments"] = result.changedPortAttachments;
           fields["changed_graph_boundary_attachments"] =
               result.changedGraphBoundaryAttachments;
+          fields["structurally_adjusted_root_preferences"] =
+              result.structurallyAdjustedRootPreferences;
           fields["maximum_endpoint_selections"] =
               result.maximumEndpointSelections;
           fields["assignment_attempts"] = result.assignmentAttempts;
@@ -558,13 +196,17 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
                                      getInvalidPnrIndex());
   const auto &realizations = problem.realizations();
   const auto contexts = realizations.computeInstructionContexts();
-  auto topologyIncidences = buildComputeTopologyIncidences(problem);
-  if (!topologyIncidences)
-    return topologyIncidences.takeError();
-  std::vector<PnrIndex> selectedChoiceOrdinals(bindings.computeDecisionCount(),
-                                               getInvalidPnrIndex());
-  std::vector<std::uint32_t> hopDistances;
-  std::vector<PnrIndex> hopWorklist;
+  auto topology = detail::SpatialCandidateTopologyPreference::create(problem);
+  if (!topology)
+    return topology.takeError();
+  auto localTransfers =
+      detail::SpatialCandidateLocalTransferPreference::create(problem);
+  if (!localTransfers)
+    return localTransfers.takeError();
+  std::vector<PnrIndex> selectedChoiceOrdinals(
+      bindings.computeDecisionCount() + bindings.memoryDecisionCount(),
+      getInvalidPnrIndex());
+  std::vector<PnrIndex> choicePlacementScratch;
   std::vector<FrozenSpatialAttachmentOption> fixedOptionScratch;
   const auto contextKey = [&](const detail::SpatialComputeBindingChoice &choice)
       -> llvm::Expected<ContextKey> {
@@ -646,59 +288,29 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       return initializerError("occurrence-priced distance exceeds u64");
     return distance * price;
   };
-  const auto participatesInHardRelation = [&](PnrIndex decision) {
-    return llvm::any_of(bindings.decisionRelations(decision),
-                        [&](PnrIndex relation) {
-                          return bindings.relationIsConstraint(relation);
-                        });
-  };
   const auto preferenceOrigin = [&](PnrIndex baselineChoice) {
     return attemptOrdinal == 0 ? PnrIndex{0} : baselineChoice;
   };
 
   for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
        ++realization) {
-    if (!participatesInHardRelation(realization))
-      continue;
-    const auto choices = bindings.computeChoices(realization);
-    const PnrIndex selected = result.choices[realization];
-    if (selected >= choices.size())
-      return initializerError(
-          "root relation baseline selected a foreign compute choice");
-    fixedChoices[realization] = selected;
-    selectedChoiceOrdinals[realization] = selected;
-    auto key = contextKey(choices[selected]);
-    if (!key)
-      return key.takeError();
-    auto schedule = computeSchedule(choices[selected]);
-    if (!schedule)
-      return schedule.takeError();
-    result.selectedTemporalComputeRoots +=
-        *schedule == ::fabric::Schedule::Temporal;
-    std::uint64_t &count = selectedCounts[*key];
-    if (count == std::numeric_limits<std::uint64_t>::max())
-      return initializerError("compute preference count overflows u64");
-    result.maximumContextSelections =
-        std::max(result.maximumContextSelections, ++count);
-    if (llvm::Error error = countComputeOccurrence(choices[selected]))
-      return std::move(error);
-  }
-
-  for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
-       ++realization) {
-    if (fixedChoices[realization] != getInvalidPnrIndex())
-      continue;
     const auto choices = bindings.computeChoices(realization);
     const PnrIndex baselineChoice = result.choices[realization];
     if (choices.empty() || baselineChoice >= choices.size())
       return initializerError(
           "root relation baseline selected a foreign compute choice");
 
-    auto topologyScores = scoreComputeTopologyChoices(
-        problem, realization, choices, selectedChoiceOrdinals,
-        *topologyIncidences, hopDistances, hopWorklist, fixedOptionScratch);
+    choicePlacementScratch.clear();
+    for (const detail::SpatialComputeBindingChoice &choice : choices)
+      choicePlacementScratch.push_back(choice.placement);
+    auto topologyScores = topology->scoreChoices(
+        realization, choicePlacementScratch, selectedChoiceOrdinals);
     if (!topologyScores)
       return topologyScores.takeError();
+    auto localTransferScores = localTransfers->scoreChoices(
+        realization, choicePlacementScratch, selectedChoiceOrdinals);
+    if (!localTransferScores)
+      return localTransferScores.takeError();
     if (topologyScores->activeIncidences != 0) {
       if (result.topologyScoredRoots ==
           std::numeric_limits<std::uint64_t>::max())
@@ -715,6 +327,7 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
 
     PnrIndex selected = baselineChoice;
     auto selectedScore = std::make_tuple(
+        std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(), true,
         std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(),
@@ -754,9 +367,9 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           problem.schedulePressure().computePlacementContribution(
               choices[local].placement);
       const auto score = std::make_tuple(
-          count, unreachable, unreachable ? std::uint64_t{0} : *locality,
-          *occurrenceLoad, schedulePressure,
-          static_cast<std::uint8_t>(temporal ? 0 : 1), rank);
+          localTransferScores->unmatchedNets[local], count, unreachable,
+          unreachable ? std::uint64_t{0} : *locality, *occurrenceLoad,
+          schedulePressure, static_cast<std::uint8_t>(temporal ? 0 : 1), rank);
       if (score < selectedScore) {
         selected = local;
         selectedScore = score;
@@ -815,6 +428,12 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           fields["selected_static_schedule_pressure"] =
               selectedSchedulePressure;
           fields["selected_temporal"] = selectedTemporal;
+          fields["local_transfer_active_net_count"] =
+              localTransferScores->activeNets;
+          fields["selected_local_transfer_match_count"] =
+              localTransferScores->matchedNets[selected];
+          fields["selected_local_transfer_miss_count"] =
+              localTransferScores->unmatchedNets[selected];
           fields["topology_incidence_count"] = topologyScores->activeIncidences;
           fields["topology_boundary_anchor_incidence_count"] =
               topologyScores->activeBoundaryAnchorIncidences;
@@ -828,8 +447,6 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
 
   for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
        ++realization) {
-    if (participatesInHardRelation(realization))
-      continue;
     const auto choices = bindings.computeChoices(realization);
     const PnrIndex current = fixedChoices[realization];
     if (current >= choices.size())
@@ -849,13 +466,20 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     auto currentSchedule = computeSchedule(choices[current]);
     if (!currentSchedule)
       return currentSchedule.takeError();
-    auto topologyScores = scoreComputeTopologyChoices(
-        problem, realization, choices, selectedChoiceOrdinals,
-        *topologyIncidences, hopDistances, hopWorklist, fixedOptionScratch);
+    choicePlacementScratch.clear();
+    for (const detail::SpatialComputeBindingChoice &choice : choices)
+      choicePlacementScratch.push_back(choice.placement);
+    auto topologyScores = topology->scoreChoices(
+        realization, choicePlacementScratch, selectedChoiceOrdinals);
     if (!topologyScores)
       return topologyScores.takeError();
+    auto localTransferScores = localTransfers->scoreChoices(
+        realization, choicePlacementScratch, selectedChoiceOrdinals);
+    if (!localTransferScores)
+      return localTransferScores.takeError();
     PnrIndex selected = current;
     auto selectedScore = std::make_tuple(
+        std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(), true,
         std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(), choices.size());
@@ -885,7 +509,7 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       if (!locality)
         return locality.takeError();
       const auto score = std::make_tuple(
-          selectedCount, unreachable,
+          localTransferScores->unmatchedNets[local], selectedCount, unreachable,
           unreachable ? std::uint64_t{0} : *locality, *occurrenceLoad, rank);
       if (score < selectedScore) {
         selected = local;
@@ -944,33 +568,23 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
 
   for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount(); ++memory) {
     const PnrIndex decision = memoryOffset + memory;
-    if (!participatesInHardRelation(decision))
-      continue;
-    const auto choices = bindings.memoryChoices(memory);
-    const PnrIndex selected = result.choices[decision];
-    if (selected >= choices.size())
-      return initializerError(
-          "root relation baseline selected a foreign memory choice");
-    auto placement = memoryPlacement(choices[selected]);
-    if (!placement)
-      return placement.takeError();
-    fixedChoices[decision] = selected;
-    if (llvm::Error error = countMemory(**placement))
-      return std::move(error);
-  }
-
-  for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount(); ++memory) {
-    const PnrIndex decision = memoryOffset + memory;
-    if (fixedChoices[decision] != getInvalidPnrIndex())
-      continue;
     const auto choices = bindings.memoryChoices(memory);
     const PnrIndex baselineChoice = result.choices[decision];
     if (choices.empty() || baselineChoice >= choices.size())
       return initializerError(
           "root relation baseline selected a foreign memory choice");
 
+    choicePlacementScratch.clear();
+    for (const detail::SpatialMemoryBindingChoice &choice : choices)
+      choicePlacementScratch.push_back(choice.placement);
+    auto topologyScores = topology->scoreChoices(
+        decision, choicePlacementScratch, selectedChoiceOrdinals);
+    if (!topologyScores)
+      return topologyScores.takeError();
+
     PnrIndex selected = baselineChoice;
     auto selectedScore = std::make_tuple(
+        std::numeric_limits<std::uint64_t>::max(), true,
         std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint8_t>::max(), choices.size());
@@ -993,12 +607,16 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       const std::uint64_t schedulePressure =
           problem.schedulePressure().memoryPlacementContribution(
               choices[local].placement);
+      const bool unreachable = topologyScores->unreachable[local] != 0;
+      auto locality = pricedDistance(topologyScores->distances[local], count);
+      if (!locality)
+        return locality.takeError();
       // A Spatial memory occurrence serves one static realization per
-      // operation port, so occurrence load is the physical pressure the seed
-      // must spread before it optimizes schedule quality.
+      // operation port, so occurrence load prices this root's distance to its
+      // already placed neighbours exactly as it does for a compute root.
       const auto score = std::make_tuple(
-          count, schedulePressure, static_cast<std::uint8_t>(temporal ? 0 : 1),
-          rank);
+          unreachable, unreachable ? std::uint64_t{0} : *locality, count,
+          schedulePressure, static_cast<std::uint8_t>(temporal ? 0 : 1), rank);
       if (score < selectedScore) {
         selected = local;
         selectedScore = score;
@@ -1011,6 +629,7 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     if (!placement)
       return placement.takeError();
     fixedChoices[decision] = selected;
+    selectedChoiceOrdinals[decision] = selected;
     result.changedMemoryRoots += selected != baselineChoice;
     if (llvm::Error error = countMemory(**placement))
       return std::move(error);
@@ -1031,6 +650,111 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           fields["memory_ref"] =
               loom::fabric::printFabricRef((*placement)->memory);
         });
+  }
+
+  std::vector<PnrIndex> structurallyFeasibleChoices = result.choices;
+  const bool proposedRootChange =
+      llvm::any_of(llvm::seq<PnrIndex>(0, bindings.realizationDecisionCount()),
+                   [&](PnrIndex decision) {
+                     return fixedChoices[decision] != result.choices[decision];
+                   });
+  if (proposedRootChange) {
+    const std::uint64_t remaining = assignmentLimit - result.assignmentAttempts;
+    if (remaining == 0) {
+      result.status = "root_preference_work_limit";
+      emitPreference();
+      return result;
+    }
+    auto feasible =
+        solver.solveCanonicalWithPreferredChoices(remaining, fixedChoices);
+    const std::uint64_t preferenceAttempts = solver.assignmentAttempts();
+    if (preferenceAttempts > remaining)
+      return initializerError(
+          "root preference exceeded its remaining assignment work");
+    result.assignmentAttempts += preferenceAttempts;
+    if (!feasible) {
+      bool workLimit = false;
+      llvm::Error unhandled = llvm::handleErrors(
+          feasible.takeError(),
+          [&](const InitializerRelationSolveFailure &failure) -> llvm::Error {
+            if (failure.kind() ==
+                InitializerRelationSolveFailureKind::WorkLimit) {
+              workLimit = true;
+              return llvm::Error::success();
+            }
+            std::string message;
+            llvm::raw_string_ostream stream(message);
+            failure.log(stream);
+            return llvm::make_error<InitializerRelationSolveFailure>(
+                failure.kind(), std::move(message));
+          });
+      if (unhandled)
+        return std::move(unhandled);
+      if (!workLimit)
+        return initializerError(
+            "soft root preferences failed without work exhaustion");
+      result.status = "root_preference_work_limit";
+      emitPreference();
+      return result;
+    }
+    structurallyFeasibleChoices = std::move(feasible->choices);
+  }
+
+  for (PnrIndex decision = 0; decision < bindings.realizationDecisionCount();
+       ++decision) {
+    result.structurallyAdjustedRootPreferences +=
+        structurallyFeasibleChoices[decision] != fixedChoices[decision];
+    fixedChoices[decision] = structurallyFeasibleChoices[decision];
+    selectedChoiceOrdinals[decision] = structurallyFeasibleChoices[decision];
+  }
+  result.changedComputeRoots = 0;
+  result.changedMemoryRoots = 0;
+  for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
+       ++realization)
+    result.changedComputeRoots +=
+        fixedChoices[realization] != result.choices[realization];
+  for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount(); ++memory) {
+    const PnrIndex decision = memoryOffset + memory;
+    result.changedMemoryRoots +=
+        fixedChoices[decision] != result.choices[decision];
+  }
+
+  selectedCounts.clear();
+  selectedOccurrenceCounts.clear();
+  selectedMemoryCounts.clear();
+  result.selectedTemporalComputeRoots = 0;
+  result.maximumContextSelections = 0;
+  result.maximumComputeOccurrenceSelections = 0;
+  result.selectedTemporalMemoryRoots = 0;
+  result.maximumMemorySelections = 0;
+  for (PnrIndex realization = 0; realization < bindings.computeDecisionCount();
+       ++realization) {
+    const auto choices = bindings.computeChoices(realization);
+    const PnrIndex selected = fixedChoices[realization];
+    auto key = contextKey(choices[selected]);
+    if (!key)
+      return key.takeError();
+    std::uint64_t &count = selectedCounts[*key];
+    if (count == std::numeric_limits<std::uint64_t>::max())
+      return initializerError("compute preference count overflows u64");
+    result.maximumContextSelections =
+        std::max(result.maximumContextSelections, ++count);
+    auto schedule = computeSchedule(choices[selected]);
+    if (!schedule)
+      return schedule.takeError();
+    result.selectedTemporalComputeRoots +=
+        *schedule == ::fabric::Schedule::Temporal;
+    if (llvm::Error error = countComputeOccurrence(choices[selected]))
+      return std::move(error);
+  }
+  for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount(); ++memory) {
+    const PnrIndex decision = memoryOffset + memory;
+    const auto choices = bindings.memoryChoices(memory);
+    auto placement = memoryPlacement(choices[fixedChoices[decision]]);
+    if (!placement)
+      return placement.takeError();
+    if (llvm::Error error = countMemory(**placement))
+      return std::move(error);
   }
 
   for (const auto &[occurrence, count] : selectedOccurrenceCounts) {
@@ -1108,8 +832,6 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
         return initializerError(
             "port preference attachment owner is malformed");
       if (placementDomains[record.owner].placement != *placement)
-        continue;
-      if (participatesInHardRelation(decision) && local != baselineChoice)
         continue;
       const auto found = endpointSelectionCounts.find(record.endpoint);
       const std::uint64_t count =
@@ -1225,18 +947,19 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     constexpr std::uint32_t unreachable =
         std::numeric_limits<std::uint32_t>::max();
     for (const FrozenSpatialAttachmentOption &peer : fixedOptionScratch) {
-      if (llvm::Error error = fillTopologyHopDistances(
-              problem, llvm::ArrayRef(peer), boundaryRecord.payloadWidthBits,
-              !boundaryIsSource, hopDistances, hopWorklist))
-        return std::move(error);
+      auto hopDistances = topology->hopDistancesFrom(
+          llvm::ArrayRef(peer), boundaryRecord.payloadWidthBits,
+          !boundaryIsSource);
+      if (!hopDistances)
+        return hopDistances.takeError();
       for (std::size_t local = 0; local < choices.size(); ++local) {
         const PnrIndex option = choices[local];
         if (option >= attachmentOptions.size() ||
-            attachmentOptions[option].endpoint >= hopDistances.size())
+            attachmentOptions[option].endpoint >= hopDistances->size())
           return initializerError(
               "attachment preference boundary option is out of range");
         const PnrIndex endpoint = attachmentOptions[option].endpoint;
-        const std::uint32_t distance = hopDistances[endpoint];
+        const std::uint32_t distance = (*hopDistances)[endpoint];
         if (distance == unreachable) {
           ++unreachableCounts[local];
           continue;
@@ -1267,8 +990,6 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
           record.owner != boundary)
         return initializerError(
             "attachment preference graph-boundary owner is malformed");
-      if (participatesInHardRelation(decision) && local != baselineChoice)
-        continue;
       const auto found = endpointSelectionCounts.find(record.endpoint);
       const std::uint64_t count =
           found == endpointSelectionCounts.end() ? 0 : found->second;
@@ -1291,32 +1012,91 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     emitPreference();
     return result;
   }
+
+  const auto adoptFeasibleAssignment =
+      [&](std::vector<PnrIndex> choices,
+          llvm::StringRef status) -> llvm::Error {
+    if (choices.size() != result.choices.size())
+      return initializerError(
+          "preferred assignment has the wrong decision count");
+    result.changedComputeRoots = 0;
+    result.changedMemoryRoots = 0;
+    result.changedPortAttachments = 0;
+    result.changedGraphBoundaryAttachments = 0;
+    for (PnrIndex realization = 0;
+         realization < bindings.computeDecisionCount(); ++realization)
+      result.changedComputeRoots +=
+          choices[realization] != result.choices[realization];
+    for (PnrIndex memory = 0; memory < bindings.memoryDecisionCount();
+         ++memory) {
+      const PnrIndex decision = memoryOffset + memory;
+      result.changedMemoryRoots +=
+          choices[decision] != result.choices[decision];
+    }
+    endpointSelectionCounts.clear();
+    result.maximumEndpointSelections = 0;
+    for (PnrIndex demand = 0; demand < bindings.portDecisionCount(); ++demand) {
+      const PnrIndex decision = bindings.portDecisionOffset() + demand;
+      result.changedPortAttachments +=
+          choices[decision] != result.choices[decision];
+      const auto domain = bindings.portAttachmentChoices(demand);
+      if (choices[decision] >= domain.size())
+        return initializerError(
+            "preferred PortDemand choice is outside its domain");
+      if (llvm::Error error = countEndpoint(domain[choices[decision]]))
+        return error;
+    }
+    for (PnrIndex boundary = 0;
+         boundary < bindings.graphBoundaryDecisionCount(); ++boundary) {
+      const PnrIndex decision =
+          bindings.graphBoundaryDecisionOffset() + boundary;
+      result.changedGraphBoundaryAttachments +=
+          choices[decision] != result.choices[decision];
+      const auto domain = bindings.graphBoundaryAttachmentChoices(boundary);
+      if (choices[decision] >= domain.size())
+        return initializerError(
+            "preferred graph-boundary choice is outside its domain");
+      if (llvm::Error error = countEndpoint(domain[choices[decision]]))
+        return error;
+    }
+    result.applied = result.changedComputeRoots != 0 ||
+                     result.changedMemoryRoots != 0 ||
+                     result.changedPortAttachments != 0 ||
+                     result.changedGraphBoundaryAttachments != 0;
+    result.choices = std::move(choices);
+    result.status = status;
+    return llvm::Error::success();
+  };
+
   const std::uint64_t remaining = assignmentLimit - result.assignmentAttempts;
   if (remaining == 0) {
-    result.status = "work_limit";
+    if (llvm::Error error = adoptFeasibleAssignment(
+            structurallyFeasibleChoices, "attachment_preference_work_limit"))
+      return std::move(error);
     emitPreference();
     return result;
   }
 
-  auto preferred =
-      solver.solveCanonicalWithFixedChoices(remaining, fixedChoices);
+  std::vector<PnrIndex> rootFixedChoices(bindings.decisionCount(),
+                                         getInvalidPnrIndex());
+  for (PnrIndex decision = 0; decision < bindings.realizationDecisionCount();
+       ++decision)
+    rootFixedChoices[decision] = structurallyFeasibleChoices[decision];
+  auto preferred = solver.solveCanonicalWithFixedAndPreferredChoices(
+      remaining, rootFixedChoices, fixedChoices);
   const std::uint64_t preferenceAttempts = solver.assignmentAttempts();
   if (preferenceAttempts > remaining)
-    return initializerError("compute preference exceeded its remaining work");
+    return initializerError(
+        "attachment preference exceeded its remaining assignment work");
   result.assignmentAttempts += preferenceAttempts;
   if (!preferred) {
-    llvm::StringRef fallbackStatus = "invalid";
+    bool workLimit = false;
     llvm::Error unhandled = llvm::handleErrors(
         preferred.takeError(),
         [&](const InitializerRelationSolveFailure &failure) -> llvm::Error {
           if (failure.kind() ==
-              InitializerRelationSolveFailureKind::FixedRootInfeasible) {
-            fallbackStatus = "fixed_root_infeasible";
-            return llvm::Error::success();
-          }
-          if (failure.kind() ==
               InitializerRelationSolveFailureKind::WorkLimit) {
-            fallbackStatus = "work_limit";
+            workLimit = true;
             return llvm::Error::success();
           }
           std::string message;
@@ -1327,14 +1107,19 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
         });
     if (unhandled)
       return std::move(unhandled);
-    result.status = fallbackStatus;
+    if (!workLimit)
+      return initializerError(
+          "attachment preferences invalidated a feasible root assignment");
+    if (llvm::Error error = adoptFeasibleAssignment(
+            structurallyFeasibleChoices, "attachment_preference_work_limit"))
+      return std::move(error);
     emitPreference();
     return result;
   }
 
-  result.choices = std::move(preferred->choices);
-  result.applied = true;
-  result.status = "applied";
+  if (llvm::Error error =
+          adoptFeasibleAssignment(std::move(preferred->choices), "applied"))
+    return std::move(error);
   emitPreference();
   return result;
 }
@@ -1371,10 +1156,15 @@ public:
   }
 
   SpatialCandidateInitialization initialization() const {
-    return {computeBindings_,      memoryBindings_,
-            portAttachments_,      graphBoundaryAttachments_,
-            memoryOperationPlans_, logicalMemoryBindings_,
-            memoryUseDispatches_,  memoryExposureSelections_};
+    return {computeBindings_,
+            memoryBindings_,
+            portAttachments_,
+            graphBoundaryAttachments_,
+            memoryOperationPlans_,
+            logicalMemoryBindings_,
+            memoryUseDispatches_,
+            memoryExposureSelections_,
+            {}};
   }
 
   std::uint64_t assignmentAttempts() const { return assignmentAttempts_; }
@@ -1884,12 +1674,6 @@ loom::pnr::createSpatialCandidateInitializerAttempt(
 
   const detail::SpatialBindingRelationModel &bindingRelations =
       problem->bindingRelations();
-  if (const auto deferred = bindingRelations.deferredProjection())
-    return initializerError(
-        "hard equality or disjointness for projection '" +
-        ::mapping::stringifySpatialConstraintProjection(*deferred) +
-        "' requires its owning decision model");
-
   detail::InitializerRelationSolver relationSolver(
       bindingRelations.relations());
   std::optional<DeterministicPnrRandomStream> diversificationStream;
@@ -2069,8 +1853,14 @@ loom::pnr::createSpatialCandidateInitializerAttempt(
   assignmentAttempts = builder.assignmentAttempts();
   if (buildError)
     return std::move(buildError);
-  auto candidate =
-      SpatialCandidateState::create(problem, builder.initialization());
+  SpatialCandidateInitialization initialization = builder.initialization();
+  auto registerFifoTransfers =
+      detail::derivePreferredSpatialLocalTransferSelections(
+          *problem, initialization.computeBindings);
+  if (!registerFifoTransfers)
+    return registerFifoTransfers.takeError();
+  initialization.registerFifoTransfers = *registerFifoTransfers;
+  auto candidate = SpatialCandidateState::create(problem, initialization);
   if (!candidate)
     return candidate.takeError();
   return SpatialCandidateInitializerAttempt{std::move(*candidate)};

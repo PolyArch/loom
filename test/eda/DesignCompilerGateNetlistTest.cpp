@@ -172,8 +172,10 @@ SemanticFixture makeSemanticFixture(const std::filesystem::path &fixtureRoot,
            finalizeHardwareImplementation(
                HardwareImplementationDraft{
                    system.reference(),
+                   take(__func__,
+                        hardware::test::requireSingleSpatialCoreOccurrence(
+                            system)),
                    abi.reference(),
-                   {},
                    std::move(representation),
                    platform.reference(),
                    {},

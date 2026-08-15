@@ -1,5 +1,6 @@
 #include "PnR/SpatialNetRouter.h"
 
+#include "SpatialPhysicalTiming.h"
 #include "SpatialProgressAnalysis.h"
 #include "SpatialRouteConstraintModel.h"
 #include "SpatialRouteTreePruning.h"
@@ -7,6 +8,7 @@
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
+#include <limits>
 #include <system_error>
 #include <tuple>
 #include <utility>
@@ -62,6 +64,8 @@ SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   sourceEndpoints_.reserve(endpointCount);
   sourceReplicationGroups_.clear();
   sourceReplicationGroups_.reserve(endpointCount);
+  sourceTimingArrivalQuanta_.clear();
+  sourceTimingArrivalQuanta_.reserve(endpointCount);
   targetCandidates_.clear();
   targetCandidates_.reserve(maximumSinkCount);
   targetEndpoints_.clear();
@@ -70,6 +74,8 @@ SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   targetPreferenceRanks_.reserve(maximumSinkCount);
   targetRequiresTraversal_.clear();
   targetRequiresTraversal_.reserve(maximumSinkCount);
+  targetTimingDelayQuanta_.clear();
+  targetTimingDelayQuanta_.reserve(maximumSinkCount);
   targetObligationByEndpoint_.assign(endpointCount, getInvalidPnrIndex());
   unresolvedSinks_.assign(maximumSinkCount, 0);
   prospectiveClaimBits_.assign(
@@ -84,7 +90,26 @@ SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem) {
       bufferedTraversalBits_[traversal / 64] |= std::uint64_t{1}
                                                 << (traversal % 64);
   }
-  forbiddenEndpointBits_.assign((endpointCount + 63) / 64, 0);
+  arcTimingDelayQuanta_.clear();
+  arcTimingRegisteredDestination_.clear();
+  arcTimingDelayQuanta_.reserve(problem.routing().routingArcs().size());
+  arcTimingRegisteredDestination_.reserve(
+      problem.routing().routingArcs().size());
+  for (const EndpointRoutingArc &arc : problem.routing().routingArcs()) {
+    if (arc.traversal >= problem.routing().traversals().size())
+      return netRouterError("routing arc timing traversal is out of range");
+    const FrozenSpatialTraversal &traversal =
+        problem.routing().traversals()[arc.traversal];
+    arcTimingDelayQuanta_.push_back(traversal.physicalDelayQuanta);
+    arcTimingRegisteredDestination_.push_back(
+        traversal.physicalTimingBoundary ==
+                ::loom::fabric::FabricPhysicalTimingBoundaryKind::
+                    RegisteredDestination
+            ? 1
+            : 0);
+  }
+  routeNodeTimingArrivals_.clear();
+  routeNodeTimingArrivals_.reserve(endpointCount);
   endpointMarks_.assign(endpointCount, 0);
   subtreeWorklist_.clear();
   subtreeWorklist_.reserve(endpointCount);
@@ -165,7 +190,7 @@ llvm::Error SpatialNetRouterScratch::collectTargetFrontier(
   targetEndpoints_.clear();
   targetPreferenceRanks_.clear();
   targetRequiresTraversal_.clear();
-  std::fill(forbiddenEndpointBits_.begin(), forbiddenEndpointBits_.end(), 0);
+  targetTimingDelayQuanta_.clear();
   for (PnrIndex sink = 0; sink < sinkCount; ++sink) {
     if (!unresolvedSinks_[sink])
       continue;
@@ -174,33 +199,22 @@ llvm::Error SpatialNetRouterScratch::collectTargetFrontier(
     if (!prerequisites)
       return prerequisites.takeError();
     bool ready = true;
-    for (PnrIndex prerequisite : *prerequisites) {
-      if (prerequisite >= sinkCount)
-        return netRouterError("sink progress prerequisite is out of range");
-      if (unresolvedSinks_[prerequisite]) {
+    for (const FrozenSpatialProgressPrerequisite &prerequisite :
+         *prerequisites) {
+      const auto *external =
+          std::get_if<FrozenSpatialExternalSinkPrerequisite>(&prerequisite);
+      if (!external)
+        continue;
+      if (external->sink >= sinkCount)
+        return netRouterError(
+            "external sink progress prerequisite is out of range");
+      if (unresolvedSinks_[external->sink]) {
         ready = false;
         break;
       }
     }
-    if (!ready) {
-      const FrozenSpatialLogicalNet &net =
-          candidate.problem().transfers().logicalNets()[logicalNet];
-      auto localBoundary = spatialTerminalProvidesLocalProgressBoundary(
-          candidate, candidate.problem()
-                         .transfers()
-                         .logicalNetSinkBindings()[net.sinkOffset + sink]);
-      if (!localBoundary)
-        return localBoundary.takeError();
-      if (!*localBoundary) {
-        const PnrIndex endpoint =
-            candidate.logicalNetSinkEndpoint(logicalNet, sink);
-        if (endpoint / 64 >= forbiddenEndpointBits_.size())
-          return netRouterError("blocked sink endpoint is out of range");
-        forbiddenEndpointBits_[endpoint / 64] |= std::uint64_t{1}
-                                                 << (endpoint % 64);
-      }
+    if (!ready)
       continue;
-    }
     bool requiresBufferedTraversal = !prerequisites->empty();
     if (requiresBufferedTraversal) {
       const FrozenSpatialLogicalNet &net =
@@ -233,6 +247,28 @@ llvm::Error SpatialNetRouterScratch::collectTargetFrontier(
     targetEndpoints_.push_back(target.endpoint);
     targetPreferenceRanks_.push_back(target.sinkObligation);
     targetRequiresTraversal_.push_back(target.requiresTraversal);
+    const FrozenSpatialLogicalNet &net =
+        candidate.problem().transfers().logicalNets()[logicalNet];
+    const FrozenSpatialTerminalBinding binding =
+        candidate.problem()
+            .transfers()
+            .logicalNetSinkBindings()[net.sinkOffset + target.sinkObligation];
+    auto localTraversal = detail::projectSelectedSpatialTerminalTraversal(
+        candidate.problem(), binding, candidate.portAttachmentSelections(),
+        candidate.graphBoundaryAttachmentSelections());
+    if (!localTraversal)
+      return localTraversal.takeError();
+    std::uint64_t terminalDelay = 0;
+    if (*localTraversal) {
+      if (**localTraversal >= candidate.problem().routing().traversals().size())
+        return netRouterError(
+            "target-local physical timing traversal is out of range");
+      terminalDelay = candidate.problem()
+                          .routing()
+                          .traversals()[**localTraversal]
+                          .physicalDelayQuanta;
+    }
+    targetTimingDelayQuanta_.push_back(terminalDelay);
     targetObligationByEndpoint_[target.endpoint] = target.sinkObligation;
   }
   return llvm::Error::success();
@@ -287,7 +323,7 @@ SpatialNetRouterScratch::updateCurrentTagUses(const RouteTreeState &tree,
   if (llvm::Error error = detail::rebuildSpatialTagContinuityUnchecked(
           tree, tagContinuity_, tagContinuityScratch_))
     return error;
-  return costs.updateSelectedLogicalNetTagUses(tagContinuity_);
+  return costs.updateSelectedLogicalNetTagUses(tree, tagContinuity_);
 }
 
 void SpatialNetRouterScratch::beginEndpointMarks() {
@@ -495,10 +531,14 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
       if (!prerequisites)
         return prerequisites.takeError();
       bool progressSatisfied = true;
-      for (PnrIndex prerequisite : *prerequisites) {
-        if (prerequisite >= net.sinkCount)
-          return netRouterError("sink progress prerequisite is out of range");
-        if (unresolvedSinks_[prerequisite]) {
+      for (const FrozenSpatialProgressPrerequisite &prerequisite :
+           *prerequisites) {
+        const auto *external =
+            std::get_if<FrozenSpatialExternalSinkPrerequisite>(&prerequisite);
+        if (external && external->sink >= net.sinkCount)
+          return netRouterError(
+              "external sink progress prerequisite is out of range");
+        if (external && unresolvedSinks_[external->sink]) {
           progressSatisfied = false;
           break;
         }
@@ -524,6 +564,31 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
 
     if (llvm::Error error = collectSourceFrontier(tree, source))
       return std::move(error);
+    sourceTimingArrivalQuanta_.clear();
+    if (tree.isUnrouted()) {
+      auto arrival = detail::projectSpatialLogicalNetSourceArrival(
+          candidate.problem(), logicalNet, candidate.portAttachmentSelections(),
+          candidate.graphBoundaryAttachmentSelections());
+      if (!arrival)
+        return arrival.takeError();
+      sourceTimingArrivalQuanta_.assign(sourceEndpoints_.size(), *arrival);
+    } else {
+      auto arrivals = detail::projectSpatialLogicalNetRouteNodeArrivals(
+          candidate.problem(), logicalNet, tree,
+          candidate.portAttachmentSelections(),
+          candidate.graphBoundaryAttachmentSelections());
+      if (!arrivals)
+        return arrivals.takeError();
+      routeNodeTimingArrivals_ = std::move(*arrivals);
+      sourceTimingArrivalQuanta_.reserve(sourceEndpoints_.size());
+      for (PnrIndex endpoint : sourceEndpoints_) {
+        const auto slot = tree.findNode(endpoint);
+        if (!slot || *slot >= routeNodeTimingArrivals_.size())
+          return netRouterError(
+              "route branch point has no physical timing arrival");
+        sourceTimingArrivalQuanta_.push_back(routeNodeTimingArrivals_[*slot]);
+      }
+    }
     if (llvm::Error error =
             collectTargetFrontier(candidate, logicalNet, net.sinkCount))
       return std::move(error);
@@ -539,14 +604,38 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
         requiresBufferedTraversal
             ? llvm::ArrayRef<std::uint64_t>(bufferedTraversalBits_)
             : llvm::ArrayRef<std::uint64_t>();
-    auto result = endpointSearch_.search(
-        {sourceEndpoints_, sourceReplicationGroups_, targetEndpoints_,
-         targetPreferenceRanks_, costs.lowerBoundArcCosts(),
-         costs.currentArcCosts(), candidate.logicalNetPayloadWidth(logicalNet),
-         0, endpointExpansionLimit, *eligibleTraversals,
-         costs.lowerBoundCostRevision(), requiredTraversals,
-         requiresBufferedTraversal, targetRequiresTraversal_,
-         forbiddenEndpointBits_});
+    auto timing = detail::projectSpatialLogicalNetPhysicalTiming(
+        candidate.problem(), logicalNet, tree,
+        candidate.registerFifoTransfer(logicalNet),
+        candidate.portAttachmentSelections(),
+        candidate.graphBoundaryAttachmentSelections());
+    if (!timing)
+      return timing.takeError();
+    EndpointRouteSearchRequest routeRequest;
+    routeRequest.sourceEndpoints = sourceEndpoints_;
+    routeRequest.sourceReplicationGroups = sourceReplicationGroups_;
+    routeRequest.targetEndpoints = targetEndpoints_;
+    routeRequest.targetPreferenceRanks = targetPreferenceRanks_;
+    routeRequest.lowerBoundArcCosts = costs.lowerBoundArcCosts();
+    routeRequest.currentArcCosts = costs.currentArcCosts();
+    routeRequest.requiredPayloadWidthBits =
+        candidate.logicalNetPayloadWidth(logicalNet);
+    routeRequest.endpointExpansionLimit = endpointExpansionLimit;
+    routeRequest.eligibleTraversalBits = *eligibleTraversals;
+    routeRequest.lowerBoundCostRevision = costs.lowerBoundCostRevision();
+    routeRequest.requiredTraversalBits = requiredTraversals;
+    routeRequest.forbidSourceReentry = requiresBufferedTraversal;
+    routeRequest.targetRequiresTraversal = targetRequiresTraversal_;
+    routeRequest.physicalTimingEnabled = true;
+    routeRequest.arcTimingDelayQuanta = arcTimingDelayQuanta_;
+    routeRequest.arcTimingRegisteredDestination =
+        arcTimingRegisteredDestination_;
+    routeRequest.sourceTimingArrivalQuanta = sourceTimingArrivalQuanta_;
+    routeRequest.targetTimingDelayQuanta = targetTimingDelayQuanta_;
+    routeRequest.requiredTimingQuanta =
+        routing.requiredCombinationalDelayQuanta();
+    routeRequest.timingCriticality = timing->structuralCriticality;
+    auto result = endpointSearch_.search(routeRequest);
     if (!result)
       return result.takeError();
 
@@ -566,9 +655,13 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
     if (selectedTarget == targetEndpoints_.end() ||
         *selectedTarget != result->target)
       return netRouterError("route search selected a foreign target endpoint");
+    const std::size_t targetOrdinal = selectedTarget - targetEndpoints_.begin();
+    const PnrIndex sink = targetObligationByEndpoint_[result->target];
+    if (sink == getInvalidPnrIndex() || sink >= net.sinkCount ||
+        !unresolvedSinks_[sink])
+      return netRouterError("route search selected no unresolved obligation");
     const bool selectedRequiresTraversal =
-        targetRequiresTraversal_[selectedTarget - targetEndpoints_.begin()] !=
-        0;
+        targetRequiresTraversal_[targetOrdinal] != 0;
     if (selectedRequiresTraversal) {
       bool branchBuffered = false;
       for (PnrIndex arc : branch) {
@@ -585,20 +678,100 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
             "route-tree attachment");
     }
     RouteCost branchCost = 0;
+    std::uint64_t branchArrival = 0;
+    if (tree.isUnrouted()) {
+      const auto sourcePosition =
+          llvm::lower_bound(sourceEndpoints_, attachment);
+      if (sourcePosition == sourceEndpoints_.end() ||
+          *sourcePosition != attachment)
+        return netRouterError(
+            "unrouted attachment has no physical timing arrival");
+      branchArrival =
+          sourceTimingArrivalQuanta_[sourcePosition - sourceEndpoints_.begin()];
+    } else {
+      const auto attachmentSlot = tree.findNode(attachment);
+      if (!attachmentSlot || *attachmentSlot >= routeNodeTimingArrivals_.size())
+        return netRouterError(
+            "routed attachment has no physical timing arrival");
+      branchArrival = routeNodeTimingArrivals_[*attachmentSlot];
+    }
+    const std::uint64_t initialExcess =
+        branchArrival > routing.requiredCombinationalDelayQuanta()
+            ? branchArrival - routing.requiredCombinationalDelayQuanta()
+            : 0;
+    auto initialPenalty = detail::physicalTimingDrivenNegativeSlackCost(
+        initialExcess, routing.requiredCombinationalDelayQuanta(),
+        timing->structuralCriticality);
+    if (!initialPenalty)
+      return initialPenalty.takeError();
+    branchCost = *initialPenalty;
     for (PnrIndex arc : branch) {
-      auto next = accumulateRouteCost(branchCost, costs.currentArcCosts()[arc]);
+      auto traversalCost = detail::physicalTimingDrivenTraversalCost(
+          arcTimingDelayQuanta_[arc],
+          routing.requiredCombinationalDelayQuanta(),
+          timing->structuralCriticality);
+      if (!traversalCost)
+        return traversalCost.takeError();
+      auto arcCost =
+          accumulateRouteCost(costs.currentArcCosts()[arc], *traversalCost);
+      if (!arcCost)
+        return arcCost.takeError();
+      auto next = accumulateRouteCost(branchCost, *arcCost);
       if (!next)
         return next.takeError();
       branchCost = *next;
+      if (arcTimingDelayQuanta_[arc] >
+          std::numeric_limits<std::uint64_t>::max() - branchArrival)
+        return netRouterError("route branch physical arrival exceeds u64");
+      const std::uint64_t reached = branchArrival + arcTimingDelayQuanta_[arc];
+      const std::uint64_t oldExcess =
+          branchArrival > routing.requiredCombinationalDelayQuanta()
+              ? branchArrival - routing.requiredCombinationalDelayQuanta()
+              : 0;
+      const std::uint64_t newExcess =
+          reached > routing.requiredCombinationalDelayQuanta()
+              ? reached - routing.requiredCombinationalDelayQuanta()
+              : 0;
+      auto penalty = detail::physicalTimingDrivenNegativeSlackCost(
+          newExcess - oldExcess, routing.requiredCombinationalDelayQuanta(),
+          timing->structuralCriticality);
+      if (!penalty)
+        return penalty.takeError();
+      next = accumulateRouteCost(branchCost, *penalty);
+      if (!next)
+        return next.takeError();
+      branchCost = *next;
+      branchArrival = arcTimingRegisteredDestination_[arc] ? 0 : reached;
     }
+    const std::uint64_t terminalDelay = targetTimingDelayQuanta_[targetOrdinal];
+    if (terminalDelay >
+        std::numeric_limits<std::uint64_t>::max() - branchArrival)
+      return netRouterError("route target physical arrival exceeds u64");
+    const std::uint64_t terminalArrival = branchArrival + terminalDelay;
+    const std::uint64_t oldTerminalExcess =
+        branchArrival > routing.requiredCombinationalDelayQuanta()
+            ? branchArrival - routing.requiredCombinationalDelayQuanta()
+            : 0;
+    const std::uint64_t terminalExcess =
+        terminalArrival > routing.requiredCombinationalDelayQuanta()
+            ? terminalArrival - routing.requiredCombinationalDelayQuanta()
+            : 0;
+    auto terminalPenalty = detail::physicalTimingDrivenNegativeSlackCost(
+        terminalExcess - oldTerminalExcess,
+        routing.requiredCombinationalDelayQuanta(),
+        timing->structuralCriticality);
+    if (!terminalPenalty)
+      return terminalPenalty.takeError();
+    auto next = accumulateRouteCost(branchCost, *terminalPenalty);
+    if (!next)
+      return next.takeError();
+    branchCost = *next;
+    if (pathBegin == 0 && branchCost != result->cost)
+      return netRouterError(
+          "route branch timing cost disagrees with endpoint search");
     auto nextTotal = accumulateRouteCost(totalCost, branchCost);
     if (!nextTotal)
       return nextTotal.takeError();
-
-    const PnrIndex sink = targetObligationByEndpoint_[result->target];
-    if (sink == getInvalidPnrIndex() || sink >= net.sinkCount ||
-        !unresolvedSinks_[sink])
-      return netRouterError("route search selected no unresolved obligation");
     if (llvm::Error error =
             move.attachRoutePath(logicalNet, attachment, branch, sink))
       return std::move(error);
@@ -621,15 +794,19 @@ std::size_t SpatialNetRouterScratch::retainedStorageBytes() const {
   return endpointSearch_.retainedStorageBytes() +
          retainedBytes(sourceCandidates_) + retainedBytes(sourceEndpoints_) +
          retainedBytes(sourceReplicationGroups_) +
+         retainedBytes(sourceTimingArrivalQuanta_) +
          retainedBytes(targetCandidates_) + retainedBytes(targetEndpoints_) +
          retainedBytes(targetPreferenceRanks_) +
          retainedBytes(targetRequiresTraversal_) +
+         retainedBytes(targetTimingDelayQuanta_) +
          retainedBytes(targetObligationByEndpoint_) +
          retainedBytes(unresolvedSinks_) +
          retainedBytes(prospectiveClaimBits_) +
          retainedBytes(bufferedTraversalBits_) +
-         retainedBytes(forbiddenEndpointBits_) + retainedBytes(endpointMarks_) +
-         retainedBytes(subtreeWorklist_) +
+         retainedBytes(arcTimingDelayQuanta_) +
+         retainedBytes(arcTimingRegisteredDestination_) +
+         retainedBytes(routeNodeTimingArrivals_) +
+         retainedBytes(endpointMarks_) + retainedBytes(subtreeWorklist_) +
          tagContinuity_.retainedStorageBytes() +
          tagContinuityScratch_.retainedStorageBytes() +
          private_->routeConstraints.retainedStorageBytes() +

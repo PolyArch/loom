@@ -41,6 +41,22 @@ def Fabric_OperandBufferModeAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
+def Fabric_FuConfigMode : I32EnumAttr<"FuConfigMode",
+    "temporal PE FU configuration storage organization",
+    [
+      I32EnumAttrCase<"PerInstructionFuConfig", 0,
+                      "per_instruction_fu_config">,
+      I32EnumAttrCase<"PerFuConfig", 1, "per_fu_config">
+    ]> {
+  let cppNamespace = "::fabric";
+  let genSpecializedAttr = 0;
+}
+
+def Fabric_FuConfigModeAttr
+    : EnumAttr<Fabric_Dialect, Fabric_FuConfigMode, "fu_config_mode"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def Fabric_InterconnectProtocolSchemaAttr
     : I32EnumAttr<"InterconnectProtocolSchema",
         "closed interconnect implementation protocol schema",

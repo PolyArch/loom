@@ -7,8 +7,8 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
-#include <cstdint>
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <variant>
 
@@ -28,8 +28,17 @@ struct SpatialMemoryBindingAction final {
 using SpatialRealizationBindingAction =
     std::variant<SpatialComputeBindingAction, SpatialMemoryBindingAction>;
 
+enum class SpatialWholeNetDispositionKind : std::uint8_t {
+  Preferred,
+  External,
+  RegisterFifo,
+};
+
 struct SpatialWholeNetRoutingAction final {
   PnrIndex logicalNet;
+  SpatialWholeNetDispositionKind disposition =
+      SpatialWholeNetDispositionKind::Preferred;
+  PnrIndex registerFifoTransfer = getInvalidPnrIndex();
 };
 
 struct SpatialSingleSinkRoutingAction final {

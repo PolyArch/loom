@@ -40,7 +40,7 @@ projection of Deployment, not an installation or distribution system.
 
 Compatible schema evolution does not make an exact Artifact reference
 version-polymorphic. Deployment consumes the current exact
-`loom.hardware_implementation 3.0` descriptor; accepting an older major would
+`loom.hardware_implementation 4.0` descriptor; accepting an older major would
 require an explicit additional schema alternative rather than reinterpretation
 or a compatibility alias.
 

@@ -4,6 +4,8 @@
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Fabric/IR/ResourceContract.h"
 
+#include <optional>
+
 namespace fabric {
 
 /// Reusable exact contract for a stateless operation with one registered
@@ -55,6 +57,21 @@ const ResourceContract &loopGateOperationResourceContract();
 llvm::Expected<UsePatternKey>
 resolveOperationUsePattern(const ResourceContract &contract,
                            std::uint32_t transitionCaseOrdinal);
+
+/// Exact architectural timing of one built-in operation transition. Result
+/// publication and next-state visibility are distinct semantic facts even
+/// when a concrete implementation assigns them the same cycle. An absent
+/// result is a typed lack of proof: callers must not substitute release
+/// latency or an implementation-family default.
+struct OperationTransitionArchitecturalTiming final {
+  std::uint32_t resultPublicationLatencyCycles = 0;
+  std::uint32_t nextStateLatencyCycles = 0;
+};
+
+llvm::Expected<std::optional<OperationTransitionArchitecturalTiming>>
+projectOperationTransitionArchitecturalTiming(
+    const ResourceContract &contract, ::dataflow::OperationSchemaId schema,
+    std::uint32_t transitionCaseOrdinal);
 
 UsePatternKey
 loopControlUsePattern(::dataflow::semantics::StreamCase transition);

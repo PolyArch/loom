@@ -21,23 +21,29 @@ add_mlir_library(LoomPnR
   SpatialMemoryConstraintModel.cpp
   SpatialCanonicalSeed.cpp
   SpatialCandidateInitializer.cpp
+  SpatialCandidateLocalTransferPreference.cpp
+  SpatialCandidateTopologyPreference.cpp
   SpatialCandidateMemory.cpp
   SpatialCandidateResourceTime.cpp
   SpatialCandidateRelations.cpp
   SpatialCandidateRouteResources.cpp
   SpatialCandidateState.cpp
   SpatialGlobalRoutingClosure.cpp
+  SpatialLocalTransferIndex.cpp
   SpatialMappingMaterializer.cpp
   SpatialMoveTransaction.cpp
   SpatialNetRouter.cpp
   SpatialPnrCapacityIndex.cpp
+  SpatialPathFinderDiagnostics.cpp
   SpatialPathFinderRouter.cpp
   SpatialPathFinderRoutingRegion.cpp
   SpatialPnrHandshakeIndex.cpp
   SpatialPnrMemoryIndex.cpp
   SpatialPnrPortIndex.cpp
   SpatialPnrProblem.cpp
+  SpatialPhysicalTiming.cpp
   SpatialProgressAnalysis.cpp
+  SpatialRecurrenceTiming.cpp
   SpatialPnrResourceIndex.cpp
   SpatialPnrTagContinuityIndex.cpp
   SpatialPnrTransferIndex.cpp
@@ -49,6 +55,8 @@ add_mlir_library(LoomPnR
   SpatialTagColoring.cpp
   SpatialTagConstraintModel.cpp
   SpatialTagContinuity.cpp
+  SpatialSwitchRowPacking.cpp
+  SpatialSwitchHandshakeProjection.cpp
   SpatialTagPressureDiagnostic.cpp
   StaticSchedulePressure.cpp
   System/SystemPnrGraphDomain.cpp
@@ -56,6 +64,7 @@ add_mlir_library(LoomPnR
   System/SystemPnrServiceDomain.cpp
   System/SystemPresburgerPartition.cpp
   System/SystemPnrProblem.cpp
+  System/SystemPnrProblemView.cpp
   System/SystemAction.cpp
   System/SystemActionDomain.cpp
   System/SystemActionExecutor.cpp

@@ -26,6 +26,15 @@ LOOM_MAPPING_VIOLATION(HardProgressViolation, 4, "HardProgressViolation",
 LOOM_MAPPING_MEASURE(TotalSelectedTraversalClaim, 0,
                      "TotalSelectedTraversalClaim")
 LOOM_MAPPING_MEASURE(StaticSchedulePressure, 1, "StaticSchedulePressure")
+LOOM_MAPPING_MEASURE(RecurrenceMinimumInitiationIntervalCycles, 2,
+                     "RecurrenceMinimumInitiationIntervalCycles")
+LOOM_MAPPING_MEASURE(ResourceMinimumInitiationIntervalCycles, 3,
+                     "ResourceMinimumInitiationIntervalCycles")
+LOOM_MAPPING_MEASURE(TransportBitCycleDemand, 4, "TransportBitCycleDemand")
+LOOM_MAPPING_MEASURE(WorstRouteArrivalDelayQuanta, 5,
+                     "WorstRouteArrivalDelayQuanta")
+LOOM_MAPPING_MEASURE(TotalRouteNegativeSlackQuanta, 6,
+                     "TotalRouteNegativeSlackQuanta")
 
 #undef LOOM_MAPPING_MEASURE
 #undef LOOM_MAPPING_VIOLATION

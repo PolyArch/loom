@@ -1107,17 +1107,13 @@ buildConfigurationImageCatalog(
     if (!unit)
       return invalid("configuration image names a missing programming unit");
 
-    ConfigurationImageCatalogEntry entry{reference, {}};
-    for (const fabric::FabricPhysicalOccurrenceOwnerRef &owner :
-         unit->exactFabricResourceClosure) {
-      if (owner.kind() !=
-          fabric::FabricPhysicalOccurrenceOwnerKind::SpatialCoreInternal)
-        continue;
-      const auto &internal =
-          std::get<fabric::SpatialCoreInternalOccurrenceRef>(owner.payload());
-      if (!llvm::is_contained(entry.accCores, internal.spatialCore.core))
-        entry.accCores.push_back(internal.spatialCore.core);
-    }
+    const hardware::ProgrammingUnitOccurrenceScope scope =
+        hardware::deriveProgrammingUnitOccurrenceScope(*unit);
+    if (scope.includesDirectSystemResources || scope.spatialCores.size() != 1)
+      return invalid("configuration image programming unit is not local to "
+                     "one SpatialCore occurrence");
+    ConfigurationImageCatalogEntry entry{
+        reference, {scope.spatialCores.front().core}};
     catalog.push_back(std::move(entry));
   }
   return catalog;

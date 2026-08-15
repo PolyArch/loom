@@ -710,8 +710,8 @@ publishGateNetlist(const InvocationFacts &facts, llvm::StringRef netlist,
     return catalog.takeError();
   HardwareImplementationDraft draft{
       source.fabric(),
+      source.subject(),
       source.configurationAbi(),
-      source.interconnectImplementations().vec(),
       std::move(*representation),
       source.implementationPlatform(),
       source.interfaces().vec(),

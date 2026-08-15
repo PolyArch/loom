@@ -103,8 +103,11 @@ repeatedOveruseSelections(const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SystemInstructionResourceUseSelection> instructionUses,
     llvm::ArrayRef<SystemServiceResourceUseSelection> serviceUses) {
   return take(candidate.problem().capacityModel().project(
-      candidate.problem(), {candidate.threadChoices(), candidate.graphChoices(),
-                            routes, routeNodes, instructionUses, serviceUses}));
+                  candidate.problem(),
+                  {candidate.threadChoices(), candidate.graphChoices(), routes,
+                   routeNodes, candidate.serviceRouteSinks(), instructionUses,
+                   serviceUses}))
+      .capacity;
 }
 
 ::loom::mapping::detail::ResourceCapacityOveruseProjection
@@ -112,7 +115,9 @@ projectImportedCapacity(const SystemCandidateState &candidate,
                         llvm::ArrayRef<PnrIndex> threadChoices,
                         llvm::ArrayRef<PnrIndex> graphChoices) {
   return take(candidate.problem().capacityModel().project(
-      candidate.problem(), {threadChoices, graphChoices, {}, {}, {}, {}}));
+                  candidate.problem(),
+                  {threadChoices, graphChoices, {}, {}, {}, {}, {}}))
+      .capacity;
 }
 
 bool traversalClaimsCell(const FrozenEndpointRoutingTopology &topology,
@@ -328,8 +333,8 @@ WorkflowProblem buildProblem(
   auto searchDomain = take(projectSystemPnrSearchDomain(
       dataflow, system, config, constraints, partition,
       SystemHierarchicalGraphSearchInput{{spatialMapping}}, store));
-  auto problem = take(freezeSystemPnrProblem(dataflow, system, searchDomain,
-                                             config, constraints, store));
+  auto problem = take(freezeSystemPnrProblemWithNormalizedTiming(
+      dataflow, system, searchDomain, config, constraints, store));
   return {std::move(config), std::move(searchDomain), std::move(problem)};
 }
 

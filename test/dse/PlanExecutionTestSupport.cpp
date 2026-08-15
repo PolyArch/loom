@@ -65,6 +65,8 @@ std::atomic_uint64_t providerCalls{0};
 std::atomic_uint64_t activeProviders{0};
 std::atomic_uint64_t maximumActiveProviders{0};
 std::atomic_uint64_t requiredConcurrentProviders{1};
+std::atomic_bool waitForStopRequest{false};
+std::atomic_bool observedStopRequest{false};
 std::mutex concurrencyMutex;
 std::condition_variable concurrencyChanged;
 
@@ -80,7 +82,8 @@ void observeMaximum(std::uint64_t active) {
 llvm::Expected<CandidateGeneratorProviderResult>
 generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
          const ResolvedCandidateGeneratorBinding &binding,
-         const ArtifactStore &store, const BlobStore &) {
+         const ArtifactStore &store, const BlobStore &,
+         const ExecutionControlView &executionControl) {
   if (binding.descriptorRef() != descriptor.reference() ||
       inputBindings.size() != 1 ||
       inputBindings.front().slot != CandidateGeneratorInputSlotRef(0) ||
@@ -104,6 +107,25 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       concurrencyChanged.notify_all();
       return invalid("parallel provider rendezvous timed out");
     }
+  }
+  if (waitForStopRequest.load(std::memory_order_relaxed)) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!executionControl.stopRequested() &&
+           std::chrono::steady_clock::now() < deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    const bool stopped = executionControl.stopRequested();
+    observedStopRequest.store(stopped, std::memory_order_relaxed);
+    activeProviders.fetch_sub(1, std::memory_order_relaxed);
+    concurrencyChanged.notify_all();
+    if (!stopped)
+      return invalid("provider execution-control stop was not observable");
+    return CandidateGeneratorProviderResult{
+        IncompleteCandidateGeneratorResult{
+            CandidateGeneratorIncompleteReason::CancelledOrTimeout,
+            {{CandidateGeneratorOutputSlotRef(0), {}}},
+            {}},
+        {{CandidateGeneratorWorkUnitRef(0), 1, 0}}};
   }
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
   activeProviders.fetch_sub(1, std::memory_order_relaxed);
@@ -187,10 +209,23 @@ void resetPlanExecutionProviderObservations() {
   activeProviders.store(0, std::memory_order_relaxed);
   maximumActiveProviders.store(0, std::memory_order_relaxed);
   requiredConcurrentProviders.store(1, std::memory_order_relaxed);
+  waitForStopRequest.store(false, std::memory_order_relaxed);
+  observedStopRequest.store(false, std::memory_order_relaxed);
 }
 
 void requireConcurrentPlanExecutionProviders(std::uint64_t count) {
   requiredConcurrentProviders.store(count, std::memory_order_relaxed);
+}
+
+void requirePlanExecutionProviderStopObservation() {
+  waitForStopRequest.store(true, std::memory_order_relaxed);
+}
+
+bool waitForActivePlanExecutionProvider() {
+  std::unique_lock<std::mutex> lock(concurrencyMutex);
+  return concurrencyChanged.wait_for(lock, std::chrono::seconds(10), [] {
+    return activeProviders.load(std::memory_order_relaxed) != 0;
+  });
 }
 
 std::uint64_t planExecutionProviderCalls() {
@@ -199,6 +234,10 @@ std::uint64_t planExecutionProviderCalls() {
 
 std::uint64_t maximumConcurrentPlanExecutionProviders() {
   return maximumActiveProviders.load(std::memory_order_relaxed);
+}
+
+bool planExecutionProviderObservedStop() {
+  return observedStopRequest.load(std::memory_order_relaxed);
 }
 
 } // namespace loom::dse::test_support

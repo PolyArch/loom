@@ -23,8 +23,8 @@ enum class OperandBufferMode : std::uint32_t;
 /// alone: the resident context is the one canonical
 /// `loom::fabric::InstructionContextRef`, and the other two components are the
 /// concrete FU occurrence ordinal and one FU input ordinal of that occurrence.
-/// The key is owner-local, so it is neither a standalone entity nor a persistent
-/// reference, and it never becomes a second context identity.
+/// The key is owner-local, so it is neither a standalone entity nor a
+/// persistent reference, and it never becomes a second context identity.
 struct LogicalOperandQueueKey {
   loom::fabric::InstructionContextRef context;
   loom::fabric::FabricOrdinal fuOccurrence = 0;
@@ -67,14 +67,14 @@ using OperandAllocationUnit =
     std::variant<DedicatedQueueUnit, FuInputUnit, WholeTemporalPeUnit>;
 
 /// The one capacity dimension of `OperandEntryPool`: the entries of one
-/// allocation unit's pool. Occupancy is durable operand-buffer state that only a
-/// committed transition changes; no use pattern claims it.
+/// allocation unit's pool. Occupancy is durable operand-buffer state that only
+/// a committed transition changes; no use pattern claims it.
 enum class OperandEntryPoolDimension : std::uint32_t { OccupiedEntry };
 
 /// The one capacity dimension of `OperandQueue`: the operands one logical queue
 /// holds in arrival order. Every allocation unit keeps this state per logical
-/// queue, so a shared pool never merges contexts, tags, or streams into a global
-/// arrival-order head. Its contents are durable state, not a claim.
+/// queue, so a shared pool never merges contexts, tags, or streams into a
+/// global arrival-order head. Its contents are durable state, not a claim.
 enum class OperandQueueDimension : std::uint32_t { QueuedOperand };
 
 /// The one capacity dimension shared by `OperandEnqueueService` and
@@ -87,7 +87,8 @@ enum class OperandBufferEligibility : std::uint32_t {
   /// The allocation unit has a free entry once this cycle's selected dequeue is
   /// accounted for, that is `O - D < capacity`.
   FreeEntryAfterCycleStartDequeue,
-  /// The logical queue holds a head token that was present at cycle start, so an
+  /// The logical queue holds a head token that was present at cycle start, so
+  /// an
   /// operand appended in this cycle can never satisfy this dequeue.
   CycleStartHeadPresent,
 };
@@ -110,8 +111,8 @@ enum class OperandBufferTiming : std::uint32_t {
 };
 
 /// What one temporal PE declares about its operand buffering.
-/// `contextCount` is `num_instruction`, `fuInputCounts` is the FU input count of
-/// every concrete FU occurrence in canonical occurrence order, and
+/// `contextCount` is `num_instruction`, `fuInputCounts` is the FU input count
+/// of every concrete FU occurrence in canonical occurrence order, and
 /// `entriesPerAllocationUnit` is the required positive `operand_buffer_size`.
 /// No field carries a default meaning: a zero entry count is rejected in every
 /// mode, so no implicit dedicated depth and no builder or backend default can
@@ -190,8 +191,8 @@ struct OperandCommitSelection {
 /// releases or inherits another use's claim.
 ///
 /// Because enqueue and dequeue claim disjoint services, both may commit on one
-/// allocation unit in one cycle. When two logical queues project to one unit the
-/// contract carries the shared `RoundRobin` GrantPolicy over the canonical
+/// allocation unit in one cycle. When two logical queues project to one unit
+/// the contract carries the shared `RoundRobin` GrantPolicy over the canonical
 /// logical-queue order, reset to the first canonical requester; a service
 /// filters that cycle to `queuesOf` its unit through eligibility, and its
 /// running cursor is caller-owned execution state, so enqueue and dequeue
@@ -257,6 +258,12 @@ public:
   /// heads that project to one unit make the binding invalid; no implementation
   /// may serialize the removals privately after consuming part of the inputs.
   bool admitsActorDequeueSet(llvm::ArrayRef<std::uint32_t> queues) const;
+
+  /// Whether one ingress token may atomically enqueue every matching logical
+  /// queue. Version 1 has one enqueue service per allocation unit, so a match
+  /// group may contain at most one queue from each unit. Atomic fanout across
+  /// distinct units remains admitted.
+  bool admitsIngressEnqueueSet(llvm::ArrayRef<std::uint32_t> queues) const;
 
 private:
   struct Span {

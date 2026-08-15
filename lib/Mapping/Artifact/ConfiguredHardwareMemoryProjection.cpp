@@ -251,29 +251,6 @@ deriveRowTarget(const ::loom::fabric::FabricArtifactView &fabric,
   return std::move(*selected);
 }
 
-llvm::Expected<::loom::fabric::FabricOrdinal> connectionOrdinal(
-    const ::loom::fabric::FabricArtifactView &fabric,
-    ::loom::fabric::FabricMemoryOccurrenceRef memory,
-    const ::loom::fabric::FabricMemoryEngineTemplateInternalConnectionRef
-        &selected) {
-  const auto *connectivity = fabric.memoryConnectivity(memory);
-  if (!connectivity)
-    return invalid("memory occurrence has no connectivity contract");
-  std::optional<::loom::fabric::FabricOrdinal> result;
-  for (auto [ordinal, candidate] :
-       llvm::enumerate(connectivity->internalConnections())) {
-    if (candidate.sourceEndpointOrdinal != selected.source.ordinal ||
-        candidate.sinkEndpointOrdinal != selected.sink.ordinal)
-      continue;
-    if (result)
-      return invalid("memory connectivity repeats an internal edge");
-    result = static_cast<::loom::fabric::FabricOrdinal>(ordinal);
-  }
-  if (!result)
-    return invalid("Tech memory edge is absent from its occurrence");
-  return *result;
-}
-
 llvm::Expected<const SpatialRouteTreeView *>
 findProducerRoute(llvm::ArrayRef<SpatialRouteTreeView> routes,
                   const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
@@ -396,8 +373,8 @@ struct RoleProjection final {
 llvm::Expected<RoleProjection>
 deriveRoles(const ::dataflow::CanonicalDataflowProgramView &dataflow,
             const ::loom::fabric::FabricArtifactView &fabric,
-            const TechMemoryRealizationView &realization,
             const TechMemoryActorView &actor,
+            const SpatialMemoryActorRoleDemandView &demand,
             llvm::ArrayRef<SpatialRouteTreeView> routes,
             llvm::ArrayRef<SpatialResourceUseView> resourceUses,
             llvm::ArrayRef<SpatialPhysicalTagSegmentView> tagSegments,
@@ -412,6 +389,10 @@ deriveRoles(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   if (actor.operandPorts.size() != service->arguments().size() ||
       actor.resultPorts.size() != service->results().size())
     return invalid("Tech memory role map has the wrong service shape");
+  if (demand.actor != actor.actor || demand.occurrence != memory ||
+      demand.sources.size() != roleCount ||
+      demand.destinations.size() != roleCount)
+    return invalid("memory physical role demand has the wrong owner or shape");
 
   RoleProjection result;
   result.sources.resize(roleCount);
@@ -426,29 +407,28 @@ deriveRoles(const ::dataflow::CanonicalDataflowProgramView &dataflow,
         ::dataflow::ActorTokenOperandRef{
             actor.actor, static_cast<::dataflow::StructuralOrdinal>(
                              (*operand)->getOperandNumber())});
-    const TechMemoryInternalEdgeView *internal = nullptr;
-    for (const TechMemoryInternalEdgeView &edge : realization.internalEdges) {
-      if (edge.consumer != consumer)
-        continue;
-      if (internal)
-        return invalid("memory operand has multiple internal sources");
-      internal = &edge;
-    }
-    if (internal) {
-      auto connection = connectionOrdinal(fabric, memory, internal->connection);
-      if (!connection)
-        return connection.takeError();
+    const std::size_t role = static_cast<std::size_t>(argument.role);
+    if (role >= demand.sources.size() || !demand.sources[role])
+      return invalid("memory input role has no physical demand");
+    if (const auto *internal =
+            std::get_if<::loom::fabric::FabricMemoryHandshakeInternalRoleSource>(
+                &*demand.sources[role])) {
       result.sources[static_cast<unsigned>(argument.role)] =
-          ::loom::fabric::FabricMemoryInternalRoleSource{*connection};
+          ::loom::fabric::FabricMemoryInternalRoleSource{
+              internal->connection};
       continue;
     }
-    auto external = externalInputSource(
+    const auto &externalDemand =
+        std::get<::loom::fabric::FabricMemoryHandshakeExternalRoleSource>(
+            *demand.sources[role]);
+    auto projectedExternal = externalInputSource(
         fabric, routes, resourceUses, tagSegments, consumer,
         ::loom::fabric::FabricTransportEndpointRef{
-            endpointOwner, actor.operandPorts[ordinal].ordinal});
-    if (!external)
-      return external.takeError();
-    result.sources[static_cast<unsigned>(argument.role)] = std::move(*external);
+            endpointOwner, externalDemand.endpoint});
+    if (!projectedExternal)
+      return projectedExternal.takeError();
+    result.sources[static_cast<unsigned>(argument.role)] =
+        std::move(*projectedExternal);
   }
 
   for (auto [ordinal, output] : llvm::enumerate(service->results())) {
@@ -459,32 +439,29 @@ deriveRoles(const ::dataflow::CanonicalDataflowProgramView &dataflow,
         ::dataflow::ActorTokenResultRef{
             actor.actor, static_cast<::dataflow::StructuralOrdinal>(
                              value->getResultNumber())});
+    const std::size_t role = static_cast<std::size_t>(output.role);
+    if (role >= demand.destinations.size() || !demand.destinations[role])
+      return invalid("memory output role has no physical demand");
     ::loom::fabric::FabricMemoryRoleDestination destination;
-    for (const TechMemoryInternalEdgeView &edge : realization.internalEdges) {
-      if (edge.producer != producer)
-        continue;
-      auto connection = connectionOrdinal(fabric, memory, edge.connection);
-      if (!connection)
-        return connection.takeError();
-      destination.internalConnections.push_back(*connection);
-    }
-    llvm::sort(destination.internalConnections);
-    destination.internalConnections.erase(
-        std::unique(destination.internalConnections.begin(),
-                    destination.internalConnections.end()),
-        destination.internalConnections.end());
+    destination.internalConnections =
+        demand.destinations[role]->internalConnections;
     std::uint64_t routeOrdinal = 0;
     auto producerRoute = findProducerRoute(routes, producer, routeOrdinal);
     if (!producerRoute)
       return producerRoute.takeError();
-    if (*producerRoute) {
+    if (demand.destinations[role]->externalEndpoint) {
+      if (!*producerRoute)
+        return invalid("external memory result has no residual route");
       auto external = externalOutputDestination(
           fabric, routes, resourceUses, tagSegments, producer,
           ::loom::fabric::FabricTransportEndpointRef{
-              endpointOwner, actor.resultPorts[ordinal].ordinal});
+              endpointOwner,
+              *demand.destinations[role]->externalEndpoint});
       if (!external)
         return external.takeError();
       destination.external = std::move(*external);
+    } else if (*producerRoute) {
+      return invalid("internal-only memory result has an external route");
     }
     if (!destination.external && destination.internalConnections.empty())
       return invalid("memory result has no external or internal destination");
@@ -547,6 +524,10 @@ llvm::Error addEngineConfiguration(
       findRealization(techMapping, engine.realization);
   if (!realization)
     return invalid("memory configuration has no unique Tech realization");
+  auto roleDemands = deriveSpatialMemoryActorRoleDemands(
+      dataflow, techMapping, fabric, *realization, engine.occurrence);
+  if (!roleDemands)
+    return roleDemands.takeError();
   for (const SpatialMemoryOperationView &operation : engine.operations) {
     const auto actorRef = std::visit(
         [](const auto &selected) { return selected.actor; }, operation);
@@ -559,6 +540,12 @@ llvm::Error addEngineConfiguration(
     const TechMemoryActorView *actor = findActor(*realization, actorRef);
     if (!actor)
       return invalid("memory configuration has no unique Tech actor");
+    const auto demand = llvm::find_if(
+        *roleDemands, [&](const SpatialMemoryActorRoleDemandView &candidate) {
+          return candidate.actor == actorRef;
+        });
+    if (demand == roleDemands->end())
+      return invalid("memory configuration has no physical role demand");
     auto resolved = dataflow.resolve(actorRef);
     if (!resolved)
       return resolved.takeError();
@@ -580,7 +567,7 @@ llvm::Error addEngineConfiguration(
                                       engine.realization, actorRef, port);
     if (!pattern)
       return pattern.takeError();
-    auto roles = deriveRoles(dataflow, fabric, *realization, *actor, routes,
+    auto roles = deriveRoles(dataflow, fabric, *actor, *demand, routes,
                              resourceUses, tagSegments, engine.occurrence);
     if (!roles)
       return roles.takeError();
@@ -602,8 +589,8 @@ llvm::Error addEngineConfiguration(
     if (*rowOrdinal >= builder.active.operationRows.size())
       return invalid("memory operation placement exceeds its row table");
     auto &selected = builder.active.operationRows[*rowOrdinal];
-    if (selected && !(*selected == *row))
-      return invalid("one memory row has conflicting operation projections");
+    if (selected)
+      return invalid("one memory row is selected by multiple operations");
     selected = std::move(*row);
     builder.selected = true;
   }

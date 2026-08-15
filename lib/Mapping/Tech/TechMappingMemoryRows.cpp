@@ -348,67 +348,231 @@ deriveInternalEdges(const TechMappingGenerationInputs &inputs,
   return edges;
 }
 
-llvm::Error emitInternalEdgeSubsets(
-    const TechMappingGenerationInputs &inputs, TechMemoryRealizationView base,
-    llvm::ArrayRef<TechMemoryInternalEdgeView> eligibleEdges,
-    llvm::ArrayRef<const MemoryActorOption *> selection, bool capacityAdmitted,
-    const std::optional<std::vector<TechMemoryGraphBoundaryView>> &boundaries,
-    TechMatchRowCollector &collector) {
-  llvm::SmallVector<llvm::ArrayRef<std::uint8_t>, 16> actorKeys;
-  actorKeys.reserve(selection.size());
-  for (const MemoryActorOption *option : selection)
-    actorKeys.push_back(option->key);
-
-  if (!capacityAdmitted || !boundaries) {
-    auto firstKey = detail::canonicalTechMemoryRowKeyFromActorKeys(
-        base.engine, actorKeys, base.graphBoundaries, {},
-        inputs.dataflow.identity());
-    if (!firstKey)
-      return firstKey.takeError();
-    auto lastKey = detail::canonicalTechMemoryRowKeyFromActorKeys(
-        base.engine, actorKeys, base.graphBoundaries, eligibleEdges,
-        inputs.dataflow.identity());
-    if (!lastKey)
-      return lastKey.takeError();
-    const bool countOverflow = eligibleEdges.size() >= 64;
-    const std::uint64_t count = countOverflow
-                                    ? std::numeric_limits<std::uint64_t>::max()
-                                    : std::uint64_t{1} << eligibleEdges.size();
-    return collector.rejectCanonicalSeedRange(
-        std::move(*firstKey), std::move(*lastKey), count, countOverflow,
-        capacityAdmitted
-            ? TechMatchSeedRejectionReason::CorrespondenceInadmissible
-            : TechMatchSeedRejectionReason::RealizationInadmissible);
+class MemorySelectionCursor final {
+public:
+  MemorySelectionCursor(std::vector<MemoryActorDomain> domains,
+                        std::size_t maxActorCount)
+      : domains_(std::move(domains)), maxActorCount_(maxActorCount) {
+    resetTarget();
   }
 
-  std::vector<TechMemoryInternalEdgeView> selectedEdges;
-  std::vector<::dataflow::ActorRef> covered;
-  covered.reserve(base.actors.size());
-  for (const TechMemoryActorView &actor : base.actors)
-    covered.push_back(actor.actor);
-  for (std::size_t count = 0; count <= eligibleEdges.size(); ++count) {
-    std::function<llvm::Error(std::size_t, std::size_t)> choose =
-        [&](std::size_t start, std::size_t remaining) -> llvm::Error {
-      if (collector.truncated())
-        return llvm::Error::success();
-      if (remaining != 0) {
-        for (std::size_t index = start;
-             index + remaining <= eligibleEdges.size(); ++index) {
-          selectedEdges.push_back(eligibleEdges[index]);
-          if (llvm::Error error = choose(index + 1, remaining - 1))
-            return error;
-          selectedEdges.pop_back();
-          if (collector.truncated())
-            break;
-        }
-        return llvm::Error::success();
+  std::optional<std::vector<const MemoryActorOption *>> next() {
+    if (exhausted_)
+      return std::nullopt;
+    if (yielded_) {
+      yielded_ = false;
+      choices_.pop_back();
+      frames_.resize(choices_.size() + 1);
+    }
+
+    while (targetActorCount_ <= maxActorCount_) {
+      const std::size_t depth = choices_.size();
+      if (depth == targetActorCount_) {
+        std::vector<const MemoryActorOption *> selection;
+        selection.reserve(choices_.size());
+        for (const Choice &choice : choices_)
+          selection.push_back(&domains_[choice.actor].options[choice.option]);
+        yielded_ = true;
+        return selection;
       }
 
-      TechMemoryRealizationView row = base;
-      row.internalEdges = selectedEdges;
-      auto key = detail::canonicalTechMemoryRowKeyFromActorKeys(
-          row.engine, actorKeys, row.graphBoundaries, row.internalEdges,
-          inputs.dataflow.identity());
+      Frame &frame = frames_[depth];
+      const std::size_t remaining = targetActorCount_ - depth;
+      bool descended = false;
+      while (frame.actor + remaining <= domains_.size()) {
+        if (frame.graph && domains_[frame.actor].actor->graph != *frame.graph) {
+          ++frame.actor;
+          frame.option = 0;
+          continue;
+        }
+        if (frame.option >= domains_[frame.actor].options.size()) {
+          ++frame.actor;
+          frame.option = 0;
+          continue;
+        }
+        const std::size_t actor = frame.actor;
+        const std::size_t option = frame.option++;
+        const ::dataflow::GraphRef graph =
+            frame.graph ? *frame.graph : domains_[actor].actor->graph;
+        choices_.push_back({actor, option});
+        frames_.push_back({actor + 1, 0, graph});
+        descended = true;
+        break;
+      }
+      if (descended)
+        continue;
+
+      if (depth == 0) {
+        ++targetActorCount_;
+        resetTarget();
+        continue;
+      }
+      choices_.pop_back();
+      frames_.resize(choices_.size() + 1);
+    }
+    exhausted_ = true;
+    return std::nullopt;
+  }
+
+private:
+  struct Choice final {
+    std::size_t actor;
+    std::size_t option;
+  };
+  struct Frame final {
+    std::size_t actor;
+    std::size_t option;
+    std::optional<::dataflow::GraphRef> graph;
+  };
+
+  void resetTarget() {
+    choices_.clear();
+    frames_.clear();
+    if (targetActorCount_ <= maxActorCount_)
+      frames_.push_back({0, 0, std::nullopt});
+  }
+
+  std::vector<MemoryActorDomain> domains_;
+  std::vector<Choice> choices_;
+  std::vector<Frame> frames_;
+  std::size_t maxActorCount_ = 0;
+  std::size_t targetActorCount_ = 1;
+  bool yielded_ = false;
+  bool exhausted_ = false;
+};
+
+class ConstrainedInternalEdgeSubsetCursor final {
+public:
+  explicit ConstrainedInternalEdgeSubsetCursor(
+      std::vector<TechMemoryInternalEdgeView> edges)
+      : edges_(std::move(edges)), nextIndexByDepth_(1, 0) {}
+
+  std::optional<std::vector<std::size_t>> next() {
+    if (exhausted_)
+      return std::nullopt;
+    if (yielded_) {
+      yielded_ = false;
+      if (targetSize_ == 0) {
+        ++targetSize_;
+        resetTarget();
+      } else {
+        selected_.pop_back();
+        nextIndexByDepth_.resize(selected_.size() + 1);
+      }
+    }
+
+    while (targetSize_ <= edges_.size()) {
+      const std::size_t depth = selected_.size();
+      if (depth == targetSize_) {
+        yielded_ = true;
+        return selected_;
+      }
+
+      const std::size_t remaining = targetSize_ - depth;
+      bool descended = false;
+      std::size_t &nextIndex = nextIndexByDepth_[depth];
+      while (nextIndex + remaining <= edges_.size()) {
+        const std::size_t candidate = nextIndex++;
+        if (!compatible(candidate))
+          continue;
+        selected_.push_back(candidate);
+        nextIndexByDepth_.push_back(candidate + 1);
+        descended = true;
+        break;
+      }
+      if (descended)
+        continue;
+
+      if (depth == 0) {
+        ++targetSize_;
+        resetTarget();
+        continue;
+      }
+      selected_.pop_back();
+      nextIndexByDepth_.resize(selected_.size() + 1);
+    }
+    exhausted_ = true;
+    return std::nullopt;
+  }
+
+  llvm::ArrayRef<TechMemoryInternalEdgeView> edges() const { return edges_; }
+
+private:
+  bool compatible(std::size_t candidate) const {
+    const TechMemoryInternalEdgeView &edge = edges_[candidate];
+    for (std::size_t selected : selected_) {
+      const TechMemoryInternalEdgeView &other = edges_[selected];
+      if (other.consumer == edge.consumer)
+        return false;
+      if (other.connection == edge.connection &&
+          other.producer != edge.producer)
+        return false;
+    }
+    return true;
+  }
+
+  void resetTarget() {
+    selected_.clear();
+    nextIndexByDepth_.assign(1, 0);
+  }
+
+  std::vector<TechMemoryInternalEdgeView> edges_;
+  std::vector<std::size_t> selected_;
+  std::vector<std::size_t> nextIndexByDepth_;
+  std::size_t targetSize_ = 0;
+  bool yielded_ = false;
+  bool exhausted_ = false;
+};
+
+struct MemorySeedState final {
+  MemorySeedState(TechMemoryRealizationView base,
+                  std::vector<TechMemoryGraphBoundaryView> boundaries,
+                  std::vector<::dataflow::ActorRef> coveredActors,
+                  std::vector<TechMemoryInternalEdgeView> eligibleEdges)
+      : base(std::move(base)), boundaries(std::move(boundaries)),
+        coveredActors(std::move(coveredActors)),
+        subsets(std::move(eligibleEdges)) {}
+
+  TechMemoryRealizationView base;
+  std::vector<TechMemoryGraphBoundaryView> boundaries;
+  std::vector<::dataflow::ActorRef> coveredActors;
+  ConstrainedInternalEdgeSubsetCursor subsets;
+  std::optional<TechMemoryRealizationView> pending;
+};
+
+class MemoryRowFamilyCursor final : public TechMatchRowFamilyCursor {
+public:
+  MemoryRowFamilyCursor(
+      const TechMappingGenerationInputs &inputs,
+      ::loom::fabric::FabricMemoryEngineTemplateRef engine,
+      const ::loom::fabric::FabricMemoryEngineTemplateRecord &engineRecord,
+      MemorySelectionCursor selections)
+      : inputs_(inputs), engine_(engine), engineRecord_(engineRecord),
+        selections_(std::move(selections)) {}
+
+  llvm::Error advance(TechMatchRowCollector &collector) override {
+    while (!collector.truncated() && !collector.interrupted()) {
+      if (!seed_) {
+        auto prepared = prepareNextSelection();
+        if (!prepared)
+          return prepared.takeError();
+        if (!*prepared) {
+          exhausted_ = true;
+          return llvm::Error::success();
+        }
+      }
+      if (!seed_->pending) {
+        auto prepared = prepareNextSubset();
+        if (!prepared)
+          return prepared.takeError();
+        if (!*prepared) {
+          seed_.reset();
+          continue;
+        }
+      }
+
+      auto key = canonicalTechMatchRowKey(*seed_->pending,
+                                          inputs_.dataflow.identity());
       if (!key)
         return key.takeError();
       auto entered = collector.beginSeed(std::move(*key));
@@ -416,192 +580,190 @@ llvm::Error emitInternalEdgeSubsets(
         return entered.takeError();
       if (!*entered)
         return llvm::Error::success();
-      row.graphBoundaries = *boundaries;
-      return collector.admit(std::move(row), covered);
-    };
-    if (llvm::Error error = choose(0, count))
-      return error;
-    if (collector.truncated())
-      break;
-  }
-  return llvm::Error::success();
-}
-
-/// Whether every selected actor presents a distinguishable ingress arrival on
-/// each shared operation-port endpoint. Two actors on one port whose same
-/// endpoint is driven by one producer carry one tag, which the Temporal row
-/// matcher cannot separate. A producer already eligible to become an internal
-/// engine edge never reaches the ingress and is excluded.
-llvm::Expected<bool> temporalIngressProducersAreDistinct(
-    const TechMappingGenerationInputs &inputs,
-    llvm::ArrayRef<const MemoryActorOption *> selection) {
-  using IngressKey =
-      std::tuple<std::uint64_t, std::uint64_t, std::vector<std::uint8_t>>;
-  std::set<IngressKey> arrivals;
-  for (const MemoryActorOption *option : selection) {
-    for (auto [argumentOrdinal, endpoint] :
-         llvm::enumerate(option->actor.operandPorts)) {
-      const ::dataflow::ActorTokenOperandRef consumer{
-          option->actor.actor,
-          option->operandOperationOrdinals[argumentOrdinal]};
-      auto producer = inputs.dataflow.graphProducer(
-          ::dataflow::CanonicalGraphConsumerEndpointRef{consumer});
-      if (!producer) {
-        llvm::consumeError(producer.takeError());
-        continue;
-      }
-      const auto *actorProducer =
-          std::get_if<::dataflow::ActorTokenResultRef>(&*producer);
-      if (actorProducer && findActor(selection, actorProducer->actor))
-        continue;
-      auto producerKey = ::dataflow::encodeDataflowReference(
-          inputs.dataflow.identity(), *producer);
-      if (!producerKey)
-        return producerKey.takeError();
-      if (!arrivals
-               .emplace(option->actor.operationPort.ordinal, endpoint.ordinal,
-                        std::move(*producerKey))
-               .second)
-        return false;
+      if (llvm::Error error =
+              collector.admit(std::move(*seed_->pending), seed_->coveredActors))
+        return error;
+      seed_->pending.reset();
     }
+    return llvm::Error::success();
   }
-  return true;
-}
 
-llvm::Error emitCanonicalMemorySelections(
-    const TechMappingGenerationInputs &inputs,
-    ::loom::fabric::FabricMemoryEngineTemplateRef engine,
-    const ::loom::fabric::FabricMemoryEngineTemplateRecord &engineRecord,
-    llvm::ArrayRef<MemoryActorDomain> domains, std::size_t actorCount,
-    TechMatchRowCollector &collector) {
-  std::vector<const MemoryActorOption *> selection;
-  std::function<llvm::Error(std::size_t, std::size_t,
-                            std::optional<::dataflow::GraphRef>)>
-      choose = [&](std::size_t start, std::size_t remaining,
-                   std::optional<::dataflow::GraphRef> graph) -> llvm::Error {
-    if (collector.truncated())
-      return llvm::Error::success();
-    if (remaining != 0) {
-      for (std::size_t actor = start; actor + remaining <= domains.size();
-           ++actor) {
-        if (graph && domains[actor].actor->graph != *graph)
+  bool exhausted() const override { return exhausted_; }
+
+private:
+  llvm::Expected<bool> prepareNextSelection() {
+    while (auto selection = selections_.next()) {
+      auto boundaries =
+          collectBoundaries(*selection, inputs_.dataflow.identity());
+      if (!boundaries)
+        return boundaries.takeError();
+      auto mergedBoundaries =
+          mergeBoundaries(*selection, inputs_.dataflow.identity());
+      if (!mergedBoundaries)
+        return mergedBoundaries.takeError();
+      if (!*mergedBoundaries)
+        continue;
+
+      bool capacityAdmitted = true;
+      if (engineRecord_.schedule == ::fabric::Schedule::Temporal) {
+        capacityAdmitted =
+            engineRecord_.residentContextCount &&
+            selection->size() <= *engineRecord_.residentContextCount;
+      } else {
+        std::vector<std::uint64_t> selectedPorts;
+        selectedPorts.reserve(selection->size());
+        for (const MemoryActorOption *option : *selection)
+          selectedPorts.push_back(option->actor.operationPort.ordinal);
+        llvm::sort(selectedPorts);
+        capacityAdmitted =
+            std::adjacent_find(selectedPorts.begin(), selectedPorts.end()) ==
+            selectedPorts.end();
+      }
+      if (!capacityAdmitted)
+        continue;
+
+      auto internalEdges = deriveInternalEdges(inputs_, engine_, *selection);
+      if (!internalEdges)
+        return internalEdges.takeError();
+      std::vector<TechMemoryActorView> actors;
+      std::vector<::dataflow::ActorRef> covered;
+      actors.reserve(selection->size());
+      covered.reserve(selection->size());
+      for (const MemoryActorOption *option : *selection) {
+        actors.push_back(option->actor);
+        covered.push_back(option->actor.actor);
+      }
+      seed_.emplace(
+          TechMemoryRealizationView{
+              0, engine_, std::move(actors), std::move(*boundaries), {}},
+          std::move(**mergedBoundaries), std::move(covered),
+          std::move(*internalEdges));
+      return true;
+    }
+    return false;
+  }
+
+  llvm::Expected<bool> prepareNextSubset() {
+    while (auto subset = seed_->subsets.next()) {
+      TechMemoryRealizationView row = seed_->base;
+      row.internalEdges.reserve(subset->size());
+      for (std::size_t edge : *subset)
+        row.internalEdges.push_back(seed_->subsets.edges()[edge]);
+      auto legality = deriveTechMemoryInternalConnectionLegality(
+          row.internalEdges, inputs_.dataflow.identity());
+      if (!legality)
+        return legality.takeError();
+      if (*legality != TechMemoryInternalConnectionLegality::Admissible)
+        return invalid("constrained internal-edge cursor emitted an illegal "
+                       "partial assignment");
+      if (engineRecord_.schedule == ::fabric::Schedule::Temporal) {
+        auto distinct =
+            techMemoryExternalIngressesAreDistinct(row, inputs_.dataflow);
+        if (!distinct)
+          return distinct.takeError();
+        if (!*distinct)
           continue;
-        const ::dataflow::GraphRef selectedGraph =
-            graph ? *graph : domains[actor].actor->graph;
-        for (const MemoryActorOption &option : domains[actor].options) {
-          if (collector.truncated())
-            break;
-          selection.push_back(&option);
-          if (llvm::Error error =
-                  choose(actor + 1, remaining - 1, selectedGraph))
-            return error;
-          selection.pop_back();
-        }
-        if (collector.truncated())
-          break;
       }
-      return llvm::Error::success();
+      row.graphBoundaries = seed_->boundaries;
+      seed_->pending.emplace(std::move(row));
+      return true;
     }
+    return false;
+  }
 
-    auto boundaries = collectBoundaries(selection, inputs.dataflow.identity());
-    if (!boundaries)
-      return boundaries.takeError();
-    auto mergedBoundaries =
-        mergeBoundaries(selection, inputs.dataflow.identity());
-    if (!mergedBoundaries)
-      return mergedBoundaries.takeError();
-    auto internalEdges = deriveInternalEdges(inputs, engine, selection);
-    if (!internalEdges)
-      return internalEdges.takeError();
-
-    bool capacityAdmitted = true;
-    if (engineRecord.schedule == ::fabric::Schedule::Temporal) {
-      capacityAdmitted = engineRecord.residentContextCount &&
-                         selection.size() <= *engineRecord.residentContextCount;
-      // A Temporal engine selects one resident row by matching the tag that
-      // arrives on the row's ingress endpoint, so two rows sharing one
-      // operation port must present different tags there. A tag belongs to the
-      // producing software edge, so two actors fed by one producer on the same
-      // role of the same port always arrive with the same tag and no Mapping
-      // can separate them. Such actors are not co-residents of one port.
-      auto distinct = temporalIngressProducersAreDistinct(inputs, selection);
-      if (!distinct)
-        return distinct.takeError();
-      capacityAdmitted = capacityAdmitted && *distinct;
-    } else {
-      std::vector<std::uint64_t> selectedPorts;
-      selectedPorts.reserve(selection.size());
-      for (const MemoryActorOption *option : selection)
-        selectedPorts.push_back(option->actor.operationPort.ordinal);
-      llvm::sort(selectedPorts);
-      capacityAdmitted =
-          std::adjacent_find(selectedPorts.begin(), selectedPorts.end()) ==
-          selectedPorts.end();
-    }
-
-    std::vector<TechMemoryActorView> actors;
-    actors.reserve(selection.size());
-    for (const MemoryActorOption *option : selection)
-      actors.push_back(option->actor);
-    TechMemoryRealizationView base{
-        0, engine, std::move(actors), std::move(*boundaries), {}};
-    return emitInternalEdgeSubsets(inputs, std::move(base), *internalEdges,
-                                   selection, capacityAdmitted,
-                                   *mergedBoundaries, collector);
-  };
-  return choose(0, actorCount, std::nullopt);
-}
+  const TechMappingGenerationInputs &inputs_;
+  ::loom::fabric::FabricMemoryEngineTemplateRef engine_;
+  const ::loom::fabric::FabricMemoryEngineTemplateRecord &engineRecord_;
+  MemorySelectionCursor selections_;
+  std::optional<MemorySeedState> seed_;
+  bool exhausted_ = false;
+};
 
 } // namespace
+
+llvm::Expected<std::unique_ptr<TechMatchRowFamilyCursor>>
+createMemoryRowFamilyCursor(
+    const TechMappingGenerationInputs &inputs,
+    llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors,
+    ::loom::fabric::FabricMemoryEngineTemplateRef family) {
+  const auto *engineRecord = inputs.fabric.memoryEngineTemplate(family);
+  if (!engineRecord)
+    return invalid("sealed Fabric memory template does not resolve");
+
+  std::vector<MemoryActorDomain> domains;
+  std::map<std::uint64_t, std::size_t> graphActorCounts;
+  for (const ::dataflow::CanonicalActorView &actor : selectedActors) {
+    if (actor.kind != ::dataflow::CanonicalDataflowActorKind::Memory)
+      continue;
+    auto options = actorOptions(inputs, actor, family, *engineRecord);
+    if (!options)
+      return options.takeError();
+    domains.push_back(MemoryActorDomain{&actor, std::move(*options)});
+    ++graphActorCounts[actor.graph.entity.value()];
+  }
+  llvm::sort(domains, [](const auto &lhs, const auto &rhs) {
+    return lhs.actor->ref.entity.value() < rhs.actor->ref.entity.value();
+  });
+  const std::size_t maxActorCount =
+      graphActorCounts.empty()
+          ? 0
+          : llvm::max_element(graphActorCounts, [](const auto &lhs,
+                                                   const auto &rhs) {
+              return lhs.second < rhs.second;
+            })->second;
+  std::unique_ptr<TechMatchRowFamilyCursor> cursor =
+      std::make_unique<MemoryRowFamilyCursor>(
+          inputs, family, *engineRecord,
+          MemorySelectionCursor(std::move(domains), maxActorCount));
+  return cursor;
+}
+
+std::vector<::loom::fabric::FabricMemoryEngineTemplateRef>
+deriveMemoryRowFamilies(
+    const TechMappingGenerationInputs &inputs,
+    llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors) {
+  std::set<::dataflow::OperationSchemaId> selectedSchemas;
+  for (const ::dataflow::CanonicalActorView &actor : selectedActors) {
+    if (actor.kind != ::dataflow::CanonicalDataflowActorKind::Memory)
+      continue;
+    const auto schema = ::dataflow::operationSchemaOf(actor.op);
+    if (schema)
+      selectedSchemas.insert(*schema);
+  }
+  if (selectedSchemas.empty())
+    return {};
+  std::vector<::loom::fabric::FabricMemoryEngineTemplateRef> families;
+  for (const auto engine : inputs.fabric.memoryEngineTemplates()) {
+    const auto *record = inputs.fabric.memoryEngineTemplate(engine);
+    if (!record)
+      continue;
+    const bool supported =
+        llvm::any_of(record->operationPorts, [&](const auto &port) {
+          return llvm::any_of(
+              port.capabilityAlternatives(), [&](const auto &alternative) {
+                return selectedSchemas.count(
+                           alternative.actorContractDomain.actorSchema()) != 0;
+              });
+        });
+    if (supported)
+      families.push_back(engine);
+  }
+  llvm::sort(families, [](const auto &lhs, const auto &rhs) {
+    return ::loom::fabric::canonicalFabricBytes(lhs) <
+           ::loom::fabric::canonicalFabricBytes(rhs);
+  });
+  return families;
+}
 
 llvm::Error
 deriveMemoryRows(const TechMappingGenerationInputs &inputs,
                  llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors,
+                 ::loom::fabric::FabricMemoryEngineTemplateRef family,
                  TechMatchRowCollector &collector) {
-  std::vector<::loom::fabric::FabricMemoryEngineTemplateRef> engines(
-      inputs.fabric.memoryEngineTemplates().begin(),
-      inputs.fabric.memoryEngineTemplates().end());
-  llvm::sort(engines, [](const auto &lhs, const auto &rhs) {
-    return ::loom::fabric::canonicalFabricBytes(lhs) <
-           ::loom::fabric::canonicalFabricBytes(rhs);
-  });
-  for (const ::loom::fabric::FabricMemoryEngineTemplateRef engine : engines) {
-    const auto *engineRecord = inputs.fabric.memoryEngineTemplate(engine);
-    if (!engineRecord)
-      return invalid("sealed Fabric memory template does not resolve");
-
-    std::vector<MemoryActorDomain> domains;
-    std::map<std::uint64_t, std::size_t> graphActorCounts;
-    for (const ::dataflow::CanonicalActorView &actor : selectedActors) {
-      if (actor.kind != ::dataflow::CanonicalDataflowActorKind::Memory)
-        continue;
-      auto options = actorOptions(inputs, actor, engine, *engineRecord);
-      if (!options)
-        return options.takeError();
-      domains.push_back(MemoryActorDomain{&actor, std::move(*options)});
-      ++graphActorCounts[actor.graph.entity.value()];
-    }
-    llvm::sort(domains, [](const auto &lhs, const auto &rhs) {
-      return lhs.actor->ref.entity.value() < rhs.actor->ref.entity.value();
-    });
-    const std::size_t maxActorCount =
-        graphActorCounts.empty()
-            ? 0
-            : llvm::max_element(graphActorCounts, [](const auto &lhs,
-                                                     const auto &rhs) {
-                return lhs.second < rhs.second;
-              })->second;
-
-    for (std::size_t actorCount = 1; actorCount <= maxActorCount;
-         ++actorCount) {
-      if (llvm::Error error = emitCanonicalMemorySelections(
-              inputs, engine, *engineRecord, domains, actorCount, collector))
-        return error;
-      if (collector.truncated())
-        return llvm::Error::success();
-    }
-  }
-  return llvm::Error::success();
+  auto cursor = createMemoryRowFamilyCursor(inputs, selectedActors, family);
+  if (!cursor)
+    return cursor.takeError();
+  return (*cursor)->advance(collector);
 }
 
 } // namespace loom::mapping::detail

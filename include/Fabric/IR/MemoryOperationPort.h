@@ -117,6 +117,15 @@ private:
   MemoryOperationPortDeclaration declaration_;
 };
 
+/// Projects the acquire-to-issue distance of one exact operation-port use.
+/// The operation port declares issue by its committed resource transition;
+/// claim release is only resource occupancy and is never substituted for
+/// architectural issue. An absent commit is therefore an explicit lack of
+/// timing proof rather than an inferred zero-cycle issue.
+llvm::Expected<std::optional<std::uint32_t>>
+projectMemoryOperationIssueLatency(const MemoryOperationPortRecord &record,
+                                   UsePatternKey pattern);
+
 llvm::Expected<std::vector<std::uint8_t>>
 encodeMemoryOperationPortRecord(const MemoryOperationPortRecord &record);
 

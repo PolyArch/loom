@@ -161,7 +161,8 @@ bool attemptedDecisionLess(const AttemptedDecisionKey &lhs,
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &store, const BlobStore &blobs) {
+               const ArtifactStore &store, const BlobStore &blobs,
+               const ExecutionControlView &) {
   auto config = adoptResolvedDataflowRewriteGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());

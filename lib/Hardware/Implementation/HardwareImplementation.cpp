@@ -41,8 +41,8 @@ public:
          std::vector<MemoryMacroBinding> memoryMacroBindings,
          std::vector<ExternalImplementationBinding> externalBindings) {
     return HardwareImplementation(
-        std::move(draft.fabric), std::move(draft.configurationAbi),
-        std::move(draft.interconnectImplementations),
+        std::move(draft.fabric), draft.subject,
+        std::move(draft.configurationAbi),
         std::move(draft.representationRoot),
         std::move(draft.implementationPlatform), std::move(draft.interfaces),
         std::move(draft.activityPoints), std::move(memoryMacroBindings),
@@ -213,6 +213,10 @@ physicalOwnerSpelling(const fabric::FabricPhysicalOccurrenceOwnerRef &owner) {
   return formatArtifactLocalPayloadHex(fabric::canonicalFabricBytes(owner));
 }
 
+std::string subjectSpelling(fabric::SpatialCoreOccurrenceRef subject) {
+  return formatArtifactLocalPayloadHex(fabric::canonicalFabricBytes(subject));
+}
+
 void writeInterfaceSemanticRef(
     llvm::json::OStream &json,
     const ImplementationInterfaceSemanticRef &reference) {
@@ -253,14 +257,11 @@ std::string serialize(const HardwareImplementation &implementation) {
     json.attributeBegin("fabric_ref");
     writeRootReference(json, implementation.fabric());
     json.attributeEnd();
+    json.attribute("spatial_core_occurrence_ref",
+                   subjectSpelling(implementation.subject()));
     json.attributeBegin("configuration_abi_ref");
     writeRootReference(json, implementation.configurationAbi());
     json.attributeEnd();
-    json.attributeArray("interconnect_implementation_refs", [&] {
-      for (const ArtifactRootReference &reference :
-           implementation.interconnectImplementations())
-        writeRootReference(json, reference);
-    });
     json.attributeBegin("representation_root");
     writeRepresentationRoot(json, implementation.representationRoot());
     json.attributeEnd();
@@ -431,6 +432,20 @@ parsePhysicalOwner(llvm::StringRef spelling, llvm::StringRef context) {
   return std::move(*owner);
 }
 
+llvm::Expected<fabric::SpatialCoreOccurrenceRef>
+parseSubject(llvm::StringRef spelling) {
+  auto bytes = parseArtifactLocalPayloadHex(spelling);
+  if (!bytes)
+    return invalid("spatial_core_occurrence_ref has malformed bytes: " +
+                   llvm::toString(bytes.takeError()));
+  auto subject =
+      fabric::decodeFabricRef<fabric::SpatialCoreOccurrenceRef>(*bytes);
+  if (!subject)
+    return invalid("spatial_core_occurrence_ref is malformed: " +
+                   llvm::toString(subject.takeError()));
+  return std::move(*subject);
+}
+
 llvm::Expected<ImplementationInterfaceSemanticRef>
 parseInterfaceSemanticRef(const llvm::json::Object &object) {
   if (llvm::Error error = rejectUnknownFields(
@@ -568,8 +583,9 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
     return invalid("root must be a JSON object");
   if (llvm::Error error = rejectUnknownFields(
           *root, "root",
-          {"schema", "schema_version", "fabric_ref", "configuration_abi_ref",
-           "interconnect_implementation_refs", "representation_root",
+          {"schema", "schema_version", "fabric_ref",
+           "spatial_core_occurrence_ref", "configuration_abi_ref",
+           "representation_root",
            "implementation_platform_ref", "interfaces", "activity_points",
            "memory_macro_bindings", "external_implementation_bindings"}))
     return std::move(error);
@@ -579,31 +595,23 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
     return !schema ? schema.takeError() : version.takeError();
   if (*schema != hardwareImplementationSchema.identity ||
       *version != formatSchemaVersion(hardwareImplementationSchema.version))
-    return invalid("root schema is not loom.hardware_implementation 3.0");
+    return invalid("root schema is not loom.hardware_implementation 4.0");
 
   auto fabricObject = requireObject(*root, "fabric_ref", "root");
+  auto subjectText =
+      requireString(*root, "spatial_core_occurrence_ref", "root");
   auto abiObject = requireObject(*root, "configuration_abi_ref", "root");
-  if (!fabricObject || !abiObject)
-    return !fabricObject ? fabricObject.takeError() : abiObject.takeError();
+  if (!fabricObject || !subjectText || !abiObject)
+    return !fabricObject   ? fabricObject.takeError()
+           : !subjectText ? subjectText.takeError()
+                          : abiObject.takeError();
   auto fabric = parseRootReference(**fabricObject, "fabric_ref");
+  auto subject = parseSubject(*subjectText);
   auto abi = parseRootReference(**abiObject, "configuration_abi_ref");
-  if (!fabric || !abi)
-    return !fabric ? fabric.takeError() : abi.takeError();
-
-  std::vector<ArtifactRootReference> interconnects;
-  auto interconnectArray =
-      requireArray(*root, "interconnect_implementation_refs", "root");
-  if (!interconnectArray)
-    return interconnectArray.takeError();
-  for (const llvm::json::Value &value : **interconnectArray) {
-    const llvm::json::Object *object = value.getAsObject();
-    if (!object)
-      return invalid("interconnect reference must be an object");
-    auto reference = parseRootReference(*object, "interconnect reference");
-    if (!reference)
-      return reference.takeError();
-    interconnects.push_back(std::move(*reference));
-  }
+  if (!fabric || !subject || !abi)
+    return !fabric   ? fabric.takeError()
+           : !subject ? subject.takeError()
+                      : abi.takeError();
 
   auto representationObject =
       requireObject(*root, "representation_root", "root");
@@ -792,19 +800,11 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
   }
 
   return HardwareImplementationDraft{
-      std::move(*fabric),         std::move(*abi),
-      std::move(interconnects),   std::move(*representation),
-      std::move(platform),        std::move(interfaces),
-      std::move(activityPoints),  std::move(memoryBindings),
+      std::move(*fabric),        *subject,
+      std::move(*abi),           std::move(*representation),
+      std::move(platform),       std::move(interfaces),
+      std::move(activityPoints), std::move(memoryBindings),
       std::move(externalBindings)};
-}
-
-bool rootReferenceLess(const ArtifactRootReference &lhs,
-                       const ArtifactRootReference &rhs) {
-  return std::tie(lhs.schemaIdentity, lhs.schemaVersion.major,
-                  lhs.schemaVersion.minor, lhs.artifact.bytes()) <
-         std::tie(rhs.schemaIdentity, rhs.schemaVersion.major,
-                  rhs.schemaVersion.minor, rhs.artifact.bytes());
 }
 
 bool interfaceLess(const ImplementationInterface &lhs,
@@ -892,10 +892,53 @@ bool hasSpatialAttachment(
   });
 }
 
+std::optional<fabric::SpatialCoreOccurrenceRef> attachmentSubject(
+    const fabric::FabricSpatialAttachmentEndpointRef &endpoint) {
+  if (const auto *transport = endpoint.transport()) {
+    if (transport->owner.kind() !=
+        fabric::FabricTransportEndpointOwnerKind::SpatialCoreOccurrence)
+      return std::nullopt;
+    return std::get<fabric::SpatialCoreOccurrenceRef>(
+        transport->owner.payload);
+  }
+  const auto *memory = endpoint.memory();
+  if (!memory || memory->owner.kind() !=
+                     fabric::FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
+    return std::nullopt;
+  return std::get<fabric::SpatialCoreOccurrenceRef>(memory->owner.payload);
+}
+
+bool domainContainsSubject(const fabric::FabricSystemRootView &system,
+                           fabric::HardwareDomainRef domain,
+                           fabric::SpatialCoreOccurrenceRef subject) {
+  const auto *contract = system.hardwareDomainContract(domain);
+  return contract && llvm::is_contained(
+                         contract->members(),
+                         fabric::FabricInventoryOwnerRef::of(subject));
+}
+
+bool physicalOwnerBelongsTo(
+    const fabric::FabricPhysicalOccurrenceOwnerRef &owner,
+    fabric::SpatialCoreOccurrenceRef subject) {
+  return owner.kind() ==
+             fabric::FabricPhysicalOccurrenceOwnerKind::SpatialCoreInternal &&
+         std::get<fabric::SpatialCoreInternalOccurrenceRef>(owner.payload())
+                 .spatialCore == subject;
+}
+
+bool programmingUnitBelongsTo(const ProgrammingUnit &unit,
+                              fabric::SpatialCoreOccurrenceRef subject) {
+  const ProgrammingUnitOccurrenceScope scope =
+      deriveProgrammingUnitOccurrenceScope(unit);
+  return !scope.includesDirectSystemResources &&
+         scope.spatialCores.size() == 1 && scope.spatialCores.front() == subject;
+}
+
 llvm::Error validateInterfaceSemanticRef(
     const ImplementationInterfaceSemanticRef &reference,
     const fabric::FabricSystemRootView &system, const ConfigurationABI &abi,
-    const ArtifactRootReference &abiReference) {
+    const ArtifactRootReference &abiReference,
+    fabric::SpatialCoreOccurrenceRef subject) {
   switch (interfaceSemanticRefKind(reference)) {
   case ImplementationInterfaceSemanticRefKind::Data: {
     const auto &endpoint =
@@ -905,6 +948,9 @@ llvm::Error validateInterfaceSemanticRef(
       return invalid("Data interface target is not on the Transport plane");
     if (!hasSpatialAttachment(system, endpoint))
       return invalid("Data interface target is absent from the exact System");
+    if (attachmentSubject(endpoint) != subject)
+      return invalid("Data interface target is outside the implementation "
+                     "SpatialCore occurrence");
     return llvm::Error::success();
   }
   case ImplementationInterfaceSemanticRefKind::Memory: {
@@ -915,6 +961,9 @@ llvm::Error validateInterfaceSemanticRef(
       return invalid("Memory interface target is not on the Memory plane");
     if (!hasSpatialAttachment(system, endpoint))
       return invalid("Memory interface target is absent from the exact System");
+    if (attachmentSubject(endpoint) != subject)
+      return invalid("Memory interface target is outside the implementation "
+                     "SpatialCore occurrence");
     return llvm::Error::success();
   }
   case ImplementationInterfaceSemanticRefKind::Clock: {
@@ -924,6 +973,9 @@ llvm::Error validateInterfaceSemanticRef(
     if (!contract ||
         contract->kind() != fabric::FabricHardwareDomainKind::Clock)
       return invalid("Clock interface target is not an exact Clock domain");
+    if (!domainContainsSubject(system, domain, subject))
+      return invalid("Clock interface target does not contain the "
+                     "implementation SpatialCore occurrence");
     return llvm::Error::success();
   }
   case ImplementationInterfaceSemanticRefKind::Reset: {
@@ -933,6 +985,9 @@ llvm::Error validateInterfaceSemanticRef(
     if (!contract ||
         contract->kind() != fabric::FabricHardwareDomainKind::Reset)
       return invalid("Reset interface target is not an exact Reset domain");
+    if (!domainContainsSubject(system, domain, subject))
+      return invalid("Reset interface target does not contain the "
+                     "implementation SpatialCore occurrence");
     return llvm::Error::success();
   }
   case ImplementationInterfaceSemanticRefKind::Configuration: {
@@ -941,18 +996,17 @@ llvm::Error validateInterfaceSemanticRef(
             .programmingUnit;
     if (unit.configurationAbi != abiReference)
       return invalid("Configuration interface references a foreign ABI");
-    if (!abi.findProgrammingUnit(unit.unitId))
+    const ProgrammingUnit *programmingUnit = abi.findProgrammingUnit(unit.unitId);
+    if (!programmingUnit)
       return invalid("Configuration interface references an unknown unit");
+    if (!programmingUnitBelongsTo(*programmingUnit, subject))
+      return invalid("Configuration interface unit is outside the "
+                     "implementation SpatialCore occurrence");
     return llvm::Error::success();
   }
   case ImplementationInterfaceSemanticRefKind::ExternalProtocol: {
-    const auto boundary =
-        std::get<ImplementationExternalProtocolInterfaceRef>(reference)
-            .boundary;
-    if (!llvm::is_contained(system.artifact().externalBoundaries(), boundary))
-      return invalid(
-          "ExternalProtocol interface target is absent from the exact System");
-    return llvm::Error::success();
+    return invalid("ExternalProtocol interface is outside a SpatialCore "
+                   "implementation boundary");
   }
   }
   llvm_unreachable("interface semantic reference variant is closed");
@@ -973,6 +1027,10 @@ canonicalize(HardwareImplementationDraft draft,
     llvm::consumeError(system.takeError());
     return invalid("fabric_ref requires a complete System root");
   }
+  if (!llvm::is_contained(system->artifact().accCoreOccurrences(),
+                          draft.subject.core))
+    return invalid(
+        "spatial_core_occurrence_ref is absent from the exact System");
 
   if (draft.configurationAbi.schemaIdentity !=
           configurationAbiSchema.identity ||
@@ -983,27 +1041,6 @@ canonicalize(HardwareImplementationDraft draft,
     return abi.takeError();
   if (abi->abi().fabric() != draft.fabric)
     return invalid("ConfigurationABI must describe the same Fabric System");
-
-  llvm::sort(draft.interconnectImplementations, rootReferenceLess);
-  if (std::adjacent_find(draft.interconnectImplementations.begin(),
-                         draft.interconnectImplementations.end()) !=
-      draft.interconnectImplementations.end())
-    return invalid("interconnect implementation catalog contains a duplicate");
-  for (const ArtifactRootReference &reference :
-       draft.interconnectImplementations) {
-    auto interconnect = fabric::importEntireFabricRoot(reference, artifacts);
-    if (!interconnect)
-      return interconnect.takeError();
-    if (interconnect->view().rootKind() !=
-        fabric::FabricRootKind::InterconnectImplementation)
-      return invalid("interconnect reference has the wrong Fabric root kind");
-    const auto dependencies = interconnect->directDependencies();
-    if (dependencies.size() != 1 ||
-        dependencies.front().role !=
-            fabric::FabricDependencyRole::RefinedSystem ||
-        dependencies.front().root != draft.fabric)
-      return invalid("interconnect implementation does not refine fabric_ref");
-  }
 
   auto representationIndex =
       indexRepresentationRoot(draft.representationRoot, blobs);
@@ -1029,7 +1066,8 @@ canonicalize(HardwareImplementationDraft draft,
     if (ordinal != 0 && draft.interfaces[ordinal - 1] == interface)
       return invalid("interface catalog contains a duplicate record");
     if (llvm::Error error = validateInterfaceSemanticRef(
-            interface.semanticRef, *system, abi->abi(), draft.configurationAbi))
+            interface.semanticRef, *system, abi->abi(),
+            draft.configurationAbi, draft.subject))
       return std::move(error);
     if (llvm::Error error = requireIndexedLocator(
             *representationIndex, interface.representationLocator,
@@ -1058,6 +1096,9 @@ canonicalize(HardwareImplementationDraft draft,
                                                   "activity point locator"))
       return std::move(error);
     if (point.semanticFabricRef) {
+      if (!physicalOwnerBelongsTo(*point.semanticFabricRef, draft.subject))
+        return invalid("activity point semantic owner is outside the "
+                       "implementation SpatialCore occurrence");
       auto resolved = system->resolvePhysicalOwner(*point.semanticFabricRef);
       if (!resolved)
         return resolved.takeError();
@@ -1066,6 +1107,17 @@ canonicalize(HardwareImplementationDraft draft,
 
   const std::vector<ExternalImplementationBindingDraft> authoredBindings =
       draft.externalImplementationBindings;
+  for (const ExternalImplementationBindingDraft &binding :
+       draft.externalImplementationBindings)
+    for (const fabric::FabricPhysicalOccurrenceOwnerRef &owner :
+         binding.fabricResourceRefs)
+      if (!physicalOwnerBelongsTo(owner, draft.subject))
+        return invalid("external implementation resource is outside the "
+                       "implementation SpatialCore occurrence");
+  for (const MemoryMacroBindingDraft &binding : draft.memoryMacroBindings)
+    if (!physicalOwnerBelongsTo(binding.fabricMemoryRef, draft.subject))
+      return invalid("memory macro resource is outside the implementation "
+                     "SpatialCore occurrence");
   if (llvm::Error error = contracts.canonicalizeAndValidateBindings(
           draft.externalImplementationBindings, draft.representationRoot,
           platform ? &platform->platform() : nullptr, *system))
@@ -1205,7 +1257,7 @@ llvm::Expected<FinalizedHardwareImplementation> importHardwareImplementation(
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (reference.schemaIdentity != hardwareImplementationSchema.identity ||
       reference.schemaVersion != hardwareImplementationSchema.version)
-    return invalid("reference schema is not loom.hardware_implementation 3.0");
+    return invalid("reference schema is not loom.hardware_implementation 4.0");
   auto bytes = artifacts.get(hardwareImplementationSchema, reference.artifact);
   if (!bytes)
     return bytes.takeError();

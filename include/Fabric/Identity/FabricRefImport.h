@@ -193,30 +193,29 @@ struct FabricModuleBoundaryMemoryAttachmentView final {
   }
 };
 
-/// The owner-defined domain that makes statically implied traversal uses one
-/// atomic activation. Most traversals select one exact UsePattern. Temporal
-/// switch broadcast is the sole current exception: every selected egress from
-/// one ingress requester belongs to the same atomic activation even though
-/// each physical traversal has its own pattern. This key is a sealed,
-/// rebuildable view value and has no persistent identity or wire encoding.
-enum class FabricTraversalActivationGroupKind : std::uint32_t {
+/// The Fabric-owned requester domain used for resource arbitration. Ordinary
+/// traversals name one exact UsePattern requester; Temporal switch traversals
+/// sourced by one input share that input's requester. Mapping-derived atomic
+/// activation instances are intentionally separate from this broader key.
+/// This sealed view has no persistent identity or wire encoding.
+enum class FabricTraversalRequesterGroupKind : std::uint32_t {
   UsePattern,
   SwitchRequester,
 };
 
-struct FabricTraversalActivationGroupView final {
-  FabricTraversalActivationGroupKind kind =
-      FabricTraversalActivationGroupKind::UsePattern;
+struct FabricTraversalRequesterGroupView final {
+  FabricTraversalRequesterGroupKind kind =
+      FabricTraversalRequesterGroupKind::UsePattern;
   FabricInventoryOwnerRef owner;
   FabricOrdinal ordinal = 0;
 
-  friend bool operator==(const FabricTraversalActivationGroupView &lhs,
-                         const FabricTraversalActivationGroupView &rhs) {
+  friend bool operator==(const FabricTraversalRequesterGroupView &lhs,
+                         const FabricTraversalRequesterGroupView &rhs) {
     return lhs.kind == rhs.kind && lhs.owner == rhs.owner &&
            lhs.ordinal == rhs.ordinal;
   }
-  friend bool operator!=(const FabricTraversalActivationGroupView &lhs,
-                         const FabricTraversalActivationGroupView &rhs) {
+  friend bool operator!=(const FabricTraversalRequesterGroupView &lhs,
+                         const FabricTraversalRequesterGroupView &rhs) {
     return !(lhs == rhs);
   }
 };
@@ -230,9 +229,20 @@ enum class FabricTraversalUseOccupancyKind : std::uint8_t {
 
 struct FabricTraversalUseView final {
   FabricUsePatternRef pattern;
-  FabricTraversalActivationGroupView activationGroup;
+  FabricTraversalRequesterGroupView requesterGroup;
   FabricTraversalUseOccupancyKind occupancyKind =
       FabricTraversalUseOccupancyKind::MappingResident;
+};
+
+/// Intrinsic transport timing derived from the exact Fabric traversal and its
+/// use patterns. `architecturalLatencyCycles` advances a logical token across
+/// registered storage. `releaseLatencyCycles` describes claim occupancy only
+/// and is never a substitute for publication timing. Dynamic arbitration and
+/// downstream stalls are deliberately absent.
+struct FabricPhysicalTraversalTimingView final {
+  std::uint32_t architecturalLatencyCycles = 0;
+  std::uint32_t releaseLatencyCycles = 0;
+  std::uint32_t minimumInitiationIntervalCycles = 1;
 };
 
 enum class FabricFuConfigurationStorageMode : std::uint32_t {
@@ -252,6 +262,7 @@ struct FabricPhysicalTraversalView final {
   std::vector<FabricTransportEndpointRef> destinations;
   std::vector<FabricResourceStateRef> resourceStates;
   std::vector<FabricTraversalUseView> impliedUses;
+  FabricPhysicalTraversalTimingView timing;
 };
 
 /// One connected token-plane Module signature endpoint and the exact

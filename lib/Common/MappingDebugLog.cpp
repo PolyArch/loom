@@ -75,37 +75,87 @@ Level level() { return diagnosticVerbosity(); }
 
 bool enabled(Level minimum) { return diagnosticVerbosityEnabled(minimum); }
 
+llvm::StringRef closureStatusSpelling(ClosureStatus status) {
+  switch (status) {
+  case ClosureStatus::Internal:
+    return "internal";
+  case ClosureStatus::SearchExhausted:
+    return "search_exhausted";
+  case ClosureStatus::SemanticLimitReached:
+    return "semantic_limit_reached";
+  case ClosureStatus::CancelledOrTimeout:
+    return "cancelled_or_timeout";
+  case ClosureStatus::ProvenInfeasible:
+    return "proven_infeasible";
+  case ClosureStatus::ProofNotEstablished:
+    return "proof_not_established";
+  case ClosureStatus::Invalid:
+    return "invalid";
+  case ClosureStatus::Failed:
+    return "failed";
+  case ClosureStatus::ArithmeticFailure:
+    return "arithmetic_failure";
+  case ClosureStatus::RouteFailure:
+    return "route_failure";
+  case ClosureStatus::RouteTerminalMismatch:
+    return "route_terminal_mismatch";
+  case ClosureStatus::MappingNonclosure:
+    return "mapping_nonclosure";
+  case ClosureStatus::SelectedHandshakeCycle:
+    return "selected_handshake_cycle";
+  case ClosureStatus::Closed:
+    return "closed";
+  case ClosureStatus::TemporaryMapping:
+    return "temporary_mapping";
+  case ClosureStatus::FixedTerminalCutTemporary:
+    return "fixed_terminal_cut_temporary";
+  case ClosureStatus::FixedTerminalCut:
+    return "fixed_terminal_cut";
+  case ClosureStatus::NoProgressTemporary:
+    return "no_progress_temporary";
+  case ClosureStatus::NoProgress:
+    return "no_progress";
+  case ClosureStatus::TemporaryCapacity:
+    return "temporary_capacity";
+  case ClosureStatus::IterationLimit:
+    return "iteration_limit";
+  }
+  llvm_unreachable("unknown Mapping closure status");
+}
+
 void emit(Level minimum, Stage stage, Event event,
           llvm::function_ref<void(llvm::json::Object &)> buildFields) {
   if (!enabled(minimum))
     return;
 
-  llvm::json::Object fields;
+  llvm::json::Object payload;
   if (buildFields)
-    buildFields(fields);
+    buildFields(payload);
 
   OutputState &state = outputState();
   std::lock_guard<std::mutex> lock(state.mutex);
-  fields["schema"] = "loom.mapping.debug.1";
-  fields["level"] = static_cast<std::int64_t>(minimum);
-  fields["event"] = spelling(event);
-  fields["stage"] = spelling(stage);
-  fields["sequence"] = static_cast<std::int64_t>(state.nextSequence++);
+  llvm::json::Object envelope;
+  envelope["schema"] = "loom.mapping.debug.1";
+  envelope["level"] = static_cast<std::int64_t>(minimum);
+  envelope["event"] = spelling(event);
+  envelope["stage"] = spelling(stage);
+  envelope["sequence"] = static_cast<std::int64_t>(state.nextSequence++);
+  envelope["payload"] = std::move(payload);
 
   std::string line;
   llvm::raw_string_ostream stream(line);
-  stream << llvm::json::Value(std::move(fields));
+  stream << llvm::json::Value(std::move(envelope));
   stream.flush();
   llvm::errs() << line << '\n';
 }
 
 void MappingRunStatistics::emit(Stage stage,
-                                llvm::StringRef closureStatus) const {
+                                ClosureStatus closureStatus) const {
   emit(stage, closureStatus, {});
 }
 
 void MappingRunStatistics::emit(
-    Stage stage, llvm::StringRef closureStatus,
+    Stage stage, ClosureStatus closureStatus,
     llvm::function_ref<void(llvm::json::Object &)> buildFields) const {
   mapping_debug::emit(Level::Summary, stage, Event::Statistics,
                       [&](llvm::json::Object &fields) {
@@ -120,7 +170,8 @@ void MappingRunStatistics::emit(
                         fields["negotiated_iterations"] = negotiatedIterations;
                         fields["capacity_conflicts"] = capacityConflicts;
                         fields["arithmetic_failures"] = arithmeticFailures;
-                        fields["closure_status"] = closureStatus;
+                        fields["closure_status"] =
+                            closureStatusSpelling(closureStatus);
                         if (buildFields)
                           buildFields(fields);
                       });

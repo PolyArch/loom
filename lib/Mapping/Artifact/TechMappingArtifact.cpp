@@ -638,6 +638,18 @@ llvm::Error verifyMemoryCorrespondenceClosure(
   }
 
   std::map<MemoryEdgeKey, const TechMemoryInternalEdgeView *> edges;
+  auto internalConnectionLegality = deriveTechMemoryInternalConnectionLegality(
+      realization.internalEdges, dataflow.identity());
+  if (!internalConnectionLegality)
+    return internalConnectionLegality.takeError();
+  switch (*internalConnectionLegality) {
+  case TechMemoryInternalConnectionLegality::Admissible:
+    break;
+  case TechMemoryInternalConnectionLegality::ConsumerHasMultipleSources:
+    return invalid("memory operand has multiple internal sources");
+  case TechMemoryInternalConnectionLegality::ConnectionHasMultipleProducers:
+    return invalid("memory internal connection has multiple producers");
+  }
   for (const TechMemoryInternalEdgeView &edge : realization.internalEdges) {
     auto key = edgeKey(dataflow.identity(), edge.producer, edge.consumer);
     if (!key)
@@ -652,6 +664,16 @@ llvm::Error verifyMemoryCorrespondenceClosure(
       return invalid("memory internal edge belongs to another graph");
     if (!edges.emplace(std::move(*key), &edge).second)
       return invalid("duplicate memory internal edge");
+  }
+
+  if (engine->schedule == ::fabric::Schedule::Temporal) {
+    auto distinct =
+        techMemoryExternalIngressesAreDistinct(realization, dataflow);
+    if (!distinct)
+      return distinct.takeError();
+    if (!*distinct)
+      return invalid(
+          "Temporal memory external ingress relation is not distinguishable");
   }
 
   std::set<MemoryBoundaryKey> requiredBoundaries;
@@ -890,6 +912,12 @@ llvm::Expected<TechComputeActorView> importComputeActor(
           *pointerLayout ? &**pointerLayout : nullptr))
     return contextual(std::move(error),
                       "compute actor port correspondence is incompatible");
+  auto activity = deriveTechComputeActivityDefinednessAdmission(
+      dataflow, *actorRef, *capability);
+  if (!activity)
+    return activity.takeError();
+  if (!*activity)
+    return invalid("compute actor activity definedness is incompatible");
   return TechComputeActorView{*actorRef, *operation, std::move(*operands),
                               std::move(*results)};
 }

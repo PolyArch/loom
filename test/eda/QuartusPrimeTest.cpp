@@ -155,17 +155,19 @@ struct SemanticFixture final {
   loom::fabric::FinalizedFabricRoot module;
   loom::fabric::FinalizedFabricRoot system;
   FinalizedConfigurationABI abi;
+  loom::fabric::SpatialCoreOccurrenceRef subject;
   loom::fabric::FabricPhysicalOccurrenceOwnerRef firstOwner;
 };
 
 SemanticFixture makeSemanticFixture(llvm::StringRef test,
                                     const ArtifactStore &artifacts) {
   adg::DesignBuilder design(artifacts);
-  const std::vector<adg::PortType> noTypes;
-  auto spatial =
-      take(test, design.createSpatialCore("quartus-static", noTypes, noTypes));
-  const std::vector<adg::SpatialValue> noOutputs;
-  if (llvm::Error error = spatial.close(noOutputs))
+  const adg::PortType bit = take(test, adg::PortType::bits(1));
+  auto spatial = take(
+      test, design.createSpatialCore("quartus-static", {bit}, {bit}));
+  auto fifo = take(test, spatial.addFifo(take(test, spatial.input(0)),
+                                        adg::FifoSpec{bit, 1, false}));
+  if (llvm::Error error = spatial.close({fifo.value()}))
     fail(test, llvm::toString(std::move(error)));
   auto finalized = take(test, std::move(design).finalize());
   require(test, finalized.roots().size() == 1,
@@ -181,11 +183,14 @@ SemanticFixture makeSemanticFixture(llvm::StringRef test,
   const auto cores = system.view().accCoreOccurrences();
   require(test, cores.size() == 1,
           "fixture did not produce one accelerator-core occurrence");
-  const auto firstOwner = take(
-      test, loom::fabric::FabricPhysicalOccurrenceOwnerRef::create(
-                loom::fabric::FabricInventoryOwnerRef::of(
-                    loom::fabric::SpatialCoreOccurrenceRef{cores.front()})));
-  return {std::move(module), std::move(system), std::move(abi), firstOwner};
+  require(test, abi.abi().programmingUnits().size() == 1,
+          "fixture did not produce one SpatialCore programming unit");
+  const ProgrammingUnit &unit = abi.abi().programmingUnits().front();
+  require(test, !unit.exactFabricResourceClosure.empty(),
+          "fixture programming unit has no physical resource closure");
+  const auto firstOwner = unit.exactFabricResourceClosure.front();
+  return {std::move(module), std::move(system), std::move(abi),
+          loom::fabric::SpatialCoreOccurrenceRef{cores.front()}, firstOwner};
 }
 
 FinalizedImplementationPlatform makePlatform(llvm::StringRef test,
@@ -240,8 +245,8 @@ FinalizedHardwareImplementation makeImplementation(
     bool withConstraint = true) {
   HardwareImplementationDraft draft{
       fixture.system.reference(),
+      fixture.subject,
       fixture.abi.reference(),
-      {},
       makeRepresentation(test, blobs, variant, withConstraint),
       std::move(platformReference),
       {},
@@ -278,8 +283,8 @@ FinalizedHardwareImplementation makeBuiltInNativeImplementation(
                      std::move(payloads)));
   HardwareImplementationDraft draft{
       fixture.system.reference(),
+      fixture.subject,
       fixture.abi.reference(),
-      {},
       std::move(representation),
       platform.reference(),
       {},

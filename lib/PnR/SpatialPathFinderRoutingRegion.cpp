@@ -81,33 +81,22 @@ SpatialPathFinderRouterScratch::expandExactRegionalConflictClosure(
        logicalNet < preparedProblem_->transfers().logicalNets().size();
        ++logicalNet) {
     bool contributes = false;
-    for (const RouteTreeNode &node :
-         candidate.routeTree(logicalNet).nodeStorage()) {
-      if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+    for (PnrIndex capacity = 0;
+         capacity < resources.capacityDimensions().size(); ++capacity) {
+      if (!regionalCapacityMarks_[capacity] ||
+          costs.workingCapacityUsageRaw(capacity) <=
+              resources.capacityDimensions()[capacity].capacity)
         continue;
-      if (node.parentArc >= routing.routingArcs().size())
+      const auto offsets = routing.capacityRouteClaimOffsets();
+      if (capacity + 1 >= offsets.size())
         return routingRegionError(
-            "conflict closure RouteTree arc is out of range");
-      const PnrIndex traversal =
-          routing.routingArcs()[node.parentArc].traversal;
-      if (traversal >= routing.traversals().size())
-        return routingRegionError(
-            "conflict closure RouteTree traversal is out of range");
-      const FrozenSpatialTraversal &record = routing.traversals()[traversal];
-      for (PnrIndex claim : routing.traversalClaimKeys().slice(
-               record.routeClaimOffset, record.routeClaimCount)) {
+            "conflict closure capacity incidence is out of range");
+      for (PnrIndex claim : routing.capacityRouteClaims().slice(
+               offsets[capacity], offsets[capacity + 1] - offsets[capacity])) {
         if (claim >= routing.routeClaims().size())
           return routingRegionError(
               "conflict closure route claim is out of range");
-        const PnrIndex capacity =
-            routing.routeClaims()[claim].capacityDimension;
-        if (capacity >= regionalCapacityMarks_.size() ||
-            capacity >= resources.capacityDimensions().size())
-          return routingRegionError(
-              "conflict closure capacity is out of range");
-        if (regionalCapacityMarks_[capacity] &&
-            costs.workingCapacityUsageRaw(capacity) >
-                resources.capacityDimensions()[capacity].capacity) {
+        if (candidate.logicalNetRouteClaimRefcount(logicalNet, claim) != 0) {
           contributes = true;
           break;
         }

@@ -14,7 +14,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.fabric_template_generator.config.3.0";
+    "loom.fabric_template_generator.config.4.0";
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
     {CandidateGeneratorOutputSlotRef(0), "fabric", PlanValueRole::CandidateSet,
@@ -47,10 +47,9 @@ void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
 }
 
 std::vector<std::uint8_t>
-encodeConfig(loom::adg::BuiltinTargetPreset preset,
-             const loom::adg::BuiltinTargetScale &scale) {
+encodeConfig(const loom::adg::BuiltinTargetScale &scale) {
   const loom::adg::BuiltinTargetDescriptor &descriptor =
-      loom::adg::getBuiltinTargetDescriptor(preset);
+      loom::adg::builtinDefaultTarget;
   std::vector<std::uint8_t> bytes;
   appendU32(bytes, descriptor.templateIdentity.size());
   bytes.insert(bytes.end(), descriptor.templateIdentity.begin(),
@@ -70,7 +69,6 @@ encodeConfig(loom::adg::BuiltinTargetPreset preset,
 }
 
 struct DecodedConfig final {
-  loom::adg::BuiltinTargetPreset preset;
   loom::adg::BuiltinTargetScale scale;
 };
 
@@ -112,7 +110,7 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
   const auto *descriptor =
       loom::adg::findBuiltinTargetDescriptor(identity, major, minor);
   if (descriptor)
-    return DecodedConfig{descriptor->preset, scale};
+    return DecodedConfig{scale};
   return invalid(
       "template descriptor is not a registered public Builder template");
 }
@@ -129,7 +127,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     fabricTemplateCandidateGeneratorKind,
     "fabric_template",
-    "loom.fabric_template.generator.v3",
+    "loom.fabric_template.generator.v4",
     {},
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -142,7 +140,8 @@ const CandidateGeneratorDescriptor descriptor{
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &store, const BlobStore &) {
+               const ArtifactStore &store, const BlobStore &,
+               const ExecutionControlView &) {
   if (!inputBindings.empty())
     return invalid("fabric template generator received an input binding");
   auto config = adoptResolvedFabricTemplateConfigView(
@@ -150,8 +149,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       binding.configDigest());
   if (!config)
     return config.takeError();
-  auto result =
-      loom::adg::buildBuiltinTarget(store, config->preset(), config->scale());
+  auto result = loom::adg::buildBuiltinTarget(store, config->scale());
   if (!result)
     return result.takeError();
   std::vector<ArtifactRootReference> outputs;
@@ -186,14 +184,6 @@ llvm::ArrayRef<std::uint8_t> resolvedFabricTemplateConfigSchemaBytes() {
   return descriptorBytes();
 }
 
-llvm::Expected<ResolvedFabricTemplateConfigView>
-resolveFabricTemplateConfig(loom::adg::BuiltinTargetPreset preset) {
-  const auto &descriptor = loom::adg::getBuiltinTargetDescriptor(preset);
-  return resolveFabricTemplateConfig(descriptor.templateIdentity,
-                                     descriptor.schemaMajor,
-                                     descriptor.schemaMinor, descriptor.scale);
-}
-
 llvm::Expected<ResolvedFabricTemplateConfigView> resolveFabricTemplateConfig(
     llvm::StringRef templateIdentity, std::uint32_t schemaMajor,
     std::uint32_t schemaMinor, const loom::adg::BuiltinTargetScale &scale) {
@@ -205,12 +195,11 @@ llvm::Expected<ResolvedFabricTemplateConfigView> resolveFabricTemplateConfig(
   if (!descriptor)
     return invalid(
         "template descriptor is not a registered public Builder template");
-  std::vector<std::uint8_t> bytes = encodeConfig(descriptor->preset, scale);
+  std::vector<std::uint8_t> bytes = encodeConfig(scale);
   auto digest = computeComponentViewDigest(descriptorBytes(), bytes);
   if (!digest)
     return digest.takeError();
-  return ResolvedFabricTemplateConfigView(descriptor->preset, scale,
-                                          std::move(bytes), *digest);
+  return ResolvedFabricTemplateConfigView(scale, std::move(bytes), *digest);
 }
 
 llvm::Expected<ResolvedFabricTemplateConfigView>
@@ -234,12 +223,11 @@ adoptResolvedFabricTemplateConfigView(
   auto decoded = decodeConfig(canonicalViewBytes);
   if (!decoded)
     return decoded.takeError();
-  std::vector<std::uint8_t> reencoded =
-      encodeConfig(decoded->preset, decoded->scale);
+  std::vector<std::uint8_t> reencoded = encodeConfig(decoded->scale);
   if (llvm::ArrayRef<std::uint8_t>(reencoded) != canonicalViewBytes)
     return invalid("template config does not re-encode to the source bytes");
-  return ResolvedFabricTemplateConfigView(decoded->preset, decoded->scale,
-                                          std::move(reencoded), digest);
+  return ResolvedFabricTemplateConfigView(decoded->scale, std::move(reencoded),
+                                          digest);
 }
 
 const CandidateGeneratorDescriptor &

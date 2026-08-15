@@ -10,4 +10,5 @@ dse:
   tech_mapping:
     match_row_attempt_limit: 2048
     partial_cover_expansion_limit: 4096
+    candidate_evaluation_limit: 32
     candidate_publication_limit: 8

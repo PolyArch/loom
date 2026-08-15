@@ -23,7 +23,7 @@ struct InProcessRuntimeFailurePlan final {
 };
 
 struct InProcessRuntimeDeviceConfig final {
-  ArtifactIdentity hardwareImplementation;
+  std::vector<ArtifactIdentity> hardwareImplementations;
   std::optional<BlobDigest> trustedAttestation;
   InProcessRuntimeFailurePlan failures;
 };

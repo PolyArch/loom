@@ -28,9 +28,6 @@ constexpr llvm::StringLiteral moduleAuthoringOnlyAttrs[] = {
     "disconnect",
     "bypassed",
     "sw_configs",
-    "pe_enable",
-    "instruction_mem",
-    "per_fu_sw_configs",
     "visual_layout",
     "coordinates_semantic"};
 

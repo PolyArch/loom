@@ -10,10 +10,12 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/InstructionCoreBinary.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/IR/MappingSchema.h"
 #include "Runtime/RuntimePlatformBinding.h"
@@ -260,6 +262,95 @@ importMappingOwners(const mapping::FinalizedSystemMapping &mapping,
   return std::make_pair(std::move(*dataflow), std::move(*fabric));
 }
 
+llvm::Expected<std::optional<hardware::FinalizedConfigurationABI>>
+validateHardwareBindingCoverage(
+    llvm::ArrayRef<DeploymentHardwareBinding> bindings,
+    llvm::ArrayRef<fabric::SpatialCoreOccurrenceRef> requiredSubjects,
+    const ArtifactRootReference &fabricReference,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  if (bindings.size() != requiredSubjects.size())
+    return invalid("hardware_bindings does not exactly cover the SpatialCore "
+                   "occurrences selected by SystemMapping");
+
+  std::vector<fabric::SpatialCoreOccurrenceRef> actualSubjects;
+  actualSubjects.reserve(bindings.size());
+  std::optional<ArtifactRootReference> commonAbi;
+  std::optional<runtime::RuntimeProviderBinding> commonProvider;
+  for (const DeploymentHardwareBinding &binding : bindings) {
+    auto implementation = hardware::importHardwareImplementation(
+        binding.hardwareImplementation, artifacts, blobs);
+    if (!implementation)
+      return implementation.takeError();
+    if (implementation->implementation().fabric() != fabricReference)
+      return invalid("HardwareImplementation has a foreign Fabric System");
+    actualSubjects.push_back(implementation->implementation().subject());
+    if (commonAbi && *commonAbi !=
+                         implementation->implementation().configurationAbi())
+      return invalid("hardware_bindings do not share one ConfigurationABI");
+    commonAbi = implementation->implementation().configurationAbi();
+
+    auto runtimeBinding = runtime::importRuntimePlatformBinding(
+        binding.runtimePlatformBinding, artifacts, blobs);
+    if (!runtimeBinding)
+      return runtimeBinding.takeError();
+    if (runtimeBinding->binding().hardwareImplementation() !=
+        binding.hardwareImplementation)
+      return invalid("RuntimePlatformBinding names another implementation");
+    if (commonProvider &&
+        !(*commonProvider == runtimeBinding->binding().providerBinding()))
+      return invalid("hardware_bindings do not share one Runtime provider "
+                     "contract");
+    commonProvider = runtimeBinding->binding().providerBinding();
+  }
+
+  llvm::sort(actualSubjects, [](fabric::SpatialCoreOccurrenceRef lhs,
+                                fabric::SpatialCoreOccurrenceRef rhs) {
+    return fabric::canonicalFabricBytes(lhs) <
+           fabric::canonicalFabricBytes(rhs);
+  });
+  if (std::adjacent_find(actualSubjects.begin(), actualSubjects.end()) !=
+      actualSubjects.end())
+    return invalid("hardware_bindings repeat a SpatialCore occurrence");
+  if (llvm::ArrayRef<fabric::SpatialCoreOccurrenceRef>(actualSubjects) !=
+      requiredSubjects)
+    return invalid("hardware_bindings select the wrong SpatialCore "
+                   "occurrences");
+  if (!commonAbi)
+    return std::optional<hardware::FinalizedConfigurationABI>{};
+  auto abi = hardware::importConfigurationABI(*commonAbi, artifacts);
+  if (!abi)
+    return abi.takeError();
+  return std::optional<hardware::FinalizedConfigurationABI>(std::move(*abi));
+}
+
+bool containsSubject(
+    llvm::ArrayRef<fabric::SpatialCoreOccurrenceRef> subjects,
+    fabric::SpatialCoreOccurrenceRef subject) {
+  return llvm::is_contained(subjects, subject);
+}
+
+llvm::Expected<std::vector<hardware::ProgrammingUnitId>>
+requiredProgrammingUnits(
+    const hardware::ConfigurationABI &abi,
+    llvm::ArrayRef<fabric::SpatialCoreOccurrenceRef> requiredSubjects) {
+  std::vector<hardware::ProgrammingUnitId> result;
+  for (const hardware::ProgrammingUnit &unit : abi.programmingUnits()) {
+    const hardware::ProgrammingUnitOccurrenceScope scope =
+        hardware::deriveProgrammingUnitOccurrenceScope(unit);
+    const bool touchesRequired = llvm::any_of(
+        scope.spatialCores, [&](fabric::SpatialCoreOccurrenceRef subject) {
+          return containsSubject(requiredSubjects, subject);
+        });
+    if (!touchesRequired)
+      continue;
+    if (scope.includesDirectSystemResources || scope.spatialCores.size() != 1)
+      return invalid("a programming unit required by SystemMapping crosses "
+                     "its SpatialCore occurrence");
+    result.push_back(unit.id);
+  }
+  return result;
+}
+
 llvm::Error
 validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
                                      const ArtifactStore &artifacts,
@@ -334,38 +425,33 @@ validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
                      "launch");
   }
 
-  if (deployment.hardwareBindings.size() != 1)
-    return invalid("hardware_bindings must select exactly one complete System "
-                   "implementation");
-  const DeploymentHardwareBinding &binding =
-      deployment.hardwareBindings.front();
-  auto implementation = hardware::importHardwareImplementation(
-      binding.hardwareImplementation, artifacts, blobs);
-  if (!implementation)
-    return implementation.takeError();
   const ArtifactRootReference fabricReference{
       fabric::fabricArtifactSchema.identity.str(),
       fabric::fabricArtifactSchema.version,
       systemMapping->view().fabricIdentity()};
-  if (implementation->implementation().fabric() != fabricReference)
-    return invalid("HardwareImplementation has a foreign Fabric System");
-  auto runtimeBinding = runtime::importRuntimePlatformBinding(
-      binding.runtimePlatformBinding, artifacts, blobs);
-  if (!runtimeBinding)
-    return runtimeBinding.takeError();
-  if (runtimeBinding->binding().hardwareImplementation() !=
-      binding.hardwareImplementation)
-    return invalid("RuntimePlatformBinding names another implementation");
-
-  const ArtifactRootReference abiReference =
-      implementation->implementation().configurationAbi();
-  auto abi = hardware::importConfigurationABI(abiReference, artifacts);
+  auto subjects = mapping::projectSystemExecutionSpatialCoreSubjects(
+      *dataflowView, systemMapping->view().executionBindings());
+  if (!subjects)
+    return subjects.takeError();
+  auto abi = validateHardwareBindingCoverage(
+      deployment.hardwareBindings, *subjects, fabricReference, artifacts,
+      blobs);
   if (!abi)
     return abi.takeError();
-  if (deployment.configurationImages.size() !=
-      abi->abi().programmingUnits().size())
+  if (!*abi) {
+    if (!deployment.configurationImages.empty())
+      return invalid("configuration_image_refs is nonempty without a selected "
+                     "SpatialCore implementation");
+    return llvm::Error::success();
+  }
+  auto requiredUnits = requiredProgrammingUnits((*abi)->abi(), *subjects);
+  if (!requiredUnits)
+    return requiredUnits.takeError();
+  if (deployment.configurationImages.size() != requiredUnits->size())
     return invalid("configuration_image_refs does not cover every programming "
-                   "unit exactly once");
+                   "unit required by the selected SpatialCore occurrences "
+                   "exactly once");
+  const ArtifactRootReference abiReference = (*abi)->reference();
   std::set<hardware::ProgrammingUnitId> coveredUnits;
   for (const ArtifactRootReference &reference :
        deployment.configurationImages) {
@@ -382,8 +468,8 @@ validateExecutableAndHardwareClosure(const detail::ParsedDeployment &deployment,
     if (!coveredUnits.insert(image->image().programmingUnitId()).second)
       return invalid("configuration image set repeats a programming unit");
   }
-  for (const hardware::ProgrammingUnit &unit : abi->abi().programmingUnits())
-    if (!coveredUnits.count(unit.id))
+  for (hardware::ProgrammingUnitId unit : *requiredUnits)
+    if (!coveredUnits.count(unit))
       return invalid("configuration image set omits a programming unit");
   return llvm::Error::success();
 }
@@ -549,30 +635,46 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
     return error;
   if (llvm::Error error = canonicalizeStaticMemory(inputs.staticMemoryImages))
     return error;
-  if (inputs.hardwareBindings.size() != 1)
-    return invalid("buildDeployment requires one complete System hardware "
-                   "binding");
-  auto implementation = hardware::importHardwareImplementation(
-      inputs.hardwareBindings.front().hardwareImplementation, artifacts, blobs);
-  if (!implementation)
-    return implementation.takeError();
-  const ArtifactRootReference abiReference =
-      implementation->implementation().configurationAbi();
-  auto abi = hardware::importConfigurationABI(abiReference, artifacts);
+  auto systemMapping =
+      mapping::importSystemMapping(inputs.systemMapping, artifacts);
+  if (!systemMapping)
+    return systemMapping.takeError();
+  auto owners = importMappingOwners(*systemMapping, artifacts);
+  if (!owners)
+    return owners.takeError();
+  auto dataflow = owners->first.view();
+  if (!dataflow)
+    return dataflow.takeError();
+  auto subjects = mapping::projectSystemExecutionSpatialCoreSubjects(
+      *dataflow, systemMapping->view().executionBindings());
+  if (!subjects)
+    return subjects.takeError();
+  const ArtifactRootReference fabricReference{
+      fabric::fabricArtifactSchema.identity.str(),
+      fabric::fabricArtifactSchema.version,
+      systemMapping->view().fabricIdentity()};
+  auto abi = validateHardwareBindingCoverage(inputs.hardwareBindings, *subjects,
+                                             fabricReference, artifacts, blobs);
   if (!abi)
     return abi.takeError();
 
   std::vector<ArtifactRootReference> images;
-  images.reserve(abi->abi().programmingUnits().size());
-  for (const hardware::ProgrammingUnit &unit : abi->abi().programmingUnits()) {
-    auto image = finalizeHardwareConfigurationImage(
-        {abiReference,
-         unit.id,
-         {ConfigurationImageSourceKind::SystemMapping, inputs.systemMapping}},
-        artifacts);
-    if (!image)
-      return image.takeError();
-    images.push_back(image->reference());
+  if (*abi) {
+    auto units = requiredProgrammingUnits((*abi)->abi(), *subjects);
+    if (!units)
+      return units.takeError();
+    images.reserve(units->size());
+    for (hardware::ProgrammingUnitId unit : *units) {
+      auto image = finalizeHardwareConfigurationImage(
+          {(*abi)->reference(),
+           unit,
+           {ConfigurationImageSourceKind::SystemMapping,
+            inputs.systemMapping}},
+          artifacts);
+      if (!image)
+        return image.takeError();
+      images.push_back(image->reference());
+    }
   }
   if (llvm::Error error = canonicalizeConfigurationImages(images, artifacts))
     return error;

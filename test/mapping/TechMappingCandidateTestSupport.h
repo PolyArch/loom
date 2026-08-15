@@ -19,6 +19,9 @@ void exerciseHandshakeCandidateRefcounts(
 adg::FinalizedFabricDesign
 buildTemporalCapacityFabric(const ArtifactStore &store);
 
+adg::FinalizedFabricDesign
+buildTemporalSwitchPackingFabric(const ArtifactStore &store);
+
 ResolvedConfig buildSpatialPnrTestResolvedConfig();
 
 mapping::FinalizedSpatialMappingConstraintSet buildSpatialMappingConstraints(

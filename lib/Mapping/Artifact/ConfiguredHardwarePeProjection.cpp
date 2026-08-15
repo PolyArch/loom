@@ -37,6 +37,15 @@ struct PeSelectorUse final {
   std::uint64_t nodeOrdinal = 0;
 };
 
+struct PeLocalTransferUse final {
+  std::uint64_t producerRealization = 0;
+  std::uint64_t consumerRealization = 0;
+  ::loom::fabric::FabricFuOccurrencePortRef producerPort;
+  ::loom::fabric::FabricFuOccurrencePortRef consumerPort;
+  ::loom::fabric::FabricOrdinal registerFifo = 0;
+  llvm::APInt tag = llvm::APInt(1, 0);
+};
+
 using ActorRealizationMap = std::map<std::uint64_t, std::uint64_t>;
 
 void appendSelectorUse(
@@ -98,6 +107,106 @@ collectSelectorUses(const TechMappingView &techMapping,
       appendSelectorUse(sink.localTraversal, *realization, routeOrdinal,
                         sink.nodeOrdinal, result);
     }
+  }
+  return result;
+}
+
+llvm::Expected<std::vector<PeLocalTransferUse>> collectLocalTransferUses(
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const TechMappingView &techMapping,
+    llvm::ArrayRef<SpatialComputeBindingView> bindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> transfers) {
+  ActorRealizationMap realizationByActor;
+  std::map<std::uint64_t, const TechComputeRealizationView *> realizations;
+  for (const TechComputeRealizationView &realization :
+       techMapping.computeRealizations()) {
+    realizations.emplace(realization.entityId, &realization);
+    for (const TechComputeActorView &actor : realization.actors)
+      if (!realizationByActor
+               .try_emplace(actor.actor.entity.value(), realization.entityId)
+               .second)
+        return invalid("compute actor belongs to multiple realizations");
+  }
+  const auto bindingOf =
+      [&](std::uint64_t realization) -> const SpatialComputeBindingView * {
+    const SpatialComputeBindingView *result = nullptr;
+    for (const SpatialComputeBindingView &binding : bindings) {
+      if (binding.realization != realization)
+        continue;
+      if (result)
+        return nullptr;
+      result = &binding;
+    }
+    return result;
+  };
+  const auto boundaryOf =
+      [&](const TechComputeRealizationView &realization,
+          ::dataflow::ActorRef actor,
+          ::loom::fabric::FabricPortDirection direction,
+          std::uint64_t ordinal) -> const TechComputeBoundaryView * {
+    const TechComputeBoundaryView *result = nullptr;
+    for (const TechComputeBoundaryView &boundary : realization.boundaries) {
+      if (boundary.actor != actor || boundary.direction != direction ||
+          boundary.portOrdinal != ordinal)
+        continue;
+      if (result)
+        return nullptr;
+      result = &boundary;
+    }
+    return result;
+  };
+
+  std::vector<PeLocalTransferUse> result;
+  result.reserve(transfers.size());
+  for (const SpatialRegisterFifoTransferView &transfer : transfers) {
+    const auto *producer =
+        std::get_if<::dataflow::ActorTokenResultRef>(&transfer.logicalNet);
+    const auto *consumer =
+        std::get_if<::dataflow::ActorTokenOperandRef>(&transfer.sink);
+    if (!producer || !consumer)
+      return invalid("register-FIFO transfer has a graph-boundary terminal");
+    auto producerRealization =
+        realizationOf(realizationByActor, producer->actor);
+    auto consumerRealization =
+        realizationOf(realizationByActor, consumer->actor);
+    if (!producerRealization)
+      return producerRealization.takeError();
+    if (!consumerRealization)
+      return consumerRealization.takeError();
+    const auto producerRecord = realizations.find(*producerRealization);
+    const auto consumerRecord = realizations.find(*consumerRealization);
+    const SpatialComputeBindingView *producerBinding =
+        bindingOf(*producerRealization);
+    const SpatialComputeBindingView *consumerBinding =
+        bindingOf(*consumerRealization);
+    if (producerRecord == realizations.end() ||
+        consumerRecord == realizations.end() || !producerBinding ||
+        !consumerBinding)
+      return invalid("register-FIFO transfer has no unique compute binding");
+    const TechComputeBoundaryView *producerBoundary = boundaryOf(
+        *producerRecord->second, producer->actor,
+        ::loom::fabric::FabricPortDirection::Output, producer->ordinal);
+    const TechComputeBoundaryView *consumerBoundary = boundaryOf(
+        *consumerRecord->second, consumer->actor,
+        ::loom::fabric::FabricPortDirection::Input, consumer->ordinal);
+    if (!producerBoundary || !consumerBoundary)
+      return invalid("register-FIFO transfer has no unique FU boundary");
+    const auto producerPe = fabric.parentPeOf(producerBinding->occurrence);
+    const auto consumerPe = fabric.parentPeOf(consumerBinding->occurrence);
+    if (!producerPe || !consumerPe || *producerPe != transfer.pe ||
+        *consumerPe != transfer.pe)
+      return invalid("register-FIFO transfer spans physical PEs");
+    result.push_back(
+        PeLocalTransferUse{*producerRealization,
+                           *consumerRealization,
+                           {producerBinding->occurrence,
+                            ::loom::fabric::FabricPortDirection::Output,
+                            producerBoundary->fabricPort.ordinal},
+                           {consumerBinding->occurrence,
+                            ::loom::fabric::FabricPortDirection::Input,
+                            consumerBoundary->fabricPort.ordinal},
+                           transfer.registerFifo,
+                           transfer.tag});
   }
   return result;
 }
@@ -256,48 +365,97 @@ selectorTag(const ::loom::fabric::FabricArtifactView &fabric,
 llvm::Expected<::loom::fabric::FabricTemporalPeOperandSelection>
 temporalOperandSelection(
     const ::loom::fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<SpatialRouteTreeView> routes,
-    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
-    llvm::ArrayRef<SpatialPhysicalTagSegmentView> tagSegments,
-    llvm::ArrayRef<PeSelectorUse> selectorUses,
+    llvm::ArrayRef<PeLocalTransferUse> localTransferUses,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> matchGroups,
     const ::loom::fabric::FabricFuOccurrencePortRef &port,
-    std::uint64_t realization, std::uint32_t tagWidth) {
-  auto use = findSelectorUse(fabric, selectorUses, port, realization);
-  if (!use)
-    return use.takeError();
-  if (!*use)
+    std::uint64_t realization, const ::fabric::LogicalOperandQueueKey &queue,
+    std::uint32_t tagWidth) {
+  const PeLocalTransferUse *local = nullptr;
+  for (const PeLocalTransferUse &candidate : localTransferUses) {
+    if (candidate.consumerRealization != realization ||
+        candidate.consumerPort != port)
+      continue;
+    if (local)
+      return invalid("Temporal PE input selects multiple register FIFOs");
+    local = &candidate;
+  }
+  const SpatialPeOperandQueueMatchGroupView *selected = nullptr;
+  for (const SpatialPeOperandQueueMatchGroupView &group : matchGroups) {
+    if (!llvm::any_of(group.matches,
+                      [&](const auto &match) { return match.queue == queue; }))
+      continue;
+    if (selected)
+      return invalid("Temporal PE operand queue belongs to multiple match "
+                     "groups");
+    selected = &group;
+  }
+  if (local) {
+    if (selected)
+      return invalid("Temporal PE input selects a register FIFO and an "
+                     "external operand queue");
+    if (local->tag.getBitWidth() != tagWidth)
+      return invalid("Temporal PE register-FIFO input has the wrong tag "
+                     "width");
+    return ::loom::fabric::FabricTemporalPeOperandSelection{
+        ::loom::fabric::FabricTemporalPeSelectorKind::Route,
+        ::loom::fabric::FabricTemporalPeSelectorTarget(
+            ::loom::fabric::FabricTemporalPeRegisterFifoTarget{
+                local->registerFifo}),
+        local->tag};
+  }
+  if (!selected)
     return ::loom::fabric::FabricTemporalPeOperandSelection{
         ::loom::fabric::FabricTemporalPeSelectorKind::Disconnected,
         std::nullopt, llvm::APInt(tagWidth, 0)};
-  auto endpoint = peEndpointFor(**use, port.direction);
-  if (!endpoint)
-    return endpoint.takeError();
-  auto target = directionOrdinal(fabric, *endpoint, port.direction);
+  if (selected->tag.getBitWidth() != tagWidth)
+    return invalid("Temporal PE operand match group has the wrong tag width");
+  auto target = directionOrdinal(fabric, selected->ingress,
+                                 ::loom::fabric::FabricPortDirection::Input);
   if (!target)
     return target.takeError();
-  auto tag =
-      selectorTag(fabric, routes, resourceUses, tagSegments, **use, tagWidth);
-  if (!tag)
-    return tag.takeError();
   return ::loom::fabric::FabricTemporalPeOperandSelection{
       ::loom::fabric::FabricTemporalPeSelectorKind::Route,
       ::loom::fabric::FabricTemporalPeSelectorTarget(
           ::loom::fabric::FabricTemporalPePortTarget{*target}),
-      std::move(*tag)};
+      selected->tag};
 }
 
 llvm::Expected<::loom::fabric::FabricTemporalPeResultSelection>
 temporalResultSelection(
     const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<PeLocalTransferUse> localTransferUses,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses,
     llvm::ArrayRef<SpatialPhysicalTagSegmentView> tagSegments,
     llvm::ArrayRef<PeSelectorUse> selectorUses,
     const ::loom::fabric::FabricFuOccurrencePortRef &port,
     std::uint64_t realization, std::uint32_t tagWidth) {
+  const PeLocalTransferUse *local = nullptr;
+  for (const PeLocalTransferUse &candidate : localTransferUses) {
+    if (candidate.producerRealization != realization ||
+        candidate.producerPort != port)
+      continue;
+    if (local)
+      return invalid("Temporal PE output selects multiple register FIFOs");
+    local = &candidate;
+  }
   auto use = findSelectorUse(fabric, selectorUses, port, realization);
   if (!use)
     return use.takeError();
+  if (local) {
+    if (*use)
+      return invalid("Temporal PE output selects a register FIFO and an "
+                     "external route");
+    if (local->tag.getBitWidth() != tagWidth)
+      return invalid("Temporal PE register-FIFO output has the wrong tag "
+                     "width");
+    return ::loom::fabric::FabricTemporalPeResultSelection{
+        ::loom::fabric::FabricTemporalPeSelectorKind::Route,
+        ::loom::fabric::FabricTemporalPeSelectorTarget(
+            ::loom::fabric::FabricTemporalPeRegisterFifoTarget{
+                local->registerFifo}),
+        local->tag};
+  }
   if (!*use)
     return ::loom::fabric::FabricTemporalPeResultSelection{
         ::loom::fabric::FabricTemporalPeSelectorKind::Disconnected,
@@ -319,14 +477,16 @@ temporalResultSelection(
       std::move(*tag)};
 }
 
-llvm::Error
-appendTemporalPeField(const ::loom::fabric::FabricArtifactView &fabric,
-                      const PeBindingGroup &group,
-                      llvm::ArrayRef<SpatialRouteTreeView> routes,
-                      llvm::ArrayRef<SpatialResourceUseView> resourceUses,
-                      llvm::ArrayRef<SpatialPhysicalTagSegmentView> tagSegments,
-                      llvm::ArrayRef<PeSelectorUse> selectorUses,
-                      std::vector<ConfiguredHardwareFieldValueView> &fields) {
+llvm::Error appendTemporalPeField(
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const PeBindingGroup &group,
+    llvm::ArrayRef<PeLocalTransferUse> localTransferUses,
+    llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> resourceUses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> tagSegments,
+    llvm::ArrayRef<PeSelectorUse> selectorUses,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView> operandQueueMatchGroups,
+    std::vector<ConfiguredHardwareFieldValueView> &fields) {
   auto schema = fabric.temporalPeConfigurationSchema(group.pe);
   if (!schema)
     return schema.takeError();
@@ -344,16 +504,21 @@ appendTemporalPeField(const ::loom::fabric::FabricArtifactView &fabric,
     });
     if (shape == layout.fus.end())
       return invalid("Temporal PE binding selects a foreign FU");
+    const ::loom::fabric::FabricOrdinal fuOrdinal =
+        static_cast<::loom::fabric::FabricOrdinal>(
+            std::distance(layout.fus.begin(), shape));
 
     ::loom::fabric::FabricTemporalPeInstructionEntry row;
     row.selectedFu = binding->occurrence;
     row.operandSelections.reserve(shape->inputCount);
     for (std::uint32_t input = 0; input < shape->inputCount; ++input) {
       auto selection = temporalOperandSelection(
-          fabric, routes, resourceUses, tagSegments, selectorUses,
+          fabric, localTransferUses, operandQueueMatchGroups,
           {binding->occurrence, ::loom::fabric::FabricPortDirection::Input,
            input},
-          binding->realization, layout.tagWidthBits);
+          binding->realization,
+          ::fabric::LogicalOperandQueueKey{binding->context, fuOrdinal, input},
+          layout.tagWidthBits);
       if (!selection)
         return selection.takeError();
       row.operandSelections.push_back(std::move(*selection));
@@ -361,7 +526,8 @@ appendTemporalPeField(const ::loom::fabric::FabricArtifactView &fabric,
     row.resultSelections.reserve(shape->outputCount);
     for (std::uint32_t output = 0; output < shape->outputCount; ++output) {
       auto selection = temporalResultSelection(
-          fabric, routes, resourceUses, tagSegments, selectorUses,
+          fabric, localTransferUses, routes, resourceUses, tagSegments,
+          selectorUses,
           {binding->occurrence, ::loom::fabric::FabricPortDirection::Output,
            output},
           binding->realization, layout.tagWidthBits);
@@ -390,15 +556,22 @@ deriveConfiguredPeFields(
     const ::loom::fabric::FabricArtifactView &fabric,
     const TechMappingView &techMapping,
     llvm::ArrayRef<SpatialComputeBindingView> bindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses,
-    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments) {
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView>
+        operandQueueMatchGroups) {
   auto groups = groupBindings(fabric, bindings);
   if (!groups)
     return groups.takeError();
   auto selectorUses = collectSelectorUses(techMapping, routes);
   if (!selectorUses)
     return selectorUses.takeError();
+  auto localTransferUses = collectLocalTransferUses(
+      fabric, techMapping, bindings, registerFifoTransfers);
+  if (!localTransferUses)
+    return localTransferUses.takeError();
   std::vector<ConfiguredHardwareFieldValueView> fields;
   for (const PeBindingGroup &group : *groups) {
     const auto schedule = fabric.peSchedule(group.pe);
@@ -410,9 +583,10 @@ deriveConfiguredPeFields(
     }
     if (schedule != ::fabric::Schedule::Temporal)
       return invalid("configured PE has an unknown schedule");
-    if (llvm::Error error =
-            appendTemporalPeField(fabric, group, routes, resourceUses,
-                                  physicalTagSegments, *selectorUses, fields))
+    if (llvm::Error error = appendTemporalPeField(
+            fabric, group, *localTransferUses, routes, resourceUses,
+            physicalTagSegments, *selectorUses, operandQueueMatchGroups,
+            fields))
       return std::move(error);
   }
   return fields;

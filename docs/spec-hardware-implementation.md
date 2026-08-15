@@ -8,15 +8,15 @@ implementation state that cannot be recovered from Fabric alone.
 ## Artifact Family
 
 ```text
-loom.hardware_implementation 3.0
+loom.hardware_implementation 4.0
 ```
 
 ```text
 HardwareImplementation {
   version
   fabric_ref
+  spatial_core_occurrence_ref
   configuration_abi_ref
-  interconnect_implementation_refs[]
   representation_root
   implementation_platform_ref?
   interfaces[]
@@ -26,12 +26,20 @@ HardwareImplementation {
 }
 ```
 
-`fabric_ref` is an exact `loom.fabric 4.1` System root and
-`configuration_abi_ref` is an exact `loom.configuration_abi 3.0` root bound to
-that same System. Imported Module internals referenced by interfaces, activity,
-configuration, memory, recipe, or external bindings use exact
-occurrence-qualified physical targets. A bare Module root or unqualified
-imported Module-local target cannot describe a complete implementation.
+`fabric_ref` is an exact `loom.fabric 5.0` System root,
+`spatial_core_occurrence_ref` is one exact SpatialCore occurrence in that
+System, and `configuration_abi_ref` is an exact
+`loom.configuration_abi 3.0` root bound to the same System. Every interface,
+activity point, configuration unit, memory macro, recipe, and external binding
+is confined to that occurrence. Imported Module internals use exact
+occurrence-qualified physical targets. A bare Module root, an unqualified
+Module-local target, a System-level resource, or another SpatialCore occurrence
+cannot describe this implementation.
+
+The represented product is the exact SpatialCore occurrence closure. It does
+not claim HostCore, InstructionCore, System transport, or interconnect RTL.
+Those System-level components remain architecture and simulation/modeling
+facts until an independent physical provider implements them.
 
 The artifact does not store Mapping, workload, configuration images, QoR
 metrics, tool logs, report paths, or pass/fail signoff booleans.
@@ -785,8 +793,9 @@ as a complete implementation.
 These bindings are downstream `HardwareImplementation` facts. They are not
 Fabric `ImplementationInput` dependencies and cannot be used to make that
 reserved-unavailable `loom.fabric 4.x` role legal. An Interconnect
-Implementation remains self-contained apart from its exact RefinedSystem root;
-provider-owned external implementation state is selected and validated here.
+Implementation remains a separate System-level product; provider-owned
+external state for the selected SpatialCore occurrence is selected and
+validated here.
 
 An implementation provider may report `Unsupported` when an otherwise valid
 Fabric resource lacks an implementation. It cannot emit a substituted,
@@ -823,8 +832,8 @@ adapter cannot mutate any of those owners in place.
 
 ## Finalization
 
-Finalization verifies exact Fabric, ConfigurationABI, interconnect,
-the optional target manifest, the closed representation root, exact format
+Finalization verifies the exact Fabric System, SpatialCore occurrence,
+ConfigurationABI, optional target manifest, closed representation root, exact format
 descriptor, payload roles, BlobStore bytes and digests, interfaces, activity
 points, memory-macro bindings, and external bindings. It resolves every
 provider contract, validates each external dependency identity, verifies every

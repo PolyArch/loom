@@ -30,6 +30,13 @@ struct CgraComputeTransitionPlan final {
   std::uint32_t physicalUseCount = 0;
 };
 
+struct CgraTemporalDispatchDomainPlan final {
+  ::loom::fabric::FabricPeOccurrenceRef pe;
+  std::uint32_t allocationUnit = 0;
+  std::uint32_t candidateCount = 0;
+  std::uint32_t resetPosition = 0;
+};
+
 struct CgraComputeActorPlan final {
   ::dataflow::ActorRef actor;
   ::dataflow::GraphRef graph;
@@ -37,6 +44,8 @@ struct CgraComputeActorPlan final {
   ::loom::fabric::InstructionContextRef context;
   std::uint64_t transitionOffset = 0;
   std::uint32_t transitionCount = 0;
+  std::optional<std::uint64_t> temporalDispatchDomain;
+  std::uint32_t temporalDispatchPosition = 0;
 };
 
 struct CgraFrozenExecutionPlan final {
@@ -44,6 +53,7 @@ struct CgraFrozenExecutionPlan final {
   std::vector<::dataflow::GraphRef> mappedGraphs;
   std::vector<CgraComputeActorPlan> computeActors;
   std::vector<CgraComputeTransitionPlan> computeTransitions;
+  std::vector<CgraTemporalDispatchDomainPlan> temporalDispatchDomains;
   std::vector<std::uint64_t> actorTransitionPhysicalUses;
   std::vector<CgraPhysicalUsePlan> physicalUses;
   std::vector<::loom::fabric::FabricUsePatternRef> physicalUsePatterns;

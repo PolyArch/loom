@@ -60,6 +60,6 @@ int main(int argc, char **argv) {
   statistics.negotiatedIterations = 11;
   statistics.capacityConflicts = 4;
   statistics.arithmeticFailures = 1;
-  statistics.emit(Stage::SystemPnr, "closed");
+  statistics.emit(Stage::SystemPnr, ClosureStatus::Closed);
   return EXIT_SUCCESS;
 }

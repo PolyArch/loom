@@ -16,7 +16,8 @@ void exerciseCgraAdmission(const ArtifactRootReference &dataflow,
                            const ArtifactRootReference &foreignFabric,
                            const ArtifactStore &store, const BlobStore &blobs,
                            bool expectPhysicalTags = false,
-                           bool expectCausalComputeRelease = false);
+                           bool expectCausalComputeRelease = false,
+                           bool expectSameInputDistinctSwitchRows = false);
 
 void exerciseCgraMemoryAdmission(const ArtifactRootReference &dataflow,
                                  const ArtifactRootReference &fabric,

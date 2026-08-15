@@ -158,15 +158,16 @@ private:
   std::optional<ObjectiveProgram> objectiveProgram_;
 };
 
-/// Exact invocation-local record for one executed Generate plan node. The
-/// enclosing plan outcome owns whether this record completed or is the node
-/// at which execution became incomplete.
+/// Exact invocation-local record for one executed Generate plan node. Valid
+/// output bindings and search completeness are independent facts: an
+/// incomplete invocation may retain outputs for downstream nodes.
 struct GenerateInvocationRecord final {
   std::uint64_t planNodeOrdinal;
   std::vector<CandidateGeneratorInputBinding> inputBindings;
   ResolvedCandidateGeneratorBinding generatorBinding;
   std::vector<CandidateGeneratorOutputBinding> outputBindings;
   std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+  std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
 };
 
 /// Nonsemantic execution accounting paired to one GenerateInvocationRecord by
@@ -221,6 +222,7 @@ private:
   ComponentViewDigest resolvedDseConfigViewDigest_;
 
   friend class DsePlanExecutionBuilder;
+  friend class IncompleteDsePlanExecution;
 };
 
 using DsePlanIncompleteReason =
@@ -241,8 +243,9 @@ public:
 
   std::uint64_t nodeOrdinal() const { return nodeOrdinal_; }
   const DsePlanIncompleteReason &reason() const { return reason_; }
-  const CompletedDsePlanExecution &completedPrefix() const {
-    return completedPrefix_;
+  bool executionStopped() const { return executionStopped_; }
+  const CompletedDsePlanExecution &availableExecution() const {
+    return availableExecution_;
   }
   std::size_t retainedOutputCount() const;
   llvm::ArrayRef<ArtifactRootReference>
@@ -251,30 +254,19 @@ public:
   const GenerateInvocationWorkSummary *incompleteGenerateWorkSummary() const;
 
 private:
-  struct PromoteRetainedOutputs final {
-    std::vector<std::vector<ArtifactRootReference>> outputBindings;
-  };
-
-  struct IncompleteGenerateNode final {
-    GenerateInvocationRecord invocation;
-    GenerateInvocationWorkSummary workSummary;
-  };
-
-  using IncompleteNode =
-      std::variant<IncompleteGenerateNode, PromoteRetainedOutputs>;
-
   IncompleteDsePlanExecution(std::uint64_t nodeOrdinal,
                              DsePlanIncompleteReason reason,
-                             CompletedDsePlanExecution completedPrefix,
-                             IncompleteNode incompleteNode)
+                             CompletedDsePlanExecution availableExecution,
+                             bool generateNode, bool executionStopped)
       : nodeOrdinal_(nodeOrdinal), reason_(std::move(reason)),
-        completedPrefix_(std::move(completedPrefix)),
-        incompleteNode_(std::move(incompleteNode)) {}
+        availableExecution_(std::move(availableExecution)),
+        generateNode_(generateNode), executionStopped_(executionStopped) {}
 
   std::uint64_t nodeOrdinal_ = 0;
   DsePlanIncompleteReason reason_;
-  CompletedDsePlanExecution completedPrefix_;
-  IncompleteNode incompleteNode_;
+  CompletedDsePlanExecution availableExecution_;
+  bool generateNode_ = false;
+  bool executionStopped_ = true;
 
   friend class DsePlanExecutionBuilder;
 };
@@ -296,12 +288,12 @@ public:
   llvm::ArrayRef<GenerateInvocationWorkSummary> completedWorkSummaries() const {
     return completedWorkSummaries_;
   }
-  const std::optional<GenerateInvocationRecord> &incomplete() const {
+  llvm::ArrayRef<GenerateInvocationRecord> incomplete() const {
     return incomplete_;
   }
-  const std::optional<GenerateInvocationWorkSummary> &
-  incompleteWorkSummary() const {
-    return incompleteWorkSummary_;
+  llvm::ArrayRef<GenerateInvocationWorkSummary>
+  incompleteWorkSummaries() const {
+    return incompleteWorkSummaries_;
   }
 
 private:
@@ -309,19 +301,19 @@ private:
       ComponentViewDigest resolvedDseConfigViewDigest,
       std::vector<GenerateInvocationRecord> completed,
       std::vector<GenerateInvocationWorkSummary> completedWorkSummaries,
-      std::optional<GenerateInvocationRecord> incomplete,
-      std::optional<GenerateInvocationWorkSummary> incompleteWorkSummary)
+      std::vector<GenerateInvocationRecord> incomplete,
+      std::vector<GenerateInvocationWorkSummary> incompleteWorkSummaries)
       : resolvedDseConfigViewDigest_(resolvedDseConfigViewDigest),
         completed_(std::move(completed)),
         completedWorkSummaries_(std::move(completedWorkSummaries)),
         incomplete_(std::move(incomplete)),
-        incompleteWorkSummary_(std::move(incompleteWorkSummary)) {}
+        incompleteWorkSummaries_(std::move(incompleteWorkSummaries)) {}
 
   ComponentViewDigest resolvedDseConfigViewDigest_;
   std::vector<GenerateInvocationRecord> completed_;
   std::vector<GenerateInvocationWorkSummary> completedWorkSummaries_;
-  std::optional<GenerateInvocationRecord> incomplete_;
-  std::optional<GenerateInvocationWorkSummary> incompleteWorkSummary_;
+  std::vector<GenerateInvocationRecord> incomplete_;
+  std::vector<GenerateInvocationWorkSummary> incompleteWorkSummaries_;
 
   friend class DsePlanExecutionBuilder;
 };

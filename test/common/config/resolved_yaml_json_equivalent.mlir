@@ -13,6 +13,7 @@
 // CHECK-DAG: "scope_expansion_limit": 23
 // CHECK-DAG: "match_row_attempt_limit": 2048
 // CHECK-DAG: "partial_cover_expansion_limit": 4096
+// CHECK-DAG: "candidate_evaluation_limit": 32
 // CHECK-DAG: "candidate_publication_limit": 8
 // CHECK-DAG: "spatial_pnr"
 // CHECK-DAG: "system_pnr"

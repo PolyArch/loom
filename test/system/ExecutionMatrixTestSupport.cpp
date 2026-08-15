@@ -721,7 +721,9 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ArtifactStore &artifacts,
   require(test, hardware.interconnect.has_value(),
           "System fixture omitted its typed interconnect implementation");
   const ArtifactRootReference interconnect = *hardware.interconnect;
-  auto implementation = hardware.implementation;
+  require(test, !hardware.implementations.empty(),
+          "System fixture omitted SpatialCore implementations");
+  auto implementation = hardware.implementations.front();
   const auto systemView =
       take(test, fabric::requireSystemRoot(hardware.system.view()));
   const auto cores = systemView.artifact().accCoreOccurrences();
@@ -744,7 +746,8 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ArtifactStore &artifacts,
                               deployment::HostExternalInterfaceDirection::InOut,
                               memoryInterfaceType(test, *context)}};
   auto deployment = deployment::test::buildMappedSystemDeployment(
-      test, dataflow, hardware.system, systemMapping, implementation,
+      test, dataflow, hardware.system, systemMapping,
+      hardware.implementations,
       std::move(programs), artifacts, blobs, tree);
   const auto [spatialWorkload, spatialRuntimeInput] =
       publishSpatialInputs(test, dataflow, artifacts);
@@ -782,13 +785,18 @@ buildResolution(llvm::StringRef test, const SharedFixture &fixture,
        {fixture.dataflowReference, fixture.hardware.system.reference(),
         fixture.hardware.spatialMapping.reference()}},
       {fixture.interconnect, {fixture.hardware.system.reference()}},
-      {fixture.implementation.reference(),
-       {fixture.hardware.system.reference(), fixture.interconnect}},
-      {fixture.deployment.reference(),
-       {fixture.dataflowReference, fixture.systemMapping.reference(),
-        fixture.hardware.spatialMapping.reference(),
-        fixture.implementation.reference()}},
   };
+  std::vector<ArtifactRootReference> deploymentParents{
+      fixture.dataflowReference, fixture.systemMapping.reference(),
+      fixture.hardware.spatialMapping.reference()};
+  for (const hardware::FinalizedHardwareImplementation &implementation :
+       fixture.hardware.implementations) {
+    entries.push_back({implementation.reference(),
+                       {fixture.hardware.system.reference()}});
+    deploymentParents.push_back(implementation.reference());
+  }
+  entries.push_back(
+      {fixture.deployment.reference(), std::move(deploymentParents)});
   if (gem5Binding)
     entries.push_back(
         {*gem5Binding,
@@ -1235,9 +1243,11 @@ ReplaySignature runExecutionMatrixCellOnce(ExecutionMatrixCell cell,
       fixture.hardware.spatialMapping.reference(),
       fixture.systemMapping.reference(),
       fixture.interconnect,
-      fixture.implementation.reference(),
       fixture.deployment.reference(),
   };
+  for (const hardware::FinalizedHardwareImplementation &implementation :
+       fixture.hardware.implementations)
+    roots.push_back(implementation.reference());
   if (cell == ExecutionMatrixCell::SpatialDfg ||
       cell == ExecutionMatrixCell::SpatialCgra ||
       cell == ExecutionMatrixCell::SpatialRtl) {
@@ -1398,22 +1408,14 @@ void verifyHeterogeneousSystemAnchor() {
               fixture.systemInputs.runtimeInput.system()
                       ->memoryInterfaceBindings.size() == 1,
           "System anchor has no terminal memory observable");
-  require(test,
-          fixture.implementation.implementation()
-                      .interconnectImplementations()
-                      .size() == 1 &&
-              fixture.implementation.implementation()
-                      .interconnectImplementations()
-                      .front() == fixture.interconnect,
-          "HardwareImplementation does not catalog the exact System "
-          "interconnect sibling");
 
   const auto tech =
       take(test,
            mapping::importTechMapping(fixture.hardware.techMapping, artifacts));
   auto progress =
       take(test, mapping::deriveSpatialMappingProgressClosure(
-                     dataflow, tech.view(),
+                     dataflow, tech.view(), module,
+                     fixture.hardware.spatialMapping.view().computeBindings(),
                      fixture.hardware.spatialMapping.view().routeTrees()));
   require(test,
           progress.kind ==
@@ -1444,7 +1446,10 @@ void verifyHeterogeneousSystemAnchor() {
   require(test, removedProgressBoundary,
           "canonical anchor has no Buffered FIFO progress boundary");
   auto closedWait = take(test, mapping::deriveSpatialMappingProgressClosure(
-                                   dataflow, tech.view(), unbufferedRoutes));
+                                   dataflow, tech.view(), module,
+                                   fixture.hardware.spatialMapping.view()
+                                       .computeBindings(),
+                                   unbufferedRoutes));
   require(test,
           closedWait.kind ==
               mapping::MappingProgressClosureKind::ProvenClosedWaitSet,

@@ -93,13 +93,15 @@ private:
                      SpatialMoveTransaction move,
                      dse::ObjectiveVector objective,
                      dse::ObjectiveSignedDifference energyDifference,
-                     bool negotiatedRouting, bool semanticChange);
+                     bool negotiatedRouting, bool routeTagsSynchronized,
+                     bool semanticChange);
 
   SpatialActionExecutorScratch *owner_ = nullptr;
   SpatialMoveTransaction move_;
   dse::ObjectiveVector objective_;
   dse::ObjectiveSignedDifference energyDifference_;
   bool negotiatedRouting_ = false;
+  bool routeTagsSynchronized_ = false;
   bool semanticChange_ = true;
 
   friend class SpatialActionExecutorScratch;
@@ -194,12 +196,15 @@ private:
   void markChangedBindingRoot(PnrIndex decision);
   void markExplicitAttachment(PnrIndex decision);
   llvm::Error markNet(PnrIndex logicalNet);
+  llvm::Error markWholeNet(SpatialWholeNetRoutingAction action);
   llvm::Error markLocalNet(PnrIndex logicalNet, PendingRouteKind kind,
                            PnrIndex localAnchor);
   llvm::Error markWitnessRegion(SpatialWitnessRegionRoutingAction action);
   void beginDependencyClosure();
   llvm::Error restoreAfterFailure(SpatialMoveTransaction &move,
                                   llvm::Error failure);
+  llvm::Error
+  synchronizeCandidateTags(llvm::ArrayRef<PnrIndex> changedLogicalNets);
 
   SpatialCandidateScratch candidateScratch_;
   SpatialPathFinderRouterScratch router_;
@@ -208,8 +213,13 @@ private:
   std::vector<std::uint64_t> netMarks_;
   std::vector<PendingRouteKind> pendingRouteKinds_;
   std::vector<PnrIndex> pendingRouteAnchors_;
+  std::vector<std::uint8_t> explicitNetDispositionMarks_;
+  std::vector<SpatialWholeNetDispositionKind> explicitNetDispositions_;
+  std::vector<PnrIndex> explicitRegisterFifoTransfers_;
   std::vector<PnrIndex> affectedNets_;
   std::vector<PnrIndex> routeCostTraversals_;
+  std::vector<PnrIndex> routeCostLogicalNets_;
+  std::vector<std::uint64_t> localTransferClaimBits_;
   std::unique_ptr<detail::InitializerRelationSolver> relationSolver_;
   std::unique_ptr<detail::SpatialMemoryConstraintScratch>
       memoryConstraintScratch_;
@@ -217,6 +227,7 @@ private:
   std::vector<std::uint8_t> relationDecisionMarks_;
   std::vector<std::uint8_t> explicitAttachmentMarks_;
   std::vector<PnrIndex> relationDecisionQueue_;
+  std::vector<PnrIndex> releasedRelationDecisions_;
   std::vector<PnrIndex> changedBindingRoots_;
   std::vector<SpatialLogicalMemoryBindingSelection>
       explicitLogicalMemorySelections_;

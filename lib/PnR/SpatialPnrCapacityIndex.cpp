@@ -136,6 +136,34 @@ struct BoundaryChange final {
 llvm::Error checkedAccumulate(std::uint64_t value, std::uint64_t &total,
                               llvm::StringRef subject);
 
+struct EnvelopeTiming final {
+  std::uint64_t releaseLatencyCycles = 0;
+  std::uint64_t minimumInitiationIntervalCycles = 1;
+};
+
+llvm::Expected<EnvelopeTiming>
+deriveEnvelopeTiming(const FrozenSpatialResourceIndex &resources,
+                     llvm::ArrayRef<PnrIndex> patterns) {
+  EnvelopeTiming result;
+  for (PnrIndex patternOrdinal : patterns) {
+    if (patternOrdinal >= resources.usePatterns().size())
+      return invalid("resource-time envelope contains an invalid pattern");
+    const FrozenSpatialUsePattern &pattern =
+        resources.usePatterns()[patternOrdinal];
+    if (pattern.minimumInitiationIntervalCycles == 0)
+      return invalid("resource-time envelope has a zero initiation interval");
+    if (llvm::Error error = checkedAccumulate(
+            pattern.releaseLatencyCycles, result.releaseLatencyCycles,
+            "resource-time release latency"))
+      return std::move(error);
+    result.minimumInitiationIntervalCycles =
+        std::max(result.minimumInitiationIntervalCycles,
+                 static_cast<std::uint64_t>(
+                     pattern.minimumInitiationIntervalCycles));
+  }
+  return result;
+}
+
 llvm::Expected<std::uint64_t>
 appendTimedEnvelope(const FrozenSpatialResourceIndex &resources,
                     llvm::ArrayRef<PnrIndex> patterns,
@@ -280,6 +308,7 @@ public:
       PnrIndex segmentOffset = 0;
       PnrIndex segmentCount = 0;
       std::uint64_t overuse = 0;
+      EnvelopeTiming timing;
     };
     std::vector<std::optional<TimedPatternProjection>> timedPatternCache(
         resources.usePatterns().size());
@@ -298,13 +327,16 @@ public:
       auto overuse = appendTimedEnvelope(resources, selected, result.segments_);
       if (!overuse)
         return overuse.takeError();
+      auto timing = deriveEnvelopeTiming(resources, selected);
+      if (!timing)
+        return timing.takeError();
       auto segmentCount = checkedIndex(
           "resource_time_envelopes", "resource_time_segments",
           PnrCapacityMeasure::Count, result.segments_.size() - *segmentOffset);
       if (!segmentCount)
         return segmentCount.takeError();
       TimedPatternProjection projection{*segmentOffset, *segmentCount,
-                                        *overuse};
+                                        *overuse, *timing};
       timedPatternCache[pattern] = projection;
       return projection;
     };
@@ -391,6 +423,9 @@ public:
                 appendTimedEnvelope(resources, patterns, result.segments_);
             if (!overuse)
               return overuse.takeError();
+            auto timing = deriveEnvelopeTiming(resources, patterns);
+            if (!timing)
+              return timing.takeError();
             auto segmentCount = checkedIndex(
                 "resource_time_envelopes", "resource_time_segments",
                 PnrCapacityMeasure::Count,
@@ -399,7 +434,9 @@ public:
               return segmentCount.takeError();
             result.envelopes_.push_back({*eventOrdinal, *useOffset, *useCount,
                                          *segmentOffset, *segmentCount,
-                                         *overuse});
+                                         *overuse,
+                                         timing->releaseLatencyCycles,
+                                         timing->minimumInitiationIntervalCycles});
             if (llvm::Error error =
                     checkedAccumulate(*overuse, placementOveruse,
                                       "compute atomic capacity overuse"))
@@ -488,7 +525,10 @@ public:
           return envelopeOrdinal.takeError();
         result.envelopes_.push_back({eventOrdinal, *useOffset, 1,
                                      timing->segmentOffset,
-                                     timing->segmentCount, timing->overuse});
+                                     timing->segmentCount, timing->overuse,
+                                     timing->timing.releaseLatencyCycles,
+                                     timing->timing
+                                         .minimumInitiationIntervalCycles});
         result.memoryOperationPlanEnvelopes_[planOrdinal] = *envelopeOrdinal;
         result.memoryOperationPlanOveruse_[planOrdinal] = timing->overuse;
       }
@@ -575,7 +615,10 @@ public:
             return envelopeOrdinal.takeError();
           result.envelopes_.push_back({*eventOrdinal, *useOffset, 1,
                                        timing->segmentOffset,
-                                       timing->segmentCount, timing->overuse});
+                                       timing->segmentCount, timing->overuse,
+                                       timing->timing.releaseLatencyCycles,
+                                       timing->timing
+                                           .minimumInitiationIntervalCycles});
           result.memoryServicePatternEnvelopes_.push_back(
               {pattern, *envelopeOrdinal});
         }
@@ -589,7 +632,7 @@ public:
       result.memoryServiceGroupEnvelopeOffsets_.push_back(*envelopeEnd);
     }
 
-    // A traversal activation group is one owner-normalized physical use. It
+    // A traversal requester group is one owner-normalized physical use. It
     // must be individually feasible; cross-event contention contributes to
     // the one CapacityOveruse owner.
     for (const FrozenSpatialRouteClaim &claim : routing.routeClaims()) {
@@ -600,8 +643,19 @@ public:
       const std::uint64_t usage =
           static_cast<std::uint64_t>(dimension.initialOccupancy) + claim.amount;
       if (usage > dimension.capacity)
-        return invalid(
-            "one traversal activation group exceeds Fabric capacity");
+        return invalid("one traversal requester group exceeds Fabric capacity");
+    }
+    std::uint64_t maximumReleaseLatency = 0;
+    std::uint64_t maximumInitiationInterval = 1;
+    for (const FrozenSpatialResourceTimeEnvelope &envelope :
+         result.envelopes_) {
+      if (llvm::Error error = checkedAccumulate(
+              envelope.releaseLatencyCycles, maximumReleaseLatency,
+              "resource-time release-latency domain"))
+        return std::move(error);
+      maximumInitiationInterval =
+          std::max(maximumInitiationInterval,
+                   envelope.minimumInitiationIntervalCycles);
     }
     return result;
   }

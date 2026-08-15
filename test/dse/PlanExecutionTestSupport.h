@@ -32,8 +32,11 @@ makePlanExecutionFixture(const ArtifactStore &store, std::size_t nodeCount,
 
 void resetPlanExecutionProviderObservations();
 void requireConcurrentPlanExecutionProviders(std::uint64_t count);
+void requirePlanExecutionProviderStopObservation();
+bool waitForActivePlanExecutionProvider();
 std::uint64_t planExecutionProviderCalls();
 std::uint64_t maximumConcurrentPlanExecutionProviders();
+bool planExecutionProviderObservedStop();
 
 } // namespace loom::dse::test_support
 

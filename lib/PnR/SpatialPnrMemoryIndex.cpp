@@ -173,8 +173,22 @@ struct DispatchDraft final {
   FrozenSpatialMemoryDispatchTarget target;
   std::optional<FabricUsePatternRef> serviceUsePattern;
   std::vector<std::uint64_t> serviceRegions;
+  std::optional<std::uint64_t> maxIssueToRetireCycles;
   std::string key;
 };
+
+std::optional<std::uint64_t> completionBound(
+    const ::fabric::MemoryServiceCapabilityDeclaration &capability) {
+  const auto *local = std::get_if<::fabric::LocalProviderConsistency>(
+      &capability.consistencyBinding);
+  if (!local)
+    return std::nullopt;
+  const auto *bounded =
+      std::get_if<::fabric::LocalBoundedCompletionCycles>(&local->progress);
+  return bounded ? std::optional<std::uint64_t>(
+                       bounded->maxIssueToRetireCycles)
+                 : std::nullopt;
+}
 
 std::string
 dispatchKey(const FrozenSpatialMemoryDispatchTarget &target,
@@ -230,11 +244,17 @@ buildDispatchOptions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   std::map<std::string, DispatchDraft> options;
   const auto add = [&](FrozenSpatialMemoryDispatchTarget target,
                        std::optional<FabricUsePatternRef> serviceUsePattern,
-                       llvm::ArrayRef<std::uint64_t> regions = {}) {
+                       llvm::ArrayRef<std::uint64_t> regions,
+                       std::optional<std::uint64_t> maxIssueToRetireCycles)
+      -> llvm::Error {
     const std::string key = dispatchKey(target, serviceUsePattern);
     auto [iterator, inserted] = options.try_emplace(
-        key, DispatchDraft{
-                 std::move(target), std::move(serviceUsePattern), {}, key});
+        key, DispatchDraft{std::move(target), std::move(serviceUsePattern), {},
+                           maxIssueToRetireCycles, key});
+    if (!inserted && iterator->second.maxIssueToRetireCycles !=
+                         maxIssueToRetireCycles)
+      return invalid(
+          "one memory dispatch option has inconsistent completion timing");
     iterator->second.serviceRegions.insert(
         iterator->second.serviceRegions.end(), regions.begin(), regions.end());
     llvm::sort(iterator->second.serviceRegions);
@@ -242,7 +262,7 @@ buildDispatchOptions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
         std::unique(iterator->second.serviceRegions.begin(),
                     iterator->second.serviceRegions.end()),
         iterator->second.serviceRegions.end());
-    (void)inserted;
+    return llvm::Error::success();
   };
 
   for (const ::fabric::MemoryDispatchTarget &target :
@@ -255,7 +275,8 @@ buildDispatchOptions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
           endpoints.managers[manager->endpointOrdinal];
       if (llvm::Error error = validateFabricRef(fabric, endpoint))
         return std::move(error);
-      add(endpoint, std::nullopt);
+      if (llvm::Error error = add(endpoint, std::nullopt, {}, std::nullopt))
+        return std::move(error);
       continue;
     }
 
@@ -277,8 +298,12 @@ buildDispatchOptions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
               pattern.ordinal()};
           if (llvm::Error error = validateFabricRef(fabric, usePattern))
             return std::move(error);
-          add(LocalMemoryServiceRef(FabricMemoryServiceRef::local(occurrence)),
-              usePattern, capability.serviceRegionOrdinals);
+          if (llvm::Error error = add(
+                  LocalMemoryServiceRef(
+                      FabricMemoryServiceRef::local(occurrence)),
+                  usePattern, capability.serviceRegionOrdinals,
+                  completionBound(capability)))
+            return std::move(error);
         }
       }
       continue;
@@ -290,7 +315,8 @@ buildDispatchOptions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
               &capability.consistencyBinding)) {
         if (llvm::Error error = validateFabricRef(fabric, *domain))
           return std::move(error);
-        add(*domain, std::nullopt);
+        if (llvm::Error error = add(*domain, std::nullopt, {}, std::nullopt))
+          return std::move(error);
       }
     }
   }
@@ -731,7 +757,8 @@ llvm::Expected<FrozenSpatialMemoryIndex> FrozenSpatialMemoryIndexBuilder::build(
             option.serviceRegions.begin(), option.serviceRegions.end());
         result.dispatchOptions_.push_back({std::move(option.target),
                                            std::move(option.serviceUsePattern),
-                                           *regionOffset, *regionCount});
+                                           *regionOffset, *regionCount,
+                                           option.maxIssueToRetireCycles});
       }
       auto optionCount = checked(optionCountContext, options->size());
       if (!optionCount)

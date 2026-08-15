@@ -24,7 +24,6 @@ struct BuiltinLimits final {
   std::uint64_t calibration;
   std::uint64_t levelBase;
   std::uint64_t perMovable;
-  std::uint64_t focused;
   ResolvedPnrExactRepairKind repairKind;
   std::uint64_t repairDecisions;
   std::uint64_t solverCalls;
@@ -34,31 +33,31 @@ constexpr BuiltinLimits limitsFor(ResolvedProfilePreset preset) {
   switch (preset) {
   case ResolvedProfilePreset::ReportOnly:
     return {
-        1, 4096, 16384, 8, 16, 16, 1, 64, ResolvedPnrExactRepairKind::Disabled,
+        1, 4096, 16384, 8, 16, 16, 1, ResolvedPnrExactRepairKind::Disabled,
         0, 0};
   case ResolvedProfilePreset::QuickExplore:
     return {
-        2,  16384, 65536, 16, 64, 64, 2, 512, ResolvedPnrExactRepairKind::CpSat,
+        2,  16384, 65536, 16, 64, 64, 2, ResolvedPnrExactRepairKind::CpSat,
         64, 128};
   case ResolvedProfilePreset::BalancedExplore:
     return {4,   65536, 262144,
             64,  256,   128,
-            8,   4096,  ResolvedPnrExactRepairKind::CpSat,
+            8,   ResolvedPnrExactRepairKind::CpSat,
             256, 1024};
   case ResolvedProfilePreset::PerformanceExplore:
     return {8,   262144, 1048576,
             128, 512,    256,
-            16,  8192,   ResolvedPnrExactRepairKind::CpSat,
+            16,  ResolvedPnrExactRepairKind::CpSat,
             512, 4096};
   case ResolvedProfilePreset::Implementation:
     return {16,   524288, 2097152,
             256,  1024,   512,
-            24,   16384,  ResolvedPnrExactRepairKind::CpSat,
+            24,   ResolvedPnrExactRepairKind::CpSat,
             1024, 8192};
   case ResolvedProfilePreset::StrictImplementation:
     return {32,   1048576, 4194304,
             512,  2048,    1024,
-            32,   32768,   ResolvedPnrExactRepairKind::CpSat,
+            32,   ResolvedPnrExactRepairKind::CpSat,
             2048, 16384};
   }
   llvm_unreachable("all resolved profile presets are handled");
@@ -95,6 +94,11 @@ constexpr std::uint32_t mappingMeasureKindCount = 0
 #define LOOM_MAPPING_MEASURE(Name, Ordinal, DisplayName) +1
 #include "Common/MappingObjectiveKinds.def"
     ;
+
+enum class BuiltinMappingMeasureKind : std::uint32_t {
+#define LOOM_MAPPING_MEASURE(Name, Ordinal, DisplayName) Name = Ordinal,
+#include "Common/MappingObjectiveKinds.def"
+};
 
 auto sourceKey(const ResolvedObjectiveScalarSource &source) {
   if (const auto *violation =
@@ -170,7 +174,8 @@ bool totalOrderingLess(const ResolvedTotalOrdering &left,
 
 } // namespace
 
-ResolvedPnrPolicyConfig resolvedBuiltinPnrPolicy(ResolvedProfilePreset preset) {
+ResolvedPnrPolicyConfig
+resolvedBuiltinSpatialPnrPolicy(ResolvedProfilePreset preset) {
   const BuiltinLimits limits = limitsFor(preset);
   return {{ResolvedPnrInitializerPolicy{limits.seeds, limits.assignments},
            ResolvedPnrActionProposalPolicy{1, 3, 2},
@@ -179,21 +184,26 @@ ResolvedPnrPolicyConfig resolvedBuiltinPnrPolicy(ResolvedProfilePreset preset) {
                builtinNoProgressIterationLimit, builtinNoProgressTrendWindow,
                ResolvedPathFinderPolicy{
                    ResolvedPathFinderPriceKernel::Multiplicative, 1,
-                   ResolvedExactRatio{3, 2}, 1},
-               std::nullopt},
+                   ResolvedExactRatio{3, 2}, 1}},
            ResolvedPnrAnnealingPolicy{
                limits.calibration, ResolvedExactRatio{3, 4},
                ResolvedExactRatio{4, 5}, 1024, 1, ResolvedExactRatio{19, 20},
                limits.levelBase, limits.perMovable},
-           limits.focused,
            ResolvedPnrExactRepairPolicy{
                limits.repairKind, limits.repairDecisions, limits.solverCalls}},
           ResolvedPnrDeterminismPolicy{
               0, ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
               ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
           allTemporaryViolations(),
-          ResolvedPnrObjectiveSelection{0, 3, {}},
-          {}};
+          ResolvedPnrObjectiveSelection{0, 4}};
+}
+
+ResolvedPnrPolicyConfig
+resolvedBuiltinSystemPnrPolicy(ResolvedProfilePreset preset) {
+  ResolvedPnrPolicyConfig policy = resolvedBuiltinSpatialPnrPolicy(preset);
+  policy.search.exactRepair =
+      ResolvedPnrExactRepairPolicy{ResolvedPnrExactRepairKind::Disabled, 0, 0};
+  return policy;
 }
 
 ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
@@ -218,20 +228,35 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
   ResolvedWeightedObjectiveLevel closure;
   ResolvedWeightedObjectiveLevel traversal;
   ResolvedWeightedObjectiveLevel schedule;
+  ResolvedWeightedObjectiveLevel timing;
   ResolvedWeightedObjectiveLevel energy;
   for (std::uint32_t dimension = 0; dimension != resolvedPnrViolationKindCount;
        ++dimension) {
     closure.terms.push_back({dimension, 1});
-    energy.terms.push_back({dimension, UINT64_C(4294967296)});
+    energy.terms.push_back({dimension, UINT64_C(281474976710656)});
   }
   traversal.terms.push_back({resolvedPnrViolationKindCount, 1});
   energy.terms.push_back({resolvedPnrViolationKindCount, 1});
   const std::uint32_t scheduleDimension = resolvedPnrViolationKindCount + 1;
   schedule.terms.push_back({scheduleDimension, 1});
   energy.terms.push_back({scheduleDimension, UINT64_C(4294967296)});
+  const std::uint32_t timingBegin = scheduleDimension + 1;
+  for (std::uint32_t dimension = timingBegin;
+       dimension != resolvedPnrViolationKindCount + mappingMeasureKindCount;
+       ++dimension) {
+    timing.terms.push_back({dimension, 1});
+    const bool transport =
+        dimension == resolvedPnrViolationKindCount +
+                         static_cast<std::uint32_t>(
+                             BuiltinMappingMeasureKind::
+                                 TransportBitCycleDemand);
+    energy.terms.push_back(
+        {dimension, transport ? UINT64_C(1) : UINT64_C(4294967296)});
+  }
   catalogs.weightedLevels = {std::move(traversal), std::move(schedule),
-                             std::move(closure), std::move(energy)};
-  catalogs.totalOrderings.push_back({{2, 1, 0}});
+                             std::move(closure), std::move(timing),
+                             std::move(energy)};
+  catalogs.totalOrderings.push_back({{2, 3, 1, 0}});
   return catalogs;
 }
 
@@ -455,9 +480,6 @@ validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
   if (llvm::Error error =
           validateResolvedPnrAnnealingPolicy(policy.search.annealing))
     return error;
-  if (policy.search.focusedClosureProposalLimit == 0)
-    return invalid("focused closure work limit must be positive");
-
   const ResolvedPnrExactRepairPolicy &repair = policy.search.exactRepair;
   if (repair.kind == ResolvedPnrExactRepairKind::Disabled) {
     if (repair.maxRegionDecisions != 0 || repair.maxSolverCalls != 0)
@@ -480,23 +502,6 @@ validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
   if (selection.selectedTotalOrdering >= catalogs.totalOrderings.size() ||
       selection.selectedSearchEnergy >= catalogs.weightedLevels.size())
     return invalid("objective selection is out of range");
-  std::uint32_t previousDimension = 0;
-  bool firstDimension = true;
-  for (std::uint32_t dimension : selection.focusedClosureDimensions) {
-    if (dimension >= catalogs.dimensions.size() ||
-        (!firstDimension && dimension <= previousDimension))
-      return invalid("focused closure dimensions are not canonical");
-    firstDimension = false;
-    previousDimension = dimension;
-  }
-  if (!selection.focusedClosureDimensions.empty())
-    return invalid("Evaluation metric objective owner is unavailable");
-
-  if (!policy.evaluationBindings.empty())
-    return invalid("Evaluation obligation owner is unavailable");
-  if (routing.routeGuidanceBinding)
-    return invalid("route guidance owner is unavailable");
-
   for (ResolvedPnrViolationKind kind : policy.temporaryViolations.admitted) {
     const std::uint32_t sourceOrdinal = static_cast<std::uint32_t>(kind);
     const bool visible = llvm::any_of(

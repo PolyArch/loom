@@ -3,6 +3,7 @@
 #include "Fabric/IR/MemoryActorContractDomain.h"
 #include "Fabric/IR/MemoryCapabilityDomains.h"
 #include "Fabric/IR/MemoryOperationPort.h"
+#include "Fabric/Identity/FabricMemoryInternalConnection.h"
 #include "Fabric/Identity/FabricRefImport.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -762,7 +763,7 @@ FabricMemoryConfigurationSchemaView::projectOperationRow(
           : std::numeric_limits<FabricOrdinal>::max();
   if (rowOrdinal != std::numeric_limits<FabricOrdinal>::max()) {
     active.operationRows[rowOrdinal] = result;
-    auto encoded = encode(FabricMemoryConfigurationValue{active});
+    auto encoded = encodeLocallyValid(FabricMemoryConfigurationValue{active});
     if (!encoded)
       return encoded.takeError();
   }
@@ -770,7 +771,7 @@ FabricMemoryConfigurationSchemaView::projectOperationRow(
 }
 
 llvm::Expected<CanonicalSemanticBytes>
-FabricMemoryConfigurationSchemaView::encode(
+FabricMemoryConfigurationSchemaView::encodeLocallyValid(
     const FabricMemoryConfigurationValue &value) const {
   std::vector<std::uint8_t> bytes(
       static_cast<std::size_t>(byteCount(layout_.carrierBitCount)), 0);
@@ -1091,6 +1092,50 @@ FabricMemoryConfigurationSchemaView::encode(
     return rejected("empty Active memory configuration is not canonical");
   setBit(bytes, 0, true);
   return CanonicalSemanticBytes(std::move(bytes));
+}
+
+llvm::Expected<CanonicalSemanticBytes>
+FabricMemoryConfigurationSchemaView::encode(
+    const FabricMemoryConfigurationValue &value) const {
+  auto encoded = encodeLocallyValid(value);
+  if (!encoded || std::holds_alternative<FabricMemoryDisabled>(value))
+    return encoded;
+
+  const auto *connectivity = fabric_->memoryConnectivity(memory_);
+  if (!connectivity)
+    return rejected("memory occurrence lost its connectivity contract");
+
+  std::vector<FabricMemoryInternalConnectionUse> uses;
+  const auto &active = std::get<FabricMemoryActive>(value);
+  for (const auto &selected : active.operationRows) {
+    if (!selected)
+      continue;
+    for (const auto &source : selected->roleSources) {
+      if (!source)
+        continue;
+      const auto *internal =
+          std::get_if<FabricMemoryInternalRoleSource>(&*source);
+      if (internal)
+        uses.push_back({memory_, internal->connection,
+                        FabricMemoryInternalConnectionUseKind::Consumer});
+    }
+    for (const auto &destination : selected->roleDestinations) {
+      if (!destination)
+        continue;
+      for (FabricOrdinal connection : destination->internalConnections)
+        uses.push_back({memory_, connection,
+                        FabricMemoryInternalConnectionUseKind::Producer});
+    }
+  }
+  switch (deriveFabricMemoryInternalConnectionClosure(uses)) {
+  case FabricMemoryInternalConnectionClosure::Closed:
+    return encoded;
+  case FabricMemoryInternalConnectionClosure::Open:
+    return rejected("memory internal connection is not closed");
+  case FabricMemoryInternalConnectionClosure::MultipleProducers:
+    return rejected("memory internal connection has multiple producers");
+  }
+  llvm_unreachable("closed memory connection closure domain");
 }
 
 llvm::Expected<FabricMemoryConfigurationValue>

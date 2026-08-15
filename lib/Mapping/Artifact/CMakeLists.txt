@@ -16,6 +16,7 @@ add_library(LoomMappingArtifact
   MappingProgressAnalysis.cpp
   SpatialMappingTagAssignments.cpp
   SpatialMappingMemoryImport.cpp
+  SpatialPhysicalDemandProjection.cpp
   SystemMappingConstraintSet.cpp
   SystemMappingConstraintSetBuilder.cpp
   SystemConfiguredHardwareProjection.cpp
@@ -32,6 +33,8 @@ add_library(LoomMappingArtifact
   TechMappingCanonicalKey.cpp
   TechMappingComputeVerification.cpp
   TechMappingArtifact.cpp
+  TechMappingMemoryIngress.cpp
+  TechMappingMemoryLegality.cpp
   TechMappingMemoryProjection.cpp
 )
 

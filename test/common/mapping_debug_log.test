@@ -12,7 +12,8 @@
 # L1-COUNT-1: "event":"invocation_begin"
 # L1-NOT: "event":"negotiation_iteration"
 # L1-NOT: "event":"capacity_conflict"
-# L1: {"a_star_expansions":101
+# L1: {"event":"statistics"
+# L1-SAME: "payload":{"a_star_expansions":101
 # L1-SAME: "actions_accepted":8
 # L1-SAME: "actions_proposed":17
 # L1-SAME: "actions_rejected":6
@@ -22,7 +23,6 @@
 # L1-SAME: "candidate_rows":13
 # L1-SAME: "capacity_conflicts":4
 # L1-SAME: "closure_status":"closed"
-# L1-SAME: "event":"statistics"
 # L1-SAME: "negotiated_iterations":11
 # L1-SAME: "schema":"loom.mapping.debug.1"
 # L1-SAME: "stage":"system_pnr"
@@ -35,7 +35,7 @@
 
 # L3-COUNT-1: "event":"invocation_begin"
 # L3-COUNT-1: "event":"negotiation_iteration"
-# L3: {"capacity":1
-# L3-SAME: "event":"capacity_conflict"
+# L3: {"event":"capacity_conflict"
+# L3-SAME: "payload":{"capacity":1
 # L3-SAME: "usage":2
 # L3-COUNT-1: "event":"statistics"

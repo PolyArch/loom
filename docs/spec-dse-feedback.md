@@ -284,21 +284,19 @@ model at any point in the stack. The initial production profiles are:
 | physical implementation analysis | HardwareImplementation |
 | system simulation | Deployment, Gem5 Simulation Binding |
 
-Evaluation registry schema 2.1 owns every case, model, MetricKind,
+Evaluation registry schema 3.0 owns every case, model, MetricKind,
 FindingKind, condition-kind, capability-enum, scope-form, and related registry
 ordinal. It registers these exact case signatures used by the pre-Mapping,
 DFG-simulation, FPA, and system-simulation flows described here:
 
-Registry 2.1 is a compatible extension of 2.0. It preserves every existing
-ordinal and descriptor meaning and appends the hardware-only, learned-system-
-runtime, mapped-RTL, and three gem5-backed execution descriptors below. An exact 2.0
-reference continues to select the 2.0 catalog and cannot name an appended
-kind; there is no version alias. No 1.0 case or model descriptor reference is
-reinterpreted to accept Fabric, ConfigurationABI, or HardwareImplementation
-3.0. The `evaluation.request.1.0` and
+Registry 3.0 is the exact current catalog. Its case and model descriptors bind
+the current Fabric, ConfigurationABI, occurrence-scoped HardwareImplementation,
+Deployment, and runtime contracts. Exact 2.0 and 2.1 references are unsupported;
+they are never cloned onto the current catalog or reinterpreted as 3.0. The
+`evaluation.request.1.0` and
 `evaluation.evidence.1.0` root record shapes remain unchanged because they
 already carry exact versioned descriptor and Artifact references; newly
-constructed roots use registry-2.1 refs.
+constructed roots use registry-3.0 refs.
 
 | Case kind | Stable spelling | Ordered roles | Workload/runtime input |
 | --- | --- | --- | --- |
@@ -307,14 +305,14 @@ constructed roots use registry-2.1 refs.
 | 2 | `structured_program_functional_comparison` | `0: selected Structured Program Candidate` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
 | 3 | `canonical_dataflow_simulation` | `0: Canonical Dataflow Program` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
 | 4 | `fpa_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with an FPA prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
-| 5 | `hardware_implementation_physical` | `0: exact loom.hardware_implementation 3.0` | both forbidden |
+| 5 | `hardware_implementation_physical` | `0: exact loom.hardware_implementation 4.0` | both forbidden |
 | 6 | `system_simulation` | `0: Deployment`, `1: Gem5 Simulation Binding` | both required; the workload and runtime input are System roots coupled to the exact Deployment |
 | 7 | `cgra_simulation` | `0: Canonical Dataflow Program`, `1: Fabric`, `2: SpatialMapping` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
 | 8 | `simulation_execution_comparison` | `0: reference SimulationExecution`, `1: candidate SimulationExecution` | both forbidden; each execution's exact Request closure must resolve the same workload and runtime input |
 | 9 | `canonical_dataflow_source_functional_comparison` | `0: Canonical Dataflow Program`, `1: selected Structured Program parent` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
 | 10 | `fabric_hardware_analysis` | `0: Fabric` | both forbidden |
 | 11 | `system_runtime_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with a System Runtime prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
-| 12 | `mapped_rtl_simulation` | `0: exact loom.hardware_implementation 3.0`, `1: Deployment` | both required; the workload and runtime input are Spatial roots, and the Deployment resolves their exact Dataflow launch to one selected Spatial execution context implemented by role 0 |
+| 12 | `mapped_rtl_simulation` | `0: exact loom.hardware_implementation 4.0`, `1: Deployment` | both required; the workload and runtime input are Spatial roots, and the Deployment resolves their exact Dataflow launch to the exact SpatialCore occurrence implemented by role 0 |
 
 The matching initial model descriptors are:
 
@@ -496,7 +494,7 @@ implementation semantic identity rather than a mutable invocation option or
 another field in `RailAnalysisModelConfig`.
 
 Its resolved config-view schema 3.0 consumes exactly one typed provider binding
-from ResolvedConfig 5.0:
+from ResolvedConfig 6.0:
 
 ```text
 CadenceVoltusStaticRailProviderBinding {
@@ -614,8 +612,10 @@ controller invokes the Dataflow rewrite generator to seek an admitted D*.
 This feasibility shortcut does not alter the rewrite generator's domain. When
 that generator is invoked, every fixed rule remains eligible for every popped
 frontier Artifact, including an admitted Artifact, and vector decomposition is
-added only for the first missing actor as specified below. An incomplete
-generator result still cannot promote its retained candidates. A functional
+added only for the first missing actor as specified below. A
+`SemanticLimitReached` result retains every fully finalized candidate and may
+feed those candidates to later plan nodes, while the generator domain remains
+explicitly incomplete. A functional
 mismatch on an admitted D0 produces no feasible semantic-conformance result;
 semantics-preserving rewrites cannot be used as a fallback to repair it.
 
@@ -651,7 +651,7 @@ FindingRequest {
 
 `MetricQuery` also uses `EvaluationScope`. Standalone query serialization is
 owned by `evaluation.metric_query 1.0` and `evaluation.finding_query 1.0`;
-those wire roots carry registry-2.1 references and do not own their ordinals.
+those wire roots carry registry-3.0 references and do not own their ordinals.
 The two request sets are independent. Their total cardinality must be nonzero
 unless the selected model descriptor declares at least one output slot whose
 `Completed` cardinality is `ExactlyOne` or `OneOrMore`. In that one case the
@@ -713,7 +713,7 @@ ProviderForm =
   | ExternalPrepareImport  // tag 1
 ```
 
-Evaluation registry schema 2.1 owns the following capability enums and retains
+Evaluation registry schema 3.0 owns the following capability enums and retains
 their stable zero-based `uint32` wire tags:
 
 ```text
@@ -1284,13 +1284,20 @@ parent and payload fields are empty for MechanicalDerivation. Descriptor role,
 schema, and cardinality fields are recovered from the exact descriptor and are
 not copied into the manifest.
 
-The outer controller outcome uniquely classifies record completeness. A
-completed manifest has only completed Generate records. An `Incomplete`
-outcome names the exact `PlanNodeRef` at which execution stopped. Generate
-records before that node are completed; if the named node is a Generate node,
-its one record is incomplete; and no later plan node has an invocation record.
-An interruption at a non-Generate node does not create a Generate record for
-that node. The nested record therefore has no independent outcome tag.
+Each nested Generate record owns its completion boolean independently of its
+retained output bindings. `ProofNotEstablished` and `SemanticLimitReached`
+preserve fully finalized outputs and allow later plan nodes to consume them;
+later independent or dependent Generate records therefore may follow an
+incomplete record. Other Generate incomplete reasons stop plan traversal after
+retaining that node's valid outputs. An interruption at a non-Generate node
+does not create a Generate record for that node.
+
+A completed manifest has only completed Generate records. An `Incomplete`
+controller outcome names the blocking node when execution stopped. If all
+incompleteness was retained candidate-domain incompleteness and plan traversal
+finished, it names the first such Generate node in `PlanNodeRef` order. The
+per-record booleans remain the complete authority for which Generate domains
+were exhausted; the outer outcome is not used to infer a completed prefix.
 
 Mechanical lowering cannot be represented as an optimization decision, and a
 decision edge cannot replace an Artifact's own dependency closure. If several
@@ -1380,6 +1387,17 @@ Request consumes no new semantic work; a new replicate is a new Request and
 work unit. Worker count, wall time, license concurrency, process retry limits,
 and host resources are Execution Limits and cannot change the formal plan.
 
+For an in-process Generate occurrence, the executor passes one non-owning
+`ExecutionControlView` that mechanically combines the mutable journal stop bit
+and the policy's absolute dispatch deadline. The view is not serialized and
+does not enter run, invocation, provider, candidate, or Artifact identity.
+Providers may observe it only at their own atomic boundaries. A provider that
+observes it returns its domain-owned typed interruption with any finalized
+outputs retained; the Generate adapter maps that outcome to
+`CancelledOrTimeout`, and the execution journal records the work unit as
+`TimedOut`. Providers that do not perform long-running bounded work may ignore
+the view, but cannot reinterpret it as a semantic budget.
+
 The Structured ownership generator uses one positive
 `scope_expansion_limit` owned by its ResolvedConfig policy. Its finite scope
 domain includes the mechanically derived nearest enclosing ownership-scope
@@ -1444,10 +1462,11 @@ refund work.
 
 If the next canonical decision does not fit the remaining resolved budget, the
 generator returns `Incomplete` with reason `SemanticLimitReached`. Already
-admitted candidates are retained for audit but are not a formal completed
-candidate set and cannot be promoted. Worker count, cache hits, artifact-store
-state, or completion order cannot alter the frontier, decision order, charge,
-or outcome.
+admitted candidates are retained as fully finalized outputs and may be consumed
+by later plan nodes. The generator domain is not exhausted, and the outer
+controller remains incomplete even if those candidates later satisfy a
+selection. Worker count, cache hits, artifact-store state, or completion order
+cannot alter the frontier, decision order, charge, or outcome.
 
 The controller owns finite candidate sets as canonical sets of complete typed
 ArtifactRootReferences. They are controller-local values, not Artifacts. Every
@@ -1661,7 +1680,7 @@ is introduced.
 The built-in application-graph TechMapping generator is the corresponding
 System-composition adapter. Its descriptor has kind 21, spelling
 `mapping.application_graph_tech_mapping`, and implementation semantic identity
-`loom.mapping.application_graph_tech_mapping.generator.v2`. Its exact input
+`loom.mapping.application_graph_tech_mapping.generator.v5`. Its exact input
 slots are `dataflow: ExactlyOne`, `system_constraints: ExactlyOne`, and
 `fabric: ExactlyOne`; the constraint root must bind the same Dataflow and a
 System whose attached Module catalog contains the exact Fabric input. The
@@ -1671,10 +1690,10 @@ It derives the unique graph set reachable from the constraint root's canonical
 non-empty root-thread-launch set, then invokes the ordinary TechMapping owner
 once per graph with a singleton cover. It returns the canonical union of the
 resulting ordinary TechMapping Artifacts and mechanical lineage edges. A graph
-proven infeasible contributes no candidate; an incomplete graph invocation
-retains only already completed graph candidates under the ordinary typed
-incomplete result; invalid or internal owner failure aborts the adapter
-invocation.
+proven infeasible contributes no candidate. A finite-prefix or incomplete
+graph invocation retains its finalized candidates, marks aggregate search
+completeness, and does not suppress later independent graphs. Invalid or
+internal owner failure aborts the adapter invocation.
 
 This adapter exists because hierarchical SystemMapping selects one
 SpatialMapping for each `RootedGraphLaunchRef`; it must be able to compose
@@ -1688,9 +1707,9 @@ the ordinary TechMapping owner explicitly.
 
 The built-in root-complete Spatial PnR generator composes the next boundary in
 the same typed plan. Its implementation semantic identity is
-`loom.mapping.root_complete_spatial_pnr.generator.v9`; the direct constrained
-Spatial provider uses `loom.mapping.spatial_pnr.generator.v9`. Both identities
-select the Spatial 12.0 search semantics. It consumes the finite TechMapping
+`loom.mapping.root_complete_spatial_pnr.generator.v13`; the direct constrained
+Spatial provider uses `loom.mapping.spatial_pnr.generator.v13`. Both identities
+select the Spatial 13.0 search semantics. It consumes the finite TechMapping
 output and the same exact Fabric Artifact. Each `T` already binds one unique Canonical Dataflow
 identity, so the descriptor strictly recovers `D` from `T` instead of accepting
 a second `D` slot. It mechanically publishes the exact empty Spatial
@@ -1704,10 +1723,10 @@ does not acquire a constraint language, Mapping state, or search algorithm.
 The built-in root-complete System PnR generator composes the final Mapping
 boundary without widening the central plan. Its descriptor has kind 9,
 spelling `mapping.root_complete_system_pnr`, schema
-`loom.mapping.root_complete_system_pnr.generator.v2`, and exact input slots
+`loom.mapping.root_complete_system_pnr.generator.v6`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, and
 `fabric: ExactlyOne`. Its sole output slot is
-`system_mapping: CandidateSet<loom.mapping 5.0>, FiniteSet`; its resolved view
+`system_mapping: CandidateSet<loom.mapping 6.0>, FiniteSet`; its resolved view
 is the exact System PnR component view. The explicit Dataflow input remains
 necessary because an InstructionCore-only closure has no SpatialMapping from
 which to recover `D`, and because `D` uniquely owns the complete root-launch
@@ -1720,8 +1739,8 @@ root-free Dataflow input completes with an empty output set. The descriptor
 references the same complete PnR work-unit catalog used by the Spatial PnR
 generator: seed attempt, assignment attempt per seed, endpoint expansion,
 negotiation iteration, calibration proposal, proposal-per-level base,
-proposal-per-movable-decision, focused-closure proposal, exact-repair region
-decision, and exact-repair solver call at ordinals 0 through 9. The ordinary
+proposal-per-movable-decision, exact-repair region decision, and exact-repair
+solver call at ordinals 0 through 8. The ordinary
 System PnR owner supplies those counts; the adapter neither aggregates nor
 reclassifies them. A root-free invocation reports the same catalog with zero
 planned and consumed work. Outputs carry MechanicalDerivation lineage; the
@@ -1735,7 +1754,7 @@ not registered.
 The built-in application-scoped System PnR generator is the strict-scope
 counterpart. Its descriptor has kind 22, spelling
 `mapping.application_system_pnr`, implementation semantic identity
-`loom.mapping.application_system_pnr.generator.v1`, and exact input slots
+`loom.mapping.application_system_pnr.generator.v5`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, `fabric: ExactlyOne`, and
 `system_constraints: ExactlyOne`. The constraint root must bind exactly that
 Dataflow and Fabric System. Its non-empty `root_thread_launches` is the sole
@@ -2096,9 +2115,11 @@ obligations and retained finalized material but no formal selected output.
 
 ### Operational Observations
 
-`loom.dse.invocation_manifest 1.1` is a compatible extension of that Artifact
-family's 1.0 schema. It
-adds one optional nonsemantic `InvocationOperationalObservations` block:
+`loom.dse.invocation_manifest 1.2` is the current compatible extension of that
+Artifact family. Version 1.1 added one optional nonsemantic
+`InvocationOperationalObservations` block to 1.0. Version 1.2 admits incomplete
+Generate records before later executed plan nodes while preserving the same
+per-record completion field and canonical encoding:
 
 ```text
 InvocationOperationalObservations {
@@ -2270,13 +2291,13 @@ Candidate generation preserves domain semantics while using one central plan.
 Generator capability is registered through a static typed descriptor rather
 than a persistent Artifact:
 
-Candidate-generator descriptor registry schema 2.0 is a new exact registry
-namespace. Its descriptor reference uses the shared owner-local registry
-framing with `loom.candidate_generator_descriptor`, version 2.0, and the
-generator kind. Registry 2.0 adds `ProviderForm` to the canonical descriptor
-projection and admits exact HardwareImplementation 3.0 slots. No registry-1.0
-descriptor reference is reinterpreted; an existing semantic generator that
-adopts either change receives the corresponding registry-2.0 reference.
+Candidate-generator descriptor registry schema 3.0 is the exact current
+registry namespace. Its descriptor reference uses the shared owner-local
+registry framing with `loom.candidate_generator_descriptor`, version 3.0, and
+the generator kind. Registry 3.0 admits exact occurrence-scoped
+HardwareImplementation 4.0 slots and assigns kind 16 to the per-SpatialCore
+portable RTL generator. Exact 1.0 and 2.0 references are unsupported and are
+never reinterpreted as current descriptors.
 
 ```text
 CandidateGeneratorDescriptor {
@@ -2459,9 +2480,9 @@ not a persistent invocation outcome. A completed result satisfies every
 descriptor-owned minimum and maximum cardinality. An incomplete result obeys
 every maximum, may remain below a minimum, and carries only fully finalized
 retained outputs. The controller validates either variant, derives the one
-outer manifest outcome, and writes a nested Generate record with no outcome
-tag. Invalid typed inputs, a violated provider contract, or malformed returned
-data are errors rather than another incomplete reason.
+outer manifest outcome, and records the exact nested Generate completion
+boolean. Invalid typed inputs, a violated provider contract, or malformed
+returned data are errors rather than another incomplete reason.
 
 `work_summary` is one dense row per descriptor-owned work unit, outside the
 outcome variant and never duplicated inside it. The descriptor is the sole
@@ -2520,7 +2541,7 @@ different provider.
 
 Hardware DSE begins from at least one exact seed: a finalized builtin Fabric,
 a user-supplied finalized Fabric, or one output of the template generator. It
-never begins from an empty mutable graph. Candidate-generator registry 2.0
+never begins from an empty mutable graph. Candidate-generator registry 3.0
 assigns these initial hardware and parameter-training kinds without changing
 kinds 0 through 11:
 
@@ -2530,7 +2551,7 @@ kinds 0 through 11:
 | 13 | `spatial_topology_rewrite` | finalized `fabric.module` children |
 | 14 | `spatial_microarchitecture_rewrite` | finalized `fabric.module` children |
 | 15 | `system_composition_rewrite` | finalized `fabric.system` children |
-| 16 | `portable_system_rtl` | finalized architecture-only portable RTL `loom.hardware_implementation 3.0` children |
+| 16 | `portable_spatial_core_rtl` | one finalized architecture-only portable RTL `loom.hardware_implementation 4.0` child per AccCore occurrence in the input System |
 | 17 | `fpa_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.fpa", 3.0, 0)` |
 | 18 | `system_runtime_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.system_runtime", 1.0, 0)` |
 | 19 | `joint_dataflow_frontier` | finalized Canonical Dataflow children produced for an explicit bounded Dataflow/System frontier |
@@ -2732,9 +2753,9 @@ a cross-domain set naturally yield application-specific, domain-specific, and
 general designs without a scope-mode enum.
 
 Hardware generator and evaluator descriptors introduced by this contract
-accept or produce exact `loom.hardware_implementation 3.0` slots. A registry
+accept or produce exact `loom.hardware_implementation 4.0` slots. A registry
 must allocate a new descriptor version or exact reference when changing an
-existing slot from the 1.0 root shape to 3.0 or when changing an existing
+existing slot from an earlier root shape to 4.0 or when changing an existing
 provider from `InProcess` to `ExternalPrepareImport`; it cannot reinterpret a
 published descriptor reference. EvaluationRequest and EvaluationEvidence root
 shapes do not change merely because their exact case signature admits the new
@@ -3221,10 +3242,11 @@ Only these stable semantic anchors belong at this boundary:
 - Equal admitted closure and local binding produce byte-identical bundles;
   `prepare`, caller execution, and `import` remain independently callable and
   expose no Job, scheduler, or process handle.
-- InvocationManifest 1.0 remains importable; 1.1 round-trips absent and present
-  operational observations canonically, rejects unknown plan-node references,
-  duplicate or unsorted rows, zero context counts, and arithmetic overflow,
-  and never changes formal selection or Evidence.
+- InvocationManifest 1.0 and 1.1 remain importable; 1.2 round-trips absent and
+  present operational observations plus retained incomplete Generate
+  frontiers canonically, rejects unknown plan-node references, duplicate or
+  unsorted rows, zero context counts, and arithmetic overflow, and never
+  changes formal selection or Evidence.
 - Candidate-generator binding identity is derived from the exact descriptor
   and canonical config view, and a caller-authored replacement is rejected.
 - An external generator publishes only complete descriptor output Artifacts;

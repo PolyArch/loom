@@ -5,6 +5,7 @@
 #include "Fabric/IR/TemporalPeResourceContract.h"
 #include "Fabric/IR/UsePatternValue.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -52,6 +53,17 @@ using EdgeKey = std::pair<RefBytes, RefBytes>;
 
 RefBytes bytes(const ::loom::fabric::FabricPhysicalTraversalRef &reference) {
   return ::loom::fabric::canonicalFabricBytes(reference);
+}
+
+RefBytes requesterGroupBytes(
+    const ::loom::fabric::FabricTraversalRequesterGroupView &group) {
+  RefBytes result = ::loom::fabric::canonicalFabricBytes(group.owner);
+  const auto kind = static_cast<std::uint32_t>(group.kind);
+  for (int shift = 24; shift >= 0; shift -= 8)
+    result.push_back(static_cast<std::uint8_t>(kind >> shift));
+  for (int shift = 56; shift >= 0; shift -= 8)
+    result.push_back(static_cast<std::uint8_t>(group.ordinal >> shift));
+  return result;
 }
 
 template <typename Ref>
@@ -176,12 +188,25 @@ storageContract(const ::loom::fabric::FabricArtifactView &fabric,
 
 llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::mapping::TechMappingView &tech,
     const ::loom::fabric::FabricArtifactView &fabric,
     const ::loom::mapping::SpatialMappingView &spatial,
     llvm::ArrayRef<::dataflow::GraphRef> mappedGraphs,
     llvm::ArrayRef<CgraPhysicalUseClientKind> physicalUseClients) {
   if (physicalUseClients.size() != spatial.resourceUses().size())
     return invalid("CGRA transport physical-use client coverage is incomplete");
+  auto operandQueueGroups =
+      ::loom::mapping::deriveSpatialPeOperandQueueMatchGroups(
+          tech, fabric, spatial.computeBindings(), spatial.routeTrees(),
+          spatial.resourceUses(), spatial.physicalTagSegments());
+  if (!operandQueueGroups)
+    return operandQueueGroups.takeError();
+  auto packedSwitchRows =
+      ::loom::mapping::deriveSpatialTemporalSwitchPackedRows(
+          fabric, spatial.routeTrees(), spatial.resourceUses(),
+          spatial.physicalTagSegments());
+  if (!packedSwitchRows)
+    return packedSwitchRows.takeError();
   std::map<RefBytes, ::loom::fabric::FabricPhysicalTraversalRef> selected;
   for (const auto &route : spatial.routeTrees()) {
     collect(route.localTraversal, selected);
@@ -189,6 +214,11 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       collect(node.incomingTraversal, selected);
     for (const auto &sink : route.sinks)
       collect(sink.localTraversal, selected);
+  }
+  for (const auto &transfer : spatial.registerFifoTransfers()) {
+    selected.try_emplace(bytes(transfer.writeTraversal),
+                         transfer.writeTraversal);
+    selected.try_emplace(bytes(transfer.readTraversal), transfer.readTraversal);
   }
 
   std::map<RefBytes, const ::loom::fabric::FabricPhysicalTraversalView *>
@@ -198,10 +228,29 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       return invalid("Fabric contains duplicate physical traversal references");
 
   CgraTransportPlan result;
+  result.operandQueueActivations.reserve(operandQueueGroups->size());
+  for (const auto &group : *operandQueueGroups) {
+    auto matchCount =
+        checkedU32(group.matches.size(), "CGRA PE operand match count");
+    if (!matchCount)
+      return matchCount.takeError();
+    const std::uint64_t matchOffset = result.operandQueueMatches.size();
+    for (const auto &match : group.matches)
+      result.operandQueueMatches.push_back(
+          {match.sink, match.queue, match.allocationUnit,
+           match.entryCapacity});
+    result.operandQueueActivations.push_back(
+        {group.logicalNet, group.ingress, group.tag, matchOffset, *matchCount});
+  }
   std::vector<std::vector<std::uint64_t>> routeNodeTags;
+  std::vector<std::vector<std::uint64_t>> routeNodeSegments;
   routeNodeTags.reserve(spatial.routeTrees().size());
-  for (const auto &route : spatial.routeTrees())
+  routeNodeSegments.reserve(spatial.routeTrees().size());
+  for (const auto &route : spatial.routeTrees()) {
     routeNodeTags.emplace_back(route.nodes.size(), invalidCgraTransportOrdinal);
+    routeNodeSegments.emplace_back(route.nodes.size(),
+                                   invalidCgraTransportOrdinal);
+  }
   std::vector<std::uint64_t> nextTagSegment(spatial.routeTrees().size(), 0);
   result.physicalTags.reserve(spatial.physicalTagSegments().size());
   for (const auto &segment : spatial.physicalTagSegments()) {
@@ -225,7 +274,29 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
               invalidCgraTransportOrdinal)
         return invalid("CGRA Physical Tag segment repeats a RouteTree node");
       routeNodeTags[segment.routeTreeOrdinal][node] = tagOrdinal;
+      routeNodeSegments[segment.routeTreeOrdinal][node] =
+          segment.segmentOrdinal;
     }
+  }
+  struct SelectedLocalTransfer final {
+    const ::loom::mapping::SpatialRegisterFifoTransferView *transfer = nullptr;
+    std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
+  };
+  std::map<EdgeKey, SelectedLocalTransfer> selectedLocalTransfers;
+  for (const auto &transfer : spatial.registerFifoTransfers()) {
+    auto producerKey = dataflowBytes(dataflow, transfer.logicalNet);
+    auto sinkKey = dataflowBytes(dataflow, transfer.sink);
+    if (!producerKey)
+      return producerKey.takeError();
+    if (!sinkKey)
+      return sinkKey.takeError();
+    const std::uint64_t tagOrdinal = result.physicalTags.size();
+    result.physicalTags.push_back({transfer.tag});
+    if (!selectedLocalTransfers
+             .try_emplace(EdgeKey{std::move(*producerKey), std::move(*sinkKey)},
+                          SelectedLocalTransfer{&transfer, tagOrdinal})
+             .second)
+      return invalid("CGRA register-FIFO transfer edge is duplicated");
   }
   struct ProducedUseBuilder final {
     ::dataflow::CanonicalGraphProducerEndpointRef endpoint;
@@ -282,6 +353,8 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
   }
   std::map<RefBytes, std::uint64_t> selectedOrdinals;
   std::map<StorageKey, std::uint64_t> storageOrdinals;
+  std::map<RefBytes, std::uint64_t> activationInstances;
+  std::uint64_t nextActivationInstance = 0;
   result.traversals.reserve(selected.size());
   for (const auto &[key, reference] : selected) {
     auto found = physical.find(key);
@@ -319,14 +392,94 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     if (found->second->impliedUses.size() >
         std::numeric_limits<std::uint32_t>::max())
       return invalid("selected traversal implied-use count exceeds u32");
-    for (const auto &use : found->second->impliedUses)
-      result.traversalUses.push_back(
-          {use.pattern, use.activationGroup, invalidCgraTransportOrdinal});
+    const auto *switchPayload =
+        std::get_if<::loom::fabric::FabricSwitchTraversalPayload>(
+            &reference.payload);
+    const bool temporalSwitch =
+        switchPayload && fabric.switchSchedule(switchPayload->owner) ==
+                             ::fabric::Schedule::Temporal;
+    if (!temporalSwitch)
+      for (const auto &use : found->second->impliedUses) {
+        const RefBytes requesterKey = requesterGroupBytes(use.requesterGroup);
+        auto [instance, inserted] = activationInstances.try_emplace(
+            requesterKey, nextActivationInstance);
+        if (inserted)
+          ++nextActivationInstance;
+        result.traversalUses.push_back({use.pattern, use.requesterGroup,
+                                        instance->second,
+                                        invalidCgraTransportOrdinal});
+      }
     const std::uint64_t ordinal = result.traversals.size();
     selectedOrdinals.emplace(key, ordinal);
     result.traversals.push_back(
         {reference, reference.kind(), storageKind, storageOrdinal, useOffset,
-         static_cast<std::uint32_t>(found->second->impliedUses.size())});
+         temporalSwitch
+             ? 0
+             : static_cast<std::uint32_t>(found->second->impliedUses.size())});
+  }
+
+  using TemporalActivationMemberKey =
+      std::tuple<std::uint64_t, std::uint64_t, RefBytes>;
+  struct TemporalActivationSlice final {
+    std::uint64_t offset = 0;
+    std::uint32_t count = 0;
+  };
+  std::map<TemporalActivationMemberKey, TemporalActivationSlice>
+      temporalActivationSlices;
+  for (const auto &row : *packedSwitchRows) {
+    std::map<
+        ::loom::fabric::FabricOrdinal,
+        std::vector<
+            const ::loom::mapping::SpatialTemporalSwitchRouteSignatureView *>>
+        byInput;
+    for (const auto &signature : row.signatures)
+      byInput[signature.input].push_back(&signature);
+    for (const auto &[input, signatures] : byInput) {
+      std::map<RefBytes, ::loom::fabric::FabricPhysicalTraversalRef>
+          activationTraversals;
+      for (const auto *signature : signatures)
+        for (const auto &traversal : signature->traversals)
+          activationTraversals.try_emplace(bytes(traversal), traversal);
+      const std::uint64_t useOffset = result.traversalUses.size();
+      const std::uint64_t activationInstance = nextActivationInstance++;
+      for (const auto &[traversalKey, traversal] : activationTraversals) {
+        auto physicalTraversal = physical.find(traversalKey);
+        if (physicalTraversal == physical.end())
+          return invalid(
+              "Temporal switch activation traversal is absent from Fabric");
+        for (const auto &use : physicalTraversal->second->impliedUses) {
+          if (use.requesterGroup.kind !=
+                  ::loom::fabric::FabricTraversalRequesterGroupKind::
+                      SwitchRequester ||
+              use.requesterGroup.owner !=
+                  ::loom::fabric::FabricInventoryOwnerRef::of(row.occurrence) ||
+              use.requesterGroup.ordinal != input)
+            return invalid(
+                "Temporal switch traversal has the wrong requester group");
+          result.traversalUses.push_back({use.pattern, use.requesterGroup,
+                                          activationInstance,
+                                          invalidCgraTransportOrdinal});
+        }
+      }
+      auto useCount = checkedU32(result.traversalUses.size() - useOffset,
+                                 "CGRA switch activation use count");
+      if (!useCount)
+        return useCount.takeError();
+      if (*useCount == 0)
+        return invalid("Temporal switch activation has no resource use");
+      const TemporalActivationSlice slice{useOffset, *useCount};
+      for (const auto *signature : signatures)
+        for (const auto &traversal : signature->traversals)
+          if (!temporalActivationSlices
+                   .try_emplace(
+                       TemporalActivationMemberKey{signature->routeTreeOrdinal,
+                                                   signature->segmentOrdinal,
+                                                   bytes(traversal)},
+                       slice)
+                   .second)
+            return invalid(
+                "Temporal switch route member has multiple activations");
+    }
   }
 
   const auto ordinalOf =
@@ -367,6 +520,34 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
       auto traversal = ordinalOf(node.incomingTraversal);
       if (!traversal)
         return traversal.takeError();
+      std::uint64_t impliedUseOffset = invalidCgraTransportOrdinal;
+      std::uint32_t impliedUseCount = 0;
+      if (node.incomingTraversal) {
+        const CgraSelectedTraversalPlan &selectedTraversal =
+            result.traversals[*traversal];
+        impliedUseOffset = selectedTraversal.impliedUseOffset;
+        impliedUseCount = selectedTraversal.impliedUseCount;
+        const auto *sw =
+            std::get_if<::loom::fabric::FabricSwitchTraversalPayload>(
+                &node.incomingTraversal->payload);
+        if (sw &&
+            fabric.switchSchedule(sw->owner) == ::fabric::Schedule::Temporal) {
+          const std::uint64_t segment =
+              routeNodeSegments[routeOrdinal][nodeOrdinal];
+          if (segment == invalidCgraTransportOrdinal)
+            return invalid(
+                "Temporal switch route node has no Physical Tag segment");
+          auto activation =
+              temporalActivationSlices.find(TemporalActivationMemberKey{
+                  routeOrdinal, segment, bytes(*node.incomingTraversal)});
+          if (activation == temporalActivationSlices.end())
+            return invalid(
+                "Temporal switch route node has no packed-row activation");
+          impliedUseOffset = activation->second.offset;
+          impliedUseCount = activation->second.count;
+          temporalActivationSlices.erase(activation);
+        }
+      }
       std::uint32_t parent = std::numeric_limits<std::uint32_t>::max();
       if (node.parentOrdinal) {
         auto checkedParent =
@@ -375,8 +556,9 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
           return checkedParent.takeError();
         parent = *checkedParent;
       }
-      result.routeNodes.push_back(
-          {parent, *traversal, routeNodeTags[routeOrdinal][nodeOrdinal]});
+      result.routeNodes.push_back({parent, *traversal,
+                                   routeNodeTags[routeOrdinal][nodeOrdinal],
+                                   impliedUseOffset, impliedUseCount});
     }
     for (const auto &sink : route.sinks) {
       auto node = checkedU32(sink.nodeOrdinal, "CGRA route sink node ordinal");
@@ -396,6 +578,9 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     result.routes.push_back({route.logicalNet, *graph, *sourceTraversal,
                              nodeOffset, *nodeCount, sinkOffset, *sinkCount});
   }
+  if (!temporalActivationSlices.empty())
+    return invalid(
+        "Temporal switch packed-row activation has no RouteTree member");
 
   std::set<std::uint64_t> coveredGraphs;
   for (const auto &graph : mappedGraphs)
@@ -404,8 +589,12 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     ::dataflow::CanonicalGraphProducerEndpointRef producer;
     ::dataflow::GraphRef graph;
     std::vector<::dataflow::CanonicalGraphConsumerEndpointRef> sinks;
+    std::uint64_t writeTraversalOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t readTraversalOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
   };
   std::map<RefBytes, LocalTransferBuilder> localTransfers;
+  std::set<EdgeKey> consumedLocalTransfers;
   if (llvm::Error error = dataflow.forEachGraphEdge(
           [&](const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
               const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer)
@@ -427,11 +616,36 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
             transferConsumers.insert(*consumerKey);
             auto [position, inserted] = localTransfers.try_emplace(
                 *producerKey, LocalTransferBuilder{producer, *graph, {}});
-            (void)inserted;
+            const EdgeKey edge{*producerKey, *consumerKey};
+            auto selectedLocal = selectedLocalTransfers.find(edge);
+            if (selectedLocal != selectedLocalTransfers.end()) {
+              if (!inserted || !position->second.sinks.empty())
+                return invalid("CGRA register-FIFO transfer is not an exact "
+                               "single-consumer edge");
+              auto write =
+                  ordinalOf(selectedLocal->second.transfer->writeTraversal);
+              auto read =
+                  ordinalOf(selectedLocal->second.transfer->readTraversal);
+              if (!write)
+                return write.takeError();
+              if (!read)
+                return read.takeError();
+              position->second.writeTraversalOrdinal = *write;
+              position->second.readTraversalOrdinal = *read;
+              position->second.physicalTagOrdinal =
+                  selectedLocal->second.physicalTagOrdinal;
+              consumedLocalTransfers.insert(edge);
+            } else if (!inserted && position->second.writeTraversalOrdinal !=
+                                        invalidCgraTransportOrdinal) {
+              return invalid("CGRA register-FIFO producer has another local "
+                             "consumer");
+            }
             position->second.sinks.push_back(consumer);
             return llvm::Error::success();
           }))
     return std::move(error);
+  if (consumedLocalTransfers.size() != selectedLocalTransfers.size())
+    return invalid("CGRA register-FIFO transfer is absent from Dataflow");
   result.localTransfers.reserve(localTransfers.size());
   for (auto &[key, transfer] : localTransfers) {
     (void)key;
@@ -443,7 +657,9 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     for (auto &sink : transfer.sinks)
       result.localTransferSinks.push_back({std::move(sink)});
     result.localTransfers.push_back(
-        {transfer.producer, transfer.graph, sinkOffset, *sinkCount});
+        {transfer.producer, transfer.graph, sinkOffset, *sinkCount,
+         transfer.writeTraversalOrdinal, transfer.readTraversalOrdinal,
+         transfer.physicalTagOrdinal});
   }
 
   for (const ::dataflow::CanonicalActorView &actor : dataflow.actors()) {

@@ -5,6 +5,7 @@
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/InvocationManifest.h"
 #include "DSE/MappingCandidateGenerator.h"
+#include "DSE/Plan.h"
 #include "DSE/Promotion.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
@@ -79,6 +80,29 @@ void requireSuccess(llvm::Error error) {
   if (error)
     fail(llvm::toString(std::move(error)));
 }
+
+const loom::dse::CompletedDsePlanExecution &requireRetainedSemanticLimit(
+    const loom::dse::DsePlanExecutionOutcome &outcome,
+    std::uint64_t nodeOrdinal) {
+  const auto *incomplete =
+      std::get_if<loom::dse::IncompleteDsePlanExecution>(&outcome);
+  const auto *reason =
+      incomplete ? std::get_if<loom::dse::CandidateGeneratorIncompleteReason>(
+                       &incomplete->reason())
+                 : nullptr;
+  if (!incomplete || incomplete->nodeOrdinal() != nodeOrdinal || !reason ||
+      *reason != loom::dse::CandidateGeneratorIncompleteReason::
+                     SemanticLimitReached ||
+      incomplete->executionStopped())
+    fail("DSE plan lost retained semantic-limit closure state");
+  return incomplete->availableExecution();
+}
+
+struct ImmediateStopSource final {
+  static bool query(const void *) { return true; }
+
+  loom::ExecutionControlView control() const { return {this, query}; }
+};
 
 class TemporaryDirectory final {
 public:
@@ -240,7 +264,7 @@ loom::ResolvedConfig buildSpatialResolvedConfig() {
       loom::ResolvedPnrViolationKind::UnroutedObligation,
       loom::ResolvedPnrViolationKind::CapacityOveruse,
   };
-  resolved.dse.spatialPnr.objectiveSelection = {0, 0, {}};
+  resolved.dse.spatialPnr.objectiveSelection = {0, 0};
   auto &search = resolved.dse.spatialPnr.search;
   search.initializer.seedAttemptCount = 2;
   search.actionProposal = {0, 1, 0};
@@ -302,6 +326,43 @@ void requireSpatialWorkSummary(
     fail("Spatial PnR omitted a required executed search domain");
 }
 
+const std::vector<loom::ArtifactRootReference> &
+techMappingOutputs(const loom::dse::CandidateGeneratorProviderResult &outcome) {
+  const std::vector<loom::dse::CandidateGeneratorOutputBinding> *bindings =
+      nullptr;
+  if (const auto *completed =
+          std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+              &outcome.outcome)) {
+    bindings = &completed->outputBindings;
+  } else if (const auto *incomplete =
+                 std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+                     &outcome.outcome);
+             incomplete && incomplete->reason ==
+                               loom::dse::CandidateGeneratorIncompleteReason::
+                                   SemanticLimitReached) {
+    bindings = &incomplete->retainedOutputBindings;
+  } else {
+    std::string diagnostic;
+    llvm::raw_string_ostream stream(diagnostic);
+    if (incomplete)
+      stream << " outcome="
+             << loom::dse::toString(
+                    loom::dse::DsePlanIncompleteReason{incomplete->reason})
+             << " retained_outputs="
+             << incomplete->retainedOutputBindings.size();
+    else
+      stream << " outcome=unknown";
+    for (const auto &[ordinal, work] : llvm::enumerate(outcome.workSummary))
+      stream << " work[" << ordinal << "]={planned=" << work.planned
+             << ",consumed=" << work.consumed << '}';
+    fail("root-complete TechMapping fixture did not publish a usable prefix:" +
+         diagnostic);
+  }
+  if (bindings->size() != 1)
+    fail("root-complete TechMapping fixture published the wrong output shape");
+  return bindings->front().artifacts;
+}
+
 loom::ArtifactRootReference
 generateTechMapping(const loom::ArtifactRootReference &dataflow,
                     const loom::ArtifactRootReference &fabric,
@@ -318,13 +379,10 @@ generateTechMapping(const loom::ArtifactRootReference &dataflow,
           config));
   auto outcome =
       take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
-  const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
-          &outcome.outcome);
-  if (!completed || completed->outputBindings.size() != 1 ||
-      completed->outputBindings.front().artifacts.size() != 1)
+  const auto &outputs = techMappingOutputs(outcome);
+  if (outputs.size() != 1)
     fail("root-complete TechMapping fixture did not publish one candidate");
-  return completed->outputBindings.front().artifacts.front();
+  return outputs.front();
 }
 
 std::vector<loom::ArtifactRootReference>
@@ -344,19 +402,28 @@ generateTechMappingSet(const loom::ArtifactRootReference &dataflow,
           config));
   auto outcome =
       take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
-  const auto *completed =
-      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
-          &outcome.outcome);
-  if (!completed || completed->outputBindings.size() != 1 ||
-      completed->outputBindings.front().artifacts.size() < 2)
+  const auto &outputs = techMappingOutputs(outcome);
+  if (outputs.size() < 2)
     fail("TechMapping fixture did not publish two distinct candidates");
-  return completed->outputBindings.front().artifacts;
+  return outputs;
+}
+
+loom::ArtifactRootReference
+normalizedTimingProfile(const loom::ArtifactRootReference &fabricReference,
+                        loom::ArtifactStore &store) {
+  auto fabric =
+      take(loom::fabric::importEntireFabricRoot(fabricReference, store));
+  auto profile =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fabric.view()));
+  return take(loom::fabric::publishFabricPhysicalTimingProfile(profile, store));
 }
 
 struct Fixture final {
   dataflow::CanonicalDataflowArtifact dataflow;
   loom::ArtifactRootReference dataflowReference;
   loom::fabric::FinalizedFabricRoot fabric;
+  loom::ArtifactRootReference physicalTimingProfile;
   loom::ArtifactRootReference techMappingReference;
 };
 
@@ -366,10 +433,11 @@ Fixture buildFixture(mlir::MLIRContext &context, loom::ArtifactStore &store,
   auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflow, store));
   auto fabric = loom::test::buildSpatialCore(store);
+  auto physicalTiming = normalizedTimingProfile(fabric.reference(), store);
   auto techMappingReference =
       generateTechMapping(dataflowReference, fabric.reference(), store, blobs);
   return {std::move(dataflow), std::move(dataflowReference), std::move(fabric),
-          std::move(techMappingReference)};
+          std::move(physicalTiming), std::move(techMappingReference)};
 }
 
 loom::ArtifactRootReference
@@ -379,7 +447,7 @@ generateSpatialMapping(const loom::ArtifactRootReference &techMapping,
                        const loom::BlobStore &blobs) {
   auto inputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
-          {techMapping}, fabric));
+          {techMapping}, fabric, normalizedTimingProfile(fabric, store)));
   auto binding =
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           buildSingleCandidateSpatialConfig()));
@@ -407,7 +475,7 @@ std::vector<loom::ArtifactRootReference> generateSpatialMappingSet(
   auto config = take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
   auto inputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
-          techMappings, fabric));
+          techMappings, fabric, normalizedTimingProfile(fabric, store)));
   auto binding =
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           config));
@@ -451,11 +519,15 @@ GeneratedSpatialFeedbackFixture generateSpatialFeedbackFixture(
       take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
           dataflowView, tech.view(), fabric.view(), store));
   auto config = buildFeedbackSpatialConfig();
+  auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fabric.view()));
   auto problem = take(loom::pnr::freezeSpatialPnrProblem(
-      dataflowView, tech.view(), fabric.view(), config, constraints.view()));
+      dataflowView, tech.view(), fabric.view(), physicalTiming, config,
+      constraints.view()));
   auto outcome = loom::pnr::generateSpatialMappings(
-      {dataflowView, tech.view(), fabric.view(), config, constraints.view(),
-       store});
+      {dataflowView, tech.view(), fabric.view(), physicalTiming, config,
+       constraints.view(), store});
   if (const auto *generated =
           std::get_if<loom::pnr::GeneratedSpatialMappings>(&outcome)) {
     for (const auto &reference : generated->candidates) {
@@ -598,19 +670,19 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
           loom::dse::rootCompleteSpatialPnrCandidateGeneratorDescriptor()
               .reference(),
           {loom::dse::PlanOutputRef{0, 0},
-           loom::dse::ExactPlanArtifacts{{fixture.fabric.reference()}}},
+           loom::dse::ExactPlanArtifacts{{fixture.fabric.reference()}},
+           loom::dse::ExactPlanArtifacts{{fixture.physicalTimingProfile}}},
           spatialConfig.canonicalViewBytes().vec(),
           spatialConfig.digest()},
   };
   auto view = take(loom::dse::projectResolvedDseConfigView(resolved));
   auto outcome = take(loom::dse::executeDsePlan(view, store, blobs));
-  const auto *completed =
-      std::get_if<loom::dse::CompletedDsePlanExecution>(&outcome);
-  if (!completed || completed->generateInvocations().size() != 2 ||
-      completed->resolve(loom::dse::PlanOutputRef{0, 0}).size() != 1 ||
-      completed->resolve(loom::dse::PlanOutputRef{1, 0}).size() != 1)
+  const auto &completed = requireRetainedSemanticLimit(outcome, 0);
+  if (completed.generateInvocations().size() != 2 ||
+      completed.resolve(loom::dse::PlanOutputRef{0, 0}).size() != 1 ||
+      completed.resolve(loom::dse::PlanOutputRef{1, 0}).size() != 1)
     fail("root-complete Mapping plan did not publish T then SpatialMapping");
-  const auto &spatialInvocation = completed->generateInvocations().back();
+  const auto &spatialInvocation = completed.generateInvocations().back();
   if (spatialInvocation.lineageEdges.size() != 1)
     fail("root-complete Spatial invocation lost mechanical lineage");
   const auto &edge = spatialInvocation.lineageEdges.front();
@@ -621,9 +693,9 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
 
   auto dataflow = take(fixture.dataflow.view());
   auto tech = take(loom::mapping::importTechMapping(
-      completed->resolve(loom::dse::PlanOutputRef{0, 0}).front(), store));
+      completed.resolve(loom::dse::PlanOutputRef{0, 0}).front(), store));
   auto spatial = take(loom::mapping::importSpatialMapping(
-      completed->resolve(loom::dse::PlanOutputRef{1, 0}).front(), store));
+      completed.resolve(loom::dse::PlanOutputRef{1, 0}).front(), store));
   if (spatial.view().dataflowIdentity() != dataflow.identity() ||
       spatial.view().fabricIdentity() != fixture.fabric.view().identity() ||
       spatial.view().computeBindings().empty() ||
@@ -639,8 +711,8 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
 
   auto wrongProfileInputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
-          {completed->resolve(loom::dse::PlanOutputRef{1, 0}).front()},
-          fixture.fabric.reference()));
+          {completed.resolve(loom::dse::PlanOutputRef{1, 0}).front()},
+          fixture.fabric.reference(), fixture.physicalTimingProfile));
   auto spatialBinding =
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           spatialConfig));
@@ -654,17 +726,15 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
     fail("wrong Mapping profile rejection lost its owner diagnostic");
 
   auto repeated = take(loom::dse::executeDsePlan(view, store, blobs));
-  const auto *repeatedCompleted =
-      std::get_if<loom::dse::CompletedDsePlanExecution>(&repeated);
-  if (!repeatedCompleted ||
-      repeatedCompleted->resolve(loom::dse::PlanOutputRef{0, 0}) !=
-          completed->resolve(loom::dse::PlanOutputRef{0, 0}) ||
-      repeatedCompleted->resolve(loom::dse::PlanOutputRef{1, 0}) !=
-          completed->resolve(loom::dse::PlanOutputRef{1, 0}))
+  const auto &repeatedCompleted = requireRetainedSemanticLimit(repeated, 0);
+  if (repeatedCompleted.resolve(loom::dse::PlanOutputRef{0, 0}) !=
+          completed.resolve(loom::dse::PlanOutputRef{0, 0}) ||
+      repeatedCompleted.resolve(loom::dse::PlanOutputRef{1, 0}) !=
+          completed.resolve(loom::dse::PlanOutputRef{1, 0}))
     fail("root-complete Mapping plan is not deterministic");
 
-  const auto firstWork = completed->generateWorkSummaries();
-  const auto repeatedWork = repeatedCompleted->generateWorkSummaries();
+  const auto firstWork = completed.generateWorkSummaries();
+  const auto repeatedWork = repeatedCompleted.generateWorkSummaries();
   if (firstWork.size() != repeatedWork.size())
     fail("deterministic replay changed production work summary width");
   for (std::size_t invocation = 0; invocation != firstWork.size(); ++invocation)
@@ -676,7 +746,7 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
   const std::vector<loom::dse::GenerateInvocationWorkSummary> expectedWork(
       repeatedWork.begin(), repeatedWork.end());
   const loom::ArtifactRootReference selectedMapping =
-      repeatedCompleted->resolve(loom::dse::PlanOutputRef{1, 0}).front();
+      repeatedCompleted.resolve(loom::dse::PlanOutputRef{1, 0}).front();
   const loom::ArtifactIdentity storedConfig =
       take(store.put(loom::ResolvedConfig::artifactSchema,
                      loom::canonicalResolvedConfigBytes(resolved)));
@@ -691,7 +761,13 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       store));
   auto manifest = take(loom::dse::InvocationManifest::get(
       std::move(closure), 0, std::nullopt, resolved, manifestRecords,
-      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store));
+      loom::dse::InvocationIncomplete{
+          0,
+          loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached,
+          {},
+          {selectedMapping},
+          {}},
+      store));
   auto reorderedClosure = take(loom::dse::DseRunClosure::get(
       take(loom::dse::DseProducerSemanticBuildIdentity::get(
           "loom.test.root_complete_spatial_pnr.v1")),
@@ -699,7 +775,13 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       store));
   auto reorderedManifest = take(loom::dse::InvocationManifest::get(
       std::move(reorderedClosure), 0, std::nullopt, resolved, manifestRecords,
-      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store));
+      loom::dse::InvocationIncomplete{
+          0,
+          loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached,
+          {},
+          {selectedMapping},
+          {}},
+      store));
   if (reorderedManifest.canonicalBytes() != manifest.canonicalBytes())
     fail("semantic-input authoring order changed production Manifest bytes");
   auto adopted = take(loom::dse::adoptInvocationManifest(
@@ -743,17 +825,22 @@ void descriptorAndEmptySetAreClosed() {
           loom::dse::rootCompleteSpatialPnrCandidateGeneratorKind ||
       descriptor.determinism !=
           loom::dse::CandidateGeneratorDeterminism::Deterministic ||
-      descriptor.inputSlots.size() != 2 || descriptor.outputSlots.size() != 1 ||
-      descriptor.workUnits.size() != 10 ||
+      descriptor.inputSlots.size() != 3 || descriptor.outputSlots.size() != 1 ||
+      descriptor.workUnits.size() != 9 ||
       descriptor.inputSlots[0].semanticRole != "tech_mapping" ||
       descriptor.inputSlots[0].cardinality !=
           loom::dse::PlanValueCardinality::FiniteSet ||
       descriptor.inputSlots[1].semanticRole != "fabric" ||
       descriptor.inputSlots[1].cardinality !=
           loom::dse::PlanValueCardinality::ExactlyOne ||
+      descriptor.inputSlots[2].semanticRole != "physical_timing_profile" ||
+      descriptor.inputSlots[2].schema !=
+          &loom::fabric::fabricPhysicalTimingProfileArtifactSchema ||
+      descriptor.inputSlots[2].cardinality !=
+          loom::dse::PlanValueCardinality::ExactlyOne ||
       descriptor.resolvedConfigView.schemaDescriptorBytes !=
           config.schemaDescriptorBytes())
-    fail("root-complete Spatial descriptor is not closed over exact T/F");
+    fail("root-complete Spatial descriptor is not closed over exact T/F/P");
   if (descriptor.workUnits.size() !=
       loom::dse::pnrCandidateGeneratorWorkUnits.size())
     fail("root-complete Spatial descriptor copied the PnR work-unit catalog");
@@ -773,9 +860,11 @@ void descriptorAndEmptySetAreClosed() {
     fail("cannot create BlobStore directory: " + error.message());
   const loom::BlobStore blobs(blobPath);
   auto fabric = loom::test::buildSpatialCore(store);
+  const auto physicalTiming =
+      normalizedTimingProfile(fabric.reference(), store);
   auto inputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
-          {}, fabric.reference()));
+          {}, fabric.reference(), physicalTiming));
   auto binding =
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           config));
@@ -813,7 +902,8 @@ void finiteSetTraversesEveryCanonicalTechMapping() {
     std::swap(techMappings[0], techMappings[1]);
   auto inputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
-          techMappings, fixture.fabric.reference()));
+          techMappings, fixture.fabric.reference(),
+          fixture.physicalTimingProfile));
   auto binding =
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           buildSingleCandidateSpatialConfig()));
@@ -860,10 +950,13 @@ void candidateWorkerCountPreservesFormalResult() {
       take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
           dataflow, tech.view(), fixture.fabric.view(), store));
   auto config = buildSpatialConfig();
+  auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fixture.fabric.view()));
 
   const auto run = [&](std::uint32_t workerCount) {
     return loom::pnr::generateSpatialMappings(
-        {dataflow, tech.view(), fixture.fabric.view(), config,
+        {dataflow, tech.view(), fixture.fabric.view(), physicalTiming, config,
          constraints.view(), store, workerCount});
   };
   const auto single = run(1);
@@ -892,41 +985,71 @@ void candidateWorkerCountPreservesFormalResult() {
   }
 }
 
-void unavailableNegotiationIsTypedIncomplete() {
+void interruptionReturnsTypedSpatialSnapshot() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   llvm::SmallString<128> blobPath(directory.path());
   llvm::sys::path::append(blobPath, "blobs");
-  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
-    fail("cannot create BlobStore directory: " + error.message());
+  requireSuccess(
+      llvm::errorCodeToError(llvm::sys::fs::create_directories(blobPath)));
   const loom::BlobStore blobs(blobPath);
   mlir::MLIRContext context = makeContext();
   Fixture fixture = buildFixture(context, store, blobs);
+  auto dataflow = take(fixture.dataflow.view());
+  auto tech = take(
+      loom::mapping::importTechMapping(fixture.techMappingReference, store));
+  auto constraints =
+      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+          dataflow, tech.view(), fixture.fabric.view(), store));
+  auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fixture.fabric.view()));
+  const ImmediateStopSource stop;
+  const auto outcome = loom::pnr::generateSpatialMappings(
+      {dataflow, tech.view(), fixture.fabric.view(), physicalTiming,
+       buildSpatialConfig(), constraints.view(), store, 1, stop.control()});
+  const auto *interrupted =
+      std::get_if<loom::pnr::InterruptedSpatialPnrGeneration>(&outcome);
+  if (!interrupted ||
+      interrupted->snapshot.stage !=
+          loom::pnr::SpatialPnrInterruptionStage::InputAdmission ||
+      interrupted->snapshot.frontier.seedAttemptSlots != 0 ||
+      interrupted->snapshot.bestSelectedRank ||
+      interrupted->snapshot.closureResidual.violationValues ||
+      interrupted->snapshot.closureResidual.retainedCandidates != 0)
+    fail("Spatial interruption did not preserve its typed empty frontier");
+
+  auto inputs =
+      take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
+          {fixture.techMappingReference}, fixture.fabric.reference(),
+          fixture.physicalTimingProfile));
+  auto binding =
+      take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
+          buildSpatialConfig()));
+  const auto provider = take(loom::dse::invokeCandidateGenerator(
+      inputs, binding, store, blobs, stop.control()));
+  const auto *incomplete =
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &provider.outcome);
+  if (!incomplete ||
+      incomplete->reason !=
+          loom::dse::CandidateGeneratorIncompleteReason::CancelledOrTimeout)
+    fail("Spatial interruption did not map to a cancelled provider outcome");
+}
+
+void unavailableNegotiationFailsClosedAtConfigProjection() {
   loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
   resolved.dse.spatialPnr.search.routing.negotiation =
       loom::ResolvedDualSubgradientPolicy{
           loom::ResolvedDualDirectionKernel::ProjectedSigned,
           std::nullopt,
           {loom::ResolvedDualStepScheduleKind::Constant, 1, 0, 0, 0}};
-  auto config = take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
-  auto inputs =
-      take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
-          {fixture.techMappingReference}, fixture.fabric.reference()));
-  auto binding =
-      take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
-          config));
-  auto outcome =
-      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
-  const auto *incomplete =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
-          &outcome.outcome);
-  if (!incomplete ||
-      incomplete->reason !=
-          loom::dse::CandidateGeneratorIncompleteReason::Unsupported ||
-      incomplete->retainedOutputBindings.size() != 1 ||
-      !incomplete->retainedOutputBindings.front().artifacts.empty() ||
-      !incomplete->lineageEdges.empty())
-    fail("unavailable routing kernel did not remain typed Unsupported");
+  auto config = loom::pnr::projectResolvedSpatialPnrConfigView(resolved);
+  if (config)
+    fail("unavailable routing kernel passed configuration projection");
+  const std::string diagnostic = llvm::toString(config.takeError());
+  if (!llvm::StringRef(diagnostic).contains("pnr_config_unsupported"))
+    fail("unavailable routing kernel lost its fail-closed diagnostic");
 }
 
 void initializerSemanticLimitIsTypedIncomplete() {
@@ -945,7 +1068,8 @@ void initializerSemanticLimitIsTypedIncomplete() {
   auto config = take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
   auto inputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
-          {fixture.techMappingReference}, fixture.fabric.reference()));
+          {fixture.techMappingReference}, fixture.fabric.reference(),
+          fixture.physicalTimingProfile));
   auto binding =
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           config));
@@ -975,9 +1099,12 @@ void foreignFabricIsRejectedBeforeSearch() {
   mlir::MLIRContext context = makeContext();
   Fixture fixture = buildFixture(context, store, blobs);
   auto foreignFabric = loom::test::buildSpatialCore(store, 64);
+  const auto foreignTiming =
+      normalizedTimingProfile(foreignFabric.reference(), store);
   auto inputs =
       take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
-          {fixture.techMappingReference}, foreignFabric.reference()));
+          {fixture.techMappingReference}, foreignFabric.reference(),
+          foreignTiming));
   auto binding =
       take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
           buildSpatialConfig()));
@@ -1087,7 +1214,8 @@ void spatialMappingPromotionExecutesExactCgraCase() {
           loom::dse::rootCompleteSpatialPnrCandidateGeneratorDescriptor()
               .reference(),
           {loom::dse::PlanOutputRef{0, 0},
-           loom::dse::ExactPlanArtifacts{{fixture.fabric.reference()}}},
+           loom::dse::ExactPlanArtifacts{{fixture.fabric.reference()}},
+           loom::dse::ExactPlanArtifacts{{fixture.physicalTimingProfile}}},
           spatialConfig.canonicalViewBytes().vec(),
           spatialConfig.digest()},
       loom::dse::PromotePlanNodeDefinition{
@@ -1108,12 +1236,11 @@ void spatialMappingPromotionExecutesExactCgraCase() {
   };
   auto planView = take(loom::dse::projectResolvedDseConfigView(resolved));
   auto planOutcome = take(loom::dse::executeDsePlan(planView, store, blobs));
-  const auto *planCompleted =
-      std::get_if<loom::dse::CompletedDsePlanExecution>(&planOutcome);
-  if (!planCompleted || planCompleted->generateInvocations().size() != 2 ||
-      planCompleted->resolve({1, 0}).size() != 1 ||
-      planCompleted->resolve({2, 0}) != planCompleted->resolve({1, 0}) ||
-      planCompleted->resolve({2, 1}).size() != 1)
+  const auto &planExecution = requireRetainedSemanticLimit(planOutcome, 0);
+  if (planExecution.generateInvocations().size() != 2 ||
+      planExecution.resolve({1, 0}).size() != 1 ||
+      planExecution.resolve({2, 0}) != planExecution.resolve({1, 0}) ||
+      planExecution.resolve({2, 1}).size() != 1)
     fail("central Mapping plan did not close M to CGRA Evidence");
 }
 
@@ -1308,15 +1435,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
   };
   auto planView = take(loom::dse::projectResolvedDseConfigView(planConfig));
   auto planOutcome = take(loom::dse::executeDsePlan(planView, store, blobs));
-  const auto *completed =
-      std::get_if<loom::dse::CompletedDsePlanExecution>(&planOutcome);
-  if (!completed) {
-    const auto &incomplete =
-        std::get<loom::dse::IncompleteDsePlanExecution>(planOutcome);
-    fail("central Mapping feedback plan stopped at node " +
-         llvm::Twine(incomplete.nodeOrdinal()) + " with " +
-         loom::dse::toString(incomplete.reason()));
-  }
+  const auto *completed = &requireRetainedSemanticLimit(planOutcome, 2);
   if (completed->generateInvocations().size() != 2)
     fail("central Mapping feedback plan changed its Generate invocation count");
   if (completed->resolve({0, 0}) !=
@@ -1492,13 +1611,11 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
   llvm::consumeError(ambiguous.takeError());
 
   auto repeated = take(loom::dse::executeDsePlan(planView, store, blobs));
-  const auto *repeatedCompleted =
-      std::get_if<loom::dse::CompletedDsePlanExecution>(&repeated);
-  if (!repeatedCompleted ||
-      repeatedCompleted->resolve({0, 0}) != completed->resolve({0, 0}) ||
-      repeatedCompleted->resolve({0, 1}) != completed->resolve({0, 1}) ||
-      repeatedCompleted->resolve({1, 0}) != completed->resolve({1, 0}) ||
-      repeatedCompleted->resolve({2, 0}) != completed->resolve({2, 0}))
+  const auto &repeatedExecution = requireRetainedSemanticLimit(repeated, 2);
+  if (repeatedExecution.resolve({0, 0}) != completed->resolve({0, 0}) ||
+      repeatedExecution.resolve({0, 1}) != completed->resolve({0, 1}) ||
+      repeatedExecution.resolve({1, 0}) != completed->resolve({1, 0}) ||
+      repeatedExecution.resolve({2, 0}) != completed->resolve({2, 0}))
     fail("finite Mapping feedback plan is not deterministic");
 }
 
@@ -1740,8 +1857,9 @@ int main(int argc, char **argv) {
           .Case("finite-set-traversal",
                 finiteSetTraversesEveryCanonicalTechMapping)
           .Case("worker-invariance", candidateWorkerCountPreservesFormalResult)
+          .Case("typed-interruption", interruptionReturnsTypedSpatialSnapshot)
           .Case("unavailable-negotiation",
-                unavailableNegotiationIsTypedIncomplete)
+                unavailableNegotiationFailsClosedAtConfigProjection)
           .Case("initializer-semantic-limit",
                 initializerSemanticLimitIsTypedIncomplete)
           .Case("foreign-fabric-rejection", foreignFabricIsRejectedBeforeSearch)

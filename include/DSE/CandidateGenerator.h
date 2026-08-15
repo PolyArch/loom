@@ -5,6 +5,7 @@
 #include "Common/BlobDigest.h"
 #include "Common/BlobStore.h"
 #include "Common/ComponentViewDigest.h"
+#include "Common/ExecutionControl.h"
 #include "Common/ProviderForm.h"
 #include "DSE/PlanValue.h"
 #include "Evaluation/ModelParameterBundle.h"
@@ -30,7 +31,7 @@ namespace loom::dse {
 std::uint32_t defaultCandidateWorkerCount();
 
 inline constexpr ArtifactSchemaDescriptor candidateGeneratorDescriptorSchema{
-    "loom.candidate_generator_descriptor", SchemaVersion{2, 0}};
+    "loom.candidate_generator_descriptor", SchemaVersion{3, 0}};
 
 class CandidateGeneratorKind final {
 public:
@@ -213,7 +214,7 @@ struct CandidateGeneratorDescriptor final {
   const CandidateGeneratorOwnerLineagePayloadContract *ownerLineagePayload =
       nullptr;
   /// The closed provider form of this descriptor, recovered from the exact
-  /// registry-2.0 descriptor reference before any implementation lookup.
+  /// registry-3.0 descriptor reference before any implementation lookup.
   ProviderForm providerForm;
 
   CandidateGeneratorDescriptorRef reference() const;
@@ -322,7 +323,7 @@ using CandidateGeneratorProviderFunction =
     llvm::Expected<CandidateGeneratorProviderResult> (*)(
         llvm::ArrayRef<CandidateGeneratorInputBinding>,
         const ResolvedCandidateGeneratorBinding &, const ArtifactStore &,
-        const BlobStore &);
+        const BlobStore &, const ExecutionControlView &);
 
 /// The external prepare callable of one ExternalPrepareImport generator. It
 /// materializes one deterministic finalized bundle and never executes a
@@ -386,6 +387,12 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeCandidateGenerator(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                          const ResolvedCandidateGeneratorBinding &binding,
                          const ArtifactStore &store, const BlobStore &blobs);
+
+llvm::Expected<CandidateGeneratorProviderResult>
+invokeCandidateGenerator(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+                         const ResolvedCandidateGeneratorBinding &binding,
+                         const ArtifactStore &store, const BlobStore &blobs,
+                         const ExecutionControlView &executionControl);
 
 llvm::Error validateCandidateGeneratorWorkSummary(
     CandidateGeneratorDescriptorRef descriptor,

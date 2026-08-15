@@ -3,10 +3,12 @@
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Identity/FabricHandshake.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "PnR/EndpointRoutingTopology.h"
 #include "PnR/FrozenConstraintIndex.h"
 #include "PnR/MappingObjective.h"
@@ -31,6 +33,7 @@ namespace detail {
 class SpatialBindingRelationModel;
 class SpatialMemoryConstraintModel;
 class SpatialRouteConstraintModel;
+class SpatialRecurrenceTimingIndex;
 class SpatialSchedulePressureIndex;
 class SpatialTagConstraintModel;
 } // namespace detail
@@ -57,6 +60,7 @@ struct FrozenSpatialMemoryPlacement final {
   PnrIndex realization = 0;
   ::loom::fabric::FabricMemoryOccurrenceRef memory;
   ::fabric::Schedule schedule = ::fabric::Schedule::Spatial;
+  std::optional<std::uint64_t> residentContextCount;
 };
 
 struct FrozenSpatialMemoryActorBinding final {
@@ -70,6 +74,10 @@ struct FrozenSpatialMemoryRealization final {
   ::loom::fabric::FabricMemoryEngineTemplateRef engine;
   PnrIndex actorOffset = 0;
   PnrIndex actorCount = 0;
+  PnrIndex externalIngressOffset = 0;
+  PnrIndex externalIngressCount = 0;
+  PnrIndex internalConnectionOffset = 0;
+  PnrIndex internalConnectionCount = 0;
   PnrIndex placementOffset = 0;
   PnrIndex placementCount = 0;
 };
@@ -98,6 +106,15 @@ public:
   llvm::ArrayRef<FrozenSpatialMemoryActorBinding> memoryActors() const {
     return memoryActors_;
   }
+  llvm::ArrayRef<::loom::mapping::TechMemoryExternalIngressView>
+  memoryExternalIngresses() const {
+    return memoryExternalIngresses_;
+  }
+  llvm::ArrayRef<
+      ::loom::fabric::FabricMemoryEngineTemplateInternalConnectionRef>
+  memoryInternalConnections() const {
+    return memoryInternalConnections_;
+  }
   llvm::ArrayRef<PnrIndex> memoryActorRealizations() const {
     return memoryActorRealizations_;
   }
@@ -114,6 +131,10 @@ private:
       computeInstructionContexts_;
   std::vector<FrozenSpatialMemoryRealization> memoryRealizations_;
   std::vector<FrozenSpatialMemoryActorBinding> memoryActors_;
+  std::vector<::loom::mapping::TechMemoryExternalIngressView>
+      memoryExternalIngresses_;
+  std::vector<::loom::fabric::FabricMemoryEngineTemplateInternalConnectionRef>
+      memoryInternalConnections_;
   std::vector<PnrIndex> memoryActorRealizations_;
   std::vector<FrozenSpatialMemoryPlacement> memoryPlacements_;
 
@@ -191,6 +212,9 @@ struct FrozenSpatialMemoryDispatchOption final {
   std::optional<::loom::fabric::FabricUsePatternRef> serviceUsePattern;
   PnrIndex serviceRegionOffset = 0;
   PnrIndex serviceRegionCount = 0;
+  /// Exact accepted-operation to retirement bound of the selected local
+  /// service. Manager and unbounded local targets retain no proof.
+  std::optional<std::uint64_t> maxIssueToRetireCycles;
 };
 
 struct FrozenSpatialMemoryDispatchDomain final {
@@ -321,9 +345,16 @@ enum class FrozenSpatialAttachmentOwnerKind : std::uint32_t {
 struct FrozenSpatialAttachmentOption final {
   PnrIndex endpoint = 0;
   std::optional<PnrIndex> localTraversal;
+  ::loom::mapping::SpatialDurableProgressBoundaryKind progressBoundary =
+      ::loom::mapping::SpatialDurableProgressBoundaryKind::None;
   FrozenSpatialAttachmentOwnerKind ownerKind =
       FrozenSpatialAttachmentOwnerKind::PlacementDomain;
   PnrIndex owner = 0;
+  /// Fabric-derived enqueue unit when every resident context available to this
+  /// option projects the concrete FU input onto the same shared service. An
+  /// absent value means either no Temporal operand queue or a context-dedicated
+  /// unit already separated by the resident-context relation.
+  std::optional<std::uint32_t> sharedOperandEnqueueUnit;
 };
 
 struct FrozenSpatialGraphBoundary final {
@@ -395,9 +426,35 @@ struct FrozenSpatialTerminalBinding final {
 
 struct FrozenSpatialLogicalNet final {
   ::dataflow::CanonicalGraphProducerEndpointRef producer;
+  std::uint32_t payloadWidthBits = 0;
   PnrIndex sinkOffset = 0;
   PnrIndex sinkCount = 0;
 };
+
+struct FrozenSpatialExternalSinkPrerequisite final {
+  PnrIndex sink = 0;
+
+  friend bool operator==(const FrozenSpatialExternalSinkPrerequisite &lhs,
+                         const FrozenSpatialExternalSinkPrerequisite &rhs) {
+    return lhs.sink == rhs.sink;
+  }
+};
+
+struct FrozenSpatialInternalMemoryConnectionPrerequisite final {
+  PnrIndex memoryRealization = 0;
+  PnrIndex internalEdge = 0;
+
+  friend bool
+  operator==(const FrozenSpatialInternalMemoryConnectionPrerequisite &lhs,
+             const FrozenSpatialInternalMemoryConnectionPrerequisite &rhs) {
+    return lhs.memoryRealization == rhs.memoryRealization &&
+           lhs.internalEdge == rhs.internalEdge;
+  }
+};
+
+using FrozenSpatialProgressPrerequisite =
+    std::variant<FrozenSpatialExternalSinkPrerequisite,
+                 FrozenSpatialInternalMemoryConnectionPrerequisite>;
 
 class FrozenSpatialTransferIndex final {
 public:
@@ -415,14 +472,15 @@ public:
   llvm::ArrayRef<FrozenSpatialTerminalBinding> logicalNetSinkBindings() const {
     return logicalNetSinkBindings_;
   }
-  /// CSR keyed by the global logical-net sink ordinal. Each value is a
-  /// sink-local prerequisite ordinal of the same multicast net. A dependent
-  /// sink must not backpressure that prerequisite through an unbuffered atomic
-  /// replication branch.
+  /// CSR keyed by the global logical-net sink ordinal. Each value is either an
+  /// external sink of the same multicast net or an exact realization-internal
+  /// memory connection. A dependent sink must not backpressure that typed
+  /// prerequisite through an unbuffered atomic replication branch.
   llvm::ArrayRef<PnrIndex> sinkProgressDependencyOffsets() const {
     return sinkProgressDependencyOffsets_;
   }
-  llvm::ArrayRef<PnrIndex> sinkProgressDependencies() const {
+  llvm::ArrayRef<FrozenSpatialProgressPrerequisite>
+  sinkProgressDependencies() const {
     return sinkProgressDependencies_;
   }
 
@@ -432,10 +490,57 @@ private:
   std::vector<FrozenSpatialTerminalBinding> logicalNetSourceBindings_;
   std::vector<FrozenSpatialTerminalBinding> logicalNetSinkBindings_;
   std::vector<PnrIndex> sinkProgressDependencyOffsets_;
-  std::vector<PnrIndex> sinkProgressDependencies_;
+  std::vector<FrozenSpatialProgressPrerequisite> sinkProgressDependencies_;
 
   friend class FrozenSpatialTransferIndexBuilder;
   friend class FrozenSpatialPortIndexBuilder;
+};
+
+/// One exact Temporal PE register-FIFO disposition admitted by a pair of
+/// compute placements. The traversal ordinals point into the frozen routing
+/// graph so capacity and handshake projections consume the same physical
+/// paths as strict Mapping import.
+struct FrozenSpatialRegisterFifoTransferOption final {
+  PnrIndex logicalNet = 0;
+  PnrIndex producerRealization = 0;
+  PnrIndex consumerRealization = 0;
+  PnrIndex producerPlacement = 0;
+  PnrIndex consumerPlacement = 0;
+  ::loom::fabric::FabricPeOccurrenceRef pe;
+  ::loom::fabric::FabricOrdinal registerFifo = 0;
+  PnrIndex writeTraversal = 0;
+  PnrIndex readTraversal = 0;
+  llvm::APInt tag = llvm::APInt(1, 0);
+};
+
+struct FrozenSpatialRegisterFifoTransferDomain final {
+  PnrIndex optionOffset = 0;
+  PnrIndex optionCount = 0;
+};
+
+/// Factorized local-transfer alternative domains keyed by logical net.
+/// External routing is the implicit fallback and is therefore not duplicated
+/// as an option record.
+class FrozenSpatialLocalTransferIndex final {
+public:
+  llvm::ArrayRef<FrozenSpatialRegisterFifoTransferDomain> domains() const {
+    return domains_;
+  }
+  llvm::ArrayRef<FrozenSpatialRegisterFifoTransferOption> options() const {
+    return options_;
+  }
+  llvm::ArrayRef<FrozenSpatialRegisterFifoTransferOption>
+  options(PnrIndex logicalNet) const {
+    const auto &domain = domains_[logicalNet];
+    return llvm::ArrayRef(options_).slice(domain.optionOffset,
+                                          domain.optionCount);
+  }
+
+private:
+  std::vector<FrozenSpatialRegisterFifoTransferDomain> domains_;
+  std::vector<FrozenSpatialRegisterFifoTransferOption> options_;
+
+  friend class FrozenSpatialLocalTransferIndexBuilder;
 };
 
 enum class FrozenSpatialGrantPolicyKind : std::uint32_t {
@@ -484,6 +589,8 @@ struct FrozenSpatialUsePattern final {
   std::uint32_t releaseEvent = 0;
   std::optional<FrozenSpatialResourceCommit> commit;
   PnrIndex timingContract = 0;
+  std::uint32_t releaseLatencyCycles = 0;
+  std::uint32_t minimumInitiationIntervalCycles = 1;
   PnrIndex claimOffset = 0;
   PnrIndex claimCount = 0;
   PnrIndex transactionOffset = 0;
@@ -586,6 +693,8 @@ struct FrozenSpatialResourceTimeEnvelope final {
   PnrIndex segmentOffset = 0;
   PnrIndex segmentCount = 0;
   std::uint64_t capacityOveruse = 0;
+  std::uint64_t releaseLatencyCycles = 0;
+  std::uint64_t minimumInitiationIntervalCycles = 1;
 };
 
 struct FrozenSpatialMemoryServicePatternEnvelope final {
@@ -710,13 +819,19 @@ struct FrozenSpatialTraversal final {
   PnrIndex resourceStateCount = 0;
   PnrIndex routeClaimOffset = 0;
   PnrIndex routeClaimCount = 0;
+  std::uint32_t architecturalLatencyCycles = 0;
+  std::uint32_t releaseLatencyCycles = 0;
+  std::uint32_t minimumInitiationIntervalCycles = 1;
+  std::uint64_t physicalDelayQuanta = 0;
+  ::loom::fabric::FabricPhysicalTimingBoundaryKind physicalTimingBoundary =
+      ::loom::fabric::FabricPhysicalTimingBoundaryKind::Combinational;
 };
 
-/// One dense, route-selected claim key. The activation group is retained only
+/// One dense, route-selected claim key. The requester group is retained only
 /// for cold verification and diagnostics. Candidate hot paths use the ordinal
 /// of this record and never compare persistent Fabric references.
 struct FrozenSpatialRouteClaim final {
-  ::loom::fabric::FabricTraversalActivationGroupView activationGroup;
+  ::loom::fabric::FabricTraversalRequesterGroupView requesterGroup;
   PnrIndex capacityDimension = 0;
   std::uint32_t amount = 0;
   std::uint64_t qCost = 0;
@@ -778,6 +893,25 @@ public:
   const FrozenSpatialTagContinuityIndex &tagContinuity() const {
     return tagContinuity_;
   }
+  std::uint64_t requiredCombinationalDelayQuanta() const {
+    return requiredCombinationalDelayQuanta_;
+  }
+  const ComponentViewDigest::Storage &physicalTimingProfileDigestBytes() const {
+    return physicalTimingProfileDigestBytes_;
+  }
+  ::loom::fabric::FabricPhysicalTimingProfileKind
+  physicalTimingProfileKind() const {
+    return physicalTimingProfileKind_;
+  }
+  llvm::StringRef physicalTimingProviderIdentity() const {
+    return physicalTimingProviderIdentity_;
+  }
+  llvm::StringRef physicalTimingTechnologyIdentity() const {
+    return physicalTimingTechnologyIdentity_;
+  }
+  llvm::StringRef physicalTimingCharacterizationIdentity() const {
+    return physicalTimingCharacterizationIdentity_;
+  }
 
 private:
   FrozenEndpointRoutingTopology topology_;
@@ -792,6 +926,13 @@ private:
   std::vector<PnrIndex> traversalArcOffsets_;
   std::vector<PnrIndex> traversalArcs_;
   FrozenSpatialTagContinuityIndex tagContinuity_;
+  std::uint64_t requiredCombinationalDelayQuanta_ = 0;
+  ComponentViewDigest::Storage physicalTimingProfileDigestBytes_{};
+  ::loom::fabric::FabricPhysicalTimingProfileKind physicalTimingProfileKind_ =
+      ::loom::fabric::FabricPhysicalTimingProfileKind::NormalizedHeuristic;
+  std::string physicalTimingProviderIdentity_;
+  std::string physicalTimingTechnologyIdentity_;
+  std::string physicalTimingCharacterizationIdentity_;
 
   friend class FrozenSpatialPnrProblemBuilder;
 };
@@ -812,6 +953,25 @@ struct FrozenSpatialHandshakeAllTraversalGroup final {
   PnrIndex fragment = 0;
 };
 
+struct FrozenSpatialSwitchHandshakeTraversalSelection final {
+  PnrIndex traversal = 0;
+  PnrIndex fragmentOffset = 0;
+  PnrIndex fragmentCount = 0;
+};
+
+/// One possible Mapping-derived `(resident row, input)` activation in a
+/// Temporal switch. The exact traversal subset is selected by the candidate;
+/// the frozen relation stores only Fabric-owned fragment incidences.
+struct FrozenSpatialSwitchHandshakeActivation final {
+  PnrIndex matchDomain = 0;
+  ::loom::fabric::FabricOrdinal row = 0;
+  ::loom::fabric::FabricOrdinal input = 0;
+  PnrIndex baseFragmentOffset = 0;
+  PnrIndex baseFragmentCount = 0;
+  PnrIndex traversalSelectionOffset = 0;
+  PnrIndex traversalSelectionCount = 0;
+};
+
 struct FrozenSpatialMemoryOperationHandshakeDomain final {
   PnrIndex placement = 0;
   PnrIndex actor = 0;
@@ -828,6 +988,9 @@ struct FrozenSpatialMemoryOperationHandshakePlan final {
   bool temporalResident = false;
   PnrIndex fragmentOffset = 0;
   PnrIndex fragmentCount = 0;
+  /// Accepted operation to memory-service issue. Absence means the selected
+  /// operation-port contract did not publish an architectural issue event.
+  std::optional<std::uint32_t> issueLatencyCycles;
 };
 
 /// One immutable, cache-oriented flattening of the Fabric-owned handshake
@@ -885,6 +1048,20 @@ public:
   llvm::ArrayRef<PnrIndex> traversalAllGroups() const {
     return traversalAllGroups_;
   }
+  llvm::ArrayRef<FrozenSpatialSwitchHandshakeActivation>
+  switchActivations() const {
+    return switchActivations_;
+  }
+  llvm::ArrayRef<PnrIndex> switchActivationBaseFragments() const {
+    return switchActivationBaseFragments_;
+  }
+  llvm::ArrayRef<FrozenSpatialSwitchHandshakeTraversalSelection>
+  switchTraversalSelections() const {
+    return switchTraversalSelections_;
+  }
+  llvm::ArrayRef<PnrIndex> switchTraversalFragments() const {
+    return switchTraversalFragments_;
+  }
   llvm::ArrayRef<PnrIndex> computePlacementFragmentOffsets() const {
     return computePlacementFragmentOffsets_;
   }
@@ -923,6 +1100,11 @@ private:
   std::vector<PnrIndex> allTraversalGroupWitnesses_;
   std::vector<PnrIndex> traversalAllGroupOffsets_;
   std::vector<PnrIndex> traversalAllGroups_;
+  std::vector<FrozenSpatialSwitchHandshakeActivation> switchActivations_;
+  std::vector<PnrIndex> switchActivationBaseFragments_;
+  std::vector<FrozenSpatialSwitchHandshakeTraversalSelection>
+      switchTraversalSelections_;
+  std::vector<PnrIndex> switchTraversalFragments_;
   std::vector<PnrIndex> computePlacementFragmentOffsets_;
   std::vector<PnrIndex> computePlacementFragments_;
   std::vector<FrozenSpatialMemoryOperationHandshakeDomain>
@@ -985,6 +1167,9 @@ public:
   }
   const FrozenSpatialMemoryIndex &memory() const { return memory_; }
   const FrozenSpatialTransferIndex &transfers() const { return transfers_; }
+  const FrozenSpatialLocalTransferIndex &localTransfers() const {
+    return localTransfers_;
+  }
   const FrozenSpatialPortIndex &ports() const { return ports_; }
   const FrozenSpatialResourceIndex &resources() const { return resources_; }
   const FrozenSpatialCapacityIndex &capacity() const { return capacity_; }
@@ -993,8 +1178,11 @@ public:
   const detail::SpatialSchedulePressureIndex &schedulePressure() const {
     return *schedulePressure_;
   }
-  const ::loom::mapping::MappingProgressClosure &progressClosure() const {
-    return progressClosure_;
+  const detail::SpatialRecurrenceTimingIndex &recurrenceTiming() const {
+    return *recurrenceTiming_;
+  }
+  const ::loom::mapping::MappingDataflowProgressBasis &progressBasis() const {
+    return progressBasis_;
   }
   const detail::SpatialBindingRelationModel &bindingRelations() const {
     return *bindingRelations_;
@@ -1019,12 +1207,15 @@ private:
       FrozenConstraintIndex constraints,
       FrozenSpatialRealizationIndex realizations,
       FrozenSpatialMemoryIndex memory, FrozenSpatialTransferIndex transfers,
+      FrozenSpatialLocalTransferIndex localTransfers,
       FrozenSpatialPortIndex ports, FrozenSpatialResourceIndex resources,
       FrozenSpatialCapacityIndex capacity, FrozenSpatialRoutingGraph routing,
       FrozenSpatialHandshakeIndex handshake,
       std::shared_ptr<const detail::SpatialSchedulePressureIndex>
           schedulePressure,
-      ::loom::mapping::MappingProgressClosure progressClosure,
+      std::shared_ptr<const detail::SpatialRecurrenceTimingIndex>
+          recurrenceTiming,
+      ::loom::mapping::MappingDataflowProgressBasis progressBasis,
       std::shared_ptr<const detail::SpatialBindingRelationModel>
           bindingRelations,
       std::shared_ptr<const detail::SpatialMemoryConstraintModel>
@@ -1042,11 +1233,13 @@ private:
         workBudget_(std::move(workBudget)),
         constraints_(std::move(constraints)),
         realizations_(std::move(realizations)), memory_(std::move(memory)),
-        transfers_(std::move(transfers)), ports_(std::move(ports)),
+        transfers_(std::move(transfers)),
+        localTransfers_(std::move(localTransfers)), ports_(std::move(ports)),
         resources_(std::move(resources)), capacity_(std::move(capacity)),
         routing_(std::move(routing)), handshake_(std::move(handshake)),
         schedulePressure_(std::move(schedulePressure)),
-        progressClosure_(progressClosure),
+        recurrenceTiming_(std::move(recurrenceTiming)),
+        progressBasis_(progressBasis),
         bindingRelations_(std::move(bindingRelations)),
         memoryConstraints_(std::move(memoryConstraints)),
         tagConstraints_(std::move(tagConstraints)),
@@ -1063,13 +1256,16 @@ private:
   FrozenSpatialRealizationIndex realizations_;
   FrozenSpatialMemoryIndex memory_;
   FrozenSpatialTransferIndex transfers_;
+  FrozenSpatialLocalTransferIndex localTransfers_;
   FrozenSpatialPortIndex ports_;
   FrozenSpatialResourceIndex resources_;
   FrozenSpatialCapacityIndex capacity_;
   FrozenSpatialRoutingGraph routing_;
   FrozenSpatialHandshakeIndex handshake_;
   std::shared_ptr<const detail::SpatialSchedulePressureIndex> schedulePressure_;
-  ::loom::mapping::MappingProgressClosure progressClosure_;
+  std::shared_ptr<const detail::SpatialRecurrenceTimingIndex>
+      recurrenceTiming_;
+  ::loom::mapping::MappingDataflowProgressBasis progressBasis_;
   std::shared_ptr<const detail::SpatialBindingRelationModel> bindingRelations_;
   std::shared_ptr<const detail::SpatialMemoryConstraintModel>
       memoryConstraints_;
@@ -1087,6 +1283,26 @@ llvm::Expected<FrozenSpatialPnrProblemHandle> freezeSpatialPnrProblem(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
+    const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
+    const ResolvedPnrConfigView &config,
+    const ::loom::mapping::SpatialMappingConstraintSetView &constraints);
+
+/// Convenience entry for the explicitly target-neutral builtin profile.
+/// Target providers must call the overload above so their exact profile and
+/// digest enter the frozen dependency closure.
+llvm::Expected<FrozenSpatialPnrProblemHandle> freezeSpatialPnrProblem(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::mapping::TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ResolvedPnrConfigView &config,
+    const ::loom::mapping::SpatialMappingConstraintSetView &constraints);
+
+llvm::Error revalidateFrozenSpatialPnrCacheHit(
+    const FrozenSpatialPnrProblem &problem,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::mapping::TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
     const ResolvedPnrConfigView &config,
     const ::loom::mapping::SpatialMappingConstraintSetView &constraints);
 

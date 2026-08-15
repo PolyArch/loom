@@ -6,7 +6,7 @@
 namespace loom::mapping {
 
 inline constexpr ArtifactSchemaDescriptor mappingArtifactSchema{
-    "loom.mapping", SchemaVersion{5, 0}};
+    "loom.mapping", SchemaVersion{6, 0}};
 
 } // namespace loom::mapping
 

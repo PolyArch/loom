@@ -1,6 +1,7 @@
 #include "CgraMemoryRuntime.h"
 
 #include "Dataflow/IR/DataflowServiceSchema.h"
+#include "Fabric/Identity/FabricMemoryInternalConnection.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -16,6 +17,10 @@ namespace {
 
 constexpr std::uint64_t invalidBinding =
     std::numeric_limits<std::uint64_t>::max();
+constexpr std::size_t memoryRoleCount =
+    static_cast<std::size_t>(
+        ::dataflow::semantics::ServiceValueRole::Completion) +
+    1;
 
 llvm::Error invalid(llvm::Twine message) {
   return llvm::createStringError(
@@ -109,6 +114,26 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
   std::vector<ActorBinding> bindings;
   std::vector<std::uint64_t> bindingBySemanticActor(execution.actorPlans.size(),
                                                     invalidBinding);
+  std::vector<bool> internalProducerValidated(
+      plan.memory.internalConnections.size(), false);
+  std::vector<bool> internalConsumerValidated(
+      plan.memory.internalConnections.size(), false);
+  std::vector<::loom::fabric::FabricMemoryInternalConnectionUse> closureUses;
+  for (std::size_t ordinal = 0;
+       ordinal != plan.memory.internalConnections.size(); ++ordinal) {
+    const CgraMemoryInternalConnectionPlan &connection =
+        plan.memory.internalConnections[ordinal];
+    for (std::size_t previous = 0; previous != ordinal; ++previous) {
+      const CgraMemoryInternalConnectionPlan &other =
+          plan.memory.internalConnections[previous];
+      if (connection.occurrence != other.occurrence ||
+          connection.connection != other.connection)
+        continue;
+      if (connection.producer == other.producer &&
+          connection.consumer == other.consumer)
+        return invalid("CGRA memory internal connection repeats a consumer");
+    }
+  }
   for (const CgraMemoryActorPlan &actor : plan.memory.actors) {
     if (actor.graph != graph)
       continue;
@@ -176,6 +201,49 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
         ::dataflow::semantics::CanonicalService::forActor(resolved->op);
     if (!service)
       return service.takeError();
+    if (actor.roleSources.size() != memoryRoleCount ||
+        actor.roleDestinations.size() != memoryRoleCount)
+      return invalid("CGRA memory activation role domain is incomplete");
+    std::vector<bool> activeSources(memoryRoleCount, false);
+    std::vector<bool> activeDestinations(memoryRoleCount, false);
+    for (auto [argumentOrdinal, argument] :
+         llvm::enumerate(service->arguments())) {
+      auto value = service->argumentValue(resolved->op, argumentOrdinal);
+      if (!value)
+        return value.takeError();
+      const ::dataflow::ActorTokenOperandRef consumer{
+          actor.actor, static_cast<::dataflow::StructuralOrdinal>(
+                           (*value)->getOperandNumber())};
+      llvm::SmallVector<std::uint64_t, 2> connections;
+      for (auto [connectionOrdinal, connection] :
+           llvm::enumerate(plan.memory.internalConnections))
+        if (connection.occurrence == actor.occurrence &&
+            connection.consumer == consumer)
+          connections.push_back(connectionOrdinal);
+      const std::size_t role = static_cast<std::size_t>(argument.role);
+      if (role >= actor.roleSources.size() || !actor.roleSources[role])
+        return invalid("CGRA memory input role activation is incomplete");
+      if (activeSources[role])
+        return invalid("CGRA memory activation repeats an input role");
+      activeSources[role] = true;
+      const auto *internal = std::get_if<
+          ::loom::fabric::FabricMemoryHandshakeInternalRoleSource>(
+          &*actor.roleSources[role]);
+      if (internal) {
+        if (connections.size() != 1 ||
+            plan.memory.internalConnections[connections.front()].connection !=
+                internal->connection)
+          return invalid("CGRA memory input role selects another internal "
+                         "connection");
+        internalConsumerValidated[connections.front()] = true;
+        closureUses.push_back(
+            {actor.occurrence, internal->connection,
+             ::loom::fabric::FabricMemoryInternalConnectionUseKind::Consumer});
+      } else if (!connections.empty()) {
+        return invalid("CGRA memory input role externalizes an internal "
+                       "connection");
+      }
+    }
     const auto serviceResults = service->results();
     if (serviceResults.size() > std::numeric_limits<std::uint32_t>::max())
       return invalid("CGRA memory result count exceeds u32");
@@ -186,6 +254,39 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
       auto value = service->resultValue(resolved->op, resultOrdinal);
       if (!value)
         return value.takeError();
+      const ::dataflow::ActorTokenResultRef producer{
+          actor.actor, static_cast<::dataflow::StructuralOrdinal>(
+                           value->getResultNumber())};
+      llvm::SmallVector<std::uint64_t, 2> connectionRows;
+      std::vector<::loom::fabric::FabricOrdinal> connectionOrdinals;
+      for (auto [connectionOrdinal, connection] :
+           llvm::enumerate(plan.memory.internalConnections)) {
+        if (connection.occurrence != actor.occurrence ||
+            connection.producer != producer)
+          continue;
+        connectionRows.push_back(connectionOrdinal);
+        connectionOrdinals.push_back(connection.connection);
+      }
+      llvm::sort(connectionOrdinals);
+      connectionOrdinals.erase(
+          std::unique(connectionOrdinals.begin(), connectionOrdinals.end()),
+          connectionOrdinals.end());
+      const std::size_t role = static_cast<std::size_t>(result.role);
+      if (role >= actor.roleDestinations.size() ||
+          !actor.roleDestinations[role] ||
+          actor.roleDestinations[role]->internalConnections !=
+              connectionOrdinals)
+        return invalid("CGRA memory output role selects another internal "
+                       "connection set");
+      for (::loom::fabric::FabricOrdinal connection : connectionOrdinals)
+        closureUses.push_back(
+            {actor.occurrence, connection,
+             ::loom::fabric::FabricMemoryInternalConnectionUseKind::Producer});
+      if (activeDestinations[role])
+        return invalid("CGRA memory activation repeats an output role");
+      activeDestinations[role] = true;
+      for (std::uint64_t connectionOrdinal : connectionRows)
+        internalProducerValidated[connectionOrdinal] = true;
       std::optional<std::uint64_t> assemblyOrdinal;
       if (result.role != ::dataflow::semantics::ServiceValueRole::Completion) {
         if (assemblyLocal == actor.resultAssemblyCount)
@@ -199,11 +300,43 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
     }
     if (assemblyLocal != actor.resultAssemblyCount)
       return invalid("CGRA memory result assembly has unused rows");
+    for (std::size_t role = 0; role != memoryRoleCount; ++role) {
+      if (!activeSources[role] && actor.roleSources[role])
+        return invalid("CGRA memory activation has an inactive input role");
+      if (!activeDestinations[role] && actor.roleDestinations[role])
+        return invalid("CGRA memory activation has an inactive output role");
+    }
 
     const std::uint64_t bindingOrdinal = bindings.size();
     bindingBySemanticActor[semanticPosition->second] = bindingOrdinal;
     bindings.push_back({semanticPosition->second, &semantic, &actor,
                         selectedUse, std::move(results), 0, false, 0});
+  }
+
+  for (auto [ordinal, connection] :
+       llvm::enumerate(plan.memory.internalConnections)) {
+    auto producer = dataflow.resolve(connection.producer.actor);
+    if (!producer)
+      return producer.takeError();
+    auto consumer = dataflow.resolve(connection.consumer.actor);
+    if (!consumer)
+      return consumer.takeError();
+    if (producer->graph != consumer->graph)
+      return invalid("CGRA memory internal connection spans graphs");
+    if (producer->graph == graph &&
+        (!internalProducerValidated[ordinal] ||
+         !internalConsumerValidated[ordinal]))
+      return invalid("CGRA memory internal connection activation is open");
+  }
+  switch (
+      ::loom::fabric::deriveFabricMemoryInternalConnectionClosure(closureUses)) {
+  case ::loom::fabric::FabricMemoryInternalConnectionClosure::Closed:
+    break;
+  case ::loom::fabric::FabricMemoryInternalConnectionClosure::Open:
+    return invalid("CGRA memory internal connection activation is open");
+  case ::loom::fabric::FabricMemoryInternalConnectionClosure::
+      MultipleProducers:
+    return invalid("CGRA memory internal connection has multiple producers");
   }
 
   for (auto [ordinal, actor] : llvm::enumerate(execution.actorPlans))

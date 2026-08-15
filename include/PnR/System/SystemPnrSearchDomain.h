@@ -90,21 +90,9 @@ struct SystemHierarchicalGraphBindingDomain final {
   std::vector<ArtifactRootReference> compatibleSpatialMappings;
 };
 
-struct FlatSpatialReopenProblem final {
-  ArtifactRootReference techMappingReference;
-  ResolvedPnrConfigView spatialConfig;
-  ArtifactRootReference spatialConstraintReference;
-};
-
-struct SystemFlatGraphBindingDomain final {
-  std::vector<FlatSpatialReopenProblem> exactSpatialReopenProblems;
-  std::vector<ArtifactRootReference> compatibleImmutableSeeds;
-};
-
 using SystemSearchAtomDomain =
     std::variant<SystemThreadBindingDomain,
-                 SystemHierarchicalGraphBindingDomain,
-                 SystemFlatGraphBindingDomain>;
+                 SystemHierarchicalGraphBindingDomain>;
 
 struct SystemSearchAtom final {
   ::loom::mapping::SystemPresburgerCell cell;
@@ -119,14 +107,7 @@ struct SystemSearchBindingDomain final {
 struct SystemHierarchicalGraphSearchInput final {
   std::vector<ArtifactRootReference> spatialMappings;
 };
-
-struct SystemFlatGraphSearchInput final {
-  std::vector<FlatSpatialReopenProblem> reopenProblems;
-  std::vector<ArtifactRootReference> verifiedSeeds;
-};
-
-using SystemGraphSearchInput = std::variant<SystemHierarchicalGraphSearchInput,
-                                            SystemFlatGraphSearchInput>;
+using SystemGraphSearchInput = SystemHierarchicalGraphSearchInput;
 
 struct SystemServiceMemberTargetSubject final {
   ::dataflow::ServiceMemberRef member;
@@ -180,7 +161,6 @@ enum class UnsupportedSystemPnrSearchDomainReason : std::uint32_t {
   DynamicWorkStableKeyProjectionUnavailable = 0,
   RootedGraphMayDomainProjectionUnavailable = 1,
   ServiceTransformProjectionUnavailable = 2,
-  FlatOperationServiceDomainProjectionUnavailable = 3,
 };
 
 class UnsupportedSystemPnrSearchDomain final

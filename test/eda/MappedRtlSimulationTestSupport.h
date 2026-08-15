@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace loom {
 class ArtifactStore;
@@ -57,7 +58,7 @@ struct MappedSpatialHardwareFixture final {
   mapping::FinalizedSpatialMapping spatialMapping;
   fabric::FinalizedFabricRoot system;
   std::optional<ArtifactRootReference> interconnect;
-  hardware::FinalizedHardwareImplementation implementation;
+  std::vector<hardware::FinalizedHardwareImplementation> implementations;
 };
 
 MappedSpatialHardwareFixture buildMappedSpatialHardwareFixture(

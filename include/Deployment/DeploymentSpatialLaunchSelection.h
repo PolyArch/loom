@@ -12,6 +12,7 @@
 
 namespace loom {
 class ArtifactStore;
+class BlobStore;
 }
 
 namespace loom::deployment {
@@ -30,7 +31,7 @@ llvm::Expected<DeploymentSpatialLaunchSelection>
 resolveDeploymentSpatialLaunchSelection(
     const FinalizedDeployment &deployment, dataflow::RootedGraphLaunchRef graph,
     llvm::ArrayRef<std::uint64_t> denseCoordinates,
-    const ArtifactStore &artifacts);
+    const ArtifactStore &artifacts, const BlobStore &blobs);
 
 } // namespace loom::deployment
 

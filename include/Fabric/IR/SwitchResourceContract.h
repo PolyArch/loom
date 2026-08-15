@@ -53,9 +53,9 @@ struct SwitchResourceDeclaration final {
 /// It remains linear in the physical connectivity: every admitted input/output
 /// traversal is one use pattern and each pattern claims exactly that ingress
 /// and egress service. Spatial patterns share one configuration requester;
-/// temporal patterns use their input requester. A selected broadcast is the
-/// atomic same-requester activation set of its traversals, so it neither
-/// enumerates output subsets nor permits partial delivery.
+/// temporal patterns use their input requester. Mapping separately derives the
+/// exact selected broadcast activation, so this contract neither enumerates
+/// output subsets nor permits a requester key to merge resident rows.
 class SwitchResourceContract final {
 public:
   static llvm::Expected<SwitchResourceContract>

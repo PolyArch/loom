@@ -11,8 +11,8 @@
 #include "Mapping/IR/MappingOps.h"
 #include "Mapping/IR/MappingSchema.h"
 
-#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -84,6 +84,24 @@ struct TechMemoryInternalEdgeView final {
   ::loom::fabric::FabricMemoryEngineTemplateInternalConnectionRef connection;
 };
 
+/// Closed legality result for the physical internal-connection domain owned by
+/// one Memory Realization. A consumer has one internal source, while one
+/// physical connection may serve multiple consumers only when they share the
+/// exact producer.
+enum class TechMemoryInternalConnectionLegality {
+  Admissible,
+  ConsumerHasMultipleSources,
+  ConnectionHasMultipleProducers,
+};
+
+/// Rebuilds the internal-connection legality relation from selected edges.
+/// Candidate generation and strict artifact import consume this single
+/// projection; the result is not persisted in Mapping.
+llvm::Expected<TechMemoryInternalConnectionLegality>
+deriveTechMemoryInternalConnectionLegality(
+    llvm::ArrayRef<TechMemoryInternalEdgeView> internalEdges,
+    const ArtifactIdentity &dataflowOwner);
+
 struct TechMemoryRealizationView final {
   std::uint64_t entityId;
   ::loom::fabric::FabricMemoryEngineTemplateRef engine;
@@ -91,6 +109,28 @@ struct TechMemoryRealizationView final {
   std::vector<TechMemoryGraphBoundaryView> graphBoundaries;
   std::vector<TechMemoryInternalEdgeView> internalEdges;
 };
+
+/// One external arrival that must remain distinguishable at a Temporal
+/// Memory Operation Engine. Selected engine-internal edges are absent because
+/// they address their destination operation-table row directly.
+struct TechMemoryExternalIngressView final {
+  ::loom::fabric::FabricMemoryEngineTemplateEndpointRef endpoint;
+  ::dataflow::CanonicalGraphProducerEndpointRef producer;
+};
+
+/// Derives the exact external ingress relation from the selected actors and
+/// selected internal edges. Generator admission, strict artifact import, and
+/// Spatial occurrence conflicts consume this single interpretation.
+llvm::Expected<std::vector<TechMemoryExternalIngressView>>
+deriveTechMemoryExternalIngresses(
+    const TechMemoryRealizationView &realization,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow);
+llvm::Expected<bool> techMemoryExternalIngressesAreDistinct(
+    const TechMemoryRealizationView &realization,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow);
+llvm::Expected<std::vector<std::uint8_t>> canonicalTechMemoryExternalIngressKey(
+    const TechMemoryExternalIngressView &ingress,
+    const ArtifactIdentity &dataflowOwner);
 
 /// One exact residual graph-local transfer obligation derived from D/T after
 /// realization-internal sinks have been removed. The producer remains the
@@ -100,6 +140,14 @@ struct TechResidualLogicalNetView final {
   ::dataflow::CanonicalGraphProducerEndpointRef producer;
   std::vector<::dataflow::CanonicalGraphConsumerEndpointRef> sinks;
 };
+
+/// Rebuilds the activity-definedness admission required by the exact selected
+/// compute capability. This is derived only from the canonical actor graph and
+/// Fabric resource contract; TechMapping does not persist the result.
+llvm::Expected<bool> deriveTechComputeActivityDefinednessAdmission(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    ::dataflow::ActorRef actor,
+    const ::loom::fabric::ResolvedFabricOpCapabilityView &capability);
 
 /// Verifies the exact realization-wide topology and correspondence relation
 /// after each actor's typed operation capability has been resolved. Generator
@@ -344,6 +392,16 @@ struct SpatialActorTransitionEventRef final {
   }
 };
 
+struct SpatialRegisterFifoTransferView final {
+  ::dataflow::CanonicalGraphProducerEndpointRef logicalNet;
+  ::dataflow::CanonicalGraphConsumerEndpointRef sink;
+  ::loom::fabric::FabricPeOccurrenceRef pe;
+  ::loom::fabric::FabricOrdinal registerFifo = 0;
+  ::loom::fabric::FabricPhysicalTraversalRef writeTraversal;
+  ::loom::fabric::FabricPhysicalTraversalRef readTraversal;
+  llvm::APInt tag = llvm::APInt(1, 0);
+};
+
 /// Derives the unique issue transition owned by one canonical memory actor.
 /// This is the sole Mapping projection used by strict import, materialization,
 /// and PnR event indexing.
@@ -378,14 +436,16 @@ deriveSpatialComputeBindingUseRequirements(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechComputeRealizationView &realization,
     const ::loom::fabric::FabricArtifactView &fabric,
-    const SpatialComputeBindingView &binding);
+    const SpatialComputeBindingView &binding,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers = {});
 
 llvm::Expected<std::vector<SpatialComputeUseRequirement>>
 deriveSpatialComputeUseRequirements(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<SpatialComputeBindingView> bindings);
+    llvm::ArrayRef<SpatialComputeBindingView> bindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers = {});
 
 struct SpatialRouteNodeView final {
   std::uint64_t ordinal = 0;
@@ -488,6 +548,10 @@ public:
   llvm::ArrayRef<SpatialRouteTreeView> routeTrees() const {
     return routeTrees_;
   }
+  llvm::ArrayRef<SpatialRegisterFifoTransferView>
+  registerFifoTransfers() const {
+    return registerFifoTransfers_;
+  }
   llvm::ArrayRef<SpatialResourceUseView> resourceUses() const {
     return resourceUses_;
   }
@@ -508,6 +572,7 @@ private:
       std::vector<SpatialComputeBindingView> computeBindings,
       std::vector<SpatialMemoryEngineBindingView> memoryEngineBindings,
       std::vector<SpatialMemoryBindingView> memoryBindings,
+      std::vector<SpatialRegisterFifoTransferView> registerFifoTransfers,
       std::vector<SpatialRouteTreeView> routeTrees,
       std::vector<SpatialResourceUseView> resourceUses,
       std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments,
@@ -520,6 +585,7 @@ private:
         computeBindings_(std::move(computeBindings)),
         memoryEngineBindings_(std::move(memoryEngineBindings)),
         memoryBindings_(std::move(memoryBindings)),
+        registerFifoTransfers_(std::move(registerFifoTransfers)),
         routeTrees_(std::move(routeTrees)),
         resourceUses_(std::move(resourceUses)),
         physicalTagSegments_(std::move(physicalTagSegments)),
@@ -533,6 +599,7 @@ private:
   std::vector<SpatialComputeBindingView> computeBindings_;
   std::vector<SpatialMemoryEngineBindingView> memoryEngineBindings_;
   std::vector<SpatialMemoryBindingView> memoryBindings_;
+  std::vector<SpatialRegisterFifoTransferView> registerFifoTransfers_;
   std::vector<SpatialRouteTreeView> routeTrees_;
   std::vector<SpatialResourceUseView> resourceUses_;
   std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments_;
@@ -543,10 +610,11 @@ private:
 /// Resolves the exact Physical Tag assigned to one RouteTree node. Untagged
 /// nodes return the canonical one-bit zero sentinel; callers must inspect the
 /// Fabric data path before treating the value as a physical signal.
-llvm::Expected<llvm::APInt> resolveSpatialPhysicalTag(
-    const SpatialMappingView &mapping,
-    const ::loom::fabric::FabricArtifactView &fabric,
-    std::uint64_t routeTreeOrdinal, std::uint64_t nodeOrdinal);
+llvm::Expected<llvm::APInt>
+resolveSpatialPhysicalTag(const SpatialMappingView &mapping,
+                          const ::loom::fabric::FabricArtifactView &fabric,
+                          std::uint64_t routeTreeOrdinal,
+                          std::uint64_t nodeOrdinal);
 
 class FinalizedSpatialMapping final {
 public:

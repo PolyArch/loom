@@ -846,6 +846,15 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs) {
+  return invokeCandidateGenerator(inputBindings, binding, store, blobs,
+                                  ExecutionControlView{});
+}
+
+llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store, const BlobStore &blobs,
+    const ExecutionControlView &executionControl) {
   const CandidateGeneratorDescriptor *descriptor =
       binding.descriptorRef().descriptor();
   if (!descriptor)
@@ -888,7 +897,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
         std::move(workSummary)};
   }
 
-  auto result = invoke(inputBindings, binding, store, blobs);
+  auto result = invoke(inputBindings, binding, store, blobs, executionControl);
   if (!result)
     return result.takeError();
   if (llvm::Error error = validateProviderResult(

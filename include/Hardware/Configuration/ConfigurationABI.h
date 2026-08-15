@@ -122,6 +122,17 @@ struct ProgrammingUnit final {
   std::vector<ConfigurationFieldEncoding> fields;
 };
 
+/// Removable projection of one programming unit's occurrence ownership.
+/// Direct System resources and imported SpatialCore occurrences remain
+/// distinct because only the latter can be implemented by a local RTL root.
+struct ProgrammingUnitOccurrenceScope final {
+  bool includesDirectSystemResources = false;
+  std::vector<fabric::SpatialCoreOccurrenceRef> spatialCores;
+};
+
+ProgrammingUnitOccurrenceScope
+deriveProgrammingUnitOccurrenceScope(const ProgrammingUnit &unit);
+
 struct SemanticConfigurationValue final {
   fabric::FabricPhysicalConfigurationSlotRef slot;
   std::vector<std::uint8_t> value;

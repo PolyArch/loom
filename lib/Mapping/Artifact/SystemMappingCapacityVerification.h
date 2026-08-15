@@ -2,6 +2,7 @@
 #define LOOM_MAPPING_ARTIFACT_SYSTEMMAPPINGCAPACITYVERIFICATION_H
 
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -16,7 +17,8 @@ qualifySystemResourceOwner(
     const ::loom::fabric::FabricInventoryOwnerRef &owner,
     std::optional<::loom::fabric::SpatialCoreOccurrenceRef> spatialCore);
 
-llvm::Error verifySystemMappingCapacity(
+llvm::Expected<std::vector<MappingResourceProgressUse>>
+verifySystemMappingCapacity(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemExecutionBindingView &execution,

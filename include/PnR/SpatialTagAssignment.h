@@ -84,7 +84,7 @@ struct SpatialTagAssignmentSummary final {
   std::vector<std::uint64_t> domainConflictCounts;
   std::vector<std::size_t> netDomainUseOffsets;
   std::vector<PnrIndex> netDomainUseDomains;
-  std::vector<std::uint64_t> netDomainUseCounts;
+  std::vector<std::uint64_t> netDomainMarginalResidentCounts;
   std::vector<std::uint64_t> netUnassignedCounts;
 };
 
@@ -146,6 +146,8 @@ private:
   llvm::Expected<SpatialTagAssignmentSummary>
   projectVerifiedRoutes(llvm::ArrayRef<const RouteTreeState *> routes,
                         bool includeDomainDetails = false) const;
+  llvm::Expected<SpatialTagAssignmentSummary>
+  summarizeCurrentState(bool includeDomainDetails) const;
   llvm::Error verify(llvm::ArrayRef<RouteTreeStateHandle> routes) const;
   llvm::Error stageRouteUpdates(
       llvm::ArrayRef<RouteTreeStateHandle> routes,

@@ -10,7 +10,6 @@
 #include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
-#include <deque>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -24,16 +23,9 @@ using detail::appendU32Be;
 using detail::appendU64Be;
 using detail::evaluationError;
 
-constexpr SchemaVersion evaluationSchema20{2, 0};
-constexpr std::uint32_t lastModelKind20 =
-    builtinEvaluationModelKind(BuiltinEvaluationModel::CadenceVoltusStaticRail)
-        .ordinal();
-
 bool schemaContainsModelKind(SchemaVersion version,
-                             EvaluationModelKind modelKind) {
-  return version == evaluationSchemaVersion() ||
-         (version == evaluationSchema20 &&
-          modelKind.ordinal() <= lastModelKind20);
+                             EvaluationModelKind) {
+  return version == evaluationSchemaVersion();
 }
 
 struct ModelDescriptorRegistryEntry {
@@ -41,19 +33,9 @@ struct ModelDescriptorRegistryEntry {
   const EvaluationModelDescriptor *descriptor;
 };
 
-struct OwnedModelDescriptorView {
-  std::vector<ModelConditionCapability> conditionCapabilities;
-  EvaluationModelDescriptor descriptor;
-};
-
 std::vector<ModelDescriptorRegistryEntry> &modelDescriptors() {
   static std::vector<ModelDescriptorRegistryEntry> descriptors;
   return descriptors;
-}
-
-std::deque<OwnedModelDescriptorView> &ownedModelDescriptorViews() {
-  static std::deque<OwnedModelDescriptorView> views;
-  return views;
 }
 
 std::mutex &modelDescriptorMutex() {
@@ -529,8 +511,7 @@ findEvaluationInteractionDomain(const EvaluationInteractionDomainRef &domain) {
 llvm::Expected<EvaluationModelDescriptorRef>
 EvaluationModelDescriptorRef::get(SchemaVersion schemaVersion,
                                   EvaluationModelKind modelKind) {
-  if (schemaVersion != evaluationSchemaVersion() &&
-      schemaVersion != evaluationSchema20)
+  if (schemaVersion != evaluationSchemaVersion())
     return evaluationError("unsupported Evaluation model descriptor version");
   if (!schemaContainsModelKind(schemaVersion, modelKind))
     return evaluationError("Evaluation model descriptor version does not "
@@ -673,26 +654,6 @@ registerEvaluationModelDescriptor(const EvaluationModelDescriptor &descriptor) {
   }
   modelDescriptors().push_back({evaluationSchemaVersion(), &descriptor});
 
-  if (schemaContainsModelKind(evaluationSchema20, descriptor.modelKind)) {
-    OwnedModelDescriptorView view{{}, descriptor};
-    view.conditionCapabilities.reserve(descriptor.conditionCapabilities.size());
-    for (const ModelConditionCapability &capability :
-         descriptor.conditionCapabilities) {
-      ModelConditionCapability projected = capability;
-      projected.pattern.targets.caseSignature =
-          llvm::cantFail(EvaluationCaseSignatureRef::get(
-              evaluationSchema20, descriptor.caseSignature.caseKind()));
-      view.conditionCapabilities.push_back(std::move(projected));
-    }
-    view.descriptor.registryVersion = evaluationSchema20;
-    view.descriptor.caseSignature =
-        llvm::cantFail(EvaluationCaseSignatureRef::get(
-            evaluationSchema20, descriptor.caseSignature.caseKind()));
-    view.descriptor.conditionCapabilities = view.conditionCapabilities;
-    ownedModelDescriptorViews().push_back(std::move(view));
-    modelDescriptors().push_back(
-        {evaluationSchema20, &ownedModelDescriptorViews().back().descriptor});
-  }
   std::sort(modelDescriptors().begin(), modelDescriptors().end(),
             [](const ModelDescriptorRegistryEntry &lhs,
                const ModelDescriptorRegistryEntry &rhs) {

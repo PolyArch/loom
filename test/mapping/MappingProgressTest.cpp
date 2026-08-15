@@ -12,7 +12,9 @@
 
 #include <array>
 #include <cstdlib>
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -44,23 +46,35 @@ module {
         complete(%lanes#0 : none)
   }
 }
+
 )mlir",
                                                         &context);
   if (!module)
     fail("cannot parse cyclic progress fixture");
   auto artifact = take(dataflow::finalizeCanonicalDataflow(*module));
   const auto view = take(artifact.view());
-  const auto uncovered = take(
-      loom::mapping::deriveMappingProgressClosure(view, /*coveredGraphs=*/{}));
+  const auto uncovered = take(loom::mapping::deriveMappingDataflowProgressBasis(
+      view, /*coveredGraphs=*/{}));
   if (uncovered.kind !=
-      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+      loom::mapping::MappingDataflowProgressBasisKind::Acyclic)
     fail("progress analysis inspected a graph outside its covered set");
+  const auto model =
+      take(loom::mapping::freezeMappingProgressModel(view, /*events=*/{}));
+  loom::mapping::MappingProgressProjection projection;
+  projection.basis = uncovered;
+  projection.routeObligations.push_back({false});
+  if (take(loom::mapping::deriveMappingProgressClosure(model, projection)).kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet)
+    fail("post-divergence route without a durable boundary passed progress");
+  projection.routeObligations.front().durableBoundaryAfterDivergence = true;
+  if (take(loom::mapping::deriveMappingProgressClosure(model, projection)).kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("post-divergence durable boundary did not close route progress");
   const std::array<dataflow::GraphRef, 1> covered = {view.graphs().front().ref};
-  const auto closure =
-      take(loom::mapping::deriveMappingProgressClosure(view, covered));
-  if (closure.kind !=
-      loom::mapping::MappingProgressClosureKind::ProofNotEstablished)
-    fail("cyclic dependencies were guessed to prove progress or deadlock");
+  const auto basis =
+      take(loom::mapping::deriveMappingDataflowProgressBasis(view, covered));
+  if (basis.kind != loom::mapping::MappingDataflowProgressBasisKind::Cyclic)
+    fail("cyclic dependencies were reported as an acyclic progress basis");
 }
 
 } // namespace

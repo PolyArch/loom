@@ -1,0 +1,1 @@
+# RUN: %loom-pnr-spatial-physical-timing-test

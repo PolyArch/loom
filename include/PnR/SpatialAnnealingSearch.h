@@ -1,6 +1,7 @@
 #ifndef LOOM_PNR_SPATIALANNEALINGSEARCH_H
 #define LOOM_PNR_SPATIALANNEALINGSEARCH_H
 
+#include "Common/ExecutionControl.h"
 #include "PnR/SpatialActionDomain.h"
 #include "PnR/SpatialActionExecutor.h"
 
@@ -15,6 +16,7 @@
 namespace loom::pnr {
 
 struct SpatialAnnealingStatistics final {
+  bool interrupted = false;
   bool exactClosureReached = false;
   std::uint64_t initialTemperature = 0;
   std::uint64_t calibrationProposalSlots = 0;
@@ -27,16 +29,19 @@ struct SpatialAnnealingStatistics final {
   std::uint64_t annealingMovableProposalSlots = 0;
   std::uint64_t annealingProbeCount = 0;
   std::uint64_t acceptedActionCount = 0;
+  std::uint64_t acceptedWorseningActionCount = 0;
   std::uint64_t rejectedActionCount = 0;
   std::uint64_t semanticNoopActionCount = 0;
   std::uint64_t cachedInactiveActionCount = 0;
   std::uint64_t annealingTransitionFailureCount = 0;
   std::uint64_t endpointExpansions = 0;
   std::uint64_t negotiationIterations = 0;
+  bool bestFeasibleIncumbentRestored = false;
 
   friend bool operator==(const SpatialAnnealingStatistics &lhs,
                          const SpatialAnnealingStatistics &rhs) {
-    return lhs.exactClosureReached == rhs.exactClosureReached &&
+    return lhs.interrupted == rhs.interrupted &&
+           lhs.exactClosureReached == rhs.exactClosureReached &&
            lhs.initialTemperature == rhs.initialTemperature &&
            lhs.calibrationProposalSlots == rhs.calibrationProposalSlots &&
            lhs.calibrationProbeCount == rhs.calibrationProbeCount &&
@@ -51,13 +56,17 @@ struct SpatialAnnealingStatistics final {
                rhs.annealingMovableProposalSlots &&
            lhs.annealingProbeCount == rhs.annealingProbeCount &&
            lhs.acceptedActionCount == rhs.acceptedActionCount &&
+           lhs.acceptedWorseningActionCount ==
+               rhs.acceptedWorseningActionCount &&
            lhs.rejectedActionCount == rhs.rejectedActionCount &&
            lhs.semanticNoopActionCount == rhs.semanticNoopActionCount &&
            lhs.cachedInactiveActionCount == rhs.cachedInactiveActionCount &&
            lhs.annealingTransitionFailureCount ==
                rhs.annealingTransitionFailureCount &&
            lhs.endpointExpansions == rhs.endpointExpansions &&
-           lhs.negotiationIterations == rhs.negotiationIterations;
+           lhs.negotiationIterations == rhs.negotiationIterations &&
+           lhs.bestFeasibleIncumbentRestored ==
+               rhs.bestFeasibleIncumbentRestored;
   }
 };
 
@@ -67,7 +76,8 @@ struct SpatialAnnealingStatistics final {
 class SpatialAnnealingSearchScratch final {
 public:
   llvm::Expected<SpatialAnnealingStatistics>
-  run(SpatialCandidateState &candidate, std::uint64_t seedAttemptOrdinal);
+  run(SpatialCandidateStateHandle &candidate, std::uint64_t seedAttemptOrdinal,
+      ExecutionControlView executionControl = {});
 
   std::size_t retainedStorageBytes() const;
 

@@ -1102,8 +1102,9 @@ void vendorBindingIsExplicit(llvm::StringRef root) {
                      std::move(payloads)));
   HardwareImplementationDraft missingPlatform{
       fabric.system.reference(),
+      take(test, loom::hardware::test::requireSingleSpatialCoreOccurrence(
+                     fabric.system)),
       abi.reference(),
-      {},
       representation,
       std::nullopt,
       {},
@@ -1117,8 +1118,9 @@ void vendorBindingIsExplicit(llvm::StringRef root) {
               "requires an implementation platform");
   HardwareImplementationDraft draft{
       fabric.system.reference(),
+      take(test, loom::hardware::test::requireSingleSpatialCoreOccurrence(
+                     fabric.system)),
       abi.reference(),
-      {},
       std::move(representation),
       platform.reference(),
       {},

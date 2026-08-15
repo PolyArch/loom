@@ -209,6 +209,38 @@ writer continuity and `ResourceUse` sharing assignments. It is a local
 interpretation key where co-resident incompatible routes require distinction,
 not a firing, iteration, invocation, or logical-token identity.
 
+SpatialMapping derives one route segment at this switch as the exact signature
+
+```text
+SwitchRouteSegment = (input, exact_output_set)
+```
+
+projects selected demands into resident rows. Physical Tag is part of the
+selected row demand: all demands with the same `(switch occurrence, Physical
+Tag)` name one resident row, while distinct tags necessarily name distinct
+rows. Same-tag demands are legal only when their signatures are compatible.
+Two signatures with the same input are compatible only when their exact output
+sets are equal. Signatures with different inputs are compatible only when
+their output sets are disjoint. These are the complete merge rules: subset,
+superset, or partially overlapping output sets do not merge. Consequently a
+resident row neither adds a crosspoint to any constituent demand nor creates
+an unrequested broadcast or fan-in.
+
+The canonical exact projection groups by occurrence and numeric tag and orders
+rows by occurrence and unsigned tag. Its row count, rather than continuity-
+segment count, is the exact `route_table_size` consumption. During search only,
+Fabric also projects candidates with unassigned tags: assigned rows retain
+their exact identity, and each unassigned demand enters the first compatible
+assigned or provisional row, opening a tagless provisional row otherwise.
+That projection is a lower bound with no configuration identity; it cannot be
+published, configured, or executed. PnR capacity and route cost use its
+marginal row increase until tags are assigned. The strict verifier rebuilds
+the exact tagged projection and proves that every selected crosspoint belongs
+to at least one constituent signature and every constituent signature is
+represented exactly. An incompatible same-tag row remains explicit while PnR
+repairs its `TagConflict`; it can contribute physical handshake demand but
+cannot pass strict Mapping verification or become configuration.
+
 ### Configuration field carrier
 
 Each switch occurrence owns exactly one ordinal-zero
@@ -231,12 +263,14 @@ not its SRAM address layout. ConfigurationABI may place its bits only through
 the one direct field; it cannot create per-output or per-entry fields whose
 independent values bypass route-table validation.
 
-Configured-hardware projection groups selected RouteTree traversals by the
-Physical Tag of their continuity segment, orders active rows by unsigned tag,
-and fills the remaining rows with `Unused`. The Fabric codec validates the
-table bound, tag width and uniqueness, admitted crosspoints, and per-output
-fan-in before ConfigurationABI assigns a physical layout. Neither Mapping nor
-a backend stores an independent route-row selection.
+Configured-hardware projection consumes exact tagged rows from the Spatial
+switch-demand function, preserves membership established by the Fabric-owned
+route-signature compatibility predicate, orders active rows by unsigned tag,
+and fills the remaining rows with `Unused`.
+The Fabric codec validates the table bound, tag width and uniqueness, admitted
+crosspoints, exact signature preservation, and per-output fan-in before
+ConfigurationABI assigns a physical layout. Neither Mapping nor a backend
+stores an independent route-row selection or re-packs rows privately.
 
 ### Handshake Dependency Projection
 
@@ -343,12 +377,17 @@ uses even though their alternative patterns share the one configuration
 requester. A temporal switch can make several input requesters eligible at
 runtime and therefore owns the exact GrantPolicy required by such fan-in.
 
-For one selected broadcast, the traversal uses have the same owner, trigger,
-and concrete logical parameters and therefore form the derived atomic
-activation set defined by `docs/spec-pnr.md`. Repeated claims on the shared
-ingress normalize to one physical claim. The source cannot retire until the
-whole set acquires and commits, so no egress can be granted independently.
-Fabric does not enumerate the power set of possible broadcast destinations.
+For one selected broadcast, the traversal uses have the same packed-row and
+input activation instance, trigger, and concrete logical parameters and
+therefore form the derived atomic activation set defined by
+`docs/spec-pnr.md`. Its execution grouping key is `(configured row, input)`,
+not every selected traversal with the same switch owner or input. Repeated
+claims on that activation's shared ingress normalize to one physical claim.
+The source cannot retire until its exact output set acquires and commits, so no
+egress can be granted independently. Another tag row at the same input is a
+different activation instance. The Fabric requester group continues to own
+physical input arbitration; it does not merge activation instances. Fabric
+does not enumerate the power set of possible broadcast destinations.
 
 Fabric 1.0 requires an exact policy whenever temporal physical connectivity
 admits fan-in between runtime requesters. A later exact Fabric-owned refinement

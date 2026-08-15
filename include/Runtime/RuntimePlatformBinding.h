@@ -26,7 +26,7 @@ class RuntimePlatformBindingBuilder;
 }
 
 inline constexpr ArtifactSchemaDescriptor runtimePlatformBindingSchema{
-    "loom.runtime_platform_binding", SchemaVersion{2, 0}};
+    "loom.runtime_platform_binding", SchemaVersion{3, 0}};
 
 struct HardwareReportedIdentity final {
   RuntimeProviderEndpointRef implementationIdentityEndpoint;

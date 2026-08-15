@@ -39,7 +39,9 @@ struct JointDesignExplorationPlan final {
 /// pair traverses application-scoped TechMapping, SpatialMapping, and
 /// SystemMapping under one exact System MappingConstraintSet.
 llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
-    JointDesignInputs inputs, const JointDesignPolicy &policy,
+    JointDesignInputs inputs,
+    llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
+    const JointDesignPolicy &policy,
     const ResolvedConfig &baseConfig, const ArtifactStore &artifactStore);
 
 struct JointMappedPair final {

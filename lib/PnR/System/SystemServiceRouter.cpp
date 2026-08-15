@@ -871,22 +871,18 @@ loom::pnr::detail::buildSystemServiceRoutes(
               llvm::ArrayRef<PnrIndex> sourceGroups,
               llvm::ArrayRef<std::uint64_t> eligibleTraversals,
               std::optional<AtomicPatternUpgrade> upgrade) -> llvm::Error {
-        auto routed = search.search(
-            {sources,
-             sourceGroups,
-             activeSink.endpoints,
-             targetRanks,
-             request.lowerBoundArcCosts,
-             *currentArcCosts,
-             leg.requiredPayloadWidthBits,
-             0,
-             problem.config().policy().search.routing.endpointExpansionLimit,
-             eligibleTraversals,
-             std::nullopt,
-             {},
-             false,
-             {},
-             {}});
+        EndpointRouteSearchRequest routeRequest;
+        routeRequest.sourceEndpoints = sources;
+        routeRequest.sourceReplicationGroups = sourceGroups;
+        routeRequest.targetEndpoints = activeSink.endpoints;
+        routeRequest.targetPreferenceRanks = targetRanks;
+        routeRequest.lowerBoundArcCosts = request.lowerBoundArcCosts;
+        routeRequest.currentArcCosts = *currentArcCosts;
+        routeRequest.requiredPayloadWidthBits = leg.requiredPayloadWidthBits;
+        routeRequest.endpointExpansionLimit =
+            problem.config().policy().search.routing.endpointExpansionLimit;
+        routeRequest.eligibleTraversalBits = eligibleTraversals;
+        auto routed = search.search(routeRequest);
         const std::uint64_t consumed = search.endpointExpansionCount();
         if (consumed >
             std::numeric_limits<std::uint64_t>::max() - endpointExpansions)

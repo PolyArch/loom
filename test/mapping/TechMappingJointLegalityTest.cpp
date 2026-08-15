@@ -340,9 +340,12 @@ void spatialMemoryRowsAreOccurrenceUnique() {
           dataflow, selected->view(), fabric.view(), store));
   const auto config = take(loom::pnr::projectResolvedSpatialPnrConfigView(
       loom::defaultResolvedConfig()));
+  const auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fabric.view()));
   auto spatial = loom::pnr::generateSpatialMappings(
-      {dataflow, selected->view(), fabric.view(), config, constraints.view(),
-       store, 1});
+      {dataflow, selected->view(), fabric.view(), physicalTiming, config,
+       constraints.view(), store, 1});
   const auto *infeasible =
       std::get_if<loom::pnr::ProvenInfeasibleSpatialMapping>(&spatial);
   if (!infeasible)

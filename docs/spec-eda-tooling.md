@@ -230,9 +230,9 @@ finalized implementation.
 ## HardwareImplementation Generation
 
 The initial RTL implementation is a `MechanicalDerivation` from exact Fabric,
-exact `ConfigurationABI`, and the resolved generator binding. It publishes the
-closed `Rtl` representation root of
-`loom.hardware_implementation 3.0`. A later flow that
+one exact SpatialCore occurrence subject, exact `ConfigurationABI`, and the
+resolved generator binding. It publishes that subject's closed `Rtl`
+representation root as `loom.hardware_implementation 4.0`. A later flow that
 consumes existing hardware state and preserves new state creates another
 immutable `HardwareImplementation`. `InvocationManifest`, not the output
 Artifact, owns both derivation records. Representative later derivations are:
@@ -372,7 +372,7 @@ complete domain, not the first report row or a provider severity threshold.
 
 The model's resolved config view additionally carries the exact stable Voltus
 provider build identity, canonical PGV member path/fingerprint table, and
-ordered PGV entrypoint paths from the typed ResolvedConfig 5.0 binding. These
+ordered PGV entrypoint paths from the typed ResolvedConfig 6.0 binding. These
 facts enter Request identity. Every entrypoint references the same member table;
 the first is the provider-required technology PGV and the remaining order is
 consumed unchanged. Preparation requires the resolved executable build to match

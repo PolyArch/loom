@@ -141,7 +141,7 @@ struct RuntimeExecutableRegistrationView final {
 /// images. A provider must copy any state needed after activate returns.
 struct RuntimeActivationView final {
   ArtifactRootReference deployment;
-  const RuntimePlatformBinding &runtimePlatformBinding;
+  llvm::ArrayRef<FinalizedRuntimePlatformBinding> runtimePlatformBindings;
   const deployment::InlineRuntimeImage &threadDispatchImage;
   const std::optional<deployment::InlineRuntimeImage> &spatialLaunchImage;
   const deployment::InlineRuntimeImage &admissionImage;

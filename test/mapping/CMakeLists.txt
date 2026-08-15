@@ -49,8 +49,13 @@ add_executable(loom-tech-mapping-config-test
 
 add_executable(loom-tech-mapping-generator-test
   ../TestAllocationProbe.cpp
+  ../InternalMemoryEdgeTestSupport.cpp
   TechMappingGeneratorTest.cpp
   SpatialMemoryConstraintTestSupport.cpp
+)
+
+target_include_directories(loom-tech-mapping-generator-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/Mapping/Tech
 )
 
 add_executable(loom-tech-mapping-activity-definedness-test
@@ -79,6 +84,7 @@ add_executable(loom-spatial-mapping-artifact-test
   SpatialCandidateSelectionTestSupport.cpp
   SpatialMemoryActionTestSupport.cpp
   SpatialMappingArtifactTest.cpp
+  TemporalPeTagDomainTestSupport.cpp
   TechMappingCandidateTestSupport.cpp
 )
 
@@ -104,6 +110,7 @@ target_include_directories(loom-configured-hardware-projection-test PRIVATE
 target_include_directories(loom-spatial-mapping-artifact-test PRIVATE
   ${LOOM_SOURCE_DIR}/lib/Mapping/Artifact
   ${LOOM_SOURCE_DIR}/lib/PnR
+  ${LOOM_SOURCE_DIR}/lib/Simulator
 )
 
 target_link_libraries(loom-mapping-artifact-test PRIVATE

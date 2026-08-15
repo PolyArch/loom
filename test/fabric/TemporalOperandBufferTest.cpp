@@ -4,6 +4,7 @@
 #include "Fabric/IR/FabricEnums.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -392,6 +393,30 @@ void roundRobinContentionBetweenTwoLogicalQueues() {
           "round-robin service order must be deterministic");
 }
 
+void ingressFanoutRespectsAllocationUnitServices() {
+  const TemporalOperandBufferContract dedicated =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::PerInstruction, 2)));
+  require(__func__, dedicated.admitsIngressEnqueueSet({0, 3}),
+          "dedicated queues must admit atomic fanout across units");
+
+  const TemporalOperandBufferContract banked =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::PerInputPort, 2)));
+  require(__func__, banked.admitsIngressEnqueueSet({0, 1}),
+          "different FU ingress banks must admit atomic fanout");
+  require(__func__, !banked.admitsIngressEnqueueSet({0, 3}),
+          "one FU ingress bank cannot serve two fanout enqueues");
+
+  const TemporalOperandBufferContract shared =
+      takeContract(__func__, TemporalOperandBufferContract::create(declaration(
+                                 OperandBufferMode::AllFuShare, 2)));
+  require(__func__, shared.admitsIngressEnqueueSet({2}),
+          "one pooled enqueue must remain admissible");
+  require(__func__, !shared.admitsIngressEnqueueSet({0, 1}),
+          "one shared PE pool cannot serve two fanout enqueues");
+}
+
 // One actor transition removes every head it needs under its single commit
 // activation. Two required heads in one allocation unit exceed that unit's one
 // dequeue service, so the binding is invalid rather than privately serialized.
@@ -460,6 +485,75 @@ void registerFifoPortCountOwnsServiceConcurrency() {
           "register FIFO service and commit timing changed");
 }
 
+void contextDispatchIsFabricOwnedAndFair() {
+  const auto declared = [](OperandBufferMode mode) {
+    return TemporalPeResourceDeclaration{kPe, 2, kFuInputCounts, mode, 2, 1,
+                                         4,   2};
+  };
+  const TemporalPeResourceContract perInput =
+      takePeContract(__func__, TemporalPeResourceContract::create(
+                                   declared(OperandBufferMode::PerInputPort)));
+  require(__func__, perInput.dispatchUnitCount() == 2,
+          "a non-shared operand organization needs one dispatch unit per FU");
+  require(__func__, perInput.dispatchCandidates().size() == 4,
+          "dispatch must cover every context and FU pair");
+  const auto firstFu = perInput.dispatchCandidatesOf(0);
+  const auto secondFu = perInput.dispatchCandidatesOf(1);
+  require(__func__, firstFu.size() == 2 && secondFu.size() == 2,
+          "each FU dispatch unit must cover both resident contexts");
+  require(__func__,
+          perInput.dispatchCandidates()[firstFu[0]].context.ordinal == 0 &&
+              perInput.dispatchCandidates()[firstFu[0]].fuOccurrence == 0 &&
+              perInput.dispatchCandidates()[firstFu[1]].context.ordinal == 1 &&
+              perInput.dispatchCandidates()[firstFu[1]].fuOccurrence == 0 &&
+              perInput.dispatchCandidates()[secondFu[0]].context.ordinal == 0 &&
+              perInput.dispatchCandidates()[secondFu[0]].fuOccurrence == 1 &&
+              perInput.dispatchCandidates()[secondFu[1]].context.ordinal == 1 &&
+              perInput.dispatchCandidates()[secondFu[1]].fuOccurrence == 1,
+          "filtered dispatch cycles must preserve canonical context/FU order");
+
+  for (std::uint32_t candidate = 0;
+       candidate != perInput.dispatchCandidates().size(); ++candidate) {
+    const UsePattern pattern = perInput.resourceContract().usePattern(
+        perInput.dispatchPattern(candidate));
+    const std::uint32_t unit =
+        perInput.dispatchCandidates()[candidate].allocationUnit;
+    require(__func__,
+            pattern.requester == perInput.dispatchRequester(candidate) &&
+                pattern.claims.size() == 1 &&
+                pattern.claims.front().state == perInput.dispatchState(unit) &&
+                !pattern.commit,
+            "a dispatch candidate must claim its Fabric-owned evaluation "
+            "service without becoming an actor commit");
+  }
+
+  const TemporalPeResourceContract shared =
+      takePeContract(__func__, TemporalPeResourceContract::create(
+                                   declared(OperandBufferMode::AllFuShare)));
+  require(__func__,
+          shared.dispatchUnitCount() == 1 &&
+              shared.dispatchCandidatesOf(0).size() == 4,
+          "all_fu_share must serialize the complete context/FU dispatch "
+          "domain");
+  const auto policy = shared.resourceContract().grantPolicy();
+  const auto *roundRobin =
+      policy ? std::get_if<RoundRobinView>(&*policy) : nullptr;
+  require(__func__, roundRobin != nullptr,
+          "a contended dispatch service requires round-robin fairness");
+  llvm::SmallVector<bool, 16> eligible(
+      shared.resourceContract().requesterCount(), false);
+  eligible[shared.dispatchRequester(0).ordinal()] = true;
+  eligible[shared.dispatchRequester(2).ordinal()] = true;
+  RoundRobinGrant grant =
+      roundRobin->grant(roundRobin->resetCursor(), eligible);
+  require(__func__, grant.granted == shared.dispatchRequester(0),
+          "dispatch reset must select the first active canonical candidate");
+  grant = roundRobin->grant(grant.nextCursor, eligible);
+  require(__func__, grant.granted == shared.dispatchRequester(2),
+          "a selected context must release the evaluation slot and advance "
+          "the shared cursor");
+}
+
 } // namespace
 
 int main() {
@@ -470,7 +564,9 @@ int main() {
   fullUnitAdmitsPopWithPushWithoutBypass();
   dedicatedDepthOneAndTwoDiffer();
   roundRobinContentionBetweenTwoLogicalQueues();
+  ingressFanoutRespectsAllocationUnitServices();
   actorRequiredDequeueOvercapacityIsRejected();
   registerFifoPortCountOwnsServiceConcurrency();
+  contextDispatchIsFabricOwnedAndFair();
   return 0;
 }

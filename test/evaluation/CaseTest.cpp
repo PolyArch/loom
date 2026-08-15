@@ -1069,7 +1069,7 @@ void requestCanonicalRoundTripAndStoreImport() {
   require(
       __func__,
       llvm::StringRef(canonical).contains(
-          "\"descriptor_ref\":{\"schema_major\":2,\"schema_minor\":1,") &&
+          "\"descriptor_ref\":{\"schema_major\":3,\"schema_minor\":0,") &&
           llvm::StringRef(canonical).contains(
               "\"resolved_model_config\":{\"canonical_view_bytes\":\"\"") &&
           llvm::StringRef(canonical).contains("\"component_view_digest\":\"") &&
@@ -1114,7 +1114,7 @@ void requestCanonicalRoundTripAndStoreImport() {
 
   std::string legacyDescriptorVersion = canonical;
   const std::string legacyDescriptorTag =
-      "\"schema_major\":2,\"schema_minor\":1";
+      "\"schema_major\":3,\"schema_minor\":0";
   const std::size_t descriptorPosition =
       legacyDescriptorVersion.find(legacyDescriptorTag);
   require(__func__, descriptorPosition != std::string::npos,
@@ -1428,9 +1428,9 @@ void modelDescriptorOwnerContractsAreClosed() {
 
 } // namespace
 
-void registry20ReferencesAreRequired() {
-  // Registry 2.0 rejects 1.0 case and model descriptor references outright;
-  // there is no reinterpretation path.
+void currentRegistryReferencesAreRequired() {
+  // Registry 3.0 rejects obsolete case and model descriptor references
+  // outright; there is no reinterpretation path.
   auto legacyCase =
       EvaluationCaseSignatureRef::get(SchemaVersion{1, 0}, testCaseKind);
   if (legacyCase)
@@ -1441,8 +1441,8 @@ void registry20ReferencesAreRequired() {
   if (legacyModel)
     fail(__func__, "a 1.0 model descriptor reference was reinterpreted");
   llvm::consumeError(legacyModel.takeError());
-  if (evaluationSchemaVersion() != SchemaVersion{2, 1})
-    fail(__func__, "the Evaluation registry did not move to schema 2.1");
+  if (evaluationSchemaVersion() != SchemaVersion{3, 0})
+    fail(__func__, "the Evaluation registry did not move to schema 3.0");
   // The Request and Evidence artifact root records stay at their own 1.0.
   if (EvaluationRequest::artifactSchema.version != SchemaVersion{1, 0} ||
       EvaluationEvidence::artifactSchema.version != SchemaVersion{1, 0})
@@ -1496,6 +1496,6 @@ int main() {
   scopeChecksAnchorClosureLocalProviderAndRoleOrder();
   conditionsCheckLocationApplicabilityDuplicatesAndConflicts();
   modelDescriptorOwnerContractsAreClosed();
-  registry20ReferencesAreRequired();
+  currentRegistryReferencesAreRequired();
   return 0;
 }

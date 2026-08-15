@@ -68,14 +68,14 @@ llvm::Error
 observeArithmeticFailure(llvm::Error error, std::uint64_t iteration,
                          llvm::StringRef operation,
                          mapping_debug::MappingRunStatistics &statistics,
-                         llvm::StringRef &closureStatus) {
+                         mapping_debug::ClosureStatus &closureStatus) {
   return llvm::handleErrors(
       std::move(error),
       [&](const RoutingNegotiationError &failure) -> llvm::Error {
         if (failure.kind() ==
             RoutingNegotiationError::Kind::ArithmeticOverflow) {
           ++statistics.arithmeticFailures;
-          closureStatus = "arithmetic_failure";
+          closureStatus = mapping_debug::ClosureStatus::ArithmeticFailure;
           mapping_debug::emit(mapping_debug::Level::Decision,
                               mapping_debug::Stage::SystemPnr,
                               mapping_debug::Event::ArithmeticFailure,
@@ -92,7 +92,7 @@ observeArithmeticFailure(llvm::Error error, std::uint64_t iteration,
         if (failure.kind() ==
             EndpointRouteSearchFailureKind::ArithmeticOverflow) {
           ++statistics.arithmeticFailures;
-          closureStatus = "arithmetic_failure";
+          closureStatus = mapping_debug::ClosureStatus::ArithmeticFailure;
           mapping_debug::emit(
               mapping_debug::Level::Decision, mapping_debug::Stage::SystemPnr,
               mapping_debug::Event::ArithmeticFailure,
@@ -235,6 +235,21 @@ llvm::json::Array encodeCapacityConflictLogicalNets(
   return logicalNets;
 }
 
+detail::SystemRoutingReopenWitness projectSystemRoutingReopenWitness(
+    const detail::SystemFixedTerminalCapacityConflict &certificate) {
+  detail::SystemRoutingReopenWitness result;
+  result.capacityCell = certificate.capacityCell;
+  result.serviceLegs.reserve(certificate.logicalNets.size());
+  for (const detail::SystemFixedTerminalCapacityLegEvidence &evidence :
+       certificate.logicalNets)
+    result.serviceLegs.push_back(evidence.leg);
+  llvm::sort(result.serviceLegs);
+  result.serviceLegs.erase(
+      std::unique(result.serviceLegs.begin(), result.serviceLegs.end()),
+      result.serviceLegs.end());
+  return result;
+}
+
 llvm::Expected<std::vector<RouteCost>>
 pathFinderArcCosts(const FrozenEndpointRoutingTopology &topology,
                    llvm::ArrayRef<std::uint64_t> usage,
@@ -339,9 +354,12 @@ detail::negotiateSystemServiceRoutes(
     std::optional<SystemServiceRoutesView> priorRoutes,
     std::optional<SystemServiceRouteTraversalExclusion> exclusion,
     std::optional<SystemServiceRouteRepairRegion> repairRegion,
-    SystemRoutingClosureRequirement closureRequirement) {
+    SystemRoutingClosureRequirement closureRequirement,
+    std::optional<SystemRoutingReopenWitness> *reopenWitness) {
   endpointExpansions = 0;
   negotiationIterations = 0;
+  if (reopenWitness)
+    reopenWitness->reset();
   const auto &routing = problem.config().policy().search.routing;
   if (routing.endpointExpansionLimit == 0 ||
       routing.negotiationIterationLimit == 0 ||
@@ -356,7 +374,8 @@ detail::negotiateSystemServiceRoutes(
   const FrozenEndpointRoutingTopology &topology = problem.routingTopology();
 
   mapping_debug::MappingRunStatistics debugStatistics;
-  llvm::StringRef closureStatus = "failed";
+  mapping_debug::ClosureStatus closureStatus =
+      mapping_debug::ClosureStatus::Failed;
   mapping_debug::emit(
       mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
       mapping_debug::Event::InvocationBegin, [&](llvm::json::Object &fields) {
@@ -376,7 +395,8 @@ detail::negotiateSystemServiceRoutes(
     mapping_debug::emit(
         mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
         mapping_debug::Event::InvocationEnd, [&](llvm::json::Object &fields) {
-          fields["closure_status"] = closureStatus;
+          fields["closure_status"] =
+              mapping_debug::closureStatusSpelling(closureStatus);
           fields["a_star_expansions"] = endpointExpansions;
           fields["negotiated_iterations"] = negotiationIterations;
         });
@@ -486,8 +506,8 @@ detail::negotiateSystemServiceRoutes(
                                       closureStatus);
     auto capacity = problem.capacityModel().project(
         problem, {threadChoices, graphChoices, built->selections.routes,
-                  built->selections.nodes, instructionResourceUses,
-                  serviceResourceUses});
+                  built->selections.nodes, built->selections.sinks,
+                  instructionResourceUses, serviceResourceUses});
     if (!capacity)
       return capacity.takeError();
     if (isCapacityClosed(topology, built->capacityUsage)) {
@@ -505,7 +525,7 @@ detail::negotiateSystemServiceRoutes(
             fields["capacity_closed"] = true;
             fields["a_star_expansions"] = endpointExpansions;
           });
-      closureStatus = "closed";
+      closureStatus = mapping_debug::ClosureStatus::Closed;
       return std::move(built->selections);
     }
     const bool admitsTemporary =
@@ -520,7 +540,9 @@ detail::negotiateSystemServiceRoutes(
     if (!traversalClaim)
       return traversalClaim.takeError();
     auto objective = problem.objectiveProgram().evaluateSystemProjection(
-        problem, graphChoices, capacity->total, *traversalClaim);
+        problem, graphChoices, capacity->capacity.total, *traversalClaim,
+        capacity->timing.minimumInitiationIntervalCycles,
+        capacity->timing.transportBitCycleDemand, capacity->progress);
     if (!objective)
       return objective.takeError();
     bool selectedRankImproved = !bestRankObjective;
@@ -684,11 +706,15 @@ detail::negotiateSystemServiceRoutes(
             fields["capacity"] = certificate->capacity;
             fields["temporary_return"] = best.has_value();
           });
+      SystemRoutingReopenWitness projectedWitness =
+          projectSystemRoutingReopenWitness(*certificate);
+      if (reopenWitness)
+        *reopenWitness = projectedWitness;
       if (best) {
-        closureStatus = "fixed_terminal_cut_temporary";
+        closureStatus = mapping_debug::ClosureStatus::FixedTerminalCutTemporary;
         return std::move(*best);
       }
-      closureStatus = "fixed_terminal_cut";
+      closureStatus = mapping_debug::ClosureStatus::FixedTerminalCut;
       return llvm::make_error<SystemRoutingClosureFailure>(
           SystemRoutingClosureFailureKind::FixedTerminalCapacityCut,
           "System routing negotiation proved fixed-terminal capacity cut at "
@@ -696,8 +722,8 @@ detail::negotiateSystemServiceRoutes(
               std::to_string(certificate->capacityCell) +
               " with mandatory usage " +
               std::to_string(certificate->mandatoryUsage) +
-              " greater than capacity " +
-              std::to_string(certificate->capacity));
+              " greater than capacity " + std::to_string(certificate->capacity),
+          std::move(projectedWitness));
     }
     if (consecutiveNoProgressIterations >= routing.noProgressIterationLimit &&
         trendCount == trendWindow &&
@@ -718,10 +744,10 @@ detail::negotiateSystemServiceRoutes(
             fields["temporary_return"] = best.has_value();
           });
       if (best) {
-        closureStatus = "no_progress_temporary";
+        closureStatus = mapping_debug::ClosureStatus::NoProgressTemporary;
         return std::move(*best);
       }
-      closureStatus = "no_progress";
+      closureStatus = mapping_debug::ClosureStatus::NoProgress;
       return llvm::make_error<SystemRoutingClosureFailure>(
           SystemRoutingClosureFailureKind::NoProgress,
           "System routing negotiation exhausted its selected-rank "
@@ -729,10 +755,10 @@ detail::negotiateSystemServiceRoutes(
     }
     if (iteration + 1 == routing.negotiationIterationLimit) {
       if (best) {
-        closureStatus = "temporary_capacity";
+        closureStatus = mapping_debug::ClosureStatus::TemporaryCapacity;
         return std::move(*best);
       }
-      closureStatus = "iteration_limit";
+      closureStatus = mapping_debug::ClosureStatus::IterationLimit;
       return llvm::make_error<SystemRoutingClosureFailure>(
           SystemRoutingClosureFailureKind::NonClosure,
           "System routing negotiation exhausted its iteration limit before "

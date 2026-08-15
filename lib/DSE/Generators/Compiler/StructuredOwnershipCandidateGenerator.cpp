@@ -240,7 +240,8 @@ singleInput(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
 llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, const BlobStore &blobs) {
+    const ArtifactStore &store, const BlobStore &blobs,
+    const ExecutionControlView &) {
   auto config = adoptResolvedStructuredOwnershipGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());

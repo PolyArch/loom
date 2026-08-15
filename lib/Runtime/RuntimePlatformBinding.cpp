@@ -620,7 +620,7 @@ canonicalize(RuntimePlatformBindingDraft draft, const ArtifactStore &artifacts,
           hardware::hardwareImplementationSchema.version)
     return invalid(
         "hardware_implementation_ref requires loom.hardware_implementation "
-        "3.0");
+        "4.0");
   auto implementation = hardware::importHardwareImplementation(
       draft.hardwareImplementation, artifacts, blobs);
   if (!implementation)
@@ -690,10 +690,16 @@ canonicalize(RuntimePlatformBindingDraft draft, const ArtifactStore &artifacts,
       requiredCompletion.push_back(ordinal);
     }
   }
-  for (const hardware::ProgrammingUnit &unit : abi->abi().programmingUnits())
-    if (!exposedUnits.count(unit.id))
+  for (const hardware::ProgrammingUnit &unit : abi->abi().programmingUnits()) {
+    const hardware::ProgrammingUnitOccurrenceScope scope =
+        hardware::deriveProgrammingUnitOccurrenceScope(unit);
+    const bool belongsToSubject =
+        !scope.includesDirectSystemResources && scope.spatialCores.size() == 1 &&
+        scope.spatialCores.front() == implementation->implementation().subject();
+    if (belongsToSubject && !exposedUnits.count(unit.id))
       return invalid("HardwareImplementation omits a Configuration interface "
-                     "for a required programming unit");
+                     "for a subject-local programming unit");
+  }
 
   llvm::sort(draft.programmingBindings, bindingLess<RuntimeProgrammingBinding>);
   llvm::sort(draft.memoryInterfaceBindings,

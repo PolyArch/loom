@@ -1,5 +1,10 @@
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
+#include "Mapping/Artifact/SystemMappingClosureProjection.h"
 
+#include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricRefImport.h"
 #include "Fabric/Identity/FabricRefs.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -9,9 +14,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
+#include <set>
+#include <string>
 #include <system_error>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -22,6 +31,433 @@ llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
       "spatial_progress_analysis_invalid: " + message);
+}
+
+void appendU32(std::string &bytes, std::uint32_t value) {
+  for (unsigned shift = 24;; shift -= 8) {
+    bytes.push_back(static_cast<char>(value >> shift));
+    if (shift == 0)
+      break;
+  }
+}
+
+void appendU64(std::string &bytes, std::uint64_t value) {
+  for (unsigned shift = 56;; shift -= 8) {
+    bytes.push_back(static_cast<char>(value >> shift));
+    if (shift == 0)
+      break;
+  }
+}
+
+void appendI64(std::string &bytes, std::int64_t value) {
+  appendU64(bytes, static_cast<std::uint64_t>(value));
+}
+
+void appendSized(std::string &bytes, llvm::ArrayRef<std::uint8_t> value) {
+  appendU64(bytes, value.size());
+  bytes.append(reinterpret_cast<const char *>(value.data()), value.size());
+}
+
+llvm::Expected<std::string> eventKey(const ArtifactIdentity &dataflowIdentity,
+                                     const ::dataflow::EventFamilyKey &event) {
+  auto encoded = ::dataflow::encodeDataflowReference(dataflowIdentity, event);
+  if (!encoded)
+    return encoded.takeError();
+  return std::string(reinterpret_cast<const char *>(encoded->data()),
+                     encoded->size());
+}
+
+llvm::Expected<std::string>
+eventKey(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+         const ::dataflow::EventFamilyKey &event) {
+  return eventKey(dataflow.identity(), event);
+}
+
+::dataflow::RootThreadLaunchRef
+rootOf(const ::dataflow::RootThreadBoundaryTransferRef &transfer) {
+  return std::visit([](const auto &typed) { return typed.launch; }, transfer);
+}
+
+::dataflow::RootedGraphLaunchRef
+graphOf(const ::dataflow::GraphLaunchBoundaryTransferRef &transfer) {
+  return std::visit([](const auto &typed) { return typed.launch; }, transfer);
+}
+
+struct EventLocation final {
+  ::dataflow::RootThreadLaunchRef root;
+  std::optional<::dataflow::RootedGraphLaunchRef> graph;
+  bool rootCompletion = false;
+};
+
+EventLocation
+producerLocation(const ::dataflow::CanonicalProducerTerminalRef &terminal) {
+  return std::visit(
+      [](const auto &typed) -> EventLocation {
+        using Terminal = std::decay_t<decltype(typed)>;
+        if constexpr (std::is_same_v<Terminal,
+                                     ::dataflow::RootThreadBoundarySourceRef>) {
+          const auto root = rootOf(typed.transfer);
+          const bool completion = std::holds_alternative<
+              ::dataflow::RootThreadCompletionTransferRef>(typed.transfer);
+          return {root, std::nullopt, completion};
+        } else if constexpr (std::is_same_v<
+                                 Terminal,
+                                 ::dataflow::GraphLaunchBoundarySourceRef>) {
+          const auto graph = graphOf(typed.transfer);
+          return {graph.rootThreadLaunch, graph, false};
+        } else {
+          return std::visit(
+              [](const auto &producer) -> EventLocation {
+                using Producer = std::decay_t<decltype(producer)>;
+                if constexpr (std::is_same_v<
+                                  Producer,
+                                  ::dataflow::GraphStreamOutputProducerRef>)
+                  return {producer.launch.rootThreadLaunch, producer.launch,
+                          false};
+                else
+                  return {producer.launch, std::nullopt, false};
+              },
+              typed.producer);
+        }
+      },
+      terminal);
+}
+
+EventLocation
+consumerLocation(const ::dataflow::CanonicalSinkTerminalRef &terminal) {
+  return std::visit(
+      [](const auto &typed) -> EventLocation {
+        using Terminal = std::decay_t<decltype(typed)>;
+        if constexpr (std::is_same_v<Terminal,
+                                     ::dataflow::RootThreadBoundarySinkRef>) {
+          return {rootOf(typed.transfer), std::nullopt, false};
+        } else if constexpr (std::is_same_v<
+                                 Terminal,
+                                 ::dataflow::GraphLaunchBoundarySinkRef>) {
+          const auto graph = graphOf(typed.transfer);
+          return {graph.rootThreadLaunch, graph, false};
+        } else {
+          return std::visit(
+              [](const auto &consumer) -> EventLocation {
+                using Consumer = std::decay_t<decltype(consumer)>;
+                if constexpr (std::is_same_v<
+                                  Consumer,
+                                  ::dataflow::GraphStreamInputConsumerRef>)
+                  return {consumer.launch.rootThreadLaunch, consumer.launch,
+                          false};
+                else
+                  return {consumer.launch, std::nullopt, false};
+              },
+              typed.consumer);
+        }
+      },
+      terminal);
+}
+
+EventLocation eventLocation(const ::dataflow::EventFamilyKey &event) {
+  return std::visit(
+      [](const auto &typed) -> EventLocation {
+        using Event = std::decay_t<decltype(typed)>;
+        if constexpr (std::is_same_v<Event,
+                                     ::dataflow::StaticTransferEventRef>) {
+          return std::visit(
+              [](const auto &transfer) -> EventLocation {
+                using Transfer = std::decay_t<decltype(transfer)>;
+                if constexpr (std::is_same_v<
+                                  Transfer,
+                                  ::dataflow::ProducedTransferEventRef>)
+                  return producerLocation(transfer.terminal);
+                else
+                  return consumerLocation(transfer.terminal);
+              },
+              typed);
+        } else {
+          return {typed.actor.launch.rootThreadLaunch, typed.actor.launch,
+                  false};
+        }
+      },
+      event);
+}
+
+class SystemEventDependencyGraph final {
+public:
+  explicit SystemEventDependencyGraph(
+      const ::dataflow::CanonicalDataflowProgramView &dataflow)
+      : dataflow_(dataflow) {}
+
+  llvm::Expected<std::uint32_t>
+  intern(const ::dataflow::EventFamilyKey &event) {
+    if (llvm::Error error = dataflow_.validate(event))
+      return std::move(error);
+    auto key = eventKey(dataflow_, event);
+    if (!key)
+      return key.takeError();
+    const auto found = ordinals_.find(*key);
+    if (found != ordinals_.end())
+      return found->second;
+    if (events_.size() >= std::numeric_limits<std::uint32_t>::max())
+      return invalid("System event dependency inventory exceeds u32");
+    const std::uint32_t ordinal = static_cast<std::uint32_t>(events_.size());
+    ordinals_.emplace(std::move(*key), ordinal);
+    events_.push_back(event);
+    edges_.emplace_back();
+    reverseEdges_.emplace_back();
+    return ordinal;
+  }
+
+  llvm::Error addEdge(const ::dataflow::EventFamilyKey &source,
+                      const ::dataflow::EventFamilyKey &sink) {
+    auto sourceOrdinal = intern(source);
+    if (!sourceOrdinal)
+      return sourceOrdinal.takeError();
+    auto sinkOrdinal = intern(sink);
+    if (!sinkOrdinal)
+      return sinkOrdinal.takeError();
+    if (*sourceOrdinal == *sinkOrdinal)
+      return llvm::Error::success();
+    edges_[*sourceOrdinal].push_back(*sinkOrdinal);
+    reverseEdges_[*sinkOrdinal].push_back(*sourceOrdinal);
+    return llvm::Error::success();
+  }
+
+  llvm::Error closeRootCompletionDependencies() {
+    const std::size_t originalCount = events_.size();
+    for (std::size_t completion = 0; completion != originalCount;
+         ++completion) {
+      const EventLocation location = eventLocation(events_[completion]);
+      if (!location.rootCompletion)
+        continue;
+      for (std::size_t source = 0; source != originalCount; ++source) {
+        if (source == completion ||
+            eventLocation(events_[source]).root != location.root)
+          continue;
+        edges_[source].push_back(static_cast<std::uint32_t>(completion));
+        reverseEdges_[completion].push_back(static_cast<std::uint32_t>(source));
+      }
+    }
+    canonicalize();
+    return llvm::Error::success();
+  }
+
+  std::vector<bool> ancestors(std::uint32_t event) const {
+    std::vector<bool> result(events_.size(), false);
+    if (event >= events_.size())
+      return result;
+    std::vector<std::uint32_t> worklist{event};
+    result[event] = true;
+    for (std::size_t cursor = 0; cursor != worklist.size(); ++cursor)
+      for (std::uint32_t predecessor : reverseEdges_[worklist[cursor]])
+        if (!result[predecessor]) {
+          result[predecessor] = true;
+          worklist.push_back(predecessor);
+        }
+    return result;
+  }
+
+  std::map<std::string, std::uint32_t> takeOrdinals() {
+    return std::move(ordinals_);
+  }
+
+  std::vector<std::vector<std::uint32_t>> takeReverseEdges() {
+    return std::move(reverseEdges_);
+  }
+
+private:
+  void canonicalize() {
+    for (auto &successors : edges_) {
+      llvm::sort(successors);
+      successors.erase(std::unique(successors.begin(), successors.end()),
+                       successors.end());
+    }
+    for (auto &predecessors : reverseEdges_) {
+      llvm::sort(predecessors);
+      predecessors.erase(std::unique(predecessors.begin(), predecessors.end()),
+                         predecessors.end());
+    }
+  }
+
+  const ::dataflow::CanonicalDataflowProgramView &dataflow_;
+  std::map<std::string, std::uint32_t> ordinals_;
+  std::vector<::dataflow::EventFamilyKey> events_;
+  std::vector<std::vector<std::uint32_t>> edges_;
+  std::vector<std::vector<std::uint32_t>> reverseEdges_;
+};
+
+void appendCellKey(std::string &bytes, const SystemPresburgerCell &cell) {
+  appendU32(bytes, cell.dimensionCount);
+  appendU32(bytes, cell.symbolCount);
+  appendU32(bytes, cell.localCount);
+  const auto appendRows = [&](const auto &rows) {
+    appendU64(bytes, rows.size());
+    for (const auto &row : rows) {
+      appendU64(bytes, row.size());
+      for (std::int64_t value : row)
+        appendI64(bytes, value);
+    }
+  };
+  appendRows(cell.equalities);
+  appendRows(cell.inequalities);
+}
+
+llvm::Expected<std::string>
+atomicActivationKey(const ArtifactIdentity &dataflowIdentity,
+                    const MappingProgressActivationProjection &activation) {
+  auto context = encodeExecutionContextKey(activation.context);
+  if (!context)
+    return context.takeError();
+  std::string result;
+  appendSized(result, *context);
+  std::vector<std::string> cells;
+  cells.reserve(activation.relationDomain.size());
+  for (const SystemPresburgerCell &cell : activation.relationDomain) {
+    std::string key;
+    appendCellKey(key, cell);
+    cells.push_back(std::move(key));
+  }
+  llvm::sort(cells);
+  cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+  appendU64(result, cells.size());
+  for (const std::string &cell : cells) {
+    appendU64(result, cell.size());
+    result.append(cell);
+  }
+  std::vector<std::string> triggers;
+  triggers.reserve(activation.triggerAlternatives.size());
+  for (const auto &event : activation.triggerAlternatives) {
+    auto key = eventKey(dataflowIdentity, event);
+    if (!key)
+      return key.takeError();
+    triggers.push_back(std::move(*key));
+  }
+  llvm::sort(triggers);
+  triggers.erase(std::unique(triggers.begin(), triggers.end()), triggers.end());
+  appendU64(result, triggers.size());
+  for (const std::string &trigger : triggers) {
+    appendU64(result, trigger.size());
+    result.append(trigger);
+  }
+  return result;
+}
+
+struct ProgressActivationGroup final {
+  std::vector<std::uint32_t> triggers;
+  std::vector<std::vector<std::uint32_t>> releases;
+  std::map<std::uint64_t, std::uint64_t> claims;
+};
+
+llvm::Error checkedAdd(std::uint64_t amount, std::uint64_t &value,
+                       llvm::StringRef subject) {
+  if (amount > std::numeric_limits<std::uint64_t>::max() - value)
+    return invalid(subject + " overflows u64");
+  value += amount;
+  return llvm::Error::success();
+}
+
+bool capacityBlocks(
+    const ProgressActivationGroup &pending,
+    const ProgressActivationGroup &holder,
+    llvm::ArrayRef<MappingProgressCapacityCellProjection> cells) {
+  for (const auto &[cell, pendingAmount] : pending.claims) {
+    const auto held = holder.claims.find(cell);
+    if (held == holder.claims.end() || cell >= cells.size())
+      continue;
+    const auto &capacity = cells[cell];
+    const unsigned __int128 demand =
+        static_cast<unsigned __int128>(capacity.baselineOccupancy) +
+        pendingAmount + held->second;
+    if (demand > capacity.capacity)
+      return true;
+  }
+  return false;
+}
+
+bool isAcyclic(llvm::ArrayRef<std::vector<std::uint32_t>> edges) {
+  std::vector<std::uint32_t> indegree(edges.size(), 0);
+  for (const auto &successors : edges)
+    for (std::uint32_t sink : successors)
+      if (sink < indegree.size())
+        ++indegree[sink];
+  std::vector<std::uint32_t> ready;
+  ready.reserve(edges.size());
+  for (std::uint32_t node = 0; node != indegree.size(); ++node)
+    if (indegree[node] == 0)
+      ready.push_back(node);
+  std::size_t visited = 0;
+  for (std::size_t cursor = 0; cursor != ready.size(); ++cursor) {
+    ++visited;
+    for (std::uint32_t sink : edges[ready[cursor]])
+      if (--indegree[sink] == 0)
+        ready.push_back(sink);
+  }
+  return visited == edges.size();
+}
+
+llvm::Error buildSystemEventDependencies(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    SystemEventDependencyGraph &graph) {
+  std::vector<std::pair<::dataflow::CanonicalGraphProducerEndpointRef,
+                        ::dataflow::CanonicalGraphConsumerEndpointRef>>
+      graphEdges;
+  if (llvm::Error error = dataflow.forEachGraphEdge(
+          [&](const auto &producer, const auto &consumer) -> llvm::Error {
+            graphEdges.emplace_back(producer, consumer);
+            return llvm::Error::success();
+          }))
+    return error;
+
+  std::vector<::dataflow::RootedGraphLaunchRef> launches;
+  dataflow.forEachRootedGraphLaunch(
+      [&](::dataflow::RootedGraphLaunchRef launch) {
+        launches.push_back(launch);
+      });
+  for (const ::dataflow::RootedGraphLaunchRef &launch : launches) {
+    auto launchedGraph = dataflow.resolve(launch);
+    if (!launchedGraph)
+      return launchedGraph.takeError();
+    for (const auto &[producer, consumer] : graphEdges) {
+      auto owner = dataflow.graphOf(producer);
+      if (!owner)
+        return owner.takeError();
+      if (*owner != *launchedGraph)
+        continue;
+      auto produced =
+          dataflow.projectRootedGraphEndpointEventFamilies(launch, producer);
+      if (!produced)
+        return produced.takeError();
+      auto consumed =
+          dataflow.projectRootedGraphEndpointEventFamilies(launch, consumer);
+      if (!consumed)
+        return consumed.takeError();
+      for (const auto &source : *produced)
+        for (const auto &sink : *consumed)
+          if (llvm::Error error = graph.addEdge(source, sink))
+            return error;
+    }
+  }
+
+  for (const auto &root : dataflow.rootThreadLaunches()) {
+    if (llvm::Error error = dataflow.forEachProducerTerminal(
+            root.ref, [&](const auto &producer) -> llvm::Error {
+              std::vector<::dataflow::CanonicalSinkTerminalRef> sinks;
+              if (llvm::Error pairError = dataflow.pairedSinks(
+                      producer.terminal,
+                      [&](const auto &sink) { sinks.push_back(sink); }))
+                return pairError;
+              const ::dataflow::EventFamilyKey produced(
+                  ::dataflow::StaticTransferEventRef(
+                      ::dataflow::ProducedTransferEventRef{producer.terminal}));
+              for (const auto &sink : sinks) {
+                const ::dataflow::EventFamilyKey consumed(
+                    ::dataflow::StaticTransferEventRef(
+                        ::dataflow::ConsumedTransferEventRef{sink}));
+                if (llvm::Error edgeError = graph.addEdge(produced, consumed))
+                  return edgeError;
+              }
+              return llvm::Error::success();
+            }))
+      return error;
+  }
+  return graph.closeRootCompletionDependencies();
 }
 
 struct ActorDependencyGraph final {
@@ -147,23 +583,51 @@ bool isBuffered(const std::optional<::loom::fabric::FabricPhysicalTraversalRef>
          fifo->mode == ::loom::fabric::FabricFifoTraversalMode::Buffered;
 }
 
-llvm::Expected<bool>
-dependentBranchIsBuffered(const SpatialRouteTreeView &route,
-                          std::uint64_t prerequisiteSink,
-                          std::uint64_t dependentSink) {
-  if (prerequisiteSink >= route.sinks.size() ||
+llvm::Expected<bool> dependentBranchHasDurableBoundary(
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
+    const SpatialRouteTreeView &route,
+    const SpatialRouteProgressPrerequisite &prerequisite,
+    std::uint64_t dependentSink) {
+  const auto *external =
+      std::get_if<SpatialRouteExternalSinkPrerequisite>(&prerequisite);
+  if ((external && external->sinkOrdinal >= route.sinks.size()) ||
       dependentSink >= route.sinks.size())
     return invalid("route progress dependency names an absent sink");
-  const SpatialRouteSinkView &prerequisite = route.sinks[prerequisiteSink];
   const SpatialRouteSinkView &dependent = route.sinks[dependentSink];
-  if (prerequisite.nodeOrdinal >= route.nodes.size() ||
-      dependent.nodeOrdinal >= route.nodes.size())
+  if (dependent.nodeOrdinal >= route.nodes.size())
     return invalid("route progress dependency names an absent node");
-  if (isBuffered(dependent.localTraversal))
+  auto localBoundary = deriveSpatialSinkDurableProgressBoundary(
+      techMapping, fabric, computeBindings, dependent);
+  if (!localBoundary)
+    return localBoundary.takeError();
+  if (*localBoundary)
     return true;
 
+  if (!external) {
+    std::uint64_t node = dependent.nodeOrdinal;
+    for (std::size_t visited = 0;; ++visited) {
+      if (visited >= route.nodes.size())
+        return invalid("route dependent ancestry is cyclic");
+      if (isBuffered(route.nodes[node].incomingTraversal))
+        return true;
+      const auto parent = route.nodes[node].parentOrdinal;
+      if (!parent)
+        return false;
+      if (*parent >= route.nodes.size())
+        return invalid("route dependent parent is out of range");
+      node = *parent;
+    }
+  }
+
+  const SpatialRouteSinkView &prerequisiteSink =
+      route.sinks[external->sinkOrdinal];
+  if (prerequisiteSink.nodeOrdinal >= route.nodes.size())
+    return invalid("route progress prerequisite names an absent node");
+
   std::vector<bool> prerequisiteAncestors(route.nodes.size(), false);
-  std::uint64_t node = prerequisite.nodeOrdinal;
+  std::uint64_t node = prerequisiteSink.nodeOrdinal;
   for (std::size_t visited = 0;; ++visited) {
     if (visited >= route.nodes.size() || prerequisiteAncestors[node])
       return invalid("route prerequisite ancestry is cyclic");
@@ -190,17 +654,350 @@ dependentBranchIsBuffered(const SpatialRouteTreeView &route,
   return false;
 }
 
+llvm::Expected<bool>
+systemDependentBranchHasDurableBoundary(const SystemTransferLegView &route,
+                                        std::uint64_t prerequisiteNode,
+                                        std::uint64_t dependentNode) {
+  std::map<std::uint64_t, const SystemTransferRouteNodeView *> nodes;
+  for (const SystemTransferRouteNodeView &node : route.nodes) {
+    if (node.ordinal == 0 || !nodes.emplace(node.ordinal, &node).second)
+      return invalid("System route has an invalid node identity");
+  }
+  const auto parent = [&](std::uint64_t node) -> llvm::Expected<std::uint64_t> {
+    if (node == 0)
+      return 0;
+    const auto found = nodes.find(node);
+    if (found == nodes.end())
+      return invalid("System route progress dependency names an absent node");
+    return found->second->parentOrdinal;
+  };
+
+  std::set<std::uint64_t> prerequisiteAncestors;
+  std::uint64_t node = prerequisiteNode;
+  for (std::size_t visited = 0;; ++visited) {
+    if (visited > nodes.size() || !prerequisiteAncestors.insert(node).second)
+      return invalid("System route prerequisite ancestry is cyclic");
+    if (node == 0)
+      break;
+    auto next = parent(node);
+    if (!next)
+      return next.takeError();
+    node = *next;
+  }
+
+  node = dependentNode;
+  for (std::size_t visited = 0; prerequisiteAncestors.count(node) == 0;
+       ++visited) {
+    if (visited > nodes.size() || node == 0)
+      return invalid("System route branches have no common ancestor");
+    const auto found = nodes.find(node);
+    if (found == nodes.end())
+      return invalid("System route dependent branch names an absent node");
+    if (isBuffered(std::optional{found->second->incomingTraversal}))
+      return true;
+    node = found->second->parentOrdinal;
+  }
+  return false;
+}
+
 } // namespace
 
-llvm::Expected<MappingProgressClosure> deriveMappingProgressClosure(
+llvm::Expected<MappingDataflowProgressBasis> deriveMappingDataflowProgressBasis(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::GraphRef> coveredGraphs) {
   auto graph = buildActorDependencyGraph(dataflow, coveredGraphs);
   if (!graph)
     return graph.takeError();
+  return MappingDataflowProgressBasis{
+      graph->acyclic ? MappingDataflowProgressBasisKind::Acyclic
+                     : MappingDataflowProgressBasisKind::Cyclic};
+}
+
+llvm::Expected<FrozenMappingProgressModel> freezeMappingProgressModel(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::EventFamilyKey> activationEvents) {
+  SystemEventDependencyGraph graph(dataflow);
+  for (const auto &event : activationEvents) {
+    auto ordinal = graph.intern(event);
+    if (!ordinal)
+      return ordinal.takeError();
+  }
+  if (llvm::Error error = buildSystemEventDependencies(dataflow, graph))
+    return std::move(error);
+  return FrozenMappingProgressModel(dataflow.identity(), graph.takeOrdinals(),
+                                    graph.takeReverseEdges());
+}
+
+llvm::Expected<MappingProgressProjection> projectSystemMappingProgress(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SystemMappingClosureProjection &closure) {
+  std::vector<::dataflow::GraphRef> coveredGraphs;
+  std::set<std::uint64_t> coveredGraphOrdinals;
+  for (const SystemSpatialContextDomain &domain :
+       closure.executionContexts.spatialDomains) {
+    auto graph = dataflow.resolve(domain.graph);
+    if (!graph)
+      return graph.takeError();
+    if (coveredGraphOrdinals.insert(graph->entity.value()).second)
+      coveredGraphs.push_back(*graph);
+  }
+  auto basis = deriveMappingDataflowProgressBasis(dataflow, coveredGraphs);
+  if (!basis)
+    return basis.takeError();
+  MappingProgressProjection result;
+  result.basis = *basis;
+  result.routeObligations = closure.routeObligations;
+  result.capacityCells.reserve(closure.capacityCells.size());
+  for (const SystemCapacityCellProjection &cell : closure.capacityCells)
+    result.capacityCells.push_back({cell.capacity, cell.baselineOccupancy});
+  result.resourceActivations.reserve(closure.resourceActivations.size());
+  for (const SystemResourceActivationProjection &activation :
+       closure.resourceActivations) {
+    auto physical = fabric.resolvePhysicalOwner(activation.physicalOwner);
+    if (!physical)
+      return physical.takeError();
+    const ::fabric::ResourceContract *contract =
+        physical->artifact.resourceContract(physical->localOwner);
+    if (!contract ||
+        activation.usePatternOrdinal >= contract->usePatternCount())
+      return invalid("System activation UsePattern is absent from Fabric");
+    const ::fabric::UsePattern pattern = contract->usePattern(
+        ::fabric::UsePatternKey(activation.usePatternOrdinal));
+    MappingResourceGrantPolicyKind policy =
+        MappingResourceGrantPolicyKind::None;
+    if (const auto grant = contract->grantPolicy())
+      policy = std::holds_alternative<::fabric::FixedPriorityView>(*grant)
+                   ? MappingResourceGrantPolicyKind::FixedPriority
+                   : MappingResourceGrantPolicyKind::RoundRobin;
+    const auto ownerBytes =
+        ::loom::fabric::canonicalFabricBytes(activation.physicalOwner);
+    const std::string ownerKey(
+        reinterpret_cast<const char *>(ownerBytes.data()), ownerBytes.size());
+    MappingProgressActivationProjection projected{
+        activation.context,
+        activation.relationDomain,
+        activation.triggerAlternatives,
+        {},
+        {},
+        MappingResourceProgressUse{ownerKey, pattern.requester.ordinal(),
+                                   policy}};
+    projected.capacityClaims.reserve(activation.capacityClaims.size());
+    for (const SystemCapacityClaimProjection &claim : activation.capacityClaims)
+      projected.capacityClaims.push_back(
+          {claim.capacityCellOrdinal, claim.amount});
+    projected.causalRelease.reserve(activation.causalRelease.size());
+    for (const SystemCausalReleasePointProjection &release :
+         activation.causalRelease)
+      projected.causalRelease.push_back({release.alternatives});
+    result.resourceActivations.push_back(std::move(projected));
+  }
+  return result;
+}
+
+llvm::Expected<MappingProgressClosure>
+deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
+                             const MappingProgressProjection &projection) {
+  if (projection.basis.kind != MappingDataflowProgressBasisKind::Acyclic)
+    return MappingProgressClosure{
+        MappingProgressClosureKind::ProofNotEstablished};
+  if (llvm::any_of(projection.routeObligations, [](const auto &obligation) {
+        return !obligation.durableBoundaryAfterDivergence;
+      }))
+    return MappingProgressClosure{
+        MappingProgressClosureKind::ProvenClosedWaitSet};
+
+  const auto eventOrdinal = [&](const ::dataflow::EventFamilyKey &event)
+      -> llvm::Expected<std::uint32_t> {
+    auto key = eventKey(model.dataflowIdentity_, event);
+    if (!key)
+      return key.takeError();
+    const auto found = model.eventOrdinals_.find(*key);
+    if (found == model.eventOrdinals_.end())
+      return invalid("System activation event is absent from the frozen "
+                     "Dataflow progress model");
+    return found->second;
+  };
+  const auto ancestors = [&](std::uint32_t event) {
+    std::vector<bool> result(model.reverseEdges_.size(), false);
+    if (event >= model.reverseEdges_.size())
+      return result;
+    std::vector<std::uint32_t> worklist{event};
+    result[event] = true;
+    for (std::size_t cursor = 0; cursor != worklist.size(); ++cursor)
+      for (std::uint32_t predecessor : model.reverseEdges_[worklist[cursor]])
+        if (!result[predecessor]) {
+          result[predecessor] = true;
+          worklist.push_back(predecessor);
+        }
+    return result;
+  };
+
+  std::map<std::string, std::size_t> groupOrdinals;
+  std::vector<ProgressActivationGroup> groups;
+  struct OwnerUse final {
+    MappingResourceGrantPolicyKind policy =
+        MappingResourceGrantPolicyKind::None;
+    std::set<std::uint32_t> requesters;
+  };
+  std::map<std::string, OwnerUse> owners;
+
+  for (const MappingProgressActivationProjection &activation :
+       projection.resourceActivations) {
+    if (activation.triggerAlternatives.empty())
+      return invalid("System resource activation has no trigger alternative");
+    auto key = atomicActivationKey(model.dataflowIdentity_, activation);
+    if (!key)
+      return key.takeError();
+    auto [position, inserted] = groupOrdinals.try_emplace(*key, groups.size());
+    if (inserted)
+      groups.emplace_back();
+    ProgressActivationGroup &group = groups[position->second];
+    for (const auto &trigger : activation.triggerAlternatives) {
+      auto ordinal = eventOrdinal(trigger);
+      if (!ordinal)
+        return ordinal.takeError();
+      group.triggers.push_back(*ordinal);
+    }
+    for (const MappingProgressCausalReleaseProjection &point :
+         activation.causalRelease) {
+      if (point.alternatives.empty())
+        return invalid("System causal release point has no alternative");
+      std::vector<std::uint32_t> alternatives;
+      alternatives.reserve(point.alternatives.size());
+      for (const auto &release : point.alternatives) {
+        auto ordinal = eventOrdinal(release);
+        if (!ordinal)
+          return ordinal.takeError();
+        alternatives.push_back(*ordinal);
+      }
+      llvm::sort(alternatives);
+      alternatives.erase(std::unique(alternatives.begin(), alternatives.end()),
+                         alternatives.end());
+      group.releases.push_back(std::move(alternatives));
+    }
+    for (const MappingProgressCapacityClaimProjection &claim :
+         activation.capacityClaims) {
+      if (claim.capacityCellOrdinal >= projection.capacityCells.size())
+        return invalid("System activation claim names a foreign capacity cell");
+      if (llvm::Error error =
+              checkedAdd(claim.amount, group.claims[claim.capacityCellOrdinal],
+                         "atomic activation capacity claim"))
+        return std::move(error);
+    }
+    const MappingResourceProgressUse &use = activation.arbitration;
+    if (use.physicalOwnerKey.empty())
+      return invalid("System activation has an empty physical owner key");
+    auto [owner, ownerInserted] =
+        owners.try_emplace(use.physicalOwnerKey, OwnerUse{use.grantPolicy, {}});
+    if (!ownerInserted && owner->second.policy != use.grantPolicy)
+      return invalid("one physical owner has inconsistent grant policies");
+    owner->second.requesters.insert(use.requester);
+  }
+
+  for (ProgressActivationGroup &group : groups) {
+    llvm::sort(group.triggers);
+    group.triggers.erase(
+        std::unique(group.triggers.begin(), group.triggers.end()),
+        group.triggers.end());
+    llvm::sort(group.releases);
+    group.releases.erase(
+        std::unique(group.releases.begin(), group.releases.end()),
+        group.releases.end());
+    for (const auto &[cell, amount] : group.claims) {
+      const auto &capacity = projection.capacityCells[cell];
+      const unsigned __int128 usage =
+          static_cast<unsigned __int128>(capacity.baselineOccupancy) + amount;
+      if (usage > capacity.capacity)
+        return MappingProgressClosure{
+            MappingProgressClosureKind::ProvenClosedWaitSet};
+    }
+  }
+
+  for (const auto &[key, owner] : owners) {
+    (void)key;
+    if (owner.policy == MappingResourceGrantPolicyKind::FixedPriority &&
+        owner.requesters.size() > 1)
+      return MappingProgressClosure{
+          MappingProgressClosureKind::ProofNotEstablished};
+  }
+
+  // Active and pending are separate nodes. This prevents ordinary contention
+  // between two pending atomic acquisitions from masquerading as hold-and-wait.
+  const auto activeNode = [](std::size_t group) {
+    return static_cast<std::uint32_t>(2 * group);
+  };
+  const auto pendingNode = [](std::size_t group) {
+    return static_cast<std::uint32_t>(2 * group + 1);
+  };
+  std::vector<std::vector<std::uint32_t>> waitFor(groups.size() * 2);
+
+  for (std::size_t holder = 0; holder != groups.size(); ++holder) {
+    for (const auto &releasePoint : groups[holder].releases) {
+      std::vector<bool> causalAncestors;
+      for (std::uint32_t alternative : releasePoint) {
+        const std::vector<bool> alternativeAncestors = ancestors(alternative);
+        if (causalAncestors.empty())
+          causalAncestors = alternativeAncestors;
+        else
+          for (std::size_t event = 0; event != alternativeAncestors.size();
+               ++event)
+            causalAncestors[event] =
+                causalAncestors[event] || alternativeAncestors[event];
+      }
+      for (std::size_t pending = 0; pending != groups.size(); ++pending) {
+        if (pending == holder)
+          continue;
+        const bool required =
+            llvm::any_of(groups[pending].triggers, [&](std::uint32_t trigger) {
+              return trigger < causalAncestors.size() &&
+                     causalAncestors[trigger];
+            });
+        if (required)
+          waitFor[activeNode(holder)].push_back(pendingNode(pending));
+      }
+    }
+  }
+  for (std::size_t pending = 0; pending != groups.size(); ++pending)
+    for (std::size_t holder = 0; holder != groups.size(); ++holder) {
+      if (pending == holder || !capacityBlocks(groups[pending], groups[holder],
+                                               projection.capacityCells))
+        continue;
+      waitFor[pendingNode(pending)].push_back(activeNode(holder));
+    }
+  for (auto &successors : waitFor) {
+    llvm::sort(successors);
+    successors.erase(std::unique(successors.begin(), successors.end()),
+                     successors.end());
+  }
+  if (!isAcyclic(waitFor))
+    return MappingProgressClosure{
+        MappingProgressClosureKind::ProofNotEstablished};
   return MappingProgressClosure{
-      graph->acyclic ? MappingProgressClosureKind::ProvenNoClosedWaitSet
-                     : MappingProgressClosureKind::ProofNotEstablished};
+      MappingProgressClosureKind::ProvenNoClosedWaitSet};
+}
+
+llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SystemMappingClosureProjection &closure) {
+  auto projection = projectSystemMappingProgress(dataflow, fabric, closure);
+  if (!projection)
+    return projection.takeError();
+  std::vector<::dataflow::EventFamilyKey> events;
+  for (const MappingProgressActivationProjection &activation :
+       projection->resourceActivations) {
+    events.insert(events.end(), activation.triggerAlternatives.begin(),
+                  activation.triggerAlternatives.end());
+    for (const MappingProgressCausalReleaseProjection &release :
+         activation.causalRelease)
+      events.insert(events.end(), release.alternatives.begin(),
+                    release.alternatives.end());
+  }
+  auto model = freezeMappingProgressModel(dataflow, events);
+  if (!model)
+    return model.takeError();
+  return deriveMappingProgressClosure(*model, *projection);
 }
 
 llvm::Expected<std::vector<SpatialRouteProgressDependency>>
@@ -218,11 +1015,34 @@ deriveSpatialRouteProgressDependencies(
   std::uint64_t generation = 0;
   for (const auto [netOrdinal, net] :
        llvm::enumerate(techMapping.residualLogicalNets())) {
+    struct PrerequisiteCandidate final {
+      ::dataflow::CanonicalGraphConsumerEndpointRef consumer;
+      SpatialRouteProgressPrerequisite prerequisite;
+    };
+    std::vector<PrerequisiteCandidate> candidates;
+    candidates.reserve(net.sinks.size());
+    for (const auto [sinkOrdinal, sink] : llvm::enumerate(net.sinks))
+      candidates.push_back(
+          {sink, SpatialRouteExternalSinkPrerequisite{sinkOrdinal}});
+    for (const auto [realizationOrdinal, realization] :
+         llvm::enumerate(techMapping.memoryRealizations()))
+      for (const auto &edgeRecord :
+           llvm::enumerate(realization.internalEdges)) {
+        const std::size_t edgeOrdinal = edgeRecord.index();
+        const TechMemoryInternalEdgeView &edge = edgeRecord.value();
+        if (edge.producer == net.producer &&
+            !llvm::any_of(candidates, [&](const auto &candidate) {
+              return candidate.consumer == edge.consumer;
+            }))
+          candidates.push_back(
+              {edge.consumer, SpatialRouteInternalMemoryConnectionPrerequisite{
+                                  realizationOrdinal, edgeOrdinal}});
+      }
     std::vector<std::optional<std::uint32_t>> sinkActors;
-    sinkActors.reserve(net.sinks.size());
-    for (const auto &sink : net.sinks)
-      sinkActors.push_back(actorOrdinal(*graph, sink));
-    for (std::size_t prerequisite = 0; prerequisite != net.sinks.size();
+    sinkActors.reserve(candidates.size());
+    for (const PrerequisiteCandidate &candidate : candidates)
+      sinkActors.push_back(actorOrdinal(*graph, candidate.consumer));
+    for (std::size_t prerequisite = 0; prerequisite != candidates.size();
          ++prerequisite) {
       if (!sinkActors[prerequisite])
         continue;
@@ -249,27 +1069,72 @@ deriveSpatialRouteProgressDependencies(
             *sinkActors[dependent] == *sinkActors[prerequisite] ||
             reachabilityMarks[*sinkActors[dependent]] != generation)
           continue;
-        result.push_back({netOrdinal, prerequisite, dependent});
+        result.push_back(
+            {netOrdinal, candidates[prerequisite].prerequisite, dependent});
       }
     }
   }
-  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
-    return std::tie(lhs.logicalNetOrdinal, lhs.dependentSinkOrdinal,
-                    lhs.prerequisiteSinkOrdinal) <
-           std::tie(rhs.logicalNetOrdinal, rhs.dependentSinkOrdinal,
-                    rhs.prerequisiteSinkOrdinal);
+  const auto prerequisiteKey = [](const auto &prerequisite) {
+    return std::visit(
+        [](const auto &typed) {
+          using T = std::decay_t<decltype(typed)>;
+          if constexpr (std::is_same_v<T, SpatialRouteExternalSinkPrerequisite>)
+            return std::tuple<std::uint8_t, std::uint64_t, std::uint64_t>{
+                0, typed.sinkOrdinal, 0};
+          else
+            return std::tuple<std::uint8_t, std::uint64_t, std::uint64_t>{
+                1, typed.memoryRealizationOrdinal, typed.internalEdgeOrdinal};
+        },
+        prerequisite);
+  };
+  llvm::sort(result, [&](const auto &lhs, const auto &rhs) {
+    const auto lhsPrefix =
+        std::tie(lhs.logicalNetOrdinal, lhs.dependentSinkOrdinal);
+    const auto rhsPrefix =
+        std::tie(rhs.logicalNetOrdinal, rhs.dependentSinkOrdinal);
+    if (lhsPrefix != rhsPrefix)
+      return lhsPrefix < rhsPrefix;
+    return prerequisiteKey(lhs.prerequisite) <
+           prerequisiteKey(rhs.prerequisite);
   });
   return result;
 }
 
-llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
+llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
-    llvm::ArrayRef<SpatialRouteTreeView> routes) {
-  auto basis = deriveMappingProgressClosure(dataflow, techMapping.covers());
-  if (!basis ||
-      basis->kind != MappingProgressClosureKind::ProvenNoClosedWaitSet)
-    return basis;
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
+    llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<::dataflow::GraphRef> selectedGraphs) {
+  std::set<std::uint64_t> selectedGraphEntities;
+  for (const ::dataflow::GraphRef graph : selectedGraphs) {
+    if (!llvm::is_contained(techMapping.covers(), graph))
+      return invalid("selected progress graph is absent from TechMapping");
+    if (!selectedGraphEntities.insert(graph.entity.value()).second)
+      return invalid("selected progress graph inventory contains a duplicate");
+  }
+  auto basis = deriveMappingDataflowProgressBasis(dataflow, selectedGraphs);
+  if (!basis)
+    return basis.takeError();
+  MappingProgressProjection result;
+  result.basis = *basis;
+  auto temporalDispatchDomains =
+      deriveSpatialTemporalPeDispatchDomains(fabric, computeBindings);
+  if (!temporalDispatchDomains)
+    return temporalDispatchDomains.takeError();
+  std::set<std::uint64_t> dispatchedRealizations;
+  for (const SpatialTemporalPeDispatchDomainView &domain :
+       *temporalDispatchDomains) {
+    if (domain.candidates.empty() ||
+        domain.resetPosition >= domain.candidates.size())
+      return invalid("temporal dispatch progress domain is malformed");
+    for (const SpatialTemporalPeDispatchCandidateView &candidate :
+         domain.candidates)
+      if (!dispatchedRealizations.insert(candidate.realization).second)
+        return invalid("temporal compute realization belongs to multiple fair "
+                       "dispatch domains");
+  }
   auto dependencies =
       deriveSpatialRouteProgressDependencies(dataflow, techMapping);
   if (!dependencies)
@@ -279,33 +1144,203 @@ llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
     if (dependency.logicalNetOrdinal >= nets.size())
       return invalid("route progress dependency names an absent logical net");
     const TechResidualLogicalNetView &net = nets[dependency.logicalNetOrdinal];
+    auto graph = dataflow.graphOf(net.producer);
+    if (!graph)
+      return graph.takeError();
+    if (selectedGraphEntities.count(graph->entity.value()) == 0)
+      continue;
     const auto route = llvm::find_if(routes, [&](const auto &candidate) {
       return candidate.logicalNet == net.producer;
     });
     if (route == routes.end())
       return invalid("route progress dependency has no selected route");
-    if (dependency.prerequisiteSinkOrdinal >= net.sinks.size() ||
+    const auto *external = std::get_if<SpatialRouteExternalSinkPrerequisite>(
+        &dependency.prerequisite);
+    if ((external && external->sinkOrdinal >= net.sinks.size()) ||
         dependency.dependentSinkOrdinal >= net.sinks.size())
       return invalid("route progress dependency names an absent logical sink");
+    if (const auto *internal =
+            std::get_if<SpatialRouteInternalMemoryConnectionPrerequisite>(
+                &dependency.prerequisite)) {
+      const auto realizations = techMapping.memoryRealizations();
+      if (internal->memoryRealizationOrdinal >= realizations.size() ||
+          internal->internalEdgeOrdinal >=
+              realizations[internal->memoryRealizationOrdinal]
+                  .internalEdges.size() ||
+          realizations[internal->memoryRealizationOrdinal]
+                  .internalEdges[internal->internalEdgeOrdinal]
+                  .producer != net.producer)
+        return invalid(
+            "route progress dependency names an absent internal connection");
+    }
     const auto prerequisite =
-        llvm::find_if(route->sinks, [&](const auto &sink) {
-          return sink.sink == net.sinks[dependency.prerequisiteSinkOrdinal];
-        });
+        external ? llvm::find_if(route->sinks,
+                                 [&](const auto &sink) {
+                                   return sink.sink ==
+                                          net.sinks[external->sinkOrdinal];
+                                 })
+                 : route->sinks.end();
     const auto dependent = llvm::find_if(route->sinks, [&](const auto &sink) {
       return sink.sink == net.sinks[dependency.dependentSinkOrdinal];
     });
-    if (prerequisite == route->sinks.end() || dependent == route->sinks.end())
+    if ((external && prerequisite == route->sinks.end()) ||
+        dependent == route->sinks.end())
       return invalid("selected route omits a progress dependency sink");
-    auto buffered = dependentBranchIsBuffered(
-        *route, std::distance(route->sinks.begin(), prerequisite),
+    SpatialRouteProgressPrerequisite routedPrerequisite =
+        dependency.prerequisite;
+    if (external)
+      routedPrerequisite =
+          SpatialRouteExternalSinkPrerequisite{static_cast<std::uint64_t>(
+              std::distance(route->sinks.begin(), prerequisite))};
+    auto durable = dependentBranchHasDurableBoundary(
+        techMapping, fabric, computeBindings, *route, routedPrerequisite,
         std::distance(route->sinks.begin(), dependent));
-    if (!buffered)
-      return buffered.takeError();
-    if (!*buffered)
-      return MappingProgressClosure{
-          MappingProgressClosureKind::ProvenClosedWaitSet};
+    if (!durable)
+      return durable.takeError();
+    result.routeObligations.push_back({*durable});
   }
-  return basis;
+  return result;
+}
+
+llvm::Expected<std::vector<SystemTransferRouteProgressDependency>>
+deriveSystemTransferRouteProgressDependencies(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<CanonicalServiceLegKey> transferLegs) {
+  SystemEventDependencyGraph graph(dataflow);
+  struct LegEvents final {
+    CanonicalServiceLegKey leg;
+    std::vector<std::uint32_t> sinkEvents;
+  };
+  std::vector<LegEvents> projected;
+  projected.reserve(transferLegs.size());
+  std::set<std::string> seenLegs;
+  for (const CanonicalServiceLegKey &leg : transferLegs) {
+    auto legBytes = encodeCanonicalServiceLegKey(dataflow.identity(), leg);
+    if (!legBytes)
+      return legBytes.takeError();
+    if (!seenLegs
+             .emplace(reinterpret_cast<const char *>(legBytes->data()),
+                      legBytes->size())
+             .second)
+      continue;
+    const auto *producer =
+        std::get_if<TransferObligationFamilyKey>(&leg.obligation);
+    if (!producer)
+      continue;
+    std::vector<::dataflow::CanonicalSinkTerminalRef> sinks;
+    if (llvm::Error error = dataflow.pairedSinks(
+            *producer, [&](const auto &sink) { sinks.push_back(sink); }))
+      return std::move(error);
+    LegEvents record{leg, {}};
+    record.sinkEvents.reserve(sinks.size());
+    for (const auto &sink : sinks) {
+      const ::dataflow::EventFamilyKey event(::dataflow::StaticTransferEventRef(
+          ::dataflow::ConsumedTransferEventRef{sink}));
+      auto ordinal = graph.intern(event);
+      if (!ordinal)
+        return ordinal.takeError();
+      record.sinkEvents.push_back(*ordinal);
+    }
+    projected.push_back(std::move(record));
+  }
+  if (llvm::Error error = buildSystemEventDependencies(dataflow, graph))
+    return std::move(error);
+
+  std::vector<SystemTransferRouteProgressDependency> result;
+  for (const LegEvents &record : projected)
+    for (std::uint64_t dependentSink = 0;
+         dependentSink < record.sinkEvents.size(); ++dependentSink) {
+      const std::vector<bool> ancestors =
+          graph.ancestors(record.sinkEvents[dependentSink]);
+      for (std::uint64_t prerequisiteSink = 0;
+           prerequisiteSink < record.sinkEvents.size(); ++prerequisiteSink) {
+        if (prerequisiteSink == dependentSink ||
+            record.sinkEvents[prerequisiteSink] ==
+                record.sinkEvents[dependentSink] ||
+            record.sinkEvents[prerequisiteSink] >= ancestors.size() ||
+            !ancestors[record.sinkEvents[prerequisiteSink]])
+          continue;
+        result.push_back({record.leg, prerequisiteSink, dependentSink});
+      }
+    }
+  return result;
+}
+
+llvm::Expected<std::vector<MappingRouteProgressObligationProjection>>
+projectSystemTransferRouteProgress(
+    llvm::ArrayRef<SystemTransferLegView> transferLegs,
+    llvm::ArrayRef<SystemTransferRouteProgressDependency> dependencies) {
+  std::vector<MappingRouteProgressObligationProjection> result;
+  for (const SystemTransferLegView &route : transferLegs) {
+    std::map<std::uint64_t, std::vector<std::uint64_t>> routeNodesBySink;
+    for (const SystemTransferRouteSinkView &sink : route.sinks) {
+      const auto *terminal =
+          std::get_if<SystemTransferSinkTerminalKey>(&sink.terminal);
+      if (!terminal)
+        return invalid("System route progress sink uses a source terminal");
+      if (terminal->leg != route.leg)
+        return invalid("System route progress sink belongs to another leg");
+      routeNodesBySink[terminal->sinkOrdinal].push_back(sink.nodeOrdinal);
+    }
+    for (auto &[sinkOrdinal, nodes] : routeNodesBySink) {
+      (void)sinkOrdinal;
+      llvm::sort(nodes);
+      nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+    }
+    for (const SystemTransferRouteProgressDependency &dependency :
+         dependencies) {
+      if (dependency.leg != route.leg)
+        continue;
+      const auto prerequisite =
+          routeNodesBySink.find(dependency.prerequisiteSinkOrdinal);
+      const auto dependent =
+          routeNodesBySink.find(dependency.dependentSinkOrdinal);
+      if (prerequisite == routeNodesBySink.end() ||
+          dependent == routeNodesBySink.end())
+        continue;
+      for (std::uint64_t prerequisiteNode : prerequisite->second)
+        for (std::uint64_t dependentNode : dependent->second) {
+          auto durable = systemDependentBranchHasDurableBoundary(
+              route, prerequisiteNode, dependentNode);
+          if (!durable)
+            return durable.takeError();
+          result.push_back({*durable});
+        }
+    }
+  }
+  return result;
+}
+
+llvm::Expected<std::vector<MappingRouteProgressObligationProjection>>
+projectSystemTransferRouteProgress(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<SystemTransferLegView> transferLegs) {
+  std::vector<CanonicalServiceLegKey> legs;
+  legs.reserve(transferLegs.size());
+  for (const SystemTransferLegView &route : transferLegs)
+    legs.push_back(route.leg);
+  auto dependencies =
+      deriveSystemTransferRouteProgressDependencies(dataflow, legs);
+  if (!dependencies)
+    return dependencies.takeError();
+  return projectSystemTransferRouteProgress(transferLegs, *dependencies);
+}
+
+llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
+    llvm::ArrayRef<SpatialRouteTreeView> routes) {
+  auto projection = projectSpatialMappingProgress(dataflow, techMapping, fabric,
+                                                  computeBindings, routes,
+                                                  techMapping.covers());
+  if (!projection)
+    return projection.takeError();
+  auto model = freezeMappingProgressModel(dataflow, {});
+  if (!model)
+    return model.takeError();
+  return deriveMappingProgressClosure(*model, *projection);
 }
 
 } // namespace loom::mapping

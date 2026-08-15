@@ -284,6 +284,9 @@ private:
       : fabric_(fabric), memory_(memory), field_(std::move(field)),
         layout_(std::move(layout)) {}
 
+  llvm::Expected<CanonicalSemanticBytes>
+  encodeLocallyValid(const FabricMemoryConfigurationValue &value) const;
+
   const FabricArtifactView *fabric_ = nullptr;
   FabricMemoryOccurrenceRef memory_;
   FabricSemanticConfigFieldRef field_;

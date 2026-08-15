@@ -2,6 +2,7 @@
 #define LOOM_LIB_MAPPING_ARTIFACT_CONFIGUREDHARDWAREPROJECTIONINTERNAL_H
 
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
 #include "llvm/ADT/APInt.h"
 
@@ -39,9 +40,12 @@ deriveConfiguredPeFields(
     const ::loom::fabric::FabricArtifactView &fabric,
     const TechMappingView &techMapping,
     llvm::ArrayRef<SpatialComputeBindingView> bindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses,
-    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments);
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView>
+        operandQueueMatchGroups);
 
 llvm::Expected<std::vector<ConfiguredHardwareFieldValueView>>
 deriveConfiguredBoundaryFields(
@@ -58,9 +62,12 @@ deriveConfiguredHardwareProjection(
     llvm::ArrayRef<SpatialComputeBindingView> bindings,
     llvm::ArrayRef<SpatialMemoryEngineBindingView> memoryEngines,
     llvm::ArrayRef<SpatialMemoryBindingView> memoryBindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses,
-    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments);
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView>
+        operandQueueMatchGroups);
 
 llvm::Expected<std::vector<ConfiguredHardwareFieldValueView>>
 deriveConfiguredMemoryFields(

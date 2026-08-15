@@ -140,9 +140,12 @@ deriveConfiguredHardwareProjection(
     llvm::ArrayRef<SpatialComputeBindingView> bindings,
     llvm::ArrayRef<SpatialMemoryEngineBindingView> memoryEngines,
     llvm::ArrayRef<SpatialMemoryBindingView> memoryBindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<SpatialResourceUseView> resourceUses,
-    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments) {
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments,
+    llvm::ArrayRef<SpatialPeOperandQueueMatchGroupView>
+        operandQueueMatchGroups) {
   if (bindings.size() != techMapping.computeRealizations().size())
     return invalid("configured hardware projection has incomplete bindings");
 
@@ -221,7 +224,8 @@ deriveConfiguredHardwareProjection(
   }
 
   auto peFields = deriveConfiguredPeFields(
-      fabric, techMapping, bindings, routes, resourceUses, physicalTagSegments);
+      fabric, techMapping, bindings, registerFifoTransfers, routes,
+      resourceUses, physicalTagSegments, operandQueueMatchGroups);
   if (!peFields)
     return peFields.takeError();
   fields.insert(fields.end(), std::make_move_iterator(peFields->begin()),
@@ -248,6 +252,11 @@ deriveConfiguredHardwareProjection(
   traversals.erase(std::unique(traversals.begin(), traversals.end()),
                    traversals.end());
 
+  auto temporalSwitchRows = deriveSpatialTemporalSwitchPackedRows(
+      fabric, routes, resourceUses, physicalTagSegments);
+  if (!temporalSwitchRows)
+    return temporalSwitchRows.takeError();
+
   for (const auto sw : fabric.switchOccurrences()) {
     std::vector<::loom::fabric::FabricPhysicalTraversalRef> selected;
     for (const auto &traversal : traversals) {
@@ -272,25 +281,11 @@ deriveConfiguredHardwareProjection(
         return ::loom::fabric::encodeSpatialSwitchConfiguration(fabric, field,
                                                                 selected);
       std::vector<::loom::fabric::FabricTemporalSwitchRouteEntry> entries;
-      for (const RouteTraversalUse &use : routeTraversals) {
-        const auto *payload =
-            std::get_if<::loom::fabric::FabricSwitchTraversalPayload>(
-                &use.traversal.payload);
-        if (!payload || payload->owner != sw)
+      for (const SpatialTemporalSwitchPackedRowView &row :
+           *temporalSwitchRows) {
+        if (row.occurrence != sw)
           continue;
-        auto tag = resolveConfiguredHardwarePhysicalTag(
-            fabric, routes, resourceUses, physicalTagSegments, use.routeOrdinal,
-            use.nodeOrdinal);
-        if (!tag)
-          return tag.takeError();
-        auto found = llvm::find_if(
-            entries, [&](const auto &entry) { return entry.tag == *tag; });
-        if (found == entries.end()) {
-          entries.push_back({std::move(*tag), {use.traversal}});
-          continue;
-        }
-        if (!llvm::is_contained(found->selectedTraversals, use.traversal))
-          found->selectedTraversals.push_back(use.traversal);
+        entries.push_back({row.tag, row.traversals});
       }
       return ::loom::fabric::encodeTemporalSwitchConfiguration(fabric, field,
                                                                entries);

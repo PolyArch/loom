@@ -80,6 +80,30 @@ void completedProductSurvivesExpansionLimit() {
     fail("a completed component product was discarded at the expansion limit");
 }
 
+void sealedCoversFollowFormalRank() {
+  const loom::ArtifactIdentity owner = identity();
+  loom::mapping::detail::TechMatchDomain domain;
+  for (std::uint64_t ordinal = 0; ordinal < 5; ++ordinal)
+    domain.actors.push_back(actor(owner, ordinal));
+  domain.rows = {
+      row(0, {0}),     row(1, {0, 1, 2, 3}), row(2, {0, 1}),  row(3, {0, 1, 2}),
+      row(4, {4}),     row(5, {3}),          row(6, {2}),     row(7, {1}),
+      row(8, {1, 2}),  row(9, {1, 3}),       row(10, {1, 3}), row(11, {1, 4}),
+      row(12, {1, 4}), row(13, {1, 3, 4}),
+  };
+
+  loom::mapping::TechMappingGenerationAccounting accounting;
+  const auto result = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(10, 3), accounting);
+  if (result.exhausted || result.covers.size() != 3 ||
+      result.covers[0].size() != 2 || result.covers[1].size() != 3 ||
+      result.covers[2].size() != 4)
+    fail("sealed covers did not retain row-count-first canonical rank");
+  if (coverKey(result.covers[1]) != std::vector<std::uint8_t>({3, 4, 5}) ||
+      coverKey(result.covers[2]) != std::vector<std::uint8_t>({2, 4, 5, 6}))
+    fail("sealed covers did not use canonical row keys as the rank tie-break");
+}
+
 long peakRssKiB() {
   struct rusage usage{};
   if (getrusage(RUSAGE_SELF, &usage) != 0)
@@ -122,11 +146,30 @@ void independentComponentFrontierIsCompact() {
     fail("independent component product exceeded its incremental RSS gate");
 }
 
+void realizationCountLowerBoundIsAdmissible() {
+  const loom::ArtifactIdentity owner = identity();
+  loom::mapping::detail::TechMatchDomain domain;
+  for (std::uint64_t ordinal = 0; ordinal < 4; ++ordinal)
+    domain.actors.push_back(actor(owner, ordinal));
+  domain.rows = {
+      row(0, {0}), row(1, {0, 1}), row(2, {1}),
+      row(3, {2}), row(4, {3}),    row(5, {1, 2, 3}),
+  };
+
+  loom::mapping::TechMappingGenerationAccounting accounting;
+  const auto result = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(1024, 2), accounting);
+  if (result.covers.size() != 2 || result.covers.front().size() != 2 ||
+      coverKey(result.covers.front()) != std::vector<std::uint8_t>({0, 5}))
+    fail("a realization-count estimate reordered a smaller exact cover");
+}
+
 void prospectiveSeedHasOneKeyedOutcome() {
   const loom::ArtifactIdentity owner = identity();
   const std::array<dataflow::ActorRef, 1> actors = {actor(owner, 0)};
   loom::mapping::TechMappingGenerationAccounting accounting;
-  loom::mapping::detail::TechMatchRowCollector collector(actors, 2, accounting);
+  loom::mapping::detail::TechMatchRowCollector collector(actors, 2, accounting,
+                                                         {});
 
   if (!take(collector.beginSeed({0x10})))
     fail("the first prospective seed did not enter the finite prefix");
@@ -155,7 +198,8 @@ void canonicalRejectedRangePreservesLimitAccounting() {
   const loom::ArtifactIdentity owner = identity();
   const std::array<dataflow::ActorRef, 1> actors = {actor(owner, 0)};
   loom::mapping::TechMappingGenerationAccounting accounting;
-  loom::mapping::detail::TechMatchRowCollector collector(actors, 4, accounting);
+  loom::mapping::detail::TechMatchRowCollector collector(actors, 4, accounting,
+                                                         {});
 
   if (!take(collector.beginSeed({0x10})))
     fail("the seed before a rejected range did not enter the prefix");
@@ -181,7 +225,9 @@ void canonicalRejectedRangePreservesLimitAccounting() {
 
 int main() {
   independentComponentFrontierIsCompact();
+  realizationCountLowerBoundIsAdmissible();
   completedProductSurvivesExpansionLimit();
+  sealedCoversFollowFormalRank();
   prospectiveSeedHasOneKeyedOutcome();
   canonicalRejectedRangePreservesLimitAccounting();
   llvm::outs() << "tech mapping search tests passed\n";

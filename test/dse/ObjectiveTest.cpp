@@ -6,11 +6,14 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -119,18 +122,25 @@ void builtinOrderingEnergyAndParetoUseOneVector() {
       loom::resolvedBuiltinObjectiveCatalogs();
   const loom::dse::ObjectiveProgram program =
       take(loom::dse::ObjectiveProgram::get(catalogs));
+  std::size_t mappingMeasureCount = 0;
+  for (const loom::ResolvedObjectiveDimension &dimension : catalogs.dimensions)
+    if (const auto *measure =
+            std::get_if<loom::ResolvedMappingMeasureObjectiveSource>(
+                &dimension.source))
+      mappingMeasureCount = std::max(
+          mappingMeasureCount, static_cast<std::size_t>(measure->ordinal) + 1);
 
   std::vector<std::uint64_t> leftViolations(loom::resolvedPnrViolationKindCount,
                                             0);
   leftViolations[0] = 1;
-  const std::uint64_t leftMeasures[] = {0, 0};
+  const std::vector<std::uint64_t> leftMeasures(mappingMeasureCount, 0);
   loom::dse::ObjectiveVector left = program.makeVector();
   requireSuccess(program.evaluate({leftViolations, leftMeasures, {}}, left));
 
   std::vector<std::uint64_t> rightViolations(
       loom::resolvedPnrViolationKindCount, 0);
-  const std::uint64_t rightMeasures[] = {
-      std::numeric_limits<std::uint64_t>::max(), 0};
+  std::vector<std::uint64_t> rightMeasures(mappingMeasureCount, 0);
+  rightMeasures.front() = std::numeric_limits<std::uint64_t>::max();
   loom::dse::ObjectiveVector right = program.makeVector();
   requireSuccess(program.evaluate({rightViolations, rightMeasures, {}}, right));
 
@@ -140,12 +150,15 @@ void builtinOrderingEnergyAndParetoUseOneVector() {
       take(program.compareTotalOrdering(left, leftKey, right, rightKey, 0)) > 0,
       "violation level did not dominate traversal quality");
 
+  constexpr std::uint32_t searchEnergyLevel = 4;
   const loom::dse::ObjectiveWideValue leftEnergy =
-      take(program.weightedLevelValue(left, 3));
-  require(leftEnergy.high == 0 && leftEnergy.low == UINT64_C(4294967296),
+      take(program.weightedLevelValue(left, searchEnergyLevel));
+  require(leftEnergy.high == 0 &&
+              leftEnergy.low == UINT64_C(281474976710656),
           "search energy did not use the selected fixed weight");
   const loom::dse::ObjectiveSignedDifference delta =
-      take(program.signedWeightedLevelDifference(left, right, 3));
+      take(program.signedWeightedLevelDifference(left, right,
+                                                 searchEnergyLevel));
   require(delta.sign == loom::dse::ObjectiveDifferenceSign::Negative,
           "energy difference has the wrong sign");
 
@@ -156,7 +169,7 @@ void builtinOrderingEnergyAndParetoUseOneVector() {
           "crossing objective dimensions must remain incomparable");
 
   loom::dse::ObjectiveVector zero = program.makeVector();
-  const std::uint64_t zeroMeasures[] = {0, 0};
+  const std::vector<std::uint64_t> zeroMeasures(mappingMeasureCount, 0);
   requireSuccess(program.evaluate({rightViolations, zeroMeasures, {}}, zero));
   require(take(program.comparePareto(zero, left, paretoDimensions)) ==
               loom::dse::ParetoRelation::Dominates,
@@ -190,7 +203,8 @@ void completeDeclaredLevelDomainMustFitUint128() {
 void malformedOwnerReferencesFailAtPreflight() {
   loom::ResolvedObjectiveCatalogs stale;
   stale.dimensions = {
-      {loom::ResolvedMappingMeasureObjectiveSource{2},
+      {loom::ResolvedMappingMeasureObjectiveSource{
+           std::numeric_limits<std::uint32_t>::max()},
        loom::ResolvedObjectiveDirection::Minimize,
        loom::resolvedObjectiveInteger(0), loom::resolvedObjectiveInteger(1), 0,
        1},

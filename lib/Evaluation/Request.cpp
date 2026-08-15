@@ -233,11 +233,6 @@ MetricRequest::get(MetricQuery query,
                    const EvaluationCase &evaluationCase,
                    const CaseArtifactResolution &resolution,
                    const ArtifactStore &artifactStore) {
-  if (evaluationCase.signature().schemaVersion() == SchemaVersion{2, 0} &&
-      static_cast<std::uint32_t>(query.metric) >
-          static_cast<std::uint32_t>(MetricKind::MaximumVoltageDrop))
-    return evaluationError(
-        "Evaluation registry 2.0 does not contain the requested metric");
   if (llvm::Error error = validateMetricQuery(query))
     return std::move(error);
 

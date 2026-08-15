@@ -59,7 +59,7 @@ error.
 
 ## TechMapping Verifier
 
-The TechMapping verifier consumes one `mapping.tech` `5.0` root and its exact
+The TechMapping verifier consumes one `mapping.tech` `6.0` root and its exact
 Canonical Dataflow Program `D` and Fabric Hardware Description `F`. It checks
 at least:
 
@@ -136,7 +136,7 @@ or FrozenModel caches, search history, Evaluation Evidence, or runtime state.
 
 The verifier checks in dependency order:
 
-* the `mapping.spatial` `5.0` root shape and exact `T`, `D`, and `F` bindings;
+* the `mapping.spatial` `6.0` root shape and exact `T`, `D`, and `F` bindings;
 * `T.D == D`, `T.F == F`, and complete inherited TechMapping coverage;
 * exactly one ComputeBinding per Compute Realization and one
   MemoryEngineBinding per Memory Realization;
@@ -173,6 +173,9 @@ The verifier checks in dependency order:
   supplied role and one output write per externally exposed result role,
   uniqueness of incompatible interpretations within each local physical
   ingress match domain, and legal tag reuse across disjoint domains;
+* execution-plan equality with that same Temporal memory role projection,
+  including occurrence-local internal-connection closure, and execution-plan
+  equality with every Temporal PE queue's allocation unit and entry capacity;
 * one typed target on every MemoryOperationUse and ExposureEntry, with the
   reconstructed `C_dispatch` contained in Fabric-owned `H_dispatch`;
 * exact agreement between each addressed or exposure target and its
@@ -259,10 +262,9 @@ SpatialMapping checks the complete SpatialCore-local graph. SystemMapping
 requires every exact imported SpatialMapping to have passed its own gate, then
 composes the active arcs mechanically derived from those immutable mappings
 with the System transport and spatial-attachment arcs and checks the complete
-combined graph. `hierarchical` and `flat` are search decompositions, not
-verifier modes. A flat search that changed a reopened Spatial decision must
-first finalize the replacement SpatialMapping before constructing the one
-ordinary SystemMapping.
+combined graph. The verifier has no search mode. Current System PnR is
+hierarchical and therefore consumes only independently finalized immutable
+SpatialMappings before constructing the ordinary SystemMapping.
 
 For the System form, `M`'s exact import table and upstream bindings
 mechanically resolve those SpatialMappings and their Module Fabric views. They
@@ -366,7 +368,7 @@ The intrinsic verifier is:
 SystemMappingBaseVerifier(D, F, M, ExactSpatialMappingSet(M))
 ```
 
-`M` is a `mapping.system` `5.0` root. `F` supplies the architecture-only
+`M` is a `mapping.system` `6.0` root. `F` supplies the architecture-only
 Fabric system and exact Transport Architecture; protocol-specific
 Interconnect Implementation is not a Mapping input.
 
@@ -398,7 +400,8 @@ their event families into each graph-launch context through Dataflow's unique
 `RootedGraphEndpointEventProjection`. One Spatial trigger endpoint expands to
 alternative System event rows; one Spatial `AllOf` release remains an `AllOf`
 of per-point `AnyOf` alternative sets. The projection then composes complete
-cross-Spatial/System service paths and derives capacity, acquire, release, and
+cross-Spatial/System service paths and derives selected route dependencies,
+typed post-divergence boundary obligations, capacity, acquire, release, and
 wait-for closure. It has no ArtifactIdentity and is not a fourth Mapping
 profile, record family, proof object, or runtime image.
 
@@ -521,14 +524,18 @@ Using that projection, the base verifier checks:
   and
 * progress and deadlock closure using the confirmed Fabric guarantees,
   existing Dataflow causal events, and exact selected routes, including a
-  post-divergence Buffered FIFO on every dependent branch of an atomic
-  multicast whose prerequisite sink can causally reach that dependent sink.
-  A FIFO on the shared route prefix and a bypass traversal do not satisfy this
-  condition.
+  typed durable boundary on every dependent branch of an atomic multicast
+  whose prerequisite sink can causally reach that dependent sink. Current
+  boundary kinds are a buffered FIFO traversal and a selected Temporal PE
+  operand queue. A boundary on the shared route prefix, a bypass traversal,
+  and a Temporal Memory row do not satisfy this condition.
 
-All verifier modules consume the same closure projection. They cannot build
-independent interpretations that disagree about imported use qualification,
-service continuity, capacity, or progress.
+All verifier modules consume the same closure projection. The independent
+importer reconstructs imported Spatial route obligations and System
+service-leg obligations from persistent artifacts; it never trusts a
+generator proof label. Verifier modules cannot build independent
+interpretations that disagree about imported use qualification, service
+continuity, capacity, or progress.
 
 The System base result uses this closed algebra:
 

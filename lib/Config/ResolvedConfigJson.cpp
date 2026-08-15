@@ -96,18 +96,6 @@ llvm::json::Object pnrPolicyJson(const loom::ResolvedPnrPolicyConfig &policy) {
        policy.temporaryViolations.admitted)
     temporaryViolations.push_back(violationName(violation));
 
-  llvm::json::Array focusedDimensions;
-  for (std::uint32_t dimension :
-       policy.objectiveSelection.focusedClosureDimensions)
-    focusedDimensions.push_back(dimension);
-
-  llvm::json::Array evaluationBindings;
-  for (const loom::ResolvedPnrEvaluationBindingSelection &binding :
-       policy.evaluationBindings)
-    evaluationBindings.push_back(
-        llvm::json::Object{{"obligation_template", binding.obligationTemplate},
-                           {"interaction_domain", binding.interactionDomain}});
-
   llvm::json::Object exactRepair;
   if (search.exactRepair.kind == loom::ResolvedPnrExactRepairKind::Disabled) {
     exactRepair = llvm::json::Object{{"kind", "disabled"}};
@@ -145,11 +133,7 @@ llvm::json::Object pnrPolicyJson(const loom::ResolvedPnrPolicyConfig &policy) {
                 {"no_progress_trend_window",
                  search.routing.noProgressTrendWindow},
                 {"negotiation_policy",
-                 routingNegotiationJson(search.routing.negotiation)},
-                {"route_guidance_binding",
-                 search.routing.routeGuidanceBinding
-                     ? llvm::json::Value(*search.routing.routeGuidanceBinding)
-                     : llvm::json::Value(nullptr)}}},
+                 routingNegotiationJson(search.routing.negotiation)}}},
            {"annealing",
             llvm::json::Object{
                 {"calibration_proposal_count",
@@ -165,9 +149,6 @@ llvm::json::Object pnrPolicyJson(const loom::ResolvedPnrPolicyConfig &policy) {
                  search.annealing.proposalsPerLevelBase},
                 {"proposals_per_movable_decision",
                  search.annealing.proposalsPerMovableDecision}}},
-           {"focused_closure",
-            llvm::json::Object{
-                {"proposal_limit", search.focusedClosureProposalLimit}}},
            {"exact_repair", std::move(exactRepair)}}},
       {"determinism_policy",
        llvm::json::Object{
@@ -178,9 +159,7 @@ llvm::json::Object pnrPolicyJson(const loom::ResolvedPnrPolicyConfig &policy) {
       {"selected_total_ordering",
        policy.objectiveSelection.selectedTotalOrdering},
       {"selected_search_energy",
-       policy.objectiveSelection.selectedSearchEnergy},
-      {"focused_closure_dimensions", std::move(focusedDimensions)},
-      {"evaluation_interaction_bindings", std::move(evaluationBindings)}};
+       policy.objectiveSelection.selectedSearchEnergy}};
 }
 
 llvm::StringRef
@@ -385,6 +364,8 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
                  config.dse.techMapping.matchRowAttemptLimit},
                 {"partial_cover_expansion_limit",
                  config.dse.techMapping.partialCoverExpansionLimit},
+                {"candidate_evaluation_limit",
+                 config.dse.techMapping.candidateEvaluationLimit},
                 {"candidate_publication_limit",
                  config.dse.techMapping.candidatePublicationLimit}}},
            {"evaluation_and_objective_catalogs",

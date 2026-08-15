@@ -44,25 +44,28 @@ void checkProjectionAndAdoption() {
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
   config.dse.techMapping.matchRowAttemptLimit = 17;
   config.dse.techMapping.partialCoverExpansionLimit = 23;
+  config.dse.techMapping.candidateEvaluationLimit = 29;
   config.dse.techMapping.candidatePublicationLimit = 5;
 
   const auto view =
       take(loom::mapping::projectResolvedTechMappingConfigView(config));
   if (view.matchRowAttemptLimit() != 17 ||
       view.partialCoverExpansionLimit() != 23 ||
+      view.candidateEvaluationLimit() != 29 ||
       view.candidatePublicationLimit() != 5)
     fail("projector changed a TechMapping limit");
 
-  const llvm::StringRef descriptor = "loom.tech_mapping.config.1.0";
+  const llvm::StringRef descriptor = "loom.tech_mapping.config.2.0";
   if (view.schemaDescriptorBytes() !=
       llvm::ArrayRef<std::uint8_t>(
           reinterpret_cast<const std::uint8_t *>(descriptor.data()),
           descriptor.size()))
-    fail("schema descriptor is not the exact 1.0 spelling");
+    fail("schema descriptor is not the exact 2.0 spelling");
   const auto bytes = view.canonicalViewBytes();
-  if (bytes.size() != 24 || readU64(bytes.slice(0, 8)) != 17 ||
-      readU64(bytes.slice(8, 8)) != 23 || readU64(bytes.slice(16, 8)) != 5)
-    fail("canonical view is not the three ordered u64be fields");
+  if (bytes.size() != 32 || readU64(bytes.slice(0, 8)) != 17 ||
+      readU64(bytes.slice(8, 8)) != 23 || readU64(bytes.slice(16, 8)) != 29 ||
+      readU64(bytes.slice(24, 8)) != 5)
+    fail("canonical view is not the four ordered u64be fields");
 
   const auto expectedDigest = take(loom::computeComponentViewDigest(
       view.schemaDescriptorBytes(), view.canonicalViewBytes()));
@@ -77,7 +80,7 @@ void checkProjectionAndAdoption() {
 void checkInvalidWire() {
   const auto view = take(loom::mapping::projectResolvedTechMappingConfigView(
       loom::defaultResolvedConfig()));
-  std::array<std::uint8_t, 24> bytes{};
+  std::array<std::uint8_t, 32> bytes{};
   const auto digest = take(
       loom::computeComponentViewDigest(view.schemaDescriptorBytes(), bytes));
   if (!rejected(loom::mapping::adoptResolvedTechMappingConfigView(

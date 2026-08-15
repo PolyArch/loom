@@ -261,8 +261,7 @@ private:
         if (!ownerOrdinal)
           return ownerOrdinal.takeError();
         result_.owners_.push_back(model.owner());
-        modelOrdinals_.try_emplace(ownerKey(model.owner()),
-                                   *ownerOrdinal);
+        modelOrdinals_.try_emplace(ownerKey(model.owner()), *ownerOrdinal);
         auto &nodeMap = modelNodes_[modelOrdinal];
         nodeMap.reserve(model.nodes().size());
         for (const HandshakeOwnerNode &node : model.nodes()) {
@@ -345,9 +344,33 @@ private:
           routing_.traversals().size());
       std::vector<std::vector<PnrIndex>> traversalAllGroups(
           routing_.traversals().size());
+      using SwitchActivationKey =
+          std::tuple<PnrIndex, FabricOrdinal, FabricOrdinal>;
+      std::map<SwitchActivationKey, std::vector<PnrIndex>>
+          switchActivationBaseFragments;
+      std::map<std::pair<SwitchActivationKey, PnrIndex>, std::vector<PnrIndex>>
+          switchTraversalFragments;
       for (auto [ordinal, traversal] : llvm::enumerate(routing_.traversals()))
         traversalOrdinals_.try_emplace(refKey(traversal.reference),
                                        static_cast<PnrIndex>(ordinal));
+
+      const auto switchDomain = [&](FabricSwitchOccurrenceRef occurrence)
+          -> llvm::Expected<PnrIndex> {
+        const auto domains = routing_.tagContinuity().matchDomains();
+        std::optional<PnrIndex> selected;
+        for (auto [ordinal, domain] : llvm::enumerate(domains)) {
+          if (domain.kind !=
+                  FabricPhysicalTagMatchDomainKind::TemporalSwitchTable ||
+              domain.owner != FabricInventoryOwnerRef::of(occurrence))
+            continue;
+          if (selected)
+            return invalid("Temporal switch has multiple match domains");
+          selected = static_cast<PnrIndex>(ordinal);
+        }
+        if (!selected)
+          return invalid("Temporal switch handshake has no match domain");
+        return *selected;
+      };
 
       for (auto [modelOrdinal, model] : llvm::enumerate(models_)) {
         for (auto [localFragmentOrdinal, fragment] :
@@ -441,6 +464,32 @@ private:
               traversalAllGroups[traversal].push_back(*group);
             break;
           }
+          case HandshakeActivationKind::AnySwitchActivationTraversal:
+          case HandshakeActivationKind::ExactSwitchActivationTraversal: {
+            if (!fragment.switchActivation)
+              return invalid("Temporal switch fragment has no activation key");
+            auto domain = switchDomain(fragment.switchActivation->occurrence);
+            if (!domain)
+              return domain.takeError();
+            const SwitchActivationKey key{*domain,
+                                          fragment.switchActivation->row,
+                                          fragment.switchActivation->input};
+            if (fragment.activationKind ==
+                HandshakeActivationKind::AnySwitchActivationTraversal) {
+              switchActivationBaseFragments[key].push_back(*globalFragment);
+              break;
+            }
+            if (fragment.witnessCount != 1)
+              return invalid("Temporal switch crosspoint fragment does not "
+                             "have one traversal witness");
+            auto traversal = traversalIndex(
+                model.traversalWitnesses()[fragment.witnessOffset]);
+            if (!traversal)
+              return traversal.takeError();
+            switchTraversalFragments[{key, *traversal}].push_back(
+                *globalFragment);
+            break;
+          }
           case HandshakeActivationKind::ExactOwnerSelection:
             break;
           }
@@ -464,9 +513,68 @@ private:
                                             result_.traversalFragmentOffsets_,
                                             result_.traversalFragments_))
         return error;
-      return flattenSlices(traversalAllGroups,
-                           result_.traversalAllGroupOffsets_,
-                           result_.traversalAllGroups_);
+      if (llvm::Error error = flattenSlices(traversalAllGroups,
+                                            result_.traversalAllGroupOffsets_,
+                                            result_.traversalAllGroups_))
+        return error;
+
+      for (auto &[key, baseFragments] : switchActivationBaseFragments) {
+        llvm::sort(baseFragments);
+        baseFragments.erase(
+            std::unique(baseFragments.begin(), baseFragments.end()),
+            baseFragments.end());
+        auto baseOffset =
+            checked(incidenceCountContext,
+                    result_.switchActivationBaseFragments_.size());
+        auto baseCount = checked(incidenceCountContext, baseFragments.size());
+        auto selectionOffset = checked(
+            incidenceCountContext, result_.switchTraversalSelections_.size());
+        if (!baseOffset)
+          return baseOffset.takeError();
+        if (!baseCount)
+          return baseCount.takeError();
+        if (!selectionOffset)
+          return selectionOffset.takeError();
+        result_.switchActivationBaseFragments_.insert(
+            result_.switchActivationBaseFragments_.end(), baseFragments.begin(),
+            baseFragments.end());
+        const std::size_t selectionBegin =
+            result_.switchTraversalSelections_.size();
+        auto selected = switchTraversalFragments.lower_bound({key, 0});
+        while (selected != switchTraversalFragments.end() &&
+               selected->first.first == key) {
+          auto &fragments = selected->second;
+          llvm::sort(fragments);
+          fragments.erase(std::unique(fragments.begin(), fragments.end()),
+                          fragments.end());
+          auto fragmentOffset = checked(
+              incidenceCountContext, result_.switchTraversalFragments_.size());
+          auto fragmentCount = checked(incidenceCountContext, fragments.size());
+          if (!fragmentOffset)
+            return fragmentOffset.takeError();
+          if (!fragmentCount)
+            return fragmentCount.takeError();
+          result_.switchTraversalFragments_.insert(
+              result_.switchTraversalFragments_.end(), fragments.begin(),
+              fragments.end());
+          result_.switchTraversalSelections_.push_back(
+              {selected->first.second, *fragmentOffset, *fragmentCount});
+          ++selected;
+        }
+        auto selectionCount =
+            checked(incidenceCountContext,
+                    result_.switchTraversalSelections_.size() - selectionBegin);
+        if (!selectionCount)
+          return selectionCount.takeError();
+        result_.switchActivations_.push_back(
+            {std::get<0>(key), std::get<1>(key), std::get<2>(key), *baseOffset,
+             *baseCount, *selectionOffset, *selectionCount});
+      }
+      if (result_.switchTraversalSelections_.size() !=
+          switchTraversalFragments.size())
+        return invalid(
+            "Temporal switch traversal fragment has no activation base");
+      return llvm::Error::success();
     }
 
     llvm::Error buildComputeSelections(
@@ -561,6 +669,10 @@ private:
         auto model = modelIndex(FabricHandshakeOwner::memory(placement.memory));
         if (!model)
           return model.takeError();
+        auto roleDemands = ::loom::mapping::deriveSpatialMemoryActorRoleDemands(
+            dataflow, techMapping, fabric, realization, placement.memory);
+        if (!roleDemands)
+          return roleDemands.takeError();
 
         for (auto [localActorOrdinal, actor] :
              llvm::enumerate(realization.actors)) {
@@ -576,8 +688,17 @@ private:
               port, actor.capability.ordinal};
           const MemoryCapabilityAlternativeView *alternative =
               fabric.memoryCapabilityAlternative(capability);
-          if (!alternative)
+          const ::fabric::MemoryOperationPortRecord *operationPort =
+              fabric.memoryOperationPort(port);
+          if (!alternative || !operationPort)
             return invalid("memory handshake capability does not resolve");
+          const ::dataflow::ActorRef actorRef = actor.actor;
+          const auto roleDemand = llvm::find_if(
+              *roleDemands,
+              [&](const ::loom::mapping::SpatialMemoryActorRoleDemandView
+                      &candidate) { return candidate.actor == actorRef; });
+          if (roleDemand == roleDemands->end())
+            return invalid("memory handshake actor has no role demand");
 
           auto planOffset =
               checked(planCountContext, result_.memoryOperationPlans_.size());
@@ -598,19 +719,22 @@ private:
               fabric.memoryResidentContextCount(placement.memory) == 0)
             return invalid("Temporal memory has no resident context");
           const FabricMemoryHandshakePlacement operationPlacement =
-              temporalResident
-                  ? FabricMemoryHandshakePlacement(
-                        FabricMemoryOperationContextRef{port, 0})
-                  : FabricMemoryHandshakePlacement(port);
+              temporalResident ? FabricMemoryHandshakePlacement(
+                                     FabricMemoryOperationContextRef{port, 0})
+                               : FabricMemoryHandshakePlacement(port);
           {
             for (::fabric::UsePatternKey pattern :
                  alternative->admissibleUsePatterns) {
+              auto issueLatency = ::fabric::projectMemoryOperationIssueLatency(
+                  *operationPort, pattern);
+              if (!issueLatency)
+                return issueLatency.takeError();
               const FabricUsePatternRef usePattern{
                   FabricUsePatternOwnerRef(FabricInventoryOwnerRef::of(port)),
                   pattern.ordinal()};
               auto selected = makeMemoryHandshakeSelection(
-                  fabric, operationPlacement, capability, usePattern,
-                  *maskForm);
+                  fabric, operationPlacement, capability, usePattern, *maskForm,
+                  roleDemand->sources, roleDemand->destinations);
               if (!selected)
                 return selected.takeError();
               FabricHandshakeSelection exact;
@@ -640,8 +764,8 @@ private:
                   result_.memoryPlanFragments_.end(), fragments.begin(),
                   fragments.end());
               result_.memoryOperationPlans_.push_back(
-                  {usePatternOrdinal->second, temporalResident,
-                   *fragmentOffset, *fragmentCount});
+                  {usePatternOrdinal->second, temporalResident, *fragmentOffset,
+                   *fragmentCount, *issueLatency});
             }
           }
           const std::size_t planCountValue =
@@ -743,8 +867,7 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialHandshakeIndex(
   for (PnrIndex arc : handshake.reverseArcOrdinals())
     if (arc >= handshake.arcs().size())
       return invalid("reverse handshake incidence is out of range");
-  if (handshake.fragmentOwnerOrdinals().size() !=
-      handshake.fragments().size())
+  if (handshake.fragmentOwnerOrdinals().size() != handshake.fragments().size())
     return invalid("handshake fragment owner table is incomplete");
   for (PnrIndex owner : handshake.fragmentOwnerOrdinals())
     if (owner >= handshake.owners().size())
@@ -773,6 +896,49 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialHandshakeIndex(
                    handshake.allTraversalGroupWitnesses().size()) ||
         group.fragment >= handshake.fragments().size())
       return invalid("all-traversal handshake group is inconsistent");
+  }
+  for (auto [ordinal, activation] :
+       llvm::enumerate(handshake.switchActivations())) {
+    const auto domains = routing.tagContinuity().matchDomains();
+    if (activation.matchDomain >= domains.size() ||
+        domains[activation.matchDomain].kind !=
+            FabricPhysicalTagMatchDomainKind::TemporalSwitchTable ||
+        activation.baseFragmentCount == 0 ||
+        !rangeFits(activation.baseFragmentOffset, activation.baseFragmentCount,
+                   handshake.switchActivationBaseFragments().size()) ||
+        !rangeFits(activation.traversalSelectionOffset,
+                   activation.traversalSelectionCount,
+                   handshake.switchTraversalSelections().size()))
+      return invalid("Temporal switch handshake activation is inconsistent");
+    if (ordinal != 0) {
+      const auto &previous = handshake.switchActivations()[ordinal - 1];
+      if (std::tie(previous.matchDomain, previous.row, previous.input) >=
+          std::tie(activation.matchDomain, activation.row, activation.input))
+        return invalid(
+            "Temporal switch handshake activations are noncanonical");
+    }
+    for (PnrIndex fragment : handshake.switchActivationBaseFragments().slice(
+             activation.baseFragmentOffset, activation.baseFragmentCount))
+      if (fragment >= handshake.fragments().size())
+        return invalid("Temporal switch activation fragment is out of range");
+    PnrIndex previousTraversal = getInvalidPnrIndex();
+    for (const FrozenSpatialSwitchHandshakeTraversalSelection &selection :
+         handshake.switchTraversalSelections().slice(
+             activation.traversalSelectionOffset,
+             activation.traversalSelectionCount)) {
+      if (selection.traversal >= routing.traversals().size() ||
+          !rangeFits(selection.fragmentOffset, selection.fragmentCount,
+                     handshake.switchTraversalFragments().size()) ||
+          selection.fragmentCount == 0 ||
+          (previousTraversal != getInvalidPnrIndex() &&
+           selection.traversal <= previousTraversal))
+        return invalid("Temporal switch traversal selection is inconsistent");
+      previousTraversal = selection.traversal;
+      for (PnrIndex fragment : handshake.switchTraversalFragments().slice(
+               selection.fragmentOffset, selection.fragmentCount))
+        if (fragment >= handshake.fragments().size())
+          return invalid("Temporal switch traversal fragment is out of range");
+    }
   }
   if (handshake.computePlacementFragmentOffsets().size() !=
       realizations.computePlacements().size() + 1)

@@ -294,7 +294,8 @@ const CandidateGeneratorDescriptor descriptor{
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &store, const BlobStore &) {
+               const ArtifactStore &store, const BlobStore &,
+               const ExecutionControlView &) {
   auto config = adoptResolvedSystemCompositionRewriteConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());

@@ -521,8 +521,8 @@ publishFusionCompilerPhysicalImplementation(
 
   auto finalized = finalizeHardwareImplementation(
       HardwareImplementationDraft{
-          input.fabric(), input.configurationAbi(),
-          input.interconnectImplementations().vec(), std::move(*representation),
+          input.fabric(), input.subject(), input.configurationAbi(),
+          std::move(*representation),
           input.implementationPlatform(), std::move(interfaces),
           std::move(activityPoints), std::move(memoryBindings),
           std::move(externalBindings)},

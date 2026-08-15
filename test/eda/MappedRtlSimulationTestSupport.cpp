@@ -17,11 +17,12 @@
 #include "Fabric/Artifact/InterconnectImplementation.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Hardware/RTL/PortableProviders.h"
-#include "Hardware/RTL/SystemImplementation.h"
+#include "Hardware/RTL/SpatialCoreImplementation.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
@@ -635,14 +636,23 @@ ArtifactRootReference generateTechMapping(llvm::StringRef test,
       test, dse::resolveRootCompleteTechMappingCandidateGeneratorBinding(view));
   auto outcome = take(
       test, dse::invokeCandidateGenerator(inputs, binding, artifacts, blobs));
+  const std::vector<dse::CandidateGeneratorOutputBinding> *outputs = nullptr;
   const auto *completed =
       std::get_if<dse::CompletedCandidateGeneratorResult>(&outcome.outcome);
+  if (completed)
+    outputs = &completed->outputBindings;
+  if (const auto *incomplete =
+          std::get_if<dse::IncompleteCandidateGeneratorResult>(
+              &outcome.outcome);
+      incomplete &&
+      incomplete->reason ==
+          dse::CandidateGeneratorIncompleteReason::SemanticLimitReached)
+    outputs = &incomplete->retainedOutputBindings;
   deployment::test::require(
-      test,
-      completed && completed->outputBindings.size() == 1 &&
-          completed->outputBindings.front().artifacts.size() == 1,
+      test, outputs && outputs->size() == 1 &&
+                outputs->front().artifacts.size() == 1,
       "TechMapping fixture did not publish one candidate");
-  return completed->outputBindings.front().artifacts.front();
+  return outputs->front().artifacts.front();
 }
 
 ArtifactRootReference
@@ -651,9 +661,17 @@ generateSpatialMapping(llvm::StringRef test, mlir::MLIRContext &context,
                        const ArtifactRootReference &fabric,
                        ArtifactStore &artifacts, const BlobStore &blobs,
                        MappedRtlRouteCoverage routeCoverage) {
+  auto fabricRoot =
+      take(test, fabric::importEntireFabricRoot(fabric, artifacts));
+  auto physicalTiming =
+      take(test, fabric::projectNormalizedFabricPhysicalTimingProfile(
+                     fabricRoot.view()));
+  const auto physicalTimingReference =
+      take(test, fabric::publishFabricPhysicalTimingProfile(physicalTiming,
+                                                            artifacts));
   auto inputs =
       take(test, dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
-                     {techMapping}, fabric));
+                     {techMapping}, fabric, physicalTimingReference));
   auto binding =
       take(test, dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
                      spatialConfig(test)));
@@ -710,8 +728,6 @@ generateSpatialMapping(llvm::StringRef test, mlir::MLIRContext &context,
     return initial;
 
   auto tech = take(test, mapping::importTechMapping(techMapping, artifacts));
-  auto fabricRoot =
-      take(test, fabric::importEntireFabricRoot(fabric, artifacts));
   const ArtifactRootReference dataflowReference{
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version,
@@ -851,6 +867,7 @@ generateSpatialMapping(llvm::StringRef test, mlir::MLIRContext &context,
       auto constrainedInputs =
           take(test, dse::bindSpatialPnrCandidateGeneratorInputs(
                          dataflowReference, techMapping, fabric,
+                         physicalTimingReference,
                          constraints.reference()));
       auto constrainedBinding = take(
           test,
@@ -925,13 +942,12 @@ publishSpatialInputs(llvm::StringRef test,
           take(test, sim::publishSimulationRuntimeInput(runtime, artifacts))};
 }
 
-hardware::FinalizedHardwareImplementation
+std::vector<hardware::FinalizedHardwareImplementation>
 buildImplementation(llvm::StringRef test,
                     const fabric::FinalizedFabricRoot &module,
                     const fabric::FinalizedFabricRoot &system,
                     mlir::MLIRContext &relationContext,
-                    ArtifactStore &artifacts, BlobStore &blobs,
-                    llvm::ArrayRef<ArtifactRootReference> interconnects) {
+                    ArtifactStore &artifacts, BlobStore &blobs) {
   const auto inventoryOwner = [](const auto &owner) {
     return std::visit(
         [](const auto &value) -> fabric::FabricInventoryOwnerRef {
@@ -991,9 +1007,18 @@ buildImplementation(llvm::StringRef test,
   requireSuccess(test,
                  hardware::rtl::registerPortableOperationProviders(providers));
   hardware::ExternalImplementationContractCatalog contracts;
-  return take(test, hardware::rtl::finalizePortableSystemHardwareImplementation(
-                        context, abi, providers, contracts, artifacts, blobs,
-                        interconnects));
+  const auto accCores = system.view().accCoreOccurrences();
+  deployment::test::require(test, !accCores.empty(),
+                            "mapped fixture System has no SpatialCore");
+  std::vector<hardware::FinalizedHardwareImplementation> implementations;
+  implementations.reserve(accCores.size());
+  for (fabric::AccCoreOccurrenceRef accCore : accCores)
+    implementations.push_back(take(
+        test,
+        hardware::rtl::finalizePortableSpatialCoreHardwareImplementation(
+            context, abi, fabric::SpatialCoreOccurrenceRef{accCore}, providers,
+            contracts, artifacts, blobs)));
+  return implementations;
 }
 
 evaluation::CaseArtifactResolution
@@ -1050,15 +1075,11 @@ MappedSpatialHardwareFixture buildMappedSpatialHardwareFixture(
         test, fabric::finalizeGem5EventInterconnectImplementation(
                   system.reference(), artifacts))
                        .reference();
-  const llvm::ArrayRef<ArtifactRootReference> interconnects =
-      interconnect ? llvm::ArrayRef<ArtifactRootReference>(*interconnect)
-                   : llvm::ArrayRef<ArtifactRootReference>();
-  auto implementation =
-      buildImplementation(test, module, system, context, artifacts, blobs,
-                          interconnects);
+  auto implementations =
+      buildImplementation(test, module, system, context, artifacts, blobs);
   return {std::move(module), techMapping, std::move(spatialMapping),
           std::move(system), std::move(interconnect),
-          std::move(implementation)};
+          std::move(implementations)};
 }
 
 MappedRtlRequestFixture
@@ -1082,19 +1103,29 @@ buildMappedRtlRequestFixture(llvm::StringRef test,
       hardware.spatialMapping.reference();
   auto deployment = deployment::test::buildMappedSpatialDeployment(
       test, dataflow, hardware.system, hardware.spatialMapping,
-      hardware.implementation, artifacts, blobs, tree);
+      hardware.implementations, artifacts, blobs, tree);
+  deployment::test::require(
+      test, deployment.deployment().hardwareBindings().size() == 1,
+      "mapped RTL request did not select one SpatialCore implementation");
+  auto implementation = take(
+      test, hardware::importHardwareImplementation(
+                deployment.deployment()
+                    .hardwareBindings()
+                    .front()
+                    .hardwareImplementation,
+                artifacts, blobs));
   const auto [workload, runtimeInput] =
       publishSpatialInputs(test, dataflow, artifacts);
   auto resolution = buildResolution(test, dataflowReference, hardware.module,
                                     hardware.system, hardware.techMapping,
-                                    spatialMapping, hardware.implementation,
+                                    spatialMapping, implementation,
                                     deployment, workload, runtimeInput);
 
   auto subjects = take(
       test,
       evaluation::EvaluationSubjectBindings::get(
           {{evaluation::models::mappedRtlHardwareImplementationSubjectRole(),
-            {hardware.implementation.reference()}},
+            {implementation.reference()}},
            {evaluation::models::mappedRtlDeploymentSubjectRole(),
             {deployment.reference()}}}));
   auto evaluationCase =
@@ -1126,7 +1157,7 @@ buildMappedRtlRequestFixture(llvm::StringRef test,
       "request publication changed its identity");
   return {std::move(request),
           std::move(resolution),
-          std::move(hardware.implementation),
+          std::move(implementation),
           std::move(deployment),
           workload,
           runtimeInput,

@@ -4,7 +4,10 @@
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "PnR/PnrConfig.h"
+#include "PnR/SpatialCandidateInitializer.h"
+#include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialPnrProblem.h"
 
 #include "TechMappingCandidateTestSupport.h"
@@ -39,6 +42,11 @@ template <typename T> bool rejected(llvm::Expected<T> value) {
   return true;
 }
 
+void requireSuccess(llvm::Error error) {
+  if (error)
+    fail(llvm::toString(std::move(error)));
+}
+
 class TemporaryDirectory final {
 public:
   TemporaryDirectory() {
@@ -62,6 +70,202 @@ private:
 };
 
 } // namespace
+
+void temporalDispatchProjectionFollowsFabricPolicy() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  auto design = loom::test::buildTemporalCapacityFabric(store);
+  const auto &fabric = design.roots().front().view();
+  if (fabric.peOccurrences().empty() || fabric.fuOccurrences().empty())
+    fail("temporal dispatch fixture has no PE or FU occurrence");
+  const auto pe = fabric.peOccurrences().front();
+  const auto fu = llvm::find_if(fabric.fuOccurrences(), [&](const auto &item) {
+    return fabric.parentPeOf(item) == pe;
+  });
+  if (fu == fabric.fuOccurrences().end() ||
+      fabric.peResidentContextCount(pe) != 2)
+    fail("temporal dispatch fixture changed its resident domain");
+
+  const std::vector<loom::mapping::SpatialComputeBindingView> bindings = {
+      {1, *fu, {pe, 1}, {}},
+      {0, *fu, {pe, 0}, {}},
+  };
+  const auto domains = take(
+      loom::mapping::deriveSpatialTemporalPeDispatchDomains(fabric, bindings));
+  if (domains.size() != 1 || domains.front().pe != pe ||
+      domains.front().allocationUnit != 0 ||
+      domains.front().resetPosition != 0 ||
+      domains.front().candidates.size() != 2)
+    fail("temporal dispatch projection changed its shared service domain");
+  for (std::uint32_t position = 0; position != 2; ++position) {
+    const auto &candidate = domains.front().candidates[position];
+    if (candidate.context != loom::fabric::InstructionContextRef{pe, position} ||
+        candidate.fu != *fu || candidate.realization != position)
+      fail("temporal dispatch projection followed Mapping insertion order");
+  }
+}
+
+void temporalIngressServiceAdmission() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  mlir::MLIRContext context = makeComputeBoundaryContext();
+  auto dataflowArtifact = buildComputeFanoutDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  auto dataflow = take(dataflowArtifact.view());
+  auto design = loom::test::buildTemporalCapacityFabric(store);
+  const auto &fabric = design.roots().front();
+  auto mapping = parseTechMapping(
+      context, computeFanoutMappingText(dataflow, fabric.view()));
+  if (!mapping)
+    fail("fanout TechMapping fixture did not parse");
+  auto techRoots = mapping->getOps<::mapping::TechOp>();
+  auto tech = take(loom::mapping::finalizeTechMapping(
+      *techRoots.begin(), dataflow, fabric.view(), store));
+  auto constraintModule = parseTechMapping(
+      context, spatialConstraintMappingText(dataflow, tech.view(),
+                                            fabric.view(), /*clauses=*/""));
+  if (!constraintModule)
+    fail("fanout Spatial constraint fixture did not parse");
+  auto constraintRoots =
+      constraintModule->getOps<::mapping::ConstraintsSpatialOp>();
+  auto constraints = take(loom::mapping::finalizeSpatialMappingConstraintSet(
+      *constraintRoots.begin(), dataflow, tech.view(), fabric.view(), store));
+  const auto config = take(loom::pnr::projectResolvedSpatialPnrConfigView(
+      loom::test::buildSpatialPnrTestResolvedConfig()));
+  auto problem = take(loom::pnr::freezeSpatialPnrProblem(
+      dataflow, tech.view(), fabric.view(), config, constraints.view()));
+  auto candidate = take(loom::pnr::createCanonicalSpatialCandidate(problem));
+  loom::pnr::SpatialCandidateScratch scratch;
+  requireSuccess(scratch.prepare(*problem));
+
+  std::optional<loom::pnr::PnrIndex> fanoutNet;
+  for (auto [ordinal, net] :
+       llvm::enumerate(problem->transfers().logicalNets()))
+    if (net.sinkCount == 2) {
+      if (fanoutNet)
+        fail("fanout fixture has more than one multicast logical net");
+      fanoutNet = static_cast<loom::pnr::PnrIndex>(ordinal);
+    }
+  if (!fanoutNet)
+    fail("fanout fixture has no two-sink logical net");
+  const auto &net = problem->transfers().logicalNets()[*fanoutNet];
+  const auto sinkBindings = problem->transfers().logicalNetSinkBindings();
+  const auto lhsBinding = sinkBindings[net.sinkOffset];
+  const auto rhsBinding = sinkBindings[net.sinkOffset + 1];
+  if (lhsBinding.kind !=
+          loom::pnr::FrozenSpatialTerminalBindingKind::PortDemand ||
+      rhsBinding.kind !=
+          loom::pnr::FrozenSpatialTerminalBindingKind::PortDemand)
+    fail("fanout sinks are not compute PortDemands");
+
+  const auto &realization =
+      problem->realizations().computeRealizations().front();
+  std::optional<loom::pnr::SpatialComputeBindingSelection> selectedBinding;
+  std::vector<loom::pnr::PnrIndex> conflicting;
+  std::vector<loom::pnr::PnrIndex> legal;
+  for (loom::pnr::PnrIndex placement = realization.placementOffset;
+       placement != realization.placementOffset + realization.placementCount &&
+       !selectedBinding;
+       ++placement) {
+    const auto &placementRecord =
+        problem->realizations().computePlacements()[placement];
+    const auto domainFor = [&](loom::pnr::PnrIndex demand) -> const auto & {
+      const auto &record = problem->ports().portDemands()[demand];
+      return problem->ports()
+          .placementDomains()[record.placementDomainOffset + placement -
+                              realization.placementOffset];
+    };
+    const auto &lhsDomain = domainFor(lhsBinding.index);
+    const auto &rhsDomain = domainFor(rhsBinding.index);
+    const auto options = problem->ports().attachmentOptions();
+    std::optional<std::pair<loom::pnr::PnrIndex, loom::pnr::PnrIndex>> conflict;
+    for (loom::pnr::PnrIndex lhs = lhsDomain.attachmentOptionOffset;
+         lhs != lhsDomain.attachmentOptionOffset +
+                    lhsDomain.attachmentOptionCount &&
+         !conflict;
+         ++lhs)
+      for (loom::pnr::PnrIndex rhs = rhsDomain.attachmentOptionOffset;
+           rhs !=
+           rhsDomain.attachmentOptionOffset + rhsDomain.attachmentOptionCount;
+           ++rhs)
+        if (options[lhs].sharedOperandEnqueueUnit &&
+            options[lhs].sharedOperandEnqueueUnit ==
+                options[rhs].sharedOperandEnqueueUnit &&
+            options[lhs].endpoint == options[rhs].endpoint) {
+          conflict = {lhs, rhs};
+          break;
+        }
+    if (!conflict)
+      continue;
+
+    std::vector<loom::pnr::PnrIndex> candidateLegal(
+        problem->ports().portDemands().size());
+    std::vector<loom::pnr::PnrIndex> usedInputEndpoints;
+    std::vector<loom::pnr::PnrIndex> usedOutputEndpoints;
+    bool complete = true;
+    for (auto [demandOrdinal, demand] :
+         llvm::enumerate(problem->ports().portDemands())) {
+      const auto &domain =
+          domainFor(static_cast<loom::pnr::PnrIndex>(demandOrdinal));
+      auto &used = std::holds_alternative<dataflow::ActorTokenOperandRef>(
+                       demand.terminal)
+                       ? usedInputEndpoints
+                       : usedOutputEndpoints;
+      const auto available = options.slice(domain.attachmentOptionOffset,
+                                           domain.attachmentOptionCount);
+      const auto found = llvm::find_if(available, [&](const auto &option) {
+        return !llvm::is_contained(used, option.endpoint);
+      });
+      if (found == available.end()) {
+        complete = false;
+        break;
+      }
+      candidateLegal[demandOrdinal] =
+          domain.attachmentOptionOffset +
+          static_cast<loom::pnr::PnrIndex>(found - available.begin());
+      used.push_back(found->endpoint);
+    }
+    if (!complete)
+      continue;
+    selectedBinding = loom::pnr::SpatialComputeBindingSelection{
+        placement, placementRecord.contextOffset};
+    legal = std::move(candidateLegal);
+    conflicting = legal;
+    conflicting[lhsBinding.index] = conflict->first;
+    conflicting[rhsBinding.index] = conflict->second;
+  }
+  if (!selectedBinding)
+    fail("fanout fixture has no shared-service placement with legal fallback");
+
+  {
+    auto move = take(candidate->beginMove(scratch));
+    requireSuccess(move.setComputeBinding(0, selectedBinding->placement,
+                                          selectedBinding->instructionContext));
+    for (auto [demand, option] : llvm::enumerate(conflicting))
+      requireSuccess(move.setPortAttachment(
+          static_cast<loom::pnr::PnrIndex>(demand), option));
+    auto closed = move.close();
+    if (closed)
+      fail("same ingress and enqueue unit escaped PnR admission");
+    const std::string message = llvm::toString(closed.takeError());
+    if (message.find("hard equality or disjoint relation") == std::string::npos)
+      fail("same-service rejection lost its typed binding relation");
+    move.rollback();
+  }
+  {
+    auto move = take(candidate->beginMove(scratch));
+    requireSuccess(move.setComputeBinding(0, selectedBinding->placement,
+                                          selectedBinding->instructionContext));
+    for (auto [demand, option] : llvm::enumerate(legal))
+      requireSuccess(move.setPortAttachment(
+          static_cast<loom::pnr::PnrIndex>(demand), option));
+    auto closed = take(move.close());
+    if (!closed)
+      fail("distinct Temporal ingresses formed a handshake cycle");
+    requireSuccess(move.commit());
+  }
+  requireSuccess(candidate->verify());
+}
 
 void computeBoundaryClosure() {
   TemporaryDirectory directory;
@@ -172,6 +376,9 @@ void computeBoundaryClosure() {
 } // namespace loom::test::tech_mapping_artifact
 
 int main() {
+  loom::test::tech_mapping_artifact::
+      temporalDispatchProjectionFollowsFabricPolicy();
+  loom::test::tech_mapping_artifact::temporalIngressServiceAdmission();
   loom::test::tech_mapping_artifact::computeBoundaryClosure();
   llvm::outs() << "tech mapping compute boundary tests passed\n";
   return 0;

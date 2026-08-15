@@ -545,7 +545,7 @@ deriveFacts(const EvaluationRequest &request,
           UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
     for (const std::vector<std::uint64_t> &point : **coordinates) {
       auto selection = deployment::resolveDeploymentSpatialLaunchSelection(
-          inputs.deployment, graph, point, artifacts);
+          inputs.deployment, graph, point, artifacts, blobs);
       if (!selection)
         return selection.takeError();
       const std::vector<std::uint8_t> coreKey = fabric::canonicalFabricBytes(

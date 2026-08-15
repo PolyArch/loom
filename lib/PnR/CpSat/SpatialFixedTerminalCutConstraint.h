@@ -2,6 +2,7 @@
 #define LOOM_PNR_CPSAT_SPATIALFIXEDTERMINALCUTCONSTRAINT_H
 
 #include "SpatialBindingRelationModel.h"
+#include "SpatialLocalDispositionModel.h"
 
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialPathFinderRouter.h"
@@ -30,6 +31,7 @@ addSpatialFixedTerminalCutEscapeConstraint(
     llvm::ArrayRef<int> decisionVariables,
     llvm::ArrayRef<PnrIndex> legalValueOffsets,
     llvm::ArrayRef<std::int64_t> legalValues,
+    const SpatialLocalDispositionModel &localDispositions,
     const SpatialFixedTerminalCutCertificate &certificate,
     std::vector<std::uint8_t> &blockedTraversals,
     std::vector<std::uint8_t> &reachableEndpoints,

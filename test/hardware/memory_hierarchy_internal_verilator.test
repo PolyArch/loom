@@ -1,0 +1,5 @@
+# REQUIRES: circt, verilator
+# RUN: rm -rf %t && mkdir -p %t
+# RUN: %loom-memory-hierarchy-test %t
+# RUN: cd %t && verilator --binary --timing --Wall --Wno-fatal --Wno-DECLFILENAME --Wno-UNUSEDSIGNAL --Wno-UNSIGNED -CFLAGS '-std=c++20' --top-module testbench internal_memory.sv internal_memory_testbench.sv --Mdir internal_obj
+# RUN: %t/internal_obj/Vtestbench

@@ -20,27 +20,47 @@ namespace loom::pnr::detail {
 enum class InitializerRelationKind : std::uint8_t {
   Equal,
   Disjoint,
+  Capacity,
 };
 
 struct InitializerRelationMemberInput final {
   PnrIndex decision = 0;
   std::vector<PnrIndex> projectedValues;
+  std::uint64_t demand = 1;
+
+  InitializerRelationMemberInput() = default;
+  InitializerRelationMemberInput(PnrIndex decision,
+                                 std::vector<PnrIndex> projectedValues,
+                                 std::uint64_t demand = 1)
+      : decision(decision), projectedValues(std::move(projectedValues)),
+        demand(demand) {}
 };
 
 struct InitializerRelationInput final {
   InitializerRelationKind kind = InitializerRelationKind::Equal;
   std::vector<InitializerRelationMemberInput> members;
+  std::vector<std::uint64_t> valueCapacities;
+
+  InitializerRelationInput() = default;
+  InitializerRelationInput(InitializerRelationKind kind,
+                           std::vector<InitializerRelationMemberInput> members,
+                           std::vector<std::uint64_t> valueCapacities = {})
+      : kind(kind), members(std::move(members)),
+        valueCapacities(std::move(valueCapacities)) {}
 };
 
 struct InitializerRelationRecord final {
   InitializerRelationKind kind = InitializerRelationKind::Equal;
   PnrIndex memberOffset = 0;
   PnrIndex memberCount = 0;
+  PnrIndex valueCapacityOffset = 0;
+  PnrIndex valueCapacityCount = 0;
 };
 
 struct InitializerRelationMember final {
   PnrIndex decision = 0;
   PnrIndex projectedValueOffset = 0;
+  std::uint64_t demand = 1;
 };
 
 class InitializerRelationModel final {
@@ -63,6 +83,11 @@ public:
                           PnrIndex localChoice) const {
     return projectedValues_[member.projectedValueOffset + localChoice];
   }
+  llvm::ArrayRef<std::uint64_t>
+  valueCapacities(const InitializerRelationRecord &relation) const {
+    return llvm::ArrayRef(valueCapacities_)
+        .slice(relation.valueCapacityOffset, relation.valueCapacityCount);
+  }
   llvm::ArrayRef<PnrIndex> decisionRelationOffsets() const {
     return decisionRelationOffsets_;
   }
@@ -81,6 +106,7 @@ private:
   std::vector<InitializerRelationRecord> relations_;
   std::vector<InitializerRelationMember> relationMembers_;
   std::vector<PnrIndex> projectedValues_;
+  std::vector<std::uint64_t> valueCapacities_;
   std::vector<PnrIndex> decisionRelationOffsets_;
   std::vector<PnrIndex> decisionRelations_;
 };
@@ -129,10 +155,21 @@ public:
   llvm::Expected<InitializerRelationSolveResult>
   solveCanonicalWithFixedChoices(std::uint64_t assignmentLimit,
                                  llvm::ArrayRef<PnrIndex> fixedChoices);
+  llvm::Expected<InitializerRelationSolveResult>
+  solveCanonicalWithReleasedChoices(std::uint64_t assignmentLimit,
+                                    llvm::ArrayRef<PnrIndex> fixedChoices,
+                                    llvm::ArrayRef<PnrIndex> releasedDecisions);
   llvm::Expected<InitializerRelationSolveResult> solveCanonicalWithFixedChoices(
       std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
       llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
           validateCompleteAssignment);
+  llvm::Expected<InitializerRelationSolveResult>
+  solveCanonicalWithPreferredChoices(std::uint64_t assignmentLimit,
+                                     llvm::ArrayRef<PnrIndex> preferredChoices);
+  llvm::Expected<InitializerRelationSolveResult>
+  solveCanonicalWithFixedAndPreferredChoices(
+      std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
+      llvm::ArrayRef<PnrIndex> preferredChoices);
   llvm::Expected<InitializerRelationSolveResult>
   solveDiversified(std::uint64_t assignmentLimit,
                    DeterministicPnrRandomStream &diversificationStream);
@@ -223,23 +260,34 @@ private:
                             PnrIndex localChoice) const;
   bool disjointChoiceSupported(PnrIndex relation, PnrIndex decision,
                                PnrIndex localChoice) const;
+  bool capacityChoiceSupported(PnrIndex relation, PnrIndex decision,
+                               PnrIndex localChoice) const;
   bool activeRelationSatisfied(const InitializerRelationRecord &relation) const;
   bool propagate();
   llvm::Expected<SearchResult>
   search(std::uint64_t assignmentLimit,
          DeterministicPnrRandomStream *diversificationStream,
+         llvm::ArrayRef<PnrIndex> preferredChoices,
          llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
              validateCompleteAssignment);
   llvm::ArrayRef<PnrIndex>
   buildChoiceOrder(PnrIndex decision,
-                   DeterministicPnrRandomStream *diversificationStream);
+                   DeterministicPnrRandomStream *diversificationStream,
+                   llvm::ArrayRef<PnrIndex> preferredChoices);
   void rollback(std::size_t journalMark);
   PnrIndex soleChoice(PnrIndex decision) const;
   llvm::Expected<InitializerRelationSolveResult>
   solve(std::uint64_t assignmentLimit,
         DeterministicPnrRandomStream *diversificationStream,
+        llvm::ArrayRef<PnrIndex> preferredChoices,
         llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
             validateCompleteAssignment);
+  llvm::Expected<InitializerRelationSolveResult>
+  solveCanonicalWithFixedAndPreferredChoices(
+      std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
+      llvm::ArrayRef<PnrIndex> preferredChoices,
+      llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+          validateCompleteAssignment);
 
   const InitializerRelationModel *model_ = nullptr;
   std::vector<PnrIndex> decisionChoiceOffsets_;

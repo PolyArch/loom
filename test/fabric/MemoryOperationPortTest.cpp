@@ -184,6 +184,15 @@ ResourceContract directContract() {
   return take("resource contract", ResourceContract::create(declaration));
 }
 
+ResourceContract committedDirectContract() {
+  ResourceContractDeclaration declaration = directContract().declaration();
+  declaration.resourceTransitions = {ResourceTransitionKey(0)};
+  declaration.usePatterns.front().commit =
+      CommitDeclaration{EventKey(0), ResourceTransitionKey(0)};
+  return take("committed resource contract",
+              ResourceContract::create(declaration));
+}
+
 MemoryCapabilityAlternativeRecord hybridAlternative() {
   MemoryActorContractClause plain = LoadStorePlainContractClause{{false}};
   MemoryActorContractDomain actors =
@@ -335,6 +344,31 @@ void checkHybridGeometry(mlir::ModuleOp module, mlir::MLIRContext &context) {
       "trailing bytes",
       decodeMemoryOperationPortRecord(bytes, &context, Schedule::Spatial,
                                       hybridEndpoints(context)));
+}
+
+void checkIssueTiming(mlir::MLIRContext &context) {
+  MemoryOperationPortDeclaration declaration{
+      {0, 1, 2, 3, 4},
+      committedDirectContract(),
+      {{MemoryPortTransactionProjection::Direct}},
+      {hybridAlternative()}};
+  MemoryOperationPortRecord committed = take(
+      "committed issue timing",
+      MemoryOperationPortRecord::create(&context, Schedule::Spatial,
+                                        hybridEndpoints(context),
+                                        std::move(declaration)));
+  auto issue = take("project committed issue timing",
+                    projectMemoryOperationIssueLatency(committed,
+                                                       UsePatternKey(0)));
+  require("committed issue timing", issue && *issue == 0,
+          "commit was not the memory operation issue event");
+
+  MemoryOperationPortRecord uncommitted = hybridPort(context);
+  auto absent = take("project absent issue timing",
+                     projectMemoryOperationIssueLatency(uncommitted,
+                                                        UsePatternKey(0)));
+  require("absent issue timing", !absent,
+          "resource release was substituted for absent issue timing");
 }
 
 void checkRoleDirection(mlir::MLIRContext &context) {
@@ -593,6 +627,7 @@ int main() {
     fail("fixture", "failed to parse memory actor fixture");
 
   checkHybridGeometry(*module, context);
+  checkIssueTiming(context);
   checkRoleDirection(context);
   checkCompleteRelationNormalization(context);
   checkAddressPayloadCapacity(context);

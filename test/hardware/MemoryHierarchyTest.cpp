@@ -2,6 +2,7 @@
 
 #include "ConfigurationABITestSupport.h"
 #include "ConfigurationTransportTestSupport.h"
+#include "../InternalMemoryEdgeTestSupport.h"
 
 #include "ADG/Builder.h"
 #include "ADG/Builtin.h"
@@ -265,9 +266,12 @@ struct MemoryActors final {
   mlir::Operation *store = nullptr;
 };
 
-MemoryActors makeMemoryActors(mlir::MLIRContext &context) {
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module {
+MemoryActors makeMemoryActors(mlir::MLIRContext &context,
+                              unsigned indexWidth) {
+  std::string text;
+  llvm::raw_string_ostream source(text);
+  source << R"mlir(module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, )mlir"
+         << indexWidth << R"mlir(>>} {
   func.func private @memory_actors(
       %memory: memref<64xi32>, %address: index, %data: i32, %ctrl: none) {
     %loaded, %load_done = dataflow.load %memory[%address] %ctrl
@@ -277,8 +281,9 @@ module {
     return
   }
 }
-)mlir",
-                                                        &context);
+)mlir";
+  source.flush();
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(text, &context);
   if (!module)
     fail("cannot parse memory actor fixture");
   MemoryActors result{std::move(module)};
@@ -296,7 +301,8 @@ module {
 llvm::Expected<loom::fabric::FabricMemoryOperationRow> projectMemoryRow(
     const loom::fabric::FabricArtifactView &fabric,
     const loom::fabric::FabricMemoryConfigurationSchemaView &schema,
-    loom::fabric::FabricOrdinal physicalPort, mlir::Operation *actor) {
+    loom::fabric::FabricOrdinal physicalPort, mlir::Operation *actor,
+    ::fabric::MemoryDispatchTarget serviceTarget) {
   auto actorProjection =
       dataflow::projectRegisteredActorSchemaProjection(actor);
   if (!actorProjection)
@@ -316,6 +322,7 @@ llvm::Expected<loom::fabric::FabricMemoryOperationRow> projectMemoryRow(
   const auto arguments = service->arguments();
   const auto results = service->results();
   const unsigned tagWidth = std::max(1U, schema.layout().tagWidthBits);
+  std::string rejection;
   for (auto [capabilityOrdinal, capability] :
        llvm::enumerate(port->capabilityAlternatives())) {
     std::vector<std::optional<loom::fabric::FabricMemoryRoleSource>> sources(
@@ -345,17 +352,15 @@ llvm::Expected<loom::fabric::FabricMemoryOperationRow> projectMemoryRow(
           physicalPort, capabilityOrdinal, pattern.ordinal(), *actorProjection,
           std::optional<dataflow::semantics::CanonicalMemoryAccessView>(
               *access),
-          0, sources, destinations,
-          ::fabric::MemoryDispatchTarget(
-              std::in_place_type<::fabric::LocalMemoryDispatchTarget>));
+          0, sources, destinations, serviceTarget);
       if (row)
         return std::move(*row);
-      llvm::consumeError(row.takeError());
+      rejection = llvm::toString(row.takeError());
     }
   }
   return llvm::createStringError(
       llvm::inconvertibleErrorCode(),
-      "memory actor has no compatible physical operation row");
+      "memory actor has no compatible physical operation row: " + rejection);
 }
 
 llvm::Expected<loom::CanonicalSemanticBytes>
@@ -365,11 +370,13 @@ makeActiveMemoryConfiguration(const loom::fabric::FabricArtifactView &fabric,
   auto schema = fabric.memoryConfigurationSchema(memory);
   if (!schema)
     return schema.takeError();
-  MemoryActors actors = makeMemoryActors(actorContext);
-  auto load = projectMemoryRow(fabric, *schema, 0, actors.load);
+  MemoryActors actors = makeMemoryActors(actorContext, 32);
+  const ::fabric::MemoryDispatchTarget localTarget(
+      std::in_place_type<::fabric::LocalMemoryDispatchTarget>);
+  auto load = projectMemoryRow(fabric, *schema, 0, actors.load, localTarget);
   if (!load)
     return load.takeError();
-  auto store = projectMemoryRow(fabric, *schema, 1, actors.store);
+  auto store = projectMemoryRow(fabric, *schema, 1, actors.store, localTarget);
   if (!store)
     return store.takeError();
   loom::fabric::FabricMemoryActive active;
@@ -387,6 +394,87 @@ makeActiveMemoryConfiguration(const loom::fabric::FabricArtifactView &fabric,
     active.operationRows[load->physicalPort] = std::move(*load);
     active.operationRows[store->physicalPort] = std::move(*store);
   }
+  return schema->encode(
+      loom::fabric::FabricMemoryConfigurationValue{std::move(active)});
+}
+
+llvm::Expected<loom::CanonicalSemanticBytes>
+makeInternalMemoryConfiguration(
+    const loom::fabric::FabricArtifactView &fabric,
+    loom::fabric::FabricMemoryOccurrenceRef memory,
+    mlir::MLIRContext &actorContext) {
+  auto schema = fabric.memoryConfigurationSchema(memory);
+  if (!schema)
+    return schema.takeError();
+  MemoryActors actors = makeMemoryActors(actorContext, 64);
+  const ::fabric::MemoryDispatchTarget managerTarget(
+      std::in_place_type<::fabric::ManagerMemoryDispatchTarget>,
+      ::fabric::ManagerMemoryDispatchTarget{0});
+  auto load =
+      projectMemoryRow(fabric, *schema, 0, actors.load, managerTarget);
+  if (!load)
+    return load.takeError();
+  auto store =
+      projectMemoryRow(fabric, *schema, 1, actors.store, managerTarget);
+  if (!store)
+    return store.takeError();
+
+  using Role = ::dataflow::semantics::ServiceValueRole;
+  const std::size_t control = static_cast<std::size_t>(Role::Control);
+  const std::size_t completion = static_cast<std::size_t>(Role::Completion);
+  if (!load->roleDestinations[completion] ||
+      !store->roleSources[control])
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "internal-edge fixture omitted completion or control");
+  load->roleDestinations[completion]->internalConnections = {0};
+  store->roleSources[control] =
+      loom::fabric::FabricMemoryInternalRoleSource{0};
+
+  loom::fabric::FabricMemoryActive active;
+  active.operationRows.resize(schema->layout().operationRows.size());
+  active.providerDecodeRows.resize(schema->layout().providerRows.size());
+  for (auto [ordinal, rows] : llvm::enumerate(schema->layout().providerRows))
+    active.providerDecodeRows[ordinal].resize(rows.size());
+  active.operationRows[load->physicalPort] = std::move(*load);
+  active.operationRows[store->physicalPort] = std::move(*store);
+
+  loom::fabric::FabricMemoryActive openConsumer = active;
+  openConsumer.operationRows[0]
+      ->roleDestinations[completion]
+      ->internalConnections.clear();
+  auto rejectedConsumer = schema->encode(
+      loom::fabric::FabricMemoryConfigurationValue{openConsumer});
+  if (rejectedConsumer)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "memory configuration accepted an internal consumer without a "
+        "producer");
+  const std::string consumerMessage =
+      llvm::toString(rejectedConsumer.takeError());
+  if (!llvm::StringRef(consumerMessage).contains(
+          "internal connection is not closed"))
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   consumerMessage);
+
+  loom::fabric::FabricMemoryActive openProducer = active;
+  openProducer.operationRows[1]->roleSources[control] =
+      loom::fabric::FabricMemoryExternalRoleSource{
+          6, llvm::APInt(std::max(1U, schema->layout().tagWidthBits), 0)};
+  auto rejectedProducer = schema->encode(
+      loom::fabric::FabricMemoryConfigurationValue{openProducer});
+  if (rejectedProducer)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "memory configuration accepted an internal producer without a "
+        "consumer");
+  const std::string producerMessage =
+      llvm::toString(rejectedProducer.takeError());
+  if (!llvm::StringRef(producerMessage).contains(
+          "internal connection is not closed"))
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   producerMessage);
+
   return schema->encode(
       loom::fabric::FabricMemoryConfigurationValue{std::move(active)});
 }
@@ -826,7 +914,6 @@ module testbench;
     input_5_valid = 0;
     input_5_tag = 0;
 
-    output_2_ready = 1;
     @(negedge clock);
     input_5_data = 64'd3;
     input_7_data = 64'h0000000011223344;
@@ -841,8 +928,13 @@ module testbench;
     input_5_data = 64'd4;
     input_7_data = 64'h0000000055667788;
     #1;
+    check(!input_5_ready && !input_7_ready && !input_9_ready,
+          "Occupied Temporal queues admitted a replacement token");
+    @(posedge clock);
+    @(negedge clock);
+    #1;
     check(input_5_ready && input_7_ready && input_9_ready,
-          "Temporal store did not accept a same-cycle replacement");
+          "Temporal store queues did not reopen after dequeue");
     @(posedge clock);
     @(negedge clock);
     input_5_valid = 0;
@@ -851,6 +943,7 @@ module testbench;
     #1;
     check(output_2_valid && output_2_tag == 0,
           "Temporal store did not publish its first completion");
+    output_2_ready = 1;
     @(posedge clock);
     @(negedge clock);
     #1;
@@ -931,6 +1024,334 @@ select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
           "could not write Temporal memory synthesis script");
 }
 
+void writeInternalMemoryToolArtifacts(
+    const std::filesystem::path &output,
+    const MemoryConfigurationImage &configuration) {
+  std::ofstream testbench(output / "internal_memory_testbench.sv");
+  testbench << R"sv(
+module testbench;
+  logic         clock;
+  logic         reset;
+  logic [63:0]  input_1_data;
+  logic [3:0]   input_1_tag;
+  logic         input_1_valid;
+  logic         input_1_ready;
+  logic [3:0]   input_2_data;
+  logic [3:0]   input_2_tag;
+  logic         input_2_valid;
+  logic         input_2_ready;
+  logic [3:0]   input_3_tag;
+  logic         input_3_valid;
+  logic         input_3_ready;
+  logic [63:0]  input_4_data;
+  logic [3:0]   input_4_tag;
+  logic         input_4_valid;
+  logic         input_4_ready;
+  logic [127:0] input_5_data;
+  logic [3:0]   input_5_tag;
+  logic         input_5_valid;
+  logic         input_5_ready;
+  logic [3:0]   input_6_data;
+  logic [3:0]   input_6_tag;
+  logic         input_6_valid;
+  logic         input_6_ready;
+  logic [3:0]   input_7_tag;
+  logic         input_7_valid;
+  logic         input_7_ready;
+  logic [127:0] input_8_data;
+  logic         input_8_valid;
+  logic         input_8_ready;
+  logic [127:0] output_0_data;
+  logic [3:0]   output_0_tag;
+  logic         output_0_valid;
+  logic         output_0_ready;
+  logic [3:0]   output_1_tag;
+  logic         output_1_valid;
+  logic         output_1_ready;
+  logic [3:0]   output_2_tag;
+  logic         output_2_valid;
+  logic         output_2_ready;
+  logic [127:0] output_3_data;
+  logic         output_3_valid;
+  logic         output_3_ready;
+  logic         memory_input_0_request_ready;
+  logic [127:0] memory_input_0_response_data;
+  logic         memory_input_0_response_valid;
+  logic         memory_input_0_request_kind;
+  logic [63:0]  memory_input_0_request_address;
+  logic [127:0] memory_input_0_request_data;
+  logic [3:0]   memory_input_0_request_mask;
+  logic         memory_input_0_request_active_lanes_kind;
+  logic [1:0]   memory_input_0_request_access_form;
+  logic         memory_input_0_request_address_form;
+  logic [63:0]  memory_input_0_request_element_width;
+  logic [63:0]  memory_input_0_request_lane_count;
+  logic [31:0]  memory_input_0_request_address_lane_width;
+  logic [63:0]  memory_input_0_request_base_address;
+  logic [63:0]  memory_input_0_request_context;
+  logic         memory_input_0_request_valid;
+  logic         memory_input_0_response_ready;
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteSignalDeclarations();
+  testbench << R"sv(
+  loom_module dut(.*);
+  always #5 clock = ~clock;
+
+  integer store_request_count;
+  integer store_completion_count;
+
+  always @(posedge clock or posedge reset) begin
+    if (reset) begin
+      store_request_count <= 0;
+      store_completion_count <= 0;
+    end else begin
+      if (memory_input_0_request_valid &&
+          memory_input_0_request_ready && memory_input_0_request_kind)
+        store_request_count <= store_request_count + 1;
+      if (output_2_valid && output_2_ready)
+        store_completion_count <= store_completion_count + 1;
+    end
+  end
+
+  task automatic check(input bit condition, input string message);
+    if (!condition)
+      $fatal(1, "%s", message);
+  endtask
+
+  task automatic accept_request(input bit expected_kind);
+    integer cycles;
+    begin
+      cycles = 0;
+      while (!memory_input_0_request_valid && cycles != 20) begin
+        @(negedge clock);
+        cycles = cycles + 1;
+      end
+      check(memory_input_0_request_valid,
+            "Memory manager request did not become valid");
+      check(memory_input_0_request_kind == expected_kind,
+            "Memory manager request had the wrong operation kind");
+      memory_input_0_request_ready = 1;
+      @(posedge clock);
+      @(negedge clock);
+      memory_input_0_request_ready = 0;
+    end
+  endtask
+
+  task automatic accept_response(input logic [127:0] data);
+    integer cycles;
+    begin
+      memory_input_0_response_data = data;
+      memory_input_0_response_valid = 1;
+      cycles = 0;
+      while (!memory_input_0_response_ready && cycles != 20) begin
+        @(negedge clock);
+        cycles = cycles + 1;
+      end
+      check(memory_input_0_response_ready,
+            "Memory manager response was not accepted");
+      @(posedge clock);
+      @(negedge clock);
+      memory_input_0_response_valid = 0;
+      memory_input_0_response_data = 0;
+    end
+  endtask
+
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteDriverTasks();
+  testbench << loom::hardware::test::portableCycleWatchdog();
+  testbench << R"sv(
+
+  initial begin
+    clock = 0;
+    reset = 1;
+    input_1_data = 0;
+    input_1_tag = 0;
+    input_1_valid = 0;
+    input_2_data = 0;
+    input_2_tag = 0;
+    input_2_valid = 0;
+    input_3_tag = 0;
+    input_3_valid = 0;
+    input_4_data = 0;
+    input_4_tag = 0;
+    input_4_valid = 0;
+    input_5_data = 0;
+    input_5_tag = 0;
+    input_5_valid = 0;
+    input_6_data = 0;
+    input_6_tag = 0;
+    input_6_valid = 0;
+    input_7_tag = 0;
+    input_7_valid = 0;
+    input_8_data = 0;
+    input_8_valid = 0;
+    output_0_ready = 0;
+    output_1_ready = 0;
+    output_2_ready = 0;
+    output_3_ready = 0;
+    memory_input_0_request_ready = 0;
+    memory_input_0_response_data = 0;
+    memory_input_0_response_valid = 0;
+)sv";
+  testbench << loom::hardware::test::portableAxiLiteInitialization();
+  testbench << R"sv(    repeat (2) @(posedge clock);
+    @(negedge clock);
+    reset = 0;
+    input_1_data = 64'd1;
+    input_1_valid = 1;
+    input_3_valid = 1;
+    #1;
+    check(!input_1_ready && !input_3_ready,
+          "Disabled internal-edge memory accepted a load");
+    input_1_valid = 0;
+    input_3_valid = 0;
+
+)sv";
+  testbench << take(loom::hardware::test::portableAxiLiteProgramAndVerify(
+      configuration.target, configuration.image));
+  testbench << R"sv(
+    input_8_data = 128'h0123456789abcdef_fedcba9876543210;
+    input_8_valid = 1;
+    output_3_ready = 1;
+    #1;
+    check(input_8_ready && output_3_valid &&
+              output_3_data == input_8_data,
+          "Internal-edge fixture changed boundary passthrough");
+    input_8_valid = 0;
+    output_3_ready = 0;
+
+    input_1_data = 64'd1;
+    input_1_valid = 1;
+    input_3_valid = 1;
+    #1;
+    check(input_1_ready && input_3_ready,
+          "First load operands were not accepted");
+    @(posedge clock);
+    @(negedge clock);
+    input_1_valid = 0;
+    input_3_valid = 0;
+    accept_request(0);
+
+    output_0_ready = 1;
+    output_1_ready = 0;
+    accept_response(128'h1111222233334444_5555666677778888);
+    #1;
+    check(!output_0_valid && output_1_valid,
+          "Blocked external load result was not retained atomically");
+    repeat (2) begin
+      @(negedge clock);
+      #1;
+      check(!memory_input_0_request_valid,
+            "Internal store control was published before external fanout");
+    end
+
+    output_1_ready = 1;
+    #1;
+    check(output_0_valid && output_1_valid &&
+              output_0_data ==
+                  128'h1111222233334444_5555666677778888,
+          "First load result did not release as one fanout");
+    @(posedge clock);
+    @(negedge clock);
+    #1;
+    check(!output_0_valid && !output_1_valid,
+          "First load result was published more than once");
+
+    input_1_data = 64'd2;
+    input_1_valid = 1;
+    input_3_valid = 1;
+    #1;
+    check(input_1_ready && input_3_ready,
+          "Second load operands were not accepted");
+    @(posedge clock);
+    @(negedge clock);
+    input_1_valid = 0;
+    input_3_valid = 0;
+    accept_request(0);
+    accept_response(128'h9999aaaabbbbcccc_ddddeeeeffff0000);
+    #1;
+    check(!output_0_valid && !output_1_valid,
+          "Full internal queue did not backpressure the second load result");
+
+    input_4_data = 64'd3;
+    input_5_data = 128'h0000000000000000_00000000deadbeef;
+    input_4_valid = 1;
+    input_5_valid = 1;
+    #1;
+    check(input_4_ready && input_5_ready,
+          "First store operands were not accepted");
+    @(posedge clock);
+    @(negedge clock);
+    input_4_valid = 0;
+    input_5_valid = 0;
+    #1;
+    check(!output_0_valid && !output_1_valid,
+          "Internal queue allowed same-cycle replacement");
+    output_1_ready = 0;
+    accept_request(1);
+    #1;
+    check(!output_0_valid && output_1_valid,
+          "Second load did not reach its external fanout after store issue");
+    output_1_ready = 1;
+    #1;
+    check(output_0_valid && output_1_valid &&
+              output_0_data ==
+                  128'h9999aaaabbbbcccc_ddddeeeeffff0000,
+          "Second load result did not release after store issue");
+    @(posedge clock);
+    @(negedge clock);
+    #1;
+    check(!output_0_valid && !output_1_valid,
+          "Second load result was published more than once");
+
+    input_4_data = 64'd4;
+    input_5_data = 128'h0000000000000000_00000000cafef00d;
+    input_4_valid = 1;
+    input_5_valid = 1;
+    #1;
+    check(input_4_ready && input_5_ready,
+          "Second store operands were not accepted");
+    @(posedge clock);
+    @(negedge clock);
+    input_4_valid = 0;
+    input_5_valid = 0;
+
+    output_2_ready = 1;
+    accept_response(0);
+    accept_request(1);
+    accept_response(0);
+    repeat (2) @(posedge clock);
+    @(negedge clock);
+    #1;
+    check(store_request_count == 2,
+          "Internal controls did not produce exactly two stores");
+    check(store_completion_count == 2,
+          "Internal stores did not produce exactly two completions");
+    check(!memory_input_0_request_valid && !output_0_valid &&
+              !output_1_valid && !output_2_valid,
+          "Internal connection duplicated a token");
+    $finish;
+  end
+endmodule
+)sv";
+  require(static_cast<bool>(testbench),
+          "could not write internal-edge memory testbench");
+
+  std::ofstream synthesis(output / "internal_memory.ys");
+  synthesis << R"ys(read_verilog -sv internal_memory.sv
+hierarchy -check -top loom_module
+check -assert
+proc
+check -assert
+select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
+synth -top loom_module
+check -assert
+select -assert-none loom_module/t:$dlatch loom_module/t:$_DLATCH_*
+)ys";
+  require(static_cast<bool>(synthesis),
+          "could not write internal-edge memory synthesis script");
+}
+
 void verifySchedule(const loom::ArtifactStore &store,
                     const std::filesystem::path &output, bool temporal) {
   auto module = makeMemoryModule(store, temporal);
@@ -985,6 +1406,46 @@ void verifySchedule(const loom::ArtifactStore &store,
     writeSpatialToolArtifacts(output, configuration);
 }
 
+void verifyInternalEdge(loom::ArtifactStore &store,
+                        const std::filesystem::path &output) {
+  auto module = loom::test::buildInternalMemoryEdgeFabric(
+      store, ::fabric::Schedule::Temporal);
+  auto system = makeMemorySystem(module, store, true);
+  loom::fabric::SpatialCoreOccurrenceRef spatialCore;
+  auto abi = makeAbi(store, module, system, spatialCore);
+  mlir::DialectRegistry actorRegistry;
+  actorRegistry.insert<dataflow::DataflowDialect, mlir::DLTIDialect,
+                       mlir::func::FuncDialect>();
+  mlir::MLIRContext actorContext(actorRegistry,
+                                 mlir::MLIRContext::Threading::DISABLED);
+  const auto memory = module.view().memoryOccurrences().front();
+  const auto schema = take(module.view().memoryConfigurationSchema(memory));
+  const auto semantic = take(makeInternalMemoryConfiguration(
+      module.view(), memory, actorContext));
+  const auto configuration =
+      makeMemoryConfigurationImage(abi, spatialCore, schema, semantic);
+
+  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  context.loadDialect<circt::comb::CombDialect, circt::hw::HWDialect,
+                      circt::seq::SeqDialect, circt::sv::SVDialect>();
+  auto skeleton = take(loom::hardware::rtl::buildModuleRootCirctSkeleton(
+      context, spatialCore, abi));
+  std::string text;
+  llvm::raw_string_ostream(text) << *skeleton.module;
+  const llvm::StringRef ir(text);
+  require(ir.contains("operand_occupied_") &&
+              ir.contains("result_occupied_"),
+          "internal memory omitted registered operand or result state");
+  const std::string rtl =
+      take(loom::hardware::rtl::lowerAndExportSpecializedSystemVerilog(
+          *skeleton.module));
+  std::ofstream(output / "internal_memory.sv") << rtl;
+  std::ofstream image(output / "internal_memory_configuration.txt");
+  for (std::uint8_t byte : configuration.image)
+    image << static_cast<unsigned>(byte) << '\n';
+  writeInternalMemoryToolArtifacts(output, configuration);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -994,5 +1455,6 @@ int main(int argc, char **argv) {
   loom::ArtifactStore store(argv[1]);
   verifySchedule(store, argv[1], false);
   verifySchedule(store, argv[1], true);
+  verifyInternalEdge(store, argv[1]);
   return EXIT_SUCCESS;
 }

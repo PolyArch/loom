@@ -5,7 +5,9 @@
 
 #include <cassert>
 #include <limits>
+#include <map>
 #include <system_error>
+#include <tuple>
 #include <utility>
 
 namespace loom::sim::detail {
@@ -221,6 +223,18 @@ llvm::Error CgraTransportRuntime::acceptTransfers(
     ++bindings_[transfer.bindingOrdinal].nextProducerSequenceOrdinal;
     slots.push_back(slot);
   }
+  std::map<std::uint64_t, llvm::SmallVector<std::uint64_t, 4>> groupedSlots;
+  for (auto [transfer, slot] : llvm::zip(transfers, slots))
+    if (transfer.publicationGroup != invalidCgraTransportOrdinal)
+      groupedSlots[transfer.publicationGroup].push_back(slot);
+  for (const auto &[group, members] : groupedSlots) {
+    (void)group;
+    if (members.size() < 2)
+      continue;
+    auto allocated = allocatePublicationGroup(members);
+    if (!allocated)
+      return allocated.takeError();
+  }
   for (const CgraPhysicalLifecycleEvent &event : *requested)
     requestedEvents_.schedule(
         {{event.coordinate, event.actionOrdinal, event.occurrenceOrdinal,
@@ -261,6 +275,9 @@ llvm::Error CgraTransportRuntime::acceptActorEmissions(
     return llvm::Error::success();
   llvm::SmallVector<PendingTransfer, 4> transfers;
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueBindings;
+  std::map<std::tuple<std::uint64_t, std::uint64_t, std::uint32_t>,
+           std::uint64_t>
+      memoryGroups;
   transfers.reserve(emissions.size());
   for (CgraActorEmission &emission : emissions) {
     auto binding = actorSourceBindings_.find(
@@ -270,8 +287,22 @@ llvm::Error CgraTransportRuntime::acceptActorEmissions(
     if (bindings_[binding->second].active ||
         !uniqueBindings.insert(binding->second).second)
       return invalid("CGRA actor emission batch reuses an in-flight source");
-    transfers.push_back(
-        {binding->second, emission.occurrenceOrdinal, &emission.token});
+    std::uint64_t publicationGroup = invalidCgraTransportOrdinal;
+    if (emission.semanticActorOrdinal >= state_->execution->actorPlans.size())
+      return invalid("CGRA actor emission names an unknown semantic actor");
+    if (state_->execution->actorPlans[emission.semanticActorOrdinal]
+            .isPlainMemory()) {
+      const auto key =
+          std::make_tuple(emission.semanticActorOrdinal,
+                          emission.occurrenceOrdinal,
+                          emission.transitionCaseOrdinal);
+      auto [position, inserted] =
+          memoryGroups.try_emplace(key, memoryGroups.size());
+      (void)inserted;
+      publicationGroup = position->second;
+    }
+    transfers.push_back({binding->second, emission.occurrenceOrdinal,
+                         &emission.token, publicationGroup});
   }
   return acceptTransfers(coordinate, transfers);
 }
@@ -292,9 +323,43 @@ llvm::Error CgraTransportRuntime::acceptGraphIngressEmissions(
         !uniqueBindings.insert(binding->second).second)
       return invalid("CGRA graph ingress batch reuses an in-flight source");
     transfers.push_back(
-        {binding->second, emission.occurrenceOrdinal, &emission.token});
+        {binding->second, emission.occurrenceOrdinal, &emission.token,
+         invalidCgraTransportOrdinal});
   }
   return acceptTransfers(coordinate, transfers);
+}
+
+llvm::Error
+CgraTransportRuntime::retryBlocked(const SpatialEventCoordinate &coordinate) {
+  auto publication = nextSpatialDelta(coordinate);
+  if (!publication)
+    return publication.takeError();
+  for (int binding = blocked_.find_first(); binding >= 0;
+       binding = blocked_.find_next(binding)) {
+    std::optional<std::uint64_t> slot;
+    for (auto &&[ordinal, inFlight] : llvm::enumerate(inFlight_))
+      if (inFlight.active &&
+          inFlight.bindingOrdinal == static_cast<std::uint64_t>(binding)) {
+        slot = ordinal;
+        break;
+      }
+    if (!slot)
+      return invalid("CGRA blocked transfer has no in-flight token");
+    blocked_.reset(binding);
+    if (inFlight_[*slot].consumedRequested) {
+      if (llvm::Error error = schedulePublication(*slot, *publication))
+        return error;
+    } else if (inFlight_[*slot].operandCapacityBlocked) {
+      inFlight_[*slot].operandCapacityBlocked = false;
+      if (llvm::Error error = scheduleArrival(*slot, *publication))
+        return error;
+    }
+  }
+  for (std::uint64_t storageOrdinal = 0; storageOrdinal != storages_.size();
+       ++storageOrdinal)
+    if (llvm::Error error = scheduleStorage(storageOrdinal, *publication))
+      return error;
+  return llvm::Error::success();
 }
 
 } // namespace loom::sim::detail

@@ -779,10 +779,10 @@ int main() {
       loom::pnr::systemPnrSearchDomainSchemaDescriptorBytes();
   require(llvm::StringRef(reinterpret_cast<const char *>(descriptor.data()),
                           descriptor.size()) ==
-              "loom.system_pnr_search_domain.3.0",
-          "H schema descriptor did not switch atomically to version 3.0");
+              "loom.system_pnr_search_domain.4.0",
+          "H schema descriptor did not switch atomically to version 4.0");
   static constexpr llvm::StringLiteral priorDescriptor =
-      "loom.system_pnr_search_domain.2.0";
+      "loom.system_pnr_search_domain.3.0";
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
                   mlir::DLTIDialect, mlir::func::FuncDialect>();
@@ -820,8 +820,8 @@ int main() {
               reinterpret_cast<const std::uint8_t *>(priorDescriptor.data()),
               priorDescriptor.size()),
           domain.canonicalViewBytes(), priorDigest, store),
-      "schema descriptor is not exact version 3.0",
-      "H 2.0 descriptor was accepted by the H 3.0 owner");
+      "schema descriptor is not exact version 4.0",
+      "H 3.0 descriptor was accepted by the H 4.0 owner");
 
   auto obligations = take(loom::mapping::projectSystemServiceObligations(
       dataflowView, constraints.view().rootThreadLaunches()));
@@ -855,7 +855,7 @@ int main() {
           {reinterpret_cast<const std::uint8_t *>(oldDescriptor.data()),
            oldDescriptor.size()},
           domain.canonicalViewBytes(), domain.digest(), store),
-      "schema descriptor is not exact version 3.0",
+      "schema descriptor is not exact version 4.0",
       "strict H adoption accepted the retired version 1.0 descriptor");
 
   auto adopted = take(loom::pnr::adoptSystemPnrSearchDomain(

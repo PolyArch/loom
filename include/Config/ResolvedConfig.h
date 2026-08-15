@@ -44,7 +44,8 @@ struct ResolvedDataflowRewriteConfig {
 struct ResolvedTechMappingConfig {
   std::uint64_t matchRowAttemptLimit = 65536;
   std::uint64_t partialCoverExpansionLimit = 262144;
-  std::uint64_t candidatePublicationLimit = 16;
+  std::uint64_t candidateEvaluationLimit = 128;
+  std::uint64_t candidatePublicationLimit = 8;
 };
 
 struct ResolvedDseConfig {
@@ -73,7 +74,7 @@ struct ResolvedEvaluationConfig final {
 
 struct ResolvedConfig {
   static constexpr ArtifactSchemaDescriptor artifactSchema{
-      "loom.config.resolved", SchemaVersion{5, 0}};
+      "loom.config.resolved", SchemaVersion{6, 0}};
 
   ResolvedHardwareTargetConfig hardwareTarget;
   ResolvedDseConfig dse;

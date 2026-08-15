@@ -224,6 +224,20 @@ def Mapping_RouteTreeOp
   let hasVerifier = 1;
 }
 
+def Mapping_RegisterFifoTransferOp
+    : Mapping_Op<"register_fifo_transfer", [HasParent<"SpatialOp">]> {
+  let summary = "one Temporal PE register-FIFO local transfer";
+  let arguments = (ins Mapping_GraphProducerEndpointRefAttr:$logical_net,
+      Mapping_GraphConsumerEndpointRefAttr:$sink,
+      Mapping_FabricPhysicalTraversalRefAttr:$write_traversal,
+      Mapping_FabricPhysicalTraversalRefAttr:$read_traversal);
+  let assemblyFormat = [{`logical_net` `(` $logical_net `)`
+                         `sink` `(` $sink `)`
+                         `write` `(` $write_traversal `)`
+                         `read` `(` $read_traversal `)` attr-dict}];
+  let hasVerifier = 1;
+}
+
 def Mapping_RouteNodeOp : Mapping_Op<"route_node", [HasParent<"RouteTreeOp">]> {
   let summary = "one canonical node in a flat Spatial route tree";
   let arguments = (ins I64Attr:$node_ordinal,

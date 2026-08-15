@@ -175,6 +175,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   add_executable(loom-common-skeleton-test
+    CommonSkeletonStructuralToolArtifacts.cpp
     CommonSkeletonTest.cpp
   )
 
@@ -190,6 +191,7 @@ if(LOOM_HAVE_CIRCT)
   )
 
   add_executable(loom-memory-hierarchy-test
+    ../InternalMemoryEdgeTestSupport.cpp
     MemoryHierarchyTest.cpp
   )
 

@@ -408,6 +408,28 @@ void declarationOrderDoesNotChangeTheContract() {
           "use patterns are not normalized by key");
 }
 
+void intrinsicTimingComesFromEventsAndClaimCapacity() {
+  ResourceContractDeclaration declared = buffer::declaration();
+  declared.states[0].capacityDimensions[0].capacity = CapacityUnits(2);
+  declared.timingContracts[0].eventRank = {0, 3};
+  const ResourceContract contract =
+      takeContract(__func__, ResourceContract::create(declared));
+
+  const UsePatternTiming enqueue =
+      contract.usePatternTiming(UsePatternKey(0));
+  const UsePatternTiming dequeue =
+      contract.usePatternTiming(UsePatternKey(1));
+  require(__func__,
+          enqueue.releaseLatencyCycles == 3 &&
+              !enqueue.commitLatencyCycles &&
+              enqueue.minimumInitiationIntervalCycles == 2,
+          "two claim slots did not admit one use every two cycles");
+  require(__func__,
+          dequeue.releaseLatencyCycles == 3 &&
+              dequeue.minimumInitiationIntervalCycles == 3,
+          "one claim slot did not retain the full hold interval");
+}
+
 void sharedCapacityWithoutPolicyIsRejected() {
   ResourceContractDeclaration declaration = buffer::declaration();
   declaration.usePatterns[1].claims[0].dimension =
@@ -1010,6 +1032,7 @@ void physicalTagAssignmentsExtendOneOwnerContract() {
 int main() {
   disjointResourceNeedsNoGrantPolicy();
   declarationOrderDoesNotChangeTheContract();
+  intrinsicTimingComesFromEventsAndClaimCapacity();
   sharedCapacityWithoutPolicyIsRejected();
   unobservableRequesterOrderIsRejected();
   duplicateDeclaredKeysAreRejected();

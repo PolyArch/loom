@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,9 +32,20 @@ struct SpatialExactRepairResult final {
   std::string detail;
 };
 
-/// Worker-local bounded exact repair scratch for one complete
-/// dependency-closed Spatial Mapping violation region. Witness domains without
-/// a total exact encoding fail closed.
+/// Returns the exact reason that the selected repair provider cannot encode
+/// the frozen search domain. This check is run before mutable Candidate state
+/// exists; an empty result means every reachable repair witness is covered by
+/// one of the provider's complete encodings.
+std::optional<std::string>
+unsupportedSpatialExactRepairDomain(const FrozenSpatialPnrProblem &problem);
+
+/// Worker-local bounded exact repair scratch for one dependency-closed
+/// Spatial Mapping violation region. The transport-closure profile encodes
+/// compute and memory placement, terminal attachment, local transfer
+/// disposition, routes, tags, and their closed constraints. The
+/// atomic-capacity profile encodes compute binding only. A witness outside the
+/// selected profile's total encoding returns UnsupportedEncoding and can never
+/// prove the invocation infeasible.
 class SpatialExactRepairScratch final {
 public:
   llvm::Expected<SpatialExactRepairResult>

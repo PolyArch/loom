@@ -15,7 +15,6 @@ inline constexpr CandidateGeneratorKind
 
 class ResolvedFabricTemplateConfigView final {
 public:
-  loom::adg::BuiltinTargetPreset preset() const { return preset_; }
   const loom::adg::BuiltinTargetScale &scale() const { return scale_; }
   llvm::ArrayRef<std::uint8_t> canonicalViewBytes() const {
     return canonicalBytes_;
@@ -23,20 +22,16 @@ public:
   const ComponentViewDigest &digest() const { return digest_; }
 
 private:
-  ResolvedFabricTemplateConfigView(loom::adg::BuiltinTargetPreset preset,
-                                   loom::adg::BuiltinTargetScale scale,
+  ResolvedFabricTemplateConfigView(loom::adg::BuiltinTargetScale scale,
                                    std::vector<std::uint8_t> canonicalBytes,
                                    ComponentViewDigest digest)
-      : preset_(preset), scale_(scale),
-        canonicalBytes_(std::move(canonicalBytes)), digest_(digest) {}
+      : scale_(scale), canonicalBytes_(std::move(canonicalBytes)),
+        digest_(digest) {}
 
-  loom::adg::BuiltinTargetPreset preset_;
   loom::adg::BuiltinTargetScale scale_;
   std::vector<std::uint8_t> canonicalBytes_;
   ComponentViewDigest digest_;
 
-  friend llvm::Expected<ResolvedFabricTemplateConfigView>
-      resolveFabricTemplateConfig(loom::adg::BuiltinTargetPreset);
   friend llvm::Expected<ResolvedFabricTemplateConfigView>
   resolveFabricTemplateConfig(llvm::StringRef, std::uint32_t, std::uint32_t,
                               const loom::adg::BuiltinTargetScale &);
@@ -47,13 +42,9 @@ private:
 };
 
 llvm::ArrayRef<std::uint8_t> resolvedFabricTemplateConfigSchemaBytes();
-llvm::Expected<ResolvedFabricTemplateConfigView>
-resolveFabricTemplateConfig(loom::adg::BuiltinTargetPreset preset);
-llvm::Expected<ResolvedFabricTemplateConfigView>
-resolveFabricTemplateConfig(llvm::StringRef templateIdentity,
-                            std::uint32_t schemaMajor,
-                            std::uint32_t schemaMinor,
-                            const loom::adg::BuiltinTargetScale &scale);
+llvm::Expected<ResolvedFabricTemplateConfigView> resolveFabricTemplateConfig(
+    llvm::StringRef templateIdentity, std::uint32_t schemaMajor,
+    std::uint32_t schemaMinor, const loom::adg::BuiltinTargetScale &scale);
 llvm::Expected<ResolvedFabricTemplateConfigView>
 projectResolvedFabricTemplateConfigView(const ResolvedConfig &config);
 llvm::Expected<ResolvedFabricTemplateConfigView>

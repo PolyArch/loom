@@ -248,10 +248,6 @@ private:
       return error;
     if (llvm::Error error = addConfigurationAbi(value.configurationAbi()))
       return error;
-    for (const ArtifactRootReference &interconnect :
-         value.interconnectImplementations())
-      if (llvm::Error error = addFabric(interconnect))
-        return error;
     if (value.implementationPlatform()) {
       if (llvm::Error error = addArtifact(*value.implementationPlatform()))
         return error;

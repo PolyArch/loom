@@ -979,12 +979,12 @@ void spatialSwitchConnectivityBecomesTraversals() {
             "spatial switch traversal lost its resource projection");
     const auto &use = traversal.impliedUses.front();
     require(test,
-            use.activationGroup.kind ==
-                    loom::fabric::FabricTraversalActivationGroupKind::
+            use.requesterGroup.kind ==
+                    loom::fabric::FabricTraversalRequesterGroupKind::
                         SwitchRequester &&
-                use.activationGroup.owner ==
+                use.requesterGroup.owner ==
                     loom::fabric::FabricInventoryOwnerRef::of(payload.owner) &&
-                use.activationGroup.ordinal == 0,
+                use.requesterGroup.ordinal == 0,
             "spatial switch traversal escaped its configuration requester");
     require(test,
             use.occupancyKind ==
@@ -1016,10 +1016,10 @@ void spatialSwitchConnectivityBecomesTraversals() {
   require(test, temporalFinalized.view().moduleResourceOwners().size() == 1,
           "temporal switch resource owner was not canonicalized");
   unsigned temporalTraversalCount = 0;
-  std::optional<loom::fabric::FabricTraversalActivationGroupView>
-      inputZeroActivation;
-  std::optional<loom::fabric::FabricTraversalActivationGroupView>
-      inputOneActivation;
+  std::optional<loom::fabric::FabricTraversalRequesterGroupView>
+      inputZeroRequester;
+  std::optional<loom::fabric::FabricTraversalRequesterGroupView>
+      inputOneRequester;
   for (const auto &traversal : temporalFinalized.view().physicalTraversals()) {
     if (traversal.reference.kind() !=
         loom::fabric::FabricPhysicalTraversalKind::SwitchTraversal)
@@ -1033,13 +1033,13 @@ void spatialSwitchConnectivityBecomesTraversals() {
         traversal.reference.payload);
     const auto &use = traversal.impliedUses.front();
     require(test,
-            use.activationGroup.kind ==
-                    loom::fabric::FabricTraversalActivationGroupKind::
+            use.requesterGroup.kind ==
+                    loom::fabric::FabricTraversalRequesterGroupKind::
                         SwitchRequester &&
-                use.activationGroup.owner ==
+                use.requesterGroup.owner ==
                     loom::fabric::FabricInventoryOwnerRef::of(payload.owner) &&
-                use.activationGroup.ordinal == payload.input,
-            "temporal switch traversal changed its requester activation");
+                use.requesterGroup.ordinal == payload.input,
+            "temporal switch traversal changed its requester group");
     require(test,
             use.occupancyKind ==
                 loom::fabric::FabricTraversalUseOccupancyKind::RuntimeService,
@@ -1053,20 +1053,20 @@ void spatialSwitchConnectivityBecomesTraversals() {
             static_cast<std::uint32_t>(use.pattern.ordinal)));
     require(test, pattern.claims.size() == 2,
             "temporal switch use is not one ingress-egress claim envelope");
-    auto &activation =
-        payload.input == 0 ? inputZeroActivation : inputOneActivation;
-    if (!activation)
-      activation = use.activationGroup;
+    auto &requester =
+        payload.input == 0 ? inputZeroRequester : inputOneRequester;
+    if (!requester)
+      requester = use.requesterGroup;
     else
-      require(test, *activation == use.activationGroup,
-              "broadcast branches did not share one activation group");
+      require(test, *requester == use.requesterGroup,
+              "broadcast branches did not share one requester group");
   }
   require(test, temporalTraversalCount == 4,
           "temporal switch connectivity changed its traversal domain");
   require(test,
-          inputZeroActivation && inputOneActivation &&
-              *inputZeroActivation != *inputOneActivation,
-          "independent switch requesters were merged into one activation");
+          inputZeroRequester && inputOneRequester &&
+              *inputZeroRequester != *inputOneRequester,
+          "independent switch requester groups were merged");
 
   const auto temporalSwitch =
       temporalFinalized.view().switchOccurrences().front();

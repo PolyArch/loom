@@ -1,6 +1,7 @@
 #ifndef LOOM_MAPPING_ARTIFACT_SYSTEMMAPPINGCLOSUREPROJECTION_H
 #define LOOM_MAPPING_ARTIFACT_SYSTEMMAPPINGCLOSUREPROJECTION_H
 
+#include "Mapping/Artifact/MappingProgressProjection.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
 #include "Fabric/IR/UsePatternValue.h"
@@ -52,9 +53,29 @@ struct SystemResourceActivationProjection final {
 struct SystemMappingClosureProjection final {
   SystemExecutionContextProjection executionContexts;
   std::vector<SystemServiceRealizationView> serviceRealizations;
+  std::vector<MappingRouteProgressObligationProjection> routeObligations;
   std::vector<SystemCapacityCellProjection> capacityCells;
   std::vector<SystemResourceActivationProjection> resourceActivations;
 };
+
+/// Rebase one SpatialMapping-relative activation event into a selected rooted
+/// graph execution. These helpers are the sole event projection used by both
+/// System PnR and strict SystemMapping closure reconstruction.
+llvm::Expected<std::vector<::dataflow::EventFamilyKey>>
+projectSystemSpatialActivityEvent(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    ::dataflow::RootedGraphLaunchRef graph,
+    const SpatialActivityEventRef &event);
+
+llvm::Expected<::dataflow::GraphRef> resolveSystemSpatialActivityEventGraph(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const SpatialActivityEventRef &event);
+
+llvm::Expected<std::vector<SystemCausalReleasePointProjection>>
+projectSystemSpatialCausalRelease(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    ::dataflow::RootedGraphLaunchRef graph,
+    llvm::ArrayRef<SpatialEventPointView> release);
 
 llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,

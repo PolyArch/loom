@@ -8,6 +8,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <iterator>
 #include <limits>
 #include <system_error>
 
@@ -74,19 +75,60 @@ llvm::Expected<InitializerRelationModel> InitializerRelationModel::create(
   for (PnrIndex relationOrdinal = 0; relationOrdinal < relationInputs.size();
        ++relationOrdinal) {
     InitializerRelationInput &input = relationInputs[relationOrdinal];
-    if (input.members.size() < 2)
+    if (input.members.empty() ||
+        (input.kind != InitializerRelationKind::Capacity &&
+         input.members.size() < 2))
       return modelError("a relation has fewer than two members");
+    if (input.kind == InitializerRelationKind::Capacity) {
+      if (input.valueCapacities.empty())
+        return modelError("a capacity relation has no value capacities");
+      if (input.valueCapacities.size() >
+          getPnrIndexMax() - model.valueCapacities_.size())
+        return modelError("relation value capacities overflow PnrIndex");
+      if (llvm::any_of(input.valueCapacities, [](std::uint64_t capacity) {
+            return capacity > static_cast<std::uint64_t>(
+                                  std::numeric_limits<std::int64_t>::max());
+          }))
+        return modelError(
+            "a relation value capacity is outside the nonnegative i64 domain");
+      std::vector<PnrIndex> decisions;
+      decisions.reserve(input.members.size());
+      for (const InitializerRelationMemberInput &member : input.members)
+        decisions.push_back(member.decision);
+      llvm::sort(decisions);
+      if (std::adjacent_find(decisions.begin(), decisions.end()) !=
+          decisions.end())
+        return modelError(
+            "a capacity relation repeats one decision as a member");
+    } else if (!input.valueCapacities.empty()) {
+      return modelError("a non-capacity relation carries value capacities");
+    }
     if (input.members.size() > getPnrIndexMax() - model.relationMembers_.size())
       return modelError("relation member count overflows PnrIndex");
     const PnrIndex memberOffset =
         static_cast<PnrIndex>(model.relationMembers_.size());
+    const PnrIndex valueCapacityOffset =
+        static_cast<PnrIndex>(model.valueCapacities_.size());
     for (InitializerRelationMemberInput &member : input.members) {
       if (member.decision >= decisionCount)
         return modelError("a relation member names a foreign decision");
+      if (member.demand == 0 ||
+          member.demand > static_cast<std::uint64_t>(
+                              std::numeric_limits<std::int64_t>::max()))
+        return modelError(
+            "a relation member demand is outside the positive i64 domain");
+      if (input.kind != InitializerRelationKind::Capacity && member.demand != 1)
+        return modelError("a non-capacity relation carries member demand");
       if (member.projectedValues.size() !=
           decisionChoiceCounts[member.decision])
         return modelError(
             "a relation projection does not cover its decision domain");
+      if (input.kind == InitializerRelationKind::Capacity &&
+          llvm::any_of(member.projectedValues, [&](PnrIndex value) {
+            return value >= input.valueCapacities.size();
+          }))
+        return modelError(
+            "a capacity projection names a value without capacity");
       if (member.projectedValues.size() >
           getPnrIndexMax() - model.projectedValues_.size())
         return modelError("projected relation values overflow PnrIndex");
@@ -95,11 +137,17 @@ llvm::Expected<InitializerRelationModel> InitializerRelationModel::create(
       model.projectedValues_.insert(model.projectedValues_.end(),
                                     member.projectedValues.begin(),
                                     member.projectedValues.end());
-      model.relationMembers_.push_back({member.decision, projectedValueOffset});
+      model.relationMembers_.push_back(
+          {member.decision, projectedValueOffset, member.demand});
       decisionRelations[member.decision].push_back(relationOrdinal);
     }
-    model.relations_.push_back({input.kind, memberOffset,
-                                static_cast<PnrIndex>(input.members.size())});
+    model.valueCapacities_.insert(model.valueCapacities_.end(),
+                                  input.valueCapacities.begin(),
+                                  input.valueCapacities.end());
+    model.relations_.push_back(
+        {input.kind, memberOffset, static_cast<PnrIndex>(input.members.size()),
+         valueCapacityOffset,
+         static_cast<PnrIndex>(input.valueCapacities.size())});
   }
 
   model.decisionRelationOffsets_.reserve(decisionCount + 1);
@@ -124,6 +172,21 @@ bool InitializerRelationModel::relationSatisfied(
   assert(choices.size() == decisionCount());
   const InitializerRelationRecord &record = relations_[relation];
   const auto relationMembers = members(record);
+  if (record.kind == InitializerRelationKind::Capacity) {
+    std::vector<std::uint64_t> loads(record.valueCapacityCount, 0);
+    const auto capacities = valueCapacities(record);
+    for (const InitializerRelationMember &member : relationMembers) {
+      assert(choices[member.decision] <
+             decisionChoiceOffsets_[member.decision + 1] -
+                 decisionChoiceOffsets_[member.decision]);
+      const PnrIndex value = projectedValue(member, choices[member.decision]);
+      assert(value < capacities.size());
+      if (member.demand > capacities[value] - loads[value])
+        return false;
+      loads[value] += member.demand;
+    }
+    return true;
+  }
   std::optional<PnrIndex> equalValue;
   for (std::size_t lhs = 0; lhs < relationMembers.size(); ++lhs) {
     const InitializerRelationMember &member = relationMembers[lhs];
@@ -156,7 +219,7 @@ llvm::Error InitializerRelationModel::verifyChoices(
       return assignmentError("a choice is outside its decision domain");
   for (PnrIndex relation = 0; relation < relations_.size(); ++relation)
     if (!relationSatisfied(relation, choices))
-      return assignmentError("a hard equality or disjoint relation failed");
+      return assignmentError("a hard relation failed");
   return llvm::Error::success();
 }
 
@@ -848,6 +911,42 @@ bool InitializerRelationSolver::disjointChoiceSupported(
   return true;
 }
 
+bool InitializerRelationSolver::capacityChoiceSupported(
+    PnrIndex relationOrdinal, PnrIndex decision, PnrIndex localChoice) const {
+  const InitializerRelationRecord &relation =
+      model_->relations()[relationOrdinal];
+  const auto capacities = model_->valueCapacities(relation);
+  std::vector<std::uint64_t> forcedLoads(capacities.size(), 0);
+  for (const InitializerRelationMember &member : model_->members(relation)) {
+    std::optional<PnrIndex> forcedValue;
+    if (member.decision == decision) {
+      forcedValue = model_->projectedValue(member, localChoice);
+    } else {
+      const PnrIndex count = decisionChoiceOffsets_[member.decision + 1] -
+                             decisionChoiceOffsets_[member.decision];
+      bool varies = false;
+      for (PnrIndex choice = 0; choice < count; ++choice) {
+        if (!choiceActive(member.decision, choice))
+          continue;
+        const PnrIndex value = model_->projectedValue(member, choice);
+        if (!forcedValue)
+          forcedValue = value;
+        else if (*forcedValue != value) {
+          varies = true;
+          break;
+        }
+      }
+      if (varies)
+        continue;
+    }
+    assert(forcedValue && *forcedValue < capacities.size());
+    if (member.demand > capacities[*forcedValue] - forcedLoads[*forcedValue])
+      return false;
+    forcedLoads[*forcedValue] += member.demand;
+  }
+  return true;
+}
+
 bool InitializerRelationSolver::relationChoiceSupported(
     PnrIndex relation, PnrIndex decision, PnrIndex localChoice) const {
   const InitializerRelationRecord &record = model_->relations()[relation];
@@ -856,6 +955,8 @@ bool InitializerRelationSolver::relationChoiceSupported(
     return equalChoiceSupported(relation, decision, localChoice);
   case InitializerRelationKind::Disjoint:
     return disjointChoiceSupported(relation, decision, localChoice);
+  case InitializerRelationKind::Capacity:
+    return capacityChoiceSupported(relation, decision, localChoice);
   }
   llvm_unreachable("unknown initializer relation kind");
 }
@@ -863,6 +964,19 @@ bool InitializerRelationSolver::relationChoiceSupported(
 bool InitializerRelationSolver::activeRelationSatisfied(
     const InitializerRelationRecord &relation) const {
   const auto members = model_->members(relation);
+  if (relation.kind == InitializerRelationKind::Capacity) {
+    const auto capacities = model_->valueCapacities(relation);
+    std::vector<std::uint64_t> loads(capacities.size(), 0);
+    for (const InitializerRelationMember &member : members) {
+      const PnrIndex value =
+          model_->projectedValue(member, soleChoice(member.decision));
+      assert(value < capacities.size());
+      if (member.demand > capacities[value] - loads[value])
+        return false;
+      loads[value] += member.demand;
+    }
+    return true;
+  }
   std::optional<PnrIndex> equalValue;
   for (std::size_t lhs = 0; lhs < members.size(); ++lhs) {
     const InitializerRelationMember &member = members[lhs];
@@ -967,6 +1081,7 @@ llvm::Expected<InitializerRelationSolver::SearchResult>
 InitializerRelationSolver::search(
     std::uint64_t assignmentLimit,
     DeterministicPnrRandomStream *diversificationStream,
+    llvm::ArrayRef<PnrIndex> preferredChoices,
     llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
         validateCompleteAssignment) {
   if (!propagate())
@@ -995,7 +1110,7 @@ InitializerRelationSolver::search(
   const PnrIndex choiceCount =
       decisionChoiceOffsets_[selected + 1] - decisionChoiceOffsets_[selected];
   const llvm::ArrayRef<PnrIndex> choiceOrder =
-      buildChoiceOrder(selected, diversificationStream);
+      buildChoiceOrder(selected, diversificationStream, preferredChoices);
   for (PnrIndex selectedChoice : choiceOrder) {
     if (assignmentAttempts_ == assignmentLimit)
       return SearchResult::WorkLimit;
@@ -1007,7 +1122,7 @@ InitializerRelationSolver::search(
         retainedChoice &= removeChoice(selected, choice);
     auto result =
         retainedChoice
-            ? search(assignmentLimit, diversificationStream,
+            ? search(assignmentLimit, diversificationStream, preferredChoices,
                      validateCompleteAssignment)
             : llvm::Expected<SearchResult>(SearchResult::Contradiction);
     if (!result)
@@ -1020,7 +1135,8 @@ InitializerRelationSolver::search(
 }
 
 llvm::ArrayRef<PnrIndex> InitializerRelationSolver::buildChoiceOrder(
-    PnrIndex decision, DeterministicPnrRandomStream *diversificationStream) {
+    PnrIndex decision, DeterministicPnrRandomStream *diversificationStream,
+    llvm::ArrayRef<PnrIndex> preferredChoices) {
   const PnrIndex choiceOffset = decisionChoiceOffsets_[decision];
   const PnrIndex choiceCount =
       decisionChoiceOffsets_[decision + 1] - choiceOffset;
@@ -1035,13 +1151,21 @@ llvm::ArrayRef<PnrIndex> InitializerRelationSolver::buildChoiceOrder(
       diversificationStream,
       llvm::MutableArrayRef(choiceOrder_).slice(choiceOffset, activeCount),
       llvm::MutableArrayRef(choiceFenwick_).slice(choiceOffset, activeCount)));
+  if (!diversificationStream && !preferredChoices.empty()) {
+    const PnrIndex preferred = preferredChoices[decision];
+    auto order =
+        llvm::MutableArrayRef(choiceOrder_).slice(choiceOffset, activeCount);
+    const auto found = llvm::find(order, preferred);
+    if (preferred != getInvalidPnrIndex() && found != order.end())
+      std::rotate(order.begin(), found, std::next(found));
+  }
   return llvm::ArrayRef(choiceOrder_).slice(choiceOffset, activeCount);
 }
 
 llvm::Expected<InitializerRelationSolveResult>
 InitializerRelationSolver::solveCanonical(std::uint64_t assignmentLimit) {
   return solve(
-      assignmentLimit, nullptr,
+      assignmentLimit, nullptr, {},
       [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
 }
 
@@ -1050,7 +1174,7 @@ InitializerRelationSolver::solveCanonical(
     std::uint64_t assignmentLimit,
     llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
         validateCompleteAssignment) {
-  return solve(assignmentLimit, nullptr, validateCompleteAssignment);
+  return solve(assignmentLimit, nullptr, {}, validateCompleteAssignment);
 }
 
 llvm::Expected<InitializerRelationSolveResult>
@@ -1062,13 +1186,232 @@ InitializerRelationSolver::solveCanonicalWithFixedChoices(
 }
 
 llvm::Expected<InitializerRelationSolveResult>
+InitializerRelationSolver::solveCanonicalWithReleasedChoices(
+    std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
+    llvm::ArrayRef<PnrIndex> releasedDecisions) {
+  assignmentAttempts_ = 0;
+  if (fixedChoices.size() != domainCounts_.size())
+    return assignmentError(
+        "fixed choice count does not match the decision domain");
+
+  std::vector<PnrIndex> released(releasedDecisions.begin(),
+                                 releasedDecisions.end());
+  llvm::sort(released);
+  released.erase(std::unique(released.begin(), released.end()), released.end());
+  std::vector<std::uint8_t> releasedMarks(domainCounts_.size(), 0);
+  for (PnrIndex decision : released) {
+    if (decision >= domainCounts_.size())
+      return assignmentError("a released decision is outside the domain");
+    releasedMarks[decision] = 1;
+  }
+
+  for (PnrIndex decision = 0; decision < fixedChoices.size(); ++decision) {
+    const PnrIndex fixed = fixedChoices[decision];
+    if (fixed == getInvalidPnrIndex()) {
+      if (!releasedMarks[decision])
+        return assignmentError("a retained decision has no fixed choice");
+      continue;
+    }
+    const PnrIndex choiceCount =
+        decisionChoiceOffsets_[decision + 1] - decisionChoiceOffsets_[decision];
+    if (fixed >= choiceCount)
+      return assignmentError("a fixed choice is outside its decision domain");
+  }
+
+  std::vector<PnrIndex> reducedDecision(releasedMarks.size(),
+                                        getInvalidPnrIndex());
+  std::vector<PnrIndex> reducedChoiceCounts;
+  reducedChoiceCounts.reserve(released.size());
+  for (PnrIndex decision : released) {
+    reducedDecision[decision] =
+        static_cast<PnrIndex>(reducedChoiceCounts.size());
+    reducedChoiceCounts.push_back(decisionChoiceOffsets_[decision + 1] -
+                                  decisionChoiceOffsets_[decision]);
+  }
+
+  const auto appendReleasedMember = [&](const InitializerRelationMember &member,
+                                        InitializerRelationInput &relation) {
+    std::vector<PnrIndex> projectedValues;
+    const PnrIndex choiceCount = decisionChoiceOffsets_[member.decision + 1] -
+                                 decisionChoiceOffsets_[member.decision];
+    projectedValues.reserve(choiceCount);
+    for (PnrIndex choice = 0; choice < choiceCount; ++choice)
+      projectedValues.push_back(model_->projectedValue(member, choice));
+    relation.members.push_back({reducedDecision[member.decision],
+                                std::move(projectedValues), member.demand});
+  };
+  const auto appendFixedValue =
+      [&](PnrIndex value, InitializerRelationInput &relation) -> llvm::Error {
+    if (reducedChoiceCounts.size() == getPnrIndexMax())
+      return modelError("projected decision count overflows PnrIndex");
+    const PnrIndex decision = static_cast<PnrIndex>(reducedChoiceCounts.size());
+    reducedChoiceCounts.push_back(1);
+    relation.members.push_back({decision, {value}});
+    return llvm::Error::success();
+  };
+  const auto fixedInfeasible = [](const llvm::Twine &message) -> llvm::Error {
+    return llvm::make_error<InitializerRelationSolveFailure>(
+        InitializerRelationSolveFailureKind::FixedRootInfeasible,
+        message.str());
+  };
+
+  std::vector<InitializerRelationInput> reducedRelations;
+  reducedRelations.reserve(model_->relations().size());
+  const auto modelFixedChoices =
+      fixedChoices.take_front(model_->decisionCount());
+  for (PnrIndex relationOrdinal = 0;
+       relationOrdinal < model_->relations().size(); ++relationOrdinal) {
+    const InitializerRelationRecord &record =
+        model_->relations()[relationOrdinal];
+    const auto members = model_->members(record);
+    const bool hasReleasedMember =
+        llvm::any_of(members, [&](const InitializerRelationMember &member) {
+          return releasedMarks[member.decision] != 0;
+        });
+    if (!hasReleasedMember) {
+      if (!model_->relationSatisfied(relationOrdinal, modelFixedChoices))
+        return fixedInfeasible(
+            "retained initializer choices violate a hard relation");
+      continue;
+    }
+
+    InitializerRelationInput reduced;
+    reduced.kind = record.kind;
+    if (record.kind == InitializerRelationKind::Capacity) {
+      const auto capacities = model_->valueCapacities(record);
+      reduced.valueCapacities.assign(capacities.begin(), capacities.end());
+      for (const InitializerRelationMember &member : members) {
+        if (releasedMarks[member.decision]) {
+          appendReleasedMember(member, reduced);
+          continue;
+        }
+        const PnrIndex value =
+            model_->projectedValue(member, fixedChoices[member.decision]);
+        if (member.demand > reduced.valueCapacities[value])
+          return fixedInfeasible(
+              "retained initializer choices exceed relation capacity");
+        reduced.valueCapacities[value] -= member.demand;
+      }
+      reducedRelations.push_back(std::move(reduced));
+      continue;
+    }
+
+    std::optional<PnrIndex> equalFixedValue;
+    std::vector<PnrIndex> disjointFixedValues;
+    if (record.kind == InitializerRelationKind::Disjoint)
+      disjointFixedValues.reserve(members.size());
+    for (const InitializerRelationMember &member : members) {
+      if (releasedMarks[member.decision]) {
+        appendReleasedMember(member, reduced);
+        continue;
+      }
+      const PnrIndex value =
+          model_->projectedValue(member, fixedChoices[member.decision]);
+      if (record.kind == InitializerRelationKind::Equal) {
+        if (equalFixedValue && *equalFixedValue != value)
+          return fixedInfeasible(
+              "retained initializer choices violate equality");
+        equalFixedValue = value;
+        continue;
+      }
+      if (llvm::is_contained(disjointFixedValues, value))
+        return fixedInfeasible(
+            "retained initializer choices violate disjointness");
+      disjointFixedValues.push_back(value);
+    }
+    if (equalFixedValue) {
+      if (llvm::Error error = appendFixedValue(*equalFixedValue, reduced))
+        return std::move(error);
+    } else {
+      for (PnrIndex value : disjointFixedValues)
+        if (llvm::Error error = appendFixedValue(value, reduced))
+          return std::move(error);
+    }
+    reducedRelations.push_back(std::move(reduced));
+  }
+
+  auto reducedModel = InitializerRelationModel::create(
+      std::move(reducedChoiceCounts), std::move(reducedRelations));
+  if (!reducedModel)
+    return reducedModel.takeError();
+  InitializerRelationSolver reducedSolver(*reducedModel);
+  auto reducedResult = reducedSolver.solveCanonical(assignmentLimit);
+  assignmentAttempts_ = reducedSolver.assignmentAttempts();
+  if (!reducedResult) {
+    llvm::Error translated = llvm::handleErrors(
+        reducedResult.takeError(),
+        [&](const InitializerRelationSolveFailure &failure) -> llvm::Error {
+          std::string message;
+          llvm::raw_string_ostream stream(message);
+          failure.log(stream);
+          return llvm::make_error<InitializerRelationSolveFailure>(
+              failure.kind() == InitializerRelationSolveFailureKind::WorkLimit
+                  ? InitializerRelationSolveFailureKind::WorkLimit
+                  : InitializerRelationSolveFailureKind::FixedRootInfeasible,
+              stream.str());
+        });
+    return std::move(translated);
+  }
+
+  InitializerRelationSolveResult solved;
+  solved.choices.assign(fixedChoices.begin(), fixedChoices.end());
+  for (auto [local, decision] : llvm::enumerate(released))
+    solved.choices[decision] = reducedResult->choices[local];
+  if (llvm::Error error = model_->verifyChoices(
+          llvm::ArrayRef(solved.choices).take_front(model_->decisionCount())))
+    return std::move(error);
+  solved.assignmentAttempts = reducedResult->assignmentAttempts;
+  return solved;
+}
+
+llvm::Expected<InitializerRelationSolveResult>
 InitializerRelationSolver::solveCanonicalWithFixedChoices(
     std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
+    llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+        validateCompleteAssignment) {
+  return solveCanonicalWithFixedAndPreferredChoices(
+      assignmentLimit, fixedChoices, {}, validateCompleteAssignment);
+}
+
+llvm::Expected<InitializerRelationSolveResult>
+InitializerRelationSolver::solveCanonicalWithPreferredChoices(
+    std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> preferredChoices) {
+  std::vector<PnrIndex> fixed(domainCounts_.size(), getInvalidPnrIndex());
+  return solveCanonicalWithFixedAndPreferredChoices(
+      assignmentLimit, fixed, preferredChoices,
+      [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
+}
+
+llvm::Expected<InitializerRelationSolveResult>
+InitializerRelationSolver::solveCanonicalWithFixedAndPreferredChoices(
+    std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
+    llvm::ArrayRef<PnrIndex> preferredChoices) {
+  return solveCanonicalWithFixedAndPreferredChoices(
+      assignmentLimit, fixedChoices, preferredChoices,
+      [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
+}
+
+llvm::Expected<InitializerRelationSolveResult>
+InitializerRelationSolver::solveCanonicalWithFixedAndPreferredChoices(
+    std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
+    llvm::ArrayRef<PnrIndex> preferredChoices,
     llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
         validateCompleteAssignment) {
   if (fixedChoices.size() != domainCounts_.size())
     return assignmentError(
         "fixed choice count does not match the decision domain");
+  if (!preferredChoices.empty() &&
+      preferredChoices.size() != domainCounts_.size())
+    return assignmentError(
+        "preferred choice count does not match the decision domain");
+  for (PnrIndex decision = 0; decision < preferredChoices.size(); ++decision) {
+    const PnrIndex preferred = preferredChoices[decision];
+    if (preferred != getInvalidPnrIndex() &&
+        preferred >= decisionChoiceOffsets_[decision + 1] -
+                         decisionChoiceOffsets_[decision])
+      return assignmentError(
+          "a preferred choice is outside its decision domain");
+  }
   if (rootCardinalityContradiction_) {
     assignmentAttempts_ = 0;
     return llvm::make_error<InitializerRelationSolveFailure>(
@@ -1091,7 +1434,8 @@ InitializerRelationSolver::solveCanonicalWithFixedChoices(
             "Spatial initializer fixed choices are infeasible");
   }
 
-  auto result = search(assignmentLimit, nullptr, validateCompleteAssignment);
+  auto result = search(assignmentLimit, nullptr, preferredChoices,
+                       validateCompleteAssignment);
   if (!result)
     return result.takeError();
   if (*result == SearchResult::WorkLimit)
@@ -1126,13 +1470,14 @@ InitializerRelationSolver::solveDiversified(
     DeterministicPnrRandomStream &diversificationStream,
     llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
         validateCompleteAssignment) {
-  return solve(assignmentLimit, &diversificationStream,
+  return solve(assignmentLimit, &diversificationStream, {},
                validateCompleteAssignment);
 }
 
 llvm::Expected<InitializerRelationSolveResult> InitializerRelationSolver::solve(
     std::uint64_t assignmentLimit,
     DeterministicPnrRandomStream *diversificationStream,
+    llvm::ArrayRef<PnrIndex> preferredChoices,
     llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
         validateCompleteAssignment) {
   if (rootCardinalityContradiction_) {
@@ -1142,7 +1487,7 @@ llvm::Expected<InitializerRelationSolveResult> InitializerRelationSolver::solve(
         "initializer all-different relation has fewer values than members");
   }
   reset();
-  auto result = search(assignmentLimit, diversificationStream,
+  auto result = search(assignmentLimit, diversificationStream, preferredChoices,
                        validateCompleteAssignment);
   if (!result)
     return result.takeError();

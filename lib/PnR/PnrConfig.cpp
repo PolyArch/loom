@@ -32,12 +32,18 @@ struct ResolvedPnrConfigViewAccess final {
 namespace {
 
 constexpr llvm::StringLiteral spatialDescriptor =
-    "loom.spatial_pnr.config.12.0";
-constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.4.0";
+    "loom.spatial_pnr.config.13.0";
+constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.5.0";
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "pnr_config_bytes_invalid: " + detail);
+}
+
+llvm::Error unsupported(const llvm::Twine &detail) {
+  return llvm::createStringError(
+      std::make_error_code(std::errc::operation_not_supported),
+      "pnr_config_unsupported: " + detail);
 }
 
 llvm::Error
@@ -45,6 +51,24 @@ validateObjectiveArithmetic(const ResolvedObjectiveCatalogs &catalogs) {
   auto program = dse::ObjectiveProgram::get(catalogs);
   if (!program)
     return program.takeError();
+  return llvm::Error::success();
+}
+
+llvm::Error validateDomainCapabilities(
+    PnrConfigDomain domain, const ResolvedPnrPolicyConfig &policy,
+    const ResolvedObjectiveCatalogs &catalogs) {
+  for (const ResolvedObjectiveDimension &dimension : catalogs.dimensions)
+    if (std::holds_alternative<ResolvedEvaluationMetricObjectiveSource>(
+            dimension.source))
+      return unsupported(
+          "PnR objective selection requires an unavailable Evaluation owner");
+  if (domain == PnrConfigDomain::Spatial &&
+      !std::holds_alternative<ResolvedPathFinderPolicy>(
+          policy.search.routing.negotiation))
+    return unsupported("Spatial PnR supports only PathFinder negotiation");
+  if (domain == PnrConfigDomain::System &&
+      policy.search.exactRepair.kind != ResolvedPnrExactRepairKind::Disabled)
+    return unsupported("System PnR has no exact-repair provider");
   return llvm::Error::success();
 }
 
@@ -183,9 +207,6 @@ void encodePolicy(Encoder &encoder, const ResolvedPnrPolicyConfig &policy) {
   encoder.u64(search.routing.noProgressIterationLimit);
   encoder.u64(search.routing.noProgressTrendWindow);
   encodeNegotiation(encoder, search.routing.negotiation);
-  encoder.u32(search.routing.routeGuidanceBinding ? 1 : 0);
-  if (search.routing.routeGuidanceBinding)
-    encoder.u32(*search.routing.routeGuidanceBinding);
   encoder.u64(search.annealing.calibrationProposalCount);
   encoder.ratio(search.annealing.positiveDeltaQuantile);
   encoder.ratio(search.annealing.targetInitialAcceptance);
@@ -194,7 +215,6 @@ void encodePolicy(Encoder &encoder, const ResolvedPnrPolicyConfig &policy) {
   encoder.ratio(search.annealing.coolingRatio);
   encoder.u64(search.annealing.proposalsPerLevelBase);
   encoder.u64(search.annealing.proposalsPerMovableDecision);
-  encoder.u64(search.focusedClosureProposalLimit);
   encoder.u32(static_cast<std::uint32_t>(search.exactRepair.kind));
   if (search.exactRepair.kind == ResolvedPnrExactRepairKind::CpSat) {
     encoder.u64(search.exactRepair.maxRegionDecisions);
@@ -211,7 +231,6 @@ void encodePolicy(Encoder &encoder, const ResolvedPnrPolicyConfig &policy) {
 
 void encodeClosure(Encoder &encoder, const ResolvedPnrPolicyConfig &policy,
                    const ResolvedObjectiveCatalogs &catalogs) {
-  encoder.u64(0);
   encoder.u64(catalogs.dimensions.size());
   for (const ResolvedObjectiveDimension &dimension : catalogs.dimensions) {
     if (const auto *violation =
@@ -224,13 +243,8 @@ void encodeClosure(Encoder &encoder, const ResolvedPnrPolicyConfig &policy,
                        &dimension.source)) {
       encoder.u32(1);
       encoder.u32(measure->ordinal);
-    } else {
-      const auto &metric =
-          std::get<ResolvedEvaluationMetricObjectiveSource>(dimension.source);
-      encoder.u32(2);
-      encoder.u32(metric.evidenceObligationTemplate);
-      encoder.u64(metric.metricRequestOrdinal);
-    }
+    } else
+      llvm_unreachable("PnR config cannot encode an Evaluation metric");
     encoder.u32(static_cast<std::uint32_t>(dimension.direction));
     const auto encodeScalar = [&](const ResolvedObjectiveScalar &value) {
       if (const auto *integer = std::get_if<ResolvedObjectiveInteger>(&value)) {
@@ -265,16 +279,6 @@ void encodeClosure(Encoder &encoder, const ResolvedPnrPolicyConfig &policy,
   }
   encoder.u32(policy.objectiveSelection.selectedTotalOrdering);
   encoder.u32(policy.objectiveSelection.selectedSearchEnergy);
-  encoder.u64(policy.objectiveSelection.focusedClosureDimensions.size());
-  for (std::uint32_t dimension :
-       policy.objectiveSelection.focusedClosureDimensions)
-    encoder.u32(dimension);
-  encoder.u64(policy.evaluationBindings.size());
-  for (const ResolvedPnrEvaluationBindingSelection &binding :
-       policy.evaluationBindings) {
-    encoder.u32(binding.obligationTemplate);
-    encoder.u32(binding.interactionDomain);
-  }
 }
 
 std::vector<std::uint8_t>
@@ -398,19 +402,6 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
   if (!negotiation)
     return negotiation.takeError();
 
-  auto guidancePresence = decoder.u32();
-  if (!guidancePresence)
-    return guidancePresence.takeError();
-  if (*guidancePresence > 1)
-    return invalid("invalid route-guidance optional tag");
-  std::optional<std::uint32_t> guidance;
-  if (*guidancePresence == 1) {
-    auto guidanceRef = decoder.u32();
-    if (!guidanceRef)
-      return guidanceRef.takeError();
-    guidance = *guidanceRef;
-  }
-
   auto calibration = decoder.u64();
   auto quantile = decoder.ratio();
   auto acceptance = decoder.ratio();
@@ -419,7 +410,6 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
   auto cooling = decoder.ratio();
   auto levelBase = decoder.u64();
   auto perMovable = decoder.u64();
-  auto focusedLimit = decoder.u64();
   if (!calibration)
     return calibration.takeError();
   if (!quantile)
@@ -436,8 +426,6 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
     return levelBase.takeError();
   if (!perMovable)
     return perMovable.takeError();
-  if (!focusedLimit)
-    return focusedLimit.takeError();
 
   auto repairTag = decoder.u32();
   if (!repairTag)
@@ -494,30 +482,22 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
        ResolvedPnrActionProposalPolicy{*realization, *transport, *resource},
        ResolvedPnrRoutingPolicy{*endpointLimit, *negotiationLimit,
                                 *noProgressLimit, *noProgressTrendWindow,
-                                std::move(*negotiation), guidance},
+                                std::move(*negotiation)},
        ResolvedPnrAnnealingPolicy{*calibration, *quantile, *acceptance,
                                   *fallback, *minimum, *cooling, *levelBase,
                                   *perMovable},
-       *focusedLimit, repair},
+       repair},
       ResolvedPnrDeterminismPolicy{
           *masterSeed,
           ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
           ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
       std::move(violations),
-      ResolvedPnrObjectiveSelection{},
-      {}};
+      ResolvedPnrObjectiveSelection{}};
 }
 
 llvm::Expected<
     std::pair<ResolvedObjectiveCatalogs, ResolvedPnrObjectiveSelection>>
-decodeClosure(Decoder &decoder,
-              std::vector<ResolvedPnrEvaluationBindingSelection> &bindings) {
-  auto templateCount = decoder.count();
-  if (!templateCount)
-    return templateCount.takeError();
-  if (*templateCount != 0)
-    return invalid("Evaluation obligation owner is unavailable");
-
+decodeClosure(Decoder &decoder) {
   ResolvedObjectiveCatalogs catalogs;
   auto dimensionCount = decoder.count();
   if (!dimensionCount)
@@ -540,17 +520,8 @@ decodeClosure(Decoder &decoder,
       if (!kind)
         return kind.takeError();
       source = ResolvedMappingMeasureObjectiveSource{*kind};
-    } else if (*sourceTag == 2) {
-      auto obligation = decoder.u32();
-      auto metricRequest = decoder.u64();
-      if (!obligation)
-        return obligation.takeError();
-      if (!metricRequest)
-        return metricRequest.takeError();
-      source =
-          ResolvedEvaluationMetricObjectiveSource{*obligation, *metricRequest};
     } else {
-      return invalid("unknown objective source kind");
+      return invalid("PnR objective source is not Mapping-owned");
     }
     auto direction = decoder.u32();
     const auto decodeScalar = [&]() -> llvm::Expected<ResolvedObjectiveScalar> {
@@ -646,35 +617,11 @@ decodeClosure(Decoder &decoder,
 
   auto selectedOrdering = decoder.u32();
   auto selectedEnergy = decoder.u32();
-  auto focusedCount = decoder.count();
   if (!selectedOrdering)
     return selectedOrdering.takeError();
   if (!selectedEnergy)
     return selectedEnergy.takeError();
-  if (!focusedCount)
-    return focusedCount.takeError();
-  ResolvedPnrObjectiveSelection selection{
-      *selectedOrdering, *selectedEnergy, {}};
-  for (std::size_t ordinal = 0; ordinal != *focusedCount; ++ordinal) {
-    auto dimension = decoder.u32();
-    if (!dimension)
-      return dimension.takeError();
-    selection.focusedClosureDimensions.push_back(*dimension);
-  }
-
-  auto bindingCount = decoder.count();
-  if (!bindingCount)
-    return bindingCount.takeError();
-  bindings.reserve(*bindingCount);
-  for (std::size_t ordinal = 0; ordinal != *bindingCount; ++ordinal) {
-    auto obligation = decoder.u32();
-    auto domain = decoder.u32();
-    if (!obligation)
-      return obligation.takeError();
-    if (!domain)
-      return domain.takeError();
-    bindings.push_back({*obligation, *domain});
-  }
+  ResolvedPnrObjectiveSelection selection{*selectedOrdering, *selectedEnergy};
   return std::make_pair(std::move(catalogs), std::move(selection));
 }
 
@@ -684,7 +631,7 @@ decodeView(llvm::ArrayRef<std::uint8_t> bytes) {
   auto policy = decodePolicy(decoder);
   if (!policy)
     return policy.takeError();
-  auto closure = decodeClosure(decoder, policy->evaluationBindings);
+  auto closure = decodeClosure(decoder);
   if (!closure)
     return closure.takeError();
   policy->objectiveSelection = std::move(closure->second);
@@ -713,9 +660,7 @@ projectSelectedClosure(const ResolvedPnrPolicyConfig &sourcePolicy,
                         sourceOrdering.weightedLevels.end());
   selectedLevels.insert(sourcePolicy.objectiveSelection.selectedSearchEnergy);
 
-  std::set<std::uint32_t> selectedDimensions(
-      sourcePolicy.objectiveSelection.focusedClosureDimensions.begin(),
-      sourcePolicy.objectiveSelection.focusedClosureDimensions.end());
+  std::set<std::uint32_t> selectedDimensions;
   for (std::uint32_t level : selectedLevels)
     for (const ResolvedWeightedObjectiveTerm &term :
          sourceCatalogs.weightedLevels[level].terms)
@@ -756,10 +701,6 @@ projectSelectedClosure(const ResolvedPnrPolicyConfig &sourcePolicy,
   selectedPolicy.objectiveSelection.selectedTotalOrdering = 0;
   selectedPolicy.objectiveSelection.selectedSearchEnergy =
       levelMap[sourcePolicy.objectiveSelection.selectedSearchEnergy];
-  for (std::uint32_t &dimension :
-       selectedPolicy.objectiveSelection.focusedClosureDimensions)
-    dimension = dimensionMap[dimension];
-
   if (llvm::Error error =
           validateResolvedPnrPolicyConfig(selectedPolicy, selectedCatalogs))
     return std::move(error);
@@ -774,6 +715,9 @@ makeProjectedView(PnrConfigDomain domain, const ResolvedPnrPolicyConfig &policy,
   auto selected = projectSelectedClosure(policy, catalogs);
   if (!selected)
     return selected.takeError();
+  if (llvm::Error error = validateDomainCapabilities(
+          domain, selected->first, selected->second))
+    return std::move(error);
   std::vector<std::uint8_t> bytes =
       encodeView(selected->first, selected->second);
   auto digest = computeComponentViewDigest(descriptorBytes(domain), bytes);
@@ -799,6 +743,9 @@ adoptView(PnrConfigDomain domain,
   auto decoded = decodeView(suppliedBytes);
   if (!decoded)
     return decoded.takeError();
+  if (llvm::Error error =
+          validateDomainCapabilities(domain, decoded->first, decoded->second))
+    return std::move(error);
   std::vector<std::uint8_t> canonical =
       encodeView(decoded->first, decoded->second);
   if (llvm::ArrayRef<std::uint8_t>(canonical) != suppliedBytes)
@@ -871,7 +818,6 @@ deriveDeterministicWorkBudgetView(const ResolvedPnrConfigView &view) {
        search.annealing.proposalsPerLevelBase},
       {PnrWorkUnit::ProposalPerMovableDecision,
        search.annealing.proposalsPerMovableDecision},
-      {PnrWorkUnit::FocusedClosureProposal, search.focusedClosureProposalLimit},
   };
   if (search.exactRepair.kind == ResolvedPnrExactRepairKind::CpSat) {
     result.push_back({PnrWorkUnit::ExactRepairRegionDecision,

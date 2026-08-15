@@ -9,26 +9,28 @@ Fabric-to-RTL consumes:
 
 * one fully elaborated exact `FabricRootKind::System` Hardware Description and
   its exact imported Module dependency closure;
+* one exact `SpatialCoreOccurrenceRef` subject in that System;
 * one exact `ConfigurationABI` for that Fabric;
-* exact Interconnect Implementation roots required by that Fabric system;
 * one resolved hardware candidate-generator binding;
 * one exact `ImplementationPlatform` when the emitted implementation is bound
   to an ASIC technology release or FPGA ordering code; and
 * exact provider-owned external input bindings required by selected Fabric
   resources or implementation recipes.
 
-It produces one `loom.hardware_implementation 3.0` whose closed `Rtl`
+It produces one `loom.hardware_implementation 4.0` whose closed `Rtl`
 representation root owns the exact top Module locator and content-addressed
-SystemVerilog source closure. The implementation also owns the interfaces,
-constraints, black-box contracts, activity-point catalog, and implementation
-manifest needed by downstream tools.
+SystemVerilog source closure for that SpatialCore occurrence. The
+implementation also owns that occurrence's interfaces, constraints, black-box
+contracts, activity-point catalog, and implementation manifest.
 
-Only a System owns the concrete occurrence, Clock/Reset, external-interface,
-and Transport Architecture closure required by an export-complete RTL design.
-A Module may lower only as an internal slot-parameterized hierarchy fragment
-within that exact System closure. A Module alone cannot publish an
-export-complete SystemVerilog design, `ConfigurationABI`, or RTL
-`HardwareImplementation`.
+The System supplies the concrete occurrence qualification, imported Module
+target, Clock/Reset membership, attachment boundary, and occurrence-local
+configuration projection. The selected Module hierarchy supplies the internal
+RTL structure. A bare Module cannot publish an occurrence-qualified
+`HardwareImplementation` because it does not select those System-owned facts.
+Conversely, this product does not claim complete System RTL: HostCore,
+InstructionCore, System transport, and interconnect implementation remain
+outside the SpatialCore implementation boundary.
 
 `docs/spec-hardware-implementation.md` owns the output root, payload roles,
 interface and activity catalogs, semantic closure, and finalization.
@@ -54,7 +56,7 @@ extends, these Fabric facts:
 * latency, initiation interval, capacity, buffering, ordering, backpressure,
   reset, and progress behavior;
 * clock, reset, power, address, memory, coherence, and protection domains;
-* Transport Architecture and exact Interconnect Implementation refinement; and
+* the selected occurrence's exact System attachment boundary; and
 * Mapping-visible semantic and physical configuration domains.
 
 Selector logic, comparator structure, gate decomposition, and naming may vary
@@ -69,11 +71,12 @@ hardware generation.
 For a memory or fence service leg, the Fabric-owned
 `ServiceLegCarrierAttachment` relation identifies architecture-level candidate
 transport endpoints and the SystemMapping RouteTree selects among them. The
-relation is not itself a protocol channel. Only the exact Interconnect
-Implementation may refine the selected path into AXI, TileLink, CXL, custom
-request or response subchannels, packet or flit fields, adapters, RTL/IP, and
-physical encodings. Lowering cannot infer or persist a second pairing between
-memory and transport endpoints.
+relation is not itself a protocol channel. This lowering exposes only the
+selected SpatialCore occurrence's declared attachment interfaces. A separate
+System interconnect product may refine the selected path into AXI, TileLink,
+CXL, custom request or response subchannels, packet or flit fields, adapters,
+RTL/IP, and physical encodings. Neither product may infer or persist a second
+pairing between memory and transport endpoints.
 
 ### Non-Defined Value Refinement
 
@@ -142,51 +145,21 @@ The skeleton uses:
 * `hw.module.generated` for a leaf whose exact Fabric contract is known but
   whose implementation recipe has not yet been materialized.
 
-The skeleton has one System-rooted top hierarchy. Every SpatialCore occurrence
-contributes one Module specialization request. Requests share one reusable
-definition exactly when this derived key is equal:
+The skeleton has one subject-rooted top hierarchy. The exact
+`SpatialCoreOccurrenceRef` resolves through the System to one imported Module
+root, and every internal object is qualified by that occurrence. Clock/Reset
+ports, attachment ports, configuration units, operation recipes, external
+implementation bindings, memory bindings, and activity relations are all
+projected for that subject only.
 
-```text
-ModuleSpecializationKey =
-  (exact ImportedModule root reference,
-   exact definition-rebased occurrence projection of ConfigurationABI,
-   exact Module-slot-keyed Clock/Reset contract projection,
-   exact definition-rebased candidate-generator projection for every internal
-     recipe, external implementation, and memory implementation choice)
-```
-
-Definition rebasing removes only physical occurrence identity. It maps every
-`SpatialCoreInternalOccurrenceRef` back to its exact Module-local target, maps
-each occurrence-slot binding to its Module slot and concrete contract, and
-projects each occurrence-scoped recipe, external implementation, or memory
-implementation selection to the semantic choice applied to that local target.
-The projections are ordered by their definition-local typed references. They
-contain no `SpatialCoreOccurrenceRef`, `AccCoreOccurrenceRef`, System
-`HardwareDomainRef`, global binding ordinal, or caller-authored name. A global
-external or memory binding is therefore represented by its exact selected
-contract and dependency closure after rebasing, not by the ordinal assigned in
-one complete HardwareImplementation.
-
-Rebasing does not discard a definition-affecting value. Different physical
-occurrences with byte-identical rebased projections share one definition;
-different ABI field schemas, codebooks, slices, inactive encodings,
-Clock/Reset contracts, recipes, external dependency closures, or memory
-choices produce different keys even when the imported Module root is equal.
-Workload-selected semantic values are not specialization inputs. The System
-instance retains the original occurrence-qualified relations and concrete
-domain references used to bind that shared definition.
-
-The key is a removable derived compiler value, not a persistent record or a
-caller-authored cache key. It contains no local executable path or attempt
-state. Each distinct key lowers to one definition with one explicit Clock or
-Reset port per symbolic Module slot; every member occurrence instantiates that
-definition and binds its ports from the exact System occurrence-slot
-memberships. A different occurrence identity alone does not force a duplicate
-definition, but any differing decoder structure, reset behavior, provider
-recipe, external implementation, or memory implementation does. Internal
-state, configuration, recipe, memory, and activity relations remain
-occurrence-qualified; definition sharing never merges the physical identity of
-two instances.
+Module-local hierarchy construction may use ordinary private derived indexes,
+but no persistent specialization key or definition-rebased occurrence model is
+part of the product. Two SpatialCore occurrences that import the same Module
+still produce two independently finalized HardwareImplementations with
+different subjects and occurrence-qualified interface closures. Content-
+addressed RTL payloads may deduplicate byte-identical source blobs without
+merging the Artifact identities or physical ownership of those occurrences.
+Workload-selected semantic values are not specialization inputs.
 
 Each Loom-generated abstract leaf is mechanically associated with one exact
 Fabric occurrence and `ResolvedFabricOpCapabilityView`. The association is an
@@ -476,12 +449,14 @@ legal completed invocation, satisfy Fabric's self-reset/quiescence contract
 before the same physical slot is reused.
 
 The backend obtains these facts by refining the exact imported Fabric artifact
-to `FabricSystemRootView` and consuming its complete System domain membership,
-Module slot assignment, occurrence-qualified effective-domain, connection,
-attachment, transport-resource, and crossing ranges. It does not accept a
-backend-owned clock/reset manifest, caller-supplied connection list, inherited
-AccCore domain, or copied crossing catalog. Derived RTL or SDC indexes are
-disposable caches validated against that one root view.
+to `FabricSystemRootView`, selecting the exact SpatialCore subject, and
+consuming the subject's occurrence-qualified effective-domain, connection,
+attachment, transport-resource, and crossing closure. Enclosing System facts
+are used to resolve and validate that closure, not to claim a complete System
+RTL product. The backend does not accept a backend-owned clock/reset manifest,
+caller-supplied connection list, inherited AccCore domain, or copied crossing
+catalog. Derived RTL or SDC indexes are disposable caches validated against
+the selected subject in that one root view.
 
 Power, clock-gating, reset synchronization, and backend constraints are emitted
 only from explicit Fabric implementation facts. An asynchronous clock crossing
@@ -490,13 +465,14 @@ resource. Reset synchronizers and release latency lower only from the exact
 Reset domain contract. Missing implementation support is a typed failure, not
 permission to omit required behavior or invent a crossing.
 
-## Memory And System Interfaces
+## Memory And Occurrence Interfaces
 
 `fabric.mem` lowers its operation engine, internal dependency forwarding,
 configurable service dispatch, optional local storage, and manager/subordinate
-interfaces without adding storage semantics absent from Fabric. System
-interconnect lowers the selected exact implementation protocol while preserving
-the architecture service, multicast, ordering, capacity, and progress contract.
+interfaces without adding storage semantics absent from Fabric. The
+SpatialCore product terminates at its exact attachment interfaces; System
+interconnect implementation is a separate product that must preserve the
+architecture service, multicast, ordering, capacity, and progress contract.
 
 The backend implements the Fabric-owned memory operation-port inventory,
 capability alternatives, parameterized access domains, mask endpoints, and
@@ -547,8 +523,8 @@ operation-channel schedule.
 The common target-independent skeleton provides one explicitly selected
 portable profile for the current plain load/store service domain. It is not a
 Fabric default and it is not inferred from a `memref`. A candidate that selects
-this profile includes that selection in its definition-rebased memory
-implementation projection and therefore in `ModuleSpecializationKey`.
+this profile materializes that choice in the subject's implementation payload,
+interface closure, and external implementation bindings.
 
 The profile carries one complete Runtime ABI-owned logical request rather than
 inventing a beat protocol. Its request channel is ready/valid and contains the
@@ -562,8 +538,8 @@ request are zero. Zero-width payload fields are omitted rather than emitted as
 zero-width HDL vectors.
 
 The address, data, and mask carrier widths are the maxima mechanically derived
-from the exact operation endpoints and local-service capabilities in one
-Module specialization. The access-form selector uses the closed encoding
+from the exact operation endpoints and local-service capabilities in the
+selected SpatialCore occurrence. The access-form selector uses the closed encoding
 `Element(0) | Contiguous(1) | Indexed(2)`; the request-kind selector uses
 `Read(0) | Write(1)`; the address-form selector uses
 `RootRelative(0) | Pointer(1)`; the active-lanes selector uses
@@ -763,8 +739,9 @@ CGRA execution, through the ordinary comparison Evaluator.
 
 ## Determinism
 
-Identical exact Fabric, ConfigurationABI, ImplementationPlatform, resolved
-candidate-generator binding, and producer identity must yield byte-identical
+Identical exact Fabric, SpatialCore occurrence subject, ConfigurationABI,
+ImplementationPlatform, resolved candidate-generator binding, and producer
+identity must yield byte-identical
 canonical HardwareImplementation content. Workload-selected semantic
 configuration is not an input to HardwareImplementation generation. Emitted
 labels derive deterministically from canonical structural references but remain
@@ -777,8 +754,8 @@ Stable anchors cover:
 * one Fabric lowering to a target-independent verified HW/Comb/Seq skeleton,
   with abstract leaves tied only to exact Fabric occurrences;
 * one System importing the same Module twice with independently bound
-  Clock/Reset slots, distinct internal occurrence identity, and one reusable
-  slot-parameterized Module definition;
+  Clock/Reset slots, producing two occurrence-scoped implementations with
+  distinct subjects and no cross-occurrence interface ownership;
 * the same skeleton specialized to portable and vendor-backed RTL without
   rebuilding structural topology;
 * rejection of a skeleton that reaches SystemVerilog export with an unresolved

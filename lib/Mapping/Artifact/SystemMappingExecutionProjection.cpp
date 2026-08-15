@@ -6,6 +6,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <string>
@@ -202,6 +203,31 @@ llvm::Expected<SystemExecutionContextProjection> projectSystemExecutionContexts(
     }
   }
   return result;
+}
+
+llvm::Expected<std::vector<fabric::SpatialCoreOccurrenceRef>>
+projectSystemExecutionSpatialCoreSubjects(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const SystemExecutionBindingView &execution) {
+  auto projection = projectSystemExecutionContexts(dataflow, execution);
+  if (!projection)
+    return projection.takeError();
+
+  std::vector<fabric::SpatialCoreOccurrenceRef> subjects;
+  subjects.reserve(projection->instructionDomains.size() +
+                   projection->spatialDomains.size());
+  for (const SystemInstructionContextDomain &domain :
+       projection->instructionDomains)
+    subjects.push_back(fabric::SpatialCoreOccurrenceRef{domain.context.accCore});
+  for (const SystemSpatialContextDomain &domain : projection->spatialDomains)
+    subjects.push_back(fabric::SpatialCoreOccurrenceRef{domain.context.accCore});
+  llvm::sort(subjects, [](fabric::SpatialCoreOccurrenceRef lhs,
+                          fabric::SpatialCoreOccurrenceRef rhs) {
+    return fabric::canonicalFabricBytes(lhs) <
+           fabric::canonicalFabricBytes(rhs);
+  });
+  subjects.erase(std::unique(subjects.begin(), subjects.end()), subjects.end());
+  return subjects;
 }
 
 llvm::Expected<SelectedSystemSpatialContext>

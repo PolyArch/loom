@@ -15,6 +15,7 @@
 #include <vector>
 
 namespace loom::mapping {
+struct MappingProgressClosure;
 class SpatialMappingView;
 }
 
@@ -96,8 +97,9 @@ spatialMappingViolationsAreZero(const SpatialCandidateState &candidate);
 /// Projects one Mapping-owned domain-independent measure from the exact
 /// candidate state. The candidate remains the sole owner of incremental route
 /// occupancy; this query does not cache or reconstruct that state.
-std::uint64_t spatialMappingMeasureValue(const SpatialCandidateState &candidate,
-                                         MappingMeasureKind kind);
+llvm::Expected<std::uint64_t>
+spatialMappingMeasureValue(const SpatialCandidateState &candidate,
+                           MappingMeasureKind kind);
 
 llvm::Expected<std::uint64_t>
 systemMappingViolationValue(const SystemCandidateState &candidate,
@@ -127,7 +129,11 @@ public:
   evaluateSystemProjection(const FrozenSystemPnrProblem &problem,
                            llvm::ArrayRef<PnrIndex> graphChoices,
                            std::uint64_t capacityOveruse,
-                           std::uint64_t totalSelectedTraversalClaim) const;
+                           std::uint64_t totalSelectedTraversalClaim,
+                           std::uint64_t resourceMinimumInitiationIntervalCycles,
+                           std::uint64_t transportBitCycleDemand,
+                           const ::loom::mapping::MappingProgressClosure
+                               &progressClosure) const;
   llvm::Expected<dse::ObjectiveWideValue>
   selectedEnergy(const dse::ObjectiveVector &vector) const;
   llvm::Expected<dse::ObjectiveSignedDifference>

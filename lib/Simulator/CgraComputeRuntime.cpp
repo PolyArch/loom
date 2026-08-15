@@ -30,6 +30,46 @@ bool isAt(const std::optional<SpatialEventCoordinate> &candidate,
 
 } // namespace
 
+llvm::Expected<SpatialEventCoordinate> projectCgraTemporalDispatchCoordinate(
+    const CgraTemporalDispatchDomainPlan &domain,
+    std::uint32_t candidatePosition,
+    const SpatialEventCoordinate &coordinate) {
+  if (domain.candidateCount == 0 ||
+      candidatePosition >= domain.candidateCount ||
+      domain.resetPosition >= domain.candidateCount)
+    return invalid("CGRA temporal dispatch domain is malformed");
+
+  const std::uint64_t numerator = coordinate.referenceCycle.numerator();
+  const std::uint64_t denominator = coordinate.referenceCycle.denominator();
+  std::uint64_t firstCycle = numerator / denominator;
+  const bool integral = numerator % denominator == 0;
+  if (!integral) {
+    if (firstCycle == std::numeric_limits<std::uint64_t>::max())
+      return llvm::createStringError(
+          std::errc::value_too_large,
+          "CGRA temporal dispatch coordinate overflows u64");
+    ++firstCycle;
+  }
+  const std::uint32_t selected = static_cast<std::uint32_t>(
+      (domain.resetPosition + firstCycle % domain.candidateCount) %
+      domain.candidateCount);
+  const std::uint32_t distance = static_cast<std::uint32_t>(
+      (static_cast<std::uint64_t>(candidatePosition) + domain.candidateCount -
+       selected) %
+      domain.candidateCount);
+  if (distance > std::numeric_limits<std::uint64_t>::max() - firstCycle)
+    return llvm::createStringError(
+        std::errc::value_too_large,
+        "CGRA temporal dispatch coordinate overflows u64");
+  const std::uint64_t selectedCycle = firstCycle + distance;
+  auto referenceCycle = ::loom::evaluation::ExactRatio::get(selectedCycle, 1);
+  if (!referenceCycle)
+    return referenceCycle.takeError();
+  const bool sameCoordinate = integral && selectedCycle == firstCycle;
+  return SpatialEventCoordinate{*referenceCycle,
+                                sameCoordinate ? coordinate.delta : 0};
+}
+
 CgraComputeRuntime::CgraComputeRuntime(
     const CgraFrozenExecutionPlan &plan, SimulatorState &state,
     std::vector<ActorBinding> bindings,
@@ -86,6 +126,18 @@ llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
       return invalid("CGRA compute actor transition slice is out of range");
     if (actor.transitionCount != semanticPlan.handshakeCases.size())
       return invalid("CGRA compute transition domain disagrees with schema");
+    if (actor.temporalDispatchDomain) {
+      if (*actor.temporalDispatchDomain >= plan.temporalDispatchDomains.size())
+        return invalid("CGRA compute actor names an unknown temporal dispatch "
+                       "domain");
+      const CgraTemporalDispatchDomainPlan &domain =
+          plan.temporalDispatchDomains[*actor.temporalDispatchDomain];
+      if (domain.pe != actor.context.pe || domain.candidateCount == 0 ||
+          domain.resetPosition >= domain.candidateCount ||
+          actor.temporalDispatchPosition >= domain.candidateCount)
+        return invalid("CGRA compute actor has an inconsistent temporal "
+                       "dispatch selection");
+    }
 
     const std::uint64_t caseOffset = transitionByCase.size();
     transitionByCase.resize(caseOffset + actor.transitionCount,
@@ -121,13 +173,27 @@ llvm::Expected<CgraComputeRuntime> CgraComputeRuntime::create(
         std::numeric_limits<std::uint64_t>::max())
       return invalid("CGRA compute actor has duplicate runtime bindings");
     bindingBySemanticActor[semantic->second] = bindingOrdinal;
-    bindings.push_back(ActorBinding{semantic->second, actor.actor,
-                                    &semanticPlan, caseOffset,
-                                    actor.transitionCount, 0, false, false, 0});
+    bindings.push_back(
+        ActorBinding{semantic->second, actor.actor, &semanticPlan, caseOffset,
+                     actor.transitionCount, actor.temporalDispatchDomain,
+                     actor.temporalDispatchPosition, 0, false, false, 0});
   }
   return CgraComputeRuntime(plan, state, std::move(bindings),
                             std::move(transitionByCase),
                             std::move(bindingBySemanticActor), physical);
+}
+
+llvm::Expected<SpatialEventCoordinate> CgraComputeRuntime::dispatchCoordinate(
+    const ActorBinding &binding,
+    const SpatialEventCoordinate &coordinate) const {
+  if (!binding.temporalDispatchDomain)
+    return coordinate;
+  if (*binding.temporalDispatchDomain >= plan_->temporalDispatchDomains.size())
+    return invalid("CGRA temporal dispatch domain disappeared");
+  const CgraTemporalDispatchDomainPlan &domain =
+      plan_->temporalDispatchDomains[*binding.temporalDispatchDomain];
+  return projectCgraTemporalDispatchCoordinate(
+      domain, binding.temporalDispatchPosition, coordinate);
 }
 
 llvm::Expected<std::uint64_t> CgraComputeRuntime::allocateFiring(
@@ -185,6 +251,9 @@ CgraComputeRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
         transitionByCase_[binding.transitionIndexOffset + **selected];
     const CgraComputeTransitionPlan &transition =
         plan_->computeTransitions[transitionOrdinal];
+    auto requestCoordinate = dispatchCoordinate(binding, coordinate);
+    if (!requestCoordinate)
+      return requestCoordinate.takeError();
     auto firingSlot = allocateFiring(candidate, transition);
     if (!firingSlot)
       return firingSlot.takeError();
@@ -200,7 +269,7 @@ CgraComputeRuntime::scheduleReady(SpatialEventCoordinate coordinate) {
             "CGRA physical action occurrence ordinal overflows u64");
       const std::uint64_t occurrence = nextActionOccurrence_[actionOrdinal]++;
       auto requested =
-          physical_->request(actionOrdinal, occurrence, coordinate);
+          physical_->request(actionOrdinal, occurrence, *requestCoordinate);
       if (!requested)
         return requested.takeError();
       const auto key = std::make_pair(actionOrdinal, occurrence);

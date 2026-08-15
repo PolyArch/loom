@@ -284,13 +284,9 @@ def Fabric_PeOp
       OptionalAttr<I32Attr>:$num_reg_fifo,
       OptionalAttr<I32Attr>:$reg_fifo_depth,
       OptionalAttr<I32Attr>:$reg_fifo_ports,
-      OptionalAttr<StrAttr>:$fu_config_mode,
+      OptionalAttr<Fabric_FuConfigModeAttr>:$fu_config_mode,
       OptionalAttr<Fabric_OperandBufferModeAttr>:$operand_buffer_mode,
-      OptionalAttr<I32Attr>:$operand_buffer_size,
-      // Temporal-only software configuration trio (all-or-nothing).
-      OptionalAttr<BoolAttr>:$pe_enable,
-      OptionalAttr<ArrayAttr>:$instruction_mem,
-      OptionalAttr<ArrayAttr>:$per_fu_sw_configs);
+      OptionalAttr<I32Attr>:$operand_buffer_size);
   let results = (outs Variadic<Fabric_AnyType>:$outputs);
   let regions = (region SizedRegion<1>:$body);
 

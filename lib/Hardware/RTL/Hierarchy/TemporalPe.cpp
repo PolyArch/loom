@@ -1,5 +1,6 @@
 #include "Components.h"
 
+#include "Fabric/IR/TemporalPeResourceContract.h"
 #include "Fabric/Identity/FabricTemporalPeConfiguration.h"
 
 #include "circt/Dialect/Comb/CombOps.h"
@@ -138,6 +139,9 @@ buildTokenPoolModule(mlir::OpBuilder &builder, mlir::Location location,
             circt::hw::ModulePort::Direction::Input}});
     inputs.push_back(
         {{builder.getStringAttr(queuePort("enqueue", queue, "_valid")),
+          builder.getI1Type(), circt::hw::ModulePort::Direction::Input}});
+    inputs.push_back(
+        {{builder.getStringAttr(queuePort("enqueue", queue, "_commit")),
           builder.getI1Type(), circt::hw::ModulePort::Direction::Input}});
     outputs.push_back(
         {{builder.getStringAttr(queuePort("enqueue", queue, "_ready")),
@@ -282,13 +286,19 @@ buildTokenPoolModule(mlir::OpBuilder &builder, mlir::Location location,
                                                           full),
                              circt::comb::createOrFoldNot(bodyBuilder, location,
                                                           dequeue)})
-                : circt::comb::createOrFoldNot(bodyBuilder, location, full);
+                : orValues(bodyBuilder, location,
+                           {circt::comb::createOrFoldNot(bodyBuilder, location,
+                                                         full),
+                            dequeue});
         std::vector<mlir::Value> enqueueFired(queueCount);
         for (std::uint32_t queue = 0; queue != queueCount; ++queue) {
-          enqueueFired[queue] = andValues(bodyBuilder, location,
+          mlir::Value granted = andValues(bodyBuilder, location,
                                           {enqueueSelected[queue], canEnqueue});
-          accessor.setOutput(queuePort("enqueue", queue, "_ready"),
-                             enqueueFired[queue]);
+          accessor.setOutput(queuePort("enqueue", queue, "_ready"), granted);
+          enqueueFired[queue] = andValues(
+              bodyBuilder, location,
+              {granted,
+               accessor.getInput(queuePort("enqueue", queue, "_commit"))});
         }
         mlir::Value enqueue = orValues(bodyBuilder, location, enqueueFired);
         cursorNext.setValue(
@@ -432,6 +442,7 @@ SelectorSignals decodeSelector(mlir::OpBuilder &builder,
 
 struct QueueRuntime final {
   circt::Backedge dequeueReady;
+  circt::Backedge enqueueCommit;
   std::optional<mlir::Value> data;
   mlir::Value valid;
   mlir::Value enqueueReady;
@@ -616,6 +627,15 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
 
   const std::uint32_t fifoDepth = fabric.peRegisterFifoDepth(pe);
   const std::uint32_t fifoPorts = fabric.peRegisterFifoPorts(pe);
+  std::vector<std::uint32_t> fuInputCounts;
+  fuInputCounts.reserve(layout.fus.size());
+  for (const auto &shape : layout.fus)
+    fuInputCounts.push_back(shape.inputCount);
+  auto peResources = ::fabric::TemporalPeResourceContract::create(
+      {pe, layout.contextCount, fuInputCounts, *mode, operandDepth,
+       layout.registerFifoCount, fifoDepth, fifoPorts});
+  if (!peResources)
+    return invalid(llvm::toString(peResources.takeError()));
   std::vector<TokenPoolModule> fifoPools;
   fifoPools.reserve(layout.registerFifoCount);
   for (std::uint32_t fifo = 0; fifo != layout.registerFifoCount; ++fifo) {
@@ -674,7 +694,9 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
           rows.push_back(std::move(row));
         }
 
-        std::vector<llvm::SmallVector<mlir::Value>> inputReadyTerms(
+        std::vector<llvm::SmallVector<mlir::Value>> inputMatchTerms(
+            layout.inputPortCount);
+        std::vector<llvm::SmallVector<mlir::Value>> inputBlockedTerms(
             layout.inputPortCount);
         std::vector<QueueRuntime> queueRuntime(queues.size());
         std::vector<std::vector<mlir::Value>> queueInputMatches(
@@ -708,7 +730,12 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
               mlir::Value routeMatches = andValues(
                   bodyBuilder, location,
                   {rowSelectsFu, selector.route, targetMatches, tagMatches});
+              mlir::Value discardMatches = andValues(
+                  bodyBuilder, location,
+                  {rowSelectsFu, selector.discard, targetMatches, tagMatches});
               queueInputMatches[queueOrdinal][port] = routeMatches;
+              inputMatchTerms[port].push_back(orValues(
+                  bodyBuilder, location, {routeMatches, discardMatches}));
               enqueueValidTerms.push_back(andValues(
                   bodyBuilder, location,
                   {routeMatches,
@@ -718,9 +745,6 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
                     bodyBuilder, location, routeMatches,
                     accessor.getInput(inputEndpoints[port]->data->getName()),
                     enqueueData, true);
-              inputReadyTerms[port].push_back(andValues(
-                  bodyBuilder, location,
-                  {rowSelectsFu, selector.discard, targetMatches, tagMatches}));
             }
             if (payloadWidth != 0)
               instanceInputs.emplace(queuePort("enqueue", local, "_data"),
@@ -728,6 +752,10 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
             instanceInputs.emplace(
                 queuePort("enqueue", local, "_valid"),
                 orValues(bodyBuilder, location, enqueueValidTerms));
+            queueRuntime[queueOrdinal].enqueueCommit =
+                backedges.get(bodyBuilder.getI1Type());
+            instanceInputs.emplace(queuePort("enqueue", local, "_commit"),
+                                   queueRuntime[queueOrdinal].enqueueCommit);
             queueRuntime[queueOrdinal].dequeueReady =
                 backedges.get(bodyBuilder.getI1Type());
             instanceInputs.emplace(queuePort("dequeue", local, "_ready"),
@@ -749,11 +777,31 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
             runtime.enqueueReady =
                 instance->at(queuePort("enqueue", local, "_ready"));
             for (std::uint32_t port = 0; port != inputEndpoints.size(); ++port)
-              inputReadyTerms[port].push_back(
-                  andValues(bodyBuilder, location,
-                            {queueInputMatches[unit.queues[local]][port],
-                             runtime.enqueueReady}));
+              inputBlockedTerms[port].push_back(andValues(
+                  bodyBuilder, location,
+                  {queueInputMatches[unit.queues[local]][port],
+                   circt::comb::createOrFoldNot(bodyBuilder, location,
+                                                runtime.enqueueReady)}));
           }
+        }
+
+        std::vector<mlir::Value> inputReady(layout.inputPortCount);
+        for (std::uint32_t port = 0; port != layout.inputPortCount; ++port)
+          inputReady[port] = andValues(
+              bodyBuilder, location,
+              {orValues(bodyBuilder, location, inputMatchTerms[port]),
+               circt::comb::createOrFoldNot(
+                   bodyBuilder, location,
+                   orValues(bodyBuilder, location, inputBlockedTerms[port]))});
+        for (std::uint32_t queue = 0; queue != queues.size(); ++queue) {
+          llvm::SmallVector<mlir::Value> commitTerms;
+          for (std::uint32_t port = 0; port != inputEndpoints.size(); ++port)
+            commitTerms.push_back(andValues(
+                bodyBuilder, location,
+                {queueInputMatches[queue][port], inputReady[port],
+                 accessor.getInput(inputEndpoints[port]->valid.getName())}));
+          queueRuntime[queue].enqueueCommit.setValue(
+              orValues(bodyBuilder, location, commitTerms));
         }
 
         const unsigned fifoPayloadWidth = payloadWidth + tagWidth;
@@ -793,34 +841,30 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
             layout.fus.size(), std::vector<mlir::Value>(
                                    layout.contextCount,
                                    bitConstant(bodyBuilder, location, false)));
-        if (*mode == ::fabric::OperandBufferMode::AllFuShare) {
+        for (std::uint32_t unit = 0; unit != peResources->dispatchUnitCount();
+             ++unit) {
           std::vector<mlir::Value> requests;
-          for (std::uint32_t fu = 0; fu != layout.fus.size(); ++fu)
-            for (std::uint32_t context = 0; context != layout.contextCount;
-                 ++context)
-              requests.push_back(contextEligible[fu][context]);
+          const auto candidates = peResources->dispatchCandidatesOf(unit);
+          requests.reserve(candidates.size());
+          for (std::uint32_t candidateOrdinal : candidates) {
+            const auto &candidate =
+                peResources->dispatchCandidates()[candidateOrdinal];
+            requests.push_back(contextEligible[candidate.fuOccurrence]
+                                              [candidate.context.ordinal]);
+          }
           StatefulSelection selection = makeStatefulSelection(
               bodyBuilder, location, backedges, requests,
               accessor.getInput("clock"), accessor.getInput("reset"),
-              "shared_dispatch_cursor_reg", clockReset);
-          std::size_t request = 0;
-          for (std::uint32_t fu = 0; fu != layout.fus.size(); ++fu)
-            for (std::uint32_t context = 0; context != layout.contextCount;
-                 ++context)
-              contextSelected[fu][context] = selection.selected[request++];
+              "dispatch_unit_" + std::to_string(unit) + "_cursor_reg",
+              clockReset);
+          for (auto [request, candidateOrdinal] : llvm::enumerate(candidates)) {
+            const auto &candidate =
+                peResources->dispatchCandidates()[candidateOrdinal];
+            contextSelected[candidate.fuOccurrence][candidate.context.ordinal] =
+                selection.selected[request];
+          }
           selection.next.setValue(nextCursor(
               bodyBuilder, location, selection.cursor, selection.selected));
-        } else {
-          for (std::uint32_t fu = 0; fu != layout.fus.size(); ++fu) {
-            StatefulSelection selection = makeStatefulSelection(
-                bodyBuilder, location, backedges, contextEligible[fu],
-                accessor.getInput("clock"), accessor.getInput("reset"),
-                "fu_" + std::to_string(fu) + "_dispatch_cursor_reg",
-                clockReset);
-            contextSelected[fu] = selection.selected;
-            selection.next.setValue(nextCursor(
-                bodyBuilder, location, selection.cursor, selection.selected));
-          }
         }
 
         std::vector<mlir::Value> queueGranted(
@@ -1207,6 +1251,8 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
           instanceInputs.emplace(
               queuePort("enqueue", 0, "_valid"),
               orValues(bodyBuilder, location, selection.selected));
+          instanceInputs.emplace(queuePort("enqueue", 0, "_commit"),
+                                 bitConstant(bodyBuilder, location, true));
           instanceInputs.emplace(
               queuePort("dequeue", 0, "_ready"),
               orValues(bodyBuilder, location, fifoReadReadyTerms[fifo]));
@@ -1245,8 +1291,7 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
 
         for (const EndpointPlan *input : inputEndpoints)
           accessor.setOutput(input->ready.getName(),
-                             orValues(bodyBuilder, location,
-                                      inputReadyTerms[input->localOrdinal]));
+                             inputReady[input->localOrdinal]);
       });
   if (materializationError)
     return invalid(*materializationError);

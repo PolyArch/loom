@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <system_error>
 #include <variant>
 
@@ -286,6 +287,59 @@ fabric::resolveOperationUsePattern(const ResourceContract &contract,
         std::errc::invalid_argument,
         "fabric.op transition case has no resource use pattern");
   return UsePatternKey(ordinal);
+}
+
+llvm::Expected<std::optional<fabric::OperationTransitionArchitecturalTiming>>
+fabric::projectOperationTransitionArchitecturalTiming(
+    const ResourceContract &contract,
+    ::dataflow::OperationSchemaId schema,
+    std::uint32_t transitionCaseOrdinal) {
+  bool recognized = false;
+  auto oneCycle = isOneCycleElasticOperationResourceContract(contract);
+  if (!oneCycle)
+    return oneCycle.takeError();
+  recognized = *oneCycle;
+
+  if (!recognized) {
+    const ResourceContract *expected = nullptr;
+    switch (schema) {
+    case ::dataflow::OperationSchemaId::DataflowStream:
+      expected = &loopStreamOperationResourceContract();
+      break;
+    case ::dataflow::OperationSchemaId::DataflowCarry:
+      expected = &loopCarryOperationResourceContract();
+      break;
+    case ::dataflow::OperationSchemaId::DataflowInvariant:
+      expected = &loopInvariantOperationResourceContract();
+      break;
+    case ::dataflow::OperationSchemaId::DataflowGate:
+      expected = &loopGateOperationResourceContract();
+      break;
+    default:
+      break;
+    }
+    if (expected) {
+      auto actualBytes = encodeResourceContractRecord(contract);
+      if (!actualBytes)
+        return actualBytes.takeError();
+      auto expectedBytes = encodeResourceContractRecord(*expected);
+      if (!expectedBytes)
+        return expectedBytes.takeError();
+      recognized = *actualBytes == *expectedBytes;
+    }
+  }
+
+  if (!recognized)
+    return std::optional<OperationTransitionArchitecturalTiming>{};
+  auto pattern = resolveOperationUsePattern(contract, transitionCaseOrdinal);
+  if (!pattern)
+    return pattern.takeError();
+  const UsePatternTiming timing = contract.usePatternTiming(*pattern);
+  if (!timing.commitLatencyCycles)
+    return std::optional<OperationTransitionArchitecturalTiming>{};
+  return std::optional<OperationTransitionArchitecturalTiming>(
+      OperationTransitionArchitecturalTiming{*timing.commitLatencyCycles,
+                                             *timing.commitLatencyCycles});
 }
 
 fabric::UsePatternKey

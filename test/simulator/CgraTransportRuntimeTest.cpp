@@ -12,6 +12,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdlib>
 #include <limits>
 #include <utility>
@@ -71,6 +72,31 @@ module {
   return take(dataflow::finalizeCanonicalDataflow(module.get()));
 }
 
+dataflow::CanonicalDataflowArtifact fanoutProgram() {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module {
+  dataflow.graph private @fanout(
+      %start: none, %lhs: i32, %rhs: i32) -> (i32)
+      attributes {
+        input_segments = array<i32: 2, 0, 0>,
+        result_segments = array<i32: 1, 0, 0>
+      } {
+    %left = arith.addi %lhs, %rhs : i32
+    %right = arith.addi %lhs, %rhs : i32
+    %sum = arith.addi %left, %right : i32
+    %published:2 = dataflow.sync %start, %sum
+        : (none, i32) -> (none, i32)
+    dataflow.graph.return values(%published#1 : i32) streams() memories()
+        complete(%published#0 : none)
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail("failed to parse operand-queue fanout fixture");
+  return take(dataflow::finalizeCanonicalDataflow(module.get()));
+}
+
 loom::sim::SpatialEventCoordinate coordinate(std::uint64_t cycle,
                                              std::uint64_t delta = 0) {
   return {take(loom::evaluation::ExactRatio::get(cycle, 1)), delta};
@@ -97,7 +123,8 @@ void localRealizationEdgePublishesThroughExactConsumer() {
   require(prepared, "local-transfer graph preparation failed");
 
   CgraFrozenExecutionPlan plan;
-  plan.computeActors.push_back({add->ref, add->graph, {}, {}, 0, 0});
+  plan.computeActors.push_back(
+      {add->ref, add->graph, {}, {}, 0, 0, std::nullopt, 0});
   plan.transport.localTransfers.push_back(
       {{dataflow::GraphIngressTokenRef{
            dataflow::GraphValueInputTokenRef{add->graph, 0}}},
@@ -190,8 +217,8 @@ void localRealizationEdgePublishesThroughExactConsumer() {
       loom::fabric::FabricPhysicalTraversalKind::SwitchTraversal;
   physicalPlan.transport.traversals[1].impliedUseOffset = 1;
   physicalPlan.transport.traversals[1].impliedUseCount = 1;
-  physicalPlan.transport.traversalUses.push_back({{}, {}, 2});
-  physicalPlan.transport.traversalUses.push_back({{}, {}, 3});
+  physicalPlan.transport.traversalUses.push_back({{}, {}, 0, 2});
+  physicalPlan.transport.traversalUses.push_back({{}, {}, 1, 3});
   physicalPlan.transport.routeNodes.push_back(
       {std::numeric_limits<std::uint32_t>::max(), invalidCgraTransportOrdinal});
   physicalPlan.transport.routeNodes.push_back({0, 1});
@@ -442,7 +469,8 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
   require(prepared, "register-FIFO graph preparation failed");
 
   CgraFrozenExecutionPlan plan;
-  plan.computeActors.push_back({add->ref, add->graph, {}, {}, 0, 0});
+  plan.computeActors.push_back(
+      {add->ref, add->graph, {}, {}, 0, 0, std::nullopt, 0});
   plan.transport.traversals.resize(2);
   plan.transport.traversals[0].kind =
       loom::fabric::FabricPhysicalTraversalKind::PeRegisterFifoTraversal;
@@ -668,10 +696,123 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
           "dual-port full-queue replacement was not one atomic cycle update");
 }
 
+void temporalOperandQueueCapacityAndFanoutAreAtomic() {
+  auto artifact = fanoutProgram();
+  auto view = take(artifact.view());
+  llvm::SmallVector<const dataflow::CanonicalActorView *, 3> adds;
+  for (const dataflow::CanonicalActorView &actor : view.actors())
+    if (dataflow::operationSchemaOf(actor.op) ==
+        dataflow::OperationSchemaId::ArithAddI)
+      adds.push_back(&actor);
+  require(adds.size() == 3,
+          "operand-queue fixture lacks its three add actors");
+  const dataflow::CanonicalActorView &left = *adds[0];
+  const dataflow::CanonicalActorView &right = *adds[1];
+  auto graphView = take(view.resolve(left.graph));
+  auto graph = mlir::cast<dataflow::GraphOp>(graphView.op);
+  GraphPreparationResult preparedResult =
+      take(prepareGraphExecution(artifact.module(), graph));
+  auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
+  require(prepared, "operand-queue graph preparation failed");
+
+  std::uint64_t leftSemantic = std::numeric_limits<std::uint64_t>::max();
+  for (auto [ordinal, actor] : llvm::enumerate(prepared->actorPlans))
+    if (actor.operation == left.op)
+      leftSemantic = ordinal;
+  require(leftSemantic != std::numeric_limits<std::uint64_t>::max(),
+          "operand-queue actor has no semantic binding");
+
+  const dataflow::CanonicalGraphProducerEndpointRef producer(
+      dataflow::GraphIngressTokenRef{
+          dataflow::GraphValueInputTokenRef{left.graph, 0}});
+  const dataflow::CanonicalGraphConsumerEndpointRef leftSink(
+      dataflow::ActorTokenOperandRef{left.ref, 0});
+  const dataflow::CanonicalGraphConsumerEndpointRef rightSink(
+      dataflow::ActorTokenOperandRef{right.ref, 0});
+  loom::fabric::FabricPeOccurrenceRef pe;
+  const fabric::LogicalOperandQueueKey leftQueue{{pe, 0}, 0, 0};
+  const fabric::LogicalOperandQueueKey rightQueue{{pe, 0}, 1, 0};
+
+  CgraFrozenExecutionPlan plan;
+  plan.transport.localTransfers.push_back(
+      {producer, left.graph, 0, 2});
+  plan.transport.localTransferSinks.push_back({leftSink});
+  plan.transport.localTransferSinks.push_back({rightSink});
+  plan.transport.consumedUses.push_back({leftSink, 0, 0});
+  plan.transport.consumedUses.push_back({rightSink, 0, 0});
+  plan.transport.operandQueueMatches.push_back(
+      {leftSink, leftQueue, 0, 2});
+  plan.transport.operandQueueMatches.push_back(
+      {rightSink, rightQueue, 1, 2});
+  plan.transport.operandQueueActivations.push_back(
+      {producer,
+       {loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 0},
+       llvm::APInt(1, 0),
+       0,
+       2});
+
+  SimulatorState state;
+  state.graphScope = graph.getOperation();
+  initializeRunState(state, *prepared);
+  TokenQueue &leftChannel = channelQueue(state, left.op->getOpOperand(0));
+  TokenQueue &rightChannel = channelQueue(state, right.op->getOpOperand(0));
+  leftChannel.push_back(take(tokenFromBitPattern(
+      llvm::APInt(32, 7), mlir::IntegerType::get(&context(), 32))));
+  auto physical = take(CgraPhysicalActionRuntime::create(
+      plan.resources, plan.physicalUseTimings));
+  auto transport = take(CgraTransportRuntime::create(
+      plan, view, left.graph, *prepared, state, physical));
+
+  llvm::SmallVector<GraphIngressEmission, 1> first;
+  first.push_back(
+      {1, 0,
+       take(tokenFromBitPattern(llvm::APInt(32, 11),
+                                mlir::IntegerType::get(&context(), 32)))});
+  if (llvm::Error error =
+          transport.acceptGraphIngressEmissions(coordinate(70), first))
+    fail(llvm::toString(std::move(error)));
+  auto firstFrame = take(transport.advance());
+  require(firstFrame && firstFrame->publications.size() == 1 &&
+              leftChannel.size() == 2 && rightChannel.size() == 1,
+          "Temporal operand fanout did not fill both allocation units");
+
+  llvm::SmallVector<GraphIngressEmission, 1> second;
+  second.push_back(
+      {1, 1,
+       take(tokenFromBitPattern(llvm::APInt(32, 13),
+                                mlir::IntegerType::get(&context(), 32)))});
+  if (llvm::Error error =
+          transport.acceptGraphIngressEmissions(coordinate(71), second))
+    fail(llvm::toString(std::move(error)));
+  auto blocked = take(transport.advance());
+  require(blocked && blocked->publications.empty() &&
+              blocked->blockedTransfers.size() == 1 &&
+              leftChannel.size() == 2 && rightChannel.size() == 1,
+          "full Temporal operand unit allowed partial fanout");
+
+  leftChannel.pop_front();
+  const std::array<CgraActorLifecycleEvent, 1> committed = {
+      CgraActorLifecycleEvent{CgraActorLifecycleKind::Committed, leftSemantic,
+                              0, 0, 0, blocked->coordinate}};
+  if (llvm::Error error = transport.acceptActorCommits(committed))
+    fail(llvm::toString(std::move(error)));
+  if (llvm::Error error = transport.retryBlocked(blocked->coordinate))
+    fail(llvm::toString(std::move(error)));
+  auto replacement = take(transport.advance());
+  require(replacement && replacement->publications.size() == 1 &&
+              leftChannel.size() == 2 && rightChannel.size() == 2 &&
+              take(tokenBitPattern(
+                  leftChannel.front(),
+                  mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 11),
+          "Temporal operand dequeue replacement did not commit atomically");
+}
+
 } // namespace
 
 int main() {
   localRealizationEdgePublishesThroughExactConsumer();
   registerFifoWriteAndReadShareOneDurableQueue();
+  temporalOperandQueueCapacityAndFanoutAreAtomic();
   return EXIT_SUCCESS;
 }

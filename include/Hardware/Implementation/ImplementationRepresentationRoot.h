@@ -20,7 +20,7 @@ class Object;
 
 namespace loom::hardware {
 
-/// Canonical typed representation root for HardwareImplementation 3.0.
+/// Canonical typed representation root for HardwareImplementation 4.0.
 struct ImplementationRepresentationRoot final {
   RepresentationRootVariant variant;
   /// Present exactly for the physical variants.

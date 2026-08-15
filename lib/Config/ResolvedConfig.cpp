@@ -234,6 +234,7 @@ struct ConfigPatch {
   std::optional<std::uint32_t> dataflowRewriteScopeExpansionLimit;
   std::optional<std::uint64_t> techMappingMatchRowAttemptLimit;
   std::optional<std::uint64_t> techMappingPartialCoverExpansionLimit;
+  std::optional<std::uint64_t> techMappingCandidateEvaluationLimit;
   std::optional<std::uint64_t> techMappingCandidatePublicationLimit;
   std::optional<std::vector<loom::dse::ModelAuthorization>> modelAuthorizations;
   std::optional<std::vector<loom::dse::EvidenceObligationTemplate>>
@@ -328,6 +329,9 @@ void applyPatch(loom::ResolvedConfig &config, const ConfigPatch &patch) {
   if (patch.techMappingPartialCoverExpansionLimit)
     config.dse.techMapping.partialCoverExpansionLimit =
         *patch.techMappingPartialCoverExpansionLimit;
+  if (patch.techMappingCandidateEvaluationLimit)
+    config.dse.techMapping.candidateEvaluationLimit =
+        *patch.techMappingCandidateEvaluationLimit;
   if (patch.techMappingCandidatePublicationLimit)
     config.dse.techMapping.candidatePublicationLimit =
         *patch.techMappingCandidatePublicationLimit;
@@ -948,14 +952,13 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
   auto fieldsOrErr = ClosedMapping::parse(
       node, key,
       {"search_policy", "determinism_policy", "temporary_violation_policy",
-       "selected_total_ordering", "selected_search_energy",
-       "focused_closure_dimensions", "evaluation_interaction_bindings"});
+       "selected_total_ordering", "selected_search_energy"});
   if (!fieldsOrErr)
     return fieldsOrErr.takeError();
   auto searchOrErr = ClosedMapping::parse(
       fieldsOrErr->at("search_policy"), key + ".search_policy",
       {"initializer", "action_proposal", "routing", "annealing",
-       "focused_closure", "exact_repair"});
+       "exact_repair"});
   if (!searchOrErr)
     return searchOrErr.takeError();
 
@@ -1002,7 +1005,7 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
       searchOrErr->at("routing"), key + ".search_policy.routing",
       {"endpoint_expansion_limit", "negotiation_iteration_limit",
        "no_progress_iteration_limit", "no_progress_trend_window",
-       "negotiation_policy", "route_guidance_binding"});
+       "negotiation_policy"});
   if (!routingOrErr)
     return routingOrErr.takeError();
   auto endpointLimit =
@@ -1030,16 +1033,6 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
     return noProgressTrendWindow.takeError();
   if (!negotiation)
     return negotiation.takeError();
-  std::optional<std::uint32_t> routeGuidance;
-  const ConfigSyntax *guidanceNode = routingOrErr->at("route_guidance_binding");
-  if (guidanceNode->kind != ConfigSyntax::Kind::Null) {
-    auto guidance = requireU32(
-        guidanceNode, key + ".search_policy.routing.route_guidance_binding");
-    if (!guidance)
-      return guidance.takeError();
-    routeGuidance = *guidance;
-  }
-
   auto annealingOrErr = ClosedMapping::parse(
       searchOrErr->at("annealing"), key + ".search_policy.annealing",
       {"calibration_proposal_count", "positive_delta_quantile",
@@ -1088,17 +1081,6 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
     return levelBase.takeError();
   if (!perMovable)
     return perMovable.takeError();
-
-  auto focusedOrErr = ClosedMapping::parse(
-      searchOrErr->at("focused_closure"),
-      key + ".search_policy.focused_closure", {"proposal_limit"});
-  if (!focusedOrErr)
-    return focusedOrErr.takeError();
-  auto focusedLimit =
-      requireU64(focusedOrErr->at("proposal_limit"),
-                 key + ".search_policy.focused_closure.proposal_limit");
-  if (!focusedLimit)
-    return focusedLimit.takeError();
 
   auto repairProbeOrErr = ClosedMapping::parse(
       searchOrErr->at("exact_repair"), key + ".search_policy.exact_repair",
@@ -1187,64 +1169,23 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
     return selectedOrdering.takeError();
   if (!selectedEnergy)
     return selectedEnergy.takeError();
-  auto focusedDimensionsOrErr =
-      requireSequence(fieldsOrErr->at("focused_closure_dimensions"),
-                      key + ".focused_closure_dimensions");
-  if (!focusedDimensionsOrErr)
-    return focusedDimensionsOrErr.takeError();
-  std::vector<std::uint32_t> focusedDimensions;
-  for (const ConfigSyntax &dimensionNode : **focusedDimensionsOrErr) {
-    auto dimension =
-        requireU32(&dimensionNode, key + ".focused_closure_dimensions");
-    if (!dimension)
-      return dimension.takeError();
-    focusedDimensions.push_back(*dimension);
-  }
-
-  auto bindingsOrErr =
-      requireSequence(fieldsOrErr->at("evaluation_interaction_bindings"),
-                      key + ".evaluation_interaction_bindings");
-  if (!bindingsOrErr)
-    return bindingsOrErr.takeError();
-  std::vector<loom::ResolvedPnrEvaluationBindingSelection> bindings;
-  for (const ConfigSyntax &bindingNode : **bindingsOrErr) {
-    auto bindingOrErr = ClosedMapping::parse(
-        &bindingNode, key + ".evaluation_interaction_bindings",
-        {"obligation_template", "interaction_domain"});
-    if (!bindingOrErr)
-      return bindingOrErr.takeError();
-    auto obligation = requireU32(
-        bindingOrErr->at("obligation_template"),
-        key + ".evaluation_interaction_bindings.obligation_template");
-    auto domain =
-        requireU32(bindingOrErr->at("interaction_domain"),
-                   key + ".evaluation_interaction_bindings.interaction_domain");
-    if (!obligation)
-      return obligation.takeError();
-    if (!domain)
-      return domain.takeError();
-    bindings.push_back({*obligation, *domain});
-  }
-
   return loom::ResolvedPnrPolicyConfig{
       {loom::ResolvedPnrInitializerPolicy{*seeds, *assignments},
        loom::ResolvedPnrActionProposalPolicy{*realization, *transport,
                                              *resource},
        loom::ResolvedPnrRoutingPolicy{*endpointLimit, *negotiationLimit,
                                       *noProgressLimit, *noProgressTrendWindow,
-                                      std::move(*negotiation), routeGuidance},
+                                      std::move(*negotiation)},
        loom::ResolvedPnrAnnealingPolicy{*calibration, *quantile, *acceptance,
                                         *fallback, *minimum, *cooling,
                                         *levelBase, *perMovable},
-       *focusedLimit, repair},
+       repair},
       loom::ResolvedPnrDeterminismPolicy{
           *masterSeed,
           loom::ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
           loom::ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
       std::move(violations),
-      loom::ResolvedPnrObjectiveSelection{*selectedOrdering, *selectedEnergy,
-                                          std::move(focusedDimensions)},
-      std::move(bindings)};
+      loom::ResolvedPnrObjectiveSelection{*selectedOrdering, *selectedEnergy}};
 }
 
 llvm::Error parseStructuredOwnership(ConfigPatch &patch,
@@ -1318,10 +1259,10 @@ llvm::Error parseDataflowRewrite(ConfigPatch &patch, const ConfigSyntax *node) {
 }
 
 llvm::Error parseTechMapping(ConfigPatch &patch, const ConfigSyntax *node) {
-  auto fieldsOrErr = ClosedMapping::parse(node, "dse.tech_mapping", {},
-                                          {"match_row_attempt_limit",
-                                           "partial_cover_expansion_limit",
-                                           "candidate_publication_limit"});
+  auto fieldsOrErr = ClosedMapping::parse(
+      node, "dse.tech_mapping", {},
+      {"match_row_attempt_limit", "partial_cover_expansion_limit",
+       "candidate_evaluation_limit", "candidate_publication_limit"});
   if (!fieldsOrErr)
     return fieldsOrErr.takeError();
   const auto parseLimit =
@@ -1343,6 +1284,9 @@ llvm::Error parseTechMapping(ConfigPatch &patch, const ConfigSyntax *node) {
   if (llvm::Error error =
           parseLimit("partial_cover_expansion_limit",
                      patch.techMappingPartialCoverExpansionLimit))
+    return error;
+  if (llvm::Error error = parseLimit("candidate_evaluation_limit",
+                                     patch.techMappingCandidateEvaluationLimit))
     return error;
   if (llvm::Error error =
           parseLimit("candidate_publication_limit",
@@ -1637,6 +1581,7 @@ llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
       config.dse.dataflowRewrite.scopeExpansionLimit == 0 ||
       config.dse.techMapping.matchRowAttemptLimit == 0 ||
       config.dse.techMapping.partialCoverExpansionLimit == 0 ||
+      config.dse.techMapping.candidateEvaluationLimit == 0 ||
       config.dse.techMapping.candidatePublicationLimit == 0)
     return diagnostic("config_range_violation", "dse",
                       "semantic work limits must be positive");
@@ -1694,8 +1639,8 @@ builtinResolvedConfig(loom::ResolvedProfilePreset preset) {
        loom::adg::builtinDefaultTarget.schemaMinor},
       loom::adg::builtinDefaultTarget.scale};
   config.dse.objectiveCatalogs = loom::resolvedBuiltinObjectiveCatalogs();
-  config.dse.spatialPnr = loom::resolvedBuiltinPnrPolicy(preset);
-  config.dse.systemPnr = loom::resolvedBuiltinPnrPolicy(preset);
+  config.dse.spatialPnr = loom::resolvedBuiltinSpatialPnrPolicy(preset);
+  config.dse.systemPnr = loom::resolvedBuiltinSystemPnrPolicy(preset);
   llvm::cantFail(loom::validateResolvedPnrPolicyConfig(
       config.dse.spatialPnr, config.dse.objectiveCatalogs));
   llvm::cantFail(loom::validateResolvedPnrPolicyConfig(

@@ -12,6 +12,10 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <variant>
 #include <vector>
 
 using namespace loom;
@@ -60,6 +64,12 @@ public:
     for (const TechResidualLogicalNetView &net : nets) {
       if (net.sinks.empty())
         return invalid("residual logical net has no sink obligation");
+      auto type = dataflow.tokenType(net.producer);
+      if (!type)
+        return type.takeError();
+      auto payloadWidth = dataflow.transportPayloadBitWidth(*type);
+      if (!payloadWidth)
+        return payloadWidth.takeError();
       auto sinkOffset =
           checked(sinkOffsetContext, result.logicalNetSinks_.size());
       if (!sinkOffset)
@@ -74,7 +84,8 @@ public:
       auto sinkCount = checked(sinkCountContext, net.sinks.size());
       if (!sinkCount)
         return sinkCount.takeError();
-      result.logicalNets_.push_back({net.producer, *sinkOffset, *sinkCount});
+      result.logicalNets_.push_back(
+          {net.producer, *payloadWidth, *sinkOffset, *sinkCount});
     }
     if (llvm::Error error =
             buildProgressDependencies(dataflow, techMapping, result))
@@ -90,7 +101,8 @@ private:
         dataflow, techMapping);
     if (!projected)
       return projected.takeError();
-    std::vector<std::vector<std::vector<PnrIndex>>> dependencies;
+    std::vector<std::vector<std::vector<FrozenSpatialProgressPrerequisite>>>
+        dependencies;
     dependencies.reserve(result.logicalNets_.size());
     for (const FrozenSpatialLogicalNet &net : result.logicalNets_)
       dependencies.emplace_back(net.sinkCount);
@@ -99,13 +111,43 @@ private:
           dependency.dependentSinkOrdinal >=
               dependencies[dependency.logicalNetOrdinal].size())
         return invalid("progress dependency is outside the frozen net index");
-      auto prerequisite = checked(progressDependencyContext,
-                                  dependency.prerequisiteSinkOrdinal);
-      if (!prerequisite)
-        return prerequisite.takeError();
+      FrozenSpatialProgressPrerequisite prerequisite;
+      if (const auto *external =
+              std::get_if<SpatialRouteExternalSinkPrerequisite>(
+                  &dependency.prerequisite)) {
+        auto sink = checked(progressDependencyContext, external->sinkOrdinal);
+        if (!sink)
+          return sink.takeError();
+        prerequisite = FrozenSpatialExternalSinkPrerequisite{*sink};
+      } else {
+        const auto &internal =
+            std::get<SpatialRouteInternalMemoryConnectionPrerequisite>(
+                dependency.prerequisite);
+        const auto realizations = techMapping.memoryRealizations();
+        if (internal.memoryRealizationOrdinal >= realizations.size() ||
+            internal.internalEdgeOrdinal >=
+                realizations[internal.memoryRealizationOrdinal]
+                    .internalEdges.size() ||
+            realizations[internal.memoryRealizationOrdinal]
+                    .internalEdges[internal.internalEdgeOrdinal]
+                    .producer !=
+                result.logicalNets_[dependency.logicalNetOrdinal].producer)
+          return invalid(
+              "progress dependency internal connection does not resolve");
+        auto realization = checked(progressDependencyContext,
+                                   internal.memoryRealizationOrdinal);
+        if (!realization)
+          return realization.takeError();
+        auto edge =
+            checked(progressDependencyContext, internal.internalEdgeOrdinal);
+        if (!edge)
+          return edge.takeError();
+        prerequisite = FrozenSpatialInternalMemoryConnectionPrerequisite{
+            *realization, *edge};
+      }
       dependencies[dependency.logicalNetOrdinal]
                   [dependency.dependentSinkOrdinal]
-                      .push_back(*prerequisite);
+                      .push_back(std::move(prerequisite));
     }
     result.sinkProgressDependencyOffsets_.clear();
     result.sinkProgressDependencies_.clear();
@@ -115,7 +157,23 @@ private:
     for (const auto [netOrdinal, net] : llvm::enumerate(result.logicalNets_)) {
       for (PnrIndex dependent = 0; dependent < net.sinkCount; ++dependent) {
         auto &sinkDependencies = dependencies[netOrdinal][dependent];
-        llvm::sort(sinkDependencies);
+        const auto key = [](const FrozenSpatialProgressPrerequisite &value) {
+          return std::visit(
+              [](const auto &typed) {
+                using T = std::decay_t<decltype(typed)>;
+                if constexpr (std::is_same_v<
+                                  T, FrozenSpatialExternalSinkPrerequisite>)
+                  return std::tuple<std::uint8_t, PnrIndex, PnrIndex>{
+                      0, typed.sink, 0};
+                else
+                  return std::tuple<std::uint8_t, PnrIndex, PnrIndex>{
+                      1, typed.memoryRealization, typed.internalEdge};
+              },
+              value);
+        };
+        llvm::sort(sinkDependencies, [&](const auto &lhs, const auto &rhs) {
+          return key(lhs) < key(rhs);
+        });
         sinkDependencies.erase(
             std::unique(sinkDependencies.begin(), sinkDependencies.end()),
             sinkDependencies.end());

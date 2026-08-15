@@ -50,8 +50,7 @@ RouteTreeTransactionScratch::~RouteTreeTransactionScratch() {
     activeTransaction_->rollback();
 }
 
-std::size_t
-RouteTreeTransactionScratch::retainedRollbackStorageBytes() const {
+std::size_t RouteTreeTransactionScratch::retainedRollbackStorageBytes() const {
   return lookupBaseline_.capacity() * sizeof(detail::RouteTreeLookupEntry) +
          initialSemanticEndpoints_.capacity() * sizeof(PnrIndex) +
          initialSemanticNodes_.capacity() * sizeof(RouteTreeSemanticNode);
@@ -260,6 +259,13 @@ RouteTreeState::sinkEndpoint(PnrIndex obligation) const {
       sinkBindings_[obligation].endpoint == getInvalidPnrIndex())
     return std::nullopt;
   return sinkBindings_[obligation].endpoint;
+}
+
+std::optional<PnrIndex> RouteTreeState::sinkNode(PnrIndex obligation) const {
+  if (obligation >= sinkBindings_.size() ||
+      sinkBindings_[obligation].nodeSlot == getInvalidPnrIndex())
+    return std::nullopt;
+  return sinkBindings_[obligation].nodeSlot;
 }
 
 PnrIndex RouteTreeState::arcSourceEndpoint(PnrIndex arc) const {

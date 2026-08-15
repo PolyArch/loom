@@ -544,9 +544,7 @@ CompletedEvidence completedWith(FindingResult finding) {
   return CompletedEvidence{{}, {std::move(finding)}};
 }
 
-FindingResult absentFinding() {
-  return FindingResult{AbsentFinding{}};
-}
+FindingResult absentFinding() { return FindingResult{AbsentFinding{}}; }
 
 void completedEvidenceIsTotalAndCanonical() {
   TemporaryDirectory directory(__func__);
@@ -935,7 +933,7 @@ void externalModelProviderFormAdmission() {
   require(
       __func__,
       semanticContract.resultImporterIdentity ==
-          "2314b0c570d23766b4b4e9922a36e3e869bc89dd48ceadd68e0d80ffbb13a1a3",
+          "7afd539b1080ee32238c8739832cfaa1d2cf0d00f0cbe92276fbb8583c58a8c2",
       "external semantic contract changed the evaluator importer identity");
   auto inProcessContract = deriveExternalToolSemanticContract(inProcessRequest);
   if (inProcessContract)

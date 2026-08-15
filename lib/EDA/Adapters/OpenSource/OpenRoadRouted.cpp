@@ -550,8 +550,8 @@ publishRoutedImplementation(
   return finalizeHardwareImplementation(
       HardwareImplementationDraft{
           source.fabric(),
+          source.subject(),
           source.configurationAbi(),
-          source.interconnectImplementations().vec(),
           std::move(*representation),
           source.implementationPlatform(),
           std::move(interfaces),

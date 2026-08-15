@@ -97,21 +97,17 @@ request(const Fixture &fixture, llvm::ArrayRef<PnrIndex> sources,
         llvm::ArrayRef<PnrIndex> targetRanks, std::uint32_t payloadWidth,
         std::uint64_t expansionLimit,
         std::optional<std::uint64_t> lowerBoundCostRevision = std::nullopt) {
-  return {sources,
-          sourceGroups,
-          targets,
-          targetRanks,
-          fixture.lowerCosts,
-          fixture.currentCosts,
-          payloadWidth,
-          0,
-          expansionLimit,
-          {},
-          lowerBoundCostRevision,
-          {},
-          false,
-          {},
-          {}};
+  EndpointRouteSearchRequest result;
+  result.sourceEndpoints = sources;
+  result.sourceReplicationGroups = sourceGroups;
+  result.targetEndpoints = targets;
+  result.targetPreferenceRanks = targetRanks;
+  result.lowerBoundArcCosts = fixture.lowerCosts;
+  result.currentArcCosts = fixture.currentCosts;
+  result.requiredPayloadWidthBits = payloadWidth;
+  result.endpointExpansionLimit = expansionLimit;
+  result.lowerBoundCostRevision = lowerBoundCostRevision;
+  return result;
 }
 
 void arbitraryTopologyAndCanonicalTieBreak() {
@@ -219,16 +215,6 @@ void requiredTraversalProductState() {
   const std::array<PnrIndex, 3> unrestrictedTargetPath{{1, 3, 5}};
   requirePath(__func__, take(__func__, scratch.search(mixed)), 0, 4, 3,
               unrestrictedTargetPath);
-
-  auto blockedTransit =
-      request(fixture, sources, sourceGroups, targets, targetRanks, 1, 64);
-  const std::array<std::uint64_t, 1> forbiddenEndpointThree{{
-      std::uint64_t{1} << 3,
-  }};
-  blockedTransit.forbiddenEndpointBits = forbiddenEndpointThree;
-  const std::array<PnrIndex, 3> alternatePath{{1, 4, 6}};
-  requirePath(__func__, take(__func__, scratch.search(blockedTransit)), 0, 4, 3,
-              alternatePath);
 }
 
 void checkedCostAndAdmissibility() {
@@ -253,6 +239,84 @@ void checkedCostAndAdmissibility() {
                 scratch.search(request(fixture, sources, sourceGroups, targets,
                                        targetRanks, 1, 64)),
                 EndpointRouteSearchFailureKind::ArithmeticOverflow);
+}
+
+void timingAwareArrivalAndBoundary() {
+  Fixture fixture;
+  fixture.lowerCosts.fill(1);
+  fixture.currentCosts.fill(1);
+  EndpointRouteSearchScratch scratch;
+  requireSuccess(__func__, scratch.prepare(fixture.graph()));
+  const std::array<PnrIndex, 1> sources{{0}};
+  const std::array<PnrIndex, 1> sourceGroups{{Fixture::noReplicationGroup}};
+  const std::array<PnrIndex, 1> targets{{4}};
+  const std::array<PnrIndex, 1> targetRanks{{0}};
+  const std::array<std::uint64_t, 7> delays{{8, 5, 8, 5, 1, 5, 1}};
+  std::array<std::uint8_t, 7> boundaries{};
+  const std::array<std::uint64_t, 1> sourceArrivals{{0}};
+  const std::array<std::uint64_t, 1> targetDelays{{0}};
+  auto combinational =
+      request(fixture, sources, sourceGroups, targets, targetRanks, 1, 128);
+  combinational.physicalTimingEnabled = true;
+  combinational.arcTimingDelayQuanta = delays;
+  combinational.arcTimingRegisteredDestination = boundaries;
+  combinational.sourceTimingArrivalQuanta = sourceArrivals;
+  combinational.targetTimingDelayQuanta = targetDelays;
+  combinational.requiredTimingQuanta = 8;
+  combinational.timingCriticality = 2;
+  const std::array<PnrIndex, 3> timingPreferredPath{{1, 4, 6}};
+  const auto combinationalResult =
+      take(__func__, scratch.search(combinational));
+  if (combinationalResult.forwardArcs !=
+      llvm::ArrayRef<PnrIndex>(timingPreferredPath))
+    fail(__func__, "candidate path arrival did not affect route selection");
+
+  const std::array<std::uint64_t, 7> recharacterizedDelays{
+      {1, 5, 1, 5, 8, 5, 8}};
+  auto recharacterized = combinational;
+  recharacterized.arcTimingDelayQuanta = recharacterizedDelays;
+  const std::array<PnrIndex, 2> recharacterizedPath{{0, 2}};
+  const auto recharacterizedResult =
+      take(__func__, scratch.search(recharacterized));
+  if (recharacterizedResult.forwardArcs !=
+      llvm::ArrayRef<PnrIndex>(recharacterizedPath))
+    fail(__func__,
+         "recharacterized provider delays did not replay a changed route");
+
+  const std::array<std::uint64_t, 1> lateRegisteredSourceArrival{{8}};
+  auto lateCombinational = combinational;
+  lateCombinational.sourceTimingArrivalQuanta = lateRegisteredSourceArrival;
+  const auto lateCombinationalResult =
+      take(__func__, scratch.search(lateCombinational));
+  boundaries[1] = 1;
+  auto registered = lateCombinational;
+  registered.arcTimingRegisteredDestination = boundaries;
+  const auto registeredResult = take(__func__, scratch.search(registered));
+  if (registeredResult.forwardArcs !=
+          llvm::ArrayRef<PnrIndex>(timingPreferredPath) ||
+      registeredResult.cost >= lateCombinationalResult.cost)
+    fail(__func__, "registered boundary did not reduce candidate path slack");
+
+  const std::array<PnrIndex, 1> overlappingTarget{{0}};
+  const std::array<std::uint64_t, 1> lateSourceArrival{{10}};
+  const std::array<std::uint64_t, 1> localTargetDelay{{2}};
+  auto terminal = request(fixture, sources, sourceGroups, overlappingTarget,
+                          targetRanks, 1, 128);
+  terminal.physicalTimingEnabled = true;
+  terminal.arcTimingDelayQuanta = delays;
+  terminal.arcTimingRegisteredDestination = boundaries;
+  terminal.sourceTimingArrivalQuanta = lateSourceArrival;
+  terminal.targetTimingDelayQuanta = localTargetDelay;
+  terminal.requiredTimingQuanta = 8;
+  terminal.timingCriticality = 0;
+  const auto terminalResult = take(__func__, scratch.search(terminal));
+  const RouteCost expectedTerminalCost =
+      (RouteCost{4} * routeCostScale + 7) / 8;
+  if (!terminalResult.forwardArcs.empty() ||
+      terminalResult.cost != expectedTerminalCost)
+    fail(__func__,
+         "source arrival and sink-local traversal slack were not counted "
+         "exactly once");
 }
 
 void failureKindSpellings() {
@@ -314,6 +378,7 @@ int main() {
   widthFilteringAndWorkLimit();
   requiredTraversalProductState();
   checkedCostAndAdmissibility();
+  timingAwareArrivalAndBoundary();
   failureKindSpellings();
   exactHeuristicCacheInvalidation();
   return 0;

@@ -41,7 +41,8 @@ struct OwnedProblem final {
 
   loom::pnr::detail::SpatialTagColoringProblemView view() const {
     return {vertices,        domainOffsets, domains,
-            intervalOffsets, intervals,     domainCount};
+            intervalOffsets, intervals,     domainCount,
+            {},              {}};
   }
 };
 
@@ -122,6 +123,22 @@ void largeColoringMinimizesUnavoidableConflict() {
           "large heuristic coloring did not use the representable palette");
 }
 
+void explicitInterferencePermitsPackedDomainReuse() {
+  OwnedProblem problem = makeProblem(3, 2, {{0}, {0}, {0}}, 1);
+  const std::vector<loom::pnr::PnrIndex> conflictOffsets{0, 1, 2, 4};
+  const std::vector<loom::pnr::PnrIndex> conflicts{2, 2, 0, 1};
+  auto view = problem.view();
+  view.vertexConflictOffsets = conflictOffsets;
+  view.vertexConflicts = conflicts;
+  const auto result =
+      take(loom::pnr::detail::colorSpatialTagInterference(view));
+  require(result.unassignedCount == 0 && result.conflictCount == 0,
+          "explicit interference introduced a false tag conflict");
+  require(value(result.values[0]) == value(result.values[1]) &&
+              value(result.values[0]) != value(result.values[2]),
+          "compatible domain members did not share one Physical Tag");
+}
+
 void emptyRestrictionRemainsUnassigned() {
   OwnedProblem problem = makeProblem(1, 3, {{}}, 0);
   problem.vertices.front().restricted = true;
@@ -137,6 +154,7 @@ void emptyRestrictionRemainsUnassigned() {
 int main() {
   exactColoringUsesLocalInterference();
   largeColoringMinimizesUnavoidableConflict();
+  explicitInterferencePermitsPackedDomainReuse();
   emptyRestrictionRemainsUnassigned();
   llvm::outs() << "spatial tag coloring tests passed\n";
   return EXIT_SUCCESS;

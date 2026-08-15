@@ -8,15 +8,19 @@ add_mlir_library(LoomFabricIdentity
   FabricSystemPhysicalOwner.cpp
   FabricModuleBoundaryTransportValidation.cpp
   FabricTraversalProjection.cpp
+  FabricPhysicalTiming.cpp
   FabricRefValidation.cpp
   FabricOpCapabilityView.cpp
   FabricPeConfiguration.cpp
   FabricTemporalPeConfiguration.cpp
   FabricMemoryConfiguration.cpp
+  FabricMemoryInternalConnection.cpp
+  FabricTemporalSwitchRoute.cpp
   FabricSemanticFieldRelation.cpp
   FabricPhysicalTagProjection.cpp
   FabricFuCapabilityTemplate.cpp
   FabricHandshake.cpp
+  FabricHandshakeModelBuilder.cpp
   FabricHandshakeFu.cpp
 
   ADDITIONAL_HEADER_DIRS

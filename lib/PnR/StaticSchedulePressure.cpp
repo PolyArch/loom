@@ -28,6 +28,8 @@ namespace {
 using loom::pnr::detail::SpatialSchedulePressureEdge;
 using loom::pnr::detail::StaticActorCriticality;
 using loom::pnr::detail::StaticActorEdgeCriticality;
+using loom::pnr::detail::StaticGraphRecurrenceTopology;
+using loom::pnr::detail::StaticRecurrenceFeedback;
 using loom::pnr::detail::StaticScheduleAnalysis;
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -162,6 +164,9 @@ struct AnalysisBuilder final {
     for (std::size_t actor = 0; actor < actorCount; ++actor)
       ++componentWeight[component[actor]];
 
+    bool nonFeedbackAcyclic = llvm::all_of(
+        componentWeight, [](std::uint64_t weight) { return weight == 1; });
+
     std::set<std::pair<std::size_t, std::size_t>> componentEdgeSet;
     for (std::size_t edgeOrdinal : graph.edges) {
       const WorkingEdge &edge = edges[edgeOrdinal];
@@ -169,9 +174,13 @@ struct AnalysisBuilder final {
         continue;
       const std::size_t source = component[localActor.at(edge.source)];
       const std::size_t sink = component[localActor.at(edge.sink)];
+      if (edge.source == edge.sink)
+        nonFeedbackAcyclic = false;
       if (source != sink)
         componentEdgeSet.emplace(source, sink);
     }
+    result.recurrenceTopologies_.push_back(
+        StaticGraphRecurrenceTopology{graph.graph, nonFeedbackAcyclic});
     std::vector<std::vector<std::size_t>> componentSuccessors(componentCount);
     std::vector<std::size_t> indegree(componentCount, 0);
     for (const auto &[source, sink] : componentEdgeSet) {
@@ -518,6 +527,9 @@ loom::pnr::detail::deriveStaticScheduleAnalysis(
             const std::size_t analysisEdge = builder.result.edges_.size();
             builder.result.edges_.push_back(
                 {*actorProducer, *actorConsumer, sourceActor.graph, 0});
+            if (feedback)
+              builder.result.feedbacks_.push_back(
+                  {*actorProducer, *actorConsumer, sourceActor.graph, 1});
             const std::size_t edgeOrdinal = builder.edges.size();
             builder.edges.push_back(
                 {source->second, sink->second, analysisEdge, feedback});
@@ -537,6 +549,15 @@ loom::pnr::detail::deriveStaticScheduleAnalysis(
     return edgeKey(left.producer, left.consumer) <
            edgeKey(right.producer, right.consumer);
   });
+  llvm::sort(builder.result.feedbacks_, [](const auto &left,
+                                           const auto &right) {
+    return edgeKey(left.producer, left.consumer) <
+           edgeKey(right.producer, right.consumer);
+  });
+  llvm::sort(builder.result.recurrenceTopologies_,
+             [](const auto &left, const auto &right) {
+               return graphKey(left.graph) < graphKey(right.graph);
+             });
   return std::move(builder.result);
 }
 

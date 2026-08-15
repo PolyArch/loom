@@ -61,6 +61,21 @@ struct CgraMemoryActorPlan final {
   std::uint32_t childTransactionCount = 0;
   std::uint64_t resultAssemblyOffset = 0;
   std::uint32_t resultAssemblyCount = 0;
+  std::vector<std::optional<::loom::fabric::FabricMemoryHandshakeRoleSource>>
+      roleSources;
+  std::vector<
+      std::optional<::loom::fabric::FabricMemoryHandshakeRoleDestination>>
+      roleDestinations;
+};
+
+/// One exact occurrence-local engine connection selected by TechMapping.
+/// Runtime transport consumes this relation directly; it is neither a routed
+/// residual net nor a second Mapping choice.
+struct CgraMemoryInternalConnectionPlan final {
+  ::loom::fabric::FabricMemoryOccurrenceRef occurrence;
+  ::loom::fabric::FabricOrdinal connection = 0;
+  ::dataflow::ActorTokenResultRef producer;
+  ::dataflow::ActorTokenOperandRef consumer;
 };
 
 struct CgraMemoryBindingPlan final {
@@ -76,6 +91,7 @@ struct CgraMemoryPlan final {
   std::vector<CgraMemoryChildTransactionPlan> childTransactions;
   std::vector<CgraMemoryResultAssemblyPlan> resultAssemblies;
   std::vector<CgraMemoryBindingPlan> bindings;
+  std::vector<CgraMemoryInternalConnectionPlan> internalConnections;
 };
 
 llvm::Expected<CgraMemoryPlan> freezeCgraMemoryPlan(

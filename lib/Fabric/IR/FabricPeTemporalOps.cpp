@@ -1,10 +1,8 @@
 //===- FabricPeTemporalOps.cpp - Verifier for fabric.pe [temporal] -------===//
 //
-// Implements the temporal-schedule branch of fabric.pe: the eight hardware
-// parameters, the three software-configuration attributes (pe_enable,
-// instruction_mem, per_fu_sw_configs), and the per-instruction-entry
-// validation. Spatial-side rules and the parser/printer for fabric.pe are
-// in FabricOps.cpp.
+// Implements the temporal-schedule branch of fabric.pe: its typed hardware
+// parameters, boundary shape, and body constraints. Spatial-side rules and
+// the parser/printer for fabric.pe are in FabricOps.cpp.
 //
 // The temporal PE boundary is uniformly !fabric.bits_tag<W, T>. Inner FUs
 // still operate on un-tagged !fabric.bits<W>; the tag is stripped at the
@@ -18,7 +16,6 @@
 #include "Fabric/IR/Crosspoint.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricTypes.h"
-#include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -44,9 +41,21 @@ struct TemporalAttrName {
 static const TemporalAttrName kTemporalAttrs[] = {
     {"tag_width"},          {"num_instruction"}, {"num_reg_fifo"},
     {"reg_fifo_depth"},     {"reg_fifo_ports"},  {"fu_config_mode"},
-    {"operand_buffer_mode"},{"operand_buffer_size"},
-    {"pe_enable"},          {"instruction_mem"}, {"per_fu_sw_configs"},
+    {"operand_buffer_mode"}, {"operand_buffer_size"},
 };
+
+static constexpr StringRef kSelectedConfigurationAttrs[] = {
+    "pe_enable", "instruction_mem", "per_fu_sw_configs"};
+
+static LogicalResult verifyNoSelectedConfigurationAttrs(PeOp op) {
+  for (StringRef name : kSelectedConfigurationAttrs)
+    if (op->hasAttr(name))
+      return op.emitOpError("selected configuration attribute '")
+             << name
+             << "' is forbidden; ConfigurationImage owns selected "
+                "instruction state";
+  return success();
+}
 
 // Get an integer-typed attribute as int64, or std::nullopt if the attr
 // is missing or not an IntegerAttr.
@@ -57,289 +66,12 @@ static std::optional<int64_t> getOptInt(Operation *op, StringRef name) {
   return a.getInt();
 }
 
-// Compute log2Ceil(n). Returns 0 when n <= 1 (matches MLIR's llvm::Log2_64_Ceil
-// semantics for n == 1).
-static unsigned log2Ceil(uint64_t n) {
-  if (n <= 1)
-    return 0;
-  return llvm::Log2_64_Ceil(n);
-}
-
-// Required keys per operand_sel / result_sel entry. Returns the missing
-// key name on failure, empty StringRef on success.
-static StringRef checkSelEntryKeys(DictionaryAttr d, bool isOperand) {
-  static const StringRef kCommon[] = {"tag", "is_port", "discard", "disconnect"};
-  for (StringRef k : kCommon)
-    if (!d.get(k))
-      return k;
-  if (isOperand) {
-    if (!d.get("src_sel"))
-      return StringRef("src_sel");
-  } else {
-    if (!d.get("dst_sel"))
-      return StringRef("dst_sel");
-  }
-  return StringRef();
-}
-
-// Pull a BoolAttr value; returns std::nullopt if missing/non-bool.
-static std::optional<bool> getBool(DictionaryAttr d, StringRef key) {
-  auto a = d.get(key);
-  if (!a)
-    return std::nullopt;
-  auto b = dyn_cast<BoolAttr>(a);
-  if (!b)
-    return std::nullopt;
-  return b.getValue();
-}
-
-// Pull an integer attribute from a Dictionary as int64. Treats the stored
-// APInt as unsigned (boolean and small bitwidth integer attributes default
-// to signless storage; getInt() sign-extends, which would yield -1 for an
-// i1 true). Returns the unsigned interpretation.
-static std::optional<int64_t> getInt(DictionaryAttr d, StringRef key) {
-  auto a = d.get(key);
-  if (!a)
-    return std::nullopt;
-  auto i = dyn_cast<IntegerAttr>(a);
-  if (!i)
-    return std::nullopt;
-  return static_cast<int64_t>(i.getValue().getZExtValue());
-}
-
-// Verify a single operand_sel / result_sel entry. `selBound` is the upper
-// bound (exclusive) for src_sel/dst_sel when is_port is true (= K or L).
-// `numRegFifo` is num_reg_fifo (the bound when is_port is false).
-static LogicalResult verifySelEntry(PeOp op, DictionaryAttr d, unsigned instIdx,
-                                    unsigned entryIdx, bool isOperand,
-                                    unsigned selBound, unsigned numRegFifo) {
-  StringRef kind = isOperand ? "operand_sel" : "result_sel";
-  StringRef selKey = isOperand ? "src_sel" : "dst_sel";
-
-  StringRef missing = checkSelEntryKeys(d, isOperand);
-  if (!missing.empty())
-    return op.emitOpError("instruction[")
-           << instIdx << "] " << kind << "[" << entryIdx
-           << "] is missing required key '" << missing << "'";
-
-  auto isPort = getBool(d, "is_port");
-  if (!isPort)
-    return op.emitOpError("instruction[")
-           << instIdx << "] " << kind << "[" << entryIdx
-           << "] 'is_port' must be a BoolAttr";
-  auto discard = getBool(d, "discard");
-  if (!discard)
-    return op.emitOpError("instruction[")
-           << instIdx << "] " << kind << "[" << entryIdx
-           << "] 'discard' must be a BoolAttr";
-  auto disconnect = getBool(d, "disconnect");
-  if (!disconnect)
-    return op.emitOpError("instruction[")
-           << instIdx << "] " << kind << "[" << entryIdx
-           << "] 'disconnect' must be a BoolAttr";
-  if (*discard && *disconnect)
-    return op.emitOpError("instruction[")
-           << instIdx << "] " << kind << "[" << entryIdx
-           << "] cannot have both 'discard' and 'disconnect' true";
-
-  auto sel = getInt(d, selKey);
-  if (!sel)
-    return op.emitOpError("instruction[")
-           << instIdx << "] " << kind << "[" << entryIdx << "] '" << selKey
-           << "' must be an IntegerAttr";
-  if (*sel < 0)
-    return op.emitOpError("instruction[")
-           << instIdx << "] " << kind << "[" << entryIdx << "] '" << selKey
-           << "' must be >= 0";
-
-  if (*isPort) {
-    if (static_cast<unsigned>(*sel) >= selBound)
-      return op.emitOpError("instruction[")
-             << instIdx << "] " << kind << "[" << entryIdx << "] '" << selKey
-             << "' (" << *sel << ") must be < "
-             << (isOperand ? "K (" : "L (") << selBound << ")";
-  } else {
-    if (numRegFifo == 0)
-      return op.emitOpError("instruction[")
-             << instIdx << "] " << kind << "[" << entryIdx
-             << "] uses 'is_port' = false but 'num_reg_fifo' is 0";
-    if (static_cast<unsigned>(*sel) >= numRegFifo)
-      return op.emitOpError("instruction[")
-             << instIdx << "] " << kind << "[" << entryIdx << "] '" << selKey
-             << "' (" << *sel << ") must be < num_reg_fifo (" << numRegFifo
-             << ")";
-  }
-
-  // Tag presence and integer-attr type are checked but the tag bit-width is
-  // not strictly enforced here; the configuration generator emits a
-  // T-bit-wide field. Only require that the tag is an IntegerAttr.
-  auto tag = d.get("tag");
-  if (!tag || !isa<IntegerAttr>(tag))
-    return op.emitOpError("instruction[")
-           << instIdx << "] " << kind << "[" << entryIdx
-           << "] 'tag' must be an IntegerAttr";
-  return success();
-}
-
-// String constants for the remaining string-valued temporal-PE attribute.
-static constexpr StringRef kFuCfgPerInstr = "per_instruction_fu_config";
-static constexpr StringRef kFuCfgPerFu = "per_fu_config";
-
+// Body whitelist + boundary type checks for the temporal PE. Returns T, K,
+// and L extracted from the declared boundary.
 static LogicalResult
-verifyInstructionEntry(PeOp op, unsigned instIdx, DictionaryAttr d,
-                       unsigned numFu, unsigned K, unsigned L,
-                       unsigned maxFuInputs, unsigned maxFuOutputs,
-                       unsigned numRegFifo, StringRef fuCfgMode) {
-  // enable
-  auto enable = getBool(d, "enable");
-  if (!enable)
-    return op.emitOpError("instruction[")
-           << instIdx << "] is missing 'enable' (BoolAttr)";
-
-  // opcode: present, < num_fu.
-  auto opcode = getInt(d, "opcode");
-  if (!opcode)
-    return op.emitOpError("instruction[")
-           << instIdx << "] is missing 'opcode' (IntegerAttr)";
-  if (*opcode < 0 || static_cast<uint64_t>(*opcode) >= numFu)
-    return op.emitOpError("instruction[")
-           << instIdx << "] 'opcode' (" << *opcode << ") must be < num_fu ("
-           << numFu << ")";
-
-  // operand_sel: array, length == max_fu_inputs.
-  auto opSelArr = dyn_cast_or_null<ArrayAttr>(d.get("operand_sel"));
-  if (!opSelArr)
-    return op.emitOpError("instruction[")
-           << instIdx << "] 'operand_sel' must be an ArrayAttr";
-  if (opSelArr.size() != maxFuInputs)
-    return op.emitOpError("instruction[")
-           << instIdx << "] 'operand_sel' length (" << opSelArr.size()
-           << ") must equal max_fu_inputs (" << maxFuInputs << ")";
-  for (unsigned i = 0; i < opSelArr.size(); ++i) {
-    auto entry = dyn_cast<DictionaryAttr>(opSelArr[i]);
-    if (!entry)
-      return op.emitOpError("instruction[")
-             << instIdx << "] operand_sel[" << i
-             << "] must be a DictionaryAttr";
-    if (failed(verifySelEntry(op, entry, instIdx, i, /*isOperand=*/true, K,
-                              numRegFifo)))
-      return failure();
-  }
-
-  // result_sel: array, length == max_fu_outputs.
-  auto resSelArr = dyn_cast_or_null<ArrayAttr>(d.get("result_sel"));
-  if (!resSelArr)
-    return op.emitOpError("instruction[")
-           << instIdx << "] 'result_sel' must be an ArrayAttr";
-  if (resSelArr.size() != maxFuOutputs)
-    return op.emitOpError("instruction[")
-           << instIdx << "] 'result_sel' length (" << resSelArr.size()
-           << ") must equal max_fu_outputs (" << maxFuOutputs << ")";
-  for (unsigned i = 0; i < resSelArr.size(); ++i) {
-    auto entry = dyn_cast<DictionaryAttr>(resSelArr[i]);
-    if (!entry)
-      return op.emitOpError("instruction[")
-             << instIdx << "] result_sel[" << i
-             << "] must be a DictionaryAttr";
-    if (failed(verifySelEntry(op, entry, instIdx, i, /*isOperand=*/false, L,
-                              numRegFifo)))
-      return failure();
-  }
-
-  // fu_sw_configs (per_instruction_fu_config only).
-  if (fuCfgMode == kFuCfgPerInstr) {
-    auto fucfg = d.get("fu_sw_configs");
-    if (!fucfg)
-      return op.emitOpError("instruction[")
-             << instIdx
-             << "] is missing 'fu_sw_configs' (required for "
-                "'per_instruction_fu_config')";
-    if (!isa<DictionaryAttr>(fucfg))
-      return op.emitOpError("instruction[")
-             << instIdx << "] 'fu_sw_configs' must be a DictionaryAttr";
-  } else {
-    if (d.get("fu_sw_configs"))
-      return op.emitOpError("instruction[")
-             << instIdx
-             << "] must not carry 'fu_sw_configs' when 'fu_config_mode' is "
-                "'per_fu_config'";
-  }
-  // Suppress unused-warning when only opcode is consumed.
-  (void)log2Ceil;
-  return success();
-}
-
-// Compute (K, L, numFu, maxFuInputs, maxFuOutputs) for the temporal PE.
-// Also returns the body's compute count (FUs + instantiates) via numFu;
-// fails if the body is empty.
-static LogicalResult collectTemporalShape(PeOp op, unsigned &K, unsigned &L,
-                                          unsigned &numFu,
-                                          unsigned &maxFuInputs,
-                                          unsigned &maxFuOutputs) {
-  Block &entry = op.getBody().front();
-  bool isNamed = static_cast<bool>(op.getSymNameAttr());
-
-  if (isNamed) {
-    auto fta = op.getFunctionTypeAttr();
-    if (!fta)
-      return op.emitOpError(
-          "named fabric.pe template requires a 'function_type' attribute");
-    auto ft = dyn_cast<FunctionType>(fta.getValue());
-    if (!ft)
-      return op.emitOpError("'function_type' attribute must be a FunctionType");
-    K = ft.getNumInputs();
-    L = ft.getNumResults();
-  } else {
-    K = entry.getNumArguments();
-    L = op.getOutputs().size();
-  }
-
-  numFu = 0;
-  maxFuInputs = 0;
-  maxFuOutputs = 0;
-  for (Operation &op2 : entry) {
-    if (auto inst = dyn_cast<InstantiateOp>(op2)) {
-      ++numFu;
-      // Best-effort shape: assume 0 inputs / 0 outputs unless we resolve
-      // the callee. The instantiate verifier already validates the
-      // callee shape; for max_fu_inputs / max_fu_outputs we use the
-      // visible operand and result counts here.
-      maxFuInputs = std::max(maxFuInputs, (unsigned)inst.getInputs().size());
-      maxFuOutputs = std::max(maxFuOutputs, (unsigned)inst.getOutputs().size());
-      continue;
-    }
-    if (isa<YieldOp>(op2))
-      continue;
-    auto fu = dyn_cast<FuOp>(op2);
-    if (!fu)
-      continue; // body whitelist enforced separately
-    ++numFu;
-    unsigned ins, outs;
-    if (fu.getSymNameAttr()) {
-      auto fta = fu.getFunctionTypeAttr();
-      if (!fta)
-        continue;
-      auto ft = dyn_cast<FunctionType>(fta.getValue());
-      if (!ft)
-        continue;
-      ins = ft.getNumInputs();
-      outs = ft.getNumResults();
-    } else {
-      ins = fu.getInputs().size();
-      outs = fu.getOutputs().size();
-    }
-    maxFuInputs = std::max(maxFuInputs, ins);
-    maxFuOutputs = std::max(maxFuOutputs, outs);
-  }
-  return success();
-}
-
-// Body whitelist + boundary type checks for the temporal PE. Returns W
-// and T extracted from the first PE port; sets isNamed.
-static LogicalResult
-verifyTemporalBoundaryAndBody(PeOp op, unsigned &W, unsigned &T,
-                              bool &isNamed) {
-  isNamed = static_cast<bool>(op.getSymNameAttr());
+verifyTemporalBoundaryAndBody(PeOp op, unsigned &T, unsigned &K,
+                              unsigned &L) {
+  const bool isNamed = static_cast<bool>(op.getSymNameAttr());
   Block &entry = op.getBody().front();
 
   SmallVector<Type, 4> declaredIns;
@@ -395,6 +127,8 @@ verifyTemporalBoundaryAndBody(PeOp op, unsigned &W, unsigned &T,
     return op.emitOpError("requires at least 1 input port (K >= 1)");
   if (declaredOuts.empty())
     return op.emitOpError("requires at least 1 output port (L >= 1)");
+  K = declaredIns.size();
+  L = declaredOuts.size();
 
   // PE boundary type: must be uniformly !fabric.bits_tag<W, T>.
   auto firstTag = dyn_cast<BitsTagType>(declaredIns[0]);
@@ -403,7 +137,7 @@ verifyTemporalBoundaryAndBody(PeOp op, unsigned &W, unsigned &T,
                "temporal fabric.pe boundary type must be "
                "'!fabric.bits_tag<W, T>'; PE input #0 has type ")
            << declaredIns[0];
-  W = firstTag.getWidth();
+  const unsigned W = firstTag.getWidth();
   T = firstTag.getTagWidth();
   for (auto [i, t] : llvm::enumerate(declaredIns)) {
     auto tag = dyn_cast<BitsTagType>(t);
@@ -618,16 +352,10 @@ static LogicalResult verifyTemporalHwParams(PeOp op, unsigned T) {
              << *regPorts;
   }
 
-  // 6. fu_config_mode: required, must be one of the known keywords.
-  auto fuCfgAttr = op.getFuConfigModeAttr();
-  if (!fuCfgAttr)
+  // 6. fu_config_mode: required typed enum.
+  if (!op.getFuConfigModeAttr())
     return op.emitOpError(
         "temporal fabric.pe requires 'fu_config_mode' attribute");
-  StringRef fuCfgMode = fuCfgAttr.getValue();
-  if (fuCfgMode != kFuCfgPerInstr && fuCfgMode != kFuCfgPerFu)
-    return op.emitOpError("'fu_config_mode' must be one of '")
-           << kFuCfgPerInstr << "' or '" << kFuCfgPerFu << "', got '"
-           << fuCfgMode << "'";
 
   // 7. operand_buffer_mode: required typed enum.
   if (!op.getOperandBufferModeAttr())
@@ -647,108 +375,21 @@ static LogicalResult verifyTemporalHwParams(PeOp op, unsigned T) {
   return success();
 }
 
-// Verify the trio (pe_enable, instruction_mem, per_fu_sw_configs).
-static LogicalResult verifyTemporalSwConfigs(PeOp op, unsigned numFu,
-                                             unsigned K, unsigned L,
-                                             unsigned maxFuInputs,
-                                             unsigned maxFuOutputs) {
-  bool hasEnable = static_cast<bool>(op.getPeEnableAttr());
-  bool hasInstMem = static_cast<bool>(op.getInstructionMemAttr());
-  StringRef fuCfgMode = op.getFuConfigModeAttr().getValue();
-  bool needsPerFu = (fuCfgMode == kFuCfgPerFu);
-  bool hasPerFu = static_cast<bool>(op.getPerFuSwConfigsAttr());
-
-  if (!hasEnable && !hasInstMem && !hasPerFu) {
-    // Fully unprogrammed (hardware-only): nothing more to check here.
-    return success();
-  }
-
-  // All-or-nothing rule. The "trio" is { pe_enable, instruction_mem, and
-  // (when needsPerFu) per_fu_sw_configs }. When fu_config_mode is
-  // 'per_instruction_fu_config', per_fu_sw_configs must be absent.
-  if (hasEnable && !hasInstMem)
-    return op.emitOpError(
-        "all-or-nothing violation: 'pe_enable' is present but "
-        "'instruction_mem' is missing");
-  if (hasInstMem && !hasEnable)
-    return op.emitOpError(
-        "all-or-nothing violation: 'instruction_mem' is present but "
-        "'pe_enable' is missing");
-  if (needsPerFu) {
-    if (hasInstMem && !hasPerFu)
-      return op.emitOpError(
-          "all-or-nothing violation: 'instruction_mem' is present but "
-          "'per_fu_sw_configs' is missing (required by 'per_fu_config' "
-          "mode)");
-    if (hasPerFu && !hasInstMem)
-      return op.emitOpError(
-          "all-or-nothing violation: 'per_fu_sw_configs' is present but "
-          "'instruction_mem' is missing");
-  } else {
-    if (hasPerFu)
-      return op.emitOpError(
-          "'per_fu_sw_configs' must be absent when 'fu_config_mode' is "
-          "'per_instruction_fu_config'");
-  }
-
-  // From here, the PE is "programmed": validate instruction_mem and
-  // per_fu_sw_configs.
-  auto instArr = op.getInstructionMemAttr();
-  auto numInst = op.getNumInstructionAttr().getInt();
-  if (instArr.size() != static_cast<size_t>(numInst))
-    return op.emitOpError("'instruction_mem' length (")
-           << instArr.size() << ") must equal 'num_instruction' (" << numInst
-           << ")";
-  for (unsigned i = 0; i < instArr.size(); ++i) {
-    auto entry = dyn_cast<DictionaryAttr>(instArr[i]);
-    if (!entry)
-      return op.emitOpError("instruction[")
-             << i << "] must be a DictionaryAttr";
-    if (failed(verifyInstructionEntry(op, i, entry, numFu, K, L, maxFuInputs,
-                                      maxFuOutputs,
-                                      op.getNumRegFifoAttr()
-                                          ? op.getNumRegFifoAttr().getInt()
-                                          : 0,
-                                      fuCfgMode)))
-      return failure();
-  }
-
-  if (needsPerFu) {
-    auto pfArr = op.getPerFuSwConfigsAttr();
-    if (pfArr.size() != numFu)
-      return op.emitOpError("'per_fu_sw_configs' length (")
-             << pfArr.size() << ") must equal num_fu (" << numFu << ")";
-    for (unsigned i = 0; i < pfArr.size(); ++i) {
-      if (!isa<DictionaryAttr>(pfArr[i]))
-        return op.emitOpError("'per_fu_sw_configs'[")
-               << i << "] must be a DictionaryAttr";
-    }
-  }
-  return success();
-}
 
 } // namespace
 
 namespace fabric {
 
 LogicalResult verifyPeTemporal(PeOp op) {
-  unsigned W = 0, T = 0;
-  bool isNamed = false;
-  if (failed(verifyTemporalBoundaryAndBody(op, W, T, isNamed)))
+  if (failed(verifyNoSelectedConfigurationAttrs(op)))
+    return failure();
+
+  unsigned T = 0, K = 0, L = 0;
+  if (failed(verifyTemporalBoundaryAndBody(op, T, K, L)))
     return failure();
   if (failed(verifyTemporalHwParams(op, T)))
     return failure();
 
-  unsigned K = 0, L = 0, numFu = 0, maxFuInputs = 0, maxFuOutputs = 0;
-  if (failed(collectTemporalShape(op, K, L, numFu, maxFuInputs, maxFuOutputs)))
-    return failure();
-  if (numFu == 0)
-    return op.emitOpError(
-        "body requires at least one fabric.fu or fabric.instantiate");
-
-  if (failed(
-          verifyTemporalSwConfigs(op, numFu, K, L, maxFuInputs, maxFuOutputs)))
-    return failure();
   auto crosspoints = validatedPeBoundaryCrosspointCount(K, L);
   if (!crosspoints)
     return op.emitOpError(llvm::toString(crosspoints.takeError()));
@@ -761,6 +402,8 @@ LogicalResult verifyPeTemporal(PeOp op) {
 }
 
 LogicalResult verifyPeSpatialNoTemporalAttrs(PeOp op) {
+  if (failed(verifyNoSelectedConfigurationAttrs(op)))
+    return failure();
   for (const auto &t : kTemporalAttrs) {
     if (op->getAttr(t.name))
       return op.emitOpError("spatial fabric.pe must not carry temporal-only "

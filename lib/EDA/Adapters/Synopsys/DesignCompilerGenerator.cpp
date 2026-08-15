@@ -692,8 +692,8 @@ publishGateNetlist(const InvocationFacts &facts,
     return catalog.takeError();
   HardwareImplementationDraft draft{
       source.fabric(),
+      source.subject(),
       source.configurationAbi(),
-      source.interconnectImplementations().vec(),
       std::move(*representation),
       source.implementationPlatform(),
       source.interfaces().vec(),

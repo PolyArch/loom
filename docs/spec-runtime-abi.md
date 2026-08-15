@@ -21,13 +21,13 @@ record or completion domain.
 The persistent runtime-owned families are:
 
 ```text
-loom.runtime_platform_binding 2.0
+loom.runtime_platform_binding 3.0
 loom.gem5_simulation_binding  2.0
 ```
 
 The major versions change because the first root admits an exact
-`loom.hardware_implementation 3.0` and the second admits exact
-`loom.fabric 4.1` roots. Their record shapes remain as specified below; no 1.0
+`loom.hardware_implementation 4.0` and the second admits exact
+`loom.fabric 5.0` roots. Their record shapes remain as specified below; no 1.0
 reference is reinterpreted with a different accepted dependency schema.
 
 Concrete device handles, leases, addresses, queues, and process state remain
@@ -389,15 +389,18 @@ RuntimePlatformBinding {
 }
 ```
 
-The HardwareImplementation reference recovers exact Fabric,
-ConfigurationABI, Interconnect Implementation, and ImplementationPlatform
-facts. The binding does not copy them. The provider binding identifies one
+The HardwareImplementation reference recovers the exact Fabric System,
+SpatialCore occurrence, ConfigurationABI, and ImplementationPlatform facts.
+It does not recover or imply a System interconnect implementation. The binding
+does not copy these facts. The provider binding identifies one
 static typed provider contract and implementation; endpoint references are
 closed typed values owned by that descriptor. Paths, device nodes, process IDs,
 bus addresses, and handles are transient invocation state.
 
-Every required programming, memory, completion, interrupt, and external
-interface has exactly one binding. Extra, missing, foreign, ambiguous, or
+Every required subject-local programming, memory, completion, interrupt, and
+external interface has exactly one binding. A configuration interface is
+required only when its Programming Unit scope is exclusively the implementation
+subject. Extra, missing, foreign, ambiguous, cross-occurrence, or
 wrong-direction bindings are invalid. `HardwareReported` reads and validates
 the exact HardwareImplementation identity through a declared interface.
 `TrustedImmutable` binds an immutable signed or otherwise trusted attestation
@@ -536,7 +539,7 @@ admission joins the third:
   execution structure, timing, capacity, and mapping-visible resources; and
 * the compatible Compiler Target Binding used by the target-specific binary.
 
-Because `loom.fabric 4.1` admits only the `RiscV` Architectural Contract, the
+Because `loom.fabric 5.0` admits only the `RiscV` Architectural Contract, the
 selected gem5 build and every `Processor` correspondence must provide a
 compatible RISC-V ISA model. A build without that ISA or a correspondence to a
 different ISA is typed `Unsupported`; the binding cannot retarget the binary

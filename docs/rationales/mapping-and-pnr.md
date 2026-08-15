@@ -75,6 +75,13 @@ dumps. Negotiated Routing owns the one exact fixed-terminal cut analysis used
 for conditional non-closure; level-three logging exposes that result and its
 reachable sets rather than creating a second diagnostic oracle.
 
+`loom.mapping.debug.1` versions only the line envelope: schema, level, event,
+stage, sequence, and one nested payload object. Payload fields are
+event-specific presentation, not a persistent semantic contract. Algorithm
+state remains in owner-local enums, variants, and records and is converted to
+text only at this boundary. The payload builder cannot replace envelope fields
+and is never invoked when its level is disabled.
+
 ## Why Compute Realization Replaces `dataflow.subgraph`
 
 An FU can implement a small configured software graph. The selected actor
@@ -221,6 +228,14 @@ general-purpose Fabric. Reusing the owner projections keeps the candidate set
 unchanged while reserving match-row attempts for complete prospective
 persistent payloads whose remaining joint topology and capacity checks can
 meaningfully pass or fail.
+
+The builtin Tech row enumerator retains one removable cursor per active family.
+This is search state, not a Mapping fact: it exists only for the invocation and
+is discarded after row-domain derivation. Retaining the cursor is necessary
+because replaying a family prefix would make the same semantic work budget have
+different wall cost after another family exhausts. Memory internal-edge choices
+use a constraint-carrying partial assignment for the same reason; invalid
+connection ownership never becomes a powerset leaf.
 
 Global CP-SAT was rejected as the primary TechMapping search. The row problem
 already has a small direct exact-cover model, while placing it in the same
@@ -1195,9 +1210,12 @@ Execution binding and channel routing must be solved together because a
 software schedule may or may not permit FIFO streaming. Runtime only admits
 and authorizes the immutable selected resources; it cannot remap them.
 
-Hierarchical System PnR reuses immutable SpatialMappings. A flattened global
-mode remains a search option, not a different artifact authority. Both produce
-the same SystemMapping schema and face the same final verifier.
+System PnR reuses immutable SpatialMappings. Reopening Spatial decisions inside
+System search was rejected because the old flat domain had no executable
+provider and made publication an ambiguous commit boundary. Cross-layer search
+instead requests additional immutable upstream candidates or uses
+invocation-local typed feedback. The one SystemMapping schema and final
+verifier remain unchanged.
 
 ## Why System Service Uses Reuse Dataflow Actor Transitions
 
@@ -1248,10 +1266,10 @@ chosen target in the search-domain view would duplicate the candidate and
 eventually the SystemMapping.
 
 The immutable `H` view therefore owns only a complete partition into typed
-atoms, legal hierarchical targets or flat reopen domains for each atom, and
+atoms, legal immutable SpatialMapping targets for each graph atom, and
 factorized compatibility relations over existing software subjects and exact
 Fabric endpoints. CandidateState still selects `B_thread`, an immutable
-`B_graph` target or flat Spatial decisions, and service targets. Those choices
+`B_graph` target, and service targets. Those choices
 mechanically derive the endpoint used to query the relation. Finalization
 merges equal-target atoms into the existing persistent binding relation. This
 permits block, cyclic, affinity, and stable-key grouping without a new
@@ -1289,14 +1307,10 @@ future contract needs service restrictions that vary independently by
 execution partition, the MappingConstraintSet projection catalog must first
 own that distinction explicitly.
 
-Using the persistent `ExecutionContextKey` instead would require the complete
-immutable SpatialMapping identity. That identity exists for hierarchical
-imports but not while flat System search is still changing Spatial decisions.
-Creating a temporary identity would add rekeying and invalidation authority;
-freezing SpatialMapping first would remove joint flat search. `H` 3.0 needs
-neither. Flat candidates derive their bound endpoints directly, and only
-successful finalization creates the ordinary `ExecutionContextKey` used by
-SystemMapping and Deployment.
+The persistent `ExecutionContextKey` requires the complete immutable
+SpatialMapping identity. `H` 4.0 has that identity because every graph target
+is an independently finalized hierarchical import. This avoids temporary
+identity, rekeying, invalidation, and a second endpoint derivation path.
 
 Keeping partition shape target-free also preserves software ownership. A
 search policy may choose how coarsely to group a logical may-domain, but it
@@ -1322,11 +1336,9 @@ This avoids a new producer-plus-sinks context tuple, which would copy the sink
 set and `source_map`, and avoids storing endpoints beside the RouteTree, which
 would duplicate Fabric and route facts.
 
-Mutable flat PnR uses its existing decision atoms until immutable
-SpatialMapping identities exist. Finalization replaces those native indices
-with the ordinary anchor/context selection rows. The same rule therefore
-supports hierarchical and flat search without provisional identity, rekeying,
-or a second plan-selection authority.
+Hierarchical PnR derives the ordinary anchor/context selection rows directly
+from immutable SpatialMapping identities. No provisional identity, rekeying,
+or second plan-selection authority is required.
 
 The route itself must cover the applicable terminal-owner set, not the static
 terminal catalog. Consider a producer domain `{0, 1}` and a consumer point

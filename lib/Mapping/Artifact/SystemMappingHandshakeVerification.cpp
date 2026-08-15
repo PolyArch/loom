@@ -192,6 +192,170 @@ projectOccurrenceBoundaryArcs(
   return result;
 }
 
+struct SystemSwitchRouteSignature final {
+  ::loom::fabric::FabricOrdinal input = 0;
+  std::vector<::loom::fabric::FabricOrdinal> outputs;
+  std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversals;
+};
+
+struct SystemSwitchRouteDemand final {
+  ::loom::fabric::FabricSwitchOccurrenceRef occurrence;
+  std::vector<SystemSwitchRouteSignature> signatures;
+};
+
+bool disjointOutputs(llvm::ArrayRef<::loom::fabric::FabricOrdinal> lhs,
+                     llvm::ArrayRef<::loom::fabric::FabricOrdinal> rhs) {
+  std::size_t left = 0;
+  std::size_t right = 0;
+  while (left != lhs.size() && right != rhs.size()) {
+    if (lhs[left] == rhs[right])
+      return false;
+    if (lhs[left] < rhs[right])
+      ++left;
+    else
+      ++right;
+  }
+  return true;
+}
+
+bool compatibleSignatures(const SystemSwitchRouteSignature &lhs,
+                          const SystemSwitchRouteSignature &rhs) {
+  return lhs.input == rhs.input ? lhs.outputs == rhs.outputs
+                                : disjointOutputs(lhs.outputs, rhs.outputs);
+}
+
+bool compatibleDemand(const SystemSwitchRouteDemand &demand,
+                      llvm::ArrayRef<const SystemSwitchRouteDemand *> row) {
+  return llvm::all_of(row, [&](const auto *existing) {
+    return llvm::all_of(demand.signatures, [&](const auto &candidate) {
+      return llvm::all_of(existing->signatures, [&](const auto &resident) {
+        return compatibleSignatures(candidate, resident);
+      });
+    });
+  });
+}
+
+llvm::Error appendSystemHandshakeSelection(
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<SystemServiceRealizationView> services,
+    ::loom::fabric::FabricHandshakeSelection &selection) {
+  std::map<std::string, std::vector<SystemSwitchRouteDemand>> demands;
+  for (const auto &service : services)
+    for (const auto &plan : service.plans)
+      for (const auto &leg : plan.transferLegs) {
+        std::map<std::string, SystemSwitchRouteDemand> routeDemands;
+        for (const auto &node : leg.nodes) {
+          const auto *crosspoint =
+              std::get_if<::loom::fabric::FabricSwitchTraversalPayload>(
+                  &node.incomingTraversal.payload);
+          if (!crosspoint ||
+              fabric.switchSchedule(crosspoint->owner) !=
+                  ::fabric::Schedule::Temporal) {
+            selection.traversals.push_back(node.incomingTraversal);
+            continue;
+          }
+          const auto occurrenceBytes =
+              ::loom::fabric::canonicalFabricBytes(crosspoint->owner);
+          const std::string occurrenceKey(
+              reinterpret_cast<const char *>(occurrenceBytes.data()),
+              occurrenceBytes.size());
+          auto [position, inserted] = routeDemands.try_emplace(
+              occurrenceKey,
+              SystemSwitchRouteDemand{crosspoint->owner, {}});
+          auto signature = llvm::find_if(
+              position->second.signatures, [&](const auto &candidate) {
+                return candidate.input == crosspoint->input;
+              });
+          if (signature == position->second.signatures.end()) {
+            position->second.signatures.push_back(
+                SystemSwitchRouteSignature{crosspoint->input, {}, {}});
+            signature = std::prev(position->second.signatures.end());
+          }
+          signature->outputs.push_back(crosspoint->output);
+          signature->traversals.push_back(node.incomingTraversal);
+        }
+        for (auto &[occurrenceKey, demand] : routeDemands) {
+          for (auto &signature : demand.signatures) {
+            llvm::sort(signature.outputs);
+            signature.outputs.erase(
+                std::unique(signature.outputs.begin(), signature.outputs.end()),
+                signature.outputs.end());
+            llvm::sort(signature.traversals, [](const auto &lhs,
+                                                const auto &rhs) {
+              return ::loom::fabric::canonicalFabricBytes(lhs) <
+                     ::loom::fabric::canonicalFabricBytes(rhs);
+            });
+            signature.traversals.erase(
+                std::unique(signature.traversals.begin(),
+                            signature.traversals.end()),
+                signature.traversals.end());
+          }
+          llvm::sort(demand.signatures,
+                     [](const auto &lhs, const auto &rhs) {
+                       return lhs.input < rhs.input;
+                     });
+          for (std::size_t left = 0; left != demand.signatures.size(); ++left)
+            for (std::size_t right = left + 1;
+                 right != demand.signatures.size(); ++right)
+              if (!compatibleSignatures(demand.signatures[left],
+                                        demand.signatures[right]))
+                return invalid("one System route requires incompatible "
+                               "Temporal switch crosspoints");
+          demands[occurrenceKey].push_back(std::move(demand));
+        }
+      }
+
+  for (auto &[occurrenceKey, occurrenceDemands] : demands) {
+    (void)occurrenceKey;
+    std::vector<std::vector<const SystemSwitchRouteDemand *>> rows;
+    for (const SystemSwitchRouteDemand &demand : occurrenceDemands) {
+      auto row = llvm::find_if(rows, [&](const auto &candidate) {
+        return compatibleDemand(demand, candidate);
+      });
+      if (row == rows.end()) {
+        rows.emplace_back();
+        row = std::prev(rows.end());
+      }
+      row->push_back(&demand);
+    }
+    if (!occurrenceDemands.empty() &&
+        rows.size() >
+            fabric.switchRouteTableSize(occurrenceDemands.front().occurrence))
+      return invalid("System Temporal switch packed rows exceed resident "
+                     "capacity");
+    for (const auto &[rowOrdinal, row] : llvm::enumerate(rows)) {
+      std::map<::loom::fabric::FabricOrdinal,
+               std::vector<::loom::fabric::FabricPhysicalTraversalRef>>
+          traversalsByInput;
+      for (const SystemSwitchRouteDemand *demand : row)
+        for (const SystemSwitchRouteSignature &signature : demand->signatures)
+          traversalsByInput[signature.input].insert(
+              traversalsByInput[signature.input].end(),
+              signature.traversals.begin(), signature.traversals.end());
+      for (auto &[input, traversals] : traversalsByInput) {
+        llvm::sort(traversals, [](const auto &lhs, const auto &rhs) {
+          return ::loom::fabric::canonicalFabricBytes(lhs) <
+                 ::loom::fabric::canonicalFabricBytes(rhs);
+        });
+        traversals.erase(std::unique(traversals.begin(), traversals.end()),
+                         traversals.end());
+        selection.switchActivations.push_back(
+            {{occurrenceDemands.front().occurrence,
+              static_cast<::loom::fabric::FabricOrdinal>(rowOrdinal), input},
+             std::move(traversals)});
+      }
+    }
+  }
+  llvm::sort(selection.traversals, [](const auto &lhs, const auto &rhs) {
+    return ::loom::fabric::canonicalFabricBytes(lhs) <
+           ::loom::fabric::canonicalFabricBytes(rhs);
+  });
+  selection.traversals.erase(
+      std::unique(selection.traversals.begin(), selection.traversals.end()),
+      selection.traversals.end());
+  return llvm::Error::success();
+}
+
 llvm::Error
 verifyAcyclic(llvm::ArrayRef<::loom::fabric::HandshakeDependencyArc> arcs) {
   std::map<std::string, std::size_t> nodes;
@@ -244,19 +408,9 @@ llvm::Error verifySystemMappingHandshakeClosure(
     llvm::ArrayRef<SystemServiceRealizationView> services,
     const ArtifactStore &store) {
   ::loom::fabric::FabricHandshakeSelection systemSelection;
-  for (const auto &service : services)
-    for (const auto &plan : service.plans)
-      for (const auto &leg : plan.transferLegs)
-        for (const auto &node : leg.nodes)
-          systemSelection.traversals.push_back(node.incomingTraversal);
-  llvm::sort(systemSelection.traversals, [](const auto &lhs, const auto &rhs) {
-    return ::loom::fabric::canonicalFabricBytes(lhs) <
-           ::loom::fabric::canonicalFabricBytes(rhs);
-  });
-  systemSelection.traversals.erase(
-      std::unique(systemSelection.traversals.begin(),
-                  systemSelection.traversals.end()),
-      systemSelection.traversals.end());
+  if (llvm::Error error = appendSystemHandshakeSelection(
+          fabric.artifact(), services, systemSelection))
+    return error;
 
   std::vector<::loom::fabric::HandshakeSignalRef> systemTerminals;
   std::set<std::string> terminalKeys;

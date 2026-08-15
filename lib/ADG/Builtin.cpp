@@ -305,7 +305,6 @@ struct MemoryMeshAttachments final {
 
 llvm::Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSpatialCoreImpl(DesignBuilder &design,
-                             const BuiltinTargetDescriptor &descriptor,
                              const BuiltinTargetScale &scale) {
   if (!isValidBuiltinTargetScale(scale))
     return invalid("all builtin target scale values must be positive");
@@ -328,9 +327,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   std::vector<PortType> moduleInputs(scale.gatewayCount, *bits128);
   moduleInputs.push_back(*managerMemory);
   std::vector<PortType> moduleOutputTypes(scale.gatewayCount, *bits128);
-  auto spatial =
-      design.createSpatialCore((descriptor.name + "-spatial-core").str(),
-                               moduleInputs, moduleOutputTypes);
+  auto spatial = design.createSpatialCore("builtin-spatial-core", moduleInputs,
+                                          moduleOutputTypes);
   if (!spatial)
     return spatial.takeError();
 
@@ -683,13 +681,11 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
 }
 
 llvm::Expected<SystemBuilder>
-expandBuiltinSystemImpl(DesignBuilder &design,
-                        const BuiltinTargetDescriptor &descriptor,
-                        const BuiltinTargetScale &scale,
+expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
                         const loom::fabric::FinalizedFabricRoot &module) {
   if (!isValidBuiltinTargetScale(scale))
     return invalid("all builtin target scale values must be positive");
-  auto system = design.createSystem((descriptor.name + "-system").str());
+  auto system = design.createSystem("builtin-system");
   if (!system)
     return system.takeError();
   auto imported = system->importSpatialCore(module);
@@ -1003,14 +999,13 @@ llvm::Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset) {
   const BuiltinTargetDescriptor &descriptor =
       getBuiltinTargetDescriptor(preset);
-  return expandBuiltinSpatialCoreImpl(design, descriptor, descriptor.scale);
+  return expandBuiltinSpatialCoreImpl(design, descriptor.scale);
 }
 
 llvm::Expected<BuiltinSpatialCoreExpansion>
-expandBuiltinSpatialCore(DesignBuilder &design, BuiltinTargetPreset preset,
+expandBuiltinSpatialCore(DesignBuilder &design,
                          const BuiltinTargetScale &scale) {
-  return expandBuiltinSpatialCoreImpl(
-      design, getBuiltinTargetDescriptor(preset), scale);
+  return expandBuiltinSpatialCoreImpl(design, scale);
 }
 
 llvm::Expected<SystemBuilder>
@@ -1018,30 +1013,26 @@ expandBuiltinSystem(DesignBuilder &design, BuiltinTargetPreset preset,
                     const loom::fabric::FinalizedFabricRoot &spatialCore) {
   const BuiltinTargetDescriptor &descriptor =
       getBuiltinTargetDescriptor(preset);
-  return expandBuiltinSystemImpl(design, descriptor, descriptor.scale,
-                                 spatialCore);
+  return expandBuiltinSystemImpl(design, descriptor.scale, spatialCore);
 }
 
 llvm::Expected<SystemBuilder>
-expandBuiltinSystem(DesignBuilder &design, BuiltinTargetPreset preset,
-                    const BuiltinTargetScale &scale,
+expandBuiltinSystem(DesignBuilder &design, const BuiltinTargetScale &scale,
                     const loom::fabric::FinalizedFabricRoot &spatialCore) {
-  return expandBuiltinSystemImpl(design, getBuiltinTargetDescriptor(preset),
-                                 scale, spatialCore);
+  return expandBuiltinSystemImpl(design, scale, spatialCore);
 }
 
 llvm::Expected<FinalizedFabricDesign>
 buildBuiltinTarget(const loom::ArtifactStore &store,
                    BuiltinTargetPreset preset) {
-  return buildBuiltinTarget(store, preset,
-                            getBuiltinTargetDescriptor(preset).scale);
+  return buildBuiltinTarget(store, getBuiltinTargetDescriptor(preset).scale);
 }
 
 llvm::Expected<FinalizedFabricDesign>
-buildBuiltinTarget(const loom::ArtifactStore &store, BuiltinTargetPreset preset,
+buildBuiltinTarget(const loom::ArtifactStore &store,
                    const BuiltinTargetScale &scale) {
   DesignBuilder moduleDesign(store);
-  auto moduleExpansion = expandBuiltinSpatialCore(moduleDesign, preset, scale);
+  auto moduleExpansion = expandBuiltinSpatialCore(moduleDesign, scale);
   if (!moduleExpansion)
     return moduleExpansion.takeError();
   if (llvm::Error error =
@@ -1054,8 +1045,8 @@ buildBuiltinTarget(const loom::ArtifactStore &store, BuiltinTargetPreset preset,
     return invalid("builtin expansion did not finalize one SpatialCore");
 
   DesignBuilder systemDesign(store);
-  auto system = expandBuiltinSystem(systemDesign, preset, scale,
-                                    modules->roots().front());
+  auto system =
+      expandBuiltinSystem(systemDesign, scale, modules->roots().front());
   if (!system)
     return system.takeError();
   if (llvm::Error error = system->close())
@@ -1072,7 +1063,7 @@ buildBuiltinTarget(const loom::ArtifactStore &store,
   if (!descriptor)
     return invalid("resolved hardware target is not a registered builtin "
                    "template");
-  return buildBuiltinTarget(store, descriptor->preset, scale);
+  return buildBuiltinTarget(store, scale);
 }
 
 } // namespace loom::adg

@@ -81,7 +81,7 @@ derive HardwareImplementation -> evaluate that exact implementation
 ## Metrics
 
 Metric kinds, dimensions, canonical units, scopes, and observation forms are
-owned by Evaluation registry 2.1. The initial FPA prediction view covers
+owned by Evaluation registry 3.0. The initial FPA prediction view covers
 `LimitingClockFrequency`, `TotalArea`, `DynamicPower`, and `LeakagePower`.
 `MaximumVoltageDrop` is an ordinary shared physical MetricKind but is outside
 that initial parameter-bundle and calibration contract. Critical-path delay,

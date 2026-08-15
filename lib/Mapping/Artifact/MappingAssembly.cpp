@@ -476,6 +476,13 @@ void canonicalizeSpatial(::mapping::SpatialOp root) {
   });
 
   llvm::DenseMap<Attribute, std::uint64_t> routeNodeRenumbering;
+  SmallVector<::mapping::RegisterFifoTransferOp> localTransfers;
+  for (auto transfer : body.getOps<::mapping::RegisterFifoTransferOp>())
+    localTransfers.push_back(transfer);
+  llvm::sort(localTransfers, [](auto left, auto right) {
+    return recordKey(left.getLogicalNet().getRecord()) <
+           recordKey(right.getLogicalNet().getRecord());
+  });
   SmallVector<::mapping::RouteTreeOp> routes;
   for (auto route : body.getOps<::mapping::RouteTreeOp>()) {
     canonicalizeRoute(route, routeNodeRenumbering);
@@ -516,6 +523,8 @@ void canonicalizeSpatial(::mapping::SpatialOp root) {
     binding->moveBefore(&body, body.end());
   for (auto binding : memoryBindings)
     binding->moveBefore(&body, body.end());
+  for (auto transfer : localTransfers)
+    transfer->moveBefore(&body, body.end());
   for (auto route : routes)
     route->moveBefore(&body, body.end());
   for (auto use : uses)

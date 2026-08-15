@@ -135,7 +135,7 @@ llvm::Error validateDirectTraversalOwners(
     if (!traversal)
       return invalid("System route names an absent Fabric traversal");
     for (const auto &use : traversal->impliedUses) {
-      if (llvm::Error error = validateDirectOwner(use.activationGroup.owner))
+      if (llvm::Error error = validateDirectOwner(use.requesterGroup.owner))
         return error;
       if (llvm::Error error = validateDirectOwner(use.pattern.owner.catalog()))
         return error;
@@ -154,7 +154,7 @@ llvm::Error validateInternalTraversalOwners(
       return invalid("imported Spatial route names an absent traversal");
     for (const auto &use : traversal->impliedUses) {
       if (llvm::Error error =
-              validateInternalOwner(spatialCore, use.activationGroup.owner))
+              validateInternalOwner(spatialCore, use.requesterGroup.owner))
         return error;
       if (llvm::Error error =
               validateInternalOwner(spatialCore, use.pattern.owner.catalog()))
@@ -220,7 +220,8 @@ qualifySystemResourceOwner(
                                                        std::move(*target)});
 }
 
-llvm::Error verifySystemMappingCapacity(
+llvm::Expected<std::vector<MappingResourceProgressUse>>
+verifySystemMappingCapacity(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemExecutionBindingView &execution,
@@ -333,15 +334,15 @@ llvm::Error verifySystemMappingCapacity(
     }
   }
 
-  auto overuse = deriveResourceCapacityOveruse(namespaces, uses, routes);
-  if (!overuse)
-    return overuse.takeError();
-  if (overuse->total == 0)
-    return llvm::Error::success();
-  if (!overuse->firstWitness ||
-      overuse->firstWitness->namespaceOrdinal >= metadata.size())
+  auto demand = deriveResourcePhysicalDemand(namespaces, uses, routes);
+  if (!demand)
+    return demand.takeError();
+  if (demand->capacity.total == 0)
+    return std::move(demand->progressUses);
+  if (!demand->capacity.firstWitness ||
+      demand->capacity.firstWitness->namespaceOrdinal >= metadata.size())
     return invalid("CapacityOveruse has no canonical physical witness");
-  const auto &witness = *overuse->firstWitness;
+  const auto &witness = *demand->capacity.firstWitness;
   std::string owner;
   if (metadata[witness.namespaceOrdinal].spatialCore) {
     auto target = projectModuleOwner(witness.owner);

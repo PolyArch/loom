@@ -133,6 +133,12 @@ do not select a workload configuration. Inner `fabric.op.hw_params` likewise
 describes parameterized hardware capability; selected semantic values and
 raw `sw_configs` are derived only after Mapping.
 
+`pe_enable`, `instruction_mem`, and `per_fu_sw_configs` are not `fabric.pe`
+attributes. They name fields of the configured view below, not authoring
+syntax. A Fabric parser/verifier rejects them on either PE schedule rather
+than accepting or canonicalizing selected workload state into a hardware
+template.
+
 The `K = numInputs()` and `L = numOutputs()` shape parameters are
 read from the op signature (anonymous form) or the `function_type`
 attribute (named form). Both must be `>= 1`.
@@ -191,13 +197,14 @@ The physical enable bit and inactive encoding belong only to
 ConfigurationABI. `Active` must contain at least one active instruction row;
 an all-unused table canonicalizes to `Disabled`.
 
-Fabric owns
-their meanings and legal domains; the finalizer derives their values from the exact
-TechMapping realization, SpatialMapping's concrete FU occurrence and
-`InstructionContextRef`, and any Fabric-declared semantic-preserving physical
-refinement. These fields are not an independent capability or Mapping
-authority. `ConfigurationABI` alone owns their bit encoding, packing, padding,
-and programming representation.
+Fabric owns their meanings, legal domains, semantic carrier width, field
+order, and canonical zero and byte-padding rules. The finalizer derives their
+values from the exact TechMapping realization, SpatialMapping's concrete FU
+occurrence and `InstructionContextRef`, and any Fabric-declared semantic-
+preserving physical refinement. These fields are not an independent capability
+or Mapping authority. `ConfigurationABI` alone owns placement of that carrier
+in a physical image, physical word and address packing, any transport- or
+device-level padding, and the programming protocol.
 
 The configured view is present only after finalization; canonical hardware-only
 Fabric contains none of these selected values. When `fu_config_mode` is
@@ -286,8 +293,10 @@ Validation rules for each active entry are:
 * Every FU input and output has exactly one selector variant.
 
 The normalized configured view omits fields that are irrelevant under the
-selected record. Fixed-capacity table layout, field widths, padding, and raw
-instruction words are exclusively `ConfigurationABI` concerns.
+selected record. Fabric owns the fixed-capacity semantic table layout, field
+widths, canonical zero filling, and unused high bits of its final semantic
+byte. `ConfigurationABI` owns only the later physical instruction words,
+addresses, placement, and physical payload padding.
 
 ## Reg FIFO semantics
 
@@ -307,6 +316,48 @@ selects an explicit temporal-PE register-file relation from the producer's
 consumer's `operand_sel`. The relation must preserve the edge's type, tag,
 order, capacity, and backpressure obligations. Sharing a PE or having a free
 register FIFO does not absorb an edge.
+
+The initial local-transfer domain is deliberately narrow. It admits exactly a
+single-consumer residual edge whose producer and consumer are bound to FU
+occurrences under the same Temporal PE, whose payload and tag widths match the
+FIFO exactly, and whose ordering contract is ordinary FIFO order. A multicast
+net, a net with both local and external consumers, or a width, tag, ordering,
+or lifetime mismatch remains an external residual net. For every admitted
+edge, SpatialMapping selects one closed disposition:
+
+```text
+TemporalPeEdgeDisposition =
+    RegisterFifo {
+      write_traversal,
+      register_fifo,
+      read_traversal,
+      resource_uses
+    }
+  | ExternalRoute
+```
+
+The local disposition names both exact FU-side traversals and the one FIFO;
+configuration projection derives the producer `ResultSelection` and consumer
+`OperandSelection` from those selected facts. A legal local disposition is the
+preferred search choice. Exhausting compatible FIFO capacity removes only that
+choice and leaves `ExternalRoute` available; preference is not feasibility.
+
+Let `O` be FIFO occupancy at the start of a PE clock cycle, `R` a successful
+read, and `W` a successful write. A read is eligible only when `O > 0` and its
+selected operand tag equals the cycle-start head tag. A write stores the
+producer result together with the configured result tag. The next occupancy is
+`O - R + W`, and a token written in the cycle is never eligible for a read in
+that cycle.
+
+With two ports, read and write service are independent. A full FIFO may accept
+a write exactly when a read also commits, so `write_ready = !full || R`; this
+is full-queue replacement, not bypass. Read and write requesters use separate
+round-robin cursors in canonical requester order, and each cursor advances only
+on its own successful grant. With one port, at most one operation commits.
+An eligible read has priority over writes; otherwise one eligible writer is
+selected by the write cursor. A full single-port FIFO therefore cannot replace
+its head in one cycle. An empty FIFO cannot satisfy a read from a same-cycle
+write under either port organization.
 
 ## Operand buffer modes
 
@@ -372,6 +423,29 @@ only after all of its required logical heads and finite output-delivery
 capacity are available. Shared-pool exhaustion and route backpressure remain
 real dependencies in the final progress and deadlock closure.
 
+One incoming boundary token may match several active logical operand queues.
+For match vector `match[i]`, the PE performs one atomic fanout rather than a
+sequence of independent enqueues:
+
+```text
+any_match = OR(match[i])
+ready     = any_match AND AND(!match[i] OR queue_ready[i])
+fire      = input_valid AND ready
+enqueue[i] = fire AND match[i]
+```
+
+`queue_ready[i]` is derived as one grant-aware bundle. For every shared
+allocation unit, a configured match group may contain at most one logical
+queue because version 1 declares one enqueue service slot. Mapping and PnR
+reject a group that selects two queues in the same unit; this is a legality
+failure, not an arbitration opportunity. Matches in distinct allocation units
+may fan out atomically when every selected unit has capacity after its
+cycle-start dequeue and grants its one required enqueue service. No matching
+queue mutates unless the common `fire` occurs; a token cannot be delivered to
+a ready subset, dropped for a blocked subset, or enqueued again on a later
+retry. No match backpressures the input and is an invalid configured routing
+situation, not an implicit discard.
+
 The temporal-PE schema uniquely owns the typed `ResourceState` values for
 resident contexts, logical operand queues, register FIFOs, and shared dispatch
 capacity; their canonical initial states; capacity dimensions;
@@ -383,6 +457,14 @@ ports. Mapping binds typed workload values and selected exact refinements but
 cannot split that use or define another scheduler. Queue contents, occupancy,
 head/tail positions, grant cursors, and in-flight transitions are nonpersistent
 execution state.
+
+The CGRA execution-plan importer consumes the same projected logical queue,
+allocation-unit ordinal, and entry capacity. Its runtime reserves every unit
+in one ingress match group before requesting the selected enqueue actions,
+commits all matching queue tails together, and applies queue-head removals from
+the committed Canonical actor handshake case. Software channel storage is only
+the dense token representation of those logical queues; it cannot impose a
+one-token default or bypass shared-unit occupancy and Fabric grant policy.
 
 For operand buffering, the finalizer derives one exact resource contract from
 the two hardware parameters:
@@ -463,14 +545,49 @@ depth, extra port, banking scheme, reservation, or virtual channel is
 forbidden. A future multiported or reserved organization requires an explicit
 typed Fabric parameter or refinement.
 
+### Context-evaluation service
+
+Temporal instruction rows are evaluated through an explicit Fabric-owned
+service. Its closed candidate domain is the context-major sequence of
+`(InstructionContextRef, FU occurrence)` pairs. `all_fu_share` has one service
+allocation unit for the PE; the other operand-buffer organizations have one
+independently advancing unit per FU. Each candidate has one UsePattern that
+claims its unit from `ContextEvaluationGrant` until the next PE clock boundary
+and has no resource transition or actor commit.
+
+Every unit filters the canonical candidate sequence to active instruction rows
+that select that FU and applies the ResourceContract's `RoundRobin` policy.
+The reset candidate and advance order are therefore Fabric facts. A selected
+candidate advances the cursor at the clock boundary even when no actor in that
+resident realization is ready. Such an idle candidate can consume only its
+fair evaluation slot; it cannot retain a grant or prevent the next active
+candidate from being evaluated. Inactive rows do not enter the filtered cycle.
+
+The evaluation grant only permits the selected context to drive its FU during
+that PE cycle. Canonical Dataflow actors remain independent transition units,
+and their exact operation ResourceContracts still decide readiness, capacity,
+arbitration, commit, and retirement. Several ready actors in one selected
+realization may therefore request their true physical operations, while an
+evaluation grant by itself mutates no Dataflow or queue state. Mapping derives
+the active filtered service domains from compute bindings, and the cycle
+simulator and RTL consume the same candidate order, allocation units, reset,
+and round-robin policy.
+
 ## Handshake Dependency Projection
 
 Every selected ingress boundary-to-FU traversal terminates at a logical
 operand queue. Because dequeue eligibility observes only the cycle-start queue
-head and an enqueue commits at the PE clock boundary, that traversal contributes
-neither a boundary-input-valid to FU-input-valid dependency nor an
-FU-input-ready to boundary-input-ready dependency. The operand queue is the
-stateful break in both directions; selector configuration does not bypass it.
+head and an enqueue commits at the PE clock boundary, that traversal does not
+contribute a boundary-input-valid to FU-input-valid dependency. A full queue,
+however, may accept an enqueue by committing a same-cycle dequeue, so boundary
+input ready depends combinationally on the selected queue's FU-side dequeue
+ready. The Fabric handshake projection therefore contributes exactly the
+backward FU-input-ready to boundary-input-ready arc and no forward valid arc.
+The queue remains a typed durable progress boundary for its exact sink
+attachment because an accepted token is durably retained independently of a
+later FU firing. Mapping progress analysis consumes that Fabric projection
+directly; it must not require an additional external
+`fabric.fifo[buffered]` after the PE ingress.
 
 A selected FU-to-boundary result traversal is transparent. Its result-valid
 and ready dependencies pass through the PE selector, while the selected
@@ -484,6 +601,16 @@ TechMapping selects the FU structural/capability template and exact ordered
 actor/op/port/FU-boundary correspondence. SpatialMapping selects a concrete FU
 occurrence and `InstructionContextRef` with the same parent temporal PE, plus
 PE ingress/egress routing and semantic-preserving physical refinements.
+
+The Spatial physical-demand functions defined by `spec-pnr.md` mechanically
+derive active logical operand queues, their atomic ingress match groups,
+eligible register-FIFO local dispositions, and residual external nets from
+those exact owners. PnR selects only alternatives admitted by those functions.
+Strict Mapping verification and configured-hardware projection rebuild the
+same demands, and simulator plan import preserves their exact result. Temporal
+PE RTL implements this Fabric-owned queue and RegFIFO mechanism from configured
+fields; it does not call Mapping. No layer may infer a local transfer or queue
+match from PE co-location alone.
 
 The context reference is only the resident configuration/runtime-state
 namespace. `instruction_mem[i]` is a Fabric-defined configuration and dispatch
@@ -545,8 +672,9 @@ other op kind is permitted.
 Anchor tests cover `per_instruction` depths 1 and 2 producing distinct Fabric
 identity and backpressure, rejection of an absent or nonpositive
 `operand_buffer_size` in every mode, canonical allocation-unit derivation for
-all three modes, one enqueue's atomic short service claim plus durable append
-transition, simultaneous dequeue/enqueue without same-cycle bypass, and
+all three modes, match-group admission against one enqueue service per unit,
+one enqueue's atomic short service claim plus durable append transition,
+simultaneous dequeue/enqueue without same-cycle bypass, and
 deterministic round-robin contention between two logical queues. Boundary tests
 also cover the shared quiet, warning, hard-limit, and overflow cases for both
 anonymous and named temporal PEs. Tests do not construct a queue-count, depth,

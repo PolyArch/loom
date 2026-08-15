@@ -305,7 +305,7 @@ Several input roles in one Temporal row may select the same tagged ingress
 only because the Fabric-owned row architecture provides one independent
 matcher and ordered queue per role. Their may-overlap interpretations require
 distinct tags. Output role endpoints within one row remain injective under
-`loom.fabric 4.1` and Mapping 5.0; Mapping cannot synthesize an unmodeled
+`loom.fabric 5.0` and Mapping 6.0; Mapping cannot synthesize an unmodeled
 result serializer.
 
 Every addressed atomic operation and fence resolves through its selected
@@ -457,13 +457,11 @@ is final storage.
 
 The attachment-bound endpoint is mechanically derived from the applicable
 execution-binding result, selected Module-local manager path, and Fabric. An
-immutable SpatialMapping supplies that path in hierarchical search and a
-current Spatial candidate supplies it in flat search. The selected AccCore
-occurrence qualifies the corresponding Module boundary and therefore fixes the
-one Fabric attachment row. This projection exists before a flat candidate has
-a SpatialMapping identity. Reusing one finalized SpatialMapping on another
-AccCore occurrence may reach another System endpoint with a different
-capability closure.
+immutable SpatialMapping supplies that path in the current hierarchical search.
+The selected AccCore occurrence qualifies the corresponding Module boundary and
+therefore fixes the one Fabric attachment row. Reusing one finalized
+SpatialMapping on another AccCore occurrence may reach another System endpoint
+with a different capability closure.
 
 System PnR domain construction is factorized by the exact bound endpoint; it
 neither unions capabilities across endpoints nor requires every occurrence to

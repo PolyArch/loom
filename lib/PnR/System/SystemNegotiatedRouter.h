@@ -23,22 +23,36 @@ enum class SystemRoutingClosureRequirement : std::uint8_t {
   Strict,
 };
 
+/// Exact fixed-terminal routing evidence that can reopen occurrence-level
+/// graph binding choices. Service legs remain the router-owned subject; a
+/// caller maps them to its own mutable decision domain.
+struct SystemRoutingReopenWitness final {
+  PnrIndex capacityCell = getInvalidPnrIndex();
+  std::vector<PnrIndex> serviceLegs;
+};
+
 class SystemRoutingClosureFailure final
     : public llvm::ErrorInfo<SystemRoutingClosureFailure> {
 public:
   static char ID;
 
-  SystemRoutingClosureFailure(SystemRoutingClosureFailureKind kind,
-                              std::string message)
-      : kind_(kind), message_(std::move(message)) {}
+  SystemRoutingClosureFailure(
+      SystemRoutingClosureFailureKind kind, std::string message,
+      std::optional<SystemRoutingReopenWitness> reopenWitness = std::nullopt)
+      : kind_(kind), message_(std::move(message)),
+        reopenWitness_(std::move(reopenWitness)) {}
 
   SystemRoutingClosureFailureKind kind() const { return kind_; }
+  const std::optional<SystemRoutingReopenWitness> &reopenWitness() const {
+    return reopenWitness_;
+  }
   void log(llvm::raw_ostream &stream) const override;
   std::error_code convertToErrorCode() const override;
 
 private:
   SystemRoutingClosureFailureKind kind_;
   std::string message_;
+  std::optional<SystemRoutingReopenWitness> reopenWitness_;
 };
 
 llvm::Expected<CanonicalSystemServiceRoutes> negotiateSystemServiceRoutes(
@@ -55,7 +69,8 @@ llvm::Expected<CanonicalSystemServiceRoutes> negotiateSystemServiceRoutes(
         std::nullopt,
     std::optional<SystemServiceRouteRepairRegion> repairRegion = std::nullopt,
     SystemRoutingClosureRequirement closureRequirement =
-        SystemRoutingClosureRequirement::PolicyAdmittedTemporary);
+        SystemRoutingClosureRequirement::PolicyAdmittedTemporary,
+    std::optional<SystemRoutingReopenWitness> *reopenWitness = nullptr);
 
 } // namespace loom::pnr::detail
 

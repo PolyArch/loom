@@ -32,6 +32,9 @@ public:
   llvm::Error rebuild(const SpatialCandidateState &candidate);
 
   SpatialActionProposalDomain view() const;
+  llvm::Expected<std::optional<SpatialMappingAction>>
+  propose(const ResolvedPnrActionProposalPolicy &policy,
+          DeterministicPnrRandomStream &proposalStream) const;
   std::uint64_t movableDecisionCount() const { return movableDecisionCount_; }
   std::size_t retainedStorageBytes() const;
 

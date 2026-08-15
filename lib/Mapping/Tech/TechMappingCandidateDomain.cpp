@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <iterator>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -19,15 +21,22 @@ llvm::Expected<bool>
 TechMatchRowCollector::beginSeed(std::vector<std::uint8_t> key) {
   if (activeSeedKey_)
     return invalid("previous match-row seed has no typed outcome");
+  if (previousSeedKey_ && key < *previousSeedKey_)
+    return invalid("match-row seeds are not in canonical key order");
+  previousSeedKey_ = key;
+  activeSeedKey_ = std::move(key);
+  if (executionControl_.stopRequested()) {
+    activeSeedKey_.reset();
+    interrupted_ = true;
+    return false;
+  }
   if (atLimit()) {
+    activeSeedKey_.reset();
     truncated_ = true;
     return false;
   }
-  if (previousSeedKey_ && key < *previousSeedKey_)
-    return invalid("match-row seeds are not in canonical key order");
   ++accounting_.matchRowAttempts;
-  previousSeedKey_ = key;
-  activeSeedKey_ = std::move(key);
+  ++accounting_.matchRowFirstVisits;
   return true;
 }
 
@@ -57,6 +66,7 @@ llvm::Error TechMatchRowCollector::rejectCanonicalSeedRange(
   const std::uint64_t available = limit_ - accounting_.matchRowAttempts;
   const std::uint64_t charged = std::min(count, available);
   accounting_.matchRowAttempts += charged;
+  accounting_.matchRowFirstVisits += charged;
   rejectionCounts_[static_cast<std::size_t>(reason)] += charged;
   if (charged != count || countOverflow) {
     truncated_ = true;
@@ -130,23 +140,131 @@ llvm::Expected<TechMatchDomain>
 deriveTechMatchDomain(const TechMappingGenerationInputs &inputs,
                       llvm::ArrayRef<::dataflow::CanonicalActorView> selected,
                       TechMappingGenerationAccounting &accounting) {
+  using MatchRowFamily =
+      std::variant<::loom::fabric::FabricFuCapabilityTemplateRef,
+                   ::loom::fabric::FabricMemoryEngineTemplateRef>;
   std::vector<::dataflow::ActorRef> actors;
   actors.reserve(selected.size());
   for (const auto &actor : selected)
     actors.push_back(actor.ref);
 
-  TechMatchRowCollector collector(actors, inputs.config.matchRowAttemptLimit(),
-                                  accounting);
-  if (llvm::Error error = deriveComputeRows(inputs, selected, collector))
-    return std::move(error);
-  if (!collector.truncated())
-    if (llvm::Error error = deriveMemoryRows(inputs, selected, collector))
-      return std::move(error);
+  const auto computeFamilies = deriveComputeRowFamilies(inputs, selected);
+  const auto memoryFamilies = deriveMemoryRowFamilies(inputs, selected);
+  std::vector<MatchRowFamily> families;
+  families.reserve(computeFamilies.size() + memoryFamilies.size());
+  const std::size_t familyDepth =
+      std::max(computeFamilies.size(), memoryFamilies.size());
+  for (std::size_t ordinal = 0; ordinal < familyDepth; ++ordinal) {
+    if (ordinal < computeFamilies.size())
+      families.emplace_back(computeFamilies[ordinal]);
+    if (ordinal < memoryFamilies.size())
+      families.emplace_back(memoryFamilies[ordinal]);
+  }
 
-  auto collectedRows = collector.takeRows();
-  if (!collectedRows)
-    return collectedRows.takeError();
-  std::vector<TechMatchRow> rows = std::move(*collectedRows);
+  std::vector<TechMatchRow> rows;
+  std::vector<std::unique_ptr<TechMatchRowFamilyCursor>> cursors;
+  cursors.reserve(families.size());
+  for (const MatchRowFamily &family : families) {
+    auto cursor = std::visit(
+        [&](const auto &selectedFamily)
+            -> llvm::Expected<std::unique_ptr<TechMatchRowFamilyCursor>> {
+          using Family = std::decay_t<decltype(selectedFamily)>;
+          if constexpr (std::is_same_v<
+                            Family,
+                            ::loom::fabric::FabricFuCapabilityTemplateRef>)
+            return createComputeRowFamilyCursor(inputs, selected,
+                                                selectedFamily);
+          else
+            return createMemoryRowFamilyCursor(inputs, selected,
+                                               selectedFamily);
+        },
+        family);
+    if (!cursor)
+      return cursor.takeError();
+    cursors.push_back(std::move(*cursor));
+  }
+  std::vector<bool> familyExhausted(families.size(), false);
+  std::vector<std::uint64_t> familyVisits(families.size(), 0);
+  bool interruptionObserved = false;
+  const auto visitFamily = [&](std::size_t familyOrdinal,
+                               std::uint64_t quota) -> llvm::Error {
+    if (quota == 0)
+      return llvm::Error::success();
+    const std::uint64_t attemptsBefore = accounting.matchRowAttempts;
+    TechMatchRowCollector collector(actors, attemptsBefore + quota, accounting,
+                                    inputs.executionControl);
+    if (familyVisits[familyOrdinal]++ != 0)
+      ++accounting.matchRowCursorResumptions;
+    if (llvm::Error error = cursors[familyOrdinal]->advance(collector))
+      return error;
+    if (collector.interrupted()) {
+      interruptionObserved = true;
+      return llvm::Error::success();
+    }
+    familyExhausted[familyOrdinal] = cursors[familyOrdinal]->exhausted();
+    auto familyRows = collector.takeRows();
+    if (!familyRows)
+      return familyRows.takeError();
+    rows.insert(rows.end(), std::make_move_iterator(familyRows->begin()),
+                std::make_move_iterator(familyRows->end()));
+    return llvm::Error::success();
+  };
+
+  const std::uint64_t familyCount = families.size();
+  const std::uint64_t baseQuota =
+      familyCount == 0 ? 0 : inputs.config.matchRowAttemptLimit() / familyCount;
+  const std::uint64_t quotaRemainder =
+      familyCount == 0 ? 0 : inputs.config.matchRowAttemptLimit() % familyCount;
+  for (std::size_t ordinal = 0; ordinal < families.size(); ++ordinal) {
+    if (interruptionObserved || inputs.executionControl.stopRequested()) {
+      interruptionObserved = true;
+      break;
+    }
+    const std::uint64_t quota =
+        baseQuota + (static_cast<std::uint64_t>(ordinal) < quotaRemainder);
+    if (llvm::Error error = visitFamily(ordinal, quota))
+      return std::move(error);
+  }
+
+  while (accounting.matchRowAttempts < inputs.config.matchRowAttemptLimit()) {
+    if (interruptionObserved || inputs.executionControl.stopRequested()) {
+      interruptionObserved = true;
+      break;
+    }
+    std::vector<std::size_t> openFamilies;
+    for (auto [ordinal, exhausted] : llvm::enumerate(familyExhausted))
+      if (!exhausted)
+        openFamilies.push_back(ordinal);
+    if (openFamilies.empty())
+      break;
+
+    const std::uint64_t remaining =
+        inputs.config.matchRowAttemptLimit() - accounting.matchRowAttempts;
+    const std::uint64_t quota = remaining / openFamilies.size();
+    const std::uint64_t remainder = remaining % openFamilies.size();
+    bool madeProgress = false;
+    for (auto [rank, ordinal] : llvm::enumerate(openFamilies)) {
+      if (interruptionObserved || inputs.executionControl.stopRequested()) {
+        interruptionObserved = true;
+        break;
+      }
+      const std::uint64_t familyQuota =
+          quota + (static_cast<std::uint64_t>(rank) < remainder);
+      const std::uint64_t attemptsBefore = accounting.matchRowAttempts;
+      const bool exhaustedBefore = familyExhausted[ordinal];
+      if (llvm::Error error = visitFamily(ordinal, familyQuota))
+        return std::move(error);
+      madeProgress |= accounting.matchRowAttempts != attemptsBefore ||
+                      familyExhausted[ordinal] != exhaustedBefore;
+    }
+    if (!madeProgress)
+      break;
+  }
+
+  const bool exhausted =
+      llvm::all_of(familyExhausted, [](bool family) { return family; });
+  const bool interrupted =
+      interruptionObserved || inputs.executionControl.stopRequested();
   llvm::sort(rows, [](const TechMatchRow &lhs, const TechMatchRow &rhs) {
     return lhs.key < rhs.key;
   });
@@ -156,7 +274,7 @@ deriveTechMatchDomain(const TechMappingGenerationInputs &inputs,
                          }),
              rows.end());
   return TechMatchDomain{std::move(actors), std::move(rows),
-                         !collector.truncated()};
+                         exhausted && !interrupted, interrupted};
 }
 
 } // namespace loom::mapping::detail

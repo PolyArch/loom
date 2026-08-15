@@ -249,6 +249,9 @@ llvm::Error CgraGraphActivationRuntime::consumeComputeFrame(
     if (!firingByOccurrence_.contains(key))
       return invalid("CGRA actor emission has no same-frame commit");
   }
+  if (!frame.actorEvents.empty())
+    if (llvm::Error error = transport_->acceptActorCommits(frame.actorEvents))
+      return error;
   if (!frame.actorEmissions.empty())
     if (llvm::Error error = transport_->acceptActorEmissions(
             frame.coordinate, frame.actorEmissions))
@@ -288,6 +291,9 @@ llvm::Error CgraGraphActivationRuntime::consumeMemoryFrame(
     if (!firingByOccurrence_.contains(
             {emission.semanticActorOrdinal, emission.occurrenceOrdinal}))
       return invalid("CGRA memory emission has no committed actor firing");
+  if (!frame.actorEvents.empty())
+    if (llvm::Error error = transport_->acceptActorCommits(frame.actorEvents))
+      return error;
   if (!frame.actorEmissions.empty())
     if (llvm::Error error = transport_->acceptActorEmissions(
             frame.coordinate, frame.actorEmissions))

@@ -66,15 +66,16 @@ The complete Artifact families have these fixed schema descriptors:
 ```text
 loom.configuration_abi             3.0
 loom.hardware_configuration_image  3.0
-loom.deployment                    4.0
+loom.deployment                    5.0
 ```
 
 ConfigurationABI and HardwareConfigurationImage 3.0 reject any image that
 omits a configurable Fabric owner and bind the exact
-`loom.hardware_implementation 3.0` closure. Deployment 4.0 additionally keys
-each static logical-memory image by its exact rooted graph launch. An old
-validator cannot reinterpret that required contextual reference under the 3.x
-descriptor.
+`loom.hardware_implementation 4.0` occurrence closure. Deployment 5.0 derives
+the exact required SpatialCore occurrence set from its SystemMapping execution
+projection and requires one HardwareImplementation and RuntimePlatformBinding
+per subject. An old validator cannot reinterpret that occurrence coverage or
+the required contextual memory reference under an earlier descriptor.
 
 The frontend relocatable accelerator payload is an input to final linking, not
 a Deployment child. `CompilerTargetBinding`, `InstructionCoreBinary`, host
@@ -116,7 +117,7 @@ ConfigurationABI {
 ```
 
 In `loom.configuration_abi 3.0`, `fabric_ref` is an exact
-`loom.fabric 4.1` System root. A complete implementation cannot bind an
+`loom.fabric 5.0` System root. A complete implementation cannot bind an
 uninstantiated Module root. The physical references used by the two nested
 fields above are closed unions:
 
@@ -467,13 +468,14 @@ DeploymentExternalInterfaceRef =
 ```
 
 The exact Canonical Dataflow Program and architecture-only Fabric are recovered
-from `system_mapping_ref`. Exact Fabric, ConfigurationABI, Interconnect
-Implementation, ImplementationPlatform target and corner facts, and
+from `system_mapping_ref`. Exact Fabric, SpatialCore subject,
+ConfigurationABI, ImplementationPlatform target and corner facts, and
 provider-owned external bindings are recovered from each selected
-HardwareImplementation. Deployment does not duplicate those
-references. Its verifier requires the recovered closures to agree exactly and
-requires `hardware_bindings[]` to cover the complete selected system without a
-foreign or unused implementation.
+HardwareImplementation. Deployment does not duplicate those references. Its
+verifier derives the union of SpatialCore occurrences named by the instruction
+and spatial execution domains, requires the recovered closures to agree
+exactly, and requires `hardware_bindings[]` to cover that set once without a
+foreign, duplicate, or unused implementation.
 
 `host_program`, `instruction_core_binary_refs[]`, and
 `static_memory_images[]` use the closed types in

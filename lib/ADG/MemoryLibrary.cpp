@@ -339,8 +339,11 @@ operationPortResourceContract(std::optional<std::uint32_t> indexedLaneCount) {
        {{::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(1),
          ::fabric::CapacityUnits(0)}}}};
   const std::uint32_t patternCount = indexedLaneCount ? 2 : 1;
-  for (std::uint32_t ordinal = 0; ordinal != patternCount; ++ordinal)
+  for (std::uint32_t ordinal = 0; ordinal != patternCount; ++ordinal) {
     declaration.requesters.push_back(::fabric::RequesterKey(ordinal));
+    declaration.resourceTransitions.push_back(
+        ::fabric::ResourceTransitionKey(ordinal));
+  }
   declaration.eligibilityCount = patternCount;
   declaration.eventCount = 2;
   declaration.timingContracts = {{::fabric::TimingContractKey(0), {0, 1}}};
@@ -351,7 +354,9 @@ operationPortResourceContract(std::optional<std::uint32_t> indexedLaneCount) {
          ::fabric::EligibilityKey(ordinal),
          ::fabric::EventKey(0),
          ::fabric::EventKey(1),
-         std::nullopt,
+         ::fabric::CommitDeclaration{
+             ::fabric::EventKey(0),
+             ::fabric::ResourceTransitionKey(ordinal)},
          ::fabric::TimingContractKey(0),
          {{::fabric::ClaimKey(0), ::fabric::StateKey(0),
            ::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(1)}},
@@ -590,7 +595,9 @@ localServiceContract(mlir::MLIRContext &context, std::uint64_t capacityBytes,
                             {0},
                             interface.serviceBeatWidthBits,
                             {::fabric::UsePatternKey(reads ? 0 : 1)},
-                            ::fabric::NoMemoryServiceConsistency{}});
+                            ::fabric::LocalProviderConsistency{
+                                ::fabric::ReleaseVisibilityPoint::AtLinearization,
+                                ::fabric::LocalBoundedCompletionCycles{1}}});
   }
   return ::fabric::MemoryServiceContractRecord::create(
       &context, ::fabric::MemoryServiceOwnerKind::Local,

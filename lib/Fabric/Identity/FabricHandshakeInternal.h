@@ -31,6 +31,8 @@ private:
   std::vector<PendingFragment> pending_;
 };
 
+std::vector<std::uint8_t> handshakeSignalKey(const HandshakeSignalRef &signal);
+
 llvm::Expected<HandshakeOwnerModel>
 compileFuHandshakeModel(const FabricArtifactView &view,
                         FabricFuOccurrenceRef occurrence);

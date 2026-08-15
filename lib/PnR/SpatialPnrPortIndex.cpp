@@ -1,12 +1,10 @@
 #include "SpatialPnrPortIndex.h"
 
-#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
-#include "Fabric/IR/ImplementationFamily.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
@@ -116,18 +114,71 @@ struct ActorOwner final {
 struct AttachmentDraft final {
   PnrIndex endpoint;
   std::optional<PnrIndex> localTraversal;
+  SpatialDurableProgressBoundaryKind progressBoundary =
+      SpatialDurableProgressBoundaryKind::None;
+  std::optional<std::uint32_t> sharedOperandEnqueueUnit;
 
   friend bool operator<(const AttachmentDraft &lhs,
                         const AttachmentDraft &rhs) {
-    return std::tie(lhs.endpoint, lhs.localTraversal) <
-           std::tie(rhs.endpoint, rhs.localTraversal);
+    return std::tie(lhs.endpoint, lhs.localTraversal, lhs.progressBoundary,
+                    lhs.sharedOperandEnqueueUnit) <
+           std::tie(rhs.endpoint, rhs.localTraversal, rhs.progressBoundary,
+                    rhs.sharedOperandEnqueueUnit);
   }
   friend bool operator==(const AttachmentDraft &lhs,
                          const AttachmentDraft &rhs) {
     return lhs.endpoint == rhs.endpoint &&
-           lhs.localTraversal == rhs.localTraversal;
+           lhs.localTraversal == rhs.localTraversal &&
+           lhs.progressBoundary == rhs.progressBoundary &&
+           lhs.sharedOperandEnqueueUnit == rhs.sharedOperandEnqueueUnit;
   }
 };
+
+llvm::Expected<std::optional<std::uint32_t>>
+deriveSharedOperandEnqueueUnit(const FabricArtifactView &fabric,
+                               const FrozenSpatialComputePlacement &placement,
+                               FabricFuOccurrencePortRef concretePort) {
+  if (placement.schedule != ::fabric::Schedule::Temporal ||
+      concretePort.direction != FabricPortDirection::Input)
+    return std::optional<std::uint32_t>();
+  auto mode = fabric.peOperandBufferMode(placement.parentPe);
+  auto schema = fabric.temporalPeConfigurationSchema(placement.parentPe);
+  if (!mode || !schema)
+    return invalid("Temporal PE attachment has no operand-buffer schema");
+  std::vector<std::uint32_t> fuInputCounts;
+  fuInputCounts.reserve(schema->layout().fus.size());
+  std::optional<FabricOrdinal> fuOrdinal;
+  for (auto [ordinal, fu] : llvm::enumerate(schema->layout().fus)) {
+    fuInputCounts.push_back(fu.inputCount);
+    if (fu.fu == concretePort.fu)
+      fuOrdinal = static_cast<FabricOrdinal>(ordinal);
+  }
+  if (!fuOrdinal || concretePort.ordinal >= fuInputCounts[*fuOrdinal])
+    return invalid("Temporal PE attachment has no concrete operand queue");
+  auto contract = ::fabric::TemporalOperandBufferContract::create(
+      ::fabric::TemporalOperandBufferDeclaration{
+          placement.parentPe, schema->layout().contextCount, fuInputCounts,
+          *mode, fabric.peOperandBufferSize(placement.parentPe)});
+  if (!contract)
+    return contract.takeError();
+
+  std::optional<std::uint32_t> sharedUnit;
+  std::uint32_t matchedContexts = 0;
+  for (auto [queue, key] : llvm::enumerate(contract->logicalQueues())) {
+    if (key.fuOccurrence != *fuOrdinal || key.fuInput != concretePort.ordinal)
+      continue;
+    const std::uint32_t unit =
+        contract->allocationUnitOf(static_cast<std::uint32_t>(queue));
+    if (!sharedUnit)
+      sharedUnit = unit;
+    else if (*sharedUnit != unit)
+      return std::optional<std::uint32_t>();
+    ++matchedContexts;
+  }
+  if (matchedContexts != schema->layout().contextCount || !sharedUnit)
+    return invalid("Temporal PE operand queue projection is incomplete");
+  return sharedUnit;
+}
 
 struct PlacementDomainDraft final {
   PnrIndex placement;
@@ -144,90 +195,22 @@ struct GraphBoundaryDraft final {
   std::vector<AttachmentDraft> options;
 };
 
-llvm::Expected<::dataflow::GraphRef>
-graphOf(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-        const ::dataflow::CanonicalGraphProducerEndpointRef &endpoint) {
-  if (const auto *ingress =
-          std::get_if<::dataflow::GraphIngressTokenRef>(&endpoint))
-    return std::visit([](const auto &token) { return token.graph; }, *ingress);
-  auto actor = dataflow.resolve(
-      std::get<::dataflow::ActorTokenResultRef>(endpoint).actor);
-  if (!actor)
-    return actor.takeError();
-  return actor->graph;
-}
-
-llvm::Expected<::dataflow::GraphRef>
-graphOf(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-        const ::dataflow::CanonicalGraphConsumerEndpointRef &endpoint) {
-  if (const auto *egress =
-          std::get_if<::dataflow::GraphEgressTokenRef>(&endpoint))
-    return std::visit([](const auto &token) { return token.graph; }, *egress);
-  auto actor = dataflow.resolve(
-      std::get<::dataflow::ActorTokenOperandRef>(endpoint).actor);
-  if (!actor)
-    return actor.takeError();
-  return actor->graph;
-}
-
-llvm::Expected<std::uint32_t> semanticPayloadWidth(
+llvm::Expected<std::uint32_t> transportPayloadWidth(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::dataflow::CanonicalGraphProducerEndpointRef &endpoint) {
   auto type = dataflow.tokenType(endpoint);
   if (!type)
     return type.takeError();
-  auto graph = graphOf(dataflow, endpoint);
-  if (!graph)
-    return graph.takeError();
-  auto graphView = dataflow.resolve(*graph);
-  if (!graphView)
-    return graphView.takeError();
-  auto indexWidth = ::loom::getIndexBitWidth(graphView->op);
-  if (!indexWidth)
-    return indexWidth.takeError();
-  std::optional<::loom::PointerLayout> pointerLayout;
-  if (auto pointer = mlir::dyn_cast<mlir::LLVM::LLVMPointerType>(*type)) {
-    auto resolved = dataflow.pointerLayout(pointer.getAddressSpace());
-    if (!resolved)
-      return resolved.takeError();
-    pointerLayout = *resolved;
-  }
-  std::string message;
-  auto width = ::fabric::getSemanticPayloadWidth(
-      *type, *indexWidth, pointerLayout ? &*pointerLayout : nullptr, message);
-  if (mlir::failed(width))
-    return invalid("cannot resolve graph producer payload width: " + message);
-  return static_cast<std::uint32_t>(*width);
+  return dataflow.transportPayloadBitWidth(*type);
 }
 
-llvm::Expected<std::uint32_t> semanticPayloadWidth(
+llvm::Expected<std::uint32_t> transportPayloadWidth(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::dataflow::CanonicalGraphConsumerEndpointRef &endpoint) {
   auto type = dataflow.tokenType(endpoint);
   if (!type)
     return type.takeError();
-  auto graph = graphOf(dataflow, endpoint);
-  if (!graph)
-    return graph.takeError();
-  auto graphView = dataflow.resolve(*graph);
-  if (!graphView)
-    return graphView.takeError();
-  auto indexWidth = ::loom::getIndexBitWidth(graphView->op);
-  if (!indexWidth)
-    return indexWidth.takeError();
-  std::optional<::loom::PointerLayout> pointerLayout;
-  if (auto pointer = mlir::dyn_cast<mlir::LLVM::LLVMPointerType>(*type)) {
-    auto resolved = dataflow.pointerLayout(pointer.getAddressSpace());
-    if (!resolved)
-      return resolved.takeError();
-    pointerLayout = *resolved;
-  }
-  std::string message;
-  auto width = ::fabric::getSemanticPayloadWidth(
-      *type, *indexWidth, pointerLayout ? &*pointerLayout : nullptr, message);
-  if (mlir::failed(width))
-    return invalid("cannot resolve graph consumer payload width: " + message);
-  return static_cast<std::uint32_t>(*width);
+  return dataflow.transportPayloadBitWidth(*type);
 }
 
 llvm::Expected<FabricFuTemplatePortRef>
@@ -391,11 +374,11 @@ public:
             using Endpoint = std::decay_t<decltype(endpoint)>;
             if constexpr (std::is_same_v<Endpoint,
                                          ::dataflow::ActorTokenResultRef>)
-              return semanticPayloadWidth(
+              return transportPayloadWidth(
                   dataflow,
                   ::dataflow::CanonicalGraphProducerEndpointRef{endpoint});
             else
-              return semanticPayloadWidth(
+              return transportPayloadWidth(
                   dataflow,
                   ::dataflow::CanonicalGraphConsumerEndpointRef{endpoint});
           },
@@ -459,7 +442,7 @@ public:
           return addActorDemand(*actor, *netIndex, std::move(*producerKey));
         const auto &ingress =
             std::get<::dataflow::GraphIngressTokenRef>(producer);
-        auto width = semanticPayloadWidth(dataflow, producer);
+        auto width = transportPayloadWidth(dataflow, producer);
         if (!width)
           return width.takeError();
         return addGraphBoundary(ingress, *netIndex, std::move(*producerKey),
@@ -484,7 +467,7 @@ public:
             return addActorDemand(*actor, *netIndex, std::move(*consumerKey));
           const auto &egress =
               std::get<::dataflow::GraphEgressTokenRef>(consumer);
-          auto width = semanticPayloadWidth(dataflow, consumer);
+          auto width = transportPayloadWidth(dataflow, consumer);
           if (!width)
             return width.takeError();
           return addGraphBoundary(egress, *netIndex, std::move(*consumerKey),
@@ -523,43 +506,51 @@ public:
     };
     const auto computeOptions =
         [&](const FrozenSpatialPortDemand &demand,
-            const FrozenSpatialComputePlacement &placement) {
-          std::vector<AttachmentDraft> options;
-          const auto &templatePort =
-              std::get<FabricFuTemplatePortRef>(demand.templateTerminal);
-          const auto fixed =
-              fabric.fuOccurrenceTransportEndpoint(FabricFuOccurrencePortRef{
-                  placement.fu, templatePort.direction, templatePort.ordinal});
-          if (!fixed)
-            return options;
-          const auto fixedIndex = endpointIndex(*fixed);
-          if (!fixedIndex)
-            return options;
-          const auto &fixedEndpoint = routing.routingEndpoints()[*fixedIndex];
-          if (fixedEndpoint.direction != directionOf(demand.terminal) ||
-              fixedEndpoint.dataPath.payloadWidthBits < demand.payloadWidthBits)
-            return options;
+            const FrozenSpatialComputePlacement &placement)
+        -> llvm::Expected<std::vector<AttachmentDraft>> {
+      std::vector<AttachmentDraft> options;
+      const auto &templatePort =
+          std::get<FabricFuTemplatePortRef>(demand.templateTerminal);
+      const FabricFuOccurrencePortRef concretePort{
+          placement.fu, templatePort.direction, templatePort.ordinal};
+      auto sharedEnqueueUnit =
+          deriveSharedOperandEnqueueUnit(fabric, placement, concretePort);
+      if (!sharedEnqueueUnit)
+        return sharedEnqueueUnit.takeError();
+      const auto fixed = fabric.fuOccurrenceTransportEndpoint(concretePort);
+      if (!fixed)
+        return options;
+      const auto fixedIndex = endpointIndex(*fixed);
+      if (!fixedIndex)
+        return options;
+      const auto &fixedEndpoint = routing.routingEndpoints()[*fixedIndex];
+      if (fixedEndpoint.direction != directionOf(demand.terminal) ||
+          fixedEndpoint.dataPath.payloadWidthBits < demand.payloadWidthBits)
+        return options;
 
-          for (const FabricFuPortAttachmentView &attachment :
-               fabric.fuOccurrencePortAttachments(FabricFuOccurrencePortRef{
-                   placement.fu, templatePort.direction,
-                   templatePort.ordinal})) {
-            const auto attachmentIndex = endpointIndex(attachment.endpoint);
-            if (!attachmentIndex)
-              continue;
-            const auto &endpoint = routing.routingEndpoints()[*attachmentIndex];
-            if (endpoint.direction != templatePort.direction ||
-                endpoint.dataPath.payloadWidthBits < demand.payloadWidthBits)
-              continue;
-            const auto traversalIndex = traversalByRef.find(
-                canonicalFabricBytes(attachment.localTraversal));
-            if (traversalIndex == traversalByRef.end())
-              continue;
-            options.push_back({*attachmentIndex, traversalIndex->second});
-          }
-          canonicalizeOptions(options);
-          return options;
-        };
+      for (const FabricFuPortAttachmentView &attachment :
+           fabric.fuOccurrencePortAttachments(concretePort)) {
+        const auto attachmentIndex = endpointIndex(attachment.endpoint);
+        if (!attachmentIndex)
+          continue;
+        const auto &endpoint = routing.routingEndpoints()[*attachmentIndex];
+        if (endpoint.direction != templatePort.direction ||
+            endpoint.dataPath.payloadWidthBits < demand.payloadWidthBits)
+          continue;
+        const auto traversalIndex = traversalByRef.find(
+            canonicalFabricBytes(attachment.localTraversal));
+        if (traversalIndex == traversalByRef.end())
+          continue;
+        auto progress = classifySpatialAttachmentDurableProgressBoundary(
+            fabric, attachment.localTraversal, concretePort);
+        if (!progress)
+          return progress.takeError();
+        options.push_back({*attachmentIndex, traversalIndex->second, *progress,
+                           *sharedEnqueueUnit});
+      }
+      canonicalizeOptions(options);
+      return options;
+    };
     const auto memoryOptions =
         [&](const FrozenSpatialPortDemand &demand,
             const FrozenSpatialMemoryPlacement &placement) {
@@ -576,7 +567,9 @@ public:
           const auto &resolved = routing.routingEndpoints()[*index];
           if (resolved.direction == directionOf(demand.terminal) &&
               resolved.dataPath.payloadWidthBits >= demand.payloadWidthBits)
-            options.push_back({*index, std::nullopt});
+            options.push_back({*index, std::nullopt,
+                               SpatialDurableProgressBoundaryKind::None,
+                               std::nullopt});
           return options;
         };
 
@@ -602,7 +595,10 @@ public:
         options.reserve(ownerDemands.size());
         bool admissible = true;
         for (PnrIndex demand : ownerDemands) {
-          options.push_back(computeOptions(demands[demand].frozen, placement));
+          auto projected = computeOptions(demands[demand].frozen, placement);
+          if (!projected)
+            return projected.takeError();
+          options.push_back(std::move(*projected));
           if (options.back().empty()) {
             admissible = false;
             break;
@@ -635,8 +631,7 @@ public:
           return contextCount.takeError();
         realizations.computePlacements_.push_back(
             {*realizationIndex, placement.fu, placement.parentPe,
-             placement.schedule,
-             *newContextOffset, *contextCount});
+             placement.schedule, *newContextOffset, *contextCount});
         for (auto [demandOrdinal, demand] : llvm::enumerate(ownerDemands))
           demands[demand].domains.push_back(
               {*placementIndex, std::move(options[demandOrdinal])});
@@ -687,7 +682,8 @@ public:
         if (!placementIndex)
           return placementIndex.takeError();
         realizations.memoryPlacements_.push_back(
-            {*realizationIndex, placement.memory, placement.schedule});
+            {*realizationIndex, placement.memory, placement.schedule,
+             placement.residentContextCount});
         for (auto [demandOrdinal, demand] : llvm::enumerate(ownerDemands))
           demands[demand].domains.push_back(
               {*placementIndex, std::move(options[demandOrdinal])});
@@ -756,9 +752,9 @@ public:
           return std::move(error);
         for (const AttachmentDraft &option : domain.options)
           result.attachmentOptions_.push_back(
-              {option.endpoint, option.localTraversal,
-               FrozenSpatialAttachmentOwnerKind::PlacementDomain,
-               *domainIndex});
+              {option.endpoint, option.localTraversal, option.progressBoundary,
+               FrozenSpatialAttachmentOwnerKind::PlacementDomain, *domainIndex,
+               option.sharedOperandEnqueueUnit});
         auto optionCount = checked(optionCountContext, domain.options.size());
         if (!optionCount)
           return optionCount.takeError();
@@ -789,7 +785,9 @@ public:
             endpoint.dataPath.payloadWidthBits <
                 boundary.frozen.payloadWidthBits)
           continue;
-        boundary.options.push_back({*index, std::nullopt});
+        boundary.options.push_back({*index, std::nullopt,
+                                    SpatialDurableProgressBoundaryKind::None,
+                                    std::nullopt});
       }
       canonicalizeOptions(boundary.options);
       if (boundary.options.empty())
@@ -810,7 +808,9 @@ public:
       for (const AttachmentDraft &option : boundary.options)
         result.attachmentOptions_.push_back(
             {option.endpoint, std::nullopt,
-             FrozenSpatialAttachmentOwnerKind::GraphBoundary, *boundaryIndex});
+             SpatialDurableProgressBoundaryKind::None,
+             FrozenSpatialAttachmentOwnerKind::GraphBoundary, *boundaryIndex,
+             std::nullopt});
       auto optionCount = checked(optionCountContext, boundary.options.size());
       if (!optionCount)
         return optionCount.takeError();
@@ -1085,6 +1085,19 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialPortIndex(
                 "compute PortDemand has no local selector traversal");
           const auto &placement =
               realizations.computePlacements()[domain.placement];
+          const auto expectedBoundary =
+              placement.schedule == ::fabric::Schedule::Temporal &&
+                      direction == FabricPortDirection::Input
+                  ? SpatialDurableProgressBoundaryKind::TemporalPeOperandQueue
+                  : SpatialDurableProgressBoundaryKind::None;
+          if (option.progressBoundary != expectedBoundary)
+            return invalid(
+                "compute attachment changed its durable progress boundary");
+          if (option.sharedOperandEnqueueUnit &&
+              expectedBoundary !=
+                  SpatialDurableProgressBoundaryKind::TemporalPeOperandQueue)
+            return invalid(
+                "non-Temporal attachment gained a shared enqueue unit");
           if (endpoint.reference.owner.kind() !=
                   FabricTransportEndpointOwnerKind::FabricPeOccurrence ||
               std::get<FabricPeOccurrenceRef>(
@@ -1109,7 +1122,9 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialPortIndex(
             return invalid("compute output selector changed its endpoints");
           }
         } else {
-          if (option.localTraversal)
+          if (option.localTraversal || option.sharedOperandEnqueueUnit ||
+              option.progressBoundary !=
+                  SpatialDurableProgressBoundaryKind::None)
             return invalid("memory PortDemand invented a local traversal");
           const auto &placement =
               realizations.memoryPlacements()[domain.placement];
@@ -1141,6 +1156,8 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialPortIndex(
                                          boundary.attachmentOptionCount)) {
       if (option.ownerKind != FrozenSpatialAttachmentOwnerKind::GraphBoundary ||
           option.owner != boundaryOrdinal || option.localTraversal ||
+          option.sharedOperandEnqueueUnit ||
+          option.progressBoundary != SpatialDurableProgressBoundaryKind::None ||
           option.endpoint >= routing.routingEndpoints().size())
         return invalid("graph-boundary attachment option is inconsistent");
       const auto &endpoint = routing.routingEndpoints()[option.endpoint];

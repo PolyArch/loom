@@ -14,12 +14,15 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -218,6 +221,13 @@ void indeterminateAtomPrecedesBooleanSelection() {
 void paretoRetainsEveryNondominatedCandidate() {
   const ResolvedObjectiveCatalogs catalogs = resolvedBuiltinObjectiveCatalogs();
   const ObjectiveProgram program = take(ObjectiveProgram::get(catalogs));
+  std::size_t mappingMeasureCount = 0;
+  for (const ResolvedObjectiveDimension &dimension : catalogs.dimensions)
+    if (const auto *measure =
+            std::get_if<ResolvedMappingMeasureObjectiveSource>(
+                &dimension.source))
+      mappingMeasureCount = std::max(
+          mappingMeasureCount, static_cast<std::size_t>(measure->ordinal) + 1);
   const ArtifactSchemaDescriptor schema{"loom.test.promotion_candidate",
                                         SchemaVersion{1, 0}};
   const ArtifactRootReference first = makeReference(0x11);
@@ -231,7 +241,8 @@ void paretoRetainsEveryNondominatedCandidate() {
     std::vector<std::uint64_t> violations(resolvedPnrViolationKindCount, 0);
     violations[0] = violation;
     ObjectiveVector vector = program.makeVector();
-    const std::array<std::uint64_t, 2> measures = {traversal, 0};
+    std::vector<std::uint64_t> measures(mappingMeasureCount, 0);
+    measures.front() = traversal;
     requireSuccess(program.evaluate({violations, measures, {}}, vector));
     return CandidateObjectiveVector{candidate, std::move(vector)};
   };

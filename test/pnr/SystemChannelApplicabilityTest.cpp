@@ -10,6 +10,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
@@ -68,6 +69,12 @@ void require(bool condition, const llvm::Twine &message) {
     fail(message);
 }
 
+struct ImmediateStopSource final {
+  static bool query(const void *) { return true; }
+
+  loom::ExecutionControlView control() const { return {this, query}; }
+};
+
 template <typename T>
 void requireFailureContains(llvm::Expected<T> value, llvm::StringRef expected) {
   if (value)
@@ -82,7 +89,9 @@ void requireFailureContains(
     llvm::StringRef expected) {
   if (std::holds_alternative<loom::mapping::VerifiedSystemMappingBase>(
           verification))
-    fail("adverse channel applicability input unexpectedly succeeded");
+    fail("adverse channel applicability input unexpectedly succeeded; "
+         "expected: " +
+         expected);
   const std::string &diagnostic = std::visit(
       [](const auto &result) -> const std::string & {
         using Result = std::decay_t<decltype(result)>;
@@ -291,7 +300,7 @@ loom::ResolvedConfig buildResolvedConfig() {
   resolved.dse.spatialPnr.temporaryViolations.admitted = {
       loom::ResolvedPnrViolationKind::UnroutedObligation,
       loom::ResolvedPnrViolationKind::CapacityOveruse};
-  resolved.dse.spatialPnr.objectiveSelection = {0, 0, {}};
+  resolved.dse.spatialPnr.objectiveSelection = {0, 0};
   auto &search = resolved.dse.spatialPnr.search;
   search.initializer.seedAttemptCount = 1;
   search.actionProposal = {0, 1, 0};
@@ -305,7 +314,7 @@ loom::ResolvedConfig buildResolvedConfig() {
   resolved.dse.systemPnr.temporaryViolations.admitted = {
       loom::ResolvedPnrViolationKind::UnroutedObligation,
       loom::ResolvedPnrViolationKind::CapacityOveruse};
-  resolved.dse.systemPnr.objectiveSelection = {0, 0, {}};
+  resolved.dse.systemPnr.objectiveSelection = {0, 0};
   auto &systemSearch = resolved.dse.systemPnr.search;
   systemSearch.initializer.seedAttemptCount = 1;
   systemSearch.actionProposal = {1, 0, 0};
@@ -341,8 +350,11 @@ generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
           dataflow, imported.view(), module.view(), store));
   const auto spatialConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
+  const auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          module.view()));
   auto spatialOutcome = loom::pnr::generateSpatialMappings(
-      {dataflow, imported.view(), module.view(), spatialConfig,
+      {dataflow, imported.view(), module.view(), physicalTiming, spatialConfig,
        constraints.view(), store});
   const auto *spatial =
       std::get_if<loom::pnr::GeneratedSpatialMappings>(&spatialOutcome);
@@ -350,8 +362,14 @@ generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
     std::visit(
         [&](const auto &outcome) {
           using Outcome = std::decay_t<decltype(outcome)>;
-          if constexpr (!std::is_same_v<Outcome,
-                                        loom::pnr::GeneratedSpatialMappings>)
+          if constexpr (std::is_same_v<
+                            Outcome,
+                            loom::pnr::InterruptedSpatialPnrGeneration>)
+            fail("SpatialMapping fixture was interrupted at " +
+                 loom::pnr::spatialPnrInterruptionStageSpelling(
+                     outcome.snapshot.stage));
+          else if constexpr (!std::is_same_v<
+                                 Outcome, loom::pnr::GeneratedSpatialMappings>)
             fail("SpatialMapping fixture did not produce one candidate: " +
                  outcome.diagnostic);
         },
@@ -382,6 +400,23 @@ bounded(loom::mapping::SystemPresburgerCell cell,
   return take(loom::mapping::canonicalizeSystemPresburgerCell(cell));
 }
 
+std::vector<loom::ArtifactRootReference>
+normalizedTimingProfileRoots(const loom::ArtifactRootReference &systemReference,
+                             loom::ArtifactStore &store) {
+  auto artifact =
+      take(loom::fabric::importEntireFabricRoot(systemReference, store));
+  auto system = take(loom::fabric::requireSystemRoot(artifact.view()));
+  auto profiles =
+      take(loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(system));
+  std::vector<loom::ArtifactRootReference> roots;
+  roots.reserve(profiles.size());
+  for (const auto &profile : profiles)
+    roots.push_back(
+        take(loom::fabric::publishFabricPhysicalTimingProfile(profile, store)));
+  llvm::sort(roots, loom::artifactRootReferenceLess);
+  return roots;
+}
+
 void verifyRootCompleteSystemAdapter(
     const loom::ArtifactRootReference &dataflowReference,
     llvm::ArrayRef<loom::ArtifactRootReference> spatialMappings,
@@ -400,21 +435,27 @@ void verifyRootCompleteSystemAdapter(
       take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
   const auto &descriptor =
       loom::dse::rootCompleteSystemPnrCandidateGeneratorDescriptor();
+  const auto physicalTimingProfiles =
+      normalizedTimingProfileRoots(systemReference, store);
   require(descriptor.kind ==
                   loom::dse::rootCompleteSystemPnrCandidateGeneratorKind &&
-              descriptor.inputSlots.size() == 3 &&
+              descriptor.inputSlots.size() == 4 &&
               descriptor.outputSlots.size() == 1 &&
               descriptor.implementationSemanticIdentity ==
-                  "loom.mapping.root_complete_system_pnr.generator.v2" &&
+                  "loom.mapping.root_complete_system_pnr.generator.v7" &&
               descriptor.workUnits.size() ==
                   loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
               descriptor.inputSlots[0].semanticRole == "dataflow" &&
               descriptor.inputSlots[1].semanticRole == "spatial_mapping" &&
-              descriptor.inputSlots[2].semanticRole == "fabric",
-          "root-complete System descriptor lost its exact D/Spatial/F shape");
+              descriptor.inputSlots[2].semanticRole == "fabric" &&
+              descriptor.inputSlots[3].semanticRole ==
+                  "physical_timing_profile",
+          "root-complete System descriptor lost its exact timing-bound input "
+          "shape");
   auto inputs =
       take(loom::dse::bindRootCompleteSystemPnrCandidateGeneratorInputs(
-          dataflowReference, spatialMappings, systemReference));
+          dataflowReference, spatialMappings, systemReference,
+          physicalTimingProfiles));
   auto binding = take(
       loom::dse::resolveRootCompleteSystemPnrCandidateGeneratorBinding(config));
   auto first =
@@ -452,12 +493,27 @@ void verifyRootCompleteSystemAdapter(
               replay.workSummary == first.workSummary,
           "root-complete System adapter changed output or work on replay");
 
+  const ImmediateStopSource stop;
+  auto cancelled = take(loom::dse::invokeCandidateGenerator(
+      inputs, binding, store, blobs, stop.control()));
+  const auto *interrupted =
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &cancelled.outcome);
+  require(interrupted &&
+              interrupted->reason ==
+                  loom::dse::CandidateGeneratorIncompleteReason::
+                      CancelledOrTimeout &&
+              llvm::all_of(cancelled.workSummary,
+                           [](const auto &work) { return work.consumed == 0; }),
+          "System interruption did not map to a zero-frontier cancellation");
+
   loom::ResolvedConfig planned = resolved;
   planned.dse.planNodes = {loom::dse::GeneratePlanNodeDefinition{
       descriptor.reference(),
       {loom::dse::ExactPlanArtifacts{{dataflowReference}},
        loom::dse::ExactPlanArtifacts{spatialMappings.vec()},
-       loom::dse::ExactPlanArtifacts{{systemReference}}},
+       loom::dse::ExactPlanArtifacts{{systemReference}},
+       loom::dse::ExactPlanArtifacts{physicalTimingProfiles}},
       config.canonicalViewBytes().vec(),
       config.digest()}};
   auto planView = take(loom::dse::projectResolvedDseConfigView(planned));
@@ -512,9 +568,11 @@ void verifyRootFreeSystemAdapter(
       take(loom::pnr::projectResolvedSystemPnrConfigView(resolved));
   auto binding = take(
       loom::dse::resolveRootCompleteSystemPnrCandidateGeneratorBinding(config));
+  const auto physicalTimingProfiles =
+      normalizedTimingProfileRoots(systemReference, store);
   auto emptyInputs =
       take(loom::dse::bindRootCompleteSystemPnrCandidateGeneratorInputs(
-          dataflowReference, {}, systemReference));
+          dataflowReference, {}, systemReference, physicalTimingProfiles));
   auto result = take(
       loom::dse::invokeCandidateGenerator(emptyInputs, binding, store, blobs));
   const auto *completed =
@@ -532,7 +590,8 @@ void verifyRootFreeSystemAdapter(
 
   auto foreignInputs =
       take(loom::dse::bindRootCompleteSystemPnrCandidateGeneratorInputs(
-          dataflowReference, {foreignSpatialMapping}, systemReference));
+          dataflowReference, {foreignSpatialMapping}, systemReference,
+          physicalTimingProfiles));
   auto foreign =
       loom::dse::invokeCandidateGenerator(foreignInputs, binding, store, blobs);
   requireFailureContains(std::move(foreign), "foreign Dataflow owner");
@@ -656,7 +715,27 @@ int main() {
   auto searchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
       dataflow, system, config, constraints, partition,
       loom::pnr::SystemHierarchicalGraphSearchInput{{spatialMapping}}, store));
-  auto problem = take(loom::pnr::freezeSystemPnrProblem(
+  const ImmediateStopSource stop;
+  const auto interruptedSystem =
+      loom::pnr::generateSystemMappings({dataflow,
+                                         system,
+                                         {},
+                                         searchDomain,
+                                         config,
+                                         constraints,
+                                         store,
+                                         stop.control()});
+  const auto *interrupted =
+      std::get_if<loom::pnr::InterruptedSystemPnrGeneration>(
+          &interruptedSystem);
+  require(interrupted &&
+              interrupted->snapshot.stage ==
+                  loom::pnr::SystemPnrInterruptionStage::InputAdmission &&
+              interrupted->snapshot.frontier.seedAttemptSlots == 0 &&
+              !interrupted->snapshot.bestSelectedRank &&
+              !interrupted->snapshot.closureResidual.violationValues,
+          "System generator interruption lost its typed empty frontier");
+  auto problem = take(loom::pnr::freezeSystemPnrProblemWithNormalizedTiming(
       dataflow, system, searchDomain, config, constraints, store));
 
   require(problem->threadDecisions().size() == 3,
@@ -1034,9 +1113,12 @@ int main() {
     cycleChild.setParentNodeOrdinal(parent);
   else
     cycleSink.setNodeOrdinal(parent);
-  requireFailureContains(loom::mapping::verifySystemMappingBase(
-                             handshakeCycleRoot, dataflow, system, store),
-                         "SelectedCombinationalHandshakeCycle");
+  const auto physicalCycleVerification = loom::mapping::verifySystemMappingBase(
+      handshakeCycleRoot, dataflow, system, store);
+  require(std::holds_alternative<loom::mapping::VerifiedSystemMappingBase>(
+              physicalCycleVerification),
+          "row-aware handshake projection rejected a physically cyclic route "
+          "whose selected activation has a combinational break");
 
   mlir::OwningOpRef<mlir::Operation *> duplicatePairDraft(mappingRoot->clone());
   auto duplicatePairRoot =

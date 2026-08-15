@@ -1,6 +1,8 @@
 #ifndef LOOM_LIB_PNR_SYSTEM_SYSTEMCANDIDATEMUTATION_H
 #define LOOM_LIB_PNR_SYSTEM_SYSTEMCANDIDATEMUTATION_H
 
+#include "SystemNegotiatedRouter.h"
+
 #include "PnR/System/SystemAction.h"
 #include "PnR/System/SystemCandidateState.h"
 
@@ -35,12 +37,12 @@ llvm::Expected<SystemCandidateStateHandle>
 rebuildSystemCandidateWithServiceUsePattern(
     const SystemCandidateState &candidate, PnrIndex use, PnrIndex choice);
 
-llvm::Expected<SystemCandidateStateHandle>
-rebuildSystemCandidateRoutes(const SystemCandidateState &candidate,
-                             const SystemTransportRoutingAction &action,
-                             std::uint64_t &endpointExpansions,
-                             std::uint64_t &negotiationIterations,
-                             bool requireCapacityClosure);
+llvm::Expected<SystemCandidateStateHandle> rebuildSystemCandidateRoutes(
+    const SystemCandidateState &candidate,
+    const SystemTransportRoutingAction &action,
+    std::uint64_t &endpointExpansions, std::uint64_t &negotiationIterations,
+    bool requireCapacityClosure,
+    std::optional<SystemRoutingReopenWitness> *reopenWitness = nullptr);
 
 } // namespace loom::pnr::detail
 

@@ -90,15 +90,6 @@ resolveHardwareImplementationPhysicalCase(
   const std::array<ArtifactRootReference, 1> configurationDependencies = {
       view.fabric()};
   merge(view.configurationAbi(), configurationDependencies);
-  for (const ArtifactRootReference &interconnect :
-       view.interconnectImplementations()) {
-    hardwareClosure.push_back(interconnect);
-    auto dependencies = fabricClosure(interconnect);
-    if (!dependencies)
-      return dependencies.takeError();
-    hardwareClosure.insert(hardwareClosure.end(), dependencies->begin(),
-                           dependencies->end());
-  }
   if (view.implementationPlatform()) {
     auto platform = platform::importImplementationPlatform(
         *view.implementationPlatform(), artifactStore);

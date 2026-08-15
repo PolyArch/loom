@@ -252,10 +252,11 @@ llvm::Expected<FabricArtifactView> buildModuleView(
         if (!mode)
           return invalid("a temporal PE occurrence has no FU configuration "
                          "storage mode");
-        if (mode.getValue() == "per_fu_config")
+        if (mode.getValue() == ::fabric::FuConfigMode::PerFuConfig)
           entity.peFuConfigurationStorageMode =
               FabricFuConfigurationStorageMode::PerFu;
-        else if (mode.getValue() == "per_instruction_fu_config")
+        else if (mode.getValue() ==
+                 ::fabric::FuConfigMode::PerInstructionFuConfig)
           entity.peFuConfigurationStorageMode =
               FabricFuConfigurationStorageMode::PerInstruction;
         else

@@ -258,13 +258,17 @@ public:
             *timingOffset, pattern.timingAndProgress.ordinal());
         if (!timing)
           return timing.takeError();
+        const ::fabric::UsePatternTiming intrinsicTiming =
+            contract->usePatternTiming(
+                ::fabric::UsePatternKey(patternOrdinal));
         result.patterns_.push_back(
             {FabricUsePatternRef{FabricUsePatternOwnerRef(owner),
                                  patternOrdinal},
              pattern.requester.ordinal(), pattern.eligibility.ordinal(),
              pattern.acquire.ordinal(), pattern.release.ordinal(), commit,
-             *timing, *claimOffset, *claimCount, *transactionOffset,
-             *transactionCount});
+             *timing, intrinsicTiming.releaseLatencyCycles,
+             intrinsicTiming.minimumInitiationIntervalCycles, *claimOffset,
+             *claimCount, *transactionOffset, *transactionCount});
       }
       auto patternCount =
           checked(capacityContext("use_patterns", "use_patterns",

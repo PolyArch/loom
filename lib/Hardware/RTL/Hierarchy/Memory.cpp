@@ -416,12 +416,13 @@ struct SourceRuntime final {
   mlir::Value data;
 };
 
-struct TemporalOperandQueueRuntime final {
+struct MemoryOperandQueueRuntime final {
   circt::Backedge occupiedNext;
   circt::Backedge dataNext;
   circt::Backedge dequeue;
   mlir::Value occupied;
   mlir::Value data;
+  mlir::Value available;
   mlir::Value enqueue;
   mlir::Value enqueueData;
 };
@@ -585,8 +586,8 @@ sourceForRole(mlir::OpBuilder &builder, mlir::Location location,
               circt::hw::HWModulePortAccessor &accessor, const RowSignals &row,
               std::uint32_t role, unsigned width,
               llvm::ArrayRef<EndpointPlan> endpoints,
-              llvm::ArrayRef<SourceRuntime> internalSources,
               std::optional<SourceRuntime> queuedExternal,
+              SourceRuntime queuedInternal,
               const fabric::FabricMemoryConfigurationLayout &layout) {
   mlir::Value valid =
       circt::comb::createOrFoldNot(builder, location, row.sourcePresent[role]);
@@ -635,23 +636,18 @@ sourceForRole(mlir::OpBuilder &builder, mlir::Location location,
             data, true);
     }
   }
-  for (std::uint32_t connection = 0; connection != internalSources.size();
-       ++connection) {
-    mlir::Value selected = andValues(
-        builder, location,
-        {row.sourcePresent[role], row.sourceInternal[role],
-         equals(builder, location, row.sourceConnection[role], connection)});
-    valid = circt::comb::OrOp::create(
-        builder, location, valid,
-        andValues(builder, location,
-                  {selected, internalSources[connection].valid}));
-    if (width != 0)
-      data = circt::comb::MuxOp::create(
-          builder, location, selected,
-          adaptWidth(builder, location, internalSources[connection].data,
-                     width),
-          data, true);
-  }
+  mlir::Value selectedInternal =
+      andValues(builder, location,
+                {row.sourcePresent[role], row.sourceInternal[role]});
+  valid = circt::comb::OrOp::create(
+      builder, location, valid,
+      andValues(builder, location,
+                {selectedInternal, queuedInternal.valid}));
+  if (width != 0)
+    data = circt::comb::MuxOp::create(
+        builder, location, selectedInternal,
+        adaptWidth(builder, location, queuedInternal.data, width), data,
+        true);
   return {valid, data};
 }
 
@@ -1011,6 +1007,113 @@ buildMemoryModule(mlir::OpBuilder &builder, mlir::Location location,
               clockReset.asynchronousReset);
         }
 
+        std::vector<std::vector<MemoryOperandQueueRuntime>> operandQueues(
+            rowCount);
+        std::map<std::uint64_t, std::vector<mlir::Value>> inputReadyTerms;
+        for (std::uint32_t row = 0; row != rowCount; ++row) {
+          operandQueues[row].reserve(layout.roleCount);
+          for (std::uint32_t role = 0; role != layout.roleCount; ++role) {
+            const unsigned width = std::max(
+                1U, roleWidth(static_cast<Role>(role), addressWidth,
+                              dataWidth, maskWidth));
+            MemoryOperandQueueRuntime queue;
+            queue.occupiedNext = backedges.get(bodyBuilder.getI1Type());
+            queue.dataNext = backedges.get(bodyBuilder.getIntegerType(width));
+            queue.dequeue = backedges.get(bodyBuilder.getI1Type());
+            queue.occupied = createRegister(
+                bodyBuilder, location, queue.occupiedNext,
+                accessor.getInput("clock"), accessor.getInput("reset"),
+                llvm::APInt(1, 0),
+                "operand_occupied_" + std::to_string(row) + "_" +
+                    std::to_string(role),
+                clockReset.asynchronousReset);
+            queue.data = createRegister(
+                bodyBuilder, location, queue.dataNext,
+                accessor.getInput("clock"), accessor.getInput("reset"),
+                llvm::APInt(width, 0),
+                "operand_data_" + std::to_string(row) + "_" +
+                    std::to_string(role),
+                clockReset.asynchronousReset);
+            queue.available = circt::comb::createOrFoldNot(
+                bodyBuilder, location, queue.occupied);
+            queue.enqueue = bitConstant(bodyBuilder, location, false);
+            queue.enqueueData = zero(bodyBuilder, location, width);
+            if (layout.schedule == ::fabric::Schedule::Temporal)
+              for (const EndpointPlan &endpoint : *endpoints) {
+                if (endpoint.direction != fabric::FabricPortDirection::Input)
+                  continue;
+                mlir::Value selected = andValues(
+                    bodyBuilder, location,
+                    {rows[row].active, rows[row].sourcePresent[role],
+                     circt::comb::createOrFoldNot(
+                         bodyBuilder, location,
+                         rows[row].sourceInternal[role]),
+                     equals(bodyBuilder, location,
+                            rows[row].sourceEndpoint[role],
+                            endpoint.endpoint.ordinal)});
+                selected = andValues(
+                    bodyBuilder, location,
+                    {selected, circt::comb::ICmpOp::create(
+                                   bodyBuilder, location,
+                                   circt::comb::ICmpPredicate::eq,
+                                   rows[row].sourceTag[role],
+                                   accessor.getInput(endpoint.tag->getName()),
+                                   true)});
+                inputReadyTerms[endpoint.endpoint.ordinal].push_back(
+                    andValues(bodyBuilder, location,
+                              {selected, queue.available}));
+                mlir::Value enqueue = andValues(
+                    bodyBuilder, location,
+                    {selected, queue.available,
+                     accessor.getInput(endpoint.valid.getName())});
+                queue.enqueue = circt::comb::OrOp::create(
+                    bodyBuilder, location, queue.enqueue, enqueue);
+                if (endpoint.data)
+                  queue.enqueueData = circt::comb::MuxOp::create(
+                      bodyBuilder, location, enqueue,
+                      adaptWidth(bodyBuilder, location,
+                                 accessor.getInput(endpoint.data->getName()),
+                                 width),
+                      queue.enqueueData, true);
+              }
+            operandQueues[row].push_back(std::move(queue));
+          }
+        }
+
+        std::vector<std::vector<mlir::Value>> internalQueueMatches(
+            layout.internalConnectionCount);
+        std::vector<mlir::Value> internalQueueReady;
+        internalQueueReady.reserve(layout.internalConnectionCount);
+        for (std::uint32_t connection = 0;
+             connection != layout.internalConnectionCount; ++connection) {
+          llvm::SmallVector<mlir::Value> readyTerms;
+          mlir::Value anyMatch = bitConstant(bodyBuilder, location, false);
+          internalQueueMatches[connection].reserve(
+              static_cast<std::size_t>(rowCount) * layout.roleCount);
+          readyTerms.reserve(static_cast<std::size_t>(rowCount) *
+                             layout.roleCount);
+          for (std::uint32_t row = 0; row != rowCount; ++row)
+            for (std::uint32_t role = 0; role != layout.roleCount; ++role) {
+              mlir::Value matches = andValues(
+                  bodyBuilder, location,
+                  {rows[row].active, rows[row].sourcePresent[role],
+                   rows[row].sourceInternal[role],
+                   equals(bodyBuilder, location,
+                          rows[row].sourceConnection[role], connection)});
+              internalQueueMatches[connection].push_back(matches);
+              anyMatch = circt::comb::OrOp::create(bodyBuilder, location,
+                                                   anyMatch, matches);
+              readyTerms.push_back(circt::comb::OrOp::create(
+                  bodyBuilder, location,
+                  circt::comb::createOrFoldNot(bodyBuilder, location,
+                                               matches),
+                  operandQueues[row][role].available));
+            }
+          internalQueueReady.push_back(andValues(
+              bodyBuilder, location,
+              {anyMatch, andValues(bodyBuilder, location, readyTerms)}));
+        }
+
         struct PublishedObligation final {
           std::uint32_t row = 0;
           std::uint32_t role = 0;
@@ -1019,18 +1122,6 @@ buildMemoryModule(mlir::OpBuilder &builder, mlir::Location location,
           mlir::Value selected;
         };
         std::vector<PublishedObligation> obligations;
-        std::vector<circt::Backedge> internalReady;
-        internalReady.reserve(layout.internalConnectionCount);
-        for (std::uint32_t connection = 0;
-             connection != layout.internalConnectionCount; ++connection)
-          internalReady.push_back(backedges.get(bodyBuilder.getI1Type()));
-        std::vector<SourceRuntime> internalSources;
-        internalSources.reserve(layout.internalConnectionCount);
-        for (std::uint32_t connection = 0;
-             connection != layout.internalConnectionCount; ++connection)
-          internalSources.push_back(
-              {bitConstant(bodyBuilder, location, false),
-               zero(bodyBuilder, location, dataWidth)});
         std::vector<mlir::Value> released(
             rowCount, bitConstant(bodyBuilder, location, false));
         std::vector<mlir::Value> resultSelected(
@@ -1079,7 +1170,7 @@ buildMemoryModule(mlir::OpBuilder &builder, mlir::Location location,
                     {row, role, nullptr, connection, selected});
                 heldValids.push_back(andValues(bodyBuilder, location,
                                                {completed[row], selected}));
-                downstreamReady.push_back(internalReady[connection]);
+                downstreamReady.push_back(internalQueueReady[connection]);
               }
           auto derived =
               heldValids.empty()
@@ -1137,19 +1228,48 @@ buildMemoryModule(mlir::OpBuilder &builder, mlir::Location location,
             accessor.setOutput(endpoint.tag->getName(), tag);
           accessor.setOutput(endpoint.valid.getName(), valid);
         }
+        std::vector<mlir::Value> internalPublishedValid(
+            layout.internalConnectionCount,
+            bitConstant(bodyBuilder, location, false));
+        std::vector<mlir::Value> internalPublishedData(
+            layout.internalConnectionCount,
+            zero(bodyBuilder, location, dataWidth));
         if (publication)
           for (auto [ordinal, obligation] : llvm::enumerate(obligations)) {
             if (!obligation.internalConnection)
               continue;
-            SourceRuntime &source =
-                internalSources[*obligation.internalConnection];
-            source.valid = circt::comb::OrOp::create(
-                bodyBuilder, location, source.valid,
+            const std::uint32_t connection =
+                *obligation.internalConnection;
+            internalPublishedValid[connection] = circt::comb::OrOp::create(
+                bodyBuilder, location, internalPublishedValid[connection],
                 publication->publishedValids[ordinal]);
-            source.data = circt::comb::MuxOp::create(
-                bodyBuilder, location, obligation.selected,
-                resultData[obligation.row], source.data, true);
+            internalPublishedData[connection] = circt::comb::MuxOp::create(
+                bodyBuilder, location,
+                publication->publishedValids[ordinal],
+                resultData[obligation.row],
+                internalPublishedData[connection], true);
           }
+        for (std::uint32_t connection = 0;
+             connection != layout.internalConnectionCount; ++connection) {
+          std::size_t matchOrdinal = 0;
+          for (std::uint32_t row = 0; row != rowCount; ++row)
+            for (std::uint32_t role = 0; role != layout.roleCount;
+                 ++role, ++matchOrdinal) {
+              MemoryOperandQueueRuntime &queue = operandQueues[row][role];
+              mlir::Value enqueue = andValues(
+                  bodyBuilder, location,
+                  {internalQueueMatches[connection][matchOrdinal],
+                   internalPublishedValid[connection]});
+              queue.enqueue = circt::comb::OrOp::create(
+                  bodyBuilder, location, queue.enqueue, enqueue);
+              queue.enqueueData = circt::comb::MuxOp::create(
+                  bodyBuilder, location, enqueue,
+                  adaptWidth(bodyBuilder, location,
+                             internalPublishedData[connection],
+                             queue.data.getType().getIntOrFloatBitWidth()),
+                  queue.enqueueData, true);
+            }
+        }
 
         std::vector<circt::Backedge> subordinateBusyNext(subordinateCount);
         std::vector<mlir::Value> subordinateBusy(subordinateCount);
@@ -1194,83 +1314,6 @@ buildMemoryModule(mlir::OpBuilder &builder, mlir::Location location,
                          accessor.getInput(ports.responseReady.getName())});
         }
 
-        std::vector<std::vector<TemporalOperandQueueRuntime>> operandQueues;
-        std::map<std::uint64_t, std::vector<mlir::Value>> inputReadyTerms;
-        if (layout.schedule == ::fabric::Schedule::Temporal) {
-          operandQueues.resize(rowCount);
-          for (std::uint32_t row = 0; row != rowCount; ++row) {
-            operandQueues[row].reserve(layout.roleCount);
-            for (std::uint32_t role = 0; role != layout.roleCount; ++role) {
-              const unsigned width = std::max(
-                  1U, roleWidth(static_cast<Role>(role), addressWidth,
-                                dataWidth, maskWidth));
-              TemporalOperandQueueRuntime queue;
-              queue.occupiedNext = backedges.get(bodyBuilder.getI1Type());
-              queue.dataNext =
-                  backedges.get(bodyBuilder.getIntegerType(width));
-              queue.dequeue = backedges.get(bodyBuilder.getI1Type());
-              queue.occupied = createRegister(
-                  bodyBuilder, location, queue.occupiedNext,
-                  accessor.getInput("clock"), accessor.getInput("reset"),
-                  llvm::APInt(1, 0),
-                  "operand_occupied_" + std::to_string(row) + "_" +
-                      std::to_string(role),
-                  clockReset.asynchronousReset);
-              queue.data = createRegister(
-                  bodyBuilder, location, queue.dataNext,
-                  accessor.getInput("clock"), accessor.getInput("reset"),
-                  llvm::APInt(width, 0),
-                  "operand_data_" + std::to_string(row) + "_" +
-                      std::to_string(role),
-                  clockReset.asynchronousReset);
-              mlir::Value available = circt::comb::OrOp::create(
-                  bodyBuilder, location,
-                  circt::comb::createOrFoldNot(bodyBuilder, location,
-                                               queue.occupied),
-                  queue.dequeue);
-              queue.enqueue = bitConstant(bodyBuilder, location, false);
-              queue.enqueueData = zero(bodyBuilder, location, width);
-              for (const EndpointPlan &endpoint : *endpoints) {
-                if (endpoint.direction != fabric::FabricPortDirection::Input)
-                  continue;
-                mlir::Value selected = andValues(
-                    bodyBuilder, location,
-                    {rows[row].active, rows[row].sourcePresent[role],
-                     circt::comb::createOrFoldNot(
-                         bodyBuilder, location,
-                         rows[row].sourceInternal[role]),
-                     equals(bodyBuilder, location,
-                            rows[row].sourceEndpoint[role],
-                            endpoint.endpoint.ordinal)});
-                selected = andValues(
-                    bodyBuilder, location,
-                    {selected, circt::comb::ICmpOp::create(
-                                   bodyBuilder, location,
-                                   circt::comb::ICmpPredicate::eq,
-                                   rows[row].sourceTag[role],
-                                   accessor.getInput(endpoint.tag->getName()),
-                                   true)});
-                inputReadyTerms[endpoint.endpoint.ordinal].push_back(
-                    andValues(bodyBuilder, location, {selected, available}));
-                mlir::Value enqueue = andValues(
-                    bodyBuilder, location,
-                    {selected, available,
-                     accessor.getInput(endpoint.valid.getName())});
-                queue.enqueue = circt::comb::OrOp::create(
-                    bodyBuilder, location, queue.enqueue, enqueue);
-                if (endpoint.data)
-                  queue.enqueueData = circt::comb::MuxOp::create(
-                      bodyBuilder, location, selected,
-                      adaptWidth(bodyBuilder, location,
-                                 accessor.getInput(endpoint.data->getName()),
-                                 width),
-                      queue.enqueueData, true);
-              }
-              operandQueues[row].push_back(std::move(queue));
-            }
-          }
-        }
-
         std::vector<std::vector<SourceRuntime>> sources(rowCount);
         std::vector<mlir::Value> rowReads(rowCount);
         std::vector<mlir::Value> rowWrites(rowCount);
@@ -1294,8 +1337,11 @@ buildMemoryModule(mlir::OpBuilder &builder, mlir::Location location,
             sources[row].push_back(sourceForRole(bodyBuilder, location,
                                                  accessor, rows[row], role,
                                                  width, *endpoints,
-                                                 internalSources,
                                                  queuedExternal,
+                                                 {operandQueues[row][role]
+                                                      .occupied,
+                                                  operandQueues[row][role]
+                                                      .data},
                                                  layout));
             sourceValids.push_back(sources[row].back().valid);
           }
@@ -1641,45 +1687,27 @@ buildMemoryModule(mlir::OpBuilder &builder, mlir::Location location,
                        {localFired[requester], managerCompleted[requester]});
         }
 
-        for (std::uint32_t connection = 0;
-             connection != layout.internalConnectionCount; ++connection) {
-          mlir::Value ready = bitConstant(bodyBuilder, location, false);
-          for (std::uint32_t row = 0; row != rowCount; ++row)
-            for (std::uint32_t role = 0; role != layout.roleCount; ++role)
-              ready = circt::comb::OrOp::create(
-                  bodyBuilder, location, ready,
-                  andValues(
-                      bodyBuilder, location,
-                      {issued[row], rows[row].sourcePresent[role],
-                       rows[row].sourceInternal[role],
-                       equals(bodyBuilder, location,
-                              rows[row].sourceConnection[role], connection)}));
-          internalReady[connection].setValue(ready);
-        }
-
-        if (layout.schedule == ::fabric::Schedule::Temporal)
-          for (std::uint32_t row = 0; row != rowCount; ++row)
-            for (std::uint32_t role = 0; role != layout.roleCount; ++role) {
-              TemporalOperandQueueRuntime &queue = operandQueues[row][role];
-              mlir::Value dequeue = andValues(
-                  bodyBuilder, location,
-                  {issued[row], rows[row].sourcePresent[role],
-                   circt::comb::createOrFoldNot(
-                       bodyBuilder, location,
-                       rows[row].sourceInternal[role])});
-              queue.dequeue.setValue(dequeue);
-              queue.occupiedNext.setValue(orValues(
-                  bodyBuilder, location,
-                  {andValues(bodyBuilder, location,
-                             {queue.occupied,
-                              circt::comb::createOrFoldNot(bodyBuilder,
-                                                           location,
-                                                           dequeue)}),
-                   queue.enqueue}));
-              queue.dataNext.setValue(circt::comb::MuxOp::create(
-                  bodyBuilder, location, queue.enqueue, queue.enqueueData,
-                  queue.data, true));
-            }
+        for (std::uint32_t row = 0; row != rowCount; ++row)
+          for (std::uint32_t role = 0; role != layout.roleCount; ++role) {
+            MemoryOperandQueueRuntime &queue = operandQueues[row][role];
+            mlir::Value queuedSource = rows[row].sourceInternal[role];
+            if (layout.schedule == ::fabric::Schedule::Temporal)
+              queuedSource = rows[row].sourcePresent[role];
+            mlir::Value dequeue = andValues(
+                bodyBuilder, location,
+                {issued[row], rows[row].sourcePresent[role], queuedSource});
+            queue.dequeue.setValue(dequeue);
+            queue.occupiedNext.setValue(orValues(
+                bodyBuilder, location,
+                {andValues(bodyBuilder, location,
+                           {queue.occupied,
+                            circt::comb::createOrFoldNot(bodyBuilder, location,
+                                                         dequeue)}),
+                 queue.enqueue}));
+            queue.dataNext.setValue(circt::comb::MuxOp::create(
+                bodyBuilder, location, queue.enqueue, queue.enqueueData,
+                queue.data, true));
+          }
 
         for (const EndpointPlan &endpoint : *endpoints) {
           if (endpoint.direction != fabric::FabricPortDirection::Input)

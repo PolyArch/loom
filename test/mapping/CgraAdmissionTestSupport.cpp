@@ -1,5 +1,7 @@
 #include "CgraAdmissionTestSupport.h"
 
+#include "CGRAExecutionPlan.h"
+
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
@@ -7,6 +9,10 @@
 #include "Evaluation/Models/CgraSimulation.h"
 #include "Evaluation/Models/DfgSimulation.h"
 #include "Evaluation/Models/SimulationComparison.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Identity/FabricRefImport.h"
+#include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/IR/MappingSchema.h"
 #include "Simulator/CGRAAdmission.h"
 #include "Simulator/CGRASimulator.h"
 #include "Simulator/SimulationArtifacts.h"
@@ -87,6 +93,77 @@ bool sameAction(const loom::sim::PhysicalActionOccurrenceRef &lhs,
          lhs.localActionOrdinal == rhs.localActionOrdinal;
 }
 
+void verifySameInputDistinctTemporalSwitchRows(
+    const loom::sim::detail::CgraFrozenExecutionPlan &plan,
+    const loom::fabric::FabricArtifactView &fabric) {
+  struct Activation final {
+    loom::fabric::FabricSwitchOccurrenceRef owner;
+    loom::fabric::FabricOrdinal input = 0;
+    llvm::APInt tag = llvm::APInt(1, 0);
+    std::uint64_t instance = 0;
+  };
+  std::vector<Activation> activations;
+  for (const auto &route : plan.transport.routes) {
+    if (route.nodeOffset > plan.transport.routeNodes.size() ||
+        route.nodeCount > plan.transport.routeNodes.size() - route.nodeOffset)
+      fail("CGRA route-node slice is malformed");
+    for (const auto &node :
+         llvm::ArrayRef(plan.transport.routeNodes)
+             .slice(route.nodeOffset, route.nodeCount)) {
+      if (node.incomingTraversalOrdinal ==
+          loom::sim::detail::invalidCgraTransportOrdinal)
+        continue;
+      if (node.incomingTraversalOrdinal >= plan.transport.traversals.size())
+        fail("CGRA route node names an absent traversal");
+      const auto &traversal =
+          plan.transport.traversals[node.incomingTraversalOrdinal].reference;
+      const auto *sw =
+          std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
+              &traversal.payload);
+      if (!sw || fabric.switchSchedule(sw->owner) != ::fabric::Schedule::Temporal)
+        continue;
+      if (node.physicalTagOrdinal >= plan.transport.physicalTags.size() ||
+          node.impliedUseOffset > plan.transport.traversalUses.size() ||
+          node.impliedUseCount == 0 ||
+          node.impliedUseCount >
+              plan.transport.traversalUses.size() - node.impliedUseOffset)
+        fail("Temporal switch route node has an incomplete activation");
+      const auto uses = llvm::ArrayRef(plan.transport.traversalUses)
+                            .slice(node.impliedUseOffset,
+                                   node.impliedUseCount);
+      const std::uint64_t instance = uses.front().activationInstanceOrdinal;
+      if (instance == loom::sim::detail::invalidCgraTransportOrdinal ||
+          llvm::any_of(uses, [&](const auto &use) {
+            return use.activationInstanceOrdinal != instance;
+          }))
+        fail("Temporal switch row/input did not form one atomic activation");
+      activations.push_back({sw->owner, sw->input,
+                             plan.transport
+                                 .physicalTags[node.physicalTagOrdinal]
+                                 .value,
+                             instance});
+    }
+  }
+
+  bool observedDistinctRows = false;
+  for (std::size_t lhs = 0; lhs != activations.size(); ++lhs)
+    for (std::size_t rhs = lhs + 1; rhs != activations.size(); ++rhs) {
+      if (activations[lhs].owner != activations[rhs].owner ||
+          activations[lhs].input != activations[rhs].input)
+        continue;
+      if (activations[lhs].tag == activations[rhs].tag) {
+        if (activations[lhs].instance != activations[rhs].instance)
+          fail("one Temporal switch row/input gained multiple activations");
+        continue;
+      }
+      observedDistinctRows = true;
+      if (activations[lhs].instance == activations[rhs].instance)
+        fail("different Temporal switch rows shared one activation");
+    }
+  if (!observedDistinctRows)
+    fail("fixture did not expose two tag rows at one Temporal switch input");
+}
+
 } // namespace
 
 void loom::test::exerciseCgraAdmission(
@@ -95,7 +172,8 @@ void loom::test::exerciseCgraAdmission(
     const ArtifactRootReference &spatialMappingReference,
     const ArtifactRootReference &foreignFabricReference,
     const ArtifactStore &store, const BlobStore &blobs, bool expectPhysicalTags,
-    bool expectCausalComputeRelease) {
+    bool expectCausalComputeRelease,
+    bool expectSameInputDistinctSwitchRows) {
   auto dataflow =
       take(::dataflow::importCanonicalDataflow(dataflowReference, store));
   auto view = take(dataflow.view());
@@ -105,6 +183,21 @@ void loom::test::exerciseCgraAdmission(
   const ::dataflow::RootedGraphLaunchRef launch{
       view.rootThreadLaunches().front().ref,
       view.staticGraphLaunches().front().ref};
+
+  if (expectSameInputDistinctSwitchRows) {
+    auto fabric = take(
+        ::loom::fabric::importEntireFabricRoot(fabricReference, store));
+    auto spatial = take(
+        ::loom::mapping::importSpatialMapping(spatialMappingReference, store));
+    const ArtifactRootReference techReference{
+        ::loom::mapping::mappingArtifactSchema.identity.str(),
+        ::loom::mapping::mappingArtifactSchema.version,
+        spatial.view().techMappingIdentity()};
+    auto tech = take(::loom::mapping::importTechMapping(techReference, store));
+    auto plan = take(sim::detail::freezeCgraExecutionPlan(
+        view, tech.view(), fabric.view(), spatial.view()));
+    verifySameInputDistinctTemporalSwitchRows(plan, fabric.view());
+  }
 
   sim::SpatialSimulationWorkload workloadDraft{launch};
   workloadDraft.valueInputPlan = {sim::RuntimeValueInput{}};

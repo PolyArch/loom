@@ -3,6 +3,8 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricHandshake.h"
 
+#include "../InternalMemoryEdgeTestSupport.h"
+
 #include "Common/ArtifactFinalizer.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Fabric/IR/FabricOps.h"
@@ -59,6 +61,56 @@ using loom::fabric::HandshakeOwnerModel;
 using loom::fabric::HandshakeSignalKind;
 using loom::fabric::HandshakeSignalRef;
 using loom::fabric::ResolvedHandshakeActivation;
+
+[[noreturn]] void fail(llvm::StringRef test, const std::string &message);
+
+struct ExternalMemoryHandshakeRoles final {
+  std::vector<std::optional<loom::fabric::FabricMemoryHandshakeRoleSource>>
+      sources;
+  std::vector<std::optional<loom::fabric::FabricMemoryHandshakeRoleDestination>>
+      destinations;
+};
+
+ExternalMemoryHandshakeRoles externalMemoryHandshakeRoles(
+    llvm::StringRef test,
+    const loom::fabric::MemoryCapabilityAlternativeView &alternative,
+    ::dataflow::semantics::MemoryMaskForm maskForm) {
+  using Role = ::dataflow::semantics::ServiceValueRole;
+  constexpr std::size_t count = static_cast<std::size_t>(Role::Completion) + 1;
+  auto kind = ::dataflow::semantics::getMemoryServiceKind(
+      alternative.actorContractDomain.actorSchema());
+  if (!kind)
+    fail(test, llvm::toString(kind.takeError()));
+  const auto &schema = ::dataflow::semantics::getServiceRoleSchema(*kind);
+  ExternalMemoryHandshakeRoles result;
+  result.sources.resize(count);
+  result.destinations.resize(count);
+  const auto endpoint = [&](Role role) {
+    const auto found = llvm::find_if(
+        alternative.roleToEndpoint,
+        [&](const ::fabric::MemoryRoleEndpointBindingRecord &binding) {
+          return binding.role == role;
+        });
+    if (found == alternative.roleToEndpoint.end())
+      fail(test, "memory capability omitted an active role endpoint");
+    return found->endpointOrdinal;
+  };
+  for (Role role : schema.arguments) {
+    if (role == Role::Mask &&
+        maskForm == ::dataflow::semantics::MemoryMaskForm::Absent)
+      continue;
+    result.sources[static_cast<std::size_t>(role)] =
+        loom::fabric::FabricMemoryHandshakeExternalRoleSource{endpoint(role)};
+  }
+  for (Role role : schema.results) {
+    if (role == Role::Mask &&
+        maskForm == ::dataflow::semantics::MemoryMaskForm::Absent)
+      continue;
+    result.destinations[static_cast<std::size_t>(role)] =
+        loom::fabric::FabricMemoryHandshakeRoleDestination{endpoint(role), {}};
+  }
+  return result;
+}
 
 [[noreturn]] void fail(llvm::StringRef test, const std::string &message) {
   llvm::errs() << test << ": " << message << '\n';
@@ -388,6 +440,87 @@ void atomicBroadcastProjectionIsLinear(std::uint32_t fanout) {
     require(test, hasPath(model, activation, peerReady, outputValid),
             "output valid does not depend on a selected peer ready");
   }
+}
+
+void temporalSwitchRowsOwnIndependentActivations() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  auto source = parse(test, R"mlir(
+    module {
+      fabric.module @temporal_rows(%input: !fabric.bits_tag<32, 4>)
+          -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>) {
+        %outputs:2 = fabric.switch [temporal] %input
+            [{connectivity_table = ["1", "1"], route_table_size = 2 : i32}]
+            : (!fabric.bits_tag<32, 4>)
+            -> (!fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>)
+        fabric.yield %outputs#0, %outputs#1
+            : !fabric.bits_tag<32, 4>, !fabric.bits_tag<32, 4>
+      }
+    }
+  )mlir");
+  FinalizedFabricRoot finalized =
+      take(test, loom::fabric::finalizeFabricRoot(root(test, *source), store));
+  std::vector<HandshakeOwnerModel> models =
+      take(test, loom::fabric::compileHandshakeOwnerModels(finalized.view()));
+  const HandshakeOwnerModel &model = switchModel(test, models);
+  const FabricSwitchOccurrenceRef occurrence =
+      std::get<FabricSwitchOccurrenceRef>(model.owner().payload());
+
+  std::array<FabricPhysicalTraversalRef, 2> traversals;
+  std::array<loom::fabric::FabricTransportEndpointRef, 2> outputs;
+  std::optional<loom::fabric::FabricTransportEndpointRef> input;
+  std::array<bool, 2> observed = {false, false};
+  for (const auto &candidate : finalized.view().physicalTraversals()) {
+    const auto *payload =
+        std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
+            &candidate.reference.payload);
+    if (!payload || payload->owner != occurrence)
+      continue;
+    require(test,
+            payload->input == 0 && payload->output < traversals.size() &&
+                candidate.sources.size() == 1 &&
+                candidate.destinations.size() == 1,
+            "Temporal switch traversal has an unexpected crosspoint");
+    observed[payload->output] = true;
+    traversals[payload->output] = candidate.reference;
+    outputs[payload->output] = candidate.destinations.front();
+    input = candidate.sources.front();
+  }
+  require(test, input.has_value() && observed[0] && observed[1],
+          "Temporal switch fixture omitted a crosspoint");
+
+  FabricHandshakeSelection separateRows;
+  separateRows.switchActivations = {{{occurrence, 0, 0}, {traversals[0]}},
+                                    {{occurrence, 1, 0}, {traversals[1]}}};
+  const ResolvedHandshakeActivation separate =
+      take(test, loom::fabric::resolveSelectedHandshake(model, separateRows));
+  const std::uint32_t output0Valid =
+      node(test, model, {outputs[0], HandshakeSignalKind::Valid});
+  const std::uint32_t output0Ready =
+      node(test, model, {outputs[0], HandshakeSignalKind::Ready});
+  const std::uint32_t output1Valid =
+      node(test, model, {outputs[1], HandshakeSignalKind::Valid});
+  const std::uint32_t output1Ready =
+      node(test, model, {outputs[1], HandshakeSignalKind::Ready});
+  require(test,
+          !hasPath(model, separate, output0Ready, output1Valid) &&
+              !hasPath(model, separate, output1Ready, output0Valid),
+          "different Temporal rows were merged into one atomic broadcast");
+  if (llvm::Error error =
+          loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+              finalized.view(), separateRows))
+    fail(test, llvm::toString(std::move(error)));
+
+  FabricHandshakeSelection oneRow;
+  oneRow.switchActivations = {
+      {{occurrence, 0, 0}, {traversals[0], traversals[1]}}};
+  const ResolvedHandshakeActivation broadcast =
+      take(test, loom::fabric::resolveSelectedHandshake(model, oneRow));
+  require(test,
+          hasPath(model, broadcast, output0Ready, output1Valid) &&
+              hasPath(model, broadcast, output1Ready, output0Valid),
+          "one Temporal row did not preserve atomic broadcast backpressure");
 }
 
 void fifoModeOwnsItsExactCombinationalBreak() {
@@ -803,7 +936,7 @@ void temporalPeQueuesAndRegisterFifosAreRegisteredBreaks() {
               num_reg_fifo = 2 : i32,
               reg_fifo_depth = 4 : i32,
               reg_fifo_ports = 2 : i32,
-              fu_config_mode = "per_fu_config",
+              fu_config_mode = #fabric.fu_config_mode<per_fu_config>,
               operand_buffer_mode = #fabric.operand_buffer_mode<per_input_port>,
               operand_buffer_size = 4 : i32
             } {
@@ -882,8 +1015,9 @@ void temporalPeQueuesAndRegisterFifosAreRegisteredBreaks() {
       continue;
     const auto &payload = std::get<loom::fabric::FabricPeSelectorPayload>(
         traversal.reference.payload);
-    require(test, payload.owner == pe && traversal.sources.size() == 1 &&
-                      traversal.destinations.size() == 1,
+    require(test,
+            payload.owner == pe && traversal.sources.size() == 1 &&
+                traversal.destinations.size() == 1,
             "temporal PE selector has an invalid owner or endpoint shape");
     FabricHandshakeSelection selection;
     selection.traversals.push_back(traversal.reference);
@@ -891,29 +1025,39 @@ void temporalPeQueuesAndRegisterFifosAreRegisteredBreaks() {
         take(test, loom::fabric::resolveSelectedHandshake(*model, selection));
     if (payload.source.owner == peEndpointOwner) {
       ++ingressSelectors;
-      require(test, activation.arcOrdinals().empty(),
-              "temporal operand queue did not break ingress handshake");
+      require(
+          test,
+          activation.arcOrdinals().size() == 1 &&
+              hasPath(*model, activation,
+                      node(test, *model,
+                           {traversal.destinations.front(),
+                            HandshakeSignalKind::Ready}),
+                      node(test, *model,
+                           {traversal.sources.front(),
+                            HandshakeSignalKind::Ready})),
+          "temporal operand queue did not preserve its registered-valid and "
+          "full-replacement-ready semantics");
       continue;
     }
     ++egressSelectors;
     require(test, activation.arcOrdinals().size() == 2,
             "temporal result selector lost its direct handshake relation");
-    require(test,
-            hasPath(*model, activation,
-                    node(test, *model,
-                         {traversal.sources.front(),
-                          HandshakeSignalKind::Valid}),
-                    node(test, *model,
-                         {traversal.destinations.front(),
-                          HandshakeSignalKind::Valid})) &&
-                hasPath(*model, activation,
-                        node(test, *model,
-                             {traversal.destinations.front(),
-                              HandshakeSignalKind::Ready}),
-                        node(test, *model,
-                             {traversal.sources.front(),
-                              HandshakeSignalKind::Ready})),
-            "temporal result selector is not transparent");
+    require(
+        test,
+        hasPath(*model, activation,
+                node(test, *model,
+                     {traversal.sources.front(), HandshakeSignalKind::Valid}),
+                node(test, *model,
+                     {traversal.destinations.front(),
+                      HandshakeSignalKind::Valid})) &&
+            hasPath(
+                *model, activation,
+                node(test, *model,
+                     {traversal.destinations.front(),
+                      HandshakeSignalKind::Ready}),
+                node(test, *model,
+                     {traversal.sources.front(), HandshakeSignalKind::Ready})),
+        "temporal result selector is not transparent");
   }
   require(test, ingressSelectors == 4 && egressSelectors == 1,
           "temporal PE selector inventory changed unexpectedly");
@@ -964,10 +1108,13 @@ void memoryOperationPlanOwnsAtomicBoundaryAndRegisteredBreak() {
   const loom::fabric::FabricUsePatternRef usePattern{
       loom::fabric::FabricUsePatternOwnerRef(FabricInventoryOwnerRef::of(port)),
       alternative->admissibleUsePatterns.front().ordinal()};
+  const auto roles = externalMemoryHandshakeRoles(
+      test, *alternative, ::dataflow::semantics::MemoryMaskForm::Absent);
   const auto selected = take(
       test, loom::fabric::makeMemoryHandshakeSelection(
                 module.view(), FabricMemoryHandshakePlacement(port), capability,
-                usePattern, ::dataflow::semantics::MemoryMaskForm::Absent));
+                usePattern, ::dataflow::semantics::MemoryMaskForm::Absent,
+                roles.sources, roles.destinations));
 
   std::vector<HandshakeOwnerModel> models =
       take(test, loom::fabric::compileHandshakeOwnerModels(module.view()));
@@ -1048,8 +1195,160 @@ void memoryOperationPlanOwnsAtomicBoundaryAndRegisteredBreak() {
                           loom::fabric::FabricUsePatternOwnerRef(
                               FabricInventoryOwnerRef::of(port)),
                           usePattern.ordinal + 1},
-                      ::dataflow::semantics::MemoryMaskForm::Absent),
+                      ::dataflow::semantics::MemoryMaskForm::Absent,
+                      roles.sources, roles.destinations),
                   "unknown use pattern");
+}
+
+void temporalMemoryInternalConnectionIsClosedAndRegistered() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  ArtifactStore store(directory.path());
+  FinalizedFabricRoot module = loom::test::buildInternalMemoryEdgeFabric(
+      store, ::fabric::Schedule::Temporal);
+  const auto memories = module.view().memoryOccurrences();
+  require(test, memories.size() == 1,
+          "internal-edge fixture has the wrong memory count");
+  const FabricMemoryOccurrenceRef memory = memories.front();
+  const auto ports = module.view().memoryOperationPorts(memory);
+  require(test, ports.size() == 2,
+          "internal-edge fixture has the wrong operation-port count");
+
+  std::optional<FabricMemoryOperationPortRef> loadPort;
+  std::optional<FabricMemoryOperationPortRef> storePort;
+  const loom::fabric::MemoryCapabilityAlternativeView *loadCapability = nullptr;
+  const loom::fabric::MemoryCapabilityAlternativeView *storeCapability =
+      nullptr;
+  for (FabricMemoryOperationPortRef port : ports) {
+    const auto *capability =
+        module.view().memoryCapabilityAlternative({port, 0});
+    require(test, capability != nullptr,
+            "internal-edge port has no capability alternative");
+    switch (capability->actorContractDomain.actorSchema()) {
+    case ::dataflow::OperationSchemaId::DataflowLoad:
+      loadPort = port;
+      loadCapability = capability;
+      break;
+    case ::dataflow::OperationSchemaId::DataflowStore:
+      storePort = port;
+      storeCapability = capability;
+      break;
+    default:
+      fail(test, "internal-edge port has the wrong actor schema");
+    }
+  }
+  require(test, loadPort && storePort && loadCapability && storeCapability,
+          "internal-edge fixture omitted its load or store port");
+
+  auto loadRoles = externalMemoryHandshakeRoles(
+      test, *loadCapability, ::dataflow::semantics::MemoryMaskForm::Absent);
+  auto storeRoles = externalMemoryHandshakeRoles(
+      test, *storeCapability, ::dataflow::semantics::MemoryMaskForm::Absent);
+  using Role = ::dataflow::semantics::ServiceValueRole;
+  const std::size_t control = static_cast<std::size_t>(Role::Control);
+  const std::size_t completion = static_cast<std::size_t>(Role::Completion);
+  require(test,
+          loadRoles.destinations[completion].has_value() &&
+              storeRoles.sources[control].has_value(),
+          "internal-edge roles omitted completion or control");
+  loadRoles.destinations[completion]->internalConnections = {0};
+  storeRoles.sources[control] =
+      loom::fabric::FabricMemoryHandshakeInternalRoleSource{0};
+
+  auto makeSelection =
+      [&](FabricMemoryOperationPortRef port,
+          const loom::fabric::MemoryCapabilityAlternativeView &capability,
+          loom::fabric::FabricOrdinal contextOrdinal,
+          const ExternalMemoryHandshakeRoles &roles) {
+        require(test, !capability.admissibleUsePatterns.empty(),
+                "internal-edge capability has no use pattern");
+        const loom::fabric::FabricMemoryCapabilityAlternativeRef capabilityRef{
+            port, 0};
+        const loom::fabric::FabricUsePatternRef usePattern{
+            loom::fabric::FabricUsePatternOwnerRef(
+                FabricInventoryOwnerRef::of(port)),
+            capability.admissibleUsePatterns.front().ordinal()};
+        return take(test, loom::fabric::makeMemoryHandshakeSelection(
+                              module.view(),
+                              loom::fabric::FabricMemoryOperationContextRef{
+                                  port, contextOrdinal},
+                              capabilityRef, usePattern,
+                              ::dataflow::semantics::MemoryMaskForm::Absent,
+                              roles.sources, roles.destinations));
+      };
+
+  auto load = makeSelection(*loadPort, *loadCapability, 0, loadRoles);
+  auto storeSelection =
+      makeSelection(*storePort, *storeCapability, 1, storeRoles);
+  FabricHandshakeSelection producerOnly;
+  producerOnly.memoryOperations.push_back(load);
+  requireRejected(test,
+                  loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+                      module.view(), producerOnly),
+                  "not closed");
+  FabricHandshakeSelection consumerOnly;
+  consumerOnly.memoryOperations.push_back(storeSelection);
+  requireRejected(test,
+                  loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+                      module.view(), consumerOnly),
+                  "not closed");
+
+  FabricHandshakeSelection closed;
+  closed.memoryOperations = {load, storeSelection};
+  if (llvm::Error error =
+          loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+              module.view(), closed))
+    fail(test, llvm::toString(std::move(error)));
+  auto duplicateProducer =
+      makeSelection(*loadPort, *loadCapability, 2, loadRoles);
+  FabricHandshakeSelection ambiguous = closed;
+  ambiguous.memoryOperations.push_back(std::move(duplicateProducer));
+  requireRejected(test,
+                  loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+                      module.view(), ambiguous),
+                  "multiple producers");
+
+  std::vector<HandshakeOwnerModel> models =
+      take(test, loom::fabric::compileHandshakeOwnerModels(module.view()));
+  const HandshakeOwnerModel *model = nullptr;
+  for (const HandshakeOwnerModel &candidate : models)
+    if (candidate.owner().kind() ==
+            FabricHandshakeOwnerKind::MemoryOccurrence &&
+        std::get<FabricMemoryOccurrenceRef>(candidate.owner().payload()) ==
+            memory)
+      model = &candidate;
+  require(test, model != nullptr,
+          "internal-edge memory has no handshake owner model");
+  ResolvedHandshakeActivation activation =
+      take(test, loom::fabric::resolveSelectedHandshake(*model, closed));
+  const auto endpointForRole = [&](const auto &capability, Role role) {
+    const auto binding =
+        llvm::find_if(capability.roleToEndpoint, [&](const auto &candidate) {
+          return candidate.role == role;
+        });
+    if (binding == capability.roleToEndpoint.end())
+      fail(test, "internal-edge capability omitted a role endpoint");
+    return loom::fabric::FabricTransportEndpointRef{
+        loom::fabric::FabricTransportEndpointOwnerRef::of(memory),
+        binding->endpointOrdinal};
+  };
+  const auto address = endpointForRole(*loadCapability, Role::Address);
+  const auto controlEndpoint = endpointForRole(*loadCapability, Role::Control);
+  const auto data = endpointForRole(*loadCapability, Role::Data);
+  const auto completionEndpoint =
+      endpointForRole(*loadCapability, Role::Completion);
+  const auto addressReady =
+      node(test, *model, {address, HandshakeSignalKind::Ready});
+  const auto controlValid =
+      node(test, *model, {controlEndpoint, HandshakeSignalKind::Valid});
+  const auto dataReady = node(test, *model, {data, HandshakeSignalKind::Ready});
+  const auto completionReady =
+      node(test, *model, {completionEndpoint, HandshakeSignalKind::Ready});
+  require(test,
+          !hasPath(*model, activation, dataReady, addressReady) &&
+              !hasPath(*model, activation, completionReady, addressReady) &&
+              !hasPath(*model, activation, controlValid, addressReady),
+          "Temporal memory queue exposed a combinational ingress path");
 }
 
 void fuSelectionUsesExactActorPortCorrespondence() {
@@ -1170,15 +1469,15 @@ void fuSelectionUsesExactActorPortCorrespondence() {
                   node(test, *model, {input0, HandshakeSignalKind::Valid}),
                   node(test, *model, {input1, HandshakeSignalKind::Ready})),
           "selected sync inputs are not one atomic rendezvous");
-  require(test,
+  require(
+      test,
+      !hasPath(*model, activation,
+               node(test, *model, {output0, HandshakeSignalKind::Ready}),
+               node(test, *model, {output1, HandshakeSignalKind::Valid})) &&
           !hasPath(*model, activation,
-                   node(test, *model, {output0, HandshakeSignalKind::Ready}),
-                   node(test, *model, {output1, HandshakeSignalKind::Valid})) &&
-              !hasPath(
-                  *model, activation,
-                  node(test, *model, {output1, HandshakeSignalKind::Ready}),
-                  node(test, *model, {output0, HandshakeSignalKind::Valid})),
-          "registered sync result valid depends on peer backpressure");
+                   node(test, *model, {output1, HandshakeSignalKind::Ready}),
+                   node(test, *model, {output0, HandshakeSignalKind::Valid})),
+      "registered sync result valid depends on peer backpressure");
   require(test,
           !hasPath(*model, activation,
                    node(test, *model, {input0, HandshakeSignalKind::Valid}),
@@ -1302,6 +1601,7 @@ int main() {
   selectedPointConnectionConsumesItsWitness();
   atomicBroadcastProjectionIsLinear(64);
   atomicBroadcastProjectionIsLinear(256);
+  temporalSwitchRowsOwnIndependentActivations();
   fifoModeOwnsItsExactCombinationalBreak();
   bufferedPhysicalCycleIsAcceptedBeforeSelection();
   selectedGlobalCycleUsesExactTraversalSelection();
@@ -1309,6 +1609,7 @@ int main() {
   oneToOneBoundariesUseDirectHandshake();
   temporalPeQueuesAndRegisterFifosAreRegisteredBreaks();
   memoryOperationPlanOwnsAtomicBoundaryAndRegisteredBreak();
+  temporalMemoryInternalConnectionIsClosedAndRegistered();
   fuSelectionUsesExactActorPortCorrespondence();
   fullWidthDirectSyncIsAcyclic();
   return EXIT_SUCCESS;

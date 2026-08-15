@@ -44,23 +44,24 @@ names, physical occurrence counts, coordinates, or backend-provider tables as
 semantic capability.
 
 `C` is the versioned component view mechanically derived from the complete
-ResolvedConfig. It contains exactly the generator policy and its three
+ResolvedConfig. It contains exactly the generator policy and its four
 positive limits:
 
 ```text
 ResolvedTechMappingConfigView {
   match_row_attempt_limit: uint64
   partial_cover_expansion_limit: uint64
+  candidate_evaluation_limit: uint64
   candidate_publication_limit: uint64
 }
 ```
 
-The view descriptor identity is `loom.tech_mapping.config`, version 1.0. Its
+The view descriptor identity is `loom.tech_mapping.config`, version 2.0. Its
 exact descriptor bytes are the ASCII bytes
-`loom.tech_mapping.config.1.0`, without a trailing zero byte. Its canonical
-view bytes are the three `u64be` values in the field order above, with no field
+`loom.tech_mapping.config.2.0`, without a trailing zero byte. Its canonical
+view bytes are the four `u64be` values in the field order above, with no field
 names or optional payload. `WorkUnitDescriptorRef` uses that same owner policy
-descriptor and the zero-based ordinals zero, one, and two in the same order.
+descriptor and the zero-based ordinals zero through three in the same order.
 The central config library owns the single projector from exact ResolvedConfig
 and uses the Common component-view digest contract.
 
@@ -144,25 +145,63 @@ graph-boundary correspondence, and selected
 internal-edge closure remain row-admission checks; each failure there is one
 charged seed rejection.
 
-Temporal ingress distinguishability is the row-local consequence of the
-Fabric-owned row architecture: a Temporal engine selects one resident row by
-matching the tag that arrives on that row's ingress endpoint, so two rows on
-one operation port must present different tags there. A tag belongs to the
-producing software edge, so two actors whose same operation-port endpoint is
-driven by one producer always arrive together and no Mapping decision can
-separate them. Such actors are not admitted into one row. A producer that is
-itself a selected actor of the row never reaches the ingress and is excluded
-from the test. This reads the Dataflow edge relation the generator already
-consumes; it reads no tag assignment, route, or occurrence count. The generator and independent verifier must consume
-the same sealed memory-operation-port relation rather than reconstructing any
-part of it in Mapping.
+Temporal ingress distinguishability is the realization-local consequence of
+the Fabric-owned row architecture: a Temporal engine selects one resident row
+by matching the tag that arrives on that row's ingress endpoint, so two rows
+using one physical ingress must present different tags there. The configured
+operation port is row state, not part of this runtime match. A tag belongs to
+the producing software edge, so two actors whose same template ingress endpoint
+is driven by one producer always arrive together and no Mapping decision can
+separate them. Such actors are not admitted into one realization unless the
+exact producer-consumer edge is selected as a realization-internal edge and
+therefore does not reach that ingress. Merely placing the producer actor in the
+same row does not internalize the edge: internal-edge selection remains an
+explicit candidate decision. This reads the Dataflow edge relation the
+generator already consumes; it reads no tag assignment, route, or occurrence
+count. The generator and independent verifier must consume the same sealed
+external-ingress relation rather than reconstructing any part of it in Mapping.
+SpatialMapping derives occurrence conflicts from those same keys when separate
+realizations would otherwise become indistinguishable on one Temporal
+occurrence.
 
 Seed keys are the corresponding prospective persistent payload keys before
-validation and Mapping-local identity assignment. The generator enumerates the
-finite compute and memory seed domains lazily in lexicographic seed-key order.
-This order is known before a seed is admitted as a row and is the sole order
-for `match_row_attempt_limit`. A successful attempt yields one row; a failed
-attempt yields one typed rejection and no partial row.
+validation and Mapping-local identity assignment. One FU capability template
+or one Memory Operation Engine template defines one closed seed family. The
+canonical compute-family and memory-family lists are interleaved by family
+ordinal so neither row kind owns a global prefix. Within one family, the
+generator enumerates seeds lazily in lexicographic seed-key order. A successful
+attempt yields one row; a failed attempt yields one typed rejection and no
+partial row.
+
+For `F` active families and total `match_row_attempt_limit = L`, each family
+receives `floor(L / F)` attempts and the first `L mod F` families in the
+interleaved order receive one additional attempt. After that visit, unused
+budget is divided by the same rule among families that have not proved
+exhaustion. Every family owns one invocation-local pull cursor over its
+canonical seed stream. A resumed family continues from the exact suspended
+selection, boundary product, or internal-edge partial assignment; it does not
+reconstruct or revalidate the charged prefix. Redistribution repeats until all
+families are exhausted or the total of `L` attempts is consumed. If any active
+family receives no quota or reaches its final quota before exhaustion, the row
+domain is incomplete. Admitted rows from all visited families remain
+independently valid and are normalized by canonical row key before exact-cover
+search, but they cannot support a `ProvenInfeasible` outcome while any family
+is incomplete. Work accounting reports first seed visits, cursor resumptions,
+and replay visits separately; the builtin cursor has zero replay visits.
+
+Before cursors are constructed, FU families are filtered by a graph-local
+injective OperationSchema-to-active-operation match and Memory Engine families
+are filtered by their Fabric-owned actor-contract schema inventory. These are
+necessary capability conditions only and therefore cannot remove an
+admissible row. Exact parameter, port, topology, and activity admission remains
+with the ordinary row verifier.
+
+When one software FU boundary has several template-compatible physical ports,
+each complete boundary correspondence is a distinct compute seed. The
+generator enumerates their canonical Cartesian product and independently
+checks exact topology closure; it cannot reject the whole range merely because
+one boundary branches. The match-row attempt limit truncates this same ordered
+seed stream.
 
 A `ComputeMatchRow` is one complete candidate Compute Realization over actors
 from one graph in `covers`. It contains exactly the selected Fabric-owned FU
@@ -180,6 +219,12 @@ template edge then derive a mandatory PE output `Discard` for SpatialMapping.
 A disconnected output is not a discard. No other unmatched template edge,
 implicit sink, or invented software edge is legal.
 
+This equality is evaluated after selecting the realization's exact FU boundary
+correspondence. A template may expose several compatible terminal ports for
+one operation endpoint; unselected terminals have no PE attachment and are
+outside that realization's active boundary projection. This does not filter
+operation-to-operation edges or otherwise weaken internal topology equality.
+
 A `MemoryMatchRow` is one complete candidate Memory Realization over canonical
 memory actors from one graph in `covers`. It contains exactly the selected
 `FabricMemoryEngineTemplateRef`, actor-to-template-operation-port and
@@ -189,6 +234,16 @@ required to materialize the persistent record. It contains no concrete memory
 occurrence, service, dispatch target, context, route, or configured-mode
 encoding.
 
+Eligible Memory Engine internal edges are not enumerated as an unconditional
+powerset. The family cursor assigns edges in canonical cardinality and edge-key
+order while maintaining the closed physical constraints: a consumer has at
+most one selected internal source, and one physical connection can serve
+multiple consumers only for the exact same producer. Incompatible partial
+assignments are pruned before they become seed attempts. Temporal external
+ingress uniqueness is then rebuilt by the shared Mapping owner before a row is
+admitted. This constrained enumeration preserves the exact ordered set of
+admissible row payloads while avoiding invalid powerset leaves.
+
 The persistent record owners define the field meanings. A row is an ephemeral
 typed value with no `EntityId`, artifact identity, generic property map, raw
 ordinal escape, or alternate serialization. Row construction must call the
@@ -196,6 +251,12 @@ same OperationSchema, HSG, Fabric capability, memory-access, width, vector,
 floating-behavior, resource, and boundary relations used by independent
 TechMapping verification. The generator cannot reproduce those rules in a
 name table or weaker compatibility predicate.
+
+For fixed-vector parallelize and serialize families, strict import
+independently rebuilds the same ordered-cardinality contract and canonical
+input activity-definedness admission from exact `D/F`. This result is derived
+rather than persisted, and an imported row cannot rely on having passed
+through the production generator.
 
 Every row is internally complete and independently valid against exact `D`
 and `F`. Rows that cross graph boundaries, mix compute and memory realization
@@ -216,49 +277,56 @@ complete cover has been selected.
 
 The production search is deterministic and lazy:
 
-1. visit MatchRowSeeds in canonical key order and charge one match-row attempt
-   before validating each seed;
+1. allocate the finite attempt budget fairly across active seed families,
+   visit each family's MatchRowSeeds in canonical key order, and charge one
+   match-row attempt before validating each seed;
 2. propagate every actor with exactly one remaining compatible row to a fixed
    point;
 3. choose the uncovered actor with the fewest remaining compatible rows,
    breaking ties by canonical `ActorRef`;
 4. visit that actor's remaining rows in canonical row order;
 5. factor independent actor-row incidence components and search each component
-   independently, expanding each component's partial covers by ascending
-   demand estimate, then ascending operation-port imbalance of the selected
-   rows, then canonical row order, where the demand estimate is
-   the selected rows unioned with one remaining compatible row for every
-   uncovered actor; and
+   independently. A partial cover's realization-count lower bound is its
+   selected-row count plus the uncovered-actor count divided upward by the
+   largest number of still-uncovered actors any compatible row can cover. At
+   that count, its canonical-key lower bound is the selected rows unioned with
+   the smallest still-compatible row keys needed to reach the count. Search
+   partial covers by this admissible pair; and
 6. enumerate the canonical lazy product of component covers without
    materializing the Cartesian product.
 
-Row derivation first consumes its canonical seed prefix up to exhaustion or
-`match_row_attempt_limit`. Exact-cover search then operates on exactly that
-derived row prefix. Reaching the row limit does not make a row incomplete; it
-only means later seed keys are outside this invocation's finite domain. Cover
-search stops at `partial_cover_expansion_limit`, complete row-domain
-exhaustion, or `candidate_publication_limit`, whichever applies first.
+Row derivation first consumes each family's allocated canonical seed prefix up
+to family exhaustion or quota. Exact-cover search then operates on exactly the
+union of those derived row prefixes. Reaching a family quota does not make an
+admitted row incomplete; it means the invocation has not exhausted that seed
+family. Cover search stops at `partial_cover_expansion_limit`, complete
+row-domain exhaustion, or the applicable complete-candidate bound. An ordinary
+generator uses the smaller of `candidate_evaluation_limit` and
+`candidate_publication_limit`. An invocation-local cross-layer continuation
+may evaluate later covers up to `candidate_evaluation_limit`; an exact
+physically infeasible candidate is then a transient no-good, not a publication
+or persistent Mapping fact.
 
 Selecting or rejecting one row during search consumes one partial-cover
-expansion. A complete cover is independently materialized, verified,
-finalized, and published before it enters the output set. A publication slot
-is consumed before Artifact-identity deduplication, so cache state cannot
+expansion. A complete cover is independently materialized, verified, and
+finalized before it is evaluated. Every distinct visited cover consumes a
+candidate-evaluation slot. An ordinary retained candidate also consumes a
+publication slot before Artifact-identity deduplication, so cache state cannot
 change the formal prefix.
 
-Candidates are ordered by ascending realization demand, then by ascending
-operation-port imbalance, then by the
+Candidates are ordered by ascending realization demand, then by the
 lexicographic sequence of selected canonical row keys after component-product
 normalization. Realization demand is the selected row count: one FU capability
-instance per compute row and one Memory Operation Engine per memory row.
-Operation-port imbalance is the largest number of memory rows that select one
-exact (engine template, operation port) pair. One engine holds one configured
-operation per physical operation port, so rows that select one port compete for
-occurrences only with each other; concentrating a cover on the first canonical
-port collapses the placeable supply to the occurrence count while the other
-ports of the same template stay idle. Both terms are properties of the cover
-alone. The generator still cannot read occurrence
-counts, coordinates, or any other physical inventory fact, and demand order
-neither admits nor rejects a row.
+instance per compute row and one Memory Operation Engine per memory row. The
+lower bound used for partial covers cannot count one independently chosen row
+per uncovered actor because those choices may collapse into one multi-actor
+row. Both the numeric and canonical-key bounds must be no greater than every
+reachable complete cover in this total order.
+
+TechMapping owns no operation-port dispersion preference. Any preference based
+on target occurrence inventory, topology, or attachment locality belongs to a
+separate target-aware physical projection and cannot change row admission or
+the target-independent Tech candidate order.
 
 Row-key order alone is not a neutral tie-break here. Single-actor rows and the
 first canonical operation port of the first canonical template hold the
@@ -280,7 +348,7 @@ published candidates.
 
 ## Work And Outcomes
 
-The three limits are distinct owner-local semantic work units. They are not
+The four limits are distinct owner-local semantic work units. They are not
 wall-time, memory, thread, or solver limits and cannot be inferred from one
 another. Execution limits may interrupt the invocation but cannot change its
 formal prefix.

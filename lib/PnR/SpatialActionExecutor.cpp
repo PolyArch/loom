@@ -4,6 +4,7 @@
 
 #include "InitializerRelationSolver.h"
 #include "SpatialBindingRelationModel.h"
+#include "SpatialLocalTransferIndex.h"
 #include "SpatialMemoryCompatibility.h"
 #include "SpatialMemoryConstraintModel.h"
 #include "SpatialRouteConstraintModel.h"
@@ -13,6 +14,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <system_error>
 #include <type_traits>
@@ -169,16 +171,19 @@ SpatialActionProbe::SpatialActionProbe(
     SpatialActionExecutorScratch &owner, SpatialMoveTransaction move,
     dse::ObjectiveVector objective,
     dse::ObjectiveSignedDifference energyDifference, bool negotiatedRouting,
-    bool semanticChange)
+    bool routeTagsSynchronized, bool semanticChange)
     : owner_(&owner), move_(std::move(move)), objective_(std::move(objective)),
       energyDifference_(energyDifference),
-      negotiatedRouting_(negotiatedRouting), semanticChange_(semanticChange) {}
+      negotiatedRouting_(negotiatedRouting),
+      routeTagsSynchronized_(routeTagsSynchronized),
+      semanticChange_(semanticChange) {}
 
 SpatialActionProbe::SpatialActionProbe(SpatialActionProbe &&other) noexcept
     : owner_(other.owner_), move_(std::move(other.move_)),
       objective_(std::move(other.objective_)),
       energyDifference_(other.energyDifference_),
       negotiatedRouting_(other.negotiatedRouting_),
+      routeTagsSynchronized_(other.routeTagsSynchronized_),
       semanticChange_(other.semanticChange_) {
   other.owner_ = nullptr;
 }
@@ -194,9 +199,9 @@ llvm::Error SpatialActionProbe::commit() {
   SpatialActionExecutorScratch *owner = owner_;
   if (llvm::Error error = move_.commit())
     return error;
-  llvm::Error synchronization = negotiatedRouting_
-                                    ? owner->routeCosts_->resetFromCandidate()
-                                    : llvm::Error::success();
+  llvm::Error synchronization =
+      negotiatedRouting_ ? owner->routeCosts_->resetFromVerifiedCandidate()
+                         : llvm::Error::success();
   owner->currentObjective_ = objective_;
   owner->activeProbe_ = false;
   owner_ = nullptr;
@@ -209,11 +214,12 @@ llvm::Error SpatialActionProbe::discard() {
   SpatialActionExecutorScratch *owner = owner_;
   move_.rollback();
   llvm::Error synchronization =
-      negotiatedRouting_ ? owner->routeCosts_->resetFromCandidate()
+      negotiatedRouting_ ? owner->routeCosts_->resetFromVerifiedCandidate()
                          : owner->routeCosts_->synchronizeCandidateTraversals(
                                owner->routeCostTraversals_);
-  if (!synchronization && !negotiatedRouting_)
-    synchronization = owner->routeCosts_->synchronizeCandidateTags();
+  if (!synchronization && !negotiatedRouting_ && routeTagsSynchronized_)
+    synchronization =
+        owner->synchronizeCandidateTags(owner->routeCostLogicalNets_);
   owner->activeProbe_ = false;
   owner_ = nullptr;
   return synchronization;
@@ -258,6 +264,8 @@ SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate) {
     return objective.takeError();
 
   routeCosts_.emplace(std::move(*routeCosts));
+  routeCostTraversals_.clear();
+  routeCostLogicalNets_.clear();
   const detail::SpatialBindingRelationModel &bindings =
       candidate.problem().bindingRelations();
   relationSolver_ =
@@ -274,6 +282,9 @@ SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate) {
   explicitAttachmentMarks_.resize(bindings.decisionCount());
   relationDecisionQueue_.clear();
   relationDecisionQueue_.reserve(bindings.decisionCount());
+  releasedRelationDecisions_.clear();
+  releasedRelationDecisions_.reserve(bindings.portDecisionCount() +
+                                     bindings.graphBoundaryDecisionCount());
   changedBindingRoots_.clear();
   changedBindingRoots_.reserve(bindings.realizationDecisionCount());
   const std::size_t logicalMemoryCount =
@@ -305,11 +316,16 @@ SpatialActionExecutorScratch::prepare(SpatialCandidateState &candidate) {
   netMarks_.assign(candidate.problem().transfers().logicalNets().size(), 0);
   pendingRouteKinds_.resize(netMarks_.size());
   pendingRouteAnchors_.resize(netMarks_.size());
+  explicitNetDispositionMarks_.resize(netMarks_.size());
+  explicitNetDispositions_.resize(netMarks_.size());
+  explicitRegisterFifoTransfers_.resize(netMarks_.size());
   affectedNets_.clear();
   affectedNets_.reserve(netMarks_.size());
   routeCostTraversals_.clear();
   routeCostTraversals_.reserve(
       candidate.problem().routing().traversals().size());
+  localTransferClaimBits_.assign(
+      (candidate.problem().routing().routeClaims().size() + 63) / 64, 0);
   netEpoch_ = 0;
   candidate_ = &candidate;
   return llvm::Error::success();
@@ -332,7 +348,10 @@ void SpatialActionExecutorScratch::beginDependencyClosure() {
   std::fill(relationDecisionMarks_.begin(), relationDecisionMarks_.end(), 0);
   std::fill(explicitAttachmentMarks_.begin(), explicitAttachmentMarks_.end(),
             0);
+  std::fill(explicitNetDispositionMarks_.begin(),
+            explicitNetDispositionMarks_.end(), 0);
   relationDecisionQueue_.clear();
+  releasedRelationDecisions_.clear();
   changedBindingRoots_.clear();
   std::fill(explicitLogicalMemoryMarks_.begin(),
             explicitLogicalMemoryMarks_.end(), 0);
@@ -383,6 +402,25 @@ llvm::Error SpatialActionExecutorScratch::markNet(PnrIndex logicalNet) {
     pendingRouteAnchors_[member] = getInvalidPnrIndex();
     affectedNets_.push_back(member);
   }
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialActionExecutorScratch::markWholeNet(
+    SpatialWholeNetRoutingAction action) {
+  if (action.logicalNet >= netMarks_.size())
+    return executorError("whole-net routing anchor is out of range");
+  if (action.disposition == SpatialWholeNetDispositionKind::RegisterFifo) {
+    if (action.registerFifoTransfer == getInvalidPnrIndex())
+      return executorError("register-FIFO disposition has no option");
+  } else if (action.registerFifoTransfer != getInvalidPnrIndex()) {
+    return executorError("nonlocal disposition names a register FIFO");
+  }
+  if (llvm::Error error = markNet(action.logicalNet))
+    return error;
+  explicitNetDispositionMarks_[action.logicalNet] = 1;
+  explicitNetDispositions_[action.logicalNet] = action.disposition;
+  explicitRegisterFifoTransfers_[action.logicalNet] =
+      action.registerFifoTransfer;
   return llvm::Error::success();
 }
 
@@ -643,7 +681,7 @@ SpatialActionExecutorScratch::apply(SpatialMoveTransaction &move,
                 using Choice = std::decay_t<decltype(choice)>;
                 if constexpr (std::is_same_v<Choice,
                                              SpatialWholeNetRoutingAction>)
-                  return markNet(choice.logicalNet);
+                  return markWholeNet(choice);
                 else if constexpr (std::is_same_v<
                                        Choice, SpatialSingleSinkRoutingAction>)
                   return markLocalNet(choice.logicalNet,
@@ -1317,6 +1355,13 @@ llvm::Error SpatialActionExecutorScratch::reconcileBindingRelations(
     }
   }
 
+  fixedRelationChoices_ = candidate.bindingRelationChoices_;
+  for (PnrIndex decision : relationDecisionQueue_)
+    if (decision >= bindings.portDecisionOffset() &&
+        !explicitAttachmentMarks_[decision]) {
+      fixedRelationChoices_[decision] = getInvalidPnrIndex();
+      releasedRelationDecisions_.push_back(decision);
+    }
   loom::mapping_debug::emit(
       loom::mapping_debug::Level::Decision,
       loom::mapping_debug::Stage::SpatialPnr,
@@ -1324,20 +1369,15 @@ llvm::Error SpatialActionExecutorScratch::reconcileBindingRelations(
       [&](llvm::json::Object &fields) {
         fields["operation"] = "binding_attachment_reconciliation";
         fields["changed_root_count"] = changedBindingRoots_.size();
-        fields["released_attachment_count"] = relationDecisionQueue_.size();
+        fields["affected_attachment_count"] = relationDecisionQueue_.size();
+        fields["released_attachment_count"] = releasedRelationDecisions_.size();
       });
-
-  fixedRelationChoices_ = candidate.bindingRelationChoices_;
-  for (PnrIndex decision : relationDecisionQueue_)
-    if (decision >= bindings.portDecisionOffset() &&
-        !explicitAttachmentMarks_[decision])
-      fixedRelationChoices_[decision] = getInvalidPnrIndex();
-  auto solved = relationSolver_->solveCanonicalWithFixedChoices(
+  auto solved = relationSolver_->solveCanonicalWithReleasedChoices(
       candidate.problem()
           .config()
           .policy()
           .search.initializer.assignmentAttemptLimitPerSeed,
-      fixedRelationChoices_);
+      fixedRelationChoices_, releasedRelationDecisions_);
   if (!solved)
     return classifyRelationFailure(solved.takeError());
 
@@ -1391,6 +1431,65 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
   for (PnrIndex logicalNet : affectedNets_) {
     if (llvm::Error error = routeCosts_->selectLogicalNet(logicalNet))
       return error;
+    if (pendingRouteKinds_[logicalNet] == PendingRouteKind::WholeNet) {
+      std::optional<PnrIndex> selectedLocal;
+      const SpatialWholeNetDispositionKind disposition =
+          explicitNetDispositionMarks_[logicalNet]
+              ? explicitNetDispositions_[logicalNet]
+              : SpatialWholeNetDispositionKind::Preferred;
+      if (disposition == SpatialWholeNetDispositionKind::RegisterFifo) {
+        selectedLocal = explicitRegisterFifoTransfers_[logicalNet];
+      } else if (disposition == SpatialWholeNetDispositionKind::Preferred) {
+        auto local = detail::findPreferredAvailableSpatialLocalTransfer(
+            candidate.problem(), candidate.computeBindings_,
+            candidate.registerFifoTransfers_, logicalNet);
+        if (!local)
+          return local.takeError();
+        selectedLocal = *local;
+      }
+      if (selectedLocal) {
+        if (candidate.registerFifoTransfer(logicalNet) != *selectedLocal)
+          if (llvm::Error error =
+                  move.setRegisterFifoTransfer(logicalNet, *selectedLocal))
+            return error;
+        if (!candidate.routeTree(logicalNet).isUnrouted())
+          if (llvm::Error error = move.ripUpWholeRoute(logicalNet))
+            return error;
+        std::fill(localTransferClaimBits_.begin(),
+                  localTransferClaimBits_.end(), 0);
+        const auto &option =
+            candidate.problem()
+                .localTransfers()
+                .options()[candidate.registerFifoTransfer(logicalNet)];
+        const auto &routing = candidate.problem().routing();
+        const std::array<PnrIndex, 2> traversals = {option.writeTraversal,
+                                                    option.readTraversal};
+        for (PnrIndex traversal : traversals) {
+          if (traversal >= routing.traversals().size())
+            return executorError("register-FIFO traversal is out of range");
+          const auto &record = routing.traversals()[traversal];
+          for (PnrIndex claim : routing.traversalClaimKeys().slice(
+                   record.routeClaimOffset, record.routeClaimCount)) {
+            if (claim >= routing.routeClaims().size())
+              return executorError("register-FIFO route claim is out of range");
+            localTransferClaimBits_[claim / 64] |= std::uint64_t{1}
+                                                   << (claim % 64);
+          }
+        }
+        if (llvm::Error error = routeCosts_->updateSelectedLogicalNetClaims(
+                localTransferClaimBits_))
+          return error;
+        if (llvm::Error error = routeCosts_->acceptSelectedLogicalNet())
+          return error;
+        if (llvm::Error error = router_.finishConstraintNet(logicalNet))
+          return error;
+        continue;
+      }
+    }
+    if (candidate.usesRegisterFifo(logicalNet))
+      if (llvm::Error error =
+              move.setRegisterFifoTransfer(logicalNet, std::nullopt))
+        return error;
     llvm::Expected<RouteCost> route = [&]() -> llvm::Expected<RouteCost> {
       switch (pendingRouteKinds_[logicalNet]) {
       case PendingRouteKind::WholeNet:
@@ -1420,6 +1519,10 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
         return error;
       if (llvm::Error error = routeCosts_->updateSelectedLogicalNetClaims({}))
         return error;
+      const SpatialTagContinuityProjection continuity;
+      if (llvm::Error error = routeCosts_->updateSelectedLogicalNetTagUses(
+              candidate.routeTree(logicalNet), continuity))
+        return error;
     }
     if (llvm::Error error = routeCosts_->acceptSelectedLogicalNet())
       return error;
@@ -1432,10 +1535,71 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
 llvm::Error
 SpatialActionExecutorScratch::restoreAfterFailure(SpatialMoveTransaction &move,
                                                   llvm::Error failure) {
+  routeCostTraversals_.assign(move.touchedRouteTraversals().begin(),
+                              move.touchedRouteTraversals().end());
+  routeCostLogicalNets_.assign(move.touchedRouteLogicalNets().begin(),
+                               move.touchedRouteLogicalNets().end());
+  const auto appendRouteTraversals = [&]() -> llvm::Error {
+    const auto &routing = candidate_->problem().routing();
+    for (PnrIndex logicalNet : routeCostLogicalNets_) {
+      if (logicalNet >= candidate_->problem().transfers().logicalNets().size())
+        return executorError("changed route logical net is out of range");
+      if (candidate_->usesRegisterFifo(logicalNet)) {
+        const PnrIndex option = candidate_->registerFifoTransfer(logicalNet);
+        if (option >= candidate_->problem().localTransfers().options().size())
+          return executorError(
+              "changed route register-FIFO option is out of range");
+        const auto &transfer =
+            candidate_->problem().localTransfers().options()[option];
+        routeCostTraversals_.push_back(transfer.writeTraversal);
+        routeCostTraversals_.push_back(transfer.readTraversal);
+        continue;
+      }
+      for (const RouteTreeNode &node :
+           candidate_->routeTree(logicalNet).nodeStorage()) {
+        if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+          continue;
+        if (node.parentArc >= routing.routingArcs().size())
+          return executorError("changed route arc is out of range");
+        routeCostTraversals_.push_back(
+            routing.routingArcs()[node.parentArc].traversal);
+      }
+    }
+    return llvm::Error::success();
+  };
+  llvm::Error restoration = appendRouteTraversals();
   move.rollback();
-  if (llvm::Error reset = routeCosts_->resetFromCandidate())
-    return llvm::joinErrors(std::move(failure), std::move(reset));
+  if (!restoration)
+    restoration = appendRouteTraversals();
+  llvm::sort(routeCostTraversals_);
+  routeCostTraversals_.erase(
+      std::unique(routeCostTraversals_.begin(), routeCostTraversals_.end()),
+      routeCostTraversals_.end());
+  if (!restoration)
+    restoration = routeCosts_->selectLogicalNet(std::nullopt);
+  if (!restoration)
+    restoration =
+        routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_);
+  if (!restoration && !routeCostLogicalNets_.empty())
+    restoration = synchronizeCandidateTags(routeCostLogicalNets_);
+  if (restoration) {
+    llvm::Error fallback = routeCosts_->resetFromVerifiedCandidate();
+    if (fallback)
+      restoration = llvm::joinErrors(std::move(restoration),
+                                     std::move(fallback));
+    return llvm::joinErrors(std::move(failure), std::move(restoration));
+  }
   return failure;
+}
+
+llvm::Error SpatialActionExecutorScratch::synchronizeCandidateTags(
+    llvm::ArrayRef<PnrIndex> changedLogicalNets) {
+  if (!candidate_ || !routeCosts_)
+    return executorError("candidate tag synchronization is not prepared");
+  auto summary = candidate_->summarizeCurrentTagAssignments();
+  if (!summary)
+    return summary.takeError();
+  return routeCosts_->synchronizeTagProjection(*summary, changedLogicalNets);
 }
 
 llvm::Expected<SpatialActionProbe>
@@ -1535,17 +1699,36 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
            negotiatedProjection->tagUnassignedCount ||
        candidate.tagConflictCount() != negotiatedProjection->tagConflictCount ||
        candidate.totalSelectedTraversalClaim() !=
-           negotiatedProjection->totalSelectedTraversalClaim))
+           negotiatedProjection->totalSelectedTraversalClaim ||
+       candidate.routeReleaseLatencyCycles() !=
+           negotiatedProjection->routeReleaseLatencyCycles ||
+       candidate.routeMinimumInitiationIntervalCycles() !=
+           negotiatedProjection->routeMinimumInitiationIntervalCycles ||
+       candidate.transportBitCycleDemand() !=
+           negotiatedProjection->transportBitCycleDemand ||
+       candidate.worstRouteArrivalDelayQuanta() !=
+           negotiatedProjection->worstRouteArrivalDelayQuanta ||
+       candidate.totalRouteNegativeSlackQuanta() !=
+           negotiatedProjection->totalRouteNegativeSlackQuanta))
     return restoreAfterFailure(
         move, executorError(
                   "closed route-derived state disagrees with its RouteTrees"));
   routeCostTraversals_.assign(move.touchedRouteTraversals().begin(),
                               move.touchedRouteTraversals().end());
+  routeCostLogicalNets_.assign(move.touchedRouteLogicalNets().begin(),
+                               move.touchedRouteLogicalNets().end());
+  const bool routeTagsSynchronized = move.hasRouteTreeChange();
   if (llvm::Error error =
           routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_))
     return restoreAfterFailure(move, std::move(error));
-  if (llvm::Error error = routeCosts_->synchronizeCandidateTags())
-    return restoreAfterFailure(move, std::move(error));
+  if (routeTagsSynchronized) {
+    auto tagSummary = move.summarizeCurrentTagAssignments();
+    if (!tagSummary)
+      return restoreAfterFailure(move, tagSummary.takeError());
+    if (llvm::Error error = routeCosts_->synchronizeTagProjection(
+            *tagSummary, routeCostLogicalNets_))
+      return restoreAfterFailure(move, std::move(error));
+  }
 
   const bool semanticChange = move.hasSemanticChange();
   dse::ObjectiveVector objective = *currentObjective_;
@@ -1565,7 +1748,8 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
 
   activeProbe_ = true;
   return SpatialActionProbe(*this, std::move(move), std::move(objective),
-                            difference, negotiatedRouting, semanticChange);
+                            difference, negotiatedRouting,
+                            routeTagsSynchronized, semanticChange);
 }
 
 std::size_t SpatialActionExecutorScratch::retainedStorageBytes() const {
@@ -1575,11 +1759,17 @@ std::size_t SpatialActionExecutorScratch::retainedStorageBytes() const {
          retainedBytes(netMarks_) + retainedBytes(affectedNets_) +
          retainedBytes(pendingRouteKinds_) +
          retainedBytes(pendingRouteAnchors_) +
+         retainedBytes(explicitNetDispositionMarks_) +
+         retainedBytes(explicitNetDispositions_) +
+         retainedBytes(explicitRegisterFifoTransfers_) +
          retainedBytes(routeCostTraversals_) +
+         retainedBytes(routeCostLogicalNets_) +
+         retainedBytes(localTransferClaimBits_) +
          retainedBytes(fixedRelationChoices_) +
          retainedBytes(relationDecisionMarks_) +
          retainedBytes(explicitAttachmentMarks_) +
          retainedBytes(relationDecisionQueue_) +
+         retainedBytes(releasedRelationDecisions_) +
          retainedBytes(changedBindingRoots_) +
          retainedBytes(explicitLogicalMemorySelections_) +
          retainedBytes(explicitLogicalMemoryMarks_) +

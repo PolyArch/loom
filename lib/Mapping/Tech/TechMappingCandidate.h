@@ -26,6 +26,7 @@ struct TechMatchDomain final {
   std::vector<::dataflow::ActorRef> actors;
   std::vector<TechMatchRow> rows;
   bool exhausted = true;
+  bool interrupted = false;
 };
 
 llvm::Expected<TechMatchDomain> deriveTechMatchDomain(
@@ -40,12 +41,19 @@ materializeTechMappingCandidate(const TechMappingGenerationInputs &inputs,
 struct TechCoverSearchResult final {
   std::vector<std::vector<const TechMatchRow *>> covers;
   bool exhausted = true;
+  bool interrupted = false;
 };
 
 TechCoverSearchResult
 searchTechMatchCovers(const TechMatchDomain &domain,
                       const ResolvedTechMappingConfigView &config,
-                      TechMappingGenerationAccounting &accounting);
+                      TechMappingGenerationAccounting &accounting,
+                      ExecutionControlView executionControl = {});
+
+TechCoverSearchResult searchTechMatchCovers(
+    const TechMatchDomain &domain, const ResolvedTechMappingConfigView &config,
+    TechMappingGenerationAccounting &accounting, std::uint64_t coverLimit,
+    ExecutionControlView executionControl = {});
 
 } // namespace loom::mapping::detail
 

@@ -1,13 +1,14 @@
+#include "DSE/JointDesignExploration.h"
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
-#include "DSE/JointDesignExploration.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Frontend/IR/LoomOps.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
@@ -37,8 +38,7 @@
 namespace {
 
 [[noreturn]] void fail(const llvm::Twine &message) {
-  llvm::errs() << "joint design exploration anchor failed: " << message
-               << '\n';
+  llvm::errs() << "joint design exploration anchor failed: " << message << '\n';
   std::exit(EXIT_FAILURE);
 }
 
@@ -51,8 +51,8 @@ template <typename T> T take(llvm::Expected<T> value) {
 class TemporaryDirectory final {
 public:
   TemporaryDirectory() {
-    if (std::error_code error = llvm::sys::fs::createUniqueDirectory(
-            "loom-joint-design", path_))
+    if (std::error_code error =
+            llvm::sys::fs::createUniqueDirectory("loom-joint-design", path_))
       fail("cannot create test directory: " + error.message());
   }
   ~TemporaryDirectory() { llvm::sys::fs::remove_directories(path_); }
@@ -64,9 +64,9 @@ private:
 
 mlir::MLIRContext makeContext() {
   mlir::DialectRegistry registry;
-  registry.insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
-                  mlir::DLTIDialect, mlir::func::FuncDialect,
-                  loom::LoomDialect>();
+  registry
+      .insert<dataflow::DataflowDialect, mlir::arith::ArithDialect,
+              mlir::DLTIDialect, mlir::func::FuncDialect, loom::LoomDialect>();
   return mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
 }
 
@@ -105,19 +105,18 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-loom::ArtifactRootReference publishApplicationWorkload(
-    const dataflow::CanonicalDataflowArtifact &artifact,
-    const loom::ArtifactStore &store) {
+loom::ArtifactRootReference
+publishApplicationWorkload(const dataflow::CanonicalDataflowArtifact &artifact,
+                           const loom::ArtifactStore &store) {
   auto view = take(artifact.view());
   if (view.rootThreadLaunches().size() != 1 ||
       view.staticGraphLaunches().size() != 1)
     fail("application fixture does not have one rooted graph launch");
-  dataflow::RootedGraphLaunchRef launch{
-      view.rootThreadLaunches().front().ref,
-      view.staticGraphLaunches().front().ref};
+  dataflow::RootedGraphLaunchRef launch{view.rootThreadLaunches().front().ref,
+                                        view.staticGraphLaunches().front().ref};
   loom::sim::SpatialSimulationWorkload draft{launch};
-  auto shapes = take(loom::sim::projectSpatialSimulationBoundaryShapes(
-      view, launch));
+  auto shapes =
+      take(loom::sim::projectSpatialSimulationBoundaryShapes(view, launch));
   draft.valueInputPlan.assign(shapes.valueInputs.size(),
                               loom::sim::RuntimeValueInput{});
   auto workload = take(loom::sim::finalizeSimulationWorkload(draft, view));
@@ -148,15 +147,14 @@ bool everyCoreIsUsed(const loom::ArtifactRootReference &systemReference,
     auto projection = take(loom::mapping::projectSystemExecutionContexts(
         dataflowView, mapping.view().executionBindings()));
     for (const auto &domain : projection.instructionDomains)
-      used.insert(key(loom::fabric::canonicalFabricBytes(
-          domain.context.accCore)));
+      used.insert(
+          key(loom::fabric::canonicalFabricBytes(domain.context.accCore)));
   }
-  return llvm::all_of(system.artifact().accCoreOccurrences(),
-                      [&](loom::fabric::AccCoreOccurrenceRef core) {
-                        return used.count(key(
-                                   loom::fabric::canonicalFabricBytes(core))) !=
-                               0;
-                      });
+  return llvm::all_of(
+      system.artifact().accCoreOccurrences(),
+      [&](loom::fabric::AccCoreOccurrenceRef core) {
+        return used.count(key(loom::fabric::canonicalFabricBytes(core))) != 0;
+      });
 }
 
 void exerciseJointExploration() {
@@ -186,13 +184,24 @@ void exerciseJointExploration() {
   const loom::ArtifactRootReference system = small.roots().front().reference();
   const loom::ArtifactRootReference alternateSystem =
       alternate.roots().front().reference();
+  auto systemArtifact =
+      take(loom::fabric::importEntireFabricRoot(system, store));
+  auto systemView =
+      take(loom::fabric::requireSystemRoot(systemArtifact.view()));
+  auto timingProfiles = take(
+      loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(systemView));
+  std::vector<loom::ArtifactRootReference> timingProfileRoots;
+  for (const auto &profile : timingProfiles)
+    timingProfileRoots.push_back(
+        take(loom::fabric::publishFabricPhysicalTimingProfile(profile, store)));
 
   const loom::dse::JointDesignPolicy policy =
       take(loom::dse::JointDesignPolicy::get(2, 1, 1, 32));
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
   config.dse.techMapping.candidatePublicationLimit = 2;
   auto plan = take(loom::dse::buildJointDesignExplorationPlan(
-      {{{firstWorkload}, {secondWorkload}}, {system}}, policy, config, store));
+      {{{firstWorkload}, {secondWorkload}}, {system}}, timingProfileRoots,
+      policy, config, store));
   if (plan.frontier.eligiblePairCount != 2 || !plan.frontier.truncated ||
       plan.frontier.pairs.size() != 1 || plan.pairOutputs.size() != 1)
     fail("bounded pair frontier did not declare deterministic truncation");
@@ -202,8 +211,8 @@ void exerciseJointExploration() {
   const auto &systemNode = std::get<loom::dse::GeneratePlanNodeDefinition>(
       plan.resolvedConfig.dse.planNodes
           [plan.pairOutputs.front().systemMappings.producerNodeOrdinal]);
-  const auto &join = std::get<loom::dse::BoundedPlanOutputJoin>(
-      systemNode.inputBindings[1]);
+  const auto &join =
+      std::get<loom::dse::BoundedPlanOutputJoin>(systemNode.inputBindings[1]);
   if (join.outputs.empty() || join.maximumArtifacts != 32)
     fail("joint Mapping plan lost its explicit SpatialMapping bound");
   for (const loom::dse::PlanOutputRef &spatialOutput : join.outputs) {
@@ -219,16 +228,25 @@ void exerciseJointExploration() {
       fail("joint Mapping plan used a whole-program TechMapping cover");
   }
 
-  auto view = take(loom::dse::projectResolvedDseConfigView(
-      plan.resolvedConfig));
+  auto view =
+      take(loom::dse::projectResolvedDseConfigView(plan.resolvedConfig));
   auto execution = take(loom::dse::executeDsePlan(view, store, blobs));
-  const auto *completed =
+  const loom::dse::CompletedDsePlanExecution *completed =
       std::get_if<loom::dse::CompletedDsePlanExecution>(&execution);
-  if (!completed)
-    fail("joint Mapping plan remained incomplete: " +
-         loom::dse::toString(
-             std::get<loom::dse::IncompleteDsePlanExecution>(execution)
-                 .reason()));
+  if (!completed) {
+    const auto &incomplete =
+        std::get<loom::dse::IncompleteDsePlanExecution>(execution);
+    const auto *reason =
+        std::get_if<loom::dse::CandidateGeneratorIncompleteReason>(
+            &incomplete.reason());
+    if (!reason ||
+        *reason != loom::dse::CandidateGeneratorIncompleteReason::
+                       SemanticLimitReached ||
+        incomplete.executionStopped())
+      fail("joint Mapping plan changed retained frontier semantics: " +
+           loom::dse::toString(incomplete.reason()));
+    completed = &incomplete.availableExecution();
+  }
   const std::vector<loom::ArtifactRootReference> mappings =
       completed->resolve(plan.pairOutputs.front().systemMappings).vec();
   if (mappings.empty())
@@ -242,7 +260,7 @@ void exerciseJointExploration() {
   }
 
   const std::vector<loom::ArtifactRootReference> systems = {system,
-                                                             alternateSystem};
+                                                            alternateSystem};
   const std::vector<loom::dse::JointMemberPromotion> memberPromotions = {
       {plan.frontier.pairs.front().software.dataflow,
        loom::dse::CompletedSelection{mappings, {}}}};
@@ -256,8 +274,9 @@ void exerciseJointExploration() {
   if (auto *completedSelection =
           std::get_if<loom::dse::JointDesignSelection>(&selected)) {
     outcomes = &completedSelection->systemOutcomes;
-    if (!covered || completedSelection->selectedSystems !=
-                        std::vector<loom::ArtifactRootReference>{system} ||
+    if (!covered ||
+        completedSelection->selectedSystems !=
+            std::vector<loom::ArtifactRootReference>{system} ||
         completedSelection->acceptedMappings != mappings)
       fail("aggregate selection bypassed member-local System gates");
   } else {
@@ -283,8 +302,7 @@ void exerciseJointExploration() {
       take(loom::dse::JointDesignPolicy::get(1, 1, 1, 1)), store);
   if (oversized)
     fail("joint frontier accepted a software set beyond its resolved bound");
-  const std::string oversizedMessage =
-      llvm::toString(oversized.takeError());
+  const std::string oversizedMessage = llvm::toString(oversized.takeError());
   if (!llvm::StringRef(oversizedMessage).contains("exceeds"))
     fail("frontier-bound rejection lost its diagnostic");
 }

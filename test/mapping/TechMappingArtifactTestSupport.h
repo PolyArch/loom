@@ -16,10 +16,15 @@ mlir::MLIRContext makeComputeBoundaryContext();
 
 dataflow::CanonicalDataflowArtifact
 buildComputeBoundaryDataflow(mlir::MLIRContext &context);
+dataflow::CanonicalDataflowArtifact
+buildComputeFanoutDataflow(mlir::MLIRContext &context);
 
 std::string computeBoundaryMappingText(
     const dataflow::CanonicalDataflowProgramView &dataflow,
     const loom::fabric::FabricArtifactView &fabric, bool includeBoundaries);
+std::string
+computeFanoutMappingText(const dataflow::CanonicalDataflowProgramView &dataflow,
+                         const loom::fabric::FabricArtifactView &fabric);
 
 mlir::OwningOpRef<mlir::ModuleOp> parseTechMapping(mlir::MLIRContext &context,
                                                    llvm::StringRef text);

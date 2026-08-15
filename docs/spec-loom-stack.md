@@ -157,7 +157,7 @@ binding or endpoint attachment.
 It executes the residual program, runtime, and fallback work and dispatches
 the exact thread and Spatial launches selected for the AccCore cluster.
 
-The `loom.fabric 4.1` System contract requires the HostCore and every AccCore
+The `loom.fabric 5.0` System contract requires the HostCore and every AccCore
 InstructionCore in one System execution closure to belong to one compatible
 RISC-V ISA and ABI cohort. They may have different Microarchitectural
 Realizations, capacities,
@@ -398,9 +398,13 @@ the only owner that combines them for candidate ranking or acceptance.
 Mapping persistence is specified by [Mapping Artifact](spec-mapping-artifact.md)
 and [Mapping Identity](spec-mapping-identity.md). Fabric-local persistent
 targets are owned by
-[Fabric Persistent Identity And References](spec-fabric-identity.md). The PnR
-algorithm and native state are owned by [Place And Route](spec-pnr.md), while
-the production semantic-realization generator is owned by
+[Fabric Persistent Identity And References](spec-fabric-identity.md).
+Provider-independent PnR semantics are owned by
+[Place And Route](spec-pnr.md), while observable bounded-search behavior of the
+in-tree implementation is owned by
+[Builtin Mapping PnR Replay Profile](spec-pnr-provider-builtin.md). Native
+state layout remains an implementation detail. The production
+semantic-realization generator is owned by
 [TechMapping Generation](spec-tech-mapping.md).
 Focused Mapping specs are derived views of those owners, not parallel schemas.
 
@@ -712,8 +716,9 @@ separately by the
 
 The first hardware gate requires the public ADG Builder to finalize both
 user-authored regular or irregular heterogeneous multi-AccCore designs and all
-initial builtin presets through the same Fabric path. The exact API,
-Small/Default/Large catalog, backend-qualification rule, and Artifact
+initial builtin scales through the same Fabric path. The exact API,
+single general-purpose template, Small/Default/Large default-scale catalog,
+backend-qualification rule, and Artifact
 publication contract remain owned by [ADG Builder](spec-adg-builder.md) and
 [Fabric Artifact](spec-fabric-artifact.md). Passing this gate produces exact
 Fabric Artifacts plus their human-readable MLIR and HTML projections without

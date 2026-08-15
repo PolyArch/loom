@@ -10,14 +10,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
 namespace loom::pnr {
 
+namespace detail {
+struct SpatialRouteCostSwitchRowState;
+}
+
 struct SpatialTagDomainUse final {
   PnrIndex domain = 0;
-  std::uint64_t segmentCount = 0;
+  std::uint64_t marginalResidentCount = 0;
 };
 
 /// Worker-local PathFinder cost projection over one exact Spatial candidate.
@@ -28,6 +33,12 @@ struct SpatialTagDomainUse final {
 /// reachable through the frozen reverse CSR indices.
 class SpatialRouteCostState final {
 public:
+  SpatialRouteCostState(SpatialRouteCostState &&) noexcept;
+  SpatialRouteCostState(const SpatialRouteCostState &) = delete;
+  SpatialRouteCostState &operator=(const SpatialRouteCostState &) = delete;
+  SpatialRouteCostState &operator=(SpatialRouteCostState &&) = delete;
+  ~SpatialRouteCostState();
+
   static llvm::Expected<SpatialRouteCostState>
   create(const SpatialCandidateState &candidate);
 
@@ -37,6 +48,7 @@ public:
   llvm::Error
   updateSelectedLogicalNetClaims(llvm::ArrayRef<std::uint64_t> claimBits);
   llvm::Error updateSelectedLogicalNetTagUses(
+      const RouteTreeState &route,
       const SpatialTagContinuityProjection &continuity);
   llvm::Error acceptSelectedLogicalNet();
   llvm::Error
@@ -74,12 +86,16 @@ public:
   llvm::ArrayRef<RouteCost> lowerBoundArcCosts() const {
     return lowerBoundArcCosts_;
   }
-  std::uint64_t lowerBoundCostRevision() const { return 0; }
+  std::uint64_t lowerBoundCostRevision() const {
+    return lowerBoundCostRevision_;
+  }
   llvm::ArrayRef<RouteCost> currentArcCosts() const { return currentArcCosts_; }
   std::size_t retainedStorageBytes() const;
 
 private:
   SpatialRouteCostState() = default;
+
+  llvm::Error resetFromVerifiedCandidate();
 
   void beginUpdate();
   llvm::Error stageLogicalNet(PnrIndex logicalNet, bool restore);
@@ -117,6 +133,9 @@ private:
   llvm::Error stageTagUses(llvm::ArrayRef<SpatialTagDomainUse> uses,
                            bool restore);
   llvm::Error rebuildTagProjectionFromCandidate(bool resetHistory);
+  llvm::Error rebuildSwitchRowProjectionFromCandidate();
+  llvm::Error
+  synchronizeCandidateSwitchRows(llvm::ArrayRef<PnrIndex> changedLogicalNets);
   llvm::Error recomputeAllArcCosts(bool resetTagHistory);
   std::uint64_t tagUsageForCost(PnrIndex domain, bool stagedTags) const;
   std::uint64_t encodingPressureRaw(PnrIndex domain, bool stagedTags) const;
@@ -130,6 +149,7 @@ private:
   std::size_t routeClaimWordCount_ = 0;
   std::optional<PnrIndex> selectedLogicalNet_;
   std::uint64_t presentPressure_ = 0;
+  std::uint64_t lowerBoundCostRevision_ = 0;
 
   std::vector<std::uint64_t> workingCapacityUsageRaw_;
   std::vector<std::uint64_t> historyPressure_;
@@ -174,7 +194,11 @@ private:
   std::vector<PnrIndex> affectedTraversals_;
   std::vector<PnrIndex> affectedTagDomains_;
   std::vector<PnrIndex> affectedTagArcs_;
+  std::unique_ptr<detail::SpatialRouteCostSwitchRowState> switchRows_;
   std::uint64_t updateEpoch_ = 0;
+
+  friend class SpatialActionExecutorScratch;
+  friend class SpatialActionProbe;
 };
 
 } // namespace loom::pnr

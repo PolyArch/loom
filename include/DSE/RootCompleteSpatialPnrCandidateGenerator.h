@@ -16,7 +16,8 @@ llvm::Error registerRootCompleteSpatialPnrCandidateGenerator();
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
 bindRootCompleteSpatialPnrCandidateGeneratorInputs(
     llvm::ArrayRef<ArtifactRootReference> techMappingCandidates,
-    const ArtifactRootReference &fabric);
+    const ArtifactRootReference &fabric,
+    const ArtifactRootReference &physicalTimingProfile);
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolveRootCompleteSpatialPnrCandidateGeneratorBinding(

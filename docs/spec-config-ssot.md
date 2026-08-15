@@ -39,8 +39,10 @@ The builtin hardware authoring selection uses the exact
 Resolution replaces that enum with the selected ADG template identity,
 template schema version, and complete typed parameter values. The enum spelling
 is recorded only as invocation provenance and is excluded from canonical
-ResolvedConfig bytes. Omitting hardware selection resolves `Default`; it does
-not produce a target-less configuration.
+ResolvedConfig bytes. All builtin presets resolve to
+`loom.adg.builtin.general_purpose` version `5.0`; only their default parameter
+values differ. Omitting hardware selection resolves the `Default` scale; it
+does not produce a target-less configuration.
 
 An external `--loom-hardware=<fabric.mlir>` binding is mutually exclusive with
 an explicitly selected builtin target. Import and Fabric finalization produce
@@ -93,7 +95,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 5.0`. Version 2.0 was an
+The current schema is `loom.config.resolved 6.0`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -176,6 +178,14 @@ template. Earlier configuration serialized resource multiplicities but left
 topology extent hidden behind preset-specific expansion. No other scale value
 can recover that choice, so adding the required field is incompatible rather
 than assigning a compatibility default.
+
+Version 6.0 adds the required positive
+`dse.tech_mapping.candidate_evaluation_limit`. Candidate evaluation and
+candidate publication are distinct finite operations once a physical closure
+may reject one exact TechMapping and continue the canonical domain. A 5.0
+reader has no bound for that continuation and rejects the new canonical field,
+so this is an incompatible change rather than an inferred multiple of another
+limit.
 
 `dse.evaluation_and_objective_catalogs` materializes exactly the owner tables
 of the [Resolved Configuration View](spec-dse-feedback.md#resolved-configuration-view):
@@ -267,7 +277,8 @@ The TechMapping generator policy owns:
 ```text
 dse.tech_mapping.match_row_attempt_limit: positive uint64 = 65536
 dse.tech_mapping.partial_cover_expansion_limit: positive uint64 = 262144
-dse.tech_mapping.candidate_publication_limit: positive uint64 = 16
+dse.tech_mapping.candidate_evaluation_limit: positive uint64 = 128
+dse.tech_mapping.candidate_publication_limit: positive uint64 = 8
 ```
 
 These values define the deterministic finite search domain described by
@@ -285,8 +296,6 @@ PnrPolicyAuthoringRecord {
   temporary_violation_policy
   selected_total_ordering
   selected_search_energy
-  focused_closure_dimensions
-  evaluation_interaction_bindings
 }
 ```
 
@@ -300,10 +309,11 @@ or the digest of the complete DSE view.
 The designated default profile is `balanced_explore`. Its initial PnR policy
 uses `PathFinder` with the `Multiplicative` price kernel, admits every closed
 Mapping violation kind only as a temporary search state, gives every admitted
-violation a positive SearchEnergy term, orders the complete violation vector
-before `StaticSchedulePressure` and then `TotalSelectedTraversalClaim`, selects
-no focused-closure metric or route-guidance binding, and enables bounded
-`CpSat` repair. All numeric values,
+violation a positive SearchEnergy term, and orders closure before cycle and
+physical timing, static schedule pressure, and selected traversal claim.
+Spatial PnR enables bounded `CpSat` repair; System PnR explicitly disables it.
+The current PnR views contain no Evaluation, focused-closure, or route-guidance
+binding. All numeric values,
 including seeds, proposal weights, semantic work limits, cooling parameters,
 PathFinder pressure parameters, and repair bounds, are emitted explicitly by
 the 3.0 resolver. No PnR kernel supplies a missing value or chooses a profile

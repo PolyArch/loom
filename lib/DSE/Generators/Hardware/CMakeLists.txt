@@ -1,7 +1,7 @@
 add_library(LoomDSEHardwareGenerator
   FabricTemplateCandidateGenerator.cpp
   HardwareDecision.cpp
-  PortableSystemRtlCandidateGenerator.cpp
+  PortableSpatialCoreRtlCandidateGenerator.cpp
   SpatialMicroarchitectureCandidateGenerator.cpp
   SpatialTopologyCandidateGenerator.cpp
   SystemCompositionCandidateGenerator.cpp

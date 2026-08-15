@@ -12,7 +12,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <map>
 #include <optional>
 #include <tuple>
@@ -48,22 +47,6 @@ struct CachedActorTopology final {
   std::vector<::dataflow::CanonicalGraphProducerEndpointRef> producers;
   std::vector<std::vector<::dataflow::CanonicalGraphConsumerEndpointRef>>
       consumers;
-};
-
-struct SeedRangeCardinality final {
-  std::uint64_t count = 1;
-  bool overflow = false;
-
-  void multiply(std::size_t factor) {
-    if (overflow)
-      return;
-    if (factor > std::numeric_limits<std::uint64_t>::max() / count) {
-      count = std::numeric_limits<std::uint64_t>::max();
-      overflow = true;
-      return;
-    }
-    count *= factor;
-  }
 };
 
 bool actorPortLess(const ActorPortKey &lhs, const ActorPortKey &rhs) {
@@ -185,66 +168,6 @@ llvm::Expected<std::vector<CanonicalActorOption>> canonicalActorOptions(
   return options;
 }
 
-llvm::Expected<bool> activityDefinednessAdmits(
-    const TechMappingGenerationInputs &inputs,
-    const ::dataflow::CanonicalActorView &actor,
-    const ::loom::fabric::ResolvedFabricOpCapabilityView &capability) {
-  auto operandIsAlwaysDefined = [&](unsigned ordinal) -> llvm::Expected<bool> {
-    auto producer = inputs.dataflow.graphProducer(
-        ::dataflow::ActorTokenOperandRef{actor.ref, ordinal});
-    if (!producer)
-      return producer.takeError();
-    auto fact = inputs.dataflow.activityDefinedness(*producer);
-    if (!fact)
-      return fact.takeError();
-    return *fact == ::dataflow::ActivityDefinedness::AlwaysDefined;
-  };
-  const auto orderedContractAdmits =
-      [&](::dataflow::OperationSchemaId schema) -> llvm::Expected<bool> {
-    const auto *parameters = std::get_if<::fabric::FixedVectorAdapterParams>(
-        &capability.parameterizedCapability);
-    if (!parameters)
-      return false;
-    auto maximumLaneCount =
-        ::fabric::maximumFixedVectorAdapterLaneCount(*parameters);
-    if (!maximumLaneCount)
-      return maximumLaneCount.takeError();
-    return ::fabric::isOrderedCardinalityOperationResourceContract(
-        capability.resourceStateAndTimingContract, schema, *maximumLaneCount);
-  };
-
-  switch (capability.implementationFamily) {
-  case ::fabric::ImplementationFamilyId::FixedVectorParallelize: {
-    auto adapter = llvm::dyn_cast<::dataflow::ParallelizeOp>(actor.op);
-    if (!adapter)
-      return false;
-    auto contract = orderedContractAdmits(
-        ::dataflow::OperationSchemaId::DataflowParallelize);
-    if (!contract || !*contract)
-      return contract;
-    return operandIsAlwaysDefined(
-        adapter.getScalarPhaseMutable().getOperandNumber());
-  }
-  case ::fabric::ImplementationFamilyId::FixedVectorSerialize: {
-    auto adapter = llvm::dyn_cast<::dataflow::SerializeOp>(actor.op);
-    if (!adapter)
-      return false;
-    auto contract =
-        orderedContractAdmits(::dataflow::OperationSchemaId::DataflowSerialize);
-    if (!contract || !*contract)
-      return contract;
-    auto mask =
-        operandIsAlwaysDefined(adapter.getMaskMutable().getOperandNumber());
-    if (!mask || !*mask)
-      return mask;
-    return operandIsAlwaysDefined(
-        adapter.getGroupPhaseMutable().getOperandNumber());
-  }
-  default:
-    return true;
-  }
-}
-
 llvm::Expected<bool>
 admitActorCorrespondence(const TechMappingGenerationInputs &inputs,
                          const TechComputeActorView &selected) {
@@ -274,7 +197,8 @@ admitActorCorrespondence(const TechMappingGenerationInputs &inputs,
     llvm::consumeError(std::move(error));
     return false;
   }
-  return activityDefinednessAdmits(inputs, *actor, *capability);
+  return deriveTechComputeActivityDefinednessAdmission(
+      inputs.dataflow, selected.actor, *capability);
 }
 
 llvm::Expected<bool>
@@ -646,85 +570,6 @@ deriveBoundaryRequirements(const TechMappingGenerationInputs &inputs,
   return requirements;
 }
 
-llvm::Error emitComputeSeeds(
-    const TechMappingGenerationInputs &inputs,
-    const ::loom::fabric::FabricFuCapabilityTemplateRef &capabilityTemplate,
-    llvm::ArrayRef<TemplateEdge> completeTopology,
-    std::vector<TechComputeActorView> actorSelection,
-    TechMatchRowCollector &collector) {
-  llvm::sort(actorSelection, [](const auto &lhs, const auto &rhs) {
-    return lhs.actor.entity.value() < rhs.actor.entity.value();
-  });
-  const std::vector<TemplateEdge> topology =
-      selectedTopology(completeTopology, actorSelection);
-  auto requirements =
-      deriveBoundaryRequirements(inputs, actorSelection, topology);
-  if (!requirements)
-    return requirements.takeError();
-
-  std::vector<TechComputeBoundaryView> boundaries;
-  SeedRangeCardinality cardinality;
-  bool branchingBoundary = false;
-  for (const BoundaryRequirement &requirement : *requirements) {
-    cardinality.multiply(requirement.candidates.size());
-    branchingBoundary |= requirement.candidates.size() > 1;
-    if (!requirement.candidates.empty())
-      boundaries.push_back(TechComputeBoundaryView{
-          requirement.software.actor, requirement.software.direction,
-          requirement.software.ordinal, requirement.candidates.front()});
-  }
-
-  auto capabilityAdmitted = admitActorCorrespondences(inputs, actorSelection);
-  if (!capabilityAdmitted)
-    return capabilityAdmitted.takeError();
-  if (branchingBoundary) {
-    TechComputeRealizationView first{0, capabilityTemplate, actorSelection,
-                                     boundaries};
-    auto firstKey = canonicalTechMatchRowKey(first, inputs.dataflow.identity());
-    if (!firstKey)
-      return firstKey.takeError();
-    for (auto [boundary, requirement] :
-         llvm::zip_equal(boundaries, *requirements))
-      boundary.fabricPort = requirement.candidates.back();
-    TechComputeRealizationView last{0, capabilityTemplate, actorSelection,
-                                    boundaries};
-    auto lastKey = canonicalTechMatchRowKey(last, inputs.dataflow.identity());
-    if (!lastKey)
-      return lastKey.takeError();
-    return collector.rejectCanonicalSeedRange(
-        std::move(*firstKey), std::move(*lastKey), cardinality.count,
-        cardinality.overflow,
-        *capabilityAdmitted
-            ? TechMatchSeedRejectionReason::RealizationInadmissible
-            : TechMatchSeedRejectionReason::CapabilityInadmissible);
-  }
-
-  TechComputeRealizationView realization{0, capabilityTemplate, actorSelection,
-                                         boundaries};
-  auto key = canonicalTechMatchRowKey(realization, inputs.dataflow.identity());
-  if (!key)
-    return key.takeError();
-  auto entered = collector.beginSeed(std::move(*key));
-  if (!entered)
-    return entered.takeError();
-  if (!*entered)
-    return llvm::Error::success();
-  if (!*capabilityAdmitted)
-    return collector.reject(
-        TechMatchSeedRejectionReason::CapabilityInadmissible);
-  if (llvm::Error error = verifyTechComputeRealizationClosure(
-          realization, inputs.dataflow, inputs.fabric)) {
-    llvm::consumeError(std::move(error));
-    return collector.reject(
-        TechMatchSeedRejectionReason::RealizationInadmissible);
-  }
-  std::vector<::dataflow::ActorRef> covered;
-  covered.reserve(actorSelection.size());
-  for (const auto &actor : actorSelection)
-    covered.push_back(actor.actor);
-  return collector.admit(std::move(realization), covered);
-}
-
 } // namespace
 
 llvm::Error enumerateCanonicalComputeSelections(
@@ -983,10 +828,136 @@ llvm::Error enumerateCanonicalComputeSelections(
   return llvm::Error::success();
 }
 
-llvm::Error
-deriveComputeRows(const TechMappingGenerationInputs &inputs,
-                  llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors,
-                  TechMatchRowCollector &collector) {
+namespace {
+
+struct ComputeSeedState final {
+  std::vector<TechComputeActorView> actors;
+  std::vector<TemplateEdge> topology;
+  std::vector<BoundaryRequirement> requirements;
+  std::vector<::dataflow::ActorRef> coveredActors;
+  std::vector<std::size_t> boundaryChoice;
+  bool capabilityAdmitted = false;
+};
+
+class ComputeRowFamilyCursor final : public TechMatchRowFamilyCursor {
+public:
+  ComputeRowFamilyCursor(
+      const TechMappingGenerationInputs &inputs,
+      ::loom::fabric::FabricFuCapabilityTemplateRef family,
+      std::vector<TemplateEdge> topology,
+      std::vector<std::vector<TechComputeActorView>> selections,
+      bool selectionEnumerationTruncated)
+      : inputs_(inputs), family_(family), topology_(std::move(topology)),
+        selections_(std::move(selections)),
+        selectionEnumerationTruncated_(selectionEnumerationTruncated) {}
+
+  llvm::Error advance(TechMatchRowCollector &collector) override {
+    while (!collector.truncated() && !collector.interrupted()) {
+      if (!seed_) {
+        if (selectionOrdinal_ == selections_.size()) {
+          exhausted_ = !selectionEnumerationTruncated_;
+          return llvm::Error::success();
+        }
+        if (llvm::Error error = prepareSeed())
+          return error;
+      }
+
+      std::vector<TechComputeBoundaryView> boundaries;
+      boundaries.reserve(seed_->requirements.size());
+      for (auto [ordinal, requirement] : llvm::enumerate(seed_->requirements)) {
+        boundaries.push_back(TechComputeBoundaryView{
+            requirement.software.actor, requirement.software.direction,
+            requirement.software.ordinal,
+            requirement.candidates[seed_->boundaryChoice[ordinal]]});
+      }
+      TechComputeRealizationView realization{0, family_, seed_->actors,
+                                             std::move(boundaries)};
+      auto key =
+          canonicalTechMatchRowKey(realization, inputs_.dataflow.identity());
+      if (!key)
+        return key.takeError();
+      auto entered = collector.beginSeed(std::move(*key));
+      if (!entered)
+        return entered.takeError();
+      if (!*entered)
+        return llvm::Error::success();
+
+      if (!seed_->capabilityAdmitted) {
+        if (llvm::Error error = collector.reject(
+                TechMatchSeedRejectionReason::CapabilityInadmissible))
+          return error;
+      } else if (llvm::Error error = verifyTechComputeRealizationClosure(
+                     realization, inputs_.dataflow, inputs_.fabric)) {
+        llvm::consumeError(std::move(error));
+        if (llvm::Error rejected = collector.reject(
+                TechMatchSeedRejectionReason::RealizationInadmissible))
+          return rejected;
+      } else if (llvm::Error error = collector.admit(std::move(realization),
+                                                     seed_->coveredActors)) {
+        return error;
+      }
+      advanceBoundaryChoice();
+    }
+    return llvm::Error::success();
+  }
+
+  bool exhausted() const override { return exhausted_; }
+
+private:
+  llvm::Error prepareSeed() {
+    ComputeSeedState next;
+    next.actors = selections_[selectionOrdinal_];
+    llvm::sort(next.actors, [](const auto &lhs, const auto &rhs) {
+      return lhs.actor.entity.value() < rhs.actor.entity.value();
+    });
+    next.topology = selectedTopology(topology_, next.actors);
+    auto requirements =
+        deriveBoundaryRequirements(inputs_, next.actors, next.topology);
+    if (!requirements)
+      return requirements.takeError();
+    next.requirements = std::move(*requirements);
+    auto capabilityAdmitted = admitActorCorrespondences(inputs_, next.actors);
+    if (!capabilityAdmitted)
+      return capabilityAdmitted.takeError();
+    next.capabilityAdmitted = *capabilityAdmitted;
+    next.coveredActors.reserve(next.actors.size());
+    for (const TechComputeActorView &actor : next.actors)
+      next.coveredActors.push_back(actor.actor);
+    next.boundaryChoice.assign(next.requirements.size(), 0);
+    seed_.emplace(std::move(next));
+    return llvm::Error::success();
+  }
+
+  void advanceBoundaryChoice() {
+    for (std::size_t ordinal = seed_->boundaryChoice.size(); ordinal != 0;
+         --ordinal) {
+      const std::size_t index = ordinal - 1;
+      if (++seed_->boundaryChoice[index] <
+          seed_->requirements[index].candidates.size())
+        return;
+      seed_->boundaryChoice[index] = 0;
+    }
+    seed_.reset();
+    ++selectionOrdinal_;
+  }
+
+  const TechMappingGenerationInputs &inputs_;
+  ::loom::fabric::FabricFuCapabilityTemplateRef family_;
+  std::vector<TemplateEdge> topology_;
+  std::vector<std::vector<TechComputeActorView>> selections_;
+  std::optional<ComputeSeedState> seed_;
+  std::size_t selectionOrdinal_ = 0;
+  bool selectionEnumerationTruncated_ = false;
+  bool exhausted_ = false;
+};
+
+} // namespace
+
+llvm::Expected<std::unique_ptr<TechMatchRowFamilyCursor>>
+createComputeRowFamilyCursor(
+    const TechMappingGenerationInputs &inputs,
+    llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors,
+    ::loom::fabric::FabricFuCapabilityTemplateRef family) {
   std::vector<::dataflow::CanonicalActorView> actors;
   for (const auto &actor : selectedActors)
     if (actor.kind != ::dataflow::CanonicalDataflowActorKind::Memory)
@@ -995,58 +966,142 @@ deriveComputeRows(const TechMappingGenerationInputs &inputs,
     return lhs.ref.entity.value() < rhs.ref.entity.value();
   });
 
-  std::vector<::loom::fabric::FabricFuTemplateRef> fuTemplates(
-      inputs.fabric.fuTemplates().begin(), inputs.fabric.fuTemplates().end());
-  llvm::sort(fuTemplates, [](const auto &lhs, const auto &rhs) {
+  const auto inventory = inputs.fabric.fuCapabilityTemplates(family.fu);
+  if (family.ordinal >= inventory.size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "tech_mapping_generation_invalid: FU match-row family does not "
+        "resolve");
+  const auto &record = inventory[family.ordinal];
+  std::vector<::loom::fabric::FabricFuTemplateNodeRef> operations;
+  for (const auto &node : record.activeNodes)
+    if (node.node == ::loom::fabric::FabricFuNodeKind::Op)
+      operations.push_back(node);
+  llvm::sort(operations, [](const auto &lhs, const auto &rhs) {
     return ::loom::fabric::canonicalFabricBytes(lhs) <
            ::loom::fabric::canonicalFabricBytes(rhs);
   });
-  for (const ::loom::fabric::FabricFuTemplateRef fu : fuTemplates) {
-    const auto inventory = inputs.fabric.fuCapabilityTemplates(fu);
-    for (std::size_t templateOrdinal = 0; templateOrdinal < inventory.size();
-         ++templateOrdinal) {
-      const auto &record = inventory[templateOrdinal];
-      std::vector<::loom::fabric::FabricFuTemplateNodeRef> operations;
-      for (const auto &node : record.activeNodes)
-        if (node.node == ::loom::fabric::FabricFuNodeKind::Op)
-          operations.push_back(node);
-      llvm::sort(operations, [](const auto &lhs, const auto &rhs) {
-        return ::loom::fabric::canonicalFabricBytes(lhs) <
-               ::loom::fabric::canonicalFabricBytes(rhs);
-      });
-      if (operations.empty())
-        continue;
-      auto topology =
-          ::loom::fabric::projectFabricFuCapabilityTemplateTerminalEdges(
-              record);
-      if (!topology)
-        return topology.takeError();
+  auto topology =
+      ::loom::fabric::projectFabricFuCapabilityTemplateTerminalEdges(record);
+  if (!topology)
+    return topology.takeError();
 
-      if (actors.size() < operations.size())
-        continue;
-      if (llvm::Error error = enumerateCanonicalComputeSelections(
-              inputs, actors, operations, *topology,
-              [&](llvm::ArrayRef<TechComputeActorView> selection)
-                  -> llvm::Expected<bool> {
-                if (collector.truncated())
-                  return false;
-                if (llvm::Error error = emitComputeSeeds(
-                        inputs,
-                        ::loom::fabric::FabricFuCapabilityTemplateRef{
-                            fu, static_cast<std::uint64_t>(templateOrdinal)},
-                        *topology,
-                        std::vector<TechComputeActorView>(selection.begin(),
-                                                          selection.end()),
-                        collector))
-                  return std::move(error);
-                return !collector.truncated();
-              }))
-        return error;
-      if (collector.truncated())
-        return llvm::Error::success();
+  std::vector<std::vector<TechComputeActorView>> selections;
+  bool selectionEnumerationTruncated = false;
+  if (!operations.empty() && actors.size() >= operations.size()) {
+    if (llvm::Error error = enumerateCanonicalComputeSelections(
+            inputs, actors, operations, *topology,
+            [&](llvm::ArrayRef<TechComputeActorView> selection)
+                -> llvm::Expected<bool> {
+              if (selections.size() >= inputs.config.matchRowAttemptLimit()) {
+                selectionEnumerationTruncated = true;
+                return false;
+              }
+              selections.emplace_back(selection.begin(), selection.end());
+              return true;
+            }))
+      return std::move(error);
+  }
+  std::unique_ptr<TechMatchRowFamilyCursor> cursor =
+      std::make_unique<ComputeRowFamilyCursor>(
+          inputs, family, std::move(*topology), std::move(selections),
+          selectionEnumerationTruncated);
+  return cursor;
+}
+
+std::vector<::loom::fabric::FabricFuCapabilityTemplateRef>
+deriveComputeRowFamilies(
+    const TechMappingGenerationInputs &inputs,
+    llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors) {
+  using Schema = ::dataflow::OperationSchemaId;
+  std::map<std::uint64_t, std::vector<Schema>> graphSchemas;
+  for (const ::dataflow::CanonicalActorView &actor : selectedActors) {
+    if (actor.kind == ::dataflow::CanonicalDataflowActorKind::Memory)
+      continue;
+    const std::optional<Schema> schema =
+        ::dataflow::operationSchemaOf(actor.op);
+    if (schema)
+      graphSchemas[actor.graph.entity.value()].push_back(*schema);
+  }
+
+  const auto graphCanPopulate =
+      [&](llvm::ArrayRef<std::vector<Schema>> operationSchemas,
+          llvm::ArrayRef<Schema> actorSchemas) {
+        if (actorSchemas.size() < operationSchemas.size())
+          return false;
+        std::vector<std::optional<std::size_t>> actorOwner(actorSchemas.size());
+        std::function<bool(std::size_t, std::vector<bool> &)> assign =
+            [&](std::size_t operation, std::vector<bool> &seen) {
+              for (std::size_t actor = 0; actor < actorSchemas.size();
+                   ++actor) {
+                if (seen[actor] ||
+                    !llvm::is_contained(operationSchemas[operation],
+                                        actorSchemas[actor]))
+                  continue;
+                seen[actor] = true;
+                if (!actorOwner[actor]) {
+                  actorOwner[actor] = operation;
+                  return true;
+                }
+                const std::size_t displaced = *actorOwner[actor];
+                if (assign(displaced, seen)) {
+                  actorOwner[actor] = operation;
+                  return true;
+                }
+              }
+              return false;
+            };
+        for (std::size_t operation = 0; operation < operationSchemas.size();
+             ++operation) {
+          std::vector<bool> seen(actorSchemas.size(), false);
+          if (!assign(operation, seen))
+            return false;
+        }
+        return true;
+      };
+
+  std::vector<::loom::fabric::FabricFuCapabilityTemplateRef> families;
+  for (const ::loom::fabric::FabricFuTemplateRef fu :
+       inputs.fabric.fuTemplates()) {
+    const auto inventory = inputs.fabric.fuCapabilityTemplates(fu);
+    for (auto [ordinal, record] : llvm::enumerate(inventory)) {
+      std::vector<std::vector<Schema>> operationSchemas;
+      for (const auto &node : record.activeNodes) {
+        if (node.node != ::loom::fabric::FabricFuNodeKind::Op)
+          continue;
+        const auto *capability = inputs.fabric.resolvedFabricOpCapability(node);
+        if (!capability) {
+          operationSchemas.clear();
+          break;
+        }
+        operationSchemas.push_back(capability->enabledOperationSchemas);
+      }
+      const bool supported =
+          !operationSchemas.empty() &&
+          llvm::any_of(graphSchemas, [&](const auto &entry) {
+            return graphCanPopulate(operationSchemas, entry.second);
+          });
+      if (supported)
+        families.push_back(::loom::fabric::FabricFuCapabilityTemplateRef{
+            fu, static_cast<std::uint64_t>(ordinal)});
     }
   }
-  return llvm::Error::success();
+  llvm::sort(families, [](const auto &lhs, const auto &rhs) {
+    return ::loom::fabric::canonicalFabricBytes(lhs) <
+           ::loom::fabric::canonicalFabricBytes(rhs);
+  });
+  return families;
+}
+
+llvm::Error
+deriveComputeRows(const TechMappingGenerationInputs &inputs,
+                  llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors,
+                  ::loom::fabric::FabricFuCapabilityTemplateRef family,
+                  TechMatchRowCollector &collector) {
+  auto cursor = createComputeRowFamilyCursor(inputs, selectedActors, family);
+  if (!cursor)
+    return cursor.takeError();
+  return (*cursor)->advance(collector);
 }
 
 } // namespace loom::mapping::detail

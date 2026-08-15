@@ -235,13 +235,14 @@ void requestFixtureClosesExactOwners() {
   loom::BlobStore blobs(blobPath);
   const auto fixture = loom::eda::test::buildMappedRtlRequestFixture(
       test, "Verilator 5.050", artifacts, blobs, tree);
-  const auto fabric = take(loom::fabric::importEntireFabricRoot(
-      fixture.module, artifacts));
+  const auto fabric =
+      take(loom::fabric::importEntireFabricRoot(fixture.module, artifacts));
   const auto spatialMapping = take(
       loom::mapping::importSpatialMapping(fixture.spatialMapping, artifacts));
   mlir::MLIRContext relationContext;
   std::size_t activeConfiguredTagBoundaries = 0;
-  for (const auto &field : spatialMapping.view().configuredHardware().fields()) {
+  for (const auto &field :
+       spatialMapping.view().configuredHardware().fields()) {
     const auto &owner = field.slot.field.owner.catalog();
     if (owner.kind() !=
         loom::fabric::FabricInventoryOwnerKind::BoundaryOccurrence)
@@ -250,10 +251,9 @@ void requestFixtureClosesExactOwners() {
         std::get<loom::fabric::FabricBoundaryOccurrenceRef>(owner.payload);
     const auto point = fabric.view().boundaryTagContinuityPoint(boundary);
     require(point.has_value(), "configured boundary lost its continuity kind");
-    auto relation = take(fabric.view().semanticFieldRelation(
-        field.slot.field, relationContext));
-    if (llvm::Error error =
-            relation.validateSemanticValue(field.value.bytes()))
+    auto relation = take(
+        fabric.view().semanticFieldRelation(field.slot.field, relationContext));
+    if (llvm::Error error = relation.validateSemanticValue(field.value.bytes()))
       fail(llvm::toString(std::move(error)));
     if (point->kind ==
         loom::fabric::FabricBoundaryTagContinuityKind::ConfigurableWriter) {
@@ -349,9 +349,8 @@ void requireSelectedHardwareCoverage(
   using namespace loom;
   const auto module =
       take(loom::fabric::importEntireFabricRoot(fixture.module, artifacts));
-  const auto mapping =
-      take(loom::mapping::importSpatialMapping(fixture.spatialMapping,
-                                               artifacts));
+  const auto mapping = take(
+      loom::mapping::importSpatialMapping(fixture.spatialMapping, artifacts));
   std::size_t spatialCompute = 0;
   std::size_t temporalCompute = 0;
   for (const loom::mapping::SpatialComputeBindingView &binding :
@@ -365,12 +364,12 @@ void requireSelectedHardwareCoverage(
   }
   require(spatialCompute >= 3 && temporalCompute >= 1,
           "real mapping did not select both PE schedules");
-  require(mapping.view().memoryEngineBindings().size() == 1 &&
-              mapping.view().memoryBindings().size() == 1 &&
-              std::holds_alternative<
-                  loom::mapping::SpatialMemoryBoundaryProxyView>(
-                  mapping.view().memoryBindings().front().target),
-          "real mapping did not select the external memory service");
+  require(
+      mapping.view().memoryEngineBindings().size() == 1 &&
+          mapping.view().memoryBindings().size() == 1 &&
+          std::holds_alternative<loom::mapping::SpatialMemoryBoundaryProxyView>(
+              mapping.view().memoryBindings().front().target),
+      "real mapping did not select the external memory service");
 
   bool sawBoundary = false;
   bool sawBufferedFifo = false;
@@ -385,8 +384,8 @@ void requireSelectedHardwareCoverage(
             std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
                 &traversal.payload)) {
       const auto key = loom::fabric::canonicalFabricBytes(sw->owner);
-      ++switchUseCounts[std::string(
-          reinterpret_cast<const char *>(key.data()), key.size())];
+      ++switchUseCounts[std::string(reinterpret_cast<const char *>(key.data()),
+                                    key.size())];
     } else if (const auto *fifo =
                    std::get_if<loom::fabric::FabricFifoTraversalPayload>(
                        &traversal.payload)) {
@@ -408,13 +407,22 @@ void requireSelectedHardwareCoverage(
     for (const loom::mapping::SpatialRouteSinkView &sink : route.sinks)
       inspectTraversal(sink.localTraversal);
   }
-  const bool sharedSwitch = std::any_of(
-      switchUseCounts.begin(), switchUseCounts.end(),
-      [](const auto &entry) { return entry.second >= 2; });
+  for (const loom::mapping::SpatialRegisterFifoTransferView &transfer :
+       mapping.view().registerFifoTransfers()) {
+    inspectTraversal(std::optional<loom::fabric::FabricPhysicalTraversalRef>(
+        transfer.writeTraversal));
+    inspectTraversal(std::optional<loom::fabric::FabricPhysicalTraversalRef>(
+        transfer.readTraversal));
+  }
+  const bool sharedSwitch =
+      std::any_of(switchUseCounts.begin(), switchUseCounts.end(),
+                  [](const auto &entry) { return entry.second >= 2; });
   require(sawBoundary && sawBufferedFifo && sharedSwitch,
           "real mapping omitted a required hierarchy traversal");
   require(sawBypassFifo,
           "real mapping did not exercise a bypass FIFO traversal");
+  require(!mapping.view().registerFifoTransfers().empty(),
+          "real mapping did not select a Temporal PE register FIFO");
 }
 
 void authoredLifecycleImportsExactEvidence() {
@@ -615,25 +623,24 @@ void authoredFailure(AuthoredFailureCase selected) {
     const auto run = prepare("malformed", "not a mapped result\n", {});
     require(take(executeExternalToolInvocationBundle(run)) == 0,
             "malformed result lifecycle failed before import");
-    expectErrorContains(importEvaluationModelInvocation(
-                            fixture.request, fixture.resolution, run, artifacts,
-                            blobs),
+    expectErrorContains(importEvaluationModelInvocation(fixture.request,
+                                                        fixture.resolution, run,
+                                                        artifacts, blobs),
                         "mapped_rtl_result_invalid");
     return;
   }
   case AuthoredFailureCase::MappingTamper: {
     const auto run = prepare("mapping-tamper", validResult, {});
-    const std::filesystem::path path =
-        std::filesystem::path(run.bundleRoot) /
-        "inputs/semantic/spatial-mapping.mlir";
+    const std::filesystem::path path = std::filesystem::path(run.bundleRoot) /
+                                       "inputs/semantic/spatial-mapping.mlir";
     writeFile(path, readFile(path) + " ");
-    require(take(executeExternalToolInvocationBundle(run)) ==
-                static_cast<int>(
-                    InvocationLauncherExitCode::BundleContentMismatch),
-            "mapping tamper was not rejected before tool execution");
-    expectErrorContains(importEvaluationModelInvocation(
-                            fixture.request, fixture.resolution, run, artifacts,
-                            blobs),
+    require(
+        take(executeExternalToolInvocationBundle(run)) ==
+            static_cast<int>(InvocationLauncherExitCode::BundleContentMismatch),
+        "mapping tamper was not rejected before tool execution");
+    expectErrorContains(importEvaluationModelInvocation(fixture.request,
+                                                        fixture.resolution, run,
+                                                        artifacts, blobs),
                         "bundle content changed");
     return;
   }
@@ -646,17 +653,16 @@ void authoredFailure(AuthoredFailureCase selected) {
     require(image != end && image->is_regular_file(),
             "mapped bundle contains no configuration image");
     writeFile(image->path(), readFile(image->path()) + " ");
-    require(take(executeExternalToolInvocationBundle(run)) ==
-                static_cast<int>(
-                    InvocationLauncherExitCode::BundleContentMismatch),
-            "configuration-image tamper was not rejected before execution");
+    require(
+        take(executeExternalToolInvocationBundle(run)) ==
+            static_cast<int>(InvocationLauncherExitCode::BundleContentMismatch),
+        "configuration-image tamper was not rejected before execution");
     return;
   }
   case AuthoredFailureCase::VersionMismatch: {
     const std::filesystem::path tool = tree.path("mismatched-verilator");
-    writeExecutable(
-        tool,
-        fakeVerilator(validResult, FakeVerilatorBehavior{"Verilator 5.051"}));
+    writeExecutable(tool, fakeVerilator(validResult, FakeVerilatorBehavior{
+                                                         "Verilator 5.051"}));
     LocalToolConfig local;
     local.runtimePolicy = RuntimePolicy::Host;
     local.tools[verilatorProvider().binding.key].binding.executable =

@@ -196,7 +196,7 @@ fabric.module @pe_temporal_non_tag_port(%a : !fabric.bits<32>) {
   // expected-error @+1 {{temporal fabric.pe boundary type must be '!fabric.bits_tag<W, T>'}}
   %r = fabric.pe [temporal] (%pa = %a : !fabric.bits<32>) -> (!fabric.bits<32>)
        attributes { tag_width = 4 : i32, num_instruction = 1 : i32,
-                    fu_config_mode = "per_fu_config",
+                    fu_config_mode = #fabric.fu_config_mode<per_fu_config>,
                     operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction> } {
     fabric.fu(%fa = %pa : !fabric.bits<32>) -> (!fabric.bits<32>) {
       %v = fabric.op [@arith.addi] (%fa, %fa)

@@ -1,5 +1,7 @@
 #include "PnR/SpatialAction.h"
 
+#include "SpatialActionProposalInternal.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -81,7 +83,8 @@ ActionKey choiceKey(const SpatialTransportRoutingAction &action) {
       [](const auto &value) {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, SpatialWholeNetRoutingAction>)
-          return ActionKey{{0}};
+          return ActionKey{{0, static_cast<std::uint8_t>(value.disposition),
+                            value.registerFifoTransfer}};
         else if constexpr (std::is_same_v<T, SpatialSingleSinkRoutingAction>)
           return ActionKey{{1, value.sinkObligation}};
         else if constexpr (std::is_same_v<T, SpatialRootedSubtreeRoutingAction>)
@@ -200,126 +203,10 @@ struct LiveKindRecord final {
   std::uint64_t weight;
 };
 
-} // namespace
-
-SpatialActionKey
-loom::pnr::spatialActionKey(const SpatialMappingAction &action) {
-  return std::visit(
-      [](const auto &category) -> SpatialActionKey {
-        using Category = std::decay_t<decltype(category)>;
-        if constexpr (std::is_same_v<Category,
-                                     SpatialRealizationBindingAction>) {
-          return std::visit(
-              [](const auto &choice) -> SpatialActionKey {
-                using Choice = std::decay_t<decltype(choice)>;
-                if constexpr (std::is_same_v<Choice,
-                                             SpatialComputeBindingAction>)
-                  return {{0, 0, choice.realization, choice.placement,
-                           choice.instructionContext, 0}};
-                else
-                  return {{0, 1, choice.realization, choice.placement, 0, 0}};
-              },
-              category);
-        } else if constexpr (std::is_same_v<Category,
-                                            SpatialTransportRoutingAction>) {
-          return std::visit(
-              [](const auto &choice) -> SpatialActionKey {
-                using Choice = std::decay_t<decltype(choice)>;
-                if constexpr (std::is_same_v<Choice,
-                                             SpatialWholeNetRoutingAction>)
-                  return {{1, 0, choice.logicalNet, 0, 0, 0}};
-                else if constexpr (std::is_same_v<
-                                       Choice,
-                                       SpatialSingleSinkRoutingAction>)
-                  return {{1, 1, choice.logicalNet, choice.sinkObligation, 0,
-                           0}};
-                else if constexpr (std::is_same_v<
-                                       Choice,
-                                       SpatialRootedSubtreeRoutingAction>)
-                  return {{1, 2, choice.logicalNet, choice.rootEndpoint, 0,
-                           0}};
-                else if constexpr (std::is_same_v<
-                                       Choice,
-                                       SpatialWitnessRegionRoutingAction>)
-                  return {{1, 3,
-                           static_cast<std::uint64_t>(choice.witnessKind),
-                           choice.witnessOrdinal, 0, 0}};
-                else
-                  return {{1, 4, 0, 0, 0, 0}};
-              },
-              category);
-        } else {
-          return std::visit(
-              [](const auto &choice) -> SpatialActionKey {
-                using Choice = std::decay_t<decltype(choice)>;
-                if constexpr (std::is_same_v<Choice,
-                                             SpatialPortAttachmentAction>)
-                  return {{2, 0, choice.demand, choice.attachmentOption, 0, 0}};
-                else if constexpr (std::is_same_v<
-                                       Choice,
-                                       SpatialGraphBoundaryAttachmentAction>)
-                  return {{2, 1, choice.boundary, choice.attachmentOption, 0,
-                           0}};
-                else if constexpr (std::is_same_v<
-                                       Choice,
-                                       SpatialMemoryOperationPlanAction>)
-                  return {{2, 2, choice.actor, choice.plan, 0, 0}};
-                else if constexpr (std::is_same_v<
-                                       Choice,
-                                       SpatialLogicalMemoryBindingAction>)
-                  return {{2, 3, choice.binding, choice.target,
-                           choice.physicalOffsetBytes, 0}};
-                else if constexpr (std::is_same_v<
-                                       Choice,
-                                       SpatialMemoryUseDispatchAction>)
-                  return {{2, 4, choice.use, choice.dispatchOption, 0, 0}};
-                else
-                  return {{2, 5, choice.exposure, choice.exposureOption, 0,
-                           0}};
-              },
-              category);
-        }
-      },
-      action);
-}
-
-llvm::Error loom::pnr::validateCanonicalSpatialActionBatch(
-    llvm::ArrayRef<SpatialMappingAction> actions) {
-  if (actions.empty())
-    return invalidBatch("ActionBatch is empty");
-
-  ActionKey previous;
-  bool first = true;
-  for (const SpatialMappingAction &action : actions) {
-    const ActionKey current = batchAnchorKey(action);
-    if (!first) {
-      if (current == previous)
-        return invalidBatch("ActionBatch anchors are not unique");
-      if (!(previous < current))
-        return invalidBatch("ActionBatch anchors are not in canonical order");
-    }
-    previous = current;
-    first = false;
-  }
-  return llvm::Error::success();
-}
-
 llvm::Expected<std::optional<SpatialMappingAction>>
-loom::pnr::proposeSpatialAction(const ResolvedPnrActionProposalPolicy &policy,
-                                SpatialActionProposalDomain domain,
-                                DeterministicPnrRandomStream &proposalStream) {
-  if (llvm::Error error = validateResolvedPnrActionProposalPolicy(policy))
-    return std::move(error);
-  if (llvm::Error error = validateKindDomain(domain.realizationAnchors,
-                                             domain.realizationChoices))
-    return std::move(error);
-  if (llvm::Error error =
-          validateKindDomain(domain.transportAnchors, domain.transportChoices))
-    return std::move(error);
-  if (llvm::Error error =
-          validateKindDomain(domain.resourceAnchors, domain.resourceChoices))
-    return std::move(error);
-
+selectSpatialAction(const ResolvedPnrActionProposalPolicy &policy,
+                    SpatialActionProposalDomain domain,
+                    DeterministicPnrRandomStream &proposalStream) {
   std::array<LiveKindRecord, 3> live{};
   std::size_t liveCount = 0;
   auto addLive = [&](LiveKind kind, std::uint64_t weight, std::size_t anchors) {
@@ -390,4 +277,131 @@ loom::pnr::proposeSpatialAction(const ResolvedPnrActionProposalPolicy &policy,
   }
   }
   llvm_unreachable("all live Spatial Action kinds are handled");
+}
+
+} // namespace
+
+SpatialActionKey
+loom::pnr::spatialActionKey(const SpatialMappingAction &action) {
+  return std::visit(
+      [](const auto &category) -> SpatialActionKey {
+        using Category = std::decay_t<decltype(category)>;
+        if constexpr (std::is_same_v<Category,
+                                     SpatialRealizationBindingAction>) {
+          return std::visit(
+              [](const auto &choice) -> SpatialActionKey {
+                using Choice = std::decay_t<decltype(choice)>;
+                if constexpr (std::is_same_v<Choice,
+                                             SpatialComputeBindingAction>)
+                  return {{0, 0, choice.realization, choice.placement,
+                           choice.instructionContext, 0}};
+                else
+                  return {{0, 1, choice.realization, choice.placement, 0, 0}};
+              },
+              category);
+        } else if constexpr (std::is_same_v<Category,
+                                            SpatialTransportRoutingAction>) {
+          return std::visit(
+              [](const auto &choice) -> SpatialActionKey {
+                using Choice = std::decay_t<decltype(choice)>;
+                if constexpr (std::is_same_v<Choice,
+                                             SpatialWholeNetRoutingAction>)
+                  return {{1, 0, choice.logicalNet,
+                           static_cast<std::uint8_t>(choice.disposition),
+                           choice.registerFifoTransfer, 0}};
+                else if constexpr (std::is_same_v<
+                                       Choice, SpatialSingleSinkRoutingAction>)
+                  return {
+                      {1, 1, choice.logicalNet, choice.sinkObligation, 0, 0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialRootedSubtreeRoutingAction>)
+                  return {{1, 2, choice.logicalNet, choice.rootEndpoint, 0, 0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialWitnessRegionRoutingAction>)
+                  return {{1, 3, static_cast<std::uint64_t>(choice.witnessKind),
+                           choice.witnessOrdinal, 0, 0}};
+                else
+                  return {{1, 4, 0, 0, 0, 0}};
+              },
+              category);
+        } else {
+          return std::visit(
+              [](const auto &choice) -> SpatialActionKey {
+                using Choice = std::decay_t<decltype(choice)>;
+                if constexpr (std::is_same_v<Choice,
+                                             SpatialPortAttachmentAction>)
+                  return {{2, 0, choice.demand, choice.attachmentOption, 0, 0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialGraphBoundaryAttachmentAction>)
+                  return {
+                      {2, 1, choice.boundary, choice.attachmentOption, 0, 0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialMemoryOperationPlanAction>)
+                  return {{2, 2, choice.actor, choice.plan, 0, 0}};
+                else if constexpr (std::is_same_v<
+                                       Choice,
+                                       SpatialLogicalMemoryBindingAction>)
+                  return {{2, 3, choice.binding, choice.target,
+                           choice.physicalOffsetBytes, 0}};
+                else if constexpr (std::is_same_v<
+                                       Choice, SpatialMemoryUseDispatchAction>)
+                  return {{2, 4, choice.use, choice.dispatchOption, 0, 0}};
+                else
+                  return {{2, 5, choice.exposure, choice.exposureOption, 0, 0}};
+              },
+              category);
+        }
+      },
+      action);
+}
+
+llvm::Error loom::pnr::validateCanonicalSpatialActionBatch(
+    llvm::ArrayRef<SpatialMappingAction> actions) {
+  if (actions.empty())
+    return invalidBatch("ActionBatch is empty");
+
+  ActionKey previous;
+  bool first = true;
+  for (const SpatialMappingAction &action : actions) {
+    const ActionKey current = batchAnchorKey(action);
+    if (!first) {
+      if (current == previous)
+        return invalidBatch("ActionBatch anchors are not unique");
+      if (!(previous < current))
+        return invalidBatch("ActionBatch anchors are not in canonical order");
+    }
+    previous = current;
+    first = false;
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<std::optional<SpatialMappingAction>>
+loom::pnr::proposeSpatialAction(const ResolvedPnrActionProposalPolicy &policy,
+                                SpatialActionProposalDomain domain,
+                                DeterministicPnrRandomStream &proposalStream) {
+  if (llvm::Error error = validateResolvedPnrActionProposalPolicy(policy))
+    return std::move(error);
+  if (llvm::Error error = validateKindDomain(domain.realizationAnchors,
+                                             domain.realizationChoices))
+    return std::move(error);
+  if (llvm::Error error =
+          validateKindDomain(domain.transportAnchors, domain.transportChoices))
+    return std::move(error);
+  if (llvm::Error error =
+          validateKindDomain(domain.resourceAnchors, domain.resourceChoices))
+    return std::move(error);
+  return selectSpatialAction(policy, domain, proposalStream);
+}
+
+llvm::Expected<std::optional<SpatialMappingAction>>
+loom::pnr::detail::proposeCanonicalSpatialAction(
+    const ResolvedPnrActionProposalPolicy &policy,
+    SpatialActionProposalDomain domain,
+    DeterministicPnrRandomStream &proposalStream) {
+  return selectSpatialAction(policy, domain, proposalStream);
 }

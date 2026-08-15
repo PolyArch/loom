@@ -240,6 +240,87 @@ void fixedChoicesConstrainTheSharedRelationModel() {
     fail("contradictory fixed choices became global infeasibility");
 }
 
+void weightedCapacityIsOccurrenceWide() {
+  InitializerRelationModel model =
+      makeModel({2, 2, 2}, {{InitializerRelationKind::Capacity,
+                             {{0, {0, 1}, 3}, {1, {0, 1}, 2}, {2, {0, 1}, 2}},
+                             {4, 4}}});
+  InitializerRelationSolver solver(model);
+  const auto result = take(solver.solveCanonical(/*assignmentLimit=*/8));
+  if (result.choices != std::vector<PnrIndex>({0, 1, 1}) ||
+      result.assignmentAttempts != 1)
+    fail("weighted capacity did not propagate occurrence-wide row demand");
+  if (llvm::Error error = model.verifyChoices(result.choices))
+    fail("weighted capacity rejected its canonical assignment: " +
+         llvm::toString(std::move(error)));
+  if (llvm::Error error = model.verifyChoices({0, 0, 1}))
+    llvm::consumeError(std::move(error));
+  else
+    fail("weighted capacity accepted an overfull occurrence");
+
+  auto overfull =
+      solver.solveCanonicalWithFixedChoices(/*assignmentLimit=*/8, {0, 0, 1});
+  if (overfull)
+    fail("fixed choices exceeded occurrence-wide row capacity");
+  bool observedFixedRootFailure = false;
+  llvm::handleAllErrors(
+      overfull.takeError(), [&](const InitializerRelationSolveFailure &error) {
+        observedFixedRootFailure =
+            error.kind() ==
+            InitializerRelationSolveFailureKind::FixedRootInfeasible;
+      });
+  if (!observedFixedRootFailure)
+    fail("fixed capacity overflow changed failure classification");
+
+  const auto preferred = take(solver.solveCanonicalWithPreferredChoices(
+      /*assignmentLimit=*/8, {1, 1, 1}));
+  if (preferred.choices != std::vector<PnrIndex>({1, 0, 0}))
+    fail("soft capacity preferences did not retain the feasible choices");
+}
+
+void releasedDecisionProjectionPreservesTheCanonicalSolve() {
+  constexpr PnrIndex unrelatedChoiceCount = 4096;
+  InitializerRelationModel model = makeModel(
+      {3, 3, 3, 3, 3, unrelatedChoiceCount},
+      {{InitializerRelationKind::Equal, {{0, {0, 1, 2}}, {1, {0, 1, 2}}}},
+       {InitializerRelationKind::Equal, {{0, {0, 1, 2}}, {2, {0, 1, 2}}}},
+       {InitializerRelationKind::Disjoint,
+        {{1, {0, 1, 2}}, {4, {0, 1, 2}}, {3, {0, 1, 2}}}},
+       {InitializerRelationKind::Capacity,
+        {{3, {0, 1, 2}, 2}, {4, {0, 1, 2}, 3}},
+        {3, 3, 3}}});
+  InitializerRelationSolver solver(model);
+  const std::size_t retainedBytes = solver.retainedStorageBytes();
+  const PnrIndex invalid = loom::pnr::getInvalidPnrIndex();
+  const std::vector<PnrIndex> fixed{1,       invalid, 1,
+                                    invalid, 0,       unrelatedChoiceCount - 1};
+  const auto full = take(solver.solveCanonicalWithFixedChoices(
+      /*assignmentLimit=*/16, fixed));
+  const auto projected = take(solver.solveCanonicalWithReleasedChoices(
+      /*assignmentLimit=*/16, fixed, {3, 1, 3}));
+  const std::vector<PnrIndex> expected{1, 1, 1, 2, 0, unrelatedChoiceCount - 1};
+  if (full.choices != expected || projected.choices != full.choices ||
+      projected.assignmentAttempts != full.assignmentAttempts)
+    fail("released relation projection changed the canonical assignment");
+  if (solver.retainedStorageBytes() != retainedBytes)
+    fail("released relation projection expanded retained solver storage");
+
+  auto conflicting = solver.solveCanonicalWithReleasedChoices(
+      /*assignmentLimit=*/16, {1, invalid, 2, invalid, 0, 0}, {1, 3});
+  if (conflicting)
+    fail("released relation projection ignored a retained contradiction");
+  bool observedFixedRootFailure = false;
+  llvm::handleAllErrors(
+      conflicting.takeError(),
+      [&](const InitializerRelationSolveFailure &error) {
+        observedFixedRootFailure =
+            error.kind() ==
+            InitializerRelationSolveFailureKind::FixedRootInfeasible;
+      });
+  if (!observedFixedRootFailure)
+    fail("retained projection contradiction changed failure classification");
+}
+
 void sparseDomainsReusePreparedStorage() {
   constexpr PnrIndex decisionCount = 4096;
   InitializerRelationModel model =
@@ -382,6 +463,8 @@ int main() {
   repeatedChoicesDoNotCreateResidentContexts();
   fixedRootFailureIsNotGlobalInfeasibility();
   fixedChoicesConstrainTheSharedRelationModel();
+  weightedCapacityIsOccurrenceWide();
+  releasedDecisionProjectionPreservesTheCanonicalSolve();
   sparseDomainsReusePreparedStorage();
   binaryEqualityIncidenceScalesWithAllDifferentDomains();
   diversifiedSearchUsesExactWithoutReplacementOrder();

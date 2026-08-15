@@ -10,11 +10,6 @@ config.name = "LOOM"
 config.test_format = lit.formats.ShTest()
 config.suffixes = [".mlir", ".test"]
 
-# System execution tests remain independently schedulable, but each launches
-# substantial nested compiler, PnR, and simulation work. Bound their aggregate
-# concurrency so lit's worker pool does not oversubscribe those inner jobs.
-lit_config.parallelism_groups["system-execution"] = 2
-
 # Hardware tools and scale Mapping tests launch nested workers and carry large
 # resident sets. Keep enough independent work in flight for this host without
 # letting lit's outer worker pool oversubscribe those inner workloads.
@@ -139,7 +134,7 @@ tools = [
     "loom-dse",
     "loom-dse-model-parameter-training-test",
     "loom-dse-ground-truth-campaign-integration-test",
-    "loom-dse-portable-system-rtl-generator-test",
+    "loom-dse-portable-spatial-core-rtl-generator-test",
     "loom-mapped-rtl-simulation-test",
     "loom-openroad-routed-test",
     "loom-openroad-static-fpa-test",
@@ -184,6 +179,7 @@ tools = [
     "loom-fabric-memory-role-bindings-test",
     "loom-fabric-memory-configuration-test",
     "loom-fabric-memory-consistency-contract-test",
+    "loom-fabric-physical-timing-profile-test",
     "loom-fabric-physical-identity-test",
     "loom-fabric-system-physical-identity-test",
     "loom-fabric-persistent-ref-test",
@@ -195,6 +191,7 @@ tools = [
     "loom-fabric-service-leg-carrier-attachment-test",
     "loom-fabric-system-service-contract-test",
     "loom-fabric-temporal-operand-buffer-test",
+    "loom-fabric-temporal-switch-route-test",
     "loom-fabric-switch-resource-contract-test",
     "loom-constant-callback-specialization-test",
     "loom-frontend-dfg-integration-test",

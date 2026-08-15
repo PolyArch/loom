@@ -55,49 +55,22 @@ struct IncidenceComponent final {
   std::vector<std::size_t> rows;
 };
 
-// A Memory Operation Engine holds one configured operation per exact physical
-// operation port, so the placeable slots of one engine template are its
-// occurrences multiplied by the operation ports its rows select. Rows that
-// select one port therefore compete for occurrences with each other alone.
-// Canonical row keys put the first operation port of the first template ahead
-// of every alternative, so a cover of equal realization demand still lands
-// every row on one port and collapses that supply to the occurrence count.
-// Port classes are the distinct (engine template, operation port) pairs the
-// derived rows select; balancing rows across them uses only the template
-// inventory each row already names.
-using PortClassCounts = std::vector<std::uint32_t>;
-
-std::uint32_t portClassImbalance(const PortClassCounts &counts) {
-  std::uint32_t maximum = 0;
-  for (std::uint32_t count : counts)
-    maximum = std::max(maximum, count);
-  return maximum;
-}
-
 struct ComponentSearchState final {
   ActorMask covered;
   std::vector<std::size_t> selectedRows;
   std::vector<std::size_t> lowerBound;
-  PortClassCounts portClasses;
-  std::uint32_t portImbalance = 0;
 };
 
-// A cover's row count is the number of physical realizations SpatialMapping
-// must place: one FU capability instance per compute row and one Memory
-// Operation Engine per memory row. Ordering partial states by canonical row
-// keys alone selects the cover whose rows have the smallest keys, which is
-// systematically the cover that binds one actor per realization and therefore
-// demands the most occurrences. `lowerBound` already holds the selected rows
-// unioned with one compatible row for every uncovered actor, so its size is a
-// realization-demand estimate that the search can minimize first. This uses no
-// occurrence count, coordinate, or other physical inventory fact.
+// `lowerBound` is a lower bound in the complete-cover order. Its length is an
+// admissible realization-count bound. At that length, its row sequence is the
+// lexicographically smallest unconstrained completion of the selected rows.
+// Every complete cover reachable from a state therefore sorts at or after the
+// state's bound.
 struct ComponentStateGreater final {
   bool operator()(const ComponentSearchState &lhs,
                   const ComponentSearchState &rhs) const {
     if (lhs.lowerBound.size() != rhs.lowerBound.size())
       return lhs.lowerBound.size() > rhs.lowerBound.size();
-    if (lhs.portImbalance != rhs.portImbalance)
-      return lhs.portImbalance > rhs.portImbalance;
     if (lhs.lowerBound != rhs.lowerBound)
       return lhs.lowerBound > rhs.lowerBound;
     return lhs.selectedRows > rhs.selectedRows;
@@ -107,6 +80,7 @@ struct ComponentStateGreater final {
 enum class ComponentAdvanceKind : std::uint8_t {
   Cover,
   Exhausted,
+  Interrupted,
 };
 
 struct ComponentAdvance final {
@@ -157,30 +131,35 @@ public:
                        llvm::ArrayRef<std::vector<std::size_t>> rowsByActor,
                        llvm::ArrayRef<ActorMask> rowMasks,
                        llvm::ArrayRef<std::size_t> actorLocalSlots,
-                       llvm::ArrayRef<std::vector<std::uint32_t>> rowPortClasses,
-                       std::size_t portClassCount,
                        const ResolvedTechMappingConfigView &config,
-                       TechMappingGenerationAccounting &accounting)
+                       TechMappingGenerationAccounting &accounting,
+                       ExecutionControlView executionControl)
       : domain_(domain), component_(component), rowsByActor_(rowsByActor),
         rowMasks_(rowMasks), actorLocalSlots_(actorLocalSlots),
-        rowPortClasses_(rowPortClasses), portClassCount_(portClassCount),
         componentMask_(actorMaskWordCount(component.actors.size()), 0),
-        config_(config), accounting_(accounting) {
+        config_(config), accounting_(accounting),
+        executionControl_(executionControl) {
     for (std::size_t actor = 0; actor < component_.actors.size(); ++actor)
       setActor(componentMask_, actor);
   }
 
   ComponentAdvance next() {
+    if (executionControl_.stopRequested())
+      return {ComponentAdvanceKind::Interrupted, {}};
     if (exhausted_)
       return {ComponentAdvanceKind::Exhausted, {}};
     if (!initialized_)
       initialize();
+    if (executionControl_.stopRequested())
+      return {ComponentAdvanceKind::Interrupted, {}};
     if (exhausted_)
       return {ComponentAdvanceKind::Exhausted, {}};
     if (sealed_)
       return nextSealed();
 
     while (!pending_.empty()) {
+      if (executionControl_.stopRequested())
+        return {ComponentAdvanceKind::Interrupted, {}};
       ComponentSearchState state = pending_.top();
       const bool complete = coversMask(state.covered, componentMask_);
       if (complete) {
@@ -207,6 +186,8 @@ public:
       }
 
       for (std::size_t row : selectedOptions) {
+        if (executionControl_.stopRequested())
+          return {ComponentAdvanceKind::Interrupted, {}};
         if (!consumeExpansion()) {
           seal();
           return nextSealed();
@@ -214,6 +195,8 @@ public:
         ComponentSearchState child = state;
         addRow(child, row);
         const PropagationResult propagation = propagate(child);
+        if (propagation == PropagationResult::Interrupted)
+          return {ComponentAdvanceKind::Interrupted, {}};
         if (propagation == PropagationResult::LimitReached) {
           seal();
           return nextSealed();
@@ -233,6 +216,7 @@ private:
     Viable,
     Infeasible,
     LimitReached,
+    Interrupted,
   };
 
   std::vector<std::size_t> compatibleRows(const ComponentSearchState &state,
@@ -256,9 +240,6 @@ private:
   void addRow(ComponentSearchState &state, std::size_t row) const {
     state.selectedRows.insert(llvm::lower_bound(state.selectedRows, row), row);
     mergeMask(state.covered, rowMasks_[row]);
-    for (std::uint32_t portClass : rowPortClasses_[row])
-      ++state.portClasses[portClass];
-    state.portImbalance = portClassImbalance(state.portClasses);
   }
 
   bool consumeExpansion() {
@@ -273,6 +254,8 @@ private:
 
   PropagationResult propagate(ComponentSearchState &state) {
     while (true) {
+      if (executionControl_.stopRequested())
+        return PropagationResult::Interrupted;
       std::optional<std::size_t> forcedRow;
       for (std::size_t actor : component_.actors) {
         if (covered(state, actor))
@@ -296,31 +279,42 @@ private:
 
   bool setLowerBound(ComponentSearchState &state) const {
     state.lowerBound = state.selectedRows;
-    for (std::size_t actor : component_.actors) {
-      if (covered(state, actor))
+    std::size_t uncoveredActorCount = 0;
+    for (std::size_t actor : component_.actors)
+      uncoveredActorCount += !covered(state, actor);
+    if (uncoveredActorCount == 0)
+      return true;
+
+    std::vector<std::size_t> availableRows;
+    std::size_t maximumNewActorsPerRow = 0;
+    for (std::size_t row : component_.rows) {
+      if (masksIntersect(state.covered, rowMasks_[row]))
         continue;
-      const std::vector<std::size_t> compatible =
-          compatibleRows(state, actor, 1);
-      if (compatible.empty())
-        return false;
-      state.lowerBound.push_back(compatible.front());
+      availableRows.push_back(row);
+      maximumNewActorsPerRow =
+          std::max(maximumNewActorsPerRow, domain_.rows[row].actorSlots.size());
     }
+    if (maximumNewActorsPerRow == 0)
+      return false;
+
+    const std::size_t additionalRowLowerBound =
+        (uncoveredActorCount + maximumNewActorsPerRow - 1) /
+        maximumNewActorsPerRow;
+    if (availableRows.size() < additionalRowLowerBound)
+      return false;
+    state.lowerBound.insert(state.lowerBound.end(), availableRows.begin(),
+                            availableRows.begin() + additionalRowLowerBound);
     llvm::sort(state.lowerBound);
-    state.lowerBound.erase(
-        std::unique(state.lowerBound.begin(), state.lowerBound.end()),
-        state.lowerBound.end());
     return true;
   }
 
   void initialize() {
     initialized_ = true;
     ComponentSearchState initial{
-        ActorMask(actorMaskWordCount(component_.actors.size()), 0),
-        {},
-        {},
-        PortClassCounts(portClassCount_, 0),
-        0};
+        ActorMask(actorMaskWordCount(component_.actors.size()), 0), {}, {}};
     const PropagationResult propagation = propagate(initial);
+    if (propagation == PropagationResult::Interrupted)
+      return;
     if (propagation == PropagationResult::LimitReached) {
       seal();
       return;
@@ -344,12 +338,22 @@ private:
       if (coversMask(state.covered, componentMask_))
         sealedCovers_.push_back(std::move(state.selectedRows));
     }
-    llvm::sort(sealedCovers_);
+    llvm::sort(sealedCovers_, [&](const auto &lhs, const auto &rhs) {
+      if (lhs.size() != rhs.size())
+        return lhs.size() < rhs.size();
+      return std::lexicographical_compare(
+          lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+          [&](std::size_t lhsRow, std::size_t rhsRow) {
+            return domain_.rows[lhsRow].key < domain_.rows[rhsRow].key;
+          });
+    });
     sealedCovers_.erase(std::unique(sealedCovers_.begin(), sealedCovers_.end()),
                         sealedCovers_.end());
   }
 
   ComponentAdvance nextSealed() {
+    if (executionControl_.stopRequested())
+      return {ComponentAdvanceKind::Interrupted, {}};
     if (sealedCursor_ == sealedCovers_.size()) {
       exhausted_ = true;
       return {ComponentAdvanceKind::Exhausted, {}};
@@ -365,11 +369,10 @@ private:
   llvm::ArrayRef<std::vector<std::size_t>> rowsByActor_;
   llvm::ArrayRef<ActorMask> rowMasks_;
   llvm::ArrayRef<std::size_t> actorLocalSlots_;
-  llvm::ArrayRef<std::vector<std::uint32_t>> rowPortClasses_;
-  std::size_t portClassCount_ = 0;
   ActorMask componentMask_;
   const ResolvedTechMappingConfigView &config_;
   TechMappingGenerationAccounting &accounting_;
+  ExecutionControlView executionControl_;
   std::priority_queue<ComponentSearchState, std::vector<ComponentSearchState>,
                       ComponentStateGreater>
       pending_;
@@ -438,20 +441,11 @@ void forEachDifferingComponent(const SparseProductIndex &lhs,
 
 struct ProductState final {
   SparseProductIndex indices;
+  std::size_t rowCount = 0;
 };
 
 struct ProductGreater final {
   const std::vector<LazyComponentCovers> *components;
-
-  std::size_t rowCount(const ProductState &state) const {
-    std::size_t count = 0;
-    for (std::size_t component = 0; component < components->size();
-         ++component)
-      count += (*components)[component]
-                   .discovered[componentIndex(state.indices, component)]
-                   .size();
-    return count;
-  }
 
   std::vector<const TechMatchRow *>
   differingRows(const ProductState &selected, const ProductState &other) const {
@@ -470,10 +464,8 @@ struct ProductGreater final {
   }
 
   bool operator()(const ProductState &lhs, const ProductState &rhs) const {
-    const std::size_t lhsCount = rowCount(lhs);
-    const std::size_t rhsCount = rowCount(rhs);
-    if (lhsCount != rhsCount)
-      return lhsCount > rhsCount;
+    if (lhs.rowCount != rhs.rowCount)
+      return lhs.rowCount > rhs.rowCount;
     const std::vector<const TechMatchRow *> lhsRows = differingRows(lhs, rhs);
     const std::vector<const TechMatchRow *> rhsRows = differingRows(rhs, lhs);
     std::size_t lhsRow = 0;
@@ -513,8 +505,23 @@ materializeCover(const std::vector<LazyComponentCovers> &components,
 TechCoverSearchResult
 searchTechMatchCovers(const TechMatchDomain &domain,
                       const ResolvedTechMappingConfigView &config,
-                      TechMappingGenerationAccounting &accounting) {
+                      TechMappingGenerationAccounting &accounting,
+                      ExecutionControlView executionControl) {
+  return searchTechMatchCovers(domain, config, accounting,
+                               config.candidatePublicationLimit(),
+                               executionControl);
+}
+
+TechCoverSearchResult searchTechMatchCovers(
+    const TechMatchDomain &domain, const ResolvedTechMappingConfigView &config,
+    TechMappingGenerationAccounting &accounting, std::uint64_t coverLimit,
+    ExecutionControlView executionControl) {
   TechCoverSearchResult result;
+  if (executionControl.stopRequested()) {
+    result.exhausted = false;
+    result.interrupted = true;
+    return result;
+  }
   const std::vector<IncidenceComponent> incidence = componentsOf(domain);
   std::vector<std::vector<std::size_t>> rowsByActor(domain.actors.size());
   std::vector<ActorMask> rowMasks(domain.rows.size());
@@ -522,27 +529,6 @@ searchTechMatchCovers(const TechMatchDomain &domain,
   for (auto [rowIndex, row] : llvm::enumerate(domain.rows))
     for (std::size_t actor : row.actorSlots)
       rowsByActor[actor].push_back(rowIndex);
-
-  std::map<std::pair<std::uint64_t, std::uint64_t>, std::uint32_t> portClasses;
-  std::vector<std::vector<std::uint32_t>> rowPortClasses(domain.rows.size());
-  for (auto [rowIndex, row] : llvm::enumerate(domain.rows)) {
-    const auto *memory = std::get_if<TechMemoryRealizationView>(&row.realization);
-    if (!memory)
-      continue;
-    for (const TechMemoryActorView &actor : memory->actors) {
-      const auto key =
-          std::make_pair(static_cast<std::uint64_t>(
-                             actor.operationPort.engine.id()),
-                         actor.operationPort.ordinal);
-      const std::uint32_t ordinal = portClasses
-                                        .try_emplace(key, static_cast<uint32_t>(
-                                                              portClasses.size()))
-                                        .first->second;
-      if (!llvm::is_contained(rowPortClasses[rowIndex], ordinal))
-        rowPortClasses[rowIndex].push_back(ordinal);
-    }
-    llvm::sort(rowPortClasses[rowIndex]);
-  }
 
   for (const IncidenceComponent &component : incidence) {
     const std::size_t words = actorMaskWordCount(component.actors.size());
@@ -560,15 +546,21 @@ searchTechMatchCovers(const TechMatchDomain &domain,
   for (const IncidenceComponent &component : incidence) {
     LazyComponentCovers lazy;
     lazy.cursor = std::make_unique<ComponentCoverCursor>(
-        domain, component, rowsByActor, rowMasks, actorLocalSlots,
-        rowPortClasses, portClasses.size(), config, accounting);
+        domain, component, rowsByActor, rowMasks, actorLocalSlots, config,
+        accounting, executionControl);
     ComponentAdvance first = lazy.cursor->next();
+    if (first.kind == ComponentAdvanceKind::Interrupted) {
+      result.exhausted = false;
+      result.interrupted = true;
+      return result;
+    }
     if (lazy.cursor->truncated())
       result.exhausted = false;
-    if (first.kind == ComponentAdvanceKind::Exhausted)
+    if (first.kind == ComponentAdvanceKind::Exhausted) {
       lazy.exhausted = true;
-    else
+    } else {
       lazy.discovered.push_back(std::move(first.cover));
+    }
     components.push_back(std::move(lazy));
   }
 
@@ -578,6 +570,11 @@ searchTechMatchCovers(const TechMatchDomain &domain,
     for (LazyComponentCovers &component : components) {
       while (!component.exhausted) {
         ComponentAdvance advance = component.cursor->next();
+        if (advance.kind == ComponentAdvanceKind::Interrupted) {
+          result.exhausted = false;
+          result.interrupted = true;
+          return result;
+        }
         if (component.cursor->truncated())
           result.exhausted = false;
         component.exhausted = advance.kind == ComponentAdvanceKind::Exhausted;
@@ -588,19 +585,22 @@ searchTechMatchCovers(const TechMatchDomain &domain,
     return result;
   }
 
+  ProductState initial;
+  for (const LazyComponentCovers &component : components)
+    initial.rowCount += component.discovered.front().size();
   std::priority_queue<ProductState, std::vector<ProductState>, ProductGreater>
       pending(ProductGreater{&components});
-  pending.push(ProductState{{}});
+  pending.push(initial);
   std::set<SparseProductIndex> visited{{}};
   while (!pending.empty()) {
+    if (executionControl.stopRequested()) {
+      result.exhausted = false;
+      result.interrupted = true;
+      return result;
+    }
     ProductState current = pending.top();
     pending.pop();
     result.covers.push_back(materializeCover(components, current));
-    if (result.covers.size() >= config.candidatePublicationLimit()) {
-      result.exhausted = false;
-      return result;
-    }
-
     for (std::size_t component = 0; component < components.size();
          ++component) {
       const std::size_t currentIndex =
@@ -612,6 +612,11 @@ searchTechMatchCovers(const TechMatchDomain &domain,
       const std::size_t nextIndex = currentIndex + 1;
       if (nextIndex == lazy.discovered.size() && !lazy.exhausted) {
         ComponentAdvance advance = lazy.cursor->next();
+        if (advance.kind == ComponentAdvanceKind::Interrupted) {
+          result.exhausted = false;
+          result.interrupted = true;
+          return result;
+        }
         if (lazy.cursor->truncated())
           result.exhausted = false;
         if (advance.kind == ComponentAdvanceKind::Exhausted)
@@ -621,7 +626,19 @@ searchTechMatchCovers(const TechMatchDomain &domain,
       }
       if (nextIndex >= lazy.discovered.size())
         continue;
-      pending.push(ProductState{std::move(next)});
+      const auto &currentCover = lazy.discovered[currentIndex];
+      const auto &nextCover = lazy.discovered[nextIndex];
+      pending.push(ProductState{std::move(next), current.rowCount -
+                                                     currentCover.size() +
+                                                     nextCover.size()});
+    }
+    if (result.covers.size() >= coverLimit) {
+      result.exhausted =
+          result.exhausted && pending.empty() &&
+          llvm::all_of(components, [](const LazyComponentCovers &component) {
+            return component.exhausted;
+          });
+      return result;
     }
   }
   return result;

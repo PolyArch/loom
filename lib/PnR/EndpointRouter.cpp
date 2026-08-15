@@ -1,5 +1,7 @@
 #include "PnR/EndpointRouter.h"
 
+#include "SpatialPhysicalTiming.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -114,6 +116,26 @@ llvm::Expected<RouteCost> addFiniteCost(RouteCost lhs, RouteCost rhs,
   return lhs + rhs;
 }
 
+llvm::Expected<RouteCost>
+arcSearchCost(const EndpointRouteSearchRequest &request, PnrIndex arc,
+              bool current) {
+  const RouteCost resourceCost =
+      current ? request.currentArcCosts[arc] : request.lowerBoundArcCosts[arc];
+  if (!request.physicalTimingEnabled)
+    return resourceCost;
+  auto timingCost = detail::physicalTimingDrivenTraversalCost(
+      request.arcTimingDelayQuanta[arc], request.requiredTimingQuanta,
+      request.timingCriticality);
+  if (!timingCost) {
+    llvm::consumeError(timingCost.takeError());
+    return overflow("physical traversal cost exceeds the largest finite route "
+                    "cost");
+  }
+  return addFiniteCost(resourceCost, *timingCost,
+                       current ? "current physical arc cost"
+                               : "lower-bound physical arc cost");
+}
+
 bool isCanonicalEndpointSet(llvm::ArrayRef<PnrIndex> endpoints) {
   return std::adjacent_find(endpoints.begin(), endpoints.end(),
                             std::greater_equal<PnrIndex>()) == endpoints.end();
@@ -210,6 +232,12 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   heapPositions_.assign(searchStateCount, invalidIndex);
   path_.clear();
   path_.reserve(searchStateCount);
+  timingLabels_.clear();
+  timingLabels_.reserve(searchStateCount);
+  timingStateLabels_.clear();
+  timingStateLabels_.resize(searchStateCount);
+  timingHeap_.clear();
+  timingHeap_.reserve(searchStateCount);
   heuristicCache_.clear();
   heuristicCacheTargets_.clear();
   heuristicCacheEligibility_.clear();
@@ -454,9 +482,11 @@ llvm::Error EndpointRouteSearchScratch::buildHeuristic(
       if (!arcEligible(arc, request, false))
         continue;
       const PnrIndex predecessor = graph_.arcSources[arc];
-      auto candidate =
-          addFiniteCost(endpointCost, request.lowerBoundArcCosts[arc],
-                        "reverse lower-bound distance");
+      auto arcCost = arcSearchCost(request, arc, false);
+      if (!arcCost)
+        return arcCost.takeError();
+      auto candidate = addFiniteCost(endpointCost, *arcCost,
+                                     "reverse lower-bound distance");
       if (!candidate)
         return candidate.takeError();
       if (*candidate >= heuristic(predecessor))
@@ -553,6 +583,241 @@ void EndpointRouteSearchScratch::storeCachedHeuristic(
 }
 
 llvm::Expected<EndpointRouteSearchResult>
+EndpointRouteSearchScratch::searchTimingAware(
+    const EndpointRouteSearchRequest &request) {
+  const PnrIndex invalidLabel = getInvalidPnrIndex();
+  for (auto &labels : timingStateLabels_)
+    labels.clear();
+  timingLabels_.clear();
+  timingHeap_.clear();
+
+  const auto key = [&](PnrIndex label) {
+    const TimingSearchLabel &value = timingLabels_[label];
+    return std::make_tuple(value.distance, value.endpoint, value.requirementMet,
+                           value.arrivalQuanta, label);
+  };
+  const auto heapWorse = [&](PnrIndex lhs, PnrIndex rhs) {
+    return key(lhs) > key(rhs);
+  };
+  const auto push = [&](PnrIndex label) {
+    timingHeap_.push_back(label);
+    std::push_heap(timingHeap_.begin(), timingHeap_.end(), heapWorse);
+  };
+  const auto pop = [&]() {
+    std::pop_heap(timingHeap_.begin(), timingHeap_.end(), heapWorse);
+    const PnrIndex result = timingHeap_.back();
+    timingHeap_.pop_back();
+    return result;
+  };
+  const auto addLabel =
+      [&](PnrIndex endpoint, bool requirementMet, std::uint64_t arrival,
+          RouteCost distance, PnrIndex predecessorLabel,
+          PnrIndex predecessorArc) -> llvm::Expected<std::optional<PnrIndex>> {
+    const PnrIndex state = searchState(endpoint, requirementMet);
+    if (state >= timingStateLabels_.size())
+      return invalid("physical timing search state is out of range");
+    for (PnrIndex existingOrdinal : timingStateLabels_[state]) {
+      const TimingSearchLabel &existing = timingLabels_[existingOrdinal];
+      if (existing.active && existing.arrivalQuanta <= arrival &&
+          existing.distance <= distance)
+        return std::optional<PnrIndex>();
+    }
+    for (PnrIndex existingOrdinal : timingStateLabels_[state]) {
+      TimingSearchLabel &existing = timingLabels_[existingOrdinal];
+      if (existing.active && arrival <= existing.arrivalQuanta &&
+          distance <= existing.distance)
+        existing.active = false;
+    }
+    if (timingLabels_.size() >= std::numeric_limits<PnrIndex>::max())
+      return overflow("physical timing label domain exceeds PnrIndex");
+    const PnrIndex ordinal = static_cast<PnrIndex>(timingLabels_.size());
+    timingLabels_.push_back({endpoint, predecessorLabel, predecessorArc,
+                             arrival, distance, requirementMet, true});
+    timingStateLabels_[state].push_back(ordinal);
+    push(ordinal);
+    return std::optional<PnrIndex>(ordinal);
+  };
+
+  beginSourceGeneration();
+  for (auto [ordinal, source] : llvm::enumerate(request.sourceEndpoints)) {
+    sourceEpochs_[source] = sourceGeneration_;
+    sourceReplicationGroups_[source] = request.sourceReplicationGroups[ordinal];
+    const std::uint64_t sourceArrival =
+        request.sourceTimingArrivalQuanta[ordinal];
+    const std::uint64_t sourceExcess =
+        sourceArrival > request.requiredTimingQuanta
+            ? sourceArrival - request.requiredTimingQuanta
+            : 0;
+    auto initialCost = detail::physicalTimingDrivenNegativeSlackCost(
+        sourceExcess, request.requiredTimingQuanta, request.timingCriticality);
+    if (!initialCost) {
+      llvm::consumeError(initialCost.takeError());
+      return overflow("physical timing source slack penalty exceeds the "
+                      "largest finite route cost");
+    }
+    auto inserted = addLabel(source, false, sourceArrival, *initialCost,
+                             invalidLabel, invalidLabel);
+    if (!inserted)
+      return inserted.takeError();
+  }
+
+  PnrIndex bestTargetLabel = invalidLabel;
+  RouteCost bestCost = routeCostInfinity;
+  std::uint64_t bestTargetArrival = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t expansions = 0;
+  while (!timingHeap_.empty()) {
+    while (!timingHeap_.empty() && !timingLabels_[timingHeap_.front()].active)
+      (void)pop();
+    if (timingHeap_.empty())
+      break;
+    if (bestTargetLabel != invalidLabel &&
+        timingLabels_[timingHeap_.front()].distance > bestCost)
+      break;
+    if (expansions == request.endpointExpansionLimit)
+      return failure(
+          EndpointRouteSearchFailureKind::WorkLimit,
+          "endpoint expansion limit reached before timing optimality proof");
+    const PnrIndex labelOrdinal = pop();
+    const TimingSearchLabel label = timingLabels_[labelOrdinal];
+    if (!label.active)
+      continue;
+    if (endpointExpansionCount_ == std::numeric_limits<std::uint64_t>::max())
+      return overflow("cumulative endpoint expansion count overflows u64");
+    ++expansions;
+    ++endpointExpansionCount_;
+
+    if (isTarget(label.endpoint) &&
+        (!targetRequiresTraversal(label.endpoint) || label.requirementMet)) {
+      const auto targetPosition =
+          llvm::lower_bound(request.targetEndpoints, label.endpoint);
+      if (targetPosition == request.targetEndpoints.end() ||
+          *targetPosition != label.endpoint)
+        return invalid("physical timing target has no request ordinal");
+      const std::size_t targetOrdinal =
+          targetPosition - request.targetEndpoints.begin();
+      const std::uint64_t terminalDelay =
+          request.targetTimingDelayQuanta[targetOrdinal];
+      if (terminalDelay >
+          std::numeric_limits<std::uint64_t>::max() - label.arrivalQuanta)
+        return overflow("physical timing target arrival exceeds u64");
+      const std::uint64_t terminalArrival = label.arrivalQuanta + terminalDelay;
+      const std::uint64_t oldExcess =
+          label.arrivalQuanta > request.requiredTimingQuanta
+              ? label.arrivalQuanta - request.requiredTimingQuanta
+              : 0;
+      const std::uint64_t terminalExcess =
+          terminalArrival > request.requiredTimingQuanta
+              ? terminalArrival - request.requiredTimingQuanta
+              : 0;
+      auto terminalPenalty = detail::physicalTimingDrivenNegativeSlackCost(
+          terminalExcess - oldExcess, request.requiredTimingQuanta,
+          request.timingCriticality);
+      if (!terminalPenalty) {
+        llvm::consumeError(terminalPenalty.takeError());
+        return overflow("physical timing target slack penalty exceeds the "
+                        "largest finite route cost");
+      }
+      auto targetCost = addFiniteCost(label.distance, *terminalPenalty,
+                                      "physical timing target distance");
+      if (!targetCost)
+        return targetCost.takeError();
+      if (*targetCost < bestCost ||
+          (*targetCost == bestCost &&
+           (bestTargetLabel == invalidLabel ||
+            std::make_tuple(targetPreferenceRank(label.endpoint),
+                            label.endpoint, terminalArrival, labelOrdinal) <
+                std::make_tuple(targetPreferenceRank(
+                                    timingLabels_[bestTargetLabel].endpoint),
+                                timingLabels_[bestTargetLabel].endpoint,
+                                bestTargetArrival, bestTargetLabel)))) {
+        bestTargetLabel = labelOrdinal;
+        bestCost = *targetCost;
+        bestTargetArrival = terminalArrival;
+      }
+      continue;
+    }
+
+    const PnrIndex begin = graph_.adjacencyOffsets[label.endpoint];
+    const PnrIndex end = graph_.adjacencyOffsets[label.endpoint + 1];
+    for (PnrIndex arc = begin; arc < end; ++arc) {
+      if (!arcEligible(arc, request, true))
+        continue;
+      const PnrIndex successor = graph_.arcs[arc].target;
+      if (request.forbidSourceReentry && isSource(successor) &&
+          successor != label.endpoint)
+        continue;
+      if (request.arcTimingDelayQuanta[arc] >
+          std::numeric_limits<std::uint64_t>::max() - label.arrivalQuanta)
+        return overflow("physical timing arrival exceeds u64");
+      const std::uint64_t reached =
+          label.arrivalQuanta + request.arcTimingDelayQuanta[arc];
+      const std::uint64_t oldExcess =
+          label.arrivalQuanta > request.requiredTimingQuanta
+              ? label.arrivalQuanta - request.requiredTimingQuanta
+              : 0;
+      const std::uint64_t newExcess =
+          reached > request.requiredTimingQuanta
+              ? reached - request.requiredTimingQuanta
+              : 0;
+      auto penalty = detail::physicalTimingDrivenNegativeSlackCost(
+          newExcess - oldExcess, request.requiredTimingQuanta,
+          request.timingCriticality);
+      if (!penalty) {
+        llvm::consumeError(penalty.takeError());
+        return overflow("physical timing slack penalty exceeds the largest "
+                        "finite route cost");
+      }
+      auto arcCost = arcSearchCost(request, arc, true);
+      if (!arcCost)
+        return arcCost.takeError();
+      auto distance = addFiniteCost(label.distance, *arcCost,
+                                    "timing-aware forward distance");
+      if (!distance)
+        return distance.takeError();
+      distance =
+          addFiniteCost(*distance, *penalty, "timing-aware slack distance");
+      if (!distance)
+        return distance.takeError();
+      const PnrIndex traversal = graph_.arcs[arc].traversal;
+      const bool selectsRequired =
+          !request.requiredTraversalBits.empty() &&
+          traversal / 64 < request.requiredTraversalBits.size() &&
+          (request.requiredTraversalBits[traversal / 64] &
+           (std::uint64_t{1} << (traversal % 64))) != 0;
+      const std::uint64_t successorArrival =
+          request.arcTimingRegisteredDestination[arc] ? 0 : reached;
+      auto inserted =
+          addLabel(successor, label.requirementMet || selectsRequired,
+                   successorArrival, *distance, labelOrdinal, arc);
+      if (!inserted)
+        return inserted.takeError();
+    }
+  }
+
+  if (bestTargetLabel == invalidLabel)
+    return failure(EndpointRouteSearchFailureKind::Unreachable,
+                   "no eligible timing-aware route connects the endpoint "
+                   "sets");
+
+  path_.clear();
+  PnrIndex label = bestTargetLabel;
+  while (timingLabels_[label].predecessorLabel != invalidLabel) {
+    if (timingLabels_[label].predecessorArc == invalidLabel)
+      return invalid("physical timing predecessor chain has no arc");
+    path_.push_back(timingLabels_[label].predecessorArc);
+    label = timingLabels_[label].predecessorLabel;
+    if (label >= timingLabels_.size())
+      return invalid("physical timing predecessor chain is out of range");
+  }
+  const PnrIndex source = timingLabels_[label].endpoint;
+  if (!isSource(source))
+    return invalid("physical timing predecessor chain has no source");
+  std::reverse(path_.begin(), path_.end());
+  return EndpointRouteSearchResult{
+      source, timingLabels_[bestTargetLabel].endpoint, bestCost, path_};
+}
+
+llvm::Expected<EndpointRouteSearchResult>
 EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   if (!prepared_)
     return invalid("scratch must be prepared before search");
@@ -574,20 +839,37 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   if (request.lowerBoundArcCosts.size() != graph_.arcs.size() ||
       request.currentArcCosts.size() != graph_.arcs.size())
     return invalid("lower-bound and current cost arrays must contain E rows");
-  const std::size_t endpointCount =
-      static_cast<std::size_t>(graph_.endpointCount);
+  const bool timingAware = request.physicalTimingEnabled;
+  if (!timingAware &&
+      (!request.arcTimingRegisteredDestination.empty() ||
+       !request.sourceTimingArrivalQuanta.empty() ||
+       !request.targetTimingDelayQuanta.empty() ||
+       request.requiredTimingQuanta != 0 || request.timingCriticality != 0))
+    return invalid("partial physical timing search input is not allowed");
+  if (timingAware &&
+      (request.arcTimingDelayQuanta.size() != graph_.arcs.size() ||
+       request.arcTimingRegisteredDestination.size() != graph_.arcs.size() ||
+       request.sourceTimingArrivalQuanta.size() !=
+           request.sourceEndpoints.size() ||
+       request.targetTimingDelayQuanta.size() !=
+           request.targetEndpoints.size() ||
+       request.requiredTimingQuanta == 0))
+    return invalid("physical timing search arrays have the wrong domain");
+  if (timingAware)
+    for (PnrIndex arc = 0; arc < graph_.arcs.size(); ++arc) {
+      if (request.arcTimingDelayQuanta[arc] == 0)
+        return invalid("physical timing search has a zero-delay arc");
+      if (request.arcTimingRegisteredDestination[arc] > 1)
+        return invalid("physical timing boundary flag is not boolean");
+    }
   const std::size_t traversalWords =
       (graph_.traversalReplicationGroups.size() + 63) / 64;
-  const std::size_t endpointWords = (endpointCount + 63) / 64;
   if (!request.eligibleTraversalBits.empty() &&
       request.eligibleTraversalBits.size() != traversalWords)
     return invalid("eligible traversal mask has the wrong width");
   if (!request.requiredTraversalBits.empty() &&
       request.requiredTraversalBits.size() != traversalWords)
     return invalid("required traversal mask has the wrong width");
-  if (!request.forbiddenEndpointBits.empty() &&
-      request.forbiddenEndpointBits.size() != endpointWords)
-    return invalid("forbidden endpoint mask has the wrong width");
   if (!request.eligibleTraversalBits.empty() &&
       graph_.traversalReplicationGroups.size() % 64 != 0) {
     const std::uint64_t paddingMask = ~(
@@ -603,12 +885,6 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
         1);
     if ((request.requiredTraversalBits.back() & paddingMask) != 0)
       return invalid("required traversal mask has nonzero padding");
-  }
-  if (!request.forbiddenEndpointBits.empty() && endpointCount % 64 != 0) {
-    const std::uint64_t paddingMask =
-        ~((std::uint64_t{1} << (endpointCount % 64)) - 1);
-    if ((request.forbiddenEndpointBits.back() & paddingMask) != 0)
-      return invalid("forbidden endpoint mask has nonzero padding");
   }
   if (!request.requiredTraversalBits.empty()) {
     bool hasRequiredTraversal = false;
@@ -654,6 +930,8 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
             ? 0
             : request.targetRequiresTraversal[ordinal];
   }
+  if (timingAware)
+    return searchTimingAware(request);
   if (!loadCachedHeuristic(request)) {
     if (llvm::Error error = buildHeuristic(request))
       return std::move(error);
@@ -668,10 +946,6 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
            request.sourceEndpoints, request.sourceReplicationGroups)) {
     sourceEpochs_[source] = sourceGeneration_;
     sourceReplicationGroups_[source] = replicationGroup;
-    if (!request.forbiddenEndpointBits.empty() &&
-        (request.forbiddenEndpointBits[source / 64] &
-         (std::uint64_t{1} << (source % 64))) != 0)
-      continue;
     const RouteCost lowerBound = heuristic(source);
     if (lowerBound == routeCostInfinity)
       continue;
@@ -724,18 +998,17 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
       if (!arcEligible(arc, request, true))
         continue;
       const PnrIndex successor = graph_.arcs[arc].target;
-      if (!request.forbiddenEndpointBits.empty() &&
-          (request.forbiddenEndpointBits[successor / 64] &
-           (std::uint64_t{1} << (successor % 64))) != 0)
-        continue;
       if (request.forbidSourceReentry && isSource(successor) &&
           successor != endpoint)
         continue;
       const RouteCost successorHeuristic = heuristic(successor);
       if (successorHeuristic == routeCostInfinity)
         continue;
-      auto candidateDistance = addFiniteCost(
-          endpointDistance, request.currentArcCosts[arc], "forward distance");
+      auto arcCost = arcSearchCost(request, arc, true);
+      if (!arcCost)
+        return arcCost.takeError();
+      auto candidateDistance =
+          addFiniteCost(endpointDistance, *arcCost, "forward distance");
       if (!candidateDistance)
         return candidateDistance.takeError();
       const PnrIndex traversal = graph_.arcs[arc].traversal;
@@ -770,15 +1043,23 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
           return llvm::binary_search(request.sourceEndpoints, target);
         });
     std::size_t eligibleRequiredTraversalCount = 0;
+    std::size_t eligibleTraversalCount = 0;
     for (std::size_t traversal = 0;
          traversal != graph_.traversalReplicationGroups.size(); ++traversal) {
       const std::uint64_t bit = std::uint64_t{1} << (traversal % 64);
+      if (request.eligibleTraversalBits.empty() ||
+          (request.eligibleTraversalBits[traversal / 64] & bit) != 0)
+        ++eligibleTraversalCount;
       if (traversal / 64 < request.requiredTraversalBits.size() &&
           (request.requiredTraversalBits[traversal / 64] & bit) != 0 &&
           (request.eligibleTraversalBits.empty() ||
            (request.eligibleTraversalBits[traversal / 64] & bit) != 0))
         ++eligibleRequiredTraversalCount;
     }
+    const std::size_t heuristicReachableSourceCount =
+        llvm::count_if(request.sourceEndpoints, [&](PnrIndex source) {
+          return heuristic(source) != routeCostInfinity;
+        });
     return failure(
         EndpointRouteSearchFailureKind::Unreachable,
         "no eligible route connects the endpoint sets (source_count=",
@@ -786,6 +1067,8 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
         ", target_count=", request.targetEndpoints.size(),
         ", source_target_overlap_count=", sourceTargetOverlapCount,
         ", target_requiring_traversal_count=", targetRequiringTraversalCount,
+        ", heuristic_reachable_source_count=", heuristicReachableSourceCount,
+        ", eligible_traversal_count=", eligibleTraversalCount,
         ", eligible_required_traversal_count=", eligibleRequiredTraversalCount,
         ", first_source=", request.sourceEndpoints.front(),
         ", first_target=", request.targetEndpoints.front(),
@@ -819,6 +1102,12 @@ std::size_t EndpointRouteSearchScratch::retainedStorageBytes() const {
       heuristicCacheTargets_.capacity() * sizeof(PnrIndex) +
       heuristicCacheEligibility_.capacity() * sizeof(std::uint64_t) +
       heuristicCacheDistances_.capacity() * sizeof(RouteCost);
+  std::size_t timingBytes =
+      timingLabels_.capacity() * sizeof(TimingSearchLabel) +
+      timingStateLabels_.capacity() * sizeof(std::vector<PnrIndex>) +
+      timingHeap_.capacity() * sizeof(PnrIndex);
+  for (const auto &labels : timingStateLabels_)
+    timingBytes += labels.capacity() * sizeof(PnrIndex);
   return cacheBytes + heuristics_.capacity() * sizeof(RouteCost) +
          distances_.capacity() * sizeof(RouteCost) +
          priorities_.capacity() * sizeof(RouteCost) +
@@ -833,5 +1122,5 @@ std::size_t EndpointRouteSearchScratch::retainedStorageBytes() const {
          sourceReplicationGroups_.capacity() * sizeof(PnrIndex) +
          heap_.capacity() * sizeof(PnrIndex) +
          heapPositions_.capacity() * sizeof(PnrIndex) +
-         path_.capacity() * sizeof(PnrIndex);
+         path_.capacity() * sizeof(PnrIndex) + timingBytes;
 }

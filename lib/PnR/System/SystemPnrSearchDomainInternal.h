@@ -2,7 +2,9 @@
 #define LOOM_LIB_PNR_SYSTEM_SYSTEMPNRSEARCHDOMAININTERNAL_H
 
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingProgressProjection.h"
 #include "PnR/FrozenConstraintIndex.h"
+#include "PnR/SpatialRecurrenceTiming.h"
 #include "PnR/System/SystemPnrProblem.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
@@ -52,27 +54,25 @@ struct CanonicalSystemPartitionBinding final {
   std::vector<::loom::mapping::SystemPresburgerCell> cells;
 };
 
+struct SpatialCatalogGraphProgress final {
+  ::dataflow::GraphRef graph;
+  std::vector<::loom::mapping::MappingRouteProgressObligationProjection>
+      routeObligations;
+};
+
 struct SpatialCatalogEntry final {
   ArtifactRootReference reference;
   ::loom::mapping::FinalizedSpatialMapping mapping;
   std::uint64_t moduleDependencyOrdinal = 0;
   std::vector<::dataflow::GraphRef> covers;
+  std::vector<SpatialCatalogGraphProgress> graphProgress;
   std::vector<std::uint64_t> graphStaticSchedulePressures;
-};
-
-struct FlatSpatialReopenCatalogEntry final {
-  FlatSpatialReopenProblem problem;
-  std::vector<::dataflow::GraphRef> covers;
-};
-
-struct FlatSpatialSeedCatalogEntry final {
-  ArtifactRootReference reference;
-  std::vector<::dataflow::GraphRef> covers;
-};
-
-struct CanonicalFlatGraphCatalog final {
-  std::vector<FlatSpatialReopenCatalogEntry> problems;
-  std::vector<FlatSpatialSeedCatalogEntry> seeds;
+  std::vector<SpatialRecurrenceTimingProjection> graphRecurrenceTimings;
+  std::uint64_t worstRouteArrivalDelayQuanta = 0;
+  std::uint64_t totalRouteNegativeSlackQuanta = 0;
+  ComponentViewDigest::Storage physicalTimingProfileDigest{};
+  ::loom::fabric::FabricPhysicalTimingProfileKind physicalTimingProfileKind =
+      ::loom::fabric::FabricPhysicalTimingProfileKind::NormalizedHeuristic;
 };
 
 llvm::Expected<std::vector<SpatialCatalogEntry>>
@@ -83,20 +83,6 @@ importSpatialCatalog(llvm::ArrayRef<ArtifactRootReference> references,
 
 std::vector<::loom::fabric::AccCoreOccurrenceRef>
 canonicalSystemAccCores(const ::loom::fabric::FabricSystemRootView &system);
-
-bool flatSpatialReopenProblemLess(const FlatSpatialReopenProblem &left,
-                                  const FlatSpatialReopenProblem &right);
-
-llvm::Expected<CanonicalFlatGraphCatalog>
-canonicalizeAndValidateFlatGraphCatalog(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    const ::loom::fabric::FabricSystemRootView &fabric,
-    llvm::ArrayRef<::dataflow::GraphRef> requiredGraphs,
-    const SystemFlatGraphSearchInput &input, const ArtifactStore &store);
-
-llvm::Expected<SystemFlatGraphBindingDomain>
-projectFlatGraphBindingDomain(const CanonicalFlatGraphCatalog &catalog,
-                              ::dataflow::GraphRef graph);
 
 llvm::Error validateSystemBindingDomains(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -132,7 +118,7 @@ projectSystemServiceDomains(
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
     llvm::ArrayRef<SystemSearchBindingDomain> bindings,
     llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
-    const SystemFrozenConstraintIndex &constraints, bool flatGraphSearch);
+    const SystemFrozenConstraintIndex &constraints);
 
 llvm::Expected<std::vector<FrozenSystemMemoryServiceBinding>>
 projectSystemMemoryServiceBindings(

@@ -73,7 +73,6 @@ struct ResolvedPnrRoutingPolicy final {
   std::uint64_t noProgressIterationLimit;
   std::uint64_t noProgressTrendWindow;
   ResolvedRoutingNegotiationPolicy negotiation;
-  std::optional<std::uint32_t> routeGuidanceBinding;
 };
 
 struct ResolvedPnrAnnealingPolicy final {
@@ -103,7 +102,6 @@ struct ResolvedPnrSearchPolicy final {
   ResolvedPnrActionProposalPolicy actionProposal;
   ResolvedPnrRoutingPolicy routing;
   ResolvedPnrAnnealingPolicy annealing;
-  std::uint64_t focusedClosureProposalLimit;
   ResolvedPnrExactRepairPolicy exactRepair;
 };
 
@@ -241,12 +239,6 @@ struct ResolvedObjectiveCatalogs final {
 struct ResolvedPnrObjectiveSelection final {
   std::uint32_t selectedTotalOrdering;
   std::uint32_t selectedSearchEnergy;
-  std::vector<std::uint32_t> focusedClosureDimensions;
-};
-
-struct ResolvedPnrEvaluationBindingSelection final {
-  std::uint32_t obligationTemplate;
-  std::uint32_t interactionDomain;
 };
 
 struct ResolvedPnrPolicyConfig final {
@@ -254,7 +246,6 @@ struct ResolvedPnrPolicyConfig final {
   ResolvedPnrDeterminismPolicy determinism;
   ResolvedPnrTemporaryViolationPolicy temporaryViolations;
   ResolvedPnrObjectiveSelection objectiveSelection;
-  std::vector<ResolvedPnrEvaluationBindingSelection> evaluationBindings;
 };
 
 enum class ResolvedProfilePreset : std::uint32_t {
@@ -266,7 +257,10 @@ enum class ResolvedProfilePreset : std::uint32_t {
   StrictImplementation,
 };
 
-ResolvedPnrPolicyConfig resolvedBuiltinPnrPolicy(ResolvedProfilePreset preset);
+ResolvedPnrPolicyConfig
+resolvedBuiltinSpatialPnrPolicy(ResolvedProfilePreset preset);
+ResolvedPnrPolicyConfig
+resolvedBuiltinSystemPnrPolicy(ResolvedProfilePreset preset);
 ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs();
 
 llvm::Error

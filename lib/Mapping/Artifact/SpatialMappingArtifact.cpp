@@ -19,6 +19,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Mapping/IR/MappingActivationKey.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "MappingAssemblyInternal.h"
@@ -143,61 +144,14 @@ importRefinements(ArrayAttr refinements) {
   return std::vector<SpatialPhysicalRefinementView>();
 }
 
-llvm::Expected<::dataflow::GraphRef>
-graphOf(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-        const ::dataflow::CanonicalGraphProducerEndpointRef &endpoint) {
-  if (const auto *ingress =
-          std::get_if<::dataflow::GraphIngressTokenRef>(&endpoint))
-    return std::visit([](const auto &token) { return token.graph; }, *ingress);
-  auto actor = dataflow.resolve(
-      std::get<::dataflow::ActorTokenResultRef>(endpoint).actor);
-  if (!actor)
-    return actor.takeError();
-  return actor->graph;
-}
-
-llvm::Expected<::dataflow::GraphRef>
-graphOf(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-        const ::dataflow::CanonicalGraphConsumerEndpointRef &endpoint) {
-  if (const auto *egress =
-          std::get_if<::dataflow::GraphEgressTokenRef>(&endpoint))
-    return std::visit([](const auto &token) { return token.graph; }, *egress);
-  auto actor = dataflow.resolve(
-      std::get<::dataflow::ActorTokenOperandRef>(endpoint).actor);
-  if (!actor)
-    return actor.takeError();
-  return actor->graph;
-}
-
 template <typename Endpoint>
 llvm::Expected<std::uint32_t>
-semanticPayloadWidth(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                     const Endpoint &endpoint) {
+transportPayloadWidth(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+                      const Endpoint &endpoint) {
   auto type = dataflow.tokenType(endpoint);
   if (!type)
     return type.takeError();
-  auto graph = graphOf(dataflow, endpoint);
-  if (!graph)
-    return graph.takeError();
-  auto graphView = dataflow.resolve(*graph);
-  if (!graphView)
-    return graphView.takeError();
-  auto indexWidth = ::loom::getIndexBitWidth(graphView->op);
-  if (!indexWidth)
-    return indexWidth.takeError();
-  std::optional<::loom::PointerLayout> pointerLayout;
-  if (auto pointer = dyn_cast<mlir::LLVM::LLVMPointerType>(*type)) {
-    auto resolved = dataflow.pointerLayout(pointer.getAddressSpace());
-    if (!resolved)
-      return resolved.takeError();
-    pointerLayout = *resolved;
-  }
-  std::string message;
-  auto width = ::fabric::getSemanticPayloadWidth(
-      *type, *indexWidth, pointerLayout ? &*pointerLayout : nullptr, message);
-  if (failed(width))
-    return invalid("cannot resolve logical-net payload width: " + message);
-  return static_cast<std::uint32_t>(*width);
+  return dataflow.transportPayloadBitWidth(*type);
 }
 
 const ::loom::fabric::FabricPhysicalTraversalView *
@@ -359,7 +313,7 @@ template <typename Endpoint>
 llvm::Expected<std::vector<::loom::fabric::FabricTransportEndpointRef>>
 terminalDomain(const TerminalProjectionContext &context,
                const Endpoint &endpoint) {
-  auto width = semanticPayloadWidth(context.dataflow, endpoint);
+  auto width = transportPayloadWidth(context.dataflow, endpoint);
   if (!width)
     return width.takeError();
   std::vector<::loom::fabric::FabricTransportEndpointRef> result;
@@ -523,7 +477,7 @@ importRouteTree(::mapping::RouteTreeOp record,
   if (llvm::Error error =
           requireTerminalEndpoint(context, *logicalNet, *rootEndpoint))
     return std::move(error);
-  auto payloadWidth = semanticPayloadWidth(context.dataflow, *logicalNet);
+  auto payloadWidth = transportPayloadWidth(context.dataflow, *logicalNet);
   if (!payloadWidth)
     return payloadWidth.takeError();
 
@@ -615,6 +569,55 @@ importRouteTree(::mapping::RouteTreeOp record,
   if (!requiredSinks.empty())
     return invalid("RouteTree omits a residual sink obligation");
   return result;
+}
+
+llvm::Expected<SpatialRegisterFifoTransferView>
+importRegisterFifoTransfer(::mapping::RegisterFifoTransferOp record,
+                           const TerminalProjectionContext &context,
+                           const TechResidualLogicalNetView &residual) {
+  auto logicalNet =
+      decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
+          record.getLogicalNet(), context.dataflow.identity());
+  auto sink = decodeDataflow<::dataflow::CanonicalGraphConsumerEndpointRef>(
+      record.getSink(), context.dataflow.identity());
+  auto write = decodeFabric<::loom::fabric::FabricPhysicalTraversalRef>(
+      record.getWriteTraversal());
+  auto read = decodeFabric<::loom::fabric::FabricPhysicalTraversalRef>(
+      record.getReadTraversal());
+  if (!logicalNet)
+    return logicalNet.takeError();
+  if (!sink)
+    return sink.takeError();
+  if (!write)
+    return write.takeError();
+  if (!read)
+    return read.takeError();
+  if (*logicalNet != residual.producer || residual.sinks.size() != 1 ||
+      *sink != residual.sinks.front())
+    return invalid("register-FIFO transfer does not name one exact residual "
+                   "edge");
+
+  auto options = deriveSpatialPeLocalTransferOptions(
+      context.dataflow, context.techMapping, context.fabric,
+      context.computeBindings, residual);
+  if (!options)
+    return options.takeError();
+  const SpatialPeLocalTransferOptionView *selected = nullptr;
+  for (const SpatialPeLocalTransferOptionView &option : *options) {
+    if (option.writeTraversal != *write || option.readTraversal != *read)
+      continue;
+    if (selected)
+      return invalid("register-FIFO transfer matches multiple physical "
+                     "alternatives");
+    selected = &option;
+  }
+  if (!selected)
+    return invalid("register-FIFO transfer is outside its derived physical "
+                   "alternative domain");
+  return SpatialRegisterFifoTransferView{
+      selected->producer,     selected->sink,           selected->pe,
+      selected->registerFifo, selected->writeTraversal, selected->readTraversal,
+      selected->tag};
 }
 
 llvm::Expected<SpatialActivityEventRef>
@@ -715,10 +718,11 @@ deriveRequiredComputeUses(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<SpatialComputeBindingView> bindings) {
+    llvm::ArrayRef<SpatialComputeBindingView> bindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers) {
   std::map<std::string, RequiredComputeUse> result;
-  auto requirements = deriveSpatialComputeUseRequirements(dataflow, techMapping,
-                                                          fabric, bindings);
+  auto requirements = deriveSpatialComputeUseRequirements(
+      dataflow, techMapping, fabric, bindings, registerFifoTransfers);
   if (!requirements)
     return requirements.takeError();
   for (const auto &use : *requirements) {
@@ -870,10 +874,17 @@ llvm::Expected<SpatialResourceUseView> importResourceUse(
     if (!encoded)
       return encoded.takeError();
     const std::string valueKey = byteKey(*encoded);
-    for (::loom::fabric::FabricOrdinal domain : tagUse->second.matchDomains)
+    const auto matchDomains = fabric.physicalTagMatchDomains();
+    for (::loom::fabric::FabricOrdinal domain : tagUse->second.matchDomains) {
+      if (domain >= matchDomains.size())
+        return invalid("Physical Tag assignment names an absent match domain");
+      if (matchDomains[domain].kind ==
+          ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable)
+        continue;
       if (!assignedDomainValues[domain].insert(valueKey).second)
         return invalid(
             "Physical Tag assignments collide in one Fabric match domain");
+    }
     physicalTagSegment = SpatialPhysicalTagSegmentView{
         tagUse->second.routeTreeOrdinal, tagUse->second.segmentOrdinal,
         tagUse->second.nodeOrdinals, resourceUseOrdinal};
@@ -955,10 +966,12 @@ struct SelectedHandshakeProjection final {
       routeTraversals;
 };
 
-llvm::Expected<SelectedHandshakeProjection>
-deriveSelectedHandshakeSelection(const TerminalProjectionContext &context,
-                                 llvm::ArrayRef<SpatialRouteTreeView> routes,
-                                 llvm::ArrayRef<SpatialResourceUseView> uses) {
+llvm::Expected<SelectedHandshakeProjection> deriveSelectedHandshakeSelection(
+    const TerminalProjectionContext &context,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
+    llvm::ArrayRef<SpatialRouteTreeView> routes,
+    llvm::ArrayRef<SpatialResourceUseView> uses,
+    llvm::ArrayRef<SpatialPhysicalTagSegmentView> physicalTagSegments) {
   SelectedHandshakeProjection result;
   auto &selection = result.selection;
   for (const auto &realization : context.techMapping.computeRealizations()) {
@@ -1003,26 +1016,39 @@ deriveSelectedHandshakeSelection(const TerminalProjectionContext &context,
     return memorySelections.takeError();
   selection.memoryOperations = std::move(*memorySelections);
 
+  const auto appendTraversal =
+      [&](const ::loom::fabric::FabricPhysicalTraversalRef &traversal,
+          std::vector<::loom::fabric::FabricPhysicalTraversalRef> &route) {
+        route.push_back(traversal);
+        const auto *sw =
+            std::get_if<::loom::fabric::FabricSwitchTraversalPayload>(
+                &traversal.payload);
+        if (!sw || context.fabric.switchSchedule(sw->owner) !=
+                       ::fabric::Schedule::Temporal)
+          selection.traversals.push_back(traversal);
+      };
+
+  for (const SpatialRegisterFifoTransferView &transfer :
+       registerFifoTransfers) {
+    result.routeTraversals.emplace_back();
+    appendTraversal(transfer.writeTraversal, result.routeTraversals.back());
+    appendTraversal(transfer.readTraversal, result.routeTraversals.back());
+  }
+
   for (const SpatialRouteTreeView &route : routes) {
     result.routeTraversals.emplace_back();
     auto &routeTraversal = result.routeTraversals.back();
-    if (route.localTraversal) {
-      selection.traversals.push_back(*route.localTraversal);
-      routeTraversal.push_back(*route.localTraversal);
-    }
+    if (route.localTraversal)
+      appendTraversal(*route.localTraversal, routeTraversal);
     for (const SpatialRouteNodeView &node : route.nodes) {
-      if (node.incomingTraversal) {
-        selection.traversals.push_back(*node.incomingTraversal);
-        routeTraversal.push_back(*node.incomingTraversal);
-      }
+      if (node.incomingTraversal)
+        appendTraversal(*node.incomingTraversal, routeTraversal);
     }
     for (const SpatialRouteSinkView &sink : route.sinks) {
       if (sink.nodeOrdinal >= route.nodes.size())
         return invalid("selected handshake sink names an absent route node");
-      if (sink.localTraversal) {
-        selection.traversals.push_back(*sink.localTraversal);
-        routeTraversal.push_back(*sink.localTraversal);
-      }
+      if (sink.localTraversal)
+        appendTraversal(*sink.localTraversal, routeTraversal);
     }
     llvm::sort(routeTraversal, [](const auto &lhs, const auto &rhs) {
       return ::loom::fabric::canonicalFabricBytes(lhs) <
@@ -1039,6 +1065,37 @@ deriveSelectedHandshakeSelection(const TerminalProjectionContext &context,
   selection.traversals.erase(
       std::unique(selection.traversals.begin(), selection.traversals.end()),
       selection.traversals.end());
+
+  auto packedRows = deriveSpatialTemporalSwitchPackedRows(
+      context.fabric, routes, uses, physicalTagSegments);
+  if (!packedRows)
+    return packedRows.takeError();
+  std::map<std::vector<std::uint8_t>, ::loom::fabric::FabricOrdinal>
+      nextOccurrenceRow;
+  for (const SpatialTemporalSwitchPackedRowView &row : *packedRows) {
+    const auto occurrenceKey =
+        ::loom::fabric::canonicalFabricBytes(row.occurrence);
+    const ::loom::fabric::FabricOrdinal rowOrdinal =
+        nextOccurrenceRow[occurrenceKey]++;
+    std::map<::loom::fabric::FabricOrdinal,
+             std::vector<::loom::fabric::FabricPhysicalTraversalRef>>
+        byInput;
+    for (const SpatialTemporalSwitchRouteSignatureView &signature :
+         row.signatures)
+      byInput[signature.input].insert(byInput[signature.input].end(),
+                                      signature.traversals.begin(),
+                                      signature.traversals.end());
+    for (auto &[input, traversals] : byInput) {
+      llvm::sort(traversals, [](const auto &lhs, const auto &rhs) {
+        return ::loom::fabric::canonicalFabricBytes(lhs) <
+               ::loom::fabric::canonicalFabricBytes(rhs);
+      });
+      traversals.erase(std::unique(traversals.begin(), traversals.end()),
+                       traversals.end());
+      selection.switchActivations.push_back(
+          {{row.occurrence, rowOrdinal, input}, std::move(traversals)});
+    }
+  }
   return result;
 }
 
@@ -1049,6 +1106,7 @@ struct ImportedSpatialView final {
   std::vector<SpatialComputeBindingView> computeBindings;
   std::vector<SpatialMemoryEngineBindingView> memoryEngineBindings;
   std::vector<SpatialMemoryBindingView> memoryBindings;
+  std::vector<SpatialRegisterFifoTransferView> registerFifoTransfers;
   std::vector<SpatialRouteTreeView> routeTrees;
   std::vector<SpatialResourceUseView> resourceUses;
   std::vector<SpatialPhysicalTagSegmentView> physicalTagSegments;
@@ -1108,6 +1166,36 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
       return encoded.takeError();
     residual.emplace(byteKey(*encoded), &net);
   }
+  std::vector<SpatialRegisterFifoTransferView> registerFifoTransfers;
+  std::set<std::pair<std::vector<std::uint8_t>, ::loom::fabric::FabricOrdinal>>
+      occupiedRegisterFifos;
+  for (auto record :
+       root.getBody().front().getOps<::mapping::RegisterFifoTransferOp>()) {
+    auto producer =
+        decodeDataflow<::dataflow::CanonicalGraphProducerEndpointRef>(
+            record.getLogicalNet(), dataflow.identity());
+    if (!producer)
+      return producer.takeError();
+    auto encoded =
+        ::dataflow::encodeDataflowReference(dataflow.identity(), *producer);
+    if (!encoded)
+      return encoded.takeError();
+    auto found = residual.find(byteKey(*encoded));
+    if (found == residual.end())
+      return invalid(
+          "register-FIFO transfer does not name a residual logical net");
+    auto transfer =
+        importRegisterFifoTransfer(record, terminalContext, *found->second);
+    if (!transfer)
+      return transfer.takeError();
+    if (!occupiedRegisterFifos
+             .emplace(::loom::fabric::canonicalFabricBytes(transfer->pe),
+                      transfer->registerFifo)
+             .second)
+      return invalid("one register FIFO is selected by multiple transfers");
+    registerFifoTransfers.push_back(std::move(*transfer));
+    residual.erase(found);
+  }
   std::vector<SpatialRouteTreeView> routes;
   for (auto record : root.getBody().front().getOps<::mapping::RouteTreeOp>()) {
     auto producer =
@@ -1131,8 +1219,8 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
   if (!residual.empty())
     return invalid("SpatialMapping omits a residual logical net RouteTree");
 
-  auto requiredUses =
-      deriveRequiredComputeUses(dataflow, techMapping, fabric, computeBindings);
+  auto requiredUses = deriveRequiredComputeUses(
+      dataflow, techMapping, fabric, computeBindings, registerFifoTransfers);
   if (!requiredUses)
     return requiredUses.takeError();
   auto requiredMemoryUses =
@@ -1190,8 +1278,13 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
     }
   }
 
+  auto operandQueueMatchGroups = deriveSpatialPeOperandQueueMatchGroups(
+      techMapping, fabric, computeBindings, routes, uses, physicalTagSegments);
+  if (!operandQueueMatchGroups)
+    return operandQueueMatchGroups.takeError();
   auto handshake =
-      deriveSelectedHandshakeSelection(terminalContext, routes, uses);
+      deriveSelectedHandshakeSelection(terminalContext, registerFifoTransfers,
+                                       routes, uses, physicalTagSegments);
   if (!handshake)
     return handshake.takeError();
   if (llvm::Error error =
@@ -1217,13 +1310,14 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
 
   auto configuredHardware = detail::deriveConfiguredHardwareProjection(
       dataflow, techMapping, fabric, computeBindings,
-      importedMemory->engineBindings, importedMemory->memoryBindings, routes,
-      uses, physicalTagSegments);
+      importedMemory->engineBindings, importedMemory->memoryBindings,
+      registerFifoTransfers, routes, uses, physicalTagSegments,
+      *operandQueueMatchGroups);
   if (!configuredHardware)
     return configuredHardware.takeError();
 
-  auto progress =
-      deriveSpatialMappingProgressClosure(dataflow, techMapping, routes);
+  auto progress = deriveSpatialMappingProgressClosure(
+      dataflow, techMapping, fabric, computeBindings, routes);
   if (!progress)
     return progress.takeError();
   switch (progress->kind) {
@@ -1241,6 +1335,7 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
                              std::move(computeBindings),
                              std::move(importedMemory->engineBindings),
                              std::move(importedMemory->memoryBindings),
+                             std::move(registerFifoTransfers),
                              std::move(routes),
                              std::move(uses),
                              std::move(physicalTagSegments),
@@ -1392,7 +1487,8 @@ deriveSpatialComputeBindingUseRequirements(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechComputeRealizationView &realization,
     const ::loom::fabric::FabricArtifactView &fabric,
-    const SpatialComputeBindingView &binding) {
+    const SpatialComputeBindingView &binding,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers) {
   std::vector<SpatialComputeUseRequirement> result;
   if (binding.realization != realization.entityId)
     return invalid("compute ResourceUse binding has the wrong realization");
@@ -1405,10 +1501,20 @@ deriveSpatialComputeBindingUseRequirements(
     return invalid("compute ResourceUse binding has an invalid context");
   const bool temporal =
       fabric.peSchedule(*parentPe) == ::fabric::Schedule::Temporal;
+  const auto isRegisterFifoSink = [&](::dataflow::ActorRef actor,
+                                      std::uint64_t ordinal) {
+    const ::dataflow::CanonicalGraphConsumerEndpointRef sink(
+        ::dataflow::ActorTokenOperandRef{actor, ordinal});
+    return llvm::any_of(registerFifoTransfers, [&](const auto &transfer) {
+      return transfer.sink == sink;
+    });
+  };
 
   if (temporal) {
     for (const auto &boundary : realization.boundaries) {
       if (boundary.direction != ::loom::fabric::FabricPortDirection::Input)
+        continue;
+      if (isRegisterFifoSink(boundary.actor, boundary.portOrdinal))
         continue;
       auto pattern = ::fabric::resolveTemporalPeOperandQueuePattern(
           fabric, binding.context, binding.occurrence,
@@ -1495,6 +1601,8 @@ deriveSpatialComputeBindingUseRequirements(
       if (!temporal)
         continue;
       for (std::uint32_t operand : transition.consumedInputs) {
+        if (isRegisterFifoSink(actorBinding.actor, operand))
+          continue;
         const TechComputeBoundaryView *boundary = nullptr;
         for (const auto &candidate : realization.boundaries) {
           if (candidate.actor != actorBinding.actor ||
@@ -1528,7 +1636,8 @@ deriveSpatialComputeUseRequirements(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
-    llvm::ArrayRef<SpatialComputeBindingView> bindings) {
+    llvm::ArrayRef<SpatialComputeBindingView> bindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers) {
   if (bindings.size() != techMapping.computeRealizations().size())
     return invalid("compute ResourceUse projection has incomplete bindings");
   std::vector<SpatialComputeUseRequirement> result;
@@ -1544,7 +1653,7 @@ deriveSpatialComputeUseRequirements(
     if (!binding)
       return invalid("Compute realization has no Spatial binding");
     auto requirements = deriveSpatialComputeBindingUseRequirements(
-        dataflow, realization, fabric, *binding);
+        dataflow, realization, fabric, *binding, registerFifoTransfers);
     if (!requirements)
       return requirements.takeError();
     result.insert(result.end(), std::make_move_iterator(requirements->begin()),
@@ -1567,8 +1676,9 @@ llvm::Expected<SpatialMappingView> SpatialMappingView::import(
       std::move(imported->dataflowIdentity),
       std::move(imported->fabricIdentity), std::move(imported->computeBindings),
       std::move(imported->memoryEngineBindings),
-      std::move(imported->memoryBindings), std::move(imported->routeTrees),
-      std::move(imported->resourceUses),
+      std::move(imported->memoryBindings),
+      std::move(imported->registerFifoTransfers),
+      std::move(imported->routeTrees), std::move(imported->resourceUses),
       std::move(imported->physicalTagSegments),
       std::move(imported->configuredHardware),
       std::move(imported->handshakeSelection));

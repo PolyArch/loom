@@ -57,7 +57,8 @@ std::uint64_t reportSpatialTagDomainPressure(
         if (detail || netSample.size() < sampleLimit) {
           llvm::json::Object row;
           row["logical_net"] = logicalNet;
-          row["segment_count"] = summary.netDomainUseCounts[incidence];
+          row["marginal_resident_count"] =
+              summary.netDomainMarginalResidentCounts[incidence];
           netSample.push_back(std::move(row));
         }
         break;
@@ -88,8 +89,8 @@ std::uint64_t reportSpatialTagDomainPressure(
           fields["encoding_overuse"] = encodingOveruse;
           fields["tag_conflicts"] = conflicts;
           fields["contributing_logical_net_count"] = contributingNetCount;
-          fields[detail ? "logical_nets" : "logical_net_sample"] =
-              std::move(netSample);
+          fields["logical_nets"] = std::move(netSample);
+          fields["logical_nets_truncated"] = !detail;
           fields["diagnostic_sample_limit"] = detail ? 0 : sampleLimit;
         });
   }

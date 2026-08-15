@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <deque>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -19,22 +18,15 @@ namespace {
 
 using detail::evaluationError;
 
-constexpr SchemaVersion evaluationSchema20{2, 0};
-constexpr SchemaVersion evaluationSchema21{2, 1};
-constexpr std::uint32_t lastCaseKind20 =
-    builtinEvaluationCaseKind(
-        BuiltinEvaluationCase::CanonicalDataflowSourceFunctionalComparison)
-        .ordinal();
+constexpr SchemaVersion evaluationSchema30{3, 0};
 
 bool isSupportedEvaluationSchema(SchemaVersion version) {
-  return version == evaluationSchema20 || version == evaluationSchema21;
+  return version == evaluationSchema30;
 }
 
 bool schemaContainsCaseKind(SchemaVersion version,
-                            EvaluationCaseKind caseKind) {
-  return version == evaluationSchema21 ||
-         (version == evaluationSchema20 &&
-          caseKind.ordinal() <= lastCaseKind20);
+                            EvaluationCaseKind) {
+  return version == evaluationSchema30;
 }
 
 struct CaseSignatureRegistryEntry {
@@ -42,19 +34,9 @@ struct CaseSignatureRegistryEntry {
   const EvaluationCaseSignatureDescriptor *descriptor;
 };
 
-struct OwnedCaseSignatureView {
-  std::vector<ConditionApplicabilityPattern> permittedBaseConditions;
-  EvaluationCaseSignatureDescriptor descriptor;
-};
-
 std::vector<CaseSignatureRegistryEntry> &caseSignatures() {
   static std::vector<CaseSignatureRegistryEntry> descriptors;
   return descriptors;
-}
-
-std::deque<OwnedCaseSignatureView> &ownedCaseSignatureViews() {
-  static std::deque<OwnedCaseSignatureView> views;
-  return views;
 }
 
 std::mutex &caseSignatureMutex() {
@@ -129,7 +111,7 @@ validateBasePatternSet(const EvaluationCaseSignatureDescriptor &descriptor) {
 
 } // namespace
 
-SchemaVersion evaluationSchemaVersion() { return evaluationSchema21; }
+SchemaVersion evaluationSchemaVersion() { return evaluationSchema30; }
 
 const CaseSubjectRoleDescriptor *
 EvaluationCaseSignatureDescriptor::findSubjectRole(
@@ -223,25 +205,6 @@ llvm::Error registerEvaluationCaseSignature(
   }
   caseSignatures().push_back({evaluationSchemaVersion(), &descriptor});
 
-  if (schemaContainsCaseKind(evaluationSchema20, descriptor.caseKind)) {
-    OwnedCaseSignatureView view{{}, descriptor};
-    view.permittedBaseConditions.reserve(
-        descriptor.permittedBaseConditions.size());
-    for (const ConditionApplicabilityPattern &pattern :
-         descriptor.permittedBaseConditions) {
-      ConditionApplicabilityPattern projected = pattern;
-      projected.targets.caseSignature =
-          llvm::cantFail(EvaluationCaseSignatureRef::get(evaluationSchema20,
-                                                         descriptor.caseKind));
-      view.permittedBaseConditions.push_back(std::move(projected));
-    }
-    view.descriptor = descriptor;
-    view.descriptor.registryVersion = evaluationSchema20;
-    view.descriptor.permittedBaseConditions = view.permittedBaseConditions;
-    ownedCaseSignatureViews().push_back(std::move(view));
-    caseSignatures().push_back(
-        {evaluationSchema20, &ownedCaseSignatureViews().back().descriptor});
-  }
   return llvm::Error::success();
 }
 

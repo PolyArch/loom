@@ -4,6 +4,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
@@ -27,6 +28,7 @@ enum InputSlot : std::uint32_t {
   DataflowInput,
   SpatialMappingCandidatesInput,
   FabricInput,
+  PhysicalTimingProfilesInput,
   InputSlotCount,
 };
 
@@ -34,6 +36,7 @@ enum ApplicationInputSlot : std::uint32_t {
   ApplicationDataflowInput,
   ApplicationSpatialMappingCandidatesInput,
   ApplicationFabricInput,
+  ApplicationPhysicalTimingProfilesInput,
   ApplicationSystemConstraintsInput,
   ApplicationInputSlotCount,
 };
@@ -50,6 +53,10 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
         {CandidateGeneratorInputSlotRef(FabricInput), "fabric",
          PlanValueRole::CandidateSet, &::loom::fabric::fabricArtifactSchema,
          PlanValueCardinality::ExactlyOne},
+        {CandidateGeneratorInputSlotRef(PhysicalTimingProfilesInput),
+         "physical_timing_profile", PlanValueRole::CandidateSet,
+         &::loom::fabric::fabricPhysicalTimingProfileArtifactSchema,
+         PlanValueCardinality::FiniteSet},
     }};
 
 constexpr std::array<CandidateGeneratorInputSlotDescriptor,
@@ -66,6 +73,10 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor,
         {CandidateGeneratorInputSlotRef(ApplicationFabricInput), "fabric",
          PlanValueRole::CandidateSet, &::loom::fabric::fabricArtifactSchema,
          PlanValueCardinality::ExactlyOne},
+        {CandidateGeneratorInputSlotRef(ApplicationPhysicalTimingProfilesInput),
+         "physical_timing_profile", PlanValueRole::CandidateSet,
+         &::loom::fabric::fabricPhysicalTimingProfileArtifactSchema,
+         PlanValueCardinality::FiniteSet},
         {CandidateGeneratorInputSlotRef(ApplicationSystemConstraintsInput),
          "system_constraints", PlanValueRole::CandidateSet,
          &::loom::mapping::mappingConstraintSetSchema,
@@ -90,17 +101,19 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, const BlobStore &blobs);
+    const ArtifactStore &store, const BlobStore &blobs,
+    const ExecutionControlView &executionControl);
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, const BlobStore &blobs);
+    const ArtifactStore &store, const BlobStore &blobs,
+    const ExecutionControlView &executionControl);
 
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSystemPnrCandidateGeneratorKind,
     "mapping.root_complete_system_pnr",
-    "loom.mapping.root_complete_system_pnr.generator.v2",
+    "loom.mapping.root_complete_system_pnr.generator.v7",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -115,7 +128,7 @@ const CandidateGeneratorDescriptor descriptor{
 const CandidateGeneratorDescriptor applicationDescriptor{
     applicationSystemPnrCandidateGeneratorKind,
     "mapping.application_system_pnr",
-    "loom.mapping.application_system_pnr.generator.v1",
+    "loom.mapping.application_system_pnr.generator.v6",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -151,8 +164,14 @@ completed(std::vector<ArtifactRootReference> outputs) {
 }
 
 IncompleteCandidateGeneratorResult
-incomplete(CandidateGeneratorIncompleteReason reason) {
-  return {reason, {{CandidateGeneratorOutputSlotRef(0), {}}}, {}};
+incomplete(CandidateGeneratorIncompleteReason reason,
+           std::vector<ArtifactRootReference> outputs = {}) {
+  llvm::sort(outputs, artifactRootReferenceLess);
+  outputs.erase(std::unique(outputs.begin(), outputs.end()), outputs.end());
+  auto lineage = mechanicalLineage(outputs);
+  return {reason,
+          {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
+          std::move(lineage)};
 }
 
 llvm::Error validateSpatialMappingOwners(
@@ -187,10 +206,59 @@ llvm::Error validateSpatialMappingOwners(
   return llvm::Error::success();
 }
 
+llvm::Expected<std::vector<::loom::fabric::FabricPhysicalTimingProfileView>>
+importPhysicalTimingProfiles(llvm::ArrayRef<ArtifactRootReference> references,
+                             const ::loom::fabric::FabricSystemRootView &system,
+                             const ArtifactStore &store) {
+  std::vector<ArtifactRootReference> canonical(references.begin(),
+                                               references.end());
+  llvm::sort(canonical, artifactRootReferenceLess);
+  if (std::adjacent_find(canonical.begin(), canonical.end()) != canonical.end())
+    return llvm::createStringError(
+        std::make_error_code(std::errc::invalid_argument),
+        "System physical timing profile set contains a duplicate root");
+
+  std::vector<::loom::fabric::FabricPhysicalTimingProfileView> profiles;
+  profiles.reserve(canonical.size());
+  for (const ArtifactRootReference &reference : canonical) {
+    auto owner = ::loom::fabric::resolveFabricPhysicalTimingProfileOwner(
+        reference, store);
+    if (!owner)
+      return owner.takeError();
+    const ::loom::fabric::FabricArtifactView *module = nullptr;
+    for (const auto core : system.artifact().accCoreOccurrences()) {
+      const auto target = system.spatialCoreTarget(core);
+      if (!target || target->dependencyOrdinal >=
+                         system.artifact().importedModules().size())
+        return llvm::createStringError(
+            std::make_error_code(std::errc::invalid_argument),
+            "System AccCore physical timing target does not resolve");
+      const auto &candidate =
+          system.artifact().importedModules()[target->dependencyOrdinal];
+      if (candidate.identity() == *owner)
+        module = &candidate;
+    }
+    if (!module)
+      return llvm::createStringError(
+          std::make_error_code(std::errc::invalid_argument),
+          "System physical timing profile has no attached Module owner");
+    auto profile = ::loom::fabric::importFabricPhysicalTimingProfile(
+        reference, *module, store);
+    if (!profile)
+      return profile.takeError();
+    profiles.push_back(std::move(*profile));
+  }
+  llvm::sort(profiles, [](const auto &lhs, const auto &rhs) {
+    return lhs.fabricIdentity().bytes() < rhs.fabricIdentity().bytes();
+  });
+  return profiles;
+}
+
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, const BlobStore &blobs) {
+    const ArtifactStore &store, const BlobStore &blobs,
+    const ExecutionControlView &executionControl) {
   (void)blobs;
   auto config = ::loom::pnr::adoptResolvedSystemPnrConfigView(
       ::loom::pnr::resolvedSystemPnrConfigSchemaDescriptorBytes(),
@@ -212,6 +280,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   auto system = ::loom::fabric::requireSystemRoot(fabricArtifact->view());
   if (!system)
     return system.takeError();
+  auto physicalTimingProfiles = importPhysicalTimingProfiles(
+      inputBindings[PhysicalTimingProfilesInput].artifacts, *system, store);
+  if (!physicalTimingProfiles)
+    return physicalTimingProfiles.takeError();
 
   if (llvm::Error error = validateSpatialMappingOwners(
           inputBindings[SpatialMappingCandidatesInput].artifacts, *dataflow,
@@ -259,13 +331,19 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 
   ::loom::pnr::SystemPnrGenerationOutcome outcome =
       ::loom::pnr::generateSystemMappings(
-          {*dataflow, *system, *searchDomain, *config, *constraints, store});
+          {*dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
+           *constraints, store, executionControl});
   if (auto *generated =
-          std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome))
+          std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
+    auto reason = pnrGenerationIncompleteReason(generated->termination);
     return CandidateGeneratorProviderResult{
-        completed(std::move(generated->candidates)),
+        reason ? CandidateGeneratorProviderOutcome(
+                     incomplete(*reason, std::move(generated->candidates)))
+               : CandidateGeneratorProviderOutcome(
+                     completed(std::move(generated->candidates))),
         rootCompleteSystemPnrCandidateGeneratorWorkSummary(
             generated->accounting)};
+  }
   if (const auto *infeasible =
           std::get_if<::loom::pnr::ProvenInfeasibleSystemMapping>(&outcome))
     return CandidateGeneratorProviderResult{
@@ -282,6 +360,13 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
         incomplete(reason), rootCompleteSystemPnrCandidateGeneratorWorkSummary(
                                 partial->accounting)};
   }
+  if (auto *interrupted =
+          std::get_if<::loom::pnr::InterruptedSystemPnrGeneration>(&outcome))
+    return CandidateGeneratorProviderResult{
+        incomplete(CandidateGeneratorIncompleteReason::CancelledOrTimeout,
+                   std::move(interrupted->candidates)),
+        rootCompleteSystemPnrCandidateGeneratorWorkSummary(
+            interrupted->accounting)};
   if (const auto *invalid =
           std::get_if<::loom::pnr::InvalidSystemPnrGeneration>(&outcome))
     return llvm::createStringError(
@@ -298,7 +383,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, const BlobStore &) {
+    const ArtifactStore &store, const BlobStore &,
+    const ExecutionControlView &executionControl) {
   auto config = ::loom::pnr::adoptResolvedSystemPnrConfigView(
       ::loom::pnr::resolvedSystemPnrConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -318,6 +404,11 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
   auto system = ::loom::fabric::requireSystemRoot(fabricArtifact->view());
   if (!system)
     return system.takeError();
+  auto physicalTimingProfiles = importPhysicalTimingProfiles(
+      inputBindings[ApplicationPhysicalTimingProfilesInput].artifacts, *system,
+      store);
+  if (!physicalTimingProfiles)
+    return physicalTimingProfiles.takeError();
   auto constraints = ::loom::mapping::importSystemMappingConstraintSet(
       inputBindings[ApplicationSystemConstraintsInput].artifacts.front(),
       store);
@@ -341,8 +432,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
   ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{
       inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts};
   auto searchDomain = ::loom::pnr::projectSystemPnrSearchDomain(
-      *dataflow, *system, *config, *constraints, *partition,
-      graphSearch, store);
+      *dataflow, *system, *config, *constraints, *partition, graphSearch,
+      store);
   if (!searchDomain) {
     bool unsupported = false;
     llvm::Error remaining = llvm::handleErrors(
@@ -364,13 +455,19 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
 
   ::loom::pnr::SystemPnrGenerationOutcome outcome =
       ::loom::pnr::generateSystemMappings(
-          {*dataflow, *system, *searchDomain, *config, *constraints, store});
+          {*dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
+           *constraints, store, executionControl});
   if (auto *generated =
-          std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome))
+          std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
+    auto reason = pnrGenerationIncompleteReason(generated->termination);
     return CandidateGeneratorProviderResult{
-        completed(std::move(generated->candidates)),
+        reason ? CandidateGeneratorProviderOutcome(
+                     incomplete(*reason, std::move(generated->candidates)))
+               : CandidateGeneratorProviderOutcome(
+                     completed(std::move(generated->candidates))),
         rootCompleteSystemPnrCandidateGeneratorWorkSummary(
             generated->accounting)};
+  }
   if (const auto *infeasible =
           std::get_if<::loom::pnr::ProvenInfeasibleSystemMapping>(&outcome))
     return CandidateGeneratorProviderResult{
@@ -387,6 +484,13 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
         incomplete(reason), rootCompleteSystemPnrCandidateGeneratorWorkSummary(
                                 partial->accounting)};
   }
+  if (auto *interrupted =
+          std::get_if<::loom::pnr::InterruptedSystemPnrGeneration>(&outcome))
+    return CandidateGeneratorProviderResult{
+        incomplete(CandidateGeneratorIncompleteReason::CancelledOrTimeout,
+                   std::move(interrupted->candidates)),
+        rootCompleteSystemPnrCandidateGeneratorWorkSummary(
+            interrupted->accounting)};
   if (const auto *invalid =
           std::get_if<::loom::pnr::InvalidSystemPnrGeneration>(&outcome))
     return llvm::createStringError(
@@ -425,7 +529,8 @@ llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
 bindRootCompleteSystemPnrCandidateGeneratorInputs(
     const ArtifactRootReference &dataflow,
     llvm::ArrayRef<ArtifactRootReference> spatialMappingCandidates,
-    const ArtifactRootReference &fabric) {
+    const ArtifactRootReference &fabric,
+    llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles) {
   if (llvm::Error error = registerRootCompleteSystemPnrCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
@@ -433,6 +538,8 @@ bindRootCompleteSystemPnrCandidateGeneratorInputs(
       {CandidateGeneratorInputSlotRef(SpatialMappingCandidatesInput),
        spatialMappingCandidates.vec()},
       {CandidateGeneratorInputSlotRef(FabricInput), {fabric}},
+      {CandidateGeneratorInputSlotRef(PhysicalTimingProfilesInput),
+       physicalTimingProfiles.vec()},
   };
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           descriptor.reference(), bindings))
@@ -466,15 +573,17 @@ bindApplicationSystemPnrCandidateGeneratorInputs(
     const ArtifactRootReference &dataflow,
     llvm::ArrayRef<ArtifactRootReference> spatialMappingCandidates,
     const ArtifactRootReference &fabric,
+    llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
     const ArtifactRootReference &systemConstraints) {
   if (llvm::Error error = registerApplicationSystemPnrCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
       {CandidateGeneratorInputSlotRef(ApplicationDataflowInput), {dataflow}},
-      {CandidateGeneratorInputSlotRef(
-           ApplicationSpatialMappingCandidatesInput),
+      {CandidateGeneratorInputSlotRef(ApplicationSpatialMappingCandidatesInput),
        spatialMappingCandidates.vec()},
       {CandidateGeneratorInputSlotRef(ApplicationFabricInput), {fabric}},
+      {CandidateGeneratorInputSlotRef(ApplicationPhysicalTimingProfilesInput),
+       physicalTimingProfiles.vec()},
       {CandidateGeneratorInputSlotRef(ApplicationSystemConstraintsInput),
        {systemConstraints}},
   };
@@ -505,7 +614,6 @@ rootCompleteSystemPnrCandidateGeneratorWorkSummary(
                   accounting.calibrationProposalSlots,
                   accounting.annealingBaseProposalSlots,
                   accounting.annealingMovableProposalSlots,
-                  accounting.focusedClosureProposalSlots,
                   accounting.exactRepairRegionDecisions,
                   accounting.exactRepairSolverCalls};
   std::vector<CandidateGeneratorWorkUnitSummary> result;

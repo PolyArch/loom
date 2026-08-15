@@ -176,6 +176,8 @@ private:
   struct NetOrderEntry final {
     std::uint8_t routeStateRank = 0;
     RouteCost conflictPressure = 0;
+    std::uint64_t physicalNegativeSlack = 0;
+    std::uint64_t physicalCriticalDelay = 0;
     RouteCost evaluationPriority = 0;
     PnrIndex logicalNet = 0;
   };
@@ -183,6 +185,8 @@ private:
   struct NetProjection final {
     std::uint8_t routeStateRank = 0;
     RouteCost conflictPressure = 0;
+    std::uint64_t physicalNegativeSlack = 0;
+    std::uint64_t physicalCriticalDelay = 0;
   };
 
   struct CapacityConflictAnalysis final {

@@ -416,8 +416,29 @@ bool admitsCapacityOveruse(const FrozenSystemPnrProblem &problem) {
 llvm::Expected<SystemCandidateStateHandle>
 SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
                              SystemCandidateInitialization initialization) {
+  return createImpl(std::move(problem), initialization, nullptr, std::nullopt,
+                    true);
+}
+
+llvm::Expected<SystemCandidateStateHandle> SystemCandidateState::createMutation(
+    const SystemCandidateState &source,
+    SystemCandidateInitialization initialization,
+    SystemCandidateMutationDomain domain) {
+  return createImpl(source.problemHandle(), initialization, &source, domain,
+                    false);
+}
+
+llvm::Expected<SystemCandidateStateHandle> SystemCandidateState::createImpl(
+    FrozenSystemPnrProblemHandle problem,
+    SystemCandidateInitialization initialization,
+    const SystemCandidateState *source,
+    std::optional<SystemCandidateMutationDomain> domain, bool runFullOracle) {
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
+  if ((source == nullptr) != !domain)
+    return invalid("mutation source and domain must be supplied together");
+  if (source && source->problemHandle() != problem)
+    return invalid("mutation source has a foreign FrozenSystemPnrProblem");
   auto choices = relationChoices(*problem, initialization.threadChoices,
                                  initialization.graphChoices);
   if (!choices)
@@ -454,13 +475,29 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
       initialization.serviceRouteSinks);
   if (!routeCapacity)
     return routeCapacity.takeError();
-  auto capacity = problem->capacityModel().project(
-      *problem, {initialization.threadChoices, initialization.graphChoices,
-                 initialization.serviceRoutes, initialization.serviceRouteNodes,
-                 instructionUses, serviceUses});
+  const detail::SystemCandidateCapacityProjectionView capacityView{
+      initialization.threadChoices,
+      initialization.graphChoices,
+      initialization.serviceRoutes,
+      initialization.serviceRouteNodes,
+      initialization.serviceRouteSinks,
+      instructionUses,
+      serviceUses};
+  llvm::Expected<detail::SystemCandidateProjectionResult> capacity =
+      source && *domain == SystemCandidateMutationDomain::TransportRoutes
+          ? problem->capacityModel().projectRouteDelta(
+                *problem, capacityView, source->projectionCache())
+      : source
+          ? problem->capacityModel().projectResourceDelta(
+                *problem, capacityView, source->projectionCache())
+          : problem->capacityModel().projectWithCache(*problem, capacityView);
   if (!capacity)
     return capacity.takeError();
-  if (capacity->total != 0 && !admitsCapacityOveruse(*problem))
+  auto recurrence = projectSystemRecurrenceTiming(
+      *problem, initialization.graphChoices);
+  if (!recurrence)
+    return recurrence.takeError();
+  if (capacity->demand.capacity.total != 0 && !admitsCapacityOveruse(*problem))
     return llvm::make_error<detail::SystemCandidateInfeasible>(
         "CapacityOveruse is not policy-admitted");
   auto state = SystemCandidateStateHandle(new SystemCandidateState(
@@ -481,12 +518,19 @@ SystemCandidateState::create(FrozenSystemPnrProblemHandle problem,
       std::vector<SystemServiceTargetSelection>(
           initialization.serviceTargets.begin(),
           initialization.serviceTargets.end()),
-      std::move(instructionUses), std::move(serviceUses), capacity->total,
-      routeCapacity->total, std::move(routeCapacity->witnesses)));
-  if (llvm::Error error = state->verify())
-    return std::move(error);
+      std::move(instructionUses), std::move(serviceUses),
+      std::move(capacity->cache), capacity->demand.capacity.total,
+      capacity->demand.progress, std::move(*recurrence),
+      capacity->demand.timing.minimumInitiationIntervalCycles,
+      capacity->demand.timing.transportBitCycleDemand, routeCapacity->total,
+      std::move(routeCapacity->witnesses)));
+  if (runFullOracle)
+    if (llvm::Error error = state->verify())
+      return std::move(error);
   return state;
 }
+
+SystemCandidateState::~SystemCandidateState() = default;
 
 PnrIndex SystemCandidateState::threadChoice(PnrIndex decision) const {
   assert(decision < threadChoices_.size());
@@ -550,11 +594,22 @@ llvm::Error SystemCandidateState::verify() const {
   auto capacity = problem_->capacityModel().project(
       *problem_,
       {threadChoices_, graphChoices_, serviceRoutes_, serviceRouteNodes_,
-       instructionResourceUses_, serviceResourceUses_});
+       serviceRouteSinks_, instructionResourceUses_, serviceResourceUses_});
   if (!capacity)
     return capacity.takeError();
-  if (capacity->total != capacityOveruse_)
+  if (capacity->capacity.total != capacityOveruse_)
     return invalid("cached CapacityOveruse projection diverged");
+  if (capacity->progress.kind != progressClosure_.kind)
+    return invalid("cached progress projection diverged");
+  auto recurrence = projectSystemRecurrenceTiming(*problem_, graphChoices_);
+  if (!recurrence)
+    return recurrence.takeError();
+  if (!(*recurrence == recurrenceTiming_))
+    return invalid("cached recurrence timing projection diverged");
+  if (capacity->timing.minimumInitiationIntervalCycles !=
+          resourceMinimumInitiationIntervalCycles_ ||
+      capacity->timing.transportBitCycleDemand != transportBitCycleDemand_)
+    return invalid("cached intrinsic timing projection diverged");
   if (capacityOveruse_ != 0 && !admitsCapacityOveruse(*problem_))
     return invalid("CapacityOveruse is not policy-admitted");
 
@@ -902,12 +957,13 @@ loom::pnr::detail::rebuildSystemCandidateWithServiceTarget(
                                  candidate.graphChoices(), targets);
   if (!serviceUses)
     return serviceUses.takeError();
-  return SystemCandidateState::create(
-      candidate.problemHandle(),
+  return SystemCandidateState::createMutation(
+      candidate,
       {candidate.threadChoices(), candidate.graphChoices(),
        candidate.serviceRoutes(), candidate.serviceRouteNodes(),
        candidate.serviceRouteSinks(), targets,
-       candidate.instructionResourceUses(), *serviceUses});
+       candidate.instructionResourceUses(), *serviceUses},
+      SystemCandidateMutationDomain::ResourceSelection);
 }
 
 llvm::Expected<SystemCandidateStateHandle>
@@ -922,12 +978,13 @@ loom::pnr::detail::rebuildSystemCandidateWithInstructionUsePattern(
       candidate.instructionResourceUses().begin(),
       candidate.instructionResourceUses().end());
   instructionUses[use].pattern = (*choices)[choice];
-  return SystemCandidateState::create(
-      candidate.problemHandle(),
+  return SystemCandidateState::createMutation(
+      candidate,
       {candidate.threadChoices(), candidate.graphChoices(),
        candidate.serviceRoutes(), candidate.serviceRouteNodes(),
        candidate.serviceRouteSinks(), candidate.serviceTargets(),
-       instructionUses, candidate.serviceResourceUses()});
+       instructionUses, candidate.serviceResourceUses()},
+      SystemCandidateMutationDomain::ResourceSelection);
 }
 
 llvm::Expected<SystemCandidateStateHandle>
@@ -942,12 +999,13 @@ loom::pnr::detail::rebuildSystemCandidateWithServiceUsePattern(
       candidate.serviceResourceUses().begin(),
       candidate.serviceResourceUses().end());
   serviceUses[use].pattern = (*choices)[choice];
-  return SystemCandidateState::create(
-      candidate.problemHandle(),
+  return SystemCandidateState::createMutation(
+      candidate,
       {candidate.threadChoices(), candidate.graphChoices(),
        candidate.serviceRoutes(), candidate.serviceRouteNodes(),
        candidate.serviceRouteSinks(), candidate.serviceTargets(),
-       candidate.instructionResourceUses(), serviceUses});
+       candidate.instructionResourceUses(), serviceUses},
+      SystemCandidateMutationDomain::ResourceSelection);
 }
 
 llvm::Expected<SystemCandidateStateHandle>
@@ -955,7 +1013,8 @@ loom::pnr::detail::rebuildSystemCandidateRoutes(
     const SystemCandidateState &candidate,
     const SystemTransportRoutingAction &action,
     std::uint64_t &endpointExpansions, std::uint64_t &negotiationIterations,
-    bool requireCapacityClosure) {
+    bool requireCapacityClosure,
+    std::optional<SystemRoutingReopenWitness> *reopenWitness) {
   std::optional<SystemServiceRouteTraversalExclusion> exclusion;
   std::vector<PnrIndex> reroutedLegs;
   std::optional<SystemServiceRouteRepairRegion> repairRegion;
@@ -1075,12 +1134,14 @@ loom::pnr::detail::rebuildSystemCandidateRoutes(
       exclusion, repairRegion,
       requireCapacityClosure
           ? SystemRoutingClosureRequirement::Strict
-          : SystemRoutingClosureRequirement::PolicyAdmittedTemporary);
+          : SystemRoutingClosureRequirement::PolicyAdmittedTemporary,
+      reopenWitness);
   if (!routes)
     return routes.takeError();
-  return SystemCandidateState::create(
-      candidate.problemHandle(),
+  return SystemCandidateState::createMutation(
+      candidate,
       {candidate.threadChoices(), candidate.graphChoices(), routes->routes,
        routes->nodes, routes->sinks, candidate.serviceTargets(),
-       candidate.instructionResourceUses(), candidate.serviceResourceUses()});
+       candidate.instructionResourceUses(), candidate.serviceResourceUses()},
+      SystemCandidateMutationDomain::TransportRoutes);
 }

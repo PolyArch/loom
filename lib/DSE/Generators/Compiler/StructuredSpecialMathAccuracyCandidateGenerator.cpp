@@ -205,7 +205,8 @@ llvm::Expected<bool> closeMechanicalAccuracy(
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &store, const BlobStore &blobs) {
+               const ArtifactStore &store, const BlobStore &blobs,
+               const ExecutionControlView &) {
   auto config = adoptResolvedStructuredSpecialMathAccuracyGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());

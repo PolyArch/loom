@@ -31,7 +31,6 @@ enum class PnrWorkUnit : std::uint32_t {
   CalibrationProposal,
   ProposalPerLevelBase,
   ProposalPerMovableDecision,
-  FocusedClosureProposal,
   ExactRepairRegionDecision,
   ExactRepairSolverCall,
 };

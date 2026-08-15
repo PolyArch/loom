@@ -98,11 +98,6 @@ public:
   llvm::Error verifyChoices(llvm::ArrayRef<PnrIndex> choices) const {
     return relations_.verifyChoices(choices);
   }
-  std::optional<::mapping::SpatialConstraintProjection>
-  deferredProjection() const {
-    return deferredProjection_;
-  }
-
 private:
   SpatialBindingRelationModel(
       InitializerRelationModel relations,
@@ -116,8 +111,7 @@ private:
       std::vector<PnrIndex> graphBoundaryAttachmentChoiceOffsets,
       std::vector<PnrIndex> attachmentChoices,
       std::vector<PnrIndex> attachmentOptionChoiceOrdinals,
-      std::vector<SpatialBindingRelationRole> relationRoles,
-      std::optional<::mapping::SpatialConstraintProjection> deferredProjection)
+      std::vector<SpatialBindingRelationRole> relationRoles)
       : relations_(std::move(relations)),
         computeChoiceOffsets_(std::move(computeChoiceOffsets)),
         computeChoices_(std::move(computeChoices)),
@@ -132,8 +126,7 @@ private:
         attachmentChoices_(std::move(attachmentChoices)),
         attachmentOptionChoiceOrdinals_(
             std::move(attachmentOptionChoiceOrdinals)),
-        relationRoles_(std::move(relationRoles)),
-        deferredProjection_(deferredProjection) {}
+        relationRoles_(std::move(relationRoles)) {}
 
   InitializerRelationModel relations_;
   std::vector<PnrIndex> computeChoiceOffsets_;
@@ -147,7 +140,6 @@ private:
   std::vector<PnrIndex> attachmentChoices_;
   std::vector<PnrIndex> attachmentOptionChoiceOrdinals_;
   std::vector<SpatialBindingRelationRole> relationRoles_;
-  std::optional<::mapping::SpatialConstraintProjection> deferredProjection_;
 };
 
 } // namespace loom::pnr::detail

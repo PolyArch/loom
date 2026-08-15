@@ -17,7 +17,7 @@ fabric.module @pe_host(%arg : !fabric.bits_tag<16, 4>) -> () {
       attributes {
         tag_width = 2 : i32,
         num_instruction = 1 : i32,
-        fu_config_mode = "per_fu_config",
+        fu_config_mode = #fabric.fu_config_mode<per_fu_config>,
         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
         operand_buffer_size = 2 : i32
       } {
@@ -62,7 +62,7 @@ fabric.module @fu_host(%arg : !fabric.bits_tag<8, 2>)
       attributes {
         tag_width = 2 : i32,
         num_instruction = 1 : i32,
-        fu_config_mode = "per_fu_config",
+        fu_config_mode = #fabric.fu_config_mode<per_fu_config>,
         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
         operand_buffer_size = 2 : i32
       } {

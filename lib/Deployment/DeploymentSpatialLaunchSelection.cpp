@@ -1,7 +1,11 @@
 #include "Deployment/DeploymentSpatialLaunchSelection.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Deployment/HardwareConfigurationImage.h"
+#include "Hardware/Configuration/ConfigurationABI.h"
+#include "Hardware/Implementation/HardwareImplementation.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 
@@ -22,10 +26,8 @@ llvm::Expected<DeploymentSpatialLaunchSelection>
 resolveDeploymentSpatialLaunchSelection(
     const FinalizedDeployment &finalized, dataflow::RootedGraphLaunchRef graph,
     llvm::ArrayRef<std::uint64_t> denseCoordinates,
-    const ArtifactStore &artifacts) {
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
   const Deployment &deployment = finalized.deployment();
-  if (deployment.hardwareBindings().size() != 1)
-    return invalid("Deployment does not contain one hardware binding");
 
   auto systemMapping =
       mapping::importSystemMapping(deployment.systemMapping(), artifacts);
@@ -54,12 +56,48 @@ resolveDeploymentSpatialLaunchSelection(
   if (!selected)
     return selected.takeError();
 
+  const fabric::SpatialCoreOccurrenceRef subject{selected->context.accCore};
+  std::optional<hardware::FinalizedHardwareImplementation> implementation;
+  for (const DeploymentHardwareBinding &binding :
+       deployment.hardwareBindings()) {
+    auto candidate = hardware::importHardwareImplementation(
+        binding.hardwareImplementation, artifacts, blobs);
+    if (!candidate)
+      return candidate.takeError();
+    if (candidate->implementation().subject() != subject)
+      continue;
+    if (implementation)
+      return invalid("Deployment repeats the selected SpatialCore binding");
+    implementation = std::move(*candidate);
+  }
+  if (!implementation)
+    return invalid("Deployment omits the selected SpatialCore binding");
+
+  auto abi = hardware::importConfigurationABI(
+      implementation->implementation().configurationAbi(), artifacts);
+  if (!abi)
+    return abi.takeError();
+  std::vector<ArtifactRootReference> configurationImages;
+  for (const ArtifactRootReference &reference :
+       deployment.configurationImages()) {
+    auto image = importHardwareConfigurationImage(reference, artifacts);
+    if (!image)
+      return image.takeError();
+    const hardware::ProgrammingUnit *unit =
+        abi->abi().findProgrammingUnit(image->image().programmingUnitId());
+    if (!unit)
+      return invalid("configuration image names a missing programming unit");
+    const hardware::ProgrammingUnitOccurrenceScope scope =
+        hardware::deriveProgrammingUnitOccurrenceScope(*unit);
+    if (!scope.includesDirectSystemResources && scope.spatialCores.size() == 1 &&
+        scope.spatialCores.front() == subject)
+      configurationImages.push_back(reference);
+  }
+
   return DeploymentSpatialLaunchSelection{
-      deployment.hardwareBindings().front().hardwareImplementation,
+      implementation->reference(),
       std::move(dataflowReference), selected->spatialMapping, selected->context,
-      std::vector<ArtifactRootReference>(
-          deployment.configurationImages().begin(),
-          deployment.configurationImages().end())};
+      std::move(configurationImages)};
 }
 
 } // namespace loom::deployment

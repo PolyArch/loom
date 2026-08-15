@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <future>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -161,6 +162,37 @@ void testStopAndResumeMissingKeys(const ArtifactStore &store,
     fail("resume did not execute exactly the missing stable work keys");
 }
 
+void testRunningProviderObservesStop(const ArtifactStore &store,
+                                     const BlobStore &blobs,
+                                     llvm::StringRef runRoot) {
+  PlanExecutionFixture fixture = take(makePlanExecutionFixture(
+      store, 1, "loom.test.plan_executor.inflight_stop.v1"));
+  ExecutionJournal journal =
+      take(openExecutionJournal(runRoot, fixture.closure, fixture.view));
+  SiteScheduler scheduler = makeScheduler();
+  resetPlanExecutionProviderObservations();
+  requirePlanExecutionProviderStopObservation();
+
+  auto pending = std::async(std::launch::async, [&] {
+    return executeDsePlan(fixture.view, fixture.closure, journal, scheduler,
+                          makePolicy(1), store, blobs);
+  });
+  if (!waitForActivePlanExecutionProvider())
+    fail("interruptible Generate provider did not enter execution");
+  requireSuccess(
+      stopDseExecution(journal, GracefulStopPolicy::FinishAtomicOwnerBoundary));
+  DsePlanExecutionResult stopped = take(pending.get());
+  if (!std::holds_alternative<IncompleteDsePlanExecution>(stopped) ||
+      !planExecutionProviderObservedStop())
+    fail("running Generate provider did not return typed interruption");
+  const auto records = take(journal.workUnits());
+  if (records.size() != 1 ||
+      records.front().status != JournalWorkUnitStatus::TimedOut ||
+      !records.front().finalizedOutputs.empty())
+    fail("interrupted Generate work did not retain a typed empty terminal "
+         "record");
+}
+
 void testDeterministicDispatchPrefix(const ArtifactStore &store,
                                      const BlobStore &blobs,
                                      llvm::StringRef runRoot) {
@@ -199,12 +231,15 @@ int main() {
   const std::string blobRoot = directory.makeDirectory("blobs");
   const std::string parallelRun = directory.makeDirectory("parallel-run");
   const std::string stoppedRun = directory.makeDirectory("stopped-run");
+  const std::string inflightStoppedRun =
+      directory.makeDirectory("inflight-stopped-run");
   const std::string prefixRun = directory.makeDirectory("prefix-run");
   ArtifactStore store(storeRoot);
   BlobStore blobs(blobRoot);
   requireSuccess(registerPlanExecutionTestGenerator());
   testParallelExecutionAndTerminalReplay(store, blobs, parallelRun);
   testStopAndResumeMissingKeys(store, blobs, stoppedRun);
+  testRunningProviderObservesStop(store, blobs, inflightStoppedRun);
   testDeterministicDispatchPrefix(store, blobs, prefixRun);
   return 0;
 }

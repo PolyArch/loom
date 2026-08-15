@@ -188,12 +188,18 @@ SpatialRouteTreePruningScratch::project(const SpatialCandidateState &candidate,
           candidate.problem(), logicalNet, dependent);
       if (!prerequisites)
         return prerequisites.takeError();
-      for (PnrIndex prerequisite : *prerequisites)
-        if (prerequisite >= net.sinkCount)
-          return invalid("sink progress prerequisite is out of range");
-      if (!llvm::any_of(*prerequisites, [&](PnrIndex prerequisite) {
-            return sinkAffected_[prerequisite] != 0;
-          }))
+      bool prerequisiteAffected = false;
+      for (const FrozenSpatialProgressPrerequisite &prerequisite :
+           *prerequisites) {
+        const auto *external =
+            std::get_if<FrozenSpatialExternalSinkPrerequisite>(&prerequisite);
+        if (!external)
+          continue;
+        if (external->sink >= net.sinkCount)
+          return invalid("external sink progress prerequisite is out of range");
+        prerequisiteAffected |= sinkAffected_[external->sink] != 0;
+      }
+      if (!prerequisiteAffected)
         continue;
       auto localBoundary = spatialTerminalProvidesLocalProgressBoundary(
           candidate, candidate.problem()

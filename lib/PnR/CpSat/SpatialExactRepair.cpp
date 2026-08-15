@@ -5,6 +5,8 @@
 #include "PnR/MappingObjective.h"
 #include "SpatialBindingRelationModel.h"
 #include "SpatialFixedTerminalCutConstraint.h"
+#include "SpatialLocalDispositionModel.h"
+#include "SpatialMemoryCompatibility.h"
 #include "SpatialRouteConstraintModel.h"
 
 #include "ortools/sat/cp_model.h"
@@ -14,10 +16,12 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <set>
 #include <system_error>
 #include <tuple>
 #include <utility>
@@ -119,7 +123,8 @@ firstTransportWitness(const SpatialCandidateState &candidate) {
   const auto &routing = problem.routing();
   for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
        ++logicalNet)
-    if (!candidate.routeTree(logicalNet).isRouted())
+    if (!candidate.usesRegisterFifo(logicalNet) &&
+        !candidate.routeTree(logicalNet).isRouted())
       return TransportWitness{ResolvedPnrViolationKind::UnroutedObligation,
                               transfers.logicalNets()[logicalNet].sinkOffset};
 
@@ -180,7 +185,8 @@ transportWitnessIsLive(const SpatialCandidateState &candidate,
          ++logicalNet) {
       const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
       if (containsOrdinal(net.sinkOffset, net.sinkCount, witness.ordinal))
-        return candidate.routeTree(logicalNet).isUnrouted();
+        return !candidate.usesRegisterFifo(logicalNet) &&
+               candidate.routeTree(logicalNet).isUnrouted();
     }
     return invocationError("unrouted witness is out of range");
   case ResolvedPnrViolationKind::CapacityOveruse: {
@@ -308,7 +314,126 @@ addMutationCountObjective(CpModelBuilder &model,
   return mutationCount;
 }
 
+void addInitializerRelationConstraint(
+    CpModelBuilder &model,
+    const detail::InitializerRelationModel &relationModel,
+    const detail::InitializerRelationRecord &record,
+    llvm::ArrayRef<IntVar> projections) {
+  if (record.kind == detail::InitializerRelationKind::Equal) {
+    for (std::size_t member = 1; member < projections.size(); ++member)
+      model.AddEquality(projections[member], projections.front());
+    return;
+  }
+  if (record.kind == detail::InitializerRelationKind::Disjoint) {
+    model.AddAllDifferent(projections);
+    return;
+  }
+
+  const auto members = relationModel.members(record);
+  const auto capacities = relationModel.valueCapacities(record);
+  assert(members.size() == projections.size());
+  std::vector<BoolVar> selected;
+  std::vector<std::int64_t> demands;
+  selected.reserve(members.size());
+  demands.reserve(members.size());
+  for (PnrIndex value = 0; value < capacities.size(); ++value) {
+    selected.clear();
+    demands.clear();
+    for (auto [member, projection] : llvm::zip_equal(members, projections)) {
+      const BoolVar usesValue = model.NewBoolVar();
+      model.AddEquality(projection, value).OnlyEnforceIf(usesValue);
+      model.AddNotEqual(projection, value).OnlyEnforceIf(usesValue.Not());
+      selected.push_back(usesValue);
+      demands.push_back(static_cast<std::int64_t>(member.demand));
+    }
+    model.AddLessOrEqual(LinearExpr::WeightedSum(selected, demands),
+                         static_cast<std::int64_t>(capacities[value]));
+  }
+}
+
 } // namespace
+
+std::optional<std::string> loom::pnr::unsupportedSpatialExactRepairDomain(
+    const FrozenSpatialPnrProblem &problem) {
+  const ResolvedPnrExactRepairPolicy &policy =
+      problem.config().policy().search.exactRepair;
+  if (policy.kind == ResolvedPnrExactRepairKind::Disabled)
+    return std::nullopt;
+  if (policy.kind != ResolvedPnrExactRepairKind::CpSat)
+    return "the selected exact-repair provider is not implemented";
+
+  const detail::SpatialBindingRelationModel &bindings =
+      problem.bindingRelations();
+
+  const FrozenSpatialCapacityIndex &capacity = problem.capacity();
+  if (llvm::any_of(capacity.memoryOperationPlanOveruse(),
+                   [](std::uint64_t value) { return value != 0; }))
+    return "CpSat_3_0 does not encode mutable memory operation-plan atomic "
+           "capacity";
+  if (llvm::any_of(capacity.memoryDispatchOptionOveruse(),
+                   [](std::uint64_t value) { return value != 0; }))
+    return "CpSat_3_0 does not encode mutable memory dispatch atomic "
+           "capacity";
+
+  const FrozenSpatialMemoryIndex &memory = problem.memory();
+  for (PnrIndex provider = 0; provider < memory.exposureProviders().size();
+       ++provider) {
+    std::set<PnrIndex> possibleBindings;
+    for (const FrozenSpatialMemoryExposure &exposure : memory.exposures()) {
+      const bool canSelectProvider = llvm::any_of(
+          memory.exposureOptions(), [&](const auto &option) {
+            if (option.provider != provider)
+              return false;
+            return llvm::any_of(memory.bindingTargets(), [&](const auto &target) {
+              return detail::memoryExposureMatchesTarget(target, option);
+            });
+          });
+      if (canSelectProvider)
+        possibleBindings.insert(exposure.logicalBinding);
+    }
+    if (possibleBindings.size() >
+        memory.exposureProviders()[provider].maxExposedBindings)
+      return "CpSat_3_0 does not encode mutable memory exposure-provider "
+             "capacity";
+  }
+
+  const detail::InitializerRelationModel &relations = bindings.relations();
+  const PnrIndex computeCount = bindings.computeDecisionCount();
+  const auto contextOveruse = capacity.computeInstructionContextOveruse();
+  std::vector<std::uint8_t> visited(bindings.decisionCount(), 0);
+  std::vector<PnrIndex> worklist;
+  for (PnrIndex seed = 0; seed < computeCount; ++seed) {
+    const bool canOveruse = llvm::any_of(
+        bindings.computeChoices(seed), [&](const auto &choice) {
+          return choice.instructionContext >= contextOveruse.size() ||
+                 contextOveruse[choice.instructionContext] != 0;
+        });
+    if (!canOveruse)
+      continue;
+    std::fill(visited.begin(), visited.end(), 0);
+    worklist.clear();
+    visited[seed] = 1;
+    worklist.push_back(seed);
+    for (std::size_t cursor = 0; cursor < worklist.size(); ++cursor) {
+      const PnrIndex decision = worklist[cursor];
+      for (PnrIndex relation : bindings.decisionRelations(decision)) {
+        if (!bindings.relationIsConstraint(relation))
+          continue;
+        for (const detail::InitializerRelationMember &member :
+             relations.members(relations.relations()[relation])) {
+          if (member.decision >= computeCount)
+            return "CpSat_3_0 atomic-capacity relation closure contains a "
+                   "non-compute decision";
+          if (!visited[member.decision]) {
+            visited[member.decision] = 1;
+            worklist.push_back(member.decision);
+          }
+        }
+      }
+    }
+  }
+  return std::nullopt;
+}
 
 llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
     SpatialCandidateState &candidate, std::uint64_t restartOrdinal,
@@ -353,7 +478,8 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
   }
   if (!witness)
     return result(SpatialExactRepairResultKind::UnsupportedEncoding, 0, 0, 0,
-                  "first CapacityOveruse witness is not a compute binding");
+                  "atomic-capacity repair does not encode a non-compute "
+                  "binding witness");
 
   decisionIncluded_.assign(bindings.decisionCount(), 0);
   relationIncluded_.assign(relationModel.relations().size(), 0);
@@ -396,12 +522,8 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
                    [&](PnrIndex decision) { return decision >= computeCount; }))
     return result(SpatialExactRepairResultKind::UnsupportedEncoding,
                   decisions_.size(), 0, 0,
-                  "capacity region includes a memory binding decision");
-  if (bindings.deferredProjection())
-    return result(SpatialExactRepairResultKind::UnsupportedEncoding,
-                  decisions_.size(), 0, 0,
-                  "capacity region has an unencoded constraint projection");
-
+                  "atomic-capacity repair region includes a memory binding "
+                  "decision");
   netIncluded_.assign(problem.transfers().logicalNets().size(), 0);
   affectedNets_.clear();
   const auto demandOffsets = problem.ports().computeRealizationDemandOffsets();
@@ -518,12 +640,7 @@ llvm::Expected<SpatialExactRepairResult> SpatialExactRepairScratch::repair(
                        elementValues_, projection);
       projections.push_back(projection);
     }
-    if (record.kind == detail::InitializerRelationKind::Equal) {
-      for (std::size_t member = 1; member < projections.size(); ++member)
-        model.AddEquality(projections[member], projections.front());
-    } else {
-      model.AddAllDifferent(projections);
-    }
+    addInitializerRelationConstraint(model, relationModel, record, projections);
   }
 
   auto mutationCount = addMutationCountObjective(model, variables, candidate,
@@ -1048,11 +1165,6 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     return result(SpatialExactRepairResultKind::UnsupportedEncoding,
                   canonicalRegionDecisionCount, 0, 0,
                   "route repair decision domain is not CP-SAT encodable");
-  if (bindings.deferredProjection())
-    return result(SpatialExactRepairResultKind::UnsupportedEncoding,
-                  canonicalRegionDecisionCount, 0, 0,
-                  "route repair has an unencoded constraint projection");
-
   CpModelBuilder model;
   std::vector<IntVar> variables;
   variables.reserve(decisions_.size());
@@ -1123,7 +1235,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
   }
 
   std::vector<detail::CpSatCanonicalVariable> canonicalVariables;
-  canonicalVariables.reserve(decisions_.size());
+  canonicalVariables.reserve(decisions_.size() + affectedNets_.size());
   for (std::size_t local = 0; local < decisions_.size(); ++local)
     canonicalVariables.push_back(
         {variables[local].index(),
@@ -1166,12 +1278,24 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       model.AddElement(variables[local], elementValues_, projection);
       projections.push_back(projection);
     }
-    if (record.kind == detail::InitializerRelationKind::Equal) {
-      for (std::size_t member = 1; member < projections.size(); ++member)
-        model.AddEquality(projections[member], projections.front());
-    } else {
-      model.AddAllDifferent(projections);
-    }
+    addInitializerRelationConstraint(model, relationModel, record, projections);
+  }
+
+  auto localDispositions = detail::SpatialLocalDispositionModel::build(
+      model, candidate, bindings, variables, decisionVariables_, affectedNets_);
+  if (!localDispositions)
+    return result(SpatialExactRepairResultKind::InternalError,
+                  canonicalRegionDecisionCount, 0, 0,
+                  llvm::toString(localDispositions.takeError()));
+  if (localDispositions->variables().size() != affectedNets_.size())
+    return result(SpatialExactRepairResultKind::InternalError,
+                  canonicalRegionDecisionCount, 0, 0,
+                  "route repair omitted a local-disposition variable");
+  for (PnrIndex local = 0; local < affectedNets_.size(); ++local) {
+    canonicalVariables.push_back({localDispositions->variables()[local].index(),
+                                  localDispositions->legalValues(local)});
+    transportObservationVariables.push_back(
+        localDispositions->variables()[local]);
   }
 
   auto mutationCount = addMutationCountObjective(model, variables, candidate,
@@ -1183,7 +1307,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
   for (const SpatialFixedTerminalCutCertificate &certificate : certificates) {
     auto encoded = detail::addSpatialFixedTerminalCutEscapeConstraint(
         model, candidate, bindings, variables, decisionVariables_,
-        legalValueOffsets_, legalValues_, certificate,
+        legalValueOffsets_, legalValues_, *localDispositions, certificate,
         routeCutBlockedTraversals_, routeCutReachableEndpoints_,
         routeCutWorklist_);
     if (!encoded)
@@ -1210,7 +1334,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
   bool sawUnknownAssignment = false;
   bool proveCurrentAssignment = currentAssignmentSatisfiesCertificates;
   std::vector<std::int64_t> currentAssignment;
-  currentAssignment.reserve(decisions_.size());
+  currentAssignment.reserve(canonicalVariables.size());
   for (PnrIndex decision : decisions_) {
     auto current = currentBindingChoice(candidate, bindings, decision);
     if (!current)
@@ -1219,6 +1343,9 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                     llvm::toString(current.takeError()));
     currentAssignment.push_back(static_cast<std::int64_t>(*current));
   }
+  currentAssignment.insert(currentAssignment.end(),
+                           localDispositions->currentValues().begin(),
+                           localDispositions->currentValues().end());
 
   const auto executedResult = [&](SpatialExactRepairResultKind kind,
                                   std::string detail = {}) {
@@ -1265,7 +1392,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       return executedResult(
           SpatialExactRepairResultKind::UnknownBudgetExhausted,
           "route exact repair exhausted its solver-call budget");
-    if (solved->assignment.size() != decisions_.size())
+    if (solved->assignment.size() != canonicalVariables.size())
       return executedResult(SpatialExactRepairResultKind::InternalError,
                             "route repair assignment has the wrong size");
     if (!solved->objectiveValue || *solved->objectiveValue < 0)
@@ -1308,9 +1435,19 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
               SpatialMemoryBindingAction{realization, choice.placement}});
       }
     }
-    for (PnrIndex logicalNet : affectedNets_)
-      actions_.push_back(SpatialTransportRoutingAction{
-          SpatialWholeNetRoutingAction{logicalNet}});
+    for (PnrIndex local = 0; local < affectedNets_.size(); ++local) {
+      auto localOption = localDispositions->selectedOption(
+          local, solved->assignment[decisions_.size() + local]);
+      if (!localOption)
+        return executedResult(SpatialExactRepairResultKind::InternalError,
+                              llvm::toString(localOption.takeError()));
+      actions_.push_back(
+          SpatialTransportRoutingAction{SpatialWholeNetRoutingAction{
+              affectedNets_[local],
+              *localOption ? SpatialWholeNetDispositionKind::RegisterFifo
+                           : SpatialWholeNetDispositionKind::External,
+              *localOption ? **localOption : getInvalidPnrIndex()}});
+    }
     for (auto [local, decision] : llvm::enumerate(decisions_)) {
       const std::int64_t selected = solved->assignment[local];
       if (decision < portOffset)
@@ -1609,9 +1746,9 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
             "negotiated routing repeated an active fixed-terminal cut");
       auto encoded = detail::addSpatialFixedTerminalCutEscapeConstraint(
           model, candidate, bindings, variables, decisionVariables_,
-          legalValueOffsets_, legalValues_, routeCutCertificate_,
-          routeCutBlockedTraversals_, routeCutReachableEndpoints_,
-          routeCutWorklist_);
+          legalValueOffsets_, legalValues_, *localDispositions,
+          routeCutCertificate_, routeCutBlockedTraversals_,
+          routeCutReachableEndpoints_, routeCutWorklist_);
       if (!encoded)
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(encoded.takeError()));
@@ -1623,7 +1760,7 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       }
     } else {
       elementValues_.clear();
-      elementValues_.reserve(decisions_.size());
+      elementValues_.reserve(canonicalVariables.size());
       for (auto [local, decision] : llvm::enumerate(decisions_)) {
         const std::int64_t selected = solved->assignment[local];
         if (decision < computeCount) {
@@ -1638,6 +1775,9 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
           elementValues_.push_back(selected);
         }
       }
+      elementValues_.insert(elementValues_.end(),
+                            solved->assignment.begin() + decisions_.size(),
+                            solved->assignment.end());
       model.AddForbiddenAssignments(transportObservationVariables)
           .AddTuple(elementValues_);
     }

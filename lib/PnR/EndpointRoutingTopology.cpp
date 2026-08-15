@@ -78,11 +78,10 @@ std::string capacityCellKey(const FabricInventoryOwnerRef &owner,
   return byteKey(bytes);
 }
 
-std::string
-activationKey(const FabricTraversalActivationGroupView &activation) {
-  std::vector<std::uint8_t> bytes = canonicalFabricBytes(activation.owner);
-  appendU32Be(bytes, static_cast<std::uint32_t>(activation.kind));
-  appendU64Be(bytes, activation.ordinal);
+std::string requesterKey(const FabricTraversalRequesterGroupView &requester) {
+  std::vector<std::uint8_t> bytes = canonicalFabricBytes(requester.owner);
+  appendU32Be(bytes, static_cast<std::uint32_t>(requester.kind));
+  appendU64Be(bytes, requester.ordinal);
   return byteKey(bytes);
 }
 
@@ -227,25 +226,24 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
         return invalid("a traversal use does not resolve its Fabric pattern");
       const ::fabric::UsePattern pattern =
           contract->usePattern(::fabric::UsePatternKey(use.pattern.ordinal));
-      if (use.activationGroup.kind ==
-          FabricTraversalActivationGroupKind::SwitchRequester)
+      if (use.requesterGroup.kind ==
+          FabricTraversalRequesterGroupKind::SwitchRequester)
         if (!switchPayload ||
-            use.activationGroup.owner !=
+            use.requesterGroup.owner !=
                 FabricInventoryOwnerRef::of(switchPayload->owner) ||
-            use.activationGroup.ordinal != pattern.requester.ordinal())
-          return invalid(
-              "a switch requester activation disagrees with its pattern");
+            use.requesterGroup.ordinal != pattern.requester.ordinal())
+          return invalid("a switch requester group disagrees with its pattern");
       if (use.occupancyKind == FabricTraversalUseOccupancyKind::RuntimeService)
         continue;
-      const std::string activation = activationKey(use.activationGroup);
-      auto activationPosition = capacityActivations.find(activation);
+      const std::string requester = requesterKey(use.requesterGroup);
+      auto activationPosition = capacityActivations.find(requester);
       if (activationPosition == capacityActivations.end()) {
         auto index =
             checked(capacityActivationContext, capacityActivations.size());
         if (!index)
           return index.takeError();
         activationPosition =
-            capacityActivations.try_emplace(activation, *index).first;
+            capacityActivations.try_emplace(requester, *index).first;
       }
       for (const ::fabric::Claim &claim : pattern.claims) {
         if (claim.state.ordinal() >= contract->stateCount())

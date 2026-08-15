@@ -132,7 +132,7 @@ loom::ResolvedConfig spatialGenerationConfig() {
   resolved.dse.spatialPnr.temporaryViolations.admitted = {
       loom::ResolvedPnrViolationKind::UnroutedObligation,
       loom::ResolvedPnrViolationKind::CapacityOveruse};
-  resolved.dse.spatialPnr.objectiveSelection = {0, 0, {}};
+  resolved.dse.spatialPnr.objectiveSelection = {0, 0};
   auto &search = resolved.dse.spatialPnr.search;
   search.initializer.seedAttemptCount = 1;
   search.actionProposal = {1, 3, 2};
@@ -194,17 +194,26 @@ generateSpatialMapping(const dataflow::CanonicalDataflowProgramView &dataflow,
           dataflow, tech.view(), module.view(), store));
   const auto pnrConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
+  const auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          module.view()));
   auto spatialOutcome = loom::pnr::generateSpatialMappings(
-      {dataflow, tech.view(), module.view(), pnrConfig, constraints.view(),
-       store});
+      {dataflow, tech.view(), module.view(), physicalTiming, pnrConfig,
+       constraints.view(), store});
   const auto *spatialCandidates =
       std::get_if<loom::pnr::GeneratedSpatialMappings>(&spatialOutcome);
   if (!spatialCandidates)
     std::visit(
         [&](const auto &outcome) {
           using Outcome = std::decay_t<decltype(outcome)>;
-          if constexpr (!std::is_same_v<Outcome,
-                                        loom::pnr::GeneratedSpatialMappings>)
+          if constexpr (std::is_same_v<
+                            Outcome,
+                            loom::pnr::InterruptedSpatialPnrGeneration>)
+            fail("Spatial PnR interrupted at " +
+                 loom::pnr::spatialPnrInterruptionStageSpelling(
+                     outcome.snapshot.stage));
+          else if constexpr (!std::is_same_v<
+                                 Outcome, loom::pnr::GeneratedSpatialMappings>)
             fail("Spatial PnR failed: " + outcome.diagnostic);
         },
         spatialOutcome);

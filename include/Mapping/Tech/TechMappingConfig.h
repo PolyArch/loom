@@ -21,17 +21,18 @@ class ResolvedTechMappingConfigView final {
 public:
   std::uint64_t matchRowAttemptLimit() const { return limits_[0]; }
   std::uint64_t partialCoverExpansionLimit() const { return limits_[1]; }
-  std::uint64_t candidatePublicationLimit() const { return limits_[2]; }
+  std::uint64_t candidateEvaluationLimit() const { return limits_[2]; }
+  std::uint64_t candidatePublicationLimit() const { return limits_[3]; }
 
   llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes() const;
   llvm::ArrayRef<std::uint8_t> canonicalViewBytes() const { return bytes_; }
   ComponentViewDigest digest() const;
 
 private:
-  explicit ResolvedTechMappingConfigView(std::array<std::uint64_t, 3> limits);
+  explicit ResolvedTechMappingConfigView(std::array<std::uint64_t, 4> limits);
 
-  std::array<std::uint64_t, 3> limits_;
-  std::array<std::uint8_t, 24> bytes_;
+  std::array<std::uint64_t, 4> limits_;
+  std::array<std::uint8_t, 32> bytes_;
 
   friend llvm::Expected<ResolvedTechMappingConfigView>
   projectResolvedTechMappingConfigView(const ResolvedConfig &config);

@@ -20,7 +20,8 @@ llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
 bindRootCompleteSystemPnrCandidateGeneratorInputs(
     const ArtifactRootReference &dataflow,
     llvm::ArrayRef<ArtifactRootReference> spatialMappingCandidates,
-    const ArtifactRootReference &fabric);
+    const ArtifactRootReference &fabric,
+    llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles);
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolveRootCompleteSystemPnrCandidateGeneratorBinding(
@@ -35,6 +36,7 @@ bindApplicationSystemPnrCandidateGeneratorInputs(
     const ArtifactRootReference &dataflow,
     llvm::ArrayRef<ArtifactRootReference> spatialMappingCandidates,
     const ArtifactRootReference &fabric,
+    llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
     const ArtifactRootReference &systemConstraints);
 
 llvm::Expected<ResolvedCandidateGeneratorBinding>

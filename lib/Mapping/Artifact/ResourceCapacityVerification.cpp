@@ -101,9 +101,9 @@ std::string dimensionKey(const ResourceCapacityNamespaceView &space,
   return result;
 }
 
-std::string activationGroupKey(
+std::string requesterGroupKey(
     const ResourceCapacityNamespaceView &space,
-    const ::loom::fabric::FabricTraversalActivationGroupView &group) {
+    const ::loom::fabric::FabricTraversalRequesterGroupView &group) {
   std::string result = physicalOwnerKey(space, group.owner);
   appendU32(result, static_cast<std::uint32_t>(group.kind));
   appendU64(result, group.ordinal);
@@ -112,15 +112,15 @@ std::string activationGroupKey(
 
 std::string
 routeClaimKey(const ResourceCapacityNamespaceView &space,
-              const ::loom::fabric::FabricTraversalActivationGroupView &group,
+              const ::loom::fabric::FabricTraversalRequesterGroupView &group,
               const ::loom::fabric::FabricInventoryOwnerRef &owner,
               ::fabric::StateKey state,
               ::fabric::CapacityDimensionKey dimension) {
-  const std::string activation = activationGroupKey(space, group);
+  const std::string requester = requesterGroupKey(space, group);
   const std::string capacity = dimensionKey(space, owner, state, dimension);
   std::string result;
-  appendU64(result, activation.size());
-  result.append(activation);
+  appendU64(result, requester.size());
+  result.append(requester);
   appendU64(result, capacity.size());
   result.append(capacity);
   return result;
@@ -134,12 +134,40 @@ llvm::Error checkedAdd(std::uint64_t amount, std::uint64_t &value,
   return llvm::Error::success();
 }
 
+llvm::Expected<std::uint64_t> checkedMultiply(std::uint64_t lhs,
+                                              std::uint64_t rhs,
+                                              llvm::StringRef subject) {
+  if (lhs != 0 && rhs > std::numeric_limits<std::uint64_t>::max() / lhs)
+    return invalid(subject + " overflows u64");
+  return lhs * rhs;
+}
+
 struct ResolvedPattern final {
   const ResourceCapacityNamespaceView *space = nullptr;
   ::loom::fabric::FabricInventoryOwnerRef owner;
   const ::fabric::ResourceContract *contract = nullptr;
   ::fabric::UsePattern pattern;
 };
+
+MappingResourceGrantPolicyKind
+grantPolicyKind(const ::fabric::ResourceContract &contract) {
+  const auto policy = contract.grantPolicy();
+  if (!policy)
+    return MappingResourceGrantPolicyKind::None;
+  return std::holds_alternative<::fabric::FixedPriorityView>(*policy)
+             ? MappingResourceGrantPolicyKind::FixedPriority
+             : MappingResourceGrantPolicyKind::RoundRobin;
+}
+
+MappingResourceProgressUse progressUse(
+    const ResourceCapacityNamespaceView &space,
+    const ::loom::fabric::FabricInventoryOwnerRef &owner,
+    const ::fabric::ResourceContract &contract,
+    const ::fabric::UsePattern &pattern) {
+  return MappingResourceProgressUse{physicalOwnerKey(space, owner),
+                                    pattern.requester.ordinal(),
+                                    grantPolicyKind(contract)};
+}
 
 llvm::Expected<ResolvedPattern>
 resolvePattern(llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
@@ -320,11 +348,16 @@ llvm::Expected<FrozenResourceCapacityIndex> freezeResourceCapacityIndex(
     const std::uint64_t release = ranks[resolved->pattern.release.ordinal()];
     if (begin == std::numeric_limits<std::uint64_t>::max())
       return invalid("Fabric pattern timing rank exceeds u64");
-    FrozenResourceCapacityPattern frozen{source.namespaceOrdinal,
-                                         source.pattern,
-                                         begin,
-                                         release > begin ? release : begin + 1,
-                                         {}};
+    FrozenResourceCapacityPattern frozen{
+        source.namespaceOrdinal,
+        source.pattern,
+        begin,
+        release > begin ? release : begin + 1,
+        {},
+        progressUse(*resolved->space, resolved->owner, *resolved->contract,
+                    resolved->pattern),
+        resolved->contract->usePatternTiming(
+            ::fabric::UsePatternKey(source.pattern.ordinal))};
     for (const ::fabric::Claim &claim : resolved->pattern.claims) {
       auto cell = dimensions.get(source.namespaceOrdinal, resolved->owner,
                                  *resolved->contract, claim);
@@ -351,24 +384,30 @@ llvm::Expected<FrozenResourceCapacityIndex> freezeResourceCapacityIndex(
         });
     if (found == space->fabric->physicalTraversals().end())
       return invalid("route traversal is absent from its Fabric namespace");
-    FrozenResourceCapacityTraversal frozen{
-        source.namespaceOrdinal, source.traversal, {}};
+    FrozenResourceCapacityTraversal frozen{source.namespaceOrdinal,
+                                            source.traversal,
+                                            {},
+                                            {},
+                                            found->timing};
     for (const auto &use : found->impliedUses) {
-      if (use.occupancyKind ==
-          ::loom::fabric::FabricTraversalUseOccupancyKind::RuntimeService)
-        continue;
       const ResourceCapacityUseProjection selected{
           source.namespaceOrdinal, use.pattern, {}};
       auto resolved = resolvePattern(namespaces, selected);
       if (!resolved)
         return resolved.takeError();
+      frozen.progressUses.push_back(
+          progressUse(*resolved->space, resolved->owner, *resolved->contract,
+                      resolved->pattern));
+      if (use.occupancyKind ==
+          ::loom::fabric::FabricTraversalUseOccupancyKind::RuntimeService)
+        continue;
       for (const ::fabric::Claim &claim : resolved->pattern.claims) {
         auto cell = dimensions.get(source.namespaceOrdinal, resolved->owner,
                                    *resolved->contract, claim);
         if (!cell)
           return cell.takeError();
         frozen.claims.push_back(
-            {routeClaimKey(*space, use.activationGroup, resolved->owner,
+            {routeClaimKey(*space, use.requesterGroup, resolved->owner,
                            claim.state, claim.dimension),
              *cell, claim.amount.value()});
       }
@@ -544,7 +583,85 @@ llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
   return result;
 }
 
-llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
+llvm::Expected<ResourcePhysicalDemandProjection> deriveResourcePhysicalDemand(
+    const FrozenResourceCapacityIndex &index,
+    llvm::ArrayRef<FrozenResourceCapacityUseSelection> resourceUses,
+    llvm::ArrayRef<FrozenResourceCapacityRouteSelection> routeTraversals) {
+  auto capacity =
+      deriveResourceCapacityOveruse(index, resourceUses, routeTraversals);
+  if (!capacity)
+    return capacity.takeError();
+
+  std::vector<MappingResourceProgressUse> progressUses;
+  ResourcePhysicalTimingProjection timing;
+  progressUses.reserve(resourceUses.size());
+  for (const FrozenResourceCapacityUseSelection &use : resourceUses) {
+    if (use.patternOrdinal >= index.patterns().size())
+      return invalid("progress ResourceUse selection names a foreign pattern");
+    const FrozenResourceCapacityPattern &pattern =
+        index.patterns()[use.patternOrdinal];
+    progressUses.push_back(pattern.progressUse);
+    if (llvm::Error error = checkedAdd(pattern.timing.releaseLatencyCycles,
+                                       timing.releaseLatencyCycles,
+                                       "ResourceUse release latency"))
+      return std::move(error);
+    timing.minimumInitiationIntervalCycles = std::max(
+        timing.minimumInitiationIntervalCycles,
+        static_cast<std::uint64_t>(
+            pattern.timing.minimumInitiationIntervalCycles));
+  }
+  for (const FrozenResourceCapacityRouteSelection &route : routeTraversals)
+    for (std::size_t traversal : route.traversalOrdinals) {
+      if (traversal >= index.traversals().size())
+        return invalid("progress route selection names a foreign traversal");
+      const FrozenResourceCapacityTraversal &selected =
+          index.traversals()[traversal];
+      const auto &uses = selected.progressUses;
+      progressUses.insert(progressUses.end(), uses.begin(), uses.end());
+      if (llvm::Error error = checkedAdd(
+              selected.timing.releaseLatencyCycles,
+              timing.releaseLatencyCycles, "route release latency"))
+        return std::move(error);
+      timing.minimumInitiationIntervalCycles = std::max(
+          timing.minimumInitiationIntervalCycles,
+          static_cast<std::uint64_t>(
+              selected.timing.minimumInitiationIntervalCycles));
+      auto bitCycles = checkedMultiply(
+          route.payloadWidthBits,
+          selected.timing.minimumInitiationIntervalCycles,
+          "route transport bit-cycle demand");
+      if (!bitCycles)
+        return bitCycles.takeError();
+      if (llvm::Error error = checkedAdd(*bitCycles,
+                                         timing.transportBitCycleDemand,
+                                         "route transport bit-cycle demand"))
+        return std::move(error);
+    }
+  llvm::sort(progressUses, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.physicalOwnerKey, lhs.grantPolicy, lhs.requester) <
+           std::tie(rhs.physicalOwnerKey, rhs.grantPolicy, rhs.requester);
+  });
+  progressUses.erase(
+      std::unique(progressUses.begin(), progressUses.end(),
+                  [](const auto &lhs, const auto &rhs) {
+                    return lhs.physicalOwnerKey == rhs.physicalOwnerKey &&
+                           lhs.requester == rhs.requester &&
+                           lhs.grantPolicy == rhs.grantPolicy;
+                  }),
+      progressUses.end());
+  return ResourcePhysicalDemandProjection{
+      std::move(*capacity), std::move(progressUses), timing};
+}
+
+namespace {
+
+struct FrozenPhysicalDemandInput final {
+  FrozenResourceCapacityIndex index;
+  std::vector<FrozenResourceCapacityUseSelection> uses;
+  std::vector<FrozenResourceCapacityRouteSelection> routes;
+};
+
+llvm::Expected<FrozenPhysicalDemandInput> freezePhysicalDemandInput(
     llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
     llvm::ArrayRef<ResourceCapacityUseProjection> resourceUses,
     llvm::ArrayRef<ResourceCapacityRouteProjection> routeTraversals) {
@@ -571,6 +688,7 @@ llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
   selectedRoutes.reserve(routeTraversals.size());
   for (const ResourceCapacityRouteProjection &route : routeTraversals) {
     FrozenResourceCapacityRouteSelection selected;
+    selected.payloadWidthBits = route.payloadWidthBits;
     selected.traversalOrdinals.reserve(route.traversals.size());
     for (const auto &traversal : route.traversals) {
       auto ordinal = index->traversalOrdinal(route.namespaceOrdinal, traversal);
@@ -580,7 +698,34 @@ llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
     }
     selectedRoutes.push_back(std::move(selected));
   }
-  return deriveResourceCapacityOveruse(*index, selectedUses, selectedRoutes);
+  return FrozenPhysicalDemandInput{std::move(*index),
+                                   std::move(selectedUses),
+                                   std::move(selectedRoutes)};
+}
+
+} // namespace
+
+llvm::Expected<ResourcePhysicalDemandProjection> deriveResourcePhysicalDemand(
+    llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
+    llvm::ArrayRef<ResourceCapacityUseProjection> resourceUses,
+    llvm::ArrayRef<ResourceCapacityRouteProjection> routeTraversals) {
+  auto frozen =
+      freezePhysicalDemandInput(namespaces, resourceUses, routeTraversals);
+  if (!frozen)
+    return frozen.takeError();
+  return deriveResourcePhysicalDemand(frozen->index, frozen->uses,
+                                      frozen->routes);
+}
+
+llvm::Expected<ResourceCapacityOveruseProjection> deriveResourceCapacityOveruse(
+    llvm::ArrayRef<ResourceCapacityNamespaceView> namespaces,
+    llvm::ArrayRef<ResourceCapacityUseProjection> resourceUses,
+    llvm::ArrayRef<ResourceCapacityRouteProjection> routeTraversals) {
+  auto demand =
+      deriveResourcePhysicalDemand(namespaces, resourceUses, routeTraversals);
+  if (!demand)
+    return demand.takeError();
+  return std::move(demand->capacity);
 }
 
 } // namespace loom::mapping::detail

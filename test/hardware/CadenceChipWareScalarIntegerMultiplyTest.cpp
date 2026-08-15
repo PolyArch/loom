@@ -470,8 +470,9 @@ void finalizeImplementation(
   BlobStore blobs(blobRoot.string());
   HardwareImplementationDraft draft{
       fixture.system.reference(),
+      take(test, loom::hardware::test::requireSingleSpatialCoreOccurrence(
+                     fixture.system)),
       abi.reference(),
-      {},
       makeRtlRepresentation(test, root, result),
       std::nullopt,
       {},

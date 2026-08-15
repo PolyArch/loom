@@ -628,6 +628,43 @@ UsePattern ResourceContract::usePattern(UsePatternKey key) const {
                  record.sharingAssignments.count)};
 }
 
+UsePatternTiming ResourceContract::usePatternTiming(UsePatternKey key) const {
+  const UsePattern pattern = usePattern(key);
+  const llvm::ArrayRef<std::uint32_t> ranks =
+      eventOrder(pattern.timingAndProgress);
+  const std::uint32_t acquire = ranks[pattern.acquire.ordinal()];
+  const std::uint32_t release = ranks[pattern.release.ordinal()];
+  assert(acquire <= release && "validated timing order is inverted");
+
+  UsePatternTiming result;
+  result.releaseLatencyCycles = release - acquire;
+  if (pattern.commit) {
+    const std::uint32_t commit = ranks[pattern.commit->event.ordinal()];
+    assert(acquire <= commit && commit <= release &&
+           "validated commit timing is inverted");
+    result.commitLatencyCycles = commit - acquire;
+  }
+
+  const std::uint32_t holdCycles =
+      std::max<std::uint32_t>(1, result.releaseLatencyCycles);
+  for (const Claim &claim : pattern.claims) {
+    const auto dimensions = capacityDimensions(claim.state);
+    assert(claim.dimension.ordinal() < dimensions.size() &&
+           "validated claim dimension is absent");
+    const CapacityDimension &dimension =
+        dimensions[claim.dimension.ordinal()];
+    const std::uint32_t available =
+        dimension.capacity.value() - dimension.initialOccupancy.value();
+    const std::uint32_t parallelUses = available / claim.amount.value();
+    assert(parallelUses != 0 && "validated claim has no available capacity");
+    const std::uint32_t interval =
+        holdCycles / parallelUses + (holdCycles % parallelUses != 0);
+    result.minimumInitiationIntervalCycles =
+        std::max(result.minimumInitiationIntervalCycles, interval);
+  }
+  return result;
+}
+
 llvm::ArrayRef<std::uint32_t>
 ResourceContract::eventOrder(TimingContractKey key) const {
   assert(key.ordinal() < timingContractCount_ && "undeclared timing contract");

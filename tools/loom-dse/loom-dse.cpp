@@ -11,7 +11,7 @@
 #include "DSE/MappingCandidateGenerator.h"
 #include "DSE/ModelParameterCalibrationAcquisition.h"
 #include "DSE/ModelParameterTrainingCandidateGenerator.h"
-#include "DSE/PortableSystemRtlCandidateGenerator.h"
+#include "DSE/PortableSpatialCoreRtlCandidateGenerator.h"
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
 #include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
@@ -28,6 +28,9 @@
 #include "DSE/SystemCompositionCandidateGenerator.h"
 #include "Evaluation/ProductionRegistry.h"
 #include "ExternalTool/LocalConfig.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
@@ -43,6 +46,7 @@
 #include <csignal>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -95,6 +99,16 @@ llvm::cl::list<std::string> jointSystemRootFiles(
     "joint-system-root",
     llvm::cl::desc("exact Fabric System root admitted to joint Mapping"),
     llvm::cl::value_desc("path"), llvm::cl::ZeroOrMore);
+llvm::cl::list<std::string> jointPhysicalTimingProfileFiles(
+    "joint-physical-timing-profile",
+    llvm::cl::desc("exact physical timing profile root for a joint target "
+                   "Module"),
+    llvm::cl::value_desc("path"), llvm::cl::ZeroOrMore);
+llvm::cl::opt<bool> jointNormalizedPhysicalTiming(
+    "joint-normalized-physical-timing",
+    llvm::cl::desc("explicitly publish and bind target-neutral normalized "
+                   "timing for every joint target Module"),
+    llvm::cl::init(false));
 llvm::cl::opt<std::uint64_t> jointPairLimit(
     "joint-pair-limit",
     llvm::cl::desc(
@@ -224,7 +238,7 @@ llvm::Error registerProductionOwners() {
       &registerSpatialTopologyCandidateGenerator,
       &registerSpatialMicroarchitectureCandidateGenerator,
       &registerSystemCompositionCandidateGenerator,
-      &registerPortableSystemRtlCandidateGenerator,
+      &registerPortableSpatialCoreRtlCandidateGenerator,
       &registerFpaGbdtTrainingCandidateGenerator,
       &registerSystemRuntimeGbdtTrainingCandidateGenerator,
       &registerStructuredEvaluationPromotionAcquisition,
@@ -257,6 +271,50 @@ loadRootReferences(llvm::ArrayRef<std::string> paths) {
   if (std::adjacent_find(roots.begin(), roots.end()) != roots.end())
     return invalid("root bindings contain a duplicate reference");
   return roots;
+}
+
+llvm::Expected<std::vector<ArtifactRootReference>>
+publishNormalizedPhysicalTimingProfiles(
+    llvm::ArrayRef<ArtifactRootReference> systems,
+    const ArtifactStore &store) {
+  std::map<ArtifactIdentity::Storage, ArtifactRootReference> profiles;
+  for (const ArtifactRootReference &systemReference : systems) {
+    auto artifact =
+        loom::fabric::importEntireFabricRoot(systemReference, store);
+    if (!artifact)
+      return artifact.takeError();
+    auto system = loom::fabric::requireSystemRoot(artifact->view());
+    if (!system)
+      return system.takeError();
+    for (const loom::fabric::AccCoreOccurrenceRef core :
+         system->artifact().accCoreOccurrences()) {
+      const auto target = system->spatialCoreTarget(core);
+      if (!target || target->dependencyOrdinal >=
+                         system->artifact().importedModules().size())
+        return invalid("joint System AccCore target does not resolve");
+      const auto &module =
+          system->artifact().importedModules()[target->dependencyOrdinal];
+      if (profiles.count(module.identity().bytes()))
+        continue;
+      auto profile =
+          loom::fabric::projectNormalizedFabricPhysicalTimingProfile(module);
+      if (!profile)
+        return profile.takeError();
+      auto published = loom::fabric::publishFabricPhysicalTimingProfile(
+          *profile, store);
+      if (!published)
+        return published.takeError();
+      profiles.emplace(module.identity().bytes(), std::move(*published));
+    }
+  }
+  std::vector<ArtifactRootReference> result;
+  result.reserve(profiles.size());
+  for (auto &[identity, reference] : profiles) {
+    (void)identity;
+    result.push_back(std::move(reference));
+  }
+  llvm::sort(result, artifactRootReferenceLess);
+  return result;
 }
 
 void canonicalizeRootUnion(std::vector<ArtifactRootReference> &roots) {
@@ -349,18 +407,16 @@ std::size_t outputCount(const CompletedDsePlanExecution &completed,
   return count;
 }
 
-void reportJointOutputs(
-    const DsePlanExecutionOutcome &outcome,
-    llvm::ArrayRef<JointDesignPlanPair> pairs) {
+void reportJointOutputs(const DsePlanExecutionOutcome &outcome,
+                        llvm::ArrayRef<JointDesignPlanPair> pairs) {
   const CompletedDsePlanExecution *completed =
       std::get_if<CompletedDsePlanExecution>(&outcome);
   if (!completed)
     completed =
-        &std::get<IncompleteDsePlanExecution>(outcome).completedPrefix();
+        &std::get<IncompleteDsePlanExecution>(outcome).availableExecution();
   for (std::size_t index = 0; index != pairs.size(); ++index) {
     const JointDesignPlanPair &pair = pairs[index];
-    llvm::errs() << "joint_pair=" << index
-                 << " tech_mappings="
+    llvm::errs() << "joint_pair=" << index << " tech_mappings="
                  << outputCount(*completed, pair.techMappings)
                  << " spatial_mappings="
                  << outputCount(*completed, pair.spatialMappings)
@@ -424,6 +480,20 @@ llvm::Expected<int> run() {
     auto systems = loadRootReferences(jointSystemRootFiles);
     if (!systems)
       return systems.takeError();
+    if (jointNormalizedPhysicalTiming &&
+        !jointPhysicalTimingProfileFiles.empty())
+      return invalid("joint normalized timing and exact timing profile roots "
+                     "are mutually exclusive");
+    if (!jointNormalizedPhysicalTiming &&
+        jointPhysicalTimingProfileFiles.empty())
+      return invalid("joint plan requires exact physical timing profile roots "
+                     "or --joint-normalized-physical-timing");
+    llvm::Expected<std::vector<ArtifactRootReference>> timingProfiles =
+        jointNormalizedPhysicalTiming
+            ? publishNormalizedPhysicalTimingProfiles(*systems, artifacts)
+            : loadRootReferences(jointPhysicalTimingProfileFiles);
+    if (!timingProfiles)
+      return timingProfiles.takeError();
     if (applicationScopes.size() >
         std::numeric_limits<std::uint64_t>::max() / systems->size())
       return invalid("joint pair count overflows u64");
@@ -432,14 +502,14 @@ llvm::Expected<int> run() {
         static_cast<std::uint64_t>(systems->size());
     const std::uint64_t pairLimit =
         jointPairLimit == 0 ? completePairCount : jointPairLimit;
-    auto policy = JointDesignPolicy::get(applicationScopes.size(),
-                                         systems->size(),
-                                         pairLimit, jointSpatialMappingLimit);
+    auto policy =
+        JointDesignPolicy::get(applicationScopes.size(), systems->size(),
+                               pairLimit, jointSpatialMappingLimit);
     if (!policy)
       return policy.takeError();
     auto plan = buildJointDesignExplorationPlan(
-        {std::move(applicationScopes), std::move(*systems)}, *policy, *config,
-        artifacts);
+        {std::move(applicationScopes), std::move(*systems)}, *timingProfiles,
+        *policy, *config, artifacts);
     if (!plan)
       return plan.takeError();
     for (const JointSoftwareScope &scope : plan->frontier.softwareFrontier) {
@@ -450,6 +520,8 @@ llvm::Expected<int> run() {
     semanticInputs->insert(semanticInputs->end(),
                            plan->frontier.systemFrontier.begin(),
                            plan->frontier.systemFrontier.end());
+    semanticInputs->insert(semanticInputs->end(), timingProfiles->begin(),
+                           timingProfiles->end());
     canonicalizeRootUnion(*semanticInputs);
     llvm::errs() << "joint_frontier_eligible="
                  << plan->frontier.eligiblePairCount

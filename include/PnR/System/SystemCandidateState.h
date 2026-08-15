@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -15,6 +16,10 @@
 #include <vector>
 
 namespace loom::pnr {
+
+namespace detail {
+class SystemCandidateProjectionCache;
+}
 
 using SystemMemoryServiceTargetPlan =
     ::loom::fabric::FabricMemoryServiceTargetPlan;
@@ -84,6 +89,11 @@ struct SystemCandidateInitialization final {
   llvm::ArrayRef<SystemServiceResourceUseSelection> serviceResourceUses;
 };
 
+enum class SystemCandidateMutationDomain : std::uint8_t {
+  TransportRoutes,
+  ResourceSelection,
+};
+
 class SystemCandidateState;
 
 class SystemCandidateState final {
@@ -92,11 +102,20 @@ public:
   create(FrozenSystemPnrProblemHandle problem,
          SystemCandidateInitialization initialization);
 
+  /// Commits one immutable invocation-local mutation. The source remains
+  /// unchanged on failure, so dropping the returned Error is the rollback.
+  /// Accepted candidates are checked by the independent full oracle before
+  /// they replace the working state.
+  static llvm::Expected<SystemCandidateStateHandle>
+  createMutation(const SystemCandidateState &source,
+                 SystemCandidateInitialization initialization,
+                 SystemCandidateMutationDomain domain);
+
   SystemCandidateState(const SystemCandidateState &) = delete;
   SystemCandidateState(SystemCandidateState &&) = delete;
   SystemCandidateState &operator=(const SystemCandidateState &) = delete;
   SystemCandidateState &operator=(SystemCandidateState &&) = delete;
-  ~SystemCandidateState() = default;
+  ~SystemCandidateState();
 
   const FrozenSystemPnrProblem &problem() const { return *problem_; }
   FrozenSystemPnrProblemHandle problemHandle() const { return problem_; }
@@ -124,6 +143,18 @@ public:
   }
   std::uint64_t routeCapacityOveruse() const { return routeCapacityOveruse_; }
   std::uint64_t capacityOveruse() const { return capacityOveruse_; }
+  const SpatialRecurrenceTimingProjection &recurrenceTiming() const {
+    return recurrenceTiming_;
+  }
+  std::uint64_t resourceMinimumInitiationIntervalCycles() const {
+    return resourceMinimumInitiationIntervalCycles_;
+  }
+  std::uint64_t transportBitCycleDemand() const {
+    return transportBitCycleDemand_;
+  }
+  const ::loom::mapping::MappingProgressClosure &progressClosure() const {
+    return progressClosure_;
+  }
   llvm::ArrayRef<SystemRouteCapacityOveruseWitness>
   routeCapacityOveruseWitnesses() const {
     return routeCapacityOveruseWitnesses_;
@@ -136,9 +167,23 @@ public:
   llvm::Expected<SystemServiceTargetDomain>
   serviceTargetDomain(PnrIndex context) const;
 
+  /// Invocation-local removable cache used only to derive mutation deltas.
+  /// Candidate legality never trusts this cache; verify() rebuilds the full
+  /// projection from the immutable selections.
+  const detail::SystemCandidateProjectionCache &projectionCache() const {
+    return *projectionCache_;
+  }
+
   llvm::Error verify() const;
 
 private:
+  static llvm::Expected<SystemCandidateStateHandle>
+  createImpl(FrozenSystemPnrProblemHandle problem,
+             SystemCandidateInitialization initialization,
+             const SystemCandidateState *source,
+             std::optional<SystemCandidateMutationDomain> domain,
+             bool runFullOracle);
+
   SystemCandidateState(
       FrozenSystemPnrProblemHandle problem, std::vector<PnrIndex> threadChoices,
       std::vector<PnrIndex> graphChoices,
@@ -149,7 +194,13 @@ private:
       std::vector<SystemInstructionResourceUseSelection>
           instructionResourceUses,
       std::vector<SystemServiceResourceUseSelection> serviceResourceUses,
-      std::uint64_t capacityOveruse, std::uint64_t routeCapacityOveruse,
+      std::shared_ptr<const detail::SystemCandidateProjectionCache>
+          projectionCache,
+      std::uint64_t capacityOveruse,
+      ::loom::mapping::MappingProgressClosure progressClosure,
+      SpatialRecurrenceTimingProjection recurrenceTiming,
+      std::uint64_t resourceMinimumInitiationIntervalCycles,
+      std::uint64_t transportBitCycleDemand, std::uint64_t routeCapacityOveruse,
       std::vector<SystemRouteCapacityOveruseWitness>
           routeCapacityOveruseWitnesses)
       : problem_(std::move(problem)), threadChoices_(std::move(threadChoices)),
@@ -160,7 +211,12 @@ private:
         serviceTargets_(std::move(serviceTargets)),
         instructionResourceUses_(std::move(instructionResourceUses)),
         serviceResourceUses_(std::move(serviceResourceUses)),
-        capacityOveruse_(capacityOveruse),
+        projectionCache_(std::move(projectionCache)),
+        capacityOveruse_(capacityOveruse), progressClosure_(progressClosure),
+        recurrenceTiming_(std::move(recurrenceTiming)),
+        resourceMinimumInitiationIntervalCycles_(
+            resourceMinimumInitiationIntervalCycles),
+        transportBitCycleDemand_(transportBitCycleDemand),
         routeCapacityOveruse_(routeCapacityOveruse),
         routeCapacityOveruseWitnesses_(
             std::move(routeCapacityOveruseWitnesses)) {}
@@ -174,7 +230,13 @@ private:
   std::vector<SystemServiceTargetSelection> serviceTargets_;
   std::vector<SystemInstructionResourceUseSelection> instructionResourceUses_;
   std::vector<SystemServiceResourceUseSelection> serviceResourceUses_;
+  std::shared_ptr<const detail::SystemCandidateProjectionCache>
+      projectionCache_;
   std::uint64_t capacityOveruse_ = 0;
+  ::loom::mapping::MappingProgressClosure progressClosure_;
+  SpatialRecurrenceTimingProjection recurrenceTiming_;
+  std::uint64_t resourceMinimumInitiationIntervalCycles_ = 1;
+  std::uint64_t transportBitCycleDemand_ = 0;
   std::uint64_t routeCapacityOveruse_ = 0;
   std::vector<SystemRouteCapacityOveruseWitness> routeCapacityOveruseWitnesses_;
 };

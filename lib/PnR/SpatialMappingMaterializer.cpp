@@ -113,6 +113,53 @@ materializeComputeBindings(mlir::OpBuilder &builder, mlir::Location location,
   return bindings;
 }
 
+llvm::Expected<std::vector<::loom::mapping::SpatialRegisterFifoTransferView>>
+materializeRegisterFifoTransfers(mlir::OpBuilder &builder,
+                                 mlir::Location location, mlir::Block &body,
+                                 const SpatialCandidateState &candidate,
+                                 const ArtifactIdentity &dataflowIdentity) {
+  const FrozenSpatialPnrProblem &problem = candidate.problem();
+  const auto logicalNets = problem.transfers().logicalNets();
+  const auto sinks = problem.transfers().logicalNetSinks();
+  const auto options = problem.localTransfers().options();
+  const auto traversals = problem.routing().traversals();
+  std::vector<::loom::mapping::SpatialRegisterFifoTransferView> result;
+  for (PnrIndex logicalNet = 0; logicalNet < logicalNets.size(); ++logicalNet) {
+    const PnrIndex selected = candidate.registerFifoTransfer(logicalNet);
+    if (selected == getInvalidPnrIndex())
+      continue;
+    if (selected >= options.size())
+      return invalid("register-FIFO transfer option is out of range");
+    const auto &option = options[selected];
+    const auto &net = logicalNets[logicalNet];
+    if (option.logicalNet != logicalNet || net.sinkCount != 1 ||
+        net.sinkOffset >= sinks.size() ||
+        option.writeTraversal >= traversals.size() ||
+        option.readTraversal >= traversals.size())
+      return invalid("register-FIFO transfer frozen projection is invalid");
+    auto producer = dataflowAttr<::mapping::GraphProducerEndpointRefAttr>(
+        builder.getContext(), dataflowIdentity, net.producer);
+    if (!producer)
+      return producer.takeError();
+    auto sink = dataflowAttr<::mapping::GraphConsumerEndpointRefAttr>(
+        builder.getContext(), dataflowIdentity, sinks[net.sinkOffset]);
+    if (!sink)
+      return sink.takeError();
+    builder.setInsertionPointToEnd(&body);
+    ::mapping::RegisterFifoTransferOp::create(
+        builder, location, *producer, *sink,
+        fabricAttr<::mapping::FabricPhysicalTraversalRefAttr>(
+            builder.getContext(), traversals[option.writeTraversal].reference),
+        fabricAttr<::mapping::FabricPhysicalTraversalRefAttr>(
+            builder.getContext(), traversals[option.readTraversal].reference));
+    result.push_back(::loom::mapping::SpatialRegisterFifoTransferView{
+        net.producer, sinks[net.sinkOffset], option.pe, option.registerFifo,
+        traversals[option.writeTraversal].reference,
+        traversals[option.readTraversal].reference, option.tag});
+  }
+  return result;
+}
+
 llvm::Expected<mlir::Attribute> materializeMemoryBindingTarget(
     mlir::MLIRContext *context,
     const FrozenSpatialMemoryBindingTargetOption &target,
@@ -203,31 +250,29 @@ materializeMemoryBindings(mlir::OpBuilder &builder, mlir::Location location,
   return llvm::Error::success();
 }
 
-/// Assigns the exact resident-context ordinal of one Temporal memory
-/// operation. Contexts of one operation port are interchangeable, so the
-/// search does not choose among them; the ordinal is the position of this
-/// actor among the actors that resolve to the exact port, in the canonical
-/// realization and actor order this materializer already walks. That makes the
-/// Fabric-owned rule that one placement holds one configured operation hold by
-/// construction.
+/// Assigns the exact operation-table row of one Temporal memory operation.
+/// Rows belong to the occurrence rather than to an individual operation port,
+/// so the ordinal is the actor's position in the canonical realization and
+/// actor walk among all realizations placed on that occurrence.
 using MemoryResidentContextCursor =
     std::map<std::vector<std::uint8_t>, std::uint64_t>;
 
 llvm::Expected<mlir::Attribute> materializeMemoryPlacement(
-    mlir::MLIRContext *context,
-    ::loom::fabric::FabricMemoryOccurrenceRef occurrence,
+    mlir::MLIRContext *context, const FrozenSpatialMemoryPlacement &placement,
     const FrozenSpatialMemoryActorBinding &actor,
     const FrozenSpatialMemoryOperationHandshakePlan &plan,
     MemoryResidentContextCursor &residentContexts) {
   const ::loom::fabric::FabricMemoryOperationPortRef port{
-      occurrence, actor.operationPort.ordinal};
+      placement.memory, actor.operationPort.ordinal};
   if (!plan.temporalResident)
     return mlir::Attribute(
         fabricAttr<::mapping::FabricMemoryOperationPortRefAttr>(context, port));
+  if (!placement.residentContextCount)
+    return invalid("Temporal memory placement has no resident capacity");
   std::uint64_t &next =
-      residentContexts[::loom::fabric::canonicalFabricBytes(port)];
-  if (next == std::numeric_limits<std::uint64_t>::max())
-    return invalid("Temporal memory resident-context ordinal overflows u64");
+      residentContexts[::loom::fabric::canonicalFabricBytes(placement.memory)];
+  if (next >= *placement.residentContextCount)
+    return invalid("Temporal memory operation table exceeds its capacity");
   return mlir::Attribute(
       fabricAttr<::mapping::FabricMemoryOperationContextRefAttr>(
           context,
@@ -310,9 +355,8 @@ materializeMemoryEngineBindings(mlir::OpBuilder &builder,
       if (!actorAttr)
         return actorAttr.takeError();
       auto operationPlacement =
-          materializeMemoryPlacement(builder.getContext(), placement.memory,
-                                     actor, plans[planOrdinal],
-                                     residentContexts);
+          materializeMemoryPlacement(builder.getContext(), placement, actor,
+                                     plans[planOrdinal], residentContexts);
       if (!operationPlacement)
         return operationPlacement.takeError();
       if (actorOrdinal + 1 >= memory.actorUseOffsets().size())
@@ -801,6 +845,8 @@ llvm::Error materializePhysicalTagResourceUses(
     const ::loom::fabric::FabricArtifactView &fabric) {
   const auto logicalNets = candidate.problem().transfers().logicalNets();
   for (PnrIndex netOrdinal = 0; netOrdinal < logicalNets.size(); ++netOrdinal) {
+    if (candidate.usesRegisterFifo(netOrdinal))
+      continue;
     const auto segments = candidate.tagSegments(netOrdinal);
     const auto values = candidate.tagValues(netOrdinal);
     if (segments.size() != values.size())
@@ -890,6 +936,10 @@ finalizeSpatialMappingCandidate(
       materializeComputeBindings(builder, location, *body, candidate);
   if (!bindings)
     return bindings.takeError();
+  auto registerFifoTransfers = materializeRegisterFifoTransfers(
+      builder, location, *body, candidate, dataflow.identity());
+  if (!registerFifoTransfers)
+    return registerFifoTransfers.takeError();
   if (llvm::Error error = materializeMemoryBindings(
           builder, location, *body, candidate, dataflow.identity()))
     return std::move(error);
@@ -898,11 +948,12 @@ finalizeSpatialMappingCandidate(
     return std::move(error);
   const auto logicalNets = problem.transfers().logicalNets();
   for (PnrIndex net = 0; net < logicalNets.size(); ++net)
-    if (llvm::Error error = materializeRouteTree(
-            builder, location, *body, candidate, net, dataflow.identity()))
-      return std::move(error);
+    if (!candidate.usesRegisterFifo(net))
+      if (llvm::Error error = materializeRouteTree(
+              builder, location, *body, candidate, net, dataflow.identity()))
+        return std::move(error);
   auto uses = ::loom::mapping::deriveSpatialComputeUseRequirements(
-      dataflow, techMapping, fabric, *bindings);
+      dataflow, techMapping, fabric, *bindings, *registerFifoTransfers);
   if (!uses)
     return uses.takeError();
   if (llvm::Error error = materializeComputeResourceUses(

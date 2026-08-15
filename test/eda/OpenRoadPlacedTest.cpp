@@ -258,8 +258,10 @@ InvocationFixture makeInvocationFixture(llvm::StringRef test,
       loom::hardware::finalizeHardwareImplementation(
           loom::hardware::HardwareImplementationDraft{
               system.reference(),
+              take(test,
+                   loom::hardware::test::requireSingleSpatialCoreOccurrence(
+                       system)),
               abi.reference(),
-              {},
               std::move(representation),
               platform.reference(),
               {},

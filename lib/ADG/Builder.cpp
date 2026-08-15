@@ -316,13 +316,13 @@ llvm::Expected<mlir::IntegerAttr> nonNegativeI32Attr(mlir::MLIRContext &context,
   return mlir::IntegerAttr::get(mlir::IntegerType::get(&context, 32), value);
 }
 
-llvm::StringRef
-fuConfigurationModeSpelling(FuConfigurationMode configurationMode) {
+::fabric::FuConfigMode
+fabricFuConfigMode(FuConfigurationMode configurationMode) {
   switch (configurationMode) {
   case FuConfigurationMode::PerInstruction:
-    return "per_instruction_fu_config";
+    return ::fabric::FuConfigMode::PerInstructionFuConfig;
   case FuConfigurationMode::PerFu:
-    return "per_fu_config";
+    return ::fabric::FuConfigMode::PerFuConfig;
   }
   llvm_unreachable("all FU configuration modes are handled");
 }
@@ -1520,7 +1520,7 @@ SpatialCoreBuilder::addPe(llvm::ArrayRef<SpatialValue> inputs,
   mlir::IntegerAttr registerFifoCount;
   mlir::IntegerAttr registerFifoDepth;
   mlir::IntegerAttr registerFifoPorts;
-  mlir::StringAttr fuConfigurationMode;
+  ::fabric::FuConfigModeAttr fuConfigurationMode;
   ::fabric::OperandBufferModeAttr operandBufferMode;
   mlir::IntegerAttr operandBufferSize;
 
@@ -1582,9 +1582,9 @@ SpatialCoreBuilder::addPe(llvm::ArrayRef<SpatialValue> inputs,
     if (!bufferSize)
       return bufferSize.takeError();
     operandBufferSize = *bufferSize;
-    fuConfigurationMode = mlir::StringAttr::get(
+    fuConfigurationMode = ::fabric::FuConfigModeAttr::get(
         &(*state)->context,
-        fuConfigurationModeSpelling(parameters.fuConfigurationMode));
+        fabricFuConfigMode(parameters.fuConfigurationMode));
     operandBufferMode = ::fabric::OperandBufferModeAttr::get(
         &(*state)->context, parameters.operandBufferMode);
 
@@ -1616,8 +1616,7 @@ SpatialCoreBuilder::addPe(llvm::ArrayRef<SpatialValue> inputs,
       builder, root.operation.getLoc(), outputTypes, mlir::StringAttr(),
       mlir::TypeAttr(), spec.schedule_, values, tagWidth, instructionCapacity,
       registerFifoCount, registerFifoDepth, registerFifoPorts,
-      fuConfigurationMode, operandBufferMode, operandBufferSize,
-      mlir::BoolAttr(), mlir::ArrayAttr(), mlir::ArrayAttr());
+      fuConfigurationMode, operandBufferMode, operandBufferSize);
   mlir::Block *body = new mlir::Block();
   operation.getBody().push_back(body);
   for (mlir::Type type : innerInputTypes)

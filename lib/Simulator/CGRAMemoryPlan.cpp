@@ -2,6 +2,7 @@
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -206,6 +207,8 @@ llvm::Expected<CgraMemoryPlan> freezeCgraMemoryPlan(
                                binding.interval, binding.target});
   }
 
+  const auto &memoryActivations = spatial.handshakeSelection().memoryOperations;
+  std::vector<bool> consumedActivations(memoryActivations.size(), false);
   llvm::DenseSet<std::uint64_t> consumedActions;
   for (const auto &engine : spatial.memoryEngineBindings()) {
     auto realization = realizations.find(engine.realization);
@@ -214,6 +217,13 @@ llvm::Expected<CgraMemoryPlan> freezeCgraMemoryPlan(
     if (fabric.memoryEngineTemplateOf(engine.occurrence) !=
         realization->second->engine)
       return invalid("CGRA memory occurrence selects the wrong definition");
+    auto roleDemands =
+        ::loom::mapping::deriveSpatialMemoryActorRoleDemands(
+            dataflow, tech, fabric, *realization->second, engine.occurrence);
+    if (!roleDemands)
+      return roleDemands.takeError();
+    if (roleDemands->size() != realization->second->actors.size())
+      return invalid("CGRA memory role-demand coverage is incomplete");
 
     for (const auto &operation : engine.operations) {
       const auto actorRef = std::visit(
@@ -255,6 +265,39 @@ llvm::Expected<CgraMemoryPlan> freezeCgraMemoryPlan(
       if (!portRecord || !capabilityRecord)
         return invalid("CGRA memory selection has no physical capability");
       const auto &selectedUse = spatial.resourceUses()[*operationAction];
+
+      std::size_t activationOrdinal = memoryActivations.size();
+      for (auto [ordinal, candidate] : llvm::enumerate(memoryActivations)) {
+        if (candidate.placement() != placement)
+          continue;
+        if (activationOrdinal != memoryActivations.size())
+          return invalid("CGRA memory placement has duplicate activations");
+        activationOrdinal = ordinal;
+      }
+      if (activationOrdinal == memoryActivations.size())
+        return invalid("CGRA memory placement has no physical activation");
+      if (consumedActivations[activationOrdinal])
+        return invalid("CGRA memory physical activation is reused");
+      consumedActivations[activationOrdinal] = true;
+      const auto &activation = memoryActivations[activationOrdinal];
+      if (activation.capability() != capability)
+        return invalid("CGRA memory activation selects another capability");
+      if (activation.usePattern() != selectedUse.useSite)
+        return invalid("CGRA memory activation selects another use pattern");
+      const auto maskForm = projection->access
+                                ? projection->access->maskForm()
+                                : ::dataflow::semantics::MemoryMaskForm::Absent;
+      if (activation.maskForm() != maskForm)
+        return invalid("CGRA memory activation selects another mask form");
+      const auto demand = llvm::find_if(
+          *roleDemands,
+          [&](const auto &candidate) { return candidate.actor == actorRef; });
+      if (demand == roleDemands->end())
+        return invalid("CGRA memory activation has no canonical role demand");
+      if (!llvm::equal(activation.roleSources(), demand->sources) ||
+          !llvm::equal(activation.roleDestinations(), demand->destinations))
+        return invalid("CGRA memory activation role projection diverges from "
+                       "physical demand");
       if (!llvm::is_contained(
               capabilityRecord->admissibleUsePatterns,
               ::fabric::UsePatternKey(selectedUse.useSite.ordinal)))
@@ -268,7 +311,7 @@ llvm::Expected<CgraMemoryPlan> freezeCgraMemoryPlan(
           port, portRecord->resourceContract(), projections);
       if (!resource)
         return resource.takeError();
-      auto pattern = resource->operationPattern(selectedUse.useSite);
+      auto pattern = resource->operationPattern(activation.usePattern());
       if (!pattern)
         return pattern.takeError();
       auto transaction = ::fabric::deriveMemoryPortTransactionPlan(
@@ -287,7 +330,11 @@ llvm::Expected<CgraMemoryPlan> freezeCgraMemoryPlan(
                                 0,
                                 0,
                                 0,
-                                0};
+                                0,
+                                {},
+                                {}};
+      actor.roleSources = demand->sources;
+      actor.roleDestinations = demand->destinations;
       const auto appendAddressedUse =
           [&](const ::loom::mapping::SpatialAddressedMemoryUseView &use)
           -> llvm::Error {
@@ -345,8 +392,28 @@ llvm::Expected<CgraMemoryPlan> freezeCgraMemoryPlan(
         return std::move(error);
       result.actors.push_back(std::move(actor));
     }
+
+    for (const ::loom::mapping::TechMemoryInternalEdgeView &edge :
+         realization->second->internalEdges) {
+      const auto *producer =
+          std::get_if<::dataflow::ActorTokenResultRef>(&edge.producer);
+      const auto *consumer =
+          std::get_if<::dataflow::ActorTokenOperandRef>(&edge.consumer);
+      if (!producer || !consumer)
+        return invalid("CGRA memory internal connection is not actor-local");
+      auto connection =
+          ::loom::mapping::deriveSpatialMemoryInternalConnectionOrdinal(
+              fabric, engine.occurrence, edge.connection);
+      if (!connection)
+        return connection.takeError();
+      result.internalConnections.push_back(
+          {engine.occurrence, *connection, *producer, *consumer});
+    }
   }
 
+  if (!llvm::all_of(consumedActivations,
+                    [](bool consumed) { return consumed; }))
+    return invalid("CGRA memory physical activation has no selected operation");
   if (consumedActions.size() != actions->size())
     return invalid("CGRA memory ResourceUse has no selected operation or use");
   return result;

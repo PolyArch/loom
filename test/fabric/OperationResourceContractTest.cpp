@@ -151,11 +151,46 @@ void orderedCardinalityContractOwnsOneClaimEnvelope() {
           "legacy one-cycle contract was accepted as ordered-cardinality");
 }
 
+void architecturalTimingNeverUsesReleaseAsPublication() {
+  using namespace fabric;
+  using Schema = dataflow::OperationSchemaId;
+
+  auto oneCycle = projectOperationTransitionArchitecturalTiming(
+      oneCycleElasticOperationResourceContract(), Schema::ArithAddI, 0);
+  if (!oneCycle)
+    fail(llvm::toString(oneCycle.takeError()));
+  require(oneCycle->has_value() &&
+              (*oneCycle)->resultPublicationLatencyCycles == 1 &&
+              (*oneCycle)->nextStateLatencyCycles == 1,
+          "one-cycle publication timing is not its exact commit distance");
+
+  auto carry = projectOperationTransitionArchitecturalTiming(
+      loopCarryOperationResourceContract(), Schema::DataflowCarry,
+      static_cast<std::uint32_t>(dataflow::semantics::CarryCase::Next));
+  if (!carry)
+    fail(llvm::toString(carry.takeError()));
+  require(carry->has_value() &&
+              (*carry)->resultPublicationLatencyCycles == 0 &&
+              (*carry)->nextStateLatencyCycles == 0,
+          "transparent carry acquired a release-latency cycle");
+
+  const ResourceContract cardinality =
+      llvm::cantFail(createOrderedCardinalityOperationResourceContract(
+          Schema::DataflowSerialize, 7));
+  auto unknown = projectOperationTransitionArchitecturalTiming(
+      cardinality, Schema::DataflowSerialize, 0);
+  if (!unknown)
+    fail(llvm::toString(unknown.takeError()));
+  require(!unknown->has_value(),
+          "ordered-cardinality commit was guessed to publish every result");
+}
+
 } // namespace
 
 int main() {
   oneCycleElasticContractOwnsOnePublishedResultSlot();
   activeResultHandoffIsOwnedByExactContracts();
   orderedCardinalityContractOwnsOneClaimEnvelope();
+  architecturalTimingNeverUsesReleaseAsPublication();
   return EXIT_SUCCESS;
 }

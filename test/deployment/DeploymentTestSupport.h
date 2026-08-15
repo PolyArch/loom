@@ -85,7 +85,7 @@ FinalizedDeployment buildMappedSpatialDeployment(
     llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
     const fabric::FinalizedFabricRoot &system,
     const mapping::FinalizedSpatialMapping &spatialMapping,
-    const hardware::FinalizedHardwareImplementation &implementation,
+    llvm::ArrayRef<hardware::FinalizedHardwareImplementation> implementations,
     ArtifactStore &artifacts, BlobStore &blobs, const TemporaryTree &tree);
 
 mapping::FinalizedSystemMapping buildMappedSystemMapping(
@@ -99,7 +99,7 @@ FinalizedDeployment buildMappedSystemDeployment(
     llvm::StringRef test, const dataflow::CanonicalDataflowArtifact &dataflow,
     const fabric::FinalizedFabricRoot &system,
     const mapping::FinalizedSystemMapping &systemMapping,
-    const hardware::FinalizedHardwareImplementation &implementation,
+    llvm::ArrayRef<hardware::FinalizedHardwareImplementation> implementations,
     MappedSystemExecutablePrograms programs, ArtifactStore &artifacts,
     BlobStore &blobs, const TemporaryTree &tree);
 

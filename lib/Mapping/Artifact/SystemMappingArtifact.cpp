@@ -12,6 +12,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
+#include "Mapping/Artifact/SystemMappingClosureProjection.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/IR/MappingDialect.h"
 
@@ -679,23 +680,25 @@ llvm::Expected<SystemMappingView> importSystemMappingView(
                                                     *execution, store);
   if (!closure)
     return closure.takeError();
-  if (llvm::Error error = detail::verifySystemMappingCapacity(
-          dataflow, fabric, *execution, closure->services,
-          closure->resourceUses, closure->resourceUseActivationKeys, store))
-    return std::move(error);
+  auto physicalDemand = detail::verifySystemMappingCapacity(
+      dataflow, fabric, *execution, closure->services, closure->resourceUses,
+      closure->resourceUseActivationKeys, store);
+  if (!physicalDemand)
+    return physicalDemand.takeError();
   if (llvm::Error error = detail::verifySystemMappingHandshakeClosure(
           dataflow, fabric, *execution, closure->services, store))
     return std::move(error);
-  std::vector<::dataflow::GraphRef> coveredGraphs;
-  std::set<std::uint64_t> coveredGraphEntities;
-  for (const auto &binding : execution->graphBindings()) {
-    auto graph = dataflow.resolve(binding.key);
-    if (!graph)
-      return graph.takeError();
-    if (coveredGraphEntities.insert(graph->entity.value()).second)
-      coveredGraphs.push_back(*graph);
-  }
-  auto progress = deriveMappingProgressClosure(dataflow, coveredGraphs);
+
+  (void)physicalDemand;
+  SystemMappingView result(
+      mappingIdentity, dataflow.identity(), fabric.artifact().identity(),
+      std::move(*execution), std::move(closure->services),
+      std::move(closure->resourceUses));
+  auto projected = projectSystemMappingClosure(dataflow, fabric, result, store);
+  if (!projected)
+    return projected.takeError();
+  auto progress =
+      deriveSystemMappingProgressClosure(dataflow, fabric, *projected);
   if (!progress)
     return progress.takeError();
   switch (progress->kind) {
@@ -704,16 +707,14 @@ llvm::Expected<SystemMappingView> importSystemMappingView(
   case MappingProgressClosureKind::ProvenClosedWaitSet:
     return llvm::make_error<SystemMappingRejectedError>(
         SystemMappingClosureFindingKind::HardProgressViolation,
-        "HardProgressViolation");
+        "selected System physical demand contains a closed wait set");
   case MappingProgressClosureKind::ProofNotEstablished:
     return llvm::make_error<SystemMappingIncompleteError>(
         SystemMappingIncompleteReason::ProofNotEstablished,
-        "proof_not_established");
+        "system route, service, and resource progress proof is not "
+        "established");
   }
-  return SystemMappingView(mappingIdentity, dataflow.identity(),
-                           fabric.artifact().identity(), std::move(*execution),
-                           std::move(closure->services),
-                           std::move(closure->resourceUses));
+  return result;
 }
 
 SystemMappingBaseVerification verifySystemMappingBase(

@@ -639,15 +639,6 @@ resolveGroundTruthRequest(const ArtifactRootReference &requestReference,
   const std::array<ArtifactRootReference, 1> configurationDependencies = {
       implementationView.fabric()};
   merge(implementationView.configurationAbi(), configurationDependencies);
-  for (const ArtifactRootReference &interconnect :
-       implementationView.interconnectImplementations()) {
-    hardwareClosure.push_back(interconnect);
-    auto dependencies = fabricClosure(interconnect);
-    if (!dependencies)
-      return dependencies.takeError();
-    hardwareClosure.insert(hardwareClosure.end(), dependencies->begin(),
-                           dependencies->end());
-  }
   if (implementationView.implementationPlatform())
     hardwareClosure.push_back(*implementationView.implementationPlatform());
   merge(implementations.front(), hardwareClosure);

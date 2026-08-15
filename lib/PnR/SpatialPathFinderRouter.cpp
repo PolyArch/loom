@@ -3,6 +3,8 @@
 #include "Common/MappingDebugLog.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "PnR/MappingObjective.h"
+#include "SpatialPhysicalTiming.h"
+#include "SpatialPathFinderRouterInternal.h"
 #include "SpatialTagPressureDiagnostic.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -11,14 +13,18 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <optional>
 #include <string>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
 using namespace loom::pnr;
+using loom::pnr::detail::encodeLogicalNetDetail;
+using loom::pnr::detail::encodeSelectedOrdinalRanges;
+using loom::pnr::detail::resourceOwnerForState;
+using loom::pnr::detail::resourceStateForCapacity;
 
 char SpatialPathFinderClosureFailure::ID;
 
@@ -86,110 +92,6 @@ llvm::Error rollbackIteration(SpatialMoveTransaction &move,
   if (llvm::Error reset = costs.resetFromCandidate())
     return llvm::joinErrors(std::move(failure), std::move(reset));
   return failure;
-}
-
-std::optional<PnrIndex>
-resourceStateForCapacity(const FrozenSpatialResourceIndex &resources,
-                         PnrIndex capacity) {
-  for (auto [state, record] : llvm::enumerate(resources.resourceStates()))
-    if (capacity >= record.capacityOffset &&
-        capacity - record.capacityOffset < record.capacityCount)
-      return static_cast<PnrIndex>(state);
-  return std::nullopt;
-}
-
-std::optional<PnrIndex>
-resourceOwnerForState(const FrozenSpatialResourceIndex &resources,
-                      PnrIndex state) {
-  for (auto [owner, record] : llvm::enumerate(resources.resourceOwners()))
-    if (state >= record.stateOffset &&
-        state - record.stateOffset < record.stateCount)
-      return static_cast<PnrIndex>(owner);
-  return std::nullopt;
-}
-
-llvm::json::Object encodeProducerReference(
-    const dataflow::CanonicalGraphProducerEndpointRef &producer) {
-  llvm::json::Object result;
-  std::visit(
-      [&](const auto &endpoint) {
-        using Endpoint = std::decay_t<decltype(endpoint)>;
-        if constexpr (std::is_same_v<Endpoint, dataflow::ActorTokenResultRef>) {
-          result["kind"] = "actor_result";
-          result["owner"] = endpoint.actor.entity.value();
-          result["ordinal"] = endpoint.ordinal;
-        } else {
-          std::visit(
-              [&](const auto &ingress) {
-                using Ingress = std::decay_t<decltype(ingress)>;
-                result["owner"] = ingress.graph.entity.value();
-                if constexpr (std::is_same_v<Ingress,
-                                             dataflow::GraphStartTokenRef>) {
-                  result["kind"] = "graph_start";
-                } else if constexpr (std::is_same_v<
-                                         Ingress,
-                                         dataflow::GraphValueInputTokenRef>) {
-                  result["kind"] = "graph_value_input";
-                  result["ordinal"] = ingress.ordinal;
-                } else {
-                  result["kind"] = "graph_stream_input";
-                  result["ordinal"] = ingress.ordinal;
-                }
-              },
-              endpoint);
-        }
-      },
-      producer);
-  return result;
-}
-
-llvm::json::Object
-encodeLogicalNetDetail(const SpatialCandidateState &candidate,
-                       PnrIndex logicalNet) {
-  const FrozenSpatialPnrProblem &problem = candidate.problem();
-  const auto &routing = problem.routing();
-  const FrozenSpatialLogicalNet &net =
-      problem.transfers().logicalNets()[logicalNet];
-  const PnrIndex source = candidate.logicalNetSourceEndpoint(logicalNet);
-  llvm::json::Object result;
-  result["logical_net"] = logicalNet;
-  result["producer"] = encodeProducerReference(net.producer);
-  result["source_endpoint"] = source;
-  result["source_endpoint_ref"] = loom::fabric::printFabricRef(
-      routing.routingEndpoints()[source].reference);
-  llvm::json::Array sinks;
-  for (PnrIndex sink = 0; sink < net.sinkCount; ++sink) {
-    const PnrIndex endpoint =
-        candidate.logicalNetSinkEndpoint(logicalNet, sink);
-    llvm::json::Object row;
-    row["endpoint"] = endpoint;
-    row["endpoint_ref"] = loom::fabric::printFabricRef(
-        routing.routingEndpoints()[endpoint].reference);
-    row["sink"] = sink;
-    sinks.push_back(std::move(row));
-  }
-  result["sinks"] = std::move(sinks);
-  return result;
-}
-
-llvm::json::Array
-encodeSelectedOrdinalRanges(llvm::ArrayRef<std::uint8_t> selected) {
-  llvm::json::Array ranges;
-  for (std::size_t begin = 0; begin < selected.size();) {
-    while (begin < selected.size() && !selected[begin])
-      ++begin;
-    if (begin == selected.size())
-      break;
-    std::size_t end = begin + 1;
-    while (end < selected.size() && selected[end])
-      ++end;
-    llvm::json::Object range;
-    range["begin"] = static_cast<std::uint64_t>(begin);
-    range["end"] = static_cast<std::uint64_t>(end);
-    ranges.push_back(std::move(range));
-    begin = end;
-  }
-  return ranges;
 }
 
 struct ProjectionDisposition final {
@@ -296,6 +198,8 @@ llvm::Error SpatialPathFinderRouterScratch::captureCurrentRoutes(
   const auto captureLogicalNet = [&](PnrIndex logicalNet) -> llvm::Error {
     if (logicalNet >= candidate.problem().transfers().logicalNets().size())
       return pathFinderError("temporary routing region contains a foreign net");
+    if (candidate.usesRegisterFifo(logicalNet))
+      return llvm::Error::success();
     const RouteTreeState &tree = candidate.routeTree(logicalNet);
     if (!tree.isRouted())
       return pathFinderError("temporary iterate contains an unrouted net");
@@ -359,6 +263,8 @@ llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
   const auto restoreLogicalNet = [&](PnrIndex logicalNet) -> llvm::Error {
     if (logicalNet >= candidate.problem().transfers().logicalNets().size())
       return pathFinderError("captured routing region contains a foreign net");
+    if (candidate.usesRegisterFifo(logicalNet))
+      return llvm::Error::success();
     auto projection = projectLogicalNet(candidate, costs, logicalNet);
     if (!projection)
       return projection.takeError();
@@ -476,6 +382,12 @@ llvm::Error SpatialPathFinderRouterScratch::restoreCapturedRoutes(
           expectedProjection.hardProgressViolation ||
       restoredProjection->totalSelectedTraversalClaim !=
           expectedProjection.totalSelectedTraversalClaim ||
+      restoredProjection->routeReleaseLatencyCycles !=
+          expectedProjection.routeReleaseLatencyCycles ||
+      restoredProjection->routeMinimumInitiationIntervalCycles !=
+          expectedProjection.routeMinimumInitiationIntervalCycles ||
+      restoredProjection->transportBitCycleDemand !=
+          expectedProjection.transportBitCycleDemand ||
       restoredProjection->routeTerminalsCompatible !=
           expectedProjection.routeTerminalsCompatible ||
       restoredProjection->selectedHandshakeAcyclic !=
@@ -540,15 +452,10 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
     for (PnrIndex logicalNet = 0;
          logicalNet < problem.transfers().logicalNets().size(); ++logicalNet) {
       cutTouchedClaims_.clear();
-      const RouteTreeState &tree = candidate.routeTree(logicalNet);
-      for (const RouteTreeNode &node : tree.nodeStorage()) {
-        if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
-          continue;
-        if (node.parentArc >= arcs.size() ||
-            node.parentArc >= arcSources.size())
-          return pathFinderError(
-              "capacity analysis RouteTree arc is out of range");
-        const PnrIndex traversal = arcs[node.parentArc].traversal;
+      const auto accountTraversal =
+          [&](PnrIndex traversal,
+              std::optional<std::pair<PnrIndex, PnrIndex>> endpoints)
+          -> llvm::Error {
         if (traversal >= routing.traversals().size())
           return pathFinderError("capacity analysis traversal is out of range");
         const FrozenSpatialTraversal &traversalRecord =
@@ -586,8 +493,39 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
         }
         if (emitDecisions && traversalContributes) {
           cutSeenTraversals_[traversal] = 1;
-          cutSeenEndpoints_[arcSources[node.parentArc]] = 1;
-          cutSeenEndpoints_[arcs[node.parentArc].target] = 1;
+          if (endpoints) {
+            cutSeenEndpoints_[endpoints->first] = 1;
+            cutSeenEndpoints_[endpoints->second] = 1;
+          }
+        }
+        return llvm::Error::success();
+      };
+      if (candidate.usesRegisterFifo(logicalNet)) {
+        const PnrIndex selected = candidate.registerFifoTransfer(logicalNet);
+        if (selected >= problem.localTransfers().options().size())
+          return pathFinderError(
+              "capacity analysis register-FIFO option is out of range");
+        const auto &option = problem.localTransfers().options()[selected];
+        if (llvm::Error error =
+                accountTraversal(option.writeTraversal, std::nullopt))
+          return std::move(error);
+        if (llvm::Error error =
+                accountTraversal(option.readTraversal, std::nullopt))
+          return std::move(error);
+      } else {
+        const RouteTreeState &tree = candidate.routeTree(logicalNet);
+        for (const RouteTreeNode &node : tree.nodeStorage()) {
+          if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+            continue;
+          if (node.parentArc >= arcs.size() ||
+              node.parentArc >= arcSources.size())
+            return pathFinderError(
+                "capacity analysis RouteTree arc is out of range");
+          const PnrIndex traversal = arcs[node.parentArc].traversal;
+          if (llvm::Error error = accountTraversal(
+                  traversal, std::pair(arcSources[node.parentArc],
+                                       arcs[node.parentArc].target)))
+            return std::move(error);
         }
       }
       if (cutTouchedClaims_.empty())
@@ -681,6 +619,8 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
     std::uint64_t mandatoryUsage = capacityRecord.initialOccupancy;
     std::uint64_t forcedNetCount = 0;
     for (PnrIndex logicalNet : cutContributingNets_) {
+      if (candidate.usesRegisterFifo(logicalNet))
+        continue;
       const std::uint32_t payloadWidth =
           candidate.logicalNetPayloadWidth(logicalNet);
       auto minimumClaimValue = minimumClaimForPayload(payloadWidth);
@@ -966,6 +906,32 @@ SpatialPathFinderRouterScratch::projectRoutingRegion(
   const auto projectNet = [&](PnrIndex logicalNet) -> llvm::Error {
     if (logicalNet >= problem.transfers().logicalNets().size())
       return pathFinderError("routing region contains a foreign logical net");
+    if (candidate.usesRegisterFifo(logicalNet)) {
+      const PnrIndex selected = candidate.registerFifoTransfer(logicalNet);
+      if (selected >= problem.localTransfers().options().size())
+        return pathFinderError(
+            "routing region has a foreign register-FIFO transfer");
+      const auto &option = problem.localTransfers().options()[selected];
+      const std::array<PnrIndex, 2> traversals = {option.writeTraversal,
+                                                  option.readTraversal};
+      for (PnrIndex traversal : traversals) {
+        if (traversal >= routing.traversals().size())
+          return pathFinderError("register-FIFO traversal is out of range");
+        const FrozenSpatialTraversal &record = routing.traversals()[traversal];
+        for (PnrIndex claim : routing.traversalClaimKeys().slice(
+                 record.routeClaimOffset, record.routeClaimCount)) {
+          if (claim >= routing.routeClaims().size())
+            return pathFinderError("register-FIFO route claim is out of range");
+          const PnrIndex capacity =
+              routing.routeClaims()[claim].capacityDimension;
+          if (capacity >= regionalCapacityMarks_.size())
+            return pathFinderError(
+                "register-FIFO route capacity is out of range");
+          regionalCapacityMarks_[capacity] = 1;
+        }
+      }
+      return llvm::Error::success();
+    }
     const std::uint64_t unassigned =
         costs.logicalNetTagUnassignedCount(logicalNet);
     if (unassigned > std::numeric_limits<std::uint64_t>::max() -
@@ -1078,23 +1044,18 @@ SpatialPathFinderRouterScratch::projectLogicalNet(
   beginProjection();
 
   const RouteTreeState &tree = candidate.routeTree(logicalNet);
-  if (tree.isUnrouted())
+  if (tree.isUnrouted() && !candidate.usesRegisterFifo(logicalNet))
     return NetProjection{0, 0};
 
   const FrozenSpatialRoutingGraph &routing = candidate.problem().routing();
-  for (const RouteTreeNode &node : tree.nodeStorage()) {
-    if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
-      continue;
-    if (node.parentArc >= routing.routingArcs().size())
-      return pathFinderError("RouteTree parent arc is out of range");
-    const PnrIndex traversal = routing.routingArcs()[node.parentArc].traversal;
+  const auto projectTraversal = [&](PnrIndex traversal) -> llvm::Error {
     if (traversal >= routing.traversals().size())
-      return pathFinderError("RouteTree traversal is out of range");
+      return pathFinderError("selected traversal is out of range");
     const FrozenSpatialTraversal &record = routing.traversals()[traversal];
     for (PnrIndex claim : routing.traversalClaimKeys().slice(
              record.routeClaimOffset, record.routeClaimCount)) {
       if (claim >= routing.routeClaims().size())
-        return pathFinderError("RouteTree claim is out of range");
+        return pathFinderError("selected traversal claim is out of range");
       if (claimEpochs_[claim] == projectionEpoch_)
         continue;
       claimEpochs_[claim] = projectionEpoch_;
@@ -1103,7 +1064,8 @@ SpatialPathFinderRouterScratch::projectLogicalNet(
       const FrozenSpatialRouteClaim &claimRecord = routing.routeClaims()[claim];
       const PnrIndex capacity = claimRecord.capacityDimension;
       if (capacity >= capacityNetQCosts_.size())
-        return pathFinderError("RouteTree claim capacity is out of range");
+        return pathFinderError(
+            "selected traversal claim capacity is out of range");
       if (capacityEpochs_[capacity] != projectionEpoch_) {
         capacityEpochs_[capacity] = projectionEpoch_;
         capacityNetQCosts_[capacity] = 0;
@@ -1114,6 +1076,28 @@ SpatialPathFinderRouterScratch::projectLogicalNet(
       if (!qCost)
         return qCost.takeError();
       capacityNetQCosts_[capacity] = *qCost;
+    }
+    return llvm::Error::success();
+  };
+  if (candidate.usesRegisterFifo(logicalNet)) {
+    const PnrIndex selected = candidate.registerFifoTransfer(logicalNet);
+    if (selected >= candidate.problem().localTransfers().options().size())
+      return pathFinderError("register-FIFO projection option is out of range");
+    const auto &option =
+        candidate.problem().localTransfers().options()[selected];
+    if (llvm::Error error = projectTraversal(option.writeTraversal))
+      return std::move(error);
+    if (llvm::Error error = projectTraversal(option.readTraversal))
+      return std::move(error);
+  } else {
+    for (const RouteTreeNode &node : tree.nodeStorage()) {
+      if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
+        continue;
+      if (node.parentArc >= routing.routingArcs().size())
+        return pathFinderError("RouteTree parent arc is out of range");
+      if (llvm::Error error =
+              projectTraversal(routing.routingArcs()[node.parentArc].traversal))
+        return std::move(error);
     }
   }
 
@@ -1138,9 +1122,22 @@ SpatialPathFinderRouterScratch::projectLogicalNet(
       return next.takeError();
     conflictPressure = *next;
   }
+  auto timing = detail::projectSpatialLogicalNetPhysicalTiming(
+      candidate.problem(), logicalNet, tree,
+      candidate.registerFifoTransfer(logicalNet),
+      candidate.portAttachmentSelections(),
+      candidate.graphBoundaryAttachmentSelections());
+  if (!timing)
+    return timing.takeError();
+  const unsigned __int128 criticalDelay =
+      (static_cast<unsigned __int128>(timing->worstArrivalDelayQuanta) + 1) *
+      (static_cast<unsigned __int128>(timing->structuralCriticality) + 1);
+  if (criticalDelay > std::numeric_limits<std::uint64_t>::max())
+    return pathFinderError("physical net criticality exceeds u64");
   return NetProjection{
       static_cast<std::uint8_t>(contributesToViolation ? 1 : 2),
-      conflictPressure};
+      conflictPressure, timing->totalNegativeSlackQuanta,
+      static_cast<std::uint64_t>(criticalDelay)};
 }
 
 llvm::Error SpatialPathFinderRouterScratch::buildCanonicalNetOrder(
@@ -1164,11 +1161,14 @@ llvm::Error SpatialPathFinderRouterScratch::buildCanonicalNetOrder(
     }
   }
   const auto append = [&](PnrIndex logicalNet) -> llvm::Error {
+    if (candidate.usesRegisterFifo(logicalNet))
+      return llvm::Error::success();
     auto projection = projectLogicalNet(candidate, costs, logicalNet);
     if (!projection)
       return projection.takeError();
     netOrder_.push_back(
         {projection->routeStateRank, projection->conflictPressure,
+         projection->physicalNegativeSlack, projection->physicalCriticalDelay,
          evaluationPriorities.empty() ? 0 : evaluationPriorities[logicalNet],
          logicalNet});
     return llvm::Error::success();
@@ -1187,6 +1187,10 @@ llvm::Error SpatialPathFinderRouterScratch::buildCanonicalNetOrder(
       return lhs.routeStateRank < rhs.routeStateRank;
     if (lhs.conflictPressure != rhs.conflictPressure)
       return lhs.conflictPressure > rhs.conflictPressure;
+    if (lhs.physicalNegativeSlack != rhs.physicalNegativeSlack)
+      return lhs.physicalNegativeSlack > rhs.physicalNegativeSlack;
+    if (lhs.physicalCriticalDelay != rhs.physicalCriticalDelay)
+      return lhs.physicalCriticalDelay > rhs.physicalCriticalDelay;
     if (lhs.evaluationPriority != rhs.evaluationPriority)
       return lhs.evaluationPriority > rhs.evaluationPriority;
     return lhs.logicalNet < rhs.logicalNet;
@@ -1348,7 +1352,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
   std::uint64_t preservedNetRoutes = 0;
   std::uint64_t selectedSinkRoutes = 0;
   std::uint64_t wholeNetRoutes = 0;
-  const auto emitStatistics = [&](llvm::StringRef status) {
+  const auto emitStatistics = [&](loom::mapping_debug::ClosureStatus status) {
     debugStatistics.aStarExpansions =
         netRouter_.endpointExpansionCount() - initialEndpointExpansions;
     debugStatistics.emit(loom::mapping_debug::Stage::SpatialPnr, status,
@@ -1372,7 +1376,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                                   fields["operation"] =
                                       "negotiation_iteration_counter";
                                 });
-      emitStatistics("arithmetic_failure");
+      emitStatistics(loom::mapping_debug::ClosureStatus::ArithmeticFailure);
       return pathFinderError("negotiation iteration count overflows u64");
     }
     const std::uint64_t sessionIteration = negotiationIterationCount_;
@@ -1458,6 +1462,11 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                       fields["iteration"] = iteration;
                       fields["session_iteration"] = sessionIteration;
                       fields["logical_net"] = entry.logicalNet;
+                      fields["source_endpoint"] =
+                          candidate.logicalNetSourceEndpoint(entry.logicalNet);
+                      fields["sink_count"] = logicalNet.sinkCount;
+                      fields["logical_net_detail"] =
+                          encodeLogicalNetDetail(candidate, entry.logicalNet);
                       fields["operation"] =
                           selectedSinks ? "route_sink_set" : "route_whole_net";
                       fields["failure_kind"] =
@@ -1478,10 +1487,15 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                 fields["iteration"] = iteration;
                 fields["session_iteration"] = sessionIteration;
                 fields["logical_net"] = entry.logicalNet;
+                fields["source_endpoint"] =
+                    candidate.logicalNetSourceEndpoint(entry.logicalNet);
+                fields["sink_count"] = logicalNet.sinkCount;
+                fields["logical_net_detail"] =
+                    encodeLogicalNetDetail(candidate, entry.logicalNet);
                 fields["operation"] =
                     selectedSinks ? "route_sink_set" : "route_whole_net";
               });
-        emitStatistics("route_failure");
+        emitStatistics(loom::mapping_debug::ClosureStatus::RouteFailure);
         return routeFailure;
       }
       loom::mapping_debug::emit(
@@ -1750,7 +1764,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
         region->unroutedObligationCount == 0 && !hasCapacityOveruse &&
         (!regionalRouting || selectedRankImprovedFromInitial);
     if (routingClosed) {
-      emitStatistics("closed");
+      emitStatistics(loom::mapping_debug::ClosureStatus::Closed);
       return SpatialPathFinderClosureResult{completedIterations, true};
     }
     if (!hasCapacityOveruse) {
@@ -1759,13 +1773,15 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                 move, candidate, costs, activeLogicalNets(),
                 *bestTemporaryObjective, *bestTemporaryProjection))
           return std::move(error);
-        emitStatistics("temporary_mapping");
+        emitStatistics(loom::mapping_debug::ClosureStatus::TemporaryMapping);
         return SpatialPathFinderClosureResult{completedIterations, false};
       }
       emitStatistics(
-          !projection->routeTerminalsCompatible  ? "route_terminal_mismatch"
-          : projection->selectedHandshakeAcyclic ? "mapping_nonclosure"
-                                                 : "selected_handshake_cycle");
+          !projection->routeTerminalsCompatible
+              ? loom::mapping_debug::ClosureStatus::RouteTerminalMismatch
+          : projection->selectedHandshakeAcyclic
+              ? loom::mapping_debug::ClosureStatus::MappingNonclosure
+              : loom::mapping_debug::ClosureStatus::SelectedHandshakeCycle);
       if (!projection->routeTerminalsCompatible)
         return pathFinderError(
             "provisional RouteTree terminals disagree with the candidate");
@@ -1797,10 +1813,11 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                 move, candidate, costs, activeLogicalNets(),
                 *bestTemporaryObjective, *bestTemporaryProjection))
           return std::move(error);
-        emitStatistics("fixed_terminal_cut_temporary");
+        emitStatistics(
+            loom::mapping_debug::ClosureStatus::FixedTerminalCutTemporary);
         return SpatialPathFinderClosureResult{completedIterations, false};
       }
-      emitStatistics("fixed_terminal_cut");
+      emitStatistics(loom::mapping_debug::ClosureStatus::FixedTerminalCut);
       return llvm::make_error<SpatialPathFinderClosureFailure>(
           SpatialPathFinderClosureFailure::Kind::FixedTerminalCapacityCut,
           "Spatial PathFinder proved fixed-terminal capacity cut at capacity " +
@@ -1840,10 +1857,10 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                 move, candidate, costs, activeLogicalNets(),
                 *bestTemporaryObjective, *bestTemporaryProjection))
           return std::move(error);
-        emitStatistics("no_progress_temporary");
+        emitStatistics(loom::mapping_debug::ClosureStatus::NoProgressTemporary);
         return SpatialPathFinderClosureResult{completedIterations, false};
       }
-      emitStatistics("no_progress");
+      emitStatistics(loom::mapping_debug::ClosureStatus::NoProgress);
       return llvm::make_error<SpatialPathFinderClosureFailure>(
           SpatialPathFinderClosureFailure::Kind::NoProgress,
           "Spatial PathFinder exhausted its closure-rank no-progress limit "
@@ -1855,10 +1872,10 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
                 move, candidate, costs, activeLogicalNets(),
                 *bestTemporaryObjective, *bestTemporaryProjection))
           return std::move(error);
-        emitStatistics("temporary_capacity");
+        emitStatistics(loom::mapping_debug::ClosureStatus::TemporaryCapacity);
         return SpatialPathFinderClosureResult{completedIterations, false};
       }
-      emitStatistics("iteration_limit");
+      emitStatistics(loom::mapping_debug::ClosureStatus::IterationLimit);
       return llvm::make_error<SpatialPathFinderClosureFailure>(
           SpatialPathFinderClosureFailure::Kind::NonClosure,
           "Spatial PathFinder exhausted its iteration limit before capacity "
@@ -1876,7 +1893,7 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
             fields["operation"] = "advance_pathfinder_iteration";
             fields["capacity_conflicts"] = capacityConflicts;
           });
-      emitStatistics("arithmetic_failure");
+      emitStatistics(loom::mapping_debug::ClosureStatus::ArithmeticFailure);
       return std::move(error);
     }
   }

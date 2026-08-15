@@ -110,7 +110,28 @@ enum class HandshakeActivationKind : std::uint8_t {
   Always,
   AnyTraversal,
   AllTraversals,
+  AnySwitchActivationTraversal,
+  ExactSwitchActivationTraversal,
   ExactOwnerSelection,
+};
+
+/// One Mapping-derived Temporal switch activation identity. The resident row
+/// is occurrence-relative and rebuildable from the configured packed rows;
+/// the input is the Fabric requester that fires within that row.
+struct FabricSwitchHandshakeActivationKey final {
+  FabricSwitchOccurrenceRef occurrence;
+  FabricOrdinal row = 0;
+  FabricOrdinal input = 0;
+
+  friend bool operator==(const FabricSwitchHandshakeActivationKey &lhs,
+                         const FabricSwitchHandshakeActivationKey &rhs) {
+    return lhs.occurrence == rhs.occurrence && lhs.row == rhs.row &&
+           lhs.input == rhs.input;
+  }
+  friend bool operator!=(const FabricSwitchHandshakeActivationKey &lhs,
+                         const FabricSwitchHandshakeActivationKey &rhs) {
+    return !(lhs == rhs);
+  }
 };
 
 struct HandshakeActivationFragment final {
@@ -120,6 +141,7 @@ struct HandshakeActivationFragment final {
       HandshakeActivationKind::ExactOwnerSelection;
   std::uint32_t witnessOffset = 0;
   std::uint32_t witnessCount = 0;
+  std::optional<FabricSwitchHandshakeActivationKey> switchActivation;
 };
 
 struct FabricFuOperationHandshakeBinding final {
@@ -191,6 +213,39 @@ llvm::Expected<FabricFuHandshakeSelection> makeFuHandshakeSelection(
 using FabricMemoryHandshakePlacement =
     std::variant<FabricMemoryOperationPortRef, FabricMemoryOperationContextRef>;
 
+struct FabricMemoryHandshakeExternalRoleSource final {
+  FabricOrdinal endpoint = 0;
+
+  friend bool operator==(FabricMemoryHandshakeExternalRoleSource lhs,
+                         FabricMemoryHandshakeExternalRoleSource rhs) {
+    return lhs.endpoint == rhs.endpoint;
+  }
+};
+
+struct FabricMemoryHandshakeInternalRoleSource final {
+  FabricOrdinal connection = 0;
+
+  friend bool operator==(FabricMemoryHandshakeInternalRoleSource lhs,
+                         FabricMemoryHandshakeInternalRoleSource rhs) {
+    return lhs.connection == rhs.connection;
+  }
+};
+
+using FabricMemoryHandshakeRoleSource =
+    std::variant<FabricMemoryHandshakeExternalRoleSource,
+                 FabricMemoryHandshakeInternalRoleSource>;
+
+struct FabricMemoryHandshakeRoleDestination final {
+  std::optional<FabricOrdinal> externalEndpoint;
+  std::vector<FabricOrdinal> internalConnections;
+
+  friend bool operator==(const FabricMemoryHandshakeRoleDestination &lhs,
+                         const FabricMemoryHandshakeRoleDestination &rhs) {
+    return lhs.externalEndpoint == rhs.externalEndpoint &&
+           lhs.internalConnections == rhs.internalConnections;
+  }
+};
+
 /// One exact occurrence-relative memory operation plan. Construction is
 /// restricted to the sealed Fabric resolver so a plan cannot name a foreign
 /// port, unsupported mask form, or inadmissible use pattern.
@@ -202,12 +257,23 @@ public:
   }
   const FabricUsePatternRef &usePattern() const { return usePattern_; }
   ::dataflow::semantics::MemoryMaskForm maskForm() const { return maskForm_; }
+  llvm::ArrayRef<std::optional<FabricMemoryHandshakeRoleSource>>
+  roleSources() const {
+    return roleSources_;
+  }
+  llvm::ArrayRef<std::optional<FabricMemoryHandshakeRoleDestination>>
+  roleDestinations() const {
+    return roleDestinations_;
+  }
 
   friend bool operator==(const FabricMemoryHandshakeSelection &lhs,
                          const FabricMemoryHandshakeSelection &rhs) {
     return lhs.placement_ == rhs.placement_ &&
            lhs.capability_ == rhs.capability_ &&
-           lhs.usePattern_ == rhs.usePattern_ && lhs.maskForm_ == rhs.maskForm_;
+           lhs.usePattern_ == rhs.usePattern_ &&
+           lhs.maskForm_ == rhs.maskForm_ &&
+           lhs.roleSources_ == rhs.roleSources_ &&
+           lhs.roleDestinations_ == rhs.roleDestinations_;
   }
 
 private:
@@ -215,34 +281,62 @@ private:
       FabricMemoryHandshakePlacement placement,
       FabricMemoryCapabilityAlternativeRef capability,
       FabricUsePatternRef usePattern,
-      ::dataflow::semantics::MemoryMaskForm maskForm)
+      ::dataflow::semantics::MemoryMaskForm maskForm,
+      std::vector<std::optional<FabricMemoryHandshakeRoleSource>> roleSources,
+      std::vector<std::optional<FabricMemoryHandshakeRoleDestination>>
+          roleDestinations)
       : placement_(std::move(placement)), capability_(capability),
-        usePattern_(usePattern), maskForm_(maskForm) {}
+        usePattern_(usePattern), maskForm_(maskForm),
+        roleSources_(std::move(roleSources)),
+        roleDestinations_(std::move(roleDestinations)) {}
 
   FabricMemoryHandshakePlacement placement_;
   FabricMemoryCapabilityAlternativeRef capability_;
   FabricUsePatternRef usePattern_;
   ::dataflow::semantics::MemoryMaskForm maskForm_;
+  std::vector<std::optional<FabricMemoryHandshakeRoleSource>> roleSources_;
+  std::vector<std::optional<FabricMemoryHandshakeRoleDestination>>
+      roleDestinations_;
 
   friend llvm::Expected<FabricMemoryHandshakeSelection>
-  makeMemoryHandshakeSelection(const FabricArtifactView &,
-                               FabricMemoryHandshakePlacement,
-                               FabricMemoryCapabilityAlternativeRef,
-                               FabricUsePatternRef,
-                               ::dataflow::semantics::MemoryMaskForm);
+  makeMemoryHandshakeSelection(
+      const FabricArtifactView &, FabricMemoryHandshakePlacement,
+      FabricMemoryCapabilityAlternativeRef, FabricUsePatternRef,
+      ::dataflow::semantics::MemoryMaskForm,
+      llvm::ArrayRef<std::optional<FabricMemoryHandshakeRoleSource>>,
+      llvm::ArrayRef<std::optional<FabricMemoryHandshakeRoleDestination>>);
 };
 
-llvm::Expected<FabricMemoryHandshakeSelection>
-makeMemoryHandshakeSelection(const FabricArtifactView &view,
-                             FabricMemoryHandshakePlacement placement,
-                             FabricMemoryCapabilityAlternativeRef capability,
-                             FabricUsePatternRef usePattern,
-                             ::dataflow::semantics::MemoryMaskForm maskForm);
+llvm::Expected<FabricMemoryHandshakeSelection> makeMemoryHandshakeSelection(
+    const FabricArtifactView &view, FabricMemoryHandshakePlacement placement,
+    FabricMemoryCapabilityAlternativeRef capability,
+    FabricUsePatternRef usePattern,
+    ::dataflow::semantics::MemoryMaskForm maskForm,
+    llvm::ArrayRef<std::optional<FabricMemoryHandshakeRoleSource>> roleSources,
+    llvm::ArrayRef<std::optional<FabricMemoryHandshakeRoleDestination>>
+        roleDestinations);
 
-/// Exact Mapping-owned choices consumed by the Fabric resolver. Additional
-/// owner-specific choices extend this typed record rather than using a bag.
+/// One exact `(resident row, input)` activation and its complete selected
+/// crosspoint set. The Fabric resolver validates the relation against the
+/// occurrence model; the requester identity remains owned by each traversal's
+/// UsePattern and is not an activation-group identity.
+struct FabricSwitchHandshakeActivationSelection final {
+  FabricSwitchHandshakeActivationKey key;
+  std::vector<FabricPhysicalTraversalRef> traversals;
+
+  friend bool operator==(const FabricSwitchHandshakeActivationSelection &lhs,
+                         const FabricSwitchHandshakeActivationSelection &rhs) {
+    return lhs.key == rhs.key && lhs.traversals == rhs.traversals;
+  }
+};
+
+/// Exact Mapping-owned choices consumed by the Fabric resolver. Temporal
+/// switch traversals occur only inside `switchActivations`; `traversals`
+/// carries every other selected physical traversal. Additional owner-specific
+/// choices extend this typed record rather than using a bag.
 struct FabricHandshakeSelection final {
   std::vector<FabricPhysicalTraversalRef> traversals;
+  std::vector<FabricSwitchHandshakeActivationSelection> switchActivations;
   std::vector<FabricFuHandshakeSelection> fuCapabilities;
   std::vector<FabricMemoryHandshakeSelection> memoryOperations;
 };
@@ -259,6 +353,8 @@ enum class HandshakeFragmentSelectorKind : std::uint8_t {
   FuOperationInputActive,
   FuOperationResultActive,
   MemoryOperationPlan,
+  AnySwitchActivationTraversal,
+  ExactSwitchActivationTraversal,
 };
 
 struct HandshakeFuOperationSelector final {
@@ -280,6 +376,11 @@ struct HandshakeFragmentSelector final {
   std::optional<FabricMemoryCapabilityAlternativeRef> memoryCapability;
   std::optional<FabricUsePatternRef> memoryUsePattern;
   std::optional<::dataflow::semantics::MemoryMaskForm> memoryMaskForm;
+  std::vector<::dataflow::semantics::ServiceValueRole>
+      requiredExternalMemoryInputRoles;
+  std::vector<::dataflow::semantics::ServiceValueRole>
+      requiredExternalMemoryOutputRoles;
+  std::optional<FabricSwitchHandshakeActivationKey> switchActivation;
   std::optional<std::uint32_t> exclusiveGroup;
 };
 } // namespace detail

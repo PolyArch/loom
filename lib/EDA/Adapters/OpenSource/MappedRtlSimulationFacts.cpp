@@ -1122,7 +1122,8 @@ deriveMappedRtlInvocationFacts(const MappedRtlExecutionClosure &closure,
   if (!workload || !runtime)
     return invalid("mapped RTL provider requires Spatial inputs");
   auto selection = deployment::resolveDeploymentSpatialLaunchSelection(
-      **deployment, workload->launchRef, workload->denseCoordinates, artifacts);
+      **deployment, workload->launchRef, workload->denseCoordinates, artifacts,
+      blobs);
   if (!selection)
     return selection.takeError();
   if (selection->hardwareImplementation != (*implementation)->reference() ||
@@ -1427,7 +1428,8 @@ importMappedRtlLaunchClosure(const MappedRtlExecutionClosure &closure,
   if (!workload || !(*inputs)->runtimeInput.spatial())
     return invalid("mapped RTL provider requires Spatial inputs");
   auto selection = deployment::resolveDeploymentSpatialLaunchSelection(
-      **deployment, workload->launchRef, workload->denseCoordinates, artifacts);
+      **deployment, workload->launchRef, workload->denseCoordinates, artifacts,
+      blobs);
   if (!selection)
     return selection.takeError();
   if (selection->dataflow.artifact != (*inputs)->dataflow.identity())

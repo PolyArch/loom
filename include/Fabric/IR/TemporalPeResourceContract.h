@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <system_error>
+#include <vector>
 
 namespace fabric {
 
@@ -29,6 +30,16 @@ struct TemporalPeResourceDeclaration final {
   std::uint32_t registerFifoPorts = 1;
 };
 
+/// One member of the closed temporal context-evaluation domain. A grant lets
+/// the selected resident configuration drive its FU for one PE clock cycle;
+/// it is not an actor transition or a whole-context commit. Candidate order,
+/// service sharing, reset, and fairness are derived by the PE contract.
+struct TemporalPeDispatchCandidate final {
+  loom::fabric::InstructionContextRef context;
+  loom::fabric::FabricOrdinal fuOccurrence = 0;
+  std::uint32_t allocationUnit = 0;
+};
+
 /// A register FIFO path selects a registered queue and never contributes a
 /// combinational ready/valid dependency. The complete temporal-PE contract
 /// still owns its queue capacity, port service, transitions, and timing.
@@ -39,21 +50,54 @@ public:
 
   const ResourceContract &resourceContract() const { return contract_; }
 
+  llvm::ArrayRef<TemporalPeDispatchCandidate> dispatchCandidates() const {
+    return dispatchCandidates_;
+  }
+  std::uint32_t dispatchUnitCount() const {
+    return static_cast<std::uint32_t>(dispatchUnitSpans_.size());
+  }
+  llvm::ArrayRef<std::uint32_t> dispatchCandidatesOf(std::uint32_t unit) const;
+  StateKey dispatchState(std::uint32_t unit) const;
+  RequesterKey dispatchRequester(std::uint32_t candidate) const;
+  UsePatternKey dispatchPattern(std::uint32_t candidate) const;
+
   std::uint32_t registerFifoCount() const { return registerFifoCount_; }
   StateKey registerFifoState(std::uint32_t fifo) const;
   UsePatternKey registerFifoWritePattern(std::uint32_t fifo) const;
   UsePatternKey registerFifoReadPattern(std::uint32_t fifo) const;
 
 private:
-  TemporalPeResourceContract(ResourceContract contract,
-                             std::uint32_t registerFifoCount,
-                             std::uint32_t registerStateOffset,
-                             std::uint32_t registerPatternOffset)
-      : contract_(std::move(contract)), registerFifoCount_(registerFifoCount),
+  struct Span final {
+    std::uint32_t first = 0;
+    std::uint32_t count = 0;
+  };
+
+  TemporalPeResourceContract(
+      ResourceContract contract,
+      std::vector<TemporalPeDispatchCandidate> dispatchCandidates,
+      std::vector<std::uint32_t> dispatchUnitCandidates,
+      std::vector<Span> dispatchUnitSpans, std::uint32_t dispatchStateOffset,
+      std::uint32_t dispatchRequesterOffset,
+      std::uint32_t dispatchPatternOffset, std::uint32_t registerFifoCount,
+      std::uint32_t registerStateOffset, std::uint32_t registerPatternOffset)
+      : contract_(std::move(contract)),
+        dispatchCandidates_(std::move(dispatchCandidates)),
+        dispatchUnitCandidates_(std::move(dispatchUnitCandidates)),
+        dispatchUnitSpans_(std::move(dispatchUnitSpans)),
+        dispatchStateOffset_(dispatchStateOffset),
+        dispatchRequesterOffset_(dispatchRequesterOffset),
+        dispatchPatternOffset_(dispatchPatternOffset),
+        registerFifoCount_(registerFifoCount),
         registerStateOffset_(registerStateOffset),
         registerPatternOffset_(registerPatternOffset) {}
 
   ResourceContract contract_;
+  std::vector<TemporalPeDispatchCandidate> dispatchCandidates_;
+  std::vector<std::uint32_t> dispatchUnitCandidates_;
+  std::vector<Span> dispatchUnitSpans_;
+  std::uint32_t dispatchStateOffset_ = 0;
+  std::uint32_t dispatchRequesterOffset_ = 0;
+  std::uint32_t dispatchPatternOffset_ = 0;
   std::uint32_t registerFifoCount_ = 0;
   std::uint32_t registerStateOffset_ = 0;
   std::uint32_t registerPatternOffset_ = 0;
@@ -124,6 +168,14 @@ resolveTemporalPeOperandQueuePattern(
     loom::fabric::InstructionContextRef context,
     loom::fabric::FabricFuOccurrenceRef fu, loom::fabric::FabricOrdinal fuInput,
     TemporalOperandQueueUse use);
+
+/// Resolves the exact context-evaluation service use selected by one temporal
+/// compute binding. Its ordinal is derived from the same canonical context/FU
+/// inventory used by finalization and RTL lowering.
+llvm::Expected<loom::fabric::FabricUsePatternRef>
+resolveTemporalPeDispatchPattern(const loom::fabric::FabricArtifactView &view,
+                                 loom::fabric::InstructionContextRef context,
+                                 loom::fabric::FabricFuOccurrenceRef fu);
 
 } // namespace fabric
 

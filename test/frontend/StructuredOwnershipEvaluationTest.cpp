@@ -485,7 +485,7 @@ void centralPlanEvaluatesScheduleChildren() {
       "compiler.structured_memory_communication"};
   for (const loom::dse::DsePlanGenerateInvocationRecords &planInvocation :
        selection->planGenerateInvocations) {
-    if (planInvocation.incomplete())
+    if (!planInvocation.incomplete().empty())
       fail("completed pre-Mapping selection retained an incomplete Generate");
     std::map<std::uint64_t, std::string> generatorByPlanNode;
     for (const loom::dse::GenerateInvocationRecord &record :

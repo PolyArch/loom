@@ -1,6 +1,8 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 
+#include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -213,13 +215,17 @@ llvm::Error verifyBoundaryProducerIdentity(
 
 llvm::Expected<std::set<TemplateConnection>> projectTemplateConnections(
     const ::loom::fabric::FabricFuCapabilityTemplateRecord &record,
-    const std::map<std::uint64_t, const TechComputeActorView *> &actors) {
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const std::map<std::uint64_t, const TechComputeActorView *> &actors,
+    const std::map<ActorPortKey, ::loom::fabric::FabricFuTemplatePortRef>
+        &boundaries) {
   auto projected =
       ::loom::fabric::projectFabricFuCapabilityTemplateTerminalEdges(record);
   if (!projected)
     return projected.takeError();
   std::set<TemplateEndpointKey> selectedSources;
   std::set<TemplateEndpointKey> selectedSinks;
+  std::set<TemplateEndpointKey> deadResultSources;
   for (const auto &[id, actor] : actors) {
     (void)id;
     for (std::uint64_t ordinal = 0; ordinal < actor->operandPorts.size();
@@ -227,15 +233,38 @@ llvm::Expected<std::set<TemplateConnection>> projectTemplateConnections(
       selectedSinks.insert(actorEndpoint(
           *actor, ::loom::fabric::FabricPortDirection::Input, ordinal));
     for (std::uint64_t ordinal = 0; ordinal < actor->resultPorts.size();
-         ++ordinal)
-      selectedSources.insert(actorEndpoint(
-          *actor, ::loom::fabric::FabricPortDirection::Output, ordinal));
+         ++ordinal) {
+      const TemplateEndpointKey source = actorEndpoint(
+          *actor, ::loom::fabric::FabricPortDirection::Output, ordinal);
+      selectedSources.insert(source);
+      auto consumers =
+          dataflow.graphConsumers(::dataflow::CanonicalGraphProducerEndpointRef{
+              ::dataflow::ActorTokenResultRef{actor->actor, ordinal}});
+      if (!consumers)
+        return consumers.takeError();
+      if (consumers->empty())
+        deadResultSources.insert(source);
+    }
+  }
+  std::set<TemplateEndpointKey> selectedBoundarySources;
+  std::set<TemplateEndpointKey> selectedBoundarySinks;
+  for (const auto &[software, physical] : boundaries) {
+    auto &selected =
+        software.direction == ::loom::fabric::FabricPortDirection::Input
+            ? selectedBoundarySources
+            : selectedBoundarySinks;
+    selected.insert(endpointKey(physical));
   }
   std::set<TemplateConnection> connections;
   for (const auto &edge : *projected) {
     const TemplateEndpointKey source = endpointKey(edge.source);
     const TemplateEndpointKey sink = endpointKey(edge.destination);
-    if ((!source.boundary && !selectedSources.count(source)) ||
+    const bool deadResultDisposition =
+        !source.boundary && sink.boundary && deadResultSources.count(source);
+    if ((source.boundary && !selectedBoundarySources.count(source)) ||
+        (!source.boundary && !selectedSources.count(source)) ||
+        (sink.boundary && !selectedBoundarySinks.count(sink) &&
+         !deadResultDisposition) ||
         (!sink.boundary && !selectedSinks.count(sink)))
       continue;
     connections.emplace(source, sink);
@@ -341,6 +370,70 @@ llvm::Error addDeadResultDispositions(
 
 } // namespace
 
+llvm::Expected<bool> deriveTechComputeActivityDefinednessAdmission(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    ::dataflow::ActorRef actor,
+    const ::loom::fabric::ResolvedFabricOpCapabilityView &capability) {
+  auto resolved = dataflow.resolve(actor);
+  if (!resolved)
+    return resolved.takeError();
+  const auto operandIsAlwaysDefined =
+      [&](unsigned ordinal) -> llvm::Expected<bool> {
+    auto producer = dataflow.graphProducer(
+        ::dataflow::ActorTokenOperandRef{actor, ordinal});
+    if (!producer)
+      return producer.takeError();
+    auto fact = dataflow.activityDefinedness(*producer);
+    if (!fact)
+      return fact.takeError();
+    return *fact == ::dataflow::ActivityDefinedness::AlwaysDefined;
+  };
+  const auto orderedContractAdmits =
+      [&](::dataflow::OperationSchemaId schema) -> llvm::Expected<bool> {
+    const auto *parameters = std::get_if<::fabric::FixedVectorAdapterParams>(
+        &capability.parameterizedCapability);
+    if (!parameters)
+      return false;
+    auto maximumLaneCount =
+        ::fabric::maximumFixedVectorAdapterLaneCount(*parameters);
+    if (!maximumLaneCount)
+      return maximumLaneCount.takeError();
+    return ::fabric::isOrderedCardinalityOperationResourceContract(
+        capability.resourceStateAndTimingContract, schema, *maximumLaneCount);
+  };
+
+  switch (capability.implementationFamily) {
+  case ::fabric::ImplementationFamilyId::FixedVectorParallelize: {
+    auto adapter = llvm::dyn_cast<::dataflow::ParallelizeOp>(resolved->op);
+    if (!adapter)
+      return false;
+    auto contract = orderedContractAdmits(
+        ::dataflow::OperationSchemaId::DataflowParallelize);
+    if (!contract || !*contract)
+      return contract;
+    return operandIsAlwaysDefined(
+        adapter.getScalarPhaseMutable().getOperandNumber());
+  }
+  case ::fabric::ImplementationFamilyId::FixedVectorSerialize: {
+    auto adapter = llvm::dyn_cast<::dataflow::SerializeOp>(resolved->op);
+    if (!adapter)
+      return false;
+    auto contract =
+        orderedContractAdmits(::dataflow::OperationSchemaId::DataflowSerialize);
+    if (!contract || !*contract)
+      return contract;
+    auto mask =
+        operandIsAlwaysDefined(adapter.getMaskMutable().getOperandNumber());
+    if (!mask || !*mask)
+      return mask;
+    return operandIsAlwaysDefined(
+        adapter.getGroupPhaseMutable().getOperandNumber());
+  }
+  default:
+    return true;
+  }
+}
+
 llvm::Error verifyTechComputeRealizationClosure(
     const TechComputeRealizationView &realization,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -377,7 +470,8 @@ llvm::Error verifyTechComputeRealizationClosure(
   if (llvm::Error error =
           verifyBoundaryProducerIdentity(dataflow, actors, *boundaries))
     return error;
-  auto actual = projectTemplateConnections(record, actors);
+  auto actual =
+      projectTemplateConnections(record, dataflow, actors, *boundaries);
   if (!actual)
     return actual.takeError();
   auto expected = expectedConnections(dataflow, actors, *boundaries);

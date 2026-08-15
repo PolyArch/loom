@@ -520,6 +520,7 @@ LogicalResult mapping::SpatialOp::verify() {
   llvm::SmallDenseSet<std::uint64_t, 8> memoryEngineBindings;
   llvm::DenseMap<std::uint64_t, mapping::MemoryBindingOp> memoryBindings;
   llvm::DenseMap<Attribute, llvm::SmallDenseSet<std::uint64_t, 8>> routeNodes;
+  llvm::DenseSet<Attribute> transferDispositions;
   llvm::DenseSet<Attribute> resourceUses;
   llvm::SmallVector<mapping::ResourceUseOp, 8> deferredUses;
   for (Operation &child : getBody().front()) {
@@ -545,12 +546,20 @@ LogicalResult mapping::SpatialOp::verify() {
       continue;
     }
     if (auto route = dyn_cast<mapping::RouteTreeOp>(child)) {
+      if (!transferDispositions.insert(route.getLogicalNet()).second)
+        return route.emitOpError("duplicates a logical-net disposition");
       auto [position, inserted] = routeNodes.try_emplace(route.getLogicalNet());
       if (!inserted)
         return route.emitOpError("duplicates a RouteTree logical-net key");
       for (auto node : route.getBody().front().getOps<mapping::RouteNodeOp>())
         position->second.insert(
             static_cast<std::uint64_t>(integerValue(node, "node_ordinal")));
+      continue;
+    }
+    if (auto transfer =
+            dyn_cast<mapping::RegisterFifoTransferOp>(child)) {
+      if (!transferDispositions.insert(transfer.getLogicalNet()).second)
+        return transfer.emitOpError("duplicates a logical-net disposition");
       continue;
     }
     if (auto use = dyn_cast<mapping::ResourceUseOp>(child)) {
@@ -831,6 +840,16 @@ LogicalResult mapping::RouteTreeOp::verify() {
     for (std::uint64_t ordinal : path)
       visitState[ordinal] = 2;
   }
+  return success();
+}
+
+LogicalResult mapping::RegisterFifoTransferOp::verify() {
+  if (failed(rejectUnknownAttributes(
+          *this, {"logical_net", "sink", "write_traversal",
+                  "read_traversal"})))
+    return failure();
+  if (getWriteTraversal() == getReadTraversal())
+    return emitOpError("requires distinct write and read traversals");
   return success();
 }
 

@@ -2,6 +2,7 @@
 #define LOOM_LIB_SIMULATOR_CGRATRANSPORTPLAN_H
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/IR/TemporalOperandBuffer.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 
@@ -35,7 +36,12 @@ enum class CgraTraversalStorageKind : std::uint8_t {
 
 struct CgraTraversalUsePlan final {
   ::loom::fabric::FabricUsePatternRef pattern;
-  ::loom::fabric::FabricTraversalActivationGroupView activationGroup;
+  /// Fabric-owned requester or ordinary UsePattern group used for resource
+  /// arbitration. It is deliberately broader than the Mapping activation.
+  ::loom::fabric::FabricTraversalRequesterGroupView requesterGroup;
+  /// Dense Mapping-derived atomic activation identity. Temporal switch uses
+  /// distinguish resident `(row, input)` instances that share one requester.
+  std::uint64_t activationInstanceOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t physicalUseOrdinal = invalidCgraTransportOrdinal;
 };
 
@@ -68,6 +74,8 @@ struct CgraRouteNodePlan final {
   std::uint32_t parentOrdinal = std::numeric_limits<std::uint32_t>::max();
   std::uint64_t incomingTraversalOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t impliedUseOffset = invalidCgraTransportOrdinal;
+  std::uint32_t impliedUseCount = 0;
 };
 
 struct CgraRouteSinkPlan final {
@@ -95,6 +103,9 @@ struct CgraLocalTransferPlan final {
   ::dataflow::GraphRef graph;
   std::uint64_t sinkOffset = 0;
   std::uint32_t sinkCount = 0;
+  std::uint64_t writeTraversalOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t readTraversalOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t physicalTagOrdinal = invalidCgraTransportOrdinal;
 };
 
 struct CgraProducedPhysicalUsePlan final {
@@ -107,6 +118,21 @@ struct CgraConsumedPhysicalUsePlan final {
   ::dataflow::CanonicalGraphConsumerEndpointRef consumer;
   std::uint64_t physicalUseOffset = 0;
   std::uint32_t physicalUseCount = 0;
+};
+
+struct CgraPeOperandQueueMatchPlan final {
+  ::dataflow::CanonicalGraphConsumerEndpointRef sink;
+  ::fabric::LogicalOperandQueueKey queue;
+  std::uint32_t allocationUnit = 0;
+  std::uint32_t entryCapacity = 0;
+};
+
+struct CgraPeOperandQueueActivationPlan final {
+  ::dataflow::CanonicalGraphProducerEndpointRef producer;
+  ::loom::fabric::FabricTransportEndpointRef ingress;
+  llvm::APInt tag = llvm::APInt(1, 0);
+  std::uint64_t matchOffset = 0;
+  std::uint32_t matchCount = 0;
 };
 
 /// Removable dense projection of the exact selected Spatial RouteTrees and
@@ -126,10 +152,13 @@ struct CgraTransportPlan final {
   std::vector<CgraProducedPhysicalUsePlan> producedUses;
   std::vector<CgraConsumedPhysicalUsePlan> consumedUses;
   std::vector<std::uint64_t> endpointPhysicalUses;
+  std::vector<CgraPeOperandQueueActivationPlan> operandQueueActivations;
+  std::vector<CgraPeOperandQueueMatchPlan> operandQueueMatches;
 };
 
 llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::mapping::TechMappingView &tech,
     const ::loom::fabric::FabricArtifactView &fabric,
     const ::loom::mapping::SpatialMappingView &spatial,
     llvm::ArrayRef<::dataflow::GraphRef> mappedGraphs,

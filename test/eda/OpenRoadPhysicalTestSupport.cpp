@@ -387,6 +387,9 @@ llvm::Expected<OpenRoadGateFixture> makeOpenRoadGateFixture(
   auto system = hardware::test::makeSingleSpatialCoreSystem(*module, artifacts);
   if (!system)
     return system.takeError();
+  auto subject = hardware::test::requireSingleSpatialCoreOccurrence(*system);
+  if (!subject)
+    return subject.takeError();
   auto abi = hardware::finalizeConfigurationABI(
       hardware::ConfigurationABIDraft{system->reference(), {}}, artifacts);
   if (!abi)
@@ -434,8 +437,8 @@ llvm::Expected<OpenRoadGateFixture> makeOpenRoadGateFixture(
   auto gate = hardware::finalizeHardwareImplementation(
       hardware::HardwareImplementationDraft{
           system->reference(),
+          *subject,
           abi->reference(),
-          {},
           std::move(*representation),
           platform->reference(),
           {},

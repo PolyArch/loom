@@ -71,30 +71,51 @@ llvm::Error appendPatternStates(const FabricArtifactView &view,
   return llvm::Error::success();
 }
 
-FabricTraversalActivationGroupView
-patternActivation(const FabricUsePatternRef &pattern) {
-  return {FabricTraversalActivationGroupKind::UsePattern,
+FabricTraversalRequesterGroupView
+patternRequester(const FabricUsePatternRef &pattern) {
+  return {FabricTraversalRequesterGroupKind::UsePattern,
           pattern.owner.catalog(), pattern.ordinal};
 }
 
-FabricTraversalActivationGroupView
-switchActivation(FabricSwitchOccurrenceRef owner, FabricOrdinal requester) {
-  return {FabricTraversalActivationGroupKind::SwitchRequester,
+FabricTraversalRequesterGroupView
+switchRequester(FabricSwitchOccurrenceRef owner, FabricOrdinal requester) {
+  return {FabricTraversalRequesterGroupKind::SwitchRequester,
           FabricInventoryOwnerRef::of(owner), requester};
+}
+
+llvm::Error
+appendTimingPattern(const FabricArtifactView &view,
+                    const FabricUsePatternRef &pattern,
+                    FabricPhysicalTraversalView &traversal) {
+  const FabricInventoryOwnerRef &owner = pattern.owner.catalog();
+  const ::fabric::ResourceContract *contract = view.resourceContract(owner);
+  if (!contract || pattern.ordinal >= contract->usePatternCount())
+    return invalid("physical traversal selects an invalid timing pattern");
+  const ::fabric::UsePatternTiming timing = contract->usePatternTiming(
+      ::fabric::UsePatternKey(pattern.ordinal));
+  traversal.timing.releaseLatencyCycles =
+      std::max(traversal.timing.releaseLatencyCycles,
+               timing.releaseLatencyCycles);
+  traversal.timing.minimumInitiationIntervalCycles =
+      std::max(traversal.timing.minimumInitiationIntervalCycles,
+               timing.minimumInitiationIntervalCycles);
+  return llvm::Error::success();
 }
 
 llvm::Error
 appendImpliedUse(const FabricArtifactView &view,
                  const FabricUsePatternRef &pattern,
-                 FabricTraversalActivationGroupView activation,
+                 FabricTraversalRequesterGroupView requester,
                  FabricPhysicalTraversalView &traversal,
                  FabricTraversalUseOccupancyKind occupancyKind =
                      FabricTraversalUseOccupancyKind::MappingResident) {
   if (llvm::Error error =
           appendPatternStates(view, pattern, traversal.resourceStates))
     return error;
+  if (llvm::Error error = appendTimingPattern(view, pattern, traversal))
+    return error;
   traversal.impliedUses.push_back(
-      {pattern, std::move(activation), occupancyKind});
+      {pattern, std::move(requester), occupancyKind});
   return llvm::Error::success();
 }
 
@@ -293,8 +314,10 @@ projectFabricTraversal(const FabricArtifactView &view,
     const FabricUsePatternRef patternRef{FabricUsePatternOwnerRef(owner),
                                          pattern->ordinal()};
     if (llvm::Error error = appendImpliedUse(
-            view, patternRef, patternActivation(patternRef), result))
+            view, patternRef, patternRequester(patternRef), result))
       return std::move(error);
+    if (payload.role == FabricRegisterFifoPathRole::Write)
+      result.timing.architecturalLatencyCycles = 1;
     break;
   }
   case FabricPhysicalTraversalKind::SwitchTraversal: {
@@ -344,7 +367,7 @@ projectFabricTraversal(const FabricArtifactView &view,
               ? FabricTraversalUseOccupancyKind::RuntimeService
               : FabricTraversalUseOccupancyKind::MappingResident;
       if (llvm::Error error = appendImpliedUse(
-              view, patternRef, switchActivation(payload.owner, requester),
+              view, patternRef, switchRequester(payload.owner, requester),
               result, occupancyKind))
         return std::move(error);
     }
@@ -383,8 +406,21 @@ projectFabricTraversal(const FabricArtifactView &view,
       const FabricUsePatternRef patternRef{
           FabricUsePatternOwnerRef(resourceOwner), pattern.ordinal()};
       if (llvm::Error error = appendImpliedUse(
-              view, patternRef, patternActivation(patternRef), result))
+              view, patternRef, patternRequester(patternRef), result))
         return std::move(error);
+    } else {
+      result.timing.architecturalLatencyCycles = 1;
+      for (::fabric::FifoUsePattern selected :
+           {::fabric::FifoUsePattern::Enqueue,
+            ::fabric::FifoUsePattern::Dequeue}) {
+        const auto pattern = ::fabric::fifoUsePattern(selected);
+        if (pattern.ordinal() >= contract->usePatternCount())
+          return invalid("FIFO buffered traversal has no timing pattern");
+        const FabricUsePatternRef patternRef{
+            FabricUsePatternOwnerRef(resourceOwner), pattern.ordinal()};
+        if (llvm::Error error = appendTimingPattern(view, patternRef, result))
+          return std::move(error);
+      }
     }
     break;
   }
@@ -410,7 +446,7 @@ projectFabricTraversal(const FabricArtifactView &view,
         FabricUsePatternOwnerRef(resourceOwner),
         ::fabric::boundaryTransferPattern.ordinal()};
     if (llvm::Error error = appendImpliedUse(
-            view, patternRef, patternActivation(patternRef), result))
+            view, patternRef, patternRequester(patternRef), result))
       return std::move(error);
     break;
   }
@@ -429,7 +465,7 @@ projectFabricTraversal(const FabricArtifactView &view,
     result.destinations.push_back(pattern->egresses()[payload.egress]);
     if (llvm::Error error =
             appendImpliedUse(view, pattern->usePattern(),
-                             patternActivation(pattern->usePattern()), result))
+                             patternRequester(pattern->usePattern()), result))
       return std::move(error);
     break;
   }

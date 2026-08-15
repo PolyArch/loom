@@ -35,10 +35,31 @@ struct StaticActorEdgeCriticality final {
   std::uint64_t weight = 0;
 };
 
+/// One canonical recurrence-closing edge. Dataflow owns the only recognized
+/// feedback semantics: the consumer is `dataflow.carry` input `Next` and the
+/// dependence distance is one logical iteration.
+struct StaticRecurrenceFeedback final {
+  ::dataflow::ActorTokenResultRef producer;
+  ::dataflow::ActorTokenOperandRef consumer;
+  ::dataflow::GraphRef graph;
+  std::uint64_t dependenceDistance = 1;
+};
+
+struct StaticGraphRecurrenceTopology final {
+  ::dataflow::GraphRef graph;
+  bool nonFeedbackAcyclic = true;
+};
+
 class StaticScheduleAnalysis final {
 public:
   llvm::ArrayRef<StaticActorCriticality> actors() const { return actors_; }
   llvm::ArrayRef<StaticActorEdgeCriticality> edges() const { return edges_; }
+  llvm::ArrayRef<StaticRecurrenceFeedback> feedbacks() const {
+    return feedbacks_;
+  }
+  llvm::ArrayRef<StaticGraphRecurrenceTopology> recurrenceTopologies() const {
+    return recurrenceTopologies_;
+  }
 
   const StaticActorCriticality *findActor(::dataflow::ActorRef actor) const;
   std::uint64_t
@@ -48,6 +69,8 @@ public:
   // Internal frozen analysis storage. This header is private to LoomPnR.
   std::vector<StaticActorCriticality> actors_;
   std::vector<StaticActorEdgeCriticality> edges_;
+  std::vector<StaticRecurrenceFeedback> feedbacks_;
+  std::vector<StaticGraphRecurrenceTopology> recurrenceTopologies_;
 };
 
 llvm::Expected<StaticScheduleAnalysis> deriveStaticScheduleAnalysis(
@@ -75,6 +98,7 @@ public:
     return analysis_.edgeWeight(producer, consumer);
   }
   llvm::ArrayRef<SpatialSchedulePressureEdge> edges() const { return edges_; }
+  const StaticScheduleAnalysis &analysis() const { return analysis_; }
   llvm::ArrayRef<PnrIndex> incidentEdges(PnrIndex root) const;
   PnrIndex computeRootCount() const { return computeRootCount_; }
   PnrIndex rootCount() const { return rootCount_; }

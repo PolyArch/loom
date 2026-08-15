@@ -55,17 +55,11 @@ llvm::Expected<PnrIndex> parentSlot(const RouteTreeState &tree, PnrIndex slot) {
 } // namespace
 
 llvm::Expected<bool> loom::pnr::spatialAttachmentProvidesLocalProgressBoundary(
-    const FrozenSpatialPortIndex &ports,
-    const FrozenSpatialRoutingGraph &routing, PnrIndex attachmentOption) {
+    const FrozenSpatialPortIndex &ports, PnrIndex attachmentOption) {
   if (attachmentOption >= ports.attachmentOptions().size())
     return invalid("attachment option is out of range");
-  const auto traversal =
-      ports.attachmentOptions()[attachmentOption].localTraversal;
-  if (!traversal)
-    return false;
-  if (*traversal >= routing.traversals().size())
-    return invalid("attachment local traversal is out of range");
-  return isBufferedTraversal(routing, *traversal);
+  return ports.attachmentOptions()[attachmentOption].progressBoundary !=
+         ::loom::mapping::SpatialDurableProgressBoundaryKind::None;
 }
 
 llvm::Expected<bool> loom::pnr::spatialTerminalProvidesLocalProgressBoundary(
@@ -85,10 +79,10 @@ llvm::Expected<bool> loom::pnr::spatialTerminalProvidesLocalProgressBoundary(
     break;
   }
   return spatialAttachmentProvidesLocalProgressBoundary(
-      candidate.problem().ports(), candidate.problem().routing(), option);
+      candidate.problem().ports(), option);
 }
 
-llvm::Expected<llvm::ArrayRef<PnrIndex>>
+llvm::Expected<llvm::ArrayRef<FrozenSpatialProgressPrerequisite>>
 loom::pnr::spatialSinkProgressDependencies(
     const FrozenSpatialPnrProblem &problem, PnrIndex logicalNet,
     PnrIndex dependentSink) {
@@ -112,33 +106,66 @@ loom::pnr::spatialSinkProgressDependencies(
 
 llvm::Expected<bool> loom::pnr::spatialRouteProgressDependencySatisfied(
     const SpatialCandidateState &candidate, PnrIndex logicalNet,
-    PnrIndex prerequisiteSink, PnrIndex dependentSink) {
+    const FrozenSpatialProgressPrerequisite &prerequisite,
+    PnrIndex dependentSink) {
   auto dependencies = spatialSinkProgressDependencies(
       candidate.problem(), logicalNet, dependentSink);
   if (!dependencies)
     return dependencies.takeError();
-  if (!llvm::is_contained(*dependencies, prerequisiteSink))
+  if (!llvm::is_contained(*dependencies, prerequisite))
     return invalid("sink pair is not a frozen progress dependency");
 
   const FrozenSpatialLogicalNet &net =
       candidate.problem().transfers().logicalNets()[logicalNet];
+  const auto *external =
+      std::get_if<FrozenSpatialExternalSinkPrerequisite>(&prerequisite);
+  if (external && external->sink >= net.sinkCount)
+    return invalid("external progress prerequisite is out of range");
   auto localBoundary = spatialTerminalProvidesLocalProgressBoundary(
-      candidate,
-      candidate.problem().transfers().logicalNetSinkBindings()[
-          net.sinkOffset + dependentSink]);
+      candidate, candidate.problem()
+                     .transfers()
+                     .logicalNetSinkBindings()[net.sinkOffset + dependentSink]);
   if (!localBoundary)
     return localBoundary.takeError();
   if (*localBoundary)
     return true;
 
   const RouteTreeState &tree = candidate.routeTree(logicalNet);
-  const auto prerequisiteEndpoint = tree.sinkEndpoint(prerequisiteSink);
   const auto dependentEndpoint = tree.sinkEndpoint(dependentSink);
-  if (!prerequisiteEndpoint || !dependentEndpoint)
+  if (!dependentEndpoint)
+    return true;
+  const auto dependentSlot = tree.findNode(*dependentEndpoint);
+  if (!dependentSlot)
+    return true;
+
+  if (!external) {
+    PnrIndex slot = *dependentSlot;
+    std::size_t visited = 0;
+    while (slot != getInvalidPnrIndex()) {
+      if (++visited > tree.activeNodeCount())
+        return invalid("route-tree dependent ancestry is cyclic");
+      const RouteTreeNode &node = tree.node(slot);
+      if (node.parentArc == getInvalidPnrIndex())
+        return false;
+      const auto arcs = tree.routingGraph().routingArcs();
+      if (node.parentArc >= arcs.size())
+        return invalid("dependent branch parent arc is out of range");
+      if (isBufferedTraversal(tree.routingGraph(),
+                              arcs[node.parentArc].traversal))
+        return true;
+      auto parent = parentSlot(tree, slot);
+      if (!parent)
+        return parent.takeError();
+      slot = *parent;
+    }
+    return false;
+  }
+
+  const auto prerequisiteEndpoint = tree.sinkEndpoint(external->sink);
+  if (!prerequisiteEndpoint)
     return true;
   const auto prerequisiteSlot = tree.findNode(*prerequisiteEndpoint);
-  const auto dependentSlot = tree.findNode(*dependentEndpoint);
-  if (!prerequisiteSlot || !dependentSlot)
+  if (!prerequisiteSlot)
     return true;
 
   std::vector<std::uint8_t> prerequisiteAncestors(tree.nodeStorage().size(), 0);
@@ -188,7 +215,8 @@ llvm::Expected<std::uint64_t> loom::pnr::spatialCandidateClosedWaitCount(
           candidate.problem(), logicalNet, dependent);
       if (!prerequisites)
         return prerequisites.takeError();
-      for (PnrIndex prerequisite : *prerequisites) {
+      for (const FrozenSpatialProgressPrerequisite &prerequisite :
+           *prerequisites) {
         auto satisfied = spatialRouteProgressDependencySatisfied(
             candidate, logicalNet, prerequisite, dependent);
         if (!satisfied)

@@ -50,11 +50,13 @@ with many roles from making one neighboring router an unavoidable bottleneck.
 The `(x, y)` pair is only an ergonomic lookup key while building; explicit
 Fabric connections remain the sole topology truth.
 
-Builtin Small, Default, and Large targets are complete hardware examples, not
-size knobs or capability summaries. Their FU distribution, memory, transport,
-InstructionCore, clocks, resets, and semantic capabilities must be
-deterministic so the same public API can reproduce and teach the exact
-hardware. Expanding their Reset contract into ordinary Fabric facts prevents
+Builtin Small, Default, and Large are closed authoring presets for one
+general-purpose hardware template. Each supplies a complete default scale, so
+the same public API can reproduce and teach an exact resolved Fabric, but the
+preset name is neither a second hardware identity nor a capability summary.
+FU distribution, memory, transport, InstructionCore, clocks, resets, and
+semantic capabilities are derived from the shared template and the resolved
+typed scale. Expanding the Reset contract into ordinary Fabric facts prevents
 the backend from becoming a second, target-dependent reset-policy owner.
 
 A schedule-wide crossbar was rejected for the builtin interconnect. Its port

@@ -17,6 +17,7 @@
 #include "Fabric/IR/FabricOps.h"
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/InstructionCoreBinary.h"
@@ -27,6 +28,7 @@
 #include "Hardware/Implementation/RepresentationFormat.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "Mapping/IR/MappingAttrs.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "PnR/PnrConfig.h"
@@ -455,12 +457,18 @@ dataflow::CanonicalDataflowArtifact buildDataflow(llvm::StringRef test,
                                                   ArtifactStore &artifacts) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
-  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)()
+  dataflow.thread private @worker_a domain(#dataflow.thread_domain<dense>)()
+      ctrl (%ctrl: none) {
+    dataflow.thread.yield
+  }
+  dataflow.thread private @worker_b domain(#dataflow.thread_domain<dense>)()
       ctrl (%ctrl: none) {
     dataflow.thread.yield
   }
   func.func private @host() {
-    %completion = dataflow.thread.launch @worker()
+    %completion_a = dataflow.thread.launch @worker_a()
+        : () -> !dataflow.thread_token
+    %completion_b = dataflow.thread.launch @worker_b()
         : () -> !dataflow.thread_token
     return
   }
@@ -570,8 +578,11 @@ mapping::FinalizedSystemMapping buildSystemMapping(
                          std::vector<ArtifactRootReference>(
                              spatialMappings.begin(), spatialMappings.end())},
                      artifacts));
-  auto outcome = pnr::generateSystemMappings(
-      {dataflow, systemView, searchDomain, config, constraints, artifacts});
+  const auto physicalTiming = take(
+      test, fabric::projectNormalizedSystemPhysicalTimingProfiles(systemView));
+  auto outcome = pnr::generateSystemMappings({dataflow, systemView,
+                                              physicalTiming, searchDomain,
+                                              config, constraints, artifacts});
   const auto *generated = std::get_if<pnr::GeneratedSystemMappings>(&outcome);
   if (!generated || generated->candidates.size() != 1) {
     const std::string diagnostic = std::visit(
@@ -579,6 +590,12 @@ mapping::FinalizedSystemMapping buildSystemMapping(
           using Outcome = std::decay_t<decltype(result)>;
           if constexpr (std::is_same_v<Outcome, pnr::GeneratedSystemMappings>)
             return std::string("unexpected candidate count");
+          else if constexpr (std::is_same_v<
+                                 Outcome, pnr::InterruptedSystemPnrGeneration>)
+            return (llvm::Twine("interrupted at ") +
+                    pnr::systemPnrInterruptionStageSpelling(
+                        result.snapshot.stage))
+                .str();
           else
             return result.diagnostic;
         },
@@ -740,78 +757,93 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
   const auto system = buildSystem(test, module, artifacts);
   auto dataflowArtifact = buildDataflow(test, artifacts);
   auto dataflow = take(test, dataflowArtifact.view());
-  const auto systemMapping =
-      buildSystemMapping(test, dataflow, system, artifacts);
+  auto systemView = take(test, fabric::requireSystemRoot(system.view()));
+  const auto cores = systemView.artifact().accCoreOccurrences();
+  require(test, cores.size() == dataflow.rootThreadLaunches().size(),
+          "minimal fixture requires one AccCore per root thread");
+  const auto systemMapping = buildSystemMapping(test, dataflow, system,
+                                                artifacts, {}, cores);
   auto abiDraft = take(
       test, hardware::derivePackedConfigurationABIDraft(system, context()));
   const auto abi = take(
       test, hardware::finalizeConfigurationABI(std::move(abiDraft), artifacts));
   require(test, abi.abi().programmingUnits().size() == 2,
           "fixture did not produce one programming unit per SpatialCore");
-  std::vector<hardware::ImplementationInterface> interfaces;
-  interfaces.reserve(abi.abi().programmingUnits().size());
-  for (std::size_t index = 0; index != abi.abi().programmingUnits().size();
-       ++index) {
-    const hardware::ProgrammingUnit &unit = abi.abi().programmingUnits()[index];
-    interfaces.push_back(
-        {hardware::ImplementationConfigurationInterfaceRef{
-             hardware::ProgrammingUnitRef{abi.reference(), unit.id}},
-         {hardware::RepresentationObjectKind::Port,
-          "top.cfg_" + std::to_string(index)},
-         std::nullopt});
-  }
-  const auto implementation =
-      take(test, hardware::finalizeHardwareImplementation(
-                     hardware::HardwareImplementationDraft{
-                         system.reference(),
-                         abi.reference(),
-                         {},
-                         representation(test, blobs, interfaces.size()),
-                         std::nullopt,
-                         std::move(interfaces),
-                         {},
-                         {},
-                         {}},
-                     artifacts, blobs));
   requireSuccess(test, runtime::registerRuntimeProvider(runtimeProvider));
-  std::vector<runtime::RuntimeProgrammingBinding> programmingBindings;
-  for (std::size_t index = 0;
-       index != implementation.implementation().interfaces().size(); ++index) {
-    const auto &interface = implementation.implementation().interfaces()[index];
-    const auto *configuration =
-        std::get_if<hardware::ImplementationConfigurationInterfaceRef>(
-            &interface.semanticRef);
-    require(test, configuration != nullptr,
-            "fixture implementation has a non-configuration interface");
-    programmingBindings.push_back(
-        {configuration->programmingUnit,
-         {implementation.reference().artifact,
-          hardware::HardwareImplementationInterfaceRef{index}},
-         runtime::inProcessRuntimeEndpoint(
-             runtime::RuntimeEndpointClass::Programming,
-             shareProgrammingEndpoint ? 0 : index)});
-  }
-  runtime::RuntimeIdentityVerification identityVerification =
-      runtime::HardwareReportedIdentity{runtime::inProcessRuntimeEndpoint(
-          runtime::RuntimeEndpointClass::Identity, 0)};
+  std::optional<BlobDigest> trustedAttestation;
   if (trustedIdentity) {
     constexpr llvm::StringLiteral attestation =
         "deployment trusted implementation";
-    identityVerification = runtime::TrustedImmutableIdentity{take(
+    trustedAttestation = take(
         test, blobs.put(llvm::ArrayRef<std::uint8_t>(
                   reinterpret_cast<const std::uint8_t *>(attestation.data()),
-                  attestation.size())))};
+                  attestation.size())));
   }
-  const auto runtimeBinding =
-      take(test, runtime::finalizeRuntimePlatformBinding(
-                     runtime::RuntimePlatformBindingDraft{
-                         implementation.reference(),
-                         runtime::runtimeProviderDescriptorRef(runtimeProvider),
-                         std::move(identityVerification),
-                         std::move(programmingBindings),
-                         {},
-                         {}},
-                     artifacts, blobs));
+  std::vector<DeploymentHardwareBinding> hardwareBindings;
+  hardwareBindings.reserve(cores.size());
+  for (const auto indexedCore : llvm::enumerate(cores)) {
+    const fabric::SpatialCoreOccurrenceRef subject{indexedCore.value()};
+    std::vector<hardware::ImplementationInterface> interfaces;
+    for (const hardware::ProgrammingUnit &unit : abi.abi().programmingUnits()) {
+      const hardware::ProgrammingUnitOccurrenceScope scope =
+          hardware::deriveProgrammingUnitOccurrenceScope(unit);
+      if (scope.includesDirectSystemResources || scope.spatialCores.size() != 1 ||
+          scope.spatialCores.front() != subject)
+        continue;
+      interfaces.push_back(
+          {hardware::ImplementationConfigurationInterfaceRef{
+               hardware::ProgrammingUnitRef{abi.reference(), unit.id}},
+           {hardware::RepresentationObjectKind::Port,
+            "top.cfg_" + std::to_string(interfaces.size())},
+           std::nullopt});
+    }
+    const auto implementation =
+        take(test, hardware::finalizeHardwareImplementation(
+                       hardware::HardwareImplementationDraft{
+                           system.reference(), subject, abi.reference(),
+                           representation(test, blobs, interfaces.size()),
+                           std::nullopt, std::move(interfaces), {}, {}, {}},
+                       artifacts, blobs));
+    std::vector<runtime::RuntimeProgrammingBinding> programmingBindings;
+    for (const auto indexedInterface :
+         llvm::enumerate(implementation.implementation().interfaces())) {
+      const auto *configuration =
+          std::get_if<hardware::ImplementationConfigurationInterfaceRef>(
+              &indexedInterface.value().semanticRef);
+      require(test, configuration != nullptr,
+              "fixture implementation has a non-configuration interface");
+      programmingBindings.push_back(
+          {configuration->programmingUnit,
+           {implementation.reference().artifact,
+            hardware::HardwareImplementationInterfaceRef{
+                indexedInterface.index()}},
+           runtime::inProcessRuntimeEndpoint(
+               runtime::RuntimeEndpointClass::Programming,
+               shareProgrammingEndpoint
+                   ? 0
+                   : configuration->programmingUnit.unitId)});
+    }
+    runtime::RuntimeIdentityVerification identityVerification =
+        trustedAttestation
+            ? runtime::RuntimeIdentityVerification(
+                  runtime::TrustedImmutableIdentity{*trustedAttestation})
+            : runtime::RuntimeIdentityVerification(
+                  runtime::HardwareReportedIdentity{
+                      runtime::inProcessRuntimeEndpoint(
+                          runtime::RuntimeEndpointClass::Identity,
+                          indexedCore.index())});
+    const auto runtimeBinding =
+        take(test, runtime::finalizeRuntimePlatformBinding(
+                       runtime::RuntimePlatformBindingDraft{
+                           implementation.reference(),
+                           runtime::runtimeProviderDescriptorRef(
+                               runtimeProvider),
+                           std::move(identityVerification),
+                           std::move(programmingBindings), {}, {}},
+                       artifacts, blobs));
+    hardwareBindings.push_back(
+        {implementation.reference(), runtimeBinding.reference()});
+  }
   auto targets = take(test, resolveSystemCompilerTargetBindings(
                                 system, targetPolicy(), artifacts));
   require(test, targets.instructionGroups().size() == 1,
@@ -822,13 +854,17 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
   const ArtifactRootReference dataflowReference{
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version, dataflow.identity()};
+  std::vector<ThreadEntryBinding> threadEntries;
+  for (const dataflow::CanonicalRootThreadLaunchView &root :
+       dataflow.rootThreadLaunches())
+    threadEntries.push_back({root.ref, 0});
   const auto instructionBinary =
       take(test, finalizeInstructionCoreBinary(
                      {dataflowReference,
                       instructionTarget.reference(),
                       linkedExecutable(test, instructionTarget.binding(), tree,
                                        "instruction", "__loom_thread_entry_0"),
-                      {{dataflow.rootThreadLaunches().front().ref, 0}},
+                      std::move(threadEntries),
                       {}},
                      artifacts, blobs));
   HostCatalog hostCatalog;
@@ -855,7 +891,7 @@ llvm::Expected<FinalizedDeployment> tryBuildMinimalDeploymentImpl(
           systemMapping.reference(),
           host,
           {instructionBinary.reference()},
-          {{implementation.reference(), runtimeBinding.reference()}}},
+          std::move(hardwareBindings)},
       *finalLinkedModule, artifacts, blobs);
 }
 
@@ -864,13 +900,13 @@ FinalizedDeployment buildMappedSpatialDeployment(
     const dataflow::CanonicalDataflowArtifact &dataflowArtifact,
     const fabric::FinalizedFabricRoot &system,
     const mapping::FinalizedSpatialMapping &spatialMapping,
-    const hardware::FinalizedHardwareImplementation &implementation,
+    llvm::ArrayRef<hardware::FinalizedHardwareImplementation> implementations,
     ArtifactStore &artifacts, BlobStore &blobs, const TemporaryTree &tree) {
   auto dataflow = take(test, dataflowArtifact.view());
   const auto systemMapping = buildSystemMapping(
       test, dataflow, system, artifacts, {spatialMapping.reference()});
   return buildMappedSystemDeployment(test, dataflowArtifact, system,
-                                     systemMapping, implementation, {},
+                                     systemMapping, implementations, {},
                                      artifacts, blobs, tree);
 }
 
@@ -891,7 +927,7 @@ FinalizedDeployment buildMappedSystemDeployment(
     const dataflow::CanonicalDataflowArtifact &dataflowArtifact,
     const fabric::FinalizedFabricRoot &system,
     const mapping::FinalizedSystemMapping &systemMapping,
-    const hardware::FinalizedHardwareImplementation &implementation,
+    llvm::ArrayRef<hardware::FinalizedHardwareImplementation> implementations,
     MappedSystemExecutablePrograms programs, ArtifactStore &artifacts,
     BlobStore &blobs, const TemporaryTree &tree) {
   auto dataflow = take(test, dataflowArtifact.view());
@@ -901,57 +937,91 @@ FinalizedDeployment buildMappedSystemDeployment(
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version, dataflow.identity()};
 
+  auto requiredSubjects = take(
+      test, mapping::projectSystemExecutionSpatialCoreSubjects(
+                dataflow, systemMapping.view().executionBindings()));
+  std::vector<const hardware::FinalizedHardwareImplementation *>
+      selectedImplementations;
+  selectedImplementations.reserve(requiredSubjects.size());
+  for (fabric::SpatialCoreOccurrenceRef subject : requiredSubjects) {
+    const hardware::FinalizedHardwareImplementation *selected = nullptr;
+    for (const hardware::FinalizedHardwareImplementation &implementation :
+         implementations) {
+      if (implementation.implementation().subject() != subject)
+        continue;
+      require(test, selected == nullptr,
+              "mapped fixture repeats a SpatialCore implementation");
+      selected = &implementation;
+    }
+    require(test, selected != nullptr,
+            "mapped fixture omits a required SpatialCore implementation");
+    selectedImplementations.push_back(selected);
+  }
+
   const runtime::RuntimeProviderDescriptor &provider =
       runtime::inProcessRuntimeProviderDescriptor();
   requireSuccess(test, runtime::registerRuntimeProvider(provider));
-  std::vector<runtime::RuntimeProgrammingBinding> programmingBindings;
-  std::vector<runtime::RuntimeInterfaceBinding> memoryBindings;
-  std::vector<runtime::RuntimeInterfaceBinding> completionBindings;
+  std::vector<DeploymentHardwareBinding> hardwareBindings;
+  hardwareBindings.reserve(selectedImplementations.size());
   std::uint64_t programmingOrdinal = 0;
   std::uint64_t memoryOrdinal = 0;
   std::uint64_t completionOrdinal = 0;
-  for (const auto &[ordinal, interface] :
-       llvm::enumerate(implementation.implementation().interfaces())) {
-    const ArtifactReference<hardware::HardwareImplementationInterfaceRef>
-        reference{implementation.reference().artifact,
-                  hardware::HardwareImplementationInterfaceRef{ordinal}};
-    if (const auto *configuration =
-            std::get_if<hardware::ImplementationConfigurationInterfaceRef>(
-                &interface.semanticRef)) {
-      programmingBindings.push_back(
-          {configuration->programmingUnit, reference,
-           runtime::inProcessRuntimeEndpoint(
-               runtime::RuntimeEndpointClass::Programming,
-               programmingOrdinal++)});
-    } else if (std::holds_alternative<
-                   hardware::ImplementationMemoryInterfaceRef>(
-                   interface.semanticRef)) {
-      memoryBindings.push_back(
-          {reference,
-           runtime::inProcessRuntimeEndpoint(
-               runtime::RuntimeEndpointClass::Memory, memoryOrdinal++)});
-    } else if (std::holds_alternative<hardware::ImplementationDataInterfaceRef>(
-                   interface.semanticRef) ||
-               std::holds_alternative<
-                   hardware::ImplementationExternalProtocolInterfaceRef>(
-                   interface.semanticRef)) {
-      completionBindings.push_back(
-          {reference, runtime::inProcessRuntimeEndpoint(
-                          runtime::RuntimeEndpointClass::Completion,
-                          completionOrdinal++)});
+  for (const auto [implementationOrdinal, selected] :
+       llvm::enumerate(selectedImplementations)) {
+    const hardware::FinalizedHardwareImplementation &implementation =
+        *selected;
+    std::vector<runtime::RuntimeProgrammingBinding> programmingBindings;
+    std::vector<runtime::RuntimeInterfaceBinding> memoryBindings;
+    std::vector<runtime::RuntimeInterfaceBinding> completionBindings;
+    for (const auto &[interfaceOrdinal, interface] :
+         llvm::enumerate(implementation.implementation().interfaces())) {
+      const ArtifactReference<hardware::HardwareImplementationInterfaceRef>
+          reference{
+              implementation.reference().artifact,
+              hardware::HardwareImplementationInterfaceRef{interfaceOrdinal}};
+      if (const auto *configuration =
+              std::get_if<hardware::ImplementationConfigurationInterfaceRef>(
+                  &interface.semanticRef)) {
+        programmingBindings.push_back(
+            {configuration->programmingUnit, reference,
+             runtime::inProcessRuntimeEndpoint(
+                 runtime::RuntimeEndpointClass::Programming,
+                 programmingOrdinal++)});
+      } else if (std::holds_alternative<
+                     hardware::ImplementationMemoryInterfaceRef>(
+                     interface.semanticRef)) {
+        memoryBindings.push_back(
+            {reference,
+             runtime::inProcessRuntimeEndpoint(
+                 runtime::RuntimeEndpointClass::Memory, memoryOrdinal++)});
+      } else if (std::holds_alternative<
+                     hardware::ImplementationDataInterfaceRef>(
+                     interface.semanticRef) ||
+                 std::holds_alternative<
+                     hardware::ImplementationExternalProtocolInterfaceRef>(
+                     interface.semanticRef)) {
+        completionBindings.push_back(
+            {reference, runtime::inProcessRuntimeEndpoint(
+                            runtime::RuntimeEndpointClass::Completion,
+                            completionOrdinal++)});
+      }
     }
+    const auto runtimeBinding = take(
+        test, runtime::finalizeRuntimePlatformBinding(
+                  runtime::RuntimePlatformBindingDraft{
+                      implementation.reference(),
+                      runtime::runtimeProviderDescriptorRef(provider),
+                      runtime::HardwareReportedIdentity{
+                          runtime::inProcessRuntimeEndpoint(
+                              runtime::RuntimeEndpointClass::Identity,
+                              implementationOrdinal)},
+                      std::move(programmingBindings),
+                      std::move(memoryBindings),
+                      std::move(completionBindings)},
+                  artifacts, blobs));
+    hardwareBindings.push_back(
+        {implementation.reference(), runtimeBinding.reference()});
   }
-  const auto runtimeBinding = take(
-      test, runtime::finalizeRuntimePlatformBinding(
-                runtime::RuntimePlatformBindingDraft{
-                    implementation.reference(),
-                    runtime::runtimeProviderDescriptorRef(provider),
-                    runtime::HardwareReportedIdentity{
-                        runtime::inProcessRuntimeEndpoint(
-                            runtime::RuntimeEndpointClass::Identity, 0)},
-                    std::move(programmingBindings), std::move(memoryBindings),
-                    std::move(completionBindings)},
-                artifacts, blobs));
 
   auto targets = take(test, resolveSystemCompilerTargetBindings(
                                 system, targetPolicy(), artifacts));
@@ -1001,8 +1071,7 @@ FinalizedDeployment buildMappedSystemDeployment(
                      DeploymentPipelineInputs{systemMapping.reference(),
                                               host,
                                               {instructionBinary.reference()},
-                                              {{implementation.reference(),
-                                                runtimeBinding.reference()}}},
+                                              std::move(hardwareBindings)},
                      *finalLinkedModule, artifacts, blobs));
   return deployment;
 }

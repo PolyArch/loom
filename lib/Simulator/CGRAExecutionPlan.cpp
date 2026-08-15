@@ -4,6 +4,7 @@
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -166,25 +167,16 @@ struct SelectedComputeActor final {
   ::dataflow::ActorRef actor;
   ::loom::fabric::FabricFuOccurrenceRef occurrence;
   ::loom::fabric::InstructionContextRef context;
+  std::optional<std::uint64_t> temporalDispatchDomain;
+  std::uint32_t temporalDispatchPosition = 0;
 };
 
 struct ComputeExecutionProjection final {
   std::vector<CgraComputeActorPlan> actors;
   std::vector<CgraComputeTransitionPlan> transitions;
+  std::vector<CgraTemporalDispatchDomainPlan> temporalDispatchDomains;
   std::vector<std::uint64_t> physicalUses;
 };
-
-std::vector<std::uint8_t> activationGroupKey(
-    const ::loom::fabric::FabricTraversalActivationGroupView &group) {
-  std::vector<std::uint8_t> result =
-      ::loom::fabric::canonicalFabricBytes(group.owner);
-  const auto kind = static_cast<std::uint32_t>(group.kind);
-  for (int shift = 24; shift >= 0; shift -= 8)
-    result.push_back(static_cast<std::uint8_t>(kind >> shift));
-  for (int shift = 56; shift >= 0; shift -= 8)
-    result.push_back(static_cast<std::uint8_t>(group.ordinal >> shift));
-  return result;
-}
 
 bool sameTiming(const CgraPhysicalUseTiming &lhs,
                 const CgraPhysicalUseTiming &rhs) {
@@ -324,11 +316,61 @@ llvm::Expected<std::vector<CgraPhysicalUseClientKind>> derivePhysicalUseClients(
   return result;
 }
 
+struct TemporalDispatchProjection final {
+  struct Selection final {
+    std::uint64_t domain = 0;
+    std::uint32_t position = 0;
+  };
+
+  std::vector<CgraTemporalDispatchDomainPlan> domains;
+  llvm::DenseMap<std::uint64_t, Selection> byRealization;
+};
+
+llvm::Expected<TemporalDispatchProjection> deriveTemporalDispatchProjection(
+    const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<::loom::mapping::SpatialComputeBindingView> bindings) {
+  auto projected =
+      ::loom::mapping::deriveSpatialTemporalPeDispatchDomains(fabric, bindings);
+  if (!projected)
+    return projected.takeError();
+
+  TemporalDispatchProjection result;
+  result.domains.reserve(projected->size());
+  result.byRealization.reserve(bindings.size());
+  for (const auto &domain : *projected) {
+    if (domain.candidates.empty() ||
+        domain.candidates.size() > std::numeric_limits<std::uint32_t>::max() ||
+        domain.resetPosition >= domain.candidates.size())
+      return invalid("CGRA temporal dispatch domain has invalid cardinality");
+
+    const std::uint64_t domainOrdinal = result.domains.size();
+    result.domains.push_back({domain.pe, domain.allocationUnit,
+                              static_cast<std::uint32_t>(
+                                  domain.candidates.size()),
+                              domain.resetPosition});
+    for (auto [position, candidate] : llvm::enumerate(domain.candidates))
+      if (!result.byRealization
+               .try_emplace(
+                   candidate.realization,
+                   TemporalDispatchProjection::Selection{
+                       domainOrdinal, static_cast<std::uint32_t>(position)})
+               .second)
+        return invalid("CGRA realization belongs to multiple temporal "
+                       "dispatch domains");
+  }
+  return result;
+}
+
 llvm::Expected<ComputeExecutionProjection> deriveComputeExecutionProjection(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::TechMappingView &tech,
+    const ::loom::fabric::FabricArtifactView &fabric,
     const ::loom::mapping::SpatialMappingView &spatial,
     llvm::ArrayRef<CgraPhysicalUseClientKind> physicalUseClients) {
+  auto dispatch =
+      deriveTemporalDispatchProjection(fabric, spatial.computeBindings());
+  if (!dispatch)
+    return dispatch.takeError();
   llvm::DenseMap<std::uint64_t,
                  const ::loom::mapping::TechComputeRealizationView *>
       realizations;
@@ -342,6 +384,19 @@ llvm::Expected<ComputeExecutionProjection> deriveComputeExecutionProjection(
     auto realization = realizations.find(binding.realization);
     if (realization == realizations.end())
       return invalid("CGRA compute execution found an unknown realization");
+    std::optional<std::uint64_t> dispatchDomain;
+    std::uint32_t dispatchPosition = 0;
+    if (const auto selected = dispatch->byRealization.find(binding.realization);
+        selected != dispatch->byRealization.end()) {
+      dispatchDomain = selected->second.domain;
+      dispatchPosition = selected->second.position;
+    } else {
+      const auto pe = fabric.parentPeOf(binding.occurrence);
+      if (!pe)
+        return invalid("CGRA compute binding FU has no parent PE");
+      if (fabric.peSchedule(*pe) == ::fabric::Schedule::Temporal)
+        return invalid("CGRA temporal compute binding has no dispatch domain");
+    }
     for (const auto &actor : realization->second->actors) {
       auto key =
           ::dataflow::encodeDataflowReference(dataflow.identity(), actor.actor);
@@ -351,7 +406,8 @@ llvm::Expected<ComputeExecutionProjection> deriveComputeExecutionProjection(
                .try_emplace(
                    std::move(*key),
                    SelectedComputeActor{binding.realization, actor.actor,
-                                        binding.occurrence, binding.context})
+                                        binding.occurrence, binding.context,
+                                        dispatchDomain, dispatchPosition})
                .second)
         return invalid("CGRA compute actor has multiple physical bindings");
     }
@@ -381,6 +437,7 @@ llvm::Expected<ComputeExecutionProjection> deriveComputeExecutionProjection(
   }
 
   ComputeExecutionProjection result;
+  result.temporalDispatchDomains = std::move(dispatch->domains);
   result.actors.reserve(selectedActors.size());
   for (const auto &[key, selected] : selectedActors) {
     (void)key;
@@ -425,7 +482,8 @@ llvm::Expected<ComputeExecutionProjection> deriveComputeExecutionProjection(
     }
     result.actors.push_back(CgraComputeActorPlan{
         selected.actor, actor->graph, selected.occurrence, selected.context,
-        transitionOffset, static_cast<std::uint32_t>(cases->size())});
+        transitionOffset, static_cast<std::uint32_t>(cases->size()),
+        selected.temporalDispatchDomain, selected.temporalDispatchPosition});
   }
   if (!triggerUses.empty())
     return invalid(
@@ -452,8 +510,8 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
       derivePhysicalUseClients(spatial.resourceUses(), *summary);
   if (!physicalUseClients)
     return physicalUseClients.takeError();
-  auto compute = deriveComputeExecutionProjection(dataflow, tech, spatial,
-                                                  *physicalUseClients);
+  auto compute = deriveComputeExecutionProjection(dataflow, tech, fabric,
+                                                  spatial, *physicalUseClients);
   if (!compute)
     return compute.takeError();
   if (compute->actors.size() != summary->computeActorCount ||
@@ -486,6 +544,7 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
   result.mappedGraphs = std::move(*mappedGraphs);
   result.computeActors = std::move(compute->actors);
   result.computeTransitions = std::move(compute->transitions);
+  result.temporalDispatchDomains = std::move(compute->temporalDispatchDomains);
   result.actorTransitionPhysicalUses = std::move(compute->physicalUses);
   result.memory = std::move(*memory);
   result.physicalUses.reserve(spatial.resourceUses().size());
@@ -508,16 +567,17 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
       return invalid("CGRA Mapping physical-use ordinal drifted");
   }
   auto transport =
-      freezeCgraTransportPlan(dataflow, fabric, spatial, result.mappedGraphs,
-                              result.physicalUseClients);
+      freezeCgraTransportPlan(dataflow, tech, fabric, spatial,
+                              result.mappedGraphs, result.physicalUseClients);
   if (!transport)
     return transport.takeError();
   result.transport = std::move(*transport);
-  std::map<std::vector<std::uint8_t>, std::vector<std::uint64_t>>
-      traversalActivationUses;
-  for (auto [ordinal, use] : llvm::enumerate(result.transport.traversalUses))
-    traversalActivationUses[activationGroupKey(use.activationGroup)].push_back(
-        ordinal);
+  std::map<std::uint64_t, std::vector<std::uint64_t>> traversalActivationUses;
+  for (auto [ordinal, use] : llvm::enumerate(result.transport.traversalUses)) {
+    if (use.activationInstanceOrdinal == invalidCgraTransportOrdinal)
+      return invalid("CGRA traversal use has no activation instance");
+    traversalActivationUses[use.activationInstanceOrdinal].push_back(ordinal);
+  }
   for (const auto &[key, useOrdinals] : traversalActivationUses) {
     (void)key;
     std::vector<::loom::fabric::FabricUsePatternRef> patterns;
@@ -539,6 +599,9 @@ llvm::Expected<CgraFrozenExecutionPlan> freezeCgraExecutionPlan(
   for (const CgraTraversalUsePlan &use : result.transport.traversalUses) {
     if (use.physicalUseOrdinal == invalidCgraTransportOrdinal)
       return invalid("CGRA traversal UsePattern has no physical action");
+    if (use.requesterGroup.kind ==
+        ::loom::fabric::FabricTraversalRequesterGroupKind::SwitchRequester)
+      continue;
     auto [position, inserted] = traversalPatternActions.try_emplace(
         ::loom::fabric::canonicalFabricBytes(use.pattern),
         use.physicalUseOrdinal);

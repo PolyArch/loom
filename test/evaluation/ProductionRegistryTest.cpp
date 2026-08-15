@@ -1,27 +1,18 @@
 #include "Evaluation/ProductionRegistry.h"
 
-#include "Common/ArtifactStore.h"
-#include "Common/BlobStore.h"
-#include "Config/ResolvedConfig.h"
-#include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Evaluation/Metric.h"
 #include "Evaluation/Models/FpaParameterContract.h"
 #include "Evaluation/Models/PredictionCalibration.h"
 #include "Evaluation/Models/SystemRuntimeParameterContract.h"
-#include "Evaluation/Request.h"
-#include "Fabric/Artifact/FabricArtifact.h"
 #include "Simulator/SimulationExecution.h"
 
-#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/FileSystem.h"
 
 #include <array>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <string>
-#include <system_error>
 #include <utility>
 
 namespace {
@@ -57,30 +48,10 @@ void expectError(llvm::StringRef test, llvm::Expected<T> value) {
   llvm::consumeError(value.takeError());
 }
 
-class TemporaryDirectory final {
-public:
-  explicit TemporaryDirectory(llvm::StringRef test) {
-    if (std::error_code error =
-            llvm::sys::fs::createUniqueDirectory("loom-registry", path_))
-      fail(test, error.message());
-  }
-
-  ~TemporaryDirectory() {
-    if (std::error_code error = llvm::sys::fs::remove_directories(path_))
-      std::cerr << "temporary directory cleanup failed: " << error.message()
-                << '\n';
-  }
-
-  llvm::StringRef path() const { return path_; }
-
-private:
-  llvm::SmallString<128> path_;
-};
-
-void exactRegistryVersionsRemainDistinct() {
+void registryMajorMatchesCurrentArtifactContracts() {
   const llvm::StringRef test = __func__;
-  require(test, evaluationSchemaVersion() == SchemaVersion{2, 1},
-          "current Evaluation registry is not 2.1");
+  require(test, evaluationSchemaVersion() == SchemaVersion{3, 0},
+          "current Evaluation registry is not 3.0");
 
   const auto canonicalDataflowFabricCase = builtinEvaluationCaseSignatureRef(
       BuiltinEvaluationCase::CanonicalDataflowWithFabric);
@@ -89,132 +60,30 @@ void exactRegistryVersionsRemainDistinct() {
                 BuiltinEvaluationModel::CanonicalDataflowFabricLowConfidence));
   const auto currentCase =
       take(test, EvaluationCaseSignatureRef::get(
-                     {2, 1}, canonicalDataflowFabricCase.caseKind()));
-  const auto legacyCase =
-      take(test, EvaluationCaseSignatureRef::get(
-                     {2, 0}, canonicalDataflowFabricCase.caseKind()));
-  require(test, currentCase.descriptor() && legacyCase.descriptor(),
-          "production case kind 1 was not registered in both catalogs");
-  require(test,
-          currentCase.descriptor() != legacyCase.descriptor() &&
-              currentCase.descriptor()->registryVersion ==
-                  SchemaVersion{2, 1} &&
-              legacyCase.descriptor()->registryVersion == SchemaVersion{2, 0},
-          "2.0 case reference aliases the 2.1 descriptor view");
+                     {3, 0}, canonicalDataflowFabricCase.caseKind()));
+  require(test, currentCase.descriptor() &&
+                    currentCase.descriptor()->registryVersion ==
+                        SchemaVersion{3, 0},
+          "production case kind 1 is not registered in registry 3.0");
 
   const auto currentModel =
       take(test, EvaluationModelDescriptorRef::get(
-                     {2, 1}, canonicalDataflowFabricModel.modelKind()));
-  const auto legacyModel =
-      take(test, EvaluationModelDescriptorRef::get(
-                     {2, 0}, canonicalDataflowFabricModel.modelKind()));
-  require(test, currentModel.descriptor() && legacyModel.descriptor(),
-          "production model kind 3 was not registered in both catalogs");
+                     {3, 0}, canonicalDataflowFabricModel.modelKind()));
   require(test,
-          currentModel.descriptor() != legacyModel.descriptor() &&
-              legacyModel.descriptor()->registryVersion ==
-                  SchemaVersion{2, 0} &&
-              legacyModel.descriptor()->caseSignature.schemaVersion() ==
-                  SchemaVersion{2, 0},
-          "2.0 model reference aliases or embeds a 2.1 descriptor");
+          currentModel.descriptor() &&
+              currentModel.descriptor()->registryVersion ==
+                  SchemaVersion{3, 0} &&
+              currentModel.descriptor()->caseSignature.schemaVersion() ==
+                  SchemaVersion{3, 0},
+          "production model kind 3 is not registered in registry 3.0");
 
-  const std::array appendedCases = {
-      BuiltinEvaluationCase::FabricHardwareAnalysis,
-      BuiltinEvaluationCase::SystemRuntimeModelParameterCalibration,
-      BuiltinEvaluationCase::MappedRtlSimulation};
-  for (BuiltinEvaluationCase evaluationCase : appendedCases) {
-    const auto reference =
-        take(test, EvaluationCaseSignatureRef::get(
-                       {2, 1}, builtinEvaluationCaseKind(evaluationCase)));
-    require(test, reference.descriptor() != nullptr,
-            "2.1 production case descriptor is unresolved");
+  for (SchemaVersion obsolete :
+       {SchemaVersion{2, 0}, SchemaVersion{2, 1}}) {
     expectError(test, EvaluationCaseSignatureRef::get(
-                          {2, 0}, builtinEvaluationCaseKind(evaluationCase)));
-  }
-  const std::array appendedModels = {
-      BuiltinEvaluationModel::FabricLowConfidence,
-      BuiltinEvaluationModel::FabricCalibratedFpa,
-      BuiltinEvaluationModel::SystemRuntimeModelParameterCalibration,
-      BuiltinEvaluationModel::Gem5CgraSystemRuntimePredictor,
-      BuiltinEvaluationModel::Gem5SystemDfg,
-      BuiltinEvaluationModel::Gem5SystemCgra,
-      BuiltinEvaluationModel::Gem5SystemRtl,
-      BuiltinEvaluationModel::OpenRoadRoutedStaticFpa,
-      BuiltinEvaluationModel::MappedRtlSimulator};
-  for (BuiltinEvaluationModel model : appendedModels) {
-    const auto reference =
-        take(test, builtinEvaluationModelDescriptorRef(model));
-    require(test, reference.descriptor() != nullptr,
-            "2.1 production model descriptor is unresolved");
+                          obsolete, canonicalDataflowFabricCase.caseKind()));
     expectError(test, EvaluationModelDescriptorRef::get(
-                          {2, 0}, builtinEvaluationModelKind(model)));
+                          obsolete, canonicalDataflowFabricModel.modelKind()));
   }
-}
-
-void legacyRequestRoundTripsWithoutVersionReinterpretation() {
-  const llvm::StringRef test = __func__;
-  TemporaryDirectory directory(test);
-  ArtifactStore artifacts(directory.path());
-  BlobStore blobs(directory.path());
-
-  const ArtifactIdentity dataflowIdentity =
-      take(test, artifacts.put(dataflow::canonicalDataflowSchema,
-                               CanonicalSemanticBytes({0x11})));
-  const ArtifactIdentity fabricIdentity =
-      take(test, artifacts.put(loom::fabric::fabricArtifactSchema,
-                               CanonicalSemanticBytes({0x22})));
-  const ArtifactRootReference dataflow{
-      dataflow::canonicalDataflowSchema.identity.str(),
-      dataflow::canonicalDataflowSchema.version, dataflowIdentity};
-  const ArtifactRootReference fabricRoot{
-      loom::fabric::fabricArtifactSchema.identity.str(),
-      loom::fabric::fabricArtifactSchema.version, fabricIdentity};
-  CaseArtifactResolution resolution = take(
-      test, CaseArtifactResolution::get({{dataflow, {}}, {fabricRoot, {}}}));
-  EvaluationSubjectBindings subjects = take(
-      test,
-      EvaluationSubjectBindings::get({{CaseSubjectRoleRef(0), {dataflow}},
-                                      {CaseSubjectRoleRef(1), {fabricRoot}}}));
-  const auto currentCase = builtinEvaluationCaseSignatureRef(
-      BuiltinEvaluationCase::CanonicalDataflowWithFabric);
-  const auto caseRef = take(
-      test, EvaluationCaseSignatureRef::get({2, 0}, currentCase.caseKind()));
-  EvaluationCase evaluationCase =
-      take(test,
-           EvaluationCase::get(caseRef, std::move(subjects), std::nullopt,
-                               std::nullopt, {}, resolution, artifacts, blobs));
-  MetricRequest metric =
-      take(test, MetricRequest::get({MetricKind::Runtime,
-                                     EvaluationScope{ScopeFormRef(0), {}}},
-                                    {}, evaluationCase, resolution, artifacts));
-  const auto currentModel = take(
-      test, builtinEvaluationModelDescriptorRef(
-                BuiltinEvaluationModel::CanonicalDataflowFabricLowConfidence));
-  const auto modelRef =
-      take(test,
-           EvaluationModelDescriptorRef::get({2, 0}, currentModel.modelKind()));
-  ResolvedModelBinding binding =
-      take(test, ResolvedModelBinding::project(modelRef, {},
-                                               defaultResolvedConfig()));
-  EvaluationRequest request =
-      take(test, EvaluationRequest::get(evaluationCase, {metric}, {},
-                                        std::move(binding), 0, resolution,
-                                        artifacts, blobs));
-  const ArtifactRootReference reference =
-      take(test, publishEvaluationRequest(request, artifacts));
-  EvaluationRequest imported = take(
-      test, importEvaluationRequest(reference, resolution, artifacts, blobs));
-  require(test,
-          imported.modelBinding().descriptorRef().schemaVersion() ==
-                  SchemaVersion{2, 0} &&
-              imported.modelBinding()
-                      .descriptorRef()
-                      .descriptor()
-                      ->caseSignature.schemaVersion() == SchemaVersion{2, 0},
-          "legacy Request import reinterpreted its registry references");
-  require(test,
-          EvaluationRequest::artifactSchema.version == SchemaVersion{1, 0},
-          "registry extension changed the Request root schema");
 }
 
 void appendedMetricsAndModelSlotsMatchTheCatalog() {
@@ -375,8 +244,7 @@ void calibrationArithmeticIsExactAndDeterministic() {
 
 int main() {
   requireSuccess("registration", registerProductionEvaluationRegistry());
-  exactRegistryVersionsRemainDistinct();
-  legacyRequestRoundTripsWithoutVersionReinterpretation();
+  registryMajorMatchesCurrentArtifactContracts();
   appendedMetricsAndModelSlotsMatchTheCatalog();
   calibrationArithmeticIsExactAndDeterministic();
   return EXIT_SUCCESS;

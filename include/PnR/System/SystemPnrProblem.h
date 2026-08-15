@@ -2,6 +2,7 @@
 #define LOOM_PNR_SYSTEM_SYSTEMPNRPROBLEM_H
 
 #include "Fabric/Artifact/FabricMemoryServiceClosure.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
@@ -9,6 +10,7 @@
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrIndex.h"
+#include "PnR/SpatialRecurrenceTiming.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -175,8 +177,8 @@ public:
   llvm::ArrayRef<DeterministicWorkBudgetEntry> workBudget() const {
     return workBudget_;
   }
-  const ::loom::mapping::MappingProgressClosure &progressClosure() const {
-    return progressClosure_;
+  const ::loom::mapping::MappingDataflowProgressBasis &progressBasis() const {
+    return progressBasis_;
   }
   llvm::ArrayRef<::dataflow::RootThreadLaunchRef> rootThreadLaunches() const {
     return rootThreadLaunches_;
@@ -189,6 +191,22 @@ public:
   }
   llvm::ArrayRef<ArtifactRootReference> spatialMappings() const {
     return spatialMappings_;
+  }
+  llvm::ArrayRef<std::uint64_t>
+  spatialMappingWorstRouteArrivalDelayQuanta() const {
+    return spatialMappingWorstRouteArrivalDelayQuanta_;
+  }
+  llvm::ArrayRef<std::uint64_t>
+  spatialMappingTotalRouteNegativeSlackQuanta() const {
+    return spatialMappingTotalRouteNegativeSlackQuanta_;
+  }
+  llvm::ArrayRef<ComponentViewDigest::Storage>
+  spatialMappingPhysicalTimingProfileDigests() const {
+    return spatialMappingPhysicalTimingProfileDigests_;
+  }
+  llvm::ArrayRef<::loom::fabric::FabricPhysicalTimingProfileKind>
+  spatialMappingPhysicalTimingProfileKinds() const {
+    return spatialMappingPhysicalTimingProfileKinds_;
   }
   llvm::ArrayRef<FrozenSystemThreadExecutionDecision> threadDecisions() const {
     return threadDecisions_;
@@ -231,6 +249,8 @@ public:
   llvm::ArrayRef<PnrIndex> graphChoiceCatalogOrdinals(PnrIndex decision) const;
   llvm::ArrayRef<std::uint64_t>
   graphChoiceStaticSchedulePressures(PnrIndex decision) const;
+  llvm::ArrayRef<SpatialRecurrenceTimingProjection>
+  graphChoiceRecurrenceTimings(PnrIndex decision) const;
   llvm::ArrayRef<PnrIndex> graphThreadOverlaps(PnrIndex decision) const;
   llvm::ArrayRef<PnrIndex> serviceLegSinkTerminals(PnrIndex leg) const;
   PnrIndex accCoreTargetClass(PnrIndex core) const;
@@ -247,18 +267,28 @@ private:
       SystemPnrSearchDomainDigest searchDomainDigest,
       ResolvedPnrConfigView config, MappingObjectiveProgram objectiveProgram,
       std::vector<DeterministicWorkBudgetEntry> workBudget,
-      ::loom::mapping::MappingProgressClosure progressClosure,
+      ::loom::mapping::MappingDataflowProgressBasis progressBasis,
       std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
       std::vector<FrozenSystemSpatialTargetClass> targetClasses,
       std::vector<::loom::fabric::AccCoreOccurrenceRef> accCores,
       std::vector<PnrIndex> accCoreTargetClasses,
       std::vector<ArtifactRootReference> spatialMappings,
       std::vector<PnrIndex> spatialMappingTargetClasses,
+      std::vector<std::uint64_t>
+          spatialMappingWorstRouteArrivalDelayQuanta,
+      std::vector<std::uint64_t>
+          spatialMappingTotalRouteNegativeSlackQuanta,
+      std::vector<ComponentViewDigest::Storage>
+          spatialMappingPhysicalTimingProfileDigests,
+      std::vector<::loom::fabric::FabricPhysicalTimingProfileKind>
+          spatialMappingPhysicalTimingProfileKinds,
       std::vector<FrozenSystemThreadExecutionDecision> threadDecisions,
       std::vector<PnrIndex> threadChoiceCatalogOrdinals,
       std::vector<FrozenSystemGraphExecutionDecision> graphDecisions,
       std::vector<PnrIndex> graphChoiceCatalogOrdinals,
       std::vector<std::uint64_t> graphChoiceStaticSchedulePressures,
+      std::vector<SpatialRecurrenceTimingProjection>
+          graphChoiceRecurrenceTimings,
       std::vector<PnrIndex> graphThreadOverlapOffsets,
       std::vector<PnrIndex> graphThreadOverlaps,
       FrozenEndpointRoutingTopology routingTopology,
@@ -285,18 +315,26 @@ private:
   ResolvedPnrConfigView config_;
   MappingObjectiveProgram objectiveProgram_;
   std::vector<DeterministicWorkBudgetEntry> workBudget_;
-  ::loom::mapping::MappingProgressClosure progressClosure_;
+  ::loom::mapping::MappingDataflowProgressBasis progressBasis_;
   std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches_;
   std::vector<FrozenSystemSpatialTargetClass> targetClasses_;
   std::vector<::loom::fabric::AccCoreOccurrenceRef> accCores_;
   std::vector<PnrIndex> accCoreTargetClasses_;
   std::vector<ArtifactRootReference> spatialMappings_;
   std::vector<PnrIndex> spatialMappingTargetClasses_;
+  std::vector<std::uint64_t> spatialMappingWorstRouteArrivalDelayQuanta_;
+  std::vector<std::uint64_t> spatialMappingTotalRouteNegativeSlackQuanta_;
+  std::vector<ComponentViewDigest::Storage>
+      spatialMappingPhysicalTimingProfileDigests_;
+  std::vector<::loom::fabric::FabricPhysicalTimingProfileKind>
+      spatialMappingPhysicalTimingProfileKinds_;
   std::vector<FrozenSystemThreadExecutionDecision> threadDecisions_;
   std::vector<PnrIndex> threadChoiceCatalogOrdinals_;
   std::vector<FrozenSystemGraphExecutionDecision> graphDecisions_;
   std::vector<PnrIndex> graphChoiceCatalogOrdinals_;
   std::vector<std::uint64_t> graphChoiceStaticSchedulePressures_;
+  std::vector<SpatialRecurrenceTimingProjection>
+      graphChoiceRecurrenceTimings_;
   std::vector<PnrIndex> graphThreadOverlapOffsets_;
   std::vector<PnrIndex> graphThreadOverlaps_;
   FrozenEndpointRoutingTopology routingTopology_;
@@ -332,6 +370,7 @@ private:
   freezeSystemPnrProblem(
       const ::dataflow::CanonicalDataflowProgramView &,
       const ::loom::fabric::FabricSystemRootView &,
+      llvm::ArrayRef<::loom::fabric::FabricPhysicalTimingProfileView>,
       const SystemPnrSearchDomainView &, const ResolvedPnrConfigView &,
       const ::loom::mapping::FinalizedSystemMappingConstraintSet &,
       const ArtifactStore &);
@@ -340,10 +379,29 @@ private:
 llvm::Expected<FrozenSystemPnrProblemHandle> freezeSystemPnrProblem(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
+    llvm::ArrayRef<::loom::fabric::FabricPhysicalTimingProfileView>
+        physicalTimingProfiles,
     const SystemPnrSearchDomainView &searchDomain,
     const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
     const ArtifactStore &store);
+
+/// Explicit test/prototyping entry point for target-neutral routing guidance.
+/// Production generators bind profile Artifacts and call the exact overload.
+llvm::Expected<FrozenSystemPnrProblemHandle>
+freezeSystemPnrProblemWithNormalizedTiming(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SystemPnrSearchDomainView &searchDomain,
+    const ResolvedPnrConfigView &config,
+    const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
+    const ArtifactStore &store);
+
+/// Rebuilds the selected graph recurrence projection from the frozen catalog
+/// that was cold-derived from each persistent SpatialMapping dependency tuple.
+llvm::Expected<SpatialRecurrenceTimingProjection>
+projectSystemRecurrenceTiming(const FrozenSystemPnrProblem &problem,
+                              llvm::ArrayRef<PnrIndex> graphChoices);
 
 } // namespace loom::pnr
 

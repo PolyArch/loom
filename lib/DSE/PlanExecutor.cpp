@@ -187,6 +187,25 @@ makeIncompleteCandidateResult(const CandidateGeneratorDescriptor &descriptor,
       std::move(work)};
 }
 
+struct ProviderExecutionStopContext final {
+  const ExecutionJournal *journal = nullptr;
+  std::optional<std::uint64_t> notAfterUnixNanoseconds;
+};
+
+bool providerExecutionStopRequested(const void *opaque) {
+  const auto &context =
+      *static_cast<const ProviderExecutionStopContext *>(opaque);
+  if (context.journal->gracefulStopRequested())
+    return true;
+  if (!context.notAfterUnixNanoseconds)
+    return false;
+  const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
+  const auto now =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+  return now <= 0 ||
+         static_cast<std::uint64_t>(now) >= *context.notAfterUnixNanoseconds;
+}
+
 llvm::Expected<std::optional<JournalWorkUnitRecord>>
 findOrQueue(ExecutionJournal &journal, const WorkUnitKey &key) {
   auto found = journal.find(key);
@@ -617,7 +636,12 @@ RecoverablePlanWorkExecutor::executeGenerate(
     if (llvm::Error error = journal_.markRunning(*key))
       return std::move(error);
     const auto begin = std::chrono::steady_clock::now();
-    auto generated = invokeCandidateGenerator(inputs, binding, store, blobs);
+    const ProviderExecutionStopContext stopContext{
+        &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
+    const ExecutionControlView executionControl{&stopContext,
+                                                providerExecutionStopRequested};
+    auto generated = invokeCandidateGenerator(inputs, binding, store, blobs,
+                                              executionControl);
     if (!generated) {
       llvm::Error reset = journal_.queue(*key);
       return llvm::joinErrors(generated.takeError(), std::move(reset));

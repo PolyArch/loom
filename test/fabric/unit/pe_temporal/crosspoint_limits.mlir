@@ -13,7 +13,7 @@ fabric.module @temporal_anonymous_quiet(
       attributes {
         tag_width = 2 : i32,
         num_instruction = 1 : i32,
-        fu_config_mode = "per_fu_config",
+        fu_config_mode = #fabric.fu_config_mode<per_fu_config>,
         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
         operand_buffer_size = 2 : i32
       } {
@@ -40,7 +40,7 @@ fabric.module @temporal_named_warning() {
       attributes {
         tag_width = 2 : i32,
         num_instruction = 1 : i32,
-        fu_config_mode = "per_fu_config",
+        fu_config_mode = #fabric.fu_config_mode<per_fu_config>,
         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
         operand_buffer_size = 2 : i32
       } {
@@ -81,7 +81,7 @@ fabric.module @temporal_anonymous_boundary(
       attributes {
         tag_width = 2 : i32,
         num_instruction = 1 : i32,
-        fu_config_mode = "per_fu_config",
+        fu_config_mode = #fabric.fu_config_mode<per_fu_config>,
         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
         operand_buffer_size = 2 : i32
       } {
@@ -112,7 +112,7 @@ fabric.module @temporal_named_oversized() {
       attributes {
         tag_width = 2 : i32,
         num_instruction = 1 : i32,
-        fu_config_mode = "per_fu_config",
+        fu_config_mode = #fabric.fu_config_mode<per_fu_config>,
         operand_buffer_mode = #fabric.operand_buffer_mode<per_instruction>,
         operand_buffer_size = 2 : i32
       } {

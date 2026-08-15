@@ -2,6 +2,7 @@
 #include "PnR/RoutingNegotiation.h"
 
 #include "SpatialBindingRelationModel.h"
+#include "SpatialLocalTransferIndex.h"
 #include "SpatialMemoryConstraintModel.h"
 #include "SpatialPnrCapacityIndex.h"
 #include "SpatialPnrHandshakeIndex.h"
@@ -10,6 +11,7 @@
 #include "SpatialPnrResourceIndex.h"
 #include "SpatialPnrTransferIndex.h"
 #include "SpatialRouteConstraintModel.h"
+#include "SpatialRecurrenceTimingInternal.h"
 #include "SpatialTagConstraintModel.h"
 #include "StaticSchedulePressure.h"
 
@@ -27,6 +29,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <string>
@@ -53,6 +56,18 @@ constexpr PnrCapacityContext actorOffsetContext{
     frozenArtifact, "realizations", "actors", PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext actorCountContext{
     frozenArtifact, "actors", "actors", PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext externalIngressOffsetContext{
+    frozenArtifact, "memory_realizations", "external_ingresses",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext externalIngressCountContext{
+    frozenArtifact, "external_ingresses", "external_ingresses",
+    PnrCapacityMeasure::Count};
+constexpr PnrCapacityContext internalConnectionOffsetContext{
+    frozenArtifact, "memory_realizations", "internal_connections",
+    PnrCapacityMeasure::Offset};
+constexpr PnrCapacityContext internalConnectionCountContext{
+    frozenArtifact, "internal_connections", "internal_connections",
+    PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext placementOffsetContext{
     frozenArtifact, "realizations", "placements", PnrCapacityMeasure::Offset};
 constexpr PnrCapacityContext placementCountContext{
@@ -106,16 +121,16 @@ constexpr PnrCapacityContext traversalArcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.14\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.20\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 14;
+constexpr std::uint32_t cacheSchemaMinor = 20;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.14";
+    "loom.spatial_pnr.freeze.2.20";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
-    "loom.spatial_pnr.native_layout.2.8";
+    "loom.spatial_pnr.native_layout.2.10";
 
 enum class CacheField : std::uint32_t {
   DataflowIdentity = 1,
@@ -128,6 +143,7 @@ enum class CacheField : std::uint32_t {
   ImporterSemanticIdentity = 8,
   NativeLayoutAbi = 9,
   PnrIndexWidth = 10,
+  PhysicalTimingProfileDigest = 11,
 };
 
 void appendU32Be(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
@@ -220,13 +236,13 @@ restriction(const FrozenConstraintIndex &constraints,
 }
 
 std::string
-routeClaimKey(const FabricTraversalActivationGroupView &activationGroup,
+routeClaimKey(const FabricTraversalRequesterGroupView &requesterGroup,
               PnrIndex capacityDimension) {
   std::vector<std::uint8_t> bytes;
-  const auto owner = canonicalFabricBytes(activationGroup.owner);
+  const auto owner = canonicalFabricBytes(requesterGroup.owner);
   bytes.reserve(20 + owner.size());
-  appendU32Be(bytes, static_cast<std::uint32_t>(activationGroup.kind));
-  appendU64Be(bytes, activationGroup.ordinal);
+  appendU32Be(bytes, static_cast<std::uint32_t>(requesterGroup.kind));
+  appendU64Be(bytes, requesterGroup.ordinal);
   appendU64Be(bytes, capacityDimension);
   bytes.insert(bytes.end(), owner.begin(), owner.end());
   return byteKey(bytes);
@@ -260,11 +276,10 @@ internReplicationGroup(llvm::StringMap<PnrIndex> &groups,
   return found->second;
 }
 
-bool matchesSwitchOwner(const FabricTraversalActivationGroupView &activation,
+bool matchesSwitchOwner(const FabricTraversalRequesterGroupView &requester,
                         const FabricSwitchTraversalPayload &payload) {
-  return activation.kind ==
-             FabricTraversalActivationGroupKind::SwitchRequester &&
-         activation.owner == FabricInventoryOwnerRef::of(payload.owner);
+  return requester.kind == FabricTraversalRequesterGroupKind::SwitchRequester &&
+         requester.owner == FabricInventoryOwnerRef::of(payload.owner);
 }
 
 llvm::Error
@@ -301,10 +316,14 @@ public:
   static llvm::Expected<FrozenSpatialPnrProblemHandle>
   build(const dataflow::CanonicalDataflowProgramView &dataflow,
         const TechMappingView &techMapping, const FabricArtifactView &fabric,
+        const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
         const ResolvedPnrConfigView &config,
         const SpatialMappingConstraintSetView &constraintSet) {
     if (llvm::Error error = validateInputs(dataflow, techMapping, fabric,
                                            config, constraintSet))
+      return std::move(error);
+    if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
+            fabric, physicalTiming))
       return std::move(error);
 
     auto objectiveProgram = MappingObjectiveProgram::get(
@@ -334,9 +353,13 @@ public:
     auto resources = detail::buildFrozenSpatialResourceIndex(fabric);
     if (!resources)
       return resources.takeError();
-    auto routing = buildRouting(fabric, *resources);
+    auto routing = buildRouting(fabric, physicalTiming, *resources);
     if (!routing)
       return routing.takeError();
+    auto localTransfers = detail::buildFrozenSpatialLocalTransferIndex(
+        dataflow, techMapping, fabric, *realizations, *transfers, *routing);
+    if (!localTransfers)
+      return localTransfers.takeError();
     auto ports = detail::buildFrozenSpatialPortIndex(
         dataflow, techMapping, fabric, *realizations, *transfers, *routing);
     if (!ports)
@@ -367,17 +390,23 @@ public:
         *routing, *handshake);
     if (!capacity)
       return capacity.takeError();
-    auto progressClosure = ::loom::mapping::deriveMappingProgressClosure(
+    auto recurrenceTiming = detail::SpatialRecurrenceTimingIndex::build(
+        dataflow, techMapping, fabric, *realizations, *memory, *transfers,
+        *handshake, (*schedulePressure)->analysis());
+    if (!recurrenceTiming)
+      return recurrenceTiming.takeError();
+    auto progressBasis = ::loom::mapping::deriveMappingDataflowProgressBasis(
         dataflow, techMapping.covers());
-    if (!progressClosure)
-      return progressClosure.takeError();
-    if (llvm::Error error =
-            verifyAggregate(*realizations, *memory, *transfers, *ports,
-                            *resources, *capacity, *routing, *handshake))
+    if (!progressBasis)
+      return progressBasis.takeError();
+    if (llvm::Error error = verifyAggregate(*realizations, *memory, *transfers,
+                                            *localTransfers, *ports, *resources,
+                                            *capacity, *routing, *handshake))
       return std::move(error);
 
     FrozenSpatialPnrCacheKey cacheKey =
-        deriveCacheKey(dataflow, techMapping, fabric, config, constraintSet);
+        deriveCacheKey(dataflow, techMapping, fabric, config, constraintSet,
+                       physicalTiming.digest());
     std::vector<DeterministicWorkBudgetEntry> workBudget =
         deriveDeterministicWorkBudgetView(config);
 
@@ -386,9 +415,10 @@ public:
         constraintSet.identity(), config, std::move(*objectiveProgram),
         std::move(workBudget), std::move(*constraints),
         std::move(*realizations), std::move(*memory), std::move(*transfers),
-        std::move(*ports), std::move(*resources), std::move(*capacity),
-        std::move(*routing), std::move(*handshake),
-        std::move(*schedulePressure), std::move(*progressClosure),
+        std::move(*localTransfers), std::move(*ports), std::move(*resources),
+        std::move(*capacity), std::move(*routing), std::move(*handshake),
+        std::move(*schedulePressure), std::move(*recurrenceTiming),
+        *progressBasis,
         std::move(*bindingRelations), std::move(*memoryConstraints),
         std::move(*tagConstraints), std::move(*routeConstraints), cacheKey));
   }
@@ -398,7 +428,8 @@ public:
                  const TechMappingView &techMapping,
                  const FabricArtifactView &fabric,
                  const ResolvedPnrConfigView &config,
-                 const SpatialMappingConstraintSetView &constraintSet) {
+                 const SpatialMappingConstraintSetView &constraintSet,
+                 const ComponentViewDigest &physicalTimingDigest) {
     std::vector<std::uint8_t> preimage;
     preimage.reserve(cacheKeyDomainSize + 2 * sizeof(std::uint32_t) + 512);
     preimage.insert(preimage.end(), cacheKeyDomain,
@@ -423,6 +454,8 @@ public:
                 importerSemanticIdentity);
     appendField(preimage, CacheField::NativeLayoutAbi, nativeLayoutAbi);
     appendU32Field(preimage, CacheField::PnrIndexWidth, getPnrIndexBits());
+    appendField(preimage, CacheField::PhysicalTimingProfileDigest,
+                physicalTimingDigest.bytes());
     return FrozenSpatialPnrCacheKey(llvm::SHA256::hash(preimage));
   }
 
@@ -430,6 +463,7 @@ public:
   verifyAggregate(const FrozenSpatialRealizationIndex &realizations,
                   const FrozenSpatialMemoryIndex &memory,
                   const FrozenSpatialTransferIndex &transfers,
+                  const FrozenSpatialLocalTransferIndex &localTransfers,
                   const FrozenSpatialPortIndex &ports,
                   const FrozenSpatialResourceIndex &resources,
                   const FrozenSpatialCapacityIndex &capacity,
@@ -451,6 +485,30 @@ public:
         realizations.memoryActorRealizations().size() !=
             realizations.memoryActors().size())
       return invalid("actor-owner reverse projections are incomplete");
+    if (localTransfers.domains().size() != transfers.logicalNets().size())
+      return invalid("local-transfer domains are incomplete");
+    for (auto [logicalNet, domain] :
+         llvm::enumerate(localTransfers.domains())) {
+      if (!rangeFits(domain.optionOffset, domain.optionCount,
+                     localTransfers.options().size()))
+        return invalid("local-transfer option slice is inconsistent");
+      for (const FrozenSpatialRegisterFifoTransferOption &option :
+           localTransfers.options(static_cast<PnrIndex>(logicalNet))) {
+        if (option.logicalNet != logicalNet ||
+            option.producerRealization >=
+                realizations.computeRealizations().size() ||
+            option.consumerRealization >=
+                realizations.computeRealizations().size() ||
+            option.producerPlacement >=
+                realizations.computePlacements().size() ||
+            option.consumerPlacement >=
+                realizations.computePlacements().size() ||
+            option.writeTraversal >= routing.traversals().size() ||
+            option.readTraversal >= routing.traversals().size() ||
+            option.writeTraversal == option.readTraversal)
+          return invalid("local-transfer option is inconsistent");
+      }
+    }
     if (llvm::Error error =
             FrozenSpatialMemoryIndexBuilder::verify(memory, realizations))
       return error;
@@ -718,6 +776,12 @@ public:
          llvm::enumerate(realizations.memoryRealizations())) {
       if (!rangeFits(realization.actorOffset, realization.actorCount,
                      realizations.memoryActors().size()) ||
+          !rangeFits(realization.externalIngressOffset,
+                     realization.externalIngressCount,
+                     realizations.memoryExternalIngresses().size()) ||
+          !rangeFits(realization.internalConnectionOffset,
+                     realization.internalConnectionCount,
+                     realizations.memoryInternalConnections().size()) ||
           !rangeFits(realization.placementOffset, realization.placementCount,
                      realizations.memoryPlacements().size()) ||
           realization.placementCount == 0)
@@ -730,7 +794,11 @@ public:
       for (const FrozenSpatialMemoryPlacement &placement :
            realizations.memoryPlacements().slice(realization.placementOffset,
                                                  realization.placementCount))
-        if (placement.realization != ordinal)
+        if (placement.realization != ordinal ||
+            (placement.schedule == ::fabric::Schedule::Temporal) !=
+                placement.residentContextCount.has_value() ||
+            (placement.residentContextCount &&
+             *placement.residentContextCount == 0))
           return invalid("memory placement slices are inconsistent");
     }
 
@@ -901,9 +969,9 @@ public:
       if (!index)
         return index.takeError();
       if (!seenRouteClaims
-               .try_emplace(routeClaimKey(claim.activationGroup,
-                                          claim.capacityDimension),
-                            *index)
+               .try_emplace(
+                   routeClaimKey(claim.requesterGroup, claim.capacityDimension),
+                   *index)
                .second)
         return invalid("route claim key is duplicated");
     }
@@ -1037,14 +1105,13 @@ public:
       }
       for (PnrIndex claimOrdinal : routing.traversalClaimKeys().slice(
                traversal.routeClaimOffset, traversal.routeClaimCount)) {
-        const FabricTraversalActivationGroupView &activation =
-            routing.routeClaims()[claimOrdinal].activationGroup;
-        if (activation.kind !=
-            FabricTraversalActivationGroupKind::SwitchRequester)
+        const FabricTraversalRequesterGroupView &requester =
+            routing.routeClaims()[claimOrdinal].requesterGroup;
+        if (requester.kind !=
+            FabricTraversalRequesterGroupKind::SwitchRequester)
           continue;
-        if (!switchPayload || !matchesSwitchOwner(activation, *switchPayload))
-          return invalid(
-              "switch requester activation disagrees with its traversal");
+        if (!switchPayload || !matchesSwitchOwner(requester, *switchPayload))
+          return invalid("switch requester group disagrees with its traversal");
       }
       if (routing.traversalReplicationGroups()[traversalOrdinal] !=
           expectedReplicationGroup)
@@ -1057,13 +1124,13 @@ public:
     return llvm::Error::success();
   }
 
-  static llvm::Error
-  revalidateCacheHit(const FrozenSpatialPnrProblem &problem,
-                     const dataflow::CanonicalDataflowProgramView &dataflow,
-                     const TechMappingView &techMapping,
-                     const FabricArtifactView &fabric,
-                     const ResolvedPnrConfigView &config,
-                     const SpatialMappingConstraintSetView &constraintSet) {
+  static llvm::Error revalidateCacheHit(
+      const FrozenSpatialPnrProblem &problem,
+      const dataflow::CanonicalDataflowProgramView &dataflow,
+      const TechMappingView &techMapping, const FabricArtifactView &fabric,
+      const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
+      const ResolvedPnrConfigView &config,
+      const SpatialMappingConstraintSetView &constraintSet) {
     if (llvm::Error error = validateInputs(dataflow, techMapping, fabric,
                                            config, constraintSet))
       return error;
@@ -1077,8 +1144,12 @@ public:
         problem.config().canonicalViewBytes() != config.canonicalViewBytes() ||
         problem.config().digest() != config.digest())
       return invalid("cache hit does not bind the exact PnR config view");
-    if (problem.cacheKey() !=
-        deriveCacheKey(dataflow, techMapping, fabric, config, constraintSet))
+    if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
+            fabric, physicalTiming))
+      return error;
+    if (problem.cacheKey() != deriveCacheKey(dataflow, techMapping, fabric,
+                                             config, constraintSet,
+                                             physicalTiming.digest()))
       return invalid("cache key does not match its dependency closure");
     return llvm::Error::success();
   }
@@ -1221,6 +1292,57 @@ private:
       auto actorCount = checked(actorCountContext, realization.actors.size());
       if (!actorCount)
         return actorCount.takeError();
+      const auto *engine = fabric.memoryEngineTemplate(realization.engine);
+      if (!engine)
+        return invalid("a memory realization names a foreign engine template");
+      auto externalIngressOffset = checked(
+          externalIngressOffsetContext, result.memoryExternalIngresses_.size());
+      if (!externalIngressOffset)
+        return externalIngressOffset.takeError();
+      if (engine->schedule == ::fabric::Schedule::Temporal) {
+        auto ingresses =
+            deriveTechMemoryExternalIngresses(realization, dataflow);
+        if (!ingresses)
+          return ingresses.takeError();
+        if (llvm::Error error = preflightAppend(
+                externalIngressCountContext,
+                result.memoryExternalIngresses_.size(), ingresses->size()))
+          return error;
+        result.memoryExternalIngresses_.insert(
+            result.memoryExternalIngresses_.end(),
+            std::make_move_iterator(ingresses->begin()),
+            std::make_move_iterator(ingresses->end()));
+      }
+      auto externalIngressCount = checked(
+          externalIngressCountContext,
+          result.memoryExternalIngresses_.size() - *externalIngressOffset);
+      if (!externalIngressCount)
+        return externalIngressCount.takeError();
+      auto internalConnectionOffset =
+          checked(internalConnectionOffsetContext,
+                  result.memoryInternalConnections_.size());
+      if (!internalConnectionOffset)
+        return internalConnectionOffset.takeError();
+      std::map<std::vector<std::uint8_t>,
+               FabricMemoryEngineTemplateInternalConnectionRef>
+          selectedInternalConnections;
+      for (const TechMemoryInternalEdgeView &edge : realization.internalEdges)
+        selectedInternalConnections.try_emplace(
+            canonicalFabricBytes(edge.connection), edge.connection);
+      if (llvm::Error error =
+              preflightAppend(internalConnectionCountContext,
+                              result.memoryInternalConnections_.size(),
+                              selectedInternalConnections.size()))
+        return error;
+      for (const auto &[key, connection] : selectedInternalConnections) {
+        (void)key;
+        result.memoryInternalConnections_.push_back(connection);
+      }
+      auto internalConnectionCount = checked(
+          internalConnectionCountContext,
+          result.memoryInternalConnections_.size() - *internalConnectionOffset);
+      if (!internalConnectionCount)
+        return internalConnectionCount.takeError();
       auto placementOffset =
           checked(placementOffsetContext, result.memoryPlacements_.size());
       if (!placementOffset)
@@ -1240,6 +1362,9 @@ private:
         if (!schedule)
           return invalid(
               "a Fabric memory occurrence has no scheduling contract");
+        if (*schedule != engine->schedule)
+          return invalid(
+              "a memory occurrence disagrees with its engine schedule");
 
         bool actorsAdmitted = true;
         for (const TechMemoryActorView &actor : realization.actors) {
@@ -1262,8 +1387,9 @@ private:
         if (llvm::Error error = preflightAppend(
                 placementCountContext, result.memoryPlacements_.size(), 1))
           return error;
-        result.memoryPlacements_.push_back(
-            {*realizationIndex, memory, *schedule});
+        result.memoryPlacements_.push_back({*realizationIndex, memory,
+                                            *schedule,
+                                            engine->residentContextCount});
       }
       const std::size_t placementCountValue =
           result.memoryPlacements_.size() - *placementOffset;
@@ -1273,18 +1399,34 @@ private:
       auto placementCount = checked(placementCountContext, placementCountValue);
       if (!placementCount)
         return placementCount.takeError();
-      result.memoryRealizations_.push_back({subject, realization.engine,
-                                            *actorOffset, *actorCount,
-                                            *placementOffset, *placementCount});
+      result.memoryRealizations_.push_back(
+          {subject, realization.engine, *actorOffset, *actorCount,
+           *externalIngressOffset, *externalIngressCount,
+           *internalConnectionOffset, *internalConnectionCount,
+           *placementOffset, *placementCount});
     }
     return result;
   }
 
-  static llvm::Expected<FrozenSpatialRoutingGraph>
-  buildRouting(const FabricArtifactView &fabric,
-               const FrozenSpatialResourceIndex &resources) {
+  static llvm::Expected<FrozenSpatialRoutingGraph> buildRouting(
+      const FabricArtifactView &fabric,
+      const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
+      const FrozenSpatialResourceIndex &resources) {
+    if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
+            fabric, physicalTiming))
+      return std::move(error);
     const auto traversalViews = fabric.physicalTraversals();
     FrozenSpatialRoutingGraph result;
+    result.requiredCombinationalDelayQuanta_ =
+        physicalTiming.requiredCombinationalDelayQuanta();
+    result.physicalTimingProfileDigestBytes_ = physicalTiming.digest().bytes();
+    result.physicalTimingProfileKind_ = physicalTiming.kind();
+    result.physicalTimingProviderIdentity_ =
+        physicalTiming.providerIdentity().str();
+    result.physicalTimingTechnologyIdentity_ =
+        physicalTiming.technologyIdentity().str();
+    result.physicalTimingCharacterizationIdentity_ =
+        physicalTiming.characterizationIdentity().str();
     auto topology = freezeEndpointRoutingTopology(fabric);
     if (!topology)
       return topology.takeError();
@@ -1314,12 +1456,23 @@ private:
         return invalid("the frozen use-pattern inventory has a duplicate");
     }
     llvm::StringMap<PnrIndex> routeClaimByKey;
+    llvm::StringMap<const ::loom::fabric::FabricTraversalPhysicalTiming *>
+        physicalTimingByTraversal;
+    for (const auto &timing : physicalTiming.traversals())
+      if (!physicalTimingByTraversal
+               .try_emplace(refKey(timing.traversal), &timing)
+               .second)
+        return invalid("the physical timing profile repeats a traversal");
     result.traversals_.reserve(traversalViews.size());
     for (auto [traversalOrdinal, traversal] : llvm::enumerate(traversalViews)) {
       const EndpointRoutingTraversal &routingTraversal =
           result.topology_.traversals()[traversalOrdinal];
       if (routingTraversal.reference != traversal.reference)
         return invalid("routing topology traversal order is not canonical");
+      const auto physicalTimingFound =
+          physicalTimingByTraversal.find(refKey(traversal.reference));
+      if (physicalTimingFound == physicalTimingByTraversal.end())
+        return invalid("routing traversal has no physical timing record");
       auto resourceStateOffset =
           checked(traversalResourceStateOffsetContext,
                   result.traversalResourceStates_.size());
@@ -1357,18 +1510,18 @@ private:
               "a traversal use is absent from the resource inventory");
         const FrozenSpatialUsePattern &pattern =
             resources.usePatterns()[patternFound->second];
-        if (use.activationGroup.owner != pattern.reference.owner.catalog())
-          return invalid("a traversal activation names a foreign owner");
-        switch (use.activationGroup.kind) {
-        case FabricTraversalActivationGroupKind::UsePattern:
-          if (use.activationGroup.ordinal != pattern.reference.ordinal)
+        if (use.requesterGroup.owner != pattern.reference.owner.catalog())
+          return invalid("a traversal requester names a foreign owner");
+        switch (use.requesterGroup.kind) {
+        case FabricTraversalRequesterGroupKind::UsePattern:
+          if (use.requesterGroup.ordinal != pattern.reference.ordinal)
             return invalid(
-                "a traversal activation disagrees with its use pattern");
+                "a traversal requester disagrees with its use pattern");
           break;
-        case FabricTraversalActivationGroupKind::SwitchRequester:
-          if (use.activationGroup.ordinal != pattern.requester)
+        case FabricTraversalRequesterGroupKind::SwitchRequester:
+          if (use.requesterGroup.ordinal != pattern.requester)
             return invalid(
-                "a switch traversal activation disagrees with its requester");
+                "a switch traversal requester disagrees with its pattern");
           break;
         }
 
@@ -1394,7 +1547,7 @@ private:
                            llvm::toString(qCost.takeError()));
 
           const std::string key =
-              routeClaimKey(use.activationGroup, *capacityDimension);
+              routeClaimKey(use.requesterGroup, *capacityDimension);
           auto found = routeClaimByKey.find(key);
           if (found == routeClaimByKey.end()) {
             auto routeClaim =
@@ -1402,9 +1555,8 @@ private:
             if (!routeClaim)
               return routeClaim.takeError();
             found = routeClaimByKey.try_emplace(key, *routeClaim).first;
-            result.routeClaims_.push_back({use.activationGroup,
-                                           *capacityDimension, claim.amount,
-                                           *qCost});
+            result.routeClaims_.push_back(
+                {use.requesterGroup, *capacityDimension, claim.amount, *qCost});
           } else {
             const FrozenSpatialRouteClaim &existing =
                 result.routeClaims_[found->second];
@@ -1434,7 +1586,12 @@ private:
           {routingTraversal.reference, routingTraversal.sourceOffset,
            routingTraversal.sourceCount, routingTraversal.destinationOffset,
            routingTraversal.destinationCount, *resourceStateOffset,
-           *resourceStateCount, *routeClaimOffset, *routeClaimCount});
+           *resourceStateCount, *routeClaimOffset, *routeClaimCount,
+           traversal.timing.architecturalLatencyCycles,
+           traversal.timing.releaseLatencyCycles,
+           traversal.timing.minimumInitiationIntervalCycles,
+           physicalTimingFound->second->delayQuanta,
+           physicalTimingFound->second->boundary});
     }
 
     result.capacityRouteClaimOffsets_.assign(
@@ -1540,10 +1697,37 @@ llvm::Expected<FrozenSpatialPnrProblemHandle>
 loom::pnr::freezeSpatialPnrProblem(
     const dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
+    const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
     const ResolvedPnrConfigView &config,
     const SpatialMappingConstraintSetView &constraints) {
-  return FrozenSpatialPnrProblemBuilder::build(dataflow, techMapping, fabric,
-                                               config, constraints);
+  return FrozenSpatialPnrProblemBuilder::build(
+      dataflow, techMapping, fabric, physicalTiming, config, constraints);
+}
+
+llvm::Expected<FrozenSpatialPnrProblemHandle>
+loom::pnr::freezeSpatialPnrProblem(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping, const FabricArtifactView &fabric,
+    const ResolvedPnrConfigView &config,
+    const SpatialMappingConstraintSetView &constraints) {
+  auto physicalTiming =
+      ::loom::fabric::projectNormalizedFabricPhysicalTimingProfile(fabric);
+  if (!physicalTiming)
+    return physicalTiming.takeError();
+  return freezeSpatialPnrProblem(dataflow, techMapping, fabric, *physicalTiming,
+                                 config, constraints);
+}
+
+llvm::Error loom::pnr::revalidateFrozenSpatialPnrCacheHit(
+    const FrozenSpatialPnrProblem &problem,
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping, const FabricArtifactView &fabric,
+    const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
+    const ResolvedPnrConfigView &config,
+    const SpatialMappingConstraintSetView &constraints) {
+  return FrozenSpatialPnrProblemBuilder::revalidateCacheHit(
+      problem, dataflow, techMapping, fabric, physicalTiming, config,
+      constraints);
 }
 
 llvm::Error loom::pnr::revalidateFrozenSpatialPnrCacheHit(
@@ -1552,6 +1736,11 @@ llvm::Error loom::pnr::revalidateFrozenSpatialPnrCacheHit(
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
     const ResolvedPnrConfigView &config,
     const SpatialMappingConstraintSetView &constraints) {
-  return FrozenSpatialPnrProblemBuilder::revalidateCacheHit(
-      problem, dataflow, techMapping, fabric, config, constraints);
+  auto physicalTiming =
+      ::loom::fabric::projectNormalizedFabricPhysicalTimingProfile(fabric);
+  if (!physicalTiming)
+    return physicalTiming.takeError();
+  return revalidateFrozenSpatialPnrCacheHit(problem, dataflow, techMapping,
+                                            fabric, *physicalTiming, config,
+                                            constraints);
 }

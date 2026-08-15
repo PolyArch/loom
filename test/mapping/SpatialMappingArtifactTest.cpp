@@ -3,6 +3,7 @@
 #include "ADG/MemoryLibrary.h"
 #include "CgraAdmissionTestSupport.h"
 #include "SpatialCandidateSelectionTestSupport.h"
+#include "TemporalPeTagDomainTestSupport.h"
 #include "TechMappingCandidateTestSupport.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -23,8 +24,11 @@
 #include "Fabric/IR/UsePatternValue.h"
 #include "Fabric/Identity/FabricMemoryConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricSemanticFieldRelation.h"
+#include "ConfiguredHardwareProjectionInternal.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/Inspection/SpatialMappingInspection.h"
 #include "Mapping/Tech/TechMappingConfig.h"
@@ -33,6 +37,7 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialCanonicalSeed.h"
+#include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialGlobalRoutingClosure.h"
 #include "PnR/SpatialMappingMaterializer.h"
 #include "PnR/SpatialPathFinderRouter.h"
@@ -197,8 +202,8 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-dataflow::CanonicalDataflowArtifact
-buildMemoryDataflow(mlir::MLIRContext &context) {
+dataflow::CanonicalDataflowArtifact buildMemoryDataflow(
+    mlir::MLIRContext &context, bool splitExposures = false) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   dataflow.graph private @load(
@@ -234,6 +239,11 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
                                                         &context);
   if (!module)
     fail("cannot parse memory Dataflow fixture");
+  if (splitExposures) {
+    auto graph = *module->getOps<::dataflow::GraphOp>().begin();
+    auto result = *graph.getBody().front().getOps<::dataflow::GraphReturnOp>().begin();
+    result.getMemoriesMutable().slice(0, 1).assign(graph.getBody().front().getArgument(2));
+  }
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
@@ -418,6 +428,14 @@ buildTemporalFabric(loom::ArtifactStore &store) {
 }
 
 loom::fabric::FinalizedFabricRoot
+buildTemporalSwitchPackingFabric(loom::ArtifactStore &store) {
+  auto design = loom::test::buildTemporalSwitchPackingFabric(store);
+  if (design.roots().size() != 1)
+    fail("Temporal switch fixture did not publish exactly one root");
+  return design.roots().front();
+}
+
+loom::fabric::FinalizedFabricRoot
 buildBoundaryTemporalFabric(loom::ArtifactStore &store) {
   using namespace loom::adg;
 
@@ -484,69 +502,7 @@ void temporalPeTagMatchDomainsAreIngressLocal() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   const auto fabric = buildBoundaryTemporalFabric(store);
-  const auto domains = fabric.view().physicalTagMatchDomains();
-  if (fabric.view().peOccurrences().size() != 1 || domains.size() != 5)
-    fail("temporal PE did not expose one tag match domain per ingress");
-
-  const auto owner = loom::fabric::FabricTransportEndpointOwnerRef::of(
-      fabric.view().peOccurrences().front());
-  std::vector<std::uint64_t> observed;
-  std::uint32_t ingressAssignments = 0;
-  std::uint32_t writerAssignments = 0;
-  for (std::uint64_t ordinal = 0;
-       ordinal < fabric.view().transportEndpointCount(owner); ++ordinal) {
-    const loom::fabric::FabricTransportEndpointRef endpoint{owner, ordinal};
-    const auto domain = fabric.view().transportEndpointTagMatchDomain(endpoint);
-    const auto assignment = fabric.view().physicalTagAssignmentPoint(endpoint);
-    if (!assignment)
-      fail("temporal PE tagged endpoint has no assignment pattern");
-    const auto *contract = fabric.view().resourceContract(
-        loom::fabric::FabricInventoryOwnerRef::of(
-            fabric.view().peOccurrences().front()));
-    if (!contract ||
-        assignment->pattern.owner.catalog() !=
-            loom::fabric::FabricInventoryOwnerRef::of(
-                fabric.view().peOccurrences().front()) ||
-        assignment->pattern.ordinal >= contract->usePatternCount())
-      fail("temporal PE assignment pattern has the wrong owner");
-    const auto assignmentPattern = contract->usePattern(
-        ::fabric::UsePatternKey(assignment->pattern.ordinal));
-    if (!assignmentPattern.claims.empty() || assignmentPattern.commit ||
-        !assignmentPattern.parameters.empty() ||
-        assignmentPattern.sharingAssignments !=
-            llvm::ArrayRef<::fabric::UsePatternValueSchema>(
-                {::fabric::UsePatternValueSchema::physicalTag(4)}))
-      fail("temporal PE assignment pattern is not owner-exact");
-    if (fabric.view().transportEndpointDirection(endpoint) ==
-        loom::fabric::FabricPortDirection::Input) {
-      if (assignment->kind !=
-          loom::fabric::FabricPhysicalTagAssignmentPointKind::Ingress)
-        fail("temporal PE ingress acquired a writer assignment");
-      ++ingressAssignments;
-      if (!domain || *domain >= domains.size())
-        fail("temporal PE ingress has no tag match domain");
-      const auto &record = domains[*domain];
-      if (record.kind != loom::fabric::FabricPhysicalTagMatchDomainKind::
-                             TemporalPeIngress ||
-          record.owner != loom::fabric::FabricInventoryOwnerRef::of(
-                              fabric.view().peOccurrences().front()) ||
-          record.ingress != endpoint || record.tagWidthBits != 4)
-        fail("temporal PE ingress tag match domain changed owner or width");
-      observed.push_back(*domain);
-    } else {
-      if (assignment->kind !=
-          loom::fabric::FabricPhysicalTagAssignmentPointKind::Writer)
-        fail("temporal PE output acquired an ingress assignment");
-      ++writerAssignments;
-      if (domain)
-        fail("temporal PE output became a tag match domain");
-    }
-  }
-  if (ingressAssignments != 5 || writerAssignments != 4)
-    fail("temporal PE assignment-point inventory changed shape");
-  llvm::sort(observed);
-  if (std::adjacent_find(observed.begin(), observed.end()) != observed.end())
-    fail("two temporal PE ingresses share a tag match domain");
+  requireSuccess(loom::test::verifyTemporalPeIngressTagDomains(fabric));
 }
 
 mlir::OwningOpRef<mlir::ModuleOp>
@@ -561,7 +517,8 @@ parseSpatial(mlir::MLIRContext &context,
 
 void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
                                 loom::pnr::SpatialCandidateScratch &scratch,
-                                bool requireLocalTagInterference) {
+                                bool requireLocalTagInterference,
+                                bool requireDistinctBoundaryEndpoints) {
   const auto &problem = candidate.problem();
   const auto realizations = problem.realizations().computeRealizations();
   if (realizations.size() != 1)
@@ -588,6 +545,7 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
       move.setComputeBinding(0, legal->placement, legal->instructionContext));
   std::vector<loom::pnr::PnrIndex> selectedAttachments(
       problem.ports().portDemands().size());
+  std::vector<loom::pnr::PnrIndex> selectedEndpoints;
   for (auto [demandOrdinal, demand] :
        llvm::enumerate(problem.ports().portDemands())) {
     const auto &domain =
@@ -595,6 +553,20 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
             .placementDomains()[demand.placementDomainOffset +
                                 legal->placement - realization.placementOffset];
     selectedAttachments[demandOrdinal] = domain.attachmentOptionOffset;
+    if (requireLocalTagInterference)
+      continue;
+    const auto options = problem.ports().attachmentOptions();
+    const auto available = options.slice(domain.attachmentOptionOffset,
+                                         domain.attachmentOptionCount);
+    const auto found = llvm::find_if(available, [&](const auto &option) {
+      return !llvm::is_contained(selectedEndpoints, option.endpoint);
+    });
+    if (found == available.end())
+      fail("Temporal route fixture has no distinct PE ingress assignment");
+    selectedAttachments[demandOrdinal] =
+        domain.attachmentOptionOffset +
+        static_cast<loom::pnr::PnrIndex>(found - available.begin());
+    selectedEndpoints.push_back(found->endpoint);
   }
   if (requireLocalTagInterference) {
     bool foundSharedIngress = false;
@@ -637,7 +609,7 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
     requireSuccess(move.setPortAttachment(
         static_cast<loom::pnr::PnrIndex>(demandOrdinal), option));
   requireSuccess(loom::test::selectReachableGraphBoundaries(
-      candidate, move, selectedAttachments));
+      candidate, move, selectedAttachments, requireDistinctBoundaryEndpoints));
   if (!take(move.close()))
     fail("legal Temporal binding closes a selected handshake cycle");
   requireSuccess(move.commit());
@@ -645,7 +617,9 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
 
 void completeCandidateRoundTrip(
     bool temporal, bool boundaryWrapped = false, bool forceTagConflict = false,
-    ComputeContractKind contractKind = ComputeContractKind::OneCycleElastic) {
+    ComputeContractKind contractKind = ComputeContractKind::OneCycleElastic,
+    bool switchPackingFabric = false,
+    bool requireSeparatedSwitchRows = false) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   llvm::SmallString<128> blobPath(directory.path());
@@ -660,8 +634,10 @@ void completeCandidateRoundTrip(
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
   const auto fabric = boundaryWrapped ? buildBoundaryTemporalFabric(store)
-                      : temporal      ? buildTemporalFabric(store)
-                                      : buildFabric(store, contractKind);
+                      : switchPackingFabric
+                          ? buildTemporalSwitchPackingFabric(store)
+                      : temporal ? buildTemporalFabric(store)
+                                 : buildFabric(store, contractKind);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 1;
@@ -701,15 +677,22 @@ void completeCandidateRoundTrip(
     search.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
     const auto generatorConfig =
         take(loom::pnr::projectResolvedSpatialPnrConfigView(generatorResolved));
+    const auto physicalTiming =
+        take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+            fabric.view()));
+    const auto physicalTimingReference = take(
+        loom::fabric::publishFabricPhysicalTimingProfile(physicalTiming,
+                                                         store));
     const auto typedGeneratorInputs =
         take(loom::dse::bindSpatialPnrCandidateGeneratorInputs(
             dataflowReference, candidates->candidates.front(),
-            fabric.reference(), constraints.reference()));
+            fabric.reference(), physicalTimingReference,
+            constraints.reference()));
     const auto generatorBinding = take(
         loom::dse::resolveSpatialPnrCandidateGeneratorBinding(generatorConfig));
     const loom::pnr::SpatialPnrGenerationInputs generatorInputs{
-        dataflow,        tech.view(),        fabric.view(),
-        generatorConfig, constraints.view(), store};
+        dataflow, tech.view(), fabric.view(), physicalTiming, generatorConfig,
+        constraints.view(), store};
     auto generatedSpatial = loom::dse::invokeSpatialPnrCandidateGenerator(
         typedGeneratorInputs, generatorBinding, store);
     const auto *generated =
@@ -813,7 +796,7 @@ void completeCandidateRoundTrip(
     const auto wrongDomainConfig =
         take(loom::pnr::projectResolvedSystemPnrConfigView(generatorResolved));
     const loom::pnr::SpatialPnrGenerationInputs wrongDomainInputs{
-        dataflow,          tech.view(),        fabric.view(),
+        dataflow, tech.view(), fabric.view(), physicalTiming,
         wrongDomainConfig, constraints.view(), store};
     const auto wrongDomainOutcome =
         loom::pnr::generateSpatialMappings(wrongDomainInputs);
@@ -853,7 +836,11 @@ void completeCandidateRoundTrip(
     }
     loom::pnr::SpatialCandidateScratch candidateScratch;
     requireSuccess(candidateScratch.prepare(*problem));
-    selectLegalTemporalBinding(*candidate, candidateScratch, boundaryWrapped);
+    selectLegalTemporalBinding(*candidate, candidateScratch,
+                               boundaryWrapped || forceTagConflict ||
+                                   requireSeparatedSwitchRows,
+                               switchPackingFabric &&
+                                   !requireSeparatedSwitchRows);
     if (forceTagConflict) {
       auto costs = take(loom::pnr::SpatialRouteCostState::create(*candidate));
       loom::pnr::SpatialNetRouterScratch router;
@@ -999,19 +986,58 @@ void completeCandidateRoundTrip(
   }
 
   bool observedSharedLocalDomain = false;
+  bool observedPackedSwitchDomain = false;
+  bool observedSeparatedSwitchDomain = false;
   std::size_t maximumLocalDomainOccupancy = 0;
-  for (loom::pnr::PnrIndex domain = 0;
-       domain < problem->routing().tagContinuity().matchDomains().size();
-       ++domain) {
+  const auto matchDomains = problem->routing().tagContinuity().matchDomains();
+  for (loom::pnr::PnrIndex domain = 0; domain < matchDomains.size(); ++domain) {
     const auto members = tagAssignments.domainSegments(domain);
     maximumLocalDomainOccupancy =
         std::max(maximumLocalDomainOccupancy, members.size());
     observedSharedLocalDomain |= members.size() > 1;
+    std::size_t distinctValues = 0;
+    for (std::size_t position = 0; position != members.size(); ++position) {
+      const loom::pnr::PnrIndex member = members[position];
+      if (llvm::none_of(members.take_front(position),
+                        [&](loom::pnr::PnrIndex prior) {
+                          return tagAssignments.values()[prior] ==
+                                 tagAssignments.values()[member];
+                        }))
+        ++distinctValues;
+    }
+    const bool temporalSwitch =
+        matchDomains[domain].kind ==
+        loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable;
+    if (temporalSwitch) {
+      if (candidate->tagDomainResidentCount(domain) != distinctValues ||
+          candidate->tagDomainResidentCapacityOveruse(domain) != 0)
+        fail("Temporal switch residency did not count packed tag rows");
+      observedPackedSwitchDomain |= members.size() > distinctValues;
+      observedSeparatedSwitchDomain |= distinctValues > 1;
+      continue;
+    }
     for (auto [position, lhs] : llvm::enumerate(members))
       for (loom::pnr::PnrIndex rhs : llvm::drop_begin(members, position + 1))
         if (!forceTagConflict &&
             tagAssignments.values()[lhs] == tagAssignments.values()[rhs])
           fail("one local Physical Tag match domain contains a collision");
+  }
+  if (switchPackingFabric && !forceTagConflict &&
+      !requireSeparatedSwitchRows && !observedPackedSwitchDomain)
+    fail("Temporal route fixture did not pack compatible switch segments");
+  if (requireSeparatedSwitchRows && !observedSeparatedSwitchDomain)
+    fail("Temporal route fixture did not select distinct resident rows");
+  if (switchPackingFabric && forceTagConflict) {
+    const bool observedSwitchConflict = llvm::any_of(
+        llvm::seq<loom::pnr::PnrIndex>(0, matchDomains.size()),
+        [&](loom::pnr::PnrIndex domain) {
+          return matchDomains[domain].kind ==
+                     loom::fabric::FabricPhysicalTagMatchDomainKind::
+                         TemporalSwitchTable &&
+                 candidate->tagDomainConflictCount(domain) != 0;
+        });
+    if (!observedSwitchConflict)
+      fail("incompatible Temporal switch signatures did not conflict");
   }
   if (boundaryWrapped && !observedSharedLocalDomain)
     fail(
@@ -1289,6 +1315,16 @@ void completeCandidateRoundTrip(
     fail("cold Spatial Mapping measure disagrees with Candidate state");
 
   if (temporal) {
+    const auto operandQueueGroups =
+        take(loom::mapping::deriveSpatialPeOperandQueueMatchGroups(
+            tech.view(), fabric.view(), imported.view().computeBindings(),
+            imported.view().routeTrees(), imported.view().resourceUses(),
+            imported.view().physicalTagSegments()));
+    if (operandQueueGroups.empty() ||
+        llvm::any_of(operandQueueGroups, [](const auto &group) {
+          return group.matches.empty() || group.tag.getBitWidth() != 4;
+        }))
+      fail("Temporal SpatialMapping lost its operand queue match groups");
     bool observedEnqueue = false;
     bool observedTransition = false;
     for (const auto &use : imported.view().resourceUses()) {
@@ -1304,6 +1340,48 @@ void completeCandidateRoundTrip(
     }
     if (!observedEnqueue || !observedTransition)
       fail("Temporal SpatialMapping round trip lost queue or operation uses");
+    const auto switchRows =
+        take(loom::mapping::deriveSpatialTemporalSwitchPackedRows(
+            fabric.view(), imported.view().routeTrees(),
+            imported.view().resourceUses(),
+            imported.view().physicalTagSegments()));
+    std::vector<loom::fabric::FabricSwitchOccurrenceRef> configuredSwitches;
+    for (const auto &row : switchRows)
+      if (!llvm::is_contained(configuredSwitches, row.occurrence))
+        configuredSwitches.push_back(row.occurrence);
+    for (const auto occurrence : configuredSwitches) {
+      std::vector<loom::fabric::FabricTemporalSwitchRouteEntry> entries;
+      for (const auto &row : switchRows)
+        if (row.occurrence == occurrence)
+          entries.push_back({row.tag, row.traversals});
+      const loom::fabric::FabricSemanticConfigFieldRef field{
+          loom::fabric::FabricConfigurationOwnerRef(
+              loom::fabric::FabricInventoryOwnerRef::of(occurrence)),
+          0};
+      const auto slot = take(
+          loom::mapping::detail::resolveConfiguredHardwareSlot(fabric.view(),
+                                                               field));
+      const auto expected = take(loom::fabric::encodeTemporalSwitchConfiguration(
+          fabric.view(), field, entries));
+      const auto configured = llvm::find_if(
+          imported.view().configuredHardware().fields(),
+          [&](const auto &candidate) { return candidate.slot == slot; });
+      if (configured == imported.view().configuredHardware().fields().end() ||
+          !configured->value.bytes().equals(expected.bytes()))
+        fail("configured hardware diverged from Fabric switch rows");
+    }
+    if (switchPackingFabric && !requireSeparatedSwitchRows &&
+        llvm::none_of(switchRows, [](const auto &row) {
+          return row.signatures.size() > 1;
+        }))
+      fail("strict SpatialMapping did not preserve a packed switch row");
+    if (requireSeparatedSwitchRows && switchRows.size() < 2)
+      fail("strict SpatialMapping merged distinct switch rows");
+    if (switchPackingFabric)
+      loom::test::exerciseCgraAdmission(
+          dataflowReference, fabric.reference(), finalized.reference(),
+          buildTemporalFabric(store).reference(), store, blobs, true, false,
+          requireSeparatedSwitchRows);
   }
 
   if (boundaryWrapped) {
@@ -1417,11 +1495,11 @@ void completeCandidateRoundTrip(
     fail("SpatialMapping finalized without a required ResourceUse");
 }
 
-void completeMemoryCandidateRoundTrip(bool temporal) {
+void completeMemoryCandidateRoundTrip(bool temporal, bool splitExposures = false) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
-  auto dataflowArtifact = buildMemoryDataflow(context);
+  auto dataflowArtifact = buildMemoryDataflow(context, splitExposures);
   const auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
@@ -1450,6 +1528,12 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
       loom::test::buildSpatialPnrTestResolvedConfig()));
   auto problem = take(loom::pnr::freezeSpatialPnrProblem(
       dataflow, tech.view(), fabric.view(), pnrConfig, constraints.view()));
+  if (splitExposures) {
+    const auto unsupported = loom::pnr::unsupportedSpatialExactRepairDomain(*problem);
+    if (!unsupported || !llvm::StringRef(*unsupported).contains("exposure-provider"))
+      fail("CpSat exact-repair preflight admitted unsupported exposure capacity");
+    return;
+  }
   auto candidate = take(loom::pnr::createCanonicalSpatialCandidate(problem));
   loom::test::exerciseSpatialMemoryActionDomain(problem, *candidate);
   loom::pnr::SpatialCandidateScratch candidateScratch;
@@ -1757,14 +1841,36 @@ void completeMemoryCandidateRoundTrip(bool temporal) {
     // Resident contexts of one operation port are interchangeable, so the
     // ordinal is derived from the canonical order of the actors that resolve
     // to the port. This fixture places one actor there, which takes the first.
-    const auto *context =
+    const auto *residentContext =
         std::get_if<loom::fabric::FabricMemoryOperationContextRef>(
             &operation.placement);
-    if (!context || context->ordinal != 0)
+    if (!residentContext || residentContext->ordinal != 0)
       fail("Temporal memory placement lost its derived resident context");
-    if (context->ordinal >= active->operationRows.size() ||
-        !active->operationRows[context->ordinal])
+    if (residentContext->ordinal >= active->operationRows.size() ||
+        !active->operationRows[residentContext->ordinal])
       fail("Temporal memory configuration selected the wrong resident row");
+
+    auto noncanonicalRow = parseSpatial(context, finalized.canonicalBytes());
+    if (!noncanonicalRow)
+      fail("cannot reparse Temporal memory row fixture");
+    auto noncanonicalRoot =
+        *noncanonicalRow->getOps<::mapping::SpatialOp>().begin();
+    std::optional<::mapping::AddressedMemoryOperationOp> operationToMutate;
+    noncanonicalRoot.walk([&](::mapping::AddressedMemoryOperationOp entry) {
+      operationToMutate = entry;
+    });
+    if (!operationToMutate)
+      fail("Temporal memory fixture has no addressed operation");
+    const loom::fabric::FabricMemoryOperationContextRef laterContext{
+        residentContext->port, residentContext->ordinal + 1};
+    (*operationToMutate)
+        ->setAttr(
+            "placement",
+            fabricReferenceAttr<::mapping::FabricMemoryOperationContextRefAttr>(
+                &context, laterContext));
+    if (!rejected(loom::mapping::verifySpatialMappingBase(
+            noncanonicalRoot, dataflow, tech.view(), fabric.view())))
+      fail("SpatialMapping accepted a noncanonical Temporal memory row");
   } else if (!std::holds_alternative<
                  loom::fabric::FabricMemoryOperationPortRef>(
                  operation.placement)) {
@@ -1877,10 +1983,17 @@ int main() {
   completeCandidateRoundTrip(false, false, false,
                              ComputeContractKind::Transparent);
   completeCandidateRoundTrip(true);
+  completeCandidateRoundTrip(true, false, false,
+                             ComputeContractKind::OneCycleElastic, true);
+  completeCandidateRoundTrip(true, false, false,
+                             ComputeContractKind::OneCycleElastic, true, true);
+  completeCandidateRoundTrip(true, false, true,
+                             ComputeContractKind::OneCycleElastic, true);
   completeCandidateRoundTrip(true, true);
   completeCandidateRoundTrip(true, true, true);
   completeMemoryCandidateRoundTrip(false);
   completeMemoryCandidateRoundTrip(true);
+  completeMemoryCandidateRoundTrip(false, true);
   llvm::outs() << "spatial mapping artifact tests passed\n";
   return 0;
 }

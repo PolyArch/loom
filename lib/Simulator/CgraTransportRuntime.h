@@ -54,6 +54,12 @@ public:
       const SpatialEventCoordinate &coordinate,
       llvm::MutableArrayRef<GraphIngressEmission> emissions);
 
+  /// Applies the exact logical-input removals of committed actor transitions
+  /// to the Fabric-owned Temporal PE operand allocation units. Canonical actor
+  /// handshake cases own the dequeue set; this runtime owns only occupancy.
+  llvm::Error
+  acceptActorCommits(llvm::ArrayRef<CgraActorLifecycleEvent> events);
+
   llvm::Expected<std::vector<CgraTransportCompletion>>
   acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
 
@@ -83,6 +89,7 @@ private:
     mlir::Value observation;
     std::uint64_t physicalUseOffset = 0;
     std::uint32_t physicalUseCount = 0;
+    std::uint64_t operandQueueBinding = invalidCgraTransportOrdinal;
   };
 
   struct TransferBinding final {
@@ -129,8 +136,12 @@ private:
     Token token;
     bool arrivalScheduled = false;
     bool publicationScheduled = false;
+    bool publicationReady = false;
     bool published = false;
+    std::uint64_t publicationGroup = invalidCgraTransportOrdinal;
     bool consumedRequested = false;
+    bool operandCapacityReserved = false;
+    bool operandCapacityBlocked = false;
     std::uint32_t producedPermitted = 0;
     std::uint32_t producedRetired = 0;
     std::uint32_t traversalPermitted = 0;
@@ -177,6 +188,7 @@ private:
     std::uint64_t bindingOrdinal = 0;
     std::uint64_t occurrenceOrdinal = 0;
     Token *token = nullptr;
+    std::uint64_t publicationGroup = invalidCgraTransportOrdinal;
   };
 
   struct PendingActionTransfer final {
@@ -222,6 +234,26 @@ private:
     bool touched = false;
   };
 
+  struct OperandQueueUnitBinding final {
+    ::loom::fabric::FabricPeOccurrenceRef pe;
+    std::uint32_t allocationUnit = 0;
+    std::uint32_t capacity = 0;
+    std::uint32_t occupancy = 0;
+    std::uint32_t reservations = 0;
+  };
+
+  struct OperandQueueBinding final {
+    ::fabric::LogicalOperandQueueKey queue;
+    ChannelOrdinal channel = 0;
+    std::uint64_t unitBinding = invalidCgraTransportOrdinal;
+    std::uint32_t occupancy = 0;
+  };
+
+  struct PublicationGroup final {
+    bool active = false;
+    std::vector<std::uint64_t> transferSlots;
+  };
+
   CgraTransportRuntime(
       const CgraFrozenExecutionPlan &plan, SimulatorState &state,
       CgraPhysicalActionRuntime &physical,
@@ -231,9 +263,13 @@ private:
       std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversalTargets,
       std::vector<std::uint64_t> traversalSuccessors,
       std::vector<StorageBinding> storages,
+      std::vector<OperandQueueUnitBinding> operandQueueUnits,
+      std::vector<OperandQueueBinding> operandQueues,
       llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
           actorSourceBindings,
-      llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings);
+      llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings,
+      llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
+          actorInputQueueBindings);
 
   std::uint64_t allocate(std::uint64_t bindingOrdinal,
                          std::uint64_t occurrenceOrdinal,
@@ -252,10 +288,17 @@ private:
                               const SpatialEventCoordinate &coordinate);
   llvm::Error schedulePublication(std::uint64_t slot,
                                   const SpatialEventCoordinate &coordinate);
+  llvm::Expected<bool> reserveOperandQueueCapacity(std::uint64_t slot);
+  llvm::Error commitOperandQueueEnqueue(std::uint64_t slot);
+  llvm::Expected<std::uint64_t>
+  allocatePublicationGroup(llvm::ArrayRef<std::uint64_t> slots);
+  llvm::Expected<bool> tryPublishPublicationGroup(
+      std::uint64_t groupOrdinal, CgraTransportFrame &frame);
   std::optional<CgraTransportCompletion> maybeRelease(std::uint64_t slot);
   void scheduleAt(std::uint64_t slot,
                   const SpatialEventCoordinate &publicationCoordinate);
-  bool canPublish(const TransferBinding &binding) const;
+  bool canPublish(const TransferBinding &binding,
+                  bool operandCapacityReserved) const;
   void publish(std::uint64_t slot, CgraTransportFrame &frame);
   std::optional<CgraTransportCompletion> release(std::uint64_t slot);
 
@@ -269,6 +312,10 @@ private:
   std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversalTargets_;
   std::vector<std::uint64_t> traversalSuccessors_;
   std::vector<StorageBinding> storages_;
+  std::vector<OperandQueueUnitBinding> operandQueueUnits_;
+  std::vector<OperandQueueBinding> operandQueues_;
+  std::vector<PublicationGroup> publicationGroups_;
+  std::vector<std::uint64_t> freePublicationGroups_;
   std::vector<StorageFrameCommit> storageFrameCommits_;
   std::vector<std::uint64_t> touchedStorageFrameCommits_;
   std::vector<std::uint32_t> traversalRemainingPredecessors_;
@@ -277,6 +324,8 @@ private:
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorSourceBindings_;
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;
+  llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
+      actorInputQueueBindings_;
   CgraEventQueue events_{"CGRA transport publication"};
   CgraEventQueue traversalEvents_{"CGRA traversal"};
   CgraEventQueue storageEvents_{"CGRA transport storage"};

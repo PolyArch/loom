@@ -1,5 +1,7 @@
 #include "PnR/SpatialActionDomain.h"
 
+#include "SpatialActionProposalInternal.h"
+
 #include "SpatialBindingRelationModel.h"
 #include "SpatialMemoryCompatibility.h"
 #include "SpatialMemoryConstraintModel.h"
@@ -45,9 +47,6 @@ llvm::Error
 SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   const detail::SpatialBindingRelationModel &relations =
       problem.bindingRelations();
-  if (relations.deferredProjection())
-    return invalid("binding relation owner is incomplete");
-
   const auto decisionOffsets = relations.relations().decisionChoiceOffsets();
   const std::size_t realizationChoiceCapacity =
       decisionOffsets.empty()
@@ -356,8 +355,12 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     return appendTransportRange(offset);
   };
   const auto &transfers = preparedProblem_->transfers();
+  std::uint64_t externalNetCount = 0;
   for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
        ++logicalNet) {
+    if (candidate.usesRegisterFifo(logicalNet))
+      continue;
+    ++externalNetCount;
     const std::size_t offset = transportChoices_.size();
     transportChoices_.emplace_back(SpatialWholeNetRoutingAction{logicalNet});
     const RouteTreeState &route = candidate.routeTree(logicalNet);
@@ -407,13 +410,15 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     if (llvm::Error error = appendTransportRange(offset))
       return error;
   }
-  if (preparedProblem_->transfers().logicalNets().size() >
+  if (externalNetCount >
       std::numeric_limits<std::uint64_t>::max() - movableDecisionCount_)
     return invalid("movable decision count overflows u64");
-  movableDecisionCount_ += preparedProblem_->transfers().logicalNets().size();
+  movableDecisionCount_ += externalNetCount;
 
   for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
        ++logicalNet) {
+    if (candidate.usesRegisterFifo(logicalNet))
+      continue;
     if (candidate.routeTree(logicalNet).isRouted())
       continue;
     const FrozenSpatialLogicalNet &net = transfers.logicalNets()[logicalNet];
@@ -474,7 +479,7 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
               appendWitness(ResolvedPnrViolationKind::TagConflict, domain))
         return error;
 
-  if (!transfers.logicalNets().empty()) {
+  if (externalNetCount != 0) {
     const std::size_t offset = transportChoices_.size();
     transportChoices_.emplace_back(SpatialGlobalRoutingAction{});
     if (llvm::Error error = appendTransportRange(offset))
@@ -682,6 +687,13 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
 SpatialActionProposalDomain SpatialActionDomainScratch::view() const {
   return {realizationAnchors_, realizationChoices_, transportAnchors_,
           transportChoices_,   resourceAnchors_,    resourceChoices_};
+}
+
+llvm::Expected<std::optional<SpatialMappingAction>>
+SpatialActionDomainScratch::propose(
+    const ResolvedPnrActionProposalPolicy &policy,
+    DeterministicPnrRandomStream &proposalStream) const {
+  return detail::proposeCanonicalSpatialAction(policy, view(), proposalStream);
 }
 
 std::size_t SpatialActionDomainScratch::retainedStorageBytes() const {

@@ -115,9 +115,9 @@ findProgrammingBinding(const RuntimePlatformBinding &binding,
 }
 
 struct ImportedRuntimeClosure final {
-  hardware::FinalizedHardwareImplementation implementation;
+  std::vector<hardware::FinalizedHardwareImplementation> implementations;
   hardware::FinalizedConfigurationABI configurationAbi;
-  FinalizedRuntimePlatformBinding runtimeBinding;
+  std::vector<FinalizedRuntimePlatformBinding> runtimeBindings;
   mapping::FinalizedSystemMapping systemMapping;
   dataflow::CanonicalDataflowArtifact dataflowArtifact;
   dataflow::CanonicalDataflowProgramView dataflow;
@@ -129,33 +129,47 @@ struct ImportedRuntimeClosure final {
 llvm::Expected<ImportedRuntimeClosure>
 importRuntimeClosure(const deployment::FinalizedDeployment &deployment,
                      const ArtifactStore &artifacts, const BlobStore &blobs) {
-  if (deployment.deployment().hardwareBindings().size() != 1)
+  if (deployment.deployment().hardwareBindings().empty())
     return loadError(RuntimeLoadFailureKind::InvalidDeployment,
-                     "Deployment does not have one complete hardware binding");
-  const deployment::DeploymentHardwareBinding &hardwareBinding =
-      deployment.deployment().hardwareBindings().front();
-  auto implementation = hardware::importHardwareImplementation(
-      hardwareBinding.hardwareImplementation, artifacts, blobs);
-  if (!implementation)
-    return loadError(RuntimeLoadFailureKind::InvalidDeployment,
-                     "cannot import HardwareImplementation: " +
-                         llvm::toString(implementation.takeError()));
-  auto abi = hardware::importConfigurationABI(
-      implementation->implementation().configurationAbi(), artifacts);
+                     "Deployment has no runtime hardware binding");
+  std::vector<hardware::FinalizedHardwareImplementation> implementations;
+  std::vector<FinalizedRuntimePlatformBinding> runtimeBindings;
+  implementations.reserve(deployment.deployment().hardwareBindings().size());
+  runtimeBindings.reserve(deployment.deployment().hardwareBindings().size());
+  std::optional<ArtifactRootReference> abiReference;
+  for (const deployment::DeploymentHardwareBinding &hardwareBinding :
+       deployment.deployment().hardwareBindings()) {
+    auto implementation = hardware::importHardwareImplementation(
+        hardwareBinding.hardwareImplementation, artifacts, blobs);
+    if (!implementation)
+      return loadError(RuntimeLoadFailureKind::InvalidDeployment,
+                       "cannot import HardwareImplementation: " +
+                           llvm::toString(implementation.takeError()));
+    if (abiReference &&
+        *abiReference != implementation->implementation().configurationAbi())
+      return loadError(RuntimeLoadFailureKind::InvalidDeployment,
+                       "HardwareImplementations do not share one "
+                       "ConfigurationABI");
+    abiReference = implementation->implementation().configurationAbi();
+    auto runtimeBinding = importRuntimePlatformBinding(
+        hardwareBinding.runtimePlatformBinding, artifacts, blobs);
+    if (!runtimeBinding)
+      return loadError(RuntimeLoadFailureKind::InvalidDeployment,
+                       "cannot import RuntimePlatformBinding: " +
+                           llvm::toString(runtimeBinding.takeError()));
+    if (runtimeBinding->binding().hardwareImplementation() !=
+        implementation->reference())
+      return loadError(RuntimeLoadFailureKind::InvalidDeployment,
+                       "RuntimePlatformBinding names another implementation");
+    implementations.push_back(std::move(*implementation));
+    runtimeBindings.push_back(std::move(*runtimeBinding));
+  }
+  assert(abiReference && "nonempty implementation set has one ABI");
+  auto abi = hardware::importConfigurationABI(*abiReference, artifacts);
   if (!abi)
     return loadError(RuntimeLoadFailureKind::InvalidDeployment,
                      "cannot import ConfigurationABI: " +
                          llvm::toString(abi.takeError()));
-  auto runtimeBinding = importRuntimePlatformBinding(
-      hardwareBinding.runtimePlatformBinding, artifacts, blobs);
-  if (!runtimeBinding)
-    return loadError(RuntimeLoadFailureKind::InvalidDeployment,
-                     "cannot import RuntimePlatformBinding: " +
-                         llvm::toString(runtimeBinding.takeError()));
-  if (runtimeBinding->binding().hardwareImplementation() !=
-      implementation->reference())
-    return loadError(RuntimeLoadFailureKind::InvalidDeployment,
-                     "RuntimePlatformBinding names another implementation");
 
   auto systemMapping = mapping::importSystemMapping(
       deployment.deployment().systemMapping(), artifacts);
@@ -183,10 +197,12 @@ importRuntimeClosure(const deployment::FinalizedDeployment &deployment,
       fabric::fabricArtifactSchema.identity.str(),
       fabric::fabricArtifactSchema.version,
       systemMapping->view().fabricIdentity()};
-  if (implementation->implementation().fabric() != fabricReference)
-    return loadError(RuntimeLoadFailureKind::InvalidDeployment,
-                     "SystemMapping and HardwareImplementation use different "
-                     "Fabric roots");
+  for (const hardware::FinalizedHardwareImplementation &implementation :
+       implementations)
+    if (implementation.implementation().fabric() != fabricReference)
+      return loadError(RuntimeLoadFailureKind::InvalidDeployment,
+                       "SystemMapping and HardwareImplementation use "
+                       "different Fabric roots");
   auto fabricArtifact =
       fabric::importEntireFabricRoot(fabricReference, artifacts);
   if (!fabricArtifact)
@@ -206,8 +222,8 @@ importRuntimeClosure(const deployment::FinalizedDeployment &deployment,
                          llvm::toString(closure.takeError()));
 
   return ImportedRuntimeClosure{
-      std::move(*implementation),   std::move(*abi),
-      std::move(*runtimeBinding),   std::move(*systemMapping),
+      std::move(implementations),   std::move(*abi),
+      std::move(runtimeBindings),   std::move(*systemMapping),
       std::move(*dataflowArtifact), std::move(*dataflowView),
       std::move(*fabricArtifact),   std::move(*system),
       std::move(*closure)};
@@ -244,6 +260,21 @@ verifyProviderIdentity(RuntimeProviderInstance &provider,
   return llvm::Error::success();
 }
 
+struct RuntimeIdentityClaim final {
+  RuntimeIdentityVerification verification;
+  ArtifactIdentity expectedImplementation;
+};
+
+llvm::Error verifyProviderIdentities(
+    RuntimeProviderInstance &provider, const RuntimeDeviceHandle &device,
+    llvm::ArrayRef<RuntimeIdentityClaim> claims) {
+  for (const RuntimeIdentityClaim &claim : claims)
+    if (llvm::Error error = verifyProviderIdentity(
+            provider, device, claim.verification, claim.expectedImplementation))
+      return error;
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::vector<RuntimeConfigurationTarget>>
 configurationTargets(const deployment::FinalizedDeployment &deployment,
                      const ImportedRuntimeClosure &closure,
@@ -261,37 +292,38 @@ configurationTargets(const deployment::FinalizedDeployment &deployment,
     const hardware::ProgrammingUnitRef unitRef{
         closure.configurationAbi.reference(),
         image->image().programmingUnitId()};
-    const RuntimeProgrammingBinding *binding =
-        findProgrammingBinding(closure.runtimeBinding.binding(), unitRef);
+    const RuntimeProgrammingBinding *binding = nullptr;
+    const hardware::FinalizedHardwareImplementation *implementation = nullptr;
+    for (const auto indexed : llvm::enumerate(closure.runtimeBindings)) {
+      const RuntimeProgrammingBinding *candidate =
+          findProgrammingBinding(indexed.value().binding(), unitRef);
+      if (!candidate)
+        continue;
+      if (binding)
+        return loadError(RuntimeLoadFailureKind::InvalidDeployment,
+                         "configuration image has multiple runtime "
+                         "programming bindings");
+      binding = candidate;
+      implementation = &closure.implementations[indexed.index()];
+    }
     if (!binding)
       return loadError(RuntimeLoadFailureKind::InvalidDeployment,
                        "configuration image has no runtime programming "
                        "binding");
-
-    std::optional<hardware::rtl::ConfigurationTransportLayout> selectedLayout;
-    std::optional<fabric::SpatialCoreOccurrenceRef> selectedCore;
-    for (fabric::AccCoreOccurrenceRef core :
-         closure.fabric.artifact().accCoreOccurrences()) {
-      const fabric::SpatialCoreOccurrenceRef spatialCore{core};
-      auto layout = hardware::rtl::derivePortableConfigurationTransportLayout(
-          closure.configurationAbi, spatialCore);
-      if (!layout)
-        return loadError(RuntimeLoadFailureKind::InvalidDeployment,
-                         "cannot derive configuration transport layout: " +
-                             llvm::toString(layout.takeError()));
-      if (!layout->find(unitRef.unitId))
-        continue;
-      if (selectedLayout)
-        return loadError(RuntimeLoadFailureKind::InvalidDeployment,
-                         "one programming unit appears in multiple local "
-                         "configuration transports");
-      selectedCore = spatialCore;
-      selectedLayout = std::move(*layout);
-    }
-    if (!selectedLayout || !selectedCore)
+    assert(implementation && "programming binding has an implementation");
+    const fabric::SpatialCoreOccurrenceRef selectedCore =
+        implementation->implementation().subject();
+    auto selectedLayout =
+        hardware::rtl::derivePortableConfigurationTransportLayout(
+            closure.configurationAbi, selectedCore);
+    if (!selectedLayout)
       return loadError(RuntimeLoadFailureKind::InvalidDeployment,
-                       "configuration image is absent from every local "
-                       "configuration transport");
+                       "cannot derive configuration transport layout: " +
+                           llvm::toString(selectedLayout.takeError()));
+    if (!selectedLayout->find(unitRef.unitId))
+      return loadError(RuntimeLoadFailureKind::InvalidDeployment,
+                       "configuration image is absent from its implementation "
+                       "transport");
     const hardware::rtl::ConfigurationTransportUnitLayout *unit =
         selectedLayout->find(unitRef.unitId);
     assert(unit && "selected layout must contain the programming unit");
@@ -306,13 +338,13 @@ configurationTargets(const deployment::FinalizedDeployment &deployment,
 
     auto activation = detail::configurationActivationEventKey(
         closure.dataflow.identity(),
-        closure.mappingClosure.executionContexts.spatialDomains, *selectedCore);
+        closure.mappingClosure.executionContexts.spatialDomains, selectedCore);
     if (!activation)
       return loadError(RuntimeLoadFailureKind::InvalidDeployment,
                        "cannot derive configuration activation events: " +
                            llvm::toString(activation.takeError()));
     RuntimeConfigurationTarget target{imageReference,
-                                      *selectedCore,
+                                      selectedCore,
                                       binding->providerEndpoint,
                                       unit->payloadBitCount,
                                       unit->commitAddress,
@@ -726,8 +758,7 @@ llvm::Error recoverAndRelease(RuntimeLoadFailureKind kind,
                               RuntimeProviderInstance &provider,
                               const RuntimeDeviceHandle &device,
                               const RuntimeLeaseHandle &lease,
-                              const RuntimeIdentityVerification &verification,
-                              const ArtifactIdentity &expectedImplementation,
+                              llvm::ArrayRef<RuntimeIdentityClaim> identities,
                               bool restoreCleanState) {
   bool quarantined = false;
   if (restoreCleanState) {
@@ -736,8 +767,8 @@ llvm::Error recoverAndRelease(RuntimeLoadFailureKind kind,
       diagnostic = appendCleanupDiagnostic(
           std::move(diagnostic), "recovery reset failed", std::move(reset));
       quarantined = true;
-    } else if (llvm::Error identity = verifyProviderIdentity(
-                   provider, device, verification, expectedImplementation)) {
+    } else if (llvm::Error identity =
+                   verifyProviderIdentities(provider, device, identities)) {
       diagnostic = appendCleanupDiagnostic(std::move(diagnostic),
                                            "recovery identity check failed",
                                            std::move(identity));
@@ -757,14 +788,13 @@ llvm::Error recoverAndRelease(RuntimeLoadFailureKind kind,
 llvm::Error releaseLoadedState(RuntimeProviderInstance &provider,
                                const RuntimeDeviceHandle &device,
                                const RuntimeLeaseHandle &lease,
-                               const RuntimeIdentityVerification &verification,
-                               const ArtifactIdentity &expectedImplementation) {
+                               llvm::ArrayRef<RuntimeIdentityClaim> identities) {
   bool quarantine = false;
   if (llvm::Error reset = provider.quiesceAndReset(lease)) {
     llvm::consumeError(std::move(reset));
     quarantine = true;
-  } else if (llvm::Error identity = verifyProviderIdentity(
-                 provider, device, verification, expectedImplementation)) {
+  } else if (llvm::Error identity =
+                 verifyProviderIdentities(provider, device, identities)) {
     llvm::consumeError(std::move(identity));
     quarantine = true;
   }
@@ -827,12 +857,10 @@ struct LoadedDeploymentState final {
   LoadedDeploymentState(deployment::FinalizedDeployment deployment,
                         std::shared_ptr<RuntimeProviderInstance> provider,
                         RuntimeDeviceHandle device, RuntimeLeaseHandle lease,
-                        RuntimeIdentityVerification identityVerification,
-                        ArtifactIdentity expectedImplementation)
+                        std::vector<RuntimeIdentityClaim> identities)
       : deployment(std::move(deployment)), provider(std::move(provider)),
         device(std::move(device)), lease(std::move(lease)),
-        identityVerification(std::move(identityVerification)),
-        expectedImplementation(std::move(expectedImplementation)) {}
+        identities(std::move(identities)) {}
 
   LoadedDeploymentState(const LoadedDeploymentState &) = delete;
   LoadedDeploymentState &operator=(const LoadedDeploymentState &) = delete;
@@ -841,14 +869,12 @@ struct LoadedDeploymentState final {
   std::shared_ptr<RuntimeProviderInstance> provider;
   RuntimeDeviceHandle device;
   RuntimeLeaseHandle lease;
-  RuntimeIdentityVerification identityVerification;
-  ArtifactIdentity expectedImplementation;
+  std::vector<RuntimeIdentityClaim> identities;
 
   ~LoadedDeploymentState() {
     if (provider)
       llvm::consumeError(releaseLoadedState(*provider, device, lease,
-                                            identityVerification,
-                                            expectedImplementation));
+                                            identities));
   }
 };
 
@@ -897,7 +923,7 @@ loadDeployment(deployment::FinalizedDeployment deployment,
                      "RuntimeProviderSelection has no provider instance");
   RuntimeProviderInstance &provider = *selection.provider;
   const RuntimeProviderBinding &allowed =
-      closure->runtimeBinding.binding().providerBinding();
+      closure->runtimeBindings.front().binding().providerBinding();
   const RuntimeProviderDescriptor *registeredProvider =
       findRuntimeProvider(allowed.descriptor);
   if (!registeredProvider || &provider.descriptor() != registeredProvider ||
@@ -944,12 +970,14 @@ loadDeployment(deployment::FinalizedDeployment deployment,
                      "selected device ordinal is absent from enumeration");
   const RuntimeDeviceHandle device =
       (*devices)[static_cast<std::size_t>(selection.deviceOrdinal)];
-  const RuntimeIdentityVerification verification =
-      closure->runtimeBinding.binding().identityVerification();
-  const ArtifactIdentity expectedImplementation =
-      closure->implementation.reference().artifact;
-  if (llvm::Error error = verifyProviderIdentity(provider, device, verification,
-                                                 expectedImplementation))
+  std::vector<RuntimeIdentityClaim> identities;
+  identities.reserve(closure->runtimeBindings.size());
+  for (const auto indexed : llvm::enumerate(closure->runtimeBindings))
+    identities.push_back(
+        {indexed.value().binding().identityVerification(),
+         closure->implementations[indexed.index()].reference().artifact});
+  if (llvm::Error error =
+          verifyProviderIdentities(provider, device, identities))
     return std::move(error);
 
   auto lease = provider.acquireExclusiveLease(device);
@@ -961,8 +989,7 @@ loadDeployment(deployment::FinalizedDeployment deployment,
     return recoverAndRelease(RuntimeLoadFailureKind::Reset,
                              "cannot establish declared reset state: " +
                                  llvm::toString(std::move(error)),
-                             provider, device, *lease, verification,
-                             expectedImplementation,
+                             provider, device, *lease, identities,
                              /*restoreCleanState=*/true);
 
   bool deviceStateChanged = false;
@@ -971,19 +998,25 @@ loadDeployment(deployment::FinalizedDeployment deployment,
                                 *configurations, deviceStateChanged))
     return recoverAndRelease(RuntimeLoadFailureKind::Programming,
                              llvm::toString(std::move(error)), provider, device,
-                             *lease, verification, expectedImplementation,
+                             *lease, identities,
                              /*restoreCleanState=*/true);
+
+  std::vector<RuntimeInterfaceBinding> memoryBindings;
+  for (const FinalizedRuntimePlatformBinding &binding :
+       closure->runtimeBindings)
+    memoryBindings.insert(
+        memoryBindings.end(),
+        binding.binding().memoryInterfaceBindings().begin(),
+        binding.binding().memoryInterfaceBindings().end());
 
   for (const RuntimeStaticMemoryInstall &install : staticMemory) {
     deviceStateChanged = true;
-    if (llvm::Error error = provider.installStaticMemory(
-            *lease, install,
-            closure->runtimeBinding.binding().memoryInterfaceBindings()))
+    if (llvm::Error error =
+            provider.installStaticMemory(*lease, install, memoryBindings))
       return recoverAndRelease(RuntimeLoadFailureKind::StaticMemory,
                                "static-memory installation failed: " +
                                    llvm::toString(std::move(error)),
-                               provider, device, *lease, verification,
-                               expectedImplementation,
+                               provider, device, *lease, identities,
                                /*restoreCleanState=*/true);
   }
 
@@ -996,11 +1029,11 @@ loadDeployment(deployment::FinalizedDeployment deployment,
     return recoverAndRelease(
         RuntimeLoadFailureKind::Registration,
         "executable registration failed: " + llvm::toString(std::move(error)),
-        provider, device, *lease, verification, expectedImplementation,
+        provider, device, *lease, identities,
         /*restoreCleanState=*/deviceStateChanged);
 
   const RuntimeActivationView activation{
-      deployment.reference(), closure->runtimeBinding.binding(),
+      deployment.reference(), closure->runtimeBindings,
       deployment.deployment().threadDispatchImage(),
       deployment.deployment().spatialLaunchImage(),
       deployment.deployment().admissionImage()};
@@ -1008,12 +1041,12 @@ loadDeployment(deployment::FinalizedDeployment deployment,
     return recoverAndRelease(
         RuntimeLoadFailureKind::Activation,
         "activation failed: " + llvm::toString(std::move(error)), provider,
-        device, *lease, verification, expectedImplementation,
+        device, *lease, identities,
         /*restoreCleanState=*/deviceStateChanged);
 
   return LoadedDeployment(std::make_unique<detail::LoadedDeploymentState>(
       std::move(deployment), std::move(selection.provider), device,
-      std::move(*lease), verification, expectedImplementation));
+      std::move(*lease), std::move(identities)));
 }
 
 } // namespace loom::runtime

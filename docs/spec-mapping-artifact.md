@@ -20,9 +20,9 @@ All persistent Mapping objects belong to the single schema family
 
 | Semantic root | Schema version | Required root bindings | Top-level record families |
 |---------------|----------------|------------------------|---------------------------|
-| `mapping.tech` | `5.0` | Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeRealization`, `MemoryRealization` |
-| `mapping.spatial` | `5.0` | TechMapping `T`, Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeBinding`, `MemoryEngineBinding`, `MemoryBinding`, `RouteTree`, `ResourceUse` |
-| `mapping.system` | `5.0` | Canonical Dataflow Program `D`, architecture-only Fabric Hardware Description `F`, canonical SpatialMapping import table | `ExecutionBinding`, `ServiceRealization`, `ResourceUse` |
+| `mapping.tech` | `6.0` | Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeRealization`, `MemoryRealization` |
+| `mapping.spatial` | `6.0` | TechMapping `T`, Canonical Dataflow Program `D`, Fabric Hardware Description `F` | `ComputeBinding`, `MemoryEngineBinding`, `MemoryBinding`, `RegisterFifoTransfer`, `RouteTree`, `ResourceUse` |
+| `mapping.system` | `6.0` | Canonical Dataflow Program `D`, architecture-only Fabric Hardware Description `F`, canonical SpatialMapping import table | `ExecutionBinding`, `ServiceRealization`, `ResourceUse` |
 
 The root operation is the profile discriminator. A Mapping object does not
 also carry a profile enum, a generic artifact root, or inactive optional
@@ -37,8 +37,13 @@ version framing and Common `ArtifactSchemaDescriptor` are mechanically
 derived from that declaration. Callers must not construct schema strings or
 maintain parallel version facts.
 
-The current schema is the complete `loom.mapping 5.0` contract with all three
-roots. Version 5.0 requires an ordered-cardinality adapter realization to use
+The current schema is the complete `loom.mapping 6.0` contract with all three
+roots. Version 6.0 adds `RegisterFifoTransfer` as the selected, non-derived
+Spatial disposition of one eligible logical net. A 5.0 artifact cannot encode
+that choice and would reinterpret an absent RouteTree as an incomplete root,
+so a 6.0 parser rejects every 5.0 root rather than guessing a disposition.
+
+Version 5.0 requires an ordered-cardinality adapter realization to use
 the exact Fabric-owned contract and its intrinsic release. A 4.0 resource use
 could instead pair that actor with a one-cycle contract and collapse repeated
 or zero productions into `AllOf(activeResults)`; this is not a complete
@@ -57,7 +62,7 @@ rather than requiring one attachment for every static sink terminal, and a
 message plan may be empty only when that applicable set is proven empty. These
 changes altered the accepted canonical content, so a 3.0 parser rejected every
 2.0 root rather than reinterpreting it. TechMapping retains its 3.0 payload
-shape but uses 5.0 because `loom.mapping` has one family version, not
+shape but uses 6.0 because `loom.mapping` has one family version, not
 independent profile versions. `loom.mapping 1.0`'s
 load/store-only `AccessEntry` and logical-memory-only operation-service owner
 are superseded by the closed `MemoryOperationEntry` and fence-aware
@@ -266,13 +271,14 @@ not persist a duplicate netlist.
 
 The `mapping.spatial` root begins with the fixed `T`, `D`, and `F`
 `UpstreamArtifactBinding` fields and then one single-block declarative record
-region. The region permits exactly five top-level record families, in
+region. The region permits exactly six top-level record families, in
 schema-owned family order:
 
 ```text
 ComputeBinding
 MemoryEngineBinding
 MemoryBinding
+RegisterFifoTransfer
 RouteTree
 ResourceUse
 ```
@@ -469,6 +475,30 @@ subordinate or provider terminal, and one
 independent ID and does not form a top-level ExposureBinding family. Its
 target must agree with its owning MemoryBinding by the same LocalRegion versus
 BoundaryProxy rule as an addressed MemoryOperationEntry.
+
+### RegisterFifoTransfer
+
+A `RegisterFifoTransfer` is the selected local disposition of one exact
+single-consumer residual logical net through one Temporal PE register FIFO.
+It stores the logical-net key, its exact sink, and the selected write and read
+Fabric traversal references. The two traversals mechanically identify the
+same PE occurrence and register FIFO; the verifier rejects a cross-PE pair,
+different FIFO ordinals, incompatible data paths, or a logical net that is not
+in the shared local-transfer option domain.
+
+This record is necessary selected state: once the external `RouteTree` is
+absent, neither Fabric configuration nor ResourceUse occupancy can recover
+which otherwise routable logical net was intentionally localized. It is
+therefore not a cache of the traversals or configured tag. The Physical Tag,
+FIFO mode, traversal endpoints, and capacity claims are derived from the
+selected pair and Fabric. Exact traversal and FIFO occupancy remain
+`ResourceUse` facts. Multicast and mixed local/external fanout have no local
+disposition in 6.0 and continue to require one external `RouteTree`.
+
+`RegisterFifoTransfer` and `RouteTree` form one closed disposition union keyed
+by logical net. Exactly one is present for every residual logical net, and the
+canonical family order places local transfers before route trees. Local
+transfers are ordered by the full logical-net key.
 
 ### RouteTree
 
@@ -794,7 +824,7 @@ target SpatialCore parent must belong to the AccCore selected by `B_thread`.
 ExecutionBinding owns only where computation executes; it owns no service
 route, capacity, or relative-time facts.
 
-Mapping 5.0 consumes the Fabric-owned rule that each AccCore has exactly one
+Mapping 6.0 consumes the Fabric-owned rule that each AccCore has exactly one
 InstructionCore context. Its `InstructionCoreContextRef` is mechanically
 derived through the framing owned by `docs/spec-fabric-identity.md`.
 

@@ -59,6 +59,11 @@ llvm::Expected<TemporalPeResourceContract> TemporalPeResourceContract::create(
     return invalid("register FIFO port count must be one or two");
   if (declaration.registerFifoCount != 0 && declaration.registerFifoDepth == 0)
     return invalid("a non-empty register FIFO domain requires positive depth");
+  if (declaration.fuInputCounts.empty())
+    return invalid("context dispatch requires at least one FU occurrence");
+  if (declaration.fuInputCounts.size() >
+      std::numeric_limits<std::uint32_t>::max())
+    return invalid("FU occurrence inventory exceeds the owner key domain");
 
   auto operandBuffer =
       TemporalOperandBufferContract::create(TemporalOperandBufferDeclaration{
@@ -68,43 +73,116 @@ llvm::Expected<TemporalPeResourceContract> TemporalPeResourceContract::create(
   if (!operandBuffer)
     return operandBuffer.takeError();
 
+  const std::uint32_t fuCount =
+      static_cast<std::uint32_t>(declaration.fuInputCounts.size());
+  const std::uint64_t dispatchCandidateCount64 =
+      static_cast<std::uint64_t>(declaration.contextCount) * fuCount;
+  if (dispatchCandidateCount64 > std::numeric_limits<std::uint32_t>::max())
+    return invalid("context-dispatch candidate domain exceeds u32");
+  const std::uint32_t dispatchCandidateCount =
+      static_cast<std::uint32_t>(dispatchCandidateCount64);
+  const std::uint32_t dispatchUnitCount =
+      declaration.operandBufferMode == OperandBufferMode::AllFuShare ? 1
+                                                                     : fuCount;
+
+  std::vector<TemporalPeDispatchCandidate> dispatchCandidates;
+  dispatchCandidates.reserve(dispatchCandidateCount);
+  std::vector<std::uint32_t> unitCounts(dispatchUnitCount, 0);
+  for (std::uint32_t context = 0; context != declaration.contextCount;
+       ++context)
+    for (std::uint32_t fu = 0; fu != fuCount; ++fu) {
+      const std::uint32_t unit =
+          declaration.operandBufferMode == OperandBufferMode::AllFuShare ? 0
+                                                                         : fu;
+      dispatchCandidates.push_back(
+          {{declaration.pe, context},
+           static_cast<loom::fabric::FabricOrdinal>(fu),
+           unit});
+      ++unitCounts[unit];
+    }
+  std::vector<Span> dispatchUnitSpans(dispatchUnitCount);
+  std::uint32_t unitOffset = 0;
+  for (std::uint32_t unit = 0; unit != dispatchUnitCount; ++unit) {
+    dispatchUnitSpans[unit] = {unitOffset, unitCounts[unit]};
+    unitOffset += unitCounts[unit];
+  }
+  std::vector<std::uint32_t> dispatchUnitCandidates(dispatchCandidateCount);
+  std::vector<std::uint32_t> unitFilled(dispatchUnitCount, 0);
+  for (std::uint32_t candidate = 0; candidate != dispatchCandidateCount;
+       ++candidate) {
+    const std::uint32_t unit = dispatchCandidates[candidate].allocationUnit;
+    dispatchUnitCandidates[dispatchUnitSpans[unit].first + unitFilled[unit]++] =
+        candidate;
+  }
+
   ResourceContractDeclaration combined =
       operandBuffer->resourceContract().declaration();
-  const std::uint32_t stateOffset =
+  const std::uint32_t dispatchStateOffset =
       operandBuffer->resourceContract().stateCount();
-  const std::uint32_t transitionOffset =
+  const std::uint32_t registerTransitionOffset =
       operandBuffer->resourceContract().resourceTransitionCount();
-  const std::uint32_t timingOffset =
+  const std::uint32_t dispatchTimingOffset =
       operandBuffer->resourceContract().timingContractCount();
-  const std::uint32_t patternOffset =
+  const std::uint32_t dispatchPatternOffset =
       operandBuffer->resourceContract().usePatternCount();
-  const std::uint32_t requesterOffset =
+  const std::uint32_t dispatchRequesterOffset =
       operandBuffer->resourceContract().requesterCount();
-  const std::uint32_t eligibilityOffset =
+  const std::uint32_t dispatchEligibilityOffset =
       operandBuffer->resourceContract().eligibilityCount();
-  const std::uint32_t eventOffset =
+  const std::uint32_t dispatchEventOffset =
       operandBuffer->resourceContract().eventCount();
 
-  auto stateCount = checkedAdd(stateOffset, declaration.registerFifoCount,
-                               "resource-state inventory");
+  auto registerStateOffset = checkedAdd(dispatchStateOffset, dispatchUnitCount,
+                                        "context-dispatch state inventory");
+  auto registerPatternOffset =
+      checkedAdd(dispatchPatternOffset, dispatchCandidateCount,
+                 "context-dispatch use-pattern inventory");
+  auto registerRequesterOffset =
+      checkedAdd(dispatchRequesterOffset, dispatchCandidateCount,
+                 "context-dispatch requester inventory");
+  auto registerEligibilityOffset = checkedAdd(
+      dispatchEligibilityOffset, 1, "context-dispatch eligibility inventory");
+  auto registerEventOffset =
+      checkedAdd(dispatchEventOffset, 2, "context-dispatch event inventory");
+  auto registerTimingOffset =
+      checkedAdd(dispatchTimingOffset, 1, "context-dispatch timing inventory");
+  if (!registerStateOffset)
+    return registerStateOffset.takeError();
+  if (!registerPatternOffset)
+    return registerPatternOffset.takeError();
+  if (!registerRequesterOffset)
+    return registerRequesterOffset.takeError();
+  if (!registerEligibilityOffset)
+    return registerEligibilityOffset.takeError();
+  if (!registerEventOffset)
+    return registerEventOffset.takeError();
+  if (!registerTimingOffset)
+    return registerTimingOffset.takeError();
+
+  auto stateCount =
+      checkedAdd(*registerStateOffset, declaration.registerFifoCount,
+                 "resource-state inventory");
   auto registerActionCount =
       checkedAdd(declaration.registerFifoCount, declaration.registerFifoCount,
                  "register FIFO action inventory");
   if (!registerActionCount)
     return registerActionCount.takeError();
-  auto transitionCount = checkedAdd(transitionOffset, *registerActionCount,
-                                    "resource-transition inventory");
-  auto patternCount =
-      checkedAdd(patternOffset, *registerActionCount, "use-pattern inventory");
-  auto requesterCount = checkedAdd(
-      requesterOffset, declaration.registerFifoCount, "requester inventory");
-  auto eligibilityCount =
-      checkedAdd(eligibilityOffset, declaration.registerFifoCount ? 2 : 0,
-                 "eligibility inventory");
-  auto eventCount = checkedAdd(
-      eventOffset, declaration.registerFifoCount ? 3 : 0, "event inventory");
+  auto transitionCount =
+      checkedAdd(registerTransitionOffset, *registerActionCount,
+                 "resource-transition inventory");
+  auto patternCount = checkedAdd(*registerPatternOffset, *registerActionCount,
+                                 "use-pattern inventory");
+  auto requesterCount =
+      checkedAdd(*registerRequesterOffset, declaration.registerFifoCount,
+                 "requester inventory");
+  auto eligibilityCount = checkedAdd(*registerEligibilityOffset,
+                                     declaration.registerFifoCount ? 2 : 0,
+                                     "eligibility inventory");
+  auto eventCount =
+      checkedAdd(*registerEventOffset, declaration.registerFifoCount ? 3 : 0,
+                 "event inventory");
   auto timingCount =
-      checkedAdd(timingOffset, declaration.registerFifoCount ? 1 : 0,
+      checkedAdd(*registerTimingOffset, declaration.registerFifoCount ? 1 : 0,
                  "timing-contract inventory");
   if (!stateCount)
     return stateCount.takeError();
@@ -129,9 +207,38 @@ llvm::Expected<TemporalPeResourceContract> TemporalPeResourceContract::create(
   combined.usePatterns.reserve(*patternCount);
   combined.requesters.reserve(*requesterCount);
 
+  for (std::uint32_t unit = 0; unit != dispatchUnitCount; ++unit)
+    combined.states.push_back(ResourceStateDeclaration{
+        StateKey(dispatchStateOffset + unit),
+        {{CapacityDimensionKey(0), CapacityUnits(1), CapacityUnits(0)}}});
+  for (std::uint32_t candidate = 0; candidate != dispatchCandidateCount;
+       ++candidate)
+    combined.requesters.emplace_back(dispatchRequesterOffset + candidate);
+
+  std::vector<std::uint32_t> dispatchEventRanks(*eventCount, 0);
+  dispatchEventRanks[dispatchEventOffset] = 0;
+  dispatchEventRanks[dispatchEventOffset + 1] = 1;
+  combined.timingContracts.push_back(
+      {TimingContractKey(dispatchTimingOffset), std::move(dispatchEventRanks)});
+  for (std::uint32_t candidate = 0; candidate != dispatchCandidateCount;
+       ++candidate) {
+    const std::uint32_t unit = dispatchCandidates[candidate].allocationUnit;
+    combined.usePatterns.push_back(UsePatternDeclaration{
+        UsePatternKey(dispatchPatternOffset + candidate),
+        RequesterKey(dispatchRequesterOffset + candidate),
+        EligibilityKey(dispatchEligibilityOffset),
+        EventKey(dispatchEventOffset),
+        EventKey(dispatchEventOffset + 1),
+        std::nullopt,
+        TimingContractKey(dispatchTimingOffset),
+        {{ClaimKey(0), StateKey(dispatchStateOffset + unit),
+          CapacityDimensionKey(0), CapacityUnits(1)}},
+        {}});
+  }
+
   for (std::uint32_t fifo = 0; fifo != declaration.registerFifoCount; ++fifo) {
     ResourceStateDeclaration state{
-        StateKey(stateOffset + fifo),
+        StateKey(*registerStateOffset + fifo),
         {{occupiedEntry, CapacityUnits(declaration.registerFifoDepth),
           CapacityUnits(0)},
          {firstPortService, CapacityUnits(1), CapacityUnits(0)}}};
@@ -139,38 +246,39 @@ llvm::Expected<TemporalPeResourceContract> TemporalPeResourceContract::create(
       state.capacityDimensions.push_back(
           {secondPortService, CapacityUnits(1), CapacityUnits(0)});
     combined.states.push_back(std::move(state));
-    combined.resourceTransitions.emplace_back(transitionOffset + fifo);
+    combined.resourceTransitions.emplace_back(registerTransitionOffset + fifo);
     combined.resourceTransitions.emplace_back(
-        transitionOffset + declaration.registerFifoCount + fifo);
-    combined.requesters.emplace_back(requesterOffset + fifo);
+        registerTransitionOffset + declaration.registerFifoCount + fifo);
+    combined.requesters.emplace_back(*registerRequesterOffset + fifo);
   }
 
   if (declaration.registerFifoCount != 0) {
     std::vector<std::uint32_t> eventRanks(*eventCount, 0);
-    eventRanks[eventOffset] = 0;
-    eventRanks[eventOffset + 1] = 0;
-    eventRanks[eventOffset + 2] = 1;
+    eventRanks[*registerEventOffset] = 0;
+    eventRanks[*registerEventOffset + 1] = 0;
+    eventRanks[*registerEventOffset + 2] = 1;
     combined.timingContracts.push_back(
-        {TimingContractKey(timingOffset), std::move(eventRanks)});
+        {TimingContractKey(*registerTimingOffset), std::move(eventRanks)});
 
     const auto appendPattern = [&](std::uint32_t fifo,
                                    bool write) -> UsePatternDeclaration {
-      const StateKey state(stateOffset + fifo);
+      const StateKey state(*registerStateOffset + fifo);
       const CapacityDimensionKey service =
           write || declaration.registerFifoPorts == 1 ? firstPortService
                                                       : secondPortService;
       const std::uint32_t role = write ? 0 : 1;
       const ResourceTransitionKey transition(
-          transitionOffset + role * declaration.registerFifoCount + fifo);
+          registerTransitionOffset + role * declaration.registerFifoCount +
+          fifo);
       return UsePatternDeclaration{
-          UsePatternKey(patternOffset + role * declaration.registerFifoCount +
-                        fifo),
-          RequesterKey(requesterOffset + fifo),
-          EligibilityKey(eligibilityOffset + role),
-          EventKey(eventOffset + role),
-          EventKey(eventOffset + 2),
-          CommitDeclaration{EventKey(eventOffset + role), transition},
-          TimingContractKey(timingOffset),
+          UsePatternKey(*registerPatternOffset +
+                        role * declaration.registerFifoCount + fifo),
+          RequesterKey(*registerRequesterOffset + fifo),
+          EligibilityKey(*registerEligibilityOffset + role),
+          EventKey(*registerEventOffset + role),
+          EventKey(*registerEventOffset + 2),
+          CommitDeclaration{EventKey(*registerEventOffset + role), transition},
+          TimingContractKey(*registerTimingOffset),
           {{ClaimKey(0), state, service, CapacityUnits(1)}},
           {}};
     };
@@ -182,16 +290,60 @@ llvm::Expected<TemporalPeResourceContract> TemporalPeResourceContract::create(
 
   combined.eligibilityCount = *eligibilityCount;
   combined.eventCount = *eventCount;
-  if (combined.grantPolicy)
-    appendRequesters(*combined.grantPolicy, requesterOffset,
+  bool dispatchContended = false;
+  for (const Span span : dispatchUnitSpans)
+    dispatchContended = dispatchContended || span.count > 1;
+  if (combined.grantPolicy) {
+    appendRequesters(*combined.grantPolicy, dispatchRequesterOffset,
+                     dispatchCandidateCount);
+    appendRequesters(*combined.grantPolicy, *registerRequesterOffset,
                      declaration.registerFifoCount);
+  } else if (dispatchContended) {
+    std::vector<RequesterKey> cycle;
+    cycle.reserve(*requesterCount);
+    for (std::uint32_t requester = 0; requester != *requesterCount; ++requester)
+      cycle.emplace_back(requester);
+    combined.grantPolicy = GrantPolicyDeclaration(
+        RoundRobinDeclaration{std::move(cycle), RequesterKey(0)});
+  }
 
   auto contract = ResourceContract::create(combined);
   if (!contract)
     return contract.takeError();
-  return TemporalPeResourceContract(std::move(*contract),
-                                    declaration.registerFifoCount, stateOffset,
-                                    patternOffset);
+  return TemporalPeResourceContract(
+      std::move(*contract), std::move(dispatchCandidates),
+      std::move(dispatchUnitCandidates), std::move(dispatchUnitSpans),
+      dispatchStateOffset, dispatchRequesterOffset, dispatchPatternOffset,
+      declaration.registerFifoCount, *registerStateOffset,
+      *registerPatternOffset);
+}
+
+llvm::ArrayRef<std::uint32_t>
+TemporalPeResourceContract::dispatchCandidatesOf(std::uint32_t unit) const {
+  assert(unit < dispatchUnitSpans_.size() &&
+         "context-dispatch unit ordinal out of range");
+  const Span span = dispatchUnitSpans_[unit];
+  return llvm::ArrayRef(dispatchUnitCandidates_).slice(span.first, span.count);
+}
+
+StateKey TemporalPeResourceContract::dispatchState(std::uint32_t unit) const {
+  assert(unit < dispatchUnitSpans_.size() &&
+         "context-dispatch unit ordinal out of range");
+  return StateKey(dispatchStateOffset_ + unit);
+}
+
+RequesterKey
+TemporalPeResourceContract::dispatchRequester(std::uint32_t candidate) const {
+  assert(candidate < dispatchCandidates_.size() &&
+         "context-dispatch candidate ordinal out of range");
+  return RequesterKey(dispatchRequesterOffset_ + candidate);
+}
+
+UsePatternKey
+TemporalPeResourceContract::dispatchPattern(std::uint32_t candidate) const {
+  assert(candidate < dispatchCandidates_.size() &&
+         "context-dispatch candidate ordinal out of range");
+  return UsePatternKey(dispatchPatternOffset_ + candidate);
 }
 
 StateKey
@@ -297,5 +449,90 @@ fabric::resolveTemporalPeOperandQueuePattern(
     return llvm::createStringError(
         std::errc::invalid_argument,
         "logical operand queue pattern disagrees with its canonical key");
+  return FabricUsePatternRef{FabricUsePatternOwnerRef(peOwner), patternOrdinal};
+}
+
+llvm::Expected<loom::fabric::FabricUsePatternRef>
+fabric::resolveTemporalPeDispatchPattern(
+    const loom::fabric::FabricArtifactView &view,
+    loom::fabric::InstructionContextRef context,
+    loom::fabric::FabricFuOccurrenceRef fu) {
+  using namespace loom::fabric;
+
+  if (llvm::Error error = validateFabricRef(view, context))
+    return std::move(error);
+  if (llvm::Error error = validateFabricRef(view, fu))
+    return std::move(error);
+  if (view.peSchedule(context.pe) != Schedule::Temporal)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "context-dispatch owner is not a temporal PE");
+  if (view.parentPeOf(fu) != context.pe)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "context-dispatch FU belongs to a different PE");
+
+  std::uint64_t fuCount = 0;
+  std::uint64_t fuOrdinal = 0;
+  std::uint64_t inputsPerContext = 0;
+  bool foundFu = false;
+  for (FabricFuOccurrenceRef candidate : view.fuOccurrences()) {
+    if (view.parentPeOf(candidate) != context.pe)
+      continue;
+    if (candidate == fu) {
+      fuOrdinal = fuCount;
+      foundFu = true;
+    }
+    ++fuCount;
+    const FabricTransportEndpointOwnerRef owner =
+        FabricTransportEndpointOwnerRef::of(candidate);
+    for (FabricOrdinal endpoint = 0;
+         endpoint != view.transportEndpointCount(owner); ++endpoint)
+      if (view.transportEndpointDirection({owner, endpoint}) ==
+          FabricPortDirection::Input)
+        ++inputsPerContext;
+  }
+  if (!foundFu || fuCount == 0)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "context-dispatch FU is absent from its PE inventory");
+
+  const std::uint64_t contextCount = view.peResidentContextCount(context.pe);
+  if (context.ordinal >= contextCount)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "context-dispatch context is outside the PE domain");
+  if (contextCount > std::numeric_limits<std::uint32_t>::max() ||
+      inputsPerContext > std::numeric_limits<std::uint32_t>::max() ||
+      contextCount * inputsPerContext >
+          std::numeric_limits<std::uint32_t>::max() ||
+      contextCount * fuCount > std::numeric_limits<std::uint32_t>::max())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "context-dispatch domain exceeds the owner key domain");
+
+  const std::uint64_t queueCount = contextCount * inputsPerContext;
+  const std::uint64_t candidate = context.ordinal * fuCount + fuOrdinal;
+  const std::uint64_t patternOrdinal64 = 2 * queueCount + candidate;
+  if (patternOrdinal64 > std::numeric_limits<std::uint32_t>::max())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "context-dispatch pattern exceeds the owner key domain");
+  const std::uint32_t patternOrdinal =
+      static_cast<std::uint32_t>(patternOrdinal64);
+  const FabricInventoryOwnerRef peOwner =
+      FabricInventoryOwnerRef::of(context.pe);
+  const ResourceContract *contract = view.resourceContract(peOwner);
+  if (!contract || patternOrdinal >= contract->usePatternCount())
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "context-dispatch pattern is absent from the PE contract");
+  const UsePattern pattern =
+      contract->usePattern(UsePatternKey(patternOrdinal));
+  if (pattern.requester.ordinal() != queueCount + candidate ||
+      pattern.claims.size() != 1 || pattern.commit)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "context-dispatch pattern disagrees with its canonical key");
   return FabricUsePatternRef{FabricUsePatternOwnerRef(peOwner), patternOrdinal};
 }

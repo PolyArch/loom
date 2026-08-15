@@ -130,7 +130,7 @@ public:
         return invalid("vertex CSR offsets are not canonical");
 
     ColoringState state(problem);
-    state.domainVertices_.resize(problem.domainCount);
+    state.conflictVertices_.resize(vertexCount);
     state.pressure_.assign(vertexCount, 0);
     DisjointSet components(vertexCount);
     for (PnrIndex vertex = 0; vertex < vertexCount; ++vertex) {
@@ -149,7 +149,6 @@ public:
           if (problem.vertices[members.front()].tagWidthBits !=
               problem.vertices[vertex].tagWidthBits)
             return invalid("one match domain contains different tag widths");
-          components.unite(members.front(), vertex);
         }
         members.push_back(vertex);
       }
@@ -168,15 +167,51 @@ public:
           return invalid("tag restriction intervals overlap");
       }
     }
-    for (const auto &members : state.domainVertices_)
-      for (PnrIndex vertex : members) {
-        const std::size_t increment = members.size() - 1;
-        state.pressure_[vertex] =
-            increment > std::numeric_limits<std::size_t>::max() -
-                            state.pressure_[vertex]
-                ? std::numeric_limits<std::size_t>::max()
-                : state.pressure_[vertex] + increment;
+    if (problem.vertexConflictOffsets.empty()) {
+      if (!problem.vertexConflicts.empty())
+        return invalid("conflict incidence has no CSR offsets");
+      for (const auto &members : state.domainVertices_)
+        for (std::size_t lhs = 0; lhs != members.size(); ++lhs)
+          for (std::size_t rhs = lhs + 1; rhs != members.size(); ++rhs) {
+            state.conflictVertices_[members[lhs]].push_back(members[rhs]);
+            state.conflictVertices_[members[rhs]].push_back(members[lhs]);
+          }
+    } else {
+      if (problem.vertexConflictOffsets.size() != vertexCount + 1 ||
+          problem.vertexConflictOffsets.front() != 0 ||
+          problem.vertexConflictOffsets.back() !=
+              problem.vertexConflicts.size())
+        return invalid("conflict CSR dimensions are inconsistent");
+      for (PnrIndex vertex = 0; vertex < vertexCount; ++vertex) {
+        const PnrIndex begin = problem.vertexConflictOffsets[vertex];
+        const PnrIndex end = problem.vertexConflictOffsets[vertex + 1];
+        if (begin > end || end > problem.vertexConflicts.size())
+          return invalid("conflict CSR offsets are not canonical");
+        auto &neighbors = state.conflictVertices_[vertex];
+        neighbors.assign(problem.vertexConflicts.begin() + begin,
+                         problem.vertexConflicts.begin() + end);
+        PnrIndex previous = 0;
+        bool first = true;
+        for (PnrIndex neighbor : neighbors) {
+          if (neighbor >= vertexCount || neighbor == vertex ||
+              (!first && neighbor <= previous))
+            return invalid("conflict adjacency is not canonical");
+          first = false;
+          previous = neighbor;
+        }
       }
+      for (PnrIndex vertex = 0; vertex < vertexCount; ++vertex)
+        for (PnrIndex neighbor : state.conflictVertices_[vertex])
+          if (!std::binary_search(state.conflictVertices_[neighbor].begin(),
+                                  state.conflictVertices_[neighbor].end(),
+                                  vertex))
+            return invalid("conflict adjacency is not symmetric");
+    }
+    for (PnrIndex vertex = 0; vertex < vertexCount; ++vertex) {
+      state.pressure_[vertex] = state.conflictVertices_[vertex].size();
+      for (PnrIndex neighbor : state.conflictVertices_[vertex])
+        components.unite(vertex, neighbor);
+    }
     std::map<PnrIndex, std::vector<PnrIndex>> componentMap;
     for (PnrIndex vertex = 0; vertex < vertexCount; ++vertex)
       componentMap[components.find(vertex)].push_back(vertex);
@@ -216,7 +251,9 @@ private:
       : problem_(problem), result_{std::vector<std::optional<llvm::APInt>>(
                                        problem.vertices.size()),
                                    0, 0},
-        colored_(problem.vertices.size(), 0), occupancy_(problem.domainCount) {}
+        colored_(problem.vertices.size(), 0),
+        saturationValueCounts_(problem.vertices.size()),
+        domainVertices_(problem.domainCount) {}
 
   llvm::ArrayRef<PnrIndex> domains(PnrIndex vertex) const {
     return problem_.vertexDomains.slice(
@@ -266,14 +303,16 @@ private:
   }
 
   bool isFree(PnrIndex vertex, const llvm::APInt &value) const {
-    return llvm::all_of(domains(vertex), [&](PnrIndex domain) {
-      return occupancy_[domain].lookup(value) == 0;
+    return llvm::all_of(conflictVertices_[vertex], [&](PnrIndex neighbor) {
+      return !colored_[neighbor] || !result_.values[neighbor] ||
+             compareUnsigned(*result_.values[neighbor], value) != 0;
     });
   }
 
   std::uint64_t conflictCost(PnrIndex vertex, const llvm::APInt &value) const {
-    return llvm::count_if(domains(vertex), [&](PnrIndex domain) {
-      return occupancy_[domain].lookup(value) != 0;
+    return llvm::count_if(conflictVertices_[vertex], [&](PnrIndex neighbor) {
+      return colored_[neighbor] && result_.values[neighbor] &&
+             compareUnsigned(*result_.values[neighbor], value) == 0;
     });
   }
 
@@ -293,10 +332,10 @@ private:
         std::numeric_limits<std::uint64_t>::max() - result_.conflictCount)
       return invalid("tag conflict count overflows u64");
     result_.conflictCount += conflicts;
-    for (PnrIndex domain : domains(vertex)) {
-      PnrIndex &count = occupancy_[domain][*value];
+    for (PnrIndex neighbor : conflictVertices_[vertex]) {
+      PnrIndex &count = saturationValueCounts_[neighbor][*value];
       if (count >= getInvalidPnrIndex() - PnrIndex{1})
-        return invalid("tag match-domain occupancy overflows PnrIndex");
+        return invalid("tag saturation incidence overflows PnrIndex");
       ++count;
     }
     return llvm::Error::success();
@@ -305,28 +344,24 @@ private:
   void unassign(PnrIndex vertex) noexcept {
     assert(colored_[vertex] && result_.values[vertex]);
     const llvm::APInt value = *result_.values[vertex];
-    for (PnrIndex domain : domains(vertex)) {
-      auto found = occupancy_[domain].find(value);
-      assert(found != occupancy_[domain].end() && found->second != 0);
-      if (found->second > 1) {
-        assert(result_.conflictCount != 0);
-        --result_.conflictCount;
-        --found->second;
-      } else {
-        occupancy_[domain].erase(found);
-      }
+    const std::uint64_t conflicts = conflictCost(vertex, value);
+    assert(conflicts <= result_.conflictCount);
+    result_.conflictCount -= conflicts;
+    for (PnrIndex neighbor : conflictVertices_[vertex]) {
+      auto saturation = saturationValueCounts_[neighbor].find(value);
+      assert(saturation != saturationValueCounts_[neighbor].end() &&
+             saturation->second != 0);
+      if (saturation->second == 1)
+        saturationValueCounts_[neighbor].erase(saturation);
+      else
+        --saturation->second;
     }
     result_.values[vertex].reset();
     colored_[vertex] = 0;
   }
 
   std::size_t saturation(PnrIndex vertex) const {
-    std::vector<llvm::APInt> values;
-    for (PnrIndex domain : domains(vertex))
-      for (const auto &entry : occupancy_[domain])
-        values.push_back(entry.first);
-    normalizeValues(values);
-    return values.size();
+    return saturationValueCounts_[vertex].size();
   }
 
   PnrIndex
@@ -460,8 +495,9 @@ private:
   SpatialTagColoringProblemView problem_;
   SpatialTagColoringResult result_;
   std::vector<std::uint8_t> colored_;
-  std::vector<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy_;
+  std::vector<llvm::DenseMap<llvm::APInt, PnrIndex>> saturationValueCounts_;
   std::vector<std::vector<PnrIndex>> domainVertices_;
+  std::vector<std::vector<PnrIndex>> conflictVertices_;
   std::vector<std::vector<PnrIndex>> components_;
   std::vector<std::size_t> pressure_;
   std::uint64_t exactWork_ = 0;

@@ -160,6 +160,11 @@ loom::sim::SpatialEventCoordinate coordinate(std::uint64_t cycle,
   return {take(loom::evaluation::ExactRatio::get(cycle, 1)), delta};
 }
 
+bool isCoordinate(const loom::sim::SpatialEventCoordinate &actual,
+                  const loom::sim::SpatialEventCoordinate &expected) {
+  return loom::sim::compareSpatialEventCoordinates(actual, expected) == 0;
+}
+
 bool hasPhysical(const CgraComputeLifecycleFrame &frame,
                  CgraPhysicalLifecycleKind kind) {
   return llvm::any_of(frame.physicalEvents,
@@ -208,7 +213,9 @@ CgraFrozenExecutionPlan selectedPlan(const dataflow::CanonicalActorView &actor,
        {},
        {},
        0,
-       static_cast<std::uint32_t>(semantic.handshakeCases.size())});
+       static_cast<std::uint32_t>(semantic.handshakeCases.size()),
+       std::nullopt,
+       0});
   std::vector<CgraResourcePatternSelection> selections;
   const fabric::UsePattern use =
       contract.usePattern(fabric::UsePatternKey(0));
@@ -235,6 +242,45 @@ CgraFrozenExecutionPlan selectedPlan(const dataflow::CanonicalActorView &actor,
   const fabric::ResourceContract *contracts[] = {&contract};
   plan.resources = take(freezeCgraResourceRuntimePlan(contracts, selections));
   return plan;
+}
+
+void temporalDispatchFollowsFabricRoundRobinSlots() {
+  CgraTemporalDispatchDomainPlan domain;
+  domain.candidateCount = 2;
+  domain.resetPosition = 0;
+
+  require(isCoordinate(take(projectCgraTemporalDispatchCoordinate(
+                           domain, 0, coordinate(0))),
+                       coordinate(0)),
+          "reset dispatch candidate did not receive the reset slot");
+  require(isCoordinate(take(projectCgraTemporalDispatchCoordinate(
+                           domain, 1, coordinate(0))),
+                       coordinate(1)),
+          "second dispatch candidate did not follow the reset slot");
+  require(isCoordinate(take(projectCgraTemporalDispatchCoordinate(
+                           domain, 1, coordinate(1, 3))),
+                       coordinate(1, 3)),
+          "selected dispatch candidate lost its current delta");
+  require(isCoordinate(take(projectCgraTemporalDispatchCoordinate(
+                           domain, 0, coordinate(1))),
+                       coordinate(2)),
+          "dispatch cursor did not advance after the second candidate");
+
+  loom::sim::SpatialEventCoordinate halfCycle{
+      take(loom::evaluation::ExactRatio::get(1, 2)), 7};
+  require(isCoordinate(take(projectCgraTemporalDispatchCoordinate(
+                           domain, 1, halfCycle)),
+                       coordinate(1)),
+          "fractional request did not wait for the next selected PE slot");
+
+  domain.resetPosition = 1;
+  require(isCoordinate(take(projectCgraTemporalDispatchCoordinate(
+                           domain, 1, coordinate(0))),
+                       coordinate(0)) &&
+              isCoordinate(take(projectCgraTemporalDispatchCoordinate(
+                               domain, 0, coordinate(0))),
+                           coordinate(1)),
+          "dispatch reset position did not come from the Fabric policy");
 }
 
 void computeCommitWaitsForExactPhysicalLifecycle() {
@@ -562,6 +608,7 @@ void exceptionalSerializeRejectsBeforePhysicalRequest() {
 } // namespace
 
 int main() {
+  temporalDispatchFollowsFabricRoundRobinSlots();
   computeCommitWaitsForExactPhysicalLifecycle();
   statefulActorCannotBypassUnmodeledTransport();
   structuralVectorUsesSharedPhysicalLifecycle();

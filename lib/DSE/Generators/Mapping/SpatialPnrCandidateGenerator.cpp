@@ -2,11 +2,13 @@
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "PnR/PnrConfig.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <array>
 #include <string>
@@ -20,6 +22,7 @@ enum InputSlot : std::uint32_t {
   DataflowInput,
   TechMappingInput,
   FabricInput,
+  PhysicalTimingProfileInput,
   ConstraintInput,
   InputSlotCount,
 };
@@ -34,6 +37,10 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
           PlanValueCardinality::ExactlyOne},
          {CandidateGeneratorInputSlotRef(FabricInput), "fabric",
           PlanValueRole::CandidateSet, &::loom::fabric::fabricArtifactSchema,
+          PlanValueCardinality::ExactlyOne},
+         {CandidateGeneratorInputSlotRef(PhysicalTimingProfileInput),
+          "physical_timing_profile", PlanValueRole::CandidateSet,
+          &::loom::fabric::fabricPhysicalTimingProfileArtifactSchema,
           PlanValueCardinality::ExactlyOne},
          {CandidateGeneratorInputSlotRef(ConstraintInput),
           "spatial_constraints", PlanValueRole::CandidateSet,
@@ -58,7 +65,7 @@ llvm::Error validateSpatialConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialPnrCandidateGeneratorKind,
     "mapping.spatial_pnr",
-    "loom.mapping.spatial_pnr.generator.v9",
+    "loom.mapping.spatial_pnr.generator.v13",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -73,10 +80,12 @@ const CandidateGeneratorDescriptor descriptor{
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                       const ResolvedCandidateGeneratorBinding &binding,
-                      const ArtifactStore &store, const BlobStore &blobs) {
+                      const ArtifactStore &store, const BlobStore &blobs,
+                      const ExecutionControlView &executionControl) {
   ::loom::pnr::SpatialPnrGenerationOutcome outcome =
       invokeSpatialPnrCandidateGenerator(inputs, binding, store,
-                                         defaultCandidateWorkerCount());
+                                         defaultCandidateWorkerCount(),
+                                         executionControl);
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSpatialMappings>(&outcome)) {
     std::vector<CandidateGeneratorLineageEdge> lineageEdges;
@@ -88,9 +97,17 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
           candidate,
           {},
           {}});
+    std::vector<CandidateGeneratorOutputBinding> outputs = {
+        {CandidateGeneratorOutputSlotRef(0), std::move(generated->candidates)}};
+    auto incompleteReason =
+        pnrGenerationIncompleteReason(generated->termination);
+    if (incompleteReason)
+      return CandidateGeneratorProviderResult{
+          IncompleteCandidateGeneratorResult{
+              *incompleteReason, std::move(outputs), std::move(lineageEdges)},
+          spatialPnrCandidateGeneratorWorkSummary(generated->accounting)};
     return CandidateGeneratorProviderResult{
-        CompletedCandidateGeneratorResult{{{CandidateGeneratorOutputSlotRef(0),
-                                            std::move(generated->candidates)}},
+        CompletedCandidateGeneratorResult{std::move(outputs),
                                           std::move(lineageEdges)},
         spatialPnrCandidateGeneratorWorkSummary(generated->accounting)};
   }
@@ -112,6 +129,25 @@ invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
         IncompleteCandidateGeneratorResult{
             reason, {{CandidateGeneratorOutputSlotRef(0), {}}}, {}},
         spatialPnrCandidateGeneratorWorkSummary(incomplete->accounting)};
+  }
+  if (auto *interrupted =
+          std::get_if<::loom::pnr::InterruptedSpatialPnrGeneration>(&outcome)) {
+    std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+    lineageEdges.reserve(interrupted->candidates.size());
+    for (const ArtifactRootReference &candidate : interrupted->candidates)
+      lineageEdges.push_back(CandidateGeneratorLineageEdge{
+          CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+          CandidateGeneratorOutputSlotRef(0),
+          candidate,
+          {},
+          {}});
+    return CandidateGeneratorProviderResult{
+        IncompleteCandidateGeneratorResult{
+            CandidateGeneratorIncompleteReason::CancelledOrTimeout,
+            {{CandidateGeneratorOutputSlotRef(0),
+              std::move(interrupted->candidates)}},
+            std::move(lineageEdges)},
+        spatialPnrCandidateGeneratorWorkSummary(interrupted->accounting)};
   }
   if (const auto *unsupported =
           std::get_if<::loom::pnr::UnsupportedSpatialPnrGeneration>(&outcome))
@@ -168,7 +204,6 @@ spatialPnrCandidateGeneratorWorkSummary(
           accounting.calibrationProposalSlots,
           accounting.annealingBaseProposalSlots,
           accounting.annealingMovableProposalSlots,
-          accounting.focusedClosureProposalSlots,
           accounting.exactRepairRegionDecisions,
           accounting.exactRepairSolverCalls,
       };
@@ -178,6 +213,19 @@ spatialPnrCandidateGeneratorWorkSummary(
     summary.push_back({CandidateGeneratorWorkUnitRef(ordinal),
                        consumed[ordinal], consumed[ordinal]});
   return summary;
+}
+
+std::optional<CandidateGeneratorIncompleteReason> pnrGenerationIncompleteReason(
+    ::loom::pnr::PnrGenerationTermination termination) {
+  switch (termination) {
+  case ::loom::pnr::PnrGenerationTermination::FixedAttemptsCompleted:
+    return std::nullopt;
+  case ::loom::pnr::PnrGenerationTermination::SemanticLimitReached:
+    return CandidateGeneratorIncompleteReason::SemanticLimitReached;
+  case ::loom::pnr::PnrGenerationTermination::ProofNotEstablished:
+    return CandidateGeneratorIncompleteReason::ProofNotEstablished;
+  }
+  llvm_unreachable("unknown PnR generation termination");
 }
 
 llvm::Error registerSpatialPnrCandidateGenerator() {
@@ -191,6 +239,7 @@ bindSpatialPnrCandidateGeneratorInputs(
     const ArtifactRootReference &dataflow,
     const ArtifactRootReference &techMapping,
     const ArtifactRootReference &fabric,
+    const ArtifactRootReference &physicalTimingProfile,
     const ArtifactRootReference &constraints) {
   if (llvm::Error error = registerSpatialPnrCandidateGenerator())
     return std::move(error);
@@ -198,6 +247,8 @@ bindSpatialPnrCandidateGeneratorInputs(
       {CandidateGeneratorInputSlotRef(DataflowInput), {dataflow}},
       {CandidateGeneratorInputSlotRef(TechMappingInput), {techMapping}},
       {CandidateGeneratorInputSlotRef(FabricInput), {fabric}},
+      {CandidateGeneratorInputSlotRef(PhysicalTimingProfileInput),
+       {physicalTimingProfile}},
       {CandidateGeneratorInputSlotRef(ConstraintInput), {constraints}},
   };
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
@@ -218,7 +269,8 @@ resolveSpatialPnrCandidateGeneratorBinding(
 ::loom::pnr::SpatialPnrGenerationOutcome invokeSpatialPnrCandidateGenerator(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
-    const ArtifactStore &store, std::uint32_t candidateWorkerCount) {
+    const ArtifactStore &store, std::uint32_t candidateWorkerCount,
+    const ExecutionControlView &executionControl) {
   if (binding.descriptorRef() != descriptor.reference())
     return invalidOutcome("binding does not select the Spatial PnR generator");
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
@@ -243,6 +295,11 @@ resolveSpatialPnrCandidateGeneratorBinding(
       singleInput(inputBindings, FabricInput), store);
   if (!fabric)
     return invalidOutcome(llvm::toString(fabric.takeError()));
+  auto physicalTiming = ::loom::fabric::importFabricPhysicalTimingProfile(
+      singleInput(inputBindings, PhysicalTimingProfileInput), fabric->view(),
+      store);
+  if (!physicalTiming)
+    return invalidOutcome(llvm::toString(physicalTiming.takeError()));
   auto tech = ::loom::mapping::importTechMapping(
       singleInput(inputBindings, TechMappingInput), store);
   if (!tech)
@@ -260,8 +317,8 @@ resolveSpatialPnrCandidateGeneratorBinding(
     return invalidOutcome("D/T/F/K binding has inconsistent artifact owners");
 
   return ::loom::pnr::generateSpatialMappings(
-      {*dataflow, tech->view(), fabric->view(), *config, constraints->view(),
-       store, candidateWorkerCount});
+      {*dataflow, tech->view(), fabric->view(), *physicalTiming, *config,
+       constraints->view(), store, candidateWorkerCount, executionControl});
 }
 
 } // namespace loom::dse

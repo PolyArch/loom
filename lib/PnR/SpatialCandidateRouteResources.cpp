@@ -43,7 +43,13 @@ llvm::Error SpatialMoveTransaction::collectRouteTraversalDeltas() {
     }
     const std::uint64_t sinkCount =
         state_->problem_->transfers().logicalNets()[logicalNet].sinkCount;
-    if (!route.initiallyRouted() && route.proposedRouted()) {
+    if (state_->usesRegisterFifo(logicalNet)) {
+      if (route.proposedRouted()) {
+        rollbackAppliedRouteResources();
+        return candidateError(
+            "register-FIFO transfer also has a proposed external route");
+      }
+    } else if (!route.initiallyRouted() && route.proposedRouted()) {
       if (proposedUnroutedObligationCount < sinkCount) {
         rollbackAppliedRouteResources();
         return candidateError("unrouted obligation count underflows u64");

@@ -1,7 +1,10 @@
 #include "PnR/SpatialTagAssignment.h"
 
+#include "SpatialSwitchRowPacking.h"
 #include "SpatialTagColoring.h"
 #include "SpatialTagConstraintModel.h"
+
+#include "Fabric/Identity/FabricTemporalSwitchRoute.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -13,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <map>
 #include <numeric>
 #include <optional>
 #include <system_error>
@@ -25,6 +29,8 @@ using namespace loom::mapping;
 using namespace loom::pnr;
 
 namespace {
+
+using TagDomainOccupancy = llvm::DenseMap<llvm::APInt, std::vector<PnrIndex>>;
 
 constexpr llvm::StringLiteral tagAssignment = "SpatialTagAssignmentProjection";
 constexpr PnrCapacityContext segmentCountContext{tagAssignment, "segments",
@@ -111,17 +117,19 @@ llvm::Expected<llvm::APInt> nextUnsigned(const llvm::APInt &value) {
 }
 
 bool isFree(llvm::ArrayRef<PnrIndex> domains, const llvm::APInt &value,
-            llvm::ArrayRef<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy) {
+            llvm::ArrayRef<TagDomainOccupancy> occupancy) {
   return llvm::all_of(domains, [&](PnrIndex domain) {
-    return occupancy[domain].lookup(value) == 0;
+    const auto found = occupancy[domain].find(value);
+    return found == occupancy[domain].end() || found->second.empty();
   });
 }
 
-std::uint64_t
-conflictCost(llvm::ArrayRef<PnrIndex> domains, const llvm::APInt &value,
-             llvm::ArrayRef<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy) {
+std::uint64_t conflictCost(llvm::ArrayRef<PnrIndex> domains,
+                           const llvm::APInt &value,
+                           llvm::ArrayRef<TagDomainOccupancy> occupancy) {
   return llvm::count_if(domains, [&](PnrIndex domain) {
-    return occupancy[domain].lookup(value) != 0;
+    const auto found = occupancy[domain].find(value);
+    return found != occupancy[domain].end() && !found->second.empty();
   });
 }
 
@@ -130,7 +138,7 @@ chooseValue(std::uint32_t tagWidthBits, llvm::ArrayRef<PnrIndex> domains,
             const std::optional<llvm::ArrayRef<SpatialConstraintDomainValue>>
                 &restriction,
             llvm::ArrayRef<llvm::APInt> forbidden,
-            llvm::ArrayRef<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy) {
+            llvm::ArrayRef<TagDomainOccupancy> occupancy) {
   std::optional<llvm::APInt> bestAllowed;
   std::uint64_t bestCost = std::numeric_limits<std::uint64_t>::max();
   const auto considerRange = [&](llvm::APInt candidate,
@@ -207,9 +215,11 @@ bool valueAllowed(
 }
 
 llvm::Error addAssignment(
-    llvm::MutableArrayRef<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy,
-    std::uint64_t &unassignedCount, std::uint64_t &conflictCount,
-    llvm::ArrayRef<PnrIndex> domains, const std::optional<llvm::APInt> &value) {
+    llvm::MutableArrayRef<TagDomainOccupancy> occupancy,
+    const ::loom::pnr::detail::SpatialTagInterferenceProjection &interference,
+    PnrIndex vertex, std::uint64_t &unassignedCount,
+    std::uint64_t &conflictCount, llvm::ArrayRef<PnrIndex> domains,
+    const std::optional<llvm::APInt> &value) {
   if (!value) {
     if (unassignedCount == std::numeric_limits<std::uint64_t>::max())
       return invalid("unassigned count overflows u64");
@@ -217,46 +227,63 @@ llvm::Error addAssignment(
     return llvm::Error::success();
   }
 
-  std::uint64_t addedConflicts = 0;
   for (PnrIndex domain : domains) {
     if (domain >= occupancy.size())
       return invalid("assignment names an out-of-range tag match domain");
-    const PnrIndex count = occupancy[domain].lookup(*value);
-    if (count >= getInvalidPnrIndex() - PnrIndex{1})
+    const auto found = occupancy[domain].find(*value);
+    if (found == occupancy[domain].end())
+      continue;
+    if (found->second.size() >= getInvalidPnrIndex() - PnrIndex{1})
       return invalid("tag match-domain occupancy overflows PnrIndex");
-    addedConflicts += count != 0;
   }
+  const std::uint64_t addedConflicts =
+      llvm::count_if(interference.conflicts(vertex), [&](PnrIndex peer) {
+        return llvm::any_of(domains, [&](PnrIndex domain) {
+          const auto found = occupancy[domain].find(*value);
+          return found != occupancy[domain].end() &&
+                 llvm::is_contained(found->second, peer);
+        });
+      });
   if (addedConflicts >
       std::numeric_limits<std::uint64_t>::max() - conflictCount)
     return invalid("tag conflict count overflows u64");
   conflictCount += addedConflicts;
   for (PnrIndex domain : domains)
-    ++occupancy[domain][*value];
+    occupancy[domain][*value].push_back(vertex);
   return llvm::Error::success();
 }
 
 void removeAssignment(
-    llvm::MutableArrayRef<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy,
-    std::uint64_t &unassignedCount, std::uint64_t &conflictCount,
-    llvm::ArrayRef<PnrIndex> domains,
+    llvm::MutableArrayRef<TagDomainOccupancy> occupancy,
+    const ::loom::pnr::detail::SpatialTagInterferenceProjection &interference,
+    PnrIndex vertex, std::uint64_t &unassignedCount,
+    std::uint64_t &conflictCount, llvm::ArrayRef<PnrIndex> domains,
     const std::optional<llvm::APInt> &value) noexcept {
   if (!value) {
     assert(unassignedCount != 0);
     --unassignedCount;
     return;
   }
+  const std::uint64_t removedConflicts =
+      llvm::count_if(interference.conflicts(vertex), [&](PnrIndex peer) {
+        return llvm::any_of(domains, [&](PnrIndex domain) {
+          const auto found = occupancy[domain].find(*value);
+          return found != occupancy[domain].end() &&
+                 llvm::is_contained(found->second, peer);
+        });
+      });
   for (PnrIndex domain : domains) {
     assert(domain < occupancy.size());
     auto found = occupancy[domain].find(*value);
-    assert(found != occupancy[domain].end() && found->second != 0);
-    if (found->second > 1) {
-      assert(conflictCount != 0);
-      --conflictCount;
-      --found->second;
-    } else {
+    assert(found != occupancy[domain].end());
+    auto member = llvm::find(found->second, vertex);
+    assert(member != found->second.end());
+    found->second.erase(member);
+    if (found->second.empty())
       occupancy[domain].erase(found);
-    }
   }
+  assert(removedConflicts <= conflictCount);
+  conflictCount -= removedConflicts;
 }
 
 } // namespace
@@ -275,6 +302,8 @@ struct SpatialTagAssignmentScratchStorage final {
   std::vector<PnrIndex> routedNets;
   std::vector<PnrIndex> rebuiltNets;
   SpatialTagContinuityScratch continuityScratch;
+  SpatialTagInterferenceProjection stagedInterference;
+  bool interferenceActive = false;
   bool active = false;
 };
 
@@ -282,7 +311,8 @@ struct SpatialTagAssignmentStateStorage final {
   const FrozenSpatialPnrProblem *problem = nullptr;
   const SpatialTagConstraintModel *constraints = nullptr;
   std::vector<SpatialTagNetState> nets;
-  std::vector<llvm::DenseMap<llvm::APInt, PnrIndex>> occupancy;
+  std::vector<TagDomainOccupancy> occupancy;
+  SpatialTagInterferenceProjection interference;
   std::vector<PnrIndex> residentCounts;
   std::vector<std::uint8_t> classBuilt;
   std::uint64_t unassignedCount = 0;
@@ -297,6 +327,14 @@ namespace {
 using TagNetState = loom::pnr::detail::SpatialTagNetState;
 using TagStateStorage = loom::pnr::detail::SpatialTagAssignmentStateStorage;
 
+PnrIndex segmentVertex(const TagStateStorage &storage, PnrIndex logicalNet,
+                       PnrIndex segment) {
+  const auto offsets = storage.interference.netSegmentOffsets();
+  assert(logicalNet + 1 < offsets.size() &&
+         segment < offsets[logicalNet + 1] - offsets[logicalNet]);
+  return offsets[logicalNet] + segment;
+}
+
 llvm::ArrayRef<PnrIndex> segmentDomains(const TagNetState &net,
                                         PnrIndex segment) {
   const auto offsets = net.continuity.segmentDomainOffsets();
@@ -305,13 +343,131 @@ llvm::ArrayRef<PnrIndex> segmentDomains(const TagNetState &net,
       offsets[segment], offsets[segment + 1] - offsets[segment]);
 }
 
+llvm::Error verifyFabricTemporalSwitchRows(
+    const TagStateStorage &storage,
+    llvm::ArrayRef<const RouteTreeState *> routes,
+    llvm::ArrayRef<const SpatialTagContinuityProjection *> continuity,
+    llvm::ArrayRef<TagDomainOccupancy> occupancy,
+    llvm::ArrayRef<PnrIndex> residentCounts) {
+  using Demand = ::loom::pnr::detail::SpatialTemporalSwitchSegmentDemand;
+  auto demands = ::loom::pnr::detail::deriveSpatialTemporalSwitchSegmentDemands(
+      *storage.problem, routes, continuity);
+  if (!demands)
+    return demands.takeError();
+  const auto domains =
+      storage.problem->routing().tagContinuity().matchDomains();
+  std::vector<std::vector<const Demand *>> demandsByDomain(domains.size());
+  for (const Demand &demand : *demands) {
+    if (demand.domain >= domains.size())
+      return invalid("Temporal switch row demand is out of range");
+    demandsByDomain[demand.domain].push_back(&demand);
+  }
+
+  for (PnrIndex domain = 0; domain < domains.size(); ++domain) {
+    if (domains[domain].kind !=
+        ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable)
+      continue;
+    const auto &domainDemands = demandsByDomain[domain];
+    std::vector<
+        std::vector<::loom::fabric::FabricTemporalSwitchRouteSignatureView>>
+        signatureStorage;
+    signatureStorage.reserve(domainDemands.size());
+    for (const Demand *demand : domainDemands) {
+      signatureStorage.emplace_back();
+      auto &signatures = signatureStorage.back();
+      signatures.reserve(demand->signatures.size());
+      for (const ::loom::pnr::detail::SpatialTemporalSwitchInputSignature
+               &signature : demand->signatures)
+        signatures.push_back(
+            {signature.occurrence, signature.input, signature.outputs});
+    }
+    std::vector<::loom::fabric::FabricTemporalSwitchTaggedRouteDemandView>
+        ownerDemands;
+    ownerDemands.reserve(domainDemands.size());
+    for (auto [ordinal, signatures] : llvm::enumerate(signatureStorage)) {
+      const Demand &demand = *domainDemands[ordinal];
+      if (demand.logicalNet >= storage.nets.size() ||
+          demand.segment >= storage.nets[demand.logicalNet].values.size() ||
+          !storage.nets[demand.logicalNet].values[demand.segment])
+        return invalid(
+            "exact Temporal switch row verification found TagUnassigned");
+      ownerDemands.push_back(
+          {{signatures},
+           storage.nets[demand.logicalNet].values[demand.segment]->zextOrTrunc(
+               domains[domain].tagWidthBits)});
+    }
+    auto ownerRows =
+        ::loom::fabric::projectFabricTemporalSwitchRouteRows(ownerDemands);
+    if (!ownerRows)
+      return ownerRows.takeError();
+    if (ownerRows->size() != residentCounts[domain] ||
+        ownerRows->size() != occupancy[domain].size())
+      return invalid(
+          "cached Temporal switch resident count diverges from Fabric rows");
+
+    for (const auto &row : *ownerRows) {
+      std::vector<PnrIndex> rowVertices;
+      rowVertices.reserve(row.demandOrdinals.size());
+      for (std::uint64_t demandOrdinal : row.demandOrdinals) {
+        if (demandOrdinal >= domainDemands.size())
+          return invalid("Fabric Temporal switch row has an absent demand");
+        const Demand &demand = *domainDemands[demandOrdinal];
+        rowVertices.push_back(
+            segmentVertex(storage, demand.logicalNet, demand.segment));
+      }
+      llvm::sort(rowVertices);
+      rowVertices.erase(std::unique(rowVertices.begin(), rowVertices.end()),
+                        rowVertices.end());
+      bool cacheCompatible = true;
+      for (std::size_t lhs = 0; lhs != rowVertices.size(); ++lhs)
+        for (std::size_t rhs = lhs + 1; rhs != rowVertices.size(); ++rhs)
+          cacheCompatible &= !storage.interference.interferes(
+              domain, rowVertices[lhs], rowVertices[rhs]);
+      if (cacheCompatible != row.compatible)
+        return invalid(
+            "cached Temporal switch compatibility diverges from Fabric row");
+
+      const auto occupied =
+          llvm::find_if(occupancy[domain], [&](const auto &entry) {
+            return compareUnsigned(entry.first, row.tag) == 0;
+          });
+      if (occupied == occupancy[domain].end())
+        return invalid("Fabric Temporal switch row has no cached tag");
+      std::vector<PnrIndex> occupiedVertices = occupied->second;
+      llvm::sort(occupiedVertices);
+      occupiedVertices.erase(
+          std::unique(occupiedVertices.begin(), occupiedVertices.end()),
+          occupiedVertices.end());
+      if (occupiedVertices != rowVertices)
+        return invalid(
+            "cached Temporal switch row membership diverges from Fabric row");
+    }
+  }
+  return llvm::Error::success();
+}
+
 std::uint64_t residentOveruse(PnrIndex count,
                               std::optional<std::uint64_t> capacity) {
   return capacity && count > *capacity ? count - *capacity : 0;
 }
 
+std::uint64_t domainConflictCount(
+    llvm::ArrayRef<TagDomainOccupancy> occupancy,
+    const ::loom::pnr::detail::SpatialTagInterferenceProjection &interference,
+    PnrIndex domain) {
+  assert(domain < occupancy.size());
+  std::uint64_t conflicts = 0;
+  for (const auto &entry : occupancy[domain])
+    for (std::size_t lhs = 0; lhs != entry.second.size(); ++lhs)
+      for (std::size_t rhs = lhs + 1; rhs != entry.second.size(); ++rhs)
+        conflicts += interference.interferes(domain, entry.second[lhs],
+                                             entry.second[rhs]);
+  return conflicts;
+}
+
 llvm::Error addDomainResidency(TagStateStorage &storage,
-                               llvm::ArrayRef<PnrIndex> domains) {
+                               llvm::ArrayRef<PnrIndex> domains,
+                               const std::optional<llvm::APInt> &value) {
   const auto matchDomains =
       storage.problem->routing().tagContinuity().matchDomains();
   std::uint64_t addedOveruse = 0;
@@ -320,6 +476,14 @@ llvm::Error addDomainResidency(TagStateStorage &storage,
         domain >= matchDomains.size())
       return invalid("segment names an out-of-range tag match domain");
     const PnrIndex count = storage.residentCounts[domain];
+    const auto found = value ? storage.occupancy[domain].find(*value)
+                             : storage.occupancy[domain].end();
+    const bool packedSwitch =
+        matchDomains[domain].kind ==
+        ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable;
+    if (packedSwitch && value && found != storage.occupancy[domain].end() &&
+        !found->second.empty())
+      continue;
     if (count >= getInvalidPnrIndex() - PnrIndex{1})
       return invalid("tag match-domain residency overflows PnrIndex");
     const auto capacity = matchDomains[domain].residentEntryCapacity;
@@ -329,20 +493,40 @@ llvm::Error addDomainResidency(TagStateStorage &storage,
   if (addedOveruse > std::numeric_limits<std::uint64_t>::max() -
                          storage.residentCapacityOveruse)
     return invalid("tag match-domain capacity overuse exceeds u64");
-  for (PnrIndex domain : domains)
-    ++storage.residentCounts[domain];
+  for (PnrIndex domain : domains) {
+    const auto found = value ? storage.occupancy[domain].find(*value)
+                             : storage.occupancy[domain].end();
+    const bool packedSwitch =
+        matchDomains[domain].kind ==
+        ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable;
+    if (!packedSwitch || !value || found == storage.occupancy[domain].end() ||
+        found->second.empty())
+      ++storage.residentCounts[domain];
+  }
   storage.residentCapacityOveruse += addedOveruse;
   return llvm::Error::success();
 }
 
 void removeDomainResidency(TagStateStorage &storage,
-                           llvm::ArrayRef<PnrIndex> domains) noexcept {
+                           llvm::ArrayRef<PnrIndex> domains,
+                           const std::optional<llvm::APInt> &value) noexcept {
   const auto matchDomains =
       storage.problem->routing().tagContinuity().matchDomains();
   for (PnrIndex domain : domains) {
     assert(domain < storage.residentCounts.size() &&
            domain < matchDomains.size());
     const PnrIndex count = storage.residentCounts[domain];
+    const auto found = value ? storage.occupancy[domain].find(*value)
+                             : storage.occupancy[domain].end();
+    const bool packedSwitch =
+        matchDomains[domain].kind ==
+        ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable;
+    if (packedSwitch && value) {
+      assert(found != storage.occupancy[domain].end() &&
+             !found->second.empty());
+      if (found->second.size() != 1)
+        continue;
+    }
     assert(count != 0);
     const auto capacity = matchDomains[domain].residentEntryCapacity;
     const std::uint64_t removedOveruse =
@@ -353,33 +537,36 @@ void removeDomainResidency(TagStateStorage &storage,
   }
 }
 
-llvm::Error addSegmentState(TagStateStorage &storage,
-                            llvm::ArrayRef<PnrIndex> domains,
+llvm::Error addSegmentState(TagStateStorage &storage, PnrIndex logicalNet,
+                            PnrIndex segment, llvm::ArrayRef<PnrIndex> domains,
                             const std::optional<llvm::APInt> &value) {
-  if (llvm::Error error =
-          addAssignment(storage.occupancy, storage.unassignedCount,
-                        storage.conflictCount, domains, value))
+  if (llvm::Error error = addDomainResidency(storage, domains, value))
     return error;
-  if (llvm::Error error = addDomainResidency(storage, domains)) {
-    removeAssignment(storage.occupancy, storage.unassignedCount,
-                     storage.conflictCount, domains, value);
+  if (llvm::Error error = addAssignment(
+          storage.occupancy, storage.interference,
+          segmentVertex(storage, logicalNet, segment), storage.unassignedCount,
+          storage.conflictCount, domains, value)) {
+    removeDomainResidency(storage, domains, value);
     return error;
   }
   return llvm::Error::success();
 }
 
-void removeSegmentState(TagStateStorage &storage,
-                        llvm::ArrayRef<PnrIndex> domains,
+void removeSegmentState(TagStateStorage &storage, PnrIndex logicalNet,
+                        PnrIndex segment, llvm::ArrayRef<PnrIndex> domains,
                         const std::optional<llvm::APInt> &value) noexcept {
-  removeDomainResidency(storage, domains);
-  removeAssignment(storage.occupancy, storage.unassignedCount,
-                   storage.conflictCount, domains, value);
+  removeDomainResidency(storage, domains, value);
+  removeAssignment(storage.occupancy, storage.interference,
+                   segmentVertex(storage, logicalNet, segment),
+                   storage.unassignedCount, storage.conflictCount, domains,
+                   value);
 }
 
-void removeNet(TagStateStorage &storage, const TagNetState &net) noexcept {
+void removeNet(TagStateStorage &storage, PnrIndex logicalNet,
+               const TagNetState &net) noexcept {
   for (PnrIndex segment = 0; segment < net.values.size(); ++segment)
-    removeSegmentState(storage, segmentDomains(net, segment),
-                       net.values[segment]);
+    removeSegmentState(storage, logicalNet, segment,
+                       segmentDomains(net, segment), net.values[segment]);
 }
 
 std::optional<llvm::APInt>
@@ -416,7 +603,8 @@ llvm::Error buildNet(TagStateStorage &storage, PnrIndex logicalNet,
       return;
     for (PnrIndex segment = 0; segment < result.values.size(); ++segment)
       if (added[segment])
-        removeSegmentState(storage, segmentDomains(result, segment),
+        removeSegmentState(storage, logicalNet, segment,
+                           segmentDomains(result, segment),
                            result.values[segment]);
   });
 
@@ -491,8 +679,9 @@ llvm::Error buildNet(TagStateStorage &storage, PnrIndex logicalNet,
       if (value == getInvalidPnrIndex())
         continue;
       result.values[segment] = (*requiredValues)[value];
-      if (llvm::Error error = addSegmentState(
-              storage, segmentDomains(result, segment), result.values[segment]))
+      if (llvm::Error error = addSegmentState(storage, logicalNet, segment,
+                                              segmentDomains(result, segment),
+                                              result.values[segment]))
         return error;
       added[segment] = 1;
     }
@@ -522,8 +711,8 @@ llvm::Error buildNet(TagStateStorage &storage, PnrIndex logicalNet,
       if (!result.values[segment])
         return unsupported(
             "tag equality set cannot color one continuity segment");
-      if (llvm::Error error =
-              addSegmentState(storage, domains, result.values[segment]))
+      if (llvm::Error error = addSegmentState(storage, logicalNet, segment,
+                                              domains, result.values[segment]))
         return error;
       added[segment] = 1;
     }
@@ -551,8 +740,8 @@ llvm::Error buildNet(TagStateStorage &storage, PnrIndex logicalNet,
       selected = std::move(*chosen);
     }
     result.values[ordinal] = std::move(selected);
-    if (llvm::Error error =
-            addSegmentState(storage, domains, result.values[ordinal]))
+    if (llvm::Error error = addSegmentState(storage, logicalNet, ordinal,
+                                            domains, result.values[ordinal]))
       return error;
     added[ordinal] = 1;
   }
@@ -703,7 +892,8 @@ llvm::Error colorIndependentNets(TagStateStorage &storage,
     return domainCount.takeError();
   auto coloring = ::loom::pnr::detail::colorSpatialTagInterference(
       {vertices, domainOffsets, domains, intervalOffsets, intervals,
-       *domainCount});
+       *domainCount, storage.interference.conflictOffsets(),
+       storage.interference.conflicts()});
   if (!coloring)
     return coloring.takeError();
   if (coloring->values.size() != vertices.size())
@@ -716,7 +906,7 @@ llvm::Error colorIndependentNets(TagStateStorage &storage,
     if (committed)
       return;
     for (const auto &[logicalNet, segment] : llvm::reverse(added))
-      removeSegmentState(storage,
+      removeSegmentState(storage, logicalNet, segment,
                          segmentDomains(storage.nets[logicalNet], segment),
                          storage.nets[logicalNet].values[segment]);
   });
@@ -727,8 +917,9 @@ llvm::Error colorIndependentNets(TagStateStorage &storage,
     net.values.assign(net.continuity.segments().size(), std::nullopt);
     for (PnrIndex segment = 0; segment < net.values.size(); ++segment) {
       net.values[segment] = coloring->values[vertex++];
-      if (llvm::Error error = addSegmentState(
-              storage, segmentDomains(net, segment), net.values[segment]))
+      if (llvm::Error error = addSegmentState(storage, logicalNet, segment,
+                                              segmentDomains(net, segment),
+                                              net.values[segment]))
         return error;
       added.emplace_back(logicalNet, segment);
     }
@@ -840,6 +1031,15 @@ buildStorage(const FrozenSpatialPnrProblem &problem,
       return continuity.takeError();
     storage->nets[logicalNet].continuity = std::move(*continuity);
   }
+  std::vector<const SpatialTagContinuityProjection *> continuity;
+  continuity.reserve(storage->nets.size());
+  for (const TagNetState &net : storage->nets)
+    continuity.push_back(&net.continuity);
+  auto interference = ::loom::pnr::detail::deriveSpatialTagInterference(
+      problem, routes, continuity);
+  if (!interference)
+    return interference.takeError();
+  storage->interference = std::move(*interference);
   if (llvm::Error error = buildAssignments(*storage, oldNets))
     return std::move(error);
   if (llvm::Error error = verifyRelations(*storage))
@@ -975,7 +1175,8 @@ std::size_t SpatialTagAssignmentScratch::retainedStorageBytes() const {
       storage_->touchedRoutes.capacity() * sizeof(PnrIndex) +
       storage_->routedNets.capacity() * sizeof(PnrIndex) +
       storage_->rebuiltNets.capacity() * sizeof(PnrIndex) +
-      storage_->continuityScratch.retainedStorageBytes();
+      storage_->continuityScratch.retainedStorageBytes() +
+      storage_->stagedInterference.retainedStorageBytes();
   for (const auto &net : storage_->stagedNets)
     bytes += retainedBytes(net);
   return bytes;
@@ -1052,12 +1253,8 @@ std::uint64_t SpatialTagAssignmentState::domainResidentCapacityOveruse(
 
 std::uint64_t
 SpatialTagAssignmentState::domainConflictCount(PnrIndex domain) const {
-  assert(domain < storage_->occupancy.size());
-  std::uint64_t conflicts = 0;
-  for (const auto &entry : storage_->occupancy[domain]) {
-    assert(entry.second != 0);
-    conflicts += entry.second - 1;
-  }
+  const std::uint64_t conflicts = ::domainConflictCount(
+      storage_->occupancy, storage_->interference, domain);
   assert(conflicts <= storage_->conflictCount);
   return conflicts;
 }
@@ -1065,8 +1262,90 @@ SpatialTagAssignmentState::domainConflictCount(PnrIndex domain) const {
 bool SpatialTagAssignmentState::domainValueConflicts(
     PnrIndex domain, const llvm::APInt &value) const {
   assert(domain < storage_->occupancy.size());
-  return storage_->occupancy[domain].lookup(value) > 1;
+  const auto found = storage_->occupancy[domain].find(value);
+  if (found == storage_->occupancy[domain].end())
+    return false;
+  for (std::size_t lhs = 0; lhs != found->second.size(); ++lhs)
+    for (std::size_t rhs = lhs + 1; rhs != found->second.size(); ++rhs)
+      if (storage_->interference.interferes(domain, found->second[lhs],
+                                            found->second[rhs]))
+        return true;
+  return false;
 }
+
+namespace {
+
+llvm::Expected<SpatialTagAssignmentSummary> summarizeTagAssignmentState(
+    const loom::pnr::detail::SpatialTagAssignmentStateStorage &storage,
+    bool includeDomainDetails) {
+  SpatialTagAssignmentSummary summary;
+  summary.unassignedCount = storage.unassignedCount;
+  summary.conflictCount = storage.conflictCount;
+  summary.residentCapacityOveruse = storage.residentCapacityOveruse;
+  if (!includeDomainDetails)
+    return summary;
+  summary.domainResidentCounts.reserve(storage.residentCounts.size());
+  summary.domainConflictCounts.reserve(storage.occupancy.size());
+  for (PnrIndex domain = 0; domain < storage.residentCounts.size(); ++domain) {
+    summary.domainResidentCounts.push_back(storage.residentCounts[domain]);
+    summary.domainConflictCounts.push_back(
+        ::domainConflictCount(storage.occupancy, storage.interference, domain));
+  }
+
+  summary.netDomainUseOffsets.reserve(storage.nets.size() + 1);
+  summary.netUnassignedCounts.reserve(storage.nets.size());
+  summary.netDomainUseOffsets.push_back(0);
+  std::vector<std::map<PnrIndex, std::uint64_t>> marginalRows(
+      storage.nets.size());
+  const auto netOffsets = storage.interference.netSegmentOffsets();
+  const auto matchDomains =
+      storage.problem->routing().tagContinuity().matchDomains();
+  for (PnrIndex domain = 0; domain < storage.occupancy.size(); ++domain) {
+    if (matchDomains[domain].kind !=
+        ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable)
+      continue;
+    for (const auto &entry : storage.occupancy[domain]) {
+      std::optional<PnrIndex> soleNet;
+      bool shared = false;
+      for (PnrIndex vertex : entry.second) {
+        const auto upper = llvm::upper_bound(netOffsets, vertex);
+        if (upper == netOffsets.begin() || upper == netOffsets.end())
+          return invalid("tag occupancy vertex is outside its logical net");
+        const PnrIndex logicalNet =
+            static_cast<PnrIndex>(std::distance(netOffsets.begin(), upper) - 1);
+        if (!soleNet)
+          soleNet = logicalNet;
+        else if (*soleNet != logicalNet)
+          shared = true;
+      }
+      if (soleNet && !shared)
+        ++marginalRows[*soleNet][domain];
+    }
+  }
+  for (PnrIndex logicalNet = 0; logicalNet < storage.nets.size();
+       ++logicalNet) {
+    const loom::pnr::detail::SpatialTagNetState &net = storage.nets[logicalNet];
+    summary.netUnassignedCounts.push_back(llvm::count_if(
+        net.values, [](const auto &value) { return !value.has_value(); }));
+    for (PnrIndex segment = 0; segment < net.values.size(); ++segment)
+      for (PnrIndex domain : ::segmentDomains(net, segment))
+        if (!net.values[segment] ||
+            matchDomains[domain].kind !=
+                ::loom::fabric::FabricPhysicalTagMatchDomainKind::
+                    TemporalSwitchTable)
+          ++marginalRows[logicalNet][domain];
+    for (const auto &[domain, count] : marginalRows[logicalNet]) {
+      if (count == 0)
+        continue;
+      summary.netDomainUseDomains.push_back(domain);
+      summary.netDomainMarginalResidentCounts.push_back(count);
+    }
+    summary.netDomainUseOffsets.push_back(summary.netDomainUseDomains.size());
+  }
+  return summary;
+}
+
+} // namespace
 
 llvm::Expected<SpatialTagAssignmentSummary>
 SpatialTagAssignmentState::projectVerifiedRoutes(
@@ -1076,46 +1355,13 @@ SpatialTagAssignmentState::projectVerifiedRoutes(
                                 RouteReadMode::AlreadyVerified);
   if (!projected)
     return projected.takeError();
-  SpatialTagAssignmentSummary summary;
-  summary.unassignedCount = (*projected)->unassignedCount;
-  summary.conflictCount = (*projected)->conflictCount;
-  summary.residentCapacityOveruse = (*projected)->residentCapacityOveruse;
-  if (!includeDomainDetails)
-    return summary;
-  summary.domainResidentCounts.reserve((*projected)->residentCounts.size());
-  summary.domainConflictCounts.reserve((*projected)->occupancy.size());
-  for (PnrIndex domain = 0; domain < (*projected)->residentCounts.size();
-       ++domain) {
-    summary.domainResidentCounts.push_back(
-        (*projected)->residentCounts[domain]);
-    std::uint64_t conflicts = 0;
-    for (const auto &entry : (*projected)->occupancy[domain])
-      conflicts += entry.second - 1;
-    summary.domainConflictCounts.push_back(conflicts);
-  }
+  return summarizeTagAssignmentState(**projected, includeDomainDetails);
+}
 
-  summary.netDomainUseOffsets.reserve((*projected)->nets.size() + 1);
-  summary.netUnassignedCounts.reserve((*projected)->nets.size());
-  summary.netDomainUseOffsets.push_back(0);
-  std::vector<PnrIndex> localDomains;
-  for (const TagNetState &net : (*projected)->nets) {
-    summary.netUnassignedCounts.push_back(llvm::count_if(
-        net.values, [](const auto &value) { return !value.has_value(); }));
-    localDomains.assign(net.continuity.segmentDomains().begin(),
-                        net.continuity.segmentDomains().end());
-    llvm::sort(localDomains);
-    for (std::size_t begin = 0; begin < localDomains.size();) {
-      std::size_t end = begin + 1;
-      while (end < localDomains.size() &&
-             localDomains[end] == localDomains[begin])
-        ++end;
-      summary.netDomainUseDomains.push_back(localDomains[begin]);
-      summary.netDomainUseCounts.push_back(end - begin);
-      begin = end;
-    }
-    summary.netDomainUseOffsets.push_back(summary.netDomainUseDomains.size());
-  }
-  return summary;
+llvm::Expected<SpatialTagAssignmentSummary>
+SpatialTagAssignmentState::summarizeCurrentState(
+    bool includeDomainDetails) const {
+  return summarizeTagAssignmentState(*storage_, includeDomainDetails);
 }
 
 llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
@@ -1152,9 +1398,10 @@ llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
   std::iota(affectedClasses.begin(), affectedClasses.end(), PnrIndex{0});
 
   transaction.active = true;
+  transaction.interferenceActive = false;
   transaction.rebuiltNets.clear();
   for (PnrIndex logicalNet : transaction.touchedRoutes) {
-    removeNet(*storage_, storage_->nets[logicalNet]);
+    removeNet(*storage_, logicalNet, storage_->nets[logicalNet]);
     std::swap(storage_->nets[logicalNet], transaction.stagedNets[logicalNet]);
   }
   for (PnrIndex equalityClass : affectedClasses)
@@ -1174,6 +1421,32 @@ llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
           transaction.stagedNets[logicalNet].continuity;
     }
   }
+  std::vector<const RouteTreeState *> projectedRoutes;
+  std::vector<const SpatialTagContinuityProjection *> continuity;
+  projectedRoutes.reserve(routes.size());
+  continuity.reserve(storage_->nets.size());
+  for (PnrIndex logicalNet = 0; logicalNet < routes.size(); ++logicalNet) {
+    if (routeTransactions[logicalNet]) {
+      auto prepared = routeTransactions[logicalNet]->preparedState();
+      if (!prepared) {
+        rollback(scratch);
+        return prepared.takeError();
+      }
+      projectedRoutes.push_back(*prepared);
+    } else {
+      projectedRoutes.push_back(routes[logicalNet].get());
+    }
+    continuity.push_back(&storage_->nets[logicalNet].continuity);
+  }
+  auto interference = ::loom::pnr::detail::deriveSpatialTagInterference(
+      *storage_->problem, projectedRoutes, continuity);
+  if (!interference) {
+    rollback(scratch);
+    return interference.takeError();
+  }
+  std::swap(transaction.stagedInterference, storage_->interference);
+  storage_->interference = std::move(*interference);
+  transaction.interferenceActive = true;
   if (llvm::Error error = buildAssignments(*storage_, &transaction.stagedNets,
                                            &transaction.rebuiltNets)) {
     rollback(scratch);
@@ -1195,6 +1468,7 @@ void SpatialTagAssignmentState::commit(
   transaction.touchedRoutes.clear();
   transaction.routedNets.clear();
   transaction.rebuiltNets.clear();
+  transaction.interferenceActive = false;
 }
 
 void SpatialTagAssignmentState::rollback(
@@ -1203,12 +1477,14 @@ void SpatialTagAssignmentState::rollback(
   if (!transaction.active)
     return;
   for (PnrIndex logicalNet : transaction.rebuiltNets)
-    removeNet(*storage_, storage_->nets[logicalNet]);
+    removeNet(*storage_, logicalNet, storage_->nets[logicalNet]);
+  if (transaction.interferenceActive)
+    std::swap(storage_->interference, transaction.stagedInterference);
   for (PnrIndex logicalNet : transaction.touchedRoutes) {
     std::swap(storage_->nets[logicalNet], transaction.stagedNets[logicalNet]);
     const TagNetState &restored = storage_->nets[logicalNet];
     for (PnrIndex segment = 0; segment < restored.values.size(); ++segment)
-      llvm::cantFail(addSegmentState(*storage_,
+      llvm::cantFail(addSegmentState(*storage_, logicalNet, segment,
                                      ::segmentDomains(restored, segment),
                                      restored.values[segment]));
   }
@@ -1218,14 +1494,14 @@ void SpatialTagAssignmentState::rollback(
   transaction.touchedRoutes.clear();
   transaction.routedNets.clear();
   transaction.rebuiltNets.clear();
+  transaction.interferenceActive = false;
 }
 
 llvm::Error SpatialTagAssignmentState::verify(
     llvm::ArrayRef<RouteTreeStateHandle> routes) const {
   if (routes.size() != storage_->nets.size())
     return invalid("candidate route count changed after Tag initialization");
-  std::vector<llvm::DenseMap<llvm::APInt, PnrIndex>> expectedOccupancy(
-      storage_->occupancy.size());
+  std::vector<TagDomainOccupancy> expectedOccupancy(storage_->occupancy.size());
   std::vector<PnrIndex> expectedResidentCounts(storage_->occupancy.size(), 0);
   std::uint64_t expectedUnassigned = 0;
   std::uint64_t expectedConflicts = 0;
@@ -1302,16 +1578,54 @@ llvm::Error SpatialTagAssignmentState::verify(
                *net.values[segment]) ||
            !valueAllowed(*net.values[segment], restriction)))
         return invalid("candidate Physical Tag value is outside its domain");
-      if (llvm::Error error =
-              addAssignment(expectedOccupancy, expectedUnassigned,
-                            expectedConflicts, domains, net.values[segment]))
-        return error;
+    }
+  }
+  std::vector<const RouteTreeState *> rawRoutes;
+  std::vector<const SpatialTagContinuityProjection *> continuity;
+  rawRoutes.reserve(routes.size());
+  continuity.reserve(storage_->nets.size());
+  for (PnrIndex logicalNet = 0; logicalNet < routes.size(); ++logicalNet) {
+    rawRoutes.push_back(routes[logicalNet].get());
+    continuity.push_back(&storage_->nets[logicalNet].continuity);
+  }
+  auto expectedInterference = ::loom::pnr::detail::deriveSpatialTagInterference(
+      *storage_->problem, rawRoutes, continuity);
+  if (!expectedInterference)
+    return expectedInterference.takeError();
+  if (!llvm::equal(expectedInterference->netSegmentOffsets(),
+                   storage_->interference.netSegmentOffsets()) ||
+      !llvm::equal(expectedInterference->conflictOffsets(),
+                   storage_->interference.conflictOffsets()) ||
+      !llvm::equal(expectedInterference->conflicts(),
+                   storage_->interference.conflicts()))
+    return invalid("cached Physical Tag interference has drifted");
+  for (PnrIndex logicalNet = 0; logicalNet < storage_->nets.size();
+       ++logicalNet) {
+    const TagNetState &net = storage_->nets[logicalNet];
+    for (PnrIndex segment = 0; segment < net.values.size(); ++segment) {
+      const auto domains = ::segmentDomains(net, segment);
       for (PnrIndex domain : domains) {
-        if (expectedResidentCounts[domain] >=
-            getInvalidPnrIndex() - PnrIndex{1})
-          return invalid("tag match-domain residency overflows PnrIndex");
-        ++expectedResidentCounts[domain];
+        const auto found =
+            net.values[segment]
+                ? expectedOccupancy[domain].find(*net.values[segment])
+                : expectedOccupancy[domain].end();
+        const bool packedSwitch =
+            matchDomains[domain].kind ==
+            ::loom::fabric::FabricPhysicalTagMatchDomainKind::
+                TemporalSwitchTable;
+        if (!packedSwitch || !net.values[segment] ||
+            found == expectedOccupancy[domain].end() || found->second.empty()) {
+          if (expectedResidentCounts[domain] >=
+              getInvalidPnrIndex() - PnrIndex{1})
+            return invalid("tag match-domain residency overflows PnrIndex");
+          ++expectedResidentCounts[domain];
+        }
       }
+      if (llvm::Error error = addAssignment(
+              expectedOccupancy, *expectedInterference,
+              segmentVertex(*storage_, logicalNet, segment), expectedUnassigned,
+              expectedConflicts, domains, net.values[segment]))
+        return error;
     }
   }
   for (PnrIndex domain = 0; domain < expectedResidentCounts.size(); ++domain) {
@@ -1323,6 +1637,11 @@ llvm::Error SpatialTagAssignmentState::verify(
       return invalid("tag match-domain capacity overuse exceeds u64");
     expectedResidentOveruse += overuse;
   }
+  if (expectedUnassigned == 0)
+    if (llvm::Error error = verifyFabricTemporalSwitchRows(
+            *storage_, rawRoutes, continuity, expectedOccupancy,
+            expectedResidentCounts))
+      return error;
   if (expectedUnassigned != storage_->unassignedCount ||
       expectedConflicts != storage_->conflictCount ||
       expectedResidentCounts != storage_->residentCounts ||
@@ -1331,9 +1650,12 @@ llvm::Error SpatialTagAssignmentState::verify(
   for (PnrIndex domain = 0; domain < storage_->occupancy.size(); ++domain) {
     if (storage_->occupancy[domain].size() != expectedOccupancy[domain].size())
       return invalid("cached Physical Tag occupancy has drifted");
-    for (const auto &entry : storage_->occupancy[domain])
-      if (expectedOccupancy[domain].lookup(entry.first) != entry.second)
+    for (const auto &entry : storage_->occupancy[domain]) {
+      const auto found = expectedOccupancy[domain].find(entry.first);
+      if (found == expectedOccupancy[domain].end() ||
+          found->second != entry.second)
         return invalid("cached Physical Tag occupancy has drifted");
+    }
   }
   if (llvm::Error error = verifyRelations(*storage_))
     return error;

@@ -185,7 +185,8 @@ makePromoteNode(PromotionAcquisitionDescriptorRef descriptor,
 llvm::Expected<CandidateGeneratorProviderResult>
 generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
-               const ArtifactStore &store, const BlobStore &) {
+               const ArtifactStore &store, const BlobStore &,
+               const ExecutionControlView &) {
   if (inputBindings.size() != 1 ||
       inputBindings.front().artifacts.size() != 1 ||
       binding.descriptorRef() != sourceGenerator.reference())
@@ -382,10 +383,17 @@ void exerciseOrderedTypedUseDef() {
   if (!retainedIncomplete ||
       !retainedIncomplete->incompleteGenerateInvocation() ||
       !retainedIncomplete->incompleteGenerateWorkSummary() ||
+      retainedIncomplete->executionStopped() ||
       retainedIncomplete->incompleteGenerateWorkSummary()->units !=
           std::vector<CandidateGeneratorWorkUnitSummary>{
               {CandidateGeneratorWorkUnitRef(0), 2, 2}} ||
       retainedIncomplete->retainedOutputCount() != 1 ||
+      !llvm::equal(
+          retainedIncomplete->availableExecution().resolve(PlanOutputRef{1, 0}),
+          expected) ||
+      !retainedIncomplete->availableExecution()
+           .resolve(PlanOutputRef{1, 1})
+           .empty() ||
       retainedIncomplete->retainedOutput(0).data() !=
           retainedIncomplete->incompleteGenerateInvocation()
               ->outputBindings.front()
@@ -423,8 +431,10 @@ void exerciseOrderedTypedUseDef() {
                            : nullptr;
   if (!incomplete || incomplete->nodeOrdinal() != 1 || !reason ||
       *reason != CandidateGeneratorIncompleteReason::ProviderUnavailable ||
-      incomplete->completedPrefix().resolve(PlanOutputRef{0, 0}).size() != 2 ||
-      incomplete->completedPrefix().generateInvocations().size() != 1 ||
+      !incomplete->executionStopped() ||
+      incomplete->availableExecution().resolve(PlanOutputRef{0, 0}).size() !=
+          2 ||
+      incomplete->availableExecution().generateInvocations().size() != 2 ||
       !incomplete->incompleteGenerateInvocation() ||
       !incomplete->incompleteGenerateWorkSummary() ||
       !incomplete->incompleteGenerateWorkSummary()->units.empty() ||
@@ -447,10 +457,10 @@ void exerciseOrderedTypedUseDef() {
       unavailableRecords.completedWorkSummaries().front().units !=
           std::vector<CandidateGeneratorWorkUnitSummary>{
               {CandidateGeneratorWorkUnitRef(0), 2, 2}} ||
-      !unavailableRecords.incomplete() ||
-      !unavailableRecords.incompleteWorkSummary() ||
-      !unavailableRecords.incompleteWorkSummary()->units.empty() ||
-      unavailableRecords.incomplete()->planNodeOrdinal != 1)
+      unavailableRecords.incomplete().size() != 1 ||
+      unavailableRecords.incompleteWorkSummaries().size() != 1 ||
+      !unavailableRecords.incompleteWorkSummaries().front().units.empty() ||
+      unavailableRecords.incomplete().front().planNodeOrdinal != 1)
     fail("outer controller projection lost incomplete Generate provenance");
   const DsePlanGenerateInvocationSummary unavailableSummary =
       take(validateAndSummarizeDsePlanGenerateInvocations(
@@ -488,17 +498,17 @@ void exerciseOrderedTypedUseDef() {
       !promotionReason ||
       *promotionReason !=
           PromotionAcquisitionIncompleteReason::ProviderUnavailable ||
-      promotionIncomplete->completedPrefix().generateInvocations().size() !=
+      promotionIncomplete->availableExecution().generateInvocations().size() !=
           1 ||
-      promotionIncomplete->completedPrefix()
+      promotionIncomplete->availableExecution()
               .generateInvocations()
               .front()
               .planNodeOrdinal != 0 ||
-      promotionIncomplete->completedPrefix()
+      promotionIncomplete->availableExecution()
               .generateInvocations()
               .front()
               .outputBindings.size() != 1 ||
-      promotionIncomplete->completedPrefix()
+      promotionIncomplete->availableExecution()
               .generateInvocations()
               .front()
               .lineageEdges.size() != 2)
@@ -510,18 +520,15 @@ void exerciseOrderedTypedUseDef() {
       makeNode(sourceGenerator.reference(),
                {ExactPlanArtifacts{{executionSource}}}, digest),
       makeNode(unavailableGenerator.reference(),
-               {BoundedPlanOutputJoin{{PlanOutputRef{0, 0},
-                                       PlanOutputRef{1, 0}},
-                                      1}},
+               {BoundedPlanOutputJoin{
+                   {PlanOutputRef{0, 0}, PlanOutputRef{1, 0}}, 1}},
                digest),
   };
   const std::vector<std::uint8_t> encodedJoin =
       canonicalDsePlanNodeBytes(joinedNodes.back());
-  DsePlanNodeDefinition adoptedJoin =
-      take(adoptDsePlanNode(encodedJoin));
-  const auto &adoptedJoinBinding =
-      std::get<BoundedPlanOutputJoin>(
-          std::get<GeneratePlanNodeDefinition>(adoptedJoin).inputBindings[0]);
+  DsePlanNodeDefinition adoptedJoin = take(adoptDsePlanNode(encodedJoin));
+  const auto &adoptedJoinBinding = std::get<BoundedPlanOutputJoin>(
+      std::get<GeneratePlanNodeDefinition>(adoptedJoin).inputBindings[0]);
   if (adoptedJoinBinding.outputs !=
           std::vector<PlanOutputRef>{{0, 0}, {1, 0}} ||
       adoptedJoinBinding.maximumArtifacts != 1)
@@ -545,13 +552,12 @@ void exerciseOrderedTypedUseDef() {
       makeNode(sourceGenerator.reference(),
                {ExactPlanArtifacts{{executionSource}}}, digest),
       makeNode(unavailableGenerator.reference(),
-               {BoundedPlanOutputJoin{{PlanOutputRef{0, 0},
-                                       PlanOutputRef{0, 0}},
-                                      1}},
+               {BoundedPlanOutputJoin{
+                   {PlanOutputRef{0, 0}, PlanOutputRef{0, 0}}, 1}},
                digest),
   };
-  auto rejectedDuplicateJoin = ResolvedDsePlan::get(
-      duplicateJoin, {}, objectiveCatalogs, qualityGates);
+  auto rejectedDuplicateJoin =
+      ResolvedDsePlan::get(duplicateJoin, {}, objectiveCatalogs, qualityGates);
   if (rejectedDuplicateJoin)
     fail("plan accepted duplicate bounded output join sources");
   requireErrorContains(rejectedDuplicateJoin.takeError(),

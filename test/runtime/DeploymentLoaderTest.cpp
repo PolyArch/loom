@@ -176,6 +176,47 @@ ObservedLoadError expectLoadError(llvm::StringRef test,
   return std::move(*observed);
 }
 
+std::vector<ArtifactIdentity> implementationIdentities(
+    llvm::StringRef test, const deployment::FinalizedDeployment &deployment,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const auto bindings = deployment.deployment().hardwareBindings();
+  std::vector<std::optional<ArtifactIdentity>> indexed(bindings.size());
+  std::vector<ArtifactIdentity> trusted;
+  for (const deployment::DeploymentHardwareBinding &binding : bindings) {
+    const FinalizedRuntimePlatformBinding runtime =
+        take(test, importRuntimePlatformBinding(binding.runtimePlatformBinding,
+                                                artifacts, blobs));
+    const auto *reported = std::get_if<HardwareReportedIdentity>(
+        &runtime.binding().identityVerification());
+    if (!reported) {
+      trusted.push_back(binding.hardwareImplementation.artifact);
+      continue;
+    }
+    bool found = false;
+    for (std::size_t ordinal = 0; ordinal != bindings.size(); ++ordinal)
+      if (reported->implementationIdentityEndpoint == inProcessRuntimeEndpoint(
+              RuntimeEndpointClass::Identity, ordinal)) {
+        deployment::test::require(test, !indexed[ordinal].has_value(),
+                                  "identity endpoint is duplicated");
+        indexed[ordinal] = binding.hardwareImplementation.artifact;
+        found = true;
+        break;
+      }
+    deployment::test::require(test, found,
+                              "identity endpoint is outside the fixture");
+  }
+  if (!trusted.empty())
+    return trusted;
+  std::vector<ArtifactIdentity> result;
+  result.reserve(indexed.size());
+  for (const std::optional<ArtifactIdentity> &identity : indexed) {
+    deployment::test::require(test, identity.has_value(),
+                              "identity endpoint coverage is incomplete");
+    result.push_back(*identity);
+  }
+  return result;
+}
+
 void loadsOneImmutableDeploymentWithAtomicConfigurationMulticast() {
   const llvm::StringRef test = __func__;
   deployment::test::TemporaryTree tree(test);
@@ -186,13 +227,11 @@ void loadsOneImmutableDeploymentWithAtomicConfigurationMulticast() {
   deployment::test::require(
       test, deployment.deployment().configurationImages().size() == 2,
       "fixture must contain one configuration image per SpatialCore");
-  const ArtifactIdentity implementation = deployment.deployment()
-                                              .hardwareBindings()
-                                              .front()
-                                              .hardwareImplementation.artifact;
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
   auto provider = take(test, createInProcessRuntimeProvider(
-                                 {{implementation, std::nullopt, {}},
-                                  {implementation, std::nullopt, {}}}));
+                                 {{implementations, std::nullopt, {}},
+                                  {implementations, std::nullopt, {}}}));
 
   {
     auto loaded =
@@ -239,14 +278,12 @@ void rejectsReadbackMismatchAndRestoresCleanState() {
   BlobStore blobs(tree.path("blobs"));
   const deployment::FinalizedDeployment deployment =
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
-  const ArtifactIdentity implementation = deployment.deployment()
-                                              .hardwareBindings()
-                                              .front()
-                                              .hardwareImplementation.artifact;
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
   auto provider = take(
       test,
       createInProcessRuntimeProvider(
-          {{implementation,
+          {{implementations,
             std::nullopt,
             {std::nullopt, InProcessRuntimeReadbackCorruption{0, 1}, false}}}));
 
@@ -272,13 +309,12 @@ void rejectsInterruptedAtomicProgrammingAndRestoresCleanState() {
   BlobStore blobs(tree.path("blobs"));
   const deployment::FinalizedDeployment deployment =
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
-  const ArtifactIdentity implementation = deployment.deployment()
-                                              .hardwareBindings()
-                                              .front()
-                                              .hardwareImplementation.artifact;
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
   auto provider = take(
       test, createInProcessRuntimeProvider(
-                {{implementation, std::nullopt, {1, std::nullopt, false}}}));
+                {{implementations, std::nullopt,
+                  {1, std::nullopt, false}}}));
 
   const ObservedLoadError error = expectLoadError(
       test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
@@ -304,14 +340,12 @@ void quarantinesDeviceWhenRecoveryIdentityCannotBeProven() {
   BlobStore blobs(tree.path("blobs"));
   const deployment::FinalizedDeployment deployment =
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
-  const ArtifactIdentity implementation = deployment.deployment()
-                                              .hardwareBindings()
-                                              .front()
-                                              .hardwareImplementation.artifact;
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
   auto provider = take(
       test,
       createInProcessRuntimeProvider(
-          {{implementation,
+          {{implementations,
             std::nullopt,
             {std::nullopt, InProcessRuntimeReadbackCorruption{0, 1}, true}}}));
 
@@ -339,17 +373,19 @@ void rejectsSelectedForeignImplementationWithoutDeviceFallback() {
   BlobStore blobs(tree.path("blobs"));
   const deployment::FinalizedDeployment deployment =
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
-  const ArtifactIdentity implementation = deployment.deployment()
-                                              .hardwareBindings()
-                                              .front()
-                                              .hardwareImplementation.artifact;
-  ArtifactIdentity::Storage foreignBytes = implementation.bytes();
-  foreignBytes.front() ^= 1;
-  const ArtifactIdentity foreign =
-      llvm::cantFail(ArtifactIdentity::fromBytes(foreignBytes));
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
+  std::vector<ArtifactIdentity> foreignImplementations;
+  foreignImplementations.reserve(implementations.size());
+  for (const ArtifactIdentity &implementation : implementations) {
+    ArtifactIdentity::Storage foreignBytes = implementation.bytes();
+    foreignBytes.front() ^= 1;
+    foreignImplementations.push_back(
+        llvm::cantFail(ArtifactIdentity::fromBytes(foreignBytes)));
+  }
   auto provider = take(test, createInProcessRuntimeProvider(
-                                 {{foreign, std::nullopt, {}},
-                                  {implementation, std::nullopt, {}}}));
+                                 {{foreignImplementations, std::nullopt, {}},
+                                  {implementations, std::nullopt, {}}}));
 
   const ObservedLoadError error = expectLoadError(
       test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
@@ -372,16 +408,15 @@ void rejectsStaleTrustedAttestationBeforeLease() {
   const deployment::FinalizedDeployment deployment =
       deployment::test::buildTrustedIdentityDeployment(test, artifacts, blobs,
                                                        tree);
-  const ArtifactIdentity implementation = deployment.deployment()
-                                              .hardwareBindings()
-                                              .front()
-                                              .hardwareImplementation.artifact;
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
   constexpr llvm::StringLiteral stale = "stale implementation attestation";
   const BlobDigest staleDigest = computeBlobDigest(llvm::ArrayRef<std::uint8_t>(
       reinterpret_cast<const std::uint8_t *>(stale.data()), stale.size()));
   auto provider =
       take(test,
-           createInProcessRuntimeProvider({{implementation, staleDigest, {}}}));
+           createInProcessRuntimeProvider(
+               {{implementations, staleDigest, {}}}));
 
   const ObservedLoadError error = expectLoadError(
       test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
@@ -405,12 +440,10 @@ void rejectsProgrammingEndpointAliasedAcrossSpatialCores() {
   const deployment::FinalizedDeployment deployment =
       deployment::test::buildSharedProgrammingEndpointDeployment(
           test, artifacts, blobs, tree);
-  const ArtifactIdentity implementation = deployment.deployment()
-                                              .hardwareBindings()
-                                              .front()
-                                              .hardwareImplementation.artifact;
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
   auto provider = take(test, createInProcessRuntimeProvider(
-                                 {{implementation, std::nullopt, {}}}));
+                                 {{implementations, std::nullopt, {}}}));
 
   const ObservedLoadError error = expectLoadError(
       test, loadDeployment(deployment, {provider, 0}, artifacts, blobs));
@@ -430,12 +463,10 @@ void rejectsUnregisteredDescriptorAliasBeforeEnumeration() {
   BlobStore blobs(tree.path("blobs"));
   const deployment::FinalizedDeployment deployment =
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
-  const ArtifactIdentity implementation = deployment.deployment()
-                                              .hardwareBindings()
-                                              .front()
-                                              .hardwareImplementation.artifact;
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
   auto delegate = take(test, createInProcessRuntimeProvider(
-                                 {{implementation, std::nullopt, {}}}));
+                                 {{implementations, std::nullopt, {}}}));
   RuntimeProviderDescriptor alias = inProcessRuntimeProviderDescriptor();
   auto provider = std::make_shared<ForwardingRuntimeProvider>(delegate, alias);
 
@@ -458,12 +489,10 @@ void rejectsNonPortableRuntimeAbiBeforeEnumeration() {
   const deployment::FinalizedDeployment deployment =
       deployment::test::buildRuntimeProviderDeployment(test, artifacts, blobs,
                                                        tree, descriptor);
-  const ArtifactIdentity implementation = deployment.deployment()
-                                              .hardwareBindings()
-                                              .front()
-                                              .hardwareImplementation.artifact;
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
   auto delegate = take(test, createInProcessRuntimeProvider(
-                                 {{implementation, std::nullopt, {}}}));
+                                 {{implementations, std::nullopt, {}}}));
   auto provider =
       std::make_shared<ForwardingRuntimeProvider>(delegate, descriptor);
 
@@ -488,12 +517,10 @@ void loadsThroughCanonicalUnicastProvider() {
   const deployment::FinalizedDeployment deployment =
       deployment::test::buildRuntimeProviderDeployment(test, artifacts, blobs,
                                                        tree, descriptor);
-  const ArtifactIdentity implementation = deployment.deployment()
-                                              .hardwareBindings()
-                                              .front()
-                                              .hardwareImplementation.artifact;
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
   auto delegate = take(test, createInProcessRuntimeProvider(
-                                 {{implementation, std::nullopt, {}}}));
+                                 {{implementations, std::nullopt, {}}}));
   auto provider =
       std::make_shared<ForwardingRuntimeProvider>(delegate, descriptor);
 
@@ -522,13 +549,11 @@ void ignoresAbiUnusedHighReadbackBits() {
   BlobStore blobs(tree.path("blobs"));
   const deployment::FinalizedDeployment deployment =
       deployment::test::buildMinimalDeployment(test, artifacts, blobs, tree);
-  const ArtifactIdentity implementation = deployment.deployment()
-                                              .hardwareBindings()
-                                              .front()
-                                              .hardwareImplementation.artifact;
+  const auto implementations =
+      implementationIdentities(test, deployment, artifacts, blobs);
   auto provider = take(
       test, createInProcessRuntimeProvider(
-                {{implementation,
+                {{implementations,
                   std::nullopt,
                   {std::nullopt,
                    InProcessRuntimeReadbackCorruption{0, UINT32_C(0x80000000)},

@@ -211,8 +211,11 @@ FinalizedHardwareImplementation makePhysicalImplementation(
   return take(__func__,
               finalizeHardwareImplementation(
                   HardwareImplementationDraft{system.reference(),
+                                              take(__func__,
+                                                   hardware::test::
+                                                       requireSingleSpatialCoreOccurrence(
+                                                           system)),
                                               abi.reference(),
-                                              {},
                                               std::move(representation),
                                               platform.reference(),
                                               {},

@@ -14,8 +14,8 @@ add_executable(loom-dse-hardware-candidate-generator-test
   HardwareCandidateGeneratorTest.cpp
 )
 
-add_executable(loom-dse-portable-system-rtl-generator-test
-  PortableSystemRtlGeneratorTest.cpp
+add_executable(loom-dse-portable-spatial-core-rtl-generator-test
+  PortableSpatialCoreRtlGeneratorTest.cpp
 )
 
 add_executable(loom-dse-model-parameter-training-test
@@ -131,7 +131,7 @@ target_link_libraries(loom-dse-hardware-candidate-generator-test PRIVATE
   LLVMSupport
 )
 
-target_link_libraries(loom-dse-portable-system-rtl-generator-test PRIVATE
+target_link_libraries(loom-dse-portable-spatial-core-rtl-generator-test PRIVATE
   LoomMappedRtlSimulationTestSupport
   LoomDSEHardwareGenerator
   LLVMSupport

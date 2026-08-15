@@ -13,6 +13,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -29,11 +30,17 @@ class TechMatchRowCollector final {
 public:
   TechMatchRowCollector(llvm::ArrayRef<::dataflow::ActorRef> actors,
                         std::uint64_t limit,
-                        TechMappingGenerationAccounting &accounting)
-      : actors_(actors), limit_(limit), accounting_(accounting) {}
+                        TechMappingGenerationAccounting &accounting,
+                        ExecutionControlView executionControl)
+      : actors_(actors), limit_(limit), accounting_(accounting),
+        executionControl_(executionControl) {}
 
   bool atLimit() const { return accounting_.matchRowAttempts >= limit_; }
+  std::uint64_t remainingCapacity() const {
+    return atLimit() ? 0 : limit_ - accounting_.matchRowAttempts;
+  }
   bool truncated() const { return truncated_; }
+  bool interrupted() const { return interrupted_; }
   llvm::Expected<bool> beginSeed(std::vector<std::uint8_t> key);
   llvm::Error reject(TechMatchSeedRejectionReason reason);
   llvm::Error rejectCanonicalSeedRange(std::vector<std::uint8_t> firstKey,
@@ -53,6 +60,7 @@ private:
   llvm::ArrayRef<::dataflow::ActorRef> actors_;
   std::uint64_t limit_;
   TechMappingGenerationAccounting &accounting_;
+  ExecutionControlView executionControl_;
   std::vector<TechMatchRow> rows_;
   std::optional<std::vector<std::uint8_t>> previousSeedKey_;
   std::optional<std::vector<std::uint8_t>> activeSeedKey_;
@@ -60,6 +68,17 @@ private:
              static_cast<std::size_t>(TechMatchSeedRejectionReason::Count)>
       rejectionCounts_{};
   bool truncated_ = false;
+  bool interrupted_ = false;
+};
+
+/// Invocation-local pull cursor for one canonical Tech match-row family.
+/// Cursor state is removable search state: it owns no persistent Mapping fact
+/// and exists only to avoid reconstructing already visited prospective seeds.
+class TechMatchRowFamilyCursor {
+public:
+  virtual ~TechMatchRowFamilyCursor() = default;
+  virtual llvm::Error advance(TechMatchRowCollector &collector) = 0;
+  virtual bool exhausted() const = 0;
 };
 
 void appendU32(std::vector<std::uint8_t> &key, std::uint32_t value);
@@ -86,11 +105,31 @@ void appendFabricRef(std::vector<std::uint8_t> &key, const Ref &reference) {
 llvm::Error
 deriveComputeRows(const TechMappingGenerationInputs &inputs,
                   llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors,
+                  ::loom::fabric::FabricFuCapabilityTemplateRef family,
                   TechMatchRowCollector &collector);
+std::vector<::loom::fabric::FabricFuCapabilityTemplateRef>
+deriveComputeRowFamilies(
+    const TechMappingGenerationInputs &inputs,
+    llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors);
+llvm::Expected<std::unique_ptr<TechMatchRowFamilyCursor>>
+createComputeRowFamilyCursor(
+    const TechMappingGenerationInputs &inputs,
+    llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors,
+    ::loom::fabric::FabricFuCapabilityTemplateRef family);
 llvm::Error
 deriveMemoryRows(const TechMappingGenerationInputs &inputs,
                  llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors,
+                 ::loom::fabric::FabricMemoryEngineTemplateRef family,
                  TechMatchRowCollector &collector);
+std::vector<::loom::fabric::FabricMemoryEngineTemplateRef>
+deriveMemoryRowFamilies(
+    const TechMappingGenerationInputs &inputs,
+    llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors);
+llvm::Expected<std::unique_ptr<TechMatchRowFamilyCursor>>
+createMemoryRowFamilyCursor(
+    const TechMappingGenerationInputs &inputs,
+    llvm::ArrayRef<::dataflow::CanonicalActorView> selectedActors,
+    ::loom::fabric::FabricMemoryEngineTemplateRef family);
 
 } // namespace loom::mapping::detail
 

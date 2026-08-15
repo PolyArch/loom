@@ -157,7 +157,8 @@ ArtifactRootReference makeReference(const ArtifactSchemaDescriptor &schema,
 llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                const ResolvedCandidateGeneratorBinding &,
-               const loom::ArtifactStore &store, const loom::BlobStore &) {
+               const loom::ArtifactStore &store, const loom::BlobStore &,
+               const loom::ExecutionControlView &) {
   const auto publish =
       [&](std::uint8_t byte) -> llvm::Expected<ArtifactRootReference> {
     auto identity = store.put(
@@ -280,8 +281,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   }
   return CandidateGeneratorProviderResult{
       CompletedCandidateGeneratorResult{
-          {{CandidateGeneratorOutputSlotRef(0), {output}}},
-          std::move(edges)},
+          {{CandidateGeneratorOutputSlotRef(0), {output}}}, std::move(edges)},
       std::move(workSummary)};
 }
 
@@ -304,10 +304,11 @@ importStub(llvm::ArrayRef<CandidateGeneratorInputBinding>,
 }
 
 llvm::Expected<loom::external_tool::PreparedExternalToolInvocation>
-prepareStubAlternate(llvm::ArrayRef<CandidateGeneratorInputBinding>,
-                     const ResolvedCandidateGeneratorBinding &,
-                     const loom::ArtifactStore &, const loom::BlobStore &,
-                     const loom::external_tool::ExternalToolPreparationContext &) {
+prepareStubAlternate(
+    llvm::ArrayRef<CandidateGeneratorInputBinding>,
+    const ResolvedCandidateGeneratorBinding &, const loom::ArtifactStore &,
+    const loom::BlobStore &,
+    const loom::external_tool::ExternalToolPreparationContext &) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "test external prepare stub");
 }
@@ -346,11 +347,15 @@ importStubValid(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     return second.takeError();
   std::vector<CandidateGeneratorLineageEdge> edges;
   edges.push_back({CandidateGeneratorLineageEdgeKind::CandidateDecision,
-                   CandidateGeneratorOutputSlotRef(0), *first,
-                   {inputs.front().artifacts.front()}, {0xaa}});
+                   CandidateGeneratorOutputSlotRef(0),
+                   *first,
+                   {inputs.front().artifacts.front()},
+                   {0xaa}});
   edges.push_back({CandidateGeneratorLineageEdgeKind::CandidateDecision,
-                   CandidateGeneratorOutputSlotRef(0), *second,
-                   {inputs.front().artifacts.front()}, {0xaa}});
+                   CandidateGeneratorOutputSlotRef(0),
+                   *second,
+                   {inputs.front().artifacts.front()},
+                   {0xaa}});
   return CandidateGeneratorProviderResult{
       CompletedCandidateGeneratorResult{
           {{CandidateGeneratorOutputSlotRef(0), {*first, *second}}},
@@ -358,11 +363,11 @@ importStubValid(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
       {{CandidateGeneratorWorkUnitRef(0), 100, 100}}};
 }
 
-llvm::Expected<CandidateGeneratorProviderResult>
-importStubIncomplete(llvm::ArrayRef<CandidateGeneratorInputBinding>,
-                     const ResolvedCandidateGeneratorBinding &,
-                     const loom::external_tool::PreparedExternalToolInvocation &,
-                     const loom::ArtifactStore &, const loom::BlobStore &) {
+llvm::Expected<CandidateGeneratorProviderResult> importStubIncomplete(
+    llvm::ArrayRef<CandidateGeneratorInputBinding>,
+    const ResolvedCandidateGeneratorBinding &,
+    const loom::external_tool::PreparedExternalToolInvocation &,
+    const loom::ArtifactStore &, const loom::BlobStore &) {
   return CandidateGeneratorProviderResult{
       IncompleteCandidateGeneratorResult{
           CandidateGeneratorIncompleteReason::ExecutionFailed,
@@ -376,26 +381,24 @@ importStubMalformed(llvm::ArrayRef<CandidateGeneratorInputBinding>,
                     const ResolvedCandidateGeneratorBinding &,
                     const loom::external_tool::PreparedExternalToolInvocation &,
                     const loom::ArtifactStore &store, const loom::BlobStore &) {
-  auto identity = store.put(
-      outputSchema, loom::CanonicalSemanticBytes(std::vector<std::uint8_t>{0x24}));
+  auto identity =
+      store.put(outputSchema,
+                loom::CanonicalSemanticBytes(std::vector<std::uint8_t>{0x24}));
   if (!identity)
     return identity.takeError();
   ArtifactRootReference output{outputSchema.identity.str(),
                                outputSchema.version, *identity};
   return CandidateGeneratorProviderResult{
       CompletedCandidateGeneratorResult{
-          {{CandidateGeneratorOutputSlotRef(0), {output}}},
-          {}},
+          {{CandidateGeneratorOutputSlotRef(0), {output}}}, {}},
       {{CandidateGeneratorWorkUnitRef(0), 1, 1}}};
 }
 
 void externalProviderFormAdmission() {
-  static_assert(static_cast<std::uint32_t>(
-                    loom::ProviderForm::InProcess) == 0,
+  static_assert(static_cast<std::uint32_t>(loom::ProviderForm::InProcess) == 0,
                 "InProcess must keep stable tag 0");
   static_assert(static_cast<std::uint32_t>(
-                    loom::ProviderForm::ExternalPrepareImport) ==
-                    1,
+                    loom::ProviderForm::ExternalPrepareImport) == 1,
                 "ExternalPrepareImport must keep stable tag 1");
   static_assert(static_cast<std::uint32_t>(
                     CandidateGeneratorIncompleteReason::ExecutionFailed) == 4,
@@ -416,8 +419,7 @@ void externalProviderFormAdmission() {
   CandidateGeneratorDescriptor external = descriptor;
   external.kind = CandidateGeneratorKind(0x7fff0002);
   external.spelling = "test.generator.external";
-  external.providerForm =
-      loom::ProviderForm::ExternalPrepareImport;
+  external.providerForm = loom::ProviderForm::ExternalPrepareImport;
   requireSuccess(registerCandidateGeneratorDescriptor(external));
 
   // In-process callbacks cannot serve an external descriptor.
@@ -435,9 +437,8 @@ void externalProviderFormAdmission() {
       "prepare and import");
   // The matching closed external form registers.
   requireSuccess(registerCandidateGeneratorProvider(CandidateGeneratorProvider{
-      external.reference(),
-      CandidateGeneratorExternalPrepareImportProvider{prepareStub,
-                                                      importStub}}));
+      external.reference(), CandidateGeneratorExternalPrepareImportProvider{
+                                prepareStub, importStub}}));
   // A second provider for the same descriptor is rejected.
   requireErrorContains(
       registerCandidateGeneratorProvider(CandidateGeneratorProvider{
@@ -496,9 +497,8 @@ void externalProviderFormAdmission() {
   if (!unavailableIncomplete ||
       unavailableIncomplete->reason !=
           CandidateGeneratorIncompleteReason::ProviderUnavailable ||
-      unavailable.workSummary !=
-          std::vector<CandidateGeneratorWorkUnitSummary>{
-              {CandidateGeneratorWorkUnitRef(0), 0, 0}})
+      unavailable.workSummary != std::vector<CandidateGeneratorWorkUnitSummary>{
+                                     {CandidateGeneratorWorkUnitRef(0), 0, 0}})
     fail("a missing in-process provider lost the zero dense work summary");
 
   // The in-process facade never invokes a registered external provider.
@@ -509,9 +509,9 @@ void externalProviderFormAdmission() {
   if (semanticContract.providerIdentity !=
       external.implementationSemanticIdentity)
     fail("external semantic contract lost the generator provider identity");
-  const auto *generatorClosure = std::get_if<
-      loom::external_tool::CandidateGeneratorInvocationClosure>(
-      &semanticContract.semanticClosure);
+  const auto *generatorClosure =
+      std::get_if<loom::external_tool::CandidateGeneratorInvocationClosure>(
+          &semanticContract.semanticClosure);
   if (!generatorClosure)
     fail("external semantic contract used the wrong closure form");
   std::vector<std::uint8_t> expectedInputs;
@@ -539,7 +539,7 @@ void externalProviderFormAdmission() {
               .bytes())
     fail("external semantic contract changed resolved binding ownership");
   if (semanticContract.resultImporterIdentity !=
-      "ccb998841fd4f25b54e4cbc492f3ef7bf5ac6ec6aa892ea06bde69a6f171920f")
+      "dc4fb4b088e761ffe13197599910723ed687927885bb1973b084e0d5edbad4ac")
     fail("external semantic contract changed the generator importer identity");
   auto inProcessContract =
       deriveExternalToolSemanticContract(inputs, inProcessBinding);
@@ -555,8 +555,7 @@ void externalProviderFormAdmission() {
   auto inProcessFacadeBinding = take(ResolvedCandidateGeneratorBinding::get(
       descriptor.reference(), canonicalConfig, digest));
   loom::external_tool::ExternalToolPreparationContext context{
-      loom::external_tool::defaultLocalToolConfig(),
-      storePath.str().str()};
+      loom::external_tool::defaultLocalToolConfig(), storePath.str().str()};
   auto wrongPrepare = prepareCandidateGeneratorInvocation(
       inputs, inProcessFacadeBinding, store, blobs, context);
   if (wrongPrepare)
@@ -666,10 +665,9 @@ void externalProviderFormAdmission() {
 void exerciseRegistryAndBinding() {
   requireSuccess(registerCandidateGeneratorDescriptor(descriptor));
   requireSuccess(registerCandidateGeneratorDescriptor(descriptor));
-  requireSuccess(registerCandidateGeneratorProvider(
-      CandidateGeneratorProvider{descriptor.reference(),
-                                 CandidateGeneratorInProcessProvider{
-                                     invokeProvider}}));
+  requireSuccess(registerCandidateGeneratorProvider(CandidateGeneratorProvider{
+      descriptor.reference(),
+      CandidateGeneratorInProcessProvider{invokeProvider}}));
 
   const CandidateGeneratorDescriptor *resolved =
       descriptor.reference().descriptor();
@@ -733,7 +731,8 @@ void exerciseRegistryAndBinding() {
       inputSchema.identity.str(), inputSchema.version, inputIdentity}};
 
   providerMode = ProviderMode::Valid;
-  auto validOutcome = take(invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto validOutcome =
+      take(invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *valid =
       std::get_if<CompletedCandidateGeneratorResult>(&validOutcome.outcome);
   if (!valid || valid->lineageEdges.size() != 1 ||
@@ -787,21 +786,24 @@ void exerciseRegistryAndBinding() {
   requireErrorContains(foreignParent.takeError(), "foreign parent");
 
   providerMode = ProviderMode::UnpublishedParent;
-  auto unpublishedParent = invokeCandidateGenerator(inputs, binding, store, blobs);
+  auto unpublishedParent =
+      invokeCandidateGenerator(inputs, binding, store, blobs);
   if (unpublishedParent)
     fail("controller accepted lineage from an unpublished parent");
   requireErrorContains(unpublishedParent.takeError(),
                        "stored object is missing");
 
   providerMode = ProviderMode::RecursiveLineage;
-  auto recursive = take(invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto recursive =
+      take(invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *recursiveCompleted =
       std::get_if<CompletedCandidateGeneratorResult>(&recursive.outcome);
   if (!recursiveCompleted || recursiveCompleted->lineageEdges.size() != 2)
     fail("controller did not preserve a rooted internal lineage node");
 
   providerMode = ProviderMode::ReconvergentLineage;
-  auto reconvergent = take(invokeCandidateGenerator(inputs, binding, store, blobs));
+  auto reconvergent =
+      take(invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto *reconvergentCompleted =
       std::get_if<CompletedCandidateGeneratorResult>(&reconvergent.outcome);
   if (!reconvergentCompleted || reconvergentCompleted->lineageEdges.size() != 4)
@@ -838,7 +840,7 @@ void bindingIdentityDerivationUsesExactFraming() {
       0x6d, 0x2e, 0x63, 0x61, 0x6e, 0x64, 0x69, 0x64, 0x61, 0x74, 0x65,
       0x5f, 0x67, 0x65, 0x6e, 0x65, 0x72, 0x61, 0x74, 0x6f, 0x72, 0x5f,
       0x64, 0x65, 0x73, 0x63, 0x72, 0x69, 0x70, 0x74, 0x6f, 0x72, 0x00,
-      0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09};
+      0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09};
   const std::vector<std::uint8_t> referenceBytes =
       canonicalCandidateGeneratorDescriptorReferenceBytes(reference);
   if (referenceBytes != expectedReference)
@@ -848,7 +850,7 @@ void bindingIdentityDerivationUsesExactFraming() {
   const loom::BlobDigest identity =
       deriveCandidateGeneratorBindingIdentity(reference, config);
   if (loom::formatBlobDigestHex(identity) !=
-      "a99c230d3eb2b0f65bc779a67e118d9781078dccec723727fb125b532d235d33")
+      "2c41f65b6070e47fa7a55c915c5bc98fe66f438cb3d7c60edf641113abe49652")
     fail("binding identity derivation framing changed");
 
   auto zeroReference = take(CandidateGeneratorDescriptorRef::get(
@@ -856,7 +858,7 @@ void bindingIdentityDerivationUsesExactFraming() {
   const loom::BlobDigest emptyIdentity =
       deriveCandidateGeneratorBindingIdentity(zeroReference, {});
   if (loom::formatBlobDigestHex(emptyIdentity) !=
-      "4e7e711de0e5029903dd7645bd9b9d05ec7063eaffccb376517ff7726f85c54c")
+      "0fcee1e00f4bf2c64e0cf114cfe954136fe65a45dd52952c7cfbac8c7e508634")
     fail("empty-config binding identity derivation framing changed");
 }
 

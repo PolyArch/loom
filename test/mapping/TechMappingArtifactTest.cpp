@@ -7,6 +7,7 @@
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
 #include "Dataflow/IR/OperationSchema.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
@@ -199,6 +200,27 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
                                                         &context);
   if (!module)
     fail("cannot parse the compute Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
+buildComputeFanoutFixture(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @fanout(
+      %start: none, %input: i32) -> (i32, i32)
+      attributes {input_segments = array<i32: 1, 0, 0>,
+                  result_segments = array<i32: 2, 0, 0>} {
+    %result:3 = dataflow.sync %start, %input, %input
+        : (none, i32, i32) -> (none, i32, i32)
+    dataflow.graph.return values(%result#1, %result#2 : i32, i32)
+        streams() memories() complete(%result#0 : none)
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse the compute fanout Dataflow fixture");
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
@@ -505,7 +527,7 @@ std::string mappingText(const dataflow::CanonicalDataflowProgramView &dataflow,
                        dataflow::GraphCompletionFrontierTokenRef{graph, 0}}}),
                dataflow::semantics::ServiceValueRole::Completion);
 
-  return "module {\n  mapping.tech version<5, 0> dataflow(" +
+  return "module {\n  mapping.tech version<6, 0> dataflow(" +
          identityAttr(dataflow.identity()) + ") fabric(" +
          identityAttr(fabric.identity()) + ") covers([" +
          dataflowAttr("graph_ref", dataflow.identity(), graph) +
@@ -550,7 +572,7 @@ computeMappingText(const dataflow::CanonicalDataflowProgramView &dataflow,
                   ") output " + std::to_string(ordinal) + " fu_port(" +
                   fabricAttr("fabric_fu_template_port_ref", port) + ")\n";
   }
-  return "module {\n  mapping.tech version<5, 0> dataflow(" +
+  return "module {\n  mapping.tech version<6, 0> dataflow(" +
          identityAttr(dataflow.identity()) + ") fabric(" +
          identityAttr(fabric.identity()) + ") covers([" +
          dataflowAttr("graph_ref", dataflow.identity(), graph) +
@@ -628,12 +650,25 @@ buildComputeBoundaryDataflow(mlir::MLIRContext &context) {
   return buildComputeDataflow(context);
 }
 
+dataflow::CanonicalDataflowArtifact
+buildComputeFanoutDataflow(mlir::MLIRContext &context) {
+  return buildComputeFanoutFixture(context);
+}
+
 std::string computeBoundaryMappingText(
     const dataflow::CanonicalDataflowProgramView &dataflow,
     const loom::fabric::FabricArtifactView &fabric, bool includeBoundaries) {
   return computeMappingText(
       dataflow, fabric, selectComputeCapability(computeActor(dataflow), fabric),
       includeBoundaries);
+}
+
+std::string
+computeFanoutMappingText(const dataflow::CanonicalDataflowProgramView &dataflow,
+                         const loom::fabric::FabricArtifactView &fabric) {
+  return computeMappingText(
+      dataflow, fabric, selectComputeCapability(computeActor(dataflow), fabric),
+      true);
 }
 
 mlir::OwningOpRef<mlir::ModuleOp> parseTechMapping(mlir::MLIRContext &context,
@@ -997,16 +1032,28 @@ void artifactRoundTripAndReferenceValidation() {
     auto malformedBindings = computeBindings;
     malformedBindings.front().placement = loom::pnr::getInvalidPnrIndex();
     if (!rejected(loom::pnr::SpatialCandidateState::create(
-            frozen, {malformedBindings, memoryBindings, portAttachments,
-                     boundaryAttachments, memoryPlans, logicalMemoryBindings,
-                     memoryUseDispatches, memoryExposureSelections})))
+            frozen, {malformedBindings,
+                     memoryBindings,
+                     portAttachments,
+                     boundaryAttachments,
+                     memoryPlans,
+                     logicalMemoryBindings,
+                     memoryUseDispatches,
+                     memoryExposureSelections,
+                     {}})))
       fail("Spatial candidate accepted a foreign compute placement");
   }
 
   auto spatialCandidate = take(loom::pnr::SpatialCandidateState::create(
-      frozen, {computeBindings, memoryBindings, portAttachments,
-               boundaryAttachments, memoryPlans, logicalMemoryBindings,
-               memoryUseDispatches, memoryExposureSelections}));
+      frozen, {computeBindings,
+               memoryBindings,
+               portAttachments,
+               boundaryAttachments,
+               memoryPlans,
+               logicalMemoryBindings,
+               memoryUseDispatches,
+               memoryExposureSelections,
+               {}}));
   requireSuccess(spatialCandidate->verify());
   std::uint64_t initialUnroutedObligations = 0;
   for (const auto &net : frozen->transfers().logicalNets())
@@ -1048,6 +1095,21 @@ void artifactRoundTripAndReferenceValidation() {
   const loom::pnr::PnrIndex unrestrictedReplicationGroup =
       loom::pnr::getInvalidPnrIndex();
   const loom::pnr::PnrIndex firstTargetRank = 0;
+  const auto searchPath = [&](loom::pnr::PnrIndex source,
+                              loom::pnr::PnrIndex target)
+      -> llvm::Expected<loom::pnr::EndpointRouteSearchResult> {
+    loom::pnr::EndpointRouteSearchRequest request;
+    request.sourceEndpoints = {&source, 1};
+    request.sourceReplicationGroups = {&unrestrictedReplicationGroup, 1};
+    request.targetEndpoints = {&target, 1};
+    request.targetPreferenceRanks = {&firstTargetRank, 1};
+    request.lowerBoundArcCosts = routeCosts;
+    request.currentArcCosts = routeCosts;
+    request.requiredPayloadWidthBits =
+        spatialCandidate->logicalNetPayloadWidth(*routedNet);
+    request.endpointExpansionLimit = 262144;
+    return routeSearch.search(request);
+  };
   std::optional<std::vector<loom::pnr::PnrIndex>> routedArcs;
   for (loom::pnr::PnrIndex claimArc = 0;
        claimArc < frozen->routing().routingArcs().size() && !routedArcs;
@@ -1062,44 +1124,14 @@ void artifactRoundTripAndReferenceValidation() {
     const loom::pnr::PnrIndex claimSource =
         frozen->routing().arcSources()[claimArc];
     const loom::pnr::PnrIndex claimTarget = claimArcRecord.target;
-    auto prefix = routeSearch.search(
-        {{&routeSource, 1},
-         {&unrestrictedReplicationGroup, 1},
-         {&claimSource, 1},
-         {&firstTargetRank, 1},
-         routeCosts,
-         routeCosts,
-         spatialCandidate->logicalNetPayloadWidth(*routedNet),
-         0,
-         262144,
-         {},
-         {},
-         {},
-         false,
-         {},
-         {}});
+    auto prefix = searchPath(routeSource, claimSource);
     if (!prefix) {
       llvm::consumeError(prefix.takeError());
       continue;
     }
     std::vector<loom::pnr::PnrIndex> candidate(prefix->forwardArcs.begin(),
                                                prefix->forwardArcs.end());
-    auto suffix = routeSearch.search(
-        {{&claimTarget, 1},
-         {&unrestrictedReplicationGroup, 1},
-         {&routeTarget, 1},
-         {&firstTargetRank, 1},
-         routeCosts,
-         routeCosts,
-         spatialCandidate->logicalNetPayloadWidth(*routedNet),
-         0,
-         262144,
-         {},
-         {},
-         {},
-         false,
-         {},
-         {}});
+    auto suffix = searchPath(claimTarget, routeTarget);
     if (!suffix) {
       llvm::consumeError(suffix.takeError());
       continue;
@@ -1147,9 +1179,9 @@ void artifactRoundTripAndReferenceValidation() {
       initialUnroutedObligations -
           frozen->transfers().logicalNets()[*routedNet].sinkCount)
     fail("routed net did not discharge its exact sink obligations");
-  if (loom::pnr::spatialMappingMeasureValue(
+  if (take(loom::pnr::spatialMappingMeasureValue(
           *spatialCandidate,
-          loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim) == 0)
+          loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim)) == 0)
     fail("routed Spatial candidate has no exact traversal-claim objective");
   bool observedActiveClaimBit = false;
   const auto activeClaimBits =
@@ -1295,6 +1327,7 @@ void artifactRoundTripAndReferenceValidation() {
       fail("PathFinder prospective rip-up did not restore excluded occupancy");
   requireSuccess(routeCostState.selectLogicalNet(std::nullopt));
   if (routeCostState.selectedLogicalNet() ||
+      routeCostState.lowerBoundCostRevision() != 0 ||
       !llvm::equal(routeCostState.currentArcCosts(), baselineCosts) ||
       routeCostState.retainedStorageBytes() != warmedRouteCostBytes)
     fail("PathFinder route-cost overlay did not restore its warmed baseline");
@@ -1305,9 +1338,15 @@ void artifactRoundTripAndReferenceValidation() {
       fail("PathFinder route-cost overlay did not restore raw occupancy");
 
   auto routedCandidate = take(loom::pnr::SpatialCandidateState::create(
-      frozen, {computeBindings, memoryBindings, portAttachments,
-               boundaryAttachments, memoryPlans, logicalMemoryBindings,
-               memoryUseDispatches, memoryExposureSelections}));
+      frozen, {computeBindings,
+               memoryBindings,
+               portAttachments,
+               boundaryAttachments,
+               memoryPlans,
+               logicalMemoryBindings,
+               memoryUseDispatches,
+               memoryExposureSelections,
+               {}}));
   loom::pnr::SpatialCandidateScratch routedCandidateScratch;
   requireSuccess(routedCandidateScratch.prepare(*frozen));
   auto routedCostState =
@@ -1507,6 +1546,46 @@ void artifactRoundTripAndReferenceValidation() {
     fail("empty MappingConstraintSet produced a nonempty constraint index");
   if (frozen->workBudget().empty())
     fail("aggregate Spatial freeze omitted the derived work budget");
+
+  const auto normalizedTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fabricRoot.view()));
+  std::vector<loom::fabric::FabricTraversalPhysicalTiming>
+      characterizedTraversals(normalizedTiming.traversals().begin(),
+                              normalizedTiming.traversals().end());
+  if (characterizedTraversals.empty())
+    fail("Spatial timing fixture has no characterized traversal");
+  ++characterizedTraversals.front().delayQuanta;
+  const auto targetTiming =
+      take(loom::fabric::createFabricPhysicalTimingProfile(
+          fabricRoot.view(),
+          loom::fabric::FabricPhysicalTimingProfileKind::TargetCharacterization,
+          "timing-fixture.1", "test-technology", "test-corner.1", 11,
+          characterizedTraversals));
+  loom::pnr::FrozenSpatialPnrProblemHandle characterized =
+      take(loom::pnr::freezeSpatialPnrProblem(
+          dataflowView, finalized.view(), fabricRoot.view(), targetTiming,
+          spatialConfig, importedConstraints.view()));
+  if (characterized->cacheKey() == frozen->cacheKey() ||
+      characterized->routing().physicalTimingProfileKind() !=
+          loom::fabric::FabricPhysicalTimingProfileKind::
+              TargetCharacterization ||
+      characterized->routing().physicalTimingProviderIdentity() !=
+          "timing-fixture.1" ||
+      characterized->routing().physicalTimingTechnologyIdentity() !=
+          "test-technology" ||
+      characterized->routing().physicalTimingCharacterizationIdentity() !=
+          "test-corner.1")
+    fail("selected target timing profile did not enter Spatial freeze");
+  requireSuccess(loom::pnr::revalidateFrozenSpatialPnrCacheHit(
+      *characterized, dataflowView, finalized.view(), fabricRoot.view(),
+      targetTiming, spatialConfig, importedConstraints.view()));
+  if (llvm::Error error = loom::pnr::revalidateFrozenSpatialPnrCacheHit(
+          *characterized, dataflowView, finalized.view(), fabricRoot.view(),
+          spatialConfig, importedConstraints.view()))
+    llvm::consumeError(std::move(error));
+  else
+    fail("normalized cache validation accepted a target timing profile");
 
   loom::pnr::FrozenSpatialPnrProblemHandle repeated =
       take(loom::pnr::freezeSpatialPnrProblem(dataflowView, finalized.view(),

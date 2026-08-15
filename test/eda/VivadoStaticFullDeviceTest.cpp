@@ -241,6 +241,7 @@ loom::fabric::FinalizedFabricRoot makeModule(llvm::StringRef test,
 struct Fixture final {
   loom::fabric::FinalizedFabricRoot system;
   FinalizedConfigurationABI abi;
+  loom::fabric::SpatialCoreOccurrenceRef subject;
   loom::fabric::FabricPhysicalOccurrenceOwnerRef firstOwner;
   loom::fabric::FabricSpatialAttachmentEndpointRef firstDataEndpoint;
   ProgrammingUnitRef firstProgrammingUnit;
@@ -259,7 +260,12 @@ Fixture makeFixture(llvm::StringRef test, const ArtifactStore &artifacts) {
   const auto endpoint = systemView.spatialAttachments().front().spatialEndpoint;
   const auto firstOwner = unit.exactFabricResourceClosure.front();
   ProgrammingUnitRef programmingUnit{abi.reference(), unit.id};
-  return Fixture{std::move(system), std::move(abi), firstOwner, endpoint,
+  return Fixture{std::move(system),
+                 std::move(abi),
+                 loom::fabric::SpatialCoreOccurrenceRef{
+                     systemView.artifact().accCoreOccurrences().front()},
+                 firstOwner,
+                 endpoint,
                  std::move(programmingUnit)};
 }
 
@@ -297,8 +303,8 @@ makeImplementation(llvm::StringRef test, const Fixture &fixture,
                {RepresentationObjectKind::Module, "top"}, std::move(payloads)));
   HardwareImplementationDraft draft{
       fixture.system.reference(),
+      fixture.subject,
       fixture.abi.reference(),
-      {},
       std::move(representation),
       std::move(implementationPlatform),
       {{ImplementationDataInterfaceRef{fixture.firstDataEndpoint},
@@ -357,8 +363,8 @@ FinalizedHardwareImplementation makeNativeImplementation(
                {RepresentationObjectKind::Module, "top"}, std::move(payloads)));
   HardwareImplementationDraft draft{
       fixture.system.reference(),
+      fixture.subject,
       fixture.abi.reference(),
-      {},
       std::move(representation),
       std::nullopt,
       {{ImplementationDataInterfaceRef{fixture.firstDataEndpoint},
@@ -407,8 +413,8 @@ FinalizedHardwareImplementation makeBuiltInNativeImplementation(
                {RepresentationObjectKind::Module, "top"}, std::move(payloads)));
   HardwareImplementationDraft draft{
       fixture.system.reference(),
+      fixture.subject,
       fixture.abi.reference(),
-      {},
       std::move(representation),
       platform.reference(),
       {{ImplementationDataInterfaceRef{fixture.firstDataEndpoint},

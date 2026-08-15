@@ -2,6 +2,7 @@
 
 #include "PnR/PnrIndex.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
@@ -24,10 +25,9 @@ constexpr PnrCapacityContext netCountContext{
 constexpr PnrCapacityContext claimCountContext{
     candidateArtifact, "route_resource_state", "route_claims",
     PnrCapacityMeasure::Count};
-constexpr PnrCapacityContext cellCountContext{
-    candidateArtifact, "route_resource_state", "net_claim_refcounts",
+constexpr PnrCapacityContext traversalCountContext{
+    candidateArtifact, "route_resource_state", "physical_traversals",
     PnrCapacityMeasure::Count};
-
 llvm::Error routeResourceError(const llvm::Twine &message) {
   return llvm::make_error<llvm::StringError>(
       ("invalid Spatial route resource state: " + message).str(),
@@ -42,8 +42,41 @@ llvm::Error checkedAdd(std::uint64_t &value, std::uint64_t amount,
   return llvm::Error::success();
 }
 
+llvm::Expected<std::uint64_t> checkedMultiply(std::uint64_t left,
+                                              std::uint64_t right,
+                                              llvm::StringRef subject) {
+  if (left != 0 && right > std::numeric_limits<std::uint64_t>::max() / left)
+    return routeResourceError(subject + " overflows u64");
+  return left * right;
+}
+
 template <typename T> std::size_t retainedBytes(const std::vector<T> &values) {
   return values.capacity() * sizeof(T);
+}
+
+std::size_t retainedSparseRefcountBytes(
+    const std::vector<llvm::DenseMap<PnrIndex, PnrIndex>> &values) {
+  std::size_t bytes = retainedBytes(values);
+  for (const auto &value : values)
+    bytes += value.getMemorySize();
+  return bytes;
+}
+
+bool sparseRefcountsEqual(
+    const std::vector<llvm::DenseMap<PnrIndex, PnrIndex>> &lhs,
+    const std::vector<llvm::DenseMap<PnrIndex, PnrIndex>> &rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  for (std::size_t index = 0; index < lhs.size(); ++index) {
+    if (lhs[index].size() != rhs[index].size())
+      return false;
+    for (const auto &[key, value] : lhs[index]) {
+      const auto found = rhs[index].find(key);
+      if (found == rhs[index].end() || found->second != value)
+        return false;
+    }
+  }
+  return true;
 }
 
 } // namespace
@@ -58,13 +91,10 @@ SpatialRouteResourceState::create(const FrozenSpatialPnrProblem &problem) {
       claimCountContext, problem.routing().routeClaims().size());
   if (!routeClaimCount)
     return routeClaimCount.takeError();
-  auto cellCount = checkedPnrIndexMultiply(cellCountContext, *logicalNetCount,
-                                           *routeClaimCount);
-  if (!cellCount)
-    return cellCount.takeError();
-  if (static_cast<std::uint64_t>(*cellCount) >
-      std::numeric_limits<std::size_t>::max() / sizeof(PnrIndex))
-    return routeResourceError("net-claim matrix exceeds native size_t");
+  auto traversalCount = checkedPnrIndex(traversalCountContext,
+                                        problem.routing().traversals().size());
+  if (!traversalCount)
+    return traversalCount.takeError();
   const std::size_t routeClaimWordCount =
       (static_cast<std::size_t>(*routeClaimCount) + 63) / 64;
   if (routeClaimWordCount != 0 &&
@@ -72,8 +102,32 @@ SpatialRouteResourceState::create(const FrozenSpatialPnrProblem &problem) {
           std::numeric_limits<std::size_t>::max() / routeClaimWordCount)
     return routeResourceError("net-claim bitset exceeds native size_t");
 
-  std::vector<PnrIndex> netClaimRefcounts(static_cast<std::size_t>(*cellCount),
-                                          0);
+  std::vector<std::uint32_t> initiationIntervals;
+  initiationIntervals.reserve(*traversalCount);
+  for (const FrozenSpatialTraversal &traversal :
+       problem.routing().traversals()) {
+    if (traversal.minimumInitiationIntervalCycles == 0)
+      return routeResourceError("traversal has a zero initiation interval");
+    initiationIntervals.push_back(traversal.minimumInitiationIntervalCycles);
+  }
+  llvm::sort(initiationIntervals);
+  initiationIntervals.erase(
+      std::unique(initiationIntervals.begin(), initiationIntervals.end()),
+      initiationIntervals.end());
+  std::vector<PnrIndex> traversalIntervalOrdinals;
+  traversalIntervalOrdinals.reserve(*traversalCount);
+  for (const FrozenSpatialTraversal &traversal :
+       problem.routing().traversals()) {
+    const auto found = llvm::lower_bound(
+        initiationIntervals, traversal.minimumInitiationIntervalCycles);
+    traversalIntervalOrdinals.push_back(
+        static_cast<PnrIndex>(found - initiationIntervals.begin()));
+  }
+
+  std::vector<llvm::DenseMap<PnrIndex, PnrIndex>> netClaimRefcounts(
+      *logicalNetCount);
+  std::vector<llvm::DenseMap<PnrIndex, PnrIndex>> netTraversalRefcounts(
+      *logicalNetCount);
   std::vector<std::uint64_t> netClaimActiveBits(
       static_cast<std::size_t>(*logicalNetCount) * routeClaimWordCount, 0);
   std::vector<PnrIndex> claimSelectionCounts(*routeClaimCount, 0);
@@ -93,7 +147,9 @@ SpatialRouteResourceState::create(const FrozenSpatialPnrProblem &problem) {
   }
 
   return SpatialRouteResourceState(
-      problem, *logicalNetCount, *routeClaimCount, routeClaimWordCount,
+      problem, *logicalNetCount, *traversalCount, *routeClaimCount,
+      routeClaimWordCount, std::move(initiationIntervals),
+      std::move(traversalIntervalOrdinals), std::move(netTraversalRefcounts),
       std::move(netClaimRefcounts), std::move(netClaimActiveBits),
       std::move(claimSelectionCounts), std::move(capacityUsageRaw),
       totalCapacityOveruseRaw);
@@ -102,11 +158,13 @@ SpatialRouteResourceState::create(const FrozenSpatialPnrProblem &problem) {
 llvm::Expected<SpatialRouteResourceState>
 SpatialRouteResourceState::projectVerifiedRoutes(
     const FrozenSpatialPnrProblem &problem,
-    llvm::ArrayRef<const RouteTreeState *> routeTrees) {
+    llvm::ArrayRef<const RouteTreeState *> routeTrees,
+    llvm::ArrayRef<PnrIndex> registerFifoTransfers) {
   auto state = create(problem);
   if (!state)
     return state.takeError();
-  if (routeTrees.size() != state->logicalNetCount_)
+  if (routeTrees.size() != state->logicalNetCount_ ||
+      registerFifoTransfers.size() != state->logicalNetCount_)
     return routeResourceError(
         "route count does not match the frozen logical nets");
 
@@ -116,6 +174,26 @@ SpatialRouteResourceState::projectVerifiedRoutes(
     if (!route || &route->routingGraph() != &problem.routing())
       return routeResourceError(
           "RouteTree does not belong to the frozen routing graph");
+    const PnrIndex localTransfer = registerFifoTransfers[logicalNet];
+    if (localTransfer != getInvalidPnrIndex()) {
+      if (localTransfer >= problem.localTransfers().options().size())
+        return routeResourceError(
+            "register-FIFO transfer option is out of range");
+      if (!route->isUnrouted())
+        return routeResourceError(
+            "register-FIFO transfer also has an external route");
+      const auto &option = problem.localTransfers().options()[localTransfer];
+      if (option.logicalNet != logicalNet)
+        return routeResourceError(
+            "register-FIFO transfer belongs to another logical net");
+      if (llvm::Error error = state->applyTraversalDelta(
+              logicalNet, option.writeTraversal, 0, 1))
+        return std::move(error);
+      if (llvm::Error error = state->applyTraversalDelta(
+              logicalNet, option.readTraversal, 0, 1))
+        return std::move(error);
+      continue;
+    }
     for (const RouteTreeNode &node : route->nodeStorage()) {
       if (!node.isActive() || node.parentArc == getInvalidPnrIndex())
         continue;
@@ -141,7 +219,8 @@ PnrIndex
 SpatialRouteResourceState::logicalNetRouteClaimRefcount(PnrIndex logicalNet,
                                                         PnrIndex claim) const {
   assert(logicalNet < logicalNetCount_ && claim < routeClaimCount_);
-  return netClaimRefcounts_[netClaimCell(logicalNet, claim)];
+  const auto found = netClaimRefcounts_[logicalNet].find(claim);
+  return found == netClaimRefcounts_[logicalNet].end() ? 0 : found->second;
 }
 
 llvm::ArrayRef<std::uint64_t>
@@ -169,15 +248,14 @@ std::uint64_t SpatialRouteResourceState::capacityOveruseRaw(
 }
 
 std::size_t SpatialRouteResourceState::retainedStorageBytes() const {
-  return retainedBytes(netClaimRefcounts_) +
+  return retainedBytes(initiationIntervals_) +
+         retainedBytes(traversalIntervalOrdinals_) +
+         retainedBytes(activeInitiationIntervalCounts_) +
+         retainedSparseRefcountBytes(netTraversalRefcounts_) +
+         retainedSparseRefcountBytes(netClaimRefcounts_) +
          retainedBytes(netClaimActiveBits_) +
          retainedBytes(claimSelectionCounts_) +
          retainedBytes(capacityUsageRaw_);
-}
-
-std::size_t SpatialRouteResourceState::netClaimCell(PnrIndex logicalNet,
-                                                    PnrIndex claim) const {
-  return static_cast<std::size_t>(logicalNet) * routeClaimCount_ + claim;
 }
 
 llvm::Error SpatialRouteResourceState::applyClaimDelta(PnrIndex logicalNet,
@@ -186,7 +264,9 @@ llvm::Error SpatialRouteResourceState::applyClaimDelta(PnrIndex logicalNet,
                                                        PnrIndex added) {
   if (logicalNet >= logicalNetCount_ || claim >= routeClaimCount_)
     return routeResourceError("claim delta index is out of range");
-  PnrIndex &refcount = netClaimRefcounts_[netClaimCell(logicalNet, claim)];
+  auto &refcounts = netClaimRefcounts_[logicalNet];
+  const auto found = refcounts.find(claim);
+  const PnrIndex refcount = found == refcounts.end() ? 0 : found->second;
   if (removed > refcount)
     return routeResourceError("claim refcount removal underflows");
   const PnrIndex remaining = refcount - removed;
@@ -196,7 +276,8 @@ llvm::Error SpatialRouteResourceState::applyClaimDelta(PnrIndex logicalNet,
   const bool activate = refcount == 0 && next != 0;
   const bool deactivate = refcount != 0 && next == 0;
   if (!activate && !deactivate) {
-    refcount = next;
+    if (next != 0)
+      found->second = next;
     return llvm::Error::success();
   }
 
@@ -252,7 +333,10 @@ llvm::Error SpatialRouteResourceState::applyClaimDelta(PnrIndex logicalNet,
   }
   usage = nextUsage;
   totalCapacityOveruseRaw_ = nextTotalOveruse;
-  refcount = next;
+  if (next == 0)
+    refcounts.erase(found);
+  else
+    refcounts.try_emplace(claim, next);
   return llvm::Error::success();
 }
 
@@ -260,11 +344,77 @@ llvm::Error SpatialRouteResourceState::applyTraversalDelta(PnrIndex logicalNet,
                                                            PnrIndex traversal,
                                                            PnrIndex removed,
                                                            PnrIndex added) {
-  if (logicalNet >= logicalNetCount_ ||
-      traversal >= problem_->routing().traversals().size())
+  if (logicalNet >= logicalNetCount_ || traversal >= traversalCount_)
     return routeResourceError("traversal delta index is out of range");
   const FrozenSpatialTraversal &record =
       problem_->routing().traversals()[traversal];
+  if (record.minimumInitiationIntervalCycles == 0)
+    return routeResourceError("traversal has a zero initiation interval");
+  auto &refcounts = netTraversalRefcounts_[logicalNet];
+  const auto found = refcounts.find(traversal);
+  const PnrIndex refcount = found == refcounts.end() ? 0 : found->second;
+  if (removed > refcount)
+    return routeResourceError("traversal refcount removal underflows");
+  const PnrIndex remaining = refcount - removed;
+  if (added > std::numeric_limits<PnrIndex>::max() - remaining)
+    return routeResourceError("traversal refcount addition overflows PnrIndex");
+  const PnrIndex next = remaining + added;
+  const bool activate = refcount == 0 && next != 0;
+  const bool deactivate = refcount != 0 && next == 0;
+
+  const PnrIndex intervalOrdinal = traversalIntervalOrdinals_[traversal];
+  if (intervalOrdinal >= activeInitiationIntervalCounts_.size() ||
+      initiationIntervals_[intervalOrdinal] !=
+          record.minimumInitiationIntervalCycles)
+    return routeResourceError("traversal initiation interval is inconsistent");
+  const std::uint64_t intervalCount =
+      activeInitiationIntervalCounts_[intervalOrdinal];
+  std::uint64_t nextIntervalCount = intervalCount;
+  if (activate) {
+    if (nextIntervalCount == std::numeric_limits<std::uint64_t>::max())
+      return routeResourceError(
+          "active initiation interval count overflows u64");
+    ++nextIntervalCount;
+  } else if (deactivate) {
+    if (nextIntervalCount == 0)
+      return routeResourceError(
+          "active initiation interval count underflows u64");
+    --nextIntervalCount;
+  }
+
+  std::uint64_t nextRelease = routeReleaseLatencyCycles_;
+  std::uint64_t nextInterval = routeMinimumInitiationIntervalCycles_;
+  std::uint64_t nextBitCycles = transportBitCycleDemand_;
+  auto bitCycles = checkedMultiply(
+      problem_->transfers().logicalNets()[logicalNet].payloadWidthBits,
+      record.minimumInitiationIntervalCycles, "transport bit-cycle demand");
+  if (!bitCycles)
+    return bitCycles.takeError();
+  if (activate) {
+    if (llvm::Error error = checkedAdd(nextRelease, record.releaseLatencyCycles,
+                                       "route release latency"))
+      return error;
+    nextInterval = std::max(
+        nextInterval,
+        static_cast<std::uint64_t>(record.minimumInitiationIntervalCycles));
+    if (llvm::Error error =
+            checkedAdd(nextBitCycles, *bitCycles, "transport bit-cycle demand"))
+      return error;
+  } else if (deactivate) {
+    if (nextRelease < record.releaseLatencyCycles || nextBitCycles < *bitCycles)
+      return routeResourceError("traversal timing deactivation underflows");
+    nextRelease -= record.releaseLatencyCycles;
+    nextBitCycles -= *bitCycles;
+    if (record.minimumInitiationIntervalCycles == nextInterval &&
+        nextIntervalCount == 0) {
+      nextInterval = 1;
+      for (std::size_t ordinal = intervalOrdinal; ordinal != 0; --ordinal)
+        if (activeInitiationIntervalCounts_[ordinal - 1] != 0) {
+          nextInterval = initiationIntervals_[ordinal - 1];
+          break;
+        }
+    }
+  }
   const auto claims = problem_->routing().traversalClaimKeys().slice(
       record.routeClaimOffset, record.routeClaimCount);
   for (std::size_t index = 0; index < claims.size(); ++index) {
@@ -276,6 +426,16 @@ llvm::Error SpatialRouteResourceState::applyTraversalDelta(PnrIndex logicalNet,
       return error;
     }
   }
+  if (next == 0)
+    refcounts.erase(found);
+  else if (found == refcounts.end())
+    refcounts.try_emplace(traversal, next);
+  else
+    found->second = next;
+  activeInitiationIntervalCounts_[intervalOrdinal] = nextIntervalCount;
+  routeReleaseLatencyCycles_ = nextRelease;
+  routeMinimumInitiationIntervalCycles_ = nextInterval;
+  transportBitCycleDemand_ = nextBitCycles;
   return llvm::Error::success();
 }
 
@@ -287,15 +447,19 @@ void SpatialRouteResourceState::revertTraversalDelta(PnrIndex logicalNet,
 }
 
 llvm::Error SpatialRouteResourceState::verify(
-    llvm::ArrayRef<RouteTreeStateHandle> routeTrees) const {
+    llvm::ArrayRef<RouteTreeStateHandle> routeTrees,
+    llvm::ArrayRef<PnrIndex> registerFifoTransfers) const {
   if (!problem_ || routeTrees.size() != logicalNetCount_ ||
+      traversalCount_ != problem_->routing().traversals().size() ||
       claimSelectionCounts_.size() != routeClaimCount_ ||
       capacityUsageRaw_.size() !=
           problem_->resources().capacityDimensions().size() ||
-      netClaimRefcounts_.size() !=
-          static_cast<std::size_t>(logicalNetCount_) * routeClaimCount_ ||
+      netClaimRefcounts_.size() != logicalNetCount_ ||
+      netTraversalRefcounts_.size() != logicalNetCount_ ||
       routeClaimWordCount_ !=
           (static_cast<std::size_t>(routeClaimCount_) + 63) / 64 ||
+      traversalIntervalOrdinals_.size() != traversalCount_ ||
+      activeInitiationIntervalCounts_.size() != initiationIntervals_.size() ||
       netClaimActiveBits_.size() !=
           static_cast<std::size_t>(logicalNetCount_) * routeClaimWordCount_)
     return routeResourceError("state dimensions disagree with the freeze");
@@ -304,16 +468,27 @@ llvm::Error SpatialRouteResourceState::verify(
   rawRoutes.reserve(routeTrees.size());
   for (const RouteTreeStateHandle &route : routeTrees)
     rawRoutes.push_back(route.get());
-  auto expected = projectVerifiedRoutes(*problem_, rawRoutes);
+  auto expected =
+      projectVerifiedRoutes(*problem_, rawRoutes, registerFifoTransfers);
   if (!expected)
     return expected.takeError();
 
-  if (netClaimRefcounts_ != expected->netClaimRefcounts_ ||
+  if (!sparseRefcountsEqual(netTraversalRefcounts_,
+                            expected->netTraversalRefcounts_) ||
+      initiationIntervals_ != expected->initiationIntervals_ ||
+      traversalIntervalOrdinals_ != expected->traversalIntervalOrdinals_ ||
+      activeInitiationIntervalCounts_ !=
+          expected->activeInitiationIntervalCounts_ ||
+      !sparseRefcountsEqual(netClaimRefcounts_, expected->netClaimRefcounts_) ||
       netClaimActiveBits_ != expected->netClaimActiveBits_ ||
       claimSelectionCounts_ != expected->claimSelectionCounts_ ||
       capacityUsageRaw_ != expected->capacityUsageRaw_ ||
       totalCapacityOveruseRaw_ != expected->totalCapacityOveruseRaw_ ||
-      totalSelectedTraversalClaim_ != expected->totalSelectedTraversalClaim_)
+      totalSelectedTraversalClaim_ != expected->totalSelectedTraversalClaim_ ||
+      routeReleaseLatencyCycles_ != expected->routeReleaseLatencyCycles_ ||
+      routeMinimumInitiationIntervalCycles_ !=
+          expected->routeMinimumInitiationIntervalCycles_ ||
+      transportBitCycleDemand_ != expected->transportBitCycleDemand_)
     return routeResourceError(
         "incremental occupancy disagrees with the selected RouteTrees");
   return llvm::Error::success();

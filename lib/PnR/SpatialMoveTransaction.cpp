@@ -3,7 +3,10 @@
 #include "SpatialBindingRelationModel.h"
 #include "SpatialCandidateStateInternal.h"
 #include "SpatialMemoryConstraintModel.h"
+#include "SpatialPhysicalTiming.h"
+#include "SpatialRecurrenceTimingInternal.h"
 #include "SpatialRouteConstraintModel.h"
+#include "SpatialSwitchHandshakeProjection.h"
 #include "StaticSchedulePressure.h"
 
 #include "Common/MappingDebugLog.h"
@@ -14,10 +17,12 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 using namespace loom::pnr;
 
@@ -37,6 +42,14 @@ llvm::Error replaceContribution(std::uint64_t oldValue, std::uint64_t newValue,
   if (newValue > std::numeric_limits<std::uint64_t>::max() - base)
     return candidateError(subject + " total overflows u64");
   total = base + newValue;
+  return llvm::Error::success();
+}
+
+llvm::Error increment(PnrIndex &value, PnrIndex amount,
+                      llvm::StringRef subject) {
+  if (amount > std::numeric_limits<PnrIndex>::max() - value)
+    return candidateError(subject + " count overflows PnrIndex");
+  value += amount;
   return llvm::Error::success();
 }
 
@@ -180,7 +193,12 @@ SpatialMoveTransaction::SpatialMoveTransaction(
     : state_(std::move(state)), scratch_(&scratch),
       initialUnroutedObligationCount_(state_->unroutedObligationCount_),
       initialAtomicCapacityOveruse_(state_->atomicCapacityOveruse_),
-      initialStaticSchedulePressure_(state_->staticSchedulePressure_) {
+      initialStaticSchedulePressure_(state_->staticSchedulePressure_),
+      initialWorstRouteArrivalDelayQuanta_(
+          state_->worstRouteArrivalDelayQuanta_),
+      initialTotalRouteNegativeSlackQuanta_(
+          state_->totalRouteNegativeSlackQuanta_),
+      initialRecurrenceTiming_(state_->recurrenceTiming_) {
   state_->activeTransaction_ = this;
   scratch_->activeTransaction_ = this;
 }
@@ -194,7 +212,17 @@ SpatialMoveTransaction::SpatialMoveTransaction(
       routeViolationApplied_(other.routeViolationApplied_),
       initialUnroutedObligationCount_(other.initialUnroutedObligationCount_),
       initialAtomicCapacityOveruse_(other.initialAtomicCapacityOveruse_),
-      initialStaticSchedulePressure_(other.initialStaticSchedulePressure_) {
+      initialStaticSchedulePressure_(other.initialStaticSchedulePressure_),
+      initialWorstRouteArrivalDelayQuanta_(
+          other.initialWorstRouteArrivalDelayQuanta_),
+      initialTotalRouteNegativeSlackQuanta_(
+          other.initialTotalRouteNegativeSlackQuanta_),
+      initialRecurrenceTiming_(std::move(other.initialRecurrenceTiming_)),
+      proposedPhysicalTimingValid_(other.proposedPhysicalTimingValid_),
+      proposedWorstRouteArrivalDelayQuanta_(
+          other.proposedWorstRouteArrivalDelayQuanta_),
+      proposedTotalRouteNegativeSlackQuanta_(
+          other.proposedTotalRouteNegativeSlackQuanta_) {
   other.scratch_ = nullptr;
   if (state_)
     state_->activeTransaction_ = this;
@@ -298,6 +326,17 @@ void SpatialMoveTransaction::recordMemoryExposure(PnrIndex exposure) {
   scratch_->decisionDeltas_.push_back(
       {SpatialCandidateScratch::DecisionKind::MemoryExposure, exposure,
        state_->memoryExposureSelections_[exposure], 0});
+}
+
+void SpatialMoveTransaction::recordRegisterFifoTransfer(PnrIndex logicalNet) {
+  if (scratch_->registerFifoTransferJournalMarks_[logicalNet] ==
+      scratch_->decisionEpoch_)
+    return;
+  scratch_->registerFifoTransferJournalMarks_[logicalNet] =
+      scratch_->decisionEpoch_;
+  scratch_->decisionDeltas_.push_back(
+      {SpatialCandidateScratch::DecisionKind::RegisterFifoTransfer, logicalNet,
+       state_->registerFifoTransfers_[logicalNet], 0});
 }
 
 void SpatialMoveTransaction::markCompute(PnrIndex realization) {
@@ -455,6 +494,152 @@ SpatialMoveTransaction::changeTraversal(std::optional<PnrIndex> oldTraversal,
   return llvm::Error::success();
 }
 
+llvm::Error SpatialMoveTransaction::changeRegisterFifoTransferResources(
+    PnrIndex logicalNet, std::optional<PnrIndex> oldOption,
+    std::optional<PnrIndex> newOption) {
+  if (oldOption == newOption)
+    return llvm::Error::success();
+  const auto options = state_->problem_->localTransfers().options();
+  if ((oldOption && *oldOption >= options.size()) ||
+      (newOption && *newOption >= options.size()))
+    return candidateError("register-FIFO resource option is out of range");
+
+  struct TraversalDelta final {
+    PnrIndex traversal = 0;
+    PnrIndex removed = 0;
+    PnrIndex added = 0;
+  };
+  std::vector<TraversalDelta> deltas;
+  deltas.reserve(4);
+  if (oldOption) {
+    const auto &old = options[*oldOption];
+    deltas.push_back({old.writeTraversal, 1, 0});
+    deltas.push_back({old.readTraversal, 1, 0});
+  }
+  if (newOption) {
+    const auto &next = options[*newOption];
+    deltas.push_back({next.writeTraversal, 0, 1});
+    deltas.push_back({next.readTraversal, 0, 1});
+  }
+
+  std::size_t applied = 0;
+  for (const TraversalDelta &delta : deltas) {
+    if (llvm::Error error = state_->routeResources_.applyTraversalDelta(
+            logicalNet, delta.traversal, delta.removed, delta.added)) {
+      for (std::size_t undo = applied; undo != 0; --undo) {
+        const TraversalDelta &previous = deltas[undo - 1];
+        state_->routeResources_.revertTraversalDelta(
+            logicalNet, previous.traversal, previous.removed, previous.added);
+      }
+      return error;
+    }
+    ++applied;
+  }
+  return llvm::Error::success();
+}
+
+llvm::Error SpatialMoveTransaction::recordTraversalSelectionDelta(
+    PnrIndex traversal, PnrIndex removed, PnrIndex added) {
+  if (traversal >= scratch_->traversalDeltaMarks_.size())
+    return candidateError("selected traversal delta is out of range");
+  if (scratch_->traversalDeltaMarks_[traversal] != scratch_->traversalEpoch_) {
+    scratch_->traversalDeltaMarks_[traversal] = scratch_->traversalEpoch_;
+    scratch_->traversalRemoved_[traversal] = 0;
+    scratch_->traversalAdded_[traversal] = 0;
+    scratch_->touchedTraversals_.push_back(traversal);
+  }
+  if (llvm::Error error = increment(scratch_->traversalRemoved_[traversal],
+                                    removed, "selected traversal removal"))
+    return error;
+  return increment(scratch_->traversalAdded_[traversal], added,
+                   "selected traversal addition");
+}
+
+llvm::Error SpatialMoveTransaction::setRegisterFifoTransfer(
+    PnrIndex logicalNet, std::optional<PnrIndex> option) {
+  if (llvm::Error error = ensureCollecting())
+    return error;
+  if (logicalNet >= state_->registerFifoTransfers_.size())
+    return candidateError("register-FIFO transfer net is out of range");
+  const PnrIndex replacement = option.value_or(getInvalidPnrIndex());
+  const PnrIndex old = state_->registerFifoTransfers_[logicalNet];
+  if (old == replacement)
+    return llvm::Error::success();
+
+  state_->registerFifoTransfers_[logicalNet] = replacement;
+  if (llvm::Error error = state_->validateRegisterFifoTransfer(logicalNet)) {
+    state_->registerFifoTransfers_[logicalNet] = old;
+    return error;
+  }
+  if (replacement != getInvalidPnrIndex()) {
+    const auto &selected =
+        state_->problem_->localTransfers().options()[replacement];
+    for (PnrIndex net = 0; net < state_->registerFifoTransfers_.size(); ++net) {
+      if (net == logicalNet ||
+          state_->registerFifoTransfers_[net] == getInvalidPnrIndex())
+        continue;
+      const auto &peer = state_->problem_->localTransfers()
+                             .options()[state_->registerFifoTransfers_[net]];
+      if (peer.pe == selected.pe &&
+          peer.registerFifo == selected.registerFifo) {
+        state_->registerFifoTransfers_[logicalNet] = old;
+        return candidateError(
+            "register-FIFO transfer resource already has an owner");
+      }
+    }
+  }
+  state_->registerFifoTransfers_[logicalNet] = old;
+
+  recordRegisterFifoTransfer(logicalNet);
+  markNet(logicalNet);
+  state_->registerFifoTransfers_[logicalNet] = replacement;
+  const std::optional<PnrIndex> oldOption =
+      old == getInvalidPnrIndex() ? std::nullopt : std::optional(old);
+  const std::optional<PnrIndex> newOption = replacement == getInvalidPnrIndex()
+                                                ? std::nullopt
+                                                : std::optional(replacement);
+  if (llvm::Error error =
+          changeRegisterFifoTransferResources(logicalNet, oldOption, newOption))
+    return error;
+  if (oldOption) {
+    const auto &selected =
+        state_->problem_->localTransfers().options()[*oldOption];
+    if (llvm::Error error =
+            recordTraversalSelectionDelta(selected.writeTraversal, 1, 0))
+      return error;
+    if (llvm::Error error =
+            recordTraversalSelectionDelta(selected.readTraversal, 1, 0))
+      return error;
+  }
+  if (newOption) {
+    const auto &selected =
+        state_->problem_->localTransfers().options()[*newOption];
+    if (llvm::Error error =
+            recordTraversalSelectionDelta(selected.writeTraversal, 0, 1))
+      return error;
+    if (llvm::Error error =
+            recordTraversalSelectionDelta(selected.readTraversal, 0, 1))
+      return error;
+  }
+  if (state_->routeTrees_[logicalNet]->isUnrouted()) {
+    const std::uint64_t sinkCount =
+        state_->problem_->transfers().logicalNets()[logicalNet].sinkCount;
+    if (!oldOption && newOption) {
+      if (state_->unroutedObligationCount_ < sinkCount)
+        return candidateError(
+            "register-FIFO transfer unrouted count underflows u64");
+      state_->unroutedObligationCount_ -= sinkCount;
+    } else if (oldOption && !newOption) {
+      if (sinkCount > std::numeric_limits<std::uint64_t>::max() -
+                          state_->unroutedObligationCount_)
+        return candidateError(
+            "register-FIFO transfer unrouted count overflows u64");
+      state_->unroutedObligationCount_ += sinkCount;
+    }
+  }
+  return llvm::Error::success();
+}
+
 llvm::Error SpatialMoveTransaction::setComputeBinding(
     PnrIndex realization, PnrIndex placement, PnrIndex instructionContext) {
   if (llvm::Error error = ensureCollecting())
@@ -485,6 +670,22 @@ llvm::Error SpatialMoveTransaction::setComputeBinding(
           *state_, realization, placement);
   if (!schedulePressure)
     return schedulePressure.takeError();
+
+  if (old.placement != placement) {
+    for (PnrIndex logicalNet = 0;
+         logicalNet < state_->registerFifoTransfers_.size(); ++logicalNet) {
+      const PnrIndex selected = state_->registerFifoTransfers_[logicalNet];
+      if (selected == getInvalidPnrIndex())
+        continue;
+      const auto &transfer =
+          state_->problem_->localTransfers().options()[selected];
+      if (transfer.producerRealization != realization &&
+          transfer.consumerRealization != realization)
+        continue;
+      if (llvm::Error error = setRegisterFifoTransfer(logicalNet, std::nullopt))
+        return error;
+    }
+  }
 
   recordCompute(realization);
   markCompute(realization);
@@ -745,6 +946,8 @@ SpatialMoveTransaction::routeTransaction(PnrIndex logicalNet) {
   if (logicalNet >= state_->routeTrees_.size())
     return candidateError("logical net is out of range");
   if (!scratch_->routeTransactions_[logicalNet]) {
+    if (llvm::Error error = captureSwitchHandshakeBaseline())
+      return std::move(error);
     auto transaction = state_->routeTrees_[logicalNet]->beginTransaction(
         *scratch_->routeScratch_[logicalNet]);
     if (!transaction)
@@ -754,6 +957,35 @@ SpatialMoveTransaction::routeTransaction(PnrIndex logicalNet) {
     markNet(logicalNet);
   }
   return &*scratch_->routeTransactions_[logicalNet];
+}
+
+llvm::Error SpatialMoveTransaction::captureSwitchHandshakeBaseline() {
+  if (scratch_->switchHandshakeBaselineCaptured_ ||
+      !detail::hasSpatialTemporalSwitchHandshakeDomain(state_->problem()))
+    return llvm::Error::success();
+  rebuildRouteViews();
+  rebuildTagValueViews();
+  auto fragments = detail::deriveSpatialTemporalSwitchHandshakeFragments(
+      state_->problem(), scratch_->routeViews_, scratch_->tagValueViews_);
+  if (!fragments)
+    return fragments.takeError();
+  scratch_->oldSwitchHandshakeFragments_.assign(fragments->begin(),
+                                                fragments->end());
+  scratch_->switchHandshakeBaselineCaptured_ = true;
+  return llvm::Error::success();
+}
+
+void SpatialMoveTransaction::rebuildRouteViews() {
+  scratch_->routeViews_.clear();
+  for (const RouteTreeStateHandle &route : state_->routeTrees_)
+    scratch_->routeViews_.push_back(route.get());
+}
+
+void SpatialMoveTransaction::rebuildTagValueViews() {
+  scratch_->tagValueViews_.clear();
+  for (PnrIndex logicalNet = 0; logicalNet < state_->routeTrees_.size();
+       ++logicalNet)
+    scratch_->tagValueViews_.push_back(state_->tagValues(logicalNet));
 }
 
 llvm::Error SpatialMoveTransaction::bindRouteSource(PnrIndex logicalNet,
@@ -932,6 +1164,9 @@ llvm::Error SpatialMoveTransaction::validateAffectedState() const {
         return candidateError(
             "route sink disagrees with its selected attachment");
   }
+  if (!scratch_->affectedNets_.empty())
+    if (llvm::Error error = state_->verifyRegisterFifoTransfers())
+      return error;
   if (llvm::Error error = scratch_->routeConstraintScratch_->verifyAffected(
           *state_, scratch_->affectedNets_))
     return error;
@@ -950,8 +1185,63 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
           scratch_->touchedRoutes_, scratch_->tagScratch_))
     return std::move(error);
   tagDeltasCollected_ = true;
+  rebuildRouteViews();
+  if (scratch_->switchHandshakeBaselineCaptured_) {
+    rebuildTagValueViews();
+    auto switchFragments =
+        detail::deriveSpatialTemporalSwitchHandshakeFragments(
+            state_->problem(), scratch_->routeViews_, scratch_->tagValueViews_);
+    if (!switchFragments)
+      return switchFragments.takeError();
+    scratch_->newSwitchHandshakeFragments_.assign(switchFragments->begin(),
+                                                  switchFragments->end());
+    scratch_->removedSwitchHandshakeFragments_.clear();
+    scratch_->addedSwitchHandshakeFragments_.clear();
+    std::set_difference(
+        scratch_->oldSwitchHandshakeFragments_.begin(),
+        scratch_->oldSwitchHandshakeFragments_.end(),
+        scratch_->newSwitchHandshakeFragments_.begin(),
+        scratch_->newSwitchHandshakeFragments_.end(),
+        std::back_inserter(scratch_->removedSwitchHandshakeFragments_));
+    std::set_difference(
+        scratch_->newSwitchHandshakeFragments_.begin(),
+        scratch_->newSwitchHandshakeFragments_.end(),
+        scratch_->oldSwitchHandshakeFragments_.begin(),
+        scratch_->oldSwitchHandshakeFragments_.end(),
+        std::back_inserter(scratch_->addedSwitchHandshakeFragments_));
+    if (llvm::Error error = scratch_->handshakeTransaction_->removeFragments(
+            scratch_->removedSwitchHandshakeFragments_))
+      return std::move(error);
+    if (llvm::Error error = scratch_->handshakeTransaction_->addFragments(
+            scratch_->addedSwitchHandshakeFragments_))
+      return std::move(error);
+  }
   if (llvm::Error error = validateAffectedState())
     return std::move(error);
+  if (!scratch_->affectedNets_.empty()) {
+    auto physicalTiming = detail::projectSpatialPhysicalTiming(
+        state_->problem(), scratch_->routeViews_,
+        state_->registerFifoTransfers_, state_->portAttachments_,
+        state_->graphBoundaryAttachments_);
+    if (!physicalTiming)
+      return physicalTiming.takeError();
+    proposedPhysicalTimingValid_ = true;
+    proposedWorstRouteArrivalDelayQuanta_ =
+        physicalTiming->worstArrivalDelayQuanta;
+    proposedTotalRouteNegativeSlackQuanta_ =
+        physicalTiming->totalNegativeSlackQuanta;
+    state_->worstRouteArrivalDelayQuanta_ =
+        proposedWorstRouteArrivalDelayQuanta_;
+    state_->totalRouteNegativeSlackQuanta_ =
+        proposedTotalRouteNegativeSlackQuanta_;
+  }
+  {
+    auto recurrenceTiming =
+        detail::projectSpatialRecurrenceTiming(*state_, scratch_->routeViews_);
+    if (!recurrenceTiming)
+      return recurrenceTiming.takeError();
+    state_->recurrenceTiming_ = std::move(*recurrenceTiming);
+  }
   auto closure = scratch_->handshakeTransaction_->close();
   if (!closure)
     return closure.takeError();
@@ -970,9 +1260,27 @@ llvm::ArrayRef<PnrIndex> SpatialMoveTransaction::cycleWitness() const {
 
 llvm::ArrayRef<PnrIndex>
 SpatialMoveTransaction::touchedRouteTraversals() const {
-  if (!scratch_ || !closed_)
+  if (!scratch_)
     return {};
   return scratch_->touchedTraversals_;
+}
+
+llvm::ArrayRef<PnrIndex>
+SpatialMoveTransaction::touchedRouteLogicalNets() const {
+  if (!scratch_)
+    return {};
+  return scratch_->touchedRoutes_;
+}
+
+llvm::Expected<SpatialTagAssignmentSummary>
+SpatialMoveTransaction::summarizeCurrentTagAssignments() const {
+  if (!scratch_ || !closed_)
+    return candidateError("Physical Tag summary requires a closed active move");
+  return state_->tagAssignments_.summarizeCurrentState(true);
+}
+
+bool SpatialMoveTransaction::hasRouteTreeChange() const {
+  return scratch_ && !scratch_->touchedRoutes_.empty();
 }
 
 bool SpatialMoveTransaction::hasSemanticChange() const {
@@ -1016,6 +1324,10 @@ bool SpatialMoveTransaction::hasSemanticChange() const {
       break;
     case SpatialCandidateScratch::DecisionKind::MemoryExposure:
       if (state_->memoryExposureSelections_[delta.index] != delta.oldValue0)
+        return true;
+      break;
+    case SpatialCandidateScratch::DecisionKind::RegisterFifoTransfer:
+      if (state_->registerFifoTransfers_[delta.index] != delta.oldValue0)
         return true;
       break;
     }
@@ -1132,10 +1444,32 @@ void SpatialMoveTransaction::rollback() noexcept {
       state_->memoryExposureSelections_[delta.index] = delta.oldValue0;
       break;
     }
+    case SpatialCandidateScratch::DecisionKind::RegisterFifoTransfer: {
+      const PnrIndex current = state_->registerFifoTransfers_[delta.index];
+      const std::optional<PnrIndex> currentOption =
+          current == getInvalidPnrIndex() ? std::nullopt
+                                          : std::optional(current);
+      const std::optional<PnrIndex> oldOption =
+          delta.oldValue0 == getInvalidPnrIndex()
+              ? std::nullopt
+              : std::optional(delta.oldValue0);
+      if (llvm::Error error = changeRegisterFifoTransferResources(
+              delta.index, currentOption, oldOption)) {
+        assert(false && "validated register-FIFO rollback failed");
+        llvm::consumeError(std::move(error));
+      }
+      state_->registerFifoTransfers_[delta.index] = delta.oldValue0;
+      break;
+    }
     }
   }
+  state_->unroutedObligationCount_ = initialUnroutedObligationCount_;
   state_->atomicCapacityOveruse_ = initialAtomicCapacityOveruse_;
   state_->staticSchedulePressure_ = initialStaticSchedulePressure_;
+  state_->worstRouteArrivalDelayQuanta_ = initialWorstRouteArrivalDelayQuanta_;
+  state_->totalRouteNegativeSlackQuanta_ =
+      initialTotalRouteNegativeSlackQuanta_;
+  state_->recurrenceTiming_ = initialRecurrenceTiming_;
   finish();
 }
 

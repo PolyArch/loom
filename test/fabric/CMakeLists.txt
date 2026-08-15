@@ -18,6 +18,10 @@ add_executable(loom-fabric-physical-tag-test
   PhysicalTagTest.cpp
 )
 
+add_executable(loom-fabric-temporal-switch-route-test
+  TemporalSwitchRouteTest.cpp
+)
+
 add_executable(loom-fabric-resource-contract-test
   ResourceContractTest.cpp
 )
@@ -62,6 +66,10 @@ add_executable(loom-fabric-memory-configuration-test
   FabricMemoryConfigurationTest.cpp
 )
 
+add_executable(loom-fabric-physical-timing-profile-test
+  FabricPhysicalTimingProfileTest.cpp
+)
+
 add_executable(loom-fabric-boundary-transfer-test
   BoundaryTransferTest.cpp
 )
@@ -98,6 +106,11 @@ target_link_libraries(loom-fabric-boundary-data-path-test PRIVATE
 
 target_link_libraries(loom-fabric-physical-tag-test PRIVATE
   LoomFabricPhysicalTag
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-temporal-switch-route-test PRIVATE
+  LoomFabricIdentity
   LLVMSupport
 )
 
@@ -194,6 +207,13 @@ target_link_libraries(loom-fabric-memory-configuration-test PRIVATE
   LoomCommon
   LoomFabricArtifact
   MLIRIR
+  LLVMSupport
+)
+
+target_link_libraries(loom-fabric-physical-timing-profile-test PRIVATE
+  LoomADGBuilder
+  LoomCommon
+  LoomFabricArtifact
   LLVMSupport
 )
 
@@ -419,6 +439,7 @@ add_executable(loom-fabric-module-boundary-transport-passthrough-test
 )
 
 add_executable(loom-fabric-handshake-model-test
+  ../InternalMemoryEdgeTestSupport.cpp
   FabricHandshakeModelTest.cpp
 )
 

@@ -247,7 +247,7 @@ llvm::Expected<PnrIndex> relationDecision(
                      "attachment projection names a foreign terminal");
     return found->second;
   }
-  llvm_unreachable("deferred projection requested a binding decision");
+  llvm_unreachable("non-binding projection requested a binding decision");
 }
 
 } // namespace
@@ -582,6 +582,102 @@ SpatialBindingRelationModel::create(
 
   std::vector<InitializerRelationInput> relationInputs;
   std::vector<SpatialBindingRelationRole> relationRoles;
+
+  // A Temporal PE ingress activation is keyed by the selected endpoint and
+  // Physical Tag. Sinks of one logical net that select the same endpoint also
+  // necessarily share the same tag-continuity node, so Fabric's one-enqueue
+  // service rule is an attachment relation, not a routing heuristic. Only
+  // units shared by every resident-context choice appear here; context-local
+  // units are already separated by the resident-context relation below.
+  for (const FrozenSpatialLogicalNet &net : transfers.logicalNets()) {
+    InitializerRelationInput ingressServices;
+    ingressServices.kind = InitializerRelationKind::Disjoint;
+    std::vector<std::vector<ProjectionKey>> memberKeys;
+    std::map<ProjectionKey, std::set<PnrIndex>> conflictMembers;
+    std::set<PnrIndex> memberDecisions;
+    for (PnrIndex sink = 0; sink < net.sinkCount; ++sink) {
+      const PnrIndex globalSink = net.sinkOffset + sink;
+      if (globalSink >= transfers.logicalNetSinkBindings().size())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "operand queue relation names a foreign sink");
+      const FrozenSpatialTerminalBinding binding =
+          transfers.logicalNetSinkBindings()[globalSink];
+      if (binding.kind != FrozenSpatialTerminalBindingKind::PortDemand ||
+          binding.index >= ports.portDemands().size())
+        continue;
+      const FrozenSpatialPortDemand &demand =
+          ports.portDemands()[binding.index];
+      if (demand.kind != FrozenSpatialPortDemandKind::Compute)
+        continue;
+      const PnrIndex decision = portDecisionOffset + binding.index;
+      const auto choices =
+          llvm::ArrayRef(attachmentChoices)
+              .slice(portAttachmentChoiceOffsets[binding.index],
+                     portAttachmentChoiceOffsets[binding.index + 1] -
+                         portAttachmentChoiceOffsets[binding.index]);
+      const bool canUseSharedService =
+          llvm::any_of(choices, [&](PnrIndex option) {
+            return option < ports.attachmentOptions().size() &&
+                   ports.attachmentOptions()[option]
+                       .sharedOperandEnqueueUnit.has_value();
+          });
+      if (!canUseSharedService)
+        continue;
+      if (!memberDecisions.insert(decision).second)
+        return invalid(Projection::SpatialTransferAttachment,
+                       "operand queue relation repeats one sink decision");
+
+      std::vector<ProjectionKey> keys;
+      keys.reserve(choices.size());
+      for (PnrIndex option : choices) {
+        if (option >= ports.attachmentOptions().size())
+          return invalid(Projection::SpatialTransferAttachment,
+                         "operand queue relation names a foreign option");
+        const FrozenSpatialAttachmentOption &attachment =
+            ports.attachmentOptions()[option];
+        ProjectionKey key;
+        if (attachment.sharedOperandEnqueueUnit) {
+          key.push_back(0);
+          appendU32Be(key, attachment.endpoint);
+          appendU32Be(key, *attachment.sharedOperandEnqueueUnit);
+          conflictMembers[key].insert(decision);
+        } else {
+          key.push_back(1);
+          appendU32Be(key, decision);
+        }
+        keys.push_back(std::move(key));
+      }
+      ingressServices.members.push_back({decision, {}});
+      memberKeys.push_back(std::move(keys));
+    }
+    if (ingressServices.members.size() < 2 ||
+        llvm::none_of(conflictMembers, [](const auto &entry) {
+          return entry.second.size() > 1;
+        }))
+      continue;
+
+    std::vector<ProjectionKey> universe;
+    for (const auto &keys : memberKeys)
+      universe.insert(universe.end(), keys.begin(), keys.end());
+    llvm::sort(universe);
+    universe.erase(std::unique(universe.begin(), universe.end()),
+                   universe.end());
+    if (universe.size() > getPnrIndexMax())
+      return invalid(Projection::SpatialTransferAttachment,
+                     "operand queue relation value domain overflows PnrIndex");
+    for (std::size_t member = 0; member < memberKeys.size(); ++member) {
+      auto &values = ingressServices.members[member].projectedValues;
+      values.reserve(memberKeys[member].size());
+      for (const ProjectionKey &key : memberKeys[member]) {
+        const auto found = llvm::lower_bound(universe, key);
+        assert(found != universe.end() && *found == key);
+        values.push_back(static_cast<PnrIndex>(found - universe.begin()));
+      }
+    }
+    relationInputs.push_back(std::move(ingressServices));
+    relationRoles.push_back(SpatialBindingRelationRole::Structural);
+  }
+
   if (computeDecisionCount > 1) {
     const auto contexts = realizations.computeInstructionContexts();
     std::vector<PnrIndex> contextValues(contexts.size());
@@ -593,10 +689,10 @@ SpatialBindingRelationModel::create(
         if (valueByContext.size() == getPnrIndexMax())
           return invalid(Projection::ComputeInstructionContext,
                          "resident context relation overflows PnrIndex");
-        found = valueByContext
-                    .try_emplace(key,
-                                 static_cast<PnrIndex>(valueByContext.size()))
-                    .first;
+        found =
+            valueByContext
+                .try_emplace(key, static_cast<PnrIndex>(valueByContext.size()))
+                .first;
       }
       contextValues[ordinal] = found->second;
     }
@@ -608,11 +704,10 @@ SpatialBindingRelationModel::create(
          ++realization) {
       InitializerRelationMemberInput member;
       member.decision = realization;
-      const auto choices =
-          llvm::ArrayRef(computeChoices)
-              .slice(computeChoiceOffsets[realization],
-                     computeChoiceOffsets[realization + 1] -
-                         computeChoiceOffsets[realization]);
+      const auto choices = llvm::ArrayRef(computeChoices)
+                               .slice(computeChoiceOffsets[realization],
+                                      computeChoiceOffsets[realization + 1] -
+                                          computeChoiceOffsets[realization]);
       member.projectedValues.reserve(choices.size());
       for (const SpatialComputeBindingChoice &choice : choices) {
         if (choice.instructionContext >= contextValues.size())
@@ -628,13 +723,15 @@ SpatialBindingRelationModel::create(
   }
 
   if (memoryDecisionCount > 1) {
-    // One Memory Operation Engine holds one configured operation per exact
-    // physical operation port: a Spatial port carries one static row, and a
-    // Temporal port carries one resident row per context that the owning
-    // realization partitions among its own actors. Two realizations therefore
-    // cannot share one occurrence-relative port under either schedule, and the
-    // relation is the same for both.
-    std::map<ProjectionKey, std::vector<PnrIndex>> operationPortUsers;
+    struct TemporalCapacityGroup final {
+      std::vector<PnrIndex> realizations;
+      std::map<ProjectionKey, std::uint64_t> occurrenceCapacities;
+    };
+    std::map<ProjectionKey, std::vector<PnrIndex>> spatialPortUsers;
+    std::map<ProjectionKey, TemporalCapacityGroup> temporalCapacityGroups;
+    std::map<ProjectionKey, std::vector<PnrIndex>> temporalIngressUsers;
+    std::map<ProjectionKey, std::vector<PnrIndex>> internalConnectionUsers;
+
     for (PnrIndex realization = 0; realization < memoryDecisionCount;
          ++realization) {
       const FrozenSpatialMemoryRealization &record =
@@ -647,28 +744,70 @@ SpatialBindingRelationModel::create(
           }))
         return invalid(Projection::MemoryPlacement,
                        "one memory realization crosses scheduling domains");
-      std::set<ProjectionKey> selectedPorts;
-      for (const FrozenSpatialMemoryActorBinding &actor :
-           realizations.memoryActors().slice(record.actorOffset,
-                                             record.actorCount)) {
-        const ProjectionKey key = canonicalFabricBytes(actor.operationPort);
-        if (!selectedPorts.insert(key).second &&
-            schedule == ::fabric::Schedule::Spatial)
-          return invalid(Projection::MemoryOperationPort,
-                         "a Spatial memory realization repeats an operation "
-                         "port");
+
+      for (const auto &connection :
+           realizations.memoryInternalConnections().slice(
+               record.internalConnectionOffset, record.internalConnectionCount))
+        internalConnectionUsers[canonicalFabricBytes(connection)].push_back(
+            realization);
+
+      if (schedule == ::fabric::Schedule::Spatial) {
+        std::set<ProjectionKey> selectedPorts;
+        for (const FrozenSpatialMemoryActorBinding &actor :
+             realizations.memoryActors().slice(record.actorOffset,
+                                               record.actorCount)) {
+          const ProjectionKey key = canonicalFabricBytes(actor.operationPort);
+          if (!selectedPorts.insert(key).second)
+            return invalid(
+                Projection::MemoryOperationPort,
+                "a Spatial memory realization repeats an operation port");
+        }
+        for (const ProjectionKey &port : selectedPorts)
+          spatialPortUsers[port].push_back(realization);
+        continue;
       }
-      for (const ProjectionKey &port : selectedPorts)
-        operationPortUsers[port].push_back(realization);
+
+      const ProjectionKey engine = canonicalFabricBytes(record.engine);
+      TemporalCapacityGroup &capacityGroup = temporalCapacityGroups[engine];
+      capacityGroup.realizations.push_back(realization);
+      for (const FrozenSpatialMemoryPlacement &placement : placements) {
+        if (!placement.residentContextCount)
+          return invalid(Projection::MemoryPlacement,
+                         "a Temporal memory occurrence has no resident "
+                         "capacity");
+        const ProjectionKey occurrence = canonicalFabricBytes(placement.memory);
+        auto [found, inserted] = capacityGroup.occurrenceCapacities.try_emplace(
+            occurrence, *placement.residentContextCount);
+        if (!inserted && found->second != *placement.residentContextCount)
+          return invalid(Projection::MemoryPlacement,
+                         "one Temporal occurrence has inconsistent resident "
+                         "capacity");
+      }
+
+      std::set<ProjectionKey> realizationIngresses;
+      for (const TechMemoryExternalIngressView &ingress :
+           realizations.memoryExternalIngresses().slice(
+               record.externalIngressOffset, record.externalIngressCount)) {
+        auto key =
+            canonicalTechMemoryExternalIngressKey(ingress, dataflowIdentity);
+        if (!key)
+          return key.takeError();
+        if (!realizationIngresses.insert(*key).second)
+          return invalid(Projection::MemoryOperationPort,
+                         "one Temporal realization repeats an external "
+                         "ingress relation");
+      }
+      for (const ProjectionKey &ingress : realizationIngresses)
+        temporalIngressUsers[ingress].push_back(realization);
     }
 
-    for (const auto &[port, users] : operationPortUsers) {
-      (void)port;
+    const auto addOccurrenceDisjoint =
+        [&](llvm::ArrayRef<PnrIndex> users) -> llvm::Error {
       if (users.size() < 2)
-        continue;
-      InitializerRelationInput operationRows;
-      operationRows.kind = InitializerRelationKind::Disjoint;
-      operationRows.members.reserve(users.size());
+        return llvm::Error::success();
+      InitializerRelationInput relation;
+      relation.kind = InitializerRelationKind::Disjoint;
+      relation.members.reserve(users.size());
       std::map<ProjectionKey, PnrIndex> occurrenceValues;
       for (PnrIndex realization : users) {
         InitializerRelationMemberInput member;
@@ -682,10 +821,8 @@ SpatialBindingRelationModel::create(
           if (choice.placement >= realizations.memoryPlacements().size())
             return invalid(Projection::MemoryPlacement,
                            "memory choice names a foreign placement");
-          const FrozenSpatialMemoryPlacement &placement =
-              realizations.memoryPlacements()[choice.placement];
-          const ProjectionKey occurrence =
-              canonicalFabricBytes(placement.memory);
+          const ProjectionKey occurrence = canonicalFabricBytes(
+              realizations.memoryPlacements()[choice.placement].memory);
           auto found = occurrenceValues.find(occurrence);
           if (found == occurrenceValues.end()) {
             if (occurrenceValues.size() == getPnrIndexMax())
@@ -699,15 +836,80 @@ SpatialBindingRelationModel::create(
           }
           member.projectedValues.push_back(found->second);
         }
-        operationRows.members.push_back(std::move(member));
+        relation.members.push_back(std::move(member));
       }
-      relationInputs.push_back(std::move(operationRows));
+      relationInputs.push_back(std::move(relation));
+      relationRoles.push_back(SpatialBindingRelationRole::Structural);
+      return llvm::Error::success();
+    };
+
+    std::set<std::vector<PnrIndex>> distinctOccurrenceConflictGroups;
+    for (const auto &[port, users] : spatialPortUsers) {
+      (void)port;
+      if (users.size() >= 2)
+        distinctOccurrenceConflictGroups.insert(users);
+    }
+    for (auto &[ingress, users] : temporalIngressUsers) {
+      (void)ingress;
+      if (users.size() >= 2)
+        distinctOccurrenceConflictGroups.insert(std::move(users));
+    }
+    for (auto &[connection, users] : internalConnectionUsers) {
+      (void)connection;
+      if (users.size() >= 2)
+        distinctOccurrenceConflictGroups.insert(std::move(users));
+    }
+    for (const std::vector<PnrIndex> &users : distinctOccurrenceConflictGroups)
+      if (llvm::Error error = addOccurrenceDisjoint(users))
+        return std::move(error);
+
+    for (const auto &[engine, group] : temporalCapacityGroups) {
+      (void)engine;
+      if (group.realizations.size() < 2)
+        continue;
+      InitializerRelationInput capacity;
+      capacity.kind = InitializerRelationKind::Capacity;
+      std::map<ProjectionKey, PnrIndex> occurrenceValues;
+      for (const auto &[occurrence, residentCapacity] :
+           group.occurrenceCapacities) {
+        if (occurrenceValues.size() == getPnrIndexMax())
+          return invalid(Projection::MemoryPlacement,
+                         "Temporal capacity relation overflows PnrIndex");
+        occurrenceValues.emplace(
+            occurrence, static_cast<PnrIndex>(occurrenceValues.size()));
+        capacity.valueCapacities.push_back(residentCapacity);
+      }
+      capacity.members.reserve(group.realizations.size());
+      for (PnrIndex realization : group.realizations) {
+        const FrozenSpatialMemoryRealization &record =
+            realizations.memoryRealizations()[realization];
+        InitializerRelationMemberInput member;
+        member.decision = memoryDecisionOffset + realization;
+        member.demand = record.actorCount;
+        const auto choices = llvm::ArrayRef(memoryChoices)
+                                 .slice(memoryChoiceOffsets[realization],
+                                        memoryChoiceOffsets[realization + 1] -
+                                            memoryChoiceOffsets[realization]);
+        member.projectedValues.reserve(choices.size());
+        for (const SpatialMemoryBindingChoice &choice : choices) {
+          const ProjectionKey occurrence = canonicalFabricBytes(
+              realizations.memoryPlacements()[choice.placement].memory);
+          const auto found = occurrenceValues.find(occurrence);
+          if (found == occurrenceValues.end())
+            return invalid(Projection::MemoryPlacement,
+                           "Temporal memory choice is outside its capacity "
+                           "domain");
+          member.projectedValues.push_back(found->second);
+        }
+        capacity.members.push_back(std::move(member));
+      }
+      relationInputs.push_back(std::move(capacity));
       relationRoles.push_back(SpatialBindingRelationRole::Structural);
     }
   }
 
-  const auto attachmentDecision = [&](FrozenSpatialTerminalBinding binding)
-      -> llvm::Expected<PnrIndex> {
+  const auto attachmentDecision =
+      [&](FrozenSpatialTerminalBinding binding) -> llvm::Expected<PnrIndex> {
     if (binding.kind == FrozenSpatialTerminalBindingKind::PortDemand) {
       if (binding.index >= ports.portDemands().size())
         return invalid(Projection::SpatialTransferAttachment,
@@ -720,8 +922,8 @@ SpatialBindingRelationModel::create(
     return graphBoundaryDecisionOffset + binding.index;
   };
   const auto endpointRelationMember =
-      [&](PnrIndex decision, bool dependent)
-      -> llvm::Expected<InitializerRelationMemberInput> {
+      [&](PnrIndex decision,
+          bool dependent) -> llvm::Expected<InitializerRelationMemberInput> {
     InitializerRelationMemberInput member;
     member.decision = decision;
     llvm::ArrayRef<PnrIndex> choices;
@@ -754,8 +956,8 @@ SpatialBindingRelationModel::create(
       if (option >= ports.attachmentOptions().size())
         return invalid(Projection::SpatialTransferAttachment,
                        "progress dependency attachment option is out of range");
-      auto buffered = spatialAttachmentProvidesLocalProgressBoundary(
-          ports, routing, option);
+      auto buffered =
+          spatialAttachmentProvidesLocalProgressBoundary(ports, option);
       if (!buffered)
         return buffered.takeError();
       member.projectedValues.push_back(
@@ -783,15 +985,20 @@ SpatialBindingRelationModel::create(
           transfers.logicalNetSinkBindings()[globalDependent]);
       if (!dependentDecision)
         return dependentDecision.takeError();
-      for (PnrIndex prerequisite : progressDependencies.slice(
-               progressOffsets[globalDependent],
-               progressOffsets[globalDependent + 1] -
-                   progressOffsets[globalDependent])) {
-        if (prerequisite >= net.sinkCount || prerequisite == dependent)
+      for (const FrozenSpatialProgressPrerequisite &prerequisite :
+           progressDependencies.slice(progressOffsets[globalDependent],
+                                      progressOffsets[globalDependent + 1] -
+                                          progressOffsets[globalDependent])) {
+        const auto *external =
+            std::get_if<FrozenSpatialExternalSinkPrerequisite>(&prerequisite);
+        if (!external)
+          continue;
+        if (external->sink >= net.sinkCount || external->sink == dependent)
           return invalid(Projection::SpatialTransferAttachment,
                          "progress dependency sink ordinal is invalid");
         auto prerequisiteDecision = attachmentDecision(
-            transfers.logicalNetSinkBindings()[net.sinkOffset + prerequisite]);
+            transfers
+                .logicalNetSinkBindings()[net.sinkOffset + external->sink]);
         if (!prerequisiteDecision)
           return prerequisiteDecision.takeError();
         auto prerequisiteMember =
@@ -819,7 +1026,6 @@ SpatialBindingRelationModel::create(
       }
     }
   }
-  std::optional<Projection> deferredProjection;
   for (std::size_t projectionOrdinal = 0;
        projectionOrdinal != FrozenConstraintIndex::projectionCount;
        ++projectionOrdinal) {
@@ -838,9 +1044,8 @@ SpatialBindingRelationModel::create(
           *projection == Projection::MemoryBoundServices ||
           *projection == Projection::MemoryAddressRegion)
         continue;
-      if (!deferredProjection)
-        deferredProjection = *projection;
-      continue;
+      return invalid(*projection,
+                     "hard relation projection has no owning decision model");
     }
 
     const auto appendRelations =
@@ -1042,7 +1247,7 @@ SpatialBindingRelationModel::create(
           std::move(graphBoundaryAttachmentChoiceOffsets),
           std::move(attachmentChoices),
           std::move(attachmentOptionChoiceOrdinals),
-          std::move(relationRoles), deferredProjection));
+          std::move(relationRoles)));
 }
 
 llvm::ArrayRef<SpatialComputeBindingChoice>

@@ -4,6 +4,7 @@
 #include "PnR/HandshakeCandidateState.h"
 #include "PnR/RouteTreeState.h"
 #include "PnR/SpatialPnrProblem.h"
+#include "PnR/SpatialRecurrenceTiming.h"
 #include "PnR/SpatialRouteResourceState.h"
 #include "PnR/SpatialTagAssignment.h"
 
@@ -49,6 +50,7 @@ struct SpatialCandidateInitialization final {
   llvm::ArrayRef<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings;
   llvm::ArrayRef<PnrIndex> memoryUseDispatches;
   llvm::ArrayRef<PnrIndex> memoryExposureSelections;
+  llvm::ArrayRef<PnrIndex> registerFifoTransfers;
 };
 
 /// Cold reconstruction of every route-derived Mapping fact for the current
@@ -62,6 +64,12 @@ struct SpatialCandidateRouteProjection final {
   std::uint64_t tagConflictCount = 0;
   std::uint64_t hardProgressViolation = 0;
   std::uint64_t totalSelectedTraversalClaim = 0;
+  std::uint64_t routeReleaseLatencyCycles = 0;
+  std::uint64_t routeMinimumInitiationIntervalCycles = 1;
+  SpatialRecurrenceTimingProjection recurrenceTiming;
+  std::uint64_t transportBitCycleDemand = 0;
+  std::uint64_t worstRouteArrivalDelayQuanta = 0;
+  std::uint64_t totalRouteNegativeSlackQuanta = 0;
   bool routeTerminalsCompatible = false;
   bool selectedHandshakeAcyclic = false;
 };
@@ -96,6 +104,7 @@ private:
     LogicalMemoryBinding,
     MemoryUseDispatch,
     MemoryExposure,
+    RegisterFifoTransfer,
   };
 
   struct DecisionDelta final {
@@ -124,6 +133,7 @@ private:
   std::vector<std::uint64_t> logicalMemoryJournalMarks_;
   std::vector<std::uint64_t> memoryDispatchJournalMarks_;
   std::vector<std::uint64_t> memoryExposureJournalMarks_;
+  std::vector<std::uint64_t> registerFifoTransferJournalMarks_;
   std::vector<DecisionDelta> decisionDeltas_;
   std::uint64_t decisionEpoch_ = 0;
 
@@ -152,6 +162,13 @@ private:
   std::uint64_t affectedEpoch_ = 0;
 
   std::vector<PnrIndex> touchedRoutes_;
+  std::vector<const RouteTreeState *> routeViews_;
+  std::vector<llvm::ArrayRef<std::optional<llvm::APInt>>> tagValueViews_;
+  std::vector<PnrIndex> oldSwitchHandshakeFragments_;
+  std::vector<PnrIndex> newSwitchHandshakeFragments_;
+  std::vector<PnrIndex> removedSwitchHandshakeFragments_;
+  std::vector<PnrIndex> addedSwitchHandshakeFragments_;
+  bool switchHandshakeBaselineCaptured_ = false;
 
   std::vector<std::uint64_t> traversalDeltaMarks_;
   std::vector<PnrIndex> traversalRemoved_;
@@ -183,6 +200,12 @@ public:
   create(const FrozenSpatialPnrProblem &,
          SpatialCandidateInitialization) = delete;
 
+  /// Reconstructs an independent candidate from this candidate's selected
+  /// decisions and complete RouteTrees. Rebuildable capacity, tag, handshake,
+  /// timing, and objective state is derived again from its semantic owners.
+  /// This is the snapshot boundary used for a best feasible incumbent.
+  llvm::Expected<SpatialCandidateStateHandle> cloneFullyRouted() const;
+
   SpatialCandidateState(const SpatialCandidateState &) = delete;
   SpatialCandidateState(SpatialCandidateState &&) = delete;
   SpatialCandidateState &operator=(const SpatialCandidateState &) = delete;
@@ -195,12 +218,22 @@ public:
   const SpatialMemoryBindingSelection &
   memoryBinding(PnrIndex realization) const;
   PnrIndex portAttachment(PnrIndex demand) const;
+  llvm::ArrayRef<PnrIndex> portAttachmentSelections() const {
+    return portAttachments_;
+  }
   PnrIndex graphBoundaryAttachment(PnrIndex boundary) const;
+  llvm::ArrayRef<PnrIndex> graphBoundaryAttachmentSelections() const {
+    return graphBoundaryAttachments_;
+  }
   PnrIndex memoryOperationPlan(PnrIndex actor) const;
   const SpatialLogicalMemoryBindingSelection &
   logicalMemoryBinding(PnrIndex binding) const;
   PnrIndex memoryUseDispatch(PnrIndex use) const;
   PnrIndex memoryExposureSelection(PnrIndex exposure) const;
+  PnrIndex registerFifoTransfer(PnrIndex logicalNet) const;
+  bool usesRegisterFifo(PnrIndex logicalNet) const {
+    return registerFifoTransfer(logicalNet) != getInvalidPnrIndex();
+  }
 
   PnrIndex logicalNetSourceEndpoint(PnrIndex logicalNet) const;
   PnrIndex logicalNetSinkEndpoint(PnrIndex logicalNet,
@@ -227,6 +260,30 @@ public:
   }
   llvm::ArrayRef<std::uint64_t> activeResourceTimeEnvelopeBits() const {
     return activeResourceTimeEnvelopeBits_;
+  }
+  std::uint64_t resourceReleaseLatencyCycles() const {
+    return resourceReleaseLatencyCycles_;
+  }
+  std::uint64_t resourceMinimumInitiationIntervalCycles() const {
+    return resourceMinimumInitiationIntervalCycles_;
+  }
+  std::uint64_t routeReleaseLatencyCycles() const {
+    return routeResources_.routeReleaseLatencyCycles();
+  }
+  std::uint64_t routeMinimumInitiationIntervalCycles() const {
+    return routeResources_.routeMinimumInitiationIntervalCycles();
+  }
+  const SpatialRecurrenceTimingProjection &recurrenceTiming() const {
+    return recurrenceTiming_;
+  }
+  std::uint64_t transportBitCycleDemand() const {
+    return routeResources_.transportBitCycleDemand();
+  }
+  std::uint64_t worstRouteArrivalDelayQuanta() const {
+    return worstRouteArrivalDelayQuanta_;
+  }
+  std::uint64_t totalRouteNegativeSlackQuanta() const {
+    return totalRouteNegativeSlackQuanta_;
   }
   std::uint64_t totalSelectedTraversalClaim() const {
     return routeResources_.totalSelectedTraversalClaim();
@@ -300,12 +357,15 @@ private:
       std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryBindings,
       std::vector<PnrIndex> memoryUseDispatches,
       std::vector<PnrIndex> memoryExposureSelections,
+      std::vector<PnrIndex> registerFifoTransfers,
       std::vector<RouteTreeStateHandle> routeTrees,
       HandshakeCandidateStateHandle handshake,
       SpatialRouteResourceState routeResources,
       SpatialTagAssignmentState tagAssignments,
       std::uint64_t unroutedObligationCount,
-      std::uint64_t atomicCapacityOveruse, std::uint64_t staticSchedulePressure)
+      std::uint64_t atomicCapacityOveruse, std::uint64_t staticSchedulePressure,
+      std::uint64_t worstRouteArrivalDelayQuanta,
+      std::uint64_t totalRouteNegativeSlackQuanta)
       : problem_(std::move(problem)),
         computeBindings_(std::move(computeBindings)),
         memoryBindings_(std::move(memoryBindings)),
@@ -316,12 +376,15 @@ private:
         logicalMemoryBindings_(std::move(logicalMemoryBindings)),
         memoryUseDispatches_(std::move(memoryUseDispatches)),
         memoryExposureSelections_(std::move(memoryExposureSelections)),
+        registerFifoTransfers_(std::move(registerFifoTransfers)),
         routeTrees_(std::move(routeTrees)), handshake_(std::move(handshake)),
         routeResources_(std::move(routeResources)),
         tagAssignments_(std::move(tagAssignments)),
         unroutedObligationCount_(unroutedObligationCount),
         atomicCapacityOveruse_(atomicCapacityOveruse),
-        staticSchedulePressure_(staticSchedulePressure) {}
+        staticSchedulePressure_(staticSchedulePressure),
+        worstRouteArrivalDelayQuanta_(worstRouteArrivalDelayQuanta),
+        totalRouteNegativeSlackQuanta_(totalRouteNegativeSlackQuanta) {}
 
   llvm::Error validateComputeBinding(PnrIndex realization) const;
   llvm::Error validateMemoryBinding(PnrIndex realization) const;
@@ -338,6 +401,8 @@ private:
   memoryUseDispatchSelectionSupported(PnrIndex use, PnrIndex selection) const;
   llvm::Error validateMemoryUseDispatch(PnrIndex use) const;
   llvm::Error validateMemoryExposureSelection(PnrIndex exposure) const;
+  llvm::Error validateRegisterFifoTransfer(PnrIndex logicalNet) const;
+  llvm::Error verifyRegisterFifoTransfers() const;
   llvm::Error verifyMemorySelections() const;
   llvm::Error rebuildMemoryServiceUsage();
   llvm::Error changeMemoryServiceUsage(PnrIndex use, PnrIndex oldOption,
@@ -360,7 +425,7 @@ private:
                                                PnrIndex newCount);
   llvm::Error replaceResourceTimeEnvelope(std::optional<PnrIndex> oldEnvelope,
                                           std::optional<PnrIndex> newEnvelope);
-  void applyResourceTimeEnvelopeDelta(PnrIndex envelope, bool add) noexcept;
+  llvm::Error applyResourceTimeEnvelopeDelta(PnrIndex envelope, bool add);
   llvm::Expected<PnrIndex>
   memoryServiceResourceTimeEnvelope(PnrIndex group, PnrIndex pattern) const;
   PnrIndex terminalEndpoint(FrozenSpatialTerminalBinding binding) const;
@@ -369,6 +434,8 @@ private:
   llvm::Expected<SpatialCandidateRouteProjection> projectVerifiedRoutes(
       llvm::ArrayRef<const RouteTreeState *> routeTrees,
       SpatialTagAssignmentSummary *tagSummary = nullptr) const;
+  llvm::Expected<SpatialTagAssignmentSummary>
+  summarizeCurrentTagAssignments() const;
 
   FrozenSpatialPnrProblemHandle problem_;
   std::vector<SpatialComputeBindingSelection> computeBindings_;
@@ -385,7 +452,10 @@ private:
   std::vector<PnrIndex> resourceTimeEnvelopeRefcounts_;
   std::vector<std::uint64_t> activeResourceTimeEnvelopeBits_;
   PnrIndex activeResourceTimeEnvelopeCount_ = 0;
+  std::uint64_t resourceReleaseLatencyCycles_ = 0;
+  std::uint64_t resourceMinimumInitiationIntervalCycles_ = 1;
   std::vector<PnrIndex> memoryExposureSelections_;
+  std::vector<PnrIndex> registerFifoTransfers_;
   llvm::DenseMap<std::pair<PnrIndex, PnrIndex>, PnrIndex>
       memoryExposureProviderRefcounts_;
   std::vector<PnrIndex> memoryExposureProviderBindingCounts_;
@@ -396,6 +466,9 @@ private:
   std::uint64_t unroutedObligationCount_ = 0;
   std::uint64_t atomicCapacityOveruse_ = 0;
   std::uint64_t staticSchedulePressure_ = 0;
+  std::uint64_t worstRouteArrivalDelayQuanta_ = 0;
+  std::uint64_t totalRouteNegativeSlackQuanta_ = 0;
+  SpatialRecurrenceTimingProjection recurrenceTiming_;
   SpatialMoveTransaction *activeTransaction_ = nullptr;
 
   friend class SpatialActionDomainScratch;
@@ -423,6 +496,8 @@ public:
   llvm::Error setMemoryUseDispatch(PnrIndex use, PnrIndex dispatchOption);
   llvm::Error setMemoryExposureSelection(PnrIndex exposure,
                                          PnrIndex exposureOption);
+  llvm::Error setRegisterFifoTransfer(PnrIndex logicalNet,
+                                      std::optional<PnrIndex> option);
 
   llvm::Error bindRouteSource(PnrIndex logicalNet, PnrIndex endpoint);
   llvm::Error bindRouteSink(PnrIndex logicalNet, PnrIndex sinkObligation,
@@ -441,6 +516,10 @@ public:
   llvm::Expected<bool> close();
   llvm::ArrayRef<PnrIndex> cycleWitness() const;
   llvm::ArrayRef<PnrIndex> touchedRouteTraversals() const;
+  llvm::ArrayRef<PnrIndex> touchedRouteLogicalNets() const;
+  llvm::Expected<SpatialTagAssignmentSummary>
+  summarizeCurrentTagAssignments() const;
+  bool hasRouteTreeChange() const;
   bool hasSemanticChange() const;
   llvm::Error commit();
   void rollback() noexcept;
@@ -453,6 +532,9 @@ private:
   projectCurrentRoutesImpl(SpatialTagAssignmentSummary *tagSummary) const;
   llvm::Error ensureCollecting() const;
   llvm::Expected<RouteTreeTransaction *> routeTransaction(PnrIndex logicalNet);
+  llvm::Error captureSwitchHandshakeBaseline();
+  void rebuildRouteViews();
+  void rebuildTagValueViews();
   void recordCompute(PnrIndex realization);
   void recordMemory(PnrIndex realization);
   void recordPort(PnrIndex demand);
@@ -461,6 +543,7 @@ private:
   void recordLogicalMemory(PnrIndex binding);
   void recordMemoryDispatch(PnrIndex use);
   void recordMemoryExposure(PnrIndex exposure);
+  void recordRegisterFifoTransfer(PnrIndex logicalNet);
   void markCompute(PnrIndex realization);
   void markMemory(PnrIndex realization);
   void markPort(PnrIndex demand);
@@ -476,6 +559,12 @@ private:
                               llvm::ArrayRef<PnrIndex> newFragments);
   llvm::Error changeTraversal(std::optional<PnrIndex> oldTraversal,
                               std::optional<PnrIndex> newTraversal);
+  llvm::Error
+  changeRegisterFifoTransferResources(PnrIndex logicalNet,
+                                      std::optional<PnrIndex> oldOption,
+                                      std::optional<PnrIndex> newOption);
+  llvm::Error recordTraversalSelectionDelta(PnrIndex traversal,
+                                            PnrIndex removed, PnrIndex added);
   llvm::Error collectRouteTraversalDeltas();
   void rollbackAppliedRouteResources() noexcept;
   void acceptAppliedRouteResources() noexcept;
@@ -492,6 +581,12 @@ private:
   std::uint64_t initialUnroutedObligationCount_ = 0;
   std::uint64_t initialAtomicCapacityOveruse_ = 0;
   std::uint64_t initialStaticSchedulePressure_ = 0;
+  std::uint64_t initialWorstRouteArrivalDelayQuanta_ = 0;
+  std::uint64_t initialTotalRouteNegativeSlackQuanta_ = 0;
+  SpatialRecurrenceTimingProjection initialRecurrenceTiming_;
+  bool proposedPhysicalTimingValid_ = false;
+  std::uint64_t proposedWorstRouteArrivalDelayQuanta_ = 0;
+  std::uint64_t proposedTotalRouteNegativeSlackQuanta_ = 0;
 
   friend class SpatialCandidateState;
   friend class SpatialCandidateScratch;

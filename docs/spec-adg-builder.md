@@ -534,14 +534,15 @@ ImplementationFamilyId, memory form, transport resource, and external binding.
 A missing provider is typed `Unsupported`; it neither invalidates nor changes
 the already finalized Fabric.
 
-The initial general-purpose family has three closed authoring presets:
+The initial general-purpose template has three closed authoring presets:
 
 ```text
 BuiltinTargetPreset = Small | Default | Large
 ```
 
-The `Small`, `Default`, and `Large` builtin descriptors use schema version
-`4.1`. Their prior recipes are not retained as compatibility expansions.
+Every preset resolves to the single template identity
+`loom.adg.builtin.general_purpose` at schema version `5.0`. Their prior recipes
+are not retained as compatibility expansions.
 Version 3 replaced runtime tag-token gateway inputs with Mapping-configured tag
 writers, derived the minimum positive tag width from resident route capacity,
 and placed non-bypassable elastic storage in both cross-schedule directions.
@@ -559,6 +560,9 @@ catalog, so application DataLayout-derived 32- and 64-bit address-space-zero
 pointer values cross root-thread boundaries without treating pointer types as
 integers. This closes System transfer for every builtin-computable payload
 shape without enumerating shapes or treating equal widths as equal types.
+Version 5 removes preset names from the template identity and generated Fabric
+labels. A preset now supplies only a default `BuiltinTargetScale`; the complete
+resolved scale is the sole builtin sizing input to the shared recipe.
 
 The public builtin boundary is:
 
@@ -569,17 +573,15 @@ parseBuiltinTargetPreset(StringRef)
   -> Expected<BuiltinTargetPreset>
 expandBuiltinSpatialCore(DesignBuilder, BuiltinTargetPreset)
   -> Expected<BuiltinSpatialCoreExpansion>
-expandBuiltinSpatialCore(DesignBuilder, BuiltinTargetPreset,
-                         BuiltinTargetScale)
+expandBuiltinSpatialCore(DesignBuilder, BuiltinTargetScale)
   -> Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSystem(DesignBuilder, BuiltinTargetPreset, FinalizedFabricRoot)
   -> Expected<SystemBuilder>
-expandBuiltinSystem(DesignBuilder, BuiltinTargetPreset, BuiltinTargetScale,
-                    FinalizedFabricRoot)
+expandBuiltinSystem(DesignBuilder, BuiltinTargetScale, FinalizedFabricRoot)
   -> Expected<SystemBuilder>
 buildBuiltinTarget(ArtifactStore, BuiltinTargetPreset)
   -> Expected<FinalizedFabricDesign>
-buildBuiltinTarget(ArtifactStore, BuiltinTargetPreset, BuiltinTargetScale)
+buildBuiltinTarget(ArtifactStore, BuiltinTargetScale)
   -> Expected<FinalizedFabricDesign>
 buildBuiltinTarget(ArtifactStore, StringRef templateIdentity,
                    uint32 schemaMajor, uint32 schemaMinor,
@@ -587,13 +589,14 @@ buildBuiltinTarget(ArtifactStore, StringRef templateIdentity,
   -> Expected<FinalizedFabricDesign>
 ```
 
-The parameterized expansion calls are the resolved authoring boundary. The
-preset-only calls mechanically supply the descriptor's default scale. The
-template identity and version select the topology recipe while the complete
-typed scale controls every resource multiplicity and capacity; a resolved
-scale is never discarded in favor of preset defaults. The identity/version
-overload is the consumer boundary for ResolvedConfig: it requires an exact
-registered descriptor and then applies the supplied scale. SpatialCore
+The scale-parameterized expansion calls are the resolved authoring boundary.
+The preset-only calls mechanically supply the selected default scale. The
+single template identity and version select the topology recipe while the
+complete typed scale controls every resource multiplicity and capacity; a
+resolved scale is never discarded in favor of preset defaults. The
+identity/version overload is the consumer boundary for ResolvedConfig: it
+requires the exact registered template and then applies the supplied scale.
+SpatialCore
 expansion returns its open typed root and default result sequence. The caller
 may add ordinary resources and close it with that or a replacement result
 sequence. After that Module is independently finalized and published, System
@@ -608,14 +611,14 @@ ArtifactStore. The function uses only the same public typed Builder operations
 available to external hardware authors.
 
 `BuiltinTargetDescriptor` separately carries the user-facing preset spelling,
-the stable template identity `loom.adg.builtin.{small,default,large}`, schema
-major/minor, and the closed typed scale parameters below. The spelling is not
+the shared stable template identity `loom.adg.builtin.general_purpose`, schema
+major/minor, and the preset's closed default scale below. The spelling is not
 an alias for the template identity.
 
 The enum is accepted only at authoring boundaries. Resolution replaces it
 with the exact template identity, version, and fully expanded typed parameters.
-The preset spelling is provenance; it is not a hardware fact or a substitute
-for the finalized Fabric identity.
+The preset spelling is invocation provenance; it is not a hardware fact, a
+recipe selector, or a substitute for the finalized Fabric identity.
 
 All three presets share one general-purpose capability set. They differ in
 resource multiplicity, resident capacity, buffering, and topology scale, not

@@ -13,6 +13,7 @@
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
@@ -48,7 +49,8 @@ std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
 }
 
 llvm::Error registerMappingGenerators() {
-  if (llvm::Error error = registerApplicationGraphTechMappingCandidateGenerator())
+  if (llvm::Error error =
+          registerApplicationGraphTechMappingCandidateGenerator())
     return error;
   if (llvm::Error error = registerRootCompleteSpatialPnrCandidateGenerator())
     return error;
@@ -120,10 +122,10 @@ scopeRoots(const JointSoftwareScope &scope, const ArtifactStore &store) {
   return roots;
 }
 
-llvm::Expected<ArtifactRootReference> publishScopeConstraints(
-    const JointSoftwareScope &scope,
-    const ArtifactRootReference &systemReference,
-    const ArtifactStore &store) {
+llvm::Expected<ArtifactRootReference>
+publishScopeConstraints(const JointSoftwareScope &scope,
+                        const ArtifactRootReference &systemReference,
+                        const ArtifactStore &store) {
   auto dataflowArtifact =
       dataflow::importCanonicalDataflow(scope.dataflow, store);
   if (!dataflowArtifact)
@@ -131,8 +133,7 @@ llvm::Expected<ArtifactRootReference> publishScopeConstraints(
   auto dataflow = dataflowArtifact->view();
   if (!dataflow)
     return dataflow.takeError();
-  auto systemArtifact =
-      fabric::importEntireFabricRoot(systemReference, store);
+  auto systemArtifact = fabric::importEntireFabricRoot(systemReference, store);
   if (!systemArtifact)
     return systemArtifact.takeError();
   auto system = fabric::requireSystemRoot(systemArtifact->view());
@@ -195,7 +196,9 @@ llvm::Expected<std::size_t> findSystem(llvm::ArrayRef<ImportedSystem> systems,
 } // namespace
 
 llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
-    JointDesignInputs inputs, const JointDesignPolicy &policy,
+    JointDesignInputs inputs,
+    llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
+    const JointDesignPolicy &policy,
     const ResolvedConfig &baseConfig, const ArtifactStore &artifactStore) {
   if (!baseConfig.dse.planNodes.empty())
     return invalid("base ResolvedConfig already owns a DSE invocation plan");
@@ -215,6 +218,17 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
   if (!systemConfig)
     return systemConfig.takeError();
 
+  std::map<ArtifactIdentity::Storage, ArtifactRootReference> timingByModule;
+  for (const ArtifactRootReference &profile : physicalTimingProfiles) {
+    auto owner = fabric::resolveFabricPhysicalTimingProfileOwner(
+        profile, artifactStore);
+    if (!owner)
+      return owner.takeError();
+    if (!timingByModule.emplace(owner->bytes(), profile).second)
+      return invalid(
+          "multiple physical timing profiles target the same Module");
+  }
+
   ResolvedConfig planConfig = baseConfig;
   planConfig.dse.planNodes.clear();
   std::vector<JointDesignPlanPair> outputs;
@@ -230,6 +244,23 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     if (modules->size() > policy.maximumSpatialMappingsPerPair())
       return invalid("SpatialMapping join bound is smaller than the System's "
                      "distinct target Module count");
+    std::vector<ArtifactRootReference> moduleTimingProfiles;
+    moduleTimingProfiles.reserve(modules->size());
+    for (const ArtifactRootReference &module : *modules) {
+      const auto profile = timingByModule.find(module.artifact.bytes());
+      if (profile == timingByModule.end())
+        return invalid(
+            "joint System target Module has no physical timing profile");
+      auto importedModule = fabric::importEntireFabricRoot(module,
+                                                           artifactStore);
+      if (!importedModule)
+        return importedModule.takeError();
+      auto importedProfile = fabric::importFabricPhysicalTimingProfile(
+          profile->second, importedModule->view(), artifactStore);
+      if (!importedProfile)
+        return importedProfile.takeError();
+      moduleTimingProfiles.push_back(profile->second);
+    }
     std::vector<PlanOutputRef> techOutputs;
     techOutputs.reserve(modules->size());
     for (const ArtifactRootReference &module : *modules) {
@@ -250,7 +281,8 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
       planConfig.dse.planNodes.push_back(GeneratePlanNodeDefinition{
           rootCompleteSpatialPnrCandidateGeneratorDescriptor().reference(),
           {techOutputs[moduleIndex],
-           ExactPlanArtifacts{{(*modules)[moduleIndex]}}},
+           ExactPlanArtifacts{{(*modules)[moduleIndex]}},
+           ExactPlanArtifacts{{moduleTimingProfiles[moduleIndex]}}},
           spatialConfig->canonicalViewBytes().vec(),
           spatialConfig->digest()});
       spatialOutputs.push_back(PlanOutputRef{spatialNode, 0});
@@ -262,7 +294,9 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
         {ExactPlanArtifacts{{pair.software.dataflow}},
          BoundedPlanOutputJoin{std::move(spatialOutputs),
                                policy.maximumSpatialMappingsPerPair()},
-         ExactPlanArtifacts{{pair.system}}, ExactPlanArtifacts{{*constraints}}},
+         ExactPlanArtifacts{{pair.system}},
+         ExactPlanArtifacts{moduleTimingProfiles},
+         ExactPlanArtifacts{{*constraints}}},
         systemConfig->canonicalViewBytes().vec(),
         systemConfig->digest()});
     outputs.push_back({pair, std::move(techOutputs), retainedSpatialOutputs,
@@ -295,7 +329,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignExploration(
       std::get_if<CompletedDsePlanExecution>(&*execution);
   if (!completed)
     completed =
-        &std::get<IncompleteDsePlanExecution>(*execution).completedPrefix();
+        &std::get<IncompleteDsePlanExecution>(*execution).availableExecution();
   std::vector<JointMappedPair> mappedPairs;
   for (const JointDesignPlanPair &pair : plan.pairOutputs) {
     if (!completed->hasOutput(pair.systemMappings))

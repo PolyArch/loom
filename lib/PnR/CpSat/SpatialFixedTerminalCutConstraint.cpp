@@ -29,6 +29,7 @@ loom::pnr::detail::addSpatialFixedTerminalCutEscapeConstraint(
     llvm::ArrayRef<IntVar> variables, llvm::ArrayRef<int> decisionVariables,
     llvm::ArrayRef<PnrIndex> legalValueOffsets,
     llvm::ArrayRef<std::int64_t> legalValues,
+    const SpatialLocalDispositionModel &localDispositions,
     const SpatialFixedTerminalCutCertificate &certificate,
     std::vector<std::uint8_t> &blockedTraversals_,
     std::vector<std::uint8_t> &reachableEndpoints_,
@@ -153,7 +154,7 @@ loom::pnr::detail::addSpatialFixedTerminalCutEscapeConstraint(
   };
 
   std::vector<BoolVar> escapedCuts;
-  escapedCuts.reserve(cuts.size());
+  escapedCuts.reserve(cuts.size() * 2);
   bool currentAssignmentEscapes = false;
   for (const SpatialFixedTerminalCutNet &cut : cuts) {
     if (cut.logicalNet >= transfers.logicalNets().size())
@@ -193,8 +194,13 @@ loom::pnr::detail::addSpatialFixedTerminalCutEscapeConstraint(
     if (currentSink >= reachableEndpoints_.size())
       return cutConstraintError("current sink endpoint is out of range");
     currentAssignmentEscapes |= reachableEndpoints_[currentSink] != 0;
+    currentAssignmentEscapes |= candidate.usesRegisterFifo(cut.logicalNet);
     const BoolVar escaped = model.NewBoolVar();
     escapedCuts.push_back(escaped);
+    const auto localSelected = localDispositions.localSelected(cut.logicalNet);
+    if (!localSelected)
+      return SpatialFixedTerminalCutConstraintResult{};
+    escapedCuts.push_back(*localSelected);
 
     if (**sourceLocal == **sinkLocal) {
       TableConstraint table = model.AddAllowedAssignments(

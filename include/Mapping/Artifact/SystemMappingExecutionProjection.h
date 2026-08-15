@@ -40,6 +40,14 @@ llvm::Expected<SystemExecutionContextProjection> projectSystemExecutionContexts(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const SystemExecutionBindingView &execution);
 
+/// Projects the canonical set of SpatialCore occurrences required by the
+/// instruction and spatial domains of one execution binding. The result is
+/// sorted by canonical Fabric identity and contains no duplicates.
+llvm::Expected<std::vector<fabric::SpatialCoreOccurrenceRef>>
+projectSystemExecutionSpatialCoreSubjects(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const SystemExecutionBindingView &execution);
+
 /// Selects the one Spatial execution context for a concrete graph-launch
 /// coordinate. Launch-parameter symbols remain existential: if legal symbol
 /// valuations select different contexts, the point is ambiguous.

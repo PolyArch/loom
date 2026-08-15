@@ -35,7 +35,7 @@ class FabricSystemRootView;
 namespace loom::hardware {
 
 inline constexpr ArtifactSchemaDescriptor hardwareImplementationSchema{
-    "loom.hardware_implementation", SchemaVersion{3, 0}};
+    "loom.hardware_implementation", SchemaVersion{4, 0}};
 
 struct ImplementationDataInterfaceRef final {
   fabric::FabricSpatialAttachmentEndpointRef endpoint;
@@ -285,8 +285,8 @@ struct MemoryMacroBinding final {
 
 struct HardwareImplementationDraft final {
   ArtifactRootReference fabric;
+  fabric::SpatialCoreOccurrenceRef subject;
   ArtifactRootReference configurationAbi;
-  std::vector<ArtifactRootReference> interconnectImplementations;
   ImplementationRepresentationRoot representationRoot;
   std::optional<ArtifactRootReference> implementationPlatform;
   std::vector<ImplementationInterface> interfaces;
@@ -303,11 +303,9 @@ class HardwareImplementationBuilder;
 class HardwareImplementation final {
 public:
   const ArtifactRootReference &fabric() const { return fabric_; }
+  fabric::SpatialCoreOccurrenceRef subject() const { return subject_; }
   const ArtifactRootReference &configurationAbi() const {
     return configurationAbi_;
-  }
-  llvm::ArrayRef<ArtifactRootReference> interconnectImplementations() const {
-    return interconnectImplementations_;
   }
   const ImplementationRepresentationRoot &representationRoot() const {
     return representationRoot_;
@@ -331,17 +329,16 @@ public:
 
 private:
   HardwareImplementation(
-      ArtifactRootReference fabric, ArtifactRootReference configurationAbi,
-      std::vector<ArtifactRootReference> interconnectImplementations,
+      ArtifactRootReference fabric, fabric::SpatialCoreOccurrenceRef subject,
+      ArtifactRootReference configurationAbi,
       ImplementationRepresentationRoot representationRoot,
       std::optional<ArtifactRootReference> implementationPlatform,
       std::vector<ImplementationInterface> interfaces,
       std::vector<ActivityPoint> activityPoints,
       std::vector<MemoryMacroBinding> memoryMacroBindings,
       std::vector<ExternalImplementationBinding> externalImplementationBindings)
-      : fabric_(std::move(fabric)),
+      : fabric_(std::move(fabric)), subject_(subject),
         configurationAbi_(std::move(configurationAbi)),
-        interconnectImplementations_(std::move(interconnectImplementations)),
         representationRoot_(std::move(representationRoot)),
         implementationPlatform_(std::move(implementationPlatform)),
         interfaces_(std::move(interfaces)),
@@ -351,8 +348,8 @@ private:
             std::move(externalImplementationBindings)) {}
 
   ArtifactRootReference fabric_;
+  fabric::SpatialCoreOccurrenceRef subject_;
   ArtifactRootReference configurationAbi_;
-  std::vector<ArtifactRootReference> interconnectImplementations_;
   ImplementationRepresentationRoot representationRoot_;
   std::optional<ArtifactRootReference> implementationPlatform_;
   std::vector<ImplementationInterface> interfaces_;

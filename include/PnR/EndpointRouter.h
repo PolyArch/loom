@@ -87,11 +87,21 @@ struct EndpointRouteSearchRequest final {
   /// one, and a target is eligible only after the predicate is satisfied when
   /// its entry is one.
   llvm::ArrayRef<std::uint8_t> targetRequiresTraversal;
-  /// Empty means every endpoint is admissible. Otherwise paths may neither
-  /// begin at nor enter endpoints named by this dense mask. The reverse
-  /// heuristic deliberately ignores the mask and remains an admissible lower
-  /// bound.
-  llvm::ArrayRef<std::uint64_t> forbiddenEndpointBits;
+  /// Optional exact physical timing product. When present, every timing field
+  /// is complete: arc delays and registered-destination flags are parallel to
+  /// `arcs`, source arrivals are parallel to `sourceEndpoints`, target-local
+  /// delays are parallel to `targetEndpoints`, and the required delay is
+  /// positive. Search then retains nondominated
+  /// `(endpoint, requirement, combinational arrival)` labels so negative slack
+  /// and registered boundaries participate in path selection rather than
+  /// being scored only after a route is chosen.
+  bool physicalTimingEnabled = false;
+  llvm::ArrayRef<std::uint64_t> arcTimingDelayQuanta;
+  llvm::ArrayRef<std::uint8_t> arcTimingRegisteredDestination;
+  llvm::ArrayRef<std::uint64_t> sourceTimingArrivalQuanta;
+  llvm::ArrayRef<std::uint64_t> targetTimingDelayQuanta;
+  std::uint64_t requiredTimingQuanta = 0;
+  std::uint64_t timingCriticality = 0;
 };
 
 struct EndpointRouteSearchResult final {
@@ -154,6 +164,8 @@ private:
   bool arcEligible(PnrIndex arc, const EndpointRouteSearchRequest &request,
                    bool enforceSourceReplication) const;
   llvm::Error buildHeuristic(const EndpointRouteSearchRequest &request);
+  llvm::Expected<EndpointRouteSearchResult>
+  searchTimingAware(const EndpointRouteSearchRequest &request);
   bool loadCachedHeuristic(const EndpointRouteSearchRequest &request);
   void storeCachedHeuristic(const EndpointRouteSearchRequest &request);
 
@@ -167,6 +179,16 @@ private:
     std::size_t targetEndpointCount = 0;
     std::size_t eligibleTraversalWordCount = 0;
     bool populated = false;
+  };
+
+  struct TimingSearchLabel final {
+    PnrIndex endpoint = 0;
+    PnrIndex predecessorLabel = 0;
+    PnrIndex predecessorArc = 0;
+    std::uint64_t arrivalQuanta = 0;
+    RouteCost distance = 0;
+    bool requirementMet = false;
+    bool active = false;
   };
 
   std::uint64_t
@@ -191,6 +213,9 @@ private:
   std::vector<PnrIndex> heap_;
   std::vector<PnrIndex> heapPositions_;
   std::vector<PnrIndex> path_;
+  std::vector<TimingSearchLabel> timingLabels_;
+  std::vector<std::vector<PnrIndex>> timingStateLabels_;
+  std::vector<PnrIndex> timingHeap_;
   std::vector<HeuristicCacheEntry> heuristicCache_;
   std::vector<PnrIndex> heuristicCacheTargets_;
   std::vector<std::uint64_t> heuristicCacheEligibility_;

@@ -182,6 +182,20 @@ struct UsePattern {
   llvm::ArrayRef<UsePatternValueSchema> sharingAssignments;
 };
 
+/// Intrinsic cycle timing mechanically derived from one validated atomic use.
+/// `releaseLatencyCycles` is the exact owner-declared acquire-to-release
+/// distance. `commitLatencyCycles`, when present, is the acquire-to-commit
+/// distance. `minimumInitiationIntervalCycles` is the smallest integer issue
+/// interval admitted by this use's own claim envelopes and canonical initial
+/// occupancy. It excludes contention with other requesters and dynamic
+/// backpressure; those remain execution state rather than hidden timing
+/// defaults.
+struct UsePatternTiming final {
+  std::uint32_t releaseLatencyCycles = 0;
+  std::optional<std::uint32_t> commitLatencyCycles;
+  std::uint32_t minimumInitiationIntervalCycles = 1;
+};
+
 class ResourceContract;
 
 /// Validated fixed-priority order. It has no cursor: the permutation alone
@@ -456,6 +470,7 @@ public:
     return static_cast<std::uint32_t>(patterns_.size());
   }
   UsePattern usePattern(UsePatternKey key) const;
+  UsePatternTiming usePatternTiming(UsePatternKey key) const;
   llvm::ArrayRef<ClaimKey> internalTransaction(UsePatternKey key,
                                                std::uint32_t transaction) const;
 

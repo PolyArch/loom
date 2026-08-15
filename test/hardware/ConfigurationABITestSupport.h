@@ -24,6 +24,10 @@ llvm::Expected<fabric::FinalizedFabricRoot>
 makeSingleSpatialCoreSystem(const fabric::FinalizedFabricRoot &module,
                             const ArtifactStore &store);
 
+llvm::Expected<fabric::SpatialCoreOccurrenceRef>
+requireSingleSpatialCoreOccurrence(
+    const fabric::FinalizedFabricRoot &system);
+
 llvm::Expected<fabric::FinalizedFabricRoot>
 makeSpatialCoreSystem(const fabric::FinalizedFabricRoot &module,
                       const ArtifactStore &store,

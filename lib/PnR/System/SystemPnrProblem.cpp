@@ -1,5 +1,6 @@
 #include "PnR/System/SystemPnrProblem.h"
 
+#include "../SpatialPhysicalTiming.h"
 #include "PnR/InitializerRelationSolver.h"
 #include "SystemCapacityProjection.h"
 #include "SystemPnrSearchDomainInternal.h"
@@ -919,6 +920,8 @@ struct Catalogs final {
 llvm::Expected<Catalogs>
 buildCatalogs(const ::dataflow::CanonicalDataflowProgramView &dataflow,
               const ::loom::fabric::FabricSystemRootView &system,
+              llvm::ArrayRef<::loom::fabric::FabricPhysicalTimingProfileView>
+                  physicalTimingProfiles,
               const SystemPnrSearchDomainView &searchDomain,
               const ArtifactStore &store) {
   Catalogs result;
@@ -964,6 +967,53 @@ buildCatalogs(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   if (!spatialCatalog)
     return spatialCatalog.takeError();
   result.spatialCatalog = std::move(*spatialCatalog);
+
+  std::map<ArtifactIdentity::Storage,
+           const ::loom::fabric::FabricPhysicalTimingProfileView *>
+      timingByModule;
+  std::map<ArtifactIdentity::Storage,
+           const ::loom::fabric::FabricArtifactView *>
+      attachedModules;
+  for (auto core : result.cores) {
+    const auto target = system.spatialCoreTarget(core);
+    if (!target ||
+        target->dependencyOrdinal >= system.artifact().importedModules().size())
+      return invalid("AccCore timing target does not resolve");
+    const auto &module =
+        system.artifact().importedModules()[target->dependencyOrdinal];
+    attachedModules.emplace(module.identity().bytes(), &module);
+  }
+  for (const auto &profile : physicalTimingProfiles) {
+    const auto module = attachedModules.find(profile.fabricIdentity().bytes());
+    if (module == attachedModules.end())
+      return invalid(
+          "physical timing profile targets a Module not attached to System");
+    if (!timingByModule.emplace(profile.fabricIdentity().bytes(), &profile)
+             .second)
+      return invalid(
+          "System invocation has multiple physical timing profiles for one "
+          "Module");
+    if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
+            *module->second, profile))
+      return std::move(error);
+  }
+  if (timingByModule.size() != attachedModules.size())
+    return invalid(
+        "System invocation omits an attached Module physical timing profile");
+  for (detail::SpatialCatalogEntry &entry : result.spatialCatalog) {
+    const auto timing =
+        timingByModule.find(entry.mapping.view().fabricIdentity().bytes());
+    if (timing == timingByModule.end())
+      return invalid("SpatialMapping has no exact physical timing profile");
+    auto projected = detail::projectSpatialMappingPhysicalTiming(
+        entry.mapping.view(), *timing->second);
+    if (!projected)
+      return projected.takeError();
+    entry.worstRouteArrivalDelayQuanta = projected->worstArrivalDelayQuanta;
+    entry.totalRouteNegativeSlackQuanta = projected->totalNegativeSlackQuanta;
+    entry.physicalTimingProfileDigest = timing->second->digest().bytes();
+    entry.physicalTimingProfileKind = timing->second->kind();
+  }
 
   std::vector<FrozenSystemSpatialTargetClass> mappingClasses;
   mappingClasses.reserve(result.mappings.size());
@@ -1143,6 +1193,39 @@ llvm::Expected<std::vector<std::uint64_t>> buildGraphChoiceSchedulePressures(
   }
   if (result.size() != decisions.graphChoices.size())
     return invalid("graph choice pressure projection is incomplete");
+  return result;
+}
+
+llvm::Expected<std::vector<SpatialRecurrenceTimingProjection>>
+buildGraphChoiceRecurrenceTimings(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const Catalogs &catalogs, const Decisions &decisions) {
+  if (catalogs.spatialCatalog.size() != catalogs.mappings.size())
+    return invalid("SpatialMapping recurrence catalog has the wrong width");
+  std::vector<SpatialRecurrenceTimingProjection> result;
+  result.reserve(decisions.graphChoices.size());
+  for (const FrozenSystemGraphExecutionDecision &decision : decisions.graphs) {
+    auto graph = dataflow.resolve(decision.launch);
+    if (!graph)
+      return graph.takeError();
+    for (PnrIndex mapping :
+         llvm::ArrayRef(decisions.graphChoices)
+             .slice(decision.choiceOffset, decision.choiceCount)) {
+      if (mapping >= catalogs.spatialCatalog.size())
+        return invalid("graph choice recurrence names a foreign mapping");
+      const detail::SpatialCatalogEntry &entry =
+          catalogs.spatialCatalog[mapping];
+      if (entry.covers.size() != entry.graphRecurrenceTimings.size())
+        return invalid("SpatialMapping graph recurrence has the wrong width");
+      const auto covered = llvm::find(entry.covers, *graph);
+      if (covered == entry.covers.end())
+        return invalid("graph choice recurrence is absent from its mapping");
+      result.push_back(entry.graphRecurrenceTimings[static_cast<std::size_t>(
+          covered - entry.covers.begin())]);
+    }
+  }
+  if (result.size() != decisions.graphChoices.size())
+    return invalid("graph choice recurrence projection is incomplete");
   return result;
 }
 
@@ -1590,156 +1673,40 @@ buildServiceContexts(const ::dataflow::CanonicalDataflowProgramView &dataflow,
 
 } // namespace
 
-FrozenSystemPnrProblem::FrozenSystemPnrProblem(
-    ArtifactIdentity dataflowIdentity, ArtifactIdentity fabricIdentity,
-    ArtifactIdentity constraintIdentity,
-    SystemPnrSearchDomainDigest searchDomainDigest,
-    ResolvedPnrConfigView config, MappingObjectiveProgram objectiveProgram,
-    std::vector<DeterministicWorkBudgetEntry> workBudget,
-    ::loom::mapping::MappingProgressClosure progressClosure,
-    std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
-    std::vector<FrozenSystemSpatialTargetClass> targetClasses,
-    std::vector<::loom::fabric::AccCoreOccurrenceRef> accCores,
-    std::vector<PnrIndex> accCoreTargetClasses,
-    std::vector<ArtifactRootReference> spatialMappings,
-    std::vector<PnrIndex> spatialMappingTargetClasses,
-    std::vector<FrozenSystemThreadExecutionDecision> threadDecisions,
-    std::vector<PnrIndex> threadChoiceCatalogOrdinals,
-    std::vector<FrozenSystemGraphExecutionDecision> graphDecisions,
-    std::vector<PnrIndex> graphChoiceCatalogOrdinals,
-    std::vector<std::uint64_t> graphChoiceStaticSchedulePressures,
-    std::vector<PnrIndex> graphThreadOverlapOffsets,
-    std::vector<PnrIndex> graphThreadOverlaps,
-    FrozenEndpointRoutingTopology routingTopology,
-    std::vector<FrozenSystemTransferTerminal> serviceTerminals,
-    std::vector<FrozenSystemTransferTerminalOwnerDomain>
-        serviceTerminalOwnerDomains,
-    std::vector<PnrIndex> serviceTerminalEndpointChoices,
-    std::vector<SystemSearchServiceDomain> serviceDomains,
-    std::vector<FrozenSystemServiceContext> serviceContexts,
-    std::vector<FrozenSystemMemoryServiceBinding> memoryServiceBindings,
-    std::vector<FrozenSystemInstructionUsePatternDomain>
-        instructionUsePatternDomains,
-    std::vector<FrozenSystemConsistencyUsePatternDomain>
-        consistencyUsePatternDomains,
-    std::vector<FrozenSystemServiceLeg> serviceLegs,
-    std::vector<PnrIndex> serviceLegSinkTerminals,
-    std::unique_ptr<detail::SystemCapacityModel> capacityModel,
-    std::unique_ptr<detail::InitializerRelationModel> initializerRelations)
-    : dataflowIdentity_(std::move(dataflowIdentity)),
-      fabricIdentity_(std::move(fabricIdentity)),
-      constraintIdentity_(std::move(constraintIdentity)),
-      searchDomainDigest_(std::move(searchDomainDigest)),
-      config_(std::move(config)),
-      objectiveProgram_(std::move(objectiveProgram)),
-      workBudget_(std::move(workBudget)), progressClosure_(progressClosure),
-      rootThreadLaunches_(std::move(rootThreadLaunches)),
-      targetClasses_(std::move(targetClasses)), accCores_(std::move(accCores)),
-      accCoreTargetClasses_(std::move(accCoreTargetClasses)),
-      spatialMappings_(std::move(spatialMappings)),
-      spatialMappingTargetClasses_(std::move(spatialMappingTargetClasses)),
-      threadDecisions_(std::move(threadDecisions)),
-      threadChoiceCatalogOrdinals_(std::move(threadChoiceCatalogOrdinals)),
-      graphDecisions_(std::move(graphDecisions)),
-      graphChoiceCatalogOrdinals_(std::move(graphChoiceCatalogOrdinals)),
-      graphChoiceStaticSchedulePressures_(
-          std::move(graphChoiceStaticSchedulePressures)),
-      graphThreadOverlapOffsets_(std::move(graphThreadOverlapOffsets)),
-      graphThreadOverlaps_(std::move(graphThreadOverlaps)),
-      routingTopology_(std::move(routingTopology)),
-      serviceTerminals_(std::move(serviceTerminals)),
-      serviceTerminalOwnerDomains_(std::move(serviceTerminalOwnerDomains)),
-      serviceTerminalEndpointChoices_(
-          std::move(serviceTerminalEndpointChoices)),
-      serviceDomains_(std::move(serviceDomains)),
-      serviceContexts_(std::move(serviceContexts)),
-      memoryServiceBindings_(std::move(memoryServiceBindings)),
-      instructionUsePatternDomains_(std::move(instructionUsePatternDomains)),
-      consistencyUsePatternDomains_(std::move(consistencyUsePatternDomains)),
-      serviceLegs_(std::move(serviceLegs)),
-      serviceLegSinkTerminals_(std::move(serviceLegSinkTerminals)),
-      capacityModel_(std::move(capacityModel)),
-      initializerRelations_(std::move(initializerRelations)) {}
-
-FrozenSystemPnrProblem::~FrozenSystemPnrProblem() = default;
-
-llvm::ArrayRef<PnrIndex>
-FrozenSystemPnrProblem::threadChoiceCatalogOrdinals(PnrIndex decision) const {
-  assert(decision < threadDecisions_.size());
-  const auto &record = threadDecisions_[decision];
-  return choiceSlice(threadChoiceCatalogOrdinals_, record.choiceOffset,
-                     record.choiceCount);
-}
-
-llvm::ArrayRef<PnrIndex>
-FrozenSystemPnrProblem::graphChoiceCatalogOrdinals(PnrIndex decision) const {
-  assert(decision < graphDecisions_.size());
-  const auto &record = graphDecisions_[decision];
-  return choiceSlice(graphChoiceCatalogOrdinals_, record.choiceOffset,
-                     record.choiceCount);
-}
-
-llvm::ArrayRef<std::uint64_t>
-FrozenSystemPnrProblem::graphChoiceStaticSchedulePressures(
-    PnrIndex decision) const {
-  assert(decision < graphDecisions_.size());
-  const auto &record = graphDecisions_[decision];
-  return llvm::ArrayRef(graphChoiceStaticSchedulePressures_)
-      .slice(record.choiceOffset, record.choiceCount);
-}
-
-llvm::ArrayRef<PnrIndex>
-FrozenSystemPnrProblem::graphThreadOverlaps(PnrIndex decision) const {
-  assert(decision < graphDecisions_.size());
-  assert(decision + 1 < graphThreadOverlapOffsets_.size());
-  const PnrIndex begin = graphThreadOverlapOffsets_[decision];
-  const PnrIndex end = graphThreadOverlapOffsets_[decision + 1];
-  assert(begin <= end && end <= graphThreadOverlaps_.size());
-  return llvm::ArrayRef(graphThreadOverlaps_).slice(begin, end - begin);
-}
-
-const detail::SystemCapacityModel &
-FrozenSystemPnrProblem::capacityModel() const {
-  return *capacityModel_;
-}
-
-llvm::ArrayRef<FrozenSystemTransferTerminalOwnerDomain>
-FrozenSystemPnrProblem::serviceTerminalOwnerDomains(PnrIndex terminal) const {
-  assert(terminal < serviceTerminals_.size());
-  const auto &record = serviceTerminals_[terminal];
-  return llvm::ArrayRef(serviceTerminalOwnerDomains_)
-      .slice(record.ownerDomainOffset, record.ownerDomainCount);
-}
-
-llvm::ArrayRef<PnrIndex>
-FrozenSystemPnrProblem::serviceTerminalOwnerEndpointChoices(
-    const FrozenSystemTransferTerminalOwnerDomain &domain) const {
-  return choiceSlice(serviceTerminalEndpointChoices_,
-                     domain.endpointChoiceOffset, domain.endpointChoiceCount);
-}
-
-llvm::ArrayRef<PnrIndex>
-FrozenSystemPnrProblem::serviceLegSinkTerminals(PnrIndex leg) const {
-  assert(leg < serviceLegs_.size());
-  const auto &record = serviceLegs_[leg];
-  return choiceSlice(serviceLegSinkTerminals_, record.sinkOffset,
-                     record.sinkCount);
-}
-
-PnrIndex FrozenSystemPnrProblem::accCoreTargetClass(PnrIndex core) const {
-  assert(core < accCoreTargetClasses_.size());
-  return accCoreTargetClasses_[core];
-}
-
-PnrIndex
-FrozenSystemPnrProblem::spatialMappingTargetClass(PnrIndex mapping) const {
-  assert(mapping < spatialMappingTargetClasses_.size());
-  return spatialMappingTargetClasses_[mapping];
+llvm::Expected<SpatialRecurrenceTimingProjection>
+loom::pnr::projectSystemRecurrenceTiming(
+    const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<PnrIndex> graphChoices) {
+  if (graphChoices.size() != problem.graphDecisions().size())
+    return invalid("System recurrence graph choice count is incomplete");
+  SpatialRecurrenceTimingProjection result;
+  for (PnrIndex decision = 0; decision < graphChoices.size(); ++decision) {
+    const auto domain = problem.graphChoiceRecurrenceTimings(decision);
+    if (graphChoices[decision] >= domain.size())
+      return invalid("System recurrence graph choice is out of range");
+    const SpatialRecurrenceTimingProjection &selected =
+        domain[graphChoices[decision]];
+    if (selected.kind ==
+        SpatialRecurrenceTimingProofKind::ProofNotEstablished) {
+      result.kind = SpatialRecurrenceTimingProofKind::ProofNotEstablished;
+      result.diagnostic = selected.diagnostic;
+      result.witnesses.clear();
+      return result;
+    }
+    result.recurrenceMinimumInitiationIntervalCycles =
+        std::max(result.recurrenceMinimumInitiationIntervalCycles,
+                 selected.recurrenceMinimumInitiationIntervalCycles);
+    result.witnesses.insert(result.witnesses.end(), selected.witnesses.begin(),
+                            selected.witnesses.end());
+  }
+  return result;
 }
 
 llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
+    llvm::ArrayRef<::loom::fabric::FabricPhysicalTimingProfileView>
+        physicalTimingProfiles,
     const SystemPnrSearchDomainView &searchDomain,
     const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
@@ -1751,7 +1718,8 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       config.selectedObjectiveCatalogs(), config.policy().objectiveSelection);
   if (!objectiveProgram)
     return objectiveProgram.takeError();
-  auto catalogs = buildCatalogs(dataflow, fabric, searchDomain, store);
+  auto catalogs = buildCatalogs(dataflow, fabric, physicalTimingProfiles,
+                                searchDomain, store);
   if (!catalogs)
     return catalogs.takeError();
   auto decisions = buildDecisions(searchDomain, *catalogs);
@@ -1761,19 +1729,24 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       buildGraphChoiceSchedulePressures(dataflow, *catalogs, *decisions);
   if (!graphChoiceSchedulePressures)
     return graphChoiceSchedulePressures.takeError();
+  auto graphChoiceRecurrenceTimings =
+      buildGraphChoiceRecurrenceTimings(dataflow, *catalogs, *decisions);
+  if (!graphChoiceRecurrenceTimings)
+    return graphChoiceRecurrenceTimings.takeError();
   std::vector<::dataflow::GraphRef> coveredGraphs;
-  std::set<std::uint64_t> coveredGraphEntities;
+  std::set<std::uint64_t> coveredGraphOrdinals;
+  coveredGraphs.reserve(decisions->graphs.size());
   for (const FrozenSystemGraphExecutionDecision &decision : decisions->graphs) {
     auto graph = dataflow.resolve(decision.launch);
     if (!graph)
       return graph.takeError();
-    if (coveredGraphEntities.insert(graph->entity.value()).second)
+    if (coveredGraphOrdinals.insert(graph->entity.value()).second)
       coveredGraphs.push_back(*graph);
   }
-  auto progress =
-      ::loom::mapping::deriveMappingProgressClosure(dataflow, coveredGraphs);
-  if (!progress)
-    return progress.takeError();
+  auto progressBasis = ::loom::mapping::deriveMappingDataflowProgressBasis(
+      dataflow, coveredGraphs);
+  if (!progressBasis)
+    return progressBasis.takeError();
   std::vector<PnrIndex> overlapOffsets;
   std::vector<PnrIndex> overlaps;
   auto relations =
@@ -1811,7 +1784,8 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       dataflow, fabric, catalogs->cores, catalogs->coreTargetClasses,
       catalogs->mappingTargetClasses, catalogs->spatialCatalog,
       decisions->graphs, *instructionUsePatterns, *memoryBindings,
-      consistencyUsePatterns, routing->topology);
+      consistencyUsePatterns, *serviceContexts, routing->legs,
+      routing->topology);
   if (!capacityModel)
     return capacityModel.takeError();
 
@@ -1819,20 +1793,50 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       searchDomain.serviceObligations().begin(),
       searchDomain.serviceObligations().end());
 
+  std::vector<std::uint64_t> spatialMappingWorstRouteArrivalDelayQuanta;
+  std::vector<std::uint64_t> spatialMappingTotalRouteNegativeSlackQuanta;
+  std::vector<ComponentViewDigest::Storage>
+      spatialMappingPhysicalTimingProfileDigests;
+  std::vector<::loom::fabric::FabricPhysicalTimingProfileKind>
+      spatialMappingPhysicalTimingProfileKinds;
+  spatialMappingWorstRouteArrivalDelayQuanta.reserve(
+      catalogs->spatialCatalog.size());
+  spatialMappingTotalRouteNegativeSlackQuanta.reserve(
+      catalogs->spatialCatalog.size());
+  spatialMappingPhysicalTimingProfileDigests.reserve(
+      catalogs->spatialCatalog.size());
+  spatialMappingPhysicalTimingProfileKinds.reserve(
+      catalogs->spatialCatalog.size());
+  for (const detail::SpatialCatalogEntry &entry : catalogs->spatialCatalog) {
+    spatialMappingWorstRouteArrivalDelayQuanta.push_back(
+        entry.worstRouteArrivalDelayQuanta);
+    spatialMappingTotalRouteNegativeSlackQuanta.push_back(
+        entry.totalRouteNegativeSlackQuanta);
+    spatialMappingPhysicalTimingProfileDigests.push_back(
+        entry.physicalTimingProfileDigest);
+    spatialMappingPhysicalTimingProfileKinds.push_back(
+        entry.physicalTimingProfileKind);
+  }
+
   return FrozenSystemPnrProblemHandle(new FrozenSystemPnrProblem(
       dataflow.identity(), fabric.artifact().identity(),
       constraints.view().identity(), searchDomain.digest(), config,
       std::move(*objectiveProgram), deriveDeterministicWorkBudgetView(config),
-      *progress,
+      *progressBasis,
       std::vector<::dataflow::RootThreadLaunchRef>(
           searchDomain.rootThreadLaunches().begin(),
           searchDomain.rootThreadLaunches().end()),
       std::move(catalogs->targetClasses), std::move(catalogs->cores),
       std::move(catalogs->coreTargetClasses), std::move(catalogs->mappings),
-      std::move(catalogs->mappingTargetClasses), std::move(decisions->threads),
-      std::move(decisions->threadChoices), std::move(decisions->graphs),
-      std::move(decisions->graphChoices),
-      std::move(*graphChoiceSchedulePressures), std::move(overlapOffsets),
+      std::move(catalogs->mappingTargetClasses),
+      std::move(spatialMappingWorstRouteArrivalDelayQuanta),
+      std::move(spatialMappingTotalRouteNegativeSlackQuanta),
+      std::move(spatialMappingPhysicalTimingProfileDigests),
+      std::move(spatialMappingPhysicalTimingProfileKinds),
+      std::move(decisions->threads), std::move(decisions->threadChoices),
+      std::move(decisions->graphs), std::move(decisions->graphChoices),
+      std::move(*graphChoiceSchedulePressures),
+      std::move(*graphChoiceRecurrenceTimings), std::move(overlapOffsets),
       std::move(overlaps), std::move(routing->topology),
       std::move(routing->terminals), std::move(routing->ownerDomains),
       std::move(routing->endpointChoices), std::move(serviceDomains),
@@ -1840,4 +1844,20 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       std::move(*instructionUsePatterns), std::move(consistencyUsePatterns),
       std::move(routing->legs), std::move(routing->legSinks),
       std::move(*capacityModel), std::move(*relations)));
+}
+
+llvm::Expected<FrozenSystemPnrProblemHandle>
+loom::pnr::freezeSystemPnrProblemWithNormalizedTiming(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SystemPnrSearchDomainView &searchDomain,
+    const ResolvedPnrConfigView &config,
+    const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
+    const ArtifactStore &store) {
+  auto profiles =
+      ::loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(fabric);
+  if (!profiles)
+    return profiles.takeError();
+  return freezeSystemPnrProblem(dataflow, fabric, *profiles, searchDomain,
+                                config, constraints, store);
 }

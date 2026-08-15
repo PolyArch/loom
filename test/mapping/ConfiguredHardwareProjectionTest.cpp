@@ -490,7 +490,7 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
   resolved.dse.spatialPnr.temporaryViolations.admitted = {
       loom::ResolvedPnrViolationKind::UnroutedObligation,
       loom::ResolvedPnrViolationKind::CapacityOveruse};
-  resolved.dse.spatialPnr.objectiveSelection = {0, 0, {}};
+  resolved.dse.spatialPnr.objectiveSelection = {0, 0};
   resolved.dse.techMapping.candidatePublicationLimit = 1;
   const auto techConfig =
       take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
@@ -519,9 +519,12 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
   search.exactRepair = {loom::ResolvedPnrExactRepairKind::Disabled, 0, 0};
   const auto pnrConfig =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
+  const auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fabric.view()));
   auto generatedSpatial = loom::pnr::generateSpatialMappings(
-      {dataflow, tech.view(), fabric.view(), pnrConfig, constraints.view(),
-       store});
+      {dataflow, tech.view(), fabric.view(), physicalTiming, pnrConfig,
+       constraints.view(), store});
   const auto *spatialCandidates =
       std::get_if<loom::pnr::GeneratedSpatialMappings>(&generatedSpatial);
   if (!spatialCandidates || spatialCandidates->candidates.size() != 1) {
@@ -531,6 +534,13 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
           if constexpr (std::is_same_v<Outcome,
                                        loom::pnr::GeneratedSpatialMappings>)
             return std::string("generated an unexpected candidate count");
+          else if constexpr (std::is_same_v<
+                                 Outcome,
+                                 loom::pnr::InterruptedSpatialPnrGeneration>)
+            return (llvm::Twine("interrupted at ") +
+                    loom::pnr::spatialPnrInterruptionStageSpelling(
+                        outcome.snapshot.stage))
+                .str();
           else
             return outcome.diagnostic;
         },
@@ -655,7 +665,7 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
   resolved.dse.systemPnr.temporaryViolations.admitted = {
       loom::ResolvedPnrViolationKind::UnroutedObligation,
       loom::ResolvedPnrViolationKind::CapacityOveruse};
-  resolved.dse.systemPnr.objectiveSelection = {0, 0, {}};
+  resolved.dse.systemPnr.objectiveSelection = {0, 0};
   auto &systemSearch = resolved.dse.systemPnr.search;
   systemSearch.initializer.seedAttemptCount = 1;
   systemSearch.routing.negotiationIterationLimit = 8;
@@ -683,9 +693,11 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
       dataflow, systemView, systemConfig, systemConstraints, partition,
       loom::pnr::SystemHierarchicalGraphSearchInput{{spatial.reference()}},
       store));
+  const auto systemPhysicalTiming = take(
+      loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(systemView));
   auto generatedSystem = loom::pnr::generateSystemMappings(
-      {dataflow, systemView, searchDomain, systemConfig, systemConstraints,
-       store});
+      {dataflow, systemView, systemPhysicalTiming, searchDomain, systemConfig,
+       systemConstraints, store});
   const auto *systemCandidates =
       std::get_if<loom::pnr::GeneratedSystemMappings>(&generatedSystem);
   if (!systemCandidates || systemCandidates->candidates.size() != 1) {
@@ -695,6 +707,13 @@ void exactVectorMappingDerivesConfigurationAndExecutes() {
           if constexpr (std::is_same_v<Outcome,
                                        loom::pnr::GeneratedSystemMappings>)
             return std::string("generated an unexpected candidate count");
+          else if constexpr (std::is_same_v<
+                                 Outcome,
+                                 loom::pnr::InterruptedSystemPnrGeneration>)
+            return (llvm::Twine("interrupted at ") +
+                    loom::pnr::systemPnrInterruptionStageSpelling(
+                        outcome.snapshot.stage))
+                .str();
           else
             return outcome.diagnostic;
         },

@@ -14,7 +14,8 @@ namespace loom::test {
 
 llvm::Error selectReachableGraphBoundaries(
     pnr::SpatialCandidateState &candidate, pnr::SpatialMoveTransaction &move,
-    llvm::ArrayRef<pnr::PnrIndex> selectedPortAttachments) {
+    llvm::ArrayRef<pnr::PnrIndex> selectedPortAttachments,
+    bool requireDistinctEndpoints) {
   const auto &problem = candidate.problem();
   const auto reachable = [&](pnr::PnrIndex source, pnr::PnrIndex destination) {
     const auto &routing = problem.routing();
@@ -52,10 +53,14 @@ llvm::Error selectReachableGraphBoundaries(
         }
         return problem.ports().attachmentOptions()[option].endpoint;
       };
+  std::vector<pnr::PnrIndex> selectedBoundaryEndpoints;
   for (auto [boundaryOrdinal, boundary] :
        llvm::enumerate(problem.ports().graphBoundaries())) {
     const auto netOrdinal = boundary.logicalNet;
     const auto &net = problem.transfers().logicalNets()[netOrdinal];
+    const bool ingressBoundary =
+        std::holds_alternative<dataflow::GraphIngressTokenRef>(
+            boundary.terminal);
     bool selected = false;
     for (pnr::PnrIndex option = boundary.attachmentOptionOffset;
          option !=
@@ -63,6 +68,11 @@ llvm::Error selectReachableGraphBoundaries(
          ++option) {
       const auto override =
           std::make_pair(static_cast<pnr::PnrIndex>(boundaryOrdinal), option);
+      const pnr::PnrIndex endpoint =
+          problem.ports().attachmentOptions()[option].endpoint;
+      if (requireDistinctEndpoints && ingressBoundary &&
+          llvm::is_contained(selectedBoundaryEndpoints, endpoint))
+        continue;
       const auto source = selectedEndpoint(
           problem.transfers().logicalNetSourceBindings()[netOrdinal], override);
       bool connects = true;
@@ -74,13 +84,18 @@ llvm::Error selectReachableGraphBoundaries(
       if (llvm::Error error = move.setGraphBoundaryAttachment(
               static_cast<pnr::PnrIndex>(boundaryOrdinal), option))
         return error;
+      if (ingressBoundary)
+        selectedBoundaryEndpoints.push_back(endpoint);
       selected = true;
       break;
     }
     if (!selected)
       return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                     "graph boundary has no reachable "
-                                     "attachment");
+                                     "graph boundary %zu has no reachable%s "
+                                     "attachment",
+                                     static_cast<std::size_t>(boundaryOrdinal),
+                                     requireDistinctEndpoints ? " distinct"
+                                                              : "");
   }
   return llvm::Error::success();
 }

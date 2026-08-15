@@ -10,6 +10,7 @@ add_mlir_library(LoomCommon
   CanonicalRelation.cpp
   ComponentViewDigest.cpp
   DiagnosticVerbosity.cpp
+  ExecutionControl.cpp
   ExternalFileFingerprint.cpp
   IndexWidth.cpp
   MappingDebugLog.cpp

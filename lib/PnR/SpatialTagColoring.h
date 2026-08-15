@@ -33,6 +33,8 @@ struct SpatialTagColoringProblemView final {
   llvm::ArrayRef<PnrIndex> vertexIntervalOffsets;
   llvm::ArrayRef<SpatialTagColoringInterval> intervals;
   PnrIndex domainCount = 0;
+  llvm::ArrayRef<PnrIndex> vertexConflictOffsets;
+  llvm::ArrayRef<PnrIndex> vertexConflicts;
 };
 
 struct SpatialTagColoringResult final {

@@ -16,7 +16,10 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <array>
 #include <cstdlib>
+#include <initializer_list>
+#include <optional>
 #include <system_error>
 #include <utility>
 
@@ -129,6 +132,53 @@ module attributes {
   return take(dataflow::finalizeCanonicalDataflow(module.get()));
 }
 
+dataflow::CanonicalDataflowArtifact memoryChainProgram() {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {
+  dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>
+} {
+  dataflow.graph private @load_then_store(
+      %start: none, %load_index: index, %store_index: index,
+      %load_memory: memref<4xi32>, %store_memory: memref<4xi32>) -> ()
+      attributes {
+        input_segments = array<i32: 2, 0, 2>,
+        result_segments = array<i32: 0, 0, 0>
+      } {
+    %value, %load_done =
+        dataflow.load %load_memory[%load_index] %start : memref<4xi32>
+    %store_done = dataflow.store
+        %store_memory[%store_index] %value %load_done : memref<4xi32>
+    dataflow.graph.return values() streams() memories()
+        complete(%store_done : none)
+  }
+  dataflow.thread private @memory_worker
+      domain(#dataflow.thread_domain<dense>)(
+          %load_index: index, %store_index: index,
+          %load_memory: memref<4xi32>, %store_memory: memref<4xi32>)
+      ctrl (%ctrl: none) {
+    %done = dataflow.graph.launch @load_then_store deps(%ctrl)
+        values(%load_index, %store_index) stream_inputs()
+        memories(%load_memory, %store_memory) stream_outputs()
+        : (none, index, index, memref<4xi32>, memref<4xi32>) -> none
+    dataflow.thread.yield %done : none
+  }
+  func.func private @memory_host(
+      %load_index: index, %store_index: index,
+      %load_memory: memref<4xi32>, %store_memory: memref<4xi32>) {
+    %token = dataflow.thread.launch @memory_worker(
+        %load_index, %store_index, %load_memory, %store_memory)
+        : (index, index, memref<4xi32>, memref<4xi32>)
+          -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context());
+  if (!module)
+    fail("failed to parse internal-memory-chain fixture");
+  return take(dataflow::finalizeCanonicalDataflow(module.get()));
+}
+
 dataflow::RootedGraphLaunchRef
 onlyLaunch(const dataflow::CanonicalDataflowProgramView &view) {
   require(view.rootThreadLaunches().size() == 1 &&
@@ -185,6 +235,29 @@ void appendTransfer(CgraFrozenExecutionPlan &plan,
       {std::move(producer), graph, sink, 1});
 }
 
+void selectExternalMemoryRoles(CgraMemoryActorPlan &plan,
+                               mlir::Operation *operation) {
+  constexpr std::size_t roleCount =
+      static_cast<std::size_t>(
+          dataflow::semantics::ServiceValueRole::Completion) +
+      1;
+  auto service =
+      take(dataflow::semantics::CanonicalService::forActor(operation));
+  plan.roleSources.resize(roleCount);
+  plan.roleDestinations.resize(roleCount);
+  for (auto [ordinal, argument] : llvm::enumerate(service.arguments()))
+    plan.roleSources[static_cast<std::size_t>(argument.role)] =
+        loom::fabric::FabricMemoryHandshakeExternalRoleSource{
+            static_cast<loom::fabric::FabricOrdinal>(ordinal)};
+  for (auto [ordinal, result] : llvm::enumerate(service.results())) {
+    loom::fabric::FabricMemoryHandshakeRoleDestination destination;
+    destination.externalEndpoint =
+        static_cast<loom::fabric::FabricOrdinal>(ordinal);
+    plan.roleDestinations[static_cast<std::size_t>(result.role)] =
+        std::move(destination);
+  }
+}
+
 void graphActivationCoordinatesComputeAndTransport() {
   auto artifact = program();
   auto view = take(artifact.view());
@@ -227,7 +300,9 @@ void graphActivationCoordinatesComputeAndTransport() {
          {},
          {},
          transitionOffset,
-         static_cast<std::uint32_t>(semantic.handshakeCases.size())});
+         static_cast<std::uint32_t>(semantic.handshakeCases.size()),
+         std::nullopt,
+         0});
   }
 
   const std::uint64_t producedAction = plan.physicalUseTimings.size();
@@ -371,7 +446,9 @@ void graphActivationExecutesSelectedLocalMemory() {
          {},
          {},
          transitionOffset,
-         static_cast<std::uint32_t>(semantic.handshakeCases.size())});
+         static_cast<std::uint32_t>(semantic.handshakeCases.size()),
+         std::nullopt,
+         0});
   }
 
   const std::uint64_t operationAction = plan.physicalUseTimings.size();
@@ -404,7 +481,8 @@ void graphActivationExecutesSelectedLocalMemory() {
       {load->ref, load->graph, occurrence,
        loom::mapping::SpatialMemoryOperationPlacementView(port),
        loom::fabric::FabricMemoryCapabilityAlternativeRef{port, 0},
-       operationAction, 0, 1, 0, 1, 0, 1});
+       operationAction, 0, 1, 0, 1, 0, 1, {}, {}});
+  selectExternalMemoryRoles(plan.memory.actors.back(), load->op);
 
   appendTransfer(
       plan,
@@ -505,10 +583,264 @@ void graphActivationExecutesSelectedLocalMemory() {
           "memory graph produced the wrong loaded value");
 }
 
+void graphActivationExecutesExactMemoryInternalConnections() {
+  auto artifact = memoryChainProgram();
+  auto view = take(artifact.view());
+  const dataflow::RootedGraphLaunchRef launch = onlyLaunch(view);
+  const dataflow::CanonicalActorView *load = nullptr;
+  const dataflow::CanonicalActorView *store = nullptr;
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
+    const auto schema = dataflow::operationSchemaOf(actor.op);
+    if (schema == dataflow::OperationSchemaId::DataflowLoad)
+      load = &actor;
+    if (schema == dataflow::OperationSchemaId::DataflowStore)
+      store = &actor;
+  }
+  require(load && store, "internal-memory fixture lacks load or store");
+  auto graphView = take(view.resolve(load->graph));
+  auto graph = mlir::cast<dataflow::GraphOp>(graphView.op);
+  GraphPreparationResult preparedResult =
+      take(prepareGraphExecution(artifact.module(), graph));
+  auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
+  require(prepared, "internal-memory graph preparation failed");
+
+  CgraFrozenExecutionPlan plan;
+  std::vector<CgraResourcePatternSelection> selections;
+  const fabric::ResourceContract contract = resourceContract();
+  for (std::uint64_t action = 0; action != 4; ++action) {
+    plan.physicalUseClients.push_back(
+        CgraPhysicalUseClientKind::MemoryTransition);
+    plan.physicalUseTimings.push_back(
+        {action, 0, std::nullopt, 1, 0, 1, std::nullopt});
+    selections.push_back({action, fabric::UsePatternKey(0)});
+  }
+
+  const loom::fabric::FabricMemoryOccurrenceRef occurrence{};
+  const loom::fabric::LocalMemoryServiceRef service(
+      loom::fabric::FabricMemoryServiceRef::local(occurrence));
+  plan.memory.rootedUses.push_back(
+      {launch, 0, CgraMemoryServiceTarget(service), 1});
+  plan.memory.rootedUses.push_back(
+      {launch, 1, CgraMemoryServiceTarget(service), 3});
+  plan.memory.childTransactions.push_back(
+      {fabric::MemoryChildActivationKind::Always, std::nullopt,
+       fabric::MemoryChildProjectionKind::ParentRequest, std::nullopt});
+  plan.memory.childTransactions.push_back(
+      {fabric::MemoryChildActivationKind::Always, std::nullopt,
+       fabric::MemoryChildProjectionKind::ParentRequest, std::nullopt});
+  plan.memory.resultAssemblies.push_back(
+      {dataflow::semantics::ServiceValueRole::Data,
+       fabric::MemoryResultAssemblyStrategy::PassThroughParent, std::nullopt,
+       std::nullopt});
+  const loom::fabric::FabricMemoryOperationPortRef loadPort{occurrence, 0};
+  const loom::fabric::FabricMemoryOperationPortRef storePort{occurrence, 1};
+  plan.memory.actors.push_back(
+      {load->ref, load->graph, occurrence,
+       loom::mapping::SpatialMemoryOperationPlacementView(loadPort),
+       loom::fabric::FabricMemoryCapabilityAlternativeRef{loadPort, 0},
+       0, 0, 1, 0, 1, 0, 1, {}, {}});
+  plan.memory.actors.push_back(
+      {store->ref, store->graph, occurrence,
+       loom::mapping::SpatialMemoryOperationPlacementView(storePort),
+       loom::fabric::FabricMemoryCapabilityAlternativeRef{storePort, 0},
+       2, 1, 1, 1, 1, 1, 0, {}, {}});
+  selectExternalMemoryRoles(plan.memory.actors[0], load->op);
+  selectExternalMemoryRoles(plan.memory.actors[1], store->op);
+
+  auto loadService =
+      take(dataflow::semantics::CanonicalService::forActor(load->op));
+  auto storeService =
+      take(dataflow::semantics::CanonicalService::forActor(store->op));
+  loom::fabric::FabricOrdinal nextConnection = 0;
+  for (auto [resultOrdinal, result] :
+       llvm::enumerate(loadService.results())) {
+    auto resultValue = loadService.resultValue(load->op, resultOrdinal);
+    if (!resultValue)
+      fail(llvm::toString(resultValue.takeError()));
+    const mlir::OpOperand *storeUse = nullptr;
+    for (const mlir::OpOperand &use : resultValue->getUses())
+      if (use.getOwner() == store->op)
+        storeUse = &use;
+    require(storeUse, "load result has no selected store consumer");
+    std::optional<dataflow::semantics::ServiceValueRole> storeRole;
+    for (auto [argumentOrdinal, argument] :
+         llvm::enumerate(storeService.arguments())) {
+      auto value = storeService.argumentValue(store->op, argumentOrdinal);
+      if (!value)
+        fail(llvm::toString(value.takeError()));
+      if (*value == storeUse)
+        storeRole = argument.role;
+    }
+    require(storeRole.has_value(),
+            "store consumer has no canonical service role");
+    const std::size_t resultRole = static_cast<std::size_t>(result.role);
+    const std::size_t argumentRole = static_cast<std::size_t>(*storeRole);
+    auto &destination =
+        *plan.memory.actors[0].roleDestinations[resultRole];
+    destination.externalEndpoint.reset();
+    destination.internalConnections = {nextConnection};
+    plan.memory.actors[1].roleSources[argumentRole] =
+        loom::fabric::FabricMemoryHandshakeInternalRoleSource{
+            nextConnection};
+    plan.memory.internalConnections.push_back(
+         {occurrence, nextConnection,
+         {load->ref, static_cast<dataflow::StructuralOrdinal>(
+                         resultValue->getResultNumber())},
+         {store->ref, static_cast<dataflow::StructuralOrdinal>(
+                          storeUse->getOperandNumber())}});
+    ++nextConnection;
+  }
+  require(plan.memory.internalConnections.size() == 2,
+          "memory chain did not select both internal connections");
+
+  const auto appendExternalInputs = [&](
+                                        const dataflow::CanonicalActorView &actor,
+                                        const CgraMemoryActorPlan &memoryActor,
+                                        std::uint32_t addressInput,
+                                        bool hasControl) {
+    auto actorService =
+        take(dataflow::semantics::CanonicalService::forActor(actor.op));
+    for (auto [argumentOrdinal, argument] :
+         llvm::enumerate(actorService.arguments())) {
+      const std::size_t role = static_cast<std::size_t>(argument.role);
+      if (!memoryActor.roleSources[role] ||
+          !std::holds_alternative<
+              loom::fabric::FabricMemoryHandshakeExternalRoleSource>(
+              *memoryActor.roleSources[role]))
+        continue;
+      auto value = actorService.argumentValue(actor.op, argumentOrdinal);
+      if (!value)
+        fail(llvm::toString(value.takeError()));
+      dataflow::CanonicalGraphProducerEndpointRef producer(
+          dataflow::GraphIngressTokenRef{
+              dataflow::GraphValueInputTokenRef{actor.graph, addressInput}});
+      if (argument.role ==
+              dataflow::semantics::ServiceValueRole::Control &&
+          hasControl) {
+        producer = dataflow::GraphIngressTokenRef{
+            dataflow::GraphStartTokenRef{actor.graph}};
+      }
+      appendTransfer(
+          plan, std::move(producer),
+          dataflow::ActorTokenOperandRef{
+              actor.ref, static_cast<dataflow::StructuralOrdinal>(
+                             (*value)->getOperandNumber())},
+          actor.graph);
+    }
+  };
+  appendExternalInputs(*load, plan.memory.actors[0], 0, true);
+  appendExternalInputs(*store, plan.memory.actors[1], 1, false);
+  appendTransfer(
+      plan, dataflow::ActorTokenResultRef{store->ref, 0},
+      dataflow::GraphEgressTokenRef{
+          dataflow::GraphCompletionFrontierTokenRef{store->graph, 0}},
+      store->graph);
+
+  const std::array<const fabric::ResourceContract *, 4> contracts = {
+      &contract, &contract, &contract, &contract};
+  plan.resources = take(freezeCgraResourceRuntimePlan(contracts, selections));
+
+  SimulatorState state;
+  state.graphScope = graph.getOperation();
+  initializeRunState(state, *prepared);
+  const auto makeMemory = [&](std::initializer_list<std::uint32_t> values) {
+    auto memory = std::make_shared<MemoryValue>();
+    for (std::uint32_t value : values) {
+      auto bytes = take(encodeMemoryElement(
+          take(tokenFromBitPattern(
+              llvm::APInt(32, value),
+              mlir::IntegerType::get(&context(), 32))),
+          mlir::IntegerType::get(&context(), 32), graph.getOperation()));
+      memory->bytes.append(bytes.begin(), bytes.end());
+    }
+    memory->initialized = llvm::SmallBitVector(memory->bytes.size(), true);
+    return memory;
+  };
+  auto loadMemory = makeMemory({3, 11, 5, 7});
+  auto storeMemory = makeMemory({0, 0, 0, 0});
+  loadMemory->logicalRootId = 0;
+  storeMemory->logicalRootId = 1;
+  mlir::Block &entry = graph.getBody().front();
+  llvm::SmallVector<GraphIngressEmission, 3> ingress;
+  state.graphIngressCapture = &ingress;
+  seedBlockArgument(state, entry.getArgument(0), noneToken());
+  seedBlockArgument(state, entry.getArgument(1),
+                    indexToken(llvm::APInt(64, 1)));
+  seedBlockArgument(state, entry.getArgument(2),
+                    indexToken(llvm::APInt(64, 2)));
+  state.graphIngressCapture = nullptr;
+  state.memories[entry.getArgument(3)] = loadMemory;
+  state.memories[entry.getArgument(4)] = storeMemory;
+  const MemoryView loadView{loadMemory, entry.getArgument(3), 0,
+                            mlir::IntegerType::get(&context(), 32)};
+  const MemoryView storeView{storeMemory, entry.getArgument(4), 0,
+                             mlir::IntegerType::get(&context(), 32)};
+  state.memoryViews[entry.getArgument(3)] = loadView;
+  state.memoryViews[entry.getArgument(4)] = storeView;
+
+  CgraFrozenExecutionPlan tampered = plan;
+  bool changedConnection = false;
+  for (auto &source : tampered.memory.actors[1].roleSources) {
+    auto *internal = source
+                         ? std::get_if<loom::fabric::
+                                           FabricMemoryHandshakeInternalRoleSource>(
+                               &*source)
+                         : nullptr;
+    if (!internal)
+      continue;
+    ++internal->connection;
+    changedConnection = true;
+    break;
+  }
+  require(changedConnection, "memory role tamper found no internal source");
+  auto rejected = CgraGraphActivationRuntime::create(
+      tampered, view, launch, load->graph, *prepared, state,
+      /*captureMicroarchitecture=*/false);
+  require(!rejected,
+          "tampered memory internal activation was accepted by runtime");
+  llvm::consumeError(rejected.takeError());
+
+  auto runtime = take(CgraGraphActivationRuntime::create(
+      plan, view, launch, load->graph, *prepared, state,
+      /*captureMicroarchitecture=*/false));
+  if (llvm::Error error = runtime.start(coordinate(100), ingress))
+    fail(llvm::toString(std::move(error)));
+  bool sawAtomicLoadPacket = false;
+  for (unsigned iteration = 0; iteration != 128 && runtime.hasPendingEvents();
+       ++iteration) {
+    auto frame = take(runtime.advance());
+    require(frame.has_value(),
+            "internal-memory activation lost its pending frame");
+    std::uint32_t loadPublications = 0;
+    for (const CgraTokenPublication &publication : frame->publications) {
+      const auto *result =
+          std::get_if<dataflow::ActorTokenResultRef>(&publication.producer);
+      if (result && result->actor == load->ref)
+        ++loadPublications;
+    }
+    require(loadPublications == 0 || loadPublications == 2,
+            "memory completion packet published only one role");
+    sawAtomicLoadPacket |= loadPublications == 2;
+  }
+  require(!runtime.hasPendingEvents(),
+          "internal-memory activation did not quiesce");
+  require(sawAtomicLoadPacket,
+          "memory completion packet did not publish both internal roles");
+  auto stored = readMemoryElement(
+      storeView, 8, mlir::IntegerType::get(&context(), 32), state,
+      graph.getOperation(), "internal-memory verification");
+  require(stored &&
+              take(tokenBitPattern(*stored,
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 11),
+          "exact memory internal connections did not feed the store");
+}
+
 } // namespace
 
 int main() {
   graphActivationCoordinatesComputeAndTransport();
   graphActivationExecutesSelectedLocalMemory();
+  graphActivationExecutesExactMemoryInternalConnections();
   return EXIT_SUCCESS;
 }

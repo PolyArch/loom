@@ -52,7 +52,7 @@ struct SystemPnrSearchDomainViewBuilder final {
 
 namespace {
 
-constexpr char kSchemaDescriptor[] = "loom.system_pnr_search_domain.3.0";
+constexpr char kSchemaDescriptor[] = "loom.system_pnr_search_domain.4.0";
 constexpr char kDigestDomain[] = "loom.system.pnr.search.domain.digest.v1\0";
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -312,44 +312,6 @@ decodeRootDomain(WireReader &reader) {
   return values;
 }
 
-llvm::Expected<std::vector<std::uint8_t>>
-encodeFlatProblem(const FlatSpatialReopenProblem &problem) {
-  WireWriter writer;
-  writer.rootReference(problem.techMappingReference);
-  writer.sizedBytes(problem.spatialConfig.schemaDescriptorBytes());
-  writer.sizedBytes(problem.spatialConfig.canonicalViewBytes());
-  writer.bytes(problem.spatialConfig.digest().bytes());
-  writer.rootReference(problem.spatialConstraintReference);
-  return writer.take();
-}
-
-llvm::Expected<FlatSpatialReopenProblem> decodeFlatProblem(WireReader &reader) {
-  auto tech = reader.rootReference();
-  if (!tech)
-    return tech.takeError();
-  auto descriptor = reader.sizedBytes();
-  if (!descriptor)
-    return descriptor.takeError();
-  auto canonical = reader.sizedBytes();
-  if (!canonical)
-    return canonical.takeError();
-  auto digestBytes = reader.take(ComponentViewDigest::byteSize);
-  if (!digestBytes)
-    return digestBytes.takeError();
-  auto digest = ComponentViewDigest::fromBytes(*digestBytes);
-  if (!digest)
-    return digest.takeError();
-  auto config =
-      adoptResolvedSpatialPnrConfigView(*descriptor, *canonical, *digest);
-  if (!config)
-    return config.takeError();
-  auto constraints = reader.rootReference();
-  if (!constraints)
-    return constraints.takeError();
-  return FlatSpatialReopenProblem{std::move(*tech), std::move(*config),
-                                  std::move(*constraints)};
-}
-
 llvm::Error encodeAtomDomain(WireWriter &writer,
                              const SystemSearchAtomDomain &domain) {
   WireWriter payload;
@@ -362,20 +324,6 @@ llvm::Error encodeAtomDomain(WireWriter &writer,
                  std::get_if<SystemHierarchicalGraphBindingDomain>(&domain)) {
     writer.u32(1);
     encodeRootDomain(payload, hierarchical->compatibleSpatialMappings);
-  } else if (const auto *flat =
-                 std::get_if<SystemFlatGraphBindingDomain>(&domain)) {
-    if (flat->exactSpatialReopenProblems.empty())
-      return invalid("flat graph domain has no reopen problem");
-    writer.u32(2);
-    payload.u64(flat->exactSpatialReopenProblems.size());
-    for (const FlatSpatialReopenProblem &problem :
-         flat->exactSpatialReopenProblems) {
-      auto bytes = encodeFlatProblem(problem);
-      if (!bytes)
-        return bytes.takeError();
-      payload.sizedBytes(*bytes);
-    }
-    encodeRootDomain(payload, flat->compatibleImmutableSeeds);
   }
   writer.sizedBytes(payload.take());
   return llvm::Error::success();
@@ -403,36 +351,6 @@ decodeAtomDomain(WireReader &reader,
     if (!values)
       return values.takeError();
     result = SystemHierarchicalGraphBindingDomain{std::move(*values)};
-  } else if (*kind == 2) {
-    auto count = payload.count(/*minimumElementBytes=*/8, "flat problem");
-    if (!count)
-      return count.takeError();
-    if (*count == 0)
-      return invalid("flat graph domain has no reopen problem");
-    std::vector<FlatSpatialReopenProblem> problems;
-    problems.reserve(*count);
-    std::optional<FlatSpatialReopenProblem> previous;
-    for (std::size_t index = 0; index < *count; ++index) {
-      auto bytes = payload.sizedBytes();
-      if (!bytes)
-        return bytes.takeError();
-      WireReader problemReader(*bytes);
-      auto problem = decodeFlatProblem(problemReader);
-      if (!problem)
-        return problem.takeError();
-      if (!problemReader.empty())
-        return invalid("flat reopen problem has trailing bytes");
-      if (previous &&
-          !detail::flatSpatialReopenProblemLess(*previous, *problem))
-        return invalid("flat reopen problems are not strictly ordered");
-      previous = *problem;
-      problems.push_back(std::move(*problem));
-    }
-    auto seeds = decodeRootDomain(payload);
-    if (!seeds)
-      return seeds.takeError();
-    result =
-        SystemFlatGraphBindingDomain{std::move(problems), std::move(*seeds)};
   } else {
     return invalid("unknown System search-atom domain variant");
   }
@@ -1098,12 +1016,8 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
       dataflow, constraints.view().rootThreadLaunches());
   if (!roots)
     return roots.takeError();
-  const auto *hierarchical =
-      std::get_if<SystemHierarchicalGraphSearchInput>(&graphSearch);
   const llvm::ArrayRef<ArtifactRootReference> spatialMappings =
-      hierarchical
-          ? llvm::ArrayRef<ArtifactRootReference>(hierarchical->spatialMappings)
-          : llvm::ArrayRef<ArtifactRootReference>();
+      graphSearch.spatialMappings;
   if (llvm::Error error = validateConstraintInputs(
           dataflow, fabric, constraints, *roots, spatialMappings))
     return std::move(error);
@@ -1118,27 +1032,6 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
       detail::importSpatialCatalog(spatialMappings, dataflow, fabric, store);
   if (!catalog)
     return catalog.takeError();
-  std::vector<::dataflow::GraphRef> requiredGraphs;
-  for (const detail::CanonicalSystemPartitionBinding &partition : *partitions) {
-    const auto *launch =
-        std::get_if<::dataflow::RootedGraphLaunchRef>(&partition.key);
-    if (!launch)
-      continue;
-    auto graph = dataflow.resolve(*launch);
-    if (!graph)
-      return graph.takeError();
-    if (!llvm::is_contained(requiredGraphs, *graph))
-      requiredGraphs.push_back(*graph);
-  }
-  std::optional<detail::CanonicalFlatGraphCatalog> flatCatalog;
-  if (!hierarchical) {
-    auto canonical = detail::canonicalizeAndValidateFlatGraphCatalog(
-        dataflow, fabric, requiredGraphs,
-        std::get<SystemFlatGraphSearchInput>(graphSearch), store);
-    if (!canonical)
-      return canonical.takeError();
-    flatCatalog.emplace(std::move(*canonical));
-  }
   std::vector<::loom::fabric::AccCoreOccurrenceRef> cores =
       detail::canonicalSystemAccCores(fabric);
 
@@ -1161,22 +1054,15 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
       auto graph = dataflow.resolve(graphLaunch);
       if (!graph)
         return graph.takeError();
-      if (hierarchical) {
-        std::vector<ArtifactRootReference> compatible;
-        for (const detail::SpatialCatalogEntry &entry : *catalog)
-          if (llvm::is_contained(entry.covers, *graph))
-            compatible.push_back(entry.reference);
-        detail::applySystemConstraintRestriction(
-            compatible, *constraintIndex,
-            ::mapping::SystemConstraintProjection::GraphSelectedSpatialMapping,
-            ::loom::mapping::SystemConstraintSubject{graphLaunch});
-        domain = SystemHierarchicalGraphBindingDomain{std::move(compatible)};
-      } else {
-        auto flat = detail::projectFlatGraphBindingDomain(*flatCatalog, *graph);
-        if (!flat)
-          return flat.takeError();
-        domain = std::move(*flat);
-      }
+      std::vector<ArtifactRootReference> compatible;
+      for (const detail::SpatialCatalogEntry &entry : *catalog)
+        if (llvm::is_contained(entry.covers, *graph))
+          compatible.push_back(entry.reference);
+      detail::applySystemConstraintRestriction(
+          compatible, *constraintIndex,
+          ::mapping::SystemConstraintProjection::GraphSelectedSpatialMapping,
+          ::loom::mapping::SystemConstraintSubject{graphLaunch});
+      domain = SystemHierarchicalGraphBindingDomain{std::move(compatible)};
     }
     SystemSearchBindingDomain binding{std::move(partition.key), {}};
     binding.atoms.reserve(partition.cells.size());
@@ -1186,8 +1072,7 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
   }
 
   auto services = detail::projectSystemServiceDomains(
-      dataflow, fabric, *roots, bindings, *catalog, *constraintIndex,
-      hierarchical == nullptr);
+      dataflow, fabric, *roots, bindings, *catalog, *constraintIndex);
   if (!services)
     return services.takeError();
   if (llvm::Error error =
@@ -1284,7 +1169,7 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
                            const SystemPnrSearchDomainDigest &digest,
                            const ArtifactStore &store) {
   if (schemaDescriptorBytes != systemPnrSearchDomainSchemaDescriptorBytes())
-    return invalid("schema descriptor is not exact version 3.0");
+    return invalid("schema descriptor is not exact version 4.0");
   if (llvm::Error error = validateSystemPnrSearchDomainDigest(
           schemaDescriptorBytes, canonicalViewBytes, digest))
     return std::move(error);

@@ -11,12 +11,29 @@
 #include <cstdint>
 #include <optional>
 #include <variant>
+#include <vector>
 
 namespace loom::pnr {
 
 struct SystemExecutionBindingAction final {
   PnrIndex decision = 0;
   PnrIndex choice = 0;
+
+  friend bool operator==(const SystemExecutionBindingAction &lhs,
+                         const SystemExecutionBindingAction &rhs) {
+    return lhs.decision == rhs.decision && lhs.choice == rhs.choice;
+  }
+};
+
+struct SystemExecutionBindingReopenAction final {
+  PnrIndex capacityCell = getInvalidPnrIndex();
+  std::vector<PnrIndex> graphDecisions;
+
+  friend bool operator==(const SystemExecutionBindingReopenAction &lhs,
+                         const SystemExecutionBindingReopenAction &rhs) {
+    return lhs.capacityCell == rhs.capacityCell &&
+           lhs.graphDecisions == rhs.graphDecisions;
+  }
 };
 
 struct SystemWholeLegRoutingAction final {
@@ -66,8 +83,9 @@ using SystemResourceAllocationAction =
                  SystemServiceUsePatternAction>;
 
 using SystemMappingAction =
-    std::variant<SystemExecutionBindingAction, SystemTransportRoutingAction,
-                 SystemResourceAllocationAction>;
+    std::variant<SystemExecutionBindingAction,
+                 SystemExecutionBindingReopenAction,
+                 SystemTransportRoutingAction, SystemResourceAllocationAction>;
 
 struct SystemActionChoiceRange final {
   PnrIndex choiceOffset = 0;

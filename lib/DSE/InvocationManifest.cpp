@@ -28,6 +28,7 @@ namespace {
 
 constexpr char runKeyDomain[] = "loom.dse.run_key.1.0\0";
 constexpr SchemaVersion legacyInvocationManifestSchemaVersion{1, 0};
+constexpr SchemaVersion operationalInvocationManifestSchemaVersion{1, 1};
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -373,12 +374,28 @@ validateGenerateSequence(llvm::ArrayRef<InvocationGenerateRecord> records,
   const auto *incomplete = std::get_if<InvocationIncomplete>(&outcome);
   if (incomplete && incomplete->planNodeOrdinal >= view.plan().nodes().size())
     return invalid("Incomplete outcome references an unknown plan node");
+  const bool retainedCandidateFrontier =
+      incomplete &&
+      std::visit(
+          [](const auto &reason) {
+            using Reason = std::decay_t<decltype(reason)>;
+            if constexpr (!std::is_same_v<Reason,
+                                          CandidateGeneratorIncompleteReason>) {
+              return false;
+            } else {
+              return reason == CandidateGeneratorIncompleteReason::
+                                   ProofNotEstablished ||
+                     reason == CandidateGeneratorIncompleteReason::
+                                   SemanticLimitReached;
+            }
+          },
+          incomplete->reason);
 
   std::size_t recordOrdinal = 0;
   for (std::size_t nodeOrdinal = 0; nodeOrdinal != view.plan().nodes().size();
        ++nodeOrdinal) {
-    const bool nodeExecuted =
-        !incomplete || nodeOrdinal <= incomplete->planNodeOrdinal;
+    const bool nodeExecuted = !incomplete || retainedCandidateFrontier ||
+                              nodeOrdinal <= incomplete->planNodeOrdinal;
     if (!nodeExecuted)
       break;
     const auto *generate = std::get_if<ResolvedGeneratePlanNode>(
@@ -390,11 +407,6 @@ validateGenerateSequence(llvm::ArrayRef<InvocationGenerateRecord> records,
     const InvocationGenerateRecord &record = records[recordOrdinal++];
     if (record.invocation.planNodeOrdinal != nodeOrdinal)
       return invalid("Generate records do not follow exact PlanNodeRef order");
-    const bool shouldComplete =
-        !incomplete || nodeOrdinal < incomplete->planNodeOrdinal;
-    if (record.completed != shouldComplete)
-      return invalid("Generate completion state disagrees with the controller "
-                     "outcome");
     if (llvm::Error error = validateGenerateRecord(record, *generate, store))
       return error;
   }
@@ -404,9 +416,11 @@ validateGenerateSequence(llvm::ArrayRef<InvocationGenerateRecord> records,
     const bool failedAtGenerate =
         std::holds_alternative<ResolvedGeneratePlanNode>(
             view.plan().nodes()[incomplete->planNodeOrdinal]);
-    if (failedAtGenerate && (records.empty() || records.back().completed ||
-                             records.back().invocation.planNodeOrdinal !=
-                                 incomplete->planNodeOrdinal))
+    const auto failedRecord = llvm::find_if(records, [&](const auto &record) {
+      return record.invocation.planNodeOrdinal == incomplete->planNodeOrdinal;
+    });
+    if (failedAtGenerate &&
+        (failedRecord == records.end() || failedRecord->completed))
       return invalid("Incomplete Generate node lacks its partial invocation "
                      "record");
   } else if (llvm::any_of(records, [](const InvocationGenerateRecord &record) {
@@ -749,7 +763,7 @@ decodeGenerateRecord(Decoder &decoder) {
       *completed == 1,
       GenerateInvocationRecord{*planNode, std::move(*inputs),
                                std::move(*binding), std::move(*outputs),
-                               std::move(*edges)},
+                               std::move(*edges), std::nullopt},
       std::move(*work)};
 }
 
@@ -864,7 +878,7 @@ encodeManifest(const InvocationOccurrenceRef &occurrence,
   for (const InvocationGenerateRecord &record : generateRecords)
     encodeGenerateRecord(encoder, record);
   encodeOutcome(encoder, outcome);
-  if (schemaVersion == InvocationManifest::schemaVersion) {
+  if (schemaVersion != legacyInvocationManifestSchemaVersion) {
     encoder.u32(operationalObservations ? 1 : 0);
     if (operationalObservations) {
       encoder.u64(operationalObservations->totalActiveWallTimeNanoseconds);
@@ -995,19 +1009,20 @@ flattenGenerateRecords(const DsePlanGenerateInvocationRecords &records) {
   if (records.completed().size() != records.completedWorkSummaries().size())
     return invalid("completed Generate records and work summaries differ in "
                    "width");
-  if (records.incomplete().has_value() !=
-      records.incompleteWorkSummary().has_value())
-    return invalid("incomplete Generate record and work summary presence "
-                   "differs");
+  if (records.incomplete().size() != records.incompleteWorkSummaries().size())
+    return invalid(
+        "incomplete Generate records and work summaries differ in width");
   std::vector<InvocationGenerateRecord> flattened;
-  flattened.reserve(records.completed().size() +
-                    (records.incomplete() ? 1 : 0));
+  flattened.reserve(records.completed().size() + records.incomplete().size());
   for (auto [record, work] :
        llvm::zip_equal(records.completed(), records.completedWorkSummaries()))
     flattened.push_back({true, record, work});
-  if (records.incomplete())
-    flattened.push_back(
-        {false, *records.incomplete(), *records.incompleteWorkSummary()});
+  for (auto [record, work] :
+       llvm::zip_equal(records.incomplete(), records.incompleteWorkSummaries()))
+    flattened.push_back({false, record, work});
+  llvm::sort(flattened, [](const auto &lhs, const auto &rhs) {
+    return lhs.invocation.planNodeOrdinal < rhs.invocation.planNodeOrdinal;
+  });
   return flattened;
 }
 
@@ -1106,6 +1121,7 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
   const SchemaVersion sourceSchemaVersion{*major, *minor};
   if (*schema != InvocationManifest::schemaIdentity ||
       (sourceSchemaVersion != legacyInvocationManifestSchemaVersion &&
+       sourceSchemaVersion != operationalInvocationManifestSchemaVersion &&
        sourceSchemaVersion != InvocationManifest::schemaVersion))
     return invalid("unsupported InvocationManifest schema");
 
@@ -1167,7 +1183,7 @@ adoptInvocationManifest(llvm::ArrayRef<std::uint8_t> canonicalBytes,
   if (!outcome)
     return outcome.takeError();
   std::optional<InvocationOperationalObservations> operationalObservations;
-  if (sourceSchemaVersion == InvocationManifest::schemaVersion) {
+  if (sourceSchemaVersion != legacyInvocationManifestSchemaVersion) {
     auto decodedObservations = decodeOperationalObservations(decoder);
     if (!decodedObservations)
       return decodedObservations.takeError();

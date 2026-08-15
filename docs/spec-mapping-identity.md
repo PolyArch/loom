@@ -321,11 +321,10 @@ service member always uses the Spatial variant.
 The exact SpatialMapping semantic target is its complete immutable
 ArtifactIdentity. Within a finalized SystemMapping, the existing canonical
 import table encodes that target through `SpatialMappingImportRef`; ordering
-and comparison first resolve the alias back to the complete identity. A
-mutable flat System PnR candidate has no Spatial variant until its reopened
-Spatial decisions have passed independent verification and received that
-identity. It cannot use a provisional digest, native handle, reopen ordinal,
-or candidate generation as a substitute semantic target.
+and comparison first resolve the alias back to the complete identity. Current
+System PnR is hierarchical and may select only independently finalized
+SpatialMappings. A provisional digest, native handle, reopen ordinal, or
+candidate generation can never substitute for that semantic target.
 
 The canonical semantic variant ordinals are `Instruction = 0` and
 `Spatial = 1`. Canonical comparison is lexicographic over the variant ordinal,
@@ -394,7 +393,7 @@ Each key stores only its minimal derivation anchor. For a transfer key, the
 exact Dataflow program, workload scope, and producer derive one canonical
 sorted unique non-empty sink set. The sink set is not serialized in the key.
 This is the static obligation universe, not a claim that every sink has a
-`source_map` preimage at every producer point. Mapping 5.0 derives per-point
+`source_map` preimage at every producer point. Mapping 5.0 and later derive per-point
 message route applicability without extending the obligation key.
 For a logical-memory owner, the exact Dataflow program derives the complete
 canonical addressed-memory member set, including applicable load, store,
@@ -543,7 +542,7 @@ different artifact context.
 ## Classification Boundary
 
 The table in this document closes identity classification for every Mapping
-record family in the complete `loom.mapping 5.0` schema. This document does
+record family in the complete `loom.mapping 6.0` schema. This document does
 not make additional classifications for upstream Dataflow channels,
 unqualified Fabric resources, deployment objects, or other objects whose
 independent reference requirements are owned elsewhere.

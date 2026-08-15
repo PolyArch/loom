@@ -637,23 +637,11 @@ projectSystemServiceDomains(
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> roots,
     llvm::ArrayRef<SystemSearchBindingDomain> bindings,
     llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog,
-    const SystemFrozenConstraintIndex &constraints, bool flatGraphSearch) {
+    const SystemFrozenConstraintIndex &constraints) {
   auto obligations =
       ::loom::mapping::projectSystemServiceObligations(dataflow, roots);
   if (!obligations)
     return obligations.takeError();
-  const bool hasOperationService =
-      llvm::any_of(*obligations, [](const auto &obligation) {
-        return std::holds_alternative<
-            ::loom::mapping::OperationServiceObligationFamilyKey>(
-            obligation.key);
-      });
-  if (flatGraphSearch && hasOperationService)
-    return llvm::make_error<UnsupportedSystemPnrSearchDomain>(
-        UnsupportedSystemPnrSearchDomainReason::
-            FlatOperationServiceDomainProjectionUnavailable,
-        "flat operation-service compatibility projection is not implemented "
-        "by the System PnR search-domain projector");
   std::vector<SystemSearchServiceDomain> result;
   result.reserve(obligations->size());
   for (const auto &obligation : *obligations) {
@@ -848,21 +836,19 @@ llvm::Error validateSystemServiceDomains(
     const SystemFrozenConstraintIndex &constraints,
     llvm::ArrayRef<ArtifactRootReference> constraintSpatialMappings,
     const ArtifactStore &store) {
-  bool flatGraphSearch = false;
   std::vector<ArtifactRootReference> spatialMappings(
       constraintSpatialMappings.begin(), constraintSpatialMappings.end());
   for (const SystemSearchBindingDomain &binding : bindings) {
     if (!std::holds_alternative<::dataflow::RootedGraphLaunchRef>(binding.key))
       continue;
     for (const SystemSearchAtom &atom : binding.atoms) {
-      if (const auto *hierarchical =
-              std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain)) {
-        spatialMappings.insert(spatialMappings.end(),
-                               hierarchical->compatibleSpatialMappings.begin(),
-                               hierarchical->compatibleSpatialMappings.end());
-      } else {
-        flatGraphSearch = true;
-      }
+      const auto *hierarchical =
+          std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain);
+      if (!hierarchical)
+        return invalid("graph binding atom has the wrong domain variant");
+      spatialMappings.insert(spatialMappings.end(),
+                             hierarchical->compatibleSpatialMappings.begin(),
+                             hierarchical->compatibleSpatialMappings.end());
     }
   }
   auto catalog = importSpatialCatalog(spatialMappings, dataflow, fabric, store);
@@ -870,7 +856,7 @@ llvm::Error validateSystemServiceDomains(
     return catalog.takeError();
   auto expected =
       projectSystemServiceDomains(dataflow, fabric, roots, bindings, *catalog,
-                                  constraints, flatGraphSearch);
+                                  constraints);
   if (!expected)
     return expected.takeError();
   if (services.size() != expected->size())

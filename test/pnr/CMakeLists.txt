@@ -156,6 +156,19 @@ target_link_libraries(loom-pnr-endpoint-router-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-pnr-spatial-physical-timing-test
+  SpatialPhysicalTimingTest.cpp
+)
+
+target_include_directories(loom-pnr-spatial-physical-timing-test PRIVATE
+  ${LOOM_SOURCE_DIR}/lib/PnR
+)
+
+target_link_libraries(loom-pnr-spatial-physical-timing-test PRIVATE
+  LoomPnR
+  LLVMSupport
+)
+
 add_executable(loom-pnr-initializer-relation-solver-test
   InitializerRelationSolverTest.cpp
 )

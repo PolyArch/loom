@@ -125,21 +125,6 @@ llvm::Error verifyGem5Binding(const ArtifactRootReference &subject,
       gem5->binding().fabric().artifact)
     return invalid("gem5 binding names a foreign System Fabric");
 
-  bool ownsInterconnect = false;
-  for (const deployment::DeploymentHardwareBinding &binding :
-       (*deployment)->deployment().hardwareBindings()) {
-    auto implementation = hardware::importHardwareImplementation(
-        binding.hardwareImplementation, artifacts, blobs);
-    if (!implementation)
-      return implementation.takeError();
-    if (llvm::is_contained(
-            implementation->implementation().interconnectImplementations(),
-            gem5->binding().interconnectImplementation()))
-      ownsInterconnect = true;
-  }
-  if (!ownsInterconnect)
-    return invalid("Deployment hardware closure does not own the gem5 "
-                   "interconnect implementation");
   return llvm::Error::success();
 }
 
@@ -301,7 +286,8 @@ llvm::Error verifyMappedRtlWorkload(
   if (!spatial)
     return invalid("mapped RTL case requires a Spatial workload");
   auto selection = deployment::resolveDeploymentSpatialLaunchSelection(
-      **deployment, spatial->launchRef, spatial->denseCoordinates, artifacts);
+      **deployment, spatial->launchRef, spatial->denseCoordinates, artifacts,
+      blobs);
   if (!selection)
     return selection.takeError();
   if (selection->hardwareImplementation != implementations.front())
@@ -335,7 +321,8 @@ resolveMappedRtlCycle(const EvaluationCase &evaluationCase,
   if (!spatial)
     return invalid("mapped RTL reference cycle requires a Spatial workload");
   auto selection = deployment::resolveDeploymentSpatialLaunchSelection(
-      **deployment, spatial->launchRef, spatial->denseCoordinates, artifacts);
+      **deployment, spatial->launchRef, spatial->denseCoordinates, artifacts,
+      blobs);
   if (!selection)
     return selection.takeError();
   if (selection->hardwareImplementation != implementations.front() ||

@@ -58,12 +58,12 @@ void projectionAndAdoptionAreDomainTyped() {
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               spatial.schemaDescriptorBytes().data()),
                           spatial.schemaDescriptorBytes().size()) ==
-              "loom.spatial_pnr.config.12.0",
+              "loom.spatial_pnr.config.13.0",
           "Spatial PnR view has the wrong schema descriptor");
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               system.schemaDescriptorBytes().data()),
                           system.schemaDescriptorBytes().size()) ==
-              "loom.system_pnr.config.4.0",
+              "loom.system_pnr.config.5.0",
           "System PnR view has the wrong schema descriptor");
   require(spatial.digest() != system.digest(),
           "domain-distinct views have the same digest");
@@ -97,18 +97,18 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
 
   loom::ResolvedConfig unselectedChange = base;
   auto &catalogs = unselectedChange.dse.objectiveCatalogs;
-  catalogs.dimensions.push_back({loom::ResolvedMappingMeasureObjectiveSource{1},
-                                 loom::ResolvedObjectiveDirection::Maximize,
-                                 loom::resolvedObjectiveInteger(0),
-                                 loom::resolvedObjectiveInteger(1), 0,
-                                 UINT64_MAX});
+  catalogs.dimensions.push_back(
+      {loom::ResolvedEvaluationMetricObjectiveSource{0, 0},
+       loom::ResolvedObjectiveDirection::Maximize,
+       loom::resolvedObjectiveDecimal(0, 0),
+       loom::resolvedObjectiveDecimal(1, 0), 0, UINT64_MAX});
   const std::uint32_t unselectedDimension =
       static_cast<std::uint32_t>(catalogs.dimensions.size() - 1);
   catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 2,
                                  {{{unselectedDimension, 1}}});
-  catalogs.totalOrderings.front().weightedLevels = {3, 1, 0};
-  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 4;
-  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 4;
+  catalogs.totalOrderings.front().weightedLevels = {3, 4, 1, 0};
+  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 5;
+  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 5;
 
   const loom::pnr::ResolvedPnrConfigView unselectedView =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(unselectedChange));
@@ -173,7 +173,7 @@ void routingKernelsConsumeTheProjectedOwnerRecord() {
 void mappingObjectiveRegistryIsClosedAndTyped() {
   const auto &registry = loom::pnr::mappingObjectiveRegistryDescriptor();
   require(registry.identity == "loom.mapping.pnr.objective" &&
-              registry.schemaMajor == 2 && registry.schemaMinor == 1,
+              registry.schemaMajor == 3 && registry.schemaMinor == 0,
           "Mapping objective registry has the wrong identity");
 
   const auto violations = loom::pnr::mappingViolationDescriptors();
@@ -190,16 +190,16 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
       "Mapping violation registry changed the canonical catalog order");
 
   const auto measures = loom::pnr::mappingMeasureDescriptors();
-  require(measures.size() == 2 &&
+  require(measures.size() == 7 &&
               measures.front().kind ==
                   loom::pnr::MappingMeasureKind::TotalSelectedTraversalClaim &&
               measures.back().kind ==
-                  loom::pnr::MappingMeasureKind::StaticSchedulePressure,
+                  loom::pnr::MappingMeasureKind::TotalRouteNegativeSlackQuanta,
           "Mapping measure registry does not own the closed catalog");
 }
 
 void resolvedConfigUsesTheIndependentViolationCatalog() {
-  require(loom::ResolvedConfig::artifactSchema.version.major == 5 &&
+  require(loom::ResolvedConfig::artifactSchema.version.major == 6 &&
               loom::ResolvedConfig::artifactSchema.version.minor == 0,
           "ResolvedConfig has the wrong schema version");
   const std::string canonical =
@@ -213,25 +213,46 @@ void resolvedConfigUsesTheIndependentViolationCatalog() {
 
 void objectiveArithmeticIsPreflightedByThePnrView() {
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
-  auto &energy = config.dse.objectiveCatalogs.weightedLevels[3];
+  auto &energy = config.dse.objectiveCatalogs.weightedLevels[4];
   energy.terms[0].weight = UINT64_MAX;
   energy.terms[1].weight = UINT64_MAX - 1;
   requireRejected(loom::pnr::projectResolvedSpatialPnrConfigView(config),
                   "weighted level domain overflows uint128");
 }
 
-void evaluationObjectiveRequiresItsObligationOwner() {
+void domainCapabilitiesFailClosed() {
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
-  auto &catalogs = config.dse.objectiveCatalogs;
-  catalogs.dimensions.push_back(
-      {loom::ResolvedEvaluationMetricObjectiveSource{0, 0},
-       loom::ResolvedObjectiveDirection::Minimize,
-       loom::resolvedObjectiveDecimal(0, 0),
-       loom::resolvedObjectiveDecimal(1, 0), 0, 100});
-  config.dse.spatialPnr.objectiveSelection.focusedClosureDimensions = {
-      static_cast<std::uint32_t>(catalogs.dimensions.size() - 1)};
+  config.dse.spatialPnr.search.routing.negotiation =
+      loom::ResolvedDualSubgradientPolicy{
+          loom::ResolvedDualDirectionKernel::PositiveViolationOnly,
+          std::nullopt,
+          {loom::ResolvedDualStepScheduleKind::Constant, 1, 0, 0, 0}};
   requireRejected(loom::pnr::projectResolvedSpatialPnrConfigView(config),
-                  "Evaluation metric objective owner is unavailable");
+                  "Spatial PnR supports only PathFinder");
+
+  config = loom::defaultResolvedConfig();
+  config.dse.systemPnr.search.routing.negotiation =
+      loom::ResolvedDualSubgradientPolicy{
+          loom::ResolvedDualDirectionKernel::PositiveViolationOnly,
+          std::nullopt,
+          {loom::ResolvedDualStepScheduleKind::Constant, 1, 0, 0, 0}};
+  (void)take(loom::pnr::projectResolvedSystemPnrConfigView(config));
+
+  config = loom::defaultResolvedConfig();
+  config.dse.systemPnr.search.exactRepair = {
+      loom::ResolvedPnrExactRepairKind::CpSat, 8, 8};
+  requireRejected(loom::pnr::projectResolvedSystemPnrConfigView(config),
+                  "System PnR has no exact-repair provider");
+
+  config = loom::defaultResolvedConfig();
+  config.dse.objectiveCatalogs.dimensions.back().source =
+      loom::ResolvedEvaluationMetricObjectiveSource{0, 0};
+  config.dse.objectiveCatalogs.dimensions.back().origin =
+      loom::resolvedObjectiveDecimal(0, 0);
+  config.dse.objectiveCatalogs.dimensions.back().quantum =
+      loom::resolvedObjectiveDecimal(1, 0);
+  requireRejected(loom::pnr::projectResolvedSpatialPnrConfigView(config),
+                  "unavailable Evaluation owner");
 }
 
 void malformedWireFailsClosed() {
@@ -268,7 +289,7 @@ int main() {
   mappingObjectiveRegistryIsClosedAndTyped();
   resolvedConfigUsesTheIndependentViolationCatalog();
   objectiveArithmeticIsPreflightedByThePnrView();
-  evaluationObjectiveRequiresItsObligationOwner();
+  domainCapabilitiesFailClosed();
   malformedWireFailsClosed();
   static_assert(
       !std::is_default_constructible_v<loom::pnr::ResolvedPnrConfigView>);
