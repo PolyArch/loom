@@ -116,13 +116,14 @@ struct TokenPoolModule final {
   unsigned payloadWidth = 0;
 };
 
-llvm::Expected<TokenPoolModule>
-buildTokenPoolModule(mlir::OpBuilder &builder, mlir::Location location,
-                     llvm::StringRef name, std::uint32_t queueCount,
-                     std::uint32_t depth, unsigned payloadWidth,
-                     bool singlePort, const ClockResetPlan &clockReset) {
+llvm::Expected<TokenPoolModule> buildTokenPoolModule(
+    mlir::OpBuilder &builder, mlir::Location location, llvm::StringRef name,
+    std::uint32_t queueCount, std::uint32_t depth, unsigned payloadWidth,
+    bool singlePort, bool fullReplacement, const ClockResetPlan &clockReset) {
   if (queueCount == 0 || depth == 0)
     return invalid("token pool requires nonempty queue and entry domains");
+  if (singlePort && fullReplacement)
+    return invalid("single-port token pool cannot replace a full entry");
 
   llvm::SmallVector<circt::hw::PortInfo, 32> inputs;
   llvm::SmallVector<circt::hw::PortInfo, 32> outputs;
@@ -280,16 +281,15 @@ buildTokenPoolModule(mlir::OpBuilder &builder, mlir::Location location,
             bodyBuilder, location, circt::comb::ICmpPredicate::eq, occupancy,
             constant(bodyBuilder, location, occupancyWidth, depth), true);
         mlir::Value canEnqueue =
-            singlePort
-                ? andValues(bodyBuilder, location,
-                            {circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                          full),
-                             circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                          dequeue)})
-                : orValues(bodyBuilder, location,
-                           {circt::comb::createOrFoldNot(bodyBuilder, location,
-                                                         full),
-                            dequeue});
+            circt::comb::createOrFoldNot(bodyBuilder, location, full);
+        if (singlePort)
+          canEnqueue = andValues(
+              bodyBuilder, location,
+              {canEnqueue,
+               circt::comb::createOrFoldNot(bodyBuilder, location, dequeue)});
+        else if (fullReplacement)
+          canEnqueue = circt::comb::OrOp::create(bodyBuilder, location,
+                                                 canEnqueue, dequeue);
         std::vector<mlir::Value> enqueueFired(queueCount);
         for (std::uint32_t queue = 0; queue != queueCount; ++queue) {
           mlir::Value granted = andValues(bodyBuilder, location,
@@ -619,7 +619,7 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
                              "loom_temporal_pe_" + std::to_string(pe.id()) +
                                  "_operand_pool_" + std::to_string(unit),
                              units[unit].queues.size(), operandDepth,
-                             payloadWidth, false, clockReset);
+                             payloadWidth, false, false, clockReset);
     if (!pool)
       return pool.takeError();
     units[unit].pool = std::move(*pool);
@@ -639,11 +639,12 @@ buildTemporalPeModule(mlir::OpBuilder &builder, mlir::Location location,
   std::vector<TokenPoolModule> fifoPools;
   fifoPools.reserve(layout.registerFifoCount);
   for (std::uint32_t fifo = 0; fifo != layout.registerFifoCount; ++fifo) {
-    auto pool = buildTokenPoolModule(
-        builder, location,
-        "loom_temporal_pe_" + std::to_string(pe.id()) + "_register_fifo_" +
-            std::to_string(fifo),
-        1, fifoDepth, payloadWidth + tagWidth, fifoPorts == 1, clockReset);
+    auto pool =
+        buildTokenPoolModule(builder, location,
+                             "loom_temporal_pe_" + std::to_string(pe.id()) +
+                                 "_register_fifo_" + std::to_string(fifo),
+                             1, fifoDepth, payloadWidth + tagWidth,
+                             fifoPorts == 1, fifoPorts == 2, clockReset);
     if (!pool)
       return pool.takeError();
     fifoPools.push_back(std::move(*pool));

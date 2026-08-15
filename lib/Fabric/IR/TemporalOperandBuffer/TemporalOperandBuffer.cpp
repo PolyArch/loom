@@ -308,7 +308,7 @@ TemporalOperandBufferContract::create(
   for (std::uint32_t queue = 0; queue != queueTotal; ++queue)
     contract.usePatterns.push_back(servicePattern(
         layout.enqueue(queue), queue, layout.enqueueService(unitOfQueue[queue]),
-        OperandBufferEligibility::FreeEntryAfterCycleStartDequeue,
+        OperandBufferEligibility::CycleStartFreeEntry,
         OperandBufferEvent::EnqueueCommit, layout.append(queue)));
   for (std::uint32_t queue = 0; queue != queueTotal; ++queue)
     contract.usePatterns.push_back(servicePattern(
@@ -450,7 +450,7 @@ bool TemporalOperandBufferContract::admits(
   const std::uint32_t dequeues = selection.dequeue ? 1 : 0;
   if (dequeues > occupancy)
     return false;
-  if (selection.enqueue && occupancy - dequeues >= entryCapacity_.value())
+  if (selection.enqueue && occupancy >= entryCapacity_.value())
     return false;
   return true;
 }

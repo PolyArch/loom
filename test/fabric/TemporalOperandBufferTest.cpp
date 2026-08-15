@@ -227,6 +227,11 @@ void enqueueClaimsOneServiceAndCommitsADurableAppend() {
           enqueue.claims.size() == 1 &&
               enqueue.claims[0].state == enqueueService,
           "an enqueue must claim only its enqueue service slot");
+  require(
+      __func__,
+      enqueue.eligibility ==
+          key<EligibilityKey>(OperandBufferEligibility::CycleStartFreeEntry),
+      "an enqueue must observe only cycle-start capacity");
   require(__func__,
           enqueue.acquire == key<EventKey>(OperandBufferEvent::EnqueueCommit) &&
               enqueue.release ==
@@ -274,10 +279,9 @@ void dequeueCommitsADurableRemoval() {
           "every logical queue owns one append and one remove transition");
 }
 
-// A full allocation unit admits a pop together with a push, the pushed operand
-// cannot satisfy that cycle's dequeue, and the next occupancy is exactly
-// `O - D + E`.
-void fullUnitAdmitsPopWithPushWithoutBypass() {
+// Cycle-start occupancy independently gates both transitions, and every
+// admitted next occupancy is exactly `O - D + E`.
+void cycleStartCapacityCutsFullQueueReady() {
   const TemporalOperandBufferContract contract =
       takeContract(__func__, TemporalOperandBufferContract::create(declaration(
                                  OperandBufferMode::AllFuShare, 2)));
@@ -285,10 +289,8 @@ void fullUnitAdmitsPopWithPushWithoutBypass() {
 
   require(__func__, !contract.admits(full, {false, true}),
           "a full allocation unit must backpressure a lone enqueue");
-  require(__func__, contract.admits(full, {true, true}),
-          "a dequeue must give same-cycle capacity to an enqueue");
-  require(__func__, contract.occupancyAfter(full, {true, true}) == full,
-          "pop with push must leave occupancy unchanged");
+  require(__func__, !contract.admits(full, {true, true}),
+          "a full allocation unit must not expose dequeue-dependent ready");
 
   const CapacityUnits empty(0);
   require(__func__, !contract.admits(empty, {true, false}),
@@ -561,7 +563,7 @@ int main() {
   modeProjectionDiffersExactly();
   enqueueClaimsOneServiceAndCommitsADurableAppend();
   dequeueCommitsADurableRemoval();
-  fullUnitAdmitsPopWithPushWithoutBypass();
+  cycleStartCapacityCutsFullQueueReady();
   dedicatedDepthOneAndTwoDiffer();
   roundRobinContentionBetweenTwoLogicalQueues();
   ingressFanoutRespectsAllocationUnitServices();

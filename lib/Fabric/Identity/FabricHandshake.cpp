@@ -640,7 +640,7 @@ compilePeModel(const FabricArtifactView &view, FabricPeOccurrenceRef owner,
       addDirectTraversal(builder, traversalSelector(traversal.reference),
                          traversal.sources.front(),
                          traversal.destinations.front(),
-                         /*forwardValid=*/false, /*backwardReady=*/true);
+                         /*forwardValid=*/false, /*backwardReady=*/false);
       continue;
     }
     addDirectTraversal(builder, traversalSelector(traversal.reference),

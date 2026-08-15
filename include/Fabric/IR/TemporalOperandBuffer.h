@@ -84,13 +84,12 @@ enum class OperandServiceDimension : std::uint32_t { Slot };
 
 /// The closed eligibility domain of the two patterns.
 enum class OperandBufferEligibility : std::uint32_t {
-  /// The allocation unit has a free entry once this cycle's selected dequeue is
-  /// accounted for, that is `O - D < capacity`.
-  FreeEntryAfterCycleStartDequeue,
   /// The logical queue holds a head token that was present at cycle start, so
-  /// an
-  /// operand appended in this cycle can never satisfy this dequeue.
+  /// an operand appended in this cycle can never satisfy this dequeue.
   CycleStartHeadPresent,
+  /// The allocation unit has a free entry at the start of this PE clock cycle,
+  /// that is `O < capacity` independently of this cycle's dequeue.
+  CycleStartFreeEntry,
 };
 
 /// The closed acquire, commit, and release event domain. `NextPeClockBoundary`
@@ -242,9 +241,9 @@ public:
 
   /// Whether `selection` is admitted on one allocation unit whose occupancy at
   /// the start of the PE clock cycle is `cycleStartOccupancy`. A dequeue
-  /// observes only a token present at cycle start, and an enqueue is checked
-  /// against `O - D`, so a full unit admits a pop with a push while the pushed
-  /// operand cannot satisfy that same cycle's dequeue.
+  /// observes only a token present at cycle start, and an enqueue observes only
+  /// capacity free at cycle start. A full unit therefore rejects an enqueue
+  /// even when a dequeue commits in the same cycle.
   bool admits(CapacityUnits cycleStartOccupancy,
               OperandCommitSelection selection) const;
 

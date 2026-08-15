@@ -18,6 +18,21 @@ llvm::Error invalid(const llvm::Twine &message) {
       std::make_error_code(std::errc::invalid_argument), message);
 }
 
+llvm::Expected<SpatialEventCoordinate>
+nextPeClockBoundary(const SpatialEventCoordinate &coordinate) {
+  const std::uint64_t numerator = coordinate.referenceCycle.numerator();
+  const std::uint64_t denominator = coordinate.referenceCycle.denominator();
+  const std::uint64_t cycle = numerator / denominator;
+  if (cycle == std::numeric_limits<std::uint64_t>::max())
+    return llvm::createStringError(
+        std::errc::value_too_large,
+        "CGRA PE operand retry coordinate overflows u64");
+  auto boundary = ::loom::evaluation::ExactRatio::get(cycle + 1, 1);
+  if (!boundary)
+    return boundary.takeError();
+  return SpatialEventCoordinate{*boundary, 0};
+}
+
 } // namespace
 
 std::uint64_t CgraTransportRuntime::allocate(
@@ -292,10 +307,9 @@ llvm::Error CgraTransportRuntime::acceptActorEmissions(
       return invalid("CGRA actor emission names an unknown semantic actor");
     if (state_->execution->actorPlans[emission.semanticActorOrdinal]
             .isPlainMemory()) {
-      const auto key =
-          std::make_tuple(emission.semanticActorOrdinal,
-                          emission.occurrenceOrdinal,
-                          emission.transitionCaseOrdinal);
+      const auto key = std::make_tuple(emission.semanticActorOrdinal,
+                                       emission.occurrenceOrdinal,
+                                       emission.transitionCaseOrdinal);
       auto [position, inserted] =
           memoryGroups.try_emplace(key, memoryGroups.size());
       (void)inserted;
@@ -322,9 +336,8 @@ llvm::Error CgraTransportRuntime::acceptGraphIngressEmissions(
     if (bindings_[binding->second].active ||
         !uniqueBindings.insert(binding->second).second)
       return invalid("CGRA graph ingress batch reuses an in-flight source");
-    transfers.push_back(
-        {binding->second, emission.occurrenceOrdinal, &emission.token,
-         invalidCgraTransportOrdinal});
+    transfers.push_back({binding->second, emission.occurrenceOrdinal,
+                         &emission.token, invalidCgraTransportOrdinal});
   }
   return acceptTransfers(coordinate, transfers);
 }
@@ -334,6 +347,9 @@ CgraTransportRuntime::retryBlocked(const SpatialEventCoordinate &coordinate) {
   auto publication = nextSpatialDelta(coordinate);
   if (!publication)
     return publication.takeError();
+  auto operandAdmission = nextPeClockBoundary(coordinate);
+  if (!operandAdmission)
+    return operandAdmission.takeError();
   for (int binding = blocked_.find_first(); binding >= 0;
        binding = blocked_.find_next(binding)) {
     std::optional<std::uint64_t> slot;
@@ -351,7 +367,7 @@ CgraTransportRuntime::retryBlocked(const SpatialEventCoordinate &coordinate) {
         return error;
     } else if (inFlight_[*slot].operandCapacityBlocked) {
       inFlight_[*slot].operandCapacityBlocked = false;
-      if (llvm::Error error = scheduleArrival(*slot, *publication))
+      if (llvm::Error error = scheduleArrival(*slot, *operandAdmission))
         return error;
     }
   }

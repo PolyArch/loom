@@ -684,16 +684,15 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
         auto queueProjection = projectedQueueSinks.find(*sinkKey);
         if (queueProjection != projectedQueueSinks.end()) {
           const OperandQueueProjection &projected = queueProjection->second;
-          const RefBytes peKey = ::loom::fabric::canonicalFabricBytes(
-              projected.queue.context.pe);
-          const auto unitKey =
-              std::make_pair(peKey, projected.allocationUnit);
+          const RefBytes peKey =
+              ::loom::fabric::canonicalFabricBytes(projected.queue.context.pe);
+          const auto unitKey = std::make_pair(peKey, projected.allocationUnit);
           auto [unitPosition, insertedUnit] = operandQueueUnitByKey.try_emplace(
               unitKey, operandQueueUnits.size());
           if (insertedUnit) {
             operandQueueUnits.push_back(
                 {projected.queue.context.pe, projected.allocationUnit,
-                 projected.entryCapacity, 0, 0});
+                 projected.entryCapacity, 0, 0, std::nullopt, 0});
           } else {
             const OperandQueueUnitBinding &unit =
                 operandQueueUnits[unitPosition->second];
@@ -738,9 +737,8 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
             execution, std::get<::dataflow::GraphEgressTokenRef>(sink));
         if (!observed)
           return observed.takeError();
-        sinks.push_back({SinkKind::Observation, 0, *observed,
-                         consumedUseOffset, consumedUseCount,
-                         invalidCgraTransportOrdinal});
+        sinks.push_back({SinkKind::Observation, 0, *observed, consumedUseOffset,
+                         consumedUseCount, invalidCgraTransportOrdinal});
       }
     }
     if (builder.sinks.size() > std::numeric_limits<std::uint32_t>::max())
@@ -819,8 +817,7 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
       std::move(traversalTargets), std::move(traversalSuccessors),
       std::move(storages), std::move(operandQueueUnits),
       std::move(operandQueues), std::move(actorSourceBindings),
-      std::move(ingressSourceBindings),
-      std::move(actorInputQueueBindings));
+      std::move(ingressSourceBindings), std::move(actorInputQueueBindings));
 }
 
 llvm::Error CgraTransportRuntime::scheduleArrival(
@@ -1500,8 +1497,8 @@ CgraTransportRuntime::acceptPhysicalEvents(
   return completions;
 }
 
-bool CgraTransportRuntime::canPublish(
-    const TransferBinding &binding, bool operandCapacityReserved) const {
+bool CgraTransportRuntime::canPublish(const TransferBinding &binding,
+                                      bool operandCapacityReserved) const {
   for (const SinkBinding &sink :
        llvm::ArrayRef(sinks_).slice(binding.sinkOffset, binding.sinkCount)) {
     if (sink.kind != SinkKind::Channel)
@@ -1513,12 +1510,10 @@ bool CgraTransportRuntime::canPublish(
     }
     if (sink.operandQueueBinding >= operandQueues_.size())
       return false;
-    const OperandQueueBinding &queue =
-        operandQueues_[sink.operandQueueBinding];
+    const OperandQueueBinding &queue = operandQueues_[sink.operandQueueBinding];
     if (queue.unitBinding >= operandQueueUnits_.size())
       return false;
-    const OperandQueueUnitBinding &unit =
-        operandQueueUnits_[queue.unitBinding];
+    const OperandQueueUnitBinding &unit = operandQueueUnits_[queue.unitBinding];
     if (!operandCapacityReserved &&
         (unit.occupancy > unit.capacity ||
          unit.reservations >= unit.capacity - unit.occupancy))
@@ -1910,7 +1905,8 @@ CgraTransportRuntime::advance() {
           inFlight.occurrenceOrdinal != event.order.occurrenceOrdinal)
         return invalid("CGRA transport arrival key is inconsistent");
       inFlight.arrivalScheduled = false;
-      auto capacityReady = reserveOperandQueueCapacity(event.payload);
+      auto capacityReady =
+          reserveOperandQueueCapacity(event.payload, (**arrivals).coordinate);
       if (!capacityReady)
         return capacityReady.takeError();
       if (!*capacityReady) {
@@ -1953,8 +1949,8 @@ CgraTransportRuntime::advance() {
       inFlight.publicationScheduled = false;
       inFlight.publicationReady = true;
       if (inFlight.publicationGroup != invalidCgraTransportOrdinal) {
-        auto published = tryPublishPublicationGroup(
-            inFlight.publicationGroup, frame);
+        auto published =
+            tryPublishPublicationGroup(inFlight.publicationGroup, frame);
         if (!published)
           return published.takeError();
         continue;

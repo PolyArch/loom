@@ -704,8 +704,7 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
     if (dataflow::operationSchemaOf(actor.op) ==
         dataflow::OperationSchemaId::ArithAddI)
       adds.push_back(&actor);
-  require(adds.size() == 3,
-          "operand-queue fixture lacks its three add actors");
+  require(adds.size() == 3, "operand-queue fixture lacks its three add actors");
   const dataflow::CanonicalActorView &left = *adds[0];
   const dataflow::CanonicalActorView &right = *adds[1];
   auto graphView = take(view.resolve(left.graph));
@@ -734,16 +733,13 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
   const fabric::LogicalOperandQueueKey rightQueue{{pe, 0}, 1, 0};
 
   CgraFrozenExecutionPlan plan;
-  plan.transport.localTransfers.push_back(
-      {producer, left.graph, 0, 2});
+  plan.transport.localTransfers.push_back({producer, left.graph, 0, 2});
   plan.transport.localTransferSinks.push_back({leftSink});
   plan.transport.localTransferSinks.push_back({rightSink});
   plan.transport.consumedUses.push_back({leftSink, 0, 0});
   plan.transport.consumedUses.push_back({rightSink, 0, 0});
-  plan.transport.operandQueueMatches.push_back(
-      {leftSink, leftQueue, 0, 2});
-  plan.transport.operandQueueMatches.push_back(
-      {rightSink, rightQueue, 1, 2});
+  plan.transport.operandQueueMatches.push_back({leftSink, leftQueue, 0, 2});
+  plan.transport.operandQueueMatches.push_back({rightSink, rightQueue, 1, 2});
   plan.transport.operandQueueActivations.push_back(
       {producer,
        {loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 0},
@@ -800,12 +796,15 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
     fail(llvm::toString(std::move(error)));
   auto replacement = take(transport.advance());
   require(replacement && replacement->publications.size() == 1 &&
+              compareSpatialEventCoordinates(replacement->coordinate,
+                                             blocked->coordinate) > 0 &&
+              replacement->coordinate.referenceCycle !=
+                  blocked->coordinate.referenceCycle &&
               leftChannel.size() == 2 && rightChannel.size() == 2 &&
-              take(tokenBitPattern(
-                  leftChannel.front(),
-                  mlir::IntegerType::get(&context(), 32))) ==
+              take(tokenBitPattern(leftChannel.front(),
+                                   mlir::IntegerType::get(&context(), 32))) ==
                   llvm::APInt(32, 11),
-          "Temporal operand dequeue replacement did not commit atomically");
+          "Temporal operand retry did not wait for cycle-start capacity");
 }
 
 } // namespace

@@ -339,7 +339,9 @@ enqueue[i] = fire && match[i]
 No matching queue may consume independently. Mapping progress and configured-
 hardware projection rebuild the exact group; simulator plan import preserves
 it; and the Fabric RTL implements the corresponding queue admission contract.
-A PE selector or endpoint alone is not durable storage.
+Each queue-ready term observes only capacity free at the start of the PE clock
+cycle, so neither valid nor ready propagates combinationally through the
+ingress traversal. A PE selector or endpoint alone is not durable storage.
 
 The frozen attachment domain records the Fabric-derived operand allocation
 unit only when every resident-context choice for that concrete FU input names

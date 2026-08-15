@@ -240,6 +240,8 @@ private:
     std::uint32_t capacity = 0;
     std::uint32_t occupancy = 0;
     std::uint32_t reservations = 0;
+    std::optional<::loom::evaluation::ExactRatio> admissionCycle;
+    std::uint32_t admissionCredits = 0;
   };
 
   struct OperandQueueBinding final {
@@ -288,12 +290,15 @@ private:
                               const SpatialEventCoordinate &coordinate);
   llvm::Error schedulePublication(std::uint64_t slot,
                                   const SpatialEventCoordinate &coordinate);
-  llvm::Expected<bool> reserveOperandQueueCapacity(std::uint64_t slot);
+  llvm::Error beginOperandQueueCycle(const SpatialEventCoordinate &coordinate);
+  llvm::Expected<bool>
+  reserveOperandQueueCapacity(std::uint64_t slot,
+                              const SpatialEventCoordinate &coordinate);
   llvm::Error commitOperandQueueEnqueue(std::uint64_t slot);
   llvm::Expected<std::uint64_t>
   allocatePublicationGroup(llvm::ArrayRef<std::uint64_t> slots);
-  llvm::Expected<bool> tryPublishPublicationGroup(
-      std::uint64_t groupOrdinal, CgraTransportFrame &frame);
+  llvm::Expected<bool> tryPublishPublicationGroup(std::uint64_t groupOrdinal,
+                                                  CgraTransportFrame &frame);
   std::optional<CgraTransportCompletion> maybeRelease(std::uint64_t slot);
   void scheduleAt(std::uint64_t slot,
                   const SpatialEventCoordinate &publicationCoordinate);

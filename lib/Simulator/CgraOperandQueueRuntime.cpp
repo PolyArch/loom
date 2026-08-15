@@ -1,8 +1,8 @@
 #include "CgraTransportRuntime.h"
 
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <limits>
 #include <system_error>
@@ -17,8 +17,29 @@ llvm::Error invalid(const llvm::Twine &message) {
 
 } // namespace
 
-llvm::Expected<bool>
-CgraTransportRuntime::reserveOperandQueueCapacity(std::uint64_t slot) {
+llvm::Error CgraTransportRuntime::beginOperandQueueCycle(
+    const SpatialEventCoordinate &coordinate) {
+  const SpatialEventCoordinate incoming{coordinate.referenceCycle, 0};
+  for (OperandQueueUnitBinding &unit : operandQueueUnits_) {
+    if (unit.admissionCycle) {
+      const SpatialEventCoordinate active{*unit.admissionCycle, 0};
+      const int order = compareSpatialEventCoordinates(incoming, active);
+      if (order < 0)
+        return invalid("CGRA PE operand admission cycle moved backward");
+      if (order == 0)
+        continue;
+    }
+    if (unit.occupancy > unit.capacity ||
+        unit.reservations > unit.capacity - unit.occupancy)
+      return invalid("CGRA PE operand allocation-unit occupancy is invalid");
+    unit.admissionCycle = coordinate.referenceCycle;
+    unit.admissionCredits = unit.capacity - unit.occupancy - unit.reservations;
+  }
+  return llvm::Error::success();
+}
+
+llvm::Expected<bool> CgraTransportRuntime::reserveOperandQueueCapacity(
+    std::uint64_t slot, const SpatialEventCoordinate &coordinate) {
   if (slot >= inFlight_.size() || !inFlight_[slot].active)
     return invalid("CGRA PE operand reservation names an inactive token");
   InFlight &inFlight = inFlight_[slot];
@@ -35,8 +56,7 @@ CgraTransportRuntime::reserveOperandQueueCapacity(std::uint64_t slot) {
     if (sink.kind != SinkKind::Channel ||
         sink.operandQueueBinding >= operandQueues_.size())
       return invalid("CGRA PE operand sink has an invalid queue binding");
-    const OperandQueueBinding &queue =
-        operandQueues_[sink.operandQueueBinding];
+    const OperandQueueBinding &queue = operandQueues_[sink.operandQueueBinding];
     if (queue.channel != sink.channel ||
         queue.unitBinding >= operandQueueUnits_.size() ||
         state_->channelSlots[queue.channel].ready.size() != queue.occupancy)
@@ -46,16 +66,21 @@ CgraTransportRuntime::reserveOperandQueueCapacity(std::uint64_t slot) {
     units.push_back(queue.unitBinding);
   }
 
+  if (!units.empty())
+    if (llvm::Error error = beginOperandQueueCycle(coordinate))
+      return std::move(error);
   for (std::uint64_t unitOrdinal : units) {
     const OperandQueueUnitBinding &unit = operandQueueUnits_[unitOrdinal];
     if (unit.occupancy > unit.capacity ||
         unit.reservations > unit.capacity - unit.occupancy)
       return invalid("CGRA PE operand allocation-unit occupancy is invalid");
-    if (unit.occupancy + unit.reservations == unit.capacity)
+    if (unit.admissionCredits == 0)
       return false;
   }
-  for (std::uint64_t unitOrdinal : units)
+  for (std::uint64_t unitOrdinal : units) {
+    --operandQueueUnits_[unitOrdinal].admissionCredits;
     ++operandQueueUnits_[unitOrdinal].reservations;
+  }
   inFlight.operandCapacityReserved = !units.empty();
   inFlight.operandCapacityBlocked = false;
   return true;
@@ -75,16 +100,14 @@ CgraTransportRuntime::commitOperandQueueEnqueue(std::uint64_t slot) {
       continue;
     if (sink.operandQueueBinding >= operandQueues_.size())
       return invalid("CGRA PE operand enqueue has an invalid queue binding");
-    const OperandQueueBinding &queue =
-        operandQueues_[sink.operandQueueBinding];
+    const OperandQueueBinding &queue = operandQueues_[sink.operandQueueBinding];
     if (queue.unitBinding >= operandQueueUnits_.size() ||
         queue.channel != sink.channel ||
         state_->channelSlots[queue.channel].ready.size() != queue.occupancy)
       return invalid("CGRA PE operand enqueue found divergent queue state");
     if (!uniqueUnits.insert(queue.unitBinding).second)
       return invalid("CGRA PE operand enqueue repeats an allocation unit");
-    const OperandQueueUnitBinding &unit =
-        operandQueueUnits_[queue.unitBinding];
+    const OperandQueueUnitBinding &unit = operandQueueUnits_[queue.unitBinding];
     if (unit.reservations == 0 || unit.occupancy >= unit.capacity)
       return invalid("CGRA PE operand enqueue has no reserved capacity");
     queues.push_back(sink.operandQueueBinding);
@@ -116,21 +139,29 @@ llvm::Error CgraTransportRuntime::acceptActorCommits(
   };
   llvm::SmallVector<Dequeue, 8> dequeues;
   llvm::SmallDenseSet<std::uint64_t, 8> frameUnits;
+  if (!events.empty()) {
+    const auto &cycle = events.front().coordinate.referenceCycle;
+    for (const CgraActorLifecycleEvent &event : events)
+      if (event.coordinate.referenceCycle != cycle)
+        return invalid("CGRA PE operand dequeue batch spans clock cycles");
+    if (llvm::Error error = beginOperandQueueCycle(events.front().coordinate))
+      return error;
+  }
   for (const CgraActorLifecycleEvent &event : events) {
     if (event.kind != CgraActorLifecycleKind::Committed ||
         event.semanticActorOrdinal >= state_->execution->actorPlans.size())
       return invalid("CGRA PE operand dequeue has an invalid actor commit");
     const ActorExecutionPlan &actor =
         state_->execution->actorPlans[event.semanticActorOrdinal];
-    const auto transition = llvm::find_if(
-        actor.handshakeCases, [&](const auto &candidate) {
+    const auto transition =
+        llvm::find_if(actor.handshakeCases, [&](const auto &candidate) {
           return candidate.ordinal == event.transitionCaseOrdinal;
         });
     if (transition == actor.handshakeCases.end())
       return invalid("CGRA PE operand dequeue names an unknown transition");
     for (std::uint32_t input : transition->consumedInputs) {
-      auto found = actorInputQueueBindings_.find(
-          {event.semanticActorOrdinal, input});
+      auto found =
+          actorInputQueueBindings_.find({event.semanticActorOrdinal, input});
       if (found == actorInputQueueBindings_.end())
         continue;
       if (found->second >= operandQueues_.size())

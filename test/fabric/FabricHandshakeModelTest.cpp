@@ -1026,17 +1026,8 @@ void temporalPeQueuesAndRegisterFifosAreRegisteredBreaks() {
     if (payload.source.owner == peEndpointOwner) {
       ++ingressSelectors;
       require(
-          test,
-          activation.arcOrdinals().size() == 1 &&
-              hasPath(*model, activation,
-                      node(test, *model,
-                           {traversal.destinations.front(),
-                            HandshakeSignalKind::Ready}),
-                      node(test, *model,
-                           {traversal.sources.front(),
-                            HandshakeSignalKind::Ready})),
-          "temporal operand queue did not preserve its registered-valid and "
-          "full-replacement-ready semantics");
+          test, activation.arcOrdinals().empty(),
+          "temporal operand queue did not cut valid and ready dependencies");
       continue;
     }
     ++egressSelectors;

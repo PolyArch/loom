@@ -439,12 +439,15 @@ allocation unit, a configured match group may contain at most one logical
 queue because version 1 declares one enqueue service slot. Mapping and PnR
 reject a group that selects two queues in the same unit; this is a legality
 failure, not an arbitration opportunity. Matches in distinct allocation units
-may fan out atomically when every selected unit has capacity after its
-cycle-start dequeue and grants its one required enqueue service. No matching
-queue mutates unless the common `fire` occurs; a token cannot be delivered to
-a ready subset, dropped for a blocked subset, or enqueued again on a later
-retry. No match backpressures the input and is an invalid configured routing
-situation, not an implicit discard.
+may fan out atomically when every selected unit has cycle-start capacity and
+grants its one required enqueue service. No matching queue mutates unless the
+common `fire` occurs; a token cannot be delivered to a ready subset, dropped
+for a blocked subset, or enqueued again on a later retry. Each
+`queue_ready[i]` observes only capacity that was free at the start of the PE
+clock cycle. A dequeue in that cycle does not create a combinational
+replacement path from FU readiness to ingress readiness. No match
+backpressures the input and is an invalid configured routing situation, not an
+implicit discard.
 
 The temporal-PE schema uniquely owns the typed `ResourceState` values for
 resident contexts, logical operand queues, register FIFOs, and shared dispatch
@@ -510,12 +513,12 @@ One enqueue and one dequeue may commit on the same allocation unit in one
 PE clock cycle. Let `O` be occupancy at the cycle start, `D` the selected
 dequeue count, and `E` the selected enqueue count for one allocation unit.
 The current operand-buffer contract has `D` and `E` in `{0, 1}`. Dequeue
-eligibility observes only a token present at cycle start. Enqueue capacity is
-checked against `O - D`, and
-the next occupancy is exactly `O - D + E`. The two selected resource
-transitions commit atomically at the PE clock boundary. Consequently a dequeue
-may provide same-cycle capacity to an enqueue, while the newly enqueued token
-cannot satisfy that cycle's dequeue; there is no implicit bypass.
+eligibility observes only a token present at cycle start. Enqueue eligibility
+requires `O < capacity`, independently of `D`, and the next occupancy is
+exactly `O - D + E`. The two selected resource transitions commit atomically
+at the PE clock boundary. A non-full unit may therefore dequeue and enqueue in
+one cycle, while a full unit cannot use that cycle's dequeue as ingress
+capacity. The newly enqueued token cannot satisfy that cycle's dequeue.
 
 `NextPeClockBoundary` is mechanically the next rising edge of the exact Clock
 domain containing the PE. It is not an `OperandBufferLocalCycle` state object,
@@ -576,14 +579,12 @@ and round-robin policy.
 ## Handshake Dependency Projection
 
 Every selected ingress boundary-to-FU traversal terminates at a logical
-operand queue. Because dequeue eligibility observes only the cycle-start queue
-head and an enqueue commits at the PE clock boundary, that traversal does not
-contribute a boundary-input-valid to FU-input-valid dependency. A full queue,
-however, may accept an enqueue by committing a same-cycle dequeue, so boundary
-input ready depends combinationally on the selected queue's FU-side dequeue
-ready. The Fabric handshake projection therefore contributes exactly the
-backward FU-input-ready to boundary-input-ready arc and no forward valid arc.
-The queue remains a typed durable progress boundary for its exact sink
+operand queue. Dequeue eligibility observes only the cycle-start queue head,
+enqueue eligibility observes only cycle-start free capacity, and both
+transitions commit at the PE clock boundary. The traversal therefore
+contributes neither a boundary-input-valid to FU-input-valid dependency nor a
+backward FU-input-ready to boundary-input-ready dependency. The queue is a
+typed durable progress boundary for its exact sink
 attachment because an accepted token is durably retained independently of a
 later FU firing. Mapping progress analysis consumes that Fabric projection
 directly; it must not require an additional external
@@ -674,7 +675,8 @@ identity and backpressure, rejection of an absent or nonpositive
 `operand_buffer_size` in every mode, canonical allocation-unit derivation for
 all three modes, match-group admission against one enqueue service per unit,
 one enqueue's atomic short service claim plus durable append transition,
-simultaneous dequeue/enqueue without same-cycle bypass, and
+simultaneous dequeue/enqueue from non-full occupancy without same-cycle
+replacement, and
 deterministic round-robin contention between two logical queues. Boundary tests
 also cover the shared quiet, warning, hard-limit, and overflow cases for both
 anonymous and named temporal PEs. Tests do not construct a queue-count, depth,
