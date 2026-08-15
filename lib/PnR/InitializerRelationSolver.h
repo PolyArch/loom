@@ -252,6 +252,11 @@ private:
                                  bool add);
   void enqueueAllDifferentForcedValue(PnrIndex relation, PnrIndex value);
   bool propagateAllDifferentValue(PnrIndex relation, PnrIndex value);
+  bool allDifferentMatchingFeasible(PnrIndex relation,
+                                    const AllDifferentRelationSupport &support,
+                                    bool initialPropagation);
+  bool augmentAllDifferentMatching(const AllDifferentRelationSupport &support,
+                                   PnrIndex member, PnrIndex shortestLength);
   bool removeChoice(PnrIndex decision, PnrIndex localChoice);
   bool choiceActive(PnrIndex decision, PnrIndex localChoice) const;
   bool relationChoiceSupported(PnrIndex relation, PnrIndex decision,
@@ -263,6 +268,7 @@ private:
   bool capacityChoiceSupported(PnrIndex relation, PnrIndex decision,
                                PnrIndex localChoice) const;
   bool activeRelationSatisfied(const InitializerRelationRecord &relation) const;
+  std::string allDifferentHallFailureMessage() const;
   bool propagate();
   llvm::Expected<SearchResult>
   search(std::uint64_t assignmentLimit,
@@ -312,6 +318,11 @@ private:
   std::vector<AllDifferentChoiceOccurrence> allDifferentChoiceOccurrences_;
   std::vector<std::uint8_t> allDifferentForcedValuePending_;
   std::vector<AllDifferentForcedValue> allDifferentForcedValueQueue_;
+  std::vector<PnrIndex> allDifferentMemberMatches_;
+  std::vector<PnrIndex> allDifferentValueMatches_;
+  std::vector<PnrIndex> allDifferentMemberDistances_;
+  std::vector<PnrIndex> allDifferentMemberQueue_;
+  std::vector<std::uint8_t> allDifferentValueReachable_;
   std::vector<PnrIndex> canonicalActiveChoices_;
   std::vector<PnrIndex> choiceOrder_;
   std::vector<PnrIndex> choiceFenwick_;
@@ -320,6 +331,12 @@ private:
   std::size_t queueTail_ = 0;
   std::size_t queueCount_ = 0;
   std::uint64_t assignmentAttempts_ = 0;
+  PnrIndex allDifferentFailureRelation_ = getInvalidPnrIndex();
+  PnrIndex allDifferentFailureMatched_ = 0;
+  PnrIndex allDifferentFailureMemberCount_ = 0;
+  PnrIndex allDifferentFailureValueCount_ = 0;
+  std::uint64_t propagationInvocationCount_ = 0;
+  bool allDifferentFailureAtInitialPropagation_ = false;
   bool rootCardinalityContradiction_ = false;
 };
 

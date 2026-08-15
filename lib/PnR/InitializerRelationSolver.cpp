@@ -435,6 +435,19 @@ InitializerRelationSolver::InitializerRelationSolver(
   binaryEqualDepletedValueQueue_.reserve(
       binaryEqualDepletedValuePending_.size());
   allDifferentForcedValueQueue_.reserve(allDifferentMembers_.size());
+  PnrIndex maximumAllDifferentMemberCount = 0;
+  PnrIndex maximumAllDifferentValueCount = 0;
+  for (const AllDifferentRelationSupport &support : allDifferentSupports_) {
+    maximumAllDifferentMemberCount =
+        std::max(maximumAllDifferentMemberCount, support.memberCount);
+    maximumAllDifferentValueCount =
+        std::max(maximumAllDifferentValueCount, support.valueCount);
+  }
+  allDifferentMemberMatches_.resize(maximumAllDifferentMemberCount);
+  allDifferentValueMatches_.resize(maximumAllDifferentValueCount);
+  allDifferentMemberDistances_.resize(maximumAllDifferentMemberCount);
+  allDifferentMemberQueue_.resize(maximumAllDifferentMemberCount);
+  allDifferentValueReachable_.resize(maximumAllDifferentValueCount);
   canonicalActiveChoices_.resize(choiceCount);
   choiceOrder_.resize(choiceCount);
   choiceFenwick_.resize(choiceCount);
@@ -515,6 +528,9 @@ void InitializerRelationSolver::reset() {
   }
   removalJournal_.clear();
   assignmentAttempts_ = 0;
+  propagationInvocationCount_ = 0;
+  allDifferentFailureRelation_ = getInvalidPnrIndex();
+  allDifferentFailureAtInitialPropagation_ = false;
   for (PnrIndex relation = 0; relation < model_->relations().size();
        ++relation) {
     const BinaryEqualSupport &equal = binaryEqualSupports_[relation];
@@ -738,6 +754,154 @@ bool InitializerRelationSolver::propagateAllDifferentValue(PnrIndex relation,
     if (choiceActive(decision, occurrence.localChoice) &&
         !removeChoice(decision, occurrence.localChoice))
       return false;
+  }
+  return true;
+}
+
+bool InitializerRelationSolver::augmentAllDifferentMatching(
+    const AllDifferentRelationSupport &support, PnrIndex memberOrdinal,
+    PnrIndex shortestLength) {
+  const auto members = llvm::ArrayRef(allDifferentMembers_)
+                           .slice(support.memberOffset, support.memberCount);
+  const AllDifferentMemberSupport &member = members[memberOrdinal];
+  const PnrIndex nextDistance = allDifferentMemberDistances_[memberOrdinal] + 1;
+  for (PnrIndex value = 0; value < support.valueCount; ++value) {
+    if (allDifferentActiveChoiceCounts_[member.activeChoiceCountOffset +
+                                        value] == 0)
+      continue;
+    const PnrIndex owner = allDifferentValueMatches_[value];
+    if (owner == getInvalidPnrIndex()) {
+      if (nextDistance != shortestLength)
+        continue;
+    } else if (allDifferentMemberDistances_[owner] != nextDistance ||
+               !augmentAllDifferentMatching(support, owner, shortestLength)) {
+      continue;
+    }
+    allDifferentMemberMatches_[memberOrdinal] = value;
+    allDifferentValueMatches_[value] = memberOrdinal;
+    return true;
+  }
+  allDifferentMemberDistances_[memberOrdinal] = getInvalidPnrIndex();
+  return false;
+}
+
+bool InitializerRelationSolver::allDifferentMatchingFeasible(
+    PnrIndex relation, const AllDifferentRelationSupport &support,
+    bool initialPropagation) {
+  if (support.valueCount == 0)
+    return true;
+  auto memberMatches = llvm::MutableArrayRef(allDifferentMemberMatches_)
+                           .take_front(support.memberCount);
+  auto valueMatches = llvm::MutableArrayRef(allDifferentValueMatches_)
+                          .take_front(support.valueCount);
+  std::fill(memberMatches.begin(), memberMatches.end(), getInvalidPnrIndex());
+  std::fill(valueMatches.begin(), valueMatches.end(), getInvalidPnrIndex());
+
+  PnrIndex matched = 0;
+  while (matched != support.memberCount) {
+    auto distances = llvm::MutableArrayRef(allDifferentMemberDistances_)
+                         .take_front(support.memberCount);
+    std::fill(distances.begin(), distances.end(), getInvalidPnrIndex());
+    PnrIndex head = 0;
+    PnrIndex tail = 0;
+    for (PnrIndex member = 0; member < support.memberCount; ++member) {
+      if (memberMatches[member] != getInvalidPnrIndex())
+        continue;
+      distances[member] = 0;
+      allDifferentMemberQueue_[tail++] = member;
+    }
+
+    PnrIndex shortestLength = getInvalidPnrIndex();
+    const auto members = llvm::ArrayRef(allDifferentMembers_)
+                             .slice(support.memberOffset, support.memberCount);
+    while (head != tail) {
+      const PnrIndex memberOrdinal = allDifferentMemberQueue_[head++];
+      const PnrIndex nextDistance = distances[memberOrdinal] + 1;
+      if (shortestLength != getInvalidPnrIndex() &&
+          nextDistance > shortestLength)
+        continue;
+      const AllDifferentMemberSupport &member = members[memberOrdinal];
+      for (PnrIndex value = 0; value < support.valueCount; ++value) {
+        if (allDifferentActiveChoiceCounts_[member.activeChoiceCountOffset +
+                                            value] == 0)
+          continue;
+        const PnrIndex owner = valueMatches[value];
+        if (owner == getInvalidPnrIndex()) {
+          shortestLength = nextDistance;
+          continue;
+        }
+        if (distances[owner] != getInvalidPnrIndex())
+          continue;
+        distances[owner] = nextDistance;
+        allDifferentMemberQueue_[tail++] = owner;
+      }
+    }
+    if (shortestLength == getInvalidPnrIndex()) {
+      auto valueReachable = llvm::MutableArrayRef(allDifferentValueReachable_)
+                                .take_front(support.valueCount);
+      std::fill(valueReachable.begin(), valueReachable.end(), 0);
+      PnrIndex hallMemberCount = 0;
+      for (PnrIndex memberOrdinal = 0; memberOrdinal < support.memberCount;
+           ++memberOrdinal) {
+        if (distances[memberOrdinal] == getInvalidPnrIndex())
+          continue;
+        ++hallMemberCount;
+        const AllDifferentMemberSupport &member = members[memberOrdinal];
+        for (PnrIndex value = 0; value < support.valueCount; ++value)
+          if (allDifferentActiveChoiceCounts_[member.activeChoiceCountOffset +
+                                              value] != 0)
+            valueReachable[value] = 1;
+      }
+      const PnrIndex hallValueCount = static_cast<PnrIndex>(
+          llvm::count(valueReachable, static_cast<std::uint8_t>(1)));
+      allDifferentFailureRelation_ = relation;
+      allDifferentFailureMatched_ = matched;
+      allDifferentFailureMemberCount_ = hallMemberCount;
+      allDifferentFailureValueCount_ = hallValueCount;
+      allDifferentFailureAtInitialPropagation_ = initialPropagation;
+      if (!initialPropagation)
+        return false;
+      loom::mapping_debug::emit(
+          loom::mapping_debug::Level::Summary,
+          loom::mapping_debug::Stage::SpatialPnr,
+          loom::mapping_debug::Event::Seed, [&](llvm::json::Object &fields) {
+            fields["operation"] = "initializer_all_different_hall_failure";
+            fields["relation"] = relation;
+            fields["member_count"] = support.memberCount;
+            fields["projected_value_count"] = support.valueCount;
+            fields["maximum_matching_size"] = matched;
+            fields["hall_member_count"] = hallMemberCount;
+            fields["hall_value_count"] = hallValueCount;
+          });
+      loom::mapping_debug::emit(
+          loom::mapping_debug::Level::Decision,
+          loom::mapping_debug::Stage::SpatialPnr,
+          loom::mapping_debug::Event::Seed, [&](llvm::json::Object &fields) {
+            fields["operation"] = "initializer_all_different_hall_witness";
+            fields["relation"] = relation;
+            llvm::json::Array decisions;
+            for (PnrIndex memberOrdinal = 0;
+                 memberOrdinal < support.memberCount; ++memberOrdinal)
+              if (distances[memberOrdinal] != getInvalidPnrIndex())
+                decisions.emplace_back(members[memberOrdinal].decision);
+            llvm::json::Array values;
+            for (PnrIndex value = 0; value < support.valueCount; ++value)
+              if (valueReachable[value] != 0)
+                values.emplace_back(value);
+            fields["hall_decisions"] = std::move(decisions);
+            fields["hall_values"] = std::move(values);
+          });
+      return false;
+    }
+
+    PnrIndex augmented = 0;
+    for (PnrIndex member = 0; member < support.memberCount; ++member)
+      if (memberMatches[member] == getInvalidPnrIndex() &&
+          augmentAllDifferentMatching(support, member, shortestLength))
+        ++augmented;
+    if (augmented == 0)
+      return false;
+    matched += augmented;
   }
   return true;
 }
@@ -998,6 +1162,9 @@ bool InitializerRelationSolver::activeRelationSatisfied(
 }
 
 bool InitializerRelationSolver::propagate() {
+  const bool initialPropagation = propagationInvocationCount_++ == 0;
+  allDifferentFailureRelation_ = getInvalidPnrIndex();
+  allDifferentFailureAtInitialPropagation_ = false;
   while (queueCount_ != 0 || !allDifferentForcedValueQueue_.empty() ||
          !binaryEqualDepletedValueQueue_.empty()) {
     if (!allDifferentForcedValueQueue_.empty()) {
@@ -1049,7 +1216,24 @@ bool InitializerRelationSolver::propagate() {
           return false;
     }
   }
+  for (auto [relation, support] : llvm::enumerate(allDifferentSupports_))
+    if (!allDifferentMatchingFeasible(static_cast<PnrIndex>(relation), support,
+                                      initialPropagation))
+      return false;
   return true;
+}
+
+std::string InitializerRelationSolver::allDifferentHallFailureMessage() const {
+  assert(allDifferentFailureRelation_ < allDifferentSupports_.size());
+  return "initializer all-different relation " +
+         std::to_string(allDifferentFailureRelation_) +
+         " has a Hall deficit: maximum matching " +
+         std::to_string(allDifferentFailureMatched_) + "/" +
+         std::to_string(
+             allDifferentSupports_[allDifferentFailureRelation_].memberCount) +
+         ", witness members " +
+         std::to_string(allDifferentFailureMemberCount_) + ", witness values " +
+         std::to_string(allDifferentFailureValueCount_);
 }
 
 PnrIndex InitializerRelationSolver::soleChoice(PnrIndex decision) const {
@@ -1442,10 +1626,15 @@ InitializerRelationSolver::solveCanonicalWithFixedAndPreferredChoices(
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::WorkLimit,
         "Spatial initializer exhausted its assignment work limit");
-  if (*result == SearchResult::Contradiction)
+  if (*result == SearchResult::Contradiction) {
+    if (allDifferentFailureAtInitialPropagation_)
+      return llvm::make_error<InitializerRelationSolveFailure>(
+          InitializerRelationSolveFailureKind::FixedRootInfeasible,
+          allDifferentHallFailureMessage());
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::FixedRootInfeasible,
         "Spatial initializer fixed choices are infeasible");
+  }
 
   InitializerRelationSolveResult solved;
   solved.choices.reserve(domainCounts_.size());
@@ -1495,10 +1684,15 @@ llvm::Expected<InitializerRelationSolveResult> InitializerRelationSolver::solve(
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::WorkLimit,
         "Spatial initializer exhausted its assignment work limit");
-  if (*result == SearchResult::Contradiction)
+  if (*result == SearchResult::Contradiction) {
+    if (allDifferentFailureAtInitialPropagation_)
+      return llvm::make_error<InitializerRelationSolveFailure>(
+          InitializerRelationSolveFailureKind::ProvenInfeasible,
+          allDifferentHallFailureMessage());
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::ProvenInfeasible,
         "initializer assignment domain is infeasible");
+  }
 
   InitializerRelationSolveResult solved;
   solved.choices.reserve(domainCounts_.size());
@@ -1528,6 +1722,11 @@ std::size_t InitializerRelationSolver::retainedStorageBytes() const {
          retainedBytes(allDifferentChoiceOccurrences_) +
          retainedBytes(allDifferentForcedValuePending_) +
          retainedBytes(allDifferentForcedValueQueue_) +
+         retainedBytes(allDifferentMemberMatches_) +
+         retainedBytes(allDifferentValueMatches_) +
+         retainedBytes(allDifferentMemberDistances_) +
+         retainedBytes(allDifferentMemberQueue_) +
+         retainedBytes(allDifferentValueReachable_) +
          retainedBytes(canonicalActiveChoices_) + retainedBytes(choiceOrder_) +
          retainedBytes(choiceFenwick_) + retainedBytes(completeAssignment_);
 }

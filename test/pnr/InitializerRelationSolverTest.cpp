@@ -162,6 +162,25 @@ void allDifferentCardinalityProvesInfeasibilityBeforeSearch() {
     fail("all-different cardinality proof entered fixed-root DFS");
 }
 
+void allDifferentHallContradictionProvesInfeasibilityBeforeSearch() {
+  InitializerRelationModel model = makeModel(
+      {2, 2, 2, 2}, {{InitializerRelationKind::Disjoint,
+                      {{0, {0, 1}}, {1, {0, 1}}, {2, {0, 1}}, {3, {2, 3}}}}});
+  InitializerRelationSolver solver(model);
+
+  auto result = solver.solveCanonical(/*assignmentLimit=*/1);
+  if (result)
+    fail("all-different Hall contradiction produced an assignment");
+  bool observedProof = false;
+  llvm::handleAllErrors(
+      result.takeError(), [&](const InitializerRelationSolveFailure &error) {
+        observedProof = error.kind() ==
+                        InitializerRelationSolveFailureKind::ProvenInfeasible;
+      });
+  if (!observedProof || solver.assignmentAttempts() != 0)
+    fail("all-different Hall contradiction entered canonical DFS");
+}
+
 void repeatedChoicesDoNotCreateResidentContexts() {
   InitializerRelationModel model = makeModel(
       {3, 2},
@@ -460,6 +479,7 @@ int main() {
   completeAssignmentValidationBacktracks();
   workLimitDoesNotBecomeInfeasibility();
   allDifferentCardinalityProvesInfeasibilityBeforeSearch();
+  allDifferentHallContradictionProvesInfeasibilityBeforeSearch();
   repeatedChoicesDoNotCreateResidentContexts();
   fixedRootFailureIsNotGlobalInfeasibility();
   fixedChoicesConstrainTheSharedRelationModel();
