@@ -7,7 +7,9 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <variant>
 #include <vector>
@@ -428,6 +430,51 @@ private:
   deriveUnconditionalHandshakeDependencyArcs(const FabricArtifactView &);
 };
 
+struct FabricHandshakeContextStatistics final {
+  std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t retainedBytes = 0;
+  std::uint64_t deterministicWork = 0;
+  std::uint64_t ownerCount = 0;
+  std::uint64_t nodeCount = 0;
+  std::uint64_t arcCount = 0;
+  std::uint64_t fragmentCount = 0;
+};
+
+/// Immutable Fabric-only compilation of occurrence-level handshake semantics.
+/// The complete Fabric identity and algorithm key make reuse explicit and
+/// bounded by the lifetime of the owning invocation context.
+class FabricHandshakeContext final {
+public:
+  FabricHandshakeContext(const FabricHandshakeContext &) = default;
+  FabricHandshakeContext(FabricHandshakeContext &&) noexcept = default;
+  FabricHandshakeContext &operator=(const FabricHandshakeContext &) = default;
+  FabricHandshakeContext &
+  operator=(FabricHandshakeContext &&) noexcept = default;
+
+  const ArtifactIdentity &fabricIdentity() const { return fabricIdentity_; }
+  const std::array<std::uint8_t, 32> &key() const { return key_; }
+  llvm::ArrayRef<HandshakeOwnerModel> ownerModels() const { return *models_; }
+  const FabricHandshakeContextStatistics &statistics() const {
+    return statistics_;
+  }
+
+private:
+  FabricHandshakeContext(
+      ArtifactIdentity fabricIdentity, std::array<std::uint8_t, 32> key,
+      std::shared_ptr<const std::vector<HandshakeOwnerModel>> models,
+      FabricHandshakeContextStatistics statistics)
+      : fabricIdentity_(std::move(fabricIdentity)), key_(key),
+        models_(std::move(models)), statistics_(statistics) {}
+
+  ArtifactIdentity fabricIdentity_;
+  std::array<std::uint8_t, 32> key_{};
+  std::shared_ptr<const std::vector<HandshakeOwnerModel>> models_;
+  FabricHandshakeContextStatistics statistics_;
+
+  friend llvm::Expected<FabricHandshakeContext>
+  buildFabricHandshakeContext(const FabricArtifactView &);
+};
+
 class ResolvedHandshakeActivation final {
 public:
   llvm::ArrayRef<std::uint32_t> fragmentOrdinals() const {
@@ -449,6 +496,13 @@ private:
 llvm::Expected<std::vector<HandshakeOwnerModel>>
 compileHandshakeOwnerModels(const FabricArtifactView &view);
 
+llvm::Expected<FabricHandshakeContext>
+buildFabricHandshakeContext(const FabricArtifactView &view);
+
+llvm::Error
+revalidateFabricHandshakeContext(const FabricHandshakeContext &context,
+                                 const FabricArtifactView &view);
+
 /// Resolves one owner's exact active fragments. Facts belonging to other
 /// owners are ignored; stale or contradictory facts for this owner reject.
 llvm::Expected<ResolvedHandshakeActivation>
@@ -462,6 +516,10 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
 llvm::Error verifySelectedCombinationalHandshakeAcyclic(
     const FabricArtifactView &view, const FabricHandshakeSelection &selection);
 
+llvm::Error verifySelectedCombinationalHandshakeAcyclic(
+    const FabricArtifactView &view, const FabricHandshakeSelection &selection,
+    const FabricHandshakeContext &context);
+
 /// Derives exact reachability between the requested boundary signals under one
 /// selected configuration. Owner-local junctions remain private, and an
 /// endpoint with no active dependency simply contributes no relation. The
@@ -470,6 +528,12 @@ llvm::Expected<std::vector<HandshakeDependencyArc>>
 deriveSelectedHandshakeReachability(
     const FabricArtifactView &view, const FabricHandshakeSelection &selection,
     llvm::ArrayRef<HandshakeSignalRef> terminals);
+
+llvm::Expected<std::vector<HandshakeDependencyArc>>
+deriveSelectedHandshakeReachability(
+    const FabricArtifactView &view, const FabricHandshakeSelection &selection,
+    llvm::ArrayRef<HandshakeSignalRef> terminals,
+    const FabricHandshakeContext &context);
 
 /// Derives the root-complete boundary relation that is present in every legal
 /// configured view. Internal junctions never escape this projection.

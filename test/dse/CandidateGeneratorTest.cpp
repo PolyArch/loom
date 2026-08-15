@@ -158,7 +158,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                const ResolvedCandidateGeneratorBinding &,
                const loom::ArtifactStore &store, const loom::BlobStore &,
-               const loom::ExecutionControlView &) {
+               const CandidateGeneratorInvocationView &) {
   const auto publish =
       [&](std::uint8_t byte) -> llvm::Expected<ArtifactRootReference> {
     auto identity = store.put(

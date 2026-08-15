@@ -80,7 +80,8 @@ projectSystemSpatialCausalRelease(
 llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
-    const SystemMappingView &mapping, const ArtifactStore &store);
+    const SystemMappingView &mapping, const ArtifactStore &store,
+    const SpatialMappingImportContext *spatialMappings = nullptr);
 
 } // namespace loom::mapping
 

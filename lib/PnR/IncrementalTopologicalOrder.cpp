@@ -7,9 +7,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <limits>
-#include <queue>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -101,18 +99,15 @@ buildCanonicalOrder(IncrementalTopologicalGraphView graph,
     if (bitIsSet(activeArcBits, static_cast<PnrIndex>(ordinal)))
       ++indegree[arc.destination];
 
-  std::priority_queue<PnrIndex, std::vector<PnrIndex>, std::greater<PnrIndex>>
-      ready;
-  for (PnrIndex node = 0; node < graph.nodeCount; ++node)
-    if (indegree[node] == 0)
-      ready.push(node);
-
   std::vector<PnrIndex> order;
   order.reserve(nodeCount);
-  while (!ready.empty()) {
-    const PnrIndex node = ready.top();
-    ready.pop();
-    order.push_back(node);
+  for (PnrIndex node = 0; node < graph.nodeCount; ++node)
+    if (indegree[node] == 0)
+      order.push_back(node);
+
+  std::size_t cursor = 0;
+  while (cursor < order.size()) {
+    const PnrIndex node = order[cursor++];
     for (PnrIndex arc = graph.adjacencyOffsets[node];
          arc < graph.adjacencyOffsets[node + 1]; ++arc) {
       if (!bitIsSet(activeArcBits, arc))
@@ -120,7 +115,7 @@ buildCanonicalOrder(IncrementalTopologicalGraphView graph,
       const PnrIndex destination = graph.arcs[arc].destination;
       assert(indegree[destination] != 0);
       if (--indegree[destination] == 0)
-        ready.push(destination);
+        order.push_back(destination);
     }
   }
   if (order.size() != nodeCount)
@@ -150,6 +145,14 @@ IncrementalTopologicalScratch::prepare(IncrementalTopologicalGraphView graph) {
   if (llvm::Error error = validateGraph(graph))
     return error;
 
+  return prepareValidated(graph);
+}
+
+llvm::Error IncrementalTopologicalScratch::prepareValidated(
+    IncrementalTopologicalGraphView graph) {
+  if (activeTransaction_)
+    return topologyError("cannot prepare scratch during a transaction");
+
   const std::size_t nodes = static_cast<std::size_t>(graph.nodeCount);
   const std::size_t arcs = graph.arcs.size();
   forwardMarks_.assign(nodes, 0);
@@ -157,18 +160,9 @@ IncrementalTopologicalScratch::prepare(IncrementalTopologicalGraphView graph) {
   forwardParentArcs_.resize(nodes);
   rankJournalMarks_.assign(nodes, 0);
   arcJournalMarks_.assign(arcs, 0);
-  forwardWorklist_.reserve(nodes);
-  backwardWorklist_.reserve(nodes);
-  reorderBuffer_.reserve(nodes);
-  touchedRanks_.reserve(nodes);
-  oldRankNodes_.reserve(nodes);
-  touchedArcs_.reserve(arcs);
-  oldArcActive_.reserve(arcs);
-  cycleWitness_.reserve(nodes + 1);
   cycleSearchStates_.assign(nodes, 0);
   cycleSearchParents_.resize(nodes);
   cycleSearchCursors_.resize(nodes);
-  cycleSearchStack_.reserve(nodes);
   transactionEpoch_ = 0;
   searchEpoch_ = 0;
   resetTransaction();
@@ -184,8 +178,7 @@ std::size_t IncrementalTopologicalScratch::retainedStorageBytes() const {
          retainedBytes(touchedArcs_) + retainedBytes(oldArcActive_) +
          retainedBytes(cycleWitness_) + retainedBytes(cycleSearchStates_) +
          retainedBytes(cycleSearchParents_) +
-         retainedBytes(cycleSearchCursors_) +
-         retainedBytes(cycleSearchStack_);
+         retainedBytes(cycleSearchCursors_) + retainedBytes(cycleSearchStack_);
 }
 
 void IncrementalTopologicalScratch::beginTransaction() {
@@ -272,8 +265,6 @@ llvm::Error IncrementalTopologicalOrder::rebuild() {
 }
 
 llvm::Error IncrementalTopologicalOrder::verify() const {
-  if (llvm::Error error = validateGraph(graph_))
-    return error;
   if (activeArcBits_.size() != bitWordCount(graph_.arcs.size()) ||
       order_.size() != graph_.nodeCount || ranks_.size() != graph_.nodeCount)
     return topologyError("state shape does not match the potential graph");
@@ -375,8 +366,7 @@ llvm::Error IncrementalTopologicalTransaction::removeArc(PnrIndex arcOrdinal) {
 }
 
 llvm::Expected<bool> IncrementalTopologicalTransaction::applyArcChanges(
-    llvm::ArrayRef<PnrIndex> removals,
-    llvm::ArrayRef<PnrIndex> insertions) {
+    llvm::ArrayRef<PnrIndex> removals, llvm::ArrayRef<PnrIndex> insertions) {
   if (!scratch_)
     return topologyError("transaction is no longer active");
   if (hasCycle_)
@@ -602,10 +592,9 @@ void IncrementalTopologicalTransaction::buildCycleWitness() {
         ancestor = graph.arcs[parentArc].source;
       }
       llvm::sort(scratch_->cycleWitness_);
-      scratch_->cycleWitness_.erase(
-          std::unique(scratch_->cycleWitness_.begin(),
-                      scratch_->cycleWitness_.end()),
-          scratch_->cycleWitness_.end());
+      scratch_->cycleWitness_.erase(std::unique(scratch_->cycleWitness_.begin(),
+                                                scratch_->cycleWitness_.end()),
+                                    scratch_->cycleWitness_.end());
       return;
     }
   }

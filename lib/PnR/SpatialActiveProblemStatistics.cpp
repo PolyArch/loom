@@ -1,0 +1,149 @@
+#include "SpatialActiveProblemStatistics.h"
+
+#include <cstdint>
+#include <limits>
+
+namespace loom::pnr {
+namespace {
+
+template <typename T>
+void addTrackedArray(std::uint64_t &bytes, std::uint64_t &work,
+                     llvm::ArrayRef<T> values) {
+  const std::uint64_t count = values.size();
+  const std::uint64_t elementBytes = sizeof(T);
+  if (count >
+      (std::numeric_limits<std::uint64_t>::max() - bytes) / elementBytes)
+    bytes = std::numeric_limits<std::uint64_t>::max();
+  else
+    bytes += count * elementBytes;
+  if (count > std::numeric_limits<std::uint64_t>::max() - work)
+    work = std::numeric_limits<std::uint64_t>::max();
+  else
+    work += count;
+}
+
+void saturatingAdd(std::uint64_t &value, std::uint64_t added) {
+  value = added > std::numeric_limits<std::uint64_t>::max() - value
+              ? std::numeric_limits<std::uint64_t>::max()
+              : value + added;
+}
+
+} // namespace
+
+SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
+    const FrozenSpatialRealizationIndex &realizations,
+    const FrozenSpatialMemoryIndex &memory,
+    const FrozenSpatialTransferIndex &transfers,
+    const FrozenSpatialLocalTransferIndex &localTransfers,
+    const FrozenSpatialPortIndex &ports,
+    const FrozenSpatialCapacityIndex &capacity,
+    const FrozenSpatialActiveRoutingDomain &activeRouting,
+    const FrozenSpatialHandshakeIndex &handshake,
+    std::uint64_t constructionNanoseconds) {
+  SpatialActiveProblemStatistics result;
+  result.context.constructionCount = 1;
+  result.context.constructionNanoseconds = constructionNanoseconds;
+  result.computeRealizationCount = realizations.computeRealizations().size();
+  result.computePlacementCount = realizations.computePlacements().size();
+  result.memoryRealizationCount = realizations.memoryRealizations().size();
+  result.memoryPlacementCount = realizations.memoryPlacements().size();
+  result.logicalNetCount = transfers.logicalNets().size();
+  result.logicalSinkCount = transfers.logicalNetSinks().size();
+  result.localTransferOptionCount = localTransfers.options().size();
+  result.portDemandCount = ports.portDemands().size();
+  result.attachmentOptionCount = ports.attachmentOptions().size();
+  result.activeEndpointCount = activeRouting.activeEndpointCount();
+  result.activeTraversalCount = activeRouting.activeTraversalCount();
+  result.activeRoutingArcCount = activeRouting.activeArcCount();
+  result.handshakeOwnerCount = handshake.owners().size();
+  result.handshakeNodeCount = handshake.nodeSignals().size();
+  result.handshakeArcCount = handshake.arcs().size();
+  result.handshakeFragmentCount = handshake.fragments().size();
+
+  std::uint64_t &bytes = result.context.retainedBytes;
+  std::uint64_t &work = result.context.deterministicWork;
+  addTrackedArray(bytes, work, realizations.computeRealizations());
+  addTrackedArray(bytes, work, realizations.computeActors());
+  addTrackedArray(bytes, work, realizations.computeActorRealizations());
+  addTrackedArray(bytes, work, realizations.computePlacements());
+  addTrackedArray(bytes, work, realizations.computeInstructionContexts());
+  addTrackedArray(bytes, work, realizations.memoryRealizations());
+  addTrackedArray(bytes, work, realizations.memoryActors());
+  addTrackedArray(bytes, work, realizations.memoryActorRealizations());
+  addTrackedArray(bytes, work, realizations.memoryPlacements());
+  addTrackedArray(bytes, work, memory.logicalBindings());
+  addTrackedArray(bytes, work, memory.bindingTargets());
+  addTrackedArray(bytes, work, memory.rootedUses());
+  addTrackedArray(bytes, work, memory.serviceUseGroups());
+  addTrackedArray(bytes, work, memory.exposures());
+  addTrackedArray(bytes, work, memory.exposureProviders());
+  addTrackedArray(bytes, work, memory.exposureOptions());
+  addTrackedArray(bytes, work, memory.dispatchDomains());
+  addTrackedArray(bytes, work, memory.dispatchOptions());
+  addTrackedArray(bytes, work, transfers.logicalNets());
+  addTrackedArray(bytes, work, transfers.logicalNetSinks());
+  addTrackedArray(bytes, work, transfers.logicalNetSourceBindings());
+  addTrackedArray(bytes, work, transfers.logicalNetSinkBindings());
+  addTrackedArray(bytes, work, localTransfers.domains());
+  addTrackedArray(bytes, work, localTransfers.options());
+  addTrackedArray(bytes, work, ports.portDemands());
+  addTrackedArray(bytes, work, ports.placementDomains());
+  addTrackedArray(bytes, work, ports.attachmentOptions());
+  addTrackedArray(bytes, work, ports.graphBoundaries());
+  addTrackedArray(bytes, work, capacity.resourceEvents());
+  addTrackedArray(bytes, work, capacity.resourceUses());
+  addTrackedArray(bytes, work, capacity.resourceTimeEnvelopes());
+  addTrackedArray(bytes, work, capacity.resourceTimeSegments());
+  addTrackedArray(bytes, work, handshake.nodeSignals());
+  addTrackedArray(bytes, work, handshake.arcs());
+  addTrackedArray(bytes, work, handshake.owners());
+  addTrackedArray(bytes, work, handshake.fragments());
+  addTrackedArray(bytes, work, handshake.fragmentArcOrdinals());
+  addTrackedArray(bytes, work, handshake.traversalFragments());
+  addTrackedArray(bytes, work, handshake.computePlacementFragments());
+  addTrackedArray(bytes, work, handshake.memoryOperationDomains());
+  addTrackedArray(bytes, work, handshake.memoryOperationPlans());
+  addTrackedArray(bytes, work, handshake.memoryPlanFragments());
+  saturatingAdd(bytes, activeRouting.retainedBytes());
+  saturatingAdd(work, activeRouting.deterministicWork());
+  return result;
+}
+
+void emitSpatialActiveProblemStatistics(const FrozenSpatialPnrProblem &problem,
+                                        mapping_debug::Stage stage,
+                                        std::uint64_t hits,
+                                        std::uint64_t misses) {
+  const SpatialActiveProblemStatistics &statistics = problem.statistics();
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, stage,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "spatial_active";
+        fields["cache_hits"] = hits;
+        fields["cache_misses"] = misses;
+        fields["construction_count"] = statistics.context.constructionCount;
+        fields["construction_time_ns"] =
+            statistics.context.constructionNanoseconds;
+        fields["retained_bytes"] = statistics.context.retainedBytes;
+        fields["deterministic_work"] = statistics.context.deterministicWork;
+        fields["compute_realization_count"] =
+            statistics.computeRealizationCount;
+        fields["compute_placement_count"] = statistics.computePlacementCount;
+        fields["memory_realization_count"] = statistics.memoryRealizationCount;
+        fields["memory_placement_count"] = statistics.memoryPlacementCount;
+        fields["logical_net_count"] = statistics.logicalNetCount;
+        fields["logical_sink_count"] = statistics.logicalSinkCount;
+        fields["local_transfer_option_count"] =
+            statistics.localTransferOptionCount;
+        fields["port_demand_count"] = statistics.portDemandCount;
+        fields["attachment_option_count"] = statistics.attachmentOptionCount;
+        fields["active_endpoint_count"] = statistics.activeEndpointCount;
+        fields["active_traversal_count"] = statistics.activeTraversalCount;
+        fields["active_routing_arc_count"] = statistics.activeRoutingArcCount;
+        fields["handshake_owner_count"] = statistics.handshakeOwnerCount;
+        fields["handshake_node_count"] = statistics.handshakeNodeCount;
+        fields["handshake_arc_count"] = statistics.handshakeArcCount;
+        fields["handshake_fragment_count"] = statistics.handshakeFragmentCount;
+      });
+}
+
+} // namespace loom::pnr

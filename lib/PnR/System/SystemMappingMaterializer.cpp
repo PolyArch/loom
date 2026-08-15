@@ -801,7 +801,7 @@ finalizeSystemMappingCandidate(
     return draft.takeError();
   return ::loom::mapping::finalizeSystemMapping(
       mlir::cast<::mapping::SystemOp>(draft->get()), dataflow, fabric,
-      constraints, store);
+      constraints, store, &candidate.problem().spatialMappingImports());
 }
 
 } // namespace loom::pnr

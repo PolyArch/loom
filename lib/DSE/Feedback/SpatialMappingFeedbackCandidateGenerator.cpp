@@ -453,7 +453,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &store, const BlobStore &blobs,
-               const ExecutionControlView &) {
+               const CandidateGeneratorInvocationView &) {
   auto config = ::loom::pnr::adoptResolvedSpatialPnrConfigView(
       ::loom::pnr::resolvedSpatialPnrConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());

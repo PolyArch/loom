@@ -228,7 +228,7 @@ verifySystemMappingCapacity(
     llvm::ArrayRef<SystemServiceRealizationView> services,
     llvm::ArrayRef<SystemResourceUseView> resourceUses,
     llvm::ArrayRef<std::string> resourceUseActivationKeys,
-    const ArtifactStore &store) {
+    const SpatialMappingImportContext &spatialMappings) {
   if (resourceUses.size() != resourceUseActivationKeys.size())
     return invalid("System ResourceUse activation projection is incomplete");
 
@@ -272,10 +272,11 @@ verifySystemMappingCapacity(
         byteKey(encodeArtifactRootReference(context.spatialMapping));
     auto foundMapping = mappings.find(mappingKey);
     if (foundMapping == mappings.end()) {
-      auto imported = importSpatialMapping(context.spatialMapping, store);
+      auto imported =
+          resolveSpatialMappingImport(spatialMappings, context.spatialMapping);
       if (!imported)
         return imported.takeError();
-      foundMapping = mappings.emplace(mappingKey, imported->view()).first;
+      foundMapping = mappings.emplace(mappingKey, (*imported)->view()).first;
     }
     const SpatialMappingView &mapping = foundMapping->second;
     const auto spatialCore =

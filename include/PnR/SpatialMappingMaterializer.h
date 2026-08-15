@@ -20,7 +20,8 @@ finalizeSpatialMappingCandidate(
     const ::loom::mapping::TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     const ::loom::mapping::SpatialMappingConstraintSetView &constraints,
-    const ArtifactStore &store);
+    const ArtifactStore &store,
+    const ::loom::fabric::FabricHandshakeContext *handshakeContext = nullptr);
 
 } // namespace loom::pnr
 

@@ -3,6 +3,7 @@
 #include "../SpatialPhysicalTiming.h"
 #include "PnR/InitializerRelationSolver.h"
 #include "SystemCapacityProjection.h"
+#include "SystemPnrDerivedContextInternal.h"
 #include "SystemPnrSearchDomainInternal.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -91,60 +92,6 @@ llvm::Expected<PnrIndex> checked(PnrCapacityContext context,
   return checkedPnrIndex(context, static_cast<std::uint64_t>(value));
 }
 
-std::vector<::loom::fabric::FabricUsePatternRef>
-patternRefs(::loom::fabric::FabricInventoryOwnerRef owner,
-            const ::fabric::ResourceContract &contract) {
-  std::vector<::loom::fabric::FabricUsePatternRef> result;
-  result.reserve(contract.usePatternCount());
-  const auto patternOwner = ::loom::fabric::FabricUsePatternOwnerRef(owner);
-  for (std::uint32_t ordinal = 0; ordinal < contract.usePatternCount();
-       ++ordinal)
-    result.push_back({patternOwner, ordinal});
-  return result;
-}
-
-llvm::Expected<std::vector<FrozenSystemInstructionUsePatternDomain>>
-freezeInstructionUsePatterns(
-    const ::loom::fabric::FabricSystemRootView &fabric,
-    llvm::ArrayRef<::loom::fabric::AccCoreOccurrenceRef> cores) {
-  std::vector<FrozenSystemInstructionUsePatternDomain> result;
-  result.reserve(cores.size());
-  for (const auto core : cores) {
-    const ::loom::fabric::InstructionCoreContextRef context{core};
-    const auto *microarchitecture =
-        fabric.instructionCoreMicroarchitecture(context);
-    if (!microarchitecture)
-      return invalid("AccCore has no InstructionCore microarchitecture");
-    auto patterns =
-        patternRefs(::loom::fabric::FabricInventoryOwnerRef::of(context),
-                    microarchitecture->resourceContract());
-    if (patterns.empty())
-      return invalid("InstructionCore exposes no occupancy use pattern");
-    result.push_back({context, std::move(patterns)});
-  }
-  return result;
-}
-
-std::vector<FrozenSystemConsistencyUsePatternDomain>
-freezeConsistencyUsePatterns(
-    const ::loom::fabric::FabricSystemRootView &fabric) {
-  std::vector<FrozenSystemConsistencyUsePatternDomain> result;
-  for (const auto domain : fabric.hardwareDomains()) {
-    const auto *record = fabric.hardwareDomainContract(domain);
-    if (!record)
-      continue;
-    const auto *consistency =
-        std::get_if<::fabric::MemoryConsistencyContract>(&record->contract());
-    if (!consistency)
-      continue;
-    result.push_back(
-        {::loom::fabric::MemoryConsistencyDomainRef(domain),
-         patternRefs(::loom::fabric::FabricInventoryOwnerRef::of(domain),
-                     consistency->resourceContract())});
-  }
-  return result;
-}
-
 std::string bytesKey(llvm::ArrayRef<std::uint8_t> bytes) {
   return std::string(reinterpret_cast<const char *>(bytes.data()),
                      bytes.size());
@@ -154,25 +101,7 @@ std::string coreKey(::loom::fabric::AccCoreOccurrenceRef core) {
   return bytesKey(::loom::fabric::canonicalFabricBytes(core));
 }
 
-std::string targetClassKey(const FrozenSystemSpatialTargetClass &targetClass) {
-  std::string key = bytesKey(targetClass.moduleIdentity.bytes());
-  const auto moduleBytes =
-      ::loom::fabric::canonicalFabricBytes(targetClass.moduleTemplate);
-  key.append(reinterpret_cast<const char *>(moduleBytes.data()),
-             moduleBytes.size());
-  return key;
-}
-
-llvm::Expected<FrozenSystemSpatialTargetClass>
-targetClassForModule(const ::loom::fabric::FabricArtifactView &module) {
-  auto root = module.moduleRootTemplate();
-  if (module.rootKind() != ::loom::fabric::FabricRootKind::Module || !root)
-    return invalid("System SpatialCore dependency is not an exact Module root");
-  return FrozenSystemSpatialTargetClass{module.identity(), *root};
-}
-
 struct FrozenSystemRoutingData final {
-  FrozenEndpointRoutingTopology topology;
   std::vector<FrozenSystemTransferTerminal> terminals;
   std::vector<FrozenSystemTransferTerminalOwnerDomain> ownerDomains;
   std::vector<PnrIndex> endpointChoices;
@@ -351,6 +280,7 @@ llvm::Expected<TerminalOwnerDependency> terminalOwnerDependency(
 llvm::Expected<FrozenSystemRoutingData> freezeSystemRouting(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
+    const FrozenEndpointRoutingTopology &topology,
     const SystemPnrSearchDomainView &searchDomain,
     llvm::ArrayRef<FrozenSystemServiceContext> serviceContexts,
     llvm::ArrayRef<FrozenSystemThreadExecutionDecision> threadDecisions,
@@ -358,14 +288,8 @@ llvm::Expected<FrozenSystemRoutingData> freezeSystemRouting(
     llvm::ArrayRef<::loom::fabric::AccCoreOccurrenceRef> accCores,
     llvm::ArrayRef<FrozenSystemGraphExecutionDecision> graphDecisions) {
   FrozenSystemRoutingData result;
-  auto topology = freezeEndpointRoutingTopology(fabric.artifact());
-  if (!topology)
-    return topology.takeError();
-  result.topology = std::move(*topology);
-
   llvm::StringMap<PnrIndex> endpointOrdinals;
-  for (auto [ordinal, endpoint] :
-       llvm::enumerate(result.topology.endpoints())) {
+  for (auto [ordinal, endpoint] : llvm::enumerate(topology.endpoints())) {
     auto index = checked(serviceEndpointChoiceContext, ordinal);
     if (!index)
       return index.takeError();
@@ -909,164 +833,67 @@ llvm::Error validateInputs(
 }
 
 struct Catalogs final {
-  std::vector<FrozenSystemSpatialTargetClass> targetClasses;
-  std::vector<::loom::fabric::AccCoreOccurrenceRef> cores;
-  std::vector<PnrIndex> coreTargetClasses;
+  std::shared_ptr<const std::vector<FrozenSystemSpatialTargetClass>>
+      targetClasses;
+  std::shared_ptr<const std::vector<::loom::fabric::AccCoreOccurrenceRef>>
+      cores;
+  std::shared_ptr<const std::vector<PnrIndex>> coreTargetClasses;
   std::vector<ArtifactRootReference> mappings;
   std::vector<PnrIndex> mappingTargetClasses;
-  std::vector<detail::SpatialCatalogEntry> spatialCatalog;
+  std::shared_ptr<const std::vector<detail::SpatialCatalogEntry>>
+      spatialCatalog;
 };
 
-llvm::Expected<Catalogs>
-buildCatalogs(const ::dataflow::CanonicalDataflowProgramView &dataflow,
-              const ::loom::fabric::FabricSystemRootView &system,
-              llvm::ArrayRef<::loom::fabric::FabricPhysicalTimingProfileView>
-                  physicalTimingProfiles,
-              const SystemPnrSearchDomainView &searchDomain,
-              const ArtifactStore &store) {
-  Catalogs result;
-  result.cores.assign(system.artifact().accCoreOccurrences().begin(),
-                      system.artifact().accCoreOccurrences().end());
-  llvm::sort(result.cores, [](auto lhs, auto rhs) {
-    return ::loom::fabric::canonicalFabricBytes(lhs) <
-           ::loom::fabric::canonicalFabricBytes(rhs);
-  });
-
-  std::vector<FrozenSystemSpatialTargetClass> coreClasses;
-  coreClasses.reserve(result.cores.size());
-  for (auto core : result.cores) {
-    auto target = system.spatialCoreTarget(core);
-    if (!target ||
-        target->dependencyOrdinal >= system.artifact().importedModules().size())
-      return invalid("AccCore has no exact imported SpatialCore target");
-    const auto &module =
-        system.artifact().importedModules()[target->dependencyOrdinal];
-    auto targetClass = targetClassForModule(module);
-    if (!targetClass)
-      return targetClass.takeError();
-    if (targetClass->moduleTemplate != target->target)
-      return invalid(
-          "AccCore SpatialCore target disagrees with its Module root");
-    coreClasses.push_back(std::move(*targetClass));
-  }
-
+std::vector<ArtifactRootReference> activeSpatialMappings(
+    const SystemPnrSearchDomainView &searchDomain,
+    const ::loom::mapping::SystemMappingConstraintSetView &constraints) {
+  std::vector<ArtifactRootReference> result(
+      constraints.spatialMappingReferences().begin(),
+      constraints.spatialMappingReferences().end());
   for (const SystemSearchBindingDomain &binding : searchDomain.bindings())
     if (std::holds_alternative<::dataflow::RootedGraphLaunchRef>(binding.key))
       for (const SystemSearchAtom &atom : binding.atoms)
         if (const auto *domain =
                 std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain))
-          result.mappings.insert(result.mappings.end(),
-                                 domain->compatibleSpatialMappings.begin(),
-                                 domain->compatibleSpatialMappings.end());
-  llvm::sort(result.mappings, artifactRootReferenceLess);
-  result.mappings.erase(
-      std::unique(result.mappings.begin(), result.mappings.end()),
-      result.mappings.end());
-  auto spatialCatalog =
-      detail::importSpatialCatalog(result.mappings, dataflow, system, store);
-  if (!spatialCatalog)
-    return spatialCatalog.takeError();
-  result.spatialCatalog = std::move(*spatialCatalog);
+          result.insert(result.end(), domain->compatibleSpatialMappings.begin(),
+                        domain->compatibleSpatialMappings.end());
+  llvm::sort(result, artifactRootReferenceLess);
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
 
-  std::map<ArtifactIdentity::Storage,
-           const ::loom::fabric::FabricPhysicalTimingProfileView *>
-      timingByModule;
-  std::map<ArtifactIdentity::Storage,
-           const ::loom::fabric::FabricArtifactView *>
-      attachedModules;
-  for (auto core : result.cores) {
-    const auto target = system.spatialCoreTarget(core);
-    if (!target ||
-        target->dependencyOrdinal >= system.artifact().importedModules().size())
-      return invalid("AccCore timing target does not resolve");
-    const auto &module =
-        system.artifact().importedModules()[target->dependencyOrdinal];
-    attachedModules.emplace(module.identity().bytes(), &module);
-  }
-  for (const auto &profile : physicalTimingProfiles) {
-    const auto module = attachedModules.find(profile.fabricIdentity().bytes());
-    if (module == attachedModules.end())
-      return invalid(
-          "physical timing profile targets a Module not attached to System");
-    if (!timingByModule.emplace(profile.fabricIdentity().bytes(), &profile)
-             .second)
-      return invalid(
-          "System invocation has multiple physical timing profiles for one "
-          "Module");
-    if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
-            *module->second, profile))
-      return std::move(error);
-  }
-  if (timingByModule.size() != attachedModules.size())
-    return invalid(
-        "System invocation omits an attached Module physical timing profile");
-  for (detail::SpatialCatalogEntry &entry : result.spatialCatalog) {
-    const auto timing =
-        timingByModule.find(entry.mapping.view().fabricIdentity().bytes());
-    if (timing == timingByModule.end())
-      return invalid("SpatialMapping has no exact physical timing profile");
-    auto projected = detail::projectSpatialMappingPhysicalTiming(
-        entry.mapping.view(), *timing->second);
-    if (!projected)
-      return projected.takeError();
-    entry.worstRouteArrivalDelayQuanta = projected->worstArrivalDelayQuanta;
-    entry.totalRouteNegativeSlackQuanta = projected->totalNegativeSlackQuanta;
-    entry.physicalTimingProfileDigest = timing->second->digest().bytes();
-    entry.physicalTimingProfileKind = timing->second->kind();
-  }
+llvm::Expected<Catalogs>
+buildCatalogs(const detail::SystemStaticContextStorage &staticContext,
+              const detail::SystemActiveContextStorage &activeContext,
+              const SystemPnrSearchDomainView &searchDomain) {
+  Catalogs result;
+  result.targetClasses = staticContext.targetClasses;
+  result.cores = staticContext.accCores;
+  result.coreTargetClasses = staticContext.accCoreTargetClasses;
+  result.mappings = activeContext.spatialMappings;
+  result.mappingTargetClasses.assign(
+      activeContext.spatialMappingTargetClasses->begin(),
+      activeContext.spatialMappingTargetClasses->end());
+  result.spatialCatalog = activeContext.spatialCatalog;
 
-  std::vector<FrozenSystemSpatialTargetClass> mappingClasses;
-  mappingClasses.reserve(result.mappings.size());
-  std::set<std::string> attachedTargetClasses;
-  for (const auto &targetClass : coreClasses)
-    attachedTargetClasses.insert(targetClassKey(targetClass));
-  for (const detail::SpatialCatalogEntry &entry : result.spatialCatalog) {
-    const ::loom::fabric::FabricArtifactView *module = nullptr;
-    for (const auto &candidate : system.artifact().importedModules())
-      if (candidate.identity() == entry.mapping.view().fabricIdentity()) {
-        module = &candidate;
-        break;
-      }
-    if (!module)
-      return invalid("SpatialMapping target Module is not imported by System");
-    auto targetClass = targetClassForModule(*module);
-    if (!targetClass)
-      return targetClass.takeError();
-    if (!attachedTargetClasses.count(targetClassKey(*targetClass)))
-      return invalid(
-          "SpatialMapping target class is not attached to a System AccCore");
-    mappingClasses.push_back(std::move(*targetClass));
-  }
-
-  result.targetClasses = coreClasses;
-  result.targetClasses.insert(result.targetClasses.end(),
-                              mappingClasses.begin(), mappingClasses.end());
-  llvm::sort(result.targetClasses, [](const auto &lhs, const auto &rhs) {
-    return targetClassKey(lhs) < targetClassKey(rhs);
-  });
-  result.targetClasses.erase(
-      std::unique(result.targetClasses.begin(), result.targetClasses.end(),
-                  [](const auto &lhs, const auto &rhs) {
-                    return targetClassKey(lhs) == targetClassKey(rhs);
-                  }),
-      result.targetClasses.end());
-  std::map<std::string, PnrIndex> classOrdinals;
-  for (const auto &[ordinal, targetClass] :
-       llvm::enumerate(result.targetClasses)) {
-    auto index = checked(catalogIndexContext, ordinal);
-    if (!index)
-      return index.takeError();
-    classOrdinals.emplace(targetClassKey(targetClass), *index);
-  }
-  for (const auto &targetClass : coreClasses)
-    result.coreTargetClasses.push_back(
-        classOrdinals.at(targetClassKey(targetClass)));
-  for (const auto &targetClass : mappingClasses) {
-    auto found = classOrdinals.find(targetClassKey(targetClass));
-    if (found == classOrdinals.end())
-      return invalid("SpatialMapping target class is absent from the System");
-    result.mappingTargetClasses.push_back(found->second);
-  }
+  std::vector<ArtifactRootReference> searchMappings;
+  for (const SystemSearchBindingDomain &binding : searchDomain.bindings())
+    if (std::holds_alternative<::dataflow::RootedGraphLaunchRef>(binding.key))
+      for (const SystemSearchAtom &atom : binding.atoms)
+        if (const auto *domain =
+                std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain))
+          searchMappings.insert(searchMappings.end(),
+                                domain->compatibleSpatialMappings.begin(),
+                                domain->compatibleSpatialMappings.end());
+  llvm::sort(searchMappings, artifactRootReferenceLess);
+  searchMappings.erase(
+      std::unique(searchMappings.begin(), searchMappings.end()),
+      searchMappings.end());
+  for (const ArtifactRootReference &reference : searchMappings)
+    if (!std::binary_search(result.mappings.begin(), result.mappings.end(),
+                            reference, artifactRootReferenceLess))
+      return invalid("System search domain names a SpatialMapping outside its "
+                     "active context");
   return result;
 }
 
@@ -1082,7 +909,7 @@ buildDecisions(const SystemPnrSearchDomainView &searchDomain,
                const Catalogs &catalogs) {
   Decisions result;
   std::map<std::string, PnrIndex> coreOrdinals;
-  for (const auto &[ordinal, core] : llvm::enumerate(catalogs.cores)) {
+  for (const auto &[ordinal, core] : llvm::enumerate(*catalogs.cores)) {
     auto index = checked(catalogIndexContext, ordinal);
     if (!index)
       return index.takeError();
@@ -1166,7 +993,7 @@ buildDecisions(const SystemPnrSearchDomainView &searchDomain,
 llvm::Expected<std::vector<std::uint64_t>> buildGraphChoiceSchedulePressures(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const Catalogs &catalogs, const Decisions &decisions) {
-  if (catalogs.spatialCatalog.size() != catalogs.mappings.size())
+  if (catalogs.spatialCatalog->size() != catalogs.mappings.size())
     return invalid("SpatialMapping pressure catalog has the wrong width");
   std::vector<std::uint64_t> result;
   result.reserve(decisions.graphChoices.size());
@@ -1177,10 +1004,10 @@ llvm::Expected<std::vector<std::uint64_t>> buildGraphChoiceSchedulePressures(
     for (PnrIndex mapping :
          llvm::ArrayRef(decisions.graphChoices)
              .slice(decision.choiceOffset, decision.choiceCount)) {
-      if (mapping >= catalogs.spatialCatalog.size())
+      if (mapping >= catalogs.spatialCatalog->size())
         return invalid("graph choice pressure names a foreign mapping");
       const detail::SpatialCatalogEntry &entry =
-          catalogs.spatialCatalog[mapping];
+          (*catalogs.spatialCatalog)[mapping];
       if (entry.covers.size() != entry.graphStaticSchedulePressures.size())
         return invalid("SpatialMapping graph pressure has the wrong width");
       const auto covered = llvm::find(entry.covers, *graph);
@@ -1200,7 +1027,7 @@ llvm::Expected<std::vector<SpatialRecurrenceTimingProjection>>
 buildGraphChoiceRecurrenceTimings(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const Catalogs &catalogs, const Decisions &decisions) {
-  if (catalogs.spatialCatalog.size() != catalogs.mappings.size())
+  if (catalogs.spatialCatalog->size() != catalogs.mappings.size())
     return invalid("SpatialMapping recurrence catalog has the wrong width");
   std::vector<SpatialRecurrenceTimingProjection> result;
   result.reserve(decisions.graphChoices.size());
@@ -1211,10 +1038,10 @@ buildGraphChoiceRecurrenceTimings(
     for (PnrIndex mapping :
          llvm::ArrayRef(decisions.graphChoices)
              .slice(decision.choiceOffset, decision.choiceCount)) {
-      if (mapping >= catalogs.spatialCatalog.size())
+      if (mapping >= catalogs.spatialCatalog->size())
         return invalid("graph choice recurrence names a foreign mapping");
       const detail::SpatialCatalogEntry &entry =
-          catalogs.spatialCatalog[mapping];
+          (*catalogs.spatialCatalog)[mapping];
       if (entry.covers.size() != entry.graphRecurrenceTimings.size())
         return invalid("SpatialMapping graph recurrence has the wrong width");
       const auto covered = llvm::find(entry.covers, *graph);
@@ -1295,7 +1122,7 @@ buildRelations(const Catalogs &catalogs, const Decisions &decisions,
       for (PnrIndex core : choiceSlice(decisions.threadChoices,
                                        thread.choiceOffset, thread.choiceCount))
         threadMember.projectedValues.push_back(
-            catalogs.coreTargetClasses[core]);
+            (*catalogs.coreTargetClasses)[core]);
       detail::InitializerRelationMemberInput graphMember;
       graphMember.decision = graph.relationDecision;
       for (PnrIndex mapping : choiceSlice(
@@ -1710,16 +1537,47 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
     const SystemPnrSearchDomainView &searchDomain,
     const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const SystemStaticContext *staticContext,
+    const SystemActiveContext *activeContext) {
   if (llvm::Error error =
           validateInputs(dataflow, fabric, searchDomain, config, constraints))
     return std::move(error);
+  std::optional<SystemStaticContext> ownedStaticContext;
+  if (!staticContext) {
+    auto built = buildSystemStaticContext(fabric);
+    if (!built)
+      return built.takeError();
+    ownedStaticContext.emplace(std::move(*built));
+    staticContext = &*ownedStaticContext;
+  } else if (llvm::Error error =
+                 revalidateSystemStaticContext(*staticContext, fabric)) {
+    return std::move(error);
+  }
+  const detail::SystemStaticContextStorage &staticStorage =
+      detail::systemStaticContextStorage(*staticContext);
+  std::optional<SystemActiveContext> ownedActiveContext;
+  if (!activeContext) {
+    auto mappings = activeSpatialMappings(searchDomain, constraints.view());
+    auto built = buildSystemActiveContext(*staticContext, dataflow, fabric,
+                                          physicalTimingProfiles, constraints,
+                                          mappings, store);
+    if (!built)
+      return built.takeError();
+    ownedActiveContext.emplace(std::move(*built));
+    activeContext = &*ownedActiveContext;
+  } else if (llvm::Error error = revalidateSystemActiveContext(
+                 *activeContext, *staticContext, dataflow, fabric,
+                 physicalTimingProfiles, constraints,
+                 activeContext->spatialMappings())) {
+    return std::move(error);
+  }
+  const detail::SystemActiveContextStorage &activeStorage =
+      detail::systemActiveContextStorage(*activeContext);
   auto objectiveProgram = MappingObjectiveProgram::get(
       config.selectedObjectiveCatalogs(), config.policy().objectiveSelection);
   if (!objectiveProgram)
     return objectiveProgram.takeError();
-  auto catalogs = buildCatalogs(dataflow, fabric, physicalTimingProfiles,
-                                searchDomain, store);
+  auto catalogs = buildCatalogs(staticStorage, activeStorage, searchDomain);
   if (!catalogs)
     return catalogs.takeError();
   auto decisions = buildDecisions(searchDomain, *catalogs);
@@ -1763,29 +1621,25 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
     return constraintIndex.takeError();
   auto memoryBindings = detail::projectSystemMemoryServiceBindings(
       dataflow, fabric, searchDomain.rootThreadLaunches(),
-      catalogs->spatialCatalog, *constraintIndex);
+      *catalogs->spatialCatalog, *constraintIndex);
   if (!memoryBindings)
     return memoryBindings.takeError();
   auto routing = freezeSystemRouting(
-      dataflow, fabric, searchDomain, *serviceContexts, decisions->threads,
-      decisions->threadChoices, catalogs->cores, decisions->graphs);
+      dataflow, fabric, *staticStorage.routingTopology, searchDomain,
+      *serviceContexts, decisions->threads, decisions->threadChoices,
+      *catalogs->cores, decisions->graphs);
   if (!routing)
     return routing.takeError();
   if (llvm::Error error = validateStaticMessageTerminalSupport(
           dataflow, *routing, decisions->threads, decisions->threadChoices,
-          catalogs->cores))
+          *catalogs->cores))
     return std::move(error);
-  auto instructionUsePatterns =
-      freezeInstructionUsePatterns(fabric, catalogs->cores);
-  if (!instructionUsePatterns)
-    return instructionUsePatterns.takeError();
-  auto consistencyUsePatterns = freezeConsistencyUsePatterns(fabric);
   auto capacityModel = detail::buildSystemCapacityModel(
-      dataflow, fabric, catalogs->cores, catalogs->coreTargetClasses,
-      catalogs->mappingTargetClasses, catalogs->spatialCatalog,
-      decisions->graphs, *instructionUsePatterns, *memoryBindings,
-      consistencyUsePatterns, *serviceContexts, routing->legs,
-      routing->topology);
+      dataflow, fabric, *catalogs->cores, *catalogs->coreTargetClasses,
+      catalogs->mappingTargetClasses, *catalogs->spatialCatalog,
+      decisions->graphs, *staticStorage.instructionUsePatterns, *memoryBindings,
+      *staticStorage.consistencyUsePatterns, *serviceContexts, routing->legs,
+      *staticStorage.routingTopology);
   if (!capacityModel)
     return capacityModel.takeError();
 
@@ -1800,14 +1654,14 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
   std::vector<::loom::fabric::FabricPhysicalTimingProfileKind>
       spatialMappingPhysicalTimingProfileKinds;
   spatialMappingWorstRouteArrivalDelayQuanta.reserve(
-      catalogs->spatialCatalog.size());
+      catalogs->spatialCatalog->size());
   spatialMappingTotalRouteNegativeSlackQuanta.reserve(
-      catalogs->spatialCatalog.size());
+      catalogs->spatialCatalog->size());
   spatialMappingPhysicalTimingProfileDigests.reserve(
-      catalogs->spatialCatalog.size());
+      catalogs->spatialCatalog->size());
   spatialMappingPhysicalTimingProfileKinds.reserve(
-      catalogs->spatialCatalog.size());
-  for (const detail::SpatialCatalogEntry &entry : catalogs->spatialCatalog) {
+      catalogs->spatialCatalog->size());
+  for (const detail::SpatialCatalogEntry &entry : *catalogs->spatialCatalog) {
     spatialMappingWorstRouteArrivalDelayQuanta.push_back(
         entry.worstRouteArrivalDelayQuanta);
     spatialMappingTotalRouteNegativeSlackQuanta.push_back(
@@ -1826,8 +1680,8 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       std::vector<::dataflow::RootThreadLaunchRef>(
           searchDomain.rootThreadLaunches().begin(),
           searchDomain.rootThreadLaunches().end()),
-      std::move(catalogs->targetClasses), std::move(catalogs->cores),
-      std::move(catalogs->coreTargetClasses), std::move(catalogs->mappings),
+      catalogs->targetClasses, catalogs->cores, catalogs->coreTargetClasses,
+      std::move(catalogs->mappings), activeStorage.spatialMappingImports,
       std::move(catalogs->mappingTargetClasses),
       std::move(spatialMappingWorstRouteArrivalDelayQuanta),
       std::move(spatialMappingTotalRouteNegativeSlackQuanta),
@@ -1837,13 +1691,14 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       std::move(decisions->graphs), std::move(decisions->graphChoices),
       std::move(*graphChoiceSchedulePressures),
       std::move(*graphChoiceRecurrenceTimings), std::move(overlapOffsets),
-      std::move(overlaps), std::move(routing->topology),
+      std::move(overlaps), staticStorage.routingTopology,
       std::move(routing->terminals), std::move(routing->ownerDomains),
       std::move(routing->endpointChoices), std::move(serviceDomains),
       std::move(*serviceContexts), std::move(*memoryBindings),
-      std::move(*instructionUsePatterns), std::move(consistencyUsePatterns),
-      std::move(routing->legs), std::move(routing->legSinks),
-      std::move(*capacityModel), std::move(*relations)));
+      staticStorage.instructionUsePatterns,
+      staticStorage.consistencyUsePatterns, std::move(routing->legs),
+      std::move(routing->legSinks), std::move(*capacityModel),
+      std::move(*relations)));
 }
 
 llvm::Expected<FrozenSystemPnrProblemHandle>
@@ -1853,11 +1708,13 @@ loom::pnr::freezeSystemPnrProblemWithNormalizedTiming(
     const SystemPnrSearchDomainView &searchDomain,
     const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, const SystemStaticContext *staticContext,
+    const SystemActiveContext *activeContext) {
   auto profiles =
       ::loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(fabric);
   if (!profiles)
     return profiles.takeError();
   return freezeSystemPnrProblem(dataflow, fabric, *profiles, searchDomain,
-                                config, constraints, store);
+                                config, constraints, store, staticContext,
+                                activeContext);
 }

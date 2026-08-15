@@ -25,6 +25,14 @@ using FrozenSpatialHandshakeIndexHandle =
     std::shared_ptr<const FrozenSpatialHandshakeIndex>;
 using HandshakeCandidateStateHandle = std::shared_ptr<HandshakeCandidateState>;
 
+/// Rebuilds the selected handshake graph from immutable projection inputs and
+/// checks its closure with one deterministic whole-graph pass. This path does
+/// not read or mutate candidate state.
+llvm::Expected<bool> independentlyVerifyHandshakeProjectionAcyclic(
+    const FrozenSpatialHandshakeIndex &index,
+    llvm::ArrayRef<PnrIndex> selectedFragments,
+    llvm::ArrayRef<PnrIndex> traversalUses);
+
 class HandshakeCandidateScratch final {
 public:
   HandshakeCandidateScratch();
@@ -68,6 +76,10 @@ class HandshakeCandidateState final
 public:
   static llvm::Expected<HandshakeCandidateStateHandle>
   create(FrozenSpatialHandshakeIndexHandle index);
+  static llvm::Expected<HandshakeCandidateStateHandle>
+  create(FrozenSpatialHandshakeIndexHandle index,
+         llvm::ArrayRef<PnrIndex> selectedFragments,
+         llvm::ArrayRef<PnrIndex> traversalUses);
   static llvm::Expected<HandshakeCandidateStateHandle>
   create(const FrozenSpatialHandshakeIndex &index) = delete;
   static llvm::Expected<HandshakeCandidateStateHandle>

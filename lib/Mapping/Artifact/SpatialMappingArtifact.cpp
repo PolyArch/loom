@@ -1118,7 +1118,8 @@ llvm::Expected<ImportedSpatialView>
 importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
            const ::dataflow::CanonicalDataflowProgramView &dataflow,
            const TechMappingView &techMapping,
-           const ::loom::fabric::FabricArtifactView &fabric) {
+           const ::loom::fabric::FabricArtifactView &fabric,
+           const ::loom::fabric::FabricHandshakeContext *handshakeContext) {
   (void)mappingIdentity;
   auto techIdentity = decodeIdentity(root.getTechMapping());
   auto dataflowIdentity = decodeIdentity(root.getDataflow());
@@ -1287,10 +1288,16 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
                                        routes, uses, physicalTagSegments);
   if (!handshake)
     return handshake.takeError();
-  if (llvm::Error error =
-          ::loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
-              fabric, handshake->selection))
+  if (handshakeContext) {
+    if (llvm::Error error =
+            ::loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+                fabric, handshake->selection, *handshakeContext))
+      return std::move(error);
+  } else if (llvm::Error error =
+                 ::loom::fabric::verifySelectedCombinationalHandshakeAcyclic(
+                     fabric, handshake->selection)) {
     return std::move(error);
+  }
 
   auto capacityOveruse = detail::deriveSpatialCapacityOveruse(
       fabric, dataflow.identity(), uses, handshake->routeTraversals);
@@ -1666,9 +1673,10 @@ llvm::Expected<SpatialMappingView> SpatialMappingView::import(
     const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping,
-    const ::loom::fabric::FabricArtifactView &fabric) {
-  auto imported =
-      importView(mappingIdentity, root, dataflow, techMapping, fabric);
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ::loom::fabric::FabricHandshakeContext *handshakeContext) {
+  auto imported = importView(mappingIdentity, root, dataflow, techMapping,
+                             fabric, handshakeContext);
   if (!imported)
     return imported.takeError();
   return SpatialMappingView(
@@ -1701,13 +1709,14 @@ llvm::Error verifySpatialMappingBase(
   return llvm::Error::success();
 }
 
-llvm::Expected<FinalizedSpatialMapping>
-finalizeSpatialMapping(::mapping::SpatialOp source,
-                       const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                       const TechMappingView &techMapping,
-                       const ::loom::fabric::FabricArtifactView &fabric,
-                       const SpatialMappingConstraintSetView &constraints,
-                       const ArtifactStore &store) {
+llvm::Expected<FinalizedSpatialMapping> finalizeSpatialMapping(
+    ::mapping::SpatialOp source,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const SpatialMappingConstraintSetView &constraints,
+    const ArtifactStore &store,
+    const ::loom::fabric::FabricHandshakeContext *handshakeContext) {
   if (llvm::Error error =
           requirePublishedUpstream(dataflow, techMapping, fabric, store))
     return std::move(error);
@@ -1722,7 +1731,7 @@ finalizeSpatialMapping(::mapping::SpatialOp source,
   auto view = SpatialMappingView::import(
       prepared->reference.artifact,
       cast<::mapping::SpatialOp>(prepared->canonicalRoot.get()), dataflow,
-      techMapping, fabric);
+      techMapping, fabric, handshakeContext);
   if (!view)
     return view.takeError();
   if (llvm::Error error = admitSpatialMappingConstraints(

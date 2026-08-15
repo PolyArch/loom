@@ -202,7 +202,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &store, const BlobStore &,
-               const ExecutionControlView &) {
+               const CandidateGeneratorInvocationView &) {
   auto config = adoptResolvedSpatialMicroarchitectureRewriteConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());

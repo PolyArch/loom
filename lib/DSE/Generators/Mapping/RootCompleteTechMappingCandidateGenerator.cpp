@@ -85,13 +85,13 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
-    const ExecutionControlView &executionControl);
+    const CandidateGeneratorInvocationView &invocation);
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
-    const ExecutionControlView &executionControl);
+    const CandidateGeneratorInvocationView &invocation);
 
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteTechMappingCandidateGeneratorKind,
@@ -322,15 +322,16 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &,
-    const ExecutionControlView &executionControl) {
-  return invokeProvider(inputBindings, binding, store, executionControl);
+    const CandidateGeneratorInvocationView &invocation) {
+  return invokeProvider(inputBindings, binding, store,
+                        invocation.executionControl());
 }
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &,
-    const ExecutionControlView &executionControl) {
+    const CandidateGeneratorInvocationView &invocation) {
   auto config = ::loom::mapping::adoptResolvedTechMappingConfigView(
       ::loom::mapping::resolvedTechMappingConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -420,11 +421,11 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
       };
   for (const ::dataflow::GraphRef &graph : graphs) {
     const std::array cover = {graph};
-    auto incomplete =
-        consumeTechMappingOutcome(::loom::mapping::generateTechMappings(
-                                      {*dataflow, cover, fabric->view(),
-                                       *config, store, executionControl}),
-                                  accounting, outputs, lineage);
+    auto incomplete = consumeTechMappingOutcome(
+        ::loom::mapping::generateTechMappings({*dataflow, cover, fabric->view(),
+                                               *config, store,
+                                               invocation.executionControl()}),
+        accounting, outputs, lineage);
     if (!incomplete)
       return incomplete.takeError();
     if (*incomplete)

@@ -9,6 +9,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "PnR/PnrConfig.h"
+#include "PnR/PnrDerivedContext.h"
 #include "PnR/PnrGeneration.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -19,6 +20,10 @@
 #include <string>
 #include <variant>
 #include <vector>
+
+namespace loom::fabric {
+struct FabricTopologyQualityReport;
+}
 
 namespace loom::pnr {
 
@@ -193,6 +198,9 @@ struct SpatialPnrGenerationInputs final {
   /// every fixed restart slot and its canonical reduction remain unchanged.
   std::uint32_t candidateWorkerCount = 1;
   ExecutionControlView executionControl = {};
+  const FabricDerivedContextBundle *derivedContexts = nullptr;
+  const ::loom::fabric::FabricTopologyQualityReport *topologyQualityDiagnostic =
+      nullptr;
 };
 
 /// Runs the fixed canonical Spatial restart sequence for one exact D/T/F/C/K

@@ -68,58 +68,51 @@ tagValueViews(const SpatialTagAssignmentState &assignments,
   return result;
 }
 
-llvm::Error addInitialHandshakeSelections(
-    const FrozenSpatialPnrProblem &problem,
+llvm::Expected<HandshakeCandidateStateHandle> createInitialHandshakeState(
+    const FrozenSpatialPnrProblemHandle &problem,
     llvm::ArrayRef<SpatialComputeBindingSelection> computeBindings,
     llvm::ArrayRef<PnrIndex> portAttachments,
     llvm::ArrayRef<PnrIndex> memoryOperationPlans,
-    llvm::ArrayRef<PnrIndex> registerFifoTransfers,
-    HandshakeCandidateState &handshake) {
-  HandshakeCandidateScratch scratch;
-  if (llvm::Error error = scratch.prepare(problem.handshake()))
-    return error;
-  auto transaction = handshake.beginTransaction(scratch);
-  if (!transaction)
-    return transaction.takeError();
-
+    llvm::ArrayRef<PnrIndex> registerFifoTransfers) {
+  std::vector<PnrIndex> selectedFragments;
   for (const SpatialComputeBindingSelection &binding : computeBindings)
-    if (llvm::Error error = transaction->addFragments(
-            computePlacementFragments(problem.handshake(), binding.placement)))
-      return error;
+    llvm::append_range(
+        selectedFragments,
+        computePlacementFragments(problem->handshake(), binding.placement));
   for (PnrIndex plan : memoryOperationPlans)
-    if (llvm::Error error = transaction->addFragments(
-            memoryPlanFragments(problem.handshake(), plan)))
-      return error;
+    llvm::append_range(selectedFragments,
+                       memoryPlanFragments(problem->handshake(), plan));
+
+  std::vector<PnrIndex> traversalUses(problem->routing().traversals().size(),
+                                      0);
+  const auto addTraversalUse = [&](PnrIndex traversal) -> llvm::Error {
+    if (traversal >= traversalUses.size())
+      return candidateError("initial handshake traversal is out of range");
+    return increment(traversalUses[traversal], 1, "handshake traversal");
+  };
   for (PnrIndex option : portAttachments)
     if (std::optional<PnrIndex> traversal =
-            attachmentTraversal(problem.ports(), option))
-      if (llvm::Error error = transaction->addTraversalUses(*traversal, 1))
-        return error;
+            attachmentTraversal(problem->ports(), option))
+      if (llvm::Error error = addTraversalUse(*traversal))
+        return std::move(error);
   for (PnrIndex option : registerFifoTransfers) {
     if (option == getInvalidPnrIndex())
       continue;
-    if (option >= problem.localTransfers().options().size())
+    if (option >= problem->localTransfers().options().size())
       return candidateError("initial register-FIFO transfer is out of range");
-    const auto &transfer = problem.localTransfers().options()[option];
-    if (llvm::Error error =
-            transaction->addTraversalUses(transfer.writeTraversal, 1))
-      return error;
-    if (llvm::Error error =
-            transaction->addTraversalUses(transfer.readTraversal, 1))
-      return error;
+    const auto &transfer = problem->localTransfers().options()[option];
+    if (llvm::Error error = addTraversalUse(transfer.writeTraversal))
+      return std::move(error);
+    if (llvm::Error error = addTraversalUse(transfer.readTraversal))
+      return std::move(error);
   }
-
-  auto closure = transaction->close();
-  if (!closure)
-    return closure.takeError();
-  if (!*closure)
-    return candidateError(
-        "initial selections close a combinational handshake cycle");
-  return transaction->commit();
+  auto handshakeOwner = std::shared_ptr<const FrozenSpatialHandshakeIndex>(
+      problem, &problem->handshake());
+  return HandshakeCandidateState::create(std::move(handshakeOwner),
+                                         selectedFragments, traversalUses);
 }
 
 llvm::Expected<bool> projectHandshakeSelections(
-    FrozenSpatialHandshakeIndexHandle handshakeOwner,
     const FrozenSpatialPnrProblem &problem,
     llvm::ArrayRef<SpatialComputeBindingSelection> computeBindings,
     llvm::ArrayRef<PnrIndex> portAttachments,
@@ -127,28 +120,25 @@ llvm::Expected<bool> projectHandshakeSelections(
     llvm::ArrayRef<PnrIndex> registerFifoTransfers,
     llvm::ArrayRef<const RouteTreeState *> routes,
     llvm::ArrayRef<llvm::ArrayRef<std::optional<llvm::APInt>>> tagValues) {
-  auto handshake = HandshakeCandidateState::create(std::move(handshakeOwner));
-  if (!handshake)
-    return handshake.takeError();
-  HandshakeCandidateScratch scratch;
-  if (llvm::Error error = scratch.prepare(problem.handshake()))
-    return std::move(error);
-  auto transaction = (*handshake)->beginTransaction(scratch);
-  if (!transaction)
-    return transaction.takeError();
-
+  std::vector<PnrIndex> selectedFragments;
   for (const SpatialComputeBindingSelection &binding : computeBindings)
-    if (llvm::Error error = transaction->addFragments(
-            computePlacementFragments(problem.handshake(), binding.placement)))
-      return std::move(error);
+    llvm::append_range(
+        selectedFragments,
+        computePlacementFragments(problem.handshake(), binding.placement));
   for (PnrIndex plan : memoryOperationPlans)
-    if (llvm::Error error = transaction->addFragments(
-            memoryPlanFragments(problem.handshake(), plan)))
-      return std::move(error);
+    llvm::append_range(selectedFragments,
+                       memoryPlanFragments(problem.handshake(), plan));
+
+  std::vector<PnrIndex> traversalUses(problem.routing().traversals().size(), 0);
+  const auto addTraversalUse = [&](PnrIndex traversal) -> llvm::Error {
+    if (traversal >= traversalUses.size())
+      return candidateError("projected handshake traversal is out of range");
+    return increment(traversalUses[traversal], 1, "handshake traversal");
+  };
   for (PnrIndex option : portAttachments)
     if (std::optional<PnrIndex> traversal =
             attachmentTraversal(problem.ports(), option))
-      if (llvm::Error error = transaction->addTraversalUses(*traversal, 1))
+      if (llvm::Error error = addTraversalUse(*traversal))
         return std::move(error);
   for (PnrIndex option : registerFifoTransfers) {
     if (option == getInvalidPnrIndex())
@@ -156,15 +146,12 @@ llvm::Expected<bool> projectHandshakeSelections(
     if (option >= problem.localTransfers().options().size())
       return candidateError("projected register-FIFO transfer is out of range");
     const auto &transfer = problem.localTransfers().options()[option];
-    if (llvm::Error error =
-            transaction->addTraversalUses(transfer.writeTraversal, 1))
+    if (llvm::Error error = addTraversalUse(transfer.writeTraversal))
       return std::move(error);
-    if (llvm::Error error =
-            transaction->addTraversalUses(transfer.readTraversal, 1))
+    if (llvm::Error error = addTraversalUse(transfer.readTraversal))
       return std::move(error);
   }
 
-  std::vector<PnrIndex> traversalUses(problem.routing().traversals().size(), 0);
   for (const RouteTreeState *route : routes) {
     if (!route || &route->routingGraph() != &problem.routing())
       return candidateError(
@@ -183,18 +170,13 @@ llvm::Expected<bool> projectHandshakeSelections(
         return std::move(error);
     }
   }
-  for (PnrIndex traversal = 0; traversal < traversalUses.size(); ++traversal)
-    if (traversalUses[traversal] != 0)
-      if (llvm::Error error = transaction->addTraversalUses(
-              traversal, traversalUses[traversal]))
-        return std::move(error);
   auto switchFragments = detail::deriveSpatialTemporalSwitchHandshakeFragments(
       problem, routes, tagValues);
   if (!switchFragments)
     return switchFragments.takeError();
-  if (llvm::Error error = transaction->addFragments(*switchFragments))
-    return std::move(error);
-  return transaction->close();
+  llvm::append_range(selectedFragments, *switchFragments);
+  return independentlyVerifyHandshakeProjectionAcyclic(
+      problem.handshake(), selectedFragments, traversalUses);
 }
 
 } // namespace
@@ -294,12 +276,6 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   touchedRoutes_.reserve(netCount);
   routeViews_.reserve(netCount);
   tagValueViews_.reserve(netCount);
-  oldSwitchHandshakeFragments_.reserve(problem.handshake().fragments().size());
-  newSwitchHandshakeFragments_.reserve(problem.handshake().fragments().size());
-  removedSwitchHandshakeFragments_.reserve(
-      problem.handshake().fragments().size());
-  addedSwitchHandshakeFragments_.reserve(
-      problem.handshake().fragments().size());
   traversalDeltaMarks_.assign(traversalCount, 0);
   traversalRemoved_.assign(traversalCount, 0);
   traversalAdded_.assign(traversalCount, 0);
@@ -503,9 +479,9 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
     registerFifoTransfers.assign(initialization.registerFifoTransfers.begin(),
                                  initialization.registerFifoTransfers.end());
 
-  auto handshakeOwner = std::shared_ptr<const FrozenSpatialHandshakeIndex>(
-      problem, &problem->handshake());
-  auto handshake = HandshakeCandidateState::create(std::move(handshakeOwner));
+  auto handshake =
+      createInitialHandshakeState(problem, computeBindings, portAttachments,
+                                  memoryOperationPlans, registerFifoTransfers);
   if (!handshake)
     return handshake.takeError();
 
@@ -601,11 +577,6 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
     if (llvm::Error error = candidate->validateLogicalNet(index))
       return std::move(error);
   if (llvm::Error error = candidate->verifyRegisterFifoTransfers())
-    return std::move(error);
-  if (llvm::Error error = addInitialHandshakeSelections(
-          candidate->problem(), candidate->computeBindings_,
-          candidate->portAttachments_, candidate->memoryOperationPlans_,
-          candidate->registerFifoTransfers_, *candidate->handshake_))
     return std::move(error);
   auto capacityOveruse = candidate->recomputeAtomicCapacityOveruse();
   if (!capacityOveruse)
@@ -1044,12 +1015,10 @@ SpatialCandidateState::projectVerifiedRoutes(
   const std::uint64_t tagConflictCount = tags->conflictCount;
   if (tagSummary)
     *tagSummary = std::move(*tags);
-  auto handshakeOwner = std::shared_ptr<const FrozenSpatialHandshakeIndex>(
-      problem_, &problem_->handshake());
   const auto tagValues = tagValueViews(tagAssignments_, routes.size());
   auto handshakeAcyclic = projectHandshakeSelections(
-      std::move(handshakeOwner), *problem_, computeBindings_, portAttachments_,
-      memoryOperationPlans_, registerFifoTransfers_, routes, tagValues);
+      *problem_, computeBindings_, portAttachments_, memoryOperationPlans_,
+      registerFifoTransfers_, routes, tagValues);
   if (!handshakeAcyclic)
     return handshakeAcyclic.takeError();
   std::uint64_t hardProgressViolation = 0;

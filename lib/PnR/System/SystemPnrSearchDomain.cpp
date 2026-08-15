@@ -1,5 +1,7 @@
 #include "SystemPnrSearchDomainInternal.h"
 
+#include "SystemPnrDerivedContextInternal.h"
+
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ComponentViewDigest.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -1003,7 +1005,8 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
     const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
     const SystemBindingPartitionPlan &partitionPlan,
-    const SystemGraphSearchInput &graphSearch, const ArtifactStore &store) {
+    const SystemGraphSearchInput &graphSearch, const ArtifactStore &store,
+    const SystemActiveContext *activeContext) {
   if (config.domain() != PnrConfigDomain::System)
     return invalid("System search-domain projection received a non-System "
                    "resolved config view");
@@ -1028,10 +1031,28 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
       dataflow, *roots, partitionPlan);
   if (!partitions)
     return partitions.takeError();
-  auto catalog =
-      detail::importSpatialCatalog(spatialMappings, dataflow, fabric, store);
-  if (!catalog)
-    return catalog.takeError();
+  std::optional<std::vector<detail::SpatialCatalogEntry>> ownedCatalog;
+  llvm::ArrayRef<detail::SpatialCatalogEntry> catalog;
+  if (activeContext) {
+    const auto &active = detail::systemActiveContextStorage(*activeContext);
+    std::vector<ArtifactRootReference> canonicalMappings(
+        spatialMappings.begin(), spatialMappings.end());
+    llvm::sort(canonicalMappings, artifactRootReferenceLess);
+    if (active.dataflowIdentity != dataflow.identity() ||
+        active.systemIdentity != fabric.artifact().identity() ||
+        active.constraintIdentity != constraints.view().identity() ||
+        active.spatialMappings != canonicalMappings || !active.spatialCatalog)
+      return invalid("SystemActiveContext does not match search-domain "
+                     "inputs");
+    catalog = *active.spatialCatalog;
+  } else {
+    auto imported =
+        detail::importSpatialCatalog(spatialMappings, dataflow, fabric, store);
+    if (!imported)
+      return imported.takeError();
+    ownedCatalog.emplace(std::move(*imported));
+    catalog = *ownedCatalog;
+  }
   std::vector<::loom::fabric::AccCoreOccurrenceRef> cores =
       detail::canonicalSystemAccCores(fabric);
 
@@ -1055,7 +1076,7 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
       if (!graph)
         return graph.takeError();
       std::vector<ArtifactRootReference> compatible;
-      for (const detail::SpatialCatalogEntry &entry : *catalog)
+      for (const detail::SpatialCatalogEntry &entry : catalog)
         if (llvm::is_contained(entry.covers, *graph))
           compatible.push_back(entry.reference);
       detail::applySystemConstraintRestriction(
@@ -1072,7 +1093,7 @@ llvm::Expected<SystemPnrSearchDomainView> buildView(
   }
 
   auto services = detail::projectSystemServiceDomains(
-      dataflow, fabric, *roots, bindings, *catalog, *constraintIndex);
+      dataflow, fabric, *roots, bindings, catalog, *constraintIndex);
   if (!services)
     return services.takeError();
   if (llvm::Error error =
@@ -1158,9 +1179,10 @@ llvm::Expected<SystemPnrSearchDomainView> projectSystemPnrSearchDomain(
     const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
     const SystemBindingPartitionPlan &partitionPlan,
-    const SystemGraphSearchInput &graphSearch, const ArtifactStore &store) {
+    const SystemGraphSearchInput &graphSearch, const ArtifactStore &store,
+    const SystemActiveContext *activeContext) {
   return buildView(dataflow, fabric, config, constraints, partitionPlan,
-                   graphSearch, store);
+                   graphSearch, store, activeContext);
 }
 
 llvm::Expected<SystemPnrSearchDomainView>
@@ -1254,14 +1276,29 @@ adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,
       if (cell != atom.cell)
         return invalid("adopted Presburger cell is not canonical");
   }
+  std::vector<ArtifactRootReference> spatialMappings(
+      constraints->view().spatialMappingReferences().begin(),
+      constraints->view().spatialMappingReferences().end());
+  for (const SystemSearchBindingDomain &binding : decoded->bindings)
+    if (std::holds_alternative<::dataflow::RootedGraphLaunchRef>(binding.key))
+      for (const SystemSearchAtom &atom : binding.atoms)
+        if (const auto *hierarchical =
+                std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain))
+          spatialMappings.insert(
+              spatialMappings.end(),
+              hierarchical->compatibleSpatialMappings.begin(),
+              hierarchical->compatibleSpatialMappings.end());
+  auto spatialCatalog =
+      detail::importSpatialCatalog(spatialMappings, *dataflow, *system, store);
+  if (!spatialCatalog)
+    return spatialCatalog.takeError();
   if (llvm::Error error = detail::validateSystemBindingDomains(
           *dataflow, *system, decoded->bindings, *constraintIndex,
-          constraints->view().spatialMappingReferences(), store))
+          *spatialCatalog))
     return std::move(error);
   if (llvm::Error error = detail::validateSystemServiceDomains(
           *dataflow, *system, decoded->roots, decoded->bindings,
-          decoded->services, *constraintIndex,
-          constraints->view().spatialMappingReferences(), store))
+          decoded->services, *constraintIndex, *spatialCatalog))
     return std::move(error);
   auto encoded =
       encodeView(decoded->dataflowReference, decoded->fabricReference,

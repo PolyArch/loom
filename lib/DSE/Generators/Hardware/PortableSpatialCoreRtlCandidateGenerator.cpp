@@ -9,8 +9,8 @@
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "Hardware/RTL/CommonSkeleton.h"
 #include "Hardware/RTL/PortableProviders.h"
-#include "Hardware/RTL/Specialization.h"
 #include "Hardware/RTL/SpatialCoreImplementation.h"
+#include "Hardware/RTL/Specialization.h"
 
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
@@ -55,9 +55,9 @@ constexpr std::array<CandidateGeneratorWorkUnitDescriptor, 1> workUnits = {{
 }};
 
 llvm::Error invalid(const llvm::Twine &message) {
-  return llvm::createStringError(llvm::inconvertibleErrorCode(),
-                                 "portable_spatial_core_rtl_generator_invalid: " +
-                                     message);
+  return llvm::createStringError(
+      llvm::inconvertibleErrorCode(),
+      "portable_spatial_core_rtl_generator_invalid: " + message);
 }
 
 llvm::ArrayRef<std::uint8_t> descriptorBytes() {
@@ -65,10 +65,10 @@ llvm::ArrayRef<std::uint8_t> descriptorBytes() {
           configDescriptor.size()};
 }
 
-llvm::Expected<CandidateGeneratorProviderResult> unsupportedResult(
-    std::vector<ArtifactRootReference> outputs,
-    std::vector<CandidateGeneratorLineageEdge> lineage,
-    std::uint64_t completed, std::uint64_t total) {
+llvm::Expected<CandidateGeneratorProviderResult>
+unsupportedResult(std::vector<ArtifactRootReference> outputs,
+                  std::vector<CandidateGeneratorLineageEdge> lineage,
+                  std::uint64_t completed, std::uint64_t total) {
   return CandidateGeneratorProviderResult{
       IncompleteCandidateGeneratorResult{
           CandidateGeneratorIncompleteReason::Unsupported,
@@ -103,7 +103,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &artifacts, const BlobStore &blobs,
-               const ExecutionControlView &) {
+               const CandidateGeneratorInvocationView &) {
   auto config = adoptResolvedPortableSpatialCoreRtlConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());
@@ -139,8 +139,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   outputs.reserve(accCores.size());
   lineage.reserve(accCores.size());
   for (loom::fabric::AccCoreOccurrenceRef accCore : accCores) {
-    auto implementation = loom::hardware::rtl::
-        finalizePortableSpatialCoreHardwareImplementation(
+    auto implementation =
+        loom::hardware::rtl::finalizePortableSpatialCoreHardwareImplementation(
             context, *configurationAbi,
             loom::fabric::SpatialCoreOccurrenceRef{accCore}, providers,
             externalContracts, artifacts, blobs);
@@ -152,10 +152,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                   FabricStructuralLoweringUnsupportedError &) {
             unsupported = true;
           },
-          [&](const loom::hardware::rtl::
-                  FabricOperationProviderUnsupportedError &) {
-            unsupported = true;
-          });
+          [&](const loom::hardware::rtl::FabricOperationProviderUnsupportedError
+                  &) { unsupported = true; });
       if (remainder)
         return std::move(remainder);
       if (unsupported) {
@@ -187,8 +185,7 @@ const CandidateGeneratorProvider provider{
 
 } // namespace
 
-llvm::ArrayRef<std::uint8_t>
-resolvedPortableSpatialCoreRtlConfigSchemaBytes() {
+llvm::ArrayRef<std::uint8_t> resolvedPortableSpatialCoreRtlConfigSchemaBytes() {
   return descriptorBytes();
 }
 

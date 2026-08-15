@@ -70,8 +70,7 @@ private:
       std::vector<WorkUnitResourceBinding> resourceBindings,
       std::optional<std::uint64_t> maximumDispatches,
       std::optional<std::uint64_t> dispatchNotAfterUnixNanoseconds)
-      : workerCount_(workerCount),
-        inProcessClaim_(std::move(inProcessClaim)),
+      : workerCount_(workerCount), inProcessClaim_(std::move(inProcessClaim)),
         externalSite_(std::move(externalSite)),
         resourceBindings_(std::move(resourceBindings)),
         maximumDispatches_(maximumDispatches),
@@ -95,22 +94,23 @@ llvm::Error stopDseExecution(ExecutionJournal &journal,
                              GracefulStopPolicy policy);
 
 llvm::Expected<DsePlanExecutionResult>
-executeDsePlan(const ResolvedDseConfigView &view,
-               const DseRunClosure &closure, ExecutionJournal &journal,
-               SiteScheduler &scheduler, const PlanExecutionPolicy &policy,
-               const ArtifactStore &store, const BlobStore &blobs);
+executeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
+               ExecutionJournal &journal, SiteScheduler &scheduler,
+               const PlanExecutionPolicy &policy, const ArtifactStore &store,
+               const BlobStore &blobs);
 
 llvm::Expected<DsePlanExecutionResult>
-resumeDsePlan(const ResolvedDseConfigView &view,
-              const DseRunClosure &closure, ExecutionJournal &journal,
-              SiteScheduler &scheduler, const PlanExecutionPolicy &policy,
-              const ArtifactStore &store, const BlobStore &blobs);
+resumeDsePlan(const ResolvedDseConfigView &view, const DseRunClosure &closure,
+              ExecutionJournal &journal, SiteScheduler &scheduler,
+              const PlanExecutionPolicy &policy, const ArtifactStore &store,
+              const BlobStore &blobs);
 
 namespace detail {
 
 struct DseGenerateExecutionTask final {
   std::uint64_t planNodeOrdinal = 0;
   std::vector<CandidateGeneratorInputBinding> inputs;
+  std::vector<CandidateGeneratorOutputDemand> outputDemands;
   ResolvedCandidateGeneratorBinding binding;
 };
 
@@ -122,16 +122,16 @@ public:
   virtual llvm::Expected<CandidateGeneratorProviderResult>
   executeGenerate(std::uint64_t planNodeOrdinal,
                   llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+                  llvm::ArrayRef<CandidateGeneratorOutputDemand> outputDemands,
                   const ResolvedCandidateGeneratorBinding &binding,
                   const ArtifactStore &store, const BlobStore &blobs) = 0;
   virtual llvm::Expected<std::vector<CandidateGeneratorProviderResult>>
   executeGenerateBatch(llvm::ArrayRef<DseGenerateExecutionTask> tasks,
-                       const ArtifactStore &store,
-                       const BlobStore &blobs) = 0;
-  virtual llvm::Error beginPromotion(
-      std::uint64_t planNodeOrdinal,
-      llvm::ArrayRef<ArtifactRootReference> candidates,
-      llvm::ArrayRef<EvidenceObligationTemplateRef> obligations) = 0;
+                       const ArtifactStore &store, const BlobStore &blobs) = 0;
+  virtual llvm::Error
+  beginPromotion(std::uint64_t planNodeOrdinal,
+                 llvm::ArrayRef<ArtifactRootReference> candidates,
+                 llvm::ArrayRef<EvidenceObligationTemplateRef> obligations) = 0;
 };
 
 llvm::Expected<DsePlanExecutionOutcome> executeDsePlanWithWorkExecutor(

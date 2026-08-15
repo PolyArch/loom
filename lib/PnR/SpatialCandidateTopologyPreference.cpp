@@ -209,7 +209,8 @@ llvm::Error detail::SpatialCandidateTopologyPreference::fillHopDistances(
            ++arc) {
         if (arc >= arcs.size() || arcs[arc].target >= hopDistances_.size())
           return topologyError("forward arc is malformed");
-        if (arcs[arc].payloadCapacityBits < payloadWidthBits ||
+        if (!problem_->activeRouting().arcIsActive(arc) ||
+            arcs[arc].payloadCapacityBits < payloadWidthBits ||
             hopDistances_[arcs[arc].target] != unreachable)
           continue;
         hopDistances_[arcs[arc].target] = nextDistance;
@@ -229,7 +230,8 @@ llvm::Error detail::SpatialCandidateTopologyPreference::fillHopDistances(
       const PnrIndex source = arcSources[arc];
       if (source >= hopDistances_.size())
         return topologyError("reverse source is malformed");
-      if (arcs[arc].payloadCapacityBits < payloadWidthBits ||
+      if (!problem_->activeRouting().arcIsActive(arc) ||
+          arcs[arc].payloadCapacityBits < payloadWidthBits ||
           hopDistances_[source] != unreachable)
         continue;
       hopDistances_[source] = nextDistance;

@@ -142,7 +142,8 @@ loom::pnr::detail::addSpatialFixedTerminalCutEscapeConstraint(
         if (record.traversal >= blockedTraversals_.size() ||
             record.target >= reachableEndpoints_.size())
           return cutConstraintError("routing topology is malformed");
-        if (blockedTraversals_[record.traversal] ||
+        if (!problem.activeRouting().arcIsActive(arc) ||
+            blockedTraversals_[record.traversal] ||
             record.payloadCapacityBits < payloadWidth ||
             reachableEndpoints_[record.target])
           continue;

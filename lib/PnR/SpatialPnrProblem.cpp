@@ -1,6 +1,9 @@
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/RoutingNegotiation.h"
 
+#include "PnrDerivedContextInternal.h"
+#include "SpatialActiveProblemStatistics.h"
+#include "SpatialActiveRoutingDomain.h"
 #include "SpatialBindingRelationModel.h"
 #include "SpatialLocalTransferIndex.h"
 #include "SpatialMemoryConstraintModel.h"
@@ -10,8 +13,8 @@
 #include "SpatialPnrPortIndex.h"
 #include "SpatialPnrResourceIndex.h"
 #include "SpatialPnrTransferIndex.h"
-#include "SpatialRouteConstraintModel.h"
 #include "SpatialRecurrenceTimingInternal.h"
+#include "SpatialRouteConstraintModel.h"
 #include "SpatialTagConstraintModel.h"
 #include "StaticSchedulePressure.h"
 
@@ -27,10 +30,12 @@
 #include "llvm/Support/SHA256.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -121,12 +126,12 @@ constexpr PnrCapacityContext traversalArcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.20\0";
+constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.21\0";
 constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
 constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 20;
+constexpr std::uint32_t cacheSchemaMinor = 21;
 constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.20";
+    "loom.spatial_pnr.freeze.2.21";
 constexpr llvm::StringLiteral importerSemanticIdentity =
     "loom.spatial_pnr.importers.2.1";
 constexpr llvm::StringLiteral nativeLayoutAbi =
@@ -318,13 +323,30 @@ public:
         const TechMappingView &techMapping, const FabricArtifactView &fabric,
         const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
         const ResolvedPnrConfigView &config,
-        const SpatialMappingConstraintSetView &constraintSet) {
+        const SpatialMappingConstraintSetView &constraintSet,
+        const FabricDerivedContextBundle *derivedContexts) {
     if (llvm::Error error = validateInputs(dataflow, techMapping, fabric,
                                            config, constraintSet))
       return std::move(error);
     if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
             fabric, physicalTiming))
       return std::move(error);
+
+    std::optional<FabricDerivedContextBundle> ownedContexts;
+    if (!derivedContexts) {
+      auto built = buildFabricDerivedContextBundle(fabric, physicalTiming);
+      if (!built)
+        return built.takeError();
+      ownedContexts.emplace(std::move(*built));
+      derivedContexts = &*ownedContexts;
+    } else if (llvm::Error error = revalidateFabricDerivedContextBundle(
+                   *derivedContexts, fabric, physicalTiming)) {
+      return std::move(error);
+    }
+    const auto &contextStorage = *derivedContexts->storage_;
+    const auto &staticContext = *contextStorage.staticContext;
+    const auto &timingContext = *contextStorage.timingContext;
+    const auto activeProblemBegin = std::chrono::steady_clock::now();
 
     auto objectiveProgram = MappingObjectiveProgram::get(
         config.selectedObjectiveCatalogs(), config.policy().objectiveSelection);
@@ -350,12 +372,8 @@ public:
         detail::buildFrozenSpatialTransferIndex(dataflow, techMapping);
     if (!transfers)
       return transfers.takeError();
-    auto resources = detail::buildFrozenSpatialResourceIndex(fabric);
-    if (!resources)
-      return resources.takeError();
-    auto routing = buildRouting(fabric, physicalTiming, *resources);
-    if (!routing)
-      return routing.takeError();
+    const auto &resources = staticContext.resources;
+    const auto &routing = timingContext.routing;
     auto localTransfers = detail::buildFrozenSpatialLocalTransferIndex(
         dataflow, techMapping, fabric, *realizations, *transfers, *routing);
     if (!localTransfers)
@@ -364,6 +382,10 @@ public:
         dataflow, techMapping, fabric, *realizations, *transfers, *routing);
     if (!ports)
       return ports.takeError();
+    auto activeRouting = buildFrozenSpatialActiveRoutingDomain(
+        *transfers, *localTransfers, *ports, *routing);
+    if (!activeRouting)
+      return activeRouting.takeError();
     auto bindingRelations = detail::SpatialBindingRelationModel::create(
         dataflow.identity(), *realizations, *constraints, *transfers, *ports,
         *routing);
@@ -382,7 +404,8 @@ public:
     if (!routeConstraints)
       return routeConstraints.takeError();
     auto handshake = detail::buildFrozenSpatialHandshakeIndex(
-        dataflow, techMapping, fabric, *realizations, *resources, *routing);
+        dataflow, techMapping, fabric, staticContext.handshake.ownerModels(),
+        *realizations, *resources, *routing, *activeRouting);
     if (!handshake)
       return handshake.takeError();
     auto capacity = detail::buildFrozenSpatialCapacityIndex(
@@ -399,9 +422,9 @@ public:
         dataflow, techMapping.covers());
     if (!progressBasis)
       return progressBasis.takeError();
-    if (llvm::Error error = verifyAggregate(*realizations, *memory, *transfers,
-                                            *localTransfers, *ports, *resources,
-                                            *capacity, *routing, *handshake))
+    if (llvm::Error error = verifyAggregate(
+            *realizations, *memory, *transfers, *localTransfers, *ports,
+            *resources, *capacity, *routing, *activeRouting, *handshake))
       return std::move(error);
 
     FrozenSpatialPnrCacheKey cacheKey =
@@ -409,18 +432,24 @@ public:
                        physicalTiming.digest());
     std::vector<DeterministicWorkBudgetEntry> workBudget =
         deriveDeterministicWorkBudgetView(config);
+    SpatialActiveProblemStatistics statistics =
+        buildSpatialActiveProblemStatistics(
+            *realizations, *memory, *transfers, *localTransfers, *ports,
+            *capacity, *activeRouting, *handshake,
+            detail::elapsedNanoseconds(activeProblemBegin));
 
     return FrozenSpatialPnrProblemHandle(new FrozenSpatialPnrProblem(
         dataflow.identity(), techMapping.identity(), fabric.identity(),
         constraintSet.identity(), config, std::move(*objectiveProgram),
         std::move(workBudget), std::move(*constraints),
         std::move(*realizations), std::move(*memory), std::move(*transfers),
-        std::move(*localTransfers), std::move(*ports), std::move(*resources),
-        std::move(*capacity), std::move(*routing), std::move(*handshake),
-        std::move(*schedulePressure), std::move(*recurrenceTiming),
-        *progressBasis,
+        std::move(*localTransfers), std::move(*ports), resources,
+        std::move(*capacity), routing, std::move(*activeRouting),
+        std::move(*handshake), std::move(*schedulePressure),
+        std::move(*recurrenceTiming), *progressBasis,
         std::move(*bindingRelations), std::move(*memoryConstraints),
-        std::move(*tagConstraints), std::move(*routeConstraints), cacheKey));
+        std::move(*tagConstraints), std::move(*routeConstraints), cacheKey,
+        std::move(statistics)));
   }
 
   static FrozenSpatialPnrCacheKey
@@ -468,6 +497,7 @@ public:
                   const FrozenSpatialResourceIndex &resources,
                   const FrozenSpatialCapacityIndex &capacity,
                   const FrozenSpatialRoutingGraph &routing,
+                  const FrozenSpatialActiveRoutingDomain &activeRouting,
                   const FrozenSpatialHandshakeIndex &handshake) {
     const auto rangeFits = [](PnrIndex offset, PnrIndex count,
                               std::size_t size) {
@@ -479,6 +509,54 @@ public:
                                   PnrIndex index) {
       return index >= offset && index - offset < count;
     };
+
+    if (activeRouting.activeEndpoints().size() !=
+            routing.routingEndpoints().size() ||
+        activeRouting.activeTraversals().size() !=
+            routing.traversals().size() ||
+        activeRouting.activeArcs().size() != routing.routingArcs().size() ||
+        activeRouting.activeTraversalBits().size() !=
+            (routing.traversals().size() + 63) / 64)
+      return invalid("active routing domain has the wrong shape");
+    std::uint64_t activeEndpointCount = 0;
+    std::uint64_t activeTraversalCount = 0;
+    std::uint64_t activeArcCount = 0;
+    for (auto [endpoint, active] :
+         llvm::enumerate(activeRouting.activeEndpoints()))
+      if (active) {
+        ++activeEndpointCount;
+        if (endpoint >= routing.routingEndpoints().size())
+          return invalid("active routing endpoint is out of range");
+      }
+    for (auto [traversal, active] :
+         llvm::enumerate(activeRouting.activeTraversals())) {
+      const bool bit = (activeRouting.activeTraversalBits()[traversal / 64] &
+                        (std::uint64_t{1} << (traversal % 64))) != 0;
+      if (static_cast<bool>(active) != bit)
+        return invalid("active traversal bitset diverges from its domain");
+      activeTraversalCount += active != 0;
+    }
+    for (auto [arc, active] : llvm::enumerate(activeRouting.activeArcs())) {
+      if (!active)
+        continue;
+      ++activeArcCount;
+      const EndpointRoutingArc &record = routing.routingArcs()[arc];
+      if (record.traversal >= routing.traversals().size() ||
+          !activeRouting.traversalIsActive(record.traversal) ||
+          !activeRouting.endpointIsActive(routing.arcSources()[arc]) ||
+          !activeRouting.endpointIsActive(record.target))
+        return invalid("active routing arc has an inactive dependency");
+    }
+    if (activeEndpointCount != activeRouting.activeEndpointCount() ||
+        activeTraversalCount != activeRouting.activeTraversalCount() ||
+        activeArcCount != activeRouting.activeArcCount())
+      return invalid("active routing domain count is inconsistent");
+    for (const FrozenSpatialAttachmentOption &option :
+         ports.attachmentOptions())
+      if (!activeRouting.endpointIsActive(option.endpoint) ||
+          (option.localTraversal &&
+           !activeRouting.traversalIsActive(*option.localTraversal)))
+        return invalid("attachment option is absent from active routing");
 
     if (realizations.computeActorRealizations().size() !=
             realizations.computeActors().size() ||
@@ -505,7 +583,9 @@ public:
                 realizations.computePlacements().size() ||
             option.writeTraversal >= routing.traversals().size() ||
             option.readTraversal >= routing.traversals().size() ||
-            option.writeTraversal == option.readTraversal)
+            option.writeTraversal == option.readTraversal ||
+            !activeRouting.traversalIsActive(option.writeTraversal) ||
+            !activeRouting.traversalIsActive(option.readTraversal))
           return invalid("local-transfer option is inconsistent");
       }
     }
@@ -1154,6 +1234,129 @@ public:
     return llvm::Error::success();
   }
 
+  static llvm::Expected<FabricDerivedContextBundle> buildDerivedContexts(
+      const FabricArtifactView &fabric,
+      const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming) {
+    if (fabric.rootKind() != FabricRootKind::Module)
+      return invalid("FabricStaticContext requires one Module root");
+    if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
+            fabric, physicalTiming))
+      return std::move(error);
+
+    FabricDerivedContextStatistics statistics;
+    const auto staticBegin = std::chrono::steady_clock::now();
+    auto resources = detail::buildFrozenSpatialResourceIndex(fabric);
+    if (!resources)
+      return resources.takeError();
+    auto topology = freezeEndpointRoutingTopology(fabric);
+    if (!topology)
+      return topology.takeError();
+    auto tagContinuity = freezeSpatialTagContinuityIndex(fabric);
+    if (!tagContinuity)
+      return tagContinuity.takeError();
+    auto handshake = buildFabricHandshakeContext(fabric);
+    if (!handshake)
+      return handshake.takeError();
+
+    auto resourcesOwner = std::make_shared<const FrozenSpatialResourceIndex>(
+        std::move(*resources));
+    auto topologyOwner = std::make_shared<const FrozenEndpointRoutingTopology>(
+        std::move(*topology));
+    auto tagOwner = std::make_shared<const FrozenSpatialTagContinuityIndex>(
+        std::move(*tagContinuity));
+    auto staticContext = std::make_shared<const detail::FabricStaticContext>(
+        detail::FabricStaticContext{
+            detail::deriveFabricStaticContextKey(fabric), fabric.identity(),
+            resourcesOwner, topologyOwner, tagOwner, std::move(*handshake)});
+
+    statistics.staticContext.constructionCount = 1;
+    statistics.staticContext.constructionNanoseconds =
+        detail::elapsedNanoseconds(staticBegin);
+    statistics.staticContext.retainedBytes = detail::staticContextRetainedBytes(
+        *resourcesOwner, *topologyOwner, *tagOwner,
+        staticContext->handshake.ownerModels());
+    statistics.resourceOwnerCount = resourcesOwner->resourceOwners().size();
+    statistics.endpointCount = topologyOwner->endpoints().size();
+    statistics.traversalCount = topologyOwner->traversals().size();
+    statistics.routingArcCount = topologyOwner->arcs().size();
+    statistics.handshakeOwnerCount =
+        staticContext->handshake.ownerModels().size();
+    for (const HandshakeOwnerModel &model :
+         staticContext->handshake.ownerModels()) {
+      statistics.handshakeNodeCount += model.nodes().size();
+      statistics.handshakeArcCount += model.arcs().size();
+      statistics.handshakeFragmentCount += model.fragments().size();
+    }
+    statistics.staticContext.deterministicWork =
+        statistics.resourceOwnerCount + statistics.endpointCount +
+        statistics.traversalCount + statistics.routingArcCount +
+        statistics.handshakeOwnerCount + statistics.handshakeNodeCount +
+        statistics.handshakeArcCount + statistics.handshakeFragmentCount;
+
+    const auto timingBegin = std::chrono::steady_clock::now();
+    auto routing = buildRouting(fabric, physicalTiming, *resourcesOwner,
+                                topologyOwner, tagOwner);
+    if (!routing)
+      return routing.takeError();
+    auto routingOwner =
+        std::make_shared<const FrozenSpatialRoutingGraph>(std::move(*routing));
+    auto timingContext = std::make_shared<const detail::FabricTimingContext>(
+        detail::FabricTimingContext{detail::deriveFabricTimingContextKey(
+                                        staticContext->key, physicalTiming),
+                                    fabric.identity(),
+                                    physicalTiming.digest().bytes(),
+                                    staticContext, routingOwner});
+    statistics.timingContext.constructionCount = 1;
+    statistics.timingContext.constructionNanoseconds =
+        detail::elapsedNanoseconds(timingBegin);
+    statistics.timingContext.retainedBytes =
+        detail::timingContextRetainedBytes(*routingOwner);
+    statistics.timingContext.deterministicWork =
+        routingOwner->traversals().size() + routingOwner->routeClaims().size() +
+        routingOwner->traversalClaimKeys().size() +
+        routingOwner->traversalArcs().size();
+
+    auto storage = std::make_shared<const detail::FabricDerivedContextStorage>(
+        detail::FabricDerivedContextStorage{staticContext, timingContext,
+                                            statistics});
+    return FabricDerivedContextBundle(std::move(storage));
+  }
+
+  static llvm::Error revalidateDerivedContexts(
+      const FabricDerivedContextBundle &bundle,
+      const FabricArtifactView &fabric,
+      const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming) {
+    if (!bundle.storage_ || !bundle.storage_->staticContext ||
+        !bundle.storage_->timingContext)
+      return invalid("Fabric derived context bundle is incomplete");
+    if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
+            fabric, physicalTiming))
+      return error;
+    const auto &staticContext = *bundle.storage_->staticContext;
+    const auto &timingContext = *bundle.storage_->timingContext;
+    if (staticContext.fabricIdentity != fabric.identity() ||
+        timingContext.fabricIdentity != fabric.identity() ||
+        timingContext.staticContext.get() != &staticContext)
+      return invalid("Fabric derived context binds another Fabric identity");
+    if (staticContext.key != detail::deriveFabricStaticContextKey(fabric) ||
+        timingContext.key != detail::deriveFabricTimingContextKey(
+                                 staticContext.key, physicalTiming) ||
+        timingContext.physicalTimingDigestBytes !=
+            physicalTiming.digest().bytes())
+      return invalid("Fabric derived context key does not match its inputs");
+    if (!staticContext.resources || !staticContext.routingTopology ||
+        !staticContext.tagContinuity || !timingContext.routing ||
+        &timingContext.routing->topology() !=
+            staticContext.routingTopology.get() ||
+        &timingContext.routing->tagContinuity() !=
+            staticContext.tagContinuity.get())
+      return invalid("Fabric derived context lost a static projection");
+    if (llvm::Error error =
+            revalidateFabricHandshakeContext(staticContext.handshake, fabric))
+      return error;
+    return llvm::Error::success();
+  }
+
 private:
   static llvm::Expected<FrozenSpatialRealizationIndex>
   buildRealizations(const dataflow::CanonicalDataflowProgramView &dataflow,
@@ -1411,7 +1614,9 @@ private:
   static llvm::Expected<FrozenSpatialRoutingGraph> buildRouting(
       const FabricArtifactView &fabric,
       const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
-      const FrozenSpatialResourceIndex &resources) {
+      const FrozenSpatialResourceIndex &resources,
+      std::shared_ptr<const FrozenEndpointRoutingTopology> topology,
+      std::shared_ptr<const FrozenSpatialTagContinuityIndex> tagContinuity) {
     if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
             fabric, physicalTiming))
       return std::move(error);
@@ -1427,16 +1632,12 @@ private:
         physicalTiming.technologyIdentity().str();
     result.physicalTimingCharacterizationIdentity_ =
         physicalTiming.characterizationIdentity().str();
-    auto topology = freezeEndpointRoutingTopology(fabric);
-    if (!topology)
-      return topology.takeError();
-    result.topology_ = std::move(*topology);
-    if (result.topology_.traversals().size() != traversalViews.size())
+    if (!topology || !tagContinuity)
+      return invalid("Fabric timing context has a null static projection");
+    result.topology_ = std::move(topology);
+    if (result.topology_->traversals().size() != traversalViews.size())
       return invalid("routing topology lost a physical traversal");
-    auto tagContinuity = freezeSpatialTagContinuityIndex(fabric);
-    if (!tagContinuity)
-      return tagContinuity.takeError();
-    result.tagContinuity_ = std::move(*tagContinuity);
+    result.tagContinuity_ = std::move(tagContinuity);
     llvm::StringMap<PnrIndex> stateByCanonicalRef;
     for (auto [ordinal, state] : llvm::enumerate(resources.resourceStates())) {
       auto index = checked(traversalResourceStateCountContext, ordinal);
@@ -1466,7 +1667,7 @@ private:
     result.traversals_.reserve(traversalViews.size());
     for (auto [traversalOrdinal, traversal] : llvm::enumerate(traversalViews)) {
       const EndpointRoutingTraversal &routingTraversal =
-          result.topology_.traversals()[traversalOrdinal];
+          result.topology_->traversals()[traversalOrdinal];
       if (routingTraversal.reference != traversal.reference)
         return invalid("routing topology traversal order is not canonical");
       const auto physicalTimingFound =
@@ -1664,7 +1865,7 @@ private:
     }
 
     result.traversalArcOffsets_.assign(result.traversals_.size() + 1, 0);
-    for (const EndpointRoutingArc &arc : result.topology_.arcs()) {
+    for (const EndpointRoutingArc &arc : result.topology_->arcs()) {
       auto count =
           checkedPnrIndexAdd(traversalArcCountContext,
                              result.traversalArcOffsets_[arc.traversal + 1], 1);
@@ -1681,9 +1882,9 @@ private:
         return prefix.takeError();
       result.traversalArcOffsets_[traversal] = *prefix;
     }
-    result.traversalArcs_.resize(result.topology_.arcs().size());
+    result.traversalArcs_.resize(result.topology_->arcs().size());
     std::vector<PnrIndex> traversalArcCursors = result.traversalArcOffsets_;
-    for (auto [arcOrdinal, arc] : llvm::enumerate(result.topology_.arcs())) {
+    for (auto [arcOrdinal, arc] : llvm::enumerate(result.topology_->arcs())) {
       auto arcIndex = checked(arcIndexContext, arcOrdinal);
       if (!arcIndex)
         return arcIndex.takeError();
@@ -1699,9 +1900,11 @@ loom::pnr::freezeSpatialPnrProblem(
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
     const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
     const ResolvedPnrConfigView &config,
-    const SpatialMappingConstraintSetView &constraints) {
-  return FrozenSpatialPnrProblemBuilder::build(
-      dataflow, techMapping, fabric, physicalTiming, config, constraints);
+    const SpatialMappingConstraintSetView &constraints,
+    const FabricDerivedContextBundle *derivedContexts) {
+  return FrozenSpatialPnrProblemBuilder::build(dataflow, techMapping, fabric,
+                                               physicalTiming, config,
+                                               constraints, derivedContexts);
 }
 
 llvm::Expected<FrozenSpatialPnrProblemHandle>
@@ -1709,13 +1912,29 @@ loom::pnr::freezeSpatialPnrProblem(
     const dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
     const ResolvedPnrConfigView &config,
-    const SpatialMappingConstraintSetView &constraints) {
+    const SpatialMappingConstraintSetView &constraints,
+    const FabricDerivedContextBundle *derivedContexts) {
   auto physicalTiming =
       ::loom::fabric::projectNormalizedFabricPhysicalTimingProfile(fabric);
   if (!physicalTiming)
     return physicalTiming.takeError();
   return freezeSpatialPnrProblem(dataflow, techMapping, fabric, *physicalTiming,
-                                 config, constraints);
+                                 config, constraints, derivedContexts);
+}
+
+llvm::Expected<FabricDerivedContextBundle>
+loom::pnr::buildFabricDerivedContextBundle(
+    const FabricArtifactView &fabric,
+    const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming) {
+  return FrozenSpatialPnrProblemBuilder::buildDerivedContexts(fabric,
+                                                              physicalTiming);
+}
+
+llvm::Error loom::pnr::revalidateFabricDerivedContextBundle(
+    const FabricDerivedContextBundle &bundle, const FabricArtifactView &fabric,
+    const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming) {
+  return FrozenSpatialPnrProblemBuilder::revalidateDerivedContexts(
+      bundle, fabric, physicalTiming);
 }
 
 llvm::Error loom::pnr::revalidateFrozenSpatialPnrCacheHit(

@@ -491,7 +491,6 @@ void loom::test::exerciseHandshakeCandidateRefcounts(
 
   pnr::HandshakeCandidateScratch scratch;
   requireSuccess(scratch.prepare(*owner));
-  const std::size_t retainedScratchBytes = scratch.retainedStorageBytes();
   const auto offsets = handshake.computePlacementFragmentOffsets();
   const auto fragments = handshake.computePlacementFragments().slice(
       offsets.front(), offsets[1] - offsets.front());
@@ -526,6 +525,7 @@ void loom::test::exerciseHandshakeCandidateRefcounts(
   {
     auto transaction = take(candidate->beginTransaction(scratch));
     requireSuccess(transaction.removeFragments(fragments));
+    requireSuccess(transaction.removeFragments(fragments));
     if (!take(transaction.close()))
       fail("handshake deletion reported a cycle");
     transaction.rollback();
@@ -533,6 +533,7 @@ void loom::test::exerciseHandshakeCandidateRefcounts(
   if (candidate->fragmentRefcount(*observedFragment) != 2 ||
       candidate->arcRefcount(*observedArc) != selectedArcRefcount)
     fail("handshake rollback changed the committed refcounts");
+  const std::size_t retainedScratchBytes = scratch.retainedStorageBytes();
 
   for (unsigned selection = 0; selection < 2; ++selection) {
     auto transaction = take(candidate->beginTransaction(scratch));
@@ -544,7 +545,14 @@ void loom::test::exerciseHandshakeCandidateRefcounts(
   if (candidate->fragmentRefcount(*observedFragment) != 0 ||
       candidate->arcRefcount(*observedArc) != baseArcRefcount ||
       scratch.retainedStorageBytes() != retainedScratchBytes)
-    fail("handshake selection removal retained state or expanded scratch");
+    fail("handshake selection removal retained state or expanded scratch: "
+         "fragment_refcount=" +
+         std::to_string(candidate->fragmentRefcount(*observedFragment)) +
+         " arc_refcount=" +
+         std::to_string(candidate->arcRefcount(*observedArc)) +
+         " expected_arc_refcount=" + std::to_string(baseArcRefcount) +
+         " scratch_bytes=" + std::to_string(scratch.retainedStorageBytes()) +
+         " expected_scratch_bytes=" + std::to_string(retainedScratchBytes));
   requireSuccess(candidate->verify());
 }
 

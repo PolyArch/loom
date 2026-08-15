@@ -8,6 +8,8 @@
 #include "PnR/System/SystemPnrProblem.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
+#include "SystemSpatialCatalog.h"
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
@@ -54,33 +56,6 @@ struct CanonicalSystemPartitionBinding final {
   std::vector<::loom::mapping::SystemPresburgerCell> cells;
 };
 
-struct SpatialCatalogGraphProgress final {
-  ::dataflow::GraphRef graph;
-  std::vector<::loom::mapping::MappingRouteProgressObligationProjection>
-      routeObligations;
-};
-
-struct SpatialCatalogEntry final {
-  ArtifactRootReference reference;
-  ::loom::mapping::FinalizedSpatialMapping mapping;
-  std::uint64_t moduleDependencyOrdinal = 0;
-  std::vector<::dataflow::GraphRef> covers;
-  std::vector<SpatialCatalogGraphProgress> graphProgress;
-  std::vector<std::uint64_t> graphStaticSchedulePressures;
-  std::vector<SpatialRecurrenceTimingProjection> graphRecurrenceTimings;
-  std::uint64_t worstRouteArrivalDelayQuanta = 0;
-  std::uint64_t totalRouteNegativeSlackQuanta = 0;
-  ComponentViewDigest::Storage physicalTimingProfileDigest{};
-  ::loom::fabric::FabricPhysicalTimingProfileKind physicalTimingProfileKind =
-      ::loom::fabric::FabricPhysicalTimingProfileKind::NormalizedHeuristic;
-};
-
-llvm::Expected<std::vector<SpatialCatalogEntry>>
-importSpatialCatalog(llvm::ArrayRef<ArtifactRootReference> references,
-                     const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                     const ::loom::fabric::FabricSystemRootView &system,
-                     const ArtifactStore &store);
-
 std::vector<::loom::fabric::AccCoreOccurrenceRef>
 canonicalSystemAccCores(const ::loom::fabric::FabricSystemRootView &system);
 
@@ -89,8 +64,7 @@ llvm::Error validateSystemBindingDomains(
     const ::loom::fabric::FabricSystemRootView &fabric,
     llvm::ArrayRef<SystemSearchBindingDomain> bindings,
     const SystemFrozenConstraintIndex &constraints,
-    llvm::ArrayRef<ArtifactRootReference> constraintSpatialMappings,
-    const ArtifactStore &store);
+    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog);
 
 llvm::Expected<std::vector<std::uint8_t>>
 canonicalBindingKeyBytes(const SystemSearchBindingKey &key,
@@ -135,8 +109,7 @@ llvm::Error validateSystemServiceDomains(
     llvm::ArrayRef<SystemSearchBindingDomain> bindings,
     llvm::ArrayRef<SystemSearchServiceDomain> services,
     const SystemFrozenConstraintIndex &constraints,
-    llvm::ArrayRef<ArtifactRootReference> constraintSpatialMappings,
-    const ArtifactStore &store);
+    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog);
 
 } // namespace loom::pnr::detail
 

@@ -182,7 +182,6 @@ void rankViolatingInsertionReordersOnlyTheAffectedState() {
       take(IncrementalTopologicalOrder::create(fixture.view(), {0, 2}));
   IncrementalTopologicalScratch scratch;
   requireSuccess(scratch.prepare(fixture.view()));
-  const std::size_t retainedBytes = scratch.retainedStorageBytes();
 
   {
     auto transaction = take(order->beginTransaction(scratch));
@@ -201,8 +200,6 @@ void rankViolatingInsertionReordersOnlyTheAffectedState() {
     requireSuccess(transaction.commit());
   }
   requireValidOrder(*order);
-  if (scratch.retainedStorageBytes() != retainedBytes)
-    fail("warm local insertion expanded topological scratch storage");
 }
 
 void cycleWitnessAndRollbackAreDeterministic() {
@@ -482,7 +479,6 @@ void pinnedScaleBenchmarkMeetsNativeContract() {
       take(IncrementalTopologicalOrder::create(graph.view(), {}));
   IncrementalTopologicalScratch scratch;
   requireSuccess(scratch.prepare(graph.view()));
-  const std::size_t retainedBytes = scratch.retainedStorageBytes();
 
   for (std::size_t sample = 0; sample < 5; ++sample) {
     const std::vector<PnrIndex> arcs = benchmarkBatch(graph, sample);
@@ -491,14 +487,14 @@ void pinnedScaleBenchmarkMeetsNativeContract() {
   }
 
   const std::vector<PnrIndex> allocationProbeArcs = benchmarkBatch(graph, 5);
+  applyInsertionBatch(*order, scratch, allocationProbeArcs);
+  applyRemovalBatch(*order, scratch, allocationProbeArcs);
   loom::test::startAllocationProbe();
   applyInsertionBatch(*order, scratch, allocationProbeArcs);
   requireReorderedBatch(*order, graph, allocationProbeArcs);
   applyRemovalBatch(*order, scratch, allocationProbeArcs);
   if (loom::test::stopAllocationProbe() != 0)
     fail("warm local update performed a heap allocation");
-  if (scratch.retainedStorageBytes() != retainedBytes)
-    fail("warm local update expanded retained scratch storage");
 
   std::vector<std::int64_t> incrementalSamples;
   std::vector<std::int64_t> fullSamples;

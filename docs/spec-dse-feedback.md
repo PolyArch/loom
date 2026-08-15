@@ -2191,6 +2191,17 @@ In-flight work is safely retried with its original ordinal. Resume cannot
 renumber work, consume the same logical slot twice, substitute another
 candidate, or complete from best-so-far state.
 
+A terminal in-process Generate record is recovered directly from its immutable
+owner finalized-work record. Recovery strict-imports that record, revalidates
+its exact invocation closure and every referenced Artifact preimage, and
+reconstructs the canonical provider result. It must not invoke the generator,
+freeze a Mapping problem, allocate candidate or solver state, or enter search.
+Plan reconstruction may use a bounded execution-session artifact-resolution
+cache keyed by complete root reference and import algorithm version; the cache
+is removable, preserves every integrity check, and cannot turn a path or object
+address into identity. Terminal recovery reports import/cache work separately
+from newly executed provider work.
+
 For an external-tool attempt, a valid atomic completion permits import of that
 exact bundle. A prepared bundle without valid completion remains incomplete;
 the controller cannot infer process liveness, acquire an execution claim, or

@@ -596,6 +596,53 @@ resolveRuntimeInput(const PlanInputBinding &input,
   return artifacts;
 }
 
+llvm::ArrayRef<PlanInputBinding>
+planNodeInputs(const ResolvedDsePlanNode &node) {
+  if (const auto *generate = std::get_if<ResolvedGeneratePlanNode>(&node))
+    return generate->inputBindings();
+  return std::get<ResolvedPromotePlanNode>(node).inputBindings();
+}
+
+std::vector<CandidateGeneratorOutputDemand>
+deriveOutputDemands(const ResolvedDsePlan &plan,
+                    std::size_t producerNodeOrdinal,
+                    const CandidateGeneratorDescriptor &descriptor) {
+  std::vector<CandidateGeneratorOutputDemand> demands;
+  demands.reserve(descriptor.outputSlots.size());
+  for (const CandidateGeneratorOutputSlotDescriptor &slot :
+       descriptor.outputSlots) {
+    const PlanOutputRef produced{
+        static_cast<std::uint64_t>(producerNodeOrdinal), slot.slot.ordinal()};
+    bool referenced = false;
+    bool unbounded = false;
+    std::uint64_t maximumArtifacts = 0;
+    for (std::size_t consumer = producerNodeOrdinal + 1;
+         consumer != plan.nodes().size() && !unbounded; ++consumer) {
+      for (const PlanInputBinding &input :
+           planNodeInputs(plan.nodes()[consumer])) {
+        if (const auto *output = std::get_if<PlanOutputRef>(&input)) {
+          if (*output == produced) {
+            referenced = true;
+            unbounded = true;
+            break;
+          }
+          continue;
+        }
+        const auto *join = std::get_if<BoundedPlanOutputJoin>(&input);
+        if (!join || !llvm::is_contained(join->outputs, produced))
+          continue;
+        referenced = true;
+        maximumArtifacts = std::max(maximumArtifacts, join->maximumArtifacts);
+      }
+    }
+    demands.push_back(CandidateGeneratorOutputDemand{
+        slot.slot, referenced && !unbounded
+                       ? std::optional<std::uint64_t>(maximumArtifacts)
+                       : std::nullopt});
+  }
+  return demands;
+}
+
 } // namespace
 
 class DsePlanExecutionBuilder final {
@@ -1152,8 +1199,14 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
             candidate->configDigest());
         if (!binding)
           return binding.takeError();
+        const CandidateGeneratorDescriptor *descriptor =
+            candidate->descriptorRef().descriptor();
+        if (!descriptor)
+          return invalid("Generate frontier lost its descriptor");
         tasks.push_back({static_cast<std::uint64_t>(candidateIndex),
-                         std::move(inputs), std::move(*binding)});
+                         std::move(inputs),
+                         deriveOutputDemands(plan, candidateIndex, *descriptor),
+                         std::move(*binding)});
       }
       if (tasks.empty())
         return invalid("Generate frontier did not contain its first node");
@@ -1234,11 +1287,20 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
           generate->configDigest());
       if (!binding)
         return binding.takeError();
+      const CandidateGeneratorDescriptor *descriptor =
+          generate->descriptorRef().descriptor();
+      if (!descriptor)
+        return invalid("Generate node lost its descriptor");
+      std::vector<CandidateGeneratorOutputDemand> outputDemands =
+          deriveOutputDemands(plan, nodeIndex, *descriptor);
       auto result =
           executor
               ? executor->executeGenerate(static_cast<std::uint64_t>(nodeIndex),
-                                          inputs, *binding, store, blobs)
-              : invokeCandidateGenerator(inputs, *binding, store, blobs);
+                                          inputs, outputDemands, *binding,
+                                          store, blobs)
+              : invokeCandidateGenerator(
+                    inputs, *binding, store, blobs,
+                    CandidateGeneratorInvocationView({}, outputDemands));
       if (!result)
         return result.takeError();
       if (auto *incomplete = std::get_if<IncompleteCandidateGeneratorResult>(

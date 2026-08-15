@@ -9,6 +9,7 @@
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrGeneration.h"
+#include "PnR/System/SystemPnrDerivedContext.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -180,6 +181,8 @@ struct SystemPnrGenerationInputs final {
   const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints;
   const ArtifactStore &store;
   ExecutionControlView executionControl = {};
+  const SystemStaticContext *staticContext = nullptr;
+  const SystemActiveContext *activeContext = nullptr;
 };
 
 /// Runs the canonical System PnR invocation for one exact D/F/R/H/C/K

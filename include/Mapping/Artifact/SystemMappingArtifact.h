@@ -79,7 +79,8 @@ private:
   strictImportSystemExecutionBindings(
       const CanonicalSemanticBytes &,
       const ::dataflow::CanonicalDataflowProgramView &,
-      const ::loom::fabric::FabricSystemRootView &, const ArtifactStore &);
+      const ::loom::fabric::FabricSystemRootView &, const ArtifactStore &,
+      const SpatialMappingImportContext *);
 };
 
 struct SystemMemoryRegionElementView final {
@@ -219,7 +220,8 @@ private:
   importSystemMappingView(const ArtifactIdentity &, ::mapping::SystemOp,
                           const ::dataflow::CanonicalDataflowProgramView &,
                           const ::loom::fabric::FabricSystemRootView &,
-                          const ArtifactStore &);
+                          const ArtifactStore &,
+                          const SpatialMappingImportContext *);
 };
 
 class FinalizedSystemMapping final {
@@ -244,7 +246,8 @@ private:
   friend llvm::Expected<FinalizedSystemMapping> finalizeSystemMapping(
       ::mapping::SystemOp, const ::dataflow::CanonicalDataflowProgramView &,
       const ::loom::fabric::FabricSystemRootView &,
-      const SystemMappingConstraintSetView &, const ArtifactStore &);
+      const SystemMappingConstraintSetView &, const ArtifactStore &,
+      const SpatialMappingImportContext *);
   friend llvm::Expected<FinalizedSystemMapping>
   importSystemMapping(const ArtifactRootReference &, const ArtifactStore &);
 };
@@ -269,6 +272,44 @@ enum class SystemMappingIncompleteReason : std::uint8_t {
   ProofNotEstablished,
 };
 
+class SystemMappingIncompleteError final
+    : public llvm::ErrorInfo<SystemMappingIncompleteError> {
+public:
+  static char ID;
+
+  SystemMappingIncompleteError(SystemMappingIncompleteReason reason,
+                               std::string diagnostic);
+
+  SystemMappingIncompleteReason reason() const { return reason_; }
+  llvm::StringRef diagnostic() const { return diagnostic_; }
+
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  SystemMappingIncompleteReason reason_;
+  std::string diagnostic_;
+};
+
+class SystemMappingRejectedError final
+    : public llvm::ErrorInfo<SystemMappingRejectedError> {
+public:
+  static char ID;
+
+  SystemMappingRejectedError(SystemMappingClosureFindingKind finding,
+                             std::string diagnostic);
+
+  SystemMappingClosureFindingKind finding() const { return finding_; }
+  llvm::StringRef diagnostic() const { return diagnostic_; }
+
+  void log(llvm::raw_ostream &stream) const override;
+  std::error_code convertToErrorCode() const override;
+
+private:
+  SystemMappingClosureFindingKind finding_;
+  std::string diagnostic_;
+};
+
 struct IncompleteSystemMappingBase final {
   SystemMappingIncompleteReason reason;
   std::string diagnostic;
@@ -288,7 +329,8 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
     const CanonicalSemanticBytes &bytes,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
-    const ArtifactStore &store);
+    const ArtifactStore &store,
+    const SpatialMappingImportContext *spatialMappings = nullptr);
 
 SystemMappingBaseVerification verifySystemMappingBase(
     ::mapping::SystemOp source,
@@ -296,12 +338,13 @@ SystemMappingBaseVerification verifySystemMappingBase(
     const ::loom::fabric::FabricSystemRootView &fabric,
     const ArtifactStore &store);
 
-llvm::Expected<FinalizedSystemMapping>
-finalizeSystemMapping(::mapping::SystemOp source,
-                      const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                      const ::loom::fabric::FabricSystemRootView &fabric,
-                      const SystemMappingConstraintSetView &constraints,
-                      const ArtifactStore &store);
+llvm::Expected<FinalizedSystemMapping> finalizeSystemMapping(
+    ::mapping::SystemOp source,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    const SystemMappingConstraintSetView &constraints,
+    const ArtifactStore &store,
+    const SpatialMappingImportContext *spatialMappings = nullptr);
 
 llvm::Expected<FinalizedSystemMapping>
 importSystemMapping(const ArtifactRootReference &reference,

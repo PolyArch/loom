@@ -115,6 +115,7 @@ private:
 
   const FrozenSpatialPnrProblem *problem_ = nullptr;
   const SpatialRouteConstraintModel *model_ = nullptr;
+  std::vector<std::uint64_t> activeTraversalBits_;
   std::vector<std::uint64_t> eligibleTraversalBits_;
   std::vector<std::uint64_t> selectedTraversalBits_;
   std::vector<std::uint64_t> selectedResourceStateBits_;

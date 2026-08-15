@@ -15,7 +15,9 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -524,11 +526,12 @@ struct SpatialPhysicalTagSegmentView final {
 /// claims are deliberately absent.
 class SpatialMappingView final {
 public:
-  static llvm::Expected<SpatialMappingView>
-  import(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
-         const ::dataflow::CanonicalDataflowProgramView &dataflow,
-         const TechMappingView &techMapping,
-         const ::loom::fabric::FabricArtifactView &fabric);
+  static llvm::Expected<SpatialMappingView> import(
+      const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
+      const ::dataflow::CanonicalDataflowProgramView &dataflow,
+      const TechMappingView &techMapping,
+      const ::loom::fabric::FabricArtifactView &fabric,
+      const ::loom::fabric::FabricHandshakeContext *handshakeContext = nullptr);
 
   const ArtifactIdentity &identity() const { return identity_; }
   const ArtifactIdentity &techMappingIdentity() const {
@@ -641,11 +644,76 @@ private:
       const TechMappingView &techMapping,
       const ::loom::fabric::FabricArtifactView &fabric,
       const SpatialMappingConstraintSetView &constraints,
-      const ArtifactStore &store);
+      const ArtifactStore &store,
+      const ::loom::fabric::FabricHandshakeContext *handshakeContext);
   friend llvm::Expected<FinalizedSpatialMapping>
   importSpatialMapping(const ArtifactRootReference &reference,
                        const ArtifactStore &store);
 };
+
+struct SpatialMappingImportContextStatistics final {
+  std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t retainedBytes = 0;
+  std::uint64_t deterministicWork = 0;
+  std::uint64_t mappingCount = 0;
+};
+
+/// Bounded immutable import set for one explicit invocation. Every member is
+/// strictly imported once; lookups never admit references outside the exact
+/// canonical set used to derive the context key.
+class SpatialMappingImportContext final {
+public:
+  SpatialMappingImportContext(const SpatialMappingImportContext &) = delete;
+  SpatialMappingImportContext &
+  operator=(const SpatialMappingImportContext &) = delete;
+  SpatialMappingImportContext(SpatialMappingImportContext &&) noexcept =
+      default;
+  SpatialMappingImportContext &
+  operator=(SpatialMappingImportContext &&) noexcept = default;
+
+  const std::array<std::uint8_t, 32> &key() const { return key_; }
+  const SpatialMappingImportContextStatistics &statistics() const {
+    return statistics_;
+  }
+  llvm::ArrayRef<ArtifactRootReference> references() const {
+    return references_;
+  }
+  const FinalizedSpatialMapping *
+  find(const ArtifactRootReference &reference) const;
+
+private:
+  SpatialMappingImportContext(
+      std::array<std::uint8_t, 32> key,
+      std::vector<ArtifactRootReference> references,
+      std::vector<std::shared_ptr<const FinalizedSpatialMapping>> mappings,
+      SpatialMappingImportContextStatistics statistics)
+      : key_(key), references_(std::move(references)),
+        mappings_(std::move(mappings)), statistics_(statistics) {}
+
+  std::array<std::uint8_t, 32> key_{};
+  std::vector<ArtifactRootReference> references_;
+  std::vector<std::shared_ptr<const FinalizedSpatialMapping>> mappings_;
+  SpatialMappingImportContextStatistics statistics_;
+
+  friend llvm::Expected<SpatialMappingImportContext>
+  buildSpatialMappingImportContext(llvm::ArrayRef<ArtifactRootReference>,
+                                   const ArtifactStore &);
+  friend llvm::Expected<std::shared_ptr<const FinalizedSpatialMapping>>
+  resolveSpatialMappingImportHandle(const SpatialMappingImportContext &,
+                                    const ArtifactRootReference &);
+};
+
+llvm::Expected<SpatialMappingImportContext> buildSpatialMappingImportContext(
+    llvm::ArrayRef<ArtifactRootReference> references,
+    const ArtifactStore &store);
+
+llvm::Expected<const FinalizedSpatialMapping *>
+resolveSpatialMappingImport(const SpatialMappingImportContext &context,
+                            const ArtifactRootReference &reference);
+
+llvm::Expected<std::shared_ptr<const FinalizedSpatialMapping>>
+resolveSpatialMappingImportHandle(const SpatialMappingImportContext &context,
+                                  const ArtifactRootReference &reference);
 
 /// Runs the intrinsic Spatial Mapping base verifier without publishing the
 /// draft. Constraint admission is deliberately outside this owner.
@@ -658,13 +726,14 @@ llvm::Error verifySpatialMappingBase(
 /// Production Spatial publication gate. The independently finalized K remains
 /// outside Mapping identity, but its exact owner tuple and admission must hold
 /// before the candidate reaches ArtifactStore::put.
-llvm::Expected<FinalizedSpatialMapping>
-finalizeSpatialMapping(::mapping::SpatialOp source,
-                       const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                       const TechMappingView &techMapping,
-                       const ::loom::fabric::FabricArtifactView &fabric,
-                       const SpatialMappingConstraintSetView &constraints,
-                       const ArtifactStore &store);
+llvm::Expected<FinalizedSpatialMapping> finalizeSpatialMapping(
+    ::mapping::SpatialOp source,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const SpatialMappingConstraintSetView &constraints,
+    const ArtifactStore &store,
+    const ::loom::fabric::FabricHandshakeContext *handshakeContext = nullptr);
 
 llvm::Expected<FinalizedSpatialMapping>
 importSpatialMapping(const ArtifactRootReference &reference,

@@ -141,7 +141,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &store, const BlobStore &,
-               const ExecutionControlView &) {
+               const CandidateGeneratorInvocationView &) {
   if (!inputBindings.empty())
     return invalid("fabric template generator received an input binding");
   auto config = adoptResolvedFabricTemplateConfigView(

@@ -188,7 +188,7 @@ boundPairsForMember(const ::loom::fabric::FabricSystemRootView &fabric,
       ::loom::mapping::ServiceMemberPlanSelectionAnchor{memberRef};
   for (const SpatialCatalogEntry &entry : spatialCatalog) {
     auto projection = ::loom::mapping::projectSystemSpatialMemoryBinding(
-        fabric, entry.mapping.view(), entry.moduleDependencyOrdinal, anchor);
+        fabric, entry.mapping->view(), entry.moduleDependencyOrdinal, anchor);
     if (!projection)
       return projection.takeError();
     auto admitted = admittedBindingPairs(entry, member.contextualActor->launch,
@@ -211,7 +211,7 @@ boundPairsForExposure(const ::loom::fabric::FabricSystemRootView &fabric,
       ::loom::mapping::MemoryExposurePlanSelectionAnchor{exposure};
   for (const SpatialCatalogEntry &entry : spatialCatalog) {
     auto projection = ::loom::mapping::projectSystemSpatialMemoryBinding(
-        fabric, entry.mapping.view(), entry.moduleDependencyOrdinal, anchor);
+        fabric, entry.mapping->view(), entry.moduleDependencyOrdinal, anchor);
     if (!projection)
       return projection.takeError();
     auto admitted =
@@ -779,7 +779,7 @@ projectSystemMemoryServiceBindings(
         const ::loom::mapping::ServicePlanSelectionAnchor anchor =
             ::loom::mapping::ServiceMemberPlanSelectionAnchor{memberRef};
         auto projection = ::loom::mapping::projectSystemSpatialMemoryBinding(
-            fabric, entry.mapping.view(), entry.moduleDependencyOrdinal,
+            fabric, entry.mapping->view(), entry.moduleDependencyOrdinal,
             anchor);
         if (!projection)
           return projection.takeError();
@@ -805,7 +805,7 @@ projectSystemMemoryServiceBindings(
         const ::loom::mapping::ServicePlanSelectionAnchor anchor =
             ::loom::mapping::MemoryExposurePlanSelectionAnchor{exposure};
         auto projection = ::loom::mapping::projectSystemSpatialMemoryBinding(
-            fabric, entry.mapping.view(), entry.moduleDependencyOrdinal,
+            fabric, entry.mapping->view(), entry.moduleDependencyOrdinal,
             anchor);
         if (!projection)
           return projection.takeError();
@@ -834,29 +834,9 @@ llvm::Error validateSystemServiceDomains(
     llvm::ArrayRef<SystemSearchBindingDomain> bindings,
     llvm::ArrayRef<SystemSearchServiceDomain> services,
     const SystemFrozenConstraintIndex &constraints,
-    llvm::ArrayRef<ArtifactRootReference> constraintSpatialMappings,
-    const ArtifactStore &store) {
-  std::vector<ArtifactRootReference> spatialMappings(
-      constraintSpatialMappings.begin(), constraintSpatialMappings.end());
-  for (const SystemSearchBindingDomain &binding : bindings) {
-    if (!std::holds_alternative<::dataflow::RootedGraphLaunchRef>(binding.key))
-      continue;
-    for (const SystemSearchAtom &atom : binding.atoms) {
-      const auto *hierarchical =
-          std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain);
-      if (!hierarchical)
-        return invalid("graph binding atom has the wrong domain variant");
-      spatialMappings.insert(spatialMappings.end(),
-                             hierarchical->compatibleSpatialMappings.begin(),
-                             hierarchical->compatibleSpatialMappings.end());
-    }
-  }
-  auto catalog = importSpatialCatalog(spatialMappings, dataflow, fabric, store);
-  if (!catalog)
-    return catalog.takeError();
-  auto expected =
-      projectSystemServiceDomains(dataflow, fabric, roots, bindings, *catalog,
-                                  constraints);
+    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog) {
+  auto expected = projectSystemServiceDomains(dataflow, fabric, roots, bindings,
+                                              spatialCatalog, constraints);
   if (!expected)
     return expected.takeError();
   if (services.size() != expected->size())

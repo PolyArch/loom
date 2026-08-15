@@ -993,8 +993,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       const auto found = endpointSelectionCounts.find(record.endpoint);
       const std::uint64_t count =
           found == endpointSelectionCounts.end() ? 0 : found->second;
-      const auto score = std::make_tuple(unreachableCounts[local],
-                                         distanceSums[local], count, rank);
+      const auto score = std::make_tuple(unreachableCounts[local], count,
+                                         distanceSums[local], rank);
       if (score < selectedScore) {
         selected = local;
         selectedScore = score;

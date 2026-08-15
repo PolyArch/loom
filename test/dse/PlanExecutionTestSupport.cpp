@@ -83,7 +83,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
          const ResolvedCandidateGeneratorBinding &binding,
          const ArtifactStore &store, const BlobStore &,
-         const ExecutionControlView &executionControl) {
+         const CandidateGeneratorInvocationView &invocation) {
   if (binding.descriptorRef() != descriptor.reference() ||
       inputBindings.size() != 1 ||
       inputBindings.front().slot != CandidateGeneratorInputSlotRef(0) ||
@@ -111,10 +111,10 @@ generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   if (waitForStopRequest.load(std::memory_order_relaxed)) {
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!executionControl.stopRequested() &&
+    while (!invocation.stopRequested() &&
            std::chrono::steady_clock::now() < deadline)
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    const bool stopped = executionControl.stopRequested();
+    const bool stopped = invocation.stopRequested();
     observedStopRequest.store(stopped, std::memory_order_relaxed);
     activeProviders.fetch_sub(1, std::memory_order_relaxed);
     concurrencyChanged.notify_all();

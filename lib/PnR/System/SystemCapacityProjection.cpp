@@ -284,7 +284,7 @@ llvm::Expected<std::unique_ptr<SystemCapacityModel>> buildSystemCapacityModel(
     const auto module = modulesByTargetClass.find(targetClass);
     if (module == modulesByTargetClass.end())
       return invalid("SpatialMapping target class has no System occurrence");
-    const auto &mapping = entry.mapping.view();
+    const auto &mapping = entry.mapping->view();
     if (mapping.fabricIdentity() != module->second->identity())
       return invalid("SpatialMapping target class has the wrong Module");
 

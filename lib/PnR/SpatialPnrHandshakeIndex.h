@@ -9,9 +9,11 @@ llvm::Expected<FrozenSpatialHandshakeIndex> buildFrozenSpatialHandshakeIndex(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::mapping::TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<::loom::fabric::HandshakeOwnerModel> handshakeOwnerModels,
     const FrozenSpatialRealizationIndex &realizations,
     const FrozenSpatialResourceIndex &resources,
-    const FrozenSpatialRoutingGraph &routing);
+    const FrozenSpatialRoutingGraph &routing,
+    const FrozenSpatialActiveRoutingDomain &activeRouting);
 
 llvm::Error verifyFrozenSpatialHandshakeIndex(
     const FrozenSpatialHandshakeIndex &handshake,

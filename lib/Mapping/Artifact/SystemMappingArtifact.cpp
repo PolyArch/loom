@@ -35,6 +35,34 @@
 #include <vector>
 
 namespace loom::mapping {
+char SystemMappingIncompleteError::ID;
+
+SystemMappingIncompleteError::SystemMappingIncompleteError(
+    SystemMappingIncompleteReason reason, std::string diagnostic)
+    : reason_(reason), diagnostic_(std::move(diagnostic)) {}
+
+void SystemMappingIncompleteError::log(llvm::raw_ostream &stream) const {
+  stream << "system_mapping_incomplete: " << diagnostic_;
+}
+
+std::error_code SystemMappingIncompleteError::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
+
+char SystemMappingRejectedError::ID;
+
+SystemMappingRejectedError::SystemMappingRejectedError(
+    SystemMappingClosureFindingKind finding, std::string diagnostic)
+    : finding_(finding), diagnostic_(std::move(diagnostic)) {}
+
+void SystemMappingRejectedError::log(llvm::raw_ostream &stream) const {
+  stream << "system_mapping_rejected: " << diagnostic_;
+}
+
+std::error_code SystemMappingRejectedError::convertToErrorCode() const {
+  return llvm::inconvertibleErrorCode();
+}
+
 namespace {
 
 llvm::Error invalid(const llvm::Twine &message) {
@@ -42,58 +70,6 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "system_mapping_execution_invalid: " +
                                      message);
 }
-
-class SystemMappingIncompleteError final
-    : public llvm::ErrorInfo<SystemMappingIncompleteError> {
-public:
-  static char ID;
-
-  SystemMappingIncompleteError(SystemMappingIncompleteReason reason,
-                               std::string diagnostic)
-      : reason_(reason), diagnostic_(std::move(diagnostic)) {}
-
-  SystemMappingIncompleteReason reason() const { return reason_; }
-  llvm::StringRef diagnostic() const { return diagnostic_; }
-
-  void log(llvm::raw_ostream &stream) const override {
-    stream << "system_mapping_incomplete: " << diagnostic_;
-  }
-  std::error_code convertToErrorCode() const override {
-    return llvm::inconvertibleErrorCode();
-  }
-
-private:
-  SystemMappingIncompleteReason reason_;
-  std::string diagnostic_;
-};
-
-char SystemMappingIncompleteError::ID;
-
-class SystemMappingRejectedError final
-    : public llvm::ErrorInfo<SystemMappingRejectedError> {
-public:
-  static char ID;
-
-  SystemMappingRejectedError(SystemMappingClosureFindingKind finding,
-                             std::string diagnostic)
-      : finding_(finding), diagnostic_(std::move(diagnostic)) {}
-
-  SystemMappingClosureFindingKind finding() const { return finding_; }
-  llvm::StringRef diagnostic() const { return diagnostic_; }
-
-  void log(llvm::raw_ostream &stream) const override {
-    stream << "system_mapping_rejected: " << diagnostic_;
-  }
-  std::error_code convertToErrorCode() const override {
-    return llvm::inconvertibleErrorCode();
-  }
-
-private:
-  SystemMappingClosureFindingKind finding_;
-  std::string diagnostic_;
-};
-
-char SystemMappingRejectedError::ID;
 
 std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr record) {
   std::vector<std::uint8_t> result;
@@ -429,13 +405,45 @@ llvm::Error verifyTargetCompatibility(
   return llvm::Error::success();
 }
 
+llvm::Expected<std::vector<ArtifactRootReference>>
+decodeSpatialMappingImports(::mapping::SystemOp root) {
+  std::vector<ArtifactRootReference> imports;
+  imports.reserve(root.getSpatialMappingImports().size());
+  for (mlir::Attribute attribute : root.getSpatialMappingImports()) {
+    auto reference = decodeRootReference(
+        mlir::cast<::mapping::ArtifactRootReferenceAttr>(attribute));
+    if (!reference)
+      return reference.takeError();
+    if (reference->schemaIdentity != mappingArtifactSchema.identity ||
+        reference->schemaVersion != mappingArtifactSchema.version)
+      return invalid("import table contains a non-Mapping reference");
+    imports.push_back(std::move(*reference));
+  }
+  return imports;
+}
+
+llvm::Error validateSpatialMappingImportContext(
+    llvm::ArrayRef<ArtifactRootReference> imports,
+    const SpatialMappingImportContext &context) {
+  std::vector<ArtifactRootReference> canonical(imports.begin(), imports.end());
+  llvm::sort(canonical, artifactRootReferenceLess);
+  if (std::adjacent_find(canonical.begin(), canonical.end()) != canonical.end())
+    return invalid("SpatialMapping import table contains a duplicate");
+  for (const ArtifactRootReference &reference : canonical)
+    if (!context.find(reference))
+      return invalid("SpatialMapping import context does not cover the exact "
+                     "SystemMapping import table");
+  return llvm::Error::success();
+}
+
 } // namespace
 
 llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
     const CanonicalSemanticBytes &bytes,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
-    const ArtifactStore &store) {
+    const ArtifactStore &store,
+    const SpatialMappingImportContext *spatialMappings) {
   auto parsed = parseSystemRoot(bytes);
   if (!parsed)
     return parsed.takeError();
@@ -476,28 +484,35 @@ llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
                           &binding);
   }
 
-  std::vector<ArtifactRootReference> imports;
+  auto decodedImports = decodeSpatialMappingImports(parsed->root);
+  if (!decodedImports)
+    return decodedImports.takeError();
+  std::vector<ArtifactRootReference> imports = std::move(*decodedImports);
+  std::optional<SpatialMappingImportContext> ownedSpatialMappings;
+  if (!spatialMappings) {
+    auto built = buildSpatialMappingImportContext(imports, store);
+    if (!built)
+      return built.takeError();
+    ownedSpatialMappings.emplace(std::move(*built));
+    spatialMappings = &*ownedSpatialMappings;
+  }
+  if (llvm::Error error =
+          validateSpatialMappingImportContext(imports, *spatialMappings))
+    return std::move(error);
+
   std::map<ArtifactRootReference, SpatialMappingView,
            decltype(&artifactRootReferenceLess)>
       importedMappings(&artifactRootReferenceLess);
-  for (mlir::Attribute attribute : parsed->root.getSpatialMappingImports()) {
-    auto reference = decodeRootReference(
-        mlir::cast<::mapping::ArtifactRootReferenceAttr>(attribute));
-    if (!reference)
-      return reference.takeError();
-    if (reference->schemaIdentity != mappingArtifactSchema.identity ||
-        reference->schemaVersion != mappingArtifactSchema.version)
-      return invalid("import table contains a non-Mapping reference");
-    auto mapping = importSpatialMapping(*reference, store);
+  for (const ArtifactRootReference &reference : imports) {
+    auto mapping = resolveSpatialMappingImport(*spatialMappings, reference);
     if (!mapping)
       return mapping.takeError();
-    if (mapping->view().dataflowIdentity() != dataflow.identity())
+    if ((*mapping)->view().dataflowIdentity() != dataflow.identity())
       return invalid("SpatialMapping import has a foreign Dataflow owner");
-    if (!importedMappings.emplace(*reference, mapping->view()).second)
+    if (!importedMappings.emplace(reference, (*mapping)->view()).second)
       return invalid("SpatialMapping import table contains a duplicate");
-    if (auto target = mappingTargetClass(fabric, mapping->view()); !target)
+    if (auto target = mappingTargetClass(fabric, (*mapping)->view()); !target)
       return target.takeError();
-    imports.push_back(*reference);
   }
 
   std::vector<SystemThreadExecutionBindingView> threadBindings;
@@ -665,36 +680,53 @@ llvm::Expected<SystemMappingView> importSystemMappingView(
     const ArtifactIdentity &mappingIdentity, ::mapping::SystemOp root,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
-    const ArtifactStore &store) {
+    const ArtifactStore &store,
+    const SpatialMappingImportContext *spatialMappings) {
   auto canonical = writeCanonicalSystemMappingAssembly(root);
   if (!canonical)
     return canonical.takeError();
   if (finalizeArtifactIdentity(mappingArtifactSchema, *canonical) !=
       mappingIdentity)
     return invalid("mapping identity does not match canonical bytes");
-  auto execution =
-      strictImportSystemExecutionBindings(*canonical, dataflow, fabric, store);
+  auto imports = decodeSpatialMappingImports(root);
+  if (!imports)
+    return imports.takeError();
+  std::optional<SpatialMappingImportContext> ownedSpatialMappings;
+  if (!spatialMappings) {
+    auto built = buildSpatialMappingImportContext(*imports, store);
+    if (!built)
+      return built.takeError();
+    ownedSpatialMappings.emplace(std::move(*built));
+    spatialMappings = &*ownedSpatialMappings;
+  }
+  if (llvm::Error error =
+          validateSpatialMappingImportContext(*imports, *spatialMappings))
+    return std::move(error);
+
+  auto execution = strictImportSystemExecutionBindings(
+      *canonical, dataflow, fabric, store, spatialMappings);
   if (!execution)
     return execution.takeError();
-  auto closure = detail::importSystemMappingClosure(root, dataflow, fabric,
-                                                    *execution, store);
+  auto closure = detail::importSystemMappingClosure(
+      root, dataflow, fabric, *execution, *spatialMappings);
   if (!closure)
     return closure.takeError();
   auto physicalDemand = detail::verifySystemMappingCapacity(
       dataflow, fabric, *execution, closure->services, closure->resourceUses,
-      closure->resourceUseActivationKeys, store);
+      closure->resourceUseActivationKeys, *spatialMappings);
   if (!physicalDemand)
     return physicalDemand.takeError();
   if (llvm::Error error = detail::verifySystemMappingHandshakeClosure(
-          dataflow, fabric, *execution, closure->services, store))
+          dataflow, fabric, *execution, closure->services, *spatialMappings))
     return std::move(error);
 
   (void)physicalDemand;
-  SystemMappingView result(
-      mappingIdentity, dataflow.identity(), fabric.artifact().identity(),
-      std::move(*execution), std::move(closure->services),
-      std::move(closure->resourceUses));
-  auto projected = projectSystemMappingClosure(dataflow, fabric, result, store);
+  SystemMappingView result(mappingIdentity, dataflow.identity(),
+                           fabric.artifact().identity(), std::move(*execution),
+                           std::move(closure->services),
+                           std::move(closure->resourceUses));
+  auto projected = projectSystemMappingClosure(dataflow, fabric, result, store,
+                                               spatialMappings);
   if (!projected)
     return projected.takeError();
   auto progress =
@@ -732,7 +764,7 @@ SystemMappingBaseVerification verifySystemMappingBase(
       finalizeArtifactIdentity(mappingArtifactSchema, assembly->bytes);
   auto view = importSystemMappingView(
       identity, mlir::cast<::mapping::SystemOp>(assembly->root.get()), dataflow,
-      fabric, store);
+      fabric, store, nullptr);
   if (!view) {
     std::optional<SystemMappingBaseVerification> typed;
     llvm::Error remaining = llvm::handleErrors(
@@ -765,7 +797,8 @@ finalizeSystemMapping(::mapping::SystemOp source,
                       const ::dataflow::CanonicalDataflowProgramView &dataflow,
                       const ::loom::fabric::FabricSystemRootView &fabric,
                       const SystemMappingConstraintSetView &constraints,
-                      const ArtifactStore &store) {
+                      const ArtifactStore &store,
+                      const SpatialMappingImportContext *spatialMappings) {
   if (constraints.dataflowIdentity() != dataflow.identity() ||
       constraints.fabricIdentity() != fabric.artifact().identity())
     return invalid("System constraint owner tuple does not match D/F");
@@ -790,7 +823,8 @@ finalizeSystemMapping(::mapping::SystemOp source,
   const ArtifactIdentity identity =
       finalizeArtifactIdentity(mappingArtifactSchema, assembly->bytes);
   auto root = mlir::cast<::mapping::SystemOp>(assembly->root.get());
-  auto view = importSystemMappingView(identity, root, dataflow, fabric, store);
+  auto view = importSystemMappingView(identity, root, dataflow, fabric, store,
+                                      spatialMappings);
   if (!view)
     return view.takeError();
   if (constraints.rootThreadLaunches() !=
@@ -858,7 +892,7 @@ importSystemMapping(const ArtifactRootReference &reference,
   if (!system)
     return system.takeError();
   auto view = importSystemMappingView(reference.artifact, parsed->root,
-                                      *dataflowView, *system, store);
+                                      *dataflowView, *system, store, nullptr);
   if (!view)
     return view.takeError();
   return FinalizedSystemMapping(reference, std::move(*canonical),

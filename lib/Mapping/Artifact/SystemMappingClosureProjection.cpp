@@ -14,6 +14,7 @@
 #include <array>
 #include <limits>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
@@ -492,7 +493,8 @@ projectSystemSpatialCausalRelease(
 llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
-    const SystemMappingView &mapping, const ArtifactStore &store) {
+    const SystemMappingView &mapping, const ArtifactStore &store,
+    const SpatialMappingImportContext *spatialMappings) {
   if (mapping.dataflowIdentity() != dataflow.identity() ||
       mapping.fabricIdentity() != fabric.artifact().identity())
     return invalid("projection inputs disagree with SystemMapping lineage");
@@ -502,12 +504,33 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
   if (!contexts)
     return contexts.takeError();
 
+  std::optional<SpatialMappingImportContext> ownedSpatialMappings;
+  if (!spatialMappings) {
+    auto built = buildSpatialMappingImportContext(
+        mapping.executionBindings().spatialMappingImports(), store);
+    if (!built)
+      return built.takeError();
+    ownedSpatialMappings.emplace(std::move(*built));
+    spatialMappings = &*ownedSpatialMappings;
+  }
+  std::vector<ArtifactRootReference> canonicalImports(
+      mapping.executionBindings().spatialMappingImports().begin(),
+      mapping.executionBindings().spatialMappingImports().end());
+  llvm::sort(canonicalImports, artifactRootReferenceLess);
+  if (std::adjacent_find(canonicalImports.begin(), canonicalImports.end()) !=
+      canonicalImports.end())
+    return invalid("SystemMapping import table contains a duplicate");
+  for (const ArtifactRootReference &reference : canonicalImports)
+    if (!spatialMappings->find(reference))
+      return invalid("SpatialMapping import context does not cover the exact "
+                     "SystemMapping import table");
+
   std::vector<ResourceCapacityNamespaceView> namespaces{
       {&fabric.artifact(),
        detail::rootResourceCapacityQualifier(fabric.artifact())}};
   std::vector<NamespaceMetadata> metadata{{std::nullopt}};
   std::map<std::string, std::size_t> namespaceByOccurrence;
-  std::map<std::string, FinalizedSpatialMapping> importedMappings;
+  std::map<std::string, const FinalizedSpatialMapping *> importedMappings;
   std::map<std::string, FinalizedTechMapping> importedTechMappings;
   std::map<std::string, std::size_t> namespaceByContext;
 
@@ -516,26 +539,27 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
         byteKey(encodeArtifactRootReference(domain.spatialMapping));
     auto imported = importedMappings.find(mappingKey);
     if (imported == importedMappings.end()) {
-      auto value = importSpatialMapping(domain.spatialMapping, store);
+      auto value =
+          resolveSpatialMappingImport(*spatialMappings, domain.spatialMapping);
       if (!value)
         return value.takeError();
-      imported = importedMappings.emplace(mappingKey, std::move(*value)).first;
+      imported = importedMappings.emplace(mappingKey, *value).first;
       ArtifactRootReference techReference{
           mappingArtifactSchema.identity.str(), mappingArtifactSchema.version,
-          imported->second.view().techMappingIdentity()};
+          imported->second->view().techMappingIdentity()};
       auto tech = importTechMapping(techReference, store);
       if (!tech)
         return tech.takeError();
       if (tech->view().dataflowIdentity() != dataflow.identity() ||
           tech->view().fabricIdentity() !=
-              imported->second.view().fabricIdentity())
+              imported->second->view().fabricIdentity())
         return invalid("Spatial context has inconsistent TechMapping lineage");
       importedTechMappings.emplace(mappingKey, std::move(*tech));
     }
     const auto spatialCore =
         ::loom::fabric::SpatialCoreOccurrenceRef{domain.context.accCore};
     const auto *module = resolveOccurrenceModule(fabric, domain.context.accCore,
-                                                 imported->second.view());
+                                                 imported->second->view());
     if (!module)
       return invalid("Spatial context does not match its AccCore Module");
     const std::string occurrenceKey = fabricKey(spatialCore);
@@ -578,7 +602,7 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
     const auto imported = importedMappings.find(mappingKey);
     if (imported == importedMappings.end())
       return invalid("Spatial context lost its imported Mapping");
-    for (const auto &use : imported->second.view().resourceUses()) {
+    for (const auto &use : imported->second->view().resourceUses()) {
       auto ownerGraph =
           spatialEventGraph(dataflow, use.activation.trigger.event);
       if (!ownerGraph)
@@ -634,7 +658,7 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
       return invalid("routed SpatialMapping lost its capacity namespace");
     std::vector<FrozenResourceCapacityRouteSelection> unused;
     if (llvm::Error error = collectSpatialRouteTraversals(
-            imported->second.view(), namespacePosition->second,
+            imported->second->view(), namespacePosition->second,
             traversalSources, unused))
       return std::move(error);
   }
@@ -676,7 +700,7 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
       return invalid("selected route lost its SpatialMapping namespace");
     std::vector<ResourceCapacityTraversalSource> unused;
     if (llvm::Error error = collectSpatialRouteTraversals(
-            imported->second.view(), namespacePosition->second, unused,
+            imported->second->view(), namespacePosition->second, unused,
             selectedRoutes, &*capacity))
       return std::move(error);
   }
@@ -717,8 +741,7 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
   result.serviceRealizations.assign(mapping.serviceRealizations().begin(),
                                     mapping.serviceRealizations().end());
   std::vector<SystemTransferLegView> serviceLegs;
-  for (const SystemServiceRealizationView &service :
-       result.serviceRealizations)
+  for (const SystemServiceRealizationView &service : result.serviceRealizations)
     for (const SystemServicePlanView &plan : service.plans)
       serviceLegs.insert(serviceLegs.end(), plan.transferLegs.begin(),
                          plan.transferLegs.end());
@@ -736,8 +759,7 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
       return graph.takeError();
     const std::string mappingKey =
         byteKey(encodeArtifactRootReference(domain.spatialMapping));
-    if (!projectedSpatialGraphs
-             .emplace(mappingKey, graph->entity.value())
+    if (!projectedSpatialGraphs.emplace(mappingKey, graph->entity.value())
              .second)
       continue;
     const auto spatial = importedMappings.find(mappingKey);
@@ -746,15 +768,15 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
         spatial == importedMappings.end()
             ? nullptr
             : resolveOccurrenceModule(fabric, domain.context.accCore,
-                                      spatial->second.view());
+                                      spatial->second->view());
     if (spatial == importedMappings.end() ||
         tech == importedTechMappings.end() || !module)
       return invalid("Spatial progress projection lost an imported owner");
     const std::array<::dataflow::GraphRef, 1> selected{*graph};
     auto progress = projectSpatialMappingProgress(
         dataflow, tech->second.view(), *module,
-        spatial->second.view().computeBindings(),
-        spatial->second.view().routeTrees(), selected);
+        spatial->second->view().computeBindings(),
+        spatial->second->view().routeTrees(), selected);
     if (!progress)
       return progress.takeError();
     result.routeObligations.insert(result.routeObligations.end(),

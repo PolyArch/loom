@@ -11,6 +11,7 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrIndex.h"
 #include "PnR/SpatialRecurrenceTiming.h"
+#include "PnR/System/SystemPnrDerivedContext.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -184,13 +185,17 @@ public:
     return rootThreadLaunches_;
   }
   llvm::ArrayRef<FrozenSystemSpatialTargetClass> targetClasses() const {
-    return targetClasses_;
+    return *targetClasses_;
   }
   llvm::ArrayRef<::loom::fabric::AccCoreOccurrenceRef> accCores() const {
-    return accCores_;
+    return *accCores_;
   }
   llvm::ArrayRef<ArtifactRootReference> spatialMappings() const {
     return spatialMappings_;
+  }
+  const ::loom::mapping::SpatialMappingImportContext &
+  spatialMappingImports() const {
+    return *spatialMappingImports_;
   }
   llvm::ArrayRef<std::uint64_t>
   spatialMappingWorstRouteArrivalDelayQuanta() const {
@@ -215,7 +220,7 @@ public:
     return graphDecisions_;
   }
   const FrozenEndpointRoutingTopology &routingTopology() const {
-    return routingTopology_;
+    return *routingTopology_;
   }
   llvm::ArrayRef<FrozenSystemTransferTerminal> serviceTerminals() const {
     return serviceTerminals_;
@@ -236,11 +241,11 @@ public:
   }
   llvm::ArrayRef<FrozenSystemInstructionUsePatternDomain>
   instructionUsePatternDomains() const {
-    return instructionUsePatternDomains_;
+    return *instructionUsePatternDomains_;
   }
   llvm::ArrayRef<FrozenSystemConsistencyUsePatternDomain>
   consistencyUsePatternDomains() const {
-    return consistencyUsePatternDomains_;
+    return *consistencyUsePatternDomains_;
   }
   llvm::ArrayRef<FrozenSystemServiceLeg> serviceLegs() const {
     return serviceLegs_;
@@ -269,15 +274,17 @@ private:
       std::vector<DeterministicWorkBudgetEntry> workBudget,
       ::loom::mapping::MappingDataflowProgressBasis progressBasis,
       std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
-      std::vector<FrozenSystemSpatialTargetClass> targetClasses,
-      std::vector<::loom::fabric::AccCoreOccurrenceRef> accCores,
-      std::vector<PnrIndex> accCoreTargetClasses,
+      std::shared_ptr<const std::vector<FrozenSystemSpatialTargetClass>>
+          targetClasses,
+      std::shared_ptr<const std::vector<::loom::fabric::AccCoreOccurrenceRef>>
+          accCores,
+      std::shared_ptr<const std::vector<PnrIndex>> accCoreTargetClasses,
       std::vector<ArtifactRootReference> spatialMappings,
+      std::shared_ptr<const ::loom::mapping::SpatialMappingImportContext>
+          spatialMappingImports,
       std::vector<PnrIndex> spatialMappingTargetClasses,
-      std::vector<std::uint64_t>
-          spatialMappingWorstRouteArrivalDelayQuanta,
-      std::vector<std::uint64_t>
-          spatialMappingTotalRouteNegativeSlackQuanta,
+      std::vector<std::uint64_t> spatialMappingWorstRouteArrivalDelayQuanta,
+      std::vector<std::uint64_t> spatialMappingTotalRouteNegativeSlackQuanta,
       std::vector<ComponentViewDigest::Storage>
           spatialMappingPhysicalTimingProfileDigests,
       std::vector<::loom::fabric::FabricPhysicalTimingProfileKind>
@@ -291,7 +298,7 @@ private:
           graphChoiceRecurrenceTimings,
       std::vector<PnrIndex> graphThreadOverlapOffsets,
       std::vector<PnrIndex> graphThreadOverlaps,
-      FrozenEndpointRoutingTopology routingTopology,
+      std::shared_ptr<const FrozenEndpointRoutingTopology> routingTopology,
       std::vector<FrozenSystemTransferTerminal> serviceTerminals,
       std::vector<FrozenSystemTransferTerminalOwnerDomain>
           serviceTerminalOwnerDomains,
@@ -299,9 +306,11 @@ private:
       std::vector<SystemSearchServiceDomain> serviceDomains,
       std::vector<FrozenSystemServiceContext> serviceContexts,
       std::vector<FrozenSystemMemoryServiceBinding> memoryServiceBindings,
-      std::vector<FrozenSystemInstructionUsePatternDomain>
+      std::shared_ptr<
+          const std::vector<FrozenSystemInstructionUsePatternDomain>>
           instructionUsePatternDomains,
-      std::vector<FrozenSystemConsistencyUsePatternDomain>
+      std::shared_ptr<
+          const std::vector<FrozenSystemConsistencyUsePatternDomain>>
           consistencyUsePatternDomains,
       std::vector<FrozenSystemServiceLeg> serviceLegs,
       std::vector<PnrIndex> serviceLegSinkTerminals,
@@ -317,10 +326,14 @@ private:
   std::vector<DeterministicWorkBudgetEntry> workBudget_;
   ::loom::mapping::MappingDataflowProgressBasis progressBasis_;
   std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches_;
-  std::vector<FrozenSystemSpatialTargetClass> targetClasses_;
-  std::vector<::loom::fabric::AccCoreOccurrenceRef> accCores_;
-  std::vector<PnrIndex> accCoreTargetClasses_;
+  std::shared_ptr<const std::vector<FrozenSystemSpatialTargetClass>>
+      targetClasses_;
+  std::shared_ptr<const std::vector<::loom::fabric::AccCoreOccurrenceRef>>
+      accCores_;
+  std::shared_ptr<const std::vector<PnrIndex>> accCoreTargetClasses_;
   std::vector<ArtifactRootReference> spatialMappings_;
+  std::shared_ptr<const ::loom::mapping::SpatialMappingImportContext>
+      spatialMappingImports_;
   std::vector<PnrIndex> spatialMappingTargetClasses_;
   std::vector<std::uint64_t> spatialMappingWorstRouteArrivalDelayQuanta_;
   std::vector<std::uint64_t> spatialMappingTotalRouteNegativeSlackQuanta_;
@@ -333,11 +346,10 @@ private:
   std::vector<FrozenSystemGraphExecutionDecision> graphDecisions_;
   std::vector<PnrIndex> graphChoiceCatalogOrdinals_;
   std::vector<std::uint64_t> graphChoiceStaticSchedulePressures_;
-  std::vector<SpatialRecurrenceTimingProjection>
-      graphChoiceRecurrenceTimings_;
+  std::vector<SpatialRecurrenceTimingProjection> graphChoiceRecurrenceTimings_;
   std::vector<PnrIndex> graphThreadOverlapOffsets_;
   std::vector<PnrIndex> graphThreadOverlaps_;
-  FrozenEndpointRoutingTopology routingTopology_;
+  std::shared_ptr<const FrozenEndpointRoutingTopology> routingTopology_;
   std::vector<FrozenSystemTransferTerminal> serviceTerminals_;
   std::vector<FrozenSystemTransferTerminalOwnerDomain>
       serviceTerminalOwnerDomains_;
@@ -345,9 +357,9 @@ private:
   std::vector<SystemSearchServiceDomain> serviceDomains_;
   std::vector<FrozenSystemServiceContext> serviceContexts_;
   std::vector<FrozenSystemMemoryServiceBinding> memoryServiceBindings_;
-  std::vector<FrozenSystemInstructionUsePatternDomain>
+  std::shared_ptr<const std::vector<FrozenSystemInstructionUsePatternDomain>>
       instructionUsePatternDomains_;
-  std::vector<FrozenSystemConsistencyUsePatternDomain>
+  std::shared_ptr<const std::vector<FrozenSystemConsistencyUsePatternDomain>>
       consistencyUsePatternDomains_;
   std::vector<FrozenSystemServiceLeg> serviceLegs_;
   std::vector<PnrIndex> serviceLegSinkTerminals_;
@@ -373,7 +385,8 @@ private:
       llvm::ArrayRef<::loom::fabric::FabricPhysicalTimingProfileView>,
       const SystemPnrSearchDomainView &, const ResolvedPnrConfigView &,
       const ::loom::mapping::FinalizedSystemMappingConstraintSet &,
-      const ArtifactStore &);
+      const ArtifactStore &, const SystemStaticContext *,
+      const SystemActiveContext *);
 };
 
 llvm::Expected<FrozenSystemPnrProblemHandle> freezeSystemPnrProblem(
@@ -384,7 +397,9 @@ llvm::Expected<FrozenSystemPnrProblemHandle> freezeSystemPnrProblem(
     const SystemPnrSearchDomainView &searchDomain,
     const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
-    const ArtifactStore &store);
+    const ArtifactStore &store,
+    const SystemStaticContext *staticContext = nullptr,
+    const SystemActiveContext *activeContext = nullptr);
 
 /// Explicit test/prototyping entry point for target-neutral routing guidance.
 /// Production generators bind profile Artifacts and call the exact overload.
@@ -395,7 +410,9 @@ freezeSystemPnrProblemWithNormalizedTiming(
     const SystemPnrSearchDomainView &searchDomain,
     const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
-    const ArtifactStore &store);
+    const ArtifactStore &store,
+    const SystemStaticContext *staticContext = nullptr,
+    const SystemActiveContext *activeContext = nullptr);
 
 /// Rebuilds the selected graph recurrence projection from the frozen catalog
 /// that was cold-derived from each persistent SpatialMapping dependency tuple.

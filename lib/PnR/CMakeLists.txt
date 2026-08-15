@@ -11,11 +11,14 @@ add_mlir_library(LoomPnR
   MappingObjective.cpp
   PnrIndex.cpp
   PnrConfig.cpp
+  PnrDerivedContext.cpp
   RouteTreeState.cpp
   RoutingNegotiation.cpp
   SpatialAction.cpp
   SpatialActionDomain.cpp
   SpatialActionExecutor.cpp
+  SpatialActiveProblemStatistics.cpp
+  SpatialActiveRoutingDomain.cpp
   SpatialAnnealingSearch.cpp
   SpatialBindingRelationModel.cpp
   SpatialMemoryConstraintModel.cpp
@@ -60,6 +63,7 @@ add_mlir_library(LoomPnR
   SpatialTagPressureDiagnostic.cpp
   StaticSchedulePressure.cpp
   System/SystemPnrGraphDomain.cpp
+  System/SystemPnrDerivedContext.cpp
   System/SystemPnrSearchDomain.cpp
   System/SystemPnrServiceDomain.cpp
   System/SystemPresburgerPartition.cpp

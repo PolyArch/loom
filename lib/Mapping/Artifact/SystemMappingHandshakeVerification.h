@@ -10,7 +10,7 @@ llvm::Error verifySystemMappingHandshakeClosure(
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemExecutionBindingView &execution,
     llvm::ArrayRef<SystemServiceRealizationView> services,
-    const ArtifactStore &store);
+    const SpatialMappingImportContext &spatialMappings);
 
 } // namespace loom::mapping::detail
 

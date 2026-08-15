@@ -1,5 +1,5 @@
-#include "../StaticSchedulePressure.h"
 #include "../SpatialPhysicalTiming.h"
+#include "../StaticSchedulePressure.h"
 #include "PnR/SpatialRecurrenceTiming.h"
 #include "SystemPnrSearchDomainInternal.h"
 
@@ -27,16 +27,30 @@ llvm::Error invalid(const llvm::Twine &message) {
 
 } // namespace
 
-llvm::Expected<std::vector<SpatialCatalogEntry>>
-importSpatialCatalog(llvm::ArrayRef<ArtifactRootReference> references,
-                     const ::dataflow::CanonicalDataflowProgramView &dataflow,
-                     const ::loom::fabric::FabricSystemRootView &system,
-                     const ArtifactStore &store) {
+llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
+    llvm::ArrayRef<ArtifactRootReference> references,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &system,
+    const ArtifactStore &store,
+    const ::loom::mapping::SpatialMappingImportContext *imports) {
   std::vector<ArtifactRootReference> canonical(references.begin(),
                                                references.end());
   llvm::sort(canonical, artifactRootReferenceLess);
   canonical.erase(std::unique(canonical.begin(), canonical.end()),
                   canonical.end());
+
+  std::optional<::loom::mapping::SpatialMappingImportContext> ownedImports;
+  if (!imports) {
+    auto built =
+        ::loom::mapping::buildSpatialMappingImportContext(canonical, store);
+    if (!built)
+      return built.takeError();
+    ownedImports.emplace(std::move(*built));
+    imports = &*ownedImports;
+  }
+  if (llvm::ArrayRef<ArtifactRootReference>(canonical) != imports->references())
+    return invalid(
+        "SpatialMapping import context does not match the exact catalog");
 
   std::vector<ArtifactIdentity> attachedModules;
   for (::loom::fabric::AccCoreOccurrenceRef core :
@@ -53,13 +67,15 @@ importSpatialCatalog(llvm::ArrayRef<ArtifactRootReference> references,
   std::vector<SpatialCatalogEntry> result;
   result.reserve(canonical.size());
   for (const ArtifactRootReference &reference : canonical) {
-    auto spatial = ::loom::mapping::importSpatialMapping(reference, store);
+    auto spatial =
+        ::loom::mapping::resolveSpatialMappingImportHandle(*imports, reference);
     if (!spatial)
       return spatial.takeError();
-    if (spatial->view().dataflowIdentity() != dataflow.identity())
+    if ((*spatial)->view().dataflowIdentity() != dataflow.identity())
       return invalid(
           "SpatialMapping catalog contains a foreign Dataflow owner");
-    if (!llvm::is_contained(attachedModules, spatial->view().fabricIdentity()))
+    if (!llvm::is_contained(attachedModules,
+                            (*spatial)->view().fabricIdentity()))
       return invalid(
           "SpatialMapping Fabric is not attached to a System AccCore");
 
@@ -67,7 +83,7 @@ importSpatialCatalog(llvm::ArrayRef<ArtifactRootReference> references,
     const ::loom::fabric::FabricArtifactView *spatialModule = nullptr;
     for (auto [ordinal, module] :
          llvm::enumerate(system.artifact().importedModules())) {
-      if (module.identity() != spatial->view().fabricIdentity())
+      if (module.identity() != (*spatial)->view().fabricIdentity())
         continue;
       if (moduleDependencyOrdinal)
         return invalid(
@@ -81,16 +97,16 @@ importSpatialCatalog(llvm::ArrayRef<ArtifactRootReference> references,
     ArtifactRootReference techReference{
         ::loom::mapping::mappingArtifactSchema.identity.str(),
         ::loom::mapping::mappingArtifactSchema.version,
-        spatial->view().techMappingIdentity()};
+        (*spatial)->view().techMappingIdentity()};
     auto tech = ::loom::mapping::importTechMapping(techReference, store);
     if (!tech)
       return tech.takeError();
     if (tech->view().dataflowIdentity() != dataflow.identity() ||
-        tech->view().fabricIdentity() != spatial->view().fabricIdentity())
+        tech->view().fabricIdentity() != (*spatial)->view().fabricIdentity())
       return invalid(
           "SpatialMapping catalog has inconsistent TechMapping lineage");
     auto pressures = projectStaticSchedulePressureByGraph(
-        dataflow, tech->view(), *spatialModule, spatial->view());
+        dataflow, tech->view(), *spatialModule, (*spatial)->view());
     if (!pressures)
       return pressures.takeError();
     std::vector<SpatialCatalogGraphProgress> graphProgress;
@@ -101,26 +117,30 @@ importSpatialCatalog(llvm::ArrayRef<ArtifactRootReference> references,
       const std::array<::dataflow::GraphRef, 1> selected{graph};
       auto progress = ::loom::mapping::projectSpatialMappingProgress(
           dataflow, tech->view(), *spatialModule,
-          spatial->view().computeBindings(), spatial->view().routeTrees(),
+          (*spatial)->view().computeBindings(), (*spatial)->view().routeTrees(),
           selected);
       if (!progress)
         return progress.takeError();
-      graphProgress.push_back(
-          {graph, std::move(progress->routeObligations)});
+      graphProgress.push_back({graph, std::move(progress->routeObligations)});
       auto recurrence = projectSpatialMappingGraphRecurrenceTiming(
-          dataflow, tech->view(), *spatialModule, spatial->view(), graph);
+          dataflow, tech->view(), *spatialModule, (*spatial)->view(), graph);
       if (!recurrence)
         return recurrence.takeError();
       graphRecurrenceTimings.push_back(std::move(*recurrence));
     }
     result.push_back(
-        {reference, std::move(*spatial), *moduleDependencyOrdinal,
+        {reference,
+         std::move(*spatial),
+         *moduleDependencyOrdinal,
          std::vector<::dataflow::GraphRef>(tech->view().covers().begin(),
                                            tech->view().covers().end()),
-         std::move(graphProgress), std::move(*pressures),
-         std::move(graphRecurrenceTimings), 0, 0, {},
-         ::loom::fabric::FabricPhysicalTimingProfileKind::
-             NormalizedHeuristic});
+         std::move(graphProgress),
+         std::move(*pressures),
+         std::move(graphRecurrenceTimings),
+         0,
+         0,
+         {},
+         ::loom::fabric::FabricPhysicalTimingProfileKind::NormalizedHeuristic});
   }
   return result;
 }
@@ -142,17 +162,13 @@ llvm::Error validateSystemBindingDomains(
     const ::loom::fabric::FabricSystemRootView &fabric,
     llvm::ArrayRef<SystemSearchBindingDomain> bindings,
     const SystemFrozenConstraintIndex &constraints,
-    llvm::ArrayRef<ArtifactRootReference> constraintSpatialMappings,
-    const ArtifactStore &store) {
+    llvm::ArrayRef<SpatialCatalogEntry> spatialCatalog) {
   const auto cores = canonicalSystemAccCores(fabric);
   struct GraphBinding final {
     const SystemSearchBindingDomain *binding = nullptr;
     ::dataflow::GraphRef graph;
   };
   std::vector<GraphBinding> graphBindings;
-  std::vector<ArtifactRootReference> hierarchicalReferences(
-      constraintSpatialMappings.begin(), constraintSpatialMappings.end());
-
   for (const SystemSearchBindingDomain &binding : bindings) {
     if (std::holds_alternative<::dataflow::RootThreadLaunchRef>(binding.key)) {
       std::vector<::loom::fabric::AccCoreOccurrenceRef> expected = cores;
@@ -181,23 +197,15 @@ llvm::Error validateSystemBindingDomains(
           std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain);
       if (!hierarchical)
         return invalid("graph binding atom has the wrong domain variant");
-      hierarchicalReferences.insert(
-          hierarchicalReferences.end(),
-          hierarchical->compatibleSpatialMappings.begin(),
-          hierarchical->compatibleSpatialMappings.end());
     }
   }
 
   if (graphBindings.empty())
     return llvm::Error::success();
 
-  auto catalog =
-      importSpatialCatalog(hierarchicalReferences, dataflow, fabric, store);
-  if (!catalog)
-    return catalog.takeError();
   for (const GraphBinding &entry : graphBindings) {
     std::vector<ArtifactRootReference> expected;
-    for (const SpatialCatalogEntry &mapping : *catalog)
+    for (const SpatialCatalogEntry &mapping : spatialCatalog)
       if (llvm::is_contained(mapping.covers, entry.graph))
         expected.push_back(mapping.reference);
     applySystemConstraintRestriction(

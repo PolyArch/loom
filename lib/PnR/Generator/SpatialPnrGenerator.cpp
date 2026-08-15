@@ -2,8 +2,8 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/MappingDebugLog.h"
-#include "FabricTopologyQualityDiagnostic.h"
 #include "InitializerRelationSolver.h"
+#include "PnR/FabricTopologyQualityDiagnostic.h"
 #include "PnR/FrozenConstraintIndex.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/SpatialAnnealingSearch.h"
@@ -852,16 +852,54 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   if (inputs.executionControl.stopRequested())
     return interruptedOutcome(SpatialPnrInterruptionStage::InputAdmission,
                               std::nullopt, accounting, {}, {}, resources);
-  auto topology = analyzeAndEmitFabricTopologyQuality(
-      inputs.fabric, mapping_debug::Stage::SpatialPnr);
-  if (!topology)
-    return InvalidSpatialPnrGeneration{
-        InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
-        llvm::toString(topology.takeError())};
+
+  std::optional<FabricDerivedContextBundle> ownedContexts;
+  const FabricDerivedContextBundle *derivedContexts = inputs.derivedContexts;
+  if (!derivedContexts) {
+    auto built =
+        buildFabricDerivedContextBundle(inputs.fabric, inputs.physicalTiming);
+    if (!built) {
+      FreezeFailure failure = classifyFreezeFailure(built.takeError());
+      switch (failure.kind) {
+      case FreezeFailureKind::Invalid:
+        return InvalidSpatialPnrGeneration{
+            InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
+            std::move(failure.diagnostic)};
+      case FreezeFailureKind::ProvenInfeasible:
+        return ProvenInfeasibleSpatialMapping{accounting,
+                                              std::move(failure.diagnostic)};
+      case FreezeFailureKind::Internal:
+        return internal(
+            InternalSpatialPnrGenerationReason::FrozenModelConstruction,
+            accounting, failure.diagnostic);
+      }
+    }
+    ownedContexts.emplace(std::move(*built));
+    derivedContexts = &*ownedContexts;
+    emitFabricDerivedContextStatistics(
+        *derivedContexts, mapping_debug::Stage::SpatialPnr, 0, 1, 0, 1);
+  } else {
+    emitFabricDerivedContextStatistics(
+        *derivedContexts, mapping_debug::Stage::SpatialPnr, 1, 0, 1, 0);
+  }
+
+  if (inputs.topologyQualityDiagnostic) {
+    emitFabricTopologyQuality(*inputs.topologyQualityDiagnostic,
+                              mapping_debug::Stage::SpatialPnr);
+  } else {
+    auto topology = analyzeFabricTopologyQualityForDiagnostics(inputs.fabric);
+    if (!topology)
+      return InvalidSpatialPnrGeneration{
+          InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
+          llvm::toString(topology.takeError())};
+    if (*topology)
+      emitFabricTopologyQuality(**topology, mapping_debug::Stage::SpatialPnr);
+  }
   llvm::Expected<FrozenSpatialPnrProblemHandle> problem =
       freezeSpatialPnrProblem(inputs.dataflow, inputs.techMapping,
                               inputs.fabric, inputs.physicalTiming,
-                              inputs.config, inputs.constraints);
+                              inputs.config, inputs.constraints,
+                              derivedContexts);
   if (!problem) {
     FreezeFailure failure = classifyFreezeFailure(problem.takeError());
     switch (failure.kind) {
@@ -878,6 +916,8 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
           accounting, failure.diagnostic);
     }
   }
+  emitSpatialActiveProblemStatistics(**problem,
+                                     mapping_debug::Stage::SpatialPnr, 0, 1);
   if (inputs.executionControl.stopRequested())
     return interruptedOutcome(
         SpatialPnrInterruptionStage::FrozenModelConstruction, std::nullopt,
@@ -1001,7 +1041,7 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     ++accounting.publicationSlots;
     auto finalized = finalizeSpatialMappingCandidate(
         *restart.candidate, inputs.dataflow, inputs.techMapping, inputs.fabric,
-        inputs.constraints, inputs.store);
+        inputs.constraints, inputs.store, &derivedContexts->handshakeContext());
     if (!finalized)
       return internal(InternalSpatialPnrGenerationReason::CandidateFinalization,
                       accounting, finalized.takeError());

@@ -25,6 +25,8 @@
 
 namespace loom::pnr {
 
+class SystemActiveContext;
+
 namespace detail {
 struct SystemPnrSearchDomainViewBuilder;
 }
@@ -240,7 +242,7 @@ private:
       const ResolvedPnrConfigView &,
       const ::loom::mapping::FinalizedSystemMappingConstraintSet &,
       const SystemBindingPartitionPlan &, const SystemGraphSearchInput &,
-      const ArtifactStore &);
+      const ArtifactStore &, const SystemActiveContext *);
   friend llvm::Expected<SystemPnrSearchDomainView> adoptSystemPnrSearchDomain(
       llvm::ArrayRef<std::uint8_t>, llvm::ArrayRef<std::uint8_t>,
       const SystemPnrSearchDomainDigest &, const ArtifactStore &);
@@ -258,7 +260,8 @@ llvm::Expected<SystemPnrSearchDomainView> projectSystemPnrSearchDomain(
     const ResolvedPnrConfigView &config,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
     const SystemBindingPartitionPlan &partitionPlan,
-    const SystemGraphSearchInput &graphSearch, const ArtifactStore &store);
+    const SystemGraphSearchInput &graphSearch, const ArtifactStore &store,
+    const SystemActiveContext *activeContext = nullptr);
 
 llvm::Expected<SystemPnrSearchDomainView>
 adoptSystemPnrSearchDomain(llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes,

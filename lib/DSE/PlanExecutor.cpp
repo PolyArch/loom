@@ -282,6 +282,7 @@ public:
   llvm::Expected<CandidateGeneratorProviderResult>
   executeGenerate(std::uint64_t planNodeOrdinal,
                   llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+                  llvm::ArrayRef<CandidateGeneratorOutputDemand> outputDemands,
                   const ResolvedCandidateGeneratorBinding &binding,
                   const ArtifactStore &store, const BlobStore &blobs) override;
 
@@ -493,6 +494,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 RecoverablePlanWorkExecutor::executeGenerate(
     std::uint64_t planNodeOrdinal,
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    llvm::ArrayRef<CandidateGeneratorOutputDemand> outputDemands,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs) {
   const CandidateGeneratorDescriptor *descriptor =
@@ -640,8 +642,10 @@ RecoverablePlanWorkExecutor::executeGenerate(
         &journal_, policy_.dispatchNotAfterUnixNanoseconds()};
     const ExecutionControlView executionControl{&stopContext,
                                                 providerExecutionStopRequested};
-    auto generated = invokeCandidateGenerator(inputs, binding, store, blobs,
-                                              executionControl);
+    const CandidateGeneratorInvocationView invocation(executionControl,
+                                                      outputDemands);
+    auto generated =
+        invokeCandidateGenerator(inputs, binding, store, blobs, invocation);
     if (!generated) {
       llvm::Error reset = journal_.queue(*key);
       return llvm::joinErrors(generated.takeError(), std::move(reset));
@@ -737,8 +741,9 @@ RecoverablePlanWorkExecutor::executeGenerateBatch(
     std::vector<CandidateGeneratorProviderResult> results;
     results.reserve(tasks.size());
     for (const detail::DseGenerateExecutionTask &task : tasks) {
-      auto result = executeGenerate(task.planNodeOrdinal, task.inputs,
-                                    task.binding, store, blobs);
+      auto result =
+          executeGenerate(task.planNodeOrdinal, task.inputs, task.outputDemands,
+                          task.binding, store, blobs);
       if (!result)
         return result.takeError();
       results.push_back(std::move(*result));
@@ -758,8 +763,9 @@ RecoverablePlanWorkExecutor::executeGenerateBatch(
         if (index >= tasks.size())
           break;
         const detail::DseGenerateExecutionTask &task = tasks[index];
-        results[index] = std::make_unique<WorkResult>(executeGenerate(
-            task.planNodeOrdinal, task.inputs, task.binding, store, blobs));
+        results[index] = std::make_unique<WorkResult>(
+            executeGenerate(task.planNodeOrdinal, task.inputs,
+                            task.outputDemands, task.binding, store, blobs));
       }
     });
   pool.wait();

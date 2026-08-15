@@ -22,6 +22,7 @@ using OwnerKey = std::vector<std::uint8_t>;
 using ClockMembership = std::map<OwnerKey, ClockDomainRef>;
 using ModuleSlotPair =
     std::pair<FabricModuleDomainSlotRef, FabricModuleDomainSlotRef>;
+using ModuleSlotMembership = std::map<OwnerKey, ModuleSlotPair>;
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -177,40 +178,56 @@ moduleMember(const FabricArtifactView &artifact,
       endpoint.payload);
 }
 
-llvm::Expected<ModuleSlotPair>
-moduleSlots(const FabricModuleRootView &module,
-            const FabricModuleDomainMemberRef &member) {
-  std::optional<FabricModuleDomainSlotRef> clock;
-  std::optional<FabricModuleDomainSlotRef> reset;
+llvm::Expected<ModuleSlotMembership>
+buildModuleSlotMembership(const FabricModuleRootView &module) {
+  struct PendingSlots final {
+    std::optional<FabricModuleDomainSlotRef> clock;
+    std::optional<FabricModuleDomainSlotRef> reset;
+  };
+  std::map<OwnerKey, PendingSlots> pending;
   for (const ModuleDomainAssignment &assignment : module.domainAssignments()) {
-    if (assignment.member != member)
-      continue;
+    PendingSlots &slots = pending[canonicalFabricBytes(assignment.member)];
     std::optional<FabricModuleDomainSlotRef> *selected = nullptr;
     switch (assignment.slot.kind) {
     case FabricClockResetKind::Clock:
-      selected = &clock;
+      selected = &slots.clock;
       break;
     case FabricClockResetKind::Reset:
-      selected = &reset;
+      selected = &slots.reset;
       break;
     }
     if (!selected || *selected)
       return invalid("Module member has duplicate or unknown domain rows");
     *selected = assignment.slot;
   }
-  if (!clock || !reset)
+  ModuleSlotMembership membership;
+  for (auto &[member, slots] : pending) {
+    if (!slots.clock || !slots.reset)
+      return invalid(
+          "Module member has no complete Clock and Reset assignment");
+    membership.emplace(std::move(member),
+                       ModuleSlotPair{*slots.clock, *slots.reset});
+  }
+  return membership;
+}
+
+llvm::Expected<ModuleSlotPair>
+moduleSlots(const ModuleSlotMembership &membership,
+            const FabricModuleDomainMemberRef &member) {
+  const auto found = membership.find(canonicalFabricBytes(member));
+  if (found == membership.end())
     return invalid("Module member has no complete Clock and Reset assignment");
-  return ModuleSlotPair{*clock, *reset};
+  return found->second;
 }
 
 llvm::Error
-requireSameModuleSlots(const FabricModuleRootView &module,
+requireSameModuleSlots(const ModuleSlotMembership &membership,
                        const FabricModuleDomainMemberRef &source,
                        const FabricModuleDomainMemberRef &destination) {
-  auto sourceSlots = moduleSlots(module, source);
+  auto sourceSlots = moduleSlots(membership, source);
   if (!sourceSlots)
     return sourceSlots.takeError();
-  auto destinationSlots = moduleSlots(module, destination);
+  auto destinationSlots = moduleSlots(membership, destination);
   if (!destinationSlots)
     return destinationSlots.takeError();
   if (*sourceSlots != *destinationSlots)
@@ -220,13 +237,13 @@ requireSameModuleSlots(const FabricModuleRootView &module,
 }
 
 llvm::Error requireSameModuleSlots(
-    const FabricModuleRootView &module,
+    const ModuleSlotMembership &membership,
     llvm::ArrayRef<FabricModuleDomainMemberRef> sources,
     llvm::ArrayRef<FabricModuleDomainMemberRef> destinations) {
   for (const FabricModuleDomainMemberRef &source : sources)
     for (const FabricModuleDomainMemberRef &destination : destinations)
       if (llvm::Error error =
-              requireSameModuleSlots(module, source, destination))
+              requireSameModuleSlots(membership, source, destination))
         return error;
   return llvm::Error::success();
 }
@@ -235,6 +252,9 @@ llvm::Error requireSameModuleSlots(
 
 llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
   const FabricArtifactView &artifact = module.artifact();
+  auto membership = buildModuleSlotMembership(module);
+  if (!membership)
+    return membership.takeError();
   for (const FabricPointConnectionPayload &connection :
        artifact.pointConnections()) {
     auto source = moduleMembers(artifact, connection.source);
@@ -244,7 +264,7 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
     if (!destination)
       return destination.takeError();
     if (llvm::Error error =
-            requireSameModuleSlots(module, *source, *destination))
+            requireSameModuleSlots(*membership, *source, *destination))
       return error;
   }
   for (const FabricModuleBoundaryTransportAttachmentView &attachment :
@@ -254,7 +274,7 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
       return internal.takeError();
     for (const FabricModuleDomainMemberRef &member : *internal)
       if (llvm::Error error = requireSameModuleSlots(
-              module, FabricModuleDomainMemberRef::of(attachment.boundary),
+              *membership, FabricModuleDomainMemberRef::of(attachment.boundary),
               member))
         return error;
   }
@@ -264,7 +284,7 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
     if (!internal)
       return internal.takeError();
     if (llvm::Error error = requireSameModuleSlots(
-            module, FabricModuleDomainMemberRef::of(attachment.boundary),
+            *membership, FabricModuleDomainMemberRef::of(attachment.boundary),
             *internal))
       return error;
   }
@@ -277,7 +297,7 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
     if (!provider)
       return provider.takeError();
     if (llvm::Error error =
-            requireSameModuleSlots(module, *requester, *provider))
+            requireSameModuleSlots(*membership, *requester, *provider))
       return error;
   }
   for (FabricMemoryOccurrenceRef memory : artifact.memoryOccurrences()) {
@@ -301,7 +321,7 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
           if (!destination)
             return destination.takeError();
           if (llvm::Error error =
-                  requireSameModuleSlots(module, *source, *destination))
+                  requireSameModuleSlots(*membership, *source, *destination))
             return error;
         }
     }
@@ -316,7 +336,7 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
         if (!destination)
           return destination.takeError();
         if (llvm::Error error = requireSameModuleSlots(
-                module, *subordinateSource, *destination))
+                *membership, *subordinateSource, *destination))
           return error;
       }
     for (const ::fabric::MemoryInternalConnectionDeclaration &connection :
@@ -332,7 +352,7 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
       if (!destinations)
         return destinations.takeError();
       if (llvm::Error error =
-              requireSameModuleSlots(module, *sources, *destinations))
+              requireSameModuleSlots(*membership, *sources, *destinations))
         return error;
     }
   }
@@ -349,7 +369,7 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
     if (!destination)
       return destination.takeError();
     if (llvm::Error error =
-            requireSameModuleSlots(module, *source, *destination))
+            requireSameModuleSlots(*membership, *source, *destination))
       return error;
   }
   for (FabricFuOccurrenceRef occurrence : artifact.fuOccurrences()) {
@@ -368,14 +388,14 @@ llvm::Error validateModuleClockReset(const FabricModuleRootView &module) {
         if (!destination)
           return destination.takeError();
         if (llvm::Error error =
-                requireSameModuleSlots(module, *source, *destination))
+                requireSameModuleSlots(*membership, *source, *destination))
           return error;
       }
   }
   for (const FabricModuleBoundaryTransportPassthroughView &passthrough :
        artifact.moduleBoundaryTransportPassthroughs())
     if (llvm::Error error = requireSameModuleSlots(
-            module, FabricModuleDomainMemberRef::of(passthrough.input),
+            *membership, FabricModuleDomainMemberRef::of(passthrough.input),
             FabricModuleDomainMemberRef::of(passthrough.output)))
       return error;
   return llvm::Error::success();

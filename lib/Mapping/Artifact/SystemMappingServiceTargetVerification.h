@@ -9,7 +9,7 @@ namespace loom::mapping::detail {
 llvm::Error verifySystemServiceTargetClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
-    const ArtifactStore &store,
+    const SpatialMappingImportContext &spatialMappings,
     const SystemServiceObligationProjection &obligation,
     const SystemExecutionContextProjection &contexts,
     llvm::ArrayRef<SystemServicePlanView> plans,

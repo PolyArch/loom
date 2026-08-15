@@ -203,7 +203,10 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate) {
   std::vector<std::uint64_t> domainArcCounts(tagDomainCount + 1, 0);
   const auto endpointDomains =
       problem.routing().tagContinuity().endpointMatchDomainOrdinals();
-  for (const EndpointRoutingArc &arc : problem.routing().routingArcs()) {
+  for (auto [arcOrdinal, arc] :
+       llvm::enumerate(problem.routing().routingArcs())) {
+    if (!problem.activeRouting().arcIsActive(static_cast<PnrIndex>(arcOrdinal)))
+      continue;
     if (arc.target >= endpointDomains.size())
       return routeCostStateError("routing arc target is out of range");
     const PnrIndex domain = endpointDomains[arc.target];
@@ -225,6 +228,8 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate) {
   std::vector<std::uint64_t> domainArcCursors = domainArcCounts;
   for (auto [arcOrdinal, arc] :
        llvm::enumerate(problem.routing().routingArcs())) {
+    if (!problem.activeRouting().arcIsActive(static_cast<PnrIndex>(arcOrdinal)))
+      continue;
     const PnrIndex domain = endpointDomains[arc.target];
     if (domain == getInvalidPnrIndex())
       continue;
@@ -242,6 +247,11 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate) {
   state.stagedTraversalCosts_.assign(traversalCount, 0);
   state.affectedTraversals_.reserve(traversalCount);
   for (PnrIndex traversal = 0; traversal < traversalCount; ++traversal) {
+    if (!problem.activeRouting().traversalIsActive(traversal)) {
+      state.lowerBoundTraversalCosts_[traversal] = 0;
+      state.currentTraversalCosts_[traversal] = 0;
+      continue;
+    }
     auto lower = state.computeTraversalCost(traversal, false, false);
     if (!lower)
       return lower.takeError();
@@ -262,6 +272,11 @@ SpatialRouteCostState::create(const SpatialCandidateState &candidate) {
     const EndpointRoutingArc &arc = problem.routing().routingArcs()[arcOrdinal];
     if (arc.traversal >= traversalCount)
       return routeCostStateError("routing arc traversal is out of range");
+    if (!problem.activeRouting().arcIsActive(arcOrdinal)) {
+      state.lowerBoundArcCosts_.push_back(0);
+      state.currentArcCosts_.push_back(0);
+      continue;
+    }
     auto lower = state.computeArcCost(arcOrdinal, false, false, false);
     if (!lower)
       return lower.takeError();
@@ -590,6 +605,8 @@ llvm::Error SpatialRouteCostState::finishUpdate() {
           routing.routeClaimTraversalOffsets()[claim + 1] -
               routing.routeClaimTraversalOffsets()[claim]);
       for (PnrIndex traversal : traversals) {
+        if (!problem_->activeRouting().traversalIsActive(traversal))
+          continue;
         if (traversalUpdateEpochs_[traversal] == updateEpoch_)
           continue;
         traversalUpdateEpochs_[traversal] = updateEpoch_;
@@ -638,6 +655,8 @@ llvm::Error SpatialRouteCostState::finishUpdate() {
              problem_->routing().traversalArcOffsets()[traversal],
              problem_->routing().traversalArcOffsets()[traversal + 1] -
                  problem_->routing().traversalArcOffsets()[traversal])) {
+      if (!problem_->activeRouting().arcIsActive(arc))
+        continue;
       if (arcUpdateEpochs_[arc] == updateEpoch_)
         continue;
       arcUpdateEpochs_[arc] = updateEpoch_;
@@ -1434,6 +1453,11 @@ llvm::Error SpatialRouteCostState::recomputeAllArcCosts(bool resetTagHistory) {
   if (lowerBoundArcCosts_.empty() || currentArcCosts_.empty())
     return llvm::Error::success();
   for (PnrIndex arc = 0; arc < currentArcCosts_.size(); ++arc) {
+    if (!problem_->activeRouting().arcIsActive(arc)) {
+      lowerBoundArcCosts_[arc] = 0;
+      currentArcCosts_[arc] = 0;
+      continue;
+    }
     auto lower = computeArcCost(arc, false, false, false);
     if (!lower)
       return lower.takeError();
@@ -1481,6 +1505,10 @@ llvm::Error SpatialRouteCostState::resetFromVerifiedCandidate() {
   std::fill(stagedHistoryPressure_.begin(), stagedHistoryPressure_.end(), 0);
   for (PnrIndex traversal = 0;
        traversal < problem_->routing().traversals().size(); ++traversal) {
+    if (!problem_->activeRouting().traversalIsActive(traversal)) {
+      stagedTraversalCosts_[traversal] = 0;
+      continue;
+    }
     auto cost = computeTraversalCostImpl(traversal, true, true,
                                          policy_.presentPressureInitial,
                                          stagedHistoryPressure_);
@@ -1495,9 +1523,14 @@ llvm::Error SpatialRouteCostState::resetFromVerifiedCandidate() {
   }
   llvm::copy(stagedClaimOveruseCosts_, currentClaimOveruseCosts_.begin());
   llvm::copy(stagedTraversalCosts_, currentTraversalCosts_.begin());
-  for (PnrIndex arc = 0; arc < problem_->routing().routingArcs().size(); ++arc)
-    currentArcCosts_[arc] = currentTraversalCosts_
-        [problem_->routing().routingArcs()[arc].traversal];
+  for (PnrIndex arc = 0; arc < problem_->routing().routingArcs().size();
+       ++arc) {
+    currentArcCosts_[arc] =
+        problem_->activeRouting().arcIsActive(arc)
+            ? currentTraversalCosts_
+                  [problem_->routing().routingArcs()[arc].traversal]
+            : 0;
+  }
   presentPressure_ = policy_.presentPressureInitial;
   std::fill(historyPressure_.begin(), historyPressure_.end(), 0);
   std::fill(selectedLogicalNetClaimBits_.begin(),
@@ -1545,6 +1578,8 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
                routing.routeClaimTraversalOffsets()[claim],
                routing.routeClaimTraversalOffsets()[claim + 1] -
                    routing.routeClaimTraversalOffsets()[claim])) {
+        if (!problem_->activeRouting().traversalIsActive(traversal))
+          continue;
         if (traversalUpdateEpochs_[traversal] == updateEpoch_)
           continue;
         traversalUpdateEpochs_[traversal] = updateEpoch_;
@@ -1596,6 +1631,8 @@ llvm::Error SpatialRouteCostState::advancePathFinderIteration() {
              problem_->routing().traversalArcOffsets()[traversal],
              problem_->routing().traversalArcOffsets()[traversal + 1] -
                  problem_->routing().traversalArcOffsets()[traversal])) {
+      if (!problem_->activeRouting().arcIsActive(arc))
+        continue;
       if (arcUpdateEpochs_[arc] == updateEpoch_)
         continue;
       arcUpdateEpochs_[arc] = updateEpoch_;

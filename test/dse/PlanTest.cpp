@@ -143,6 +143,7 @@ const PromotionAcquisitionDescriptor unavailableAcquisition{
 
 bool sourceGenerationStopsAfterRetainingOutputs = false;
 bool sourceGenerationReturnsEmpty = false;
+std::optional<std::uint64_t> sourceObservedOutputMaximum;
 
 ArtifactRootReference makeReference(const ArtifactSchemaDescriptor &schema,
                                     std::uint8_t fill) {
@@ -186,7 +187,7 @@ llvm::Expected<CandidateGeneratorProviderResult>
 generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
                const ResolvedCandidateGeneratorBinding &binding,
                const ArtifactStore &store, const BlobStore &,
-               const ExecutionControlView &) {
+               const CandidateGeneratorInvocationView &invocation) {
   if (inputBindings.size() != 1 ||
       inputBindings.front().artifacts.size() != 1 ||
       binding.descriptorRef() != sourceGenerator.reference())
@@ -201,20 +202,37 @@ generateSource(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       publishReference(store, candidateSchema, 0x31);
   const ArtifactRootReference second =
       publishReference(store, candidateSchema, 0x22);
+  sourceObservedOutputMaximum =
+      invocation.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
+  const bool demandLimited =
+      sourceObservedOutputMaximum && *sourceObservedOutputMaximum < 2;
+  std::vector<ArtifactRootReference> candidates = {first, second, first};
+  if (sourceObservedOutputMaximum) {
+    llvm::sort(candidates, artifactRootReferenceLess);
+    candidates.erase(std::unique(candidates.begin(), candidates.end()),
+                     candidates.end());
+    if (candidates.size() > *sourceObservedOutputMaximum)
+      candidates.erase(candidates.begin() + static_cast<std::size_t>(
+                                                *sourceObservedOutputMaximum),
+                       candidates.end());
+  }
   std::vector<CandidateGeneratorOutputBinding> outputBindings = {
-      {CandidateGeneratorOutputSlotRef(0), {first, second, first}}};
-  std::vector<CandidateGeneratorLineageEdge> lineageEdges = {
-      {CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
-       CandidateGeneratorOutputSlotRef(0),
-       first,
-       {},
-       {}},
-      {CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
-       CandidateGeneratorOutputSlotRef(0),
-       second,
-       {},
-       {}}};
-  if (sourceGenerationStopsAfterRetainingOutputs)
+      {CandidateGeneratorOutputSlotRef(0), candidates}};
+  std::vector<ArtifactRootReference> lineageCandidates = candidates;
+  llvm::sort(lineageCandidates, artifactRootReferenceLess);
+  lineageCandidates.erase(
+      std::unique(lineageCandidates.begin(), lineageCandidates.end()),
+      lineageCandidates.end());
+  std::vector<CandidateGeneratorLineageEdge> lineageEdges;
+  lineageEdges.reserve(lineageCandidates.size());
+  for (const ArtifactRootReference &candidate : lineageCandidates)
+    lineageEdges.push_back(
+        {CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+         CandidateGeneratorOutputSlotRef(0),
+         candidate,
+         {},
+         {}});
+  if (sourceGenerationStopsAfterRetainingOutputs || demandLimited)
     return CandidateGeneratorProviderResult{
         IncompleteCandidateGeneratorResult{
             CandidateGeneratorIncompleteReason::SemanticLimitReached,
@@ -545,7 +563,8 @@ void exerciseOrderedTypedUseDef() {
   if (!joinedIncomplete || joinedIncomplete->nodeOrdinal() != 2 ||
       !joinedInvocation || joinedInvocation->inputBindings.size() != 1 ||
       joinedInvocation->inputBindings.front().artifacts !=
-          std::vector<ArtifactRootReference>{generated.front()})
+          std::vector<ArtifactRootReference>{generated.front()} ||
+      sourceObservedOutputMaximum != std::optional<std::uint64_t>(1))
     fail("bounded output join did not canonicalize, deduplicate, and truncate");
 
   std::vector<DsePlanNodeDefinition> duplicateJoin = {

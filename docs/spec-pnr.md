@@ -53,6 +53,82 @@ indexes, or a search heuristic into a competing source of physical meaning.
 When two consumers need the same derived physical fact, they must call the same
 typed projection or validate a cache against it.
 
+## Derived Contexts And Bounded Reuse
+
+PnR separates immutable target-derived state from workload-derived demand and
+mutable search state. These layers are rebuildable implementation views, not
+Artifacts and not additional semantic owners:
+
+```text
+Fabric identity
+  -> FabricStaticContext
+       canonical Fabric view and shared dependency views
+       resource and capacity supply inventory
+       endpoint and traversal topology
+       tag-continuity index
+       compiled handshake owner models
+
+FabricStaticContext + PhysicalTimingProfile digest
+  -> FabricTimingContext
+       validated traversal timing lookup
+       timing-annotated routing index
+
+Dataflow + TechMapping + constraints + selected config
+  -> SpatialActiveProblem
+       realizations and compatible placements
+       memory, transfer, port, route, and handshake demand
+       progress and recurrence projections
+
+System identity
+  -> SystemStaticContext
+       execution-core and target-class inventory
+       endpoint and traversal topology
+       static carrier and use-pattern domains
+
+SystemStaticContext + SpatialMapping set + Dataflow + constraints + timing
+  -> SystemActiveProblem
+       execution and graph decisions
+       workload service terminals and legs
+       memory and SpatialMapping bindings
+
+active problem + exact selections
+  -> mutable candidate and transaction state
+```
+
+A context key contains every exact Artifact identity or component-view digest
+on which its value depends, plus the owner-defined schema and algorithm
+versions for the derived representation. A path, application label, object
+address, timestamp, allocation order, or invocation ordinal is never a key.
+Changing any dependency produces a miss; a hit performs the owner's cheap
+exact-key and structural revalidation before use.
+
+Context reuse is bounded by an explicit invocation or execution-session owner.
+Values are shared immutable handles and are destroyed with that owner. A
+process-global unbounded map is forbidden. Mutable candidates, transactions,
+scratch arenas, PRNG state, work budgets, solver state, and interruption state
+are never cached across candidate attempts. An exact whole-problem cache may
+provide a same-tuple fast path, but it cannot replace the coarser static and
+timing contexts needed by sibling TechMapping or SpatialMapping candidates.
+
+The provider records, for each context kind, hit and miss counts, construction
+wall time, retained bytes, and deterministic construction work. It also records
+the full and active endpoint, traversal, handshake, placement, and relation
+counts needed to expose accidental full-target work. These observations are
+diagnostic infrastructure only: they do not affect identity, ordering, work
+budgets, or replay.
+
+Diagnostic analysis and emission are separate operations. A report consumed
+only by diagnostics, including Fabric topology quality, is not computed while
+its required diagnostic level is disabled. If enabled at several Mapping
+stages, one Fabric-identity analysis may be emitted several times without being
+recomputed. A DSE objective that consumes the same projection obtains it from
+its typed hardware-evaluation owner instead of relying on Mapping diagnostics.
+
+Reuse never weakens closure. Cache hits do not bypass input admission, exact
+repair, final global closure, Artifact finalization, or the cold independent
+Mapping verifier. Cache misses and hits must publish identical canonical
+results and deterministic work accounting.
+
 ## Invocation Contracts
 
 ### Spatial PnR

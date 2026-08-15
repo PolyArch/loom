@@ -32,6 +32,7 @@ enum class Event : std::uint8_t {
   ContextChoice,
   NetRoute,
   CutAnalysis,
+  DerivedContext,
   TopologyQuality,
   TagDomainPressure,
   ArithmeticFailure,

@@ -55,7 +55,151 @@ llvm::Error increment(PnrIndex &value, llvm::StringRef subject) {
   return llvm::Error::success();
 }
 
+struct RebuiltHandshakeProjection final {
+  std::vector<PnrIndex> fragmentRefcounts;
+  std::vector<PnrIndex> arcRefcounts;
+  std::vector<PnrIndex> traversalRefcounts;
+  std::vector<PnrIndex> allGroupSelectedWitnessCounts;
+  std::vector<PnrIndex> activeArcs;
+};
+
+llvm::Expected<RebuiltHandshakeProjection>
+rebuildHandshakeProjection(const FrozenSpatialHandshakeIndex &index,
+                           llvm::ArrayRef<PnrIndex> selectedFragments,
+                           llvm::ArrayRef<PnrIndex> traversalUses) {
+  const auto traversalFragmentOffsets = index.traversalFragmentOffsets();
+  const auto traversalGroupOffsets = index.traversalAllGroupOffsets();
+  if (traversalFragmentOffsets.empty() || traversalGroupOffsets.empty())
+    return candidateError("projection traversal offsets are empty");
+  const std::size_t traversalCount = traversalFragmentOffsets.size() - 1;
+  if (traversalUses.size() != traversalCount ||
+      traversalGroupOffsets.size() != traversalCount + 1)
+    return candidateError(
+        "projection traversal dimension does not match its index");
+
+  RebuiltHandshakeProjection result;
+  result.fragmentRefcounts.assign(index.fragments().size(), 0);
+  result.arcRefcounts.assign(index.arcs().size(), 0);
+  result.traversalRefcounts.assign(traversalUses.begin(), traversalUses.end());
+  result.allGroupSelectedWitnessCounts.assign(index.allTraversalGroups().size(),
+                                              0);
+  const auto activateFragment = [&](PnrIndex fragment) -> llvm::Error {
+    if (fragment >= result.fragmentRefcounts.size())
+      return candidateError("projection fragment is out of range");
+    return increment(result.fragmentRefcounts[fragment], "fragment");
+  };
+  for (PnrIndex fragment : index.fixedFragments())
+    if (llvm::Error error = activateFragment(fragment))
+      return std::move(error);
+  for (PnrIndex fragment : selectedFragments)
+    if (llvm::Error error = activateFragment(fragment))
+      return std::move(error);
+
+  for (PnrIndex traversal = 0; traversal < traversalCount; ++traversal) {
+    if (traversalUses[traversal] == 0)
+      continue;
+    for (PnrIndex fragment : index.traversalFragments().slice(
+             traversalFragmentOffsets[traversal],
+             traversalFragmentOffsets[traversal + 1] -
+                 traversalFragmentOffsets[traversal]))
+      if (llvm::Error error = activateFragment(fragment))
+        return std::move(error);
+    for (PnrIndex group : index.traversalAllGroups().slice(
+             traversalGroupOffsets[traversal],
+             traversalGroupOffsets[traversal + 1] -
+                 traversalGroupOffsets[traversal])) {
+      if (group >= result.allGroupSelectedWitnessCounts.size())
+        return candidateError("projection traversal group is out of range");
+      if (llvm::Error error =
+              increment(result.allGroupSelectedWitnessCounts[group],
+                        "all-traversal witness"))
+        return std::move(error);
+    }
+  }
+  for (auto [groupOrdinal, group] :
+       llvm::enumerate(index.allTraversalGroups())) {
+    const PnrIndex selected =
+        result.allGroupSelectedWitnessCounts[groupOrdinal];
+    if (selected > group.witnessCount)
+      return candidateError(
+          "projection selects excess all-traversal witnesses");
+    if (selected == group.witnessCount)
+      if (llvm::Error error = activateFragment(group.fragment))
+        return std::move(error);
+  }
+
+  const auto fragments = index.fragments();
+  const auto fragmentArcs = index.fragmentArcOrdinals();
+  for (PnrIndex fragment = 0; fragment < fragments.size(); ++fragment) {
+    if (result.fragmentRefcounts[fragment] == 0)
+      continue;
+    const FrozenSpatialHandshakeFragment record = fragments[fragment];
+    if (record.contributionOffset > fragmentArcs.size() ||
+        record.contributionCount >
+            fragmentArcs.size() - record.contributionOffset)
+      return candidateError("projection fragment incidence is out of range");
+    for (PnrIndex arc : fragmentArcs.slice(record.contributionOffset,
+                                           record.contributionCount)) {
+      if (arc >= result.arcRefcounts.size())
+        return candidateError("projection fragment arc is out of range");
+      if (llvm::Error error = increment(result.arcRefcounts[arc], "arc"))
+        return std::move(error);
+    }
+  }
+  result.activeArcs.reserve(result.arcRefcounts.size());
+  for (auto [arc, refcount] : llvm::enumerate(result.arcRefcounts))
+    if (refcount != 0)
+      result.activeArcs.push_back(static_cast<PnrIndex>(arc));
+  return result;
+}
+
 } // namespace
+
+llvm::Expected<bool> loom::pnr::independentlyVerifyHandshakeProjectionAcyclic(
+    const FrozenSpatialHandshakeIndex &index,
+    llvm::ArrayRef<PnrIndex> selectedFragments,
+    llvm::ArrayRef<PnrIndex> traversalUses) {
+  auto projection =
+      rebuildHandshakeProjection(index, selectedFragments, traversalUses);
+  if (!projection)
+    return projection.takeError();
+  const auto arcs = index.arcs();
+  std::vector<PnrIndex> indegree(index.nodeCount(), 0);
+  for (PnrIndex arc : projection->activeArcs)
+    if (llvm::Error error = increment(indegree[arcs[arc].destination],
+                                      "handshake node indegree"))
+      return std::move(error);
+
+  std::vector<PnrIndex> ready;
+  ready.reserve(index.nodeCount());
+  for (PnrIndex node = 0; node < index.nodeCount(); ++node)
+    if (indegree[node] == 0)
+      ready.push_back(node);
+  std::size_t visited = 0;
+  const auto adjacencyOffsets = index.adjacencyOffsets();
+  if (adjacencyOffsets.size() !=
+      static_cast<std::size_t>(index.nodeCount()) + 1)
+    return candidateError(
+        "independent projection adjacency shape is inconsistent");
+  while (visited < ready.size()) {
+    const PnrIndex node = ready[visited];
+    ++visited;
+    for (PnrIndex arc = adjacencyOffsets[node];
+         arc < adjacencyOffsets[node + 1]; ++arc) {
+      if (arc >= arcs.size())
+        return candidateError(
+            "independent projection adjacency arc is out of range");
+      if (projection->arcRefcounts[arc] == 0)
+        continue;
+      PnrIndex &destinationIndegree = indegree[arcs[arc].destination];
+      if (destinationIndegree == 0)
+        return candidateError("independent projection indegree underflows");
+      if (--destinationIndegree == 0)
+        ready.push_back(arcs[arc].destination);
+    }
+  }
+  return visited == index.nodeCount();
+}
 
 HandshakeCandidateScratch::HandshakeCandidateScratch()
     : storage_(std::make_unique<detail::HandshakeCandidateScratchStorage>()) {}
@@ -69,20 +213,18 @@ llvm::Error
 HandshakeCandidateScratch::prepare(const FrozenSpatialHandshakeIndex &index) {
   if (activeTransaction_)
     return candidateError("cannot prepare scratch during a transaction");
+  if (index.traversalFragmentOffsets().empty())
+    return candidateError("handshake traversal offsets are empty");
   if (llvm::Error error =
-          storage_->topologyScratch.prepare(topologyView(index)))
+          storage_->topologyScratch.prepareValidated(topologyView(index)))
     return error;
 
+  const std::size_t traversalCount =
+      index.traversalFragmentOffsets().size() - 1;
   fragmentJournalMarks_.assign(index.fragments().size(), 0);
   arcJournalMarks_.assign(index.arcs().size(), 0);
-  traversalJournalMarks_.assign(index.traversalFragmentOffsets().size() - 1, 0);
+  traversalJournalMarks_.assign(traversalCount, 0);
   groupJournalMarks_.assign(index.allTraversalGroups().size(), 0);
-  fragmentDeltas_.reserve(index.fragments().size());
-  arcDeltas_.reserve(index.arcs().size());
-  traversalDeltas_.reserve(index.traversalFragmentOffsets().size() - 1);
-  groupDeltas_.reserve(index.allTraversalGroups().size());
-  storage_->removedArcs.reserve(index.arcs().size());
-  storage_->insertedArcs.reserve(index.arcs().size());
   transactionEpoch_ = 0;
   resetTransaction();
   return llvm::Error::success();
@@ -123,43 +265,33 @@ llvm::Expected<HandshakeCandidateStateHandle>
 HandshakeCandidateState::create(FrozenSpatialHandshakeIndexHandle index) {
   if (!index)
     return candidateError("FrozenSpatialHandshakeIndex owner is null");
-
-  std::vector<PnrIndex> fragmentRefcounts(index->fragments().size(), 0);
-  std::vector<PnrIndex> arcRefcounts(index->arcs().size(), 0);
-  for (PnrIndex fragment : index->fixedFragments()) {
-    if (fragment >= index->fragments().size())
-      return candidateError("fixed fragment is out of range");
-    if (llvm::Error error = increment(fragmentRefcounts[fragment], "fragment"))
-      return std::move(error);
-    if (fragmentRefcounts[fragment] != 1)
-      continue;
-    const FrozenSpatialHandshakeFragment record = index->fragments()[fragment];
-    for (PnrIndex arc : index->fragmentArcOrdinals().slice(
-             record.contributionOffset, record.contributionCount)) {
-      if (arc >= arcRefcounts.size())
-        return candidateError("fixed fragment arc is out of range");
-      if (llvm::Error error = increment(arcRefcounts[arc], "arc"))
-        return std::move(error);
-    }
-  }
-
-  std::vector<PnrIndex> activeArcs;
-  activeArcs.reserve(index->arcs().size());
-  for (auto [arc, refcount] : llvm::enumerate(arcRefcounts))
-    if (refcount != 0)
-      activeArcs.push_back(static_cast<PnrIndex>(arc));
-  auto topology = detail::IncrementalTopologicalOrder::create(
-      topologyView(*index), activeArcs);
-  if (!topology)
-    return topology.takeError();
-
+  if (index->traversalFragmentOffsets().empty())
+    return candidateError("handshake traversal offsets are empty");
   const std::size_t traversalCount =
       index->traversalFragmentOffsets().size() - 1;
-  const std::size_t groupCount = index->allTraversalGroups().size();
+  return create(std::move(index), {}, std::vector<PnrIndex>(traversalCount, 0));
+}
+
+llvm::Expected<HandshakeCandidateStateHandle>
+HandshakeCandidateState::create(FrozenSpatialHandshakeIndexHandle index,
+                                llvm::ArrayRef<PnrIndex> selectedFragments,
+                                llvm::ArrayRef<PnrIndex> traversalUses) {
+  if (!index)
+    return candidateError("FrozenSpatialHandshakeIndex owner is null");
+  auto projection =
+      rebuildHandshakeProjection(*index, selectedFragments, traversalUses);
+  if (!projection)
+    return projection.takeError();
+  auto topology = detail::IncrementalTopologicalOrder::create(
+      topologyView(*index), projection->activeArcs);
+  if (!topology)
+    return topology.takeError();
   return HandshakeCandidateStateHandle(new HandshakeCandidateState(
-      std::move(index), std::move(*topology), std::move(fragmentRefcounts),
-      std::move(arcRefcounts), std::vector<PnrIndex>(traversalCount, 0),
-      std::vector<PnrIndex>(groupCount, 0)));
+      std::move(index), std::move(*topology),
+      std::move(projection->fragmentRefcounts),
+      std::move(projection->arcRefcounts),
+      std::move(projection->traversalRefcounts),
+      std::move(projection->allGroupSelectedWitnessCounts)));
 }
 
 PnrIndex HandshakeCandidateState::fragmentRefcount(PnrIndex fragment) const {

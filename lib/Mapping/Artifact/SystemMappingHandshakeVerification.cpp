@@ -248,9 +248,8 @@ llvm::Error appendSystemHandshakeSelection(
           const auto *crosspoint =
               std::get_if<::loom::fabric::FabricSwitchTraversalPayload>(
                   &node.incomingTraversal.payload);
-          if (!crosspoint ||
-              fabric.switchSchedule(crosspoint->owner) !=
-                  ::fabric::Schedule::Temporal) {
+          if (!crosspoint || fabric.switchSchedule(crosspoint->owner) !=
+                                 ::fabric::Schedule::Temporal) {
             selection.traversals.push_back(node.incomingTraversal);
             continue;
           }
@@ -260,8 +259,7 @@ llvm::Error appendSystemHandshakeSelection(
               reinterpret_cast<const char *>(occurrenceBytes.data()),
               occurrenceBytes.size());
           auto [position, inserted] = routeDemands.try_emplace(
-              occurrenceKey,
-              SystemSwitchRouteDemand{crosspoint->owner, {}});
+              occurrenceKey, SystemSwitchRouteDemand{crosspoint->owner, {}});
           auto signature = llvm::find_if(
               position->second.signatures, [&](const auto &candidate) {
                 return candidate.input == crosspoint->input;
@@ -280,20 +278,18 @@ llvm::Error appendSystemHandshakeSelection(
             signature.outputs.erase(
                 std::unique(signature.outputs.begin(), signature.outputs.end()),
                 signature.outputs.end());
-            llvm::sort(signature.traversals, [](const auto &lhs,
-                                                const auto &rhs) {
-              return ::loom::fabric::canonicalFabricBytes(lhs) <
-                     ::loom::fabric::canonicalFabricBytes(rhs);
-            });
-            signature.traversals.erase(
-                std::unique(signature.traversals.begin(),
-                            signature.traversals.end()),
-                signature.traversals.end());
+            llvm::sort(signature.traversals,
+                       [](const auto &lhs, const auto &rhs) {
+                         return ::loom::fabric::canonicalFabricBytes(lhs) <
+                                ::loom::fabric::canonicalFabricBytes(rhs);
+                       });
+            signature.traversals.erase(std::unique(signature.traversals.begin(),
+                                                   signature.traversals.end()),
+                                       signature.traversals.end());
           }
-          llvm::sort(demand.signatures,
-                     [](const auto &lhs, const auto &rhs) {
-                       return lhs.input < rhs.input;
-                     });
+          llvm::sort(demand.signatures, [](const auto &lhs, const auto &rhs) {
+            return lhs.input < rhs.input;
+          });
           for (std::size_t left = 0; left != demand.signatures.size(); ++left)
             for (std::size_t right = left + 1;
                  right != demand.signatures.size(); ++right)
@@ -406,7 +402,7 @@ llvm::Error verifySystemMappingHandshakeClosure(
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemExecutionBindingView &execution,
     llvm::ArrayRef<SystemServiceRealizationView> services,
-    const ArtifactStore &store) {
+    const SpatialMappingImportContext &spatialMappings) {
   ::loom::fabric::FabricHandshakeSelection systemSelection;
   if (llvm::Error error = appendSystemHandshakeSelection(
           fabric.artifact(), services, systemSelection))
@@ -440,10 +436,11 @@ llvm::Error verifySystemMappingHandshakeClosure(
         byteKey(encodeArtifactRootReference(context.spatialMapping));
     auto found = mappings.find(mappingKey);
     if (found == mappings.end()) {
-      auto imported = importSpatialMapping(context.spatialMapping, store);
+      auto imported =
+          resolveSpatialMappingImport(spatialMappings, context.spatialMapping);
       if (!imported)
         return imported.takeError();
-      found = mappings.emplace(mappingKey, imported->view()).first;
+      found = mappings.emplace(mappingKey, (*imported)->view()).first;
     }
     const auto core = context.context.accCore;
     if (!projected.insert(occurrenceMappingKey(core, context.spatialMapping))

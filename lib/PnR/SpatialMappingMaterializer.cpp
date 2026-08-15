@@ -888,7 +888,8 @@ finalizeSpatialMappingCandidate(
     const ::loom::mapping::TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     const ::loom::mapping::SpatialMappingConstraintSetView &constraints,
-    const ArtifactStore &store) {
+    const ArtifactStore &store,
+    const ::loom::fabric::FabricHandshakeContext *handshakeContext) {
   if (llvm::Error error = candidate.verify())
     return std::move(error);
   const FrozenSpatialPnrProblem &problem = candidate.problem();
@@ -967,7 +968,8 @@ finalizeSpatialMappingCandidate(
     return std::move(error);
 
   return ::loom::mapping::finalizeSpatialMapping(root, dataflow, techMapping,
-                                                 fabric, constraints, store);
+                                                 fabric, constraints, store,
+                                                 handshakeContext);
 }
 
 } // namespace loom::pnr

@@ -10,6 +10,7 @@
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
+#include "PnR/FabricTopologyQualityDiagnostic.h"
 #include "PnR/SpatialPnrGenerator.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -70,12 +71,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
-    const ExecutionControlView &executionControl);
+    const CandidateGeneratorInvocationView &invocation);
 
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSpatialPnrCandidateGeneratorKind,
     "mapping.root_complete_spatial_pnr",
-    "loom.mapping.root_complete_spatial_pnr.generator.v13",
+    "loom.mapping.root_complete_spatial_pnr.generator.v14",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -160,7 +161,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
-    const ExecutionControlView &executionControl) {
+    const CandidateGeneratorInvocationView &invocation) {
   auto config = ::loom::pnr::adoptResolvedSpatialPnrConfigView(
       ::loom::pnr::resolvedSpatialPnrConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -176,6 +177,16 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       fabric->view(), store);
   if (!physicalTiming)
     return physicalTiming.takeError();
+  auto derivedContexts = ::loom::pnr::buildFabricDerivedContextBundle(
+      fabric->view(), *physicalTiming);
+  if (!derivedContexts)
+    return derivedContexts.takeError();
+  ::loom::pnr::emitFabricDerivedContextStatistics(
+      *derivedContexts, ::loom::mapping_debug::Stage::SpatialPnr, 0, 1, 0, 1);
+  auto topology =
+      ::loom::pnr::analyzeFabricTopologyQualityForDiagnostics(fabric->view());
+  if (!topology)
+    return topology.takeError();
 
   std::map<ArtifactIdentity::Storage, std::unique_ptr<CachedDataflow>>
       dataflowCache;
@@ -192,6 +203,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       };
   std::vector<CandidateGeneratorWorkUnitSummary> workSummary =
       spatialPnrCandidateGeneratorWorkSummary({});
+  const std::optional<std::uint64_t> maximumOutputs =
+      invocation.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
   for (const auto indexedTech :
        llvm::enumerate(inputBindings[TechMappingCandidatesInput].artifacts)) {
     const std::size_t techOrdinal = indexedTech.index();
@@ -239,7 +252,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
         ::loom::pnr::generateSpatialMappings(
             {dataflow, tech->view(), fabric->view(), *physicalTiming, *config,
              constraints->view(), store, defaultCandidateWorkerCount(),
-             executionControl});
+             invocation.executionControl(), &*derivedContexts,
+             *topology ? &**topology : nullptr});
     const auto invocationWorkSummary = std::visit(
         [](const auto &value) {
           return spatialPnrCandidateGeneratorWorkSummary(value.accounting);
@@ -255,6 +269,22 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       outputs.insert(outputs.end(),
                      std::make_move_iterator(generated->candidates.begin()),
                      std::make_move_iterator(generated->candidates.end()));
+      canonicalizeReferences(outputs);
+      if (maximumOutputs && outputs.size() >= *maximumOutputs) {
+        const bool droppedOutputs = outputs.size() > *maximumOutputs;
+        if (droppedOutputs)
+          outputs.erase(outputs.begin() +
+                            static_cast<std::size_t>(*maximumOutputs),
+                        outputs.end());
+        const bool skippedTechMappings =
+            techOrdinal + 1 !=
+            inputBindings[TechMappingCandidatesInput].artifacts.size();
+        if (droppedOutputs || skippedTechMappings)
+          rememberIncomplete(
+              CandidateGeneratorIncompleteReason::SemanticLimitReached);
+        if (droppedOutputs || skippedTechMappings)
+          break;
+      }
       continue;
     }
     if (const auto *infeasible =

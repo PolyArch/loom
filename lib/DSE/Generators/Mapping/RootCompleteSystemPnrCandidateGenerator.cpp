@@ -7,6 +7,7 @@
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "PnR/System/SystemPnrDerivedContext.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -102,13 +103,13 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
-    const ExecutionControlView &executionControl);
+    const CandidateGeneratorInvocationView &invocation);
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
-    const ExecutionControlView &executionControl);
+    const CandidateGeneratorInvocationView &invocation);
 
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSystemPnrCandidateGeneratorKind,
@@ -174,38 +175,6 @@ incomplete(CandidateGeneratorIncompleteReason reason,
           std::move(lineage)};
 }
 
-llvm::Error validateSpatialMappingOwners(
-    llvm::ArrayRef<ArtifactRootReference> spatialMappingReferences,
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    const ::loom::fabric::FabricSystemRootView &system,
-    const ArtifactStore &store) {
-  for (const ArtifactRootReference &reference : spatialMappingReferences) {
-    auto spatial = ::loom::mapping::importSpatialMapping(reference, store);
-    if (!spatial)
-      return spatial.takeError();
-    if (spatial->view().dataflowIdentity() != dataflow.identity())
-      return llvm::createStringError(
-          std::make_error_code(std::errc::invalid_argument),
-          "root-complete System SpatialMapping has a foreign Dataflow owner");
-    const bool attached = llvm::any_of(
-        system.artifact().accCoreOccurrences(), [&](const auto core) {
-          const auto target = system.spatialCoreTarget(core);
-          return target &&
-                 target->dependencyOrdinal <
-                     system.artifact().importedModules().size() &&
-                 system.artifact()
-                         .importedModules()[target->dependencyOrdinal]
-                         .identity() == spatial->view().fabricIdentity();
-        });
-    if (!attached)
-      return llvm::createStringError(
-          std::make_error_code(std::errc::invalid_argument),
-          "root-complete System SpatialMapping Fabric is not attached to "
-          "the System");
-  }
-  return llvm::Error::success();
-}
-
 llvm::Expected<std::vector<::loom::fabric::FabricPhysicalTimingProfileView>>
 importPhysicalTimingProfiles(llvm::ArrayRef<ArtifactRootReference> references,
                              const ::loom::fabric::FabricSystemRootView &system,
@@ -258,7 +227,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
-    const ExecutionControlView &executionControl) {
+    const CandidateGeneratorInvocationView &invocation) {
   (void)blobs;
   auto config = ::loom::pnr::adoptResolvedSystemPnrConfigView(
       ::loom::pnr::resolvedSystemPnrConfigSchemaDescriptorBytes(),
@@ -280,15 +249,15 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   auto system = ::loom::fabric::requireSystemRoot(fabricArtifact->view());
   if (!system)
     return system.takeError();
+  auto staticContext = ::loom::pnr::buildSystemStaticContext(*system);
+  if (!staticContext)
+    return staticContext.takeError();
+  ::loom::pnr::emitSystemStaticContextStatistics(
+      *staticContext, ::loom::mapping_debug::Stage::SystemPnr, 0, 1);
   auto physicalTimingProfiles = importPhysicalTimingProfiles(
       inputBindings[PhysicalTimingProfilesInput].artifacts, *system, store);
   if (!physicalTimingProfiles)
     return physicalTimingProfiles.takeError();
-
-  if (llvm::Error error = validateSpatialMappingOwners(
-          inputBindings[SpatialMappingCandidatesInput].artifacts, *dataflow,
-          *system, store))
-    return std::move(error);
 
   std::vector<::dataflow::RootThreadLaunchRef> roots;
   roots.reserve(dataflow->rootThreadLaunches().size());
@@ -302,6 +271,13 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       *dataflow, *system, roots, store);
   if (!constraints)
     return constraints.takeError();
+  auto activeContext = ::loom::pnr::buildSystemActiveContext(
+      *staticContext, *dataflow, *system, *physicalTimingProfiles, *constraints,
+      inputBindings[SpatialMappingCandidatesInput].artifacts, store);
+  if (!activeContext)
+    return activeContext.takeError();
+  ::loom::pnr::emitSystemActiveContextStatistics(
+      *activeContext, ::loom::mapping_debug::Stage::SystemPnr, 0, 1);
   auto partition = ::loom::pnr::projectWholeDomainPresburgerPartitionPlan(
       *dataflow, constraints->view().rootThreadLaunches());
   if (!partition)
@@ -309,8 +285,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{
       inputBindings[SpatialMappingCandidatesInput].artifacts};
   auto searchDomain = ::loom::pnr::projectSystemPnrSearchDomain(
-      *dataflow, *system, *config, *constraints, *partition, graphSearch,
-      store);
+      *dataflow, *system, *config, *constraints, *partition, graphSearch, store,
+      &*activeContext);
   if (!searchDomain) {
     bool unsupported = false;
     llvm::Error remaining = llvm::handleErrors(
@@ -332,7 +308,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   ::loom::pnr::SystemPnrGenerationOutcome outcome =
       ::loom::pnr::generateSystemMappings(
           {*dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
-           *constraints, store, executionControl});
+           *constraints, store, invocation.executionControl(), &*staticContext,
+           &*activeContext});
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
     auto reason = pnrGenerationIncompleteReason(generated->termination);
@@ -384,7 +361,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &,
-    const ExecutionControlView &executionControl) {
+    const CandidateGeneratorInvocationView &invocation) {
   auto config = ::loom::pnr::adoptResolvedSystemPnrConfigView(
       ::loom::pnr::resolvedSystemPnrConfigSchemaDescriptorBytes(),
       binding.canonicalConfigBytes(), binding.configDigest());
@@ -404,6 +381,11 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
   auto system = ::loom::fabric::requireSystemRoot(fabricArtifact->view());
   if (!system)
     return system.takeError();
+  auto staticContext = ::loom::pnr::buildSystemStaticContext(*system);
+  if (!staticContext)
+    return staticContext.takeError();
+  ::loom::pnr::emitSystemStaticContextStatistics(
+      *staticContext, ::loom::mapping_debug::Stage::SystemPnr, 0, 1);
   auto physicalTimingProfiles = importPhysicalTimingProfiles(
       inputBindings[ApplicationPhysicalTimingProfilesInput].artifacts, *system,
       store);
@@ -420,10 +402,13 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
         llvm::inconvertibleErrorCode(),
         "application_system_pnr_generator_invalid: constraints bind foreign "
         "Dataflow or Fabric owners");
-  if (llvm::Error error = validateSpatialMappingOwners(
-          inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts,
-          *dataflow, *system, store))
-    return std::move(error);
+  auto activeContext = ::loom::pnr::buildSystemActiveContext(
+      *staticContext, *dataflow, *system, *physicalTimingProfiles, *constraints,
+      inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts, store);
+  if (!activeContext)
+    return activeContext.takeError();
+  ::loom::pnr::emitSystemActiveContextStatistics(
+      *activeContext, ::loom::mapping_debug::Stage::SystemPnr, 0, 1);
 
   auto partition = ::loom::pnr::projectWholeDomainPresburgerPartitionPlan(
       *dataflow, constraints->view().rootThreadLaunches());
@@ -432,8 +417,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
   ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{
       inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts};
   auto searchDomain = ::loom::pnr::projectSystemPnrSearchDomain(
-      *dataflow, *system, *config, *constraints, *partition, graphSearch,
-      store);
+      *dataflow, *system, *config, *constraints, *partition, graphSearch, store,
+      &*activeContext);
   if (!searchDomain) {
     bool unsupported = false;
     llvm::Error remaining = llvm::handleErrors(
@@ -456,7 +441,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
   ::loom::pnr::SystemPnrGenerationOutcome outcome =
       ::loom::pnr::generateSystemMappings(
           {*dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
-           *constraints, store, executionControl});
+           *constraints, store, invocation.executionControl(), &*staticContext,
+           &*activeContext});
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
     auto reason = pnrGenerationIncompleteReason(generated->termination);

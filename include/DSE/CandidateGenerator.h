@@ -115,6 +115,37 @@ struct CandidateGeneratorInputBinding final {
   std::vector<ArtifactRootReference> artifacts;
 };
 
+/// One plan-derived bound for an output slot. A missing maximum means that
+/// every provider-owned candidate remains observable by at least one consumer.
+struct CandidateGeneratorOutputDemand final {
+  CandidateGeneratorOutputSlotRef slot;
+  std::optional<std::uint64_t> maximumArtifacts;
+};
+
+/// Immutable invocation policy derived from the resolved plan. Output demand
+/// is semantic work policy owned by that plan; interruption remains transient
+/// execution policy. Neither is mutable candidate state.
+class CandidateGeneratorInvocationView final {
+public:
+  constexpr CandidateGeneratorInvocationView() = default;
+  constexpr CandidateGeneratorInvocationView(
+      ExecutionControlView executionControl,
+      llvm::ArrayRef<CandidateGeneratorOutputDemand> outputDemands)
+      : executionControl_(executionControl), outputDemands_(outputDemands) {}
+
+  ExecutionControlView executionControl() const { return executionControl_; }
+  bool stopRequested() const { return executionControl_.stopRequested(); }
+  std::optional<std::uint64_t>
+  maximumOutputArtifacts(CandidateGeneratorOutputSlotRef slot) const;
+  llvm::ArrayRef<CandidateGeneratorOutputDemand> outputDemands() const {
+    return outputDemands_;
+  }
+
+private:
+  ExecutionControlView executionControl_;
+  llvm::ArrayRef<CandidateGeneratorOutputDemand> outputDemands_;
+};
+
 struct CandidateGeneratorInputSlotDescriptor final {
   CandidateGeneratorInputSlotRef slot;
   llvm::StringRef semanticRole;
@@ -323,7 +354,7 @@ using CandidateGeneratorProviderFunction =
     llvm::Expected<CandidateGeneratorProviderResult> (*)(
         llvm::ArrayRef<CandidateGeneratorInputBinding>,
         const ResolvedCandidateGeneratorBinding &, const ArtifactStore &,
-        const BlobStore &, const ExecutionControlView &);
+        const BlobStore &, const CandidateGeneratorInvocationView &);
 
 /// The external prepare callable of one ExternalPrepareImport generator. It
 /// materializes one deterministic finalized bundle and never executes a
@@ -393,6 +424,12 @@ invokeCandidateGenerator(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                          const ResolvedCandidateGeneratorBinding &binding,
                          const ArtifactStore &store, const BlobStore &blobs,
                          const ExecutionControlView &executionControl);
+
+llvm::Expected<CandidateGeneratorProviderResult>
+invokeCandidateGenerator(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+                         const ResolvedCandidateGeneratorBinding &binding,
+                         const ArtifactStore &store, const BlobStore &blobs,
+                         const CandidateGeneratorInvocationView &invocation);
 
 llvm::Error validateCandidateGeneratorWorkSummary(
     CandidateGeneratorDescriptorRef descriptor,

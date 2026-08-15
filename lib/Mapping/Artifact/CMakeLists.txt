@@ -13,6 +13,7 @@ add_library(LoomMappingArtifact
   SpatialMappingConstraintAdmission.cpp
   SpatialMappingCapacityVerification.cpp
   SpatialMappingArtifact.cpp
+  SpatialMappingImportContext.cpp
   MappingProgressAnalysis.cpp
   SpatialMappingTagAssignments.cpp
   SpatialMappingMemoryImport.cpp

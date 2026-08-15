@@ -1,8 +1,8 @@
 #ifndef LOOM_MAPPING_ARTIFACT_SYSTEMMAPPINGCAPACITYVERIFICATION_H
 #define LOOM_MAPPING_ARTIFACT_SYSTEMMAPPINGCAPACITYVERIFICATION_H
 
-#include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -25,7 +25,7 @@ verifySystemMappingCapacity(
     llvm::ArrayRef<SystemServiceRealizationView> services,
     llvm::ArrayRef<SystemResourceUseView> resourceUses,
     llvm::ArrayRef<std::string> resourceUseActivationKeys,
-    const ArtifactStore &store);
+    const SpatialMappingImportContext &spatialMappings);
 
 } // namespace loom::mapping::detail
 

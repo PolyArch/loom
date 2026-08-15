@@ -81,11 +81,11 @@ llvm::Expected<CandidateGeneratorProviderResult>
 invokeSpatialProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
                       const ResolvedCandidateGeneratorBinding &binding,
                       const ArtifactStore &store, const BlobStore &blobs,
-                      const ExecutionControlView &executionControl) {
+                      const CandidateGeneratorInvocationView &invocation) {
   ::loom::pnr::SpatialPnrGenerationOutcome outcome =
       invokeSpatialPnrCandidateGenerator(inputs, binding, store,
                                          defaultCandidateWorkerCount(),
-                                         executionControl);
+                                         invocation.executionControl());
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSpatialMappings>(&outcome)) {
     std::vector<CandidateGeneratorLineageEdge> lineageEdges;

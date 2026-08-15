@@ -17,7 +17,8 @@ llvm::Expected<ImportedSystemClosure> importSystemMappingClosure(
     ::mapping::SystemOp root,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
-    const SystemExecutionBindingView &execution, const ArtifactStore &store);
+    const SystemExecutionBindingView &execution,
+    const SpatialMappingImportContext &spatialMappings);
 
 } // namespace loom::mapping::detail
 

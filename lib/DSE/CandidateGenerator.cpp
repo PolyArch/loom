@@ -681,6 +681,17 @@ CandidateGeneratorDescriptor::findOutputSlot(
   return &outputSlots[slot.ordinal()];
 }
 
+std::optional<std::uint64_t>
+CandidateGeneratorInvocationView::maximumOutputArtifacts(
+    CandidateGeneratorOutputSlotRef slot) const {
+  if (outputDemands_.empty() || slot.ordinal() >= outputDemands_.size())
+    return std::nullopt;
+  const CandidateGeneratorOutputDemand &demand = outputDemands_[slot.ordinal()];
+  if (demand.slot != slot)
+    return std::nullopt;
+  return demand.maximumArtifacts;
+}
+
 llvm::Error registerCandidateGeneratorDescriptor(
     const CandidateGeneratorDescriptor &descriptor) {
   if (llvm::Error error = validateDescriptor(descriptor))
@@ -847,7 +858,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs) {
   return invokeCandidateGenerator(inputBindings, binding, store, blobs,
-                                  ExecutionControlView{});
+                                  CandidateGeneratorInvocationView{});
 }
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
@@ -855,6 +866,16 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
     const ExecutionControlView &executionControl) {
+  return invokeCandidateGenerator(
+      inputBindings, binding, store, blobs,
+      CandidateGeneratorInvocationView(executionControl, {}));
+}
+
+llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
+    const ResolvedCandidateGeneratorBinding &binding,
+    const ArtifactStore &store, const BlobStore &blobs,
+    const CandidateGeneratorInvocationView &invocation) {
   const CandidateGeneratorDescriptor *descriptor =
       binding.descriptorRef().descriptor();
   if (!descriptor)
@@ -870,6 +891,19 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
   if (llvm::Error error = validateContractedInputArtifacts(
           *descriptor, inputBindings, store, blobs))
     return std::move(error);
+  const llvm::ArrayRef<CandidateGeneratorOutputDemand> outputDemands =
+      invocation.outputDemands();
+  if (!outputDemands.empty()) {
+    if (outputDemands.size() != descriptor->outputSlots.size())
+      return invalid("output demand does not cover every descriptor slot");
+    for (std::size_t index = 0; index != outputDemands.size(); ++index) {
+      if (outputDemands[index].slot.ordinal() != index)
+        return invalid("output demand must be dense and canonical");
+      if (outputDemands[index].maximumArtifacts &&
+          *outputDemands[index].maximumArtifacts == 0)
+        return invalid("output demand maximum must be positive");
+    }
+  }
 
   std::optional<CandidateGeneratorProviderImplementation> implementation =
       lookupProviderImplementation(binding.descriptorRef());
@@ -897,12 +931,29 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeCandidateGenerator(
         std::move(workSummary)};
   }
 
-  auto result = invoke(inputBindings, binding, store, blobs, executionControl);
+  auto result = invoke(inputBindings, binding, store, blobs, invocation);
   if (!result)
     return result.takeError();
   if (llvm::Error error = validateProviderResult(
           *descriptor, binding, inputBindings, *result, store, blobs))
     return std::move(error);
+  if (!outputDemands.empty()) {
+    const auto &outputs = std::visit(
+        [](const auto &outcome)
+            -> const std::vector<CandidateGeneratorOutputBinding> & {
+          using T = std::decay_t<decltype(outcome)>;
+          if constexpr (std::is_same_v<T, CompletedCandidateGeneratorResult>)
+            return outcome.outputBindings;
+          else
+            return outcome.retainedOutputBindings;
+        },
+        result->outcome);
+    for (std::size_t index = 0; index != outputDemands.size(); ++index)
+      if (outputDemands[index].maximumArtifacts &&
+          outputs[index].artifacts.size() >
+              *outputDemands[index].maximumArtifacts)
+        return invalid("provider exceeded its plan-derived output demand");
+  }
   return result;
 }
 

@@ -241,7 +241,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeOwnershipProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
-    const ExecutionControlView &) {
+    const CandidateGeneratorInvocationView &) {
   auto config = adoptResolvedStructuredOwnershipGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());

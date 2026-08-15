@@ -2,9 +2,9 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/MappingDebugLog.h"
-#include "FabricTopologyQualityDiagnostic.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/IR/MappingDialect.h"
+#include "PnR/FabricTopologyQualityDiagnostic.h"
 #include "PnR/System/SystemActionExecutor.h"
 #include "PnR/System/SystemAnnealingSearch.h"
 #include "PnR/System/SystemCandidateState.h"
@@ -395,15 +395,100 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
     return interruptedOutcome(SystemPnrInterruptionStage::InputAdmission,
                               std::nullopt, accounting, {}, interruptionBest,
                               resources);
-  auto topology = analyzeAndEmitFabricTopologyQuality(
-      inputs.fabric.artifact(), mapping_debug::Stage::SystemPnr);
+  std::optional<SystemStaticContext> ownedStaticContext;
+  const SystemStaticContext *staticContext = inputs.staticContext;
+  if (!staticContext) {
+    auto built = buildSystemStaticContext(inputs.fabric);
+    if (!built) {
+      FreezeFailure failure = classifyFreezeFailure(built.takeError());
+      switch (failure.kind) {
+      case FreezeFailureKind::Invalid:
+        return InvalidSystemPnrGeneration{
+            InvalidSystemPnrGenerationReason::FrozenInput, accounting,
+            std::move(failure.diagnostic)};
+      case FreezeFailureKind::ProvenInfeasible:
+        return ProvenInfeasibleSystemMapping{accounting,
+                                             std::move(failure.diagnostic)};
+      case FreezeFailureKind::Internal:
+        return internal(
+            InternalSystemPnrGenerationReason::FrozenModelConstruction,
+            accounting, failure.diagnostic);
+      }
+    }
+    ownedStaticContext.emplace(std::move(*built));
+    staticContext = &*ownedStaticContext;
+    emitSystemStaticContextStatistics(*staticContext,
+                                      mapping_debug::Stage::SystemPnr, 0, 1);
+  } else {
+    if (llvm::Error error =
+            revalidateSystemStaticContext(*staticContext, inputs.fabric)) {
+      FreezeFailure failure = classifyFreezeFailure(std::move(error));
+      return InvalidSystemPnrGeneration{
+          InvalidSystemPnrGenerationReason::FrozenInput, accounting,
+          std::move(failure.diagnostic)};
+    }
+    emitSystemStaticContextStatistics(*staticContext,
+                                      mapping_debug::Stage::SystemPnr, 1, 0);
+  }
+  std::optional<SystemActiveContext> ownedActiveContext;
+  const SystemActiveContext *activeContext = inputs.activeContext;
+  if (!activeContext) {
+    std::vector<ArtifactRootReference> spatialMappings(
+        inputs.constraints.view().spatialMappingReferences().begin(),
+        inputs.constraints.view().spatialMappingReferences().end());
+    for (const SystemSearchBindingDomain &binding :
+         inputs.searchDomain.bindings())
+      if (std::holds_alternative<::dataflow::RootedGraphLaunchRef>(binding.key))
+        for (const SystemSearchAtom &atom : binding.atoms)
+          if (const auto *domain =
+                  std::get_if<SystemHierarchicalGraphBindingDomain>(
+                      &atom.domain))
+            spatialMappings.insert(spatialMappings.end(),
+                                   domain->compatibleSpatialMappings.begin(),
+                                   domain->compatibleSpatialMappings.end());
+    llvm::sort(spatialMappings, artifactRootReferenceLess);
+    spatialMappings.erase(
+        std::unique(spatialMappings.begin(), spatialMappings.end()),
+        spatialMappings.end());
+    auto built = buildSystemActiveContext(
+        *staticContext, inputs.dataflow, inputs.fabric,
+        inputs.physicalTimingProfiles, inputs.constraints, spatialMappings,
+        inputs.store);
+    if (!built) {
+      FreezeFailure failure = classifyFreezeFailure(built.takeError());
+      return InvalidSystemPnrGeneration{
+          InvalidSystemPnrGenerationReason::FrozenInput, accounting,
+          std::move(failure.diagnostic)};
+    }
+    ownedActiveContext.emplace(std::move(*built));
+    activeContext = &*ownedActiveContext;
+    emitSystemActiveContextStatistics(*activeContext,
+                                      mapping_debug::Stage::SystemPnr, 0, 1);
+  } else {
+    if (llvm::Error error = revalidateSystemActiveContext(
+            *activeContext, *staticContext, inputs.dataflow, inputs.fabric,
+            inputs.physicalTimingProfiles, inputs.constraints,
+            activeContext->spatialMappings())) {
+      FreezeFailure failure = classifyFreezeFailure(std::move(error));
+      return InvalidSystemPnrGeneration{
+          InvalidSystemPnrGenerationReason::FrozenInput, accounting,
+          std::move(failure.diagnostic)};
+    }
+    emitSystemActiveContextStatistics(*activeContext,
+                                      mapping_debug::Stage::SystemPnr, 1, 0);
+  }
+  auto topology =
+      analyzeFabricTopologyQualityForDiagnostics(inputs.fabric.artifact());
   if (!topology)
     return InvalidSystemPnrGeneration{
         InvalidSystemPnrGenerationReason::FrozenInput, accounting,
         llvm::toString(topology.takeError())};
+  if (*topology)
+    emitFabricTopologyQuality(**topology, mapping_debug::Stage::SystemPnr);
   auto problem = freezeSystemPnrProblem(
       inputs.dataflow, inputs.fabric, inputs.physicalTimingProfiles,
-      inputs.searchDomain, inputs.config, inputs.constraints, inputs.store);
+      inputs.searchDomain, inputs.config, inputs.constraints, inputs.store,
+      staticContext, activeContext);
   if (!problem) {
     FreezeFailure failure = classifyFreezeFailure(problem.takeError());
     switch (failure.kind) {
@@ -582,44 +667,41 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
     if (llvm::Error error = candidate->verify())
       return internal(InternalSystemPnrGenerationReason::CandidateVerification,
                       accounting, std::move(error));
+    ++accounting.finalVerificationAttempts;
+    if (inputs.executionControl.stopRequested())
+      return interruptedOutcome(
+          SystemPnrInterruptionStage::CandidateFinalization, attempt,
+          accounting, std::move(candidates), interruptionBest, resources);
     auto draft = materializeSystemCandidateDraft(*candidate, context);
     if (!draft)
       return internal(InternalSystemPnrGenerationReason::CandidateFinalization,
                       accounting, draft.takeError());
     auto root = mlir::cast<::mapping::SystemOp>(draft->get());
-    ++accounting.finalVerificationAttempts;
-    const ::loom::mapping::SystemMappingBaseVerification verification =
-        ::loom::mapping::verifySystemMappingBase(root, inputs.dataflow,
-                                                 inputs.fabric, inputs.store);
-    if (const auto *incomplete =
-            std::get_if<::loom::mapping::IncompleteSystemMappingBase>(
-                &verification)) {
-      rememberIncomplete(incomplete->diagnostic, false);
-      continue;
-    }
-    if (const auto *rejected =
-            std::get_if<::loom::mapping::RejectedSystemMappingBase>(
-                &verification)) {
-      rememberIncomplete(rejected->diagnostic, false);
-      continue;
-    }
-    if (const auto *failure =
-            std::get_if<::loom::mapping::InternalSystemMappingBaseError>(
-                &verification))
-      return internal(InternalSystemPnrGenerationReason::CandidateVerification,
-                      accounting, failure->diagnostic);
-
-    if (inputs.executionControl.stopRequested())
-      return interruptedOutcome(
-          SystemPnrInterruptionStage::CandidateFinalization, attempt,
-          accounting, std::move(candidates), interruptionBest, resources);
     ++accounting.publicationSlots;
     auto finalized = ::loom::mapping::finalizeSystemMapping(
         root, inputs.dataflow, inputs.fabric, inputs.constraints.view(),
-        inputs.store);
-    if (!finalized)
+        inputs.store, &candidate->problem().spatialMappingImports());
+    if (!finalized) {
+      std::optional<std::string> incompleteDiagnostic;
+      llvm::Error remaining = llvm::handleErrors(
+          finalized.takeError(),
+          [&](const ::loom::mapping::SystemMappingIncompleteError &error) {
+            incompleteDiagnostic = error.diagnostic().str();
+          },
+          [&](const ::loom::mapping::SystemMappingRejectedError &error) {
+            incompleteDiagnostic = error.diagnostic().str();
+          });
+      if (incompleteDiagnostic) {
+        if (remaining)
+          return internal(
+              InternalSystemPnrGenerationReason::CandidateFinalization,
+              accounting, std::move(remaining));
+        rememberIncomplete(*incompleteDiagnostic, false);
+        continue;
+      }
       return internal(InternalSystemPnrGenerationReason::CandidateFinalization,
-                      accounting, finalized.takeError());
+                      accounting, std::move(remaining));
+    }
     ++accounting.finalizedRestarts;
     candidates.push_back(finalized->reference());
     if (inputs.executionControl.stopRequested())

@@ -191,7 +191,7 @@ ArtifactRootReference publish(const ArtifactStore &store,
 llvm::Expected<CandidateGeneratorProviderResult>
 generate(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
          const ResolvedCandidateGeneratorBinding &, const ArtifactStore &store,
-         const BlobStore &, const ExecutionControlView &) {
+         const BlobStore &, const CandidateGeneratorInvocationView &) {
   const ArtifactRootReference candidate = publish(store, candidateSchema, 0x31);
   if (generationStopsEarly)
     return CandidateGeneratorProviderResult{

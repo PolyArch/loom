@@ -275,8 +275,7 @@ loadRootReferences(llvm::ArrayRef<std::string> paths) {
 
 llvm::Expected<std::vector<ArtifactRootReference>>
 publishNormalizedPhysicalTimingProfiles(
-    llvm::ArrayRef<ArtifactRootReference> systems,
-    const ArtifactStore &store) {
+    llvm::ArrayRef<ArtifactRootReference> systems, const ArtifactStore &store) {
   std::map<ArtifactIdentity::Storage, ArtifactRootReference> profiles;
   for (const ArtifactRootReference &systemReference : systems) {
     auto artifact =
@@ -300,8 +299,8 @@ publishNormalizedPhysicalTimingProfiles(
           loom::fabric::projectNormalizedFabricPhysicalTimingProfile(module);
       if (!profile)
         return profile.takeError();
-      auto published = loom::fabric::publishFabricPhysicalTimingProfile(
-          *profile, store);
+      auto published =
+          loom::fabric::publishFabricPhysicalTimingProfile(*profile, store);
       if (!published)
         return published.takeError();
       profiles.emplace(module.identity().bytes(), std::move(*published));
@@ -389,12 +388,19 @@ llvm::StringRef admissionReason(CampaignAdmissionFailureReason reason) {
 
 int reportPlanOutcome(const DsePlanExecutionOutcome &outcome) {
   if (std::holds_alternative<CompletedDsePlanExecution>(outcome)) {
-    llvm::errs() << "campaign_result=completed\n";
+    llvm::errs() << "campaign_result=completed search_complete=true\n";
     return EXIT_SUCCESS;
   }
   const auto &incomplete = std::get<IncompleteDsePlanExecution>(outcome);
+  if (!incomplete.executionStopped()) {
+    llvm::errs() << "campaign_result=completed search_complete=false node="
+                 << incomplete.nodeOrdinal()
+                 << " reason=" << toString(incomplete.reason()) << '\n';
+    return EXIT_SUCCESS;
+  }
   llvm::errs() << "campaign_result=incomplete node=" << incomplete.nodeOrdinal()
-               << " reason=" << toString(incomplete.reason()) << '\n';
+               << " search_complete=false reason="
+               << toString(incomplete.reason()) << '\n';
   return 2;
 }
 

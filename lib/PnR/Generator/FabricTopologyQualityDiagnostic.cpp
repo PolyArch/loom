@@ -1,4 +1,4 @@
-#include "FabricTopologyQualityDiagnostic.h"
+#include "PnR/FabricTopologyQualityDiagnostic.h"
 
 #include "Common/ArtifactText.h"
 #include "Fabric/IR/FabricEnums.h"
@@ -7,6 +7,7 @@
 #include "llvm/Support/JSON.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace loom::pnr {
 namespace {
@@ -50,20 +51,27 @@ hopDistribution(const fabric::FabricTopologyHopDistribution &distribution) {
 
 } // namespace
 
-llvm::Expected<fabric::FabricTopologyQualityReport>
-analyzeAndEmitFabricTopologyQuality(const fabric::FabricArtifactView &fabric,
-                                    mapping_debug::Stage stage) {
+llvm::Expected<std::optional<fabric::FabricTopologyQualityReport>>
+analyzeFabricTopologyQualityForDiagnostics(
+    const fabric::FabricArtifactView &fabric) {
+  if (!mapping_debug::enabled(mapping_debug::Level::Summary))
+    return std::optional<fabric::FabricTopologyQualityReport>{};
   auto report = fabric::analyzeFabricTopologyQuality(fabric);
   if (!report)
     return report.takeError();
+  return std::optional<fabric::FabricTopologyQualityReport>(std::move(*report));
+}
 
+void emitFabricTopologyQuality(
+    const fabric::FabricTopologyQualityReport &report,
+    mapping_debug::Stage stage) {
   std::uint64_t portCount = 0;
   std::uint64_t routingResourceIncidences = 0;
   std::uint64_t directResourceIncidences = 0;
   std::uint64_t boundaryPortCount = 0;
   std::uint64_t unreachablePortCount = 0;
   std::uint64_t directBindingOwners = 0;
-  for (const fabric::FabricTopologyOwnerQuality &owner : report->owners) {
+  for (const fabric::FabricTopologyOwnerQuality &owner : report.owners) {
     portCount += owner.portCount();
     routingResourceIncidences += owner.routingResourceCount();
     directResourceIncidences += owner.directResourceCount();
@@ -72,25 +80,25 @@ analyzeAndEmitFabricTopologyQuality(const fabric::FabricArtifactView &fabric,
     directBindingOwners += owner.directResourceCount() != 0;
   }
 
-  const std::string artifact = formatArtifactIdentityHex(report->artifact);
+  const std::string artifact = formatArtifactIdentityHex(report.artifact);
   const fabric::FabricTopologyDseQuality dseQuality =
-      fabric::projectFabricTopologyDseQuality(*report);
+      fabric::projectFabricTopologyDseQuality(report);
   mapping_debug::emit(
       mapping_debug::Level::Summary, stage,
       mapping_debug::Event::TopologyQuality, [&](llvm::json::Object &fields) {
         fields["scope"] = "root";
         fields["artifact"] = artifact;
-        fields["root_kind"] = fabric::fabricRefKeyword(report->rootKind);
-        fields["owner_count"] = report->owners.size();
+        fields["root_kind"] = fabric::fabricRefKeyword(report.rootKind);
+        fields["owner_count"] = report.owners.size();
         fields["port_count"] = portCount;
         fields["routing_resource_incidences"] = routingResourceIncidences;
         fields["direct_resource_incidences"] = directResourceIncidences;
         fields["boundary_port_count"] = boundaryPortCount;
         fields["unreachable_port_count"] = unreachablePortCount;
         fields["direct_binding_owner_count"] = directBindingOwners;
-        fields["unscheduled_memory_count"] = report->unscheduledMemoryCount;
-        fields["schedule_distribution_count"] = report->schedules.size();
-        fields["capability_distribution_count"] = report->capabilities.size();
+        fields["unscheduled_memory_count"] = report.unscheduledMemoryCount;
+        fields["schedule_distribution_count"] = report.schedules.size();
+        fields["capability_distribution_count"] = report.capabilities.size();
         fields["schedule_supply_gap"] = dseQuality.scheduleSupplyGap;
         fields["matching_memory_unreachable_pe_count"] =
             dseQuality.matchingMemoryUnreachablePeCount;
@@ -112,7 +120,7 @@ analyzeAndEmitFabricTopologyQuality(const fabric::FabricArtifactView &fabric,
     return value;
   };
   for (const fabric::FabricTopologyKindDistribution &distribution :
-       fabric::summarizeFabricTopologyQuality(*report)) {
+       fabric::summarizeFabricTopologyQuality(report)) {
     mapping_debug::emit(
         mapping_debug::Level::Summary, stage,
         mapping_debug::Event::TopologyQuality, [&](llvm::json::Object &fields) {
@@ -144,7 +152,7 @@ analyzeAndEmitFabricTopologyQuality(const fabric::FabricArtifactView &fabric,
   }
 
   for (const fabric::FabricTopologyScheduleQuality &schedule :
-       report->schedules) {
+       report.schedules) {
     mapping_debug::emit(
         mapping_debug::Level::Summary, stage,
         mapping_debug::Event::TopologyQuality, [&](llvm::json::Object &fields) {
@@ -166,7 +174,7 @@ analyzeAndEmitFabricTopologyQuality(const fabric::FabricArtifactView &fabric,
   }
 
   for (const fabric::FabricTopologyCapabilityQuality &capability :
-       report->capabilities) {
+       report.capabilities) {
     mapping_debug::emit(
         mapping_debug::Level::Summary, stage,
         mapping_debug::Event::TopologyQuality, [&](llvm::json::Object &fields) {
@@ -183,7 +191,7 @@ analyzeAndEmitFabricTopologyQuality(const fabric::FabricArtifactView &fabric,
         });
   }
 
-  for (const fabric::FabricTopologyOwnerQuality &owner : report->owners) {
+  for (const fabric::FabricTopologyOwnerQuality &owner : report.owners) {
     mapping_debug::emit(
         mapping_debug::Level::Decision, stage,
         mapping_debug::Event::TopologyQuality, [&](llvm::json::Object &fields) {
@@ -214,7 +222,6 @@ analyzeAndEmitFabricTopologyQuality(const fabric::FabricArtifactView &fabric,
           });
     }
   }
-  return report;
 }
 
 } // namespace loom::pnr

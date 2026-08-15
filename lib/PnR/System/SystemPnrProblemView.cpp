@@ -26,10 +26,14 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
     std::vector<DeterministicWorkBudgetEntry> workBudget,
     ::loom::mapping::MappingDataflowProgressBasis progressBasis,
     std::vector<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
-    std::vector<FrozenSystemSpatialTargetClass> targetClasses,
-    std::vector<::loom::fabric::AccCoreOccurrenceRef> accCores,
-    std::vector<PnrIndex> accCoreTargetClasses,
+    std::shared_ptr<const std::vector<FrozenSystemSpatialTargetClass>>
+        targetClasses,
+    std::shared_ptr<const std::vector<::loom::fabric::AccCoreOccurrenceRef>>
+        accCores,
+    std::shared_ptr<const std::vector<PnrIndex>> accCoreTargetClasses,
     std::vector<ArtifactRootReference> spatialMappings,
+    std::shared_ptr<const ::loom::mapping::SpatialMappingImportContext>
+        spatialMappingImports,
     std::vector<PnrIndex> spatialMappingTargetClasses,
     std::vector<std::uint64_t> spatialMappingWorstRouteArrivalDelayQuanta,
     std::vector<std::uint64_t> spatialMappingTotalRouteNegativeSlackQuanta,
@@ -45,7 +49,7 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
     std::vector<SpatialRecurrenceTimingProjection> graphChoiceRecurrenceTimings,
     std::vector<PnrIndex> graphThreadOverlapOffsets,
     std::vector<PnrIndex> graphThreadOverlaps,
-    FrozenEndpointRoutingTopology routingTopology,
+    std::shared_ptr<const FrozenEndpointRoutingTopology> routingTopology,
     std::vector<FrozenSystemTransferTerminal> serviceTerminals,
     std::vector<FrozenSystemTransferTerminalOwnerDomain>
         serviceTerminalOwnerDomains,
@@ -53,9 +57,9 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
     std::vector<SystemSearchServiceDomain> serviceDomains,
     std::vector<FrozenSystemServiceContext> serviceContexts,
     std::vector<FrozenSystemMemoryServiceBinding> memoryServiceBindings,
-    std::vector<FrozenSystemInstructionUsePatternDomain>
+    std::shared_ptr<const std::vector<FrozenSystemInstructionUsePatternDomain>>
         instructionUsePatternDomains,
-    std::vector<FrozenSystemConsistencyUsePatternDomain>
+    std::shared_ptr<const std::vector<FrozenSystemConsistencyUsePatternDomain>>
         consistencyUsePatternDomains,
     std::vector<FrozenSystemServiceLeg> serviceLegs,
     std::vector<PnrIndex> serviceLegSinkTerminals,
@@ -72,6 +76,7 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
       targetClasses_(std::move(targetClasses)), accCores_(std::move(accCores)),
       accCoreTargetClasses_(std::move(accCoreTargetClasses)),
       spatialMappings_(std::move(spatialMappings)),
+      spatialMappingImports_(std::move(spatialMappingImports)),
       spatialMappingTargetClasses_(std::move(spatialMappingTargetClasses)),
       spatialMappingWorstRouteArrivalDelayQuanta_(
           std::move(spatialMappingWorstRouteArrivalDelayQuanta)),
@@ -179,8 +184,8 @@ FrozenSystemPnrProblem::serviceLegSinkTerminals(PnrIndex leg) const {
 }
 
 PnrIndex FrozenSystemPnrProblem::accCoreTargetClass(PnrIndex core) const {
-  assert(core < accCoreTargetClasses_.size());
-  return accCoreTargetClasses_[core];
+  assert(core < accCoreTargetClasses_->size());
+  return (*accCoreTargetClasses_)[core];
 }
 
 PnrIndex

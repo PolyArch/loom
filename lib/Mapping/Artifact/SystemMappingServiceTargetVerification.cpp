@@ -608,30 +608,29 @@ moduleDependencyOrdinal(const ::loom::fabric::FabricSystemRootView &fabric,
   return target->dependencyOrdinal;
 }
 
-llvm::Expected<
-    std::pair<FinalizedSpatialMapping, SystemSpatialMemoryBindingProjection>>
+llvm::Expected<SystemSpatialMemoryBindingProjection>
 resolveBinding(const ::loom::fabric::FabricSystemRootView &fabric,
-               const ArtifactStore &store,
+               const SpatialMappingImportContext &spatialMappings,
                const SpatialExecutionContextKey &context,
                const ServicePlanSelectionAnchor &anchor) {
   ArtifactRootReference reference{mappingArtifactSchema.identity.str(),
                                   mappingArtifactSchema.version,
                                   context.spatialMapping};
-  auto mapping = importSpatialMapping(reference, store);
+  auto mapping = resolveSpatialMappingImport(spatialMappings, reference);
   if (!mapping)
     return mapping.takeError();
   auto dependency =
-      moduleDependencyOrdinal(fabric, context.accCore, mapping->view());
+      moduleDependencyOrdinal(fabric, context.accCore, (*mapping)->view());
   if (!dependency)
     return dependency.takeError();
   auto binding = projectSystemSpatialMemoryBinding(
-      fabric, mapping->view(), *dependency, anchor, context.accCore);
+      fabric, (*mapping)->view(), *dependency, anchor, context.accCore);
   if (!binding)
     return binding.takeError();
   if (binding->endpointPairs.size() != 1)
     return invalid("selected execution does not resolve exactly one "
                    "attachment-bound memory endpoint pair");
-  return std::make_pair(std::move(*mapping), std::move(*binding));
+  return binding;
 }
 
 llvm::Expected<std::vector<::loom::fabric::FabricMemoryServiceTargetPlan>>
@@ -806,7 +805,7 @@ llvm::Error verifyConsistencyTarget(
 llvm::Error verifySystemServiceTargetClosure(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
-    const ArtifactStore &store,
+    const SpatialMappingImportContext &spatialMappings,
     const SystemServiceObligationProjection &obligation,
     const SystemExecutionContextProjection &contexts,
     llvm::ArrayRef<SystemServicePlanView> plans,
@@ -840,10 +839,10 @@ llvm::Error verifySystemServiceTargetClosure(
       return invalid("operation service target has an unreachable execution "
                      "context");
     auto resolved =
-        resolveBinding(fabric, store, *context, selection.key.anchor);
+        resolveBinding(fabric, spatialMappings, *context, selection.key.anchor);
     if (!resolved)
       return resolved.takeError();
-    const auto &binding = resolved->second;
+    const auto &binding = *resolved;
 
     for (std::uint64_t ordinal : selectedPlanOrdinals(selection)) {
       const auto *plan = findPlan(plans, ordinal);

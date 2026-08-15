@@ -47,6 +47,8 @@ llvm::StringRef spelling(Event event) {
     return "net_route";
   case Event::CutAnalysis:
     return "cut_analysis";
+  case Event::DerivedContext:
+    return "derived_context";
   case Event::TopologyQuality:
     return "topology_quality";
   case Event::TagDomainPressure:

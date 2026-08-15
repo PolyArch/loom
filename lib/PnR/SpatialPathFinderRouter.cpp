@@ -3,8 +3,8 @@
 #include "Common/MappingDebugLog.h"
 #include "Fabric/Identity/FabricRefText.h"
 #include "PnR/MappingObjective.h"
-#include "SpatialPhysicalTiming.h"
 #include "SpatialPathFinderRouterInternal.h"
+#include "SpatialPhysicalTiming.h"
 #include "SpatialTagPressureDiagnostic.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -648,7 +648,8 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
           if (record.traversal >= cutBlockedTraversals_.size() ||
               record.target >= cutReachableEndpoints_.size())
             return pathFinderError("cut routing arc endpoint is out of range");
-          if (cutBlockedTraversals_[record.traversal] ||
+          if (!problem.activeRouting().arcIsActive(arc) ||
+              cutBlockedTraversals_[record.traversal] ||
               record.payloadCapacityBits < payloadWidth ||
               cutReachableEndpoints_[record.target])
             continue;
@@ -1806,17 +1807,8 @@ SpatialPathFinderRouterScratch::routeToClosureInMove(
             fields["capacity_ref"] = conflictAnalysis.certificateCapacity;
             fields["mandatory_usage"] = conflictAnalysis.mandatoryUsage;
             fields["capacity"] = conflictAnalysis.physicalCapacity;
-            fields["temporary_return"] = bestTemporaryObjective.has_value();
+            fields["temporary_return"] = false;
           });
-      if (bestTemporaryObjective) {
-        if (llvm::Error error = restoreCapturedRoutes(
-                move, candidate, costs, activeLogicalNets(),
-                *bestTemporaryObjective, *bestTemporaryProjection))
-          return std::move(error);
-        emitStatistics(
-            loom::mapping_debug::ClosureStatus::FixedTerminalCutTemporary);
-        return SpatialPathFinderClosureResult{completedIterations, false};
-      }
       emitStatistics(loom::mapping_debug::ClosureStatus::FixedTerminalCut);
       return llvm::make_error<SpatialPathFinderClosureFailure>(
           SpatialPathFinderClosureFailure::Kind::FixedTerminalCapacityCut,

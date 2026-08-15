@@ -149,7 +149,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
     const ArtifactStore &store, const BlobStore &blobs,
-    const ExecutionControlView &) {
+    const CandidateGeneratorInvocationView &) {
   auto config = adoptResolvedStructuredScheduleGeneratorConfigView(
       descriptorBytes(), binding.canonicalConfigBytes(),
       binding.configDigest());

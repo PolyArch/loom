@@ -78,8 +78,7 @@ private:
   std::vector<std::size_t> parent_;
 };
 
-llvm::Expected<PnrIndex> checkedIndex(std::size_t value,
-                                      llvm::StringRef table,
+llvm::Expected<PnrIndex> checkedIndex(std::size_t value, llvm::StringRef table,
                                       PnrCapacityMeasure measure) {
   return checkedPnrIndex(
       {"FrozenSpatialRouteConstraintModel", table, table, measure}, value);
@@ -136,12 +135,11 @@ llvm::Expected<std::vector<PnrIndex>> decodeDomain(
 } // namespace
 
 llvm::Expected<std::shared_ptr<const SpatialRouteConstraintModel>>
-SpatialRouteConstraintModel::create(
-    const ArtifactIdentity &dataflowIdentity,
-    const FrozenConstraintIndex &constraints,
-    const FrozenSpatialTransferIndex &transfers,
-    const FrozenSpatialResourceIndex &resources,
-    const FrozenSpatialRoutingGraph &routing) {
+SpatialRouteConstraintModel::create(const ArtifactIdentity &dataflowIdentity,
+                                    const FrozenConstraintIndex &constraints,
+                                    const FrozenSpatialTransferIndex &transfers,
+                                    const FrozenSpatialResourceIndex &resources,
+                                    const FrozenSpatialRoutingGraph &routing) {
   auto result = std::make_shared<SpatialRouteConstraintModel>();
   const auto logicalNets = transfers.logicalNets();
   const std::size_t netCount = logicalNets.size();
@@ -158,9 +156,7 @@ SpatialRouteConstraintModel::create(
           "logical-net producer reference cannot be encoded: " +
               llvm::toString(key.takeError()));
     const bool inserted =
-        netOrdinals
-            .try_emplace(std::move(*key),
-                         static_cast<PnrIndex>(ordinal))
+        netOrdinals.try_emplace(std::move(*key), static_cast<PnrIndex>(ordinal))
             .second;
     if (!inserted)
       return freezeInvalid(Projection::NetSelectedPhysicalTraversals,
@@ -202,21 +198,21 @@ SpatialRouteConstraintModel::create(
     SpatialRouteConstraintDomain &traversalRecord =
         result->traversalDomains_[net];
     traversalRecord.restricted = traversalDomain.has_value();
-    auto traversalOffset = checkedIndex(
-        result->traversalDomainValues_.size(), "route_traversal_domain_values",
-        PnrCapacityMeasure::Offset);
+    auto traversalOffset = checkedIndex(result->traversalDomainValues_.size(),
+                                        "route_traversal_domain_values",
+                                        PnrCapacityMeasure::Offset);
     if (!traversalOffset)
       return traversalOffset.takeError();
-    auto traversalCount = checkedIndex(
-        traversals->size(), "route_traversal_domain_values",
-        PnrCapacityMeasure::Count);
+    auto traversalCount =
+        checkedIndex(traversals->size(), "route_traversal_domain_values",
+                     PnrCapacityMeasure::Count);
     if (!traversalCount)
       return traversalCount.takeError();
     traversalRecord.valueOffset = *traversalOffset;
     traversalRecord.valueCount = *traversalCount;
-    result->traversalDomainValues_.insert(
-        result->traversalDomainValues_.end(), traversals->begin(),
-        traversals->end());
+    result->traversalDomainValues_.insert(result->traversalDomainValues_.end(),
+                                          traversals->begin(),
+                                          traversals->end());
 
     const auto resourceDomain = resourceShard.restrictedDomain(subject);
     auto states = decodeDomain<FabricResourceStateRef>(
@@ -232,9 +228,9 @@ SpatialRouteConstraintModel::create(
         "route_resource_state_domain_values", PnrCapacityMeasure::Offset);
     if (!resourceOffset)
       return resourceOffset.takeError();
-    auto resourceCount = checkedIndex(
-        states->size(), "route_resource_state_domain_values",
-        PnrCapacityMeasure::Count);
+    auto resourceCount =
+        checkedIndex(states->size(), "route_resource_state_domain_values",
+                     PnrCapacityMeasure::Count);
     if (!resourceCount)
       return resourceCount.takeError();
     resourceRecord.valueOffset = *resourceOffset;
@@ -242,9 +238,8 @@ SpatialRouteConstraintModel::create(
     result->resourceStateDomainValues_.insert(
         result->resourceStateDomainValues_.end(), states->begin(),
         states->end());
-    result->netConstraintFlags_[net] =
-        static_cast<std::uint8_t>(traversalRecord.restricted ||
-                                  resourceRecord.restricted);
+    result->netConstraintFlags_[net] = static_cast<std::uint8_t>(
+        traversalRecord.restricted || resourceRecord.restricted);
   }
 
   DisjointSet equality(netCount);
@@ -259,14 +254,14 @@ SpatialRouteConstraintModel::create(
             ? Projection::NetSelectedPhysicalTraversals
             : Projection::NetTraversalResourceStates;
     for (const FrozenConstraintRelation &relation : relations) {
-      auto relationOrdinal = checkedIndex(result->relations_.size(),
-                                          "route_relations",
-                                          PnrCapacityMeasure::Count);
+      auto relationOrdinal =
+          checkedIndex(result->relations_.size(), "route_relations",
+                       PnrCapacityMeasure::Count);
       if (!relationOrdinal)
         return relationOrdinal.takeError();
-      auto memberOffset = checkedIndex(result->relationMembers_.size(),
-                                       "route_relation_members",
-                                       PnrCapacityMeasure::Offset);
+      auto memberOffset =
+          checkedIndex(result->relationMembers_.size(),
+                       "route_relation_members", PnrCapacityMeasure::Offset);
       if (!memberOffset)
         return memberOffset.takeError();
       std::vector<PnrIndex> members;
@@ -288,8 +283,7 @@ SpatialRouteConstraintModel::create(
                          llvm::toString(key.takeError()));
         const auto found = netOrdinals.find(*key);
         if (found == netOrdinals.end())
-          return freezeInvalid(owner,
-                               "relation names a foreign logical net");
+          return freezeInvalid(owner, "relation names a foreign logical net");
         members.push_back(found->second);
       }
       llvm::sort(members);
@@ -341,11 +335,11 @@ SpatialRouteConstraintModel::create(
   result->netRelationOffsets_.push_back(0);
   for (std::vector<PnrIndex> &relations : netRelations) {
     llvm::sort(relations);
-    result->netRelations_.insert(result->netRelations_.end(),
-                                 relations.begin(), relations.end());
-    auto offset = checkedIndex(result->netRelations_.size(),
-                               "route_relation_incidence",
-                               PnrCapacityMeasure::Offset);
+    result->netRelations_.insert(result->netRelations_.end(), relations.begin(),
+                                 relations.end());
+    auto offset =
+        checkedIndex(result->netRelations_.size(), "route_relation_incidence",
+                     PnrCapacityMeasure::Offset);
     if (!offset)
       return offset.takeError();
     result->netRelationOffsets_.push_back(*offset);
@@ -358,9 +352,9 @@ SpatialRouteConstraintModel::create(
   result->equalityComponentOffsets_.push_back(0);
   for (const auto &[root, members] : components) {
     (void)root;
-    auto component = checkedIndex(result->equalityComponentOffsets_.size() - 1,
-                                  "route_equality_components",
-                                  PnrCapacityMeasure::Count);
+    auto component =
+        checkedIndex(result->equalityComponentOffsets_.size() - 1,
+                     "route_equality_components", PnrCapacityMeasure::Count);
     if (!component)
       return component.takeError();
     for (PnrIndex net : members)
@@ -413,14 +407,19 @@ void SpatialRouteConstraintScratch::clearBits(
   std::fill(bits.begin(), bits.end(), 0);
 }
 
-llvm::Error SpatialRouteConstraintScratch::prepare(
-    const FrozenSpatialPnrProblem &problem) {
+llvm::Error
+SpatialRouteConstraintScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   problem_ = &problem;
   model_ = &problem.routeConstraints();
   const std::size_t traversalWords =
       (problem.routing().traversals().size() + 63) / 64;
   const std::size_t resourceWords =
       (problem.resources().resourceStates().size() + 63) / 64;
+  activeTraversalBits_.assign(
+      problem.activeRouting().activeTraversalBits().begin(),
+      problem.activeRouting().activeTraversalBits().end());
+  if (activeTraversalBits_.size() != traversalWords)
+    return runtimeInvalid("active traversal domain has the wrong width");
   eligibleTraversalBits_.assign(traversalWords, 0);
   selectedTraversalBits_.assign(traversalWords, 0);
   referenceBits_.assign(std::max(traversalWords, resourceWords), 0);
@@ -510,40 +509,34 @@ SpatialRouteConstraintScratch::eligibleTraversals(
     return runtimeInvalid("constraint sweep belongs to another freeze");
   if (logicalNet >= pendingNets_.size() || !pendingNets_[logicalNet])
     return runtimeInvalid("logical net is not pending in the route sweep");
+  eligibleTraversalBits_ = activeTraversalBits_;
   if (!model_->netHasConstraints(logicalNet))
-    return llvm::ArrayRef<std::uint64_t>{};
-
-  std::fill(eligibleTraversalBits_.begin(), eligibleTraversalBits_.end(),
-            std::numeric_limits<std::uint64_t>::max());
-  if (!eligibleTraversalBits_.empty() &&
-      problem_->routing().traversals().size() % 64 != 0)
-    eligibleTraversalBits_.back() =
-        (std::uint64_t{1}
-         << (problem_->routing().traversals().size() % 64)) -
-        1;
+    return llvm::ArrayRef(eligibleTraversalBits_);
 
   const SpatialRouteConstraintDomain &traversalDomain =
       model_->traversalDomains_[logicalNet];
   if (traversalDomain.restricted) {
-    clearBits(eligibleTraversalBits_);
-    for (PnrIndex traversal : llvm::ArrayRef(model_->traversalDomainValues_)
-                                  .slice(traversalDomain.valueOffset,
-                                         traversalDomain.valueCount))
-      setBit(eligibleTraversalBits_, traversal);
+    clearBits(selectedTraversalBits_);
+    for (PnrIndex traversal :
+         llvm::ArrayRef(model_->traversalDomainValues_)
+             .slice(traversalDomain.valueOffset, traversalDomain.valueCount))
+      setBit(selectedTraversalBits_, traversal);
+    for (std::size_t word = 0; word < eligibleTraversalBits_.size(); ++word)
+      eligibleTraversalBits_[word] &= selectedTraversalBits_[word];
   }
   const SpatialRouteConstraintDomain &resourceDomain =
       model_->resourceStateDomains_[logicalNet];
   if (resourceDomain.restricted) {
     clearBits(selectedResourceStateBits_);
-    for (PnrIndex state : llvm::ArrayRef(model_->resourceStateDomainValues_)
-                              .slice(resourceDomain.valueOffset,
-                                     resourceDomain.valueCount))
+    for (PnrIndex state :
+         llvm::ArrayRef(model_->resourceStateDomainValues_)
+             .slice(resourceDomain.valueOffset, resourceDomain.valueCount))
       setBit(selectedResourceStateBits_, state);
     for (PnrIndex traversal = 0;
          traversal < problem_->routing().traversals().size(); ++traversal)
       if (bitIsSet(eligibleTraversalBits_, traversal) &&
-          !traversalAllowedByResourceBits(
-              traversal, selectedResourceStateBits_, true))
+          !traversalAllowedByResourceBits(traversal, selectedResourceStateBits_,
+                                          true))
         eligibleTraversalBits_[traversal / 64] &=
             ~(std::uint64_t{1} << (traversal % 64));
   }
@@ -574,8 +567,7 @@ SpatialRouteConstraintScratch::eligibleTraversals(
       for (PnrIndex traversal = 0;
            traversal < problem_->routing().traversals().size(); ++traversal)
         if (bitIsSet(eligibleTraversalBits_, traversal) &&
-            !traversalAllowedByResourceBits(traversal, selected,
-                                            requireSubset))
+            !traversalAllowedByResourceBits(traversal, selected, requireSubset))
           eligibleTraversalBits_[traversal / 64] &=
               ~(std::uint64_t{1} << (traversal % 64));
     }
@@ -593,11 +585,11 @@ llvm::Error SpatialRouteConstraintScratch::finishNet(PnrIndex logicalNet) {
 
 llvm::Error SpatialRouteConstraintScratch::verifyNetDomains(
     const SpatialCandidateState &candidate, PnrIndex logicalNet) {
-  const auto checkDomain = [&](SpatialRouteConstraintProjection projection,
-                               const SpatialRouteConstraintDomain &domain,
-                               llvm::ArrayRef<PnrIndex> values,
-                               std::vector<std::uint64_t> &selected)
-      -> llvm::Error {
+  const auto checkDomain =
+      [&](SpatialRouteConstraintProjection projection,
+          const SpatialRouteConstraintDomain &domain,
+          llvm::ArrayRef<PnrIndex> values,
+          std::vector<std::uint64_t> &selected) -> llvm::Error {
     if (!domain.restricted)
       return llvm::Error::success();
     if (llvm::Error error =
@@ -611,10 +603,10 @@ llvm::Error SpatialRouteConstraintScratch::verifyNetDomains(
         return runtimeInvalid("selected route set escapes its domain");
     return llvm::Error::success();
   };
-  if (llvm::Error error = checkDomain(
-          SpatialRouteConstraintProjection::Traversal,
-          model_->traversalDomains_[logicalNet],
-          model_->traversalDomainValues_, selectedTraversalBits_))
+  if (llvm::Error error =
+          checkDomain(SpatialRouteConstraintProjection::Traversal,
+                      model_->traversalDomains_[logicalNet],
+                      model_->traversalDomainValues_, selectedTraversalBits_))
     return error;
   return checkDomain(SpatialRouteConstraintProjection::ResourceState,
                      model_->resourceStateDomains_[logicalNet],
@@ -644,12 +636,11 @@ llvm::Error SpatialRouteConstraintScratch::verifyRelation(
     if (relation.kind == SpatialRouteConstraintRelationKind::Equal) {
       if (first)
         std::copy(selected.begin(), selected.end(), referenceBits_.begin());
-      else if (!equalBits(selected, llvm::ArrayRef(referenceBits_).take_front(
-                                        words)))
+      else if (!equalBits(selected,
+                          llvm::ArrayRef(referenceBits_).take_front(words)))
         return runtimeInvalid("selected route sets violate Equal");
     } else {
-      if (intersects(selected,
-                     llvm::ArrayRef(seenBits_).take_front(words)))
+      if (intersects(selected, llvm::ArrayRef(seenBits_).take_front(words)))
         return runtimeInvalid("selected route sets violate Disjoint");
       for (std::size_t word = 0; word < words; ++word)
         seenBits_[word] |= selected[word];
@@ -702,7 +693,8 @@ llvm::Error SpatialRouteConstraintScratch::verifyAffected(
 }
 
 std::size_t SpatialRouteConstraintScratch::retainedStorageBytes() const {
-  return eligibleTraversalBits_.capacity() * sizeof(std::uint64_t) +
+  return activeTraversalBits_.capacity() * sizeof(std::uint64_t) +
+         eligibleTraversalBits_.capacity() * sizeof(std::uint64_t) +
          selectedTraversalBits_.capacity() * sizeof(std::uint64_t) +
          selectedResourceStateBits_.capacity() * sizeof(std::uint64_t) +
          referenceBits_.capacity() * sizeof(std::uint64_t) +

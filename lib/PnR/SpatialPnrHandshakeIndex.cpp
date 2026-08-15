@@ -204,15 +204,17 @@ public:
   static llvm::Expected<FrozenSpatialHandshakeIndex>
   build(const dataflow::CanonicalDataflowProgramView &dataflow,
         const TechMappingView &techMapping, const FabricArtifactView &fabric,
+        llvm::ArrayRef<HandshakeOwnerModel> handshakeOwnerModels,
         const FrozenSpatialRealizationIndex &realizations,
         const FrozenSpatialResourceIndex &resources,
-        const FrozenSpatialRoutingGraph &routing) {
-    auto compiled = compileHandshakeOwnerModels(fabric);
-    if (!compiled)
-      return compiled.takeError();
-
+        const FrozenSpatialRoutingGraph &routing,
+        const FrozenSpatialActiveRoutingDomain &activeRouting) {
+    auto activeModels = selectActiveModels(handshakeOwnerModels, realizations,
+                                           routing, activeRouting);
+    if (!activeModels)
+      return activeModels.takeError();
     FrozenSpatialHandshakeIndex result;
-    BuildState state{result, *compiled, routing};
+    BuildState state{result, *activeModels, routing};
     if (llvm::Error error = state.buildNodesAndArcs())
       return std::move(error);
     if (llvm::Error error = state.buildFragments())
@@ -230,10 +232,53 @@ public:
   }
 
 private:
+  static llvm::Expected<std::vector<const HandshakeOwnerModel *>>
+  selectActiveModels(llvm::ArrayRef<HandshakeOwnerModel> models,
+                     const FrozenSpatialRealizationIndex &realizations,
+                     const FrozenSpatialRoutingGraph &routing,
+                     const FrozenSpatialActiveRoutingDomain &activeRouting) {
+    if (activeRouting.activeTraversals().size() != routing.traversals().size())
+      return invalid("active traversal domain has the wrong width");
+    llvm::StringMap<bool> selectedOwners;
+    for (const FrozenSpatialComputePlacement &placement :
+         realizations.computePlacements())
+      selectedOwners.try_emplace(
+          ownerKey(FabricHandshakeOwner::fu(placement.fu)), true);
+    for (const FrozenSpatialMemoryPlacement &placement :
+         realizations.memoryPlacements())
+      selectedOwners.try_emplace(
+          ownerKey(FabricHandshakeOwner::memory(placement.memory)), true);
+
+    llvm::StringMap<PnrIndex> traversalOrdinals;
+    for (auto [ordinal, traversal] : llvm::enumerate(routing.traversals()))
+      traversalOrdinals.try_emplace(refKey(traversal.reference),
+                                    static_cast<PnrIndex>(ordinal));
+
+    std::vector<const HandshakeOwnerModel *> active;
+    active.reserve(models.size());
+    for (const HandshakeOwnerModel &model : models) {
+      bool selected = selectedOwners.contains(ownerKey(model.owner()));
+      if (!selected) {
+        for (const FabricPhysicalTraversalRef &witness :
+             model.traversalWitnesses()) {
+          const auto found = traversalOrdinals.find(refKey(witness));
+          if (found != traversalOrdinals.end() &&
+              activeRouting.traversalIsActive(found->second)) {
+            selected = true;
+            break;
+          }
+        }
+      }
+      if (selected)
+        active.push_back(&model);
+    }
+    return active;
+  }
+
   class BuildState final {
   public:
     BuildState(FrozenSpatialHandshakeIndex &result,
-               llvm::ArrayRef<HandshakeOwnerModel> models,
+               llvm::ArrayRef<const HandshakeOwnerModel *> models,
                const FrozenSpatialRoutingGraph &routing)
         : result_(result), models_(models), routing_(routing) {}
 
@@ -256,7 +301,8 @@ private:
       modelNodes_.resize(models_.size());
       modelArcPairs_.resize(models_.size());
       std::vector<ArcPair> allArcs;
-      for (auto [modelOrdinal, model] : llvm::enumerate(models_)) {
+      for (auto [modelOrdinal, modelPointer] : llvm::enumerate(models_)) {
+        const HandshakeOwnerModel &model = *modelPointer;
         auto ownerOrdinal = checked(ownerIndexContext, modelOrdinal);
         if (!ownerOrdinal)
           return ownerOrdinal.takeError();
@@ -372,7 +418,8 @@ private:
         return *selected;
       };
 
-      for (auto [modelOrdinal, model] : llvm::enumerate(models_)) {
+      for (auto [modelOrdinal, modelPointer] : llvm::enumerate(models_)) {
+        const HandshakeOwnerModel &model = *modelPointer;
         for (auto [localFragmentOrdinal, fragment] :
              llvm::enumerate(model.fragments())) {
           auto globalFragment =
@@ -627,7 +674,7 @@ private:
           return model.takeError();
         FabricHandshakeSelection exact;
         exact.fuCapabilities.push_back(std::move(*selection));
-        auto activation = resolveSelectedHandshake(models_[*model], exact);
+        auto activation = resolveSelectedHandshake(*models_[*model], exact);
         if (!activation)
           return activation.takeError();
         appendResolvedFragments(*model, activation->fragmentOrdinals(),
@@ -740,7 +787,7 @@ private:
               FabricHandshakeSelection exact;
               exact.memoryOperations.push_back(std::move(*selected));
               auto activation =
-                  resolveSelectedHandshake(models_[*model], exact);
+                  resolveSelectedHandshake(*models_[*model], exact);
               if (!activation)
                 return activation.takeError();
 
@@ -817,7 +864,7 @@ private:
     }
 
     FrozenSpatialHandshakeIndex &result_;
-    llvm::ArrayRef<HandshakeOwnerModel> models_;
+    llvm::ArrayRef<const HandshakeOwnerModel *> models_;
     const FrozenSpatialRoutingGraph &routing_;
     llvm::StringMap<PnrIndex> endpointOrdinals_;
     llvm::StringMap<PnrIndex> traversalOrdinals_;
@@ -833,11 +880,14 @@ llvm::Expected<FrozenSpatialHandshakeIndex>
 loom::pnr::detail::buildFrozenSpatialHandshakeIndex(
     const dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
+    llvm::ArrayRef<HandshakeOwnerModel> handshakeOwnerModels,
     const FrozenSpatialRealizationIndex &realizations,
     const FrozenSpatialResourceIndex &resources,
-    const FrozenSpatialRoutingGraph &routing) {
+    const FrozenSpatialRoutingGraph &routing,
+    const FrozenSpatialActiveRoutingDomain &activeRouting) {
   return FrozenSpatialHandshakeIndexBuilder::build(
-      dataflow, techMapping, fabric, realizations, resources, routing);
+      dataflow, techMapping, fabric, handshakeOwnerModels, realizations,
+      resources, routing, activeRouting);
 }
 
 llvm::Error loom::pnr::detail::verifyFrozenSpatialHandshakeIndex(

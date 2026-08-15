@@ -13,6 +13,7 @@
 #include "PnR/FrozenConstraintIndex.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/PnrConfig.h"
+#include "PnR/PnrDerivedContext.h"
 #include "PnR/PnrIndex.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -839,15 +840,15 @@ struct FrozenSpatialRouteClaim final {
 
 class FrozenSpatialRoutingGraph final {
 public:
-  const FrozenEndpointRoutingTopology &topology() const { return topology_; }
+  const FrozenEndpointRoutingTopology &topology() const { return *topology_; }
   llvm::ArrayRef<EndpointRoutingEndpoint> routingEndpoints() const {
-    return topology_.endpoints();
+    return topology_->endpoints();
   }
   llvm::ArrayRef<FrozenSpatialTraversal> traversals() const {
     return traversals_;
   }
   llvm::ArrayRef<PnrIndex> traversalEndpoints() const {
-    return topology_.traversalEndpoints();
+    return topology_->traversalEndpoints();
   }
   llvm::ArrayRef<PnrIndex> traversalResourceStates() const {
     return traversalResourceStates_;
@@ -859,7 +860,7 @@ public:
     return traversalClaimKeys_;
   }
   llvm::ArrayRef<PnrIndex> traversalReplicationGroups() const {
-    return topology_.traversalReplicationGroups();
+    return topology_->traversalReplicationGroups();
   }
   llvm::ArrayRef<PnrIndex> capacityRouteClaimOffsets() const {
     return capacityRouteClaimOffsets_;
@@ -878,20 +879,22 @@ public:
   }
   llvm::ArrayRef<PnrIndex> traversalArcs() const { return traversalArcs_; }
   llvm::ArrayRef<PnrIndex> adjacencyOffsets() const {
-    return topology_.adjacencyOffsets();
+    return topology_->adjacencyOffsets();
   }
   llvm::ArrayRef<PnrIndex> reverseAdjacencyOffsets() const {
-    return topology_.reverseAdjacencyOffsets();
+    return topology_->reverseAdjacencyOffsets();
   }
   llvm::ArrayRef<PnrIndex> reverseArcOrdinals() const {
-    return topology_.reverseArcOrdinals();
+    return topology_->reverseArcOrdinals();
   }
-  llvm::ArrayRef<PnrIndex> arcSources() const { return topology_.arcSources(); }
+  llvm::ArrayRef<PnrIndex> arcSources() const {
+    return topology_->arcSources();
+  }
   llvm::ArrayRef<EndpointRoutingArc> routingArcs() const {
-    return topology_.arcs();
+    return topology_->arcs();
   }
   const FrozenSpatialTagContinuityIndex &tagContinuity() const {
-    return tagContinuity_;
+    return *tagContinuity_;
   }
   std::uint64_t requiredCombinationalDelayQuanta() const {
     return requiredCombinationalDelayQuanta_;
@@ -914,7 +917,7 @@ public:
   }
 
 private:
-  FrozenEndpointRoutingTopology topology_;
+  std::shared_ptr<const FrozenEndpointRoutingTopology> topology_;
   std::vector<FrozenSpatialTraversal> traversals_;
   std::vector<PnrIndex> traversalResourceStates_;
   std::vector<FrozenSpatialRouteClaim> routeClaims_;
@@ -925,7 +928,7 @@ private:
   std::vector<PnrIndex> routeClaimTraversals_;
   std::vector<PnrIndex> traversalArcOffsets_;
   std::vector<PnrIndex> traversalArcs_;
-  FrozenSpatialTagContinuityIndex tagContinuity_;
+  std::shared_ptr<const FrozenSpatialTagContinuityIndex> tagContinuity_;
   std::uint64_t requiredCombinationalDelayQuanta_ = 0;
   ComponentViewDigest::Storage physicalTimingProfileDigestBytes_{};
   ::loom::fabric::FabricPhysicalTimingProfileKind physicalTimingProfileKind_ =
@@ -935,6 +938,59 @@ private:
   std::string physicalTimingCharacterizationIdentity_;
 
   friend class FrozenSpatialPnrProblemBuilder;
+};
+
+/// Immutable workload overlay on the complete timing-annotated Fabric graph.
+/// A bit is present only when the corresponding object can participate in at
+/// least one width-compatible path between legal terminals of this TechMapping,
+/// or is an explicitly selectable local attachment/RegFIFO traversal.
+class FrozenSpatialActiveRoutingDomain final {
+public:
+  llvm::ArrayRef<std::uint8_t> activeEndpoints() const {
+    return activeEndpoints_;
+  }
+  llvm::ArrayRef<std::uint8_t> activeTraversals() const {
+    return activeTraversals_;
+  }
+  llvm::ArrayRef<std::uint8_t> activeArcs() const { return activeArcs_; }
+  llvm::ArrayRef<std::uint64_t> activeTraversalBits() const {
+    return activeTraversalBits_;
+  }
+  bool endpointIsActive(PnrIndex endpoint) const {
+    return endpoint < activeEndpoints_.size() && activeEndpoints_[endpoint];
+  }
+  bool traversalIsActive(PnrIndex traversal) const {
+    return traversal < activeTraversals_.size() && activeTraversals_[traversal];
+  }
+  bool arcIsActive(PnrIndex arc) const {
+    return arc < activeArcs_.size() && activeArcs_[arc];
+  }
+  std::uint64_t activeEndpointCount() const { return activeEndpointCount_; }
+  std::uint64_t activeTraversalCount() const { return activeTraversalCount_; }
+  std::uint64_t activeArcCount() const { return activeArcCount_; }
+  std::uint64_t deterministicWork() const { return deterministicWork_; }
+  std::uint64_t retainedBytes() const {
+    return activeEndpoints_.size() * sizeof(std::uint8_t) +
+           activeTraversals_.size() * sizeof(std::uint8_t) +
+           activeArcs_.size() * sizeof(std::uint8_t) +
+           activeTraversalBits_.size() * sizeof(std::uint64_t);
+  }
+
+private:
+  std::vector<std::uint8_t> activeEndpoints_;
+  std::vector<std::uint8_t> activeTraversals_;
+  std::vector<std::uint8_t> activeArcs_;
+  std::vector<std::uint64_t> activeTraversalBits_;
+  std::uint64_t activeEndpointCount_ = 0;
+  std::uint64_t activeTraversalCount_ = 0;
+  std::uint64_t activeArcCount_ = 0;
+  std::uint64_t deterministicWork_ = 0;
+
+  friend llvm::Expected<FrozenSpatialActiveRoutingDomain>
+  buildFrozenSpatialActiveRoutingDomain(const FrozenSpatialTransferIndex &,
+                                        const FrozenSpatialLocalTransferIndex &,
+                                        const FrozenSpatialPortIndex &,
+                                        const FrozenSpatialRoutingGraph &);
 };
 
 struct FrozenSpatialHandshakeArc final {
@@ -1139,6 +1195,26 @@ private:
   friend class FrozenSpatialPnrProblemBuilder;
 };
 
+struct SpatialActiveProblemStatistics final {
+  DerivedContextConstructionStatistics context;
+  std::uint64_t computeRealizationCount = 0;
+  std::uint64_t computePlacementCount = 0;
+  std::uint64_t memoryRealizationCount = 0;
+  std::uint64_t memoryPlacementCount = 0;
+  std::uint64_t logicalNetCount = 0;
+  std::uint64_t logicalSinkCount = 0;
+  std::uint64_t localTransferOptionCount = 0;
+  std::uint64_t portDemandCount = 0;
+  std::uint64_t attachmentOptionCount = 0;
+  std::uint64_t activeEndpointCount = 0;
+  std::uint64_t activeTraversalCount = 0;
+  std::uint64_t activeRoutingArcCount = 0;
+  std::uint64_t handshakeOwnerCount = 0;
+  std::uint64_t handshakeNodeCount = 0;
+  std::uint64_t handshakeArcCount = 0;
+  std::uint64_t handshakeFragmentCount = 0;
+};
+
 class FrozenSpatialPnrProblem final {
 public:
   FrozenSpatialPnrProblem(const FrozenSpatialPnrProblem &) = delete;
@@ -1171,9 +1247,12 @@ public:
     return localTransfers_;
   }
   const FrozenSpatialPortIndex &ports() const { return ports_; }
-  const FrozenSpatialResourceIndex &resources() const { return resources_; }
+  const FrozenSpatialResourceIndex &resources() const { return *resources_; }
   const FrozenSpatialCapacityIndex &capacity() const { return capacity_; }
-  const FrozenSpatialRoutingGraph &routing() const { return routing_; }
+  const FrozenSpatialRoutingGraph &routing() const { return *routing_; }
+  const FrozenSpatialActiveRoutingDomain &activeRouting() const {
+    return activeRouting_;
+  }
   const FrozenSpatialHandshakeIndex &handshake() const { return handshake_; }
   const detail::SpatialSchedulePressureIndex &schedulePressure() const {
     return *schedulePressure_;
@@ -1197,6 +1276,9 @@ public:
     return *tagConstraints_;
   }
   const FrozenSpatialPnrCacheKey &cacheKey() const { return cacheKey_; }
+  const SpatialActiveProblemStatistics &statistics() const {
+    return statistics_;
+  }
 
 private:
   FrozenSpatialPnrProblem(
@@ -1208,8 +1290,11 @@ private:
       FrozenSpatialRealizationIndex realizations,
       FrozenSpatialMemoryIndex memory, FrozenSpatialTransferIndex transfers,
       FrozenSpatialLocalTransferIndex localTransfers,
-      FrozenSpatialPortIndex ports, FrozenSpatialResourceIndex resources,
-      FrozenSpatialCapacityIndex capacity, FrozenSpatialRoutingGraph routing,
+      FrozenSpatialPortIndex ports,
+      std::shared_ptr<const FrozenSpatialResourceIndex> resources,
+      FrozenSpatialCapacityIndex capacity,
+      std::shared_ptr<const FrozenSpatialRoutingGraph> routing,
+      FrozenSpatialActiveRoutingDomain activeRouting,
       FrozenSpatialHandshakeIndex handshake,
       std::shared_ptr<const detail::SpatialSchedulePressureIndex>
           schedulePressure,
@@ -1223,7 +1308,8 @@ private:
       std::shared_ptr<const detail::SpatialTagConstraintModel> tagConstraints,
       std::shared_ptr<const detail::SpatialRouteConstraintModel>
           routeConstraints,
-      FrozenSpatialPnrCacheKey cacheKey)
+      FrozenSpatialPnrCacheKey cacheKey,
+      SpatialActiveProblemStatistics statistics)
       : dataflowIdentity_(std::move(dataflowIdentity)),
         techMappingIdentity_(std::move(techMappingIdentity)),
         fabricIdentity_(std::move(fabricIdentity)),
@@ -1236,14 +1322,16 @@ private:
         transfers_(std::move(transfers)),
         localTransfers_(std::move(localTransfers)), ports_(std::move(ports)),
         resources_(std::move(resources)), capacity_(std::move(capacity)),
-        routing_(std::move(routing)), handshake_(std::move(handshake)),
+        routing_(std::move(routing)), activeRouting_(std::move(activeRouting)),
+        handshake_(std::move(handshake)),
         schedulePressure_(std::move(schedulePressure)),
         recurrenceTiming_(std::move(recurrenceTiming)),
         progressBasis_(progressBasis),
         bindingRelations_(std::move(bindingRelations)),
         memoryConstraints_(std::move(memoryConstraints)),
         tagConstraints_(std::move(tagConstraints)),
-        routeConstraints_(std::move(routeConstraints)), cacheKey_(cacheKey) {}
+        routeConstraints_(std::move(routeConstraints)), cacheKey_(cacheKey),
+        statistics_(std::move(statistics)) {}
 
   ArtifactIdentity dataflowIdentity_;
   ArtifactIdentity techMappingIdentity_;
@@ -1258,13 +1346,13 @@ private:
   FrozenSpatialTransferIndex transfers_;
   FrozenSpatialLocalTransferIndex localTransfers_;
   FrozenSpatialPortIndex ports_;
-  FrozenSpatialResourceIndex resources_;
+  std::shared_ptr<const FrozenSpatialResourceIndex> resources_;
   FrozenSpatialCapacityIndex capacity_;
-  FrozenSpatialRoutingGraph routing_;
+  std::shared_ptr<const FrozenSpatialRoutingGraph> routing_;
+  FrozenSpatialActiveRoutingDomain activeRouting_;
   FrozenSpatialHandshakeIndex handshake_;
   std::shared_ptr<const detail::SpatialSchedulePressureIndex> schedulePressure_;
-  std::shared_ptr<const detail::SpatialRecurrenceTimingIndex>
-      recurrenceTiming_;
+  std::shared_ptr<const detail::SpatialRecurrenceTimingIndex> recurrenceTiming_;
   ::loom::mapping::MappingDataflowProgressBasis progressBasis_;
   std::shared_ptr<const detail::SpatialBindingRelationModel> bindingRelations_;
   std::shared_ptr<const detail::SpatialMemoryConstraintModel>
@@ -1272,6 +1360,7 @@ private:
   std::shared_ptr<const detail::SpatialTagConstraintModel> tagConstraints_;
   std::shared_ptr<const detail::SpatialRouteConstraintModel> routeConstraints_;
   FrozenSpatialPnrCacheKey cacheKey_;
+  SpatialActiveProblemStatistics statistics_;
 
   friend class FrozenSpatialPnrProblemBuilder;
 };
@@ -1285,7 +1374,8 @@ llvm::Expected<FrozenSpatialPnrProblemHandle> freezeSpatialPnrProblem(
     const ::loom::fabric::FabricArtifactView &fabric,
     const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
     const ResolvedPnrConfigView &config,
-    const ::loom::mapping::SpatialMappingConstraintSetView &constraints);
+    const ::loom::mapping::SpatialMappingConstraintSetView &constraints,
+    const FabricDerivedContextBundle *derivedContexts = nullptr);
 
 /// Convenience entry for the explicitly target-neutral builtin profile.
 /// Target providers must call the overload above so their exact profile and
@@ -1295,7 +1385,8 @@ llvm::Expected<FrozenSpatialPnrProblemHandle> freezeSpatialPnrProblem(
     const ::loom::mapping::TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     const ResolvedPnrConfigView &config,
-    const ::loom::mapping::SpatialMappingConstraintSetView &constraints);
+    const ::loom::mapping::SpatialMappingConstraintSetView &constraints,
+    const FabricDerivedContextBundle *derivedContexts = nullptr);
 
 llvm::Error revalidateFrozenSpatialPnrCacheHit(
     const FrozenSpatialPnrProblem &problem,
@@ -1305,6 +1396,11 @@ llvm::Error revalidateFrozenSpatialPnrCacheHit(
     const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
     const ResolvedPnrConfigView &config,
     const ::loom::mapping::SpatialMappingConstraintSetView &constraints);
+
+void emitSpatialActiveProblemStatistics(const FrozenSpatialPnrProblem &problem,
+                                        mapping_debug::Stage stage,
+                                        std::uint64_t hits,
+                                        std::uint64_t misses);
 
 llvm::Error revalidateFrozenSpatialPnrCacheHit(
     const FrozenSpatialPnrProblem &problem,

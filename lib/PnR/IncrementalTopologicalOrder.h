@@ -39,6 +39,9 @@ public:
   ~IncrementalTopologicalScratch();
 
   llvm::Error prepare(IncrementalTopologicalGraphView graph);
+  /// Prepares storage for a graph already admitted by an immutable frozen
+  /// owner. The caller must preserve that graph for the scratch lifetime.
+  llvm::Error prepareValidated(IncrementalTopologicalGraphView graph);
   std::size_t retainedStorageBytes() const;
 
 private:
