@@ -1068,7 +1068,8 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
     prospectiveDemands[demand.domain].push_back(&demand);
   }
 
-  auto projectRows = [&](llvm::ArrayRef<CandidateDemand> candidates)
+  auto projectRows = [&](llvm::ArrayRef<CandidateDemand> candidates,
+                         std::uint32_t tagWidthBits)
       -> llvm::Expected<
           std::vector<::loom::fabric::FabricTemporalSwitchCandidateRouteRow>> {
     std::vector<
@@ -1089,22 +1090,27 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
     std::vector<::loom::fabric::FabricTemporalSwitchCandidateRouteDemandView>
         views;
     views.reserve(candidates.size());
-    for (auto [ordinal, signatures] : llvm::enumerate(signatureStorage))
-      views.push_back({{signatures}, candidates[ordinal].tag});
+    for (auto [ordinal, signatures] : llvm::enumerate(signatureStorage)) {
+      std::optional<llvm::APInt> tag = candidates[ordinal].tag;
+      if (tag)
+        tag = tag->zextOrTrunc(tagWidthBits);
+      views.push_back({{signatures}, std::move(tag)});
+    }
     return ::loom::fabric::projectFabricTemporalSwitchCandidateRouteRows(views);
   };
 
   for (PnrIndex domain = 0; domain < prospectiveDemands.size(); ++domain) {
     if (prospectiveDemands[domain].empty())
       continue;
-    auto baseRows = projectRows(baseDemands[domain]);
+    auto baseRows =
+        projectRows(baseDemands[domain], domains[domain].tagWidthBits);
     if (!baseRows)
       return baseRows.takeError();
     std::vector<CandidateDemand> combined = baseDemands[domain];
     combined.reserve(combined.size() + prospectiveDemands[domain].size());
     for (const Demand *demand : prospectiveDemands[domain])
       combined.push_back({demand, std::nullopt});
-    auto combinedRows = projectRows(combined);
+    auto combinedRows = projectRows(combined, domains[domain].tagWidthBits);
     if (!combinedRows)
       return combinedRows.takeError();
     if (combinedRows->size() < baseRows->size())
