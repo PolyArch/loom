@@ -126,6 +126,19 @@ llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
   return encodeCanonical(result, *context);
 }
 
+llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
+    const SpatialEngineBoundaryResult &result,
+    const ImportedSpatialSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput) {
+  auto context =
+      detail::resolveSpatialEngineResultContext(workload, runtimeInput);
+  if (!context)
+    return context.takeError();
+  if (llvm::Error error = validateResult(result, *context))
+    return std::move(error);
+  return encodeCanonical(result, *context);
+}
+
 llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
     llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ArtifactStore &store) {
@@ -140,6 +153,17 @@ llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
     llvm::ArrayRef<std::uint8_t> bytes,
     const ImportedSpatialSimulationInputs &inputs) {
   auto context = detail::resolveSpatialEngineResultContext(inputs);
+  if (!context)
+    return context.takeError();
+  return decodeCanonical(bytes, *context);
+}
+
+llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
+    llvm::ArrayRef<std::uint8_t> bytes,
+    const ImportedSpatialSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput) {
+  auto context =
+      detail::resolveSpatialEngineResultContext(workload, runtimeInput);
   if (!context)
     return context.takeError();
   return decodeCanonical(bytes, *context);

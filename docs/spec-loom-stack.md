@@ -473,6 +473,10 @@ observations agree, each standalone observation agrees with its originating
 System observation, and any requested independent oracle agrees. It may not
 reconstruct an invocation from source constants, select another Mapping, or
 accept a hand-authored Spatial runtime input beside the Deployment.
+Each static bridge publishes one bounded collection whose invocation sequence
+starts at zero and is dense. The driver must replay and independently validate
+every collection member; selecting only the first or final activation is not a
+valid System execution.
 
 The driver's `loom.execution_matrix_workspace.1.0` manifest is a nonsemantic
 workspace projection. It records the exact Deployment, binding, workload,

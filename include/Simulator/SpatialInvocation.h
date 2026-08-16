@@ -16,6 +16,11 @@ struct SpatialInvocationMemoryWrite final {
   std::vector<std::uint8_t> bytes;
 };
 
+llvm::Expected<CanonicalSimulationRuntimeInput>
+materializeSpatialInvocationRuntimeInput(
+    const ImportedSpatialSimulationWorkload &workload,
+    const runtime::SpatialInvocationWire &wire);
+
 llvm::Expected<ImportedSpatialSimulationInputs>
 materializeSpatialInvocationInputs(ImportedSpatialSimulationWorkload workload,
                                    const runtime::SpatialInvocationWire &wire);
@@ -24,6 +29,12 @@ llvm::Expected<std::vector<SpatialInvocationMemoryWrite>>
 projectSpatialInvocationResultWrites(
     const runtime::SpatialInvocationWire &wire,
     const ImportedSpatialSimulationInputs &inputs,
+    const SpatialFunctionalObservations &observations);
+
+llvm::Expected<std::vector<SpatialInvocationMemoryWrite>>
+projectSpatialInvocationResultWrites(
+    const runtime::SpatialInvocationWire &wire,
+    const ImportedSpatialSimulationWorkload &workload,
     const SpatialFunctionalObservations &observations);
 
 } // namespace loom::sim

@@ -706,6 +706,15 @@ llvm::Expected<ImportedSpatialSimulationWorkload>
 importSpatialSimulationWorkload(const ::loom::ArtifactRootReference &workload,
                                 const ::loom::ArtifactStore &store);
 
+/// Strictly imports one runtime-input root against an already imported exact
+/// Spatial workload. The workload owner and its Dataflow projection are reused;
+/// the runtime bytes are still rehashed and fully validated.
+llvm::Expected<CanonicalSimulationRuntimeInput>
+importSpatialSimulationRuntimeInput(
+    const ::loom::ArtifactRootReference &runtimeInput,
+    const ImportedSpatialSimulationWorkload &workload,
+    const ::loom::ArtifactStore &store);
+
 /// Strictly imports one stored System workload/runtime pair and its exact
 /// Deployment owner. Deployment remains responsible for closure and blob
 /// validation.

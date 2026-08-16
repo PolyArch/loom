@@ -143,6 +143,25 @@ importSpatialSimulationWorkload(const ArtifactRootReference &workloadReference,
                                            std::move(*workload)};
 }
 
+llvm::Expected<CanonicalSimulationRuntimeInput>
+importSpatialSimulationRuntimeInput(
+    const ArtifactRootReference &runtimeInputReference,
+    const ImportedSpatialSimulationWorkload &workload,
+    const ArtifactStore &store) {
+  if (!hasSchema(runtimeInputReference, simulationRuntimeInputSchema))
+    return invalid("foreign SimulationRuntimeInput reference schema");
+  if (!workload.workload.spatial())
+    return invalid("workload is not a Spatial root");
+  auto view = workload.dataflow.view();
+  if (!view)
+    return view.takeError();
+  auto runtimeBytes = store.get(runtimeInputReference);
+  if (!runtimeBytes)
+    return runtimeBytes.takeError();
+  return importSimulationRuntimeInput(runtimeBytes->bytes(), workload.workload,
+                                      *view, runtimeInputReference.artifact);
+}
+
 llvm::Expected<ImportedStructuredProgramSimulationInputs>
 importStructuredProgramSimulationInputs(
     const ArtifactRootReference &workloadReference,

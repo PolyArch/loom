@@ -221,7 +221,7 @@ renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.5");
+    json.attribute("schema", "loom.gem5_system_projection.6");
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
@@ -383,6 +383,8 @@ renderProjection(const Gem5SystemFacts &facts,
             json.value(std::to_string(kMaximumSpatialWork));
             json.value("--ticks-per-cycle");
             json.value(std::to_string(ticksPerCycle));
+            json.value("--maximum-invocations");
+            json.value(std::to_string(kMaximumDynamicSpatialInvocations));
             if (facts.engine == Gem5SystemEngine::Cgra) {
               json.value("--fabric");
               json.value(formatArtifactIdentityHex(launch.fabric.artifact));
@@ -395,6 +397,8 @@ renderProjection(const Gem5SystemFacts &facts,
                          spatialBridgeResultPath(indexed.index()));
           json.attribute("maximum_message_bytes",
                          launch.bridge.maximumMessageBytes);
+          json.attribute("maximum_invocations",
+                         kMaximumDynamicSpatialInvocations);
         });
       }
     });
@@ -712,8 +716,8 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
   auto projection = renderProjection(facts, *readiness);
   if (!projection)
     return projection.takeError();
-  files.push_back({kProjectionPath.str(), std::move(*projection), std::nullopt,
-                   false});
+  files.push_back(
+      {kProjectionPath.str(), std::move(*projection), std::nullopt, false});
 
   if (facts.engine == Gem5SystemEngine::Rtl) {
     auto options = eda::open_source::resolveMappedRtlExecutionAttemptOptions(
@@ -1021,102 +1025,132 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
       return bridgeText.takeError();
     std::vector<std::uint8_t> bridgeBytes(bridgeText->begin(),
                                           bridgeText->end());
-    Gem5BridgeResult bridgeResult;
+    Gem5BridgeResultCollection bridgeResults;
     std::string bridgeDiagnostic;
-    if (!decodeGem5BridgeResult(bridgeBytes, bridgeResult, bridgeDiagnostic))
+    if (!decodeGem5BridgeResultCollection(bridgeBytes, bridgeResults,
+                                          bridgeDiagnostic))
       return invalid("bridge result is invalid: " + bridgeDiagnostic);
-    if (bridgeResult.status > 1 || bridgeResult.sequence != 0 ||
-        bridgeResult.completionTick < systemResult->entryTick ||
-        bridgeResult.completionTick > systemResult->exitTick)
-      return invalid("bridge completion is inconsistent with gem5 time");
-    SpatialInvocationResultWire invocationResult;
-    std::string invocationDiagnostic;
-    if (!decodeSpatialInvocationResultWire(
-            bridgeResult.result, invocationResult, invocationDiagnostic))
-      return invalid("bridge invocation result is invalid: " +
-                     invocationDiagnostic);
-
-    std::optional<sim::SpatialEngineBoundaryResult> spatialResult;
-    if (facts.engine == Gem5SystemEngine::Rtl) {
+    if (bridgeResults.results.empty() ||
+        bridgeResults.results.size() > kMaximumDynamicSpatialInvocations)
+      return invalid("bridge result count is outside the session bound");
+    std::optional<sim::ImportedSpatialSimulationWorkload> spatialWorkload;
+    if (facts.engine != Gem5SystemEngine::Rtl) {
+      auto loaded = sim::importSpatialSimulationWorkload(launch.spatialWorkload,
+                                                         artifacts);
+      if (!loaded)
+        return loaded.takeError();
+      spatialWorkload.emplace(std::move(*loaded));
+    } else {
+      if (bridgeResults.results.size() != 1)
+        return invalid("gem5 RTL bridge published multiple invocations");
       if (indexed.index() >= rtlClosures.size())
         return invalid("gem5 RTL import lost its exact mapped RTL closure");
-      auto mappedText = readExternalToolInvocationDeclaredOutput(
-          imported, mappedRtlLaunchResultPath(indexed.index()));
-      if (!mappedText)
-        return mappedText.takeError();
-      const llvm::ArrayRef<std::uint8_t> mappedBytes(
-          reinterpret_cast<const std::uint8_t *>(mappedText->data()),
-          mappedText->size());
-      if (!invocationResult.invocation.empty() ||
-          mappedBytes != llvm::ArrayRef<std::uint8_t>(
-                             invocationResult.spatialBoundaryResult))
-        return invalid("bridge payload differs from the mapped RTL result");
-      auto mappedResult =
-          eda::open_source::parseMappedRtlSimulationResult(*mappedText);
-      if (!mappedResult)
-        return mappedResult.takeError();
-      if (mappedResult->terminal ==
-          eda::open_source::MappedRtlTerminalStatus::StoppedByLimit) {
-        if (bridgeResult.status != 1)
+    }
+    std::optional<sim::CanonicalSimulationRuntimeInput> staticRuntime;
+    if (spatialWorkload && launch.spatialRuntimeInput) {
+      auto loaded = sim::importSpatialSimulationRuntimeInput(
+          *launch.spatialRuntimeInput, *spatialWorkload, artifacts);
+      if (!loaded)
+        return loaded.takeError();
+      staticRuntime.emplace(std::move(*loaded));
+    }
+    std::uint64_t previousCompletionTick = systemResult->entryTick;
+    for (const auto resultIndexed : llvm::enumerate(bridgeResults.results)) {
+      const Gem5BridgeResult &bridgeResult = resultIndexed.value();
+      if (bridgeResult.status > 1 ||
+          bridgeResult.sequence != resultIndexed.index() ||
+          bridgeResult.completionTick < previousCompletionTick ||
+          bridgeResult.completionTick > systemResult->exitTick)
+        return invalid("bridge completion is inconsistent with gem5 time");
+      previousCompletionTick = bridgeResult.completionTick;
+      SpatialInvocationResultWire invocationResult;
+      std::string invocationDiagnostic;
+      if (!decodeSpatialInvocationResultWire(
+              bridgeResult.result, invocationResult, invocationDiagnostic))
+        return invalid("bridge invocation result is invalid: " +
+                       invocationDiagnostic);
+
+      std::optional<sim::SpatialEngineBoundaryResult> spatialResult;
+      if (facts.engine == Gem5SystemEngine::Rtl) {
+        auto mappedText = readExternalToolInvocationDeclaredOutput(
+            imported, mappedRtlLaunchResultPath(indexed.index()));
+        if (!mappedText)
+          return mappedText.takeError();
+        const llvm::ArrayRef<std::uint8_t> mappedBytes(
+            reinterpret_cast<const std::uint8_t *>(mappedText->data()),
+            mappedText->size());
+        if (!invocationResult.invocation.empty() ||
+            mappedBytes != llvm::ArrayRef<std::uint8_t>(
+                               invocationResult.spatialBoundaryResult))
+          return invalid("bridge payload differs from the mapped RTL result");
+        auto mappedResult =
+            eda::open_source::parseMappedRtlSimulationResult(*mappedText);
+        if (!mappedResult)
+          return mappedResult.takeError();
+        if (mappedResult->terminal ==
+            eda::open_source::MappedRtlTerminalStatus::StoppedByLimit) {
+          if (bridgeResult.status != 1)
+            return invalid("bridge status disagrees with the RTL terminal");
+          return terminalResult(
+              CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
+        }
+        if (bridgeResult.status != 0)
           return invalid("bridge status disagrees with the RTL terminal");
+        auto boundary =
+            eda::open_source::projectMappedRtlSpatialEngineBoundaryResult(
+                rtlClosures[indexed.index()], *mappedResult, artifacts, blobs);
+        if (!boundary)
+          return boundary.takeError();
+        spatialResult = std::move(*boundary);
+      } else {
+        llvm::Expected<sim::SpatialEngineBoundaryResult> boundary =
+            [&]() -> llvm::Expected<sim::SpatialEngineBoundaryResult> {
+          if (invocationResult.invocation.empty()) {
+            if (!staticRuntime)
+              return invalid(
+                  "static bridge result has no Spatial runtime input");
+            return sim::decodeSpatialEngineBoundaryResult(
+                invocationResult.spatialBoundaryResult, *spatialWorkload,
+                *staticRuntime);
+          }
+          if (staticRuntime)
+            return invalid(
+                "dynamic bridge result has a competing static runtime input");
+          SpatialInvocationWire wire;
+          std::string diagnostic;
+          if (!decodeSpatialInvocationWire(invocationResult.invocation, wire,
+                                           diagnostic))
+            return invalid(diagnostic);
+          auto runtime = sim::materializeSpatialInvocationRuntimeInput(
+              *spatialWorkload, wire);
+          if (!runtime)
+            return runtime.takeError();
+          auto decoded = sim::decodeSpatialEngineBoundaryResult(
+              invocationResult.spatialBoundaryResult, *spatialWorkload,
+              *runtime);
+          if (!decoded)
+            return decoded.takeError();
+          auto writes = sim::projectSpatialInvocationResultWrites(
+              wire, *spatialWorkload, decoded->functionalObservations);
+          if (!writes)
+            return writes.takeError();
+          return decoded;
+        }();
+        if (!boundary)
+          return boundary.takeError();
+        const std::uint32_t expectedStatus =
+            std::holds_alternative<sim::RetiredExecution>(boundary->terminal)
+                ? 0U
+                : 1U;
+        if (bridgeResult.status != expectedStatus)
+          return invalid("bridge status disagrees with the Spatial terminal");
+        spatialResult = std::move(*boundary);
+      }
+      if (!spatialResult || !std::holds_alternative<sim::RetiredExecution>(
+                                spatialResult->terminal))
         return terminalResult(
             CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
-      }
-      if (bridgeResult.status != 0)
-        return invalid("bridge status disagrees with the RTL terminal");
-      auto boundary =
-          eda::open_source::projectMappedRtlSpatialEngineBoundaryResult(
-              rtlClosures[indexed.index()], *mappedResult, artifacts, blobs);
-      if (!boundary)
-        return boundary.takeError();
-      spatialResult = std::move(*boundary);
-    } else {
-      llvm::Expected<sim::SpatialEngineBoundaryResult> boundary =
-          [&]() -> llvm::Expected<sim::SpatialEngineBoundaryResult> {
-        if (invocationResult.invocation.empty())
-          if (!launch.spatialRuntimeInput)
-            return invalid("static bridge result has no Spatial runtime input");
-        if (invocationResult.invocation.empty())
-          return sim::decodeSpatialEngineBoundaryResult(
-              invocationResult.spatialBoundaryResult, launch.spatialWorkload,
-              *launch.spatialRuntimeInput, artifacts);
-        auto workload = sim::importSpatialSimulationWorkload(
-            launch.spatialWorkload, artifacts);
-        if (!workload)
-          return workload.takeError();
-        SpatialInvocationWire wire;
-        std::string diagnostic;
-        if (!decodeSpatialInvocationWire(invocationResult.invocation, wire,
-                                         diagnostic))
-          return invalid(diagnostic);
-        auto invocationInputs =
-            sim::materializeSpatialInvocationInputs(std::move(*workload), wire);
-        if (!invocationInputs)
-          return invocationInputs.takeError();
-        auto decoded = sim::decodeSpatialEngineBoundaryResult(
-            invocationResult.spatialBoundaryResult, *invocationInputs);
-        if (!decoded)
-          return decoded.takeError();
-        auto writes = sim::projectSpatialInvocationResultWrites(
-            wire, *invocationInputs, decoded->functionalObservations);
-        if (!writes)
-          return writes.takeError();
-        return decoded;
-      }();
-      if (!boundary)
-        return boundary.takeError();
-      const std::uint32_t expectedStatus =
-          std::holds_alternative<sim::RetiredExecution>(boundary->terminal)
-              ? 0U
-              : 1U;
-      if (bridgeResult.status != expectedStatus)
-        return invalid("bridge status disagrees with the Spatial terminal");
-      spatialResult = std::move(*boundary);
     }
-    if (!spatialResult ||
-        !std::holds_alternative<sim::RetiredExecution>(spatialResult->terminal))
-      return terminalResult(
-          CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
   }
 
   auto memoryText =

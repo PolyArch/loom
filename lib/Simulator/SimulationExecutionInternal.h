@@ -14,7 +14,9 @@ namespace loom::sim::detail {
 
 struct SpatialExecutionContext {
   std::shared_ptr<const evaluation::EvaluationRequest> request;
-  std::shared_ptr<const ImportedSpatialSimulationInputs> inputs;
+  std::shared_ptr<const ImportedSpatialSimulationInputs> ownedInputs;
+  const CanonicalSimulationWorkload *workload = nullptr;
+  const CanonicalSimulationRuntimeInput *runtimeInput = nullptr;
   dataflow::CanonicalDataflowProgramView dataflowView;
   ResolvedLaunchContext launch;
   evaluation::ArtifactCollectionCardinality stoppedExecutionCardinality;
@@ -59,6 +61,10 @@ resolveSpatialEngineResultContext(const ArtifactRootReference &workload,
 
 llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
     const ImportedSpatialSimulationInputs &inputs);
+
+llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
+    const ImportedSpatialSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput);
 
 llvm::Error
 validateSpatialProgressObservations(const SpatialProgressObservations &progress,

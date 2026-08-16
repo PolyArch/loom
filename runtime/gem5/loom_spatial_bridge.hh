@@ -43,6 +43,7 @@ private:
   const std::string engineSocketPath;
   const std::string resultPath;
   const std::uint64_t maximumMessageBytes;
+  const std::uint64_t maximumInvocations;
 
   int engineSocket = -1;
   State state = State::Idle;
@@ -62,6 +63,7 @@ private:
   std::vector<std::uint8_t> memoryBuffer;
   loom::runtime::Gem5BridgeMemoryRequest pendingMemory;
   loom::runtime::Gem5BridgeCompletion pendingCompletion;
+  loom::runtime::Gem5BridgeResultCollection completedResults;
 
   EventFunctionWrapper launchEvent;
   EventFunctionWrapper staticLaunchCompletionEvent;

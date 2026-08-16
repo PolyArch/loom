@@ -39,9 +39,9 @@ void requireRejected(std::vector<std::uint8_t> bytes,
 }
 
 void envelopeRoundTrip() {
-  const Gem5BridgeMessage original{
-      Gem5BridgeMessageKind::ChannelTransfer, 0x1020304050607080ULL,
-      {0x00, 0x7f, 0x80, 0xff}};
+  const Gem5BridgeMessage original{Gem5BridgeMessageKind::ChannelTransfer,
+                                   0x1020304050607080ULL,
+                                   {0x00, 0x7f, 0x80, 0xff}};
   const auto bytes = encodeGem5BridgeMessage(original);
   const auto decoded = take(decodeGem5BridgeMessage(bytes));
   require(decoded.kind == original.kind &&
@@ -94,10 +94,10 @@ void payloadRoundTrips() {
   const Gem5BridgeMemoryResponse response{19, true, {0xaa, 0xbb}};
   Gem5BridgeMemoryResponse decodedResponse;
   diagnostic.clear();
-  require(decodeGem5BridgeMemoryResponse(
-              encodeGem5BridgeMemoryResponse(response), decodedResponse,
-              diagnostic),
-          diagnostic);
+  require(
+      decodeGem5BridgeMemoryResponse(encodeGem5BridgeMemoryResponse(response),
+                                     decodedResponse, diagnostic),
+      diagnostic);
   require(decodedResponse.requestId == response.requestId &&
               decodedResponse.success == response.success &&
               decodedResponse.data == response.data,
@@ -114,7 +114,8 @@ void payloadRoundTrips() {
               decodedCompletion.result == completion.result,
           "completion round-trip changed semantic fields");
 
-  const Gem5BridgeResult result{1, 0x1020304050607080ULL,
+  const Gem5BridgeResult result{1,
+                                0x1020304050607080ULL,
                                 0x8877665544332211ULL,
                                 {0x00, 0x7f, 0x80, 0xff}};
   const auto encodedResult = encodeGem5BridgeResult(result);
@@ -131,19 +132,49 @@ void payloadRoundTrips() {
   auto badResultMagic = encodedResult;
   badResultMagic.front() ^= 0xff;
   diagnostic.clear();
-  require(!decodeGem5BridgeResult(badResultMagic, decodedResult,
-                                  diagnostic) &&
-              diagnostic.find("wrong bridge result magic") !=
-                  std::string::npos,
+  require(!decodeGem5BridgeResult(badResultMagic, decodedResult, diagnostic) &&
+              diagnostic.find("wrong bridge result magic") != std::string::npos,
           "normalized bridge result accepted a bad magic");
 
   auto badResultLength = encodedResult;
   badResultLength[31] += 1;
   diagnostic.clear();
-  require(!decodeGem5BridgeResult(badResultLength, decodedResult,
-                                  diagnostic) &&
+  require(!decodeGem5BridgeResult(badResultLength, decodedResult, diagnostic) &&
               diagnostic.find("size does not match") != std::string::npos,
           "normalized bridge result accepted a bad payload length");
+
+  const Gem5BridgeResultCollection collection{
+      {result, Gem5BridgeResult{
+                   0, 0x1020304050607090ULL, 0x8877665544332212ULL, {0x42}}}};
+  const auto encodedCollection = encodeGem5BridgeResultCollection(collection);
+  Gem5BridgeResultCollection decodedCollection;
+  diagnostic.clear();
+  require(decodeGem5BridgeResultCollection(encodedCollection, decodedCollection,
+                                           diagnostic),
+          diagnostic);
+  require(decodedCollection.results.size() == 2 &&
+              decodedCollection.results[0].result == result.result &&
+              decodedCollection.results[1].completionTick ==
+                  collection.results[1].completionTick &&
+              decodedCollection.results[1].sequence ==
+                  collection.results[1].sequence,
+          "bridge result collection round-trip changed semantic fields");
+
+  auto badCollectionCount = encodedCollection;
+  badCollectionCount[11] += 1;
+  diagnostic.clear();
+  require(!decodeGem5BridgeResultCollection(badCollectionCount,
+                                            decodedCollection, diagnostic) &&
+              diagnostic.find("count exceeds") != std::string::npos,
+          "bridge result collection accepted an impossible count");
+
+  auto trailingCollection = encodedCollection;
+  trailingCollection.push_back(0xff);
+  diagnostic.clear();
+  require(!decodeGem5BridgeResultCollection(trailingCollection,
+                                            decodedCollection, diagnostic) &&
+              diagnostic.find("trailing bytes") != std::string::npos,
+          "bridge result collection accepted trailing bytes");
 }
 
 } // namespace

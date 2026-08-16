@@ -422,23 +422,31 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
       return resultText.takeError();
     const std::vector<std::uint8_t> resultBytes(resultText->begin(),
                                                 resultText->end());
-    loom::runtime::Gem5BridgeResult bridgeResult;
+    loom::runtime::Gem5BridgeResultCollection bridgeResults;
     std::string diagnostic;
-    if (!loom::runtime::decodeGem5BridgeResult(resultBytes, bridgeResult,
-                                               diagnostic))
+    if (!loom::runtime::decodeGem5BridgeResultCollection(
+            resultBytes, bridgeResults, diagnostic))
       return invalid("cannot decode verified gem5 bridge result: " +
                      llvm::Twine(diagnostic));
-    if (bridgeResult.status != 0 || bridgeResult.sequence != 0)
-      return invalid("gem5 bridge did not retire its first invocation");
-    loom::runtime::SpatialInvocationResultWire invocationResult;
-    if (!loom::runtime::decodeSpatialInvocationResultWire(
-            bridgeResult.result, invocationResult, diagnostic))
-      return invalid("cannot decode verified Spatial invocation result: " +
-                     llvm::Twine(diagnostic));
-    if (invocationResult.invocation.empty())
-      return invalid("public execution matrix requires a dynamic invocation");
-    invocations.push_back({std::move(invocationResult.invocation),
-                           std::move(invocationResult.spatialBoundaryResult)});
+    if (bridgeResults.results.empty())
+      return invalid("gem5 bridge published no Spatial invocation");
+    for (const auto resultIndexed : llvm::enumerate(bridgeResults.results)) {
+      const loom::runtime::Gem5BridgeResult &bridgeResult =
+          resultIndexed.value();
+      if (bridgeResult.status != 0 ||
+          bridgeResult.sequence != resultIndexed.index())
+        return invalid("gem5 bridge invocation sequence did not retire");
+      loom::runtime::SpatialInvocationResultWire invocationResult;
+      if (!loom::runtime::decodeSpatialInvocationResultWire(
+              bridgeResult.result, invocationResult, diagnostic))
+        return invalid("cannot decode verified Spatial invocation result: " +
+                       llvm::Twine(diagnostic));
+      if (invocationResult.invocation.empty())
+        return invalid("public execution matrix requires a dynamic invocation");
+      invocations.push_back(
+          {std::move(invocationResult.invocation),
+           std::move(invocationResult.spatialBoundaryResult)});
+    }
   }
   return invocations;
 }

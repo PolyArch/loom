@@ -31,7 +31,7 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.5"
+CONFIG_SCHEMA = "loom.gem5_system_projection.6"
 
 PROCESSOR_FIELDS = {
     "cpu_id",
@@ -133,6 +133,7 @@ def start_engines(bridges: list[dict]) -> list[subprocess.Popen]:
                     "engine_command",
                     "result_path",
                     "maximum_message_bytes",
+                    "maximum_invocations",
                 },
                 f"bridge {ordinal}",
             )
@@ -181,11 +182,8 @@ def stop_engines(processes: list[subprocess.Popen]) -> None:
 
 def finish_engines(processes: list[subprocess.Popen]) -> None:
     for process in processes:
-        try:
-            status = process.wait(timeout=5.0)
-        except subprocess.TimeoutExpired as error:
-            raise RuntimeError("Spatial engine did not exit after completion") from error
-        if status != 0:
+        status = process.poll()
+        if status is not None and status != 0:
             raise RuntimeError(f"Spatial engine exited with status {status}")
 
 
@@ -419,6 +417,11 @@ def build_system(projection: dict) -> RiscvSystem:
 
     bridges = []
     for bridge in projection["bridges"]:
+        if (
+            not isinstance(bridge["maximum_invocations"], int)
+            or bridge["maximum_invocations"] <= 0
+        ):
+            raise ValueError("Spatial bridge invocation limit must be positive")
         device = LoomSpatialBridge(
             pio_addr=bridge["pio_address"],
             pio_size=bridge["pio_size"],
@@ -426,6 +429,7 @@ def build_system(projection: dict) -> RiscvSystem:
             engine_socket=bridge["engine_socket"],
             result_path=bridge["result_path"],
             max_message_bytes=bridge["maximum_message_bytes"],
+            max_invocations=bridge["maximum_invocations"],
         )
         device.pio = system.membus.mem_side_ports
         device.dma = system.membus.cpu_side_ports

@@ -447,8 +447,13 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
       resolveLaunchContext(*view, (*inputs)->workload.spatial()->launchRef);
   if (!launch)
     return launch.takeError();
+  const CanonicalSimulationWorkload *workload = &(*inputs)->workload;
+  const CanonicalSimulationRuntimeInput *runtimeInput =
+      &(*inputs)->runtimeInput;
   return SpatialExecutionContext{std::move(*request),
                                  std::move(*inputs),
+                                 workload,
+                                 runtimeInput,
                                  std::move(*view),
                                  std::move(*launch),
                                  *stoppedCardinality,
@@ -472,9 +477,14 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
       resolveLaunchContext(*view, (*inputs)->workload.spatial()->launchRef);
   if (!launch)
     return launch.takeError();
+  const CanonicalSimulationWorkload *workload = &(*inputs)->workload;
+  const CanonicalSimulationRuntimeInput *runtimeInput =
+      &(*inputs)->runtimeInput;
   return SpatialExecutionContext{
       {},
       std::move(*inputs),
+      workload,
+      runtimeInput,
       std::move(*view),
       std::move(*launch),
       evaluation::ArtifactCollectionCardinality::OneOrMore,
@@ -492,11 +502,39 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
       resolveLaunchContext(*view, inputs.workload.spatial()->launchRef);
   if (!launch)
     return launch.takeError();
-  std::shared_ptr<const ImportedSpatialSimulationInputs> borrowedInputs(
-      &inputs, [](const ImportedSpatialSimulationInputs *) {});
   return SpatialExecutionContext{
       {},
-      std::move(borrowedInputs),
+      {},
+      &inputs.workload,
+      &inputs.runtimeInput,
+      std::move(*view),
+      std::move(*launch),
+      evaluation::ArtifactCollectionCardinality::OneOrMore,
+      nullptr,
+      nullptr,
+      nullptr};
+}
+
+llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
+    const ImportedSpatialSimulationWorkload &workload,
+    const CanonicalSimulationRuntimeInput &runtimeInput) {
+  const auto *spatialWorkload = workload.workload.spatial();
+  const auto *spatialRuntime = runtimeInput.spatial();
+  if (!spatialWorkload || !spatialRuntime ||
+      spatialRuntime->workloadIdentity != workload.workload.identity())
+    return invalid("simulation execution: Spatial engine context owners are "
+                   "inconsistent");
+  auto view = workload.dataflow.view();
+  if (!view)
+    return view.takeError();
+  auto launch = resolveLaunchContext(*view, spatialWorkload->launchRef);
+  if (!launch)
+    return launch.takeError();
+  return SpatialExecutionContext{
+      {},
+      {},
+      &workload.workload,
+      &runtimeInput,
       std::move(*view),
       std::move(*launch),
       evaluation::ArtifactCollectionCardinality::OneOrMore,

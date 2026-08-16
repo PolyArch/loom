@@ -7,12 +7,13 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace loom::runtime {
 
 inline constexpr char gem5BridgeAbiIdentity[] =
-    "loom.gem5_spatial_bridge_abi.v3";
+    "loom.gem5_spatial_bridge_abi.v4";
 
 enum class Gem5BridgeMessageKind : std::uint32_t {
   SpatialLaunch = 0,
@@ -61,6 +62,10 @@ struct Gem5BridgeResult final {
   std::vector<std::uint8_t> result;
 };
 
+struct Gem5BridgeResultCollection final {
+  std::vector<Gem5BridgeResult> results;
+};
+
 struct Gem5SpatialLaunchEnvelope final {
   std::vector<std::uint8_t> staticLaunch;
   std::vector<std::uint8_t> invocation;
@@ -73,6 +78,10 @@ inline constexpr std::size_t gem5SpatialLaunchHeaderBytes = 20;
 inline constexpr std::array<std::uint8_t, 4> gem5BridgeResultMagic{'L', 'G',
                                                                    'R', '1'};
 inline constexpr std::size_t gem5BridgeResultHeaderBytes = 32;
+
+inline constexpr std::array<std::uint8_t, 4> gem5BridgeResultCollectionMagic{
+    'L', 'G', 'C', '1'};
+inline constexpr std::size_t gem5BridgeResultCollectionHeaderBytes = 12;
 
 inline constexpr std::array<std::uint8_t, 4> gem5BridgeWireMagic{'L', 'G', 'B',
                                                                  '1'};
@@ -348,6 +357,69 @@ inline bool decodeGem5BridgeResult(const std::vector<std::uint8_t> &bytes,
   result.sequence = detail::readGem5BridgeU64(bytes.data() + 16);
   result.result.assign(bytes.begin() + gem5BridgeResultHeaderBytes,
                        bytes.end());
+  return true;
+}
+
+inline std::vector<std::uint8_t>
+encodeGem5BridgeResultCollection(const Gem5BridgeResultCollection &collection) {
+  std::vector<std::uint8_t> bytes;
+  bytes.insert(bytes.end(), gem5BridgeResultCollectionMagic.begin(),
+               gem5BridgeResultCollectionMagic.end());
+  detail::appendGem5BridgeU64(bytes, collection.results.size());
+  for (const Gem5BridgeResult &result : collection.results) {
+    std::vector<std::uint8_t> encoded = encodeGem5BridgeResult(result);
+    bytes.insert(bytes.end(), encoded.begin(), encoded.end());
+  }
+  return bytes;
+}
+
+inline bool
+decodeGem5BridgeResultCollection(const std::vector<std::uint8_t> &bytes,
+                                 Gem5BridgeResultCollection &collection,
+                                 std::string &error) {
+  if (bytes.size() < gem5BridgeResultCollectionHeaderBytes ||
+      !std::equal(gem5BridgeResultCollectionMagic.begin(),
+                  gem5BridgeResultCollectionMagic.end(), bytes.begin())) {
+    error = "wrong or truncated bridge result collection";
+    return false;
+  }
+  const std::uint64_t count = detail::readGem5BridgeU64(bytes.data() + 4);
+  const std::size_t payloadBytes =
+      bytes.size() - gem5BridgeResultCollectionHeaderBytes;
+  if (count > payloadBytes / gem5BridgeResultHeaderBytes) {
+    error = "bridge result collection count exceeds its payload";
+    return false;
+  }
+  std::size_t offset = gem5BridgeResultCollectionHeaderBytes;
+  std::vector<Gem5BridgeResult> results;
+  results.reserve(static_cast<std::size_t>(count));
+  for (std::uint64_t ordinal = 0; ordinal != count; ++ordinal) {
+    if (bytes.size() - offset < gem5BridgeResultHeaderBytes) {
+      error = "truncated bridge result in collection";
+      return false;
+    }
+    const std::uint64_t resultBytes =
+        detail::readGem5BridgeU64(bytes.data() + offset + 24);
+    if (resultBytes > std::numeric_limits<std::size_t>::max() ||
+        resultBytes > bytes.size() - offset - gem5BridgeResultHeaderBytes) {
+      error = "bridge result collection member exceeds its payload";
+      return false;
+    }
+    const std::size_t memberBytes =
+        gem5BridgeResultHeaderBytes + static_cast<std::size_t>(resultBytes);
+    std::vector<std::uint8_t> encoded(bytes.begin() + offset,
+                                      bytes.begin() + offset + memberBytes);
+    Gem5BridgeResult result;
+    if (!decodeGem5BridgeResult(encoded, result, error))
+      return false;
+    results.push_back(std::move(result));
+    offset += memberBytes;
+  }
+  if (offset != bytes.size()) {
+    error = "trailing bytes in bridge result collection";
+    return false;
+  }
+  collection.results = std::move(results);
   return true;
 }
 

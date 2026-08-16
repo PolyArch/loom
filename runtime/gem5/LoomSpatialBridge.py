@@ -15,3 +15,4 @@ class LoomSpatialBridge(DmaDevice):
     max_message_bytes = Param.Unsigned(
         64 * 1024 * 1024, "Maximum accepted bridge message size"
     )
+    max_invocations = Param.Unsigned(4096, "Maximum session invocation count")

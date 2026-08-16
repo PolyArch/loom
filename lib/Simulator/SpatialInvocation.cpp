@@ -114,9 +114,10 @@ validateResultDestinations(const runtime::SpatialInvocationWire &wire,
 
 } // namespace
 
-llvm::Expected<ImportedSpatialSimulationInputs>
-materializeSpatialInvocationInputs(ImportedSpatialSimulationWorkload workload,
-                                   const runtime::SpatialInvocationWire &wire) {
+llvm::Expected<CanonicalSimulationRuntimeInput>
+materializeSpatialInvocationRuntimeInput(
+    const ImportedSpatialSimulationWorkload &workload,
+    const runtime::SpatialInvocationWire &wire) {
   const SpatialSimulationWorkload *spatial = workload.workload.spatial();
   if (!spatial)
     return invalid("workload lost its Spatial payload");
@@ -161,8 +162,13 @@ materializeSpatialInvocationInputs(ImportedSpatialSimulationWorkload workload,
   }
   if (llvm::Error error = validateResultDestinations(wire, *spatial, *shapes))
     return std::move(error);
-  auto runtimeInput =
-      finalizeSimulationRuntimeInput(draft, workload.workload, *view);
+  return finalizeSimulationRuntimeInput(draft, workload.workload, *view);
+}
+
+llvm::Expected<ImportedSpatialSimulationInputs>
+materializeSpatialInvocationInputs(ImportedSpatialSimulationWorkload workload,
+                                   const runtime::SpatialInvocationWire &wire) {
+  auto runtimeInput = materializeSpatialInvocationRuntimeInput(workload, wire);
   if (!runtimeInput)
     return runtimeInput.takeError();
   return ImportedSpatialSimulationInputs{std::move(workload.dataflow),
@@ -170,15 +176,17 @@ materializeSpatialInvocationInputs(ImportedSpatialSimulationWorkload workload,
                                          std::move(*runtimeInput)};
 }
 
+namespace {
+
 llvm::Expected<std::vector<SpatialInvocationMemoryWrite>>
-projectSpatialInvocationResultWrites(
-    const runtime::SpatialInvocationWire &wire,
-    const ImportedSpatialSimulationInputs &inputs,
-    const SpatialFunctionalObservations &observations) {
-  const SpatialSimulationWorkload *spatial = inputs.workload.spatial();
+projectResultWrites(const runtime::SpatialInvocationWire &wire,
+                    const dataflow::CanonicalDataflowArtifact &dataflow,
+                    const CanonicalSimulationWorkload &workload,
+                    const SpatialFunctionalObservations &observations) {
+  const SpatialSimulationWorkload *spatial = workload.spatial();
   if (!spatial)
     return invalid("workload lost its Spatial payload");
-  auto view = inputs.dataflow.view();
+  auto view = dataflow.view();
   if (!view)
     return view.takeError();
   auto shapes =
@@ -207,6 +215,26 @@ projectSpatialInvocationResultWrites(
         {wire.results[ordinal].address, packLittleEndianBits(*packed)});
   }
   return writes;
+}
+
+} // namespace
+
+llvm::Expected<std::vector<SpatialInvocationMemoryWrite>>
+projectSpatialInvocationResultWrites(
+    const runtime::SpatialInvocationWire &wire,
+    const ImportedSpatialSimulationInputs &inputs,
+    const SpatialFunctionalObservations &observations) {
+  return projectResultWrites(wire, inputs.dataflow, inputs.workload,
+                             observations);
+}
+
+llvm::Expected<std::vector<SpatialInvocationMemoryWrite>>
+projectSpatialInvocationResultWrites(
+    const runtime::SpatialInvocationWire &wire,
+    const ImportedSpatialSimulationWorkload &workload,
+    const SpatialFunctionalObservations &observations) {
+  return projectResultWrites(wire, workload.dataflow, workload.workload,
+                             observations);
 }
 
 } // namespace loom::sim

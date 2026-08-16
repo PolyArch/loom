@@ -23,10 +23,12 @@ TEST_RUN_ROOT = REPOSITORY_ROOT / "build" / "test-runs"
 
 WIRE_MAGIC = b"LGB1"
 RESULT_MAGIC = b"LGR1"
+RESULT_COLLECTION_MAGIC = b"LGC1"
 SPATIAL_LAUNCH_MAGIC = b"LGL1"
 INVOCATION_RESULT_MAGIC = b"LGX1"
 WIRE_HEADER = struct.Struct(">4sIQQ")
 RESULT_HEADER = struct.Struct(">4sIQQQ")
+RESULT_COLLECTION_HEADER = struct.Struct(">4sQ")
 SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQ")
 INVOCATION_RESULT_HEADER = struct.Struct("<4sQQ")
 MEMORY_REQUEST_HEADER = struct.Struct(">IQQQQ")
@@ -368,15 +370,30 @@ def binary_digest(path: pathlib.Path) -> str:
     return digest.hexdigest()
 
 
-def decode_bridge_result(path: pathlib.Path) -> tuple[int, int, int, bytes]:
+def decode_bridge_results(path: pathlib.Path) -> list[tuple[int, int, int, bytes]]:
     data = path.read_bytes()
-    if len(data) < RESULT_HEADER.size:
-        raise RuntimeError("bridge result is truncated")
-    magic, status, completion_tick, sequence, payload_size = RESULT_HEADER.unpack_from(data)
-    payload = data[RESULT_HEADER.size :]
-    if magic != RESULT_MAGIC or payload_size != len(payload):
-        raise RuntimeError("bridge result is not canonical")
-    return status, completion_tick, sequence, payload
+    if len(data) < RESULT_COLLECTION_HEADER.size:
+        raise RuntimeError("bridge result collection is truncated")
+    magic, count = RESULT_COLLECTION_HEADER.unpack_from(data)
+    if magic != RESULT_COLLECTION_MAGIC:
+        raise RuntimeError("bridge result collection has the wrong magic")
+    offset = RESULT_COLLECTION_HEADER.size
+    results = []
+    for _ in range(count):
+        if len(data) - offset < RESULT_HEADER.size:
+            raise RuntimeError("bridge result collection member is truncated")
+        magic, status, completion_tick, sequence, payload_size = (
+            RESULT_HEADER.unpack_from(data, offset)
+        )
+        offset += RESULT_HEADER.size
+        payload = data[offset : offset + payload_size]
+        offset += payload_size
+        if magic != RESULT_MAGIC or len(payload) != payload_size:
+            raise RuntimeError("bridge result collection member is not canonical")
+        results.append((status, completion_tick, sequence, payload))
+    if offset != len(data):
+        raise RuntimeError("bridge result collection has trailing bytes")
+    return results
 
 
 def run_smoke(arguments: argparse.Namespace) -> int:
@@ -465,7 +482,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             for ordinal in range(2)
         ]
         projection = {
-            "schema": "loom.gem5_system_projection.5",
+            "schema": "loom.gem5_system_projection.6",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
             "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns"},
@@ -545,6 +562,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "engine_command": engine_commands[0],
                     "result_path": str(bridge_result_paths[0]),
                     "maximum_message_bytes": 1048576,
+                    "maximum_invocations": 16,
                 },
                 {
                     "pio_address": SECOND_BRIDGE_ADDRESS,
@@ -554,6 +572,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "engine_command": engine_commands[1],
                     "result_path": str(bridge_result_paths[1]),
                     "maximum_message_bytes": 1048576,
+                    "maximum_invocations": 16,
                 },
             ],
             "maximum_ticks": 100000000,
@@ -593,9 +612,10 @@ def run_smoke(arguments: argparse.Namespace) -> int:
         for bridge_result_path, engine_trace_path in zip(
             bridge_result_paths, engine_trace_paths, strict=True
         ):
-            status, completion_tick, sequence, result = decode_bridge_result(
-                bridge_result_path
-            )
+            bridge_results = decode_bridge_results(bridge_result_path)
+            if len(bridge_results) != 1:
+                raise RuntimeError("Spatial bridge did not publish one invocation")
+            status, completion_tick, sequence, result = bridge_results[0]
             invocation, boundary_result = decode_invocation_result(result)
             if (
                 status != 0

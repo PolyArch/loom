@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the source-to-Deployment scalar product execution contract."""
+"""Validate one source-to-Deployment product execution contract."""
 
 from __future__ import annotations
 
@@ -80,7 +80,9 @@ def one_invocation(
     return rows[0]
 
 
-def validate_mapping_work(events: list[dict[str, Any]]) -> None:
+def validate_mapping_work(
+    events: list[dict[str, Any]], minimum_spatial_negotiations: int
+) -> None:
     tech_ends = matching_payloads(
         events, stage="tech_mapping", event="invocation_end"
     )
@@ -120,6 +122,11 @@ def validate_mapping_work(events: list[dict[str, Any]]) -> None:
                 f"{name} search did not finalize exactly one result")
     require(system.get("final_verification_attempts") == 1,
             "System search skipped independent candidate verification")
+    require(
+        spatial.get("negotiation_iteration_slots", 0)
+        >= minimum_spatial_negotiations,
+        "Spatial search did not exercise the required routing work",
+    )
 
 
 def validate_reference(value: Any, context: str) -> None:
@@ -130,7 +137,12 @@ def validate_reference(value: Any, context: str) -> None:
             f"{context} has an invalid artifact identity")
 
 
-def validate_manifest(manifest: dict[str, Any]) -> None:
+def validate_manifest(
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    spatial_invocations: int,
+    required_dataflow_text: list[str],
+) -> None:
     require(manifest.get("schema") == "loom.execution_matrix_workspace.1.0",
             "execution workspace has the wrong schema")
     for field in ("deployment", "workload", "runtime_input", "gem5_binding"):
@@ -140,15 +152,29 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
 
     runs = manifest.get("runs")
     require(isinstance(runs, list), "execution workspace runs must be an array")
-    expected = {
-        ("system", "dfg"),
-        ("system", "cgra"),
-        ("spatial", "dfg"),
-        ("spatial", "cgra"),
-    }
-    actual = {(run.get("scope"), run.get("engine")) for run in runs}
-    require(len(runs) == 4 and actual == expected,
-            "execution workspace does not contain the exact four core cells")
+    system_runs = [run for run in runs if run.get("scope") == "system"]
+    spatial_runs = [run for run in runs if run.get("scope") == "spatial"]
+    require(
+        len(system_runs) == 2
+        and {run.get("engine") for run in system_runs} == {"dfg", "cgra"},
+        "execution workspace does not contain both System cells",
+    )
+    require(
+        len(spatial_runs) == spatial_invocations * 2,
+        "execution workspace has the wrong Spatial invocation count",
+    )
+    for ordinal in range(spatial_invocations):
+        invocation_runs = [
+            run
+            for run in spatial_runs
+            if run.get("invocation_ordinal") == ordinal
+        ]
+        require(
+            len(invocation_runs) == 2
+            and {run.get("engine") for run in invocation_runs}
+            == {"dfg", "cgra"},
+            f"Spatial invocation {ordinal} lacks both execution cells",
+        )
     for run in runs:
         label = f"{run.get('scope')}/{run.get('engine')}"
         for field in ("request", "evidence", "execution"):
@@ -163,14 +189,46 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
                         for field in ("entry_tick", "exit_tick", "terminal_tick")),
                     f"{label} lacks exact gem5 ticks")
 
+    dataflow_identities = {
+        run["dataflow"]["artifact"] for run in spatial_runs
+    }
+    require(
+        len(dataflow_identities) == 1,
+        "Spatial invocations do not share one exact Dataflow artifact",
+    )
+    dataflow_path = manifest_path.parent / "objects" / next(
+        iter(dataflow_identities)
+    )
+    dataflow = dataflow_path.read_bytes()
+    for text in required_dataflow_text:
+        require(
+            text.encode("ascii") in dataflow,
+            f"canonical Dataflow does not contain {text}",
+        )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--diagnostics", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--spatial-invocations", type=int, default=1)
+    parser.add_argument("--minimum-spatial-negotiations", type=int, default=0)
+    parser.add_argument("--required-dataflow-text", action="append", default=[])
     arguments = parser.parse_args()
-    validate_mapping_work(read_diagnostics(arguments.diagnostics))
-    validate_manifest(read_json(arguments.manifest))
+    require(arguments.spatial_invocations > 0,
+            "Spatial invocation count must be positive")
+    require(arguments.minimum_spatial_negotiations >= 0,
+            "minimum Spatial negotiation count cannot be negative")
+    validate_mapping_work(
+        read_diagnostics(arguments.diagnostics),
+        arguments.minimum_spatial_negotiations,
+    )
+    validate_manifest(
+        read_json(arguments.manifest),
+        arguments.manifest,
+        arguments.spatial_invocations,
+        arguments.required_dataflow_text,
+    )
 
 
 if __name__ == "__main__":

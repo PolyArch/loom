@@ -1,7 +1,10 @@
 # REQUIRES: gem5-25.1.0.1
 # RUN: rm -rf %t.deployment %t.execution
+# RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
+# RUN:   %S/Inputs/product_branch_select.c -o %t.native
+# RUN: %t.native
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc -std=c11 -O1 -ffp-contract=off \
-# RUN:   -fno-math-errno %S/Inputs/product_scalar.c -o %t.elf \
+# RUN:   -fno-math-errno %S/Inputs/product_branch_select.c -o %t.elf \
 # RUN:   --loom-deploy-output=%t.deployment > %t.build.stdout \
 # RUN:   2> %t.build.stderr
 # RUN: env LOOM_VERBOSE_LEVEL=1 loom-system-run \
@@ -9,4 +12,7 @@
 # RUN:   --gem5-readiness=%loom-gem5-readiness --expected-i32=0 \
 # RUN:   > %t.run.stdout 2> %t.run.stderr
 # RUN: %python %S/verify_product_execution.py \
-# RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json
+# RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
+# RUN:   --spatial-invocations=2 --minimum-spatial-negotiations=2 \
+# RUN:   --required-dataflow-text=arith.cmpi \
+# RUN:   --required-dataflow-text=arith.select

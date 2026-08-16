@@ -68,6 +68,7 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
       pioDelay(params.pio_latency), engineSocketPath(params.engine_socket),
       resultPath(params.result_path),
       maximumMessageBytes(params.max_message_bytes),
+      maximumInvocations(params.max_invocations),
       launchEvent([this] { fetchStaticLaunch(); }, name() + ".launch"),
       staticLaunchCompletionEvent([this] { fetchInvocation(); },
                                   name() + ".static_launch_completion"),
@@ -84,6 +85,8 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
   panic_if(maximumMessageBytes >
                static_cast<std::uint64_t>(std::numeric_limits<int>::max()),
            "LoomSpatialBridge message limit exceeds the DMA size domain");
+  panic_if(maximumInvocations == 0,
+           "LoomSpatialBridge invocation limit must be positive");
 }
 
 LoomSpatialBridge::~LoomSpatialBridge() {
@@ -198,6 +201,8 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
   } else if (value & gem5SpatialBridgeStart) {
     if (state != State::Idle && state != State::Complete)
       fail(3, "launch requested while the bridge is not idle");
+    else if (nextSequence >= maximumInvocations)
+      fail(20, "launch count exceeds the bridge session limit");
     else if (!launchFitsMessageLimit(staticLaunchSize, invocationSize,
                                      maximumMessageBytes)) {
       fail(17, "launch payload size is outside the bridge limit");
@@ -392,10 +397,18 @@ void LoomSpatialBridge::completeMemoryRequest() {
 
 void LoomSpatialBridge::completeInvocation() {
   lastCompletionTick = curTick();
+  panic_if(completedResults.results.size() != nextSequence,
+           "LoomSpatialBridge result sequence is not dense");
+  completedResults.results.push_back({pendingCompletion.status,
+                                      lastCompletionTick, nextSequence,
+                                      pendingCompletion.result});
   const std::vector<std::uint8_t> normalized =
-      loom::runtime::encodeGem5BridgeResult({pendingCompletion.status,
-                                             lastCompletionTick, nextSequence,
-                                             pendingCompletion.result});
+      loom::runtime::encodeGem5BridgeResultCollection(completedResults);
+  if (normalized.size() > maximumMessageBytes) {
+    completedResults.results.pop_back();
+    fail(21, "normalized result collection exceeds the bridge limit");
+    return;
+  }
   std::ofstream output(resultPath, std::ios::binary | std::ios::trunc);
   if (!output) {
     fail(15, "could not create the normalized result");

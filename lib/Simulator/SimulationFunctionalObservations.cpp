@@ -60,8 +60,8 @@ llvm::Expected<std::optional<ImportedMemoryProjection>>
 validateMemoryObservation(const SpatialMemoryObservable &observable,
                           const MemoryObservationPayload &payload,
                           const SpatialExecutionContext &context) {
-  const auto &workload = *context.inputs->workload.spatial();
-  const auto &runtime = *context.inputs->runtimeInput.spatial();
+  const auto &workload = *context.workload->spatial();
+  const auto &runtime = *context.runtimeInput->spatial();
   llvm::Expected<dataflow::LogicalMemoryRootOrViewRef> role =
       resolveObservableRole(observable.target, workload, context.dataflowView);
   if (!role)
@@ -242,10 +242,9 @@ graphActors(const SpatialExecutionContext &context) {
 llvm::Error validateSpatialFunctionalObservations(
     const SpatialFunctionalObservations &observations,
     const ExecutionTerminal &terminal, const SpatialExecutionContext &context) {
-  const SpatialSimulationWorkload &workload =
-      *context.inputs->workload.spatial();
+  const SpatialSimulationWorkload &workload = *context.workload->spatial();
   const SpatialSimulationRuntimeInput &runtime =
-      *context.inputs->runtimeInput.spatial();
+      *context.runtimeInput->spatial();
   const SpatialObservableContract &contract = workload.observableContract;
   if (observations.valueResults.size() != contract.valueResults.size() ||
       observations.streamOutputs.size() != contract.streamOutputs.size() ||
@@ -305,7 +304,7 @@ void encodeSpatialFunctionalObservations(
     WireWriter &writer, const SpatialFunctionalObservations &observations,
     const SpatialExecutionContext &context) {
   const SpatialObservableContract &contract =
-      context.inputs->workload.spatial()->observableContract;
+      context.workload->spatial()->observableContract;
   writer.u64(observations.valueResults.size());
   for (std::size_t index = 0; index < observations.valueResults.size();
        ++index) {
@@ -336,7 +335,7 @@ llvm::Expected<SpatialFunctionalObservations>
 decodeSpatialFunctionalObservations(WireReader &reader,
                                     const SpatialExecutionContext &context) {
   const SpatialObservableContract &contract =
-      context.inputs->workload.spatial()->observableContract;
+      context.workload->spatial()->observableContract;
   SpatialFunctionalObservations observations;
   llvm::Expected<std::uint64_t> valueCount = reader.u64();
   if (!valueCount)
