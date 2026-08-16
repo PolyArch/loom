@@ -767,11 +767,12 @@ void canonicalPublicationAndStrictImport() {
               sharedStatistics.cacheHits == 1 &&
               sharedStatistics.importRequests == 2 &&
               sharedStatistics.uniqueConstructions == 1 &&
+              sharedStatistics.revalidationCount == 2 &&
               sharedStatistics.bytesRead ==
-                  firstResult.canonicalBytes().bytes().size() &&
+                  2 * firstResult.canonicalBytes().bytes().size() &&
               sharedStatistics.bytesCopied == sharedStatistics.bytesRead &&
               sharedStatistics.entryCount == 1 &&
-              sharedStatistics.deterministicWork == 2 &&
+              sharedStatistics.deterministicWork == 3 &&
               sharedStatistics.retainedPayloadBytes != 0,
           "invocation-local strict import statistics are incomplete");
 
@@ -790,9 +791,11 @@ void canonicalPublicationAndStrictImport() {
               isolatedStatistics.cacheHits == 0 &&
               isolatedStatistics.importRequests == 1 &&
               isolatedStatistics.uniqueConstructions == 1 &&
+              isolatedStatistics.revalidationCount == 1 &&
               isolatedStatistics.bytesRead ==
                   firstResult.canonicalBytes().bytes().size() &&
-              isolatedStatistics.entryCount == 1,
+              isolatedStatistics.entryCount == 1 &&
+              isolatedStatistics.deterministicWork == 2,
           "isolated strict import reused an enclosing result");
 }
 

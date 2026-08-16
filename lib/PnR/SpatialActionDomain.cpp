@@ -218,7 +218,9 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   routeSubtreeHasSink_.clear();
   resourceAnchors_.clear();
   resourceChoices_.clear();
-  movableDecisionCount_ = 0;
+  realizationMovableDecisionCount_ = 0;
+  transportMovableDecisionCount_ = 0;
+  resourceMovableDecisionCount_ = 0;
   realizationAnchors_.reserve(realizationAnchorCapacity);
   realizationChoices_.reserve(realizationChoiceCapacity);
   transportAnchors_.reserve(*transportAnchorCapacity);
@@ -229,6 +231,69 @@ SpatialActionDomainScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   resourceAnchors_.reserve(resourceAnchorCapacity);
   resourceChoices_.reserve(resourceChoiceCapacity);
   relationChoices_.resize(relations.decisionCount());
+  relationValueOffsets_.clear();
+  relationValues_.clear();
+  relationDistinctValueCounts_.clear();
+  rootClosedRelations_.clear();
+  relationValueOffsets_.reserve(relations.relations().relations().size() + 1);
+  relationDistinctValueCounts_.reserve(
+      relations.relations().relations().size());
+  rootClosedRelations_.reserve(relations.relations().relations().size());
+  relationValueOffsets_.push_back(0);
+  const auto decisionChoiceOffsets =
+      relations.relations().decisionChoiceOffsets();
+  for (const detail::InitializerRelationRecord &relation :
+       relations.relations().relations()) {
+    std::vector<PnrIndex> values;
+    bool rootClosed = true;
+    for (const detail::InitializerRelationMember &member :
+         relations.relations().members(relation)) {
+      rootClosed &= member.decision < relations.portDecisionOffset();
+      const PnrIndex choiceCount = decisionChoiceOffsets[member.decision + 1] -
+                                   decisionChoiceOffsets[member.decision];
+      values.reserve(values.size() + choiceCount);
+      for (PnrIndex choice = 0; choice < choiceCount; ++choice)
+        values.push_back(relations.relations().projectedValue(member, choice));
+    }
+    llvm::sort(values);
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+    if (values.empty())
+      return invalid("binding relation has no projected values");
+    if (values.size() > relationValues_.max_size() - relationValues_.size())
+      return invalid("binding relation value index exceeds host size_t");
+    relationValues_.insert(relationValues_.end(), values.begin(), values.end());
+    relationValueOffsets_.push_back(relationValues_.size());
+    relationDistinctValueCounts_.push_back(0);
+    rootClosedRelations_.push_back(rootClosed ? 1 : 0);
+  }
+  relationValueLoads_.resize(relationValues_.size());
+  relationDecisionMemberOffsets_.clear();
+  relationDecisionMembers_.clear();
+  relationDecisionMemberOffsets_.reserve(
+      relations.relations().decisionRelations().size() + 1);
+  relationDecisionMemberOffsets_.push_back(0);
+  const auto relationIncidenceOffsets =
+      relations.relations().decisionRelationOffsets();
+  const auto relationIncidences = relations.relations().decisionRelations();
+  for (PnrIndex decision = 0; decision < relations.decisionCount();
+       ++decision) {
+    for (PnrIndex incidence = relationIncidenceOffsets[decision];
+         incidence < relationIncidenceOffsets[decision + 1]; ++incidence) {
+      const PnrIndex relationOrdinal = relationIncidences[incidence];
+      for (const detail::InitializerRelationMember &member :
+           relations.relations().members(
+               relations.relations().relations()[relationOrdinal]))
+        if (member.decision == decision)
+          relationDecisionMembers_.push_back(
+              {member.projectedValueOffset, member.demand});
+      if (relationDecisionMemberOffsets_.back() ==
+          relationDecisionMembers_.size())
+        return invalid("binding relation incidence has no matching member");
+      relationDecisionMemberOffsets_.push_back(relationDecisionMembers_.size());
+    }
+  }
+  if (relationDecisionMemberOffsets_.size() != relationIncidences.size() + 1)
+    return invalid("binding relation incidence index is incomplete");
   logicalMemoryChoices_.resize(maximumLogicalMemoryChoiceCapacity);
   if (!memoryConstraintScratch_)
     memoryConstraintScratch_ =
@@ -254,7 +319,11 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
   routeRootEndpoints_.clear();
   resourceAnchors_.clear();
   resourceChoices_.clear();
-  movableDecisionCount_ = 0;
+  realizationMovableDecisionCount_ = 0;
+  transportMovableDecisionCount_ = 0;
+  resourceMovableDecisionCount_ = 0;
+  examinedRealizationChoiceCount_ = 0;
+  fixedRelationPrunedRealizationChoiceCount_ = 0;
 
   const auto currentRelationChoices =
       llvm::ArrayRef(candidate.bindingRelationChoices_);
@@ -265,6 +334,59 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
 
   const detail::SpatialBindingRelationModel &relations =
       preparedProblem_->bindingRelations();
+  const detail::InitializerRelationModel &relationModel = relations.relations();
+  if (relationValueOffsets_.size() != relationModel.relations().size() + 1 ||
+      relationDistinctValueCounts_.size() != relationModel.relations().size() ||
+      rootClosedRelations_.size() != relationModel.relations().size() ||
+      relationValueLoads_.size() != relationValues_.size() ||
+      relationDecisionMemberOffsets_.size() !=
+          relationModel.decisionRelations().size() + 1)
+    return invalid("binding relation scratch shape is malformed");
+  std::fill(relationValueLoads_.begin(), relationValueLoads_.end(), 0);
+  std::fill(relationDistinctValueCounts_.begin(),
+            relationDistinctValueCounts_.end(), 0);
+  for (PnrIndex relationOrdinal = 0;
+       relationOrdinal < relationModel.relations().size(); ++relationOrdinal) {
+    const detail::InitializerRelationRecord &relation =
+        relationModel.relations()[relationOrdinal];
+    const auto values = llvm::ArrayRef(relationValues_)
+                            .slice(relationValueOffsets_[relationOrdinal],
+                                   relationValueOffsets_[relationOrdinal + 1] -
+                                       relationValueOffsets_[relationOrdinal]);
+    auto loads = llvm::MutableArrayRef(relationValueLoads_)
+                     .slice(relationValueOffsets_[relationOrdinal],
+                            relationValueOffsets_[relationOrdinal + 1] -
+                                relationValueOffsets_[relationOrdinal]);
+    const auto capacities = relationModel.valueCapacities(relation);
+    for (const detail::InitializerRelationMember &member :
+         relationModel.members(relation)) {
+      const PnrIndex rawValue = relationModel.projectedValue(
+          member, relationChoices_[member.decision]);
+      const auto found = llvm::lower_bound(values, rawValue);
+      if (found == values.end() || *found != rawValue)
+        return invalid("binding relation value index is incomplete");
+      const std::size_t value =
+          static_cast<std::size_t>(found - values.begin());
+      const std::uint64_t demand =
+          relation.kind == detail::InitializerRelationKind::Capacity
+              ? member.demand
+              : 1;
+      if (loads[value] == 0)
+        ++relationDistinctValueCounts_[relationOrdinal];
+      if (demand > std::numeric_limits<std::uint64_t>::max() - loads[value])
+        return invalid("binding relation load overflows u64");
+      loads[value] += demand;
+      if (relation.kind == detail::InitializerRelationKind::Disjoint &&
+          loads[value] != 1)
+        return invalid("candidate violates a disjoint binding relation");
+      if (relation.kind == detail::InitializerRelationKind::Capacity &&
+          (value >= capacities.size() || loads[value] > capacities[value]))
+        return invalid("candidate violates a binding capacity relation");
+    }
+    if (relation.kind == detail::InitializerRelationKind::Equal &&
+        relationDistinctValueCounts_[relationOrdinal] != 1)
+      return invalid("candidate violates an equal binding relation");
+  }
   const auto appendRealizationRange = [&](std::size_t offset) -> llvm::Error {
     if (realizationChoices_.size() == offset)
       return llvm::Error::success();
@@ -278,24 +400,92 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     if (!checkedCount)
       return checkedCount.takeError();
     realizationAnchors_.push_back({*checkedOffset, *checkedCount});
-    if (movableDecisionCount_ == std::numeric_limits<std::uint64_t>::max())
+    if (realizationMovableDecisionCount_ ==
+        std::numeric_limits<std::uint64_t>::max())
       return invalid("movable decision count overflows u64");
-    ++movableDecisionCount_;
+    ++realizationMovableDecisionCount_;
     return llvm::Error::success();
   };
-  const auto relationChoiceIsLegal =
-      [&](PnrIndex decision, PnrIndex localChoice, bool constraintsOnly) {
-        const PnrIndex oldChoice = relationChoices_[decision];
-        relationChoices_[decision] = localChoice;
-        const bool legal = llvm::all_of(
-            relations.decisionRelations(decision), [&](PnrIndex relation) {
-              if (constraintsOnly && !relations.relationIsConstraint(relation))
-                return true;
-              return relations.relationSatisfied(relation, relationChoices_);
-            });
-        relationChoices_[decision] = oldChoice;
+  const auto relationChoiceIsLegal = [&](PnrIndex decision,
+                                         PnrIndex localChoice,
+                                         bool constraintsOnly) {
+    const PnrIndex oldChoice = relationChoices_[decision];
+    const auto decisionRelationOffsets =
+        relationModel.decisionRelationOffsets();
+    for (auto incidenceRecord :
+         llvm::enumerate(relations.decisionRelations(decision))) {
+      const std::size_t localIncidence = incidenceRecord.index();
+      const PnrIndex relationOrdinal = incidenceRecord.value();
+      if (constraintsOnly && !relations.relationIsConstraint(relationOrdinal) &&
+          !rootClosedRelations_[relationOrdinal])
+        continue;
+      const detail::InitializerRelationRecord &relation =
+          relationModel.relations()[relationOrdinal];
+      const auto values =
+          llvm::ArrayRef(relationValues_)
+              .slice(relationValueOffsets_[relationOrdinal],
+                     relationValueOffsets_[relationOrdinal + 1] -
+                         relationValueOffsets_[relationOrdinal]);
+      auto loads = llvm::MutableArrayRef(relationValueLoads_)
+                       .slice(relationValueOffsets_[relationOrdinal],
+                              relationValueOffsets_[relationOrdinal + 1] -
+                                  relationValueOffsets_[relationOrdinal]);
+      const auto capacities = relationModel.valueCapacities(relation);
+      const std::size_t incidence =
+          decisionRelationOffsets[decision] + localIncidence;
+      const auto changedMembers =
+          llvm::ArrayRef(relationDecisionMembers_)
+              .slice(relationDecisionMemberOffsets_[incidence],
+                     relationDecisionMemberOffsets_[incidence + 1] -
+                         relationDecisionMemberOffsets_[incidence]);
+      const auto update = [&](PnrIndex choice, bool add) {
+        bool legal = true;
+        for (const RelationDecisionMember &record : changedMembers) {
+          const detail::InitializerRelationMember member{
+              decision, record.projectedValueOffset, record.demand};
+          const PnrIndex rawValue =
+              relationModel.projectedValue(member, choice);
+          const auto found = llvm::lower_bound(values, rawValue);
+          assert(found != values.end() && *found == rawValue);
+          const std::size_t value =
+              static_cast<std::size_t>(found - values.begin());
+          const std::uint64_t demand =
+              relation.kind == detail::InitializerRelationKind::Capacity
+                  ? record.demand
+                  : 1;
+          if (add) {
+            assert(demand <=
+                   std::numeric_limits<std::uint64_t>::max() - loads[value]);
+            if (loads[value] == 0)
+              ++relationDistinctValueCounts_[relationOrdinal];
+            loads[value] += demand;
+            if (relation.kind == detail::InitializerRelationKind::Disjoint &&
+                loads[value] != 1)
+              legal = false;
+            if (relation.kind == detail::InitializerRelationKind::Capacity &&
+                loads[value] > capacities[value])
+              legal = false;
+          } else {
+            assert(loads[value] >= demand);
+            loads[value] -= demand;
+            if (loads[value] == 0)
+              --relationDistinctValueCounts_[relationOrdinal];
+          }
+        }
         return legal;
       };
+      update(oldChoice, false);
+      bool legal = update(localChoice, true);
+      if (relation.kind == detail::InitializerRelationKind::Equal &&
+          relationDistinctValueCounts_[relationOrdinal] != 1)
+        legal = false;
+      update(localChoice, false);
+      update(oldChoice, true);
+      if (!legal)
+        return false;
+    }
+    return true;
+  };
 
   const auto &realizations = preparedProblem_->realizations();
   for (PnrIndex realization = 0;
@@ -304,11 +494,15 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     const auto choices = relations.computeChoices(realization);
     for (auto [localChoice, choice] : llvm::enumerate(choices)) {
       const auto &current = candidate.computeBinding(realization);
-      if ((current.placement == choice.placement &&
-           current.instructionContext == choice.instructionContext) ||
-          !relationChoiceIsLegal(realization,
-                                 static_cast<PnrIndex>(localChoice), true))
+      if (current.placement == choice.placement &&
+          current.instructionContext == choice.instructionContext)
         continue;
+      ++examinedRealizationChoiceCount_;
+      if (!relationChoiceIsLegal(realization,
+                                 static_cast<PnrIndex>(localChoice), true)) {
+        ++fixedRelationPrunedRealizationChoiceCount_;
+        continue;
+      }
       realizationChoices_.emplace_back(SpatialComputeBindingAction{
           realization, choice.placement, choice.instructionContext});
     }
@@ -321,10 +515,14 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     const std::size_t offset = realizationChoices_.size();
     const auto choices = relations.memoryChoices(realization);
     for (auto [localChoice, choice] : llvm::enumerate(choices)) {
-      if (candidate.memoryBinding(realization).placement == choice.placement ||
-          !relationChoiceIsLegal(memoryDecisionOffset + realization,
-                                 static_cast<PnrIndex>(localChoice), true))
+      if (candidate.memoryBinding(realization).placement == choice.placement)
         continue;
+      ++examinedRealizationChoiceCount_;
+      if (!relationChoiceIsLegal(memoryDecisionOffset + realization,
+                                 static_cast<PnrIndex>(localChoice), true)) {
+        ++fixedRelationPrunedRealizationChoiceCount_;
+        continue;
+      }
       realizationChoices_.emplace_back(
           SpatialMemoryBindingAction{realization, choice.placement});
     }
@@ -410,10 +608,7 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     if (llvm::Error error = appendTransportRange(offset))
       return error;
   }
-  if (externalNetCount >
-      std::numeric_limits<std::uint64_t>::max() - movableDecisionCount_)
-    return invalid("movable decision count overflows u64");
-  movableDecisionCount_ += externalNetCount;
+  transportMovableDecisionCount_ = externalNetCount;
 
   for (PnrIndex logicalNet = 0; logicalNet < transfers.logicalNets().size();
        ++logicalNet) {
@@ -499,9 +694,10 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
     if (!checkedCount)
       return checkedCount.takeError();
     resourceAnchors_.push_back({*checkedOffset, *checkedCount});
-    if (movableDecisionCount_ == std::numeric_limits<std::uint64_t>::max())
+    if (resourceMovableDecisionCount_ ==
+        std::numeric_limits<std::uint64_t>::max())
       return invalid("movable decision count overflows u64");
-    ++movableDecisionCount_;
+    ++resourceMovableDecisionCount_;
     return llvm::Error::success();
   };
 
@@ -696,11 +892,33 @@ SpatialActionDomainScratch::propose(
   return detail::proposeCanonicalSpatialAction(policy, view(), proposalStream);
 }
 
+std::uint64_t SpatialActionDomainScratch::movableDecisionCount() const {
+  return realizationMovableDecisionCount_ + transportMovableDecisionCount_ +
+         resourceMovableDecisionCount_;
+}
+
+std::uint64_t SpatialActionDomainScratch::selectableMovableDecisionCount(
+    const ResolvedPnrActionProposalPolicy &policy) const {
+  return (policy.realizationBindingWeight != 0
+              ? realizationMovableDecisionCount_
+              : 0) +
+         (policy.transportRoutingWeight != 0 ? transportMovableDecisionCount_
+                                             : 0) +
+         (policy.resourceAllocationWeight != 0 ? resourceMovableDecisionCount_
+                                               : 0);
+}
+
 std::size_t SpatialActionDomainScratch::retainedStorageBytes() const {
   return retainedBytes(realizationAnchors_) +
          retainedBytes(realizationChoices_) + retainedBytes(transportAnchors_) +
          retainedBytes(transportChoices_) + retainedBytes(resourceAnchors_) +
          retainedBytes(resourceChoices_) + retainedBytes(relationChoices_) +
+         retainedBytes(relationValueOffsets_) + retainedBytes(relationValues_) +
+         retainedBytes(relationValueLoads_) +
+         retainedBytes(relationDistinctValueCounts_) +
+         retainedBytes(rootClosedRelations_) +
+         retainedBytes(relationDecisionMemberOffsets_) +
+         retainedBytes(relationDecisionMembers_) +
          retainedBytes(logicalMemoryChoices_) +
          retainedBytes(routeRootEndpoints_) +
          retainedBytes(routeSubtreeSlots_) +

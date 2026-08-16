@@ -34,6 +34,7 @@
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -402,6 +403,13 @@ void reportJointOutputs(const DsePlanExecutionOutcome &outcome,
 }
 
 llvm::Expected<int> run() {
+  loom::fabric::FabricArtifactImportSession fabricImportSession;
+  llvm::scope_exit emitFabricImportStatistics([&] {
+    loom::fabric::emitFabricArtifactImportSessionStatistics(
+        loom::fabric::FabricArtifactImportVerificationDomain::SourceInvocation,
+        loom::InvocationDiagnosticStage::SpatialPnr,
+        fabricImportSession.statistics());
+  });
   if (progressIntervalMilliseconds == 0)
     return invalid("progress interval must be positive");
   if (prepareOnly && localToolConfigPath.empty())

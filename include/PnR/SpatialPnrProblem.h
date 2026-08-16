@@ -398,6 +398,15 @@ public:
   llvm::ArrayRef<PnrIndex> endpointAttachmentOptions() const {
     return endpointAttachmentOptions_;
   }
+  std::uint64_t computeAttachmentClassLookupCount() const {
+    return computeAttachmentClassLookupCount_;
+  }
+  std::uint64_t computeAttachmentClassHitCount() const {
+    return computeAttachmentClassHitCount_;
+  }
+  std::uint64_t computeAttachmentClassMissCount() const {
+    return computeAttachmentClassMissCount_;
+  }
 
 private:
   std::vector<FrozenSpatialPortDemand> portDemands_;
@@ -410,6 +419,9 @@ private:
   std::vector<PnrIndex> memoryRealizationDemands_;
   std::vector<PnrIndex> endpointAttachmentOffsets_;
   std::vector<PnrIndex> endpointAttachmentOptions_;
+  std::uint64_t computeAttachmentClassLookupCount_ = 0;
+  std::uint64_t computeAttachmentClassHitCount_ = 0;
+  std::uint64_t computeAttachmentClassMissCount_ = 0;
 
   friend class FrozenSpatialPortIndexBuilder;
 };
@@ -996,11 +1008,17 @@ private:
 struct FrozenSpatialHandshakeArc final {
   PnrIndex source = 0;
   PnrIndex destination = 0;
+
+  friend bool operator==(const FrozenSpatialHandshakeArc &lhs,
+                         const FrozenSpatialHandshakeArc &rhs) {
+    return lhs.source == rhs.source && lhs.destination == rhs.destination;
+  }
 };
 
 struct FrozenSpatialHandshakeFragment final {
-  PnrIndex contributionOffset = 0;
-  PnrIndex contributionCount = 0;
+  PnrIndex owner = 0;
+  std::uint32_t localFragment = 0;
+  std::uint32_t contributionCount = 0;
 };
 
 struct FrozenSpatialHandshakeAllTraversalGroup final {
@@ -1049,40 +1067,17 @@ struct FrozenSpatialMemoryOperationHandshakePlan final {
   std::optional<std::uint32_t> issueLatencyCycles;
 };
 
-/// One immutable, cache-oriented flattening of the Fabric-owned handshake
-/// owner models. Persistent references are retained only in the node reverse
-/// table for cold diagnostics and final projection; every search incidence is
-/// expressed with dense PnrIndex values.
+/// One immutable active-demand relation over shared Fabric-owned handshake
+/// models. It preserves every exact placement and routing alternative without
+/// flattening their potential nodes and arcs. Candidate state materializes
+/// only fragments selected by the current Mapping.
 class FrozenSpatialHandshakeIndex final {
 public:
-  PnrIndex nodeCount() const {
-    return static_cast<PnrIndex>(nodeSignals_.size());
-  }
-  llvm::ArrayRef<std::optional<::loom::fabric::HandshakeSignalRef>>
-  nodeSignals() const {
-    return nodeSignals_;
-  }
-  llvm::ArrayRef<FrozenSpatialHandshakeArc> arcs() const { return arcs_; }
-  llvm::ArrayRef<::loom::fabric::FabricHandshakeOwner> owners() const {
-    return owners_;
-  }
-  llvm::ArrayRef<PnrIndex> adjacencyOffsets() const {
-    return adjacencyOffsets_;
-  }
-  llvm::ArrayRef<PnrIndex> reverseAdjacencyOffsets() const {
-    return reverseAdjacencyOffsets_;
-  }
-  llvm::ArrayRef<PnrIndex> reverseArcOrdinals() const {
-    return reverseArcOrdinals_;
+  llvm::ArrayRef<::loom::fabric::HandshakeOwnerModel> ownerModels() const {
+    return ownerModels_;
   }
   llvm::ArrayRef<FrozenSpatialHandshakeFragment> fragments() const {
     return fragments_;
-  }
-  llvm::ArrayRef<PnrIndex> fragmentOwnerOrdinals() const {
-    return fragmentOwnerOrdinals_;
-  }
-  llvm::ArrayRef<PnrIndex> fragmentArcOrdinals() const {
-    return fragmentArcOrdinals_;
   }
   llvm::ArrayRef<PnrIndex> fixedFragments() const { return fixedFragments_; }
   llvm::ArrayRef<PnrIndex> traversalFragmentOffsets() const {
@@ -1140,15 +1135,8 @@ public:
   }
 
 private:
-  std::vector<std::optional<::loom::fabric::HandshakeSignalRef>> nodeSignals_;
-  std::vector<FrozenSpatialHandshakeArc> arcs_;
-  std::vector<::loom::fabric::FabricHandshakeOwner> owners_;
-  std::vector<PnrIndex> adjacencyOffsets_;
-  std::vector<PnrIndex> reverseAdjacencyOffsets_;
-  std::vector<PnrIndex> reverseArcOrdinals_;
+  std::vector<::loom::fabric::HandshakeOwnerModel> ownerModels_;
   std::vector<FrozenSpatialHandshakeFragment> fragments_;
-  std::vector<PnrIndex> fragmentOwnerOrdinals_;
-  std::vector<PnrIndex> fragmentArcOrdinals_;
   std::vector<PnrIndex> fixedFragments_;
   std::vector<PnrIndex> traversalFragmentOffsets_;
   std::vector<PnrIndex> traversalFragments_;
@@ -1206,13 +1194,15 @@ struct SpatialActiveProblemStatistics final {
   std::uint64_t localTransferOptionCount = 0;
   std::uint64_t portDemandCount = 0;
   std::uint64_t attachmentOptionCount = 0;
+  std::uint64_t computeAttachmentClassLookupCount = 0;
+  std::uint64_t computeAttachmentClassHitCount = 0;
+  std::uint64_t computeAttachmentClassMissCount = 0;
   std::uint64_t activeEndpointCount = 0;
   std::uint64_t activeTraversalCount = 0;
   std::uint64_t activeRoutingArcCount = 0;
   std::uint64_t handshakeOwnerCount = 0;
-  std::uint64_t handshakeNodeCount = 0;
-  std::uint64_t handshakeArcCount = 0;
-  std::uint64_t handshakeFragmentCount = 0;
+  std::uint64_t handshakePotentialFragmentCount = 0;
+  std::uint64_t handshakePotentialContributionCount = 0;
 };
 
 class FrozenSpatialPnrProblem final {

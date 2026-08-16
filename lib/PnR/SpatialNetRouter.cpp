@@ -110,6 +110,8 @@ SpatialNetRouterScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   }
   routeNodeTimingArrivals_.clear();
   routeNodeTimingArrivals_.reserve(endpointCount);
+  routeNodeTimingWorklist_.clear();
+  routeNodeTimingWorklist_.reserve(endpointCount);
   endpointMarks_.assign(endpointCount, 0);
   subtreeWorklist_.clear();
   subtreeWorklist_.reserve(endpointCount);
@@ -564,6 +566,14 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
 
     if (llvm::Error error = collectSourceFrontier(tree, source))
       return std::move(error);
+    auto timing = detail::projectSpatialLogicalNetPhysicalTiming(
+        candidate.problem(), logicalNet, tree,
+        candidate.registerFifoTransfer(logicalNet),
+        candidate.portAttachmentSelections(),
+        candidate.graphBoundaryAttachmentSelections(),
+        &routeNodeTimingArrivals_, &routeNodeTimingWorklist_);
+    if (!timing)
+      return timing.takeError();
     sourceTimingArrivalQuanta_.clear();
     if (tree.isUnrouted()) {
       auto arrival = detail::projectSpatialLogicalNetSourceArrival(
@@ -573,13 +583,6 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
         return arrival.takeError();
       sourceTimingArrivalQuanta_.assign(sourceEndpoints_.size(), *arrival);
     } else {
-      auto arrivals = detail::projectSpatialLogicalNetRouteNodeArrivals(
-          candidate.problem(), logicalNet, tree,
-          candidate.portAttachmentSelections(),
-          candidate.graphBoundaryAttachmentSelections());
-      if (!arrivals)
-        return arrivals.takeError();
-      routeNodeTimingArrivals_ = std::move(*arrivals);
       sourceTimingArrivalQuanta_.reserve(sourceEndpoints_.size());
       for (PnrIndex endpoint : sourceEndpoints_) {
         const auto slot = tree.findNode(endpoint);
@@ -604,13 +607,6 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
         requiresBufferedTraversal
             ? llvm::ArrayRef<std::uint64_t>(bufferedTraversalBits_)
             : llvm::ArrayRef<std::uint64_t>();
-    auto timing = detail::projectSpatialLogicalNetPhysicalTiming(
-        candidate.problem(), logicalNet, tree,
-        candidate.registerFifoTransfer(logicalNet),
-        candidate.portAttachmentSelections(),
-        candidate.graphBoundaryAttachmentSelections());
-    if (!timing)
-      return timing.takeError();
     EndpointRouteSearchRequest routeRequest;
     routeRequest.sourceEndpoints = sourceEndpoints_;
     routeRequest.sourceReplicationGroups = sourceReplicationGroups_;
@@ -806,6 +802,7 @@ std::size_t SpatialNetRouterScratch::retainedStorageBytes() const {
          retainedBytes(arcTimingDelayQuanta_) +
          retainedBytes(arcTimingRegisteredDestination_) +
          retainedBytes(routeNodeTimingArrivals_) +
+         retainedBytes(routeNodeTimingWorklist_) +
          retainedBytes(endpointMarks_) + retainedBytes(subtreeWorklist_) +
          tagContinuity_.retainedStorageBytes() +
          tagContinuityScratch_.retainedStorageBytes() +

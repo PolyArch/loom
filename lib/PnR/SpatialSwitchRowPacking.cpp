@@ -312,10 +312,15 @@ loom::pnr::detail::deriveSpatialTagInterference(
   const PnrIndex vertexCount = result.netSegmentOffsets_.back();
   const auto domains = problem.routing().tagContinuity().matchDomains();
   result.temporalSwitchDomains_.reserve(domains.size());
+  bool hasTemporalSwitchDomain = false;
   for (const auto &domain : domains)
-    result.temporalSwitchDomains_.push_back(
-        domain.kind ==
-        ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable);
+    if (domain.kind ==
+        ::loom::fabric::FabricPhysicalTagMatchDomainKind::TemporalSwitchTable) {
+      result.temporalSwitchDomains_.push_back(1);
+      hasTemporalSwitchDomain = true;
+    } else {
+      result.temporalSwitchDomains_.push_back(0);
+    }
   std::vector<std::vector<PnrIndex>> domainVertices(domains.size());
   for (PnrIndex logicalNet = 0; logicalNet < continuity.size(); ++logicalNet) {
     const auto offsets = continuity[logicalNet]->segmentDomainOffsets();
@@ -333,14 +338,18 @@ loom::pnr::detail::deriveSpatialTagInterference(
     }
   }
 
-  auto switchDemands =
-      deriveSpatialTemporalSwitchSegmentDemands(problem, routes, continuity);
-  if (!switchDemands)
-    return switchDemands.takeError();
+  std::vector<SpatialTemporalSwitchSegmentDemand> switchDemandStorage;
+  if (hasTemporalSwitchDomain) {
+    auto switchDemands =
+        deriveSpatialTemporalSwitchSegmentDemands(problem, routes, continuity);
+    if (!switchDemands)
+      return switchDemands.takeError();
+    switchDemandStorage = std::move(*switchDemands);
+  }
   std::map<std::pair<PnrIndex, PnrIndex>,
            const SpatialTemporalSwitchSegmentDemand *>
       demandByDomainVertex;
-  for (const SpatialTemporalSwitchSegmentDemand &demand : *switchDemands) {
+  for (const SpatialTemporalSwitchSegmentDemand &demand : switchDemandStorage) {
     if (demand.logicalNet + 1 >= result.netSegmentOffsets_.size() ||
         demand.segment >= continuity[demand.logicalNet]->segments().size())
       return invalid("switch demand names an absent tag segment");

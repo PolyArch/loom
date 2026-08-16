@@ -659,6 +659,10 @@ public:
   llvm::ArrayRef<FabricPhysicalTraversalRef>
   switchCrosspointTraversals(FabricSwitchOccurrenceRef occurrence) const;
   llvm::ArrayRef<FabricPhysicalTraversalView> physicalTraversals() const;
+  /// Resolves one exact admitted traversal through the immutable canonical
+  /// traversal index built while importing the Fabric artifact.
+  const FabricPhysicalTraversalView *
+  physicalTraversal(const FabricPhysicalTraversalRef &traversal) const;
   bool admitsTraversal(const FabricPhysicalTraversalRef &traversal) const;
 
 private:

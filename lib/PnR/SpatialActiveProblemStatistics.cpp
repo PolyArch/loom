@@ -52,13 +52,20 @@ SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
   result.localTransferOptionCount = localTransfers.options().size();
   result.portDemandCount = ports.portDemands().size();
   result.attachmentOptionCount = ports.attachmentOptions().size();
+  result.computeAttachmentClassLookupCount =
+      ports.computeAttachmentClassLookupCount();
+  result.computeAttachmentClassHitCount =
+      ports.computeAttachmentClassHitCount();
+  result.computeAttachmentClassMissCount =
+      ports.computeAttachmentClassMissCount();
   result.activeEndpointCount = activeRouting.activeEndpointCount();
   result.activeTraversalCount = activeRouting.activeTraversalCount();
   result.activeRoutingArcCount = activeRouting.activeArcCount();
-  result.handshakeOwnerCount = handshake.owners().size();
-  result.handshakeNodeCount = handshake.nodeSignals().size();
-  result.handshakeArcCount = handshake.arcs().size();
-  result.handshakeFragmentCount = handshake.fragments().size();
+  result.handshakeOwnerCount = handshake.ownerModels().size();
+  result.handshakePotentialFragmentCount = handshake.fragments().size();
+  for (const FrozenSpatialHandshakeFragment &fragment : handshake.fragments())
+    saturatingAdd(result.handshakePotentialContributionCount,
+                  fragment.contributionCount);
 
   std::uint64_t &bytes = result.context.retainedBytes;
   std::uint64_t &work = result.context.deterministicWork;
@@ -90,20 +97,19 @@ SpatialActiveProblemStatistics buildSpatialActiveProblemStatistics(
   addTrackedArray(bytes, work, ports.placementDomains());
   addTrackedArray(bytes, work, ports.attachmentOptions());
   addTrackedArray(bytes, work, ports.graphBoundaries());
+  saturatingAdd(work, result.computeAttachmentClassLookupCount);
   addTrackedArray(bytes, work, capacity.resourceEvents());
   addTrackedArray(bytes, work, capacity.resourceUses());
   addTrackedArray(bytes, work, capacity.resourceTimeEnvelopes());
   addTrackedArray(bytes, work, capacity.resourceTimeSegments());
-  addTrackedArray(bytes, work, handshake.nodeSignals());
-  addTrackedArray(bytes, work, handshake.arcs());
-  addTrackedArray(bytes, work, handshake.owners());
+  addTrackedArray(bytes, work, handshake.ownerModels());
   addTrackedArray(bytes, work, handshake.fragments());
-  addTrackedArray(bytes, work, handshake.fragmentArcOrdinals());
   addTrackedArray(bytes, work, handshake.traversalFragments());
   addTrackedArray(bytes, work, handshake.computePlacementFragments());
   addTrackedArray(bytes, work, handshake.memoryOperationDomains());
   addTrackedArray(bytes, work, handshake.memoryOperationPlans());
   addTrackedArray(bytes, work, handshake.memoryPlanFragments());
+  saturatingAdd(work, result.handshakePotentialContributionCount);
   saturatingAdd(bytes, activeRouting.retainedBytes());
   saturatingAdd(work, activeRouting.deterministicWork());
   return result;
@@ -136,13 +142,20 @@ void emitSpatialActiveProblemStatistics(const FrozenSpatialPnrProblem &problem,
             statistics.localTransferOptionCount;
         fields["port_demand_count"] = statistics.portDemandCount;
         fields["attachment_option_count"] = statistics.attachmentOptionCount;
+        fields["compute_attachment_class_lookups"] =
+            statistics.computeAttachmentClassLookupCount;
+        fields["compute_attachment_class_hits"] =
+            statistics.computeAttachmentClassHitCount;
+        fields["compute_attachment_class_misses"] =
+            statistics.computeAttachmentClassMissCount;
         fields["active_endpoint_count"] = statistics.activeEndpointCount;
         fields["active_traversal_count"] = statistics.activeTraversalCount;
         fields["active_routing_arc_count"] = statistics.activeRoutingArcCount;
         fields["handshake_owner_count"] = statistics.handshakeOwnerCount;
-        fields["handshake_node_count"] = statistics.handshakeNodeCount;
-        fields["handshake_arc_count"] = statistics.handshakeArcCount;
-        fields["handshake_fragment_count"] = statistics.handshakeFragmentCount;
+        fields["handshake_potential_fragment_count"] =
+            statistics.handshakePotentialFragmentCount;
+        fields["handshake_potential_contribution_count"] =
+            statistics.handshakePotentialContributionCount;
       });
 }
 

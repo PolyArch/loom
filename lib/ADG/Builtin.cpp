@@ -6,6 +6,7 @@
 
 #include "Dataflow/IR/DataflowEnums.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
+#include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContract.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -149,6 +150,7 @@ std::uint32_t ceilDiv(std::uint32_t value, std::uint32_t divisor) {
 }
 
 struct FuDistribution final {
+  std::vector<bool> scalarAdd;
   std::vector<bool> mac;
   std::vector<bool> vectorCompute;
   std::vector<bool> loopControl;
@@ -191,6 +193,7 @@ struct DistributedCellCursor final {
 FuDistribution makeFuDistribution(std::uint32_t count,
                                   std::uint32_t &nextLoopOrdinal) {
   FuDistribution distribution{
+      distributedSites(count, std::max(1u, ceilDiv(count, 8)), 6),
       distributedSites(count, ceilDiv(count, 2), 0),
       distributedSites(count, ceilDiv(count, 4), 1),
       distributedSites(count, ceilDiv(count, 4), 2),
@@ -203,6 +206,45 @@ FuDistribution makeFuDistribution(std::uint32_t count,
     if (distribution.loopControl[site])
       distribution.loopOrdinal[site] = nextLoopOrdinal++;
   return distribution;
+}
+
+llvm::Error addDedicatedScalarAddFu(PeBuilder &pe,
+                                    llvm::ArrayRef<PeValue> inputs) {
+  if (inputs.size() != 2)
+    return invalid("dedicated scalar add FU requires two data inputs");
+  auto bits64 = PortType::bits(64);
+  if (!bits64)
+    return bits64.takeError();
+  auto bits128 = PortType::bits(128);
+  if (!bits128)
+    return bits128.takeError();
+  auto fu = pe.addFu(inputs, FuSpec{{*bits64, *bits64}, {*bits128}});
+  if (!fu)
+    return fu.takeError();
+  auto lhs = fu->input(0);
+  if (!lhs)
+    return lhs.takeError();
+  auto rhs = fu->input(1);
+  if (!rhs)
+    return rhs.takeError();
+  auto operation = fu->addOperation(
+      {*lhs, *rhs},
+      OperationCapabilitySpec{
+          ::fabric::ImplementationFamilyId::ScalarIntegerAddSub,
+          ::fabric::ScalarIntegerParams{detail::catalogOrdinaryIntegerWidths()},
+          {::dataflow::OperationSchemaId::ArithAddI,
+           ::dataflow::OperationSchemaId::ArithSubI},
+          {*bits64},
+          ::fabric::oneCycleElasticOperationResourceContract()});
+  if (!operation)
+    return operation.takeError();
+  if (llvm::Error error =
+          fu->addCapabilityTemplate(FuCapabilityTemplateSpec{{*operation}, {}}))
+    return error;
+  auto result = operation->output(0);
+  if (!result)
+    return result.takeError();
+  return fu->close({*result});
 }
 
 VectorStructuralFuParameters builtinVectorStructuralParameters() {
@@ -250,6 +292,9 @@ llvm::Error addFuCatalog(PeBuilder &pe, std::uint32_t site,
                            {::fabric::ResolvedIndexWidth::I32,
                             ::fabric::ResolvedIndexWidth::I64})))
     return error;
+  if (distribution.scalarAdd[site])
+    if (llvm::Error error = addDedicatedScalarAddFu(pe, {inputs[0], inputs[1]}))
+      return error;
   if (distribution.mac[site])
     if (llvm::Error error =
             addMacFu(pe, {inputs[0], inputs[1], inputs[2], inputs[3]}))

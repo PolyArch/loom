@@ -14,7 +14,7 @@
 namespace loom::pnr {
 
 namespace detail {
-class IncrementalTopologicalOrder;
+struct MaterializedHandshakeGraph;
 struct HandshakeCandidateScratchStorage;
 } // namespace detail
 
@@ -24,6 +24,22 @@ class HandshakeCandidateTransaction;
 using FrozenSpatialHandshakeIndexHandle =
     std::shared_ptr<const FrozenSpatialHandshakeIndex>;
 using HandshakeCandidateStateHandle = std::shared_ptr<HandshakeCandidateState>;
+
+struct HandshakeActiveDemandStatistics final {
+  std::uint64_t constructionCount = 0;
+  std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t retainedBytes = 0;
+  std::uint64_t deterministicWork = 0;
+  std::uint64_t activeFragmentCount = 0;
+  std::uint64_t materializedNodeCount = 0;
+  std::uint64_t materializedArcCount = 0;
+  std::uint64_t materializedContributionCount = 0;
+  std::uint64_t transactionClosureCount = 0;
+  std::uint64_t transactionInsertedArcCount = 0;
+  std::uint64_t transactionRemovedArcCount = 0;
+  std::uint64_t transactionAffectedNodeCount = 0;
+  std::uint64_t transactionAffectedRankSpan = 0;
+};
 
 /// Rebuilds the selected handshake graph from immutable projection inputs and
 /// checks its closure with one deterministic whole-graph pass. This path does
@@ -57,11 +73,9 @@ private:
 
   std::unique_ptr<detail::HandshakeCandidateScratchStorage> storage_;
   std::vector<std::uint64_t> fragmentJournalMarks_;
-  std::vector<std::uint64_t> arcJournalMarks_;
   std::vector<std::uint64_t> traversalJournalMarks_;
   std::vector<std::uint64_t> groupJournalMarks_;
   std::vector<IndexDelta> fragmentDeltas_;
-  std::vector<IndexDelta> arcDeltas_;
   std::vector<IndexDelta> traversalDeltas_;
   std::vector<IndexDelta> groupDeltas_;
   std::uint64_t transactionEpoch_ = 0;
@@ -93,10 +107,14 @@ public:
 
   const FrozenSpatialHandshakeIndex &index() const { return *index_; }
   PnrIndex fragmentRefcount(PnrIndex fragment) const;
-  PnrIndex arcRefcount(PnrIndex arc) const;
   PnrIndex traversalRefcount(PnrIndex traversal) const;
-  bool isArcActive(PnrIndex arc) const;
   bool isTraversalSelected(PnrIndex traversal) const;
+  llvm::ArrayRef<std::optional<::loom::fabric::HandshakeSignalRef>>
+  activeNodeSignals() const;
+  llvm::ArrayRef<FrozenSpatialHandshakeArc> activeArcs() const;
+  llvm::ArrayRef<PnrIndex> activeArcContributors(PnrIndex arc) const;
+  std::size_t activeArcContributionCount() const;
+  HandshakeActiveDemandStatistics materializationStatistics() const;
   llvm::ArrayRef<PnrIndex> topologicalOrder() const;
   llvm::ArrayRef<PnrIndex> topologicalRanks() const;
 
@@ -109,24 +127,32 @@ public:
 private:
   HandshakeCandidateState(
       FrozenSpatialHandshakeIndexHandle index,
-      std::shared_ptr<detail::IncrementalTopologicalOrder> topology,
+      std::shared_ptr<detail::MaterializedHandshakeGraph> graph,
       std::vector<PnrIndex> fragmentRefcounts,
-      std::vector<PnrIndex> arcRefcounts,
+      std::vector<PnrIndex> activeFragments,
       std::vector<PnrIndex> traversalRefcounts,
       std::vector<PnrIndex> allGroupSelectedWitnessCounts)
-      : index_(std::move(index)), topology_(std::move(topology)),
+      : index_(std::move(index)), graph_(std::move(graph)),
         fragmentRefcounts_(std::move(fragmentRefcounts)),
-        arcRefcounts_(std::move(arcRefcounts)),
+        activeFragments_(std::move(activeFragments)),
         traversalRefcounts_(std::move(traversalRefcounts)),
         allGroupSelectedWitnessCounts_(
             std::move(allGroupSelectedWitnessCounts)) {}
 
   FrozenSpatialHandshakeIndexHandle index_;
-  std::shared_ptr<detail::IncrementalTopologicalOrder> topology_;
+  std::shared_ptr<detail::MaterializedHandshakeGraph> graph_;
   std::vector<PnrIndex> fragmentRefcounts_;
-  std::vector<PnrIndex> arcRefcounts_;
+  std::vector<PnrIndex> activeFragments_;
   std::vector<PnrIndex> traversalRefcounts_;
   std::vector<PnrIndex> allGroupSelectedWitnessCounts_;
+  std::uint64_t materializationConstructionCount_ = 0;
+  std::uint64_t materializationConstructionNanoseconds_ = 0;
+  std::uint64_t materializationDeterministicWork_ = 0;
+  std::uint64_t transactionClosureCount_ = 0;
+  std::uint64_t transactionInsertedArcCount_ = 0;
+  std::uint64_t transactionRemovedArcCount_ = 0;
+  std::uint64_t transactionAffectedNodeCount_ = 0;
+  std::uint64_t transactionAffectedRankSpan_ = 0;
   HandshakeCandidateTransaction *activeTransaction_ = nullptr;
 
   friend class HandshakeCandidateTransaction;
@@ -159,7 +185,6 @@ private:
   llvm::Error validateFragmentSlice(llvm::ArrayRef<PnrIndex> fragments) const;
   llvm::Error changeFragment(PnrIndex fragment, bool add);
   void recordFragment(PnrIndex fragment);
-  void recordArc(PnrIndex arc);
   void recordTraversal(PnrIndex traversal);
   void recordGroup(PnrIndex group);
   void finish();
@@ -168,6 +193,7 @@ private:
   HandshakeCandidateScratch *scratch_ = nullptr;
   bool closed_ = false;
   bool cycle_ = false;
+  std::shared_ptr<detail::MaterializedHandshakeGraph> pendingGraph_;
 
   friend class HandshakeCandidateState;
   friend class HandshakeCandidateScratch;

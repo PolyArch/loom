@@ -276,6 +276,13 @@ SpatialCandidateScratch::prepare(const FrozenSpatialPnrProblem &problem) {
   touchedRoutes_.reserve(netCount);
   routeViews_.reserve(netCount);
   tagValueViews_.reserve(netCount);
+  physicalTimingChangedNets_.reserve(netCount);
+  physicalTimingOldWorstArrivals_.reserve(netCount);
+  physicalTimingOldNegativeSlacks_.reserve(netCount);
+  physicalTimingRouteNodeArrivals_.reserve(
+      problem.routing().routingEndpoints().size());
+  physicalTimingRouteNodeWorklist_.reserve(
+      problem.routing().routingEndpoints().size());
   traversalDeltaMarks_.assign(traversalCount, 0);
   traversalRemoved_.assign(traversalCount, 0);
   traversalAdded_.assign(traversalCount, 0);
@@ -328,6 +335,11 @@ std::size_t SpatialCandidateScratch::retainedStorageBytes() const {
       retainedBytes(affectedMemoryExposures_) +
       retainedBytes(affectedBindingRelations_) + retainedBytes(touchedRoutes_) +
       retainedBytes(routeViews_) + retainedBytes(tagValueViews_) +
+      retainedBytes(physicalTimingChangedNets_) +
+      retainedBytes(physicalTimingOldWorstArrivals_) +
+      retainedBytes(physicalTimingOldNegativeSlacks_) +
+      retainedBytes(physicalTimingRouteNodeArrivals_) +
+      retainedBytes(physicalTimingRouteNodeWorklist_) +
       retainedBytes(oldSwitchHandshakeFragments_) +
       retainedBytes(newSwitchHandshakeFragments_) +
       retainedBytes(removedSwitchHandshakeFragments_) +
@@ -361,6 +373,9 @@ void SpatialCandidateScratch::resetTransaction() {
   touchedRoutes_.clear();
   routeViews_.clear();
   tagValueViews_.clear();
+  physicalTimingChangedNets_.clear();
+  physicalTimingOldWorstArrivals_.clear();
+  physicalTimingOldNegativeSlacks_.clear();
   oldSwitchHandshakeFragments_.clear();
   newSwitchHandshakeFragments_.clear();
   removedSwitchHandshakeFragments_.clear();
@@ -532,9 +547,12 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
   routePointers.reserve(routeTrees.size());
   for (const RouteTreeStateHandle &route : routeTrees)
     routePointers.push_back(route.get());
+  std::vector<std::uint64_t> logicalNetWorstArrivalDelayQuanta;
+  std::vector<std::uint64_t> logicalNetNegativeSlackQuanta;
   auto physicalTiming = detail::projectSpatialPhysicalTiming(
       *problem, routePointers, registerFifoTransfers, portAttachments,
-      graphBoundaryAttachments);
+      graphBoundaryAttachments, &logicalNetWorstArrivalDelayQuanta,
+      &logicalNetNegativeSlackQuanta);
   if (!physicalTiming)
     return physicalTiming.takeError();
 
@@ -546,6 +564,8 @@ SpatialCandidateState::create(FrozenSpatialPnrProblemHandle problem,
       std::move(memoryExposureSelections), std::move(registerFifoTransfers),
       std::move(routeTrees), std::move(*handshake), std::move(*routeResources),
       std::move(*tagAssignments), unroutedObligationCount, 0, 0,
+      std::move(logicalNetWorstArrivalDelayQuanta),
+      std::move(logicalNetNegativeSlackQuanta),
       physicalTiming->worstArrivalDelayQuanta,
       physicalTiming->totalNegativeSlackQuanta));
   for (PnrIndex index = 0; index < candidate->computeBindings_.size(); ++index)
@@ -1377,12 +1397,17 @@ llvm::Error SpatialCandidateState::verify() const {
   routes.reserve(routeTrees_.size());
   for (const RouteTreeStateHandle &route : routeTrees_)
     routes.push_back(route.get());
+  std::vector<std::uint64_t> expectedNetWorstArrivals;
+  std::vector<std::uint64_t> expectedNetNegativeSlacks;
   auto physicalTiming = detail::projectSpatialPhysicalTiming(
       *problem_, routes, registerFifoTransfers_, portAttachments_,
-      graphBoundaryAttachments_);
+      graphBoundaryAttachments_, &expectedNetWorstArrivals,
+      &expectedNetNegativeSlacks);
   if (!physicalTiming)
     return physicalTiming.takeError();
-  if (physicalTiming->worstArrivalDelayQuanta !=
+  if (expectedNetWorstArrivals != logicalNetWorstArrivalDelayQuanta_ ||
+      expectedNetNegativeSlacks != logicalNetNegativeSlackQuanta_ ||
+      physicalTiming->worstArrivalDelayQuanta !=
           worstRouteArrivalDelayQuanta_ ||
       physicalTiming->totalNegativeSlackQuanta !=
           totalRouteNegativeSlackQuanta_)

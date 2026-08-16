@@ -2,6 +2,7 @@
 
 #include "Common/MappingDebugLog.h"
 #include "PnR/MappingObjective.h"
+#include "PnR/SpatialCanonicalSeed.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -307,9 +308,14 @@ SpatialAnnealingSearchScratch::consumeTransitionFailure(llvm::Error failure) {
 }
 
 llvm::Expected<SpatialAnnealingStatistics>
-SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
-                                   std::uint64_t seedAttemptOrdinal,
+SpatialAnnealingSearchScratch::run(SpatialPathFinderSeed &seed,
                                    ExecutionControlView executionControl) {
+  return run(seed.candidate, seed.attemptOrdinal, executionControl);
+}
+
+llvm::Expected<SpatialAnnealingStatistics> SpatialAnnealingSearchScratch::run(
+    SpatialCandidateStateHandle &candidateHandle,
+    std::uint64_t seedAttemptOrdinal, ExecutionControlView executionControl) {
   if (!candidateHandle)
     return searchError("candidate owner is null");
   SpatialCandidateState &candidate = *candidateHandle;
@@ -528,7 +534,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     const std::uint64_t levelHeuristicBuildBegin =
         actionExecutor_.heuristicBuildCount();
     const std::uint64_t movableDecisionCount =
-        actionDomain_.movableDecisionCount();
+        actionDomain_.selectableMovableDecisionCount(
+            policy.search.actionProposal);
     auto proposalCount =
         annealingProposalsPerLevel(annealing, movableDecisionCount);
     if (!proposalCount)
@@ -728,9 +735,19 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
               actionExecutor_.heuristicCacheHitCount() - levelHeuristicHitBegin;
           fields["heuristic_builds"] =
               actionExecutor_.heuristicBuildCount() - levelHeuristicBuildBegin;
+          fields["heuristic_cache_entries"] =
+              actionExecutor_.heuristicCacheEntryCount();
+          fields["heuristic_cache_evictions"] =
+              actionExecutor_.heuristicCacheEvictionCount();
+          fields["heuristic_cache_retained_bytes"] =
+              actionExecutor_.heuristicCacheRetainedBytes();
           fields["inactive_cache_size"] = inactiveActionKeys_.size();
           fields["movable_decisions"] = movableDecisionCount;
           fields["realization_choices"] = domain.realizationChoices.size();
+          fields["realization_choices_examined"] =
+              actionDomain_.examinedRealizationChoiceCount();
+          fields["realization_choices_pruned_by_fixed_relations"] =
+              actionDomain_.fixedRelationPrunedRealizationChoiceCount();
           fields["routing_choices"] = domain.transportChoices.size();
           fields["resource_choices"] = domain.resourceChoices.size();
           fields["atomic_capacity_overuse"] = candidate.atomicCapacityOveruse();

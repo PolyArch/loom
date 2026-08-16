@@ -452,6 +452,16 @@ public:
   /// contract. The result is a derived editing form, not a second authority.
   ResourceContractDeclaration declaration() const;
 
+  /// Exact semantic equality of two validated, normalized contracts. This is
+  /// an in-memory query; persistent identity remains owned by the artifact
+  /// codec and is not reconstructed to answer it.
+  friend bool operator==(const ResourceContract &lhs,
+                         const ResourceContract &rhs);
+  friend bool operator!=(const ResourceContract &lhs,
+                         const ResourceContract &rhs) {
+    return !(lhs == rhs);
+  }
+
   std::uint32_t stateCount() const {
     return static_cast<std::uint32_t>(states_.size());
   }

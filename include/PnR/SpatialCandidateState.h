@@ -164,6 +164,12 @@ private:
   std::vector<PnrIndex> touchedRoutes_;
   std::vector<const RouteTreeState *> routeViews_;
   std::vector<llvm::ArrayRef<std::optional<llvm::APInt>>> tagValueViews_;
+  std::vector<PnrIndex> physicalTimingChangedNets_;
+  std::vector<std::uint64_t> physicalTimingOldWorstArrivals_;
+  std::vector<std::uint64_t> physicalTimingOldNegativeSlacks_;
+  std::vector<std::uint64_t> physicalTimingRouteNodeArrivals_;
+  std::vector<std::pair<PnrIndex, std::uint64_t>>
+      physicalTimingRouteNodeWorklist_;
   std::vector<PnrIndex> oldSwitchHandshakeFragments_;
   std::vector<PnrIndex> newSwitchHandshakeFragments_;
   std::vector<PnrIndex> removedSwitchHandshakeFragments_;
@@ -364,6 +370,8 @@ private:
       SpatialTagAssignmentState tagAssignments,
       std::uint64_t unroutedObligationCount,
       std::uint64_t atomicCapacityOveruse, std::uint64_t staticSchedulePressure,
+      std::vector<std::uint64_t> logicalNetWorstArrivalDelayQuanta,
+      std::vector<std::uint64_t> logicalNetNegativeSlackQuanta,
       std::uint64_t worstRouteArrivalDelayQuanta,
       std::uint64_t totalRouteNegativeSlackQuanta)
       : problem_(std::move(problem)),
@@ -383,6 +391,10 @@ private:
         unroutedObligationCount_(unroutedObligationCount),
         atomicCapacityOveruse_(atomicCapacityOveruse),
         staticSchedulePressure_(staticSchedulePressure),
+        logicalNetWorstArrivalDelayQuanta_(
+            std::move(logicalNetWorstArrivalDelayQuanta)),
+        logicalNetNegativeSlackQuanta_(
+            std::move(logicalNetNegativeSlackQuanta)),
         worstRouteArrivalDelayQuanta_(worstRouteArrivalDelayQuanta),
         totalRouteNegativeSlackQuanta_(totalRouteNegativeSlackQuanta) {}
 
@@ -466,6 +478,8 @@ private:
   std::uint64_t unroutedObligationCount_ = 0;
   std::uint64_t atomicCapacityOveruse_ = 0;
   std::uint64_t staticSchedulePressure_ = 0;
+  std::vector<std::uint64_t> logicalNetWorstArrivalDelayQuanta_;
+  std::vector<std::uint64_t> logicalNetNegativeSlackQuanta_;
   std::uint64_t worstRouteArrivalDelayQuanta_ = 0;
   std::uint64_t totalRouteNegativeSlackQuanta_ = 0;
   SpatialRecurrenceTimingProjection recurrenceTiming_;
@@ -584,10 +598,6 @@ private:
   std::uint64_t initialWorstRouteArrivalDelayQuanta_ = 0;
   std::uint64_t initialTotalRouteNegativeSlackQuanta_ = 0;
   SpatialRecurrenceTimingProjection initialRecurrenceTiming_;
-  bool proposedPhysicalTimingValid_ = false;
-  std::uint64_t proposedWorstRouteArrivalDelayQuanta_ = 0;
-  std::uint64_t proposedTotalRouteNegativeSlackQuanta_ = 0;
-
   friend class SpatialCandidateState;
   friend class SpatialCandidateScratch;
 };

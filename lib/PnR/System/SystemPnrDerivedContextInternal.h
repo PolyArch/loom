@@ -18,7 +18,7 @@ namespace loom::pnr::detail {
 inline constexpr llvm::StringLiteral systemStaticContextAlgorithmIdentity =
     "loom.pnr.system_static_context.1";
 inline constexpr llvm::StringLiteral systemActiveContextAlgorithmIdentity =
-    "loom.pnr.system_active_context.1";
+    "loom.pnr.system_active_context.2";
 
 struct SystemStaticContextStorage final {
   std::array<std::uint8_t, 32> key{};

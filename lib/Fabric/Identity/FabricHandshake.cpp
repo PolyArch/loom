@@ -417,6 +417,16 @@ llvm::Error verifyMemoryHandshakeRoles(
 
 } // namespace
 
+std::vector<std::uint8_t>
+detail::handshakeOwnerKey(const FabricHandshakeOwner &owner) {
+  return ownerKey(owner);
+}
+
+std::optional<FabricHandshakeOwner>
+detail::handshakeTraversalOwner(const FabricPhysicalTraversalRef &traversal) {
+  return ownerOfTraversal(traversal);
+}
+
 FabricHandshakeOwner
 FabricHandshakeOwner::pointConnection(FabricPointConnectionPayload connection) {
   return FabricHandshakeOwner(Payload(
@@ -518,9 +528,11 @@ llvm::Expected<FabricMemoryHandshakeSelection> makeMemoryHandshakeSelection(
 
 std::optional<std::uint32_t>
 HandshakeOwnerModel::nodeForSignal(const HandshakeSignalRef &signal) const {
-  for (auto [ordinal, node] : llvm::enumerate(nodes_))
+  for (std::uint32_t ordinal = 0; ordinal != nodeCount(); ++ordinal) {
+    const HandshakeOwnerNode node = this->node(ordinal);
     if (node.boundarySignal && *node.boundarySignal == signal)
-      return static_cast<std::uint32_t>(ordinal);
+      return ordinal;
+  }
   return std::nullopt;
 }
 
@@ -574,23 +586,6 @@ switchActivationSelector(FabricSwitchHandshakeActivationKey activation,
   selector.traversalWitnesses.assign(traversals.begin(), traversals.end());
   selector.switchActivation = activation;
   return selector;
-}
-
-std::vector<std::uint8_t> switchJunctionKey(std::uint8_t family,
-                                            FabricOrdinal row,
-                                            FabricOrdinal input,
-                                            std::uint64_t position) {
-  std::vector<std::uint8_t> key;
-  key.reserve(25);
-  key.push_back(family);
-  const auto append = [&](std::uint64_t value) {
-    for (unsigned shift = 0; shift != 64; shift += 8)
-      key.push_back(static_cast<std::uint8_t>(value >> (56 - shift)));
-  };
-  append(row);
-  append(input);
-  append(position);
-  return key;
 }
 
 detail::HandshakeFragmentSelector
@@ -845,8 +840,6 @@ llvm::Expected<HandshakeOwnerModel> compileSwitchModel(
                                       traversal.destinations.front()});
   }
 
-  detail::HandshakeOwnerModelBuilder builder(
-      FabricHandshakeOwner::switchResource(owner));
   const auto schedule = view.switchSchedule(owner);
   if (!schedule)
     return invalid("switch occurrence has no scheduling contract");
@@ -855,69 +848,69 @@ llvm::Expected<HandshakeOwnerModel> compileSwitchModel(
                                          : 1;
   if (residentRows == 0)
     return invalid("switch occurrence has no configurable route row");
-  for (std::uint64_t residentRow = 0; residentRow != residentRows;
-       ++residentRow)
-    for (auto &[input, rows] : byInput) {
-      llvm::sort(rows, [](const Row &lhs, const Row &rhs) {
-        return lhs.output < rhs.output;
-      });
-      std::vector<FabricPhysicalTraversalRef> witnesses;
-      witnesses.reserve(rows.size());
-      for (const Row &row : rows)
-        witnesses.push_back(row.reference);
+  std::vector<HandshakeOwnerModel> rowShapes;
+  rowShapes.reserve(byInput.size());
+  for (auto &[input, rows] : byInput) {
+    llvm::sort(rows, [](const Row &lhs, const Row &rhs) {
+      return lhs.output < rhs.output;
+    });
+    detail::HandshakeOwnerModelBuilder builder(
+        FabricHandshakeOwner::switchResource(owner));
+    std::vector<FabricPhysicalTraversalRef> witnesses;
+    witnesses.reserve(rows.size());
+    for (const Row &row : rows)
+      witnesses.push_back(row.reference);
 
-      const FabricSwitchHandshakeActivationKey activation{owner, residentRow,
-                                                          input};
-      std::vector<std::uint32_t> prefix(rows.size() + 1);
-      std::vector<std::uint32_t> suffix(rows.size() + 1);
-      for (std::size_t position = 0; position <= rows.size(); ++position) {
-        if (*schedule == ::fabric::Schedule::Temporal) {
-          prefix[position] = builder.junction(
-              switchJunctionKey(0, residentRow, input, position));
-          suffix[position] = builder.junction(
-              switchJunctionKey(1, residentRow, input, position));
-        } else {
-          prefix[position] = builder.junction(ordinalKey(0, input, position));
-          suffix[position] = builder.junction(ordinalKey(1, input, position));
-        }
-      }
+    const FabricSwitchHandshakeActivationKey activation{owner, 0, input};
+    std::vector<std::uint32_t> prefix(rows.size() + 1);
+    std::vector<std::uint32_t> suffix(rows.size() + 1);
+    for (std::size_t position = 0; position <= rows.size(); ++position) {
+      prefix[position] = builder.junction(ordinalKey(0, input, position));
+      suffix[position] = builder.junction(ordinalKey(1, input, position));
+    }
 
-      std::vector<Arc> base;
-      base.reserve(rows.size() * 2 + 1);
-      for (std::size_t position = 0; position < rows.size(); ++position) {
-        base.emplace_back(prefix[position], prefix[position + 1]);
-        base.emplace_back(suffix[position + 1], suffix[position]);
-      }
-      const std::uint32_t inputReady = builder.boundarySignal(
-          {rows.front().source, HandshakeSignalKind::Ready});
-      base.emplace_back(prefix.back(), inputReady);
+    std::vector<Arc> base;
+    base.reserve(rows.size() * 2 + 1);
+    for (std::size_t position = 0; position < rows.size(); ++position) {
+      base.emplace_back(prefix[position], prefix[position + 1]);
+      base.emplace_back(suffix[position + 1], suffix[position]);
+    }
+    const std::uint32_t inputReady = builder.boundarySignal(
+        {rows.front().source, HandshakeSignalKind::Ready});
+    base.emplace_back(prefix.back(), inputReady);
+    builder.addFragment(
+        *schedule == ::fabric::Schedule::Temporal
+            ? switchActivationSelector(activation, witnesses, true)
+            : anyTraversalSelector(witnesses),
+        std::move(base));
+
+    for (std::size_t position = 0; position < rows.size(); ++position) {
+      const Row &row = rows[position];
+      const std::uint32_t inputValid =
+          builder.boundarySignal({row.source, HandshakeSignalKind::Valid});
+      const std::uint32_t outputValid =
+          builder.boundarySignal({row.destination, HandshakeSignalKind::Valid});
+      const std::uint32_t outputReady =
+          builder.boundarySignal({row.destination, HandshakeSignalKind::Ready});
+      const FabricPhysicalTraversalRef selected[] = {row.reference};
       builder.addFragment(
           *schedule == ::fabric::Schedule::Temporal
-              ? switchActivationSelector(activation, witnesses, true)
-              : anyTraversalSelector(witnesses),
-          std::move(base));
-
-      for (std::size_t position = 0; position < rows.size(); ++position) {
-        const Row &row = rows[position];
-        const std::uint32_t inputValid =
-            builder.boundarySignal({row.source, HandshakeSignalKind::Valid});
-        const std::uint32_t outputValid = builder.boundarySignal(
-            {row.destination, HandshakeSignalKind::Valid});
-        const std::uint32_t outputReady = builder.boundarySignal(
-            {row.destination, HandshakeSignalKind::Ready});
-        const FabricPhysicalTraversalRef selected[] = {row.reference};
-        builder.addFragment(
-            *schedule == ::fabric::Schedule::Temporal
-                ? switchActivationSelector(activation, selected, false)
-                : traversalSelector(row.reference),
-            {{outputReady, prefix[position + 1]},
-             {outputReady, suffix[position]},
-             {inputValid, outputValid},
-             {prefix[position], outputValid},
-             {suffix[position + 1], outputValid}});
-      }
+              ? switchActivationSelector(activation, selected, false)
+              : traversalSelector(row.reference),
+          {{outputReady, prefix[position + 1]},
+           {outputReady, suffix[position]},
+           {inputValid, outputValid},
+           {prefix[position], outputValid},
+           {suffix[position + 1], outputValid}});
     }
-  return builder.finish();
+    auto shape = builder.finish();
+    if (!shape)
+      return shape.takeError();
+    rowShapes.push_back(std::move(*shape));
+  }
+  return detail::HandshakeOwnerModelFactory::instantiateSwitchRows(
+      owner, rowShapes, residentRows,
+      *schedule == ::fabric::Schedule::Temporal);
 }
 
 llvm::Expected<HandshakeOwnerModel> compileFifoModel(
@@ -1110,6 +1103,8 @@ llvm::Expected<std::vector<HandshakeOwnerModel>>
 compileHandshakeOwnerModels(const FabricArtifactView &view) {
   const HandshakeTraversalIndex traversalIndex(view);
   std::vector<HandshakeOwnerModel> models;
+  std::map<FabricEntityId, HandshakeOwnerModel> fuDefinitions;
+  std::map<FabricEntityId, HandshakeOwnerModel> memoryDefinitions;
   models.reserve(view.pointConnections().size() + view.peOccurrences().size() +
                  view.fuOccurrences().size() + view.memoryOccurrences().size() +
                  view.switchOccurrences().size() +
@@ -1127,21 +1122,41 @@ compileHandshakeOwnerModels(const FabricArtifactView &view) {
         view, owner, traversalIndex.forOwner(FabricHandshakeOwner::pe(owner)));
     if (!model)
       return model.takeError();
-    if (!model->fragments().empty())
+    if (model->fragmentCount() != 0)
       models.push_back(std::move(*model));
   }
   for (FabricFuOccurrenceRef owner : view.fuOccurrences()) {
-    auto model = detail::compileFuHandshakeModel(view, owner);
+    const auto definition = view.fuTemplateOf(owner);
+    if (!definition)
+      return invalid("FU occurrence has no handshake template relation");
+    auto found = fuDefinitions.find(definition->id());
+    llvm::Expected<HandshakeOwnerModel> model =
+        found == fuDefinitions.end()
+            ? detail::compileFuHandshakeModel(view, owner)
+            : detail::HandshakeOwnerModelFactory::rebindFuOccurrence(
+                  view, found->second, owner);
     if (!model)
       return model.takeError();
+    if (found == fuDefinitions.end())
+      fuDefinitions.emplace(definition->id(), *model);
     models.push_back(std::move(*model));
   }
   for (FabricMemoryOccurrenceRef owner : view.memoryOccurrences()) {
     if (view.memoryOperationPorts(owner).empty())
       continue;
-    auto model = compileMemoryModel(view, owner);
+    const auto definition = view.memoryEngineTemplateOf(owner);
+    if (!definition)
+      return invalid("Memory occurrence has no handshake template relation");
+    auto found = memoryDefinitions.find(definition->id());
+    llvm::Expected<HandshakeOwnerModel> model =
+        found == memoryDefinitions.end()
+            ? compileMemoryModel(view, owner)
+            : detail::HandshakeOwnerModelFactory::rebindMemoryOccurrence(
+                  view, found->second, owner);
     if (!model)
       return model.takeError();
+    if (found == memoryDefinitions.end())
+      memoryDefinitions.emplace(definition->id(), *model);
     models.push_back(std::move(*model));
   }
   for (FabricSwitchOccurrenceRef owner : view.switchOccurrences()) {
@@ -1194,29 +1209,27 @@ buildFabricHandshakeContext(const FabricArtifactView &view) {
   auto models = compileHandshakeOwnerModels(view);
   if (!models)
     return models.takeError();
+  auto unconditional =
+      detail::HandshakeOwnerModelFactory::deriveUnconditionalDependencyArcs(
+          *models);
+  if (!unconditional)
+    return unconditional.takeError();
 
   FabricHandshakeContextStatistics statistics;
+  detail::HandshakeOwnerModelFactory::accumulateStatistics(*models, statistics);
+  statistics.unconditionalArcCount = unconditional->size();
+  statistics.retainedBytes +=
+      unconditional->size() * sizeof(HandshakeDependencyArc);
+  statistics.deterministicWork += statistics.unconditionalArcCount;
   statistics.constructionNanoseconds = elapsedNanoseconds(begin);
-  statistics.ownerCount = models->size();
-  statistics.retainedBytes = models->capacity() * sizeof(HandshakeOwnerModel);
-  for (const HandshakeOwnerModel &model : *models) {
-    statistics.nodeCount += model.nodes().size();
-    statistics.arcCount += model.arcs().size();
-    statistics.fragmentCount += model.fragments().size();
-    statistics.retainedBytes +=
-        model.nodes().size() * sizeof(HandshakeOwnerNode) +
-        model.arcs().size() * sizeof(HandshakeOwnerArc) +
-        model.fragments().size() * sizeof(HandshakeActivationFragment) +
-        model.fragmentContributionOrdinals().size() * sizeof(std::uint32_t) +
-        model.traversalWitnesses().size() * sizeof(FabricPhysicalTraversalRef);
-  }
-  statistics.deterministicWork = statistics.ownerCount + statistics.nodeCount +
-                                 statistics.arcCount + statistics.fragmentCount;
   auto owner = std::make_shared<const std::vector<HandshakeOwnerModel>>(
       std::move(*models));
-  return FabricHandshakeContext(view.identity(),
-                                deriveHandshakeContextKey(view),
-                                std::move(owner), statistics);
+  auto unconditionalOwner =
+      std::make_shared<const std::vector<HandshakeDependencyArc>>(
+          std::move(*unconditional));
+  return FabricHandshakeContext(
+      view.identity(), deriveHandshakeContextKey(view), std::move(owner),
+      std::move(unconditionalOwner), statistics);
 }
 
 llvm::Error
@@ -1225,7 +1238,26 @@ revalidateFabricHandshakeContext(const FabricHandshakeContext &context,
   if (context.fabricIdentity() != view.identity() ||
       context.key() != deriveHandshakeContextKey(view))
     return invalid("handshake context binds another Fabric or algorithm");
-  if (context.statistics().ownerCount != context.ownerModels().size())
+  FabricHandshakeContextStatistics expected;
+  detail::HandshakeOwnerModelFactory::accumulateStatistics(
+      context.ownerModels(), expected);
+  expected.unconditionalArcCount = context.unconditionalDependencyArcs().size();
+  expected.retainedBytes += context.unconditionalDependencyArcs().size() *
+                            sizeof(HandshakeDependencyArc);
+  expected.deterministicWork += expected.unconditionalArcCount;
+  const FabricHandshakeContextStatistics &observed = context.statistics();
+  if (observed.retainedBytes != expected.retainedBytes ||
+      observed.deterministicWork != expected.deterministicWork ||
+      observed.ownerCount != expected.ownerCount ||
+      observed.structuralTemplateCount != expected.structuralTemplateCount ||
+      observed.bindingInstanceCount != expected.bindingInstanceCount ||
+      observed.structuralNodeCount != expected.structuralNodeCount ||
+      observed.structuralArcCount != expected.structuralArcCount ||
+      observed.structuralFragmentCount != expected.structuralFragmentCount ||
+      observed.unconditionalArcCount != expected.unconditionalArcCount ||
+      observed.nodeCount != expected.nodeCount ||
+      observed.arcCount != expected.arcCount ||
+      observed.fragmentCount != expected.fragmentCount)
     return invalid("handshake context statistics are inconsistent");
   return llvm::Error::success();
 }
@@ -1352,6 +1384,16 @@ llvm::Error verifyMemoryInternalConnectionClosure(
 
 } // namespace
 
+void detail::sortHandshakeDependencyArcs(
+    std::vector<HandshakeDependencyArc> &arcs, bool deduplicate) {
+  sortHandshakeArcs(arcs, deduplicate);
+}
+
+llvm::Error detail::verifyMemoryInternalHandshakeClosure(
+    llvm::ArrayRef<FabricMemoryHandshakeSelection> selections) {
+  return verifyMemoryInternalConnectionClosure(selections);
+}
+
 llvm::Expected<ResolvedHandshakeActivation>
 resolveSelectedHandshake(const HandshakeOwnerModel &model,
                          const FabricHandshakeSelection &selection) {
@@ -1398,23 +1440,23 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
       return invalid("selected memory operation placement is contradictory");
   }
 
-  std::vector<bool> active(model.fragments_.size(), false);
+  std::vector<bool> active(model.fragmentCount(), false);
   std::vector<bool> selectedTraversalConsumed(selection.traversals.size(),
                                               false);
   std::vector<bool> selectedMemoryConsumed(selection.memoryOperations.size(),
                                            false);
   const FabricFuHandshakeSelection *selectedFu = nullptr;
-  if (model.owner_.kind() == FabricHandshakeOwnerKind::FuOccurrence) {
+  if (model.owner().kind() == FabricHandshakeOwnerKind::FuOccurrence) {
     const FabricFuOccurrenceRef owner =
-        std::get<FabricFuOccurrenceRef>(model.owner_.payload());
+        std::get<FabricFuOccurrenceRef>(model.owner().payload());
     for (const FabricFuHandshakeSelection &candidate : selection.fuCapabilities)
       if (candidate.occurrence() == owner)
         selectedFu = &candidate;
   }
   std::map<std::uint32_t, std::uint32_t> selectedExclusiveGroups;
-  for (std::size_t ordinal = 0; ordinal < model.fragmentSelectors_.size();
-       ++ordinal) {
-    const auto &selector = model.fragmentSelectors_[ordinal];
+  for (std::uint32_t ordinal = 0; ordinal != model.fragmentCount(); ++ordinal) {
+    const detail::HandshakeFragmentSelector selector =
+        model.fragmentSelector(ordinal);
     bool selected = false;
     switch (selector.kind) {
     case detail::HandshakeFragmentSelectorKind::Always:
@@ -1520,12 +1562,12 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
   for (std::size_t ordinal = 0; ordinal < selection.traversals.size();
        ++ordinal) {
     const auto owner = ownerOfTraversal(selection.traversals[ordinal]);
-    if (owner && *owner == model.owner_ && !selectedTraversalConsumed[ordinal])
+    if (owner && *owner == model.owner() && !selectedTraversalConsumed[ordinal])
       return invalid("selected traversal is stale for its handshake owner");
   }
-  if (model.owner_.kind() == FabricHandshakeOwnerKind::SwitchOccurrence) {
+  if (model.owner().kind() == FabricHandshakeOwnerKind::SwitchOccurrence) {
     const FabricSwitchOccurrenceRef owner =
-        std::get<FabricSwitchOccurrenceRef>(model.owner_.payload());
+        std::get<FabricSwitchOccurrenceRef>(model.owner().payload());
     for (std::size_t activationOrdinal = 0;
          activationOrdinal < selection.switchActivations.size();
          ++activationOrdinal) {
@@ -1538,37 +1580,54 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
             "selected switch activation is stale for its handshake owner");
     }
   }
-  if (model.owner_.kind() == FabricHandshakeOwnerKind::FuOccurrence) {
-    const auto owner = std::get<FabricFuOccurrenceRef>(model.owner_.payload());
+  if (model.owner().kind() == FabricHandshakeOwnerKind::FuOccurrence) {
+    const auto owner = std::get<FabricFuOccurrenceRef>(model.owner().payload());
     bool hasSelection = false;
     for (const FabricFuHandshakeSelection &selected :
          selection.fuCapabilities) {
       if (selected.occurrence() != owner)
         continue;
       hasSelection = true;
-      if (!llvm::any_of(model.fragmentSelectors_, [&](const auto &selector) {
-            return selector.kind ==
-                       detail::HandshakeFragmentSelectorKind::FuCapability &&
-                   selector.fuOccurrence && selector.fuCapability &&
-                   *selector.fuOccurrence == selected.occurrence() &&
-                   *selector.fuCapability == selected.capability();
-          }))
+      bool hasCapability = false;
+      for (std::uint32_t fragment = 0; fragment != model.fragmentCount();
+           ++fragment) {
+        const detail::HandshakeFragmentSelector selector =
+            model.fragmentSelector(fragment);
+        hasCapability =
+            selector.kind ==
+                detail::HandshakeFragmentSelectorKind::FuCapability &&
+            selector.fuOccurrence && selector.fuCapability &&
+            *selector.fuOccurrence == selected.occurrence() &&
+            *selector.fuCapability == selected.capability();
+        if (hasCapability)
+          break;
+      }
+      if (!hasCapability)
         return invalid("selected FU capability is stale for its occurrence");
       for (const FabricFuOperationHandshakeSelection &operation :
-           selected.operations())
-        if (!llvm::any_of(model.fragmentSelectors_, [&](const auto &selector) {
-              return selector.fuOperation &&
-                     selector.fuOperation->operation == operation.operation &&
-                     selector.fuOperation->schema == operation.schema;
-            }))
+           selected.operations()) {
+        bool hasOperation = false;
+        for (std::uint32_t fragment = 0; fragment != model.fragmentCount();
+             ++fragment) {
+          const detail::HandshakeFragmentSelector selector =
+              model.fragmentSelector(fragment);
+          hasOperation =
+              selector.fuOperation &&
+              selector.fuOperation->operation == operation.operation &&
+              selector.fuOperation->schema == operation.schema;
+          if (hasOperation)
+            break;
+        }
+        if (!hasOperation)
           return invalid("selected FU operation is stale for its occurrence");
+      }
     }
-    if (!hasSelection && !model.fragments_.empty())
+    if (!hasSelection && model.fragmentCount() != 0)
       return invalid("FU occurrence has no selected capability");
   }
-  if (model.owner_.kind() == FabricHandshakeOwnerKind::MemoryOccurrence) {
+  if (model.owner().kind() == FabricHandshakeOwnerKind::MemoryOccurrence) {
     const auto owner =
-        std::get<FabricMemoryOccurrenceRef>(model.owner_.payload());
+        std::get<FabricMemoryOccurrenceRef>(model.owner().payload());
     for (std::size_t ordinal = 0; ordinal < selection.memoryOperations.size();
          ++ordinal) {
       if (selection.memoryOperations[ordinal].capability().port.memory != owner)
@@ -1579,16 +1638,16 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
   }
 
   ResolvedHandshakeActivation result;
-  std::vector<bool> activeArcs(model.arcs_.size(), false);
+  std::vector<bool> activeArcs(model.arcCount(), false);
   for (std::size_t ordinal = 0; ordinal < active.size(); ++ordinal) {
     if (!active[ordinal])
       continue;
     result.fragmentOrdinals_.push_back(static_cast<std::uint32_t>(ordinal));
-    const HandshakeActivationFragment &fragment = model.fragments_[ordinal];
+    const HandshakeActivationFragment fragment =
+        model.fragment(static_cast<std::uint32_t>(ordinal));
     for (std::uint32_t index = 0; index < fragment.contributionCount; ++index) {
-      const std::uint32_t arc =
-          model.fragmentContributionOrdinals_[fragment.contributionOffset +
-                                              index];
+      const std::uint32_t arc = model.fragmentContributionOrdinal(
+          fragment.contributionOffset + index);
       activeArcs[arc] = true;
     }
   }
@@ -1599,395 +1658,152 @@ resolveSelectedHandshake(const HandshakeOwnerModel &model,
 }
 
 llvm::Expected<std::vector<HandshakeDependencyArc>>
-deriveUnconditionalHandshakeDependencyArcs(const FabricArtifactView &view) {
-  auto models = compileHandshakeOwnerModels(view);
-  if (!models)
-    return models.takeError();
+detail::HandshakeOwnerModelFactory::deriveUnconditionalDependencyArcs(
+    llvm::ArrayRef<HandshakeOwnerModel> models) {
   std::vector<HandshakeDependencyArc> result;
-  for (const HandshakeOwnerModel &model : *models) {
-    std::vector<std::uint32_t> boundaryNodes;
-    for (auto [ordinal, node] : llvm::enumerate(model.nodes()))
-      if (node.boundarySignal)
-        boundaryNodes.push_back(static_cast<std::uint32_t>(ordinal));
-    if (boundaryNodes.size() < 2)
-      continue;
+  for (const HandshakeOwnerModel &model : models) {
+    struct ShapeReachability final {
+      const detail::HandshakeOwnerModelInstance *definition = nullptr;
+      std::vector<std::uint32_t> boundaryNodes;
+      std::vector<bool> relation;
+    };
+    std::vector<std::optional<ShapeReachability>> shapes;
+    for (const detail::HandshakeOwnerModelInstance &instance :
+         model.storage_->instances) {
+      if (instance.projectionShapeOrdinal >= shapes.size())
+        shapes.resize(instance.projectionShapeOrdinal + 1);
+      auto &shape = shapes[instance.projectionShapeOrdinal];
+      if (!shape) {
+        ShapeReachability derived;
+        derived.definition = &instance;
+        for (auto [ordinal, node] : llvm::enumerate(*instance.nodeBindings))
+          if (node.boundarySignal)
+            derived.boundaryNodes.push_back(
+                static_cast<std::uint32_t>(ordinal));
 
-    std::vector<std::uint32_t> alwaysFragments;
-    std::map<std::uint32_t, std::vector<std::uint32_t>> exclusiveGroups;
-    for (auto [ordinal, selector] : llvm::enumerate(model.fragmentSelectors_)) {
-      const std::uint32_t fragment = static_cast<std::uint32_t>(ordinal);
-      if (selector.kind == detail::HandshakeFragmentSelectorKind::Always)
-        alwaysFragments.push_back(fragment);
-      if (selector.exclusiveGroup)
-        exclusiveGroups[*selector.exclusiveGroup].push_back(fragment);
-    }
-    if (exclusiveGroups.size() > 1)
-      return invalid("handshake owner has multiple unnormalized mandatory "
-                     "configuration domains");
+        if (derived.boundaryNodes.size() >= 2) {
+          std::vector<std::uint32_t> alwaysFragments;
+          std::map<std::uint32_t, std::vector<std::uint32_t>> exclusiveGroups;
+          for (auto [fragment, selector] :
+               llvm::enumerate(*instance.selectors)) {
+            if (selector.kind == detail::HandshakeFragmentSelectorKind::Always)
+              alwaysFragments.push_back(static_cast<std::uint32_t>(fragment));
+            if (selector.exclusiveGroup)
+              exclusiveGroups[*selector.exclusiveGroup].push_back(
+                  static_cast<std::uint32_t>(fragment));
+          }
+          if (exclusiveGroups.size() > 1)
+            return invalid(
+                "handshake owner has multiple unnormalized mandatory "
+                "configuration domains");
 
-    const auto reachability =
-        [&](llvm::ArrayRef<std::uint32_t> alternativeFragments) {
-          std::vector<bool> activeArcs(model.arcs().size(), false);
-          const auto activate = [&](std::uint32_t fragment) {
-            const HandshakeActivationFragment &record =
-                model.fragments()[fragment];
-            for (std::uint32_t index = 0; index < record.contributionCount;
-                 ++index)
-              activeArcs[model.fragmentContributionOrdinals()
-                             [record.contributionOffset + index]] = true;
-          };
-          for (std::uint32_t fragment : alwaysFragments)
-            activate(fragment);
-          for (std::uint32_t fragment : alternativeFragments)
-            activate(fragment);
+          const auto reachability =
+              [&](llvm::ArrayRef<std::uint32_t> alternatives) {
+                std::vector<bool> activeArcs(instance.structure->arcs.size(),
+                                             false);
+                const auto activate = [&](std::uint32_t fragment) {
+                  const detail::HandshakeStructuralFragment &record =
+                      instance.structure->fragments[fragment];
+                  for (std::uint32_t index = 0;
+                       index != record.contributionCount; ++index)
+                    activeArcs[instance.structure->fragmentContributionOrdinals
+                                   [record.contributionOffset + index]] = true;
+                };
+                for (std::uint32_t fragment : alwaysFragments)
+                  activate(fragment);
+                for (std::uint32_t fragment : alternatives)
+                  activate(fragment);
 
-          std::vector<std::vector<std::uint32_t>> adjacency(
-              model.nodes().size());
-          for (std::uint32_t arc = 0; arc < activeArcs.size(); ++arc)
-            if (activeArcs[arc])
-              adjacency[model.arcs()[arc].source].push_back(
-                  model.arcs()[arc].destination);
+                std::vector<std::vector<std::uint32_t>> adjacency(
+                    instance.structure->nodeKinds.size());
+                for (auto [arcOrdinal, active] : llvm::enumerate(activeArcs))
+                  if (active) {
+                    const HandshakeOwnerArc arc =
+                        instance.structure->arcs[arcOrdinal];
+                    adjacency[arc.source].push_back(arc.destination);
+                  }
 
-          std::vector<bool> relation(
-              boundaryNodes.size() * boundaryNodes.size(), false);
-          std::vector<bool> visited(model.nodes().size(), false);
-          std::vector<std::uint32_t> worklist;
-          worklist.reserve(model.nodes().size());
-          for (auto [sourceOrdinal, source] : llvm::enumerate(boundaryNodes)) {
-            std::fill(visited.begin(), visited.end(), false);
-            worklist.clear();
-            worklist.push_back(source);
-            visited[source] = true;
-            while (!worklist.empty()) {
-              const std::uint32_t current = worklist.back();
-              worklist.pop_back();
-              for (std::uint32_t next : adjacency[current]) {
-                if (visited[next])
-                  continue;
-                visited[next] = true;
-                worklist.push_back(next);
+                std::vector<bool> relation(derived.boundaryNodes.size() *
+                                               derived.boundaryNodes.size(),
+                                           false);
+                std::vector<bool> visited(instance.structure->nodeKinds.size(),
+                                          false);
+                std::vector<std::uint32_t> worklist;
+                worklist.reserve(instance.structure->nodeKinds.size());
+                for (auto [sourceOrdinal, source] :
+                     llvm::enumerate(derived.boundaryNodes)) {
+                  std::fill(visited.begin(), visited.end(), false);
+                  worklist.clear();
+                  worklist.push_back(source);
+                  visited[source] = true;
+                  while (!worklist.empty()) {
+                    const std::uint32_t current = worklist.back();
+                    worklist.pop_back();
+                    for (std::uint32_t next : adjacency[current]) {
+                      if (visited[next])
+                        continue;
+                      visited[next] = true;
+                      worklist.push_back(next);
+                    }
+                  }
+                  for (auto [destinationOrdinal, destination] :
+                       llvm::enumerate(derived.boundaryNodes))
+                    if (source != destination && visited[destination])
+                      relation[sourceOrdinal * derived.boundaryNodes.size() +
+                               destinationOrdinal] = true;
+                }
+                return relation;
+              };
+
+          if (exclusiveGroups.empty()) {
+            derived.relation = reachability({});
+          } else {
+            for (std::uint32_t alternative : exclusiveGroups.begin()->second) {
+              const std::uint32_t selected[] = {alternative};
+              std::vector<bool> current = reachability(selected);
+              if (derived.relation.empty()) {
+                derived.relation = std::move(current);
+              } else {
+                for (std::size_t edge = 0; edge < derived.relation.size();
+                     ++edge)
+                  derived.relation[edge] =
+                      derived.relation[edge] && current[edge];
               }
             }
-            for (auto [destinationOrdinal, destination] :
-                 llvm::enumerate(boundaryNodes))
-              if (source != destination && visited[destination])
-                relation[sourceOrdinal * boundaryNodes.size() +
-                         destinationOrdinal] = true;
           }
-          return relation;
-        };
-
-    std::vector<bool> common;
-    if (exclusiveGroups.empty()) {
-      common = reachability({});
-    } else {
-      for (std::uint32_t alternative : exclusiveGroups.begin()->second) {
-        const std::uint32_t selected[] = {alternative};
-        std::vector<bool> current = reachability(selected);
-        if (common.empty()) {
-          common = std::move(current);
-        } else {
-          for (std::size_t edge = 0; edge < common.size(); ++edge)
-            common[edge] = common[edge] && current[edge];
         }
+        shape = std::move(derived);
       }
-    }
 
-    for (auto [sourceOrdinal, source] : llvm::enumerate(boundaryNodes))
-      for (auto [destinationOrdinal, destination] :
-           llvm::enumerate(boundaryNodes)) {
-        if (!common[sourceOrdinal * boundaryNodes.size() + destinationOrdinal])
-          continue;
-        result.push_back({*model.nodes()[source].boundarySignal,
-                          *model.nodes()[destination].boundarySignal});
-      }
+      if (shape->definition->structure != instance.structure ||
+          shape->definition->nodeBindings != instance.nodeBindings ||
+          shape->definition->selectors != instance.selectors)
+        return invalid("handshake projection shape is inconsistent");
+      for (auto [sourceOrdinal, source] : llvm::enumerate(shape->boundaryNodes))
+        for (auto [destinationOrdinal, destination] :
+             llvm::enumerate(shape->boundaryNodes)) {
+          if (!shape->relation[sourceOrdinal * shape->boundaryNodes.size() +
+                               destinationOrdinal])
+            continue;
+          result.push_back(
+              {*(*instance.nodeBindings)[source].boundarySignal,
+               *(*instance.nodeBindings)[destination].boundarySignal});
+        }
+    }
   }
 
   sortHandshakeArcs(result, true);
   return result;
 }
 
-namespace {
-
-struct ResolvedSelectedHandshakeGraph final {
-  using Arc = std::pair<std::size_t, std::size_t>;
-
-  std::map<std::vector<std::uint8_t>, std::size_t> boundaryNodes;
-  std::size_t nodeCount = 0;
-  std::vector<Arc> arcs;
-};
-
-llvm::Expected<ResolvedSelectedHandshakeGraph>
-resolveSelectedHandshakeGraph(const FabricArtifactView &view,
-                              const FabricHandshakeSelection &selection,
-                              llvm::ArrayRef<HandshakeOwnerModel> models) {
-  if (llvm::Error error =
-          verifyMemoryInternalConnectionClosure(selection.memoryOperations))
-    return std::move(error);
-
-  using OwnerKey = std::vector<std::uint8_t>;
-  std::map<OwnerKey, FabricHandshakeSelection> ownerSelections;
-  std::set<std::vector<std::uint8_t>> traversalKeys;
-  for (const FabricPhysicalTraversalRef &traversal : selection.traversals) {
-    if (!traversalKeys.insert(canonicalFabricBytes(traversal)).second)
-      return invalid("selected traversal relation contains a duplicate");
-    const auto owner = ownerOfTraversal(traversal);
-    if (!owner)
-      return invalid("selected traversal has no handshake owner");
-    ownerSelections[ownerKey(*owner)].traversals.push_back(traversal);
-  }
-  for (const FabricSwitchHandshakeActivationSelection &activation :
-       selection.switchActivations)
-    ownerSelections[ownerKey(FabricHandshakeOwner::switchResource(
-                        activation.key.occurrence))]
-        .switchActivations.push_back(activation);
-  for (const FabricFuHandshakeSelection &selected : selection.fuCapabilities) {
-    auto &local = ownerSelections[ownerKey(
-        FabricHandshakeOwner::fu(selected.occurrence()))];
-    local.fuCapabilities.push_back(selected);
-  }
-  std::set<std::vector<std::uint8_t>> memorySelections;
-  std::set<std::vector<std::uint8_t>> memoryPlacements;
-  for (const FabricMemoryHandshakeSelection &selected :
-       selection.memoryOperations) {
-    if (!memorySelections.insert(memorySelectionKey(selected)).second)
-      return invalid("selected memory operation relation contains a duplicate");
-    if (!memoryPlacements.insert(memoryPlacementKey(selected.placement()))
-             .second)
-      return invalid("selected memory operation placement is contradictory");
-    ownerSelections[ownerKey(FabricHandshakeOwner::memory(
-                        selected.capability().port.memory))]
-        .memoryOperations.push_back(selected);
-  }
-
-  ResolvedSelectedHandshakeGraph graph;
-  for (const HandshakeOwnerModel &model : models)
-    for (const HandshakeOwnerNode &node : model.nodes())
-      if (node.boundarySignal)
-        graph.boundaryNodes.try_emplace(
-            detail::handshakeSignalKey(*node.boundarySignal), 0);
-  for (auto &[key, ordinal] : graph.boundaryNodes) {
-    (void)key;
-    ordinal = graph.nodeCount++;
-  }
-
-  std::vector<std::vector<std::size_t>> modelNodes(models.size());
-  for (auto [modelOrdinal, model] : llvm::enumerate(models)) {
-    auto &nodes = modelNodes[modelOrdinal];
-    nodes.reserve(model.nodes().size());
-    for (const HandshakeOwnerNode &node : model.nodes()) {
-      if (node.boundarySignal) {
-        auto found = graph.boundaryNodes.find(
-            detail::handshakeSignalKey(*node.boundarySignal));
-        if (found == graph.boundaryNodes.end())
-          return invalid("selected handshake boundary node is absent");
-        nodes.push_back(found->second);
-      } else {
-        nodes.push_back(graph.nodeCount++);
-      }
-    }
-  }
-
-  std::set<OwnerKey> consumedOwners;
-  for (auto [modelOrdinal, model] : llvm::enumerate(models)) {
-    const OwnerKey key = ownerKey(model.owner());
-    const auto selected = ownerSelections.find(key);
-    if (selected != ownerSelections.end())
-      consumedOwners.insert(key);
-
-    std::vector<std::uint32_t> activeArcs;
-    if (model.owner().kind() == FabricHandshakeOwnerKind::FuOccurrence &&
-        (selected == ownerSelections.end() ||
-         selected->second.fuCapabilities.empty())) {
-      for (const HandshakeActivationFragment &fragment : model.fragments()) {
-        if (fragment.activationKind != HandshakeActivationKind::Always)
-          continue;
-        for (std::uint32_t index = 0; index < fragment.contributionCount;
-             ++index)
-          activeArcs.push_back(
-              model.fragmentContributionOrdinals()[fragment.contributionOffset +
-                                                   index]);
-      }
-    } else if (model.owner().kind() == FabricHandshakeOwnerKind::FuOccurrence) {
-      for (const FabricFuHandshakeSelection &fuSelection :
-           selected->second.fuCapabilities) {
-        FabricHandshakeSelection local;
-        local.traversals = selected->second.traversals;
-        local.fuCapabilities.push_back(fuSelection);
-        auto active = resolveSelectedHandshake(model, local);
-        if (!active)
-          return active.takeError();
-        activeArcs.insert(activeArcs.end(), active->arcOrdinals().begin(),
-                          active->arcOrdinals().end());
-      }
-      llvm::sort(activeArcs);
-      activeArcs.erase(std::unique(activeArcs.begin(), activeArcs.end()),
-                       activeArcs.end());
-    } else {
-      static const FabricHandshakeSelection empty;
-      auto active = resolveSelectedHandshake(
-          model, selected == ownerSelections.end() ? empty : selected->second);
-      if (!active)
-        return active.takeError();
-      activeArcs.assign(active->arcOrdinals().begin(),
-                        active->arcOrdinals().end());
-    }
-    for (std::uint32_t arcOrdinal : activeArcs) {
-      if (arcOrdinal >= model.arcs().size())
-        return invalid("selected handshake arc is out of range");
-      const HandshakeOwnerArc &arc = model.arcs()[arcOrdinal];
-      if (arc.source >= modelNodes[modelOrdinal].size() ||
-          arc.destination >= modelNodes[modelOrdinal].size())
-        return invalid("selected handshake arc endpoint is out of range");
-      graph.arcs.emplace_back(modelNodes[modelOrdinal][arc.source],
-                              modelNodes[modelOrdinal][arc.destination]);
-    }
-  }
-  if (consumedOwners.size() != ownerSelections.size())
-    return invalid("selected handshake relation names a stale owner");
-  llvm::sort(graph.arcs);
-  graph.arcs.erase(std::unique(graph.arcs.begin(), graph.arcs.end()),
-                   graph.arcs.end());
-  return graph;
-}
-
-llvm::Expected<std::vector<std::vector<std::size_t>>>
-acyclicAdjacency(const ResolvedSelectedHandshakeGraph &graph) {
-  std::vector<std::vector<std::size_t>> adjacency(graph.nodeCount);
-  std::vector<std::size_t> indegree(graph.nodeCount, 0);
-  for (const auto &[source, destination] : graph.arcs) {
-    adjacency[source].push_back(destination);
-    ++indegree[destination];
-  }
-  std::vector<std::size_t> worklist;
-  worklist.reserve(graph.nodeCount);
-  for (std::size_t node = 0; node < graph.nodeCount; ++node)
-    if (indegree[node] == 0)
-      worklist.push_back(node);
-  std::size_t visited = 0;
-  while (!worklist.empty()) {
-    const std::size_t node = worklist.back();
-    worklist.pop_back();
-    ++visited;
-    for (std::size_t destination : adjacency[node])
-      if (--indegree[destination] == 0)
-        worklist.push_back(destination);
-  }
-  if (visited != graph.nodeCount)
-    return invalid("SelectedCombinationalHandshakeCycle");
-  return adjacency;
-}
-
-} // namespace
-
-llvm::Error verifySelectedCombinationalHandshakeAcyclic(
-    const FabricArtifactView &view, const FabricHandshakeSelection &selection) {
-  auto models = compileHandshakeOwnerModels(view);
-  if (!models)
-    return models.takeError();
-  auto graph = resolveSelectedHandshakeGraph(view, selection, *models);
-  if (!graph)
-    return graph.takeError();
-  auto adjacency = acyclicAdjacency(*graph);
-  if (!adjacency)
-    return adjacency.takeError();
-  return llvm::Error::success();
-}
-
-llvm::Error verifySelectedCombinationalHandshakeAcyclic(
-    const FabricArtifactView &view, const FabricHandshakeSelection &selection,
-    const FabricHandshakeContext &context) {
-  if (llvm::Error error = revalidateFabricHandshakeContext(context, view))
-    return error;
-  auto graph =
-      resolveSelectedHandshakeGraph(view, selection, context.ownerModels());
-  if (!graph)
-    return graph.takeError();
-  auto adjacency = acyclicAdjacency(*graph);
-  if (!adjacency)
-    return adjacency.takeError();
-  return llvm::Error::success();
-}
-
-static llvm::Expected<std::vector<HandshakeDependencyArc>>
-deriveSelectedHandshakeReachabilityWithModels(
-    const FabricArtifactView &view, const FabricHandshakeSelection &selection,
-    llvm::ArrayRef<HandshakeSignalRef> terminals,
-    llvm::ArrayRef<HandshakeOwnerModel> models) {
-  auto graph = resolveSelectedHandshakeGraph(view, selection, models);
-  if (!graph)
-    return graph.takeError();
-  auto adjacency = acyclicAdjacency(*graph);
-  if (!adjacency)
-    return adjacency.takeError();
-
-  std::set<std::vector<std::uint8_t>> terminalKeys;
-  std::vector<std::optional<std::size_t>> terminalNodes;
-  terminalNodes.reserve(terminals.size());
-  for (const HandshakeSignalRef &terminal : terminals) {
-    if (llvm::Error error = validateFabricRef(view, terminal.endpoint))
-      return std::move(error);
-    const auto key = detail::handshakeSignalKey(terminal);
-    if (!terminalKeys.insert(key).second)
-      return invalid("selected handshake terminal inventory has a duplicate");
-    const auto found = graph->boundaryNodes.find(key);
-    terminalNodes.push_back(found == graph->boundaryNodes.end()
-                                ? std::nullopt
-                                : std::optional<std::size_t>(found->second));
-  }
-
-  std::vector<HandshakeDependencyArc> result;
-  std::vector<bool> visited(graph->nodeCount, false);
-  std::vector<std::size_t> worklist;
-  worklist.reserve(graph->nodeCount);
-  for (std::size_t source = 0; source < terminals.size(); ++source) {
-    if (!terminalNodes[source])
-      continue;
-    std::fill(visited.begin(), visited.end(), false);
-    worklist.clear();
-    worklist.push_back(*terminalNodes[source]);
-    visited[*terminalNodes[source]] = true;
-    while (!worklist.empty()) {
-      const std::size_t node = worklist.back();
-      worklist.pop_back();
-      for (std::size_t destination : (*adjacency)[node]) {
-        if (visited[destination])
-          continue;
-        visited[destination] = true;
-        worklist.push_back(destination);
-      }
-    }
-    for (std::size_t destination = 0; destination < terminals.size();
-         ++destination)
-      if (source != destination && terminalNodes[destination] &&
-          visited[*terminalNodes[destination]])
-        result.push_back({terminals[source], terminals[destination]});
-  }
-
-  sortHandshakeArcs(result, false);
-  return result;
-}
-
 llvm::Expected<std::vector<HandshakeDependencyArc>>
-deriveSelectedHandshakeReachability(
-    const FabricArtifactView &view, const FabricHandshakeSelection &selection,
-    llvm::ArrayRef<HandshakeSignalRef> terminals) {
-  auto models = compileHandshakeOwnerModels(view);
-  if (!models)
-    return models.takeError();
-  return deriveSelectedHandshakeReachabilityWithModels(view, selection,
-                                                       terminals, *models);
-}
-
-llvm::Expected<std::vector<HandshakeDependencyArc>>
-deriveSelectedHandshakeReachability(
-    const FabricArtifactView &view, const FabricHandshakeSelection &selection,
-    llvm::ArrayRef<HandshakeSignalRef> terminals,
-    const FabricHandshakeContext &context) {
-  if (llvm::Error error = revalidateFabricHandshakeContext(context, view))
-    return std::move(error);
-  return deriveSelectedHandshakeReachabilityWithModels(
-      view, selection, terminals, context.ownerModels());
+deriveUnconditionalHandshakeDependencyArcs(const FabricArtifactView &view) {
+  auto context = buildFabricHandshakeContext(view);
+  if (!context)
+    return context.takeError();
+  return std::vector<HandshakeDependencyArc>(
+      context->unconditionalDependencyArcs().begin(),
+      context->unconditionalDependencyArcs().end());
 }
 
 } // namespace loom::fabric

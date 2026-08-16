@@ -129,6 +129,78 @@ repair, final global closure, Artifact finalization, or the cold independent
 Mapping verifier. Cache misses and hits must publish identical canonical
 results and deterministic work accounting.
 
+A root-complete Spatial invocation may import several TechMappings that share
+one Canonical Dataflow. It imports that Dataflow at most once per complete root
+reference, including schema identity, schema version, and artifact identity.
+Every reuse revalidates the cached Artifact and program-view identities against
+the exact TechMapping lineage. The cache is destroyed with the provider
+invocation and reports requests, hits, misses, construction time, retained
+bytes, and deterministic import work.
+
+`SystemActiveProblem` imports the canonical SpatialMapping set exactly once and
+imports each lineage TechMapping at most once per complete root reference.
+Each SpatialMapping still performs exact Dataflow, Module, and TechMapping
+lineage validation on reuse. The TechMapping import cache exists only while the
+active context is constructed; its requests, hits, and misses are included in
+the active-context statistics and deterministic construction work.
+
+Within one `SpatialActiveProblem` construction, compute attachment projection
+is factored by the exact physical tuple `(FU occurrence, parent PE, schedule,
+FU template port, logical terminal direction, payload width)`. The Fabric and
+routing contexts are fixed inputs of that table. A miss derives the canonical
+endpoint, local traversal, durable progress boundary, and shared Temporal
+operand-enqueue unit once; a hit reuses that immutable list while each logical
+PortDemand still receives its own placement domain and option ownership. The
+table is destroyed after construction and never contains a selection. Active
+context diagnostics report its lookup, hit, and miss counts in addition to the
+fully materialized logical option count.
+
+The handshake part of `SpatialActiveProblem` is an exact demand relation over
+the shared Fabric handshake context. It retains a compact owner-model and local
+fragment reference for every placement, memory plan, traversal witness, and
+switch activation admitted by the active realization and routing domains. It
+must not flatten the union of those potential fragments into candidate nodes,
+arcs, adjacency tables, or topological state.
+
+The mutable candidate materializes a graph only from its currently selected
+fragments. Boundary signals with equal typed Fabric identity are unified;
+owner-local junctions remain private. A transaction derives physical arc
+insertions and removals only from fragment refcounts that cross zero. Deletions
+cannot introduce a cycle. Insertions are checked against the committed graph
+plus the exact transaction overlay by affected reachability, without rebuilding
+the candidate graph, canonical order, or a full-Fabric topology. Rollback drops
+the overlay. Commit materializes the new active graph; a refcount-only commit
+whose active fragment set did not change reuses the existing graph. This graph
+is mutable candidate state and is never placed in an invocation, session,
+static, or global cache.
+Candidate selections, refcounts, scratch storage, PRNG state, and budgets also
+remain candidate-owned.
+
+An endpoint router may retain exact reverse lower-bound distance tables inside
+one prepared search scratch. Its key covers the router algorithm version,
+lower-bound cost revision, endpoint targets, traversal eligibility, payload and
+tag requirements, and every timing input consumed by the reverse search. The
+stored distances must losslessly reconstruct the complete `RouteCost`. A
+compact common-scale table may use explicit wide-value exceptions, but
+narrowing or saturation is forbidden because a cache hit must preserve the
+cold path, cost, tie break, and deterministic forward expansion work. Storage
+is allocated only on a miss and is bounded by both bytes and entry count. The
+search diagnostics report hits, builds, evictions, populated entries, and
+retained bytes. This cache never survives the search scratch and is not part of
+a static or active context.
+
+This construction rule does not prune the legal candidate domain. Every
+placement and plan admitted by the exact realization domain remains
+selectable, and first use must materialize the same fragments that eager
+expansion would have produced. Exact repair may request any admitted entry.
+Final Mapping verification reconstructs the selected handshake relation from
+the complete Fabric models and exact Mapping decisions without trusting the
+candidate's materialized graph. Diagnostics report potential fragment and
+contribution counts separately from materialized fragment, node, arc, and
+contribution counts. They also report uncached materialization time, retained
+bytes, deterministic work, transaction closure count, inserted and removed
+arcs, affected-node visits, and affected rank span.
+
 ## Invocation Contracts
 
 ### Spatial PnR
@@ -153,6 +225,12 @@ semantic identity of a published SpatialMapping.
 Each published result must be a finalized SpatialMapping that independently
 passes base verification and exact `K` admission. Mutable candidates, solver
 assignments, route-price history, no-goods, and proof caches are never outputs.
+Every terminal outcome, including success, reports deterministic invocation
+work for seed preparation, placement assignment, endpoint expansion,
+negotiation, annealing, exact repair, final closure, independent verification,
+Artifact finalization, and publication. A zero exact-repair count means the
+candidate closed without invoking repair; it never means repair or final
+verification was disabled.
 
 ### System PnR
 

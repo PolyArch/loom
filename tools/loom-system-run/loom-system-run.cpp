@@ -1035,6 +1035,10 @@ llvm::Error run() {
   loom::evaluation::emitArtifactImportCacheStatistics(
       loom::evaluation::ArtifactImportCacheVerificationDomain::SourceInvocation,
       artifactImportSession.statistics());
+  loom::fabric::emitFabricArtifactImportSessionStatistics(
+      loom::fabric::FabricArtifactImportVerificationDomain::SourceInvocation,
+      loom::InvocationDiagnosticStage::Deployment,
+      fabricImportSession.statistics());
   loom::hardware::emitConfigurationABIImportSessionStatistics(
       loom::hardware::ConfigurationABIImportVerificationDomain::
           SourceInvocation,

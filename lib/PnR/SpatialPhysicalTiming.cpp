@@ -196,12 +196,13 @@ deriveSourceArrival(const FrozenSpatialPnrProblem &problem, PnrIndex logicalNet,
       problem.routing().requiredCombinationalDelayQuanta(), timing);
 }
 
-llvm::Expected<std::vector<std::uint64_t>>
-deriveRouteNodeArrivals(const FrozenSpatialPnrProblem &problem,
-                        PnrIndex logicalNet, const RouteTreeState &route,
-                        llvm::ArrayRef<PnrIndex> portAttachments,
-                        llvm::ArrayRef<PnrIndex> graphBoundaryAttachments,
-                        detail::SpatialLogicalNetPhysicalTiming &timing) {
+llvm::Error deriveRouteNodeArrivals(
+    const FrozenSpatialPnrProblem &problem, PnrIndex logicalNet,
+    const RouteTreeState &route, llvm::ArrayRef<PnrIndex> portAttachments,
+    llvm::ArrayRef<PnrIndex> graphBoundaryAttachments,
+    detail::SpatialLogicalNetPhysicalTiming &timing,
+    std::vector<std::uint64_t> &arrivals,
+    std::vector<std::pair<PnrIndex, std::uint64_t>> &worklist) {
   const FrozenSpatialRoutingGraph &routing = problem.routing();
   if (logicalNet >= problem.transfers().logicalNets().size() ||
       logicalNet >= problem.transfers().logicalNetSourceBindings().size())
@@ -225,8 +226,8 @@ deriveRouteNodeArrivals(const FrozenSpatialPnrProblem &problem,
   if (!rootArrival)
     return rootArrival.takeError();
 
-  std::vector<std::pair<PnrIndex, std::uint64_t>> worklist;
-  std::vector<std::uint64_t> arrivals(route.nodeStorage().size(), 0);
+  worklist.clear();
+  arrivals.resize(route.nodeStorage().size());
   worklist.reserve(route.activeNodeCount());
   worklist.emplace_back(*sourceSlot, *rootArrival);
   for (std::size_t cursor = 0; cursor < worklist.size(); ++cursor) {
@@ -256,7 +257,7 @@ deriveRouteNodeArrivals(const FrozenSpatialPnrProblem &problem,
   }
   if (worklist.size() != route.activeNodeCount())
     return invalid("RouteTree timing walk did not cover every active node");
-  return arrivals;
+  return llvm::Error::success();
 }
 
 } // namespace
@@ -277,8 +278,13 @@ detail::projectSpatialLogicalNetRouteNodeArrivals(
     const RouteTreeState &route, llvm::ArrayRef<PnrIndex> portAttachments,
     llvm::ArrayRef<PnrIndex> graphBoundaryAttachments) {
   SpatialLogicalNetPhysicalTiming timing;
-  return deriveRouteNodeArrivals(problem, logicalNet, route, portAttachments,
-                                 graphBoundaryAttachments, timing);
+  std::vector<std::uint64_t> arrivals;
+  std::vector<std::pair<PnrIndex, std::uint64_t>> worklist;
+  if (llvm::Error error = deriveRouteNodeArrivals(
+          problem, logicalNet, route, portAttachments, graphBoundaryAttachments,
+          timing, arrivals, worklist))
+    return std::move(error);
+  return arrivals;
 }
 
 llvm::Expected<std::uint64_t> detail::projectSpatialLogicalNetSourceArrival(
@@ -295,8 +301,12 @@ detail::projectSpatialLogicalNetPhysicalTiming(
     const FrozenSpatialPnrProblem &problem, PnrIndex logicalNet,
     const RouteTreeState &route, PnrIndex registerFifoTransfer,
     llvm::ArrayRef<PnrIndex> portAttachments,
-    llvm::ArrayRef<PnrIndex> graphBoundaryAttachments) {
+    llvm::ArrayRef<PnrIndex> graphBoundaryAttachments,
+    std::vector<std::uint64_t> *routeNodeArrivals,
+    std::vector<std::pair<PnrIndex, std::uint64_t>> *routeNodeWorklist) {
   SpatialLogicalNetPhysicalTiming result;
+  if (routeNodeArrivals)
+    routeNodeArrivals->clear();
   auto criticality = logicalNetStructuralCriticality(problem, logicalNet);
   if (!criticality)
     return criticality.takeError();
@@ -329,11 +339,17 @@ detail::projectSpatialLogicalNetPhysicalTiming(
 
   if (route.isUnrouted())
     return result;
-  auto arrivals =
-      deriveRouteNodeArrivals(problem, logicalNet, route, portAttachments,
-                              graphBoundaryAttachments, result);
-  if (!arrivals)
-    return arrivals.takeError();
+  std::vector<std::uint64_t> localArrivals;
+  std::vector<std::pair<PnrIndex, std::uint64_t>> localWorklist;
+  std::vector<std::uint64_t> &arrivalStorage =
+      routeNodeArrivals ? *routeNodeArrivals : localArrivals;
+  std::vector<std::pair<PnrIndex, std::uint64_t>> &worklistStorage =
+      routeNodeWorklist ? *routeNodeWorklist : localWorklist;
+  if (llvm::Error error = deriveRouteNodeArrivals(
+          problem, logicalNet, route, portAttachments, graphBoundaryAttachments,
+          result, arrivalStorage, worklistStorage))
+    return std::move(error);
+  const llvm::ArrayRef<std::uint64_t> arrivalValues = arrivalStorage;
 
   const FrozenSpatialLogicalNet &net =
       problem.transfers().logicalNets()[logicalNet];
@@ -342,9 +358,9 @@ detail::projectSpatialLogicalNetPhysicalTiming(
     const auto sinkSlot = route.sinkNode(sink);
     if (!sinkSlot)
       continue;
-    if (*sinkSlot >= arrivals->size())
+    if (*sinkSlot >= arrivalValues.size())
       return invalid("timing sink RouteTree node is out of range");
-    std::uint64_t arrival = (*arrivals)[*sinkSlot];
+    std::uint64_t arrival = arrivalValues[*sinkSlot];
     const FrozenSpatialTerminalBinding binding =
         sinkBindings[net.sinkOffset + sink];
     auto localTraversal = selectedLocalTraversal(
@@ -371,10 +387,21 @@ detail::projectSpatialPhysicalTiming(
     llvm::ArrayRef<const RouteTreeState *> routes,
     llvm::ArrayRef<PnrIndex> registerFifoTransfers,
     llvm::ArrayRef<PnrIndex> portAttachments,
-    llvm::ArrayRef<PnrIndex> graphBoundaryAttachments) {
+    llvm::ArrayRef<PnrIndex> graphBoundaryAttachments,
+    std::vector<std::uint64_t> *netWorstArrivals,
+    std::vector<std::uint64_t> *netNegativeSlacks) {
   if (routes.size() != problem.transfers().logicalNets().size() ||
       registerFifoTransfers.size() != routes.size())
     return invalid("physical timing projection has the wrong net domain");
+  if ((netWorstArrivals == nullptr) != (netNegativeSlacks == nullptr))
+    return invalid(
+        "physical timing per-net outputs must be requested together");
+  if (netWorstArrivals) {
+    netWorstArrivals->clear();
+    netNegativeSlacks->clear();
+    netWorstArrivals->reserve(routes.size());
+    netNegativeSlacks->reserve(routes.size());
+  }
   SpatialPhysicalTimingProjection result;
   for (PnrIndex logicalNet = 0; logicalNet < routes.size(); ++logicalNet) {
     if (!routes[logicalNet])
@@ -385,6 +412,10 @@ detail::projectSpatialPhysicalTiming(
         graphBoundaryAttachments);
     if (!timing)
       return timing.takeError();
+    if (netWorstArrivals) {
+      netWorstArrivals->push_back(timing->worstArrivalDelayQuanta);
+      netNegativeSlacks->push_back(timing->totalNegativeSlackQuanta);
+    }
     result.worstArrivalDelayQuanta = std::max(result.worstArrivalDelayQuanta,
                                               timing->worstArrivalDelayQuanta);
     auto total =

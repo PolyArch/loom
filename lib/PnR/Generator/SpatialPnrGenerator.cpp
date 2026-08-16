@@ -42,6 +42,72 @@ struct AttemptFailure final {
   std::string diagnostic;
 };
 
+void emitActiveHandshakeStatistics(
+    const HandshakeActiveDemandStatistics &statistics, std::uint32_t attempt) {
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "spatial_active_handshake";
+        fields["candidate_attempt"] = attempt;
+        fields["cache_hits"] = 0;
+        fields["cache_misses"] = statistics.constructionCount;
+        fields["construction_count"] = statistics.constructionCount;
+        fields["construction_time_ns"] = statistics.constructionNanoseconds;
+        fields["retained_bytes"] = statistics.retainedBytes;
+        fields["deterministic_work"] = statistics.deterministicWork;
+        fields["active_fragment_count"] = statistics.activeFragmentCount;
+        fields["materialized_node_count"] = statistics.materializedNodeCount;
+        fields["materialized_arc_count"] = statistics.materializedArcCount;
+        fields["materialized_contribution_count"] =
+            statistics.materializedContributionCount;
+        fields["transaction_closure_count"] =
+            statistics.transactionClosureCount;
+        fields["transaction_inserted_arc_count"] =
+            statistics.transactionInsertedArcCount;
+        fields["transaction_removed_arc_count"] =
+            statistics.transactionRemovedArcCount;
+        fields["transaction_affected_node_count"] =
+            statistics.transactionAffectedNodeCount;
+        fields["transaction_affected_rank_span"] =
+            statistics.transactionAffectedRankSpan;
+      });
+}
+
+void emitInvocationAccounting(const SpatialPnrGenerationAccounting &accounting,
+                              mapping_debug::ClosureStatus closureStatus,
+                              std::uint64_t candidatePublications) {
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SpatialPnr,
+      mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
+        fields["statistics_kind"] = "spatial_pnr_invocation";
+        fields["closure_status"] =
+            mapping_debug::closureStatusSpelling(closureStatus);
+        fields["candidate_publications"] = candidatePublications;
+        fields["seed_attempt_slots"] = accounting.seedAttemptSlots;
+        fields["prepared_seeds"] = accounting.preparedSeeds;
+        fields["initializer_assignment_attempts"] =
+            accounting.initializerAssignmentAttempts;
+        fields["endpoint_expansion_slots"] = accounting.endpointExpansionSlots;
+        fields["negotiation_iteration_slots"] =
+            accounting.negotiationIterationSlots;
+        fields["calibration_proposal_slots"] =
+            accounting.calibrationProposalSlots;
+        fields["annealing_base_proposal_slots"] =
+            accounting.annealingBaseProposalSlots;
+        fields["annealing_movable_proposal_slots"] =
+            accounting.annealingMovableProposalSlots;
+        fields["annealing_accepted_actions"] =
+            accounting.annealingAcceptedActions;
+        fields["exact_repair_invocations"] = accounting.exactRepairInvocations;
+        fields["exact_repair_region_decisions"] =
+            accounting.exactRepairRegionDecisions;
+        fields["exact_repair_solver_calls"] = accounting.exactRepairSolverCalls;
+        fields["final_closure_attempts"] = accounting.finalClosureAttempts;
+        fields["finalized_restarts"] = accounting.finalizedRestarts;
+        fields["publication_slots"] = accounting.publicationSlots;
+      });
+}
+
 enum class FreezeFailureKind : std::uint8_t {
   Invalid,
   ProvenInfeasible,
@@ -193,7 +259,8 @@ llvm::Error accumulateAnnealing(const SpatialAnnealingStatistics &source,
                                      target.negotiationIterationSlots,
                                      "annealing negotiation iterations"))
     return error;
-  return checkedAdd(source.acceptedActionCount, target.annealingAcceptedActions,
+  return checkedAdd(source.acceptedActionCount,
+                    target.annealingAcceptedActions,
                     "annealing accepted Actions");
 }
 
@@ -409,7 +476,7 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
   }
 
   accounting.preparedSeeds = 1;
-  auto annealed = annealing.run(seed->candidate, attempt, executionControl);
+  auto annealed = annealing.run(*seed, executionControl);
   if (!annealed)
     return restartInternal(InternalSpatialPnrGenerationReason::Annealing,
                            std::move(accounting), annealed.takeError());
@@ -597,6 +664,8 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
     return restartInternal(
         InternalSpatialPnrGenerationReason::CandidateVerification,
         std::move(accounting), std::move(error));
+  emitActiveHandshakeStatistics(
+      seed->candidate->handshake().materializationStatistics(), attempt);
   auto violation = firstFinalViolation(*seed->candidate);
   if (!violation)
     return restartInternal(
@@ -1018,6 +1087,8 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
             accounting,
             "one restart proved global infeasibility while another produced "
             "a verified candidate");
+      emitInvocationAccounting(
+          accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
       return ProvenInfeasibleSpatialMapping{accounting,
                                             std::move(restart.diagnostic)};
     case SpatialRestartDisposition::Incomplete:
@@ -1065,6 +1136,12 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     llvm::sort(candidates, artifactRootReferenceLess);
     candidates.erase(std::unique(candidates.begin(), candidates.end()),
                      candidates.end());
+    const mapping_debug::ClosureStatus closureStatus =
+        proofNotEstablished ? mapping_debug::ClosureStatus::ProofNotEstablished
+        : semanticLimitReached
+            ? mapping_debug::ClosureStatus::SemanticLimitReached
+            : mapping_debug::ClosureStatus::Closed;
+    emitInvocationAccounting(accounting, closureStatus, candidates.size());
     return GeneratedSpatialMappings{
         std::move(candidates),
         proofNotEstablished ? PnrGenerationTermination::ProofNotEstablished
@@ -1073,15 +1150,23 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
             : PnrGenerationTermination::FixedAttemptsCompleted,
         accounting};
   }
-  if (accounting.preparedSeeds == 0 && !semanticLimitReached)
+  if (accounting.preparedSeeds == 0 && !semanticLimitReached) {
+    emitInvocationAccounting(
+        accounting, mapping_debug::ClosureStatus::ProofNotEstablished, 0);
     return IncompleteSpatialPnrGeneration{
         IncompleteSpatialPnrGenerationReason::NoPreparedSeed, accounting,
         !incompleteRepresentative
             ? "no fixed initializer slot produced a prepared Spatial candidate"
             : incompleteRepresentative->diagnostic};
+  }
   const SpatialRestartResult *representative = semanticLimitReached
                                                    ? semanticLimitRepresentative
                                                    : incompleteRepresentative;
+  emitInvocationAccounting(
+      accounting,
+      semanticLimitReached ? mapping_debug::ClosureStatus::SemanticLimitReached
+                           : mapping_debug::ClosureStatus::ProofNotEstablished,
+      0);
   return IncompleteSpatialPnrGeneration{
       semanticLimitReached
           ? IncompleteSpatialPnrGenerationReason::SemanticLimitReached

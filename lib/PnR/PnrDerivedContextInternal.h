@@ -54,7 +54,7 @@ std::uint64_t staticContextRetainedBytes(
     const FrozenSpatialResourceIndex &resources,
     const FrozenEndpointRoutingTopology &topology,
     const FrozenSpatialTagContinuityIndex &tags,
-    llvm::ArrayRef<::loom::fabric::HandshakeOwnerModel> models);
+    const ::loom::fabric::FabricHandshakeContext &handshake);
 
 std::uint64_t
 timingContextRetainedBytes(const FrozenSpatialRoutingGraph &routing);

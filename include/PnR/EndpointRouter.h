@@ -8,8 +8,11 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -131,22 +134,36 @@ public:
     return heuristicCacheHitCount_;
   }
   std::uint64_t heuristicBuildCount() const { return heuristicBuildCount_; }
+  std::uint64_t heuristicCacheEvictionCount() const {
+    return heuristicCacheEvictionCount_;
+  }
+  std::size_t heuristicCacheEntryCount() const {
+    return heuristicCacheIndex_.size();
+  }
+  std::size_t heuristicCacheRetainedBytes() const;
   std::size_t retainedStorageBytes() const;
 
 private:
+  struct RouteQueueEntry final {
+    RouteCost key = 0;
+    PnrIndex state = 0;
+    std::size_t next = std::numeric_limits<std::size_t>::max();
+  };
+
   enum class HeapMode {
     ReverseDistance,
     ForwardAStar,
   };
 
-  void resetHeap();
-  bool heapLess(PnrIndex lhs, PnrIndex rhs) const;
-  void heapSwap(std::size_t lhs, std::size_t rhs);
-  void siftUp(std::size_t position);
-  void siftDown(std::size_t position);
+  void resetRouteQueue();
+  bool routeQueueEmpty();
+  bool routeQueueEntryCurrent(const RouteQueueEntry &entry) const;
+  bool routeQueueTieWorse(const RouteQueueEntry &lhs,
+                          const RouteQueueEntry &rhs) const;
+  bool refillRouteQueueMinimumBucket();
   void insertOrDecrease(PnrIndex endpoint);
   PnrIndex popMinimum();
-  PnrIndex peekMinimum() const;
+  PnrIndex peekMinimum();
 
   void beginHeuristicGeneration();
   void beginSearchGeneration();
@@ -169,33 +186,40 @@ private:
   bool loadCachedHeuristic(const EndpointRouteSearchRequest &request);
   void storeCachedHeuristic(const EndpointRouteSearchRequest &request);
 
+  struct HeuristicCacheWideDistance final {
+    PnrIndex endpoint = 0;
+    RouteCost distance = 0;
+  };
+
   struct HeuristicCacheEntry final {
-    const RouteCost *lowerBoundCostData = nullptr;
-    std::size_t lowerBoundCostSize = 0;
-    std::uint64_t lowerBoundCostRevision = 0;
-    std::uint64_t keyHash = 0;
-    std::uint32_t requiredPayloadWidthBits = 0;
-    std::uint32_t requiredTagWidthBits = 0;
-    std::size_t targetEndpointCount = 0;
-    std::size_t eligibleTraversalWordCount = 0;
+    std::array<std::uint8_t, 32> keyDigest{};
+    std::vector<std::uint32_t> scaledDistances;
+    std::vector<HeuristicCacheWideDistance> wideDistances;
+    std::uint64_t lastUse = 0;
+    std::uint8_t scaleShift = 0;
     bool populated = false;
   };
+
+  RouteCost cachedHeuristic(const HeuristicCacheEntry &entry,
+                            PnrIndex endpoint) const;
+  std::size_t
+  heuristicCacheEntryDistanceBytes(const HeuristicCacheEntry &entry) const;
+  void evictHeuristicCacheEntry(std::size_t slot);
 
   struct TimingSearchLabel final {
     PnrIndex endpoint = 0;
     PnrIndex predecessorLabel = 0;
     PnrIndex predecessorArc = 0;
+    PnrIndex nextStateLabel = 0;
     std::uint64_t arrivalQuanta = 0;
     RouteCost distance = 0;
+    RouteCost priority = 0;
     bool requirementMet = false;
     bool active = false;
   };
 
-  std::uint64_t
-  heuristicCacheKeyHash(const EndpointRouteSearchRequest &request) const;
-  bool heuristicCacheKeyEquals(const HeuristicCacheEntry &entry,
-                               const EndpointRouteSearchRequest &request,
-                               std::uint64_t keyHash, std::size_t slot) const;
+  std::array<std::uint8_t, 32>
+  heuristicCacheKeyDigest(const EndpointRouteSearchRequest &request) const;
 
   EndpointRoutingGraphView graph_;
   std::vector<RouteCost> heuristics_;
@@ -210,25 +234,31 @@ private:
   std::vector<PnrIndex> targetPreferenceRanks_;
   std::vector<std::uint8_t> targetRequiresTraversal_;
   std::vector<PnrIndex> sourceReplicationGroups_;
-  std::vector<PnrIndex> heap_;
-  std::vector<PnrIndex> heapPositions_;
+  std::array<std::size_t, 65> routeQueueBucketHeads_{};
+  std::vector<RouteQueueEntry> routeQueueEntries_;
+  std::size_t routeQueueEntryCount_ = 0;
+  std::vector<std::size_t> routeQueueMinimumHeap_;
+  RouteCost routeQueueLastKey_ = 0;
   std::vector<PnrIndex> path_;
   std::vector<TimingSearchLabel> timingLabels_;
-  std::vector<std::vector<PnrIndex>> timingStateLabels_;
+  std::vector<PnrIndex> timingStateLabelHeads_;
+  std::vector<std::uint64_t> timingStateLabelEpochs_;
   std::vector<PnrIndex> timingHeap_;
   std::vector<HeuristicCacheEntry> heuristicCache_;
-  std::vector<PnrIndex> heuristicCacheTargets_;
-  std::vector<std::uint64_t> heuristicCacheEligibility_;
-  std::vector<RouteCost> heuristicCacheDistances_;
-  std::size_t heuristicCacheTraversalWordCount_ = 0;
-  const RouteCost *activeCachedHeuristics_ = nullptr;
+  std::map<std::array<std::uint8_t, 32>, std::size_t> heuristicCacheIndex_;
+  const HeuristicCacheEntry *activeCachedHeuristic_ = nullptr;
+  std::size_t heuristicCacheDistanceByteBudget_ = 0;
+  std::size_t heuristicCacheDistanceBytes_ = 0;
+  std::uint64_t heuristicCacheUseEpoch_ = 0;
   std::uint64_t heuristicGeneration_ = 0;
   std::uint64_t searchGeneration_ = 0;
   std::uint64_t targetGeneration_ = 0;
   std::uint64_t sourceGeneration_ = 0;
+  std::uint64_t timingLabelGeneration_ = 0;
   std::uint64_t endpointExpansionCount_ = 0;
   std::uint64_t heuristicCacheHitCount_ = 0;
   std::uint64_t heuristicBuildCount_ = 0;
+  std::uint64_t heuristicCacheEvictionCount_ = 0;
   HeapMode heapMode_ = HeapMode::ReverseDistance;
   bool prepared_ = false;
 };

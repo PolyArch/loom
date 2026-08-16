@@ -1273,25 +1273,33 @@ public:
     statistics.staticContext.constructionNanoseconds =
         detail::elapsedNanoseconds(staticBegin);
     statistics.staticContext.retainedBytes = detail::staticContextRetainedBytes(
-        *resourcesOwner, *topologyOwner, *tagOwner,
-        staticContext->handshake.ownerModels());
+        *resourcesOwner, *topologyOwner, *tagOwner, staticContext->handshake);
     statistics.resourceOwnerCount = resourcesOwner->resourceOwners().size();
     statistics.endpointCount = topologyOwner->endpoints().size();
     statistics.traversalCount = topologyOwner->traversals().size();
     statistics.routingArcCount = topologyOwner->arcs().size();
-    statistics.handshakeOwnerCount =
-        staticContext->handshake.ownerModels().size();
-    for (const HandshakeOwnerModel &model :
-         staticContext->handshake.ownerModels()) {
-      statistics.handshakeNodeCount += model.nodes().size();
-      statistics.handshakeArcCount += model.arcs().size();
-      statistics.handshakeFragmentCount += model.fragments().size();
-    }
+    const FabricHandshakeContextStatistics &handshakeStatistics =
+        staticContext->handshake.statistics();
+    statistics.handshakeOwnerCount = handshakeStatistics.ownerCount;
+    statistics.handshakeStructuralTemplateCount =
+        handshakeStatistics.structuralTemplateCount;
+    statistics.handshakeBindingInstanceCount =
+        handshakeStatistics.bindingInstanceCount;
+    statistics.handshakeStructuralNodeCount =
+        handshakeStatistics.structuralNodeCount;
+    statistics.handshakeStructuralArcCount =
+        handshakeStatistics.structuralArcCount;
+    statistics.handshakeStructuralFragmentCount =
+        handshakeStatistics.structuralFragmentCount;
+    statistics.handshakeUnconditionalArcCount =
+        handshakeStatistics.unconditionalArcCount;
+    statistics.handshakeNodeCount = handshakeStatistics.nodeCount;
+    statistics.handshakeArcCount = handshakeStatistics.arcCount;
+    statistics.handshakeFragmentCount = handshakeStatistics.fragmentCount;
     statistics.staticContext.deterministicWork =
         statistics.resourceOwnerCount + statistics.endpointCount +
         statistics.traversalCount + statistics.routingArcCount +
-        statistics.handshakeOwnerCount + statistics.handshakeNodeCount +
-        statistics.handshakeArcCount + statistics.handshakeFragmentCount;
+        handshakeStatistics.deterministicWork;
 
     const auto timingBegin = std::chrono::steady_clock::now();
     auto routing = buildRouting(fabric, physicalTiming, *resourcesOwner,

@@ -134,6 +134,27 @@ struct AttachmentDraft final {
   }
 };
 
+struct ComputeAttachmentClassKey final {
+  FabricEntityId fu = 0;
+  FabricEntityId parentPe = 0;
+  ::fabric::Schedule schedule = ::fabric::Schedule::Spatial;
+  FabricEntityId templateFu = 0;
+  FabricPortDirection templateDirection = FabricPortDirection::Input;
+  FabricOrdinal templateOrdinal = 0;
+  FabricPortDirection terminalDirection = FabricPortDirection::Input;
+  std::uint32_t payloadWidthBits = 0;
+
+  friend bool operator<(const ComputeAttachmentClassKey &lhs,
+                        const ComputeAttachmentClassKey &rhs) {
+    return std::tie(lhs.fu, lhs.parentPe, lhs.schedule, lhs.templateFu,
+                    lhs.templateDirection, lhs.templateOrdinal,
+                    lhs.terminalDirection, lhs.payloadWidthBits) <
+           std::tie(rhs.fu, rhs.parentPe, rhs.schedule, rhs.templateFu,
+                    rhs.templateDirection, rhs.templateOrdinal,
+                    rhs.terminalDirection, rhs.payloadWidthBits);
+  }
+};
+
 llvm::Expected<std::optional<std::uint32_t>>
 deriveSharedOperandEnqueueUnit(const FabricArtifactView &fabric,
                                const FrozenSpatialComputePlacement &placement,
@@ -182,7 +203,21 @@ deriveSharedOperandEnqueueUnit(const FabricArtifactView &fabric,
 
 struct PlacementDomainDraft final {
   PnrIndex placement;
-  std::vector<AttachmentDraft> options;
+  const std::vector<AttachmentDraft> *sharedOptions = nullptr;
+  std::vector<AttachmentDraft> ownedOptions;
+
+  PlacementDomainDraft(PnrIndex placement,
+                       const std::vector<AttachmentDraft> *options)
+      : placement(placement), sharedOptions(options) {}
+
+  PlacementDomainDraft(PnrIndex placement, std::vector<AttachmentDraft> options)
+      : placement(placement), ownedOptions(std::move(options)) {}
+
+  llvm::ArrayRef<AttachmentDraft> options() const {
+    if (sharedOptions)
+      return *sharedOptions;
+    return ownedOptions;
+  }
 };
 
 struct PortDemandDraft final {
@@ -504,13 +539,33 @@ public:
                  ? std::nullopt
                  : std::optional<PnrIndex>(found->second);
     };
+    std::map<ComputeAttachmentClassKey, std::vector<AttachmentDraft>>
+        computeAttachmentClasses;
     const auto computeOptions =
         [&](const FrozenSpatialPortDemand &demand,
             const FrozenSpatialComputePlacement &placement)
-        -> llvm::Expected<std::vector<AttachmentDraft>> {
-      std::vector<AttachmentDraft> options;
+        -> llvm::Expected<const std::vector<AttachmentDraft> *> {
       const auto &templatePort =
           std::get<FabricFuTemplatePortRef>(demand.templateTerminal);
+      const ComputeAttachmentClassKey key{
+          placement.fu.id(),
+          placement.parentPe.id(),
+          placement.schedule,
+          templatePort.fu.id(),
+          templatePort.direction,
+          templatePort.ordinal,
+          directionOf(demand.terminal),
+          demand.payloadWidthBits,
+      };
+      auto [classIt, inserted] = computeAttachmentClasses.try_emplace(key);
+      ++result.computeAttachmentClassLookupCount_;
+      if (!inserted) {
+        ++result.computeAttachmentClassHitCount_;
+        return &classIt->second;
+      }
+      ++result.computeAttachmentClassMissCount_;
+
+      std::vector<AttachmentDraft> options;
       const FabricFuOccurrencePortRef concretePort{
           placement.fu, templatePort.direction, templatePort.ordinal};
       auto sharedEnqueueUnit =
@@ -519,14 +574,14 @@ public:
         return sharedEnqueueUnit.takeError();
       const auto fixed = fabric.fuOccurrenceTransportEndpoint(concretePort);
       if (!fixed)
-        return options;
+        return &classIt->second;
       const auto fixedIndex = endpointIndex(*fixed);
       if (!fixedIndex)
-        return options;
+        return &classIt->second;
       const auto &fixedEndpoint = routing.routingEndpoints()[*fixedIndex];
       if (fixedEndpoint.direction != directionOf(demand.terminal) ||
           fixedEndpoint.dataPath.payloadWidthBits < demand.payloadWidthBits)
-        return options;
+        return &classIt->second;
 
       for (const FabricFuPortAttachmentView &attachment :
            fabric.fuOccurrencePortAttachments(concretePort)) {
@@ -549,7 +604,8 @@ public:
                            *sharedEnqueueUnit});
       }
       canonicalizeOptions(options);
-      return options;
+      classIt->second = std::move(options);
+      return &classIt->second;
     };
     const auto memoryOptions =
         [&](const FrozenSpatialPortDemand &demand,
@@ -591,15 +647,15 @@ public:
            llvm::ArrayRef<FrozenSpatialComputePlacement>(oldComputePlacements)
                .slice(realization.placementOffset,
                       realization.placementCount)) {
-        std::vector<std::vector<AttachmentDraft>> options;
+        std::vector<const std::vector<AttachmentDraft> *> options;
         options.reserve(ownerDemands.size());
         bool admissible = true;
         for (PnrIndex demand : ownerDemands) {
           auto projected = computeOptions(demands[demand].frozen, placement);
           if (!projected)
             return projected.takeError();
-          options.push_back(std::move(*projected));
-          if (options.back().empty()) {
+          options.push_back(*projected);
+          if (options.back()->empty()) {
             admissible = false;
             break;
           }
@@ -633,8 +689,8 @@ public:
             {*realizationIndex, placement.fu, placement.parentPe,
              placement.schedule, *newContextOffset, *contextCount});
         for (auto [demandOrdinal, demand] : llvm::enumerate(ownerDemands))
-          demands[demand].domains.push_back(
-              {*placementIndex, std::move(options[demandOrdinal])});
+          demands[demand].domains.emplace_back(*placementIndex,
+                                               options[demandOrdinal]);
       }
       const std::size_t countValue =
           realizations.computePlacements_.size() - *newOffset;
@@ -685,8 +741,8 @@ public:
             {*realizationIndex, placement.memory, placement.schedule,
              placement.residentContextCount});
         for (auto [demandOrdinal, demand] : llvm::enumerate(ownerDemands))
-          demands[demand].domains.push_back(
-              {*placementIndex, std::move(options[demandOrdinal])});
+          demands[demand].domains.emplace_back(
+              *placementIndex, std::move(options[demandOrdinal]));
       }
       const std::size_t countValue =
           realizations.memoryPlacements_.size() - *newOffset;
@@ -738,6 +794,7 @@ public:
       if (!domainOffset)
         return domainOffset.takeError();
       for (PlacementDomainDraft &domain : demand.domains) {
+        const llvm::ArrayRef<AttachmentDraft> options = domain.options();
         auto domainIndex =
             checked(domainIndexContext, result.placementDomains_.size());
         if (!domainIndex)
@@ -748,14 +805,14 @@ public:
           return optionOffset.takeError();
         if (llvm::Error error = preflightAppend(
                 optionCountContext, result.attachmentOptions_.size(),
-                domain.options.size()))
+                options.size()))
           return std::move(error);
-        for (const AttachmentDraft &option : domain.options)
+        for (const AttachmentDraft &option : options)
           result.attachmentOptions_.push_back(
               {option.endpoint, option.localTraversal, option.progressBoundary,
                FrozenSpatialAttachmentOwnerKind::PlacementDomain, *domainIndex,
                option.sharedOperandEnqueueUnit});
-        auto optionCount = checked(optionCountContext, domain.options.size());
+        auto optionCount = checked(optionCountContext, options.size());
         if (!optionCount)
           return optionCount.takeError();
         result.placementDomains_.push_back(

@@ -14,8 +14,10 @@
 #include "PnR/SpatialPnrGenerator.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <iterator>
 #include <limits>
@@ -92,6 +94,64 @@ struct CachedDataflow final {
   ::dataflow::CanonicalDataflowArtifact artifact;
   ::dataflow::CanonicalDataflowProgramView view;
 };
+
+struct DataflowImportStatistics final {
+  std::uint64_t requests = 0;
+  std::uint64_t hits = 0;
+  std::uint64_t misses = 0;
+  std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t retainedBytes = 0;
+  std::uint64_t deterministicWork = 0;
+};
+
+void saturatingAdd(std::uint64_t &value, std::uint64_t amount) {
+  value = amount > std::numeric_limits<std::uint64_t>::max() - value
+              ? std::numeric_limits<std::uint64_t>::max()
+              : value + amount;
+}
+
+template <typename T>
+void accountArray(llvm::ArrayRef<T> values, std::uint64_t &bytes,
+                  std::uint64_t &work) {
+  const std::uint64_t count = values.size();
+  const std::uint64_t elementBytes = sizeof(T);
+  saturatingAdd(bytes,
+                count > std::numeric_limits<std::uint64_t>::max() / elementBytes
+                    ? std::numeric_limits<std::uint64_t>::max()
+                    : count * elementBytes);
+  saturatingAdd(work, count);
+}
+
+void accountRetainedDataflow(const CachedDataflow &cached,
+                             DataflowImportStatistics &statistics) {
+  std::uint64_t bytes = sizeof(CachedDataflow);
+  std::uint64_t work = cached.artifact.canonicalBytes().bytes().size();
+  saturatingAdd(bytes, cached.artifact.canonicalBytes().bytes().size());
+  accountArray(cached.view.graphs(), bytes, work);
+  accountArray(cached.view.actors(), bytes, work);
+  accountArray(cached.view.rootThreadLaunches(), bytes, work);
+  accountArray(cached.view.staticGraphLaunches(), bytes, work);
+  accountArray(cached.view.logicalMemoryRoots(), bytes, work);
+  saturatingAdd(statistics.retainedBytes, bytes);
+  saturatingAdd(statistics.deterministicWork, work);
+}
+
+void emitDataflowImportStatistics(const DataflowImportStatistics &statistics) {
+  ::loom::mapping_debug::emit(
+      ::loom::mapping_debug::Level::Summary,
+      ::loom::mapping_debug::Stage::SpatialPnr,
+      ::loom::mapping_debug::Event::DerivedContext,
+      [&](llvm::json::Object &fields) {
+        fields["context_kind"] = "root_complete_spatial_dataflow_import";
+        fields["cache_requests"] = statistics.requests;
+        fields["cache_hits"] = statistics.hits;
+        fields["cache_misses"] = statistics.misses;
+        fields["construction_count"] = statistics.misses;
+        fields["construction_time_ns"] = statistics.constructionNanoseconds;
+        fields["retained_bytes"] = statistics.retainedBytes;
+        fields["deterministic_work"] = statistics.deterministicWork;
+      });
+}
 
 void canonicalizeReferences(std::vector<ArtifactRootReference> &references) {
   llvm::sort(references, artifactRootReferenceLess);
@@ -188,8 +248,12 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   if (!topology)
     return topology.takeError();
 
-  std::map<ArtifactIdentity::Storage, std::unique_ptr<CachedDataflow>>
-      dataflowCache;
+  std::map<ArtifactRootReference, std::unique_ptr<CachedDataflow>,
+           decltype(&artifactRootReferenceLess)>
+      dataflowCache(&artifactRootReferenceLess);
+  DataflowImportStatistics dataflowImportStatistics;
+  auto emitDataflowImportStatisticsOnExit = llvm::scope_exit(
+      [&] { emitDataflowImportStatistics(dataflowImportStatistics); });
   std::vector<ArtifactRootReference> outputs;
   std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
   const auto rememberIncomplete =
@@ -218,14 +282,14 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
           "root_complete_spatial_pnr_generator_invalid: TechMapping binds "
           "a foreign Fabric");
 
-    const ArtifactIdentity::Storage dataflowKey =
-        tech->view().dataflowIdentity().bytes();
-    auto cached = dataflowCache.find(dataflowKey);
+    ArtifactRootReference dataflowReference{
+        ::dataflow::canonicalDataflowSchema.identity.str(),
+        ::dataflow::canonicalDataflowSchema.version,
+        tech->view().dataflowIdentity()};
+    ++dataflowImportStatistics.requests;
+    auto cached = dataflowCache.find(dataflowReference);
     if (cached == dataflowCache.end()) {
-      ArtifactRootReference dataflowReference{
-          ::dataflow::canonicalDataflowSchema.identity.str(),
-          ::dataflow::canonicalDataflowSchema.version,
-          tech->view().dataflowIdentity()};
+      const auto constructionBegin = std::chrono::steady_clock::now();
       auto artifact =
           ::dataflow::importCanonicalDataflow(dataflowReference, store);
       if (!artifact)
@@ -234,11 +298,27 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       if (!view)
         return view.takeError();
       cached = dataflowCache
-                   .emplace(dataflowKey,
+                   .emplace(dataflowReference,
                             std::make_unique<CachedDataflow>(CachedDataflow{
                                 std::move(*artifact), std::move(*view)}))
                    .first;
+      ++dataflowImportStatistics.misses;
+      saturatingAdd(
+          dataflowImportStatistics.constructionNanoseconds,
+          static_cast<std::uint64_t>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::steady_clock::now() - constructionBegin)
+                  .count()));
+      accountRetainedDataflow(*cached->second, dataflowImportStatistics);
+    } else {
+      ++dataflowImportStatistics.hits;
     }
+    if (cached->second->artifact.identity() != dataflowReference.artifact ||
+        cached->second->view.identity() != dataflowReference.artifact)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "root_complete_spatial_pnr_generator_invalid: cached Dataflow "
+          "identity does not match the exact TechMapping lineage");
     const ::dataflow::CanonicalDataflowProgramView &dataflow =
         cached->second->view;
 

@@ -31,7 +31,7 @@ llvm::Expected<PnrIndex> actionIndex(std::size_t value, llvm::StringRef table,
 template <typename Action>
 llvm::Error appendRange(std::size_t offset, const std::vector<Action> &choices,
                         std::vector<SystemActionChoiceRange> &anchors,
-                        std::uint64_t &movableDecisionCount,
+                        std::uint64_t &categoryMovableDecisionCount,
                         llvm::StringRef table, bool countMovable = true) {
   if (choices.size() == offset)
     return llvm::Error::success();
@@ -44,9 +44,10 @@ llvm::Error appendRange(std::size_t offset, const std::vector<Action> &choices,
     return checkedCount.takeError();
   anchors.push_back({*checkedOffset, *checkedCount});
   if (countMovable) {
-    if (movableDecisionCount == std::numeric_limits<std::uint64_t>::max())
+    if (categoryMovableDecisionCount ==
+        std::numeric_limits<std::uint64_t>::max())
       return invalid("movable decision count overflows u64");
-    ++movableDecisionCount;
+    ++categoryMovableDecisionCount;
   }
   return llvm::Error::success();
 }
@@ -61,7 +62,9 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
   routingChoices_.clear();
   resourceAnchors_.clear();
   resourceChoices_.clear();
-  movableDecisionCount_ = 0;
+  bindingMovableDecisionCount_ = 0;
+  routingMovableDecisionCount_ = 0;
+  resourceMovableDecisionCount_ = 0;
 
   const FrozenSystemPnrProblem &problem = candidate.problem();
   for (PnrIndex decision = 0; decision < problem.threadDecisions().size();
@@ -74,7 +77,7 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
         bindingChoices_.push_back({decision, choice});
     if (llvm::Error error =
             appendRange(offset, bindingChoices_, bindingAnchors_,
-                        movableDecisionCount_, "bindingChoices"))
+                        bindingMovableDecisionCount_, "bindingChoices"))
       return error;
   }
   const PnrIndex threadCount = problem.threadDecisions().size();
@@ -87,7 +90,7 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
         bindingChoices_.push_back({threadCount + decision, choice});
     if (llvm::Error error =
             appendRange(offset, bindingChoices_, bindingAnchors_,
-                        movableDecisionCount_, "bindingChoices"))
+                        bindingMovableDecisionCount_, "bindingChoices"))
       return error;
   }
 
@@ -117,7 +120,7 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
     }
     if (llvm::Error error =
             appendRange(offset, routingChoices_, routingAnchors_,
-                        movableDecisionCount_, "routingChoices"))
+                        routingMovableDecisionCount_, "routingChoices"))
       return error;
   }
   for (const SystemRouteCapacityOveruseWitness &witness :
@@ -127,7 +130,7 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
         ResolvedPnrViolationKind::CapacityOveruse, witness.capacityCell});
     if (llvm::Error error =
             appendRange(offset, routingChoices_, routingAnchors_,
-                        movableDecisionCount_, "routingChoices", false))
+                        routingMovableDecisionCount_, "routingChoices", false))
       return error;
   }
   if (!candidate.serviceRoutes().empty()) {
@@ -135,7 +138,7 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
     routingChoices_.emplace_back(SystemGlobalRoutingAction{});
     if (llvm::Error error =
             appendRange(offset, routingChoices_, routingAnchors_,
-                        movableDecisionCount_, "routingChoices", false))
+                        routingMovableDecisionCount_, "routingChoices", false))
       return error;
   }
 
@@ -151,7 +154,7 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
             SystemServiceTargetAction{context, choice});
     if (llvm::Error error =
             appendRange(offset, resourceChoices_, resourceAnchors_,
-                        movableDecisionCount_, "resourceChoices"))
+                        resourceMovableDecisionCount_, "resourceChoices"))
       return error;
   }
   for (PnrIndex use = 0; use < candidate.instructionResourceUses().size();
@@ -167,7 +170,7 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
             SystemInstructionUsePatternAction{use, choice});
     if (llvm::Error error =
             appendRange(offset, resourceChoices_, resourceAnchors_,
-                        movableDecisionCount_, "resourceChoices"))
+                        resourceMovableDecisionCount_, "resourceChoices"))
       return error;
   }
   for (PnrIndex use = 0; use < candidate.serviceResourceUses().size(); ++use) {
@@ -181,7 +184,7 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
             SystemServiceUsePatternAction{use, choice});
     if (llvm::Error error =
             appendRange(offset, resourceChoices_, resourceAnchors_,
-                        movableDecisionCount_, "resourceChoices"))
+                        resourceMovableDecisionCount_, "resourceChoices"))
       return error;
   }
   return llvm::Error::success();
@@ -190,4 +193,19 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
 SystemActionProposalDomain SystemActionDomainScratch::view() const {
   return {bindingAnchors_, bindingChoices_,  routingAnchors_,
           routingChoices_, resourceAnchors_, resourceChoices_};
+}
+
+std::uint64_t SystemActionDomainScratch::movableDecisionCount() const {
+  return bindingMovableDecisionCount_ + routingMovableDecisionCount_ +
+         resourceMovableDecisionCount_;
+}
+
+std::uint64_t SystemActionDomainScratch::selectableMovableDecisionCount(
+    const ResolvedPnrActionProposalPolicy &policy) const {
+  return (policy.realizationBindingWeight != 0 ? bindingMovableDecisionCount_
+                                               : 0) +
+         (policy.transportRoutingWeight != 0 ? routingMovableDecisionCount_
+                                             : 0) +
+         (policy.resourceAllocationWeight != 0 ? resourceMovableDecisionCount_
+                                               : 0);
 }

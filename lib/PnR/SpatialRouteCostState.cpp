@@ -883,18 +883,6 @@ SpatialRouteCostState::selectLogicalNet(std::optional<PnrIndex> logicalNet) {
   if (logicalNet == selectedLogicalNet_)
     return llvm::Error::success();
 
-  std::uint64_t physicalCriticality = 0;
-  if (logicalNet) {
-    auto timing = detail::projectSpatialLogicalNetPhysicalTiming(
-        *problem_, *logicalNet, candidate_->routeTree(*logicalNet),
-        candidate_->registerFifoTransfer(*logicalNet),
-        candidate_->portAttachmentSelections(),
-        candidate_->graphBoundaryAttachmentSelections());
-    if (!timing)
-      return timing.takeError();
-    physicalCriticality = timing->structuralCriticality;
-  }
-
   beginUpdate();
   if (selectedLogicalNet_) {
     if (llvm::Error error = stageClaimBits(selectedLogicalNetClaimBits_, false))
@@ -923,7 +911,6 @@ SpatialRouteCostState::selectLogicalNet(std::optional<PnrIndex> logicalNet) {
   if (switchRows_)
     switchRows_->selectedNetDemands.clear();
   selectedLogicalNet_ = logicalNet;
-  lowerBoundCostRevision_ = physicalCriticality;
   return llvm::Error::success();
 }
 
@@ -937,14 +924,6 @@ llvm::Error SpatialRouteCostState::selectLogicalNet(
       activeClaimBits.size() != routeClaimWordCount_)
     return routeCostStateError("active claim bitset has the wrong width");
 
-  auto timing = detail::projectSpatialLogicalNetPhysicalTiming(
-      *problem_, logicalNet, candidate_->routeTree(logicalNet),
-      candidate_->registerFifoTransfer(logicalNet),
-      candidate_->portAttachmentSelections(),
-      candidate_->graphBoundaryAttachmentSelections());
-  if (!timing)
-    return timing.takeError();
-
   beginUpdate();
   if (llvm::Error error = stageClaimBits(activeClaimBits, false))
     return error;
@@ -957,7 +936,6 @@ llvm::Error SpatialRouteCostState::selectLogicalNet(
   if (switchRows_)
     switchRows_->selectedNetDemands.clear();
   selectedLogicalNet_ = logicalNet;
-  lowerBoundCostRevision_ = timing->structuralCriticality;
   return llvm::Error::success();
 }
 
@@ -1452,8 +1430,10 @@ llvm::Error SpatialRouteCostState::recomputeAllArcCosts(bool resetTagHistory) {
   }
   if (lowerBoundArcCosts_.empty() || currentArcCosts_.empty())
     return llvm::Error::success();
+  bool lowerBoundChanged = false;
   for (PnrIndex arc = 0; arc < currentArcCosts_.size(); ++arc) {
     if (!problem_->activeRouting().arcIsActive(arc)) {
+      lowerBoundChanged |= lowerBoundArcCosts_[arc] != 0;
       lowerBoundArcCosts_[arc] = 0;
       currentArcCosts_[arc] = 0;
       continue;
@@ -1461,11 +1441,17 @@ llvm::Error SpatialRouteCostState::recomputeAllArcCosts(bool resetTagHistory) {
     auto lower = computeArcCost(arc, false, false, false);
     if (!lower)
       return lower.takeError();
+    lowerBoundChanged |= lowerBoundArcCosts_[arc] != *lower;
     lowerBoundArcCosts_[arc] = *lower;
     auto current = computeArcCost(arc, true, false, false);
     if (!current)
       return current.takeError();
     currentArcCosts_[arc] = *current;
+  }
+  if (lowerBoundChanged) {
+    if (lowerBoundCostRevision_ == std::numeric_limits<std::uint64_t>::max())
+      return routeCostStateError("lower-bound cost revision overflows u64");
+    ++lowerBoundCostRevision_;
   }
   return llvm::Error::success();
 }

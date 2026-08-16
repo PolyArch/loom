@@ -17,7 +17,9 @@ public:
   llvm::Error rebuild(const SystemCandidateState &candidate);
 
   SystemActionProposalDomain view() const;
-  std::uint64_t movableDecisionCount() const { return movableDecisionCount_; }
+  std::uint64_t movableDecisionCount() const;
+  std::uint64_t selectableMovableDecisionCount(
+      const ResolvedPnrActionProposalPolicy &policy) const;
 
 private:
   std::vector<SystemActionChoiceRange> bindingAnchors_;
@@ -26,7 +28,9 @@ private:
   std::vector<SystemTransportRoutingAction> routingChoices_;
   std::vector<SystemActionChoiceRange> resourceAnchors_;
   std::vector<SystemResourceAllocationAction> resourceChoices_;
-  std::uint64_t movableDecisionCount_ = 0;
+  std::uint64_t bindingMovableDecisionCount_ = 0;
+  std::uint64_t routingMovableDecisionCount_ = 0;
+  std::uint64_t resourceMovableDecisionCount_ = 0;
 };
 
 } // namespace loom::pnr

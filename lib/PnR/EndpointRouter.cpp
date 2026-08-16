@@ -3,10 +3,13 @@
 #include "SpatialPhysicalTiming.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/bit.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <limits>
 #include <tuple>
@@ -67,17 +70,20 @@ EndpointRoutingGraphView loom::pnr::endpointRoutingGraphView(
 namespace {
 
 constexpr PnrIndex invalidIndex = std::numeric_limits<PnrIndex>::max();
-constexpr std::size_t heuristicCacheByteBudget = 16 * 1024 * 1024;
-constexpr std::size_t maximumHeuristicCacheEntryCount = 1024;
-constexpr std::uint64_t hashOffsetBasis = UINT64_C(14695981039346656037);
-constexpr std::uint64_t hashPrime = UINT64_C(1099511628211);
+constexpr std::size_t heuristicCacheByteBudget = 512 * 1024 * 1024;
+constexpr std::size_t maximumHeuristicCacheEntryCount = 4096;
+constexpr std::uint32_t compactHeuristicInfinity =
+    std::numeric_limits<std::uint32_t>::max();
+constexpr llvm::StringLiteral endpointHeuristicAlgorithmIdentity =
+    "loom.pnr.endpoint_lower_bound_heuristic.4";
 
-void hashWord(std::uint64_t &hash, std::uint64_t value) {
+void updateDigestWord(llvm::SHA256 &digest, std::uint64_t value) {
+  std::array<std::uint8_t, 8> bytes{};
   for (unsigned byte = 0; byte != 8; ++byte) {
-    hash ^= value & UINT64_C(0xff);
-    hash *= hashPrime;
+    bytes[7 - byte] = static_cast<std::uint8_t>(value);
     value >>= 8;
   }
+  digest.update(bytes);
 }
 
 void saturatingIncrement(std::uint64_t &value) {
@@ -227,147 +233,201 @@ EndpointRouteSearchScratch::prepare(EndpointRoutingGraphView graph) {
   targetPreferenceRanks_.assign(endpointCount, 0);
   targetRequiresTraversal_.assign(endpointCount, 0);
   sourceReplicationGroups_.assign(endpointCount, getInvalidPnrIndex());
-  heap_.clear();
-  heap_.reserve(searchStateCount);
-  heapPositions_.assign(searchStateCount, invalidIndex);
+  if (graph.arcs.size() >
+      (std::numeric_limits<std::size_t>::max() - searchStateCount) / 2)
+    return invalid("routing graph cannot bound its radix queue storage");
+  routeQueueEntries_.resize(graph.arcs.size() * 2 + searchStateCount);
+  routeQueueEntryCount_ = 0;
+  routeQueueMinimumHeap_.clear();
+  routeQueueMinimumHeap_.reserve(searchStateCount);
+  resetRouteQueue();
   path_.clear();
   path_.reserve(searchStateCount);
   timingLabels_.clear();
   timingLabels_.reserve(searchStateCount);
-  timingStateLabels_.clear();
-  timingStateLabels_.resize(searchStateCount);
+  timingStateLabelHeads_.assign(searchStateCount, invalidIndex);
+  timingStateLabelEpochs_.assign(searchStateCount, 0);
   timingHeap_.clear();
   timingHeap_.reserve(searchStateCount);
   heuristicCache_.clear();
-  heuristicCacheTargets_.clear();
-  heuristicCacheEligibility_.clear();
-  heuristicCacheDistances_.clear();
-  const std::size_t traversalWordCount =
-      graph.traversalReplicationGroups.size() / 64 +
-      (graph.traversalReplicationGroups.size() % 64 != 0);
-  const bool cacheShapeFits =
-      endpointCount != 0 &&
-      endpointCount <=
-          heuristicCacheByteBudget / (sizeof(RouteCost) + sizeof(PnrIndex)) &&
-      traversalWordCount <= heuristicCacheByteBudget / sizeof(std::uint64_t);
-  if (cacheShapeFits) {
-    const std::size_t maximumKeyBytes =
-        endpointCount * sizeof(PnrIndex) +
-        traversalWordCount * sizeof(std::uint64_t);
-    const std::size_t estimatedEntryBytes =
-        endpointCount * sizeof(RouteCost) + maximumKeyBytes;
-    const std::size_t entryCount =
-        std::min(maximumHeuristicCacheEntryCount,
-                 heuristicCacheByteBudget /
-                     std::max<std::size_t>(estimatedEntryBytes, 1));
-    const bool targetStorageFits =
-        entryCount <= std::numeric_limits<std::size_t>::max() /
-                          std::max<std::size_t>(endpointCount, 1);
-    const bool eligibilityStorageFits =
-        entryCount <= std::numeric_limits<std::size_t>::max() /
-                          std::max<std::size_t>(traversalWordCount, 1);
-    if (targetStorageFits && eligibilityStorageFits) {
+  heuristicCacheIndex_.clear();
+  heuristicCacheDistanceByteBudget_ = 0;
+  heuristicCacheDistanceBytes_ = 0;
+  if (endpointCount != 0 &&
+      endpointCount <= heuristicCacheByteBudget / sizeof(std::uint32_t)) {
+    constexpr std::size_t indexEntryBytes =
+        sizeof(std::array<std::uint8_t, 32>) + sizeof(std::size_t) +
+        sizeof(void *) * 4;
+    const std::size_t distanceBytes = endpointCount * sizeof(std::uint32_t);
+    const std::size_t entryBytes =
+        distanceBytes + sizeof(HeuristicCacheEntry) + indexEntryBytes;
+    std::size_t entryCount = std::min(maximumHeuristicCacheEntryCount,
+                                      heuristicCacheByteBudget /
+                                          std::max<std::size_t>(entryBytes, 1));
+    if (entryCount != 0) {
       heuristicCache_.resize(entryCount);
-      heuristicCacheTargets_.resize(entryCount * endpointCount);
-      heuristicCacheEligibility_.resize(entryCount * traversalWordCount);
-      heuristicCacheDistances_.resize(entryCount * endpointCount);
+      const std::size_t fixedBytes =
+          heuristicCache_.capacity() *
+          (sizeof(HeuristicCacheEntry) + indexEntryBytes);
+      if (fixedBytes < heuristicCacheByteBudget)
+        heuristicCacheDistanceByteBudget_ =
+            heuristicCacheByteBudget - fixedBytes;
     }
   }
-  heuristicCacheTraversalWordCount_ = traversalWordCount;
-  activeCachedHeuristics_ = nullptr;
+  activeCachedHeuristic_ = nullptr;
+  heuristicCacheUseEpoch_ = 0;
   heuristicGeneration_ = 0;
   searchGeneration_ = 0;
   targetGeneration_ = 0;
   sourceGeneration_ = 0;
+  timingLabelGeneration_ = 0;
   endpointExpansionCount_ = 0;
   heuristicCacheHitCount_ = 0;
   heuristicBuildCount_ = 0;
+  heuristicCacheEvictionCount_ = 0;
   prepared_ = true;
   return llvm::Error::success();
 }
 
-void EndpointRouteSearchScratch::resetHeap() {
-  for (PnrIndex endpoint : heap_)
-    heapPositions_[endpoint] = invalidIndex;
-  heap_.clear();
+void EndpointRouteSearchScratch::resetRouteQueue() {
+  routeQueueBucketHeads_.fill(std::numeric_limits<std::size_t>::max());
+  routeQueueEntryCount_ = 0;
+  routeQueueMinimumHeap_.clear();
+  routeQueueLastKey_ = 0;
 }
 
-bool EndpointRouteSearchScratch::heapLess(PnrIndex lhs, PnrIndex rhs) const {
+bool EndpointRouteSearchScratch::routeQueueEntryCurrent(
+    const RouteQueueEntry &entry) const {
   if (heapMode_ == HeapMode::ReverseDistance) {
-    if (heuristics_[lhs] != heuristics_[rhs])
-      return heuristics_[lhs] < heuristics_[rhs];
-    return lhs < rhs;
+    return entry.state < graph_.endpointCount &&
+           heuristicEpochs_[entry.state] == heuristicGeneration_ &&
+           heuristics_[entry.state] == entry.key;
   }
-  if (priorities_[lhs] != priorities_[rhs])
-    return priorities_[lhs] < priorities_[rhs];
-  const PnrIndex lhsEndpoint = searchEndpoint(lhs);
-  const PnrIndex rhsEndpoint = searchEndpoint(rhs);
-  if (heuristic(lhsEndpoint) != heuristic(rhsEndpoint))
-    return heuristic(lhsEndpoint) < heuristic(rhsEndpoint);
-  return lhs < rhs;
+  return entry.state < priorities_.size() &&
+         distanceEpochs_[entry.state] == searchGeneration_ &&
+         priorities_[entry.state] == entry.key;
 }
 
-void EndpointRouteSearchScratch::heapSwap(std::size_t lhs, std::size_t rhs) {
-  std::swap(heap_[lhs], heap_[rhs]);
-  heapPositions_[heap_[lhs]] = static_cast<PnrIndex>(lhs);
-  heapPositions_[heap_[rhs]] = static_cast<PnrIndex>(rhs);
+bool EndpointRouteSearchScratch::routeQueueTieWorse(
+    const RouteQueueEntry &lhs, const RouteQueueEntry &rhs) const {
+  if (lhs.key != rhs.key)
+    return lhs.key > rhs.key;
+  if (heapMode_ == HeapMode::ReverseDistance)
+    return lhs.state > rhs.state;
+  const PnrIndex lhsEndpoint = searchEndpoint(lhs.state);
+  const PnrIndex rhsEndpoint = searchEndpoint(rhs.state);
+  const RouteCost lhsHeuristic = heuristic(lhsEndpoint);
+  const RouteCost rhsHeuristic = heuristic(rhsEndpoint);
+  if (lhsHeuristic != rhsHeuristic)
+    return lhsHeuristic > rhsHeuristic;
+  return lhs.state > rhs.state;
 }
 
-void EndpointRouteSearchScratch::siftUp(std::size_t position) {
-  while (position != 0) {
-    const std::size_t parent = (position - 1) / 2;
-    if (!heapLess(heap_[position], heap_[parent]))
-      break;
-    heapSwap(position, parent);
-    position = parent;
-  }
-}
-
-void EndpointRouteSearchScratch::siftDown(std::size_t position) {
+bool EndpointRouteSearchScratch::refillRouteQueueMinimumBucket() {
+  constexpr std::size_t invalidEntry = std::numeric_limits<std::size_t>::max();
   while (true) {
-    const std::size_t left = position * 2 + 1;
-    if (left >= heap_.size())
-      return;
-    const std::size_t right = left + 1;
-    std::size_t minimum = left;
-    if (right < heap_.size() && heapLess(heap_[right], heap_[left]))
-      minimum = right;
-    if (!heapLess(heap_[minimum], heap_[position]))
-      return;
-    heapSwap(position, minimum);
-    position = minimum;
+    std::size_t bucket = 1;
+    while (bucket != routeQueueBucketHeads_.size() &&
+           routeQueueBucketHeads_[bucket] == invalidEntry)
+      ++bucket;
+    if (bucket == routeQueueBucketHeads_.size())
+      return false;
+
+    const std::size_t head = routeQueueBucketHeads_[bucket];
+    routeQueueBucketHeads_[bucket] = invalidEntry;
+    RouteCost minimumKey = routeCostInfinity;
+    for (std::size_t entry = head; entry != invalidEntry;
+         entry = routeQueueEntries_[entry].next)
+      if (routeQueueEntryCurrent(routeQueueEntries_[entry]))
+        minimumKey = std::min(minimumKey, routeQueueEntries_[entry].key);
+    if (minimumKey == routeCostInfinity)
+      continue;
+    routeQueueLastKey_ = minimumKey;
+
+    for (std::size_t entry = head; entry != invalidEntry;) {
+      RouteQueueEntry &record = routeQueueEntries_[entry];
+      const std::size_t next = record.next;
+      if (routeQueueEntryCurrent(record)) {
+        const RouteCost difference = record.key ^ routeQueueLastKey_;
+        const std::size_t destination =
+            difference == 0 ? 0 : 64 - llvm::countl_zero(difference);
+        if (destination == 0) {
+          routeQueueMinimumHeap_.push_back(entry);
+          const auto worse = [&](std::size_t lhs, std::size_t rhs) {
+            return routeQueueTieWorse(routeQueueEntries_[lhs],
+                                      routeQueueEntries_[rhs]);
+          };
+          std::push_heap(routeQueueMinimumHeap_.begin(),
+                         routeQueueMinimumHeap_.end(), worse);
+        } else {
+          record.next = routeQueueBucketHeads_[destination];
+          routeQueueBucketHeads_[destination] = entry;
+        }
+      }
+      entry = next;
+    }
+    if (!routeQueueMinimumHeap_.empty())
+      return true;
+  }
+}
+
+bool EndpointRouteSearchScratch::routeQueueEmpty() {
+  const auto worse = [&](std::size_t lhs, std::size_t rhs) {
+    return routeQueueTieWorse(routeQueueEntries_[lhs], routeQueueEntries_[rhs]);
+  };
+  while (true) {
+    while (!routeQueueMinimumHeap_.empty() &&
+           !routeQueueEntryCurrent(
+               routeQueueEntries_[routeQueueMinimumHeap_.front()])) {
+      std::pop_heap(routeQueueMinimumHeap_.begin(),
+                    routeQueueMinimumHeap_.end(), worse);
+      routeQueueMinimumHeap_.pop_back();
+    }
+    if (!routeQueueMinimumHeap_.empty())
+      return false;
+    if (!refillRouteQueueMinimumBucket())
+      return true;
   }
 }
 
 void EndpointRouteSearchScratch::insertOrDecrease(PnrIndex endpoint) {
-  const PnrIndex position = heapPositions_[endpoint];
-  if (position != invalidIndex) {
-    siftUp(static_cast<std::size_t>(position));
+  const RouteCost key = heapMode_ == HeapMode::ReverseDistance
+                            ? heuristics_[endpoint]
+                            : priorities_[endpoint];
+  assert(key != routeCostInfinity && key >= routeQueueLastKey_);
+  const RouteCost difference = key ^ routeQueueLastKey_;
+  const std::size_t bucket =
+      difference == 0 ? 0 : 64 - llvm::countl_zero(difference);
+  assert(routeQueueEntryCount_ < routeQueueEntries_.size());
+  const std::size_t entry = routeQueueEntryCount_++;
+  routeQueueEntries_[entry] = {key, endpoint, routeQueueBucketHeads_[bucket]};
+  if (bucket != 0) {
+    routeQueueBucketHeads_[bucket] = entry;
     return;
   }
-  heapPositions_[endpoint] = static_cast<PnrIndex>(heap_.size());
-  heap_.push_back(endpoint);
-  siftUp(heap_.size() - 1);
+  routeQueueMinimumHeap_.push_back(entry);
+  const auto worse = [&](std::size_t lhs, std::size_t rhs) {
+    return routeQueueTieWorse(routeQueueEntries_[lhs], routeQueueEntries_[rhs]);
+  };
+  std::push_heap(routeQueueMinimumHeap_.begin(), routeQueueMinimumHeap_.end(),
+                 worse);
 }
 
 PnrIndex EndpointRouteSearchScratch::popMinimum() {
-  assert(!heap_.empty());
-  const PnrIndex minimum = heap_.front();
-  if (heap_.size() == 1) {
-    heap_.pop_back();
-    heapPositions_[minimum] = invalidIndex;
-    return minimum;
-  }
-  heapSwap(0, heap_.size() - 1);
-  heap_.pop_back();
-  heapPositions_[minimum] = invalidIndex;
-  siftDown(0);
-  return minimum;
+  assert(!routeQueueMinimumHeap_.empty());
+  const auto worse = [&](std::size_t lhs, std::size_t rhs) {
+    return routeQueueTieWorse(routeQueueEntries_[lhs], routeQueueEntries_[rhs]);
+  };
+  std::pop_heap(routeQueueMinimumHeap_.begin(), routeQueueMinimumHeap_.end(),
+                worse);
+  const std::size_t entry = routeQueueMinimumHeap_.back();
+  routeQueueMinimumHeap_.pop_back();
+  return routeQueueEntries_[entry].state;
 }
 
-PnrIndex EndpointRouteSearchScratch::peekMinimum() const {
-  assert(!heap_.empty());
-  return heap_.front();
+PnrIndex EndpointRouteSearchScratch::peekMinimum() {
+  assert(!routeQueueMinimumHeap_.empty());
+  return routeQueueEntries_[routeQueueMinimumHeap_.front()].state;
 }
 
 void EndpointRouteSearchScratch::beginHeuristicGeneration() {
@@ -387,11 +447,27 @@ void EndpointRouteSearchScratch::beginSourceGeneration() {
 }
 
 RouteCost EndpointRouteSearchScratch::heuristic(PnrIndex endpoint) const {
-  if (activeCachedHeuristics_)
-    return activeCachedHeuristics_[endpoint];
+  if (activeCachedHeuristic_)
+    return cachedHeuristic(*activeCachedHeuristic_, endpoint);
   if (heuristicEpochs_[endpoint] != heuristicGeneration_)
     return routeCostInfinity;
   return heuristics_[endpoint];
+}
+
+RouteCost
+EndpointRouteSearchScratch::cachedHeuristic(const HeuristicCacheEntry &entry,
+                                            PnrIndex endpoint) const {
+  assert(endpoint < entry.scaledDistances.size());
+  const std::uint32_t scaled = entry.scaledDistances[endpoint];
+  if (scaled != compactHeuristicInfinity)
+    return static_cast<RouteCost>(scaled) << entry.scaleShift;
+  const auto found =
+      llvm::lower_bound(entry.wideDistances, endpoint,
+                        [](const HeuristicCacheWideDistance &value,
+                           PnrIndex key) { return value.endpoint < key; });
+  return found != entry.wideDistances.end() && found->endpoint == endpoint
+             ? found->distance
+             : routeCostInfinity;
 }
 
 RouteCost EndpointRouteSearchScratch::distance(PnrIndex state) const {
@@ -461,9 +537,9 @@ bool EndpointRouteSearchScratch::arcEligible(
 
 llvm::Error EndpointRouteSearchScratch::buildHeuristic(
     const EndpointRouteSearchRequest &request) {
-  activeCachedHeuristics_ = nullptr;
+  activeCachedHeuristic_ = nullptr;
   saturatingIncrement(heuristicBuildCount_);
-  resetHeap();
+  resetRouteQueue();
   heapMode_ = HeapMode::ReverseDistance;
   beginHeuristicGeneration();
   for (PnrIndex target : request.targetEndpoints) {
@@ -472,7 +548,7 @@ llvm::Error EndpointRouteSearchScratch::buildHeuristic(
     insertOrDecrease(target);
   }
 
-  while (!heap_.empty()) {
+  while (!routeQueueEmpty()) {
     const PnrIndex endpoint = popMinimum();
     const RouteCost endpointCost = heuristics_[endpoint];
     const PnrIndex begin = graph_.reverseAdjacencyOffsets[endpoint];
@@ -485,8 +561,8 @@ llvm::Error EndpointRouteSearchScratch::buildHeuristic(
       auto arcCost = arcSearchCost(request, arc, false);
       if (!arcCost)
         return arcCost.takeError();
-      auto candidate = addFiniteCost(endpointCost, *arcCost,
-                                     "reverse lower-bound distance");
+      auto candidate =
+          addFiniteCost(endpointCost, *arcCost, "reverse lower-bound distance");
       if (!candidate)
         return candidate.takeError();
       if (*candidate >= heuristic(predecessor))
@@ -499,102 +575,158 @@ llvm::Error EndpointRouteSearchScratch::buildHeuristic(
   return llvm::Error::success();
 }
 
-std::uint64_t EndpointRouteSearchScratch::heuristicCacheKeyHash(
+std::array<std::uint8_t, 32>
+EndpointRouteSearchScratch::heuristicCacheKeyDigest(
     const EndpointRouteSearchRequest &request) const {
   assert(request.lowerBoundCostRevision);
-  std::uint64_t hash = hashOffsetBasis;
-  hashWord(hash, *request.lowerBoundCostRevision);
-  hashWord(hash, request.requiredPayloadWidthBits);
-  hashWord(hash, request.requiredTagWidthBits);
-  hashWord(hash, request.targetEndpoints.size());
+  llvm::SHA256 digest;
+  digest.update(llvm::ArrayRef<std::uint8_t>(
+      reinterpret_cast<const std::uint8_t *>(
+          endpointHeuristicAlgorithmIdentity.data()),
+      endpointHeuristicAlgorithmIdentity.size()));
+  updateDigestWord(digest, *request.lowerBoundCostRevision);
+  updateDigestWord(digest, request.lowerBoundArcCosts.size());
+  updateDigestWord(digest, request.requiredPayloadWidthBits);
+  updateDigestWord(digest, request.requiredTagWidthBits);
+  updateDigestWord(digest, request.physicalTimingEnabled ? 1 : 0);
+  updateDigestWord(digest, request.requiredTimingQuanta);
+  updateDigestWord(digest, request.timingCriticality);
+  updateDigestWord(digest, request.targetEndpoints.size());
   for (PnrIndex endpoint : request.targetEndpoints)
-    hashWord(hash, endpoint);
-  hashWord(hash, request.eligibleTraversalBits.size());
+    updateDigestWord(digest, endpoint);
+  updateDigestWord(digest, request.eligibleTraversalBits.size());
   for (std::uint64_t word : request.eligibleTraversalBits)
-    hashWord(hash, word);
-  return hash;
-}
-
-bool EndpointRouteSearchScratch::heuristicCacheKeyEquals(
-    const HeuristicCacheEntry &entry, const EndpointRouteSearchRequest &request,
-    std::uint64_t keyHash, std::size_t slot) const {
-  const std::size_t endpointCount =
-      static_cast<std::size_t>(graph_.endpointCount);
-  const auto targets =
-      llvm::ArrayRef(heuristicCacheTargets_)
-          .slice(slot * endpointCount, entry.targetEndpointCount);
-  const auto eligibility = llvm::ArrayRef(heuristicCacheEligibility_)
-                               .slice(slot * heuristicCacheTraversalWordCount_,
-                                      entry.eligibleTraversalWordCount);
-  return entry.populated && entry.keyHash == keyHash &&
-         entry.lowerBoundCostData == request.lowerBoundArcCosts.data() &&
-         entry.lowerBoundCostSize == request.lowerBoundArcCosts.size() &&
-         entry.lowerBoundCostRevision == *request.lowerBoundCostRevision &&
-         entry.requiredPayloadWidthBits == request.requiredPayloadWidthBits &&
-         entry.requiredTagWidthBits == request.requiredTagWidthBits &&
-         targets == request.targetEndpoints &&
-         eligibility == request.eligibleTraversalBits;
+    updateDigestWord(digest, word);
+  return digest.final();
 }
 
 bool EndpointRouteSearchScratch::loadCachedHeuristic(
     const EndpointRouteSearchRequest &request) {
-  activeCachedHeuristics_ = nullptr;
+  activeCachedHeuristic_ = nullptr;
   if (!request.lowerBoundCostRevision || heuristicCache_.empty())
     return false;
-  const std::uint64_t keyHash = heuristicCacheKeyHash(request);
-  const std::size_t slot = keyHash % heuristicCache_.size();
-  HeuristicCacheEntry &entry = heuristicCache_[slot];
-  if (!heuristicCacheKeyEquals(entry, request, keyHash, slot))
+  const auto digest = heuristicCacheKeyDigest(request);
+  const auto indexed = heuristicCacheIndex_.find(digest);
+  if (indexed == heuristicCacheIndex_.end() ||
+      indexed->second >= heuristicCache_.size())
     return false;
-  activeCachedHeuristics_ =
-      heuristicCacheDistances_.data() +
-      slot * static_cast<std::size_t>(graph_.endpointCount);
+  HeuristicCacheEntry &entry = heuristicCache_[indexed->second];
+  if (!entry.populated || entry.keyDigest != digest ||
+      entry.scaledDistances.size() != graph_.endpointCount)
+    return false;
+  saturatingIncrement(heuristicCacheUseEpoch_);
+  entry.lastUse = heuristicCacheUseEpoch_;
+  activeCachedHeuristic_ = &entry;
   saturatingIncrement(heuristicCacheHitCount_);
   return true;
+}
+
+std::size_t EndpointRouteSearchScratch::heuristicCacheEntryDistanceBytes(
+    const HeuristicCacheEntry &entry) const {
+  return entry.scaledDistances.capacity() * sizeof(std::uint32_t) +
+         entry.wideDistances.capacity() * sizeof(HeuristicCacheWideDistance);
+}
+
+void EndpointRouteSearchScratch::evictHeuristicCacheEntry(std::size_t slot) {
+  assert(slot < heuristicCache_.size());
+  HeuristicCacheEntry &entry = heuristicCache_[slot];
+  const std::size_t retained = heuristicCacheEntryDistanceBytes(entry);
+  assert(retained <= heuristicCacheDistanceBytes_);
+  heuristicCacheDistanceBytes_ -= retained;
+  if (entry.populated) {
+    heuristicCacheIndex_.erase(entry.keyDigest);
+    saturatingIncrement(heuristicCacheEvictionCount_);
+  }
+  std::vector<std::uint32_t>().swap(entry.scaledDistances);
+  std::vector<HeuristicCacheWideDistance>().swap(entry.wideDistances);
+  entry = HeuristicCacheEntry{};
 }
 
 void EndpointRouteSearchScratch::storeCachedHeuristic(
     const EndpointRouteSearchRequest &request) {
   if (!request.lowerBoundCostRevision || heuristicCache_.empty())
     return;
-  const std::uint64_t keyHash = heuristicCacheKeyHash(request);
-  const std::size_t slot = keyHash % heuristicCache_.size();
-  HeuristicCacheEntry &entry = heuristicCache_[slot];
-  entry.populated = false;
-  entry.lowerBoundCostData = request.lowerBoundArcCosts.data();
-  entry.lowerBoundCostSize = request.lowerBoundArcCosts.size();
-  entry.lowerBoundCostRevision = *request.lowerBoundCostRevision;
-  entry.keyHash = keyHash;
-  entry.requiredPayloadWidthBits = request.requiredPayloadWidthBits;
-  entry.requiredTagWidthBits = request.requiredTagWidthBits;
-  entry.targetEndpointCount = request.targetEndpoints.size();
-  entry.eligibleTraversalWordCount = request.eligibleTraversalBits.size();
-  const std::size_t endpointCount =
-      static_cast<std::size_t>(graph_.endpointCount);
-  llvm::copy(request.targetEndpoints,
-             heuristicCacheTargets_.begin() + slot * endpointCount);
-  llvm::copy(request.eligibleTraversalBits,
-             heuristicCacheEligibility_.begin() +
-                 slot * heuristicCacheTraversalWordCount_);
-  RouteCost *distances = heuristicCacheDistances_.data() + slot * endpointCount;
-  for (PnrIndex endpoint = 0; endpoint != graph_.endpointCount; ++endpoint)
-    distances[endpoint] = heuristic(endpoint);
+  const auto digest = heuristicCacheKeyDigest(request);
+  std::size_t selected = 0;
+  for (std::size_t slot = 0; slot != heuristicCache_.size(); ++slot) {
+    if (!heuristicCache_[slot].populated) {
+      selected = slot;
+      break;
+    }
+    if (heuristicCache_[slot].lastUse < heuristicCache_[selected].lastUse)
+      selected = slot;
+  }
+  evictHeuristicCacheEntry(selected);
+  HeuristicCacheEntry &entry = heuristicCache_[selected];
+  entry.keyDigest = digest;
+  unsigned commonShift = std::numeric_limits<RouteCost>::digits;
+  for (PnrIndex endpoint = 0; endpoint != graph_.endpointCount; ++endpoint) {
+    const RouteCost value = heuristic(endpoint);
+    if (value != 0 && value != routeCostInfinity)
+      commonShift = std::min(commonShift,
+                             static_cast<unsigned>(llvm::countr_zero(value)));
+  }
+  if (commonShift == std::numeric_limits<RouteCost>::digits)
+    commonShift = 0;
+  entry.scaleShift = static_cast<std::uint8_t>(commonShift);
+  entry.scaledDistances.resize(graph_.endpointCount, compactHeuristicInfinity);
+  for (PnrIndex endpoint = 0; endpoint != graph_.endpointCount; ++endpoint) {
+    const RouteCost value = heuristic(endpoint);
+    if (value == routeCostInfinity)
+      continue;
+    const RouteCost scaled = value >> commonShift;
+    if (scaled < compactHeuristicInfinity) {
+      entry.scaledDistances[endpoint] = static_cast<std::uint32_t>(scaled);
+      continue;
+    }
+    entry.wideDistances.push_back({endpoint, value});
+  }
+  const std::size_t entryBytes = heuristicCacheEntryDistanceBytes(entry);
+  if (entryBytes > heuristicCacheDistanceByteBudget_) {
+    std::vector<std::uint32_t>().swap(entry.scaledDistances);
+    std::vector<HeuristicCacheWideDistance>().swap(entry.wideDistances);
+    entry = HeuristicCacheEntry{};
+    return;
+  }
+  while (heuristicCacheDistanceBytes_ >
+         heuristicCacheDistanceByteBudget_ - entryBytes) {
+    std::size_t victim = heuristicCache_.size();
+    for (std::size_t slot = 0; slot != heuristicCache_.size(); ++slot) {
+      if (slot == selected || !heuristicCache_[slot].populated)
+        continue;
+      if (victim == heuristicCache_.size() ||
+          heuristicCache_[slot].lastUse < heuristicCache_[victim].lastUse)
+        victim = slot;
+    }
+    if (victim == heuristicCache_.size()) {
+      std::vector<std::uint32_t>().swap(entry.scaledDistances);
+      std::vector<HeuristicCacheWideDistance>().swap(entry.wideDistances);
+      entry = HeuristicCacheEntry{};
+      return;
+    }
+    evictHeuristicCacheEntry(victim);
+  }
+  heuristicCacheDistanceBytes_ += entryBytes;
+  saturatingIncrement(heuristicCacheUseEpoch_);
+  entry.lastUse = heuristicCacheUseEpoch_;
   entry.populated = true;
+  const bool indexed = heuristicCacheIndex_.emplace(digest, selected).second;
+  assert(indexed);
 }
 
 llvm::Expected<EndpointRouteSearchResult>
 EndpointRouteSearchScratch::searchTimingAware(
     const EndpointRouteSearchRequest &request) {
   const PnrIndex invalidLabel = getInvalidPnrIndex();
-  for (auto &labels : timingStateLabels_)
-    labels.clear();
+  advanceGeneration(timingStateLabelEpochs_, timingLabelGeneration_);
   timingLabels_.clear();
   timingHeap_.clear();
 
   const auto key = [&](PnrIndex label) {
     const TimingSearchLabel &value = timingLabels_[label];
-    return std::make_tuple(value.distance, value.endpoint, value.requirementMet,
-                           value.arrivalQuanta, label);
+    return std::make_tuple(value.priority, heuristic(value.endpoint),
+                           value.endpoint, value.requirementMet,
+                           value.arrivalQuanta, value.distance, label);
   };
   const auto heapWorse = [&](PnrIndex lhs, PnrIndex rhs) {
     return key(lhs) > key(rhs);
@@ -614,15 +746,24 @@ EndpointRouteSearchScratch::searchTimingAware(
           RouteCost distance, PnrIndex predecessorLabel,
           PnrIndex predecessorArc) -> llvm::Expected<std::optional<PnrIndex>> {
     const PnrIndex state = searchState(endpoint, requirementMet);
-    if (state >= timingStateLabels_.size())
+    if (state >= timingStateLabelHeads_.size())
       return invalid("physical timing search state is out of range");
-    for (PnrIndex existingOrdinal : timingStateLabels_[state]) {
+    PnrIndex existingOrdinal =
+        timingStateLabelEpochs_[state] == timingLabelGeneration_
+            ? timingStateLabelHeads_[state]
+            : invalidLabel;
+    for (; existingOrdinal != invalidLabel;
+         existingOrdinal = timingLabels_[existingOrdinal].nextStateLabel) {
       const TimingSearchLabel &existing = timingLabels_[existingOrdinal];
       if (existing.active && existing.arrivalQuanta <= arrival &&
           existing.distance <= distance)
         return std::optional<PnrIndex>();
     }
-    for (PnrIndex existingOrdinal : timingStateLabels_[state]) {
+    existingOrdinal = timingStateLabelEpochs_[state] == timingLabelGeneration_
+                          ? timingStateLabelHeads_[state]
+                          : invalidLabel;
+    for (; existingOrdinal != invalidLabel;
+         existingOrdinal = timingLabels_[existingOrdinal].nextStateLabel) {
       TimingSearchLabel &existing = timingLabels_[existingOrdinal];
       if (existing.active && arrival <= existing.arrivalQuanta &&
           distance <= existing.distance)
@@ -630,10 +771,23 @@ EndpointRouteSearchScratch::searchTimingAware(
     }
     if (timingLabels_.size() >= std::numeric_limits<PnrIndex>::max())
       return overflow("physical timing label domain exceeds PnrIndex");
+    const RouteCost lowerBound = heuristic(endpoint);
+    if (lowerBound == routeCostInfinity)
+      return std::optional<PnrIndex>();
+    auto priority =
+        addFiniteCost(distance, lowerBound, "timing-aware A-star priority");
+    if (!priority)
+      return priority.takeError();
     const PnrIndex ordinal = static_cast<PnrIndex>(timingLabels_.size());
+    const PnrIndex oldHead =
+        timingStateLabelEpochs_[state] == timingLabelGeneration_
+            ? timingStateLabelHeads_[state]
+            : invalidLabel;
     timingLabels_.push_back({endpoint, predecessorLabel, predecessorArc,
-                             arrival, distance, requirementMet, true});
-    timingStateLabels_[state].push_back(ordinal);
+                             oldHead, arrival, distance, *priority,
+                             requirementMet, true});
+    timingStateLabelHeads_[state] = ordinal;
+    timingStateLabelEpochs_[state] = timingLabelGeneration_;
     push(ordinal);
     return std::optional<PnrIndex>(ordinal);
   };
@@ -670,9 +824,12 @@ EndpointRouteSearchScratch::searchTimingAware(
       (void)pop();
     if (timingHeap_.empty())
       break;
-    if (bestTargetLabel != invalidLabel &&
-        timingLabels_[timingHeap_.front()].distance > bestCost)
-      break;
+    if (bestTargetLabel != invalidLabel) {
+      const RouteCost nextLowerBound =
+          timingLabels_[timingHeap_.front()].priority;
+      if (nextLowerBound > bestCost)
+        break;
+    }
     if (expansions == request.endpointExpansionLimit)
       return failure(
           EndpointRouteSearchFailureKind::WorkLimit,
@@ -930,15 +1087,15 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
             ? 0
             : request.targetRequiresTraversal[ordinal];
   }
-  if (timingAware)
-    return searchTimingAware(request);
   if (!loadCachedHeuristic(request)) {
     if (llvm::Error error = buildHeuristic(request))
       return std::move(error);
     storeCachedHeuristic(request);
   }
+  if (timingAware)
+    return searchTimingAware(request);
 
-  resetHeap();
+  resetRouteQueue();
   heapMode_ = HeapMode::ForwardAStar;
   beginSearchGeneration();
   beginSourceGeneration();
@@ -961,10 +1118,12 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   PnrIndex bestTargetState = invalidIndex;
   RouteCost bestCost = routeCostInfinity;
   std::uint64_t expansions = 0;
-  while (!heap_.empty()) {
+  while (!routeQueueEmpty()) {
     const PnrIndex next = peekMinimum();
-    if (bestTargetState != invalidIndex && priorities_[next] > bestCost)
-      break;
+    if (bestTargetState != invalidIndex) {
+      if (priorities_[next] > bestCost)
+        break;
+    }
     if (expansions == request.endpointExpansionLimit)
       return failure(
           EndpointRouteSearchFailureKind::WorkLimit,
@@ -1096,18 +1255,24 @@ EndpointRouteSearchScratch::search(const EndpointRouteSearchRequest &request) {
   return EndpointRouteSearchResult{source, target, bestCost, path_};
 }
 
-std::size_t EndpointRouteSearchScratch::retainedStorageBytes() const {
+std::size_t EndpointRouteSearchScratch::heuristicCacheRetainedBytes() const {
   std::size_t cacheBytes =
-      heuristicCache_.capacity() * sizeof(HeuristicCacheEntry) +
-      heuristicCacheTargets_.capacity() * sizeof(PnrIndex) +
-      heuristicCacheEligibility_.capacity() * sizeof(std::uint64_t) +
-      heuristicCacheDistances_.capacity() * sizeof(RouteCost);
+      heuristicCache_.capacity() * sizeof(HeuristicCacheEntry);
+  for (const HeuristicCacheEntry &entry : heuristicCache_)
+    cacheBytes += heuristicCacheEntryDistanceBytes(entry);
+  cacheBytes +=
+      heuristicCacheIndex_.size() * (sizeof(std::array<std::uint8_t, 32>) +
+                                     sizeof(std::size_t) + sizeof(void *) * 3);
+  return cacheBytes;
+}
+
+std::size_t EndpointRouteSearchScratch::retainedStorageBytes() const {
+  const std::size_t cacheBytes = heuristicCacheRetainedBytes();
   std::size_t timingBytes =
       timingLabels_.capacity() * sizeof(TimingSearchLabel) +
-      timingStateLabels_.capacity() * sizeof(std::vector<PnrIndex>) +
+      timingStateLabelHeads_.capacity() * sizeof(PnrIndex) +
+      timingStateLabelEpochs_.capacity() * sizeof(std::uint64_t) +
       timingHeap_.capacity() * sizeof(PnrIndex);
-  for (const auto &labels : timingStateLabels_)
-    timingBytes += labels.capacity() * sizeof(PnrIndex);
   return cacheBytes + heuristics_.capacity() * sizeof(RouteCost) +
          distances_.capacity() * sizeof(RouteCost) +
          priorities_.capacity() * sizeof(RouteCost) +
@@ -1120,7 +1285,7 @@ std::size_t EndpointRouteSearchScratch::retainedStorageBytes() const {
          targetPreferenceRanks_.capacity() * sizeof(PnrIndex) +
          targetRequiresTraversal_.capacity() * sizeof(std::uint8_t) +
          sourceReplicationGroups_.capacity() * sizeof(PnrIndex) +
-         heap_.capacity() * sizeof(PnrIndex) +
-         heapPositions_.capacity() * sizeof(PnrIndex) +
+         routeQueueEntries_.capacity() * sizeof(RouteQueueEntry) +
+         routeQueueMinimumHeap_.capacity() * sizeof(std::size_t) +
          path_.capacity() * sizeof(PnrIndex) + timingBytes;
 }

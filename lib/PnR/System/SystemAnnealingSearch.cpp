@@ -418,7 +418,8 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
     if (llvm::Error error = actionDomain_.rebuild(*candidate))
       return std::move(error);
     bool domainCurrent = true;
-    const std::uint64_t movable = actionDomain_.movableDecisionCount();
+    const std::uint64_t movable = actionDomain_.selectableMovableDecisionCount(
+        policy.search.actionProposal);
     auto proposalCount = annealingProposalsPerLevel(annealing, movable);
     if (!proposalCount)
       return proposalCount.takeError();

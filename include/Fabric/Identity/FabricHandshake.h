@@ -345,6 +345,8 @@ struct FabricHandshakeSelection final {
 
 namespace detail {
 class HandshakeOwnerModelBuilder;
+class HandshakeOwnerModelFactory;
+struct HandshakeOwnerModelStorage;
 
 enum class HandshakeFragmentSelectorKind : std::uint8_t {
   Always,
@@ -394,35 +396,34 @@ public:
   HandshakeOwnerModel &operator=(const HandshakeOwnerModel &) = default;
   HandshakeOwnerModel &operator=(HandshakeOwnerModel &&) noexcept = default;
 
-  const FabricHandshakeOwner &owner() const { return owner_; }
-  llvm::ArrayRef<HandshakeOwnerNode> nodes() const { return nodes_; }
-  llvm::ArrayRef<HandshakeOwnerArc> arcs() const { return arcs_; }
-  llvm::ArrayRef<HandshakeActivationFragment> fragments() const {
-    return fragments_;
-  }
-  llvm::ArrayRef<std::uint32_t> fragmentContributionOrdinals() const {
-    return fragmentContributionOrdinals_;
-  }
-  llvm::ArrayRef<FabricPhysicalTraversalRef> traversalWitnesses() const {
-    return traversalWitnesses_;
-  }
+  const FabricHandshakeOwner &owner() const;
+
+  std::uint32_t nodeCount() const;
+  HandshakeOwnerNode node(std::uint32_t ordinal) const;
+  std::uint32_t arcCount() const;
+  HandshakeOwnerArc arc(std::uint32_t ordinal) const;
+  std::uint32_t fragmentCount() const;
+  HandshakeActivationFragment fragment(std::uint32_t ordinal) const;
+  std::uint32_t fragmentContributionCount() const;
+  std::uint32_t fragmentContributionOrdinal(std::uint32_t ordinal) const;
+  std::uint32_t traversalWitnessCount() const;
+  FabricPhysicalTraversalRef traversalWitness(std::uint32_t ordinal) const;
 
   std::optional<std::uint32_t>
   nodeForSignal(const HandshakeSignalRef &signal) const;
 
 private:
-  explicit HandshakeOwnerModel(FabricHandshakeOwner owner)
-      : owner_(std::move(owner)) {}
+  explicit HandshakeOwnerModel(
+      std::shared_ptr<const detail::HandshakeOwnerModelStorage> storage)
+      : storage_(std::move(storage)) {}
 
-  FabricHandshakeOwner owner_;
-  std::vector<HandshakeOwnerNode> nodes_;
-  std::vector<HandshakeOwnerArc> arcs_;
-  std::vector<HandshakeActivationFragment> fragments_;
-  std::vector<std::uint32_t> fragmentContributionOrdinals_;
-  std::vector<FabricPhysicalTraversalRef> traversalWitnesses_;
-  std::vector<detail::HandshakeFragmentSelector> fragmentSelectors_;
+  detail::HandshakeFragmentSelector
+  fragmentSelector(std::uint32_t ordinal) const;
+
+  std::shared_ptr<const detail::HandshakeOwnerModelStorage> storage_;
 
   friend class detail::HandshakeOwnerModelBuilder;
+  friend class detail::HandshakeOwnerModelFactory;
   friend llvm::Expected<class ResolvedHandshakeActivation>
   resolveSelectedHandshake(const HandshakeOwnerModel &,
                            const FabricHandshakeSelection &);
@@ -435,14 +436,21 @@ struct FabricHandshakeContextStatistics final {
   std::uint64_t retainedBytes = 0;
   std::uint64_t deterministicWork = 0;
   std::uint64_t ownerCount = 0;
+  std::uint64_t structuralTemplateCount = 0;
+  std::uint64_t bindingInstanceCount = 0;
+  std::uint64_t structuralNodeCount = 0;
+  std::uint64_t structuralArcCount = 0;
+  std::uint64_t structuralFragmentCount = 0;
+  std::uint64_t unconditionalArcCount = 0;
   std::uint64_t nodeCount = 0;
   std::uint64_t arcCount = 0;
   std::uint64_t fragmentCount = 0;
 };
 
-/// Immutable Fabric-only compilation of occurrence-level handshake semantics.
-/// The complete Fabric identity and algorithm key make reuse explicit and
-/// bounded by the lifetime of the owning invocation context.
+/// Immutable Fabric-only compilation of shared structural handshake templates
+/// and their exact occurrence and row bindings. The complete Fabric identity
+/// and algorithm key make reuse explicit and bounded by the lifetime of the
+/// owning invocation context.
 class FabricHandshakeContext final {
 public:
   FabricHandshakeContext(const FabricHandshakeContext &) = default;
@@ -454,6 +462,9 @@ public:
   const ArtifactIdentity &fabricIdentity() const { return fabricIdentity_; }
   const std::array<std::uint8_t, 32> &key() const { return key_; }
   llvm::ArrayRef<HandshakeOwnerModel> ownerModels() const { return *models_; }
+  llvm::ArrayRef<HandshakeDependencyArc> unconditionalDependencyArcs() const {
+    return *unconditionalArcs_;
+  }
   const FabricHandshakeContextStatistics &statistics() const {
     return statistics_;
   }
@@ -462,13 +473,18 @@ private:
   FabricHandshakeContext(
       ArtifactIdentity fabricIdentity, std::array<std::uint8_t, 32> key,
       std::shared_ptr<const std::vector<HandshakeOwnerModel>> models,
+      std::shared_ptr<const std::vector<HandshakeDependencyArc>>
+          unconditionalArcs,
       FabricHandshakeContextStatistics statistics)
       : fabricIdentity_(std::move(fabricIdentity)), key_(key),
-        models_(std::move(models)), statistics_(statistics) {}
+        models_(std::move(models)),
+        unconditionalArcs_(std::move(unconditionalArcs)),
+        statistics_(statistics) {}
 
   ArtifactIdentity fabricIdentity_;
   std::array<std::uint8_t, 32> key_{};
   std::shared_ptr<const std::vector<HandshakeOwnerModel>> models_;
+  std::shared_ptr<const std::vector<HandshakeDependencyArc>> unconditionalArcs_;
   FabricHandshakeContextStatistics statistics_;
 
   friend llvm::Expected<FabricHandshakeContext>
@@ -491,8 +507,9 @@ private:
                            const FabricHandshakeSelection &);
 };
 
-/// Compiles every complete occurrence-level owner model in canonical owner
-/// order. The returned models are immutable derived views of `view`.
+/// Compiles every complete logical owner model in canonical owner order. Equal
+/// FU and Memory definitions and equal rows of one switch share immutable
+/// structural storage while retaining exact physical bindings.
 llvm::Expected<std::vector<HandshakeOwnerModel>>
 compileHandshakeOwnerModels(const FabricArtifactView &view);
 
@@ -509,10 +526,10 @@ llvm::Expected<ResolvedHandshakeActivation>
 resolveSelectedHandshake(const HandshakeOwnerModel &model,
                          const FabricHandshakeSelection &selection);
 
-/// Resolves every owner against one exact Mapping selection, flattens shared
-/// boundary signals and owner-local junctions, and rejects a selected
-/// combinational dependency cycle. The implementation is linear after
-/// deterministic arc ordering and owns no persistent graph identity.
+/// Projects the immutable unconditional boundary closure plus the owner-local
+/// fragments named by one exact Mapping selection, flattens shared boundary
+/// signals and active junctions, and rejects a selected combinational cycle.
+/// The active graph owns no persistent identity or mutable candidate state.
 llvm::Error verifySelectedCombinationalHandshakeAcyclic(
     const FabricArtifactView &view, const FabricHandshakeSelection &selection);
 

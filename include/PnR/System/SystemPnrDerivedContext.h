@@ -90,6 +90,9 @@ struct SystemActiveContextStatistics final {
   std::uint64_t schedulePressureCount = 0;
   std::uint64_t recurrenceProjectionCount = 0;
   std::uint64_t timingProfileCount = 0;
+  std::uint64_t techMappingImportRequests = 0;
+  std::uint64_t techMappingImportHits = 0;
+  std::uint64_t techMappingImportMisses = 0;
 };
 
 /// Bounded immutable owner for one exact System workload dependency tuple.

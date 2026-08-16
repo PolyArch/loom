@@ -401,17 +401,39 @@ closure. Such an `OwnerLocalHandshakeJunction` is a sealed-view node. It has no
 `EntityId`, persistent reference, route capacity, endpoint meaning, or backend
 identity and cannot escape the owning `HandshakeOwnerModel`.
 
-Every owner compiles its normative equations once into one sealed semantic
-model:
+The compiler factorizes the sealed semantic model into an immutable structural
+template and one or more physical bindings:
 
 ```text
-HandshakeOwnerModel {
-  ordered boundary signal bindings
+HandshakeStructuralTemplate {
   ordered owner-local junctions
   unique potential dependency arcs
-  typed activation fragments
+  structural activation fragments
+}
+
+HandshakeOwnerModel {
+  exact physical owner
+  shared HandshakeStructuralTemplate instances
+  ordered boundary signal and traversal bindings
+  typed occurrence, row, and configuration activation bindings
 }
 ```
+
+The factorization is derived only through Fabric-owned definition relations.
+FU occurrences use their exact `FabricFuTemplateRef`; Memory Operation Engine
+occurrences use their exact `FabricMemoryEngineTemplateRef`. A switch input
+uses its canonical occurrence-owned crosspoint order as one row shape. No
+consumer may infer structural equivalence from names, paths, object addresses,
+private hashes, or independently reconstructed property sets.
+
+Sharing structural storage never shares a physical activation. Every concrete
+occurrence binding retains its endpoint and traversal references. Every
+Temporal switch `(occurrence, resident row, input)` retains distinct local
+junction identity, Physical Tag, backpressure state, arbitration state, and
+runtime activation even when all rows reference one immutable row shape.
+Expanding the factorized model must produce exactly the same owner-local graph
+and selected boundary reachability as compiling each occurrence and row
+independently.
 
 An activation fragment is an owner-local set of potential arcs selected by one
 exact typed Fabric choice, such as one physical traversal, one FU-occurrence
@@ -426,7 +448,9 @@ between boundary signals for every legal selection. It need not preserve an
 internal circuit shape, and it must not materialize a boundary transitive
 closure when a linear-size owner-local dependency graph represents the same
 relation. Canonical owner-local node and arc order is a derived view contract,
-not persistent Fabric identity.
+not persistent Fabric identity. Structural templates and their instance
+bindings are rebuildable in-memory views and are never serialized as a second
+Fabric schema.
 
 A directed point connection contributes producer-valid to consumer-valid and
 consumer-ready to producer-ready arcs. Each resource owner resolves the exact

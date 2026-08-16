@@ -21,6 +21,7 @@ add_mlir_library(LoomFabricIdentity
   FabricFuCapabilityTemplate.cpp
   FabricHandshake.cpp
   FabricHandshakeModelBuilder.cpp
+  FabricHandshakeSelection.cpp
   FabricHandshakeFu.cpp
 
   ADDITIONAL_HEADER_DIRS

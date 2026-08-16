@@ -256,7 +256,7 @@ void timingAwareArrivalAndBoundary() {
   const std::array<std::uint64_t, 1> sourceArrivals{{0}};
   const std::array<std::uint64_t, 1> targetDelays{{0}};
   auto combinational =
-      request(fixture, sources, sourceGroups, targets, targetRanks, 1, 128);
+      request(fixture, sources, sourceGroups, targets, targetRanks, 1, 128, 0);
   combinational.physicalTimingEnabled = true;
   combinational.arcTimingDelayQuanta = delays;
   combinational.arcTimingRegisteredDestination = boundaries;
@@ -301,7 +301,7 @@ void timingAwareArrivalAndBoundary() {
   const std::array<std::uint64_t, 1> lateSourceArrival{{10}};
   const std::array<std::uint64_t, 1> localTargetDelay{{2}};
   auto terminal = request(fixture, sources, sourceGroups, overlappingTarget,
-                          targetRanks, 1, 128);
+                          targetRanks, 1, 128, 0);
   terminal.physicalTimingEnabled = true;
   terminal.arcTimingDelayQuanta = delays;
   terminal.arcTimingRegisteredDestination = boundaries;
@@ -317,6 +317,10 @@ void timingAwareArrivalAndBoundary() {
     fail(__func__,
          "source arrival and sink-local traversal slack were not counted "
          "exactly once");
+  if (scratch.heuristicBuildCount() != 2 ||
+      scratch.heuristicCacheHitCount() != 3)
+    fail(__func__,
+         "timing-aware search did not reuse its admissible route heuristic");
 }
 
 void failureKindSpellings() {
@@ -371,6 +375,36 @@ void exactHeuristicCacheInvalidation() {
     fail(__func__, "cost revision reused a stale exact heuristic");
 }
 
+void exactHeuristicCachePreservesWideCosts() {
+  constexpr RouteCost unit = RouteCost{1} << 40;
+  Fixture fixture;
+  fixture.lowerCosts = {unit, unit, 100 * unit, unit, unit, unit, unit};
+  fixture.currentCosts = fixture.lowerCosts;
+  EndpointRouteSearchScratch scratch;
+  requireSuccess(__func__, scratch.prepare(fixture.graph()));
+  const std::array<PnrIndex, 1> sources{{0}};
+  const std::array<PnrIndex, 1> sourceGroups{{Fixture::noReplicationGroup}};
+  const std::array<PnrIndex, 1> targets{{4}};
+  const std::array<PnrIndex, 1> targetRanks{{0}};
+  const std::array<PnrIndex, 3> expected{{1, 3, 5}};
+  auto cachedRequest =
+      request(fixture, sources, sourceGroups, targets, targetRanks, 1, 64, 0);
+
+  const std::uint64_t coldBegin = scratch.endpointExpansionCount();
+  requirePath(__func__, take(__func__, scratch.search(cachedRequest)), 0, 4,
+              3 * unit, expected);
+  const std::uint64_t coldExpansions =
+      scratch.endpointExpansionCount() - coldBegin;
+  const std::uint64_t warmBegin = scratch.endpointExpansionCount();
+  requirePath(__func__, take(__func__, scratch.search(cachedRequest)), 0, 4,
+              3 * unit, expected);
+  const std::uint64_t warmExpansions =
+      scratch.endpointExpansionCount() - warmBegin;
+  if (coldExpansions != warmExpansions || scratch.heuristicBuildCount() != 1 ||
+      scratch.heuristicCacheHitCount() != 1)
+    fail(__func__, "wide-cost cache hit changed deterministic route work");
+}
+
 } // namespace
 
 int main() {
@@ -381,5 +415,6 @@ int main() {
   timingAwareArrivalAndBoundary();
   failureKindSpellings();
   exactHeuristicCacheInvalidation();
+  exactHeuristicCachePreservesWideCosts();
   return 0;
 }

@@ -35,10 +35,23 @@ public:
   llvm::Expected<std::optional<SpatialMappingAction>>
   propose(const ResolvedPnrActionProposalPolicy &policy,
           DeterministicPnrRandomStream &proposalStream) const;
-  std::uint64_t movableDecisionCount() const { return movableDecisionCount_; }
+  std::uint64_t movableDecisionCount() const;
+  std::uint64_t selectableMovableDecisionCount(
+      const ResolvedPnrActionProposalPolicy &policy) const;
+  std::uint64_t examinedRealizationChoiceCount() const {
+    return examinedRealizationChoiceCount_;
+  }
+  std::uint64_t fixedRelationPrunedRealizationChoiceCount() const {
+    return fixedRelationPrunedRealizationChoiceCount_;
+  }
   std::size_t retainedStorageBytes() const;
 
 private:
+  struct RelationDecisionMember final {
+    PnrIndex projectedValueOffset = 0;
+    std::uint64_t demand = 1;
+  };
+
   std::vector<SpatialActionChoiceRange> realizationAnchors_;
   std::vector<SpatialRealizationBindingAction> realizationChoices_;
   std::vector<SpatialActionChoiceRange> transportAnchors_;
@@ -49,10 +62,21 @@ private:
   std::vector<SpatialActionChoiceRange> resourceAnchors_;
   std::vector<SpatialResourceAllocationAction> resourceChoices_;
   std::vector<PnrIndex> relationChoices_;
+  std::vector<std::size_t> relationValueOffsets_;
+  std::vector<PnrIndex> relationValues_;
+  std::vector<std::uint64_t> relationValueLoads_;
+  std::vector<PnrIndex> relationDistinctValueCounts_;
+  std::vector<std::uint8_t> rootClosedRelations_;
+  std::vector<std::size_t> relationDecisionMemberOffsets_;
+  std::vector<RelationDecisionMember> relationDecisionMembers_;
   std::vector<SpatialLogicalMemoryBindingSelection> logicalMemoryChoices_;
   std::unique_ptr<detail::SpatialMemoryConstraintScratch>
       memoryConstraintScratch_;
-  std::uint64_t movableDecisionCount_ = 0;
+  std::uint64_t realizationMovableDecisionCount_ = 0;
+  std::uint64_t transportMovableDecisionCount_ = 0;
+  std::uint64_t resourceMovableDecisionCount_ = 0;
+  std::uint64_t examinedRealizationChoiceCount_ = 0;
+  std::uint64_t fixedRelationPrunedRealizationChoiceCount_ = 0;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;
 };
 

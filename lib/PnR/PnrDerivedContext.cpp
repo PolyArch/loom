@@ -76,7 +76,7 @@ std::uint64_t loom::pnr::detail::staticContextRetainedBytes(
     const FrozenSpatialResourceIndex &resources,
     const FrozenEndpointRoutingTopology &topology,
     const FrozenSpatialTagContinuityIndex &tags,
-    llvm::ArrayRef<HandshakeOwnerModel> models) {
+    const FabricHandshakeContext &handshake) {
   std::uint64_t bytes = sizeof(FabricStaticContext);
   bytes +=
       resources.resourceOwners().size() * sizeof(FrozenSpatialResourceOwner);
@@ -111,16 +111,7 @@ std::uint64_t loom::pnr::detail::staticContextRetainedBytes(
   bytes +=
       tags.matchDomains().size() * sizeof(FabricPhysicalTagMatchDomainView);
   bytes += tags.endpointMatchDomainOrdinals().size() * sizeof(PnrIndex);
-  bytes += models.size() * sizeof(HandshakeOwnerModel);
-  for (const HandshakeOwnerModel &model : models) {
-    bytes += model.nodes().size() * sizeof(HandshakeOwnerNode);
-    bytes += model.arcs().size() * sizeof(HandshakeOwnerArc);
-    bytes += model.fragments().size() * sizeof(HandshakeActivationFragment);
-    bytes +=
-        model.fragmentContributionOrdinals().size() * sizeof(std::uint32_t);
-    bytes +=
-        model.traversalWitnesses().size() * sizeof(FabricPhysicalTraversalRef);
-  }
+  bytes += handshake.statistics().retainedBytes;
   return bytes;
 }
 
@@ -183,6 +174,18 @@ void loom::pnr::emitFabricDerivedContextStatistics(
           fields["traversal_count"] = statistics.traversalCount;
           fields["routing_arc_count"] = statistics.routingArcCount;
           fields["handshake_owner_count"] = statistics.handshakeOwnerCount;
+          fields["handshake_structural_template_count"] =
+              statistics.handshakeStructuralTemplateCount;
+          fields["handshake_binding_instance_count"] =
+              statistics.handshakeBindingInstanceCount;
+          fields["handshake_structural_node_count"] =
+              statistics.handshakeStructuralNodeCount;
+          fields["handshake_structural_arc_count"] =
+              statistics.handshakeStructuralArcCount;
+          fields["handshake_structural_fragment_count"] =
+              statistics.handshakeStructuralFragmentCount;
+          fields["handshake_unconditional_arc_count"] =
+              statistics.handshakeUnconditionalArcCount;
           fields["handshake_node_count"] = statistics.handshakeNodeCount;
           fields["handshake_arc_count"] = statistics.handshakeArcCount;
           fields["handshake_fragment_count"] =

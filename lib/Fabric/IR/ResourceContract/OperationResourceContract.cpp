@@ -1,5 +1,4 @@
 #include "Fabric/IR/OperationResourceContract.h"
-#include "Fabric/IR/ResourceContractRecord.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -191,14 +190,7 @@ fabric::oneCycleElasticOperationResourceContract() {
 
 llvm::Expected<bool> fabric::isOneCycleElasticOperationResourceContract(
     const ResourceContract &contract) {
-  auto actual = encodeResourceContractRecord(contract);
-  if (!actual)
-    return actual.takeError();
-  auto expected =
-      encodeResourceContractRecord(oneCycleElasticOperationResourceContract());
-  if (!expected)
-    return expected.takeError();
-  return *actual == *expected;
+  return contract == oneCycleElasticOperationResourceContract();
 }
 
 llvm::Expected<fabric::ResourceContract>
@@ -213,13 +205,7 @@ llvm::Expected<bool> fabric::isOrderedCardinalityOperationResourceContract(
   auto expected = createOrderedCardinalityContract(schema, maximumLaneCount);
   if (!expected)
     return expected.takeError();
-  auto actualBytes = encodeResourceContractRecord(contract);
-  if (!actualBytes)
-    return actualBytes.takeError();
-  auto expectedBytes = encodeResourceContractRecord(*expected);
-  if (!expectedBytes)
-    return expectedBytes.takeError();
-  return *actualBytes == *expectedBytes;
+  return contract == *expected;
 }
 
 const fabric::ResourceContract &fabric::loopStreamOperationResourceContract() {
@@ -233,18 +219,8 @@ const fabric::ResourceContract &fabric::loopStreamOperationResourceContract() {
 
 llvm::Expected<bool>
 fabric::requiresActiveResultHandoff(const ResourceContract &contract) {
-  auto oneCycle = isOneCycleElasticOperationResourceContract(contract);
-  if (!oneCycle || *oneCycle)
-    return oneCycle;
-
-  auto actual = encodeResourceContractRecord(contract);
-  if (!actual)
-    return actual.takeError();
-  auto loopStream =
-      encodeResourceContractRecord(loopStreamOperationResourceContract());
-  if (!loopStream)
-    return loopStream.takeError();
-  return *actual == *loopStream;
+  return contract == oneCycleElasticOperationResourceContract() ||
+         contract == loopStreamOperationResourceContract();
 }
 
 const fabric::ResourceContract &fabric::loopCarryOperationResourceContract() {
@@ -291,8 +267,7 @@ fabric::resolveOperationUsePattern(const ResourceContract &contract,
 
 llvm::Expected<std::optional<fabric::OperationTransitionArchitecturalTiming>>
 fabric::projectOperationTransitionArchitecturalTiming(
-    const ResourceContract &contract,
-    ::dataflow::OperationSchemaId schema,
+    const ResourceContract &contract, ::dataflow::OperationSchemaId schema,
     std::uint32_t transitionCaseOrdinal) {
   bool recognized = false;
   auto oneCycle = isOneCycleElasticOperationResourceContract(contract);
@@ -318,15 +293,8 @@ fabric::projectOperationTransitionArchitecturalTiming(
     default:
       break;
     }
-    if (expected) {
-      auto actualBytes = encodeResourceContractRecord(contract);
-      if (!actualBytes)
-        return actualBytes.takeError();
-      auto expectedBytes = encodeResourceContractRecord(*expected);
-      if (!expectedBytes)
-        return expectedBytes.takeError();
-      recognized = *actualBytes == *expectedBytes;
-    }
+    if (expected)
+      recognized = contract == *expected;
   }
 
   if (!recognized)

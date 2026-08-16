@@ -1127,7 +1127,8 @@ SpatialPathFinderRouterScratch::projectLogicalNet(
       candidate.problem(), logicalNet, tree,
       candidate.registerFifoTransfer(logicalNet),
       candidate.portAttachmentSelections(),
-      candidate.graphBoundaryAttachmentSelections());
+      candidate.graphBoundaryAttachmentSelections(), &timingRouteNodeArrivals_,
+      &timingRouteNodeWorklist_);
   if (!timing)
     return timing.takeError();
   const unsigned __int128 criticalDelay =
@@ -1963,5 +1964,7 @@ std::size_t SpatialPathFinderRouterScratch::retainedStorageBytes() const {
          retainedBytes(cutTouchedClaims_) +
          retainedBytes(cutNetClaimRefcounts_) +
          retainedBytes(cutClaimSelectionCounts_) +
-         retainedBytes(cutClaimTraversalRefcounts_);
+         retainedBytes(cutClaimTraversalRefcounts_) +
+         retainedBytes(timingRouteNodeArrivals_) +
+         retainedBytes(timingRouteNodeWorklist_);
 }

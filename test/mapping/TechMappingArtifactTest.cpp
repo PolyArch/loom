@@ -916,10 +916,14 @@ void artifactRoundTripAndReferenceValidation() {
       fail("memory actor-owner reverse projection changed its owner slice");
   }
   const auto &handshake = frozen->handshake();
-  if (handshake.nodeSignals().size() != handshake.nodeCount() ||
-      handshake.adjacencyOffsets().size() != handshake.nodeCount() + 1 ||
-      handshake.reverseAdjacencyOffsets().size() != handshake.nodeCount() + 1)
-    fail("aggregate Spatial freeze omitted handshake node incidence");
+  if (handshake.ownerModels().empty() || handshake.fragments().empty())
+    fail("aggregate Spatial freeze omitted handshake demand relations");
+  for (const auto &fragment : handshake.fragments()) {
+    if (fragment.owner >= handshake.ownerModels().size() ||
+        fragment.localFragment >=
+            handshake.ownerModels()[fragment.owner].fragmentCount())
+      fail("aggregate Spatial freeze has a stale handshake fragment");
+  }
   if (handshake.traversalFragmentOffsets().size() !=
       frozen->routing().traversals().size() + 1)
     fail("aggregate Spatial freeze omitted traversal handshake incidence");

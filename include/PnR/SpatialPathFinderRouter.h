@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace loom::dse {
@@ -161,6 +162,15 @@ public:
   std::uint64_t heuristicBuildCount() const {
     return netRouter_.heuristicBuildCount();
   }
+  std::uint64_t heuristicCacheEvictionCount() const {
+    return netRouter_.heuristicCacheEvictionCount();
+  }
+  std::size_t heuristicCacheEntryCount() const {
+    return netRouter_.heuristicCacheEntryCount();
+  }
+  std::size_t heuristicCacheRetainedBytes() const {
+    return netRouter_.heuristicCacheRetainedBytes();
+  }
   std::uint64_t negotiationIterationCount() const {
     return negotiationIterationCount_;
   }
@@ -272,6 +282,8 @@ private:
   std::vector<PnrIndex> cutNetClaimRefcounts_;
   std::vector<PnrIndex> cutClaimSelectionCounts_;
   std::vector<std::uint64_t> cutClaimTraversalRefcounts_;
+  std::vector<std::uint64_t> timingRouteNodeArrivals_;
+  std::vector<std::pair<PnrIndex, std::uint64_t>> timingRouteNodeWorklist_;
   std::uint64_t projectionEpoch_ = 0;
   std::uint64_t negotiationIterationCount_ = 0;
   const FrozenSpatialPnrProblem *preparedProblem_ = nullptr;

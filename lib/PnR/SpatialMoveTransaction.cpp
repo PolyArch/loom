@@ -123,13 +123,13 @@ void emitHandshakeCycle(const FrozenSpatialPnrProblem &problem,
         fields["witness_arc_sample_count"] = sampleCount;
         fields["witness_arc_omitted_count"] = witness.size() - sampleCount;
         llvm::json::Array arcs;
-        const auto potentialArcs = problem.handshake().arcs();
-        const auto signals = problem.handshake().nodeSignals();
+        const auto activeArcs = handshake.activeArcs();
+        const auto signals = handshake.activeNodeSignals();
         for (PnrIndex arc : witness.take_front(sampleCount)) {
           llvm::json::Object entry;
           entry["arc_ref"] = arc;
-          if (arc < potentialArcs.size()) {
-            const FrozenSpatialHandshakeArc &record = potentialArcs[arc];
+          if (arc < activeArcs.size()) {
+            const FrozenSpatialHandshakeArc &record = activeArcs[arc];
             entry["source_node"] = record.source;
             entry["destination_node"] = record.destination;
             if (record.source < signals.size() && signals[record.source]) {
@@ -146,38 +146,26 @@ void emitHandshakeCycle(const FrozenSpatialPnrProblem &problem,
                   signalKind(signals[record.destination]->signal);
             }
             llvm::json::Array contributions;
-            std::size_t contributionCount = 0;
             const auto fragments = problem.handshake().fragments();
-            const auto fragmentOwners =
-                problem.handshake().fragmentOwnerOrdinals();
-            const auto owners = problem.handshake().owners();
-            for (auto [fragmentOrdinal, fragment] :
-                 llvm::enumerate(fragments)) {
-              if (handshake.fragmentRefcount(
-                      static_cast<PnrIndex>(fragmentOrdinal)) == 0)
-                continue;
-              const auto fragmentArcs =
-                  problem.handshake().fragmentArcOrdinals().slice(
-                      fragment.contributionOffset, fragment.contributionCount);
-              if (!llvm::binary_search(fragmentArcs, arc))
-                continue;
-              ++contributionCount;
+            const auto models = problem.handshake().ownerModels();
+            const auto contributors = handshake.activeArcContributors(arc);
+            for (PnrIndex fragmentOrdinal : contributors) {
               if (!loom::mapping_debug::enabled(
                       loom::mapping_debug::Level::Detail) &&
                   contributions.size() == 4)
                 continue;
               llvm::json::Object contribution;
               contribution["fragment_ref"] = fragmentOrdinal;
-              contribution["fragment_refcount"] = handshake.fragmentRefcount(
-                  static_cast<PnrIndex>(fragmentOrdinal));
-              const PnrIndex owner = fragmentOwners[fragmentOrdinal];
+              contribution["fragment_refcount"] =
+                  handshake.fragmentRefcount(fragmentOrdinal);
+              const PnrIndex owner = fragments[fragmentOrdinal].owner;
               contribution["owner_ordinal"] = owner;
-              appendOwnerFields(contribution, owners[owner]);
+              appendOwnerFields(contribution, models[owner].owner());
               contributions.push_back(std::move(contribution));
             }
-            entry["active_contribution_count"] = contributionCount;
+            entry["active_contribution_count"] = contributors.size();
             entry["active_contribution_omitted_count"] =
-                contributionCount - contributions.size();
+                contributors.size() - contributions.size();
             entry["active_contributions"] = std::move(contributions);
           }
           arcs.push_back(std::move(entry));
@@ -217,12 +205,7 @@ SpatialMoveTransaction::SpatialMoveTransaction(
           other.initialWorstRouteArrivalDelayQuanta_),
       initialTotalRouteNegativeSlackQuanta_(
           other.initialTotalRouteNegativeSlackQuanta_),
-      initialRecurrenceTiming_(std::move(other.initialRecurrenceTiming_)),
-      proposedPhysicalTimingValid_(other.proposedPhysicalTimingValid_),
-      proposedWorstRouteArrivalDelayQuanta_(
-          other.proposedWorstRouteArrivalDelayQuanta_),
-      proposedTotalRouteNegativeSlackQuanta_(
-          other.proposedTotalRouteNegativeSlackQuanta_) {
+      initialRecurrenceTiming_(std::move(other.initialRecurrenceTiming_)) {
   other.scratch_ = nullptr;
   if (state_)
     state_->activeTransaction_ = this;
@@ -1219,21 +1202,42 @@ llvm::Expected<bool> SpatialMoveTransaction::close() {
   if (llvm::Error error = validateAffectedState())
     return std::move(error);
   if (!scratch_->affectedNets_.empty()) {
-    auto physicalTiming = detail::projectSpatialPhysicalTiming(
-        state_->problem(), scratch_->routeViews_,
-        state_->registerFifoTransfers_, state_->portAttachments_,
-        state_->graphBoundaryAttachments_);
-    if (!physicalTiming)
-      return physicalTiming.takeError();
-    proposedPhysicalTimingValid_ = true;
-    proposedWorstRouteArrivalDelayQuanta_ =
-        physicalTiming->worstArrivalDelayQuanta;
-    proposedTotalRouteNegativeSlackQuanta_ =
-        physicalTiming->totalNegativeSlackQuanta;
-    state_->worstRouteArrivalDelayQuanta_ =
-        proposedWorstRouteArrivalDelayQuanta_;
-    state_->totalRouteNegativeSlackQuanta_ =
-        proposedTotalRouteNegativeSlackQuanta_;
+    for (PnrIndex logicalNet : scratch_->affectedNets_) {
+      if (logicalNet >= scratch_->routeViews_.size() ||
+          logicalNet >= state_->logicalNetWorstArrivalDelayQuanta_.size() ||
+          logicalNet >= state_->logicalNetNegativeSlackQuanta_.size())
+        return candidateError("physical timing net cache is out of range");
+      auto timing = detail::projectSpatialLogicalNetPhysicalTiming(
+          state_->problem(), logicalNet, *scratch_->routeViews_[logicalNet],
+          state_->registerFifoTransfers_[logicalNet], state_->portAttachments_,
+          state_->graphBoundaryAttachments_,
+          &scratch_->physicalTimingRouteNodeArrivals_,
+          &scratch_->physicalTimingRouteNodeWorklist_);
+      if (!timing)
+        return timing.takeError();
+      scratch_->physicalTimingChangedNets_.push_back(logicalNet);
+      scratch_->physicalTimingOldWorstArrivals_.push_back(
+          state_->logicalNetWorstArrivalDelayQuanta_[logicalNet]);
+      scratch_->physicalTimingOldNegativeSlacks_.push_back(
+          state_->logicalNetNegativeSlackQuanta_[logicalNet]);
+      state_->logicalNetWorstArrivalDelayQuanta_[logicalNet] =
+          timing->worstArrivalDelayQuanta;
+      state_->logicalNetNegativeSlackQuanta_[logicalNet] =
+          timing->totalNegativeSlackQuanta;
+    }
+    std::uint64_t worstArrival = 0;
+    std::uint64_t totalNegativeSlack = 0;
+    for (auto [worst, negative] :
+         llvm::zip_equal(state_->logicalNetWorstArrivalDelayQuanta_,
+                         state_->logicalNetNegativeSlackQuanta_)) {
+      worstArrival = std::max(worstArrival, worst);
+      if (negative >
+          std::numeric_limits<std::uint64_t>::max() - totalNegativeSlack)
+        return candidateError("physical timing negative slack exceeds u64");
+      totalNegativeSlack += negative;
+    }
+    state_->worstRouteArrivalDelayQuanta_ = worstArrival;
+    state_->totalRouteNegativeSlackQuanta_ = totalNegativeSlack;
   }
   {
     auto recurrenceTiming =
@@ -1466,6 +1470,13 @@ void SpatialMoveTransaction::rollback() noexcept {
   state_->unroutedObligationCount_ = initialUnroutedObligationCount_;
   state_->atomicCapacityOveruse_ = initialAtomicCapacityOveruse_;
   state_->staticSchedulePressure_ = initialStaticSchedulePressure_;
+  for (auto [ordinal, logicalNet] :
+       llvm::enumerate(scratch_->physicalTimingChangedNets_)) {
+    state_->logicalNetWorstArrivalDelayQuanta_[logicalNet] =
+        scratch_->physicalTimingOldWorstArrivals_[ordinal];
+    state_->logicalNetNegativeSlackQuanta_[logicalNet] =
+        scratch_->physicalTimingOldNegativeSlacks_[ordinal];
+  }
   state_->worstRouteArrivalDelayQuanta_ = initialWorstRouteArrivalDelayQuanta_;
   state_->totalRouteNegativeSlackQuanta_ =
       initialTotalRouteNegativeSlackQuanta_;

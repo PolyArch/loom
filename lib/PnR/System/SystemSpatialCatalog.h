@@ -37,12 +37,19 @@ struct SpatialCatalogEntry final {
       ::loom::fabric::FabricPhysicalTimingProfileKind::NormalizedHeuristic;
 };
 
+struct SpatialCatalogImportStatistics final {
+  std::uint64_t techMappingImportRequests = 0;
+  std::uint64_t techMappingImportHits = 0;
+  std::uint64_t techMappingImportMisses = 0;
+};
+
 llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
     llvm::ArrayRef<ArtifactRootReference> references,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &system,
     const ArtifactStore &store,
-    const ::loom::mapping::SpatialMappingImportContext *imports = nullptr);
+    const ::loom::mapping::SpatialMappingImportContext *imports = nullptr,
+    SpatialCatalogImportStatistics *statistics = nullptr);
 
 } // namespace loom::pnr::detail
 

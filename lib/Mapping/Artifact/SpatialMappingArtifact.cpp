@@ -154,16 +154,6 @@ transportPayloadWidth(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   return dataflow.transportPayloadBitWidth(*type);
 }
 
-const ::loom::fabric::FabricPhysicalTraversalView *
-findTraversal(const ::loom::fabric::FabricArtifactView &fabric,
-              const ::loom::fabric::FabricPhysicalTraversalRef &reference) {
-  auto found =
-      llvm::find_if(fabric.physicalTraversals(), [&](const auto &candidate) {
-        return candidate.reference == reference;
-      });
-  return found == fabric.physicalTraversals().end() ? nullptr : &*found;
-}
-
 const TechComputeRealizationView *
 findComputeRealization(const TechMappingView &techMapping,
                        std::uint64_t entity) {
@@ -504,10 +494,7 @@ importRouteTree(::mapping::RouteTreeOp record,
           *node.getIncomingTraversal());
       if (!decoded)
         return decoded.takeError();
-      if (llvm::Error error =
-              ::loom::fabric::validateFabricRef(context.fabric, *decoded))
-        return std::move(error);
-      const auto *physical = findTraversal(context.fabric, *decoded);
+      const auto *physical = context.fabric.physicalTraversal(*decoded);
       if (!physical || physical->destinations.size() != 1 ||
           !llvm::is_contained(physical->sources,
                               result.nodes[*parent].endpoint))

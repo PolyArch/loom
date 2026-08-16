@@ -651,8 +651,7 @@ UsePatternTiming ResourceContract::usePatternTiming(UsePatternKey key) const {
     const auto dimensions = capacityDimensions(claim.state);
     assert(claim.dimension.ordinal() < dimensions.size() &&
            "validated claim dimension is absent");
-    const CapacityDimension &dimension =
-        dimensions[claim.dimension.ordinal()];
+    const CapacityDimension &dimension = dimensions[claim.dimension.ordinal()];
     const std::uint32_t available =
         dimension.capacity.value() - dimension.initialOccupancy.value();
     const std::uint32_t parallelUses = available / claim.amount.value();
@@ -776,6 +775,65 @@ ResourceContractDeclaration ResourceContract::declaration() const {
     }
   }
   return result;
+}
+
+bool operator==(const ResourceContract &lhs, const ResourceContract &rhs) {
+  const auto equalCapacityDimension = [](const CapacityDimension &left,
+                                         const CapacityDimension &right) {
+    return left.capacity == right.capacity &&
+           left.initialOccupancy == right.initialOccupancy;
+  };
+  const auto equalSpan = [](const ResourceContract::Span &left,
+                            const ResourceContract::Span &right) {
+    return left.first == right.first && left.count == right.count;
+  };
+  const auto equalClaim = [](const Claim &left, const Claim &right) {
+    return left.state == right.state && left.dimension == right.dimension &&
+           left.amount == right.amount;
+  };
+  const auto equalCommit = [](const std::optional<Commit> &left,
+                              const std::optional<Commit> &right) {
+    if (left.has_value() != right.has_value())
+      return false;
+    return !left || (left->event == right->event &&
+                     left->transition == right->transition);
+  };
+  const auto equalPattern = [&](const ResourceContract::PatternRecord &left,
+                                const ResourceContract::PatternRecord &right) {
+    return left.requester == right.requester &&
+           left.eligibility == right.eligibility &&
+           left.acquire == right.acquire && left.release == right.release &&
+           equalCommit(left.commit, right.commit) &&
+           left.timingAndProgress == right.timingAndProgress &&
+           equalSpan(left.claims, right.claims) &&
+           equalSpan(left.internalTransactions, right.internalTransactions) &&
+           equalSpan(left.parameters, right.parameters) &&
+           equalSpan(left.sharingAssignments, right.sharingAssignments);
+  };
+  const auto equalVector = [](const auto &left, const auto &right,
+                              const auto &equal) {
+    return left.size() == right.size() &&
+           std::equal(left.begin(), left.end(), right.begin(), equal);
+  };
+
+  return equalVector(lhs.capacityDimensions_, rhs.capacityDimensions_,
+                     equalCapacityDimension) &&
+         equalVector(lhs.states_, rhs.states_, equalSpan) &&
+         lhs.eventRanks_ == rhs.eventRanks_ &&
+         equalVector(lhs.claims_, rhs.claims_, equalClaim) &&
+         lhs.transactionClaims_ == rhs.transactionClaims_ &&
+         equalVector(lhs.internalTransactions_, rhs.internalTransactions_,
+                     equalSpan) &&
+         lhs.valueSchemas_ == rhs.valueSchemas_ &&
+         equalVector(lhs.patterns_, rhs.patterns_, equalPattern) &&
+         lhs.requesterOrder_ == rhs.requesterOrder_ &&
+         lhs.resourceTransitionCount_ == rhs.resourceTransitionCount_ &&
+         lhs.requesterCount_ == rhs.requesterCount_ &&
+         lhs.eligibilityCount_ == rhs.eligibilityCount_ &&
+         lhs.eventCount_ == rhs.eventCount_ &&
+         lhs.timingContractCount_ == rhs.timingContractCount_ &&
+         lhs.grantPolicyKind_ == rhs.grantPolicyKind_ &&
+         lhs.resetCursorPosition_ == rhs.resetCursorPosition_;
 }
 
 llvm::Expected<ResourceContract>

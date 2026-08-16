@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace loom::pnr {
@@ -75,14 +76,19 @@ projectSpatialLogicalNetPhysicalTiming(
     const FrozenSpatialPnrProblem &problem, PnrIndex logicalNet,
     const RouteTreeState &route, PnrIndex registerFifoTransfer,
     llvm::ArrayRef<PnrIndex> portAttachments,
-    llvm::ArrayRef<PnrIndex> graphBoundaryAttachments);
+    llvm::ArrayRef<PnrIndex> graphBoundaryAttachments,
+    std::vector<std::uint64_t> *routeNodeArrivals = nullptr,
+    std::vector<std::pair<PnrIndex, std::uint64_t>> *routeNodeWorklist =
+        nullptr);
 
-llvm::Expected<SpatialPhysicalTimingProjection>
-projectSpatialPhysicalTiming(const FrozenSpatialPnrProblem &problem,
-                             llvm::ArrayRef<const RouteTreeState *> routes,
-                             llvm::ArrayRef<PnrIndex> registerFifoTransfers,
-                             llvm::ArrayRef<PnrIndex> portAttachments,
-                             llvm::ArrayRef<PnrIndex> graphBoundaryAttachments);
+llvm::Expected<SpatialPhysicalTimingProjection> projectSpatialPhysicalTiming(
+    const FrozenSpatialPnrProblem &problem,
+    llvm::ArrayRef<const RouteTreeState *> routes,
+    llvm::ArrayRef<PnrIndex> registerFifoTransfers,
+    llvm::ArrayRef<PnrIndex> portAttachments,
+    llvm::ArrayRef<PnrIndex> graphBoundaryAttachments,
+    std::vector<std::uint64_t> *netWorstArrivals = nullptr,
+    std::vector<std::uint64_t> *netNegativeSlacks = nullptr);
 
 llvm::Expected<SpatialPhysicalTimingProjection>
 projectSpatialMappingPhysicalTiming(

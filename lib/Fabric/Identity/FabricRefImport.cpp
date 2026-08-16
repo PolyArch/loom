@@ -767,6 +767,20 @@ FabricArtifactView::physicalTraversals() const {
   return storage_->physicalTraversalViews;
 }
 
+const FabricPhysicalTraversalView *FabricArtifactView::physicalTraversal(
+    const FabricPhysicalTraversalRef &traversal) const {
+  const std::vector<std::uint8_t> key = canonicalFabricBytes(traversal);
+  const auto found = std::lower_bound(storage_->traversalKeys.begin(),
+                                      storage_->traversalKeys.end(), key);
+  if (found == storage_->traversalKeys.end() || *found != key)
+    return nullptr;
+  const std::size_t ordinal =
+      static_cast<std::size_t>(found - storage_->traversalKeys.begin());
+  return ordinal < storage_->physicalTraversalViews.size()
+             ? &storage_->physicalTraversalViews[ordinal]
+             : nullptr;
+}
+
 llvm::ArrayRef<FabricSpatialAttachmentRecordView>
 FabricSystemRootView::spatialAttachments() const {
   return artifact_.storage_->data.spatialAttachments;

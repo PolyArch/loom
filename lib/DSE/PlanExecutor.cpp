@@ -7,6 +7,7 @@
 #include "Evaluation/ModelDescriptor.h"
 #include "Evaluation/ModelProvider.h"
 #include "ExternalTool/InvocationBundle.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -270,7 +271,9 @@ public:
   RecoverablePlanWorkExecutor(ExecutionJournal &journal,
                               SiteScheduler &scheduler,
                               const PlanExecutionPolicy &policy)
-      : journal_(journal), scheduler_(scheduler), policy_(policy) {}
+      : journal_(journal), scheduler_(scheduler), policy_(policy),
+        fabricImportAttachment_(
+            fabric::FabricArtifactImportSession::currentAttachment()) {}
 
   bool shouldStopBeforeDispatch() const override {
     return journal_.gracefulStopRequested() ||
@@ -330,6 +333,7 @@ private:
   std::vector<ArtifactRootReference> promotionCandidates_;
   std::vector<EvidenceObligationTemplateRef> promotionObligations_;
   std::atomic_uint64_t dispatched_{0};
+  fabric::FabricArtifactImportSession::Attachment fabricImportAttachment_;
 };
 
 bool RecoverablePlanWorkExecutor::reserveDispatch() {
@@ -758,6 +762,10 @@ RecoverablePlanWorkExecutor::executeGenerateBatch(
       static_cast<unsigned>(workerCount)));
   for (std::size_t worker = 0; worker != workerCount; ++worker)
     pool.async([&] {
+      std::unique_ptr<fabric::FabricArtifactImportSession> importSession;
+      if (fabricImportAttachment_)
+        importSession = std::make_unique<fabric::FabricArtifactImportSession>(
+            fabricImportAttachment_);
       while (true) {
         const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
         if (index >= tasks.size())
@@ -1030,6 +1038,10 @@ RecoverablePlanWorkExecutor::execute(
       static_cast<unsigned>(workerCount)));
   for (std::size_t worker = 0; worker != workerCount; ++worker)
     pool.async([&] {
+      std::unique_ptr<fabric::FabricArtifactImportSession> importSession;
+      if (fabricImportAttachment_)
+        importSession = std::make_unique<fabric::FabricArtifactImportSession>(
+            fabricImportAttachment_);
       while (true) {
         const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
         if (index >= tasks.size())

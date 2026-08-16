@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace loom::pnr {
@@ -81,6 +82,15 @@ public:
   std::uint64_t heuristicBuildCount() const {
     return endpointSearch_.heuristicBuildCount();
   }
+  std::uint64_t heuristicCacheEvictionCount() const {
+    return endpointSearch_.heuristicCacheEvictionCount();
+  }
+  std::size_t heuristicCacheEntryCount() const {
+    return endpointSearch_.heuristicCacheEntryCount();
+  }
+  std::size_t heuristicCacheRetainedBytes() const {
+    return endpointSearch_.heuristicCacheRetainedBytes();
+  }
   std::size_t retainedStorageBytes() const;
 
 private:
@@ -128,6 +138,7 @@ private:
   std::vector<std::uint64_t> arcTimingDelayQuanta_;
   std::vector<std::uint8_t> arcTimingRegisteredDestination_;
   std::vector<std::uint64_t> routeNodeTimingArrivals_;
+  std::vector<std::pair<PnrIndex, std::uint64_t>> routeNodeTimingWorklist_;
   std::vector<std::uint64_t> endpointMarks_;
   std::vector<PnrIndex> subtreeWorklist_;
   SpatialTagContinuityProjection tagContinuity_;

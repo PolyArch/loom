@@ -495,20 +495,27 @@ void loom::test::exerciseHandshakeCandidateRefcounts(
   const auto fragments = handshake.computePlacementFragments().slice(
       offsets.front(), offsets[1] - offsets.front());
   std::optional<pnr::PnrIndex> observedFragment;
-  std::optional<pnr::PnrIndex> observedArc;
   for (pnr::PnrIndex fragment : fragments) {
     const auto record = handshake.fragments()[fragment];
     if (record.contributionCount == 0)
       continue;
     observedFragment = fragment;
-    observedArc = handshake.fragmentArcOrdinals()[record.contributionOffset];
     break;
   }
-  if (!observedFragment || !observedArc)
+  if (!observedFragment)
     fail("compute placement has no observable handshake contribution");
 
-  const pnr::PnrIndex baseArcRefcount = candidate->arcRefcount(*observedArc);
-  for (unsigned selection = 0; selection < 2; ++selection) {
+  const std::size_t baseContributionCount =
+      candidate->activeArcContributionCount();
+  {
+    auto transaction = take(candidate->beginTransaction(scratch));
+    requireSuccess(transaction.addFragments(fragments));
+    if (!take(transaction.close()))
+      fail("exact compute placement closed a handshake cycle");
+    requireSuccess(transaction.commit());
+  }
+  const auto activatedStatistics = candidate->materializationStatistics();
+  {
     auto transaction = take(candidate->beginTransaction(scratch));
     requireSuccess(transaction.addFragments(fragments));
     if (!take(transaction.close()))
@@ -517,11 +524,20 @@ void loom::test::exerciseHandshakeCandidateRefcounts(
   }
   if (candidate->fragmentRefcount(*observedFragment) != 2)
     fail("shared handshake fragment lost its decision refcount");
-  const pnr::PnrIndex selectedArcRefcount =
-      candidate->arcRefcount(*observedArc);
-  if (selectedArcRefcount <= baseArcRefcount)
+  const std::size_t selectedContributionCount =
+      candidate->activeArcContributionCount();
+  if (selectedContributionCount <= baseContributionCount)
     fail("selected handshake fragment did not activate its arc");
+  const auto sharedStatistics = candidate->materializationStatistics();
+  if (sharedStatistics.constructionCount !=
+          activatedStatistics.constructionCount ||
+      sharedStatistics.transactionClosureCount !=
+          activatedStatistics.transactionClosureCount ||
+      sharedStatistics.deterministicWork !=
+          activatedStatistics.deterministicWork)
+    fail("refcount-only handshake commit reclosed an unchanged active graph");
 
+  const auto beforeDiscard = candidate->materializationStatistics();
   {
     auto transaction = take(candidate->beginTransaction(scratch));
     requireSuccess(transaction.removeFragments(fragments));
@@ -530,8 +546,16 @@ void loom::test::exerciseHandshakeCandidateRefcounts(
       fail("handshake deletion reported a cycle");
     transaction.rollback();
   }
+  const auto afterDiscard = candidate->materializationStatistics();
+  if (afterDiscard.constructionCount != beforeDiscard.constructionCount ||
+      afterDiscard.transactionClosureCount !=
+          beforeDiscard.transactionClosureCount + 1 ||
+      afterDiscard.transactionRemovedArcCount <=
+          beforeDiscard.transactionRemovedArcCount)
+    fail("discarded handshake probe rebuilt the active graph instead of "
+         "closing its arc delta");
   if (candidate->fragmentRefcount(*observedFragment) != 2 ||
-      candidate->arcRefcount(*observedArc) != selectedArcRefcount)
+      candidate->activeArcContributionCount() != selectedContributionCount)
     fail("handshake rollback changed the committed refcounts");
   const std::size_t retainedScratchBytes = scratch.retainedStorageBytes();
 
@@ -543,14 +567,15 @@ void loom::test::exerciseHandshakeCandidateRefcounts(
     requireSuccess(transaction.commit());
   }
   if (candidate->fragmentRefcount(*observedFragment) != 0 ||
-      candidate->arcRefcount(*observedArc) != baseArcRefcount ||
+      candidate->activeArcContributionCount() != baseContributionCount ||
       scratch.retainedStorageBytes() != retainedScratchBytes)
     fail("handshake selection removal retained state or expanded scratch: "
          "fragment_refcount=" +
          std::to_string(candidate->fragmentRefcount(*observedFragment)) +
-         " arc_refcount=" +
-         std::to_string(candidate->arcRefcount(*observedArc)) +
-         " expected_arc_refcount=" + std::to_string(baseArcRefcount) +
+         " contribution_count=" +
+         std::to_string(candidate->activeArcContributionCount()) +
+         " expected_contribution_count=" +
+         std::to_string(baseContributionCount) +
          " scratch_bytes=" + std::to_string(scratch.retainedStorageBytes()) +
          " expected_scratch_bytes=" + std::to_string(retainedScratchBytes));
   requireSuccess(candidate->verify());
@@ -1410,6 +1435,11 @@ void loom::test::exerciseSpatialActionDomainAndObjective(
       firstDomain.resourceAnchors.size();
   if (actionDomain.movableDecisionCount() != movableDecisionCount)
     fail("Spatial Action domain miscounted movable decisions");
+  if (actionDomain.selectableMovableDecisionCount(
+          ResolvedPnrActionProposalPolicy{1, 1, 0}) !=
+      firstDomain.realizationAnchors.size() +
+          problem->transfers().logicalNets().size())
+    fail("disabled Spatial Action category inflated fixed proposal work");
   if (firstDomain.realizationChoices.empty() &&
       firstDomain.transportChoices.empty() &&
       firstDomain.resourceChoices.empty())

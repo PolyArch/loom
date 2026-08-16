@@ -15,6 +15,8 @@
 
 namespace loom::pnr {
 
+struct SpatialPathFinderSeed;
+
 struct SpatialAnnealingStatistics final {
   bool interrupted = false;
   bool exactClosureReached = false;
@@ -78,6 +80,9 @@ public:
   llvm::Expected<SpatialAnnealingStatistics>
   run(SpatialCandidateStateHandle &candidate, std::uint64_t seedAttemptOrdinal,
       ExecutionControlView executionControl = {});
+
+  llvm::Expected<SpatialAnnealingStatistics>
+  run(SpatialPathFinderSeed &seed, ExecutionControlView executionControl = {});
 
   std::size_t retainedStorageBytes() const;
 

@@ -134,9 +134,8 @@ llvm::Error checkedAdd(std::uint64_t amount, std::uint64_t &value,
   return llvm::Error::success();
 }
 
-llvm::Expected<std::uint64_t> checkedMultiply(std::uint64_t lhs,
-                                              std::uint64_t rhs,
-                                              llvm::StringRef subject) {
+llvm::Expected<std::uint64_t>
+checkedMultiply(std::uint64_t lhs, std::uint64_t rhs, llvm::StringRef subject) {
   if (lhs != 0 && rhs > std::numeric_limits<std::uint64_t>::max() / lhs)
     return invalid(subject + " overflows u64");
   return lhs * rhs;
@@ -159,11 +158,11 @@ grantPolicyKind(const ::fabric::ResourceContract &contract) {
              : MappingResourceGrantPolicyKind::RoundRobin;
 }
 
-MappingResourceProgressUse progressUse(
-    const ResourceCapacityNamespaceView &space,
-    const ::loom::fabric::FabricInventoryOwnerRef &owner,
-    const ::fabric::ResourceContract &contract,
-    const ::fabric::UsePattern &pattern) {
+MappingResourceProgressUse
+progressUse(const ResourceCapacityNamespaceView &space,
+            const ::loom::fabric::FabricInventoryOwnerRef &owner,
+            const ::fabric::ResourceContract &contract,
+            const ::fabric::UsePattern &pattern) {
   return MappingResourceProgressUse{physicalOwnerKey(space, owner),
                                     pattern.requester.ordinal(),
                                     grantPolicyKind(contract)};
@@ -378,17 +377,11 @@ llvm::Expected<FrozenResourceCapacityIndex> freezeResourceCapacityIndex(
     auto space = resolveNamespace(namespaces, source.namespaceOrdinal);
     if (!space)
       return space.takeError();
-    const auto found = llvm::find_if(
-        space->fabric->physicalTraversals(), [&](const auto &candidate) {
-          return candidate.reference == source.traversal;
-        });
-    if (found == space->fabric->physicalTraversals().end())
+    const auto *found = space->fabric->physicalTraversal(source.traversal);
+    if (!found)
       return invalid("route traversal is absent from its Fabric namespace");
-    FrozenResourceCapacityTraversal frozen{source.namespaceOrdinal,
-                                            source.traversal,
-                                            {},
-                                            {},
-                                            found->timing};
+    FrozenResourceCapacityTraversal frozen{
+        source.namespaceOrdinal, source.traversal, {}, {}, found->timing};
     for (const auto &use : found->impliedUses) {
       const ResourceCapacityUseProjection selected{
           source.namespaceOrdinal, use.pattern, {}};
@@ -605,10 +598,10 @@ llvm::Expected<ResourcePhysicalDemandProjection> deriveResourcePhysicalDemand(
                                        timing.releaseLatencyCycles,
                                        "ResourceUse release latency"))
       return std::move(error);
-    timing.minimumInitiationIntervalCycles = std::max(
-        timing.minimumInitiationIntervalCycles,
-        static_cast<std::uint64_t>(
-            pattern.timing.minimumInitiationIntervalCycles));
+    timing.minimumInitiationIntervalCycles =
+        std::max(timing.minimumInitiationIntervalCycles,
+                 static_cast<std::uint64_t>(
+                     pattern.timing.minimumInitiationIntervalCycles));
   }
   for (const FrozenResourceCapacityRouteSelection &route : routeTraversals)
     for (std::size_t traversal : route.traversalOrdinals) {
@@ -618,39 +611,39 @@ llvm::Expected<ResourcePhysicalDemandProjection> deriveResourcePhysicalDemand(
           index.traversals()[traversal];
       const auto &uses = selected.progressUses;
       progressUses.insert(progressUses.end(), uses.begin(), uses.end());
-      if (llvm::Error error = checkedAdd(
-              selected.timing.releaseLatencyCycles,
-              timing.releaseLatencyCycles, "route release latency"))
+      if (llvm::Error error =
+              checkedAdd(selected.timing.releaseLatencyCycles,
+                         timing.releaseLatencyCycles, "route release latency"))
         return std::move(error);
-      timing.minimumInitiationIntervalCycles = std::max(
-          timing.minimumInitiationIntervalCycles,
-          static_cast<std::uint64_t>(
-              selected.timing.minimumInitiationIntervalCycles));
-      auto bitCycles = checkedMultiply(
-          route.payloadWidthBits,
-          selected.timing.minimumInitiationIntervalCycles,
-          "route transport bit-cycle demand");
+      timing.minimumInitiationIntervalCycles =
+          std::max(timing.minimumInitiationIntervalCycles,
+                   static_cast<std::uint64_t>(
+                       selected.timing.minimumInitiationIntervalCycles));
+      auto bitCycles =
+          checkedMultiply(route.payloadWidthBits,
+                          selected.timing.minimumInitiationIntervalCycles,
+                          "route transport bit-cycle demand");
       if (!bitCycles)
         return bitCycles.takeError();
-      if (llvm::Error error = checkedAdd(*bitCycles,
-                                         timing.transportBitCycleDemand,
-                                         "route transport bit-cycle demand"))
+      if (llvm::Error error =
+              checkedAdd(*bitCycles, timing.transportBitCycleDemand,
+                         "route transport bit-cycle demand"))
         return std::move(error);
     }
   llvm::sort(progressUses, [](const auto &lhs, const auto &rhs) {
     return std::tie(lhs.physicalOwnerKey, lhs.grantPolicy, lhs.requester) <
            std::tie(rhs.physicalOwnerKey, rhs.grantPolicy, rhs.requester);
   });
-  progressUses.erase(
-      std::unique(progressUses.begin(), progressUses.end(),
-                  [](const auto &lhs, const auto &rhs) {
-                    return lhs.physicalOwnerKey == rhs.physicalOwnerKey &&
-                           lhs.requester == rhs.requester &&
-                           lhs.grantPolicy == rhs.grantPolicy;
-                  }),
-      progressUses.end());
-  return ResourcePhysicalDemandProjection{
-      std::move(*capacity), std::move(progressUses), timing};
+  progressUses.erase(std::unique(progressUses.begin(), progressUses.end(),
+                                 [](const auto &lhs, const auto &rhs) {
+                                   return lhs.physicalOwnerKey ==
+                                              rhs.physicalOwnerKey &&
+                                          lhs.requester == rhs.requester &&
+                                          lhs.grantPolicy == rhs.grantPolicy;
+                                 }),
+                     progressUses.end());
+  return ResourcePhysicalDemandProjection{std::move(*capacity),
+                                          std::move(progressUses), timing};
 }
 
 namespace {
@@ -698,8 +691,7 @@ llvm::Expected<FrozenPhysicalDemandInput> freezePhysicalDemandInput(
     }
     selectedRoutes.push_back(std::move(selected));
   }
-  return FrozenPhysicalDemandInput{std::move(*index),
-                                   std::move(selectedUses),
+  return FrozenPhysicalDemandInput{std::move(*index), std::move(selectedUses),
                                    std::move(selectedRoutes)};
 }
 

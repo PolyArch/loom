@@ -310,6 +310,7 @@ struct SpatialTagAssignmentScratchStorage final {
 struct SpatialTagAssignmentStateStorage final {
   const FrozenSpatialPnrProblem *problem = nullptr;
   const SpatialTagConstraintModel *constraints = nullptr;
+  bool hasTaggedTransport = false;
   std::vector<SpatialTagNetState> nets;
   std::vector<TagDomainOccupancy> occupancy;
   SpatialTagInterferenceProjection interference;
@@ -350,12 +351,17 @@ llvm::Error verifyFabricTemporalSwitchRows(
     llvm::ArrayRef<TagDomainOccupancy> occupancy,
     llvm::ArrayRef<PnrIndex> residentCounts) {
   using Demand = ::loom::pnr::detail::SpatialTemporalSwitchSegmentDemand;
+  const auto domains =
+      storage.problem->routing().tagContinuity().matchDomains();
+  if (llvm::none_of(domains, [](const auto &domain) {
+        return domain.kind == ::loom::fabric::FabricPhysicalTagMatchDomainKind::
+                                  TemporalSwitchTable;
+      }))
+    return llvm::Error::success();
   auto demands = ::loom::pnr::detail::deriveSpatialTemporalSwitchSegmentDemands(
       *storage.problem, routes, continuity);
   if (!demands)
     return demands.takeError();
-  const auto domains =
-      storage.problem->routing().tagContinuity().matchDomains();
   std::vector<std::vector<const Demand *>> demandsByDomain(domains.size());
   for (const Demand &demand : *demands) {
     if (demand.domain >= domains.size())
@@ -1013,6 +1019,10 @@ buildStorage(const FrozenSpatialPnrProblem &problem,
   auto storage = std::make_unique<TagStateStorage>();
   storage->problem = &problem;
   storage->constraints = &problem.tagConstraints();
+  storage->hasTaggedTransport = llvm::any_of(
+      problem.routing().routingEndpoints(), [](const auto &endpoint) {
+        return endpoint.dataPath.kind == ::fabric::DataPathKind::BitsTag;
+      });
   storage->nets.resize(routes.size());
   storage->occupancy.resize(
       problem.routing().tagContinuity().matchDomains().size());
@@ -1390,6 +1400,34 @@ llvm::Error SpatialTagAssignmentState::stageRouteUpdates(
         &routes[logicalNet]->routingGraph() != &storage_->problem->routing() ||
         !routeTransactions[logicalNet])
       return invalid("touched route does not belong to the frozen problem");
+
+  if (!storage_->hasTaggedTransport) {
+    transaction.touchedRoutes = transaction.routedNets;
+    for (PnrIndex logicalNet : transaction.touchedRoutes)
+      if (!storage_->nets[logicalNet].continuity.segments().empty() ||
+          !storage_->nets[logicalNet].values.empty())
+        return invalid("untagged Fabric retained a Physical Tag assignment");
+    transaction.active = true;
+    transaction.interferenceActive = false;
+    transaction.rebuiltNets.clear();
+    for (PnrIndex logicalNet : transaction.touchedRoutes)
+      std::swap(storage_->nets[logicalNet], transaction.stagedNets[logicalNet]);
+    for (PnrIndex logicalNet : transaction.touchedRoutes) {
+      if (llvm::Error error =
+              rebuildSpatialTagContinuity(*routeTransactions[logicalNet],
+                                          storage_->nets[logicalNet].continuity,
+                                          transaction.continuityScratch)) {
+        rollback(scratch);
+        return error;
+      }
+      if (!storage_->nets[logicalNet].continuity.segments().empty()) {
+        rollback(scratch);
+        return invalid("untagged Fabric produced a Physical Tag segment");
+      }
+      storage_->nets[logicalNet].values.clear();
+    }
+    return llvm::Error::success();
+  }
 
   transaction.touchedRoutes.resize(storage_->nets.size());
   std::iota(transaction.touchedRoutes.begin(), transaction.touchedRoutes.end(),

@@ -1585,8 +1585,8 @@ SpatialActionExecutorScratch::restoreAfterFailure(SpatialMoveTransaction &move,
   if (restoration) {
     llvm::Error fallback = routeCosts_->resetFromVerifiedCandidate();
     if (fallback)
-      restoration = llvm::joinErrors(std::move(restoration),
-                                     std::move(fallback));
+      restoration =
+          llvm::joinErrors(std::move(restoration), std::move(fallback));
     return llvm::joinErrors(std::move(failure), std::move(restoration));
   }
   return failure;

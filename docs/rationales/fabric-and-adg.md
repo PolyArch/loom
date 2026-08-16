@@ -491,6 +491,22 @@ Fabric entity, persistent reference, route capacity, or configuration field.
 The semantic contract remains atomic replication; the compact graph is only
 its efficient projection.
 
+Repeated physical occurrences and Temporal switch rows expose a second,
+orthogonal expansion. Their normative Boolean shape can be identical while
+their endpoints, resident rows, tags, queues, and runtime state are not. The
+smallest faithful representation therefore shares the immutable structural
+template named by an existing Fabric definition relation and instantiates its
+private junctions for each physical binding. Storing one expanded graph per
+occurrence or row preserves semantics but makes compile time and memory scale
+with unused hardware. Merging the instances would be unsound because it would
+couple independent backpressure and activation state.
+
+This is deliberately not structural interning by an implementation hash. FU
+and Memory sharing follows their canonical template references, and switch-row
+sharing follows one occurrence's canonical crosspoint inventory. These are
+already Fabric-owned relations, so the optimization introduces neither a new
+equivalence authority nor a persistent handshake schema.
+
 ## Why One Dependency Role Is Reserved But Unavailable
 
 An ordinal alone does not define the owner, schema, root kind, local target,

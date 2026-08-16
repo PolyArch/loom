@@ -206,6 +206,7 @@ private:
     PnrIndex memberCount = 0;
     std::size_t forcedDecisionCountOffset = 0;
     std::size_t valueOccurrenceOffset = 0;
+    std::size_t valueMatchOffset = 0;
     PnrIndex valueCount = 0;
   };
 
@@ -318,6 +319,7 @@ private:
   std::vector<AllDifferentChoiceOccurrence> allDifferentChoiceOccurrences_;
   std::vector<std::uint8_t> allDifferentForcedValuePending_;
   std::vector<AllDifferentForcedValue> allDifferentForcedValueQueue_;
+  std::vector<std::uint8_t> allDifferentMatchingDirty_;
   std::vector<PnrIndex> allDifferentMemberMatches_;
   std::vector<PnrIndex> allDifferentValueMatches_;
   std::vector<PnrIndex> allDifferentMemberDistances_;

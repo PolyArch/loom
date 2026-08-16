@@ -1024,6 +1024,41 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
                      system.roots().front().directDependencies().front().root,
                      store));
 
+  std::optional<loom::fabric::FabricFuTemplateRef> dedicatedScalarAdd;
+  for (const loom::fabric::FabricFuTemplateRef definition :
+       module.view().fuTemplates()) {
+    const auto capabilities =
+        module.view().resolvedFabricOpCapabilities(definition);
+    if (capabilities.size() != 1 ||
+        module.view().fuCapabilityTemplates(definition).size() != 1 ||
+        capabilities.front().implementationFamily !=
+            ::fabric::ImplementationFamilyId::ScalarIntegerAddSub)
+      continue;
+    const std::vector<::dataflow::OperationSchemaId> expectedSchemas = {
+        ::dataflow::OperationSchemaId::ArithAddI,
+        ::dataflow::OperationSchemaId::ArithSubI};
+    if (capabilities.front().enabledOperationSchemas != expectedSchemas)
+      continue;
+    require(test, !dedicatedScalarAdd,
+            "builtin has multiple dedicated scalar add FU definitions");
+    dedicatedScalarAdd = definition;
+  }
+  require(test, dedicatedScalarAdd.has_value(),
+          "builtin has no dedicated scalar add/sub FU definition");
+  std::size_t dedicatedScalarAddOccurrences = 0;
+  for (const loom::fabric::FabricFuOccurrenceRef occurrence :
+       module.view().fuOccurrences())
+    dedicatedScalarAddOccurrences +=
+        module.view().fuTemplateOf(occurrence) == dedicatedScalarAdd;
+  const auto distributedCount = [](std::uint32_t peCount) {
+    return std::max(1u, (peCount + 7) / 8);
+  };
+  require(test,
+          dedicatedScalarAddOccurrences ==
+              distributedCount(descriptor.scale.spatialPeCount) +
+                  distributedCount(descriptor.scale.temporalPeCount),
+          "builtin dedicated scalar add/sub FU distribution changed");
+
   mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   context.loadDialect<mlir::LLVM::LLVMDialect>();
   const auto actor = ::dataflow::CanonicalActorSchemaProjection{

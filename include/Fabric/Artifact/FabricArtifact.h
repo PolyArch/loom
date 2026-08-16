@@ -3,6 +3,7 @@
 
 #include "Common/Artifact.h"
 #include "Common/ArtifactStore.h"
+#include "Common/InvocationDiagnosticLog.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Identity/FabricRefImport.h"
 
@@ -10,6 +11,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -32,17 +34,31 @@ enum class FabricArtifactImportSessionMode : std::uint8_t {
   Isolated,
 };
 
+inline constexpr std::size_t defaultFabricArtifactImportSessionEntryLimit = 64;
+
+enum class FabricArtifactImportVerificationDomain : std::uint8_t {
+  SourceInvocation,
+  IndependentReplay,
+};
+
 struct FabricArtifactImportSessionStatistics final {
   std::uint64_t importRequests = 0;
   std::uint64_t uniqueConstructions = 0;
+  std::uint64_t uncachedConstructions = 0;
   std::uint64_t cacheHits = 0;
   std::uint64_t cacheMisses = 0;
+  std::uint64_t coalescedWaits = 0;
+  std::uint64_t revalidationCount = 0;
+  std::uint64_t revalidatedBytes = 0;
   std::uint64_t bytesRead = 0;
   std::uint64_t bytesCopied = 0;
   std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t constructionNanosecondsSaved = 0;
   std::uint64_t deterministicWork = 0;
   std::uint64_t retainedPayloadBytes = 0;
+  std::uint64_t retainedPayloadBytesReused = 0;
   std::uint64_t entryCount = 0;
+  std::uint64_t entryLimit = 0;
 };
 
 /// Installs one bounded cache of strictly imported immutable Fabric roots for
@@ -50,22 +66,44 @@ struct FabricArtifactImportSessionStatistics final {
 /// are used by independent replay verifiers.
 class FabricArtifactImportSession final {
 public:
+  class Attachment final {
+  public:
+    Attachment() = default;
+    explicit operator bool() const { return static_cast<bool>(state_); }
+
+  private:
+    explicit Attachment(
+        std::shared_ptr<detail::FabricArtifactImportSessionState> state)
+        : state_(std::move(state)) {}
+
+    std::shared_ptr<detail::FabricArtifactImportSessionState> state_;
+    friend class FabricArtifactImportSession;
+  };
+
   explicit FabricArtifactImportSession(
       FabricArtifactImportSessionMode mode =
-          FabricArtifactImportSessionMode::ReuseEnclosing);
+          FabricArtifactImportSessionMode::ReuseEnclosing,
+      std::size_t entryLimit = defaultFabricArtifactImportSessionEntryLimit);
+  explicit FabricArtifactImportSession(const Attachment &attachment);
   ~FabricArtifactImportSession();
 
   FabricArtifactImportSession(const FabricArtifactImportSession &) = delete;
   FabricArtifactImportSession &
   operator=(const FabricArtifactImportSession &) = delete;
 
+  static Attachment currentAttachment();
+  Attachment attachment() const { return Attachment(active_); }
   FabricArtifactImportSessionStatistics statistics() const;
 
 private:
-  std::unique_ptr<detail::FabricArtifactImportSessionState> owned_;
-  detail::FabricArtifactImportSessionState *active_ = nullptr;
-  detail::FabricArtifactImportSessionState *previous_ = nullptr;
+  std::shared_ptr<detail::FabricArtifactImportSessionState> active_;
+  std::shared_ptr<detail::FabricArtifactImportSessionState> previous_;
 };
+
+void emitFabricArtifactImportSessionStatistics(
+    FabricArtifactImportVerificationDomain domain,
+    InvocationDiagnosticStage stage,
+    const FabricArtifactImportSessionStatistics &statistics);
 
 /// The immutable result of publishing and independently importing one exact
 /// Fabric root. This is an owner result over loom.fabric 3.x, not another

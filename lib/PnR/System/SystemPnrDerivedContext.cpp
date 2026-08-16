@@ -492,10 +492,19 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
       canonicalMappings, store);
   if (!imports)
     return imports.takeError();
+  loom::pnr::detail::SpatialCatalogImportStatistics catalogImportStatistics;
   auto catalog = loom::pnr::detail::importSpatialCatalog(
-      canonicalMappings, dataflow, system, store, &*imports);
+      canonicalMappings, dataflow, system, store, &*imports,
+      &catalogImportStatistics);
   if (!catalog)
     return catalog.takeError();
+  if (catalogImportStatistics.techMappingImportRequests !=
+          canonicalMappings.size() ||
+      catalogImportStatistics.techMappingImportHits +
+              catalogImportStatistics.techMappingImportMisses !=
+          catalogImportStatistics.techMappingImportRequests)
+    return invalid("SystemActiveContext TechMapping import accounting is "
+                   "inconsistent");
 
   std::map<ArtifactIdentity::Storage, const FabricPhysicalTimingProfileView *>
       timingByModule;
@@ -597,6 +606,12 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
           .count());
   statistics.spatialMappingCount = catalogOwner->size();
   statistics.timingProfileCount = physicalTimingProfiles.size();
+  statistics.techMappingImportRequests =
+      catalogImportStatistics.techMappingImportRequests;
+  statistics.techMappingImportHits =
+      catalogImportStatistics.techMappingImportHits;
+  statistics.techMappingImportMisses =
+      catalogImportStatistics.techMappingImportMisses;
   for (const auto &entry : *catalogOwner) {
     statistics.coveredGraphCount += entry.covers.size();
     statistics.schedulePressureCount +=
@@ -620,7 +635,9 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
                                       statistics.routeProgressObligationCount +
                                       statistics.schedulePressureCount +
                                       statistics.recurrenceProjectionCount +
-                                      statistics.timingProfileCount))
+                                      statistics.timingProfileCount +
+                                      statistics.techMappingImportRequests +
+                                      statistics.techMappingImportMisses))
     return std::move(error);
 
   auto storage =
@@ -668,6 +685,11 @@ llvm::Error loom::pnr::revalidateSystemActiveContext(
       context.storage_->spatialCatalog->size() != canonicalMappings.size() ||
       context.storage_->spatialMappingTargetClasses->size() !=
           canonicalMappings.size() ||
+      context.storage_->statistics.techMappingImportRequests !=
+          canonicalMappings.size() ||
+      context.storage_->statistics.techMappingImportHits +
+              context.storage_->statistics.techMappingImportMisses !=
+          context.storage_->statistics.techMappingImportRequests ||
       context.storage_->key !=
           deriveSystemActiveContextKey(staticStorage, dataflow,
                                        physicalTimingProfiles, constraints,
@@ -699,5 +721,10 @@ void loom::pnr::emitSystemActiveContextStatistics(
         fields["recurrence_projection_count"] =
             statistics.recurrenceProjectionCount;
         fields["timing_profile_count"] = statistics.timingProfileCount;
+        fields["tech_mapping_import_requests"] =
+            statistics.techMappingImportRequests;
+        fields["tech_mapping_import_hits"] = statistics.techMappingImportHits;
+        fields["tech_mapping_import_misses"] =
+            statistics.techMappingImportMisses;
       });
 }

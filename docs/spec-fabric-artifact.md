@@ -508,9 +508,12 @@ FabricArtifactView::pointConnections()
   -> canonical range<FabricPointConnectionPayload>
 FabricArtifactView::handshakeOwners()
   -> canonical range<FabricHandshakeOwner>
-compileHandshakeOwnerModel(FabricArtifactView,
-                           FabricHandshakeOwner)
-  -> sealed HandshakeOwnerModel
+buildFabricHandshakeContext(FabricArtifactView)
+  -> sealed shared structural templates
+     + exact occurrence and row bindings
+     + unconditional boundary closure
+FabricHandshakeContext::ownerModels()
+  -> canonical range<HandshakeOwnerModel>
 resolveSelectedHandshake(
     HandshakeOwnerModel,
     exact typed owner selection)
@@ -546,6 +549,18 @@ FabricSystemRootView::clockCrossing(SystemTransportResourceRef)
   -> optional<ClockCrossingContractView>
 ```
 
+The unconditional closure projection is Fabric-only derived state. It
+evaluates each canonical handshake definition shape once, then applies the
+shape result through the exact occurrence or resident-row binding. Repeated
+rows never trigger repeated graph construction or reachability, while strict
+import still validates the complete root-level closure assembled from those
+bindings. Shape ordinals come from the normative Fabric definition relation;
+they are not hashes, object addresses, paths, or process-global cache keys.
+Selected verification starts from this immutable closure and materializes only
+the owner-local nodes and arcs reached by the exact typed selection. The final
+verifier independently rebuilds that active overlay; it does not trust a
+candidate's incremental graph or a diagnostic projection.
+
 `FabricHandshakeOwner` is a sealed view-only union of existing
 occurrence-level Fabric owners and fixed point connections.
 `HandshakeActivationFragmentOrdinal` is an owner-model-local index. Neither
@@ -554,6 +569,14 @@ receives a persistent reference kind or identity.
 dependency junctions, unique potential arcs, and typed activation fragments.
 Its internal junctions are not transport endpoints and cannot be routed,
 serialized, or referenced by Mapping records.
+
+The exposed model is a logical flattened view. Its immutable structural
+storage is shared according to the exact Fabric-owned FU-template,
+Memory-Engine-template, or switch-row-shape relation, while occurrence and row
+bindings remain distinct. Logical node, arc, and fragment ordinals are stable
+within that flattened view regardless of whether the implementation shares
+storage. Context statistics report both logical expanded counts and unique
+structural counts so storage sharing cannot hide work performed by a consumer.
 
 The selection resolver accepts only the complete typed choice owned by the
 resource: an occurrence-local traversal group, an FU occurrence plus one exact

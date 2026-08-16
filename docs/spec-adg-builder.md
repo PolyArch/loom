@@ -1360,6 +1360,7 @@ constructs:
 | FU helper          | occurrence count            | ordinal offset |
 | ------------------ | ---------------------------: | -------------: |
 | `CoreAluFu`        |                         `n`   | all sites      |
+| dedicated scalar add/sub FU | `max(1, ceil(n / 8))` |              6 |
 | `MacFu`            |               `ceil(n / 2)`  |              0 |
 | `VectorComputeFu`  |               `ceil(n / 4)`  |              1 |
 | `LoopControlFu`    |               `ceil(n / 4)`  |              2 |
@@ -1380,6 +1381,13 @@ rule spreads each family without using XY coordinates, topology distance,
 randomness, or authoring insertion order. Several FU families may occur in
 one PE. A Spatial PE still activates at most one FU configuration, while a
 Temporal PE uses its Fabric-declared resident instruction contexts.
+
+The low-density dedicated scalar add/sub FU is a distinct physical
+implementation option, not a duplicate alias for `CoreAluFu`. It contains one
+`ScalarIntegerAddSub` resource with two direct inputs, one direct result, and
+one coherent capability template. Tech Mapping can therefore choose between
+the narrow arithmetic FU and the selectable full scalar ALU while both remain
+governed by the same implementation-family semantics and resource contract.
 
 After placement in both schedule kinds, all `LoopControlFu` occurrences in
 one SpatialCore are ordered first by the closed schedule-kind order

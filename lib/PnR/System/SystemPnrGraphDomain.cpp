@@ -12,6 +12,8 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -32,7 +34,8 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &system,
     const ArtifactStore &store,
-    const ::loom::mapping::SpatialMappingImportContext *imports) {
+    const ::loom::mapping::SpatialMappingImportContext *imports,
+    SpatialCatalogImportStatistics *statistics) {
   std::vector<ArtifactRootReference> canonical(references.begin(),
                                                references.end());
   llvm::sort(canonical, artifactRootReferenceLess);
@@ -66,6 +69,10 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
 
   std::vector<SpatialCatalogEntry> result;
   result.reserve(canonical.size());
+  std::map<ArtifactRootReference,
+           std::unique_ptr<::loom::mapping::FinalizedTechMapping>,
+           decltype(&artifactRootReferenceLess)>
+      techMappings(&artifactRootReferenceLess);
   for (const ArtifactRootReference &reference : canonical) {
     auto spatial =
         ::loom::mapping::resolveSpatialMappingImportHandle(*imports, reference);
@@ -98,32 +105,49 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
         ::loom::mapping::mappingArtifactSchema.identity.str(),
         ::loom::mapping::mappingArtifactSchema.version,
         (*spatial)->view().techMappingIdentity()};
-    auto tech = ::loom::mapping::importTechMapping(techReference, store);
-    if (!tech)
-      return tech.takeError();
-    if (tech->view().dataflowIdentity() != dataflow.identity() ||
-        tech->view().fabricIdentity() != (*spatial)->view().fabricIdentity())
+    if (statistics)
+      ++statistics->techMappingImportRequests;
+    auto tech = techMappings.find(techReference);
+    if (tech == techMappings.end()) {
+      auto imported = ::loom::mapping::importTechMapping(techReference, store);
+      if (!imported)
+        return imported.takeError();
+      tech =
+          techMappings
+              .emplace(techReference,
+                       std::make_unique<::loom::mapping::FinalizedTechMapping>(
+                           std::move(*imported)))
+              .first;
+      if (statistics)
+        ++statistics->techMappingImportMisses;
+    } else if (statistics) {
+      ++statistics->techMappingImportHits;
+    }
+    const ::loom::mapping::TechMappingView &techView = tech->second->view();
+    if (techView.identity() != techReference.artifact ||
+        techView.dataflowIdentity() != dataflow.identity() ||
+        techView.fabricIdentity() != (*spatial)->view().fabricIdentity())
       return invalid(
           "SpatialMapping catalog has inconsistent TechMapping lineage");
     auto pressures = projectStaticSchedulePressureByGraph(
-        dataflow, tech->view(), *spatialModule, (*spatial)->view());
+        dataflow, techView, *spatialModule, (*spatial)->view());
     if (!pressures)
       return pressures.takeError();
     std::vector<SpatialCatalogGraphProgress> graphProgress;
     std::vector<SpatialRecurrenceTimingProjection> graphRecurrenceTimings;
-    graphProgress.reserve(tech->view().covers().size());
-    graphRecurrenceTimings.reserve(tech->view().covers().size());
-    for (const ::dataflow::GraphRef graph : tech->view().covers()) {
+    graphProgress.reserve(techView.covers().size());
+    graphRecurrenceTimings.reserve(techView.covers().size());
+    for (const ::dataflow::GraphRef graph : techView.covers()) {
       const std::array<::dataflow::GraphRef, 1> selected{graph};
       auto progress = ::loom::mapping::projectSpatialMappingProgress(
-          dataflow, tech->view(), *spatialModule,
+          dataflow, techView, *spatialModule,
           (*spatial)->view().computeBindings(), (*spatial)->view().routeTrees(),
           selected);
       if (!progress)
         return progress.takeError();
       graphProgress.push_back({graph, std::move(progress->routeObligations)});
       auto recurrence = projectSpatialMappingGraphRecurrenceTiming(
-          dataflow, tech->view(), *spatialModule, (*spatial)->view(), graph);
+          dataflow, techView, *spatialModule, (*spatial)->view(), graph);
       if (!recurrence)
         return recurrence.takeError();
       graphRecurrenceTimings.push_back(std::move(*recurrence));
@@ -132,8 +156,8 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
         {reference,
          std::move(*spatial),
          *moduleDependencyOrdinal,
-         std::vector<::dataflow::GraphRef>(tech->view().covers().begin(),
-                                           tech->view().covers().end()),
+         std::vector<::dataflow::GraphRef>(techView.covers().begin(),
+                                           techView.covers().end()),
          std::move(graphProgress),
          std::move(*pressures),
          std::move(graphRecurrenceTimings),

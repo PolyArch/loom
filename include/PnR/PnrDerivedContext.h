@@ -34,6 +34,12 @@ struct FabricDerivedContextStatistics final {
   std::uint64_t traversalCount = 0;
   std::uint64_t routingArcCount = 0;
   std::uint64_t handshakeOwnerCount = 0;
+  std::uint64_t handshakeStructuralTemplateCount = 0;
+  std::uint64_t handshakeBindingInstanceCount = 0;
+  std::uint64_t handshakeStructuralNodeCount = 0;
+  std::uint64_t handshakeStructuralArcCount = 0;
+  std::uint64_t handshakeStructuralFragmentCount = 0;
+  std::uint64_t handshakeUnconditionalArcCount = 0;
   std::uint64_t handshakeNodeCount = 0;
   std::uint64_t handshakeArcCount = 0;
   std::uint64_t handshakeFragmentCount = 0;

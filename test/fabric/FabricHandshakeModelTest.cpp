@@ -284,12 +284,12 @@ std::uint32_t node(llvm::StringRef test, const HandshakeOwnerModel &model,
 bool hasPath(const HandshakeOwnerModel &model,
              const ResolvedHandshakeActivation &activation,
              std::uint32_t source, std::uint32_t destination) {
-  std::vector<std::vector<std::uint32_t>> adjacency(model.nodes().size());
+  std::vector<std::vector<std::uint32_t>> adjacency(model.nodeCount());
   for (std::uint32_t arcOrdinal : activation.arcOrdinals()) {
-    const auto &arc = model.arcs()[arcOrdinal];
+    const auto arc = model.arc(arcOrdinal);
     adjacency[arc.source].push_back(arc.destination);
   }
-  std::vector<bool> visited(model.nodes().size(), false);
+  std::vector<bool> visited(model.nodeCount(), false);
   std::vector<std::uint32_t> worklist = {source};
   visited[source] = true;
   while (!worklist.empty()) {
@@ -375,14 +375,15 @@ void atomicBroadcastProjectionIsLinear(std::uint32_t fanout) {
       take(test, loom::fabric::compileHandshakeOwnerModels(finalized.view()));
   const HandshakeOwnerModel &model = switchModel(test, models);
 
-  require(test, model.nodes().size() <= 5 * fanout + 8,
+  require(test, model.nodeCount() <= 5 * fanout + 8,
           "broadcast owner node count is not linear in fanout");
-  require(test, model.arcs().size() <= 8 * fanout + 8,
+  require(test, model.arcCount() <= 8 * fanout + 8,
           "broadcast owner arc count is not linear in fanout");
-  require(test, model.traversalWitnesses().size() == 2 * fanout,
+  require(test, model.traversalWitnessCount() == 2 * fanout,
           "broadcast activation witness count is not linear in fanout");
   std::size_t anyTraversalFragments = 0;
-  for (const auto &fragment : model.fragments()) {
+  for (std::uint32_t ordinal = 0; ordinal != model.fragmentCount(); ++ordinal) {
+    const auto fragment = model.fragment(ordinal);
     if (fragment.activationKind !=
         loom::fabric::HandshakeActivationKind::AnyTraversal)
       continue;
@@ -461,8 +462,20 @@ void temporalSwitchRowsOwnIndependentActivations() {
   )mlir");
   FinalizedFabricRoot finalized =
       take(test, loom::fabric::finalizeFabricRoot(root(test, *source), store));
-  std::vector<HandshakeOwnerModel> models =
-      take(test, loom::fabric::compileHandshakeOwnerModels(finalized.view()));
+  const loom::fabric::FabricHandshakeContext context =
+      take(test, loom::fabric::buildFabricHandshakeContext(finalized.view()));
+  if (llvm::Error error = loom::fabric::revalidateFabricHandshakeContext(
+          context, finalized.view()))
+    fail(test, llvm::toString(std::move(error)));
+  const auto &statistics = context.statistics();
+  require(test,
+          statistics.bindingInstanceCount >
+                  statistics.structuralTemplateCount &&
+              statistics.nodeCount > statistics.structuralNodeCount &&
+              statistics.arcCount > statistics.structuralArcCount &&
+              statistics.fragmentCount > statistics.structuralFragmentCount,
+          "Temporal switch rows did not share their structural template");
+  const auto models = context.ownerModels();
   const HandshakeOwnerModel &model = switchModel(test, models);
   const FabricSwitchOccurrenceRef occurrence =
       std::get<FabricSwitchOccurrenceRef>(model.owner().payload());
