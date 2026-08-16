@@ -141,8 +141,9 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
       const std::array<::dataflow::GraphRef, 1> selected{graph};
       auto progress = ::loom::mapping::projectSpatialMappingProgress(
           dataflow, techView, *spatialModule,
-          (*spatial)->view().computeBindings(), (*spatial)->view().routeTrees(),
-          selected);
+          (*spatial)->view().computeBindings(),
+          (*spatial)->view().registerFifoTransfers(),
+          (*spatial)->view().routeTrees(), selected);
       if (!progress)
         return progress.takeError();
       graphProgress.push_back({graph, std::move(progress->routeObligations)});

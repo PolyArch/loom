@@ -580,6 +580,22 @@ because atomic ingress commits all matching queues together and each queue
 holds its token. The router must not fabricate a detour back to an endpoint
 already in the RouteTree.
 
+Canonical Dataflow may also contain initialized feedback. Dataflow derives
+the only recognized feedback-input inventory from registered actor transition
+semantics. Mapping removes all such edges and accepts the logical basis only
+when the remaining actor dependency graph is acyclic. It then retains only
+feedback edges whose consumer reaches their producer in that DAG. Any other
+cycle remains `ProofNotEstablished`.
+
+Every retained initialized feedback edge is a physical progress obligation.
+An external disposition must reach a buffered FIFO traversal or the exact
+Temporal PE operand queue at its sink. A selected same-PE RegFIFO disposition
+satisfies the obligation through its explicit write, finite FIFO, and read
+contract. A compute-internal edge without a declared durable implementation,
+a bypass path, co-location, or an unselected local alternative does not.
+Search and strict verification derive this inventory from the same Dataflow,
+TechMapping, Fabric, and selected edge dispositions.
+
 ## Spatial Legality
 
 A Spatial candidate is base-legal only when all of the following hold:
@@ -646,11 +662,12 @@ two pending groups is not hold-and-wait.
 
 The proof returns `ProvenNoClosedWaitSet` only when the reconstructed wait-for
 graph is acyclic and every arbitration case has a sufficient Fabric progress
-guarantee. A possible wait cycle, cyclic Dataflow basis without a typed breaker,
-fixed-priority owner with multiple possible requesters, or unrepresentable
-relation returns `ProofNotEstablished`. It must not be reported as a proven
-deadlock. An atomic activation whose demand plus baseline occupancy exceeds a
-capacity is `ProvenClosedWaitSet`.
+guarantee. An actor cycle remaining after initialized feedback removal, an
+initialized feedback edge without a durable selected disposition, a possible
+physical wait cycle, a fixed-priority owner with multiple possible requesters,
+or an unrepresentable relation returns `ProofNotEstablished`. It must not be
+reported as a proven deadlock. An atomic activation whose demand plus baseline
+occupancy exceeds a capacity is `ProvenClosedWaitSet`.
 
 Search-time System progress and strict SystemMapping verification must rebuild
 the same `MappingProgressProjection` and call the same closure algorithm.

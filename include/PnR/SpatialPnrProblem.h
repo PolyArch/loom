@@ -465,9 +465,17 @@ struct FrozenSpatialInternalMemoryConnectionPrerequisite final {
   }
 };
 
+struct FrozenSpatialInitializedFeedbackPrerequisite final {
+  friend bool operator==(FrozenSpatialInitializedFeedbackPrerequisite,
+                         FrozenSpatialInitializedFeedbackPrerequisite) {
+    return true;
+  }
+};
+
 using FrozenSpatialProgressPrerequisite =
     std::variant<FrozenSpatialExternalSinkPrerequisite,
-                 FrozenSpatialInternalMemoryConnectionPrerequisite>;
+                 FrozenSpatialInternalMemoryConnectionPrerequisite,
+                 FrozenSpatialInitializedFeedbackPrerequisite>;
 
 class FrozenSpatialTransferIndex final {
 public:
@@ -486,9 +494,10 @@ public:
     return logicalNetSinkBindings_;
   }
   /// CSR keyed by the global logical-net sink ordinal. Each value is either an
-  /// external sink of the same multicast net or an exact realization-internal
-  /// memory connection. A dependent sink must not backpressure that typed
-  /// prerequisite through an unbuffered atomic replication branch.
+  /// external sink of the same multicast net, an exact realization-internal
+  /// memory connection, or the initialized state that precedes a feedback
+  /// edge. A dependent sink must not backpressure that typed prerequisite
+  /// through an unbuffered atomic replication branch.
   llvm::ArrayRef<PnrIndex> sinkProgressDependencyOffsets() const {
     return sinkProgressDependencyOffsets_;
   }

@@ -33,11 +33,11 @@ struct StaticActorEdgeCriticality final {
   ::dataflow::ActorTokenOperandRef consumer;
   ::dataflow::GraphRef graph;
   std::uint64_t weight = 0;
+  bool initializedFeedback = false;
 };
 
-/// One canonical recurrence-closing edge. Dataflow owns the only recognized
-/// feedback semantics: the consumer is `dataflow.carry` input `Next` and the
-/// dependence distance is one logical iteration.
+/// One canonical timing recurrence edge projected from the registered
+/// Dataflow actor semantics.
 struct StaticRecurrenceFeedback final {
   ::dataflow::ActorTokenResultRef producer;
   ::dataflow::ActorTokenOperandRef consumer;
@@ -47,7 +47,7 @@ struct StaticRecurrenceFeedback final {
 
 struct StaticGraphRecurrenceTopology final {
   ::dataflow::GraphRef graph;
-  bool nonFeedbackAcyclic = true;
+  bool postInitializationAcyclic = true;
 };
 
 class StaticScheduleAnalysis final {

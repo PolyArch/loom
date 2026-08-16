@@ -24,6 +24,7 @@ struct MappingProgressClosure final {
 
 enum class MappingDataflowProgressBasisKind : std::uint8_t {
   Acyclic,
+  InitializedFeedback,
   Cyclic,
 };
 

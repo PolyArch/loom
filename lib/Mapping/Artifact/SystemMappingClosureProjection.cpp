@@ -776,6 +776,7 @@ llvm::Expected<SystemMappingClosureProjection> projectSystemMappingClosure(
     auto progress = projectSpatialMappingProgress(
         dataflow, tech->second.view(), *module,
         spatial->second->view().computeBindings(),
+        spatial->second->view().registerFifoTransfers(),
         spatial->second->view().routeTrees(), selected);
     if (!progress)
       return progress.takeError();

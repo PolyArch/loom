@@ -29,7 +29,7 @@ template <typename T> T take(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
-void cyclicProgressFailsClosed() {
+void initializedFeedbackProgressBasis() {
   mlir::DialectRegistry registry;
   registry.insert<dataflow::DataflowDialect>();
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
@@ -63,24 +63,38 @@ module {
   loom::mapping::MappingProgressProjection projection;
   projection.basis = uncovered;
   projection.routeObligations.push_back({false});
-  if (take(loom::mapping::deriveMappingProgressClosure(model, projection)).kind !=
+  if (take(loom::mapping::deriveMappingProgressClosure(model, projection))
+          .kind !=
       loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet)
     fail("post-divergence route without a durable boundary passed progress");
   projection.routeObligations.front().durableBoundaryAfterDivergence = true;
-  if (take(loom::mapping::deriveMappingProgressClosure(model, projection)).kind !=
+  if (take(loom::mapping::deriveMappingProgressClosure(model, projection))
+          .kind !=
       loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
     fail("post-divergence durable boundary did not close route progress");
   const std::array<dataflow::GraphRef, 1> covered = {view.graphs().front().ref};
   const auto basis =
       take(loom::mapping::deriveMappingDataflowProgressBasis(view, covered));
-  if (basis.kind != loom::mapping::MappingDataflowProgressBasisKind::Cyclic)
-    fail("cyclic dependencies were reported as an acyclic progress basis");
+  if (basis.kind !=
+      loom::mapping::MappingDataflowProgressBasisKind::InitializedFeedback)
+    fail("typed initialized feedback did not produce its progress basis");
+  projection.basis = basis;
+  if (take(loom::mapping::deriveMappingProgressClosure(model, projection))
+          .kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("durable initialized feedback did not close progress");
+  projection.basis.kind =
+      loom::mapping::MappingDataflowProgressBasisKind::Cyclic;
+  if (take(loom::mapping::deriveMappingProgressClosure(model, projection))
+          .kind !=
+      loom::mapping::MappingProgressClosureKind::ProofNotEstablished)
+    fail("an unsupported actor cycle did not fail closed");
 }
 
 } // namespace
 
 int main() {
-  cyclicProgressFailsClosed();
+  initializedFeedbackProgressBasis();
   llvm::outs() << "mapping progress tests passed\n";
   return EXIT_SUCCESS;
 }

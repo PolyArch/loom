@@ -709,12 +709,20 @@ the route divergence lets the atomic fork retire into storage; buffering the
 shared prefix does not. Mapping therefore owns one derived sink-dependency
 projection and applies it both during PnR and final verification. After that
 route closure and Fabric atomic progress are verified, topological induction
-always exposes a next actor under fair execution. Extending the proof to
-feedback requires typed initial tokens, finite-buffer occupancy, and wait-for
-relations. Treating every cycle as a deadlock would reject ordinary streaming
-loops, while treating it as safe would hide real closed waits. Failing closed
-for unsupported cyclic proofs therefore preserves one progress authority
-without inventing either answer.
+always exposes a next actor under fair execution.
+
+Ordinary structured loops need a similarly typed but narrower extension.
+`dataflow.carry` and `dataflow.invariant` already define initialization
+transitions that publish state without consuming their later feedback inputs.
+The shared Dataflow projection names those inputs; Mapping removes their edges
+and requires the remainder to be acyclic. It keeps only edges that actually
+close a path, then requires finite durable storage at each selected physical
+disposition. Temporal PE operand queues, buffered FIFO traversals, and exact
+RegFIFO transfers provide that storage under their Fabric contracts. This
+combines typed initial tokens, finite occupancy, and an acyclic residual
+wait-for basis without declaring arbitrary cycles safe. A cycle that remains
+after removal, or a feedback edge absorbed by an implementation without a
+declared durable boundary, still fails closed as `ProofNotEstablished`.
 
 Progress dependencies restrict targets, not the entire multicast search. The
 router retains every currently ready sink in one target frontier and carries a

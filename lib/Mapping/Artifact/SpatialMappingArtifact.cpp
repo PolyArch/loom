@@ -1311,7 +1311,8 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
     return configuredHardware.takeError();
 
   auto progress = deriveSpatialMappingProgressClosure(
-      dataflow, techMapping, fabric, computeBindings, routes);
+      dataflow, techMapping, fabric, computeBindings, registerFifoTransfers,
+      routes);
   if (!progress)
     return progress.takeError();
   switch (progress->kind) {

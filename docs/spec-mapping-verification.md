@@ -208,7 +208,9 @@ The verifier checks in dependency order:
   continuity; and
 * progress and deadlock closure from existing causal events, selected routes,
   finite resources, queues, atomic admission, releases, and Fabric
-  guarantees.
+  guarantees, including Dataflow-derived initialized feedback inputs, an
+  acyclic dependency graph after their removal, and one finite durable
+  disposition for every feedback edge that closes a cycle.
 
 ### Selected Combinational Handshake Closure
 
@@ -528,7 +530,11 @@ Using that projection, the base verifier checks:
   whose prerequisite sink can causally reach that dependent sink. Current
   boundary kinds are a buffered FIFO traversal and a selected Temporal PE
   operand queue. A boundary on the shared route prefix, a bypass traversal,
-  and a Temporal Memory row do not satisfy this condition.
+  and a Temporal Memory row do not satisfy this condition. The same projection
+  requires every cycle-closing initialized feedback edge to select one of
+  those sink boundaries or one exact RegFIFO local transfer. Strict import
+  receives both RouteTrees and `RegisterFifoTransfer` records and may not infer
+  a local break from placement alone.
 
 All verifier modules consume the same closure projection. The independent
 importer reconstructs imported Spatial route obligations and System

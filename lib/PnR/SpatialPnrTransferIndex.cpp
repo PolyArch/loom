@@ -119,31 +119,32 @@ private:
         if (!sink)
           return sink.takeError();
         prerequisite = FrozenSpatialExternalSinkPrerequisite{*sink};
-      } else {
-        const auto &internal =
-            std::get<SpatialRouteInternalMemoryConnectionPrerequisite>(
-                dependency.prerequisite);
+      } else if (const auto *internal = std::get_if<
+                     SpatialRouteInternalMemoryConnectionPrerequisite>(
+                     &dependency.prerequisite)) {
         const auto realizations = techMapping.memoryRealizations();
-        if (internal.memoryRealizationOrdinal >= realizations.size() ||
-            internal.internalEdgeOrdinal >=
-                realizations[internal.memoryRealizationOrdinal]
+        if (internal->memoryRealizationOrdinal >= realizations.size() ||
+            internal->internalEdgeOrdinal >=
+                realizations[internal->memoryRealizationOrdinal]
                     .internalEdges.size() ||
-            realizations[internal.memoryRealizationOrdinal]
-                    .internalEdges[internal.internalEdgeOrdinal]
+            realizations[internal->memoryRealizationOrdinal]
+                    .internalEdges[internal->internalEdgeOrdinal]
                     .producer !=
                 result.logicalNets_[dependency.logicalNetOrdinal].producer)
           return invalid(
               "progress dependency internal connection does not resolve");
         auto realization = checked(progressDependencyContext,
-                                   internal.memoryRealizationOrdinal);
+                                   internal->memoryRealizationOrdinal);
         if (!realization)
           return realization.takeError();
         auto edge =
-            checked(progressDependencyContext, internal.internalEdgeOrdinal);
+            checked(progressDependencyContext, internal->internalEdgeOrdinal);
         if (!edge)
           return edge.takeError();
         prerequisite = FrozenSpatialInternalMemoryConnectionPrerequisite{
             *realization, *edge};
+      } else {
+        prerequisite = FrozenSpatialInitializedFeedbackPrerequisite{};
       }
       dependencies[dependency.logicalNetOrdinal]
                   [dependency.dependentSinkOrdinal]
@@ -165,9 +166,13 @@ private:
                                   T, FrozenSpatialExternalSinkPrerequisite>)
                   return std::tuple<std::uint8_t, PnrIndex, PnrIndex>{
                       0, typed.sink, 0};
-                else
+                else if constexpr (
+                    std::is_same_v<
+                        T, FrozenSpatialInternalMemoryConnectionPrerequisite>)
                   return std::tuple<std::uint8_t, PnrIndex, PnrIndex>{
                       1, typed.memoryRealization, typed.internalEdge};
+                else
+                  return std::tuple<std::uint8_t, PnrIndex, PnrIndex>{2, 0, 0};
               },
               value);
         };

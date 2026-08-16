@@ -176,6 +176,37 @@ loop-exit path, leaving the body path empty.
 values, vector values, and `none` control tokens. It is not appropriate
 for frontend `memref<...>` bindings.
 
+### Initialized Feedback Projection
+
+The registered actor semantics own one closed projection of inputs that are
+not consumed by an actor's initialization transition but are consumed after
+the actor has published initialized state. These are initialized feedback
+inputs:
+
+| Actor | Initialized feedback inputs | Timing recurrence |
+|-------|-----------------------------|-------------------|
+| `dataflow.carry` | `phase`, `next` | `next`, distance one |
+| `dataflow.invariant` | `cond` | none |
+
+No other registered actor currently contributes an initialized feedback
+input. In particular, statefulness alone is insufficient: `dataflow.gate`
+requires both of its inputs for its first productive transition, and
+`dataflow.stream` consumes its complete activation tuple before producing a
+stream.
+
+Dataflow exposes this projection from the same transition-case descriptors
+used by handshake, simulation, and RTL. Mapping progress and recurrence
+timing must consume it rather than recognize operation names or operand
+ordinals independently. An edge entering one of these inputs is a cycle
+breaker only when its consumer can reach its producer after all initialized
+feedback edges are removed. Removing those edges must leave a DAG; otherwise
+the current progress proof is not established.
+
+The projection establishes logical initialization and recurrence distance. It
+does not establish physical storage. Mapping must separately prove a finite
+durable disposition for every initialized feedback edge that actually closes
+a cycle.
+
 ## 6. `dataflow.gate`
 
 `dataflow.gate` converts a `(cond, value)` stream into a region-local

@@ -45,9 +45,8 @@ private:
   std::vector<std::vector<std::uint32_t>> reverseEdges_;
 
   friend llvm::Expected<FrozenMappingProgressModel>
-  freezeMappingProgressModel(
-      const ::dataflow::CanonicalDataflowProgramView &,
-      llvm::ArrayRef<::dataflow::EventFamilyKey>);
+  freezeMappingProgressModel(const ::dataflow::CanonicalDataflowProgramView &,
+                             llvm::ArrayRef<::dataflow::EventFamilyKey>);
   friend llvm::Expected<MappingProgressClosure>
   deriveMappingProgressClosure(const FrozenMappingProgressModel &,
                                const MappingProgressProjection &);
@@ -56,8 +55,7 @@ private:
 /// Freezes Dataflow causality after interning every possible trigger and
 /// release event supplied by the caller. The inventory may be a conservative
 /// superset, but every selected event must be present.
-llvm::Expected<FrozenMappingProgressModel>
-freezeMappingProgressModel(
+llvm::Expected<FrozenMappingProgressModel> freezeMappingProgressModel(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::EventFamilyKey> activationEvents);
 
@@ -69,9 +67,9 @@ llvm::Expected<MappingProgressProjection> projectSystemMappingProgress(
     const ::loom::fabric::FabricSystemRootView &fabric,
     const SystemMappingClosureProjection &closure);
 
-llvm::Expected<MappingProgressClosure> deriveMappingProgressClosure(
-    const FrozenMappingProgressModel &model,
-    const MappingProgressProjection &projection);
+llvm::Expected<MappingProgressClosure>
+deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
+                             const MappingProgressProjection &projection);
 
 /// Derives only the reusable Dataflow basis for exactly the supplied covered
 /// graphs. It deliberately cannot return a Mapping progress proof: selected
@@ -102,12 +100,16 @@ struct SpatialRouteInternalMemoryConnectionPrerequisite final {
   std::uint64_t internalEdgeOrdinal = 0;
 };
 
+struct SpatialRouteInitializedFeedbackPrerequisite final {};
+
 /// A route prerequisite is either another externally routed sink or one exact
-/// realization-internal memory connection. The variants deliberately do not
-/// share an ordinal domain.
+/// realization-internal memory connection. Initialized feedback has no second
+/// sink: it requires a durable disposition on the dependent edge itself. The
+/// variants deliberately do not share an ordinal domain.
 using SpatialRouteProgressPrerequisite =
     std::variant<SpatialRouteExternalSinkPrerequisite,
-                 SpatialRouteInternalMemoryConnectionPrerequisite>;
+                 SpatialRouteInternalMemoryConnectionPrerequisite,
+                 SpatialRouteInitializedFeedbackPrerequisite>;
 
 /// One route-level wait dependency within a residual multicast net. Ordinals
 /// address the canonical TechMapping inventories; this projection has no
@@ -129,6 +131,7 @@ llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<::dataflow::GraphRef> selectedGraphs);
 
@@ -162,6 +165,7 @@ llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes);
 
 } // namespace loom::mapping

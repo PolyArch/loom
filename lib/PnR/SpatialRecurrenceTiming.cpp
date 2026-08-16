@@ -629,7 +629,7 @@ SpatialRecurrenceTimingIndex::build(
     result->edges_.push_back(
         {edge.producer, edge.consumer, edge.graph, producer->second,
          consumer->second, disposition, logicalNet, sink,
-         feedback != feedbackDistance.end(),
+         edge.initializedFeedback, feedback != feedbackDistance.end(),
          feedback == feedbackDistance.end() ? 0 : feedback->second});
     if (feedback != feedbackDistance.end())
       result->feedbackEdges_.push_back(*ordinal);
@@ -670,12 +670,12 @@ SpatialRecurrenceTimingIndex::build(
                                graphEdges.end());
 
     std::vector<PnrIndex> topological;
-    if (topology.nonFeedbackAcyclic) {
+    if (topology.postInitializationAcyclic) {
       std::vector<PnrIndex> indegree(result->actors_.size(), 0);
       std::vector<std::vector<PnrIndex>> successors(result->actors_.size());
       for (PnrIndex edgeOrdinal : graphEdges) {
         const FrozenRecurrenceEdge &edge = result->edges_[edgeOrdinal];
-        if (edge.feedback)
+        if (edge.initializedFeedback)
           continue;
         successors[edge.producerActor].push_back(edge.consumerActor);
         ++indegree[edge.consumerActor];
@@ -705,9 +705,10 @@ SpatialRecurrenceTimingIndex::build(
         checkedIndex(topological.size(), "recurrence topology");
     if (!topologicalCount)
       return topologicalCount.takeError();
-    result->graphs_.push_back(
-        {topology.graph, topology.nonFeedbackAcyclic, *actorOffset, *actorCount,
-         *edgeOffset, *edgeCount, *topologicalOffset, *topologicalCount});
+    result->graphs_.push_back({topology.graph,
+                               topology.postInitializationAcyclic, *actorOffset,
+                               *actorCount, *edgeOffset, *edgeCount,
+                               *topologicalOffset, *topologicalCount});
   }
   return std::shared_ptr<const SpatialRecurrenceTimingIndex>(std::move(result));
 }
@@ -749,8 +750,9 @@ projectRecurrenceCycles(const Index &index, EdgeProjector projectEdgeOrdinal) {
     const FrozenRecurrenceGraph *graph = findGraph(index, feedback.graph);
     if (!graph)
       return projectionInvalid("feedback edge has no graph topology");
-    if (!graph->nonFeedbackAcyclic)
-      return proofNotEstablished("non_feedback_cycle_timing_not_established");
+    if (!graph->postInitializationAcyclic)
+      return proofNotEstablished(
+          "post_initialization_cycle_timing_not_established");
     const auto graphEdges =
         index.graphEdges().slice(graph->edgeOffset, graph->edgeCount);
     const auto topological = index.graphTopologicalActors().slice(
@@ -758,7 +760,7 @@ projectRecurrenceCycles(const Index &index, EdgeProjector projectEdgeOrdinal) {
     std::vector<std::vector<PnrIndex>> outgoing(index.actors().size());
     for (PnrIndex edgeOrdinal : graphEdges) {
       const FrozenRecurrenceEdge &edge = index.edges()[edgeOrdinal];
-      if (edge.feedback)
+      if (edge.initializedFeedback)
         continue;
       outgoing[edge.producerActor].push_back(edgeOrdinal);
     }
@@ -1011,7 +1013,8 @@ llvm::Expected<PersistentRecurrenceIndex> buildPersistentRecurrenceIndex(
     result.edgeRecords.push_back(
         {edge.producer, edge.consumer, edge.graph, producer->second,
          consumer->second, disposition, getInvalidPnrIndex(),
-         getInvalidPnrIndex(), feedback != feedbackDistance.end(),
+         getInvalidPnrIndex(), edge.initializedFeedback,
+         feedback != feedbackDistance.end(),
          feedback == feedbackDistance.end() ? 0 : feedback->second});
     if (feedback != feedbackDistance.end())
       result.feedbackEdgeOrdinals.push_back(*ordinal);
@@ -1052,12 +1055,12 @@ llvm::Expected<PersistentRecurrenceIndex> buildPersistentRecurrenceIndex(
                                     graphEdges.begin(), graphEdges.end());
 
     std::vector<PnrIndex> topologicalActors;
-    if (topology.nonFeedbackAcyclic) {
+    if (topology.postInitializationAcyclic) {
       std::vector<PnrIndex> indegree(result.actorRecords.size(), 0);
       std::vector<std::vector<PnrIndex>> successors(result.actorRecords.size());
       for (PnrIndex edgeOrdinal : graphEdges) {
         const FrozenRecurrenceEdge &edge = result.edgeRecords[edgeOrdinal];
-        if (edge.feedback)
+        if (edge.initializedFeedback)
           continue;
         successors[edge.producerActor].push_back(edge.consumerActor);
         ++indegree[edge.consumerActor];
@@ -1088,8 +1091,9 @@ llvm::Expected<PersistentRecurrenceIndex> buildPersistentRecurrenceIndex(
     if (!topologicalCount)
       return topologicalCount.takeError();
     result.graphRecords.push_back(
-        {topology.graph, topology.nonFeedbackAcyclic, *actorOffset, *actorCount,
-         *edgeOffset, *edgeCount, *topologicalOffset, *topologicalCount});
+        {topology.graph, topology.postInitializationAcyclic, *actorOffset,
+         *actorCount, *edgeOffset, *edgeCount, *topologicalOffset,
+         *topologicalCount});
   }
   return result;
 }

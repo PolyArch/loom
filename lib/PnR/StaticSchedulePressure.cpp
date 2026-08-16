@@ -85,7 +85,8 @@ struct WorkingEdge final {
   std::size_t source = 0;
   std::size_t sink = 0;
   std::size_t analysisEdge = 0;
-  bool feedback = false;
+  bool initializedFeedback = false;
+  bool timingFeedback = false;
 };
 
 struct WorkingGraph final {
@@ -96,7 +97,9 @@ struct WorkingGraph final {
 
 struct AnalysisBuilder final {
   StaticScheduleAnalysis result;
-  std::vector<::dataflow::OperationSchemaId> schemas;
+  std::vector<llvm::SmallVector<
+      ::dataflow::semantics::InitializedFeedbackInputDescriptor, 3>>
+      initializedFeedbackInputs;
   std::vector<WorkingEdge> edges;
   std::vector<WorkingGraph> graphs;
   std::map<ActorKey, std::size_t> actorOrdinals;
@@ -114,7 +117,7 @@ struct AnalysisBuilder final {
     std::vector<std::vector<std::size_t>> adjacency(actorCount);
     for (std::size_t edgeOrdinal : graph.edges) {
       const WorkingEdge &edge = edges[edgeOrdinal];
-      if (edge.feedback)
+      if (edge.initializedFeedback)
         continue;
       const auto source = localActor.find(edge.source);
       const auto sink = localActor.find(edge.sink);
@@ -164,23 +167,23 @@ struct AnalysisBuilder final {
     for (std::size_t actor = 0; actor < actorCount; ++actor)
       ++componentWeight[component[actor]];
 
-    bool nonFeedbackAcyclic = llvm::all_of(
+    bool postInitializationAcyclic = llvm::all_of(
         componentWeight, [](std::uint64_t weight) { return weight == 1; });
 
     std::set<std::pair<std::size_t, std::size_t>> componentEdgeSet;
     for (std::size_t edgeOrdinal : graph.edges) {
       const WorkingEdge &edge = edges[edgeOrdinal];
-      if (edge.feedback)
+      if (edge.initializedFeedback)
         continue;
       const std::size_t source = component[localActor.at(edge.source)];
       const std::size_t sink = component[localActor.at(edge.sink)];
       if (edge.source == edge.sink)
-        nonFeedbackAcyclic = false;
+        postInitializationAcyclic = false;
       if (source != sink)
         componentEdgeSet.emplace(source, sink);
     }
     result.recurrenceTopologies_.push_back(
-        StaticGraphRecurrenceTopology{graph.graph, nonFeedbackAcyclic});
+        StaticGraphRecurrenceTopology{graph.graph, postInitializationAcyclic});
     std::vector<std::vector<std::size_t>> componentSuccessors(componentCount);
     std::vector<std::size_t> indegree(componentCount, 0);
     for (const auto &[source, sink] : componentEdgeSet) {
@@ -249,7 +252,7 @@ struct AnalysisBuilder final {
         result.actors_[graph.actors[local]].graphCriticalLength = graphLength;
     for (std::size_t edgeOrdinal : graph.edges) {
       const WorkingEdge &edge = edges[edgeOrdinal];
-      if (edge.feedback)
+      if (edge.initializedFeedback)
         continue;
       const std::size_t source = component[localActor.at(edge.source)];
       const std::size_t sink = component[localActor.at(edge.sink)];
@@ -263,7 +266,7 @@ struct AnalysisBuilder final {
 
     for (std::size_t feedbackOrdinal : graph.edges) {
       const WorkingEdge &feedback = edges[feedbackOrdinal];
-      if (!feedback.feedback)
+      if (!feedback.timingFeedback)
         continue;
       const std::size_t recurrenceSource =
           component[localActor.at(feedback.sink)];
@@ -328,7 +331,7 @@ struct AnalysisBuilder final {
             return error;
       for (std::size_t edgeOrdinal : graph.edges) {
         const WorkingEdge &edge = edges[edgeOrdinal];
-        if (edge.feedback) {
+        if (edge.initializedFeedback) {
           if (edgeOrdinal == feedbackOrdinal)
             if (llvm::Error error = addTo(
                     result.edges_[edge.analysisEdge].weight, recurrenceLength,
@@ -489,9 +492,14 @@ loom::pnr::detail::deriveStaticScheduleAnalysis(
       return invalid("covered actor inventory contains a duplicate");
     const ::dataflow::OperationSchemaId schema =
         ::dataflow::requireOperationSchema(actor.op);
+    auto feedbackInputs =
+        ::dataflow::semantics::projectActorInitializedFeedbackInputs(
+            schema, actor.op->getNumOperands(), actor.op->getNumResults());
+    if (!feedbackInputs)
+      return feedbackInputs.takeError();
     builder.result.actors_.push_back(
         {actor.ref, actor.graph, 0, 0, isTemporalStateCarrier(schema)});
-    builder.schemas.push_back(schema);
+    builder.initializedFeedbackInputs.push_back(std::move(*feedbackInputs));
     builder.graphs[graph->second].actors.push_back(ordinal);
   }
   if (llvm::Error error = dataflow.forEachGraphEdge(
@@ -518,21 +526,28 @@ loom::pnr::detail::deriveStaticScheduleAnalysis(
             const auto &sinkActor = builder.result.actors_[sink->second];
             if (sourceActor.graph != sinkActor.graph)
               return invalid("canonical actor edge crosses graph ownership");
-            const bool feedback =
-                builder.schemas[sink->second] ==
-                    ::dataflow::OperationSchemaId::DataflowCarry &&
-                actorConsumer->ordinal ==
-                    static_cast<std::uint64_t>(
-                        ::dataflow::semantics::CarryInput::Next);
+            const auto feedbackDescriptor = llvm::find_if(
+                builder.initializedFeedbackInputs[sink->second],
+                [&](const auto &candidate) {
+                  return candidate.inputOrdinal == actorConsumer->ordinal;
+                });
+            const bool initializedFeedback =
+                feedbackDescriptor !=
+                builder.initializedFeedbackInputs[sink->second].end();
+            const bool timingFeedback =
+                initializedFeedback &&
+                feedbackDescriptor->timingDependenceDistance.has_value();
             const std::size_t analysisEdge = builder.result.edges_.size();
-            builder.result.edges_.push_back(
-                {*actorProducer, *actorConsumer, sourceActor.graph, 0});
-            if (feedback)
+            builder.result.edges_.push_back({*actorProducer, *actorConsumer,
+                                             sourceActor.graph, 0,
+                                             initializedFeedback});
+            if (timingFeedback)
               builder.result.feedbacks_.push_back(
-                  {*actorProducer, *actorConsumer, sourceActor.graph, 1});
+                  {*actorProducer, *actorConsumer, sourceActor.graph,
+                   *feedbackDescriptor->timingDependenceDistance});
             const std::size_t edgeOrdinal = builder.edges.size();
-            builder.edges.push_back(
-                {source->second, sink->second, analysisEdge, feedback});
+            builder.edges.push_back({source->second, sink->second, analysisEdge,
+                                     initializedFeedback, timingFeedback});
             builder
                 .graphs[builder.graphOrdinals.at(graphKey(sourceActor.graph))]
                 .edges.push_back(edgeOrdinal);
@@ -549,11 +564,11 @@ loom::pnr::detail::deriveStaticScheduleAnalysis(
     return edgeKey(left.producer, left.consumer) <
            edgeKey(right.producer, right.consumer);
   });
-  llvm::sort(builder.result.feedbacks_, [](const auto &left,
-                                           const auto &right) {
-    return edgeKey(left.producer, left.consumer) <
-           edgeKey(right.producer, right.consumer);
-  });
+  llvm::sort(builder.result.feedbacks_,
+             [](const auto &left, const auto &right) {
+               return edgeKey(left.producer, left.consumer) <
+                      edgeKey(right.producer, right.consumer);
+             });
   llvm::sort(builder.result.recurrenceTopologies_,
              [](const auto &left, const auto &right) {
                return graphKey(left.graph) < graphKey(right.graph);

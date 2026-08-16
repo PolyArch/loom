@@ -68,6 +68,7 @@ struct FrozenRecurrenceEdge final {
       FrozenRecurrenceEdgeDisposition::ComputeInternal;
   PnrIndex logicalNet = getInvalidPnrIndex();
   PnrIndex sink = getInvalidPnrIndex();
+  bool initializedFeedback = false;
   bool feedback = false;
   std::uint64_t dependenceDistance = 0;
 };
@@ -81,7 +82,7 @@ struct FrozenComputeActorArchitecturalTiming final {
 
 struct FrozenRecurrenceGraph final {
   ::dataflow::GraphRef graph;
-  bool nonFeedbackAcyclic = true;
+  bool postInitializationAcyclic = true;
   PnrIndex actorOffset = 0;
   PnrIndex actorCount = 0;
   PnrIndex edgeOffset = 0;
@@ -114,8 +115,7 @@ public:
   llvm::ArrayRef<PnrIndex> computeTimingOffsets() const {
     return computeTimingOffsets_;
   }
-  llvm::ArrayRef<FrozenComputeActorArchitecturalTiming>
-  computeTimings() const {
+  llvm::ArrayRef<FrozenComputeActorArchitecturalTiming> computeTimings() const {
     return computeTimings_;
   }
   llvm::ArrayRef<std::optional<std::uint32_t>>
@@ -133,8 +133,7 @@ private:
   std::vector<PnrIndex> feedbackEdges_;
   std::vector<PnrIndex> computeTimingOffsets_;
   std::vector<FrozenComputeActorArchitecturalTiming> computeTimings_;
-  std::vector<std::optional<std::uint32_t>>
-      computeResultPublicationLatencies_;
+  std::vector<std::optional<std::uint32_t>> computeResultPublicationLatencies_;
 };
 
 llvm::Expected<SpatialRecurrenceTimingProjection>

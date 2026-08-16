@@ -1043,7 +1043,8 @@ SpatialCandidateState::projectVerifiedRoutes(
     return handshakeAcyclic.takeError();
   std::uint64_t hardProgressViolation = 0;
   switch (problem_->progressBasis().kind) {
-  case ::loom::mapping::MappingDataflowProgressBasisKind::Acyclic: {
+  case ::loom::mapping::MappingDataflowProgressBasisKind::Acyclic:
+  case ::loom::mapping::MappingDataflowProgressBasisKind::InitializedFeedback: {
     auto count = spatialCandidateClosedWaitCount(*this);
     if (!count)
       return count.takeError();

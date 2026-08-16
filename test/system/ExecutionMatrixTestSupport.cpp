@@ -746,8 +746,7 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ArtifactStore &artifacts,
                               deployment::HostExternalInterfaceDirection::InOut,
                               memoryInterfaceType(test, *context)}};
   auto deployment = deployment::test::buildMappedSystemDeployment(
-      test, dataflow, hardware.system, systemMapping,
-      hardware.implementations,
+      test, dataflow, hardware.system, systemMapping, hardware.implementations,
       std::move(programs), artifacts, blobs, tree);
   const auto [spatialWorkload, spatialRuntimeInput] =
       publishSpatialInputs(test, dataflow, artifacts);
@@ -791,8 +790,8 @@ buildResolution(llvm::StringRef test, const SharedFixture &fixture,
       fixture.hardware.spatialMapping.reference()};
   for (const hardware::FinalizedHardwareImplementation &implementation :
        fixture.hardware.implementations) {
-    entries.push_back({implementation.reference(),
-                       {fixture.hardware.system.reference()}});
+    entries.push_back(
+        {implementation.reference(), {fixture.hardware.system.reference()}});
     deploymentParents.push_back(implementation.reference());
   }
   entries.push_back(
@@ -1412,11 +1411,12 @@ void verifyHeterogeneousSystemAnchor() {
   const auto tech =
       take(test,
            mapping::importTechMapping(fixture.hardware.techMapping, artifacts));
-  auto progress =
-      take(test, mapping::deriveSpatialMappingProgressClosure(
-                     dataflow, tech.view(), module,
-                     fixture.hardware.spatialMapping.view().computeBindings(),
-                     fixture.hardware.spatialMapping.view().routeTrees()));
+  auto progress = take(
+      test, mapping::deriveSpatialMappingProgressClosure(
+                dataflow, tech.view(), module,
+                fixture.hardware.spatialMapping.view().computeBindings(),
+                fixture.hardware.spatialMapping.view().registerFifoTransfers(),
+                fixture.hardware.spatialMapping.view().routeTrees()));
   require(test,
           progress.kind ==
               mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet,
@@ -1445,11 +1445,12 @@ void verifyHeterogeneousSystemAnchor() {
   }
   require(test, removedProgressBoundary,
           "canonical anchor has no Buffered FIFO progress boundary");
-  auto closedWait = take(test, mapping::deriveSpatialMappingProgressClosure(
-                                   dataflow, tech.view(), module,
-                                   fixture.hardware.spatialMapping.view()
-                                       .computeBindings(),
-                                   unbufferedRoutes));
+  auto closedWait = take(
+      test, mapping::deriveSpatialMappingProgressClosure(
+                dataflow, tech.view(), module,
+                fixture.hardware.spatialMapping.view().computeBindings(),
+                fixture.hardware.spatialMapping.view().registerFifoTransfers(),
+                unbufferedRoutes));
   require(test,
           closedWait.kind ==
               mapping::MappingProgressClosureKind::ProvenClosedWaitSet,

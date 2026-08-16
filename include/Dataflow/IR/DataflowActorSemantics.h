@@ -56,6 +56,23 @@ llvm::Expected<llvm::SmallVector<ActorHandshakeCase, 4>>
 projectActorHandshakeCases(::dataflow::OperationSchemaId schema,
                            std::uint32_t inputCount, std::uint32_t resultCount);
 
+/// One input omitted by an actor's productive initialization transition and
+/// consumed only after initialized state has been published. A timing distance
+/// is present only when the input closes a value recurrence whose iteration
+/// distance is defined by the actor schema.
+struct InitializedFeedbackInputDescriptor final {
+  std::uint32_t inputOrdinal = 0;
+  std::optional<std::uint64_t> timingDependenceDistance;
+};
+
+/// Projects the closed initialized-feedback input inventory from the same
+/// schema-owned transition descriptors as the handshake cases. Invalid arity
+/// is rejected even when the selected schema has no initialized feedback.
+llvm::Expected<llvm::SmallVector<InitializedFeedbackInputDescriptor, 3>>
+projectActorInitializedFeedbackInputs(::dataflow::OperationSchemaId schema,
+                                      std::uint32_t inputCount,
+                                      std::uint32_t resultCount);
+
 using SemanticInputMask = std::uint8_t;
 
 template <typename Input>

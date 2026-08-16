@@ -554,6 +554,7 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
 
   switch ((*problem)->progressBasis().kind) {
   case ::loom::mapping::MappingDataflowProgressBasisKind::Acyclic:
+  case ::loom::mapping::MappingDataflowProgressBasisKind::InitializedFeedback:
     break;
   case ::loom::mapping::MappingDataflowProgressBasisKind::Cyclic:
     emitInvocationAccounting(

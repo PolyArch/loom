@@ -108,10 +108,14 @@ encodeLogicalNetDetail(const SpatialCandidateState &candidate,
                               T, FrozenSpatialExternalSinkPrerequisite>) {
               encoded["kind"] = "external_sink";
               encoded["sink"] = typed.sink;
-            } else {
+            } else if constexpr (
+                std::is_same_v<
+                    T, FrozenSpatialInternalMemoryConnectionPrerequisite>) {
               encoded["kind"] = "internal_memory_connection";
               encoded["memory_realization"] = typed.memoryRealization;
               encoded["internal_edge"] = typed.internalEdge;
+            } else {
+              encoded["kind"] = "initialized_feedback";
             }
           },
           prerequisite);

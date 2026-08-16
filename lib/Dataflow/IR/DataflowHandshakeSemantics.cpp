@@ -245,4 +245,26 @@ projectActorHandshakeCases(::dataflow::OperationSchemaId schema,
   }
 }
 
+llvm::Expected<llvm::SmallVector<InitializedFeedbackInputDescriptor, 3>>
+projectActorInitializedFeedbackInputs(::dataflow::OperationSchemaId schema,
+                                      std::uint32_t inputCount,
+                                      std::uint32_t resultCount) {
+  auto cases = projectActorHandshakeCases(schema, inputCount, resultCount);
+  if (!cases)
+    return cases.takeError();
+
+  using Schema = ::dataflow::OperationSchemaId;
+  switch (schema) {
+  case Schema::DataflowCarry:
+    return llvm::SmallVector<InitializedFeedbackInputDescriptor, 3>{
+        {static_cast<std::uint32_t>(CarryInput::Phase), std::nullopt},
+        {static_cast<std::uint32_t>(CarryInput::Next), std::uint64_t{1}}};
+  case Schema::DataflowInvariant:
+    return llvm::SmallVector<InitializedFeedbackInputDescriptor, 3>{
+        {static_cast<std::uint32_t>(InvariantInput::Phase), std::nullopt}};
+  default:
+    return llvm::SmallVector<InitializedFeedbackInputDescriptor, 3>{};
+  }
+}
+
 } // namespace dataflow::semantics

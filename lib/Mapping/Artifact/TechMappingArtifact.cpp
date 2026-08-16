@@ -1,4 +1,5 @@
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/IndexWidth.h"
@@ -1210,11 +1211,16 @@ llvm::Expected<TechMappingView> TechMappingView::import(
   auto imported = importView(mappingIdentity, root, dataflow, fabric);
   if (!imported)
     return imported.takeError();
-  return TechMappingView(
+  TechMappingView result(
       mappingIdentity, std::move(imported->dataflowIdentity),
       std::move(imported->fabricIdentity), std::move(imported->covers),
       std::move(imported->compute), std::move(imported->memory),
       std::move(imported->residualLogicalNets));
+  auto progressDependencies =
+      deriveSpatialRouteProgressDependencies(dataflow, result);
+  if (!progressDependencies)
+    return progressDependencies.takeError();
+  return result;
 }
 
 const TechResidualLogicalNetView *TechMappingView::residualLogicalNet(

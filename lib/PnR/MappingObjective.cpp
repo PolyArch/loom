@@ -88,14 +88,14 @@ llvm::Expected<std::uint64_t> recurrenceMinimumInitiationInterval(
   llvm_unreachable("unknown recurrence timing proof kind");
 }
 
-llvm::Expected<std::uint64_t> systemSpatialPhysicalMeasure(
-    const FrozenSystemPnrProblem &problem,
-    llvm::ArrayRef<PnrIndex> graphChoices, MappingMeasureKind kind) {
+llvm::Expected<std::uint64_t>
+systemSpatialPhysicalMeasure(const FrozenSystemPnrProblem &problem,
+                             llvm::ArrayRef<PnrIndex> graphChoices,
+                             MappingMeasureKind kind) {
   if (graphChoices.size() != problem.graphDecisions().size())
     return objectiveError("System graph choice timing is incomplete");
   const auto worst = problem.spatialMappingWorstRouteArrivalDelayQuanta();
-  const auto negative =
-      problem.spatialMappingTotalRouteNegativeSlackQuanta();
+  const auto negative = problem.spatialMappingTotalRouteNegativeSlackQuanta();
   if (worst.size() != problem.spatialMappings().size() ||
       negative.size() != problem.spatialMappings().size())
     return objectiveError("System SpatialMapping timing catalog is malformed");
@@ -191,6 +191,7 @@ loom::pnr::spatialMappingViolationValue(const SpatialCandidateState &candidate,
   case ResolvedPnrViolationKind::HardProgressViolation:
     switch (candidate.problem().progressBasis().kind) {
     case ::loom::mapping::MappingDataflowProgressBasisKind::Acyclic:
+    case ::loom::mapping::MappingDataflowProgressBasisKind::InitializedFeedback:
       return spatialCandidateClosedWaitCount(candidate);
     case ::loom::mapping::MappingDataflowProgressBasisKind::Cyclic:
       return llvm::createStringError(
@@ -320,8 +321,7 @@ loom::pnr::systemMappingMeasureValue(const SystemCandidateState &candidate,
     return total;
   }
   case MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles:
-    return recurrenceMinimumInitiationInterval(candidate.recurrenceTiming(),
-                                               0);
+    return recurrenceMinimumInitiationInterval(candidate.recurrenceTiming(), 0);
   case MappingMeasureKind::ResourceMinimumInitiationIntervalCycles:
     return candidate.resourceMinimumInitiationIntervalCycles();
   case MappingMeasureKind::TransportBitCycleDemand:
@@ -439,9 +439,9 @@ MappingObjectiveProgram::evaluateSpatialProjection(
       break;
     }
     case MappingMeasureKind::ResourceMinimumInitiationIntervalCycles:
-      measures[ordinal] = std::max(
-          candidate.resourceMinimumInitiationIntervalCycles(),
-          projection.routeMinimumInitiationIntervalCycles);
+      measures[ordinal] =
+          std::max(candidate.resourceMinimumInitiationIntervalCycles(),
+                   projection.routeMinimumInitiationIntervalCycles);
       break;
     case MappingMeasureKind::TransportBitCycleDemand:
       measures[ordinal] = projection.transportBitCycleDemand;
@@ -466,11 +466,11 @@ MappingObjectiveProgram::evaluate(const SystemCandidateState &candidate) const {
       candidate, MappingMeasureKind::TotalSelectedTraversalClaim);
   if (!traversalClaim)
     return traversalClaim.takeError();
-  return evaluateSystemProjection(candidate.problem(), candidate.graphChoices(),
-                                  candidate.capacityOveruse(), *traversalClaim,
-                                  candidate.resourceMinimumInitiationIntervalCycles(),
-                                  candidate.transportBitCycleDemand(),
-                                  candidate.progressClosure());
+  return evaluateSystemProjection(
+      candidate.problem(), candidate.graphChoices(),
+      candidate.capacityOveruse(), *traversalClaim,
+      candidate.resourceMinimumInitiationIntervalCycles(),
+      candidate.transportBitCycleDemand(), candidate.progressClosure());
 }
 
 llvm::Expected<dse::ObjectiveVector>

@@ -114,12 +114,13 @@ module {
   const auto &feedback = analysis.feedbacks().front();
   require(feedback.producer.actor == demux->actor &&
               feedback.consumer.actor == carry->actor &&
-              feedback.consumer.ordinal == static_cast<std::uint64_t>(
-                  dataflow::semantics::CarryInput::Next) &&
+              feedback.consumer.ordinal ==
+                  static_cast<std::uint64_t>(
+                      dataflow::semantics::CarryInput::Next) &&
               feedback.dependenceDistance == 1,
           "canonical recurrence feedback witness changed");
   require(analysis.recurrenceTopologies().size() == 1 &&
-              analysis.recurrenceTopologies().front().nonFeedbackAcyclic,
+              analysis.recurrenceTopologies().front().postInitializationAcyclic,
           "carry feedback removal did not expose the canonical DAG");
 
   llvm::outs() << "static schedule pressure test passed\n";

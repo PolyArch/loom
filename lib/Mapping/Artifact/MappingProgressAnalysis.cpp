@@ -2,7 +2,9 @@
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Mapping/Artifact/SystemMappingClosureProjection.h"
 
+#include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
+#include "Dataflow/IR/OperationSchema.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Fabric/Identity/FabricRefs.h"
@@ -461,11 +463,91 @@ llvm::Error buildSystemEventDependencies(
 }
 
 struct ActorDependencyGraph final {
+  struct InitializedFeedbackEdge final {
+    ::dataflow::ActorTokenResultRef producer;
+    ::dataflow::ActorTokenOperandRef consumer;
+    std::uint32_t producerActor = 0;
+    std::uint32_t consumerActor = 0;
+    bool closesCycle = false;
+  };
+
   llvm::DenseMap<std::uint64_t, std::uint32_t> actorOrdinals;
+  /// The actor DAG after initialized-feedback edges have been removed.
   std::vector<std::size_t> offsets;
   std::vector<std::uint32_t> destinations;
+  std::vector<InitializedFeedbackEdge> initializedFeedbackEdges;
   bool acyclic = false;
+  bool postInitializationAcyclic = false;
 };
+
+llvm::Expected<bool>
+closeActorEdges(std::size_t actorCount,
+                std::vector<std::pair<std::uint32_t, std::uint32_t>> edges,
+                std::vector<std::size_t> *closedOffsets = nullptr,
+                std::vector<std::uint32_t> *closedDestinations = nullptr) {
+  llvm::sort(edges);
+  edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
+  std::vector<std::size_t> offsets(actorCount + 1, 0);
+  std::vector<std::uint32_t> indegrees(actorCount, 0);
+  for (const auto &[source, sink] : edges) {
+    if (source >= actorCount || sink >= actorCount)
+      return invalid("actor dependency edge is out of range");
+    ++offsets[static_cast<std::size_t>(source) + 1];
+    if (indegrees[sink] == std::numeric_limits<std::uint32_t>::max())
+      return invalid("actor dependency indegree overflows");
+    ++indegrees[sink];
+  }
+  for (std::size_t index = 1; index < offsets.size(); ++index)
+    offsets[index] += offsets[index - 1];
+  std::vector<std::uint32_t> destinations(edges.size());
+  std::vector<std::size_t> cursors = offsets;
+  cursors.pop_back();
+  for (const auto &[source, sink] : edges)
+    destinations[cursors[source]++] = sink;
+
+  std::vector<std::uint32_t> ready;
+  ready.reserve(actorCount);
+  for (std::uint32_t actor = 0; actor != actorCount; ++actor)
+    if (indegrees[actor] == 0)
+      ready.push_back(actor);
+  std::size_t visited = 0;
+  for (std::size_t cursor = 0; cursor != ready.size(); ++cursor) {
+    const std::uint32_t source = ready[cursor];
+    ++visited;
+    for (std::size_t edge = offsets[source]; edge != offsets[source + 1];
+         ++edge) {
+      const std::uint32_t sink = destinations[edge];
+      if (--indegrees[sink] == 0)
+        ready.push_back(sink);
+    }
+  }
+  if (closedOffsets)
+    *closedOffsets = std::move(offsets);
+  if (closedDestinations)
+    *closedDestinations = std::move(destinations);
+  return visited == actorCount;
+}
+
+bool actorReachable(const ActorDependencyGraph &graph, std::uint32_t source,
+                    std::uint32_t target) {
+  if (source == target)
+    return true;
+  std::vector<bool> visited(graph.actorOrdinals.size(), false);
+  std::vector<std::uint32_t> worklist{source};
+  visited[source] = true;
+  for (std::size_t cursor = 0; cursor != worklist.size(); ++cursor)
+    for (std::size_t edge = graph.offsets[worklist[cursor]];
+         edge != graph.offsets[worklist[cursor] + 1]; ++edge) {
+      const std::uint32_t sink = graph.destinations[edge];
+      if (sink == target)
+        return true;
+      if (!visited[sink]) {
+        visited[sink] = true;
+        worklist.push_back(sink);
+      }
+    }
+  return false;
+}
 
 llvm::Expected<ActorDependencyGraph> buildActorDependencyGraph(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -489,14 +571,30 @@ llvm::Expected<ActorDependencyGraph> buildActorDependencyGraph(
 
   ActorDependencyGraph result;
   result.actorOrdinals.reserve(actors.size());
+  std::vector<std::vector<std::uint32_t>> initializedFeedbackInputs;
+  initializedFeedbackInputs.reserve(actors.size());
   for (const auto [ordinal, actor] : llvm::enumerate(actors))
     if (!result.actorOrdinals
              .try_emplace(actor.ref.entity.value(),
                           static_cast<std::uint32_t>(ordinal))
-             .second)
+             .second) {
       return invalid("canonical actor inventory contains a duplicate");
+    } else {
+      auto projected =
+          ::dataflow::semantics::projectActorInitializedFeedbackInputs(
+              ::dataflow::requireOperationSchema(actor.op),
+              actor.op->getNumOperands(), actor.op->getNumResults());
+      if (!projected)
+        return projected.takeError();
+      std::vector<std::uint32_t> inputs;
+      inputs.reserve(projected->size());
+      for (const auto &input : *projected)
+        inputs.push_back(input.inputOrdinal);
+      initializedFeedbackInputs.push_back(std::move(inputs));
+    }
 
-  std::vector<std::pair<std::uint32_t, std::uint32_t>> edges;
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> allEdges;
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> nonFeedbackEdges;
   if (llvm::Error error = dataflow.forEachGraphEdge(
           [&](const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
               const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer)
@@ -517,46 +615,36 @@ llvm::Expected<ActorDependencyGraph> buildActorDependencyGraph(
             if (sourceOrdinal == result.actorOrdinals.end() ||
                 sinkOrdinal == result.actorOrdinals.end())
               return invalid("covered graph edge crosses the actor catalog");
-            edges.emplace_back(sourceOrdinal->second, sinkOrdinal->second);
+            allEdges.emplace_back(sourceOrdinal->second, sinkOrdinal->second);
+            const bool initializedFeedback = llvm::is_contained(
+                initializedFeedbackInputs[sinkOrdinal->second], sink->ordinal);
+            if (initializedFeedback) {
+              result.initializedFeedbackEdges.push_back(
+                  {*source, *sink, sourceOrdinal->second, sinkOrdinal->second,
+                   false});
+            } else {
+              nonFeedbackEdges.emplace_back(sourceOrdinal->second,
+                                            sinkOrdinal->second);
+            }
             return llvm::Error::success();
           }))
     return std::move(error);
 
-  llvm::sort(edges);
-  edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
-  result.offsets.assign(actors.size() + 1, 0);
-  std::vector<std::uint32_t> indegrees(actors.size(), 0);
-  for (const auto &[source, sink] : edges) {
-    ++result.offsets[static_cast<std::size_t>(source) + 1];
-    if (indegrees[sink] == std::numeric_limits<std::uint32_t>::max())
-      return invalid("actor dependency indegree overflows");
-    ++indegrees[sink];
-  }
-  for (std::size_t index = 1; index < result.offsets.size(); ++index)
-    result.offsets[index] += result.offsets[index - 1];
-  result.destinations.resize(edges.size());
-  std::vector<std::size_t> cursors = result.offsets;
-  cursors.pop_back();
-  for (const auto &[source, sink] : edges)
-    result.destinations[cursors[source]++] = sink;
-
-  std::vector<std::uint32_t> ready;
-  ready.reserve(actors.size());
-  for (std::uint32_t actor = 0; actor != actors.size(); ++actor)
-    if (indegrees[actor] == 0)
-      ready.push_back(actor);
-  std::size_t visited = 0;
-  for (std::size_t cursor = 0; cursor != ready.size(); ++cursor) {
-    const std::uint32_t source = ready[cursor];
-    ++visited;
-    for (std::size_t edge = result.offsets[source];
-         edge != result.offsets[source + 1]; ++edge) {
-      const std::uint32_t sink = result.destinations[edge];
-      if (--indegrees[sink] == 0)
-        ready.push_back(sink);
-    }
-  }
-  result.acyclic = visited == actors.size();
+  auto acyclic = closeActorEdges(actors.size(), std::move(allEdges));
+  if (!acyclic)
+    return acyclic.takeError();
+  result.acyclic = *acyclic;
+  auto postInitializationAcyclic =
+      closeActorEdges(actors.size(), std::move(nonFeedbackEdges),
+                      &result.offsets, &result.destinations);
+  if (!postInitializationAcyclic)
+    return postInitializationAcyclic.takeError();
+  result.postInitializationAcyclic = *postInitializationAcyclic;
+  if (result.postInitializationAcyclic)
+    for (ActorDependencyGraph::InitializedFeedbackEdge &edge :
+         result.initializedFeedbackEdges)
+      edge.closesCycle =
+          actorReachable(result, edge.consumerActor, edge.producerActor);
   return result;
 }
 
@@ -708,9 +796,13 @@ llvm::Expected<MappingDataflowProgressBasis> deriveMappingDataflowProgressBasis(
   auto graph = buildActorDependencyGraph(dataflow, coveredGraphs);
   if (!graph)
     return graph.takeError();
-  return MappingDataflowProgressBasis{
-      graph->acyclic ? MappingDataflowProgressBasisKind::Acyclic
-                     : MappingDataflowProgressBasisKind::Cyclic};
+  MappingDataflowProgressBasisKind kind =
+      MappingDataflowProgressBasisKind::Cyclic;
+  if (graph->acyclic)
+    kind = MappingDataflowProgressBasisKind::Acyclic;
+  else if (graph->postInitializationAcyclic)
+    kind = MappingDataflowProgressBasisKind::InitializedFeedback;
+  return MappingDataflowProgressBasis{kind};
 }
 
 llvm::Expected<FrozenMappingProgressModel> freezeMappingProgressModel(
@@ -798,7 +890,7 @@ llvm::Expected<MappingProgressProjection> projectSystemMappingProgress(
 llvm::Expected<MappingProgressClosure>
 deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
                              const MappingProgressProjection &projection) {
-  if (projection.basis.kind != MappingDataflowProgressBasisKind::Acyclic)
+  if (projection.basis.kind == MappingDataflowProgressBasisKind::Cyclic)
     return MappingProgressClosure{
         MappingProgressClosureKind::ProofNotEstablished};
   if (llvm::any_of(projection.routeObligations, [](const auto &obligation) {
@@ -1074,6 +1166,33 @@ deriveSpatialRouteProgressDependencies(
       }
     }
   }
+  for (const ActorDependencyGraph::InitializedFeedbackEdge &feedback :
+       graph->initializedFeedbackEdges) {
+    if (!feedback.closesCycle)
+      continue;
+    bool found = false;
+    for (const auto [netOrdinal, net] :
+         llvm::enumerate(techMapping.residualLogicalNets())) {
+      if (net.producer !=
+          ::dataflow::CanonicalGraphProducerEndpointRef(feedback.producer))
+        continue;
+      for (const auto [sinkOrdinal, sink] : llvm::enumerate(net.sinks)) {
+        if (sink !=
+            ::dataflow::CanonicalGraphConsumerEndpointRef(feedback.consumer))
+          continue;
+        if (found)
+          return invalid("initialized feedback edge has multiple residual "
+                         "physical dispositions");
+        result.push_back({netOrdinal,
+                          SpatialRouteInitializedFeedbackPrerequisite{},
+                          sinkOrdinal});
+        found = true;
+      }
+    }
+    if (!found)
+      return invalid("initialized feedback edge has no residual physical "
+                     "disposition");
+  }
   const auto prerequisiteKey = [](const auto &prerequisite) {
     return std::visit(
         [](const auto &typed) {
@@ -1081,9 +1200,14 @@ deriveSpatialRouteProgressDependencies(
           if constexpr (std::is_same_v<T, SpatialRouteExternalSinkPrerequisite>)
             return std::tuple<std::uint8_t, std::uint64_t, std::uint64_t>{
                 0, typed.sinkOrdinal, 0};
-          else
+          else if constexpr (
+              std::is_same_v<T,
+                             SpatialRouteInternalMemoryConnectionPrerequisite>)
             return std::tuple<std::uint8_t, std::uint64_t, std::uint64_t>{
                 1, typed.memoryRealizationOrdinal, typed.internalEdgeOrdinal};
+          else
+            return std::tuple<std::uint8_t, std::uint64_t, std::uint64_t>{2, 0,
+                                                                          0};
         },
         prerequisite);
   };
@@ -1105,6 +1229,7 @@ llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes,
     llvm::ArrayRef<::dataflow::GraphRef> selectedGraphs) {
   std::set<std::uint64_t> selectedGraphEntities;
@@ -1149,16 +1274,25 @@ llvm::Expected<MappingProgressProjection> projectSpatialMappingProgress(
       return graph.takeError();
     if (selectedGraphEntities.count(graph->entity.value()) == 0)
       continue;
-    const auto route = llvm::find_if(routes, [&](const auto &candidate) {
-      return candidate.logicalNet == net.producer;
-    });
-    if (route == routes.end())
-      return invalid("route progress dependency has no selected route");
     const auto *external = std::get_if<SpatialRouteExternalSinkPrerequisite>(
         &dependency.prerequisite);
     if ((external && external->sinkOrdinal >= net.sinks.size()) ||
         dependency.dependentSinkOrdinal >= net.sinks.size())
       return invalid("route progress dependency names an absent logical sink");
+    const auto localTransfer =
+        llvm::find_if(registerFifoTransfers, [&](const auto &transfer) {
+          return transfer.logicalNet == net.producer &&
+                 transfer.sink == net.sinks[dependency.dependentSinkOrdinal];
+        });
+    if (localTransfer != registerFifoTransfers.end()) {
+      result.routeObligations.push_back({true});
+      continue;
+    }
+    const auto route = llvm::find_if(routes, [&](const auto &candidate) {
+      return candidate.logicalNet == net.producer;
+    });
+    if (route == routes.end())
+      return invalid("route progress dependency has no selected route");
     if (const auto *internal =
             std::get_if<SpatialRouteInternalMemoryConnectionPrerequisite>(
                 &dependency.prerequisite)) {
@@ -1331,10 +1465,11 @@ llvm::Expected<MappingProgressClosure> deriveSpatialMappingProgressClosure(
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
+    llvm::ArrayRef<SpatialRegisterFifoTransferView> registerFifoTransfers,
     llvm::ArrayRef<SpatialRouteTreeView> routes) {
-  auto projection = projectSpatialMappingProgress(dataflow, techMapping, fabric,
-                                                  computeBindings, routes,
-                                                  techMapping.covers());
+  auto projection = projectSpatialMappingProgress(
+      dataflow, techMapping, fabric, computeBindings, registerFifoTransfers,
+      routes, techMapping.covers());
   if (!projection)
     return projection.takeError();
   auto model = freezeMappingProgressModel(dataflow, {});
