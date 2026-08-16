@@ -6,6 +6,7 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefImport.h"
+#include "Fabric/Identity/FabricSemanticFieldRelation.h"
 
 #include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/STLExtras.h"
@@ -16,10 +17,13 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <list>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -33,6 +37,9 @@ namespace loom::hardware {
 namespace {
 
 using ByteVector = std::vector<std::uint8_t>;
+
+thread_local detail::ConfigurationABIImportSessionState *
+    currentConfigurationABIImportSession = nullptr;
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -281,6 +288,26 @@ struct ResolvedPhysicalField final {
   fabric::FabricSemanticConfigFieldRef local;
 };
 
+inline constexpr std::uint64_t semanticValidationAlgorithmVersion = 1;
+
+struct SemanticValidationKey final {
+  ArtifactIdentity::Storage fabricArtifact;
+  SchemaVersion abiSchemaVersion;
+  std::uint64_t algorithmVersion = 0;
+  ByteVector localField;
+  ConfigurationEncodingRelationId encodingRelation = 0;
+
+  friend bool operator<(const SemanticValidationKey &lhs,
+                        const SemanticValidationKey &rhs) {
+    return std::tie(lhs.fabricArtifact, lhs.abiSchemaVersion.major,
+                    lhs.abiSchemaVersion.minor, lhs.algorithmVersion,
+                    lhs.localField, lhs.encodingRelation) <
+           std::tie(rhs.fabricArtifact, rhs.abiSchemaVersion.major,
+                    rhs.abiSchemaVersion.minor, rhs.algorithmVersion,
+                    rhs.localField, rhs.encodingRelation);
+  }
+};
+
 llvm::Expected<ResolvedPhysicalField>
 resolvePhysicalField(const fabric::FabricSystemRootView &system,
                      const fabric::FabricPhysicalConfigurationFieldRef &field) {
@@ -468,6 +495,39 @@ parseDestinationSlice(const llvm::json::Value &value) {
   return DestinationSlice{*source, *destination, *count};
 }
 
+llvm::Expected<ConfigurationEncodingRelationDraft>
+parseEncodingRelation(const llvm::json::Value &value,
+                      std::uint64_t expectedId) {
+  constexpr llvm::StringLiteral context = "configuration encoding relation";
+  const llvm::json::Object *object = value.getAsObject();
+  if (!object)
+    return invalid(context + " must be an object");
+  if (llvm::Error error = rejectUnknownFields(
+          *object, context,
+          {"relation_id", "semantic_encoding", "inactive_value"}))
+    return std::move(error);
+  auto id = requireUnsigned(*object, "relation_id", context);
+  if (!id)
+    return id.takeError();
+  if (*id != expectedId)
+    return invalid(context + " relation_id is not dense canonical order");
+  auto encodingObject = requireObject(*object, "semantic_encoding", context);
+  if (!encodingObject)
+    return encodingObject.takeError();
+  auto encoding = parseSemanticEncoding(**encodingObject);
+  if (!encoding)
+    return encoding.takeError();
+  auto inactive = requireString(*object, "inactive_value", context);
+  if (!inactive)
+    return inactive.takeError();
+  auto inactiveBytes =
+      contextual(parseArtifactLocalPayloadHex(*inactive), context);
+  if (!inactiveBytes)
+    return inactiveBytes.takeError();
+  return ConfigurationEncodingRelationDraft{std::move(*encoding),
+                                            std::move(*inactiveBytes)};
+}
+
 llvm::Expected<ConfigurationFieldEncoding>
 parseField(const llvm::json::Value &value) {
   constexpr llvm::StringLiteral context = "configuration field";
@@ -476,8 +536,8 @@ parseField(const llvm::json::Value &value) {
     return invalid(context + " must be an object");
   if (llvm::Error error =
           rejectUnknownFields(*object, context,
-                              {"fabric_config_slot_ref", "semantic_encoding",
-                               "destination_slices", "inactive_value"}))
+                              {"fabric_config_slot_ref", "encoding_relation_id",
+                               "destination_slices"}))
     return std::move(error);
   auto slotText = requireString(*object, "fabric_config_slot_ref", context);
   if (!slotText)
@@ -486,12 +546,9 @@ parseField(const llvm::json::Value &value) {
       *slotText, "fabric_config_slot_ref");
   if (!slot)
     return slot.takeError();
-  auto encodingObject = requireObject(*object, "semantic_encoding", context);
-  if (!encodingObject)
-    return encodingObject.takeError();
-  auto encoding = parseSemanticEncoding(**encodingObject);
-  if (!encoding)
-    return encoding.takeError();
+  auto relationId = requireUnsigned(*object, "encoding_relation_id", context);
+  if (!relationId)
+    return relationId.takeError();
   auto slices = requireArray(*object, "destination_slices", context);
   if (!slices)
     return slices.takeError();
@@ -503,16 +560,8 @@ parseField(const llvm::json::Value &value) {
       return parsed.takeError();
     parsedSlices.push_back(*parsed);
   }
-  auto inactive = requireString(*object, "inactive_value", context);
-  if (!inactive)
-    return inactive.takeError();
-  auto inactiveBytes =
-      contextual(parseArtifactLocalPayloadHex(*inactive), context);
-  if (!inactiveBytes)
-    return inactiveBytes.takeError();
-  return ConfigurationFieldEncoding{std::move(*slot), std::move(*encoding),
-                                    std::move(parsedSlices),
-                                    std::move(*inactiveBytes)};
+  return ConfigurationFieldEncoding{std::move(*slot), *relationId,
+                                    std::move(parsedSlices)};
 }
 
 llvm::Expected<ProgrammingUnitDraft>
@@ -587,9 +636,10 @@ parseConfigurationABI(llvm::ArrayRef<std::uint8_t> bytes) {
   const llvm::json::Object *root = value->getAsObject();
   if (!root)
     return invalid("root must be an object");
-  if (llvm::Error error = rejectUnknownFields(
-          *root, "ConfigurationABI",
-          {"schema", "schema_version", "fabric_ref", "programming_units"}))
+  if (llvm::Error error =
+          rejectUnknownFields(*root, "ConfigurationABI",
+                              {"schema", "schema_version", "fabric_ref",
+                               "encoding_relations", "programming_units"}))
     return std::move(error);
   auto schema = requireString(*root, "schema", "ConfigurationABI");
   if (!schema)
@@ -607,6 +657,19 @@ parseConfigurationABI(llvm::ArrayRef<std::uint8_t> bytes) {
   auto fabricReference = parseRootReference(**fabricObject);
   if (!fabricReference)
     return fabricReference.takeError();
+  auto relations =
+      requireArray(*root, "encoding_relations", "ConfigurationABI");
+  if (!relations)
+    return relations.takeError();
+  std::vector<ConfigurationEncodingRelationDraft> parsedRelations;
+  parsedRelations.reserve((*relations)->size());
+  std::uint64_t expectedRelationId = 0;
+  for (const llvm::json::Value &relation : **relations) {
+    auto parsed = parseEncodingRelation(relation, expectedRelationId++);
+    if (!parsed)
+      return parsed.takeError();
+    parsedRelations.push_back(std::move(*parsed));
+  }
   auto units = requireArray(*root, "programming_units", "ConfigurationABI");
   if (!units)
     return units.takeError();
@@ -620,20 +683,22 @@ parseConfigurationABI(llvm::ArrayRef<std::uint8_t> bytes) {
     parsedUnits.push_back(std::move(*parsed));
   }
   return ConfigurationABIDraft{std::move(*fabricReference),
+                               std::move(parsedRelations),
                                std::move(parsedUnits)};
 }
 
-llvm::Error canonicalizeEncoding(ConfigurationFieldEncoding &field) {
-  const std::uint64_t bitCount = field.encodedBitCount();
+llvm::Error canonicalizeEncoding(ConfigurationEncodingRelationDraft &relation) {
+  const std::uint64_t bitCount = relation.encodedBitCount();
   if (bitCount == 0)
     return invalid("semantic encoding has zero encoded_bit_count");
-  if (auto *direct = std::get_if<DirectBitsEncoding>(&field.semanticEncoding)) {
+  if (auto *direct =
+          std::get_if<DirectBitsEncoding>(&relation.semanticEncoding)) {
     (void)direct;
-    return validateBitVector(field.inactiveValue, bitCount,
+    return validateBitVector(relation.inactiveValue, bitCount,
                              "DirectBits inactive value");
   }
 
-  auto &codebook = std::get<FiniteCodebookEncoding>(field.semanticEncoding);
+  auto &codebook = std::get<FiniteCodebookEncoding>(relation.semanticEncoding);
   if (codebook.entries.empty())
     return invalid("finite codebook has no entries");
   for (const FiniteCodebookEntry &entry : codebook.entries) {
@@ -656,7 +721,7 @@ llvm::Error canonicalizeEncoding(ConfigurationFieldEncoding &field) {
   }
   const auto inactive =
       llvm::find_if(codebook.entries, [&](const FiniteCodebookEntry &entry) {
-        return entry.semanticValue == field.inactiveValue;
+        return entry.semanticValue == relation.inactiveValue;
       });
   if (inactive == codebook.entries.end())
     return invalid("finite codebook cannot encode its inactive value");
@@ -676,15 +741,12 @@ bool sameSemanticEncoding(const SemanticFieldEncoding &lhs,
          left.entries == right.entries;
 }
 
-llvm::Error validateFieldEncoding(const fabric::FabricSystemRootView &system,
-                                  const ConfigurationFieldEncoding &field) {
-  const auto physicalField = fabric::configurationField(field.slot);
-  auto resolved = resolvePhysicalField(system, physicalField);
-  if (!resolved)
-    return resolved.takeError();
-  mlir::MLIRContext context;
+llvm::Error validateFieldEncoding(
+    const ResolvedPhysicalField &resolved,
+    const ConfigurationEncodingRelationDraft &encodingRelation,
+    mlir::MLIRContext &context) {
   auto relation =
-      resolved->artifact.semanticFieldRelation(resolved->local, context);
+      resolved.artifact.semanticFieldRelation(resolved.local, context);
   if (!relation)
     return relation.takeError();
   switch (relation->kind()) {
@@ -692,10 +754,10 @@ llvm::Error validateFieldEncoding(const fabric::FabricSystemRootView &system,
     return invalid("field is present for a fixed Fabric resource");
   case fabric::FabricSemanticFieldRelationKind::Finite: {
     const auto *codebook =
-        std::get_if<FiniteCodebookEncoding>(&field.semanticEncoding);
+        std::get_if<FiniteCodebookEncoding>(&encodingRelation.semanticEncoding);
     if (!codebook)
       return invalid("finite Fabric field requires a finite codebook");
-    auto expected = finiteSemanticDomain(*resolved, context);
+    auto expected = finiteSemanticDomain(resolved, context);
     if (!expected)
       return expected.takeError();
     std::set<ByteVector> actual;
@@ -708,25 +770,25 @@ llvm::Error validateFieldEncoding(const fabric::FabricSystemRootView &system,
     if (actual != *expected)
       return invalid("finite codebook does not equal its Fabric relation");
 
-    const auto &owner = resolved->local.owner.catalog();
+    const auto &owner = resolved.local.owner.catalog();
     if (owner.kind() == fabric::FabricInventoryOwnerKind::PeOccurrence) {
-      auto schema = resolved->artifact.spatialPeConfigurationSchema(
+      auto schema = resolved.artifact.spatialPeConfigurationSchema(
           std::get<fabric::FabricPeOccurrenceRef>(owner.payload));
       if (!schema)
         return schema.takeError();
       const auto descriptor =
           llvm::find_if(schema->fields(), [&](const auto &candidate) {
-            return candidate.reference == resolved->local;
+            return candidate.reference == resolved.local;
           });
       if (descriptor == schema->fields().end())
         return invalid("PE configuration field is absent from its schema");
       if (descriptor->kind ==
           fabric::FabricPeConfigurationFieldKind::Activation) {
         auto disabled =
-            schema->encode(resolved->local, fabric::FabricPeDisabled{});
+            schema->encode(resolved.local, fabric::FabricPeDisabled{});
         if (!disabled)
           return disabled.takeError();
-        if (!disabled->bytes().equals(field.inactiveValue))
+        if (!disabled->bytes().equals(encodingRelation.inactiveValue))
           return invalid("PE activation inactive value is not Disabled");
       }
     }
@@ -734,13 +796,13 @@ llvm::Error validateFieldEncoding(const fabric::FabricSystemRootView &system,
   }
   case fabric::FabricSemanticFieldRelationKind::Direct: {
     const auto *direct =
-        std::get_if<DirectBitsEncoding>(&field.semanticEncoding);
+        std::get_if<DirectBitsEncoding>(&encodingRelation.semanticEncoding);
     if (!direct)
       return invalid("direct Fabric field requires DirectBits");
     if (!relation->directEncodedBitCount() ||
         direct->encodedBitCount != *relation->directEncodedBitCount())
       return invalid("DirectBits width does not equal its Fabric relation");
-    return relation->validateSemanticValue(field.inactiveValue);
+    return relation->validateSemanticValue(encodingRelation.inactiveValue);
   }
   }
   llvm_unreachable("unknown Fabric semantic field relation kind");
@@ -856,9 +918,9 @@ expectedPhysicalSlots(const fabric::FabricSystemRootView &system) {
 }
 
 llvm::Error canonicalizeSlices(
-    ConfigurationFieldEncoding &field, std::uint64_t payloadBitCount,
+    ConfigurationFieldEncoding &field, std::uint64_t sourceLimit,
+    std::uint64_t payloadBitCount,
     std::vector<std::pair<std::uint64_t, std::uint64_t>> &destinationRanges) {
-  const std::uint64_t sourceLimit = field.encodedBitCount();
   std::vector<std::pair<std::uint64_t, std::uint64_t>> sourceRanges;
   sourceRanges.reserve(field.destinationSlices.size());
   for (const DestinationSlice &slice : field.destinationSlices) {
@@ -905,11 +967,58 @@ ClosureKey closureKey(const ProgrammingUnit &unit) {
 
 struct CanonicalizedConfigurationABI {
   fabric::FabricSystemRootView system;
+  std::vector<ConfigurationEncodingRelation> encodingRelations;
   std::vector<ProgrammingUnit> units;
+  ConfigurationABIConstructionStatistics statistics;
 };
+
+void accumulateStatistics(ConfigurationABIConstructionStatistics &total,
+                          const ConfigurationABIConstructionStatistics &part) {
+  total.canonicalizationCount += part.canonicalizationCount;
+  total.canonicalizationNanoseconds += part.canonicalizationNanoseconds;
+  total.semanticValidationCacheHits += part.semanticValidationCacheHits;
+  total.semanticValidationCacheMisses += part.semanticValidationCacheMisses;
+  total.physicalSlotValidationCount += part.physicalSlotValidationCount;
+  total.retainedCacheBytes += part.retainedCacheBytes;
+  total.deterministicWork += part.deterministicWork;
+  total.encodingRelationCount = part.encodingRelationCount;
+  total.configurationFieldCount = part.configurationFieldCount;
+  total.canonicalByteCount = part.canonicalByteCount;
+}
+
+bool sameEncodingRelation(const ConfigurationEncodingRelationDraft &lhs,
+                          const ConfigurationEncodingRelationDraft &rhs) {
+  return lhs.inactiveValue == rhs.inactiveValue &&
+         sameSemanticEncoding(lhs.semanticEncoding, rhs.semanticEncoding);
+}
+
+bool encodingRelationLess(const ConfigurationEncodingRelationDraft &lhs,
+                          const ConfigurationEncodingRelationDraft &rhs) {
+  if (lhs.semanticEncoding.index() != rhs.semanticEncoding.index())
+    return lhs.semanticEncoding.index() < rhs.semanticEncoding.index();
+  if (const auto *left =
+          std::get_if<DirectBitsEncoding>(&lhs.semanticEncoding)) {
+    const auto &right = std::get<DirectBitsEncoding>(rhs.semanticEncoding);
+    return std::tie(left->encodedBitCount, lhs.inactiveValue) <
+           std::tie(right.encodedBitCount, rhs.inactiveValue);
+  }
+  const auto &left = std::get<FiniteCodebookEncoding>(lhs.semanticEncoding);
+  const auto &right = std::get<FiniteCodebookEncoding>(rhs.semanticEncoding);
+  if (left.encodedBitCount != right.encodedBitCount)
+    return left.encodedBitCount < right.encodedBitCount;
+  if (left.entries != right.entries)
+    return std::lexicographical_compare(
+        left.entries.begin(), left.entries.end(), right.entries.begin(),
+        right.entries.end(), [](const auto &leftEntry, const auto &rightEntry) {
+          return std::tie(leftEntry.semanticValue, leftEntry.physicalCode) <
+                 std::tie(rightEntry.semanticValue, rightEntry.physicalCode);
+        });
+  return lhs.inactiveValue < rhs.inactiveValue;
+}
 
 llvm::Expected<CanonicalizedConfigurationABI>
 canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
+  const auto started = std::chrono::steady_clock::now();
   auto importedFabric =
       contextual(fabric::importEntireFabricRoot(draft.fabric, store),
                  "ConfigurationABI fabric_ref cannot be imported");
@@ -920,9 +1029,44 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
   if (!system)
     return system.takeError();
 
+  struct IndexedRelation final {
+    ConfigurationEncodingRelationId originalId = 0;
+    ConfigurationEncodingRelationDraft relation;
+  };
+  std::vector<IndexedRelation> indexedRelations;
+  indexedRelations.reserve(draft.encodingRelations.size());
+  for (auto indexed : llvm::enumerate(draft.encodingRelations)) {
+    if (llvm::Error error = canonicalizeEncoding(indexed.value()))
+      return error;
+    indexedRelations.push_back(
+        {static_cast<ConfigurationEncodingRelationId>(indexed.index()),
+         std::move(indexed.value())});
+  }
+  llvm::sort(indexedRelations, [](const auto &lhs, const auto &rhs) {
+    return encodingRelationLess(lhs.relation, rhs.relation);
+  });
+  std::vector<ConfigurationEncodingRelationId> relationRemap(
+      indexedRelations.size());
+  std::vector<ConfigurationEncodingRelationDraft> uniqueRelations;
+  uniqueRelations.reserve(indexedRelations.size());
+  for (IndexedRelation &indexed : indexedRelations) {
+    if (uniqueRelations.empty() ||
+        !sameEncodingRelation(uniqueRelations.back(), indexed.relation))
+      uniqueRelations.push_back(std::move(indexed.relation));
+    relationRemap[static_cast<std::size_t>(indexed.originalId)] =
+        static_cast<ConfigurationEncodingRelationId>(uniqueRelations.size() -
+                                                     1);
+  }
+  std::vector<std::uint64_t> relationUseCounts(uniqueRelations.size(), 0);
+
   std::set<ByteVector> allOwners;
   std::set<ByteVector> allFields;
-  std::map<ByteVector, SemanticFieldEncoding> encodingByPhysicalField;
+  std::map<ByteVector, ConfigurationEncodingRelationId> encodingByPhysicalField;
+  mlir::MLIRContext semanticContext;
+  std::set<SemanticValidationKey> semanticValidationCache;
+  std::uint64_t semanticValidationCacheHits = 0;
+  std::uint64_t semanticValidationCacheMisses = 0;
+  std::uint64_t deterministicWork = uniqueRelations.size();
   std::vector<ProgrammingUnit> units;
   units.reserve(draft.programmingUnits.size());
   for (ProgrammingUnitDraft &unit : draft.programmingUnits) {
@@ -935,13 +1079,12 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
     if (unit.fields.empty())
       return invalid("programming unit has no configuration fields");
 
-    llvm::sort(unit.exactFabricResourceClosure,
-               [](const fabric::FabricPhysicalOccurrenceOwnerRef &lhs,
-                  const fabric::FabricPhysicalOccurrenceOwnerRef &rhs) {
-                 return referenceKey(lhs) < referenceKey(rhs);
-               });
+    using OwnerRow =
+        std::pair<ByteVector, fabric::FabricPhysicalOccurrenceOwnerRef>;
+    std::vector<OwnerRow> ownerRows;
+    ownerRows.reserve(unit.exactFabricResourceClosure.size());
     std::set<ByteVector> unitOwners;
-    for (const fabric::FabricPhysicalOccurrenceOwnerRef &owner :
+    for (fabric::FabricPhysicalOccurrenceOwnerRef &owner :
          unit.exactFabricResourceClosure) {
       auto resolved = system->resolvePhysicalOwner(owner);
       if (!resolved)
@@ -950,12 +1093,32 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
       ByteVector key = referenceKey(owner);
       if (!unitOwners.insert(key).second)
         return invalid("programming unit resource closure is not a unique set");
-      if (!allOwners.insert(std::move(key)).second)
+      if (!allOwners.insert(key).second)
         return invalid("programming unit resource closures overlap");
+      ownerRows.emplace_back(std::move(key), std::move(owner));
     }
+    llvm::sort(ownerRows, [](const OwnerRow &lhs, const OwnerRow &rhs) {
+      return lhs.first < rhs.first;
+    });
+    unit.exactFabricResourceClosure.clear();
+    unit.exactFabricResourceClosure.reserve(ownerRows.size());
+    for (OwnerRow &row : ownerRows)
+      unit.exactFabricResourceClosure.push_back(std::move(row.second));
 
     std::vector<std::pair<std::uint64_t, std::uint64_t>> destinationRanges;
+    using FieldRow = std::pair<ByteVector, ConfigurationFieldEncoding>;
+    std::vector<FieldRow> fieldRows;
+    fieldRows.reserve(unit.fields.size());
     for (ConfigurationFieldEncoding &field : unit.fields) {
+      ++deterministicWork;
+      if (field.encodingRelation >= relationRemap.size())
+        return invalid("configuration field names an unknown encoding "
+                       "relation");
+      field.encodingRelation =
+          relationRemap[static_cast<std::size_t>(field.encodingRelation)];
+      ++relationUseCounts[static_cast<std::size_t>(field.encodingRelation)];
+      const ConfigurationEncodingRelationDraft &encodingRelation =
+          uniqueRelations[static_cast<std::size_t>(field.encodingRelation)];
       if (llvm::Error error =
               contextual(validatePhysicalSlot(*system, field.slot),
                          "configuration slot does not resolve in Fabric"))
@@ -970,26 +1133,50 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
       if (unitOwners.find(referenceKey(*physicalOwner)) == unitOwners.end())
         return invalid(
             "configuration field owner is absent from its resource closure");
-      if (llvm::Error error = canonicalizeEncoding(field))
-        return error;
       const ByteVector physicalFieldKey = referenceKey(physicalField);
       auto [knownEncoding, inserted] = encodingByPhysicalField.emplace(
-          physicalFieldKey, field.semanticEncoding);
-      if (!inserted &&
-          !sameSemanticEncoding(knownEncoding->second,
-                                field.semanticEncoding))
+          physicalFieldKey, field.encodingRelation);
+      if (!inserted && knownEncoding->second != field.encodingRelation)
         return invalid("configuration residencies of one physical field use "
                        "different semantic encodings");
-      if (llvm::Error error = validateFieldEncoding(*system, field))
+      auto resolved = resolvePhysicalField(*system, physicalField);
+      if (!resolved)
+        return resolved.takeError();
+      auto relationSource = fabric::semanticFieldRelationSourceIdentity(
+          resolved->artifact, resolved->local);
+      if (!relationSource)
+        return relationSource.takeError();
+      SemanticValidationKey validationKey{
+          resolved->artifact.identity().bytes(), configurationAbiSchema.version,
+          semanticValidationAlgorithmVersion,
+          ByteVector(relationSource->bytes().begin(),
+                     relationSource->bytes().end()),
+          field.encodingRelation};
+      auto [cached, cacheInserted] =
+          semanticValidationCache.insert(std::move(validationKey));
+      if (cacheInserted) {
+        ++semanticValidationCacheMisses;
+        ++deterministicWork;
+        if (llvm::Error error = validateFieldEncoding(
+                *resolved, encodingRelation, semanticContext))
+          return error;
+      } else {
+        (void)cached;
+        ++semanticValidationCacheHits;
+      }
+      if (llvm::Error error =
+              canonicalizeSlices(field, encodingRelation.encodedBitCount(),
+                                 unit.payloadBitCount, destinationRanges))
         return error;
-      if (llvm::Error error = canonicalizeSlices(field, unit.payloadBitCount,
-                                                 destinationRanges))
-        return error;
+      fieldRows.emplace_back(std::move(fieldKey), std::move(field));
     }
-    llvm::sort(unit.fields, [](const ConfigurationFieldEncoding &lhs,
-                               const ConfigurationFieldEncoding &rhs) {
-      return referenceKey(lhs.slot) < referenceKey(rhs.slot);
+    llvm::sort(fieldRows, [](const FieldRow &lhs, const FieldRow &rhs) {
+      return lhs.first < rhs.first;
     });
+    unit.fields.clear();
+    unit.fields.reserve(fieldRows.size());
+    for (FieldRow &row : fieldRows)
+      unit.fields.push_back(std::move(row.second));
     llvm::sort(destinationRanges);
     for (std::size_t index = 1; index < destinationRanges.size(); ++index)
       if (destinationRanges[index].first < destinationRanges[index - 1].second)
@@ -1062,15 +1249,49 @@ canonicalizeDraft(ConfigurationABIDraft draft, const ArtifactStore &store) {
     return invalid(detail);
   }
 
-  llvm::sort(units, [](const ProgrammingUnit &lhs, const ProgrammingUnit &rhs) {
-    return closureKey(lhs) < closureKey(rhs);
+  using UnitRow = std::pair<ClosureKey, ProgrammingUnit>;
+  std::vector<UnitRow> unitRows;
+  unitRows.reserve(units.size());
+  for (ProgrammingUnit &unit : units)
+    unitRows.emplace_back(closureKey(unit), std::move(unit));
+  llvm::sort(unitRows, [](const UnitRow &lhs, const UnitRow &rhs) {
+    return lhs.first < rhs.first;
   });
-  for (std::size_t index = 0; index < units.size(); ++index) {
-    if (index != 0 && closureKey(units[index - 1]) == closureKey(units[index]))
+  units.clear();
+  units.reserve(unitRows.size());
+  for (std::size_t index = 0; index < unitRows.size(); ++index) {
+    if (index != 0 && unitRows[index - 1].first == unitRows[index].first)
       return invalid("duplicate programming unit resource closure");
-    units[index].id = static_cast<ProgrammingUnitId>(index);
+    unitRows[index].second.id = static_cast<ProgrammingUnitId>(index);
+    units.push_back(std::move(unitRows[index].second));
   }
-  return CanonicalizedConfigurationABI{std::move(*system), std::move(units)};
+  if (llvm::is_contained(relationUseCounts, std::uint64_t(0)))
+    return invalid("configuration encoding relation has no field use");
+  std::vector<ConfigurationEncodingRelation> finalizedRelations;
+  finalizedRelations.reserve(uniqueRelations.size());
+  for (auto indexed : llvm::enumerate(uniqueRelations))
+    finalizedRelations.push_back(ConfigurationEncodingRelation{
+        static_cast<ConfigurationEncodingRelationId>(indexed.index()),
+        std::move(indexed.value().semanticEncoding),
+        std::move(indexed.value().inactiveValue)});
+  std::uint64_t retainedCacheBytes = 0;
+  for (const SemanticValidationKey &key : semanticValidationCache)
+    retainedCacheBytes += sizeof(key) + key.localField.size();
+  const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now() - started);
+  ConfigurationABIConstructionStatistics statistics;
+  statistics.canonicalizationCount = 1;
+  statistics.canonicalizationNanoseconds = elapsed.count();
+  statistics.semanticValidationCacheHits = semanticValidationCacheHits;
+  statistics.semanticValidationCacheMisses = semanticValidationCacheMisses;
+  statistics.physicalSlotValidationCount = allFields.size();
+  statistics.retainedCacheBytes = retainedCacheBytes;
+  statistics.deterministicWork = deterministicWork;
+  statistics.encodingRelationCount = finalizedRelations.size();
+  statistics.configurationFieldCount = allFields.size();
+  return CanonicalizedConfigurationABI{std::move(*system),
+                                       std::move(finalizedRelations),
+                                       std::move(units), statistics};
 }
 
 void writeRootReference(llvm::json::OStream &json,
@@ -1107,9 +1328,10 @@ void writeSemanticEncoding(llvm::json::OStream &json,
       encoding);
 }
 
-std::string
-serializeConfigurationABI(const ArtifactRootReference &fabricReference,
-                          llvm::ArrayRef<ProgrammingUnit> programmingUnits) {
+std::string serializeConfigurationABI(
+    const ArtifactRootReference &fabricReference,
+    llvm::ArrayRef<ConfigurationEncodingRelation> encodingRelations,
+    llvm::ArrayRef<ProgrammingUnit> programmingUnits) {
   llvm::SmallString<4096> storage;
   llvm::raw_svector_ostream output(storage);
   llvm::json::OStream json(output);
@@ -1119,6 +1341,18 @@ serializeConfigurationABI(const ArtifactRootReference &fabricReference,
                    formatSchemaVersion(configurationAbiSchema.version));
     json.attributeObject("fabric_ref",
                          [&] { writeRootReference(json, fabricReference); });
+    json.attributeArray("encoding_relations", [&] {
+      for (const ConfigurationEncodingRelation &relation : encodingRelations) {
+        json.object([&] {
+          json.attribute("relation_id", relation.id);
+          json.attributeObject("semantic_encoding", [&] {
+            writeSemanticEncoding(json, relation.semanticEncoding);
+          });
+          json.attribute("inactive_value",
+                         formatArtifactLocalPayloadHex(relation.inactiveValue));
+        });
+      }
+    });
     json.attributeArray("programming_units", [&] {
       for (const ProgrammingUnit &unit : programmingUnits) {
         json.object([&] {
@@ -1138,9 +1372,7 @@ serializeConfigurationABI(const ArtifactRootReference &fabricReference,
                 json.attribute(
                     "fabric_config_slot_ref",
                     formatArtifactLocalPayloadHex(referenceKey(field.slot)));
-                json.attributeObject("semantic_encoding", [&] {
-                  writeSemanticEncoding(json, field.semanticEncoding);
-                });
+                json.attribute("encoding_relation_id", field.encodingRelation);
                 json.attributeArray("destination_slices", [&] {
                   for (const DestinationSlice &slice :
                        field.destinationSlices) {
@@ -1153,8 +1385,6 @@ serializeConfigurationABI(const ArtifactRootReference &fabricReference,
                     });
                   }
                 });
-                json.attribute("inactive_value", formatArtifactLocalPayloadHex(
-                                                     field.inactiveValue));
               });
             }
           });
@@ -1167,24 +1397,34 @@ serializeConfigurationABI(const ArtifactRootReference &fabricReference,
 
 const ConfigurationFieldEncoding *
 findFieldInUnit(const ProgrammingUnit &unit, llvm::ArrayRef<std::uint8_t> key) {
-  for (const ConfigurationFieldEncoding &field : unit.fields)
-    if (llvm::ArrayRef<std::uint8_t>(referenceKey(field.slot)).equals(key))
-      return &field;
-  return nullptr;
+  const auto found = std::lower_bound(
+      unit.fields.begin(), unit.fields.end(), key,
+      [](const ConfigurationFieldEncoding &field,
+         llvm::ArrayRef<std::uint8_t> selected) {
+        const ByteVector candidate = referenceKey(field.slot);
+        return std::lexicographical_compare(
+            candidate.begin(), candidate.end(), selected.begin(),
+            selected.end());
+      });
+  if (found == unit.fields.end())
+    return nullptr;
+  return llvm::ArrayRef<std::uint8_t>(referenceKey(found->slot)).equals(key)
+             ? &*found
+             : nullptr;
 }
 
 llvm::Expected<ByteVector>
-encodeField(const ConfigurationFieldEncoding &field,
+encodeField(const ConfigurationEncodingRelation &relation,
             llvm::ArrayRef<std::uint8_t> semanticValue) {
   if (const auto *direct =
-          std::get_if<DirectBitsEncoding>(&field.semanticEncoding)) {
+          std::get_if<DirectBitsEncoding>(&relation.semanticEncoding)) {
     if (llvm::Error error = validateBitVector(
             semanticValue, direct->encodedBitCount, "DirectBits value"))
       return std::move(error);
     return ByteVector(semanticValue.begin(), semanticValue.end());
   }
   const auto &codebook =
-      std::get<FiniteCodebookEncoding>(field.semanticEncoding);
+      std::get<FiniteCodebookEncoding>(relation.semanticEncoding);
   const auto entry = llvm::find_if(
       codebook.entries, [&](const FiniteCodebookEntry &candidate) {
         return llvm::ArrayRef<std::uint8_t>(candidate.semanticValue)
@@ -1195,7 +1435,156 @@ encodeField(const ConfigurationFieldEncoding &field,
   return entry->physicalCode;
 }
 
+std::uint64_t retainedConfigurationABIBytes(
+    const CanonicalSemanticBytes &canonicalBytes,
+    const ConfigurationABI &abi) {
+  std::uint64_t bytes = sizeof(ConfigurationABI) + canonicalBytes.bytes().size();
+  const auto add = [&](std::uint64_t amount) {
+    if (amount > std::numeric_limits<std::uint64_t>::max() - bytes)
+      bytes = std::numeric_limits<std::uint64_t>::max();
+    else
+      bytes += amount;
+  };
+  add(abi.encodingRelations().size() *
+      sizeof(ConfigurationEncodingRelation));
+  for (const ConfigurationEncodingRelation &relation :
+       abi.encodingRelations()) {
+    add(relation.inactiveValue.capacity());
+    const auto *codebook =
+        std::get_if<FiniteCodebookEncoding>(&relation.semanticEncoding);
+    if (!codebook)
+      continue;
+    add(codebook->entries.capacity() * sizeof(FiniteCodebookEntry));
+    for (const FiniteCodebookEntry &entry : codebook->entries) {
+      add(entry.semanticValue.capacity());
+      add(entry.physicalCode.capacity());
+    }
+  }
+  add(abi.programmingUnits().size() * sizeof(ProgrammingUnit));
+  for (const ProgrammingUnit &unit : abi.programmingUnits()) {
+    add(unit.exactFabricResourceClosure.capacity() *
+        sizeof(fabric::FabricPhysicalOccurrenceOwnerRef));
+    add(unit.fields.capacity() * sizeof(ConfigurationFieldEncoding));
+    for (const ConfigurationFieldEncoding &field : unit.fields)
+      add(field.destinationSlices.capacity() * sizeof(DestinationSlice));
+  }
+  return bytes;
+}
+
 } // namespace
+
+namespace detail {
+
+constexpr std::uint64_t configurationABIImportAlgorithmVersion = 1;
+
+struct ConfigurationABIImportSessionKey final {
+  ArtifactRootReference reference;
+  std::uint64_t algorithmVersion = configurationABIImportAlgorithmVersion;
+};
+
+bool operator==(const ConfigurationABIImportSessionKey &lhs,
+                const ConfigurationABIImportSessionKey &rhs) {
+  return lhs.reference == rhs.reference &&
+         lhs.algorithmVersion == rhs.algorithmVersion;
+}
+
+struct ConfigurationABIImportSessionEntry final {
+  ConfigurationABIImportSessionKey key;
+  CanonicalSemanticBytes canonicalBytes;
+  std::shared_ptr<const ConfigurationABI> abi;
+  ConfigurationABIConstructionStatistics constructionStatistics;
+  std::uint64_t retainedBytes = 0;
+};
+
+class ConfigurationABIImportSessionState final {
+public:
+  void recordRequest() {
+    add(statistics_.importRequests, 1);
+  }
+
+  void recordRead(std::uint64_t byteCount) {
+    add(statistics_.bytesRead, byteCount);
+    add(statistics_.bytesCopied, byteCount);
+  }
+
+  std::shared_ptr<const ConfigurationABIImportSessionEntry>
+  find(const ArtifactRootReference &reference) {
+    add(statistics_.deterministicWork, 1);
+    const ConfigurationABIImportSessionKey key{reference};
+    const auto found = llvm::find_if(
+        entries_, [&](const auto &entry) { return entry->key == key; });
+    if (found == entries_.end()) {
+      add(statistics_.cacheMisses, 1);
+      return {};
+    }
+    add(statistics_.cacheHits, 1);
+    return *found;
+  }
+
+  std::shared_ptr<const ConfigurationABIImportSessionEntry> insert(
+      const ArtifactRootReference &reference,
+      CanonicalSemanticBytes canonicalBytes,
+      std::shared_ptr<const ConfigurationABI> abi,
+      const ConfigurationABIConstructionStatistics &constructionStatistics,
+      std::uint64_t retainedBytes, std::uint64_t constructionNanoseconds) {
+    const ConfigurationABIImportSessionKey key{reference};
+    const auto found = llvm::find_if(
+        entries_, [&](const auto &entry) { return entry->key == key; });
+    if (found != entries_.end())
+      return *found;
+    auto entry = std::make_shared<const ConfigurationABIImportSessionEntry>(
+        ConfigurationABIImportSessionEntry{
+            key, std::move(canonicalBytes), std::move(abi),
+            constructionStatistics, retainedBytes});
+    entries_.push_back(entry);
+    add(statistics_.uniqueConstructions, 1);
+    add(statistics_.constructionNanoseconds, constructionNanoseconds);
+    add(statistics_.deterministicWork,
+        constructionStatistics.deterministicWork);
+    add(statistics_.retainedBytes, retainedBytes);
+    statistics_.entryCount = entries_.size();
+    return entry;
+  }
+
+  ConfigurationABIImportSessionStatistics statistics() const {
+    return statistics_;
+  }
+
+private:
+  static void add(std::uint64_t &destination, std::uint64_t value) {
+    if (value > std::numeric_limits<std::uint64_t>::max() - destination)
+      destination = std::numeric_limits<std::uint64_t>::max();
+    else
+      destination += value;
+  }
+
+  std::list<std::shared_ptr<const ConfigurationABIImportSessionEntry>> entries_;
+  ConfigurationABIImportSessionStatistics statistics_;
+};
+
+} // namespace detail
+
+ConfigurationABIImportSession::ConfigurationABIImportSession(
+    ConfigurationABIImportSessionMode mode)
+    : previous_(currentConfigurationABIImportSession) {
+  if (mode == ConfigurationABIImportSessionMode::ReuseEnclosing && previous_) {
+    active_ = previous_;
+  } else {
+    owned_ = std::make_unique<detail::ConfigurationABIImportSessionState>();
+    active_ = owned_.get();
+  }
+  currentConfigurationABIImportSession = active_;
+}
+
+ConfigurationABIImportSession::~ConfigurationABIImportSession() {
+  currentConfigurationABIImportSession = previous_;
+}
+
+ConfigurationABIImportSessionStatistics
+ConfigurationABIImportSession::statistics() const {
+  return active_ ? active_->statistics()
+                 : ConfigurationABIImportSessionStatistics{};
+}
 
 ProgrammingUnitOccurrenceScope
 deriveProgrammingUnitOccurrenceScope(const ProgrammingUnit &unit) {
@@ -1220,6 +1609,15 @@ deriveProgrammingUnitOccurrenceScope(const ProgrammingUnit &unit) {
   return result;
 }
 
+const ConfigurationEncodingRelation *ConfigurationABI::findEncodingRelation(
+    ConfigurationEncodingRelationId id) const {
+  if (id >= encodingRelations_.size())
+    return nullptr;
+  const ConfigurationEncodingRelation &relation =
+      encodingRelations_[static_cast<std::size_t>(id)];
+  return relation.id == id ? &relation : nullptr;
+}
+
 const ProgrammingUnit *
 ConfigurationABI::findProgrammingUnit(ProgrammingUnitId id) const {
   if (id >= programmingUnits_.size())
@@ -1235,6 +1633,13 @@ const ConfigurationFieldEncoding *ConfigurationABI::findField(
     if (const ConfigurationFieldEncoding *encoding = findFieldInUnit(unit, key))
       return encoding;
   return nullptr;
+}
+
+const ConfigurationFieldEncoding *ConfigurationABI::findField(
+    ProgrammingUnitId unitId,
+    const fabric::FabricPhysicalConfigurationSlotRef &slot) const {
+  const ProgrammingUnit *unit = findProgrammingUnit(unitId);
+  return unit ? findFieldInUnit(*unit, referenceKey(slot)) : nullptr;
 }
 
 const ConfigurationFieldEncoding *ConfigurationABI::findOperationField(
@@ -1270,6 +1675,15 @@ const ConfigurationFieldEncoding *ConfigurationABI::findOperationField(
   return nullptr;
 }
 
+const ConfigurationEncodingRelation *
+ConfigurationABI::findOperationEncodingRelation(
+    const fabric::FabricPhysicalOccurrenceOwnerRef &operation,
+    fabric::FabricOrdinal fieldOrdinal) const {
+  const ConfigurationFieldEncoding *field =
+      findOperationField(operation, fieldOrdinal);
+  return field ? findEncodingRelation(*field) : nullptr;
+}
+
 llvm::Expected<std::vector<std::uint8_t>> ConfigurationABI::encode(
     ProgrammingUnitId id,
     llvm::ArrayRef<SemanticConfigurationValue> values) const {
@@ -1282,33 +1696,54 @@ llvm::Expected<std::vector<std::uint8_t>> ConfigurationABI::encode(
     return payloadByteCount.takeError();
   std::vector<std::uint8_t> payload(*payloadByteCount, 0);
 
-  std::map<ByteVector, llvm::ArrayRef<std::uint8_t>> selected;
+  std::map<std::size_t, llvm::ArrayRef<std::uint8_t>> selected;
   for (const SemanticConfigurationValue &value : values) {
     ByteVector key = referenceKey(value.slot);
-    if (!findFieldInUnit(*unit, key))
+    const ConfigurationFieldEncoding *field = findFieldInUnit(*unit, key);
+    if (!field)
       return invalid(
           "semantic value names a field outside the programming unit");
-    if (!selected.emplace(std::move(key), value.value).second)
+    const std::size_t ordinal =
+        static_cast<std::size_t>(field - unit->fields.data());
+    if (!selected.emplace(ordinal, value.value).second)
       return invalid("semantic value names a configuration field twice");
   }
 
-  for (const ConfigurationFieldEncoding &field : unit->fields) {
-    ByteVector key = referenceKey(field.slot);
-    auto found = selected.find(key);
-    llvm::ArrayRef<std::uint8_t> semantic =
-        found == selected.end()
-            ? llvm::ArrayRef<std::uint8_t>(field.inactiveValue)
-            : found->second;
-    if (llvm::Error error = validateSemanticValue(
-            system_, fabric::configurationField(field.slot), semantic))
-      return std::move(error);
-    auto encoded = encodeField(field, semantic);
+  std::vector<ByteVector> inactiveEncodings;
+  inactiveEncodings.reserve(encodingRelations_.size());
+  for (const ConfigurationEncodingRelation &relation : encodingRelations_) {
+    auto encoded = encodeField(relation, relation.inactiveValue);
     if (!encoded)
       return encoded.takeError();
+    inactiveEncodings.push_back(std::move(*encoded));
+  }
+
+  for (const auto indexed : llvm::enumerate(unit->fields)) {
+    const ConfigurationFieldEncoding &field = indexed.value();
+    const ConfigurationEncodingRelation *relation = findEncodingRelation(field);
+    if (!relation)
+      return invalid("configuration field names an unknown encoding relation");
+    const auto found = selected.find(indexed.index());
+    ByteVector selectedEncoding;
+    llvm::ArrayRef<std::uint8_t> encoded;
+    if (found == selected.end()) {
+      encoded = inactiveEncodings[static_cast<std::size_t>(relation->id)];
+      if (llvm::all_of(encoded, [](std::uint8_t byte) { return byte == 0; }))
+        continue;
+    } else {
+      if (llvm::Error error = validateSemanticValue(
+              system_, fabric::configurationField(field.slot), found->second))
+        return std::move(error);
+      auto selectedValue = encodeField(*relation, found->second);
+      if (!selectedValue)
+        return selectedValue.takeError();
+      selectedEncoding = std::move(*selectedValue);
+      encoded = selectedEncoding;
+    }
     for (const DestinationSlice &slice : field.destinationSlices)
       for (std::uint64_t index = 0; index < slice.bitCount; ++index)
         setBit(payload, slice.destinationBitOffset + index,
-               bit(*encoded, slice.sourceBitOffset + index));
+               bit(encoded, slice.sourceBitOffset + index));
   }
   return payload;
 }
@@ -1331,7 +1766,10 @@ ConfigurationABI::decode(ProgrammingUnitId id,
   std::vector<SemanticConfigurationValue> values;
   values.reserve(unit->fields.size());
   for (const ConfigurationFieldEncoding &field : unit->fields) {
-    const std::uint64_t fieldBitCount = field.encodedBitCount();
+    const ConfigurationEncodingRelation *relation = findEncodingRelation(field);
+    if (!relation)
+      return invalid("configuration field names an unknown encoding relation");
+    const std::uint64_t fieldBitCount = relation->encodedBitCount();
     auto fieldByteCount =
         byteCountForBits(fieldBitCount, "configuration field");
     if (!fieldByteCount)
@@ -1346,11 +1784,12 @@ ConfigurationABI::decode(ProgrammingUnitId id,
     }
 
     ByteVector semantic;
-    if (std::holds_alternative<DirectBitsEncoding>(field.semanticEncoding)) {
+    if (std::holds_alternative<DirectBitsEncoding>(
+            relation->semanticEncoding)) {
       semantic = std::move(physical);
     } else {
       const auto &codebook =
-          std::get<FiniteCodebookEncoding>(field.semanticEncoding);
+          std::get<FiniteCodebookEncoding>(relation->semanticEncoding);
       const auto entry = llvm::find_if(
           codebook.entries, [&](const FiniteCodebookEntry &candidate) {
             return candidate.physicalCode == physical;
@@ -1379,8 +1818,9 @@ finalizeConfigurationABI(ConfigurationABIDraft draft,
   auto units = canonicalizeDraft(std::move(draft), store);
   if (!units)
     return units.takeError();
-  const std::string json =
-      serializeConfigurationABI(fabricReference, units->units);
+  const std::string json = serializeConfigurationABI(
+      fabricReference, units->encodingRelations, units->units);
+  units->statistics.canonicalByteCount = json.size();
   CanonicalSemanticBytes bytes(
       std::vector<std::uint8_t>(json.begin(), json.end()));
 
@@ -1391,15 +1831,27 @@ finalizeConfigurationABI(ConfigurationABIDraft draft,
   auto reparsedUnits = canonicalizeDraft(std::move(*reparsedDraft), store);
   if (!reparsedUnits)
     return reparsedUnits.takeError();
-  if (serializeConfigurationABI(reparsedFabric, reparsedUnits->units) != json)
+  reparsedUnits->statistics.canonicalByteCount = json.size();
+  if (serializeConfigurationABI(reparsedFabric,
+                                reparsedUnits->encodingRelations,
+                                reparsedUnits->units) != json)
     return invalid("canonical JSON does not independently round-trip");
 
   auto identity = store.put(configurationAbiSchema, bytes);
   if (!identity)
     return identity.takeError();
-  return importConfigurationABI({configurationAbiSchema.identity.str(),
-                                 configurationAbiSchema.version, *identity},
-                                store);
+  auto imported =
+      importConfigurationABI({configurationAbiSchema.identity.str(),
+                              configurationAbiSchema.version, *identity},
+                             store);
+  if (!imported)
+    return imported.takeError();
+  ConfigurationABIConstructionStatistics aggregate = units->statistics;
+  accumulateStatistics(aggregate, reparsedUnits->statistics);
+  accumulateStatistics(aggregate, imported->constructionStatistics_);
+  aggregate.canonicalByteCount = json.size();
+  imported->constructionStatistics_ = aggregate;
+  return std::move(*imported);
 }
 
 llvm::Expected<FinalizedConfigurationABI>
@@ -1407,10 +1859,21 @@ importConfigurationABI(const ArtifactRootReference &reference,
                        const ArtifactStore &store) {
   if (reference.schemaIdentity != configurationAbiSchema.identity ||
       reference.schemaVersion != configurationAbiSchema.version)
-    return invalid("reference is not loom.configuration_abi 3.0");
+    return invalid("reference is not loom.configuration_abi 4.0");
+  if (currentConfigurationABIImportSession) {
+    currentConfigurationABIImportSession->recordRequest();
+    if (auto cached =
+            currentConfigurationABIImportSession->find(reference))
+      return FinalizedConfigurationABI(
+          reference, cached->canonicalBytes, cached->abi,
+          cached->constructionStatistics);
+  }
   auto bytes = store.get(reference);
   if (!bytes)
     return bytes.takeError();
+  if (currentConfigurationABIImportSession)
+    currentConfigurationABIImportSession->recordRead(bytes->bytes().size());
+  const auto started = std::chrono::steady_clock::now();
   auto draft = parseConfigurationABI(bytes->bytes());
   if (!draft)
     return draft.takeError();
@@ -1418,16 +1881,30 @@ importConfigurationABI(const ArtifactRootReference &reference,
   auto units = canonicalizeDraft(std::move(*draft), store);
   if (!units)
     return units.takeError();
-  const std::string rewritten =
-      serializeConfigurationABI(fabricReference, units->units);
+  units->statistics.canonicalByteCount = bytes->bytes().size();
+  const std::string rewritten = serializeConfigurationABI(
+      fabricReference, units->encodingRelations, units->units);
   llvm::StringRef stored(reinterpret_cast<const char *>(bytes->bytes().data()),
                          bytes->bytes().size());
   if (stored != rewritten)
     return invalid("stored ConfigurationABI payload is not canonical");
-  ConfigurationABI abi(fabricReference, std::move(units->units),
-                       std::move(units->system));
-  return FinalizedConfigurationABI(reference, std::move(*bytes),
-                                   std::move(abi));
+  std::shared_ptr<const ConfigurationABI> abi(new ConfigurationABI(
+      fabricReference, std::move(units->encodingRelations),
+      std::move(units->units), std::move(units->system)));
+  if (currentConfigurationABIImportSession) {
+    const std::uint64_t retainedBytes =
+        retainedConfigurationABIBytes(*bytes, *abi);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - started);
+    auto cached = currentConfigurationABIImportSession->insert(
+        reference, *bytes, std::move(abi), units->statistics, retainedBytes,
+        static_cast<std::uint64_t>(elapsed.count()));
+    return FinalizedConfigurationABI(
+        reference, cached->canonicalBytes, cached->abi,
+        cached->constructionStatistics);
+  }
+  return FinalizedConfigurationABI(reference, std::move(*bytes), std::move(abi),
+                                   units->statistics);
 }
 
 } // namespace loom::hardware

@@ -1,0 +1,578 @@
+#include "ADG/Builtin.h"
+#include "Application/Build.h"
+#include "Application/BuildDiagnostics.h"
+#include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
+#include "Config/ResolvedConfig.h"
+#include "Deployment/HardwareConfigurationImage.h"
+#include "Deployment/Package.h"
+#include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
+#include "Frontend/Executable/CompilerTargetBinding.h"
+#include "Frontend/Payload/AcceleratorFinalLink.h"
+#include "Hardware/Configuration/ConfigurationABI.h"
+#include "Mapping/Artifact/SystemMappingArtifact.h"
+
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/Function.h"
+#include "llvm/IR/LLVMContext.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FileUtilities.h"
+#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <limits>
+#include <memory>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <variant>
+#include <vector>
+
+namespace {
+
+using MonotonicClock = std::chrono::steady_clock;
+
+std::uint64_t elapsedNanoseconds(MonotonicClock::time_point begin) {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             MonotonicClock::now() - begin)
+      .count();
+}
+
+class ApplicationBuildOperationTimer final {
+public:
+  explicit ApplicationBuildOperationTimer(
+      loom::application::ApplicationBuildOperation operation)
+      : operation_(operation), begin_(MonotonicClock::now()) {}
+
+  ~ApplicationBuildOperationTimer() {
+    loom::application::emitApplicationBuildOperationStatistics(
+        {operation_, elapsedNanoseconds(begin_), 1});
+  }
+
+  ApplicationBuildOperationTimer(const ApplicationBuildOperationTimer &) =
+      delete;
+  ApplicationBuildOperationTimer &
+  operator=(const ApplicationBuildOperationTimer &) = delete;
+
+private:
+  loom::application::ApplicationBuildOperation operation_;
+  MonotonicClock::time_point begin_;
+};
+
+llvm::cl::opt<std::string> driverArgumentsOutput(
+    "driver-arguments-output",
+    llvm::cl::desc("Write the System-derived compiler arguments"),
+    llvm::cl::value_desc("path"));
+llvm::cl::opt<std::string> finalLinkOutput(
+    "final-link-output",
+    llvm::cl::desc("Consume one completed compiler final-link output"),
+    llvm::cl::value_desc("path"));
+llvm::cl::opt<std::string>
+    deploymentOutput("deployment-output",
+                     llvm::cl::desc("Publish the Deployment package"),
+                     llvm::cl::value_desc("path"), llvm::cl::Required);
+llvm::cl::opt<std::string>
+    accelerationProfile("acceleration-profile",
+                        llvm::cl::desc("Resolved configuration selector"),
+                        llvm::cl::value_desc("selector"));
+llvm::cl::opt<std::string> hardwarePath("hardware",
+                                        llvm::cl::desc("External Fabric MLIR"),
+                                        llvm::cl::value_desc("path"));
+llvm::cl::opt<std::string>
+    visualizationPath("visualization",
+                      llvm::cl::desc("Mapping visualization destination"),
+                      llvm::cl::value_desc("path"));
+
+llvm::Error productError(llvm::StringRef kind, const llvm::Twine &message) {
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 kind + ": " + message);
+}
+
+class ProductWorkspace final {
+public:
+  static llvm::Expected<std::unique_ptr<ProductWorkspace>>
+  create(llvm::StringRef destinationPath) {
+    llvm::SmallString<256> destination(destinationPath);
+    if (std::error_code error = llvm::sys::fs::make_absolute(destination))
+      return productError("loom_product_workspace_invalid",
+                          "cannot resolve Deployment output: " +
+                              error.message());
+    llvm::sys::path::remove_dots(destination, true);
+    const llvm::StringRef filename = llvm::sys::path::filename(destination);
+    if (filename.empty() || filename == "." || filename == "..")
+      return productError("loom_product_workspace_invalid",
+                          "Deployment output has no directory name");
+    llvm::SmallString<256> parent = llvm::sys::path::parent_path(destination);
+    if (parent.empty())
+      parent = ".";
+    if (!llvm::sys::fs::is_directory(parent))
+      return productError("loom_product_workspace_invalid",
+                          "Deployment output parent is not a directory");
+    llvm::SmallString<256> pattern(parent);
+    llvm::sys::path::append(pattern, ("." + filename + ".loom-work").str());
+    llvm::SmallString<256> root;
+    if (std::error_code error =
+            llvm::sys::fs::createUniqueDirectory(pattern, root))
+      return productError("loom_product_workspace_invalid",
+                          "cannot create bounded workspace at '" + pattern +
+                              "': " + error.message());
+    auto workspace = std::unique_ptr<ProductWorkspace>(
+        new ProductWorkspace(root.str(), destination.str()));
+    for (llvm::StringRef directory :
+         {llvm::StringRef(workspace->artifactPath_),
+          llvm::StringRef(workspace->blobPath_),
+          llvm::StringRef(workspace->journalPath_),
+          llvm::StringRef(workspace->linkerPath_)}) {
+      if (std::error_code error =
+              llvm::sys::fs::create_directories(directory)) {
+        std::error_code ignored;
+        std::filesystem::remove_all(workspace->root_, ignored);
+        return productError("loom_product_workspace_invalid",
+                            "cannot initialize workspace: " + error.message());
+      }
+    }
+    return workspace;
+  }
+
+  ~ProductWorkspace() {
+    std::error_code ignored;
+    std::filesystem::remove_all(root_, ignored);
+  }
+
+  const loom::ArtifactStore &artifacts() const { return artifacts_; }
+  const loom::BlobStore &blobs() const { return blobs_; }
+  llvm::StringRef deploymentPath() const { return deploymentPath_; }
+  llvm::StringRef journalPath() const { return journalPath_; }
+  llvm::StringRef linkerPath() const { return linkerPath_; }
+
+private:
+  static std::string child(llvm::StringRef root, llvm::StringRef name) {
+    llvm::SmallString<256> path(root);
+    llvm::sys::path::append(path, name);
+    return path.str().str();
+  }
+
+  ProductWorkspace(llvm::StringRef root, llvm::StringRef deploymentPath)
+      : root_(root.str()), deploymentPath_(deploymentPath.str()),
+        artifactPath_(child(root, "artifacts")),
+        blobPath_(child(root, "blobs")), journalPath_(child(root, "journal")),
+        linkerPath_(child(root, "linker")), artifacts_(artifactPath_),
+        blobs_(blobPath_) {}
+
+  std::string root_;
+  std::string deploymentPath_;
+  std::string artifactPath_;
+  std::string blobPath_;
+  std::string journalPath_;
+  std::string linkerPath_;
+  loom::ArtifactStore artifacts_;
+  loom::BlobStore blobs_;
+};
+
+struct PreparedProductTarget final {
+  std::unique_ptr<ProductWorkspace> workspace;
+  loom::ResolvedConfig config;
+  loom::fabric::FinalizedFabricRoot system;
+  std::vector<loom::ArtifactRootReference> physicalTimingProfiles;
+  loom::CompilerTargetPolicy compilerPolicy;
+  loom::CompilerTargetCommandLineProjection commandLine;
+};
+
+bool sameCommandLineTarget(
+    const loom::CompilerTargetCommandLineProjection &lhs,
+    const loom::CompilerTargetCommandLineProjection &rhs) {
+  return lhs.targetTriple == rhs.targetTriple &&
+         lhs.architecture == rhs.architecture && lhs.abi == rhs.abi &&
+         lhs.codeModel == rhs.codeModel && lhs.backendCpu == rhs.backendCpu &&
+         lhs.ltoFeatures == rhs.ltoFeatures &&
+         lhs.positionIndependent == rhs.positionIndependent;
+}
+
+llvm::Error validateRequestedProductCapabilities() {
+  if (!hardwarePath.empty())
+    return productError("loom_hardware_import_unsupported",
+                        "external Fabric MLIR import is not yet available");
+  if (!visualizationPath.empty())
+    return productError("loom_visualization_export_unsupported",
+                        "product visualization export is not yet available");
+  return llvm::Error::success();
+}
+
+llvm::Expected<loom::CompilerTargetCommandLineProjection>
+prepareProductDriverTarget() {
+  ApplicationBuildOperationTimer timer(
+      loom::application::ApplicationBuildOperation::ProductTargetPreparation);
+  if (llvm::Error error = validateRequestedProductCapabilities())
+    return std::move(error);
+  auto config = loom::resolveConfigProfile(accelerationProfile);
+  if (!config)
+    return config.takeError();
+  if (!loom::adg::findBuiltinTargetDescriptor(
+          config->hardwareTarget.templateIdentity,
+          config->hardwareTarget.schemaVersion.major,
+          config->hardwareTarget.schemaVersion.minor) ||
+      !loom::adg::isValidBuiltinTargetScale(config->hardwareTarget.parameters))
+    return productError("loom_product_target_invalid",
+                        "resolved builtin target descriptor is invalid");
+  auto architecture = loom::adg::getBuiltinInstructionCoreArchitecture();
+  if (!architecture)
+    return architecture.takeError();
+  return loom::projectCompilerTargetCommandLine(
+      *architecture, loom::portableRiscV64CompilerTargetPolicy());
+}
+
+llvm::Expected<PreparedProductTarget> prepareProductTarget() {
+  ApplicationBuildOperationTimer timer(
+      loom::application::ApplicationBuildOperation::ProductTargetPreparation);
+  if (llvm::Error error = validateRequestedProductCapabilities())
+    return std::move(error);
+  std::string deploymentPath = deploymentOutput.getValue();
+  auto workspace = ProductWorkspace::create(deploymentPath);
+  if (!workspace)
+    return workspace.takeError();
+  auto config = loom::resolveConfigProfile(accelerationProfile);
+  if (!config)
+    return config.takeError();
+  auto design = loom::adg::buildBuiltinTarget(
+      (*workspace)->artifacts(), config->hardwareTarget.templateIdentity,
+      config->hardwareTarget.schemaVersion.major,
+      config->hardwareTarget.schemaVersion.minor,
+      config->hardwareTarget.parameters);
+  if (!design)
+    return design.takeError();
+  if (design->roots().size() != 1)
+    return productError("loom_product_target_invalid",
+                        "resolved target did not produce one System root");
+  auto system = loom::fabric::importEntireFabricRoot(
+      design->roots().front().reference(), (*workspace)->artifacts());
+  if (!system)
+    return system.takeError();
+  auto systemView = loom::fabric::requireSystemRoot(system->view());
+  if (!systemView)
+    return systemView.takeError();
+
+  std::vector<loom::ArtifactRootReference> timingReferences;
+  auto timing =
+      loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(*systemView);
+  if (!timing)
+    return timing.takeError();
+  timingReferences.reserve(timing->size());
+  for (const auto &profile : *timing) {
+    auto published = loom::fabric::publishFabricPhysicalTimingProfile(
+        profile, (*workspace)->artifacts());
+    if (!published)
+      return published.takeError();
+    timingReferences.push_back(std::move(*published));
+  }
+
+  loom::CompilerTargetPolicy compilerPolicy =
+      loom::portableRiscV64CompilerTargetPolicy();
+  auto compilerTargets = loom::resolveSystemCompilerTargetBindings(
+      *system, compilerPolicy, (*workspace)->artifacts());
+  if (!compilerTargets)
+    return compilerTargets.takeError();
+  auto commandLine =
+      loom::projectCompilerTargetCommandLine(compilerTargets->host().binding());
+  if (!commandLine)
+    return commandLine.takeError();
+  for (const auto &group : compilerTargets->instructionGroups()) {
+    auto groupCommandLine =
+        loom::projectCompilerTargetCommandLine(group.binding().binding());
+    if (!groupCommandLine)
+      return groupCommandLine.takeError();
+    if (!sameCommandLineTarget(*commandLine, *groupCommandLine))
+      return productError(
+          "loom_product_target_unsupported",
+          "one final-linked module cannot serve the heterogeneous compiler "
+          "target cohort");
+  }
+  return PreparedProductTarget{
+      std::move(*workspace),     std::move(*config),
+      std::move(*system),        std::move(timingReferences),
+      std::move(compilerPolicy), std::move(*commandLine)};
+}
+
+std::vector<std::string> projectDriverArguments(
+    const loom::CompilerTargetCommandLineProjection &target) {
+  std::vector<std::string> result;
+  result.push_back("--target=" + target.targetTriple);
+  result.push_back("-march=" + target.architecture);
+  result.push_back("-mabi=" + target.abi);
+  result.push_back("-mcmodel=" + target.codeModel);
+  result.push_back("-mcpu=" + target.backendCpu);
+  result.push_back("-B" LOOM_LLVM_TOOLS_DIR);
+  result.push_back("-fuse-ld=lld");
+  result.push_back("-nostdlib");
+  result.push_back("-Wl,--entry=main");
+  result.push_back("-flto=full");
+  result.push_back("-ffat-lto-objects");
+  result.push_back("-Wl,--fat-lto-objects");
+  result.push_back("-Wl,--save-temps=resolution");
+  result.push_back("-Wl,--save-temps=precodegen");
+  result.push_back("-Wl,--lto-O1");
+  if (!target.ltoFeatures.empty()) {
+    result.push_back("-Xlinker");
+    result.push_back("--plugin-opt=-mattr=" + target.ltoFeatures);
+  }
+  if (target.positionIndependent)
+    result.push_back("-fPIC");
+  return result;
+}
+
+llvm::Error
+writeDriverArguments(const loom::CompilerTargetCommandLineProjection &target) {
+  std::error_code error;
+  llvm::raw_fd_ostream output(driverArgumentsOutput, error,
+                              llvm::sys::fs::OF_None);
+  if (error)
+    return productError("loom_product_driver_projection_invalid",
+                        "cannot open driver argument output: " +
+                            error.message());
+  for (const std::string &argument : projectDriverArguments(target)) {
+    output << argument;
+    output.write('\0');
+  }
+  output.close();
+  if (output.has_error())
+    return productError("loom_product_driver_projection_invalid",
+                        "cannot write driver argument output");
+  return llvm::Error::success();
+}
+
+struct ProductFinalLinkArtifacts final {
+  std::unique_ptr<llvm::Module> linkedModule;
+};
+
+llvm::Expected<ProductFinalLinkArtifacts>
+importProductFinalLink(llvm::LLVMContext &context) {
+  ApplicationBuildOperationTimer timer(
+      loom::application::ApplicationBuildOperation::FinalLinkImport);
+  const std::string resolutionPath = finalLinkOutput + ".resolution.txt";
+  const std::string bitcodePath = finalLinkOutput + ".0.5.precodegen.bc";
+  llvm::FileRemover removeResolution(resolutionPath);
+  llvm::FileRemover removeBitcode(bitcodePath);
+
+  auto resolution = llvm::MemoryBuffer::getFile(resolutionPath, false, false);
+  if (!resolution)
+    return productError("loom_final_link_artifact_missing",
+                        "cannot read LLD resolution output: " +
+                            resolution.getError().message());
+  auto bitcode = llvm::MemoryBuffer::getFile(bitcodePath, false, false);
+  if (!bitcode)
+    return productError("loom_final_link_artifact_missing",
+                        "cannot read LLD pre-code-generation bitcode: " +
+                            bitcode.getError().message());
+  auto module = loom::importLldAcceleratorFinalLink(
+      (*resolution)->getMemBufferRef(), (*bitcode)->getMemBufferRef(), context);
+  if (!module)
+    return module.takeError();
+
+  return ProductFinalLinkArtifacts{std::move(*module)};
+}
+
+llvm::Expected<loom::application::PreparedApplicationBuild>
+prepareMappedApplication(const llvm::Module &module,
+                         PreparedProductTarget &target) {
+  const llvm::Function *entry = module.getFunction("main");
+  if (!entry || entry->isDeclaration())
+    return productError("loom_application_entry_unsupported",
+                        "the final-linked module has no defined main entry");
+  if (entry->isVarArg() || !entry->arg_empty())
+    return productError(
+        "loom_application_entry_unsupported",
+        "the initial product entry supports only a nullary main function");
+
+  auto jointPolicy = loom::dse::JointDesignPolicy::get(1, 1, 1, 1);
+  if (!jointPolicy)
+    return jointPolicy.takeError();
+  loom::frontend::PreMappingCompilationOptions compilationOptions;
+  loom::dse::PreMappingExplorationOptions preMappingOptions{
+      {compilationOptions.lowering,
+       {loom::evaluation::MetricRequestOrdinal(0),
+        loom::ResolvedObjectiveDirection::Minimize, 1},
+       1}};
+  preMappingOptions.ownership.selectionMode =
+      loom::dse::StructuredOwnershipSelectionMode::SemanticConformance;
+  loom::application::ApplicationSourceInvocation sourceInvocation;
+  sourceInvocation.entrySymbol = "main";
+  sourceInvocation.observeReturnValue = !entry->getReturnType()->isVoidTy();
+
+  auto outcome = loom::application::prepareApplicationBuild(
+      module,
+      {std::move(sourceInvocation), target.system.reference(),
+       target.physicalTimingProfiles, target.config, std::move(*jointPolicy),
+       std::move(compilationOptions), std::move(preMappingOptions)},
+      target.workspace->artifacts(), target.workspace->blobs());
+  if (!outcome)
+    return outcome.takeError();
+  if (auto *prepared =
+          std::get_if<loom::application::PreparedApplicationBuild>(&*outcome))
+    return std::move(*prepared);
+  if (auto *incomplete =
+          std::get_if<loom::dse::IncompletePreMappingExploration>(&*outcome))
+    return productError("loom_pre_mapping_incomplete",
+                        "candidate exploration ended at node " +
+                            llvm::Twine(incomplete->planNodeOrdinal.value_or(
+                                std::numeric_limits<std::uint64_t>::max())) +
+                            " with reason " +
+                            loom::dse::toString(incomplete->reason));
+  if (std::holds_alternative<loom::dse::CompletedPreMappingNoFeasibleCandidate>(
+          *outcome))
+    return productError("loom_pre_mapping_no_feasible_candidate",
+                        "no verified software candidate was selected");
+  const auto &unsupported =
+      std::get<loom::application::UnsupportedApplicationBuild>(*outcome);
+  return productError("loom_application_unsupported",
+                      "root coordinate rank is not supported for launch " +
+                          llvm::Twine(unsupported.root.entity.value()));
+}
+
+llvm::Expected<loom::dse::JointDesignExecution> executeProductMapping(
+    const loom::application::PreparedApplicationBuild &prepared,
+    PreparedProductTarget &target) {
+  auto producer = loom::dse::DseProducerSemanticBuildIdentity::get(
+      loom::application::applicationBuildProducerIdentity);
+  if (!producer)
+    return producer.takeError();
+  auto capacity = loom::dse::SiteCapacity::get(1, 0, 0);
+  if (!capacity)
+    return capacity.takeError();
+  auto claim = loom::dse::SiteResourceClaim::get(1, 0, 0);
+  if (!claim)
+    return claim.takeError();
+  auto policy = loom::dse::PlanExecutionPolicy::get(1, std::move(*claim));
+  if (!policy)
+    return policy.takeError();
+  auto execution = loom::application::executeApplicationMapping(
+      prepared,
+      {std::move(*producer),
+       target.workspace->journalPath().str(),
+       {},
+       std::move(*capacity),
+       std::move(*policy)},
+      target.workspace->artifacts(), target.workspace->blobs());
+  if (!execution)
+    return execution.takeError();
+  if (const auto *incomplete =
+          std::get_if<loom::dse::IncompleteDsePlanExecution>(
+              &execution->planExecution))
+    return productError("loom_mapping_incomplete",
+                        "joint Mapping ended at node " +
+                            llvm::Twine(incomplete->nodeOrdinal()) +
+                            " with reason " +
+                            loom::dse::toString(incomplete->reason()));
+  std::size_t mappingCount = 0;
+  for (const loom::dse::JointMappedPair &pair : execution->mappedPairs)
+    mappingCount += pair.systemMappings.size();
+  if (mappingCount == 0)
+    return productError("loom_mapping_no_feasible_candidate",
+                        "joint Mapping selected no SystemMapping");
+  return std::move(*execution);
+}
+
+llvm::Error publishProductDeployment(const ProductFinalLinkArtifacts &finalLink,
+                                     PreparedProductTarget &target) {
+  auto prepared = prepareMappedApplication(*finalLink.linkedModule, target);
+  if (!prepared)
+    return prepared.takeError();
+  auto mapping = executeProductMapping(*prepared, target);
+  if (!mapping)
+    return mapping.takeError();
+  loom::mapping::SystemMappingImportSession systemMappingImportSession(
+      target.workspace->artifacts(), 1);
+  loom::deployment::ConfigurationImageProjectionSession projectionSession(
+      target.workspace->artifacts(), 1);
+  auto deployment = loom::application::buildApplicationDeployment(
+      *prepared, *mapping, *finalLink.linkedModule,
+      {target.compilerPolicy, {target.workspace->linkerPath().str()}},
+      target.workspace->artifacts(), target.workspace->blobs());
+  if (!deployment) {
+    loom::deployment::emitConfigurationImageProjectionSessionStatistics(
+        loom::deployment::ConfigurationImageProjectionVerificationDomain::
+            SourceInvocation,
+        projectionSession.statistics());
+    loom::mapping::emitSystemMappingImportSessionStatistics(
+        loom::mapping::SystemMappingImportVerificationDomain::SourceInvocation,
+        systemMappingImportSession.statistics());
+    return deployment.takeError();
+  }
+  const auto packageBegin = MonotonicClock::now();
+  llvm::Error packageError = loom::deployment::publishDeploymentPackage(
+      deployment->deployment, target.workspace->deploymentPath(),
+      target.workspace->artifacts(), target.workspace->blobs());
+  loom::application::emitApplicationBuildOperationStatistics(
+      {loom::application::ApplicationBuildOperation::PackagePublication,
+       elapsedNanoseconds(packageBegin), 1});
+  loom::deployment::emitConfigurationImageProjectionSessionStatistics(
+      loom::deployment::ConfigurationImageProjectionVerificationDomain::
+          SourceInvocation,
+      projectionSession.statistics());
+  loom::mapping::emitSystemMappingImportSessionStatistics(
+      loom::mapping::SystemMappingImportVerificationDomain::SourceInvocation,
+      systemMappingImportSession.statistics());
+  return packageError;
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+  llvm::InitLLVM init(argc, argv);
+  llvm::cl::ParseCommandLineOptions(argc, argv,
+                                    "Loom application build helper\n");
+  loom::fabric::FabricArtifactImportSession importSession;
+  loom::hardware::ConfigurationABIImportSession configurationAbiImportSession;
+  const bool projectsArguments = !driverArgumentsOutput.empty();
+  const bool buildsDeployment = !finalLinkOutput.empty();
+  if (projectsArguments == buildsDeployment) {
+    llvm::errs() << "loom-application-build: error: select exactly one "
+                    "product action\n";
+    return 1;
+  }
+
+  if (projectsArguments) {
+    auto commandLine = prepareProductDriverTarget();
+    if (!commandLine) {
+      llvm::errs() << "loom-application-build: error: "
+                   << llvm::toString(commandLine.takeError()) << '\n';
+      return 1;
+    }
+    if (llvm::Error error = writeDriverArguments(*commandLine)) {
+      llvm::errs() << "loom-application-build: error: "
+                   << llvm::toString(std::move(error)) << '\n';
+      return 1;
+    }
+    return 0;
+  }
+
+  auto target = prepareProductTarget();
+  if (!target) {
+    llvm::errs() << "loom-application-build: error: "
+                 << llvm::toString(target.takeError()) << '\n';
+    return 1;
+  }
+
+  llvm::LLVMContext context;
+  auto finalLink = importProductFinalLink(context);
+  if (!finalLink) {
+    llvm::errs() << "loom-application-build: error: "
+                 << llvm::toString(finalLink.takeError()) << '\n';
+    return 1;
+  }
+  if (llvm::Error error = publishProductDeployment(*finalLink, *target)) {
+    llvm::errs() << "loom-application-build: error: "
+                 << llvm::toString(std::move(error)) << '\n';
+    return 1;
+  }
+  return 0;
+}

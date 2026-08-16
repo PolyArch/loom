@@ -9,6 +9,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <vector>
 
 namespace loom {
@@ -17,6 +18,30 @@ class BlobStore;
 } // namespace loom
 
 namespace loom::deployment {
+
+enum class DeploymentPackageOperation : std::uint8_t {
+  SourceClosure,
+  StagingWrite,
+  IndependentRootImport,
+  IndependentClosure,
+  StagingEntryValidation,
+  AtomicPublish,
+};
+
+struct DeploymentPackageOperationStatistics final {
+  DeploymentPackageOperation operation;
+  std::uint64_t durationNanoseconds = 0;
+  std::uint64_t artifactCount = 0;
+  std::uint64_t blobCount = 0;
+  std::uint64_t fabricImportCacheHits = 0;
+  std::uint64_t fabricImportCacheMisses = 0;
+  std::uint64_t fabricImportConstructionNanoseconds = 0;
+  std::uint64_t fabricImportDeterministicWork = 0;
+  std::uint64_t fabricImportRetainedPayloadBytes = 0;
+};
+
+void emitDeploymentPackageOperationStatistics(
+    const DeploymentPackageOperationStatistics &statistics);
 
 /// The exact content-addressed object closure required to import one
 /// Deployment from an otherwise empty ArtifactStore and BlobStore.

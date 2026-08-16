@@ -291,6 +291,27 @@ struct SystemSimulationWorkload {
   SystemObservableContract observableContract = {};
 };
 
+/// Transient program-entry value geometry derived from the exact Deployment
+/// and its HostCore CompilerTargetBinding. It is shared by execution providers
+/// and the independent execution finalizer; no copy enters an Artifact.
+struct SystemSimulationValueShape final {
+  std::uint64_t lanesPerToken = 0;
+  std::uint32_t laneBitWidth = 0;
+  bool pointerPayload = false;
+};
+
+struct SystemSimulationBoundaryShapes final {
+  bool littleEndian = false;
+  std::vector<SystemSimulationValueShape> valueArguments;
+  std::vector<SystemSimulationValueShape> valueResults;
+};
+
+llvm::Expected<SystemSimulationBoundaryShapes>
+projectSystemSimulationBoundaryShapes(
+    const deployment::FinalizedDeployment &deployment,
+    const deployment::DeploymentProgramEntryRef &entry,
+    const ::loom::ArtifactStore &store);
+
 //===----------------------------------------------------------------------===//
 // SpatialSimulationRuntimeInput
 //===----------------------------------------------------------------------===//
@@ -682,9 +703,8 @@ importSpatialSimulationInputs(const ::loom::ArtifactRootReference &workload,
 /// Strictly imports one stored Spatial workload and recovers its sole
 /// Canonical Dataflow owner without requiring a runtime-input instance.
 llvm::Expected<ImportedSpatialSimulationWorkload>
-importSpatialSimulationWorkload(
-    const ::loom::ArtifactRootReference &workload,
-    const ::loom::ArtifactStore &store);
+importSpatialSimulationWorkload(const ::loom::ArtifactRootReference &workload,
+                                const ::loom::ArtifactStore &store);
 
 /// Strictly imports one stored System workload/runtime pair and its exact
 /// Deployment owner. Deployment remains responsible for closure and blob

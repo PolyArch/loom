@@ -27,6 +27,7 @@ enum class BuiltinRepresentationIndexer {
   SystemVerilogRtl,
   StructuralVerilogGateNetlist,
   IndexedPhysical,
+  FabricModel,
 };
 
 struct StaticRepresentationFormatEntry final {

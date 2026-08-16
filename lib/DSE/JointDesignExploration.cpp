@@ -309,6 +309,34 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
                                     std::move(outputs)};
 }
 
+std::vector<ArtifactRootReference>
+projectJointDesignSemanticInputs(const JointDesignExplorationPlan &plan) {
+  std::vector<ArtifactRootReference> inputs;
+  for (const JointSoftwareScope &scope : plan.frontier.softwareFrontier) {
+    inputs.push_back(scope.dataflow);
+    inputs.insert(inputs.end(), scope.workloads.begin(), scope.workloads.end());
+  }
+  inputs.insert(inputs.end(), plan.frontier.systemFrontier.begin(),
+                plan.frontier.systemFrontier.end());
+  for (const DsePlanNodeDefinition &node : plan.resolvedConfig.dse.planNodes) {
+    const auto &bindings = std::visit(
+        [](const auto &definition)
+            -> const std::vector<PlanInputBinding> & {
+          return definition.inputBindings;
+        },
+        node);
+    for (const PlanInputBinding &binding : bindings) {
+      const auto *exact = std::get_if<ExactPlanArtifacts>(&binding);
+      if (!exact)
+        continue;
+      inputs.insert(inputs.end(), exact->artifacts.begin(),
+                    exact->artifacts.end());
+    }
+  }
+  canonicalize(inputs);
+  return inputs;
+}
+
 llvm::Expected<JointDesignExecution> executeJointDesignExploration(
     const JointDesignExplorationPlan &plan, const DseRunClosure &closure,
     ExecutionJournal &journal, SiteScheduler &scheduler,

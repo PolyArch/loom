@@ -571,12 +571,8 @@ int main(int argc, char **argv) {
   auto target = readModule(targetContext, targetModulePath);
   if (!target)
     return reportError(target.takeError());
-  const loom::CompilerTargetPolicy targetPolicy{
-      loom::fabric::RiscVAbi::Lp64d,
-      loom::fabric::RiscVCodeModel::MediumAny,
-      loom::fabric::RelocationModel::Static,
-      "generic-rv64",
-      {}};
+  const loom::CompilerTargetPolicy targetPolicy =
+      loom::portableRiscV64CompilerTargetPolicy();
   auto compilerTargets = loom::resolveSystemCompilerTargetBindings(
       design->roots().front(), targetPolicy, store);
   if (!compilerTargets)

@@ -303,7 +303,7 @@ llvm::Expected<EvaluationRequest> EvaluationRequest::get(
     ResolvedModelBinding modelBinding, std::uint64_t replicateIndex,
     const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
-  ArtifactImportCacheScope cacheScope;
+  ArtifactImportCacheScope cacheScope(artifactStore, &blobStore);
   const EvaluationModelDescriptor *descriptor =
       modelBinding.descriptorRef().descriptor();
   if (!descriptor)
@@ -346,7 +346,7 @@ llvm::Expected<EvaluationRequest> EvaluationRequest::get(
     ResolvedModelBinding modelBinding, std::uint64_t replicateIndex,
     const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
-  ArtifactImportCacheScope cacheScope;
+  ArtifactImportCacheScope cacheScope(artifactStore, &blobStore);
   const EvaluationModelDescriptor *descriptor =
       modelBinding.descriptorRef().descriptor();
   if (!descriptor)
@@ -359,8 +359,8 @@ llvm::Expected<EvaluationRequest> EvaluationRequest::get(
   if (!evaluationCase)
     return evaluationCase.takeError();
   return get(*evaluationCase, metricRequests, findingRequests,
-             std::move(modelBinding), replicateIndex, resolution,
-             artifactStore, blobStore);
+             std::move(modelBinding), replicateIndex, resolution, artifactStore,
+             blobStore);
 }
 
 const MetricRequest *
@@ -383,7 +383,7 @@ resolveEvaluationModelDescriptor(const EvaluationRequest &request) {
 }
 
 llvm::Error RequestVerifier::verify(const EvaluationRequest &request) const {
-  ArtifactImportCacheScope cacheScope;
+  ArtifactImportCacheScope cacheScope(artifactStore_, &blobStore_);
   const EvaluationModelDescriptor *descriptor =
       resolveEvaluationModelDescriptor(request);
   if (!descriptor)
@@ -397,10 +397,9 @@ llvm::Error RequestVerifier::verify(const EvaluationRequest &request) const {
   return verify(request, *evaluationCase);
 }
 
-llvm::Error
-RequestVerifier::verify(const EvaluationRequest &request,
-                        const EvaluationCase &verifiedCase) const {
-  ArtifactImportCacheScope cacheScope;
+llvm::Error RequestVerifier::verify(const EvaluationRequest &request,
+                                    const EvaluationCase &verifiedCase) const {
+  ArtifactImportCacheScope cacheScope(artifactStore_, &blobStore_);
   const EvaluationModelDescriptor *descriptor =
       resolveEvaluationModelDescriptor(request);
   if (!descriptor)

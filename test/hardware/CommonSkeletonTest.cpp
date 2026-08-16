@@ -2,11 +2,11 @@
 #include "Hardware/RTL/OperationLeaf.h"
 #include "Hardware/RTL/PhysicalOperation.h"
 #include "Hardware/RTL/Providers/ScalarIntegerAddSub.h"
-#include "Hardware/RTL/Specialization.h"
 #include "Hardware/RTL/SpatialCoreImplementation.h"
+#include "Hardware/RTL/Specialization.h"
 
-#include "ConfigurationABITestSupport.h"
 #include "CommonSkeletonStructuralToolArtifacts.h"
+#include "ConfigurationABITestSupport.h"
 #include "ConfigurationTransportTestSupport.h"
 #include "PortableProviderTestSupport.h"
 
@@ -357,12 +357,11 @@ FinalizedFabricRoot makeTemporalHierarchyFabric(llvm::StringRef test,
       test,
       spatial.addPe(
           {take(test, spatial.input(0)), take(test, spatial.input(1))},
-          PeSpec::temporal(
-              {bits8, bits8}, {tagged8x2},
-              TemporalPeParameters{2, FuConfigurationMode::PerInstruction,
-                                   ::fabric::OperandBufferMode::PerInstruction,
-                                   1,
-                                   TemporalRegisterFifoParameters{1, 2, 2}})));
+          PeSpec::temporal({bits8, bits8}, {tagged8x2},
+                           TemporalPeParameters{
+                               2, FuConfigurationMode::PerInstruction,
+                               ::fabric::OperandBufferMode::PerInstruction, 1,
+                               TemporalRegisterFifoParameters{1, 2, 2}})));
   auto fu =
       take(test, pe.addFu({take(test, pe.input(0)), take(test, pe.input(1))},
                           FuSpec{{bits8, bits8}, {bits8}}));
@@ -691,8 +690,8 @@ SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
   const auto implementation = take(
       test,
       loom::hardware::rtl::finalizePortableSpatialCoreHardwareImplementation(
-          context, fabric.abi, fabric.spatialCore, providers,
-          externalContracts, store, blobs));
+          context, fabric.abi, fabric.spatialCore, providers, externalContracts,
+          store, blobs));
   std::size_t dataInterfaces = 0;
   std::size_t memoryInterfaces = 0;
   for (const auto &interface : implementation.implementation().interfaces()) {
@@ -847,8 +846,7 @@ TemporalToolArtifact temporalHierarchyBuildsStructuralSkeleton() {
       take(test, loom::hardware::test::derivePortableConfigurationTarget(
                      fabric.abi, fabric.spatialCore, owner->id));
   auto activeImage = take(test, fabric.abi.abi().encode(owner->id, values));
-  std::vector<loom::hardware::SemanticConfigurationValue> atomicValues =
-      values;
+  std::vector<loom::hardware::SemanticConfigurationValue> atomicValues = values;
   atomicValues.front().value.assign(atomicFanoutSemantic.bytes().begin(),
                                     atomicFanoutSemantic.bytes().end());
   const auto secondFuSlot =
@@ -863,10 +861,9 @@ TemporalToolArtifact temporalHierarchyBuildsStructuralSkeleton() {
                                     dispatchSemantic.bytes().end());
   auto dispatchImage =
       take(test, fabric.abi.abi().encode(owner->id, atomicValues));
-  return TemporalToolArtifact{std::move(conformance.systemVerilog), target,
-                              std::move(activeImage),
-                              std::move(atomicFanoutImage),
-                              std::move(dispatchImage)};
+  return TemporalToolArtifact{
+      std::move(conformance.systemVerilog), target, std::move(activeImage),
+      std::move(atomicFanoutImage), std::move(dispatchImage)};
 }
 
 struct RepeatedSpatialCoreToolArtifact final {
@@ -985,16 +982,14 @@ repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
               systemProviders))
     fail(test, llvm::toString(std::move(error)));
   ExternalImplementationContractCatalog systemContracts;
-  std::vector<loom::hardware::FinalizedHardwareImplementation>
-      implementations;
+  std::vector<loom::hardware::FinalizedHardwareImplementation> implementations;
   for (const auto core : system.artifact().accCoreOccurrences()) {
     const loom::fabric::SpatialCoreOccurrenceRef subject{core};
     auto implementation = take(
         test,
-        loom::hardware::rtl::
-            finalizePortableSpatialCoreHardwareImplementation(
-                systemContext, fabric.abi, subject, systemProviders,
-                systemContracts, store, blobs));
+        loom::hardware::rtl::finalizePortableSpatialCoreHardwareImplementation(
+            systemContext, fabric.abi, subject, systemProviders,
+            systemContracts, store, blobs));
     require(test,
             implementation.implementation().subject() == subject &&
                 implementation.implementation().representationRoot().top ==
@@ -1012,9 +1007,8 @@ repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
     implementations.push_back(std::move(implementation));
   }
   require(test,
-          implementations.size() == 2 &&
-              implementations.front().reference() !=
-                  implementations.back().reference(),
+          implementations.size() == 2 && implementations.front().reference() !=
+                                             implementations.back().reference(),
           "occurrence-scoped implementations did not retain distinct owners");
   return {std::move(*referenceSystemVerilog), referenceConfiguration->target,
           referenceConfiguration->route};
@@ -1047,8 +1041,11 @@ void configurationAbiIncludesFuTopology() {
   const auto *encoding = fabric.abi.abi().findField(slot);
   require(test, encoding != nullptr,
           "ConfigurationABI omitted the FU topology slot");
+  const auto *relation = fabric.abi.abi().findEncodingRelation(*encoding);
+  require(test, relation != nullptr,
+          "ConfigurationABI omitted the FU topology encoding relation");
   const auto *codebook = std::get_if<loom::hardware::FiniteCodebookEncoding>(
-      &encoding->semanticEncoding);
+      &relation->semanticEncoding);
   require(test, codebook != nullptr && codebook->entries.size() == 2,
           "single-template FU topology does not have Disabled and Active "
           "codes");
@@ -1869,17 +1866,17 @@ int main(int argc, char **argv) {
   const InternalToolArtifact internal =
       internalOperationBuildsStructuralSkeleton();
   if (argc == 2) {
+    requireSuccess("main",
+                   loom::hardware::test::writeBoundaryStructuralToolArtifacts(
+                       argv[1], systemVerilog));
     requireSuccess(
-        "main", loom::hardware::test::writeBoundaryStructuralToolArtifacts(
-                    argv[1], systemVerilog));
-    requireSuccess(
-        "main", loom::hardware::test::writeSpatialHierarchyToolArtifacts(
-                    argv[1], spatial.systemVerilog,
-                    spatial.inactiveConfigurations));
-    requireSuccess(
-        "main", loom::hardware::test::writeRepeatedSpatialCoreToolArtifacts(
-                    argv[1], repeated.systemVerilog, repeated.target,
-                    repeated.activeImage));
+        "main",
+        loom::hardware::test::writeSpatialHierarchyToolArtifacts(
+            argv[1], spatial.systemVerilog, spatial.inactiveConfigurations));
+    requireSuccess("main",
+                   loom::hardware::test::writeRepeatedSpatialCoreToolArtifacts(
+                       argv[1], repeated.systemVerilog, repeated.target,
+                       repeated.activeImage));
     writeInternalToolArtifacts(argv[1], internal);
     writeTemporalToolArtifacts(argv[1], temporal);
   }

@@ -172,9 +172,13 @@ llvm::Error ResolvedFabricOpCapabilityView::admitCorrespondence(
     const ::loom::PointerLayout *pointerLayout) const {
   if (llvm::Error error = admit(actor, indexBitWidth, pointerLayout))
     return error;
+  auto widths = resolveOrderedPhysicalWidths(*this);
+  if (!widths)
+    return widths.takeError();
   if (llvm::Error error =
           ::fabric::verifyImplementationFamilyPortCorrespondence(
-              implementationFamily, actor, operandPorts, resultPorts))
+              implementationFamily, parameterizedCapability, actor,
+              operandPorts, resultPorts, widths->inputs, widths->results))
     return error;
 
   auto represented = ::fabric::projectResolvedIndexTypes(actor, indexBitWidth);

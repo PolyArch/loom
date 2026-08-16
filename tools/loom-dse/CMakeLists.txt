@@ -3,6 +3,7 @@ llvm_update_compile_flags(loom-dse)
 
 target_link_libraries(loom-dse PRIVATE
   LoomDSE
+  LoomDSEProductionOwners
   LoomDSECompilerGenerator
   LoomDSEFeedback
   LoomDSEHardwareGenerator

@@ -191,6 +191,14 @@ choice lanes use ordered maps while their runtime selector remains a Dataflow
 operand. Constants and other parameterized operations use their registered
 operation schemas and exact Dataflow semantics.
 
+For routed-token families, these maps persist only the concrete representative
+of the Fabric-owned canonical ordered lane embedding. Raw ordinal subsets of
+one physical lane-equivalence class are not independent Mapping decisions.
+Import independently reconstructs the family relation from the exact Fabric
+and rejects a noncanonical embedding even when its widths would otherwise be
+large enough. Configuration and execution derive their lane activation from
+the same accepted maps; neither owns a second lane codec or equivalence rule.
+
 An earlier exact-mode enumeration and sync-specific Mapping-record model is
 retired. Sync now uses the ordinary parameterized capability relation and
 exact ordered TechMapping relations; masks and configured fields are derived.

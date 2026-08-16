@@ -25,7 +25,7 @@ struct DerivedRuntimeImages;
 } // namespace detail
 
 inline constexpr ArtifactSchemaDescriptor deploymentSchema{"loom.deployment",
-                                                           SchemaVersion{5, 0}};
+                                                           SchemaVersion{5, 1}};
 inline constexpr ArtifactSchemaDescriptor threadDispatchImageSchema{
     "loom.thread_dispatch_image", SchemaVersion{1, 0}};
 inline constexpr ArtifactSchemaDescriptor spatialLaunchImageSchema{

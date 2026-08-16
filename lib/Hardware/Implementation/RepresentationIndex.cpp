@@ -755,6 +755,7 @@ indexInitialHdl(RepresentationFormatDescriptorRef formatRef,
     return detail::indexStructuralVerilogGateNetlist(formatRef, *top,
                                                      exactRoot);
   case BuiltinRepresentationIndexer::IndexedPhysical:
+  case BuiltinRepresentationIndexer::FabricModel:
     llvm_unreachable("physical format cannot use the HDL indexer");
   }
   llvm_unreachable("closed built-in representation indexer");

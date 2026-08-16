@@ -46,9 +46,10 @@ target_link_libraries(loom-cc PRIVATE
   clangSerialization
 )
 
-add_dependencies(loom-cc LoomRelocatablePayloadPass)
+add_dependencies(loom-cc LoomRelocatablePayloadPass loom-application-build)
 target_compile_definitions(loom-cc PRIVATE
   LOOM_RELOCATABLE_PAYLOAD_PASS_PATH="$<TARGET_FILE:LoomRelocatablePayloadPass>"
+  LOOM_APPLICATION_BUILD_PATH="$<TARGET_FILE:loom-application-build>"
 )
 
 mlir_check_all_link_libraries(loom-cc)

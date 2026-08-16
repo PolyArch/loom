@@ -92,13 +92,13 @@ materializePortableScalarIntegerAddSub(FabricOperationProviderRequest request) {
           request.configurationAbi))
     return std::move(error);
 
-  const ConfigurationFieldEncoding *field = nullptr;
+  const ConfigurationEncodingRelation *field = nullptr;
   const FiniteCodebookEntry *nonInactiveEntry = nullptr;
   bool inactiveSubtract = hasSubtract && !hasAdd;
   if (hasAdd && hasSubtract) {
     if (request.capability.configurationFieldSchema.size() != 1)
       return invalid("configured add/sub capability requires one field");
-    field = request.configurationAbi.findOperationField(
+    field = request.configurationAbi.findOperationEncodingRelation(
         request.occurrence,
         request.capability.configurationFieldSchema.front().ordinal);
     if (!field)

@@ -12,7 +12,7 @@
 namespace loom::runtime {
 
 inline constexpr char gem5BridgeAbiIdentity[] =
-    "loom.gem5_spatial_bridge_abi.v2";
+    "loom.gem5_spatial_bridge_abi.v3";
 
 enum class Gem5BridgeMessageKind : std::uint32_t {
   SpatialLaunch = 0,
@@ -61,24 +61,33 @@ struct Gem5BridgeResult final {
   std::vector<std::uint8_t> result;
 };
 
-inline constexpr std::array<std::uint8_t, 4> gem5BridgeResultMagic{
-    'L', 'G', 'R', '1'};
+struct Gem5SpatialLaunchEnvelope final {
+  std::vector<std::uint8_t> staticLaunch;
+  std::vector<std::uint8_t> invocation;
+};
+
+inline constexpr std::array<std::uint8_t, 4> gem5SpatialLaunchMagic{'L', 'G',
+                                                                    'L', '1'};
+inline constexpr std::size_t gem5SpatialLaunchHeaderBytes = 20;
+
+inline constexpr std::array<std::uint8_t, 4> gem5BridgeResultMagic{'L', 'G',
+                                                                   'R', '1'};
 inline constexpr std::size_t gem5BridgeResultHeaderBytes = 32;
 
-inline constexpr std::array<std::uint8_t, 4> gem5BridgeWireMagic{
-    'L', 'G', 'B', '1'};
+inline constexpr std::array<std::uint8_t, 4> gem5BridgeWireMagic{'L', 'G', 'B',
+                                                                 '1'};
 inline constexpr std::size_t gem5BridgeWireHeaderBytes = 24;
 
 namespace detail {
 
 inline void appendGem5BridgeU32(std::vector<std::uint8_t> &bytes,
-                               std::uint32_t value) {
+                                std::uint32_t value) {
   for (int shift = 24; shift >= 0; shift -= 8)
     bytes.push_back(static_cast<std::uint8_t>(value >> shift));
 }
 
 inline void appendGem5BridgeU64(std::vector<std::uint8_t> &bytes,
-                               std::uint64_t value) {
+                                std::uint64_t value) {
   for (int shift = 56; shift >= 0; shift -= 8)
     bytes.push_back(static_cast<std::uint8_t>(value >> shift));
 }
@@ -100,13 +109,63 @@ inline std::uint64_t readGem5BridgeU64(const std::uint8_t *bytes) {
 } // namespace detail
 
 inline std::vector<std::uint8_t>
+encodeGem5SpatialLaunchEnvelope(const Gem5SpatialLaunchEnvelope &launch) {
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(gem5SpatialLaunchHeaderBytes + launch.staticLaunch.size() +
+                launch.invocation.size());
+  bytes.insert(bytes.end(), gem5SpatialLaunchMagic.begin(),
+               gem5SpatialLaunchMagic.end());
+  detail::appendGem5BridgeU64(bytes, launch.staticLaunch.size());
+  detail::appendGem5BridgeU64(bytes, launch.invocation.size());
+  bytes.insert(bytes.end(), launch.staticLaunch.begin(),
+               launch.staticLaunch.end());
+  bytes.insert(bytes.end(), launch.invocation.begin(), launch.invocation.end());
+  return bytes;
+}
+
+inline bool
+decodeGem5SpatialLaunchEnvelope(const std::vector<std::uint8_t> &bytes,
+                                Gem5SpatialLaunchEnvelope &launch,
+                                std::string &error) {
+  if (bytes.size() < gem5SpatialLaunchHeaderBytes ||
+      !std::equal(gem5SpatialLaunchMagic.begin(), gem5SpatialLaunchMagic.end(),
+                  bytes.begin())) {
+    error = "wrong or truncated Spatial launch envelope";
+    return false;
+  }
+  const std::uint64_t staticSize = detail::readGem5BridgeU64(bytes.data() + 4);
+  const std::uint64_t invocationSize =
+      detail::readGem5BridgeU64(bytes.data() + 12);
+  if (staticSize > std::numeric_limits<std::size_t>::max() ||
+      invocationSize > std::numeric_limits<std::size_t>::max()) {
+    error = "Spatial launch envelope length exceeds the host size domain";
+    return false;
+  }
+  const std::size_t admittedStaticSize = static_cast<std::size_t>(staticSize);
+  const std::size_t admittedInvocationSize =
+      static_cast<std::size_t>(invocationSize);
+  if (admittedStaticSize >
+          std::numeric_limits<std::size_t>::max() - admittedInvocationSize ||
+      admittedStaticSize + admittedInvocationSize !=
+          bytes.size() - gem5SpatialLaunchHeaderBytes) {
+    error = "Spatial launch envelope lengths do not match its payload";
+    return false;
+  }
+  const auto staticEnd =
+      bytes.begin() + gem5SpatialLaunchHeaderBytes + admittedStaticSize;
+  launch.staticLaunch.assign(bytes.begin() + gem5SpatialLaunchHeaderBytes,
+                             staticEnd);
+  launch.invocation.assign(staticEnd, bytes.end());
+  return true;
+}
+
+inline std::vector<std::uint8_t>
 encodeGem5BridgeWireMessage(const Gem5BridgeMessage &message) {
   std::vector<std::uint8_t> bytes;
   bytes.reserve(gem5BridgeWireHeaderBytes + message.payload.size());
   bytes.insert(bytes.end(), gem5BridgeWireMagic.begin(),
                gem5BridgeWireMagic.end());
-  detail::appendGem5BridgeU32(bytes,
-                             static_cast<std::uint32_t>(message.kind));
+  detail::appendGem5BridgeU32(bytes, static_cast<std::uint32_t>(message.kind));
   detail::appendGem5BridgeU64(bytes, message.sequence);
   detail::appendGem5BridgeU64(bytes, message.payload.size());
   bytes.insert(bytes.end(), message.payload.begin(), message.payload.end());
@@ -149,7 +208,7 @@ encodeGem5BridgeMemoryRequest(const Gem5BridgeMemoryRequest &request) {
   std::vector<std::uint8_t> bytes;
   bytes.reserve(36 + request.data.size());
   detail::appendGem5BridgeU32(bytes,
-                             static_cast<std::uint32_t>(request.operation));
+                              static_cast<std::uint32_t>(request.operation));
   detail::appendGem5BridgeU64(bytes, request.readyAfterTicks);
   detail::appendGem5BridgeU64(bytes, request.requestId);
   detail::appendGem5BridgeU64(bytes, request.address);
@@ -158,16 +217,16 @@ encodeGem5BridgeMemoryRequest(const Gem5BridgeMemoryRequest &request) {
   return bytes;
 }
 
-inline bool decodeGem5BridgeMemoryRequest(
-    const std::vector<std::uint8_t> &bytes, Gem5BridgeMemoryRequest &request,
-    std::string &error) {
+inline bool
+decodeGem5BridgeMemoryRequest(const std::vector<std::uint8_t> &bytes,
+                              Gem5BridgeMemoryRequest &request,
+                              std::string &error) {
   constexpr std::size_t headerBytes = 36;
   if (bytes.size() < headerBytes) {
     error = "truncated memory request";
     return false;
   }
-  const std::uint32_t operation =
-      detail::readGem5BridgeU32(bytes.data());
+  const std::uint32_t operation = detail::readGem5BridgeU32(bytes.data());
   if (operation >
       static_cast<std::uint32_t>(Gem5BridgeMemoryOperation::Write)) {
     error = "unknown memory operation";
@@ -201,18 +260,17 @@ encodeGem5BridgeMemoryResponse(const Gem5BridgeMemoryResponse &response) {
   return bytes;
 }
 
-inline bool decodeGem5BridgeMemoryResponse(
-    const std::vector<std::uint8_t> &bytes, Gem5BridgeMemoryResponse &response,
-    std::string &error) {
+inline bool
+decodeGem5BridgeMemoryResponse(const std::vector<std::uint8_t> &bytes,
+                               Gem5BridgeMemoryResponse &response,
+                               std::string &error) {
   constexpr std::size_t headerBytes = 20;
   if (bytes.size() < headerBytes) {
     error = "truncated memory response";
     return false;
   }
-  const std::uint32_t success =
-      detail::readGem5BridgeU32(bytes.data() + 8);
-  const std::uint64_t size =
-      detail::readGem5BridgeU64(bytes.data() + 12);
+  const std::uint32_t success = detail::readGem5BridgeU32(bytes.data() + 8);
+  const std::uint64_t size = detail::readGem5BridgeU64(bytes.data() + 12);
   if (success > 1 || size != bytes.size() - headerBytes) {
     error = "memory response fields are not canonical";
     return false;
@@ -234,16 +292,15 @@ encodeGem5BridgeCompletion(const Gem5BridgeCompletion &completion) {
   return bytes;
 }
 
-inline bool decodeGem5BridgeCompletion(
-    const std::vector<std::uint8_t> &bytes, Gem5BridgeCompletion &completion,
-    std::string &error) {
+inline bool decodeGem5BridgeCompletion(const std::vector<std::uint8_t> &bytes,
+                                       Gem5BridgeCompletion &completion,
+                                       std::string &error) {
   constexpr std::size_t headerBytes = 20;
   if (bytes.size() < headerBytes) {
     error = "truncated completion";
     return false;
   }
-  const std::uint64_t size =
-      detail::readGem5BridgeU64(bytes.data() + 12);
+  const std::uint64_t size = detail::readGem5BridgeU64(bytes.data() + 12);
   if (size != bytes.size() - headerBytes) {
     error = "completion result size does not match its payload";
     return false;

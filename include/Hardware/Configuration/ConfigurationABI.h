@@ -9,6 +9,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <memory>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -19,10 +20,55 @@ class ArtifactStore;
 
 namespace loom::hardware {
 
+namespace detail {
+class ConfigurationABIImportSessionState;
+}
+
+enum class ConfigurationABIImportSessionMode : std::uint8_t {
+  ReuseEnclosing,
+  Isolated,
+};
+
+struct ConfigurationABIImportSessionStatistics final {
+  std::uint64_t importRequests = 0;
+  std::uint64_t uniqueConstructions = 0;
+  std::uint64_t cacheHits = 0;
+  std::uint64_t cacheMisses = 0;
+  std::uint64_t bytesRead = 0;
+  std::uint64_t bytesCopied = 0;
+  std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t deterministicWork = 0;
+  std::uint64_t retainedBytes = 0;
+  std::uint64_t entryCount = 0;
+};
+
+/// Owns immutable strict ConfigurationABI imports for one synchronous
+/// verification domain. An isolated domain is used by independent replay.
+class ConfigurationABIImportSession final {
+public:
+  explicit ConfigurationABIImportSession(
+      ConfigurationABIImportSessionMode mode =
+          ConfigurationABIImportSessionMode::ReuseEnclosing);
+  ~ConfigurationABIImportSession();
+
+  ConfigurationABIImportSession(const ConfigurationABIImportSession &) =
+      delete;
+  ConfigurationABIImportSession &
+  operator=(const ConfigurationABIImportSession &) = delete;
+
+  ConfigurationABIImportSessionStatistics statistics() const;
+
+private:
+  std::unique_ptr<detail::ConfigurationABIImportSessionState> owned_;
+  detail::ConfigurationABIImportSessionState *active_ = nullptr;
+  detail::ConfigurationABIImportSessionState *previous_ = nullptr;
+};
+
 inline constexpr ArtifactSchemaDescriptor configurationAbiSchema{
-    "loom.configuration_abi", SchemaVersion{3, 0}};
+    "loom.configuration_abi", SchemaVersion{4, 0}};
 
 using ProgrammingUnitId = std::uint64_t;
+using ConfigurationEncodingRelationId = std::uint64_t;
 
 /// Exact persistent reference to one programming unit in one finalized
 /// ConfigurationABI. Its binary codec is owned by this schema.
@@ -89,10 +135,8 @@ struct FiniteCodebookEncoding final {
 using SemanticFieldEncoding =
     std::variant<DirectBitsEncoding, FiniteCodebookEncoding>;
 
-struct ConfigurationFieldEncoding final {
-  fabric::FabricPhysicalConfigurationSlotRef slot;
+struct ConfigurationEncodingRelationDraft final {
   SemanticFieldEncoding semanticEncoding;
-  std::vector<DestinationSlice> destinationSlices;
   std::vector<std::uint8_t> inactiveValue;
 
   std::uint64_t encodedBitCount() const {
@@ -100,6 +144,24 @@ struct ConfigurationFieldEncoding final {
         [](const auto &encoding) { return encoding.encodedBitCount; },
         semanticEncoding);
   }
+};
+
+struct ConfigurationEncodingRelation final {
+  ConfigurationEncodingRelationId id = 0;
+  SemanticFieldEncoding semanticEncoding;
+  std::vector<std::uint8_t> inactiveValue;
+
+  std::uint64_t encodedBitCount() const {
+    return std::visit(
+        [](const auto &encoding) { return encoding.encodedBitCount; },
+        semanticEncoding);
+  }
+};
+
+struct ConfigurationFieldEncoding final {
+  fabric::FabricPhysicalConfigurationSlotRef slot;
+  ConfigurationEncodingRelationId encodingRelation = 0;
+  std::vector<DestinationSlice> destinationSlices;
 };
 
 struct ProgrammingUnitDraft final {
@@ -111,7 +173,21 @@ struct ProgrammingUnitDraft final {
 
 struct ConfigurationABIDraft final {
   ArtifactRootReference fabric;
+  std::vector<ConfigurationEncodingRelationDraft> encodingRelations;
   std::vector<ProgrammingUnitDraft> programmingUnits;
+};
+
+struct ConfigurationABIConstructionStatistics final {
+  std::uint64_t canonicalizationCount = 0;
+  std::uint64_t canonicalizationNanoseconds = 0;
+  std::uint64_t semanticValidationCacheHits = 0;
+  std::uint64_t semanticValidationCacheMisses = 0;
+  std::uint64_t physicalSlotValidationCount = 0;
+  std::uint64_t retainedCacheBytes = 0;
+  std::uint64_t deterministicWork = 0;
+  std::uint64_t encodingRelationCount = 0;
+  std::uint64_t configurationFieldCount = 0;
+  std::uint64_t canonicalByteCount = 0;
 };
 
 struct ProgrammingUnit final {
@@ -142,15 +218,30 @@ class ConfigurationABI final {
 public:
   const ArtifactRootReference &fabric() const { return fabric_; }
   const fabric::FabricSystemRootView &fabricSystem() const { return system_; }
+  llvm::ArrayRef<ConfigurationEncodingRelation> encodingRelations() const {
+    return encodingRelations_;
+  }
   llvm::ArrayRef<ProgrammingUnit> programmingUnits() const {
     return programmingUnits_;
+  }
+  const ConfigurationEncodingRelation *
+  findEncodingRelation(ConfigurationEncodingRelationId id) const;
+  const ConfigurationEncodingRelation *
+  findEncodingRelation(const ConfigurationFieldEncoding &field) const {
+    return findEncodingRelation(field.encodingRelation);
   }
   const ProgrammingUnit *findProgrammingUnit(ProgrammingUnitId id) const;
   const ConfigurationFieldEncoding *
   findField(const fabric::FabricPhysicalConfigurationSlotRef &slot) const;
+  const ConfigurationFieldEncoding *findField(
+      ProgrammingUnitId unit,
+      const fabric::FabricPhysicalConfigurationSlotRef &slot) const;
   const ConfigurationFieldEncoding *
   findOperationField(const fabric::FabricPhysicalOccurrenceOwnerRef &operation,
                      fabric::FabricOrdinal fieldOrdinal) const;
+  const ConfigurationEncodingRelation *findOperationEncodingRelation(
+      const fabric::FabricPhysicalOccurrenceOwnerRef &operation,
+      fabric::FabricOrdinal fieldOrdinal) const;
 
   llvm::Expected<std::vector<std::uint8_t>>
   encode(ProgrammingUnitId id,
@@ -161,13 +252,16 @@ public:
 
 private:
   ConfigurationABI(ArtifactRootReference fabric,
+                   std::vector<ConfigurationEncodingRelation> encodingRelations,
                    std::vector<ProgrammingUnit> programmingUnits,
                    fabric::FabricSystemRootView system)
       : fabric_(std::move(fabric)),
+        encodingRelations_(std::move(encodingRelations)),
         programmingUnits_(std::move(programmingUnits)),
         system_(std::move(system)) {}
 
   ArtifactRootReference fabric_;
+  std::vector<ConfigurationEncodingRelation> encodingRelations_;
   std::vector<ProgrammingUnit> programmingUnits_;
   fabric::FabricSystemRootView system_;
 
@@ -183,18 +277,24 @@ public:
   const CanonicalSemanticBytes &canonicalBytes() const {
     return canonicalBytes_;
   }
-  const ConfigurationABI &abi() const { return abi_; }
+  const ConfigurationABI &abi() const { return *abi_; }
+  const ConfigurationABIConstructionStatistics &constructionStatistics() const {
+    return constructionStatistics_;
+  }
 
 private:
   FinalizedConfigurationABI(ArtifactRootReference reference,
                             CanonicalSemanticBytes canonicalBytes,
-                            ConfigurationABI abi)
+                            std::shared_ptr<const ConfigurationABI> abi,
+                            ConfigurationABIConstructionStatistics statistics)
       : reference_(std::move(reference)),
-        canonicalBytes_(std::move(canonicalBytes)), abi_(std::move(abi)) {}
+        canonicalBytes_(std::move(canonicalBytes)), abi_(std::move(abi)),
+        constructionStatistics_(statistics) {}
 
   ArtifactRootReference reference_;
   CanonicalSemanticBytes canonicalBytes_;
-  ConfigurationABI abi_;
+  std::shared_ptr<const ConfigurationABI> abi_;
+  ConfigurationABIConstructionStatistics constructionStatistics_;
 
   friend llvm::Expected<FinalizedConfigurationABI>
   finalizeConfigurationABI(ConfigurationABIDraft, const ArtifactStore &);

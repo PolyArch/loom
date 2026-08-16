@@ -2,15 +2,12 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Hardware/Implementation/FabricModel.h"
 #include "Hardware/Implementation/ImplementationRepresentationRoot.h"
 #include "Hardware/RTL/CommonSkeleton.h"
-#include "Hardware/RTL/ConfigurationTransport.h"
 
 #include "circt/Dialect/HW/HWOps.h"
-#include "llvm/ADT/STLExtras.h"
 
-#include <optional>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -24,44 +21,6 @@ llvm::Error invalid(const llvm::Twine &message) {
       "rtl_spatial_core_implementation_invalid: " + message);
 }
 
-llvm::Expected<fabric::HardwareDomainRef>
-findDomain(const fabric::FabricSystemRootView &system,
-           fabric::SpatialCoreOccurrenceRef subject,
-           fabric::FabricHardwareDomainKind kind) {
-  const fabric::FabricInventoryOwnerRef owner =
-      fabric::FabricInventoryOwnerRef::of(subject);
-  std::optional<fabric::HardwareDomainRef> result;
-  for (fabric::HardwareDomainRef domain : system.hardwareDomains()) {
-    const auto *contract = system.hardwareDomainContract(domain);
-    if (!contract || contract->kind() != kind ||
-        !llvm::is_contained(contract->members(), owner))
-      continue;
-    if (result)
-      return invalid("SpatialCore belongs to multiple required domains");
-    result = domain;
-  }
-  if (!result)
-    return invalid("SpatialCore has no required Clock or Reset domain");
-  return *result;
-}
-
-llvm::Expected<fabric::SpatialCoreOccurrenceRef>
-attachmentSubject(
-    const fabric::FabricSpatialAttachmentEndpointRef &endpoint) {
-  if (const auto *transport = endpoint.transport()) {
-    if (transport->owner.kind() !=
-        fabric::FabricTransportEndpointOwnerKind::SpatialCoreOccurrence)
-      return invalid("transport attachment is not SpatialCore-owned");
-    return std::get<fabric::SpatialCoreOccurrenceRef>(
-        transport->owner.payload);
-  }
-  const auto *memory = endpoint.memory();
-  if (!memory || memory->owner.kind() !=
-                     fabric::FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
-    return invalid("memory attachment is not SpatialCore-owned");
-  return std::get<fabric::SpatialCoreOccurrenceRef>(memory->owner.payload);
-}
-
 std::string attachmentLocalPort(
     const fabric::FabricSpatialAttachmentRecordView &attachment) {
   const bool input = attachment.moduleEndpoint.target.direction ==
@@ -72,6 +31,31 @@ std::string attachmentLocalPort(
   if (attachment.spatialEndpoint.transport())
     return direction + ordinal + "_valid";
   return "memory_" + direction + ordinal + "_request_valid";
+}
+
+llvm::Expected<std::string> interfacePort(
+    const ImplementationInterfaceSemanticRef &semantic,
+    const fabric::FabricSystemRootView &system) {
+  if (std::holds_alternative<ImplementationClockInterfaceRef>(semantic))
+    return std::string("clock");
+  if (std::holds_alternative<ImplementationResetInterfaceRef>(semantic))
+    return std::string("reset");
+  if (std::holds_alternative<ImplementationConfigurationInterfaceRef>(semantic))
+    return std::string("cfg_awaddr");
+
+  const fabric::FabricSpatialAttachmentEndpointRef *endpoint = nullptr;
+  if (const auto *data =
+          std::get_if<ImplementationDataInterfaceRef>(&semantic))
+    endpoint = &data->endpoint;
+  else if (const auto *memory =
+               std::get_if<ImplementationMemoryInterfaceRef>(&semantic))
+    endpoint = &memory->endpoint;
+  else
+    return invalid("SpatialCore RTL received an external protocol interface");
+  for (const auto &attachment : system.spatialAttachments())
+    if (attachment.spatialEndpoint == *endpoint)
+      return attachmentLocalPort(attachment);
+  return invalid("SpatialCore interface has no exact System attachment");
 }
 
 ImplementationInterface
@@ -88,48 +72,17 @@ llvm::Expected<std::vector<ImplementationInterface>> deriveInterfaces(
     fabric::SpatialCoreOccurrenceRef subject) {
   const fabric::FabricSystemRootView &system =
       configurationAbi.abi().fabricSystem();
-  auto clock =
-      findDomain(system, subject, fabric::FabricHardwareDomainKind::Clock);
-  if (!clock)
-    return clock.takeError();
-  auto reset =
-      findDomain(system, subject, fabric::FabricHardwareDomainKind::Reset);
-  if (!reset)
-    return reset.takeError();
-
+  auto semantics = deriveSpatialCoreImplementationInterfaceSemantics(
+      configurationAbi, subject);
+  if (!semantics)
+    return semantics.takeError();
   std::vector<ImplementationInterface> interfaces;
-  interfaces.push_back(topPortInterface(
-      ImplementationClockInterfaceRef{*clock}, "clock"));
-  interfaces.push_back(topPortInterface(
-      ImplementationResetInterfaceRef{*reset}, "reset"));
-
-  auto layout =
-      derivePortableConfigurationTransportLayout(configurationAbi, subject);
-  if (!layout)
-    return layout.takeError();
-  for (const ConfigurationTransportUnitLayout &unit : layout->units)
-    interfaces.push_back(topPortInterface(
-        ImplementationConfigurationInterfaceRef{unit.programmingUnit},
-        "cfg_awaddr"));
-
-  for (const auto &attachment : system.spatialAttachments()) {
-    auto owner = attachmentSubject(attachment.spatialEndpoint);
-    if (!owner)
-      return owner.takeError();
-    if (*owner != subject)
-      continue;
-    const auto target = system.spatialCoreTarget(subject.core);
-    if (!target ||
-        target->dependencyOrdinal != attachment.moduleEndpoint.dependencyOrdinal ||
-        target->target != attachment.moduleEndpoint.target.module)
-      return invalid("System attachment targets a foreign Module occurrence");
-    const std::string port = attachmentLocalPort(attachment);
-    if (attachment.spatialEndpoint.transport())
-      interfaces.push_back(topPortInterface(
-          ImplementationDataInterfaceRef{attachment.spatialEndpoint}, port));
-    else
-      interfaces.push_back(topPortInterface(
-          ImplementationMemoryInterfaceRef{attachment.spatialEndpoint}, port));
+  interfaces.reserve(semantics->size());
+  for (ImplementationInterfaceSemanticRef &semantic : *semantics) {
+    auto port = interfacePort(semantic, system);
+    if (!port)
+      return port.takeError();
+    interfaces.push_back(topPortInterface(std::move(semantic), *port));
   }
   return interfaces;
 }

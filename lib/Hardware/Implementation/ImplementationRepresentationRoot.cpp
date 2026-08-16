@@ -36,6 +36,8 @@ representationRootVariantSpelling(RepresentationRootVariant variant) {
     return llvm::StringRef("FpgaPhysical");
   case RepresentationRootVariant::FpgaImage:
     return llvm::StringRef("FpgaImage");
+  case RepresentationRootVariant::FabricModel:
+    return llvm::StringRef("FabricModel");
   }
   return invalid("representation root variant is unsupported");
 }
@@ -52,6 +54,8 @@ parseRepresentationRootVariantSpelling(llvm::StringRef spelling) {
     return RepresentationRootVariant::FpgaPhysical;
   if (spelling == "FpgaImage")
     return RepresentationRootVariant::FpgaImage;
+  if (spelling == "FabricModel")
+    return RepresentationRootVariant::FabricModel;
   return std::nullopt;
 }
 
@@ -97,6 +101,8 @@ expectedTopKind(RepresentationRootVariant variant) {
   case RepresentationRootVariant::FpgaPhysical:
   case RepresentationRootVariant::FpgaImage:
     return RepresentationObjectKind::DeviceResource;
+  case RepresentationRootVariant::FabricModel:
+    return RepresentationObjectKind::Model;
   }
   return invalid("representation root variant is unsupported");
 }
@@ -226,11 +232,18 @@ createImplementationRepresentationRoot(
     std::optional<RepresentationPhysicalStage> stage,
     RepresentationFormatDescriptorRef formatRef, RepresentationLocator top,
     std::vector<ImplementationPayload> payloads) {
-  auto canonical = canonicalizeImplementationPayloadCatalog(payloads);
-  if (!canonical)
-    return canonical.takeError();
+  std::vector<ImplementationPayload> canonical;
+  if (payloads.empty()) {
+    if (variant != RepresentationRootVariant::FabricModel)
+      return invalid("only FabricModel may omit representation payloads");
+  } else {
+    auto result = canonicalizeImplementationPayloadCatalog(payloads);
+    if (!result)
+      return result.takeError();
+    canonical = std::move(*result);
+  }
   ImplementationRepresentationRoot root{variant, stage, formatRef,
-                                        std::move(top), std::move(*canonical)};
+                                        std::move(top), std::move(canonical)};
   if (llvm::Error error = validateImplementationRepresentationRoot(root))
     return std::move(error);
   return root;
@@ -258,11 +271,18 @@ llvm::Error validateImplementationRepresentationRoot(
     return topKind.takeError();
   if (root.top.kind != *topKind)
     return invalid("representation root top kind does not match its variant");
-  auto canonical = canonicalizeImplementationPayloadCatalog(root.payloads);
-  if (!canonical)
-    return canonical.takeError();
-  if (*canonical != root.payloads)
-    return invalid("representation root payloads are not in canonical order");
+  if (root.payloads.empty()) {
+    if (root.variant != RepresentationRootVariant::FabricModel)
+      return invalid("only FabricModel may omit representation payloads");
+  } else {
+    if (root.variant == RepresentationRootVariant::FabricModel)
+      return invalid("FabricModel cannot carry representation payloads");
+    auto canonical = canonicalizeImplementationPayloadCatalog(root.payloads);
+    if (!canonical)
+      return canonical.takeError();
+    if (*canonical != root.payloads)
+      return invalid("representation root payloads are not in canonical order");
+  }
   return llvm::Error::success();
 }
 

@@ -52,13 +52,17 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &store, const BlobStore &blobs);
 
-llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
-    const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ArtifactStore &store);
+llvm::Expected<SpatialExecutionContext>
+resolveSpatialEngineResultContext(const ArtifactRootReference &workload,
+                                  const ArtifactRootReference &runtimeInput,
+                                  const ArtifactStore &store);
 
-llvm::Error validateSpatialProgressObservations(
-    const SpatialProgressObservations &progress,
-    const ExecutionTerminal &terminal);
+llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
+    const ImportedSpatialSimulationInputs &inputs);
+
+llvm::Error
+validateSpatialProgressObservations(const SpatialProgressObservations &progress,
+                                    const ExecutionTerminal &terminal);
 void encodeSpatialProgressObservations(
     WireWriter &writer, const SpatialProgressObservations &progress);
 llvm::Expected<SpatialProgressObservations>

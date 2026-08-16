@@ -116,7 +116,9 @@ void emitFabricTopologyQuality(
     llvm::json::Object value;
     value["numerator"] = extreme->numerator;
     value["denominator"] = extreme->denominator;
-    value["owners"] = ownerArray(extreme->owners);
+    value["owner_count"] = extreme->owners.size();
+    if (mapping_debug::enabled(mapping_debug::Level::Decision))
+      value["owners"] = ownerArray(extreme->owners);
     return value;
   };
   for (const fabric::FabricTopologyKindDistribution &distribution :
@@ -131,11 +133,17 @@ void emitFabricTopologyQuality(
           fields["owner_count"] = distribution.ownerCount;
           fields["zero_port_owner_count"] = distribution.zeroPortOwnerCount;
           fields["minimum_port_count"] = distribution.minimumPortCount.value;
-          fields["minimum_port_count_owners"] =
-              ownerArray(distribution.minimumPortCount.owners);
+          fields["minimum_port_count_owner_count"] =
+              distribution.minimumPortCount.owners.size();
           fields["maximum_port_count"] = distribution.maximumPortCount.value;
-          fields["maximum_port_count_owners"] =
-              ownerArray(distribution.maximumPortCount.owners);
+          fields["maximum_port_count_owner_count"] =
+              distribution.maximumPortCount.owners.size();
+          if (mapping_debug::enabled(mapping_debug::Level::Decision)) {
+            fields["minimum_port_count_owners"] =
+                ownerArray(distribution.minimumPortCount.owners);
+            fields["maximum_port_count_owners"] =
+                ownerArray(distribution.maximumPortCount.owners);
+          }
           if (distribution.minimumRoutingRatio)
             fields["minimum_routing_ratio"] =
                 ratio(distribution.minimumRoutingRatio);
@@ -154,7 +162,7 @@ void emitFabricTopologyQuality(
   for (const fabric::FabricTopologyScheduleQuality &schedule :
        report.schedules) {
     mapping_debug::emit(
-        mapping_debug::Level::Summary, stage,
+        mapping_debug::Level::Decision, stage,
         mapping_debug::Event::TopologyQuality, [&](llvm::json::Object &fields) {
           fields["scope"] = "schedule_distribution";
           fields["artifact"] = artifact;
@@ -176,7 +184,7 @@ void emitFabricTopologyQuality(
   for (const fabric::FabricTopologyCapabilityQuality &capability :
        report.capabilities) {
     mapping_debug::emit(
-        mapping_debug::Level::Summary, stage,
+        mapping_debug::Level::Decision, stage,
         mapping_debug::Event::TopologyQuality, [&](llvm::json::Object &fields) {
           fields["scope"] = "capability_distribution";
           fields["artifact"] = artifact;

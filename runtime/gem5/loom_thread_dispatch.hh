@@ -21,11 +21,20 @@ public:
   Tick write(PacketPtr packet) override;
 
 private:
-  enum class State : std::uint32_t { Idle = 0, Running = 1, Complete = 2, Failed = 3 };
+  enum class State : std::uint32_t {
+    Idle = 0,
+    Running = 1,
+    Complete = 2,
+    Failed = 3
+  };
 
   LoomRiscvDeploymentWorkload *const workload;
   State state = State::Idle;
   std::uint64_t selectedTarget = 0;
+  std::uint64_t invocationAddress = 0;
+  std::uint64_t invocationSize = 0;
+  std::uint64_t activeInvocationAddress = 0;
+  std::uint64_t activeInvocationSize = 0;
   std::uint32_t errorCode = 0;
   EventFunctionWrapper dispatchEvent;
   EventFunctionWrapper completionEvent;

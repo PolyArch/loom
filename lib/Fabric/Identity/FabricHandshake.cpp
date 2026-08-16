@@ -20,6 +20,7 @@
 #include <set>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 
 namespace loom::fabric {
@@ -152,7 +153,9 @@ public:
   }
 
 private:
-  std::map<HandshakeOwnerKey, std::vector<const FabricPhysicalTraversalView *>>
+  std::unordered_map<HandshakeOwnerKey,
+                     std::vector<const FabricPhysicalTraversalView *>,
+                     detail::CanonicalFabricByteKeyHash>
       byOwner_;
 };
 

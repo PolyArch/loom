@@ -32,6 +32,29 @@ std::mutex &representationIndexCacheMutex() {
   return mutex;
 }
 
+llvm::Expected<detail::RawIndex> indexFabricModel(
+    RepresentationFormatDescriptorRef formatRef,
+    const RepresentationLocator &exactRoot,
+    llvm::ArrayRef<ImplementationPayload> canonicalPayloads) {
+  if (!canonicalPayloads.empty())
+    return detail::invalidIndex("FabricModel representation has payloads");
+  if (exactRoot.kind != RepresentationObjectKind::Model ||
+      exactRoot.canonicalName != fabricModelRootCanonicalName)
+    return detail::invalidIndex(
+        "FabricModel representation has an invalid exact root");
+  if (llvm::Error error = validateRepresentationLocatorSyntax(formatRef,
+                                                               exactRoot))
+    return detail::invalidIndex("FabricModel exact root is invalid: " +
+                                llvm::toString(std::move(error)));
+  detail::RawIndex raw;
+  raw.rootVariant = RepresentationRootVariant::FabricModel;
+  raw.stage = std::nullopt;
+  raw.entries.push_back(
+      {exactRoot, RepresentationObjectFacts{RepresentationObjectKind::Model,
+                                            std::nullopt}});
+  return raw;
+}
+
 } // namespace
 
 llvm::Expected<RepresentationIndex>
@@ -41,12 +64,21 @@ indexRepresentation(RepresentationFormatDescriptorRef formatRef,
                     const BlobStore &blobs) {
   const detail::StaticRepresentationFormatEntry &format =
       detail::getStaticRepresentationFormatEntry(formatRef);
-  llvm::Expected<detail::RawIndex> raw =
-      format.indexer == detail::BuiltinRepresentationIndexer::IndexedPhysical
-          ? detail::indexPhysicalRepresentation(formatRef, exactRoot,
-                                                canonicalPayloads, blobs)
-          : detail::indexHdlRepresentation(formatRef, exactRoot,
-                                           canonicalPayloads, blobs);
+  llvm::Expected<detail::RawIndex> raw = [&]()
+      -> llvm::Expected<detail::RawIndex> {
+    switch (format.indexer) {
+    case detail::BuiltinRepresentationIndexer::IndexedPhysical:
+      return detail::indexPhysicalRepresentation(formatRef, exactRoot,
+                                                 canonicalPayloads, blobs);
+    case detail::BuiltinRepresentationIndexer::FabricModel:
+      return indexFabricModel(formatRef, exactRoot, canonicalPayloads);
+    case detail::BuiltinRepresentationIndexer::SystemVerilogRtl:
+    case detail::BuiltinRepresentationIndexer::StructuralVerilogGateNetlist:
+      return detail::indexHdlRepresentation(formatRef, exactRoot,
+                                            canonicalPayloads, blobs);
+    }
+    llvm_unreachable("closed representation indexer");
+  }();
   if (!raw)
     return raw.takeError();
   if (!raw->rootVariant)
@@ -71,6 +103,9 @@ llvm::Expected<RepresentationIndex> indexProspectiveRepresentation(
   if (format.indexer == detail::BuiltinRepresentationIndexer::IndexedPhysical)
     return detail::invalidIndex(
         "prospective payload indexing is available only for HDL formats");
+  if (format.indexer == detail::BuiltinRepresentationIndexer::FabricModel)
+    return detail::invalidIndex(
+        "prospective payload indexing does not apply to FabricModel");
   auto raw = detail::indexHdlRepresentation(formatRef, exactRoot, payloads);
   if (!raw)
     return raw.takeError();

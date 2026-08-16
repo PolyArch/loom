@@ -13,6 +13,7 @@ add_mlir_library(LoomCommon
   ExecutionControl.cpp
   ExternalFileFingerprint.cpp
   IndexWidth.cpp
+  InvocationDiagnosticLog.cpp
   MappingDebugLog.cpp
   PointerLayout.cpp
   ResolvedPnrPolicy.cpp

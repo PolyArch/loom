@@ -46,6 +46,8 @@ objectKindSpelling(RepresentationObjectKind kind) {
     return llvm::StringRef("PhysicalObject");
   case RepresentationObjectKind::DeviceResource:
     return llvm::StringRef("DeviceResource");
+  case RepresentationObjectKind::Model:
+    return llvm::StringRef("Model");
   }
   return invalid("representation object kind is unsupported");
 }
@@ -72,6 +74,8 @@ parseObjectKind(llvm::StringRef spelling) {
     return RepresentationObjectKind::PhysicalObject;
   if (spelling == "DeviceResource")
     return RepresentationObjectKind::DeviceResource;
+  if (spelling == "Model")
+    return RepresentationObjectKind::Model;
   return std::nullopt;
 }
 
@@ -292,9 +296,15 @@ validateRepresentationLocatorSyntax(RepresentationFormatDescriptorRef format,
   auto segmentCount = validateHdlPath(locator.canonicalName);
   if (!segmentCount)
     return segmentCount.takeError();
-  if (locator.kind == RepresentationObjectKind::Module && *segmentCount != 1)
-    return invalid("Module locator name must be one HDL identifier");
+  if ((locator.kind == RepresentationObjectKind::Module ||
+       locator.kind == RepresentationObjectKind::Model) &&
+      *segmentCount != 1)
+    return invalid("Module or Model locator name must be one identifier");
+  if (format.kind() == RepresentationFormatKind::FabricModel &&
+      locator.canonicalName != fabricModelRootCanonicalName)
+    return invalid("FabricModel locator must use the canonical model root");
   if (locator.kind != RepresentationObjectKind::Module &&
+      locator.kind != RepresentationObjectKind::Model &&
       locator.kind != RepresentationObjectKind::PhysicalObject &&
       locator.kind != RepresentationObjectKind::DeviceResource &&
       *segmentCount < 2)

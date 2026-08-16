@@ -3,6 +3,7 @@
 #include "Common/ArtifactText.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Frontend/Executable/CompilerTargetBinding.h"
+#include "Runtime/SpatialInvocationWire.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/JSON.h"
@@ -192,9 +193,9 @@ parseThreadEntries(const llvm::json::Object &root,
     if (!object)
       return codecError("instruction_core_binary_invalid",
                         "thread_entry_table entries must be objects");
-    if (llvm::Error error =
-            rejectUnknownFields(*object, "thread entry binding",
-                                {"root_thread_launch_ref", "entry_ordinal"}))
+    if (llvm::Error error = rejectUnknownFields(
+            *object, "thread entry binding",
+            {"root_thread_launch_ref", "entry_ordinal", "spatial_invocation"}))
       return std::move(error);
     auto local = requireString(*object, "root_thread_launch_ref",
                                "thread entry binding");
@@ -211,7 +212,38 @@ parseThreadEntries(const llvm::json::Object &root,
     auto ordinal = requireU64(*object, "entry_ordinal", "thread entry binding");
     if (!ordinal)
       return ordinal.takeError();
-    result.push_back({*reference, *ordinal});
+    std::optional<ThreadEntrySpatialInvocationBinding> invocation;
+    if (object->get("spatial_invocation")) {
+      auto binding =
+          requireObject(*object, "spatial_invocation", "thread entry binding");
+      if (!binding)
+        return binding.takeError();
+      if (llvm::Error error =
+              rejectUnknownFields(**binding, "spatial invocation binding",
+                                  {"abi", "rooted_graph_launch_ref"}))
+        return std::move(error);
+      auto abi = requireString(**binding, "abi", "spatial invocation binding");
+      if (!abi)
+        return abi.takeError();
+      if (*abi != runtime::spatialInvocationAbiIdentity)
+        return codecError("instruction_core_binary_invocation_abi_unsupported",
+                          "thread entry names an unsupported Spatial "
+                          "invocation ABI");
+      auto graph = requireString(**binding, "rooted_graph_launch_ref",
+                                 "spatial invocation binding");
+      if (!graph)
+        return graph.takeError();
+      auto graphBytes = parseArtifactLocalPayloadHex(*graph);
+      if (!graphBytes)
+        return graphBytes.takeError();
+      auto graphReference =
+          dataflow::decodeDataflowReference<dataflow::RootedGraphLaunchRef>(
+              *graphBytes, dataflowArtifact);
+      if (!graphReference)
+        return graphReference.takeError();
+      invocation = ThreadEntrySpatialInvocationBinding{*graphReference};
+    }
+    result.push_back({*reference, *ordinal, std::move(invocation)});
   }
   return result;
 }
@@ -263,6 +295,20 @@ canonicalizeThreadEntries(llvm::ArrayRef<ThreadEntryBinding> entries,
       return codecError(
           "instruction_core_binary_foreign_root",
           "thread entry key belongs to another Dataflow artifact");
+    else if (entry.spatialInvocation &&
+             (entry.spatialInvocation->graph.rootThreadLaunch.artifact !=
+                  dataflowArtifact ||
+              entry.spatialInvocation->graph.staticGraphLaunch.artifact !=
+                  dataflowArtifact))
+      return codecError(
+          "instruction_core_binary_foreign_invocation",
+          "thread entry invocation belongs to another Dataflow artifact");
+    else if (entry.spatialInvocation &&
+             entry.spatialInvocation->graph.rootThreadLaunch !=
+                 entry.rootThreadLaunch)
+      return codecError(
+          "instruction_core_binary_invocation_root_mismatch",
+          "thread entry invocation belongs to another root launch");
   llvm::sort(result, [](const auto &lhs, const auto &rhs) {
     return lhs.rootThreadLaunch.entity.value() <
            rhs.rootThreadLaunch.entity.value();
@@ -357,6 +403,17 @@ serializeInstructionCoreBinary(const InstructionCoreBinary &binary) {
           json.attribute("root_thread_launch_ref",
                          formatArtifactLocalPayloadHex(local));
           json.attribute("entry_ordinal", entry.entryOrdinal);
+          if (entry.spatialInvocation) {
+            const std::vector<std::uint8_t> graph =
+                llvm::cantFail(dataflow::encodeDataflowReference(
+                    binary.canonicalDataflow().artifact,
+                    entry.spatialInvocation->graph));
+            json.attributeObject("spatial_invocation", [&] {
+              json.attribute("abi", runtime::spatialInvocationAbiIdentity);
+              json.attribute("rooted_graph_launch_ref",
+                             formatArtifactLocalPayloadHex(graph));
+            });
+          }
         });
       }
     });

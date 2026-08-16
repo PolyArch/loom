@@ -75,6 +75,9 @@ endif()
 find_package(Clang REQUIRED CONFIG)
 message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
 
+find_package(LLD REQUIRED CONFIG HINTS "${LLVM_DIR}/../lld" NO_DEFAULT_PATH)
+message(STATUS "Using LLDConfig.cmake in: ${LLD_DIR}")
+
 # Optional CIRCT integration. CIRCT is supplied by the shared build under
 # externals/circt (see scripts/make-worktree.py, `make circt`). It is
 # strictly optional: omit -DCIRCT_DIR to build Loom without CIRCT. A
@@ -107,6 +110,7 @@ include(HandleLLVMOptions)
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${CLANG_INCLUDE_DIRS})
+include_directories(${LLD_INCLUDE_DIRS})
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_BINARY_DIR}/include)
 link_directories(${LLVM_BUILD_LIBRARY_DIR})

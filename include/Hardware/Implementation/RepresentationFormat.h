@@ -30,16 +30,18 @@ enum class RepresentationObjectKind : std::uint32_t {
   Pin = 7,
   PhysicalObject = 8,
   DeviceResource = 9,
+  Model = 10,
 };
 
 inline constexpr ArtifactSchemaDescriptor hardwareRepresentationFormatRegistry{
-    "loom.hardware_representation_format", SchemaVersion{2, 2}};
+    "loom.hardware_representation_format", SchemaVersion{2, 3}};
 
 enum class RepresentationFormatKind : std::uint32_t {
   SystemVerilogRtl = 0,
   StructuralVerilogGateNetlist = 1,
   IndexedPhysical = 2,
   IndexedDefPhysical = 3,
+  FabricModel = 4,
 };
 
 /// Closed root variants of one HardwareImplementation representation, with
@@ -51,7 +53,11 @@ enum class RepresentationRootVariant : std::uint32_t {
   AsicPhysical = 2,
   FpgaPhysical = 3,
   FpgaImage = 4,
+  FabricModel = 5,
 };
+
+inline constexpr llvm::StringLiteral fabricModelRootCanonicalName{
+    "fabric_model"};
 
 /// Stable stage tags for the physical root variants. `Extracted` is legal
 /// only for `AsicPhysical`.

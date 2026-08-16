@@ -72,7 +72,7 @@ std::vector<std::uint8_t> expectedBytes(std::uint32_t kind,
 }
 
 void exactBinaryCodecIsClosed() {
-  constexpr std::array<RepresentationObjectKind, 10> kinds{
+  constexpr std::array<RepresentationObjectKind, 11> kinds{
       RepresentationObjectKind::Module,
       RepresentationObjectKind::Instance,
       RepresentationObjectKind::Port,
@@ -83,6 +83,7 @@ void exactBinaryCodecIsClosed() {
       RepresentationObjectKind::Pin,
       RepresentationObjectKind::PhysicalObject,
       RepresentationObjectKind::DeviceResource,
+      RepresentationObjectKind::Model,
   };
   for (std::uint32_t tag = 0; tag < kinds.size(); ++tag) {
     const RepresentationLocator locator{kinds[tag], "top.object"};
@@ -109,11 +110,11 @@ void exactBinaryCodecIsClosed() {
   expectError(__func__, decodeRepresentationLocator(trailing), "trailing");
 
   std::vector<std::uint8_t> unknownKind = bytes;
-  unknownKind[3] = 10;
+  unknownKind[3] = 11;
   expectError(__func__, decodeRepresentationLocator(unknownKind), "kind");
   expectError(__func__,
               encodeRepresentationLocator(
-                  {static_cast<RepresentationObjectKind>(10), "top"}),
+                  {static_cast<RepresentationObjectKind>(11), "top"}),
               "kind");
 
   std::vector<std::uint8_t> excessiveLength = bytes;
@@ -134,10 +135,10 @@ void exactBinaryCodecIsClosed() {
 }
 
 void exactJsonCodecIsClosed() {
-  constexpr std::array<llvm::StringLiteral, 10> spellings{
+  constexpr std::array<llvm::StringLiteral, 11> spellings{
       "Module",         "Instance",       "Port", "Net",
       "Register",       "Memory",         "Cell", "Pin",
-      "PhysicalObject", "DeviceResource",
+      "PhysicalObject", "DeviceResource", "Model",
   };
   for (std::uint32_t tag = 0; tag < spellings.size(); ++tag) {
     const RepresentationLocator locator{
@@ -174,7 +175,7 @@ void exactJsonCodecIsClosed() {
       "canonical");
   expectError(__func__,
               serializeRepresentationLocatorJson(
-                  {static_cast<RepresentationObjectKind>(10), "top"}),
+                  {static_cast<RepresentationObjectKind>(11), "top"}),
               "kind");
 }
 
@@ -264,7 +265,8 @@ void initialFormatsOwnHdlSyntax() {
   for (RepresentationObjectKind kind :
        {RepresentationObjectKind::Cell, RepresentationObjectKind::Pin,
         RepresentationObjectKind::PhysicalObject,
-        RepresentationObjectKind::DeviceResource})
+        RepresentationObjectKind::DeviceResource,
+        RepresentationObjectKind::Model})
     expectError(__func__,
                 validateRepresentationLocatorSyntax(rtl, {kind, "top.object"}),
                 "kind");
@@ -273,10 +275,27 @@ void initialFormatsOwnHdlSyntax() {
        {RepresentationObjectKind::Instance, RepresentationObjectKind::Register,
         RepresentationObjectKind::Memory,
         RepresentationObjectKind::PhysicalObject,
-        RepresentationObjectKind::DeviceResource})
+        RepresentationObjectKind::DeviceResource,
+        RepresentationObjectKind::Model})
     expectError(__func__,
                 validateRepresentationLocatorSyntax(gate, {kind, "top.object"}),
                 "kind");
+
+  const auto model = take(__func__, RepresentationFormatDescriptorRef::get(
+                                        RepresentationFormatKind::FabricModel));
+  if (llvm::Error error = validateRepresentationLocatorSyntax(
+          model, {RepresentationObjectKind::Model,
+                  fabricModelRootCanonicalName.str()}))
+    fail(__func__, llvm::toString(std::move(error)));
+  expectError(__func__,
+              validateRepresentationLocatorSyntax(
+                  model, {RepresentationObjectKind::Model, "other_model"}),
+              "canonical model root");
+  expectError(__func__,
+              validateRepresentationLocatorSyntax(
+                  model, {RepresentationObjectKind::Module,
+                          fabricModelRootCanonicalName.str()}),
+              "kind");
 }
 
 } // namespace

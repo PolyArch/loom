@@ -7,6 +7,7 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Deployment/HardwareConfigurationImage.h"
+#include "Deployment/DeploymentDiagnostics.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -24,6 +25,7 @@
 #include "llvm/Support/JSON.h"
 
 #include <algorithm>
+#include <chrono>
 #include <iterator>
 #include <set>
 #include <string>
@@ -32,6 +34,20 @@
 
 namespace loom::deployment {
 namespace {
+
+using MonotonicClock = std::chrono::steady_clock;
+
+void emitElapsed(DeploymentConstructionMode mode,
+                 DeploymentConstructionOperation operation,
+                 MonotonicClock::time_point begin,
+                 std::uint64_t deterministicWork = 1) {
+  const std::uint64_t duration =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          MonotonicClock::now() - begin)
+          .count();
+  emitDeploymentConstructionOperationStatistics(
+      {mode, operation, duration, deterministicWork});
+}
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -604,15 +620,24 @@ importDeployment(const ArtifactRootReference &reference,
   if (reference.schemaIdentity != deploymentSchema.identity ||
       reference.schemaVersion != deploymentSchema.version)
     return invalid("root reference has the wrong schema descriptor");
+  auto operationBegin = MonotonicClock::now();
   auto bytes = artifacts.get(deploymentSchema, reference.artifact);
   if (!bytes)
     return bytes.takeError();
   auto parsed = detail::parseDeployment(bytes->bytes());
+  emitElapsed(DeploymentConstructionMode::Import,
+              DeploymentConstructionOperation::InputCanonicalization,
+              operationBegin);
   if (!parsed)
     return parsed.takeError();
+  operationBegin = MonotonicClock::now();
   auto images = detail::validateDeploymentClosure(*parsed, artifacts, blobs);
+  emitElapsed(DeploymentConstructionMode::Import,
+              DeploymentConstructionOperation::ExecutableClosureValidation,
+              operationBegin);
   if (!images)
     return images.takeError();
+  operationBegin = MonotonicClock::now();
   auto canonical = detail::serializeDeployment(*parsed, *images);
   if (!canonical)
     return canonical.takeError();
@@ -621,6 +646,9 @@ importDeployment(const ArtifactRootReference &reference,
                    "runtime images");
   Deployment deployment =
       detail::materializeDeployment(std::move(*parsed), std::move(*images));
+  emitElapsed(DeploymentConstructionMode::Import,
+              DeploymentConstructionOperation::ArtifactFinalization,
+              operationBegin);
   return detail::DeploymentCodecAccess::finalized(reference, std::move(*bytes),
                                                   std::move(deployment));
 }
@@ -628,6 +656,7 @@ importDeployment(const ArtifactRootReference &reference,
 llvm::Expected<FinalizedDeployment>
 buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
                 const BlobStore &blobs) {
+  auto operationBegin = MonotonicClock::now();
   if (llvm::Error error = canonicalizeRoots(inputs.instructionCoreBinaries,
                                             "instruction_core_binary_refs"))
     return error;
@@ -635,6 +664,10 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
     return error;
   if (llvm::Error error = canonicalizeStaticMemory(inputs.staticMemoryImages))
     return error;
+  emitElapsed(DeploymentConstructionMode::Build,
+              DeploymentConstructionOperation::InputCanonicalization,
+              operationBegin);
+  operationBegin = MonotonicClock::now();
   auto systemMapping =
       mapping::importSystemMapping(inputs.systemMapping, artifacts);
   if (!systemMapping)
@@ -649,16 +682,24 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
       *dataflow, systemMapping->view().executionBindings());
   if (!subjects)
     return subjects.takeError();
+  emitElapsed(DeploymentConstructionMode::Build,
+              DeploymentConstructionOperation::MappingOwnerImport,
+              operationBegin);
   const ArtifactRootReference fabricReference{
       fabric::fabricArtifactSchema.identity.str(),
       fabric::fabricArtifactSchema.version,
       systemMapping->view().fabricIdentity()};
+  operationBegin = MonotonicClock::now();
   auto abi = validateHardwareBindingCoverage(inputs.hardwareBindings, *subjects,
                                              fabricReference, artifacts, blobs);
+  emitElapsed(DeploymentConstructionMode::Build,
+              DeploymentConstructionOperation::HardwareClosureValidation,
+              operationBegin, inputs.hardwareBindings.size());
   if (!abi)
     return abi.takeError();
 
   std::vector<ArtifactRootReference> images;
+  operationBegin = MonotonicClock::now();
   if (*abi) {
     auto units = requiredProgrammingUnits((*abi)->abi(), *subjects);
     if (!units)
@@ -678,11 +719,19 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
   }
   if (llvm::Error error = canonicalizeConfigurationImages(images, artifacts))
     return error;
+  emitElapsed(DeploymentConstructionMode::Build,
+              DeploymentConstructionOperation::ConfigurationImageDerivation,
+              operationBegin, images.size());
+  operationBegin = MonotonicClock::now();
   auto runtimeImages = detail::deriveRuntimeImages(
       inputs.systemMapping, inputs.instructionCoreBinaries, images, artifacts,
       blobs);
   if (!runtimeImages)
     return runtimeImages.takeError();
+  emitElapsed(DeploymentConstructionMode::Build,
+              DeploymentConstructionOperation::RuntimeImageDerivation,
+              operationBegin);
+  operationBegin = MonotonicClock::now();
   auto thread =
       parseInlineBytes(runtimeImages->threadDispatch, threadDispatchImageSchema);
   auto admission =
@@ -714,8 +763,16 @@ buildDeployment(ExactDeploymentInputs inputs, const ArtifactStore &artifacts,
   if (llvm::Error error =
           validateExecutableAndHardwareClosure(parsed, artifacts, blobs))
     return error;
-  return finishFinalizedDeployment(std::move(parsed),
-                                   std::move(*runtimeImages), artifacts);
+  emitElapsed(DeploymentConstructionMode::Build,
+              DeploymentConstructionOperation::ExecutableClosureValidation,
+              operationBegin);
+  operationBegin = MonotonicClock::now();
+  auto finalized = finishFinalizedDeployment(
+      std::move(parsed), std::move(*runtimeImages), artifacts);
+  emitElapsed(DeploymentConstructionMode::Build,
+              DeploymentConstructionOperation::ArtifactFinalization,
+              operationBegin);
+  return finalized;
 }
 
 } // namespace loom::deployment

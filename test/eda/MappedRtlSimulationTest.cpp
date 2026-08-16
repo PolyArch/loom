@@ -2,6 +2,7 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
+#include "Evaluation/ArtifactImportCache.h"
 #include "Evaluation/ModelProvider.h"
 #include "ExternalTool/Binding.h"
 #include "ExternalTool/InvocationBundle.h"
@@ -437,38 +438,47 @@ void authoredLifecycleImportsExactEvidence() {
   const std::filesystem::path blobPath = tree.path("blobs");
   ArtifactStore artifacts(artifactPath.string());
   BlobStore blobs(blobPath.string());
-  const auto fixture = eda::test::buildMappedRtlRequestFixture(
-      test, "Verilator 5.050", artifacts, blobs, tree);
+  struct PreparedLifecycle final {
+    eda::test::MappedRtlRequestFixture fixture;
+    PreparedExternalToolInvocation invocation;
+  };
+  PreparedLifecycle prepared = [&] {
+    evaluation::ArtifactImportCacheScope sourceInvocation(artifacts, &blobs);
+    auto fixture = eda::test::buildMappedRtlRequestFixture(
+        test, "Verilator 5.050", artifacts, blobs, tree);
+    const std::string expectedResult =
+        take(renderMappedRtlSimulationResult(expectedMappedResult()));
+    const std::filesystem::path tool = tree.path("fake-verilator");
+    writeExecutable(tool, fakeVerilator(expectedResult));
+    LocalToolConfig local;
+    local.runtimePolicy = RuntimePolicy::Host;
+    local.tools[verilatorProvider().binding.key].binding.executable =
+        tool.string();
+    const std::filesystem::path bundle = tree.path("bundle");
+    EvaluationModelPreparation preparation =
+        take(prepareEvaluationModelInvocation(
+            fixture.request, fixture.resolution, artifacts, blobs,
+            ExternalToolPreparationContext{std::move(local), bundle.string()}));
+    auto *invocation =
+        std::get_if<PreparedExternalToolInvocation>(&preparation);
+    require(invocation,
+            "supported request did not prepare a Verilator bundle");
+    require(!std::filesystem::exists(bundle / mappedRtlResultPath.str()),
+            "preparation manufactured a simulation result");
+    require(llvm::StringRef(readFile(bundle / mappedRtlTestbenchPath.str()))
+                .contains("task automatic loom_cfg_read_"),
+            "generated testbench omits configuration readback");
+    require(take(executeExternalToolInvocationBundle(*invocation)) == 0,
+            "authored Verilator lifecycle failed");
+    return PreparedLifecycle{std::move(fixture), std::move(*invocation)};
+  }();
 
-  MappedRtlSimulationResult expected = expectedMappedResult();
-  const std::string expectedResult =
-      take(renderMappedRtlSimulationResult(expected));
-
-  const std::filesystem::path tool = tree.path("fake-verilator");
-  writeExecutable(tool, fakeVerilator(expectedResult));
-  LocalToolConfig local;
-  local.runtimePolicy = RuntimePolicy::Host;
-  local.tools[verilatorProvider().binding.key].binding.executable =
-      tool.string();
-  const std::filesystem::path bundle = tree.path("bundle");
-  EvaluationModelPreparation preparation =
-      take(prepareEvaluationModelInvocation(
-          fixture.request, fixture.resolution, artifacts, blobs,
-          ExternalToolPreparationContext{std::move(local), bundle.string()}));
-  const auto *prepared =
-      std::get_if<PreparedExternalToolInvocation>(&preparation);
-  require(prepared, "supported request did not prepare a Verilator bundle");
-  require(!std::filesystem::exists(bundle / mappedRtlResultPath.str()),
-          "preparation manufactured a simulation result");
-  require(llvm::StringRef(readFile(bundle / mappedRtlTestbenchPath.str()))
-              .contains("task automatic loom_cfg_read_"),
-          "generated testbench omits configuration readback");
-  require(take(executeExternalToolInvocationBundle(*prepared)) == 0,
-          "authored Verilator lifecycle failed");
-
+  evaluation::ArtifactImportCacheScope independentReplay(artifacts, &blobs);
   const EvaluationEvidence evidence = take(importEvaluationModelInvocation(
-      fixture.request, fixture.resolution, *prepared, artifacts, blobs));
-  require(requireCompletedEvidence(fixture, evidence, artifacts, blobs) ==
+      prepared.fixture.request, prepared.fixture.resolution,
+      prepared.invocation, artifacts, blobs));
+  require(requireCompletedEvidence(prepared.fixture, evidence, artifacts,
+                                   blobs) ==
               kExpectedMappedCycleCount,
           "authored lifecycle changed its exact cycle count");
 }

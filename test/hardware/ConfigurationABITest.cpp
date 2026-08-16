@@ -527,35 +527,37 @@ std::vector<std::uint8_t> bitVector(std::uint64_t value,
   return result;
 }
 
-ConfigurationFieldEncoding fieldEncoding(llvm::StringRef test,
-                                         SemanticFieldDomain domain) {
-  if (domain.directBitCount)
-    return ConfigurationFieldEncoding{
-        std::move(domain.slot),
-        DirectBitsEncoding{*domain.directBitCount},
-        {},
+ConfigurationFieldEncoding
+fieldEncoding(llvm::StringRef test, SemanticFieldDomain domain,
+              std::vector<ConfigurationEncodingRelationDraft> &relations) {
+  ConfigurationEncodingRelationDraft relation;
+  if (domain.directBitCount) {
+    relation = ConfigurationEncodingRelationDraft{
+        DirectBitsEncoding{*domain.directBitCount}, std::move(domain.inactive)};
+  } else {
+    const auto inactive =
+        std::find(domain.values.begin(), domain.values.end(), domain.inactive);
+    require(test, inactive != domain.values.end(),
+            "inactive value is absent from its field domain");
+    std::rotate(domain.values.begin(), inactive, std::next(inactive));
+    const std::uint64_t bits = encodedBitCount(domain.values.size());
+    std::vector<FiniteCodebookEntry> entries;
+    entries.reserve(domain.values.size());
+    for (const auto &[ordinal, value] : llvm::enumerate(domain.values))
+      entries.push_back(FiniteCodebookEntry{value, bitVector(ordinal, bits)});
+    relation = ConfigurationEncodingRelationDraft{
+        FiniteCodebookEncoding{bits, std::move(entries)},
         std::move(domain.inactive)};
-  const auto inactive =
-      std::find(domain.values.begin(), domain.values.end(), domain.inactive);
-  require(test, inactive != domain.values.end(),
-          "inactive value is absent from its field domain");
-  std::rotate(domain.values.begin(), inactive, std::next(inactive));
-  const std::uint64_t bits = encodedBitCount(domain.values.size());
-  std::vector<FiniteCodebookEntry> entries;
-  entries.reserve(domain.values.size());
-  for (const auto &[ordinal, value] : llvm::enumerate(domain.values))
-    entries.push_back(FiniteCodebookEntry{value, bitVector(ordinal, bits)});
-  return ConfigurationFieldEncoding{
-      std::move(domain.slot),
-      FiniteCodebookEncoding{bits, std::move(entries)},
-      {},
-      std::move(domain.inactive)};
+  }
+  const ConfigurationEncodingRelationId relationId = relations.size();
+  relations.push_back(std::move(relation));
+  return ConfigurationFieldEncoding{std::move(domain.slot), relationId, {}};
 }
 
-ProgrammingUnitDraft
-makeProgrammingUnit(llvm::StringRef test,
-                    const loom::fabric::FabricArtifactView &module,
-                    const loom::fabric::SpatialCoreOccurrenceRef &spatialCore) {
+ProgrammingUnitDraft makeProgrammingUnit(
+    llvm::StringRef test, const loom::fabric::FabricArtifactView &module,
+    const loom::fabric::SpatialCoreOccurrenceRef &spatialCore,
+    std::vector<ConfigurationEncodingRelationDraft> &relations) {
   std::vector<loom::fabric::FabricPhysicalOccurrenceOwnerRef> closure;
   std::vector<ConfigurationFieldEncoding> fields;
   bool sawPeField = false;
@@ -585,7 +587,8 @@ makeProgrammingUnit(llvm::StringRef test,
           take(test, module.configurationResidencies(local));
       for (const auto &residency : residencies)
         fields.push_back(fieldEncoding(
-            test, fieldDomain(test, module, spatialCore, local, residency)));
+            test, fieldDomain(test, module, spatialCore, local, residency),
+            relations));
     }
   }
   require(test, sawPeField && sawOperationField,
@@ -593,11 +596,15 @@ makeProgrammingUnit(llvm::StringRef test,
 
   std::uint64_t totalFieldBits = 0;
   for (const ConfigurationFieldEncoding &field : fields)
-    totalFieldBits += field.encodedBitCount();
+    totalFieldBits +=
+        relations[static_cast<std::size_t>(field.encodingRelation)]
+            .encodedBitCount();
   std::uint64_t globalSourceBit = 0;
   for (ConfigurationFieldEncoding &field : fields) {
-    for (std::uint64_t sourceBit = 0; sourceBit < field.encodedBitCount();
-         ++sourceBit) {
+    const std::uint64_t width =
+        relations[static_cast<std::size_t>(field.encodingRelation)]
+            .encodedBitCount();
+    for (std::uint64_t sourceBit = 0; sourceBit < width; ++sourceBit) {
       field.destinationSlices.push_back(
           {sourceBit, totalFieldBits - 1 - globalSourceBit, 1});
       ++globalSourceBit;
@@ -643,6 +650,7 @@ ConfigurationABIDraft makeDraft(const FabricFixture &fixture) {
 
   const loom::fabric::FabricArtifactView &module =
       system.artifact().importedModules().front();
+  std::vector<ConfigurationEncodingRelationDraft> relations;
   std::vector<ProgrammingUnitDraft> units;
   for (loom::fabric::AccCoreOccurrenceRef core :
        system.artifact().accCoreOccurrences()) {
@@ -653,7 +661,7 @@ ConfigurationABIDraft makeDraft(const FabricFixture &fixture) {
             target.has_value() && target->dependencyOrdinal == 0 &&
                 target->target == module.moduleRootTemplate(),
             "SpatialCore occurrence does not select the imported Module");
-    units.push_back(makeProgrammingUnit(test, module, spatialCore));
+    units.push_back(makeProgrammingUnit(test, module, spatialCore, relations));
   }
   require(test,
           units.front().exactFabricResourceClosure.front() !=
@@ -661,7 +669,8 @@ ConfigurationABIDraft makeDraft(const FabricFixture &fixture) {
               units.front().fields.front().slot !=
                   units.back().fields.front().slot,
           "occurrence qualification aliased two imported Module instances");
-  return ConfigurationABIDraft{fixture.system.reference(), std::move(units)};
+  return ConfigurationABIDraft{fixture.system.reference(), std::move(relations),
+                               std::move(units)};
 }
 
 bool bit(llvm::ArrayRef<std::uint8_t> bytes, std::uint64_t index) {
@@ -719,14 +728,34 @@ bool isOperationField(const ConfigurationFieldEncoding &field) {
          loom::fabric::FabricInventoryOwnerKind::FuOccurrenceNode;
 }
 
+const ConfigurationEncodingRelation &
+encodingRelation(llvm::StringRef test, const ConfigurationABI &abi,
+                 const ConfigurationFieldEncoding &field) {
+  const ConfigurationEncodingRelation *relation =
+      abi.findEncodingRelation(field);
+  require(test, relation != nullptr,
+          "configuration field has no encoding relation");
+  return *relation;
+}
+
+ConfigurationEncodingRelationDraft &
+draftEncodingRelation(llvm::StringRef test, ConfigurationABIDraft &draft,
+                      const ConfigurationFieldEncoding &field) {
+  require(test, field.encodingRelation < draft.encodingRelations.size(),
+          "configuration field has an invalid draft relation ID");
+  return draft
+      .encodingRelations[static_cast<std::size_t>(field.encodingRelation)];
+}
+
 const FiniteCodebookEntry &
-activeEntry(llvm::StringRef test, const ConfigurationFieldEncoding &field) {
+activeEntry(llvm::StringRef test,
+            const ConfigurationEncodingRelation &relation) {
   const auto &codebook =
-      std::get<FiniteCodebookEncoding>(field.semanticEncoding);
+      std::get<FiniteCodebookEncoding>(relation.semanticEncoding);
   const auto selected =
       std::find_if(codebook.entries.begin(), codebook.entries.end(),
                    [&](const FiniteCodebookEntry &entry) {
-                     return entry.semanticValue != field.inactiveValue;
+                     return entry.semanticValue != relation.inactiveValue;
                    });
   require(test, selected != codebook.entries.end(),
           "field domain has no non-inactive value");
@@ -734,23 +763,23 @@ activeEntry(llvm::StringRef test, const ConfigurationFieldEncoding &field) {
 }
 
 const ConfigurationFieldEncoding &
-finiteField(llvm::StringRef test,
+finiteField(llvm::StringRef test, const ConfigurationABI &abi,
             llvm::ArrayRef<ConfigurationFieldEncoding> fields) {
-  const auto field = llvm::find_if(fields, [](const auto &candidate) {
+  const auto field = llvm::find_if(fields, [&](const auto &candidate) {
     return std::holds_alternative<FiniteCodebookEncoding>(
-        candidate.semanticEncoding);
+        encodingRelation(test, abi, candidate).semanticEncoding);
   });
   require(test, field != fields.end(), "fixture has no finite field");
   return *field;
 }
 
 const ConfigurationFieldEncoding &
-finiteOperationField(llvm::StringRef test,
+finiteOperationField(llvm::StringRef test, const ConfigurationABI &abi,
                      llvm::ArrayRef<ConfigurationFieldEncoding> fields) {
-  const auto field = llvm::find_if(fields, [](const auto &candidate) {
+  const auto field = llvm::find_if(fields, [&](const auto &candidate) {
     return isOperationField(candidate) &&
            std::holds_alternative<FiniteCodebookEncoding>(
-               candidate.semanticEncoding);
+               encodingRelation(test, abi, candidate).semanticEncoding);
   });
   require(test, field != fields.end(), "fixture has no finite operation field");
   return *field;
@@ -766,20 +795,22 @@ findValue(llvm::ArrayRef<SemanticConfigurationValue> values,
   return found == values.end() ? nullptr : &*found;
 }
 
-void requireDecodedValues(llvm::StringRef test,
+void requireDecodedValues(llvm::StringRef test, const ConfigurationABI &abi,
                           llvm::ArrayRef<ConfigurationFieldEncoding> fields,
                           llvm::ArrayRef<SemanticConfigurationValue> selected,
                           llvm::ArrayRef<SemanticConfigurationValue> decoded) {
   require(test, decoded.size() == fields.size(),
           "decode did not return every programming-unit field");
   for (const ConfigurationFieldEncoding &field : fields) {
+    const ConfigurationEncodingRelation &relation =
+        encodingRelation(test, abi, field);
     const SemanticConfigurationValue *actual = findValue(decoded, field.slot);
     const SemanticConfigurationValue *selection =
         findValue(selected, field.slot);
     require(test,
             actual != nullptr &&
                 actual->value ==
-                    (selection ? selection->value : field.inactiveValue),
+                    (selection ? selection->value : relation.inactiveValue),
             "decode changed a selected or inactive semantic value");
   }
 }
@@ -790,19 +821,27 @@ void canonicalArtifactAndBitRoundTrip(const std::filesystem::path &root) {
   ArtifactStore store(root.string());
   FabricFixture fabric = makeFabric(test, store);
 
+  ConfigurationABIDraft authored = makeDraft(fabric);
+  std::size_t authoredFieldCount = 0;
+  for (const ProgrammingUnitDraft &unit : authored.programmingUnits)
+    authoredFieldCount += unit.fields.size();
   FinalizedConfigurationABI first =
-      take(test, finalizeConfigurationABI(makeDraft(fabric), store));
+      take(test, finalizeConfigurationABI(std::move(authored), store));
   require(test, first.abi().programmingUnits().size() == 2,
           "ABI did not preserve two occurrence-owned programming units");
+  require(test, first.abi().encodingRelations().size() < authoredFieldCount,
+          "ABI did not share equivalent occurrence encoding relations");
 
   const auto &unit = first.abi().programmingUnits().front();
   std::vector<SemanticConfigurationValue> selected;
   for (const ConfigurationFieldEncoding &field : unit.fields) {
+    const ConfigurationEncodingRelation &relation =
+        encodingRelation(test, first.abi(), field);
     const auto *codebook =
-        std::get_if<FiniteCodebookEncoding>(&field.semanticEncoding);
-    selected.push_back({field.slot, codebook
-                                        ? activeEntry(test, field).semanticValue
-                                        : field.inactiveValue});
+        std::get_if<FiniteCodebookEncoding>(&relation.semanticEncoding);
+    selected.push_back(
+        {field.slot, codebook ? activeEntry(test, relation).semanticValue
+                              : relation.inactiveValue});
   }
   std::vector<std::uint8_t> payload =
       take(test, first.abi().encode(unit.id, selected));
@@ -813,7 +852,7 @@ void canonicalArtifactAndBitRoundTrip(const std::filesystem::path &root) {
           "complete configuration image has the wrong shape or content");
 
   auto decoded = take(test, first.abi().decode(unit.id, payload));
-  requireDecodedValues(test, unit.fields, selected, decoded);
+  requireDecodedValues(test, first.abi(), unit.fields, selected, decoded);
   require(test, take(test, first.abi().encode(unit.id, decoded)) == payload,
           "decoded complete image did not re-encode identically");
 
@@ -821,7 +860,7 @@ void canonicalArtifactAndBitRoundTrip(const std::filesystem::path &root) {
   std::vector<std::uint8_t> partialPayload =
       take(test, first.abi().encode(unit.id, partial));
   auto partialDecoded = take(test, first.abi().decode(unit.id, partialPayload));
-  requireDecodedValues(test, unit.fields, partial, partialDecoded);
+  requireDecodedValues(test, first.abi(), unit.fields, partial, partialDecoded);
 
   ConfigurationABIDraft reordered = makeDraft(fabric);
   std::reverse(reordered.programmingUnits.begin(),
@@ -830,14 +869,21 @@ void canonicalArtifactAndBitRoundTrip(const std::filesystem::path &root) {
     std::reverse(reorderedUnit.exactFabricResourceClosure.begin(),
                  reorderedUnit.exactFabricResourceClosure.end());
     std::reverse(reorderedUnit.fields.begin(), reorderedUnit.fields.end());
-    for (ConfigurationFieldEncoding &field : reorderedUnit.fields) {
+    for (ConfigurationFieldEncoding &field : reorderedUnit.fields)
       std::reverse(field.destinationSlices.begin(),
                    field.destinationSlices.end());
-      if (auto *codebook =
-              std::get_if<FiniteCodebookEncoding>(&field.semanticEncoding))
-        std::reverse(codebook->entries.begin(), codebook->entries.end());
-    }
   }
+  std::reverse(reordered.encodingRelations.begin(),
+               reordered.encodingRelations.end());
+  for (ProgrammingUnitDraft &reorderedUnit : reordered.programmingUnits)
+    for (ConfigurationFieldEncoding &field : reorderedUnit.fields)
+      field.encodingRelation =
+          reordered.encodingRelations.size() - 1 - field.encodingRelation;
+  for (ConfigurationEncodingRelationDraft &relation :
+       reordered.encodingRelations)
+    if (auto *codebook =
+            std::get_if<FiniteCodebookEncoding>(&relation.semanticEncoding))
+      std::reverse(codebook->entries.begin(), codebook->entries.end());
   FinalizedConfigurationABI second =
       take(test, finalizeConfigurationABI(std::move(reordered), store));
   require(test,
@@ -855,19 +901,21 @@ void canonicalArtifactAndBitRoundTrip(const std::filesystem::path &root) {
 
   ConfigurationABIDraft changed = makeDraft(fabric);
   auto &changedFields = changed.programmingUnits.front().fields;
-  auto changedFieldIt = llvm::find_if(changedFields, [](const auto &field) {
+  auto changedFieldIt = llvm::find_if(changedFields, [&](const auto &field) {
     return std::holds_alternative<FiniteCodebookEncoding>(
-        field.semanticEncoding);
+        draftEncodingRelation(test, changed, field).semanticEncoding);
   });
   require(test, changedFieldIt != changedFields.end(),
           "changed draft has no finite field");
   auto &changedField = *changedFieldIt;
+  ConfigurationEncodingRelationDraft &changedRelation =
+      draftEncodingRelation(test, changed, changedField);
   auto &changedCodebook =
-      std::get<FiniteCodebookEncoding>(changedField.semanticEncoding);
+      std::get<FiniteCodebookEncoding>(changedRelation.semanticEncoding);
   const auto changedEntry = std::find_if(
       changedCodebook.entries.begin(), changedCodebook.entries.end(),
       [&](const FiniteCodebookEntry &entry) {
-        return entry.semanticValue != changedField.inactiveValue;
+        return entry.semanticValue != changedRelation.inactiveValue;
       });
   require(test, changedEntry != changedCodebook.entries.end(),
           "changed field has no active entry");
@@ -876,6 +924,64 @@ void canonicalArtifactAndBitRoundTrip(const std::filesystem::path &root) {
       take(test, finalizeConfigurationABI(std::move(changed), store));
   require(test, changedAbi.reference() != first.reference(),
           "semantic codebook change did not change ABI identity");
+}
+
+void strictImportSessionRespectsVerificationDomains(
+    const std::filesystem::path &root) {
+  const llvm::StringRef test = __func__;
+  std::filesystem::create_directories(root);
+  ArtifactStore store(root.string());
+  FabricFixture fabric = makeFabric(test, store);
+
+  ConfigurationABIImportSession session;
+  FinalizedConfigurationABI finalized =
+      take(test, finalizeConfigurationABI(makeDraft(fabric), store));
+  const ConfigurationABIImportSessionStatistics afterFinalize =
+      session.statistics();
+  require(test,
+          afterFinalize.importRequests == 1 &&
+              afterFinalize.uniqueConstructions == 1 &&
+              afterFinalize.cacheMisses == 1 &&
+              afterFinalize.cacheHits == 0 && afterFinalize.entryCount == 1,
+          "finalization did not populate one strict immutable import");
+
+  FinalizedConfigurationABI reused =
+      take(test, importConfigurationABI(finalized.reference(), store));
+  const ConfigurationABIImportSessionStatistics afterReuse =
+      session.statistics();
+  require(test,
+          afterReuse.importRequests == 2 &&
+              afterReuse.uniqueConstructions == 1 &&
+              afterReuse.cacheMisses == 1 && afterReuse.cacheHits == 1 &&
+              afterReuse.entryCount == 1 &&
+              afterReuse.bytesRead == afterFinalize.bytesRead &&
+              afterReuse.bytesCopied == afterFinalize.bytesCopied &&
+              afterReuse.retainedBytes == afterFinalize.retainedBytes,
+          "same-domain strict import did not reuse its verified handle");
+  require(test,
+          reused.reference() == finalized.reference() &&
+              reused.canonicalBytes().bytes() ==
+                  finalized.canonicalBytes().bytes(),
+          "same-domain reuse changed the canonical ABI");
+
+  ConfigurationABIImportSession isolated(
+      ConfigurationABIImportSessionMode::Isolated);
+  FinalizedConfigurationABI replayed =
+      take(test, importConfigurationABI(finalized.reference(), store));
+  const ConfigurationABIImportSessionStatistics replayStatistics =
+      isolated.statistics();
+  require(test,
+          replayStatistics.importRequests == 1 &&
+              replayStatistics.uniqueConstructions == 1 &&
+              replayStatistics.cacheMisses == 1 &&
+              replayStatistics.cacheHits == 0 &&
+              replayStatistics.entryCount == 1,
+          "isolated verification reused an enclosing ABI import");
+  require(test,
+          replayed.reference() == finalized.reference() &&
+              replayed.canonicalBytes().bytes() ==
+                  finalized.canonicalBytes().bytes(),
+          "isolated verification changed the canonical ABI");
 }
 
 void invalidSemanticDomainsAreRejected(const std::filesystem::path &root) {
@@ -888,9 +994,11 @@ void invalidSemanticDomainsAreRejected(const std::filesystem::path &root) {
 
   const ProgrammingUnit &unit = abi.abi().programmingUnits().front();
   const ConfigurationFieldEncoding &field =
-      finiteOperationField(test, unit.fields);
+      finiteOperationField(test, abi.abi(), unit.fields);
+  const ConfigurationEncodingRelation &relation =
+      encodingRelation(test, abi.abi(), field);
   const auto &codebook =
-      std::get<FiniteCodebookEncoding>(field.semanticEncoding);
+      std::get<FiniteCodebookEncoding>(relation.semanticEncoding);
   std::vector<std::uint8_t> outside = outsideSemanticCarrier(test, codebook);
   require(test, outside.size() == codebook.entries.front().semanticValue.size(),
           "out-of-domain carrier does not preserve the valid carrier width");
@@ -905,8 +1013,10 @@ void invalidSemanticDomainsAreRejected(const std::filesystem::path &root) {
     for (ConfigurationFieldEncoding &draftField : draftUnit.fields) {
       if (!isOperationField(draftField))
         continue;
+      ConfigurationEncodingRelationDraft &draftRelation =
+          draftEncodingRelation(test, foreignDomain, draftField);
       auto *draftCodebook =
-          std::get_if<FiniteCodebookEncoding>(&draftField.semanticEncoding);
+          std::get_if<FiniteCodebookEncoding>(&draftRelation.semanticEncoding);
       if (!draftCodebook)
         continue;
       std::vector<std::uint8_t> foreign =
@@ -914,7 +1024,7 @@ void invalidSemanticDomainsAreRejected(const std::filesystem::path &root) {
       const auto replacedEntry = std::find_if(
           draftCodebook->entries.begin(), draftCodebook->entries.end(),
           [&](const FiniteCodebookEntry &entry) {
-            return entry.semanticValue != draftField.inactiveValue &&
+            return entry.semanticValue != draftRelation.inactiveValue &&
                    entry.semanticValue.size() == foreign.size();
           });
       if (replacedEntry == draftCodebook->entries.end())
@@ -935,14 +1045,16 @@ void invalidSemanticDomainsAreRejected(const std::filesystem::path &root) {
   bool removed = false;
   for (ProgrammingUnitDraft &draftUnit : incompleteDomain.programmingUnits) {
     for (ConfigurationFieldEncoding &draftField : draftUnit.fields) {
+      ConfigurationEncodingRelationDraft &draftRelation =
+          draftEncodingRelation(test, incompleteDomain, draftField);
       auto *draftCodebook =
-          std::get_if<FiniteCodebookEncoding>(&draftField.semanticEncoding);
+          std::get_if<FiniteCodebookEncoding>(&draftRelation.semanticEncoding);
       if (!draftCodebook)
         continue;
       const auto extra = std::find_if(
           draftCodebook->entries.begin(), draftCodebook->entries.end(),
           [&](const FiniteCodebookEntry &entry) {
-            return entry.semanticValue != draftField.inactiveValue;
+            return entry.semanticValue != draftRelation.inactiveValue;
           });
       if (extra == draftCodebook->entries.end())
         continue;
@@ -958,13 +1070,16 @@ void invalidSemanticDomainsAreRejected(const std::filesystem::path &root) {
               finalizeConfigurationABI(std::move(incompleteDomain), store),
               "does not equal");
 
-  const auto direct = llvm::find_if(unit.fields, [](const auto &candidate) {
+  const auto direct = llvm::find_if(unit.fields, [&](const auto &candidate) {
     return std::holds_alternative<DirectBitsEncoding>(
-        candidate.semanticEncoding);
+        encodingRelation(test, abi.abi(), candidate).semanticEncoding);
   });
   require(test, direct != unit.fields.end(), "fixture has no DirectBits field");
-  std::vector<std::uint8_t> outsideDirect(direct->inactiveValue.size(), 0);
-  require(test, outsideDirect != direct->inactiveValue,
+  const ConfigurationEncodingRelation &directRelation =
+      encodingRelation(test, abi.abi(), *direct);
+  std::vector<std::uint8_t> outsideDirect(directRelation.inactiveValue.size(),
+                                          0);
+  require(test, outsideDirect != directRelation.inactiveValue,
           "DirectBits invalid carrier aliases the valid inactive value");
   expectError(test,
               abi.abi().encode(unit.id, {SemanticConfigurationValue{
@@ -994,9 +1109,12 @@ void invalidImagesAndLayoutsAreRejected(const std::filesystem::path &root) {
   setBit(reserved, unit.payloadBitCount - 1, true);
   expectError(test, abi.abi().decode(unit.id, reserved), "reserved bit");
 
-  const ConfigurationFieldEncoding &field = finiteField(test, unit.fields);
+  const ConfigurationFieldEncoding &field =
+      finiteField(test, abi.abi(), unit.fields);
+  const ConfigurationEncodingRelation &relation =
+      encodingRelation(test, abi.abi(), field);
   const auto &codebook =
-      std::get<FiniteCodebookEncoding>(field.semanticEncoding);
+      std::get<FiniteCodebookEncoding>(relation.semanticEncoding);
   const std::vector<std::uint8_t> unused = unusedPhysicalCode(test, codebook);
   std::vector<std::uint8_t> invalidCode =
       take(test, abi.abi().encode(unit.id, {}));
@@ -1038,8 +1156,8 @@ void schemaAndRootBoundaryAreVersionedAtomically(
   const llvm::StringRef test = __func__;
   require(test,
           configurationAbiSchema.identity == "loom.configuration_abi" &&
-              configurationAbiSchema.version == loom::SchemaVersion{3, 0},
-          "ConfigurationABI schema is not loom.configuration_abi 3.0");
+              configurationAbiSchema.version == loom::SchemaVersion{4, 0},
+          "ConfigurationABI schema is not loom.configuration_abi 4.0");
 
   std::filesystem::create_directories(root);
   ArtifactStore store(root.string());
@@ -1103,7 +1221,7 @@ void programmingUnitReferenceCodecIsExact(const std::filesystem::path &root) {
   expectError(
       test,
       decodeProgrammingUnitRef(encodeProgrammingUnitRef(wrongSchema), store),
-      "loom.configuration_abi 3.0");
+      "loom.configuration_abi 4.0");
 }
 
 } // namespace
@@ -1115,6 +1233,7 @@ int main(int argc, char **argv) {
       std::filesystem::absolute(argv[1]).lexically_normal();
   std::filesystem::create_directories(root);
   canonicalArtifactAndBitRoundTrip(root / "canonical");
+  strictImportSessionRespectsVerificationDomains(root / "import-session");
   invalidSemanticDomainsAreRejected(root / "semantic-domains");
   invalidImagesAndLayoutsAreRejected(root / "invalid");
   schemaAndRootBoundaryAreVersionedAtomically(root / "schema-root");

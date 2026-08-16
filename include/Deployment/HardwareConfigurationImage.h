@@ -8,6 +8,8 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <cstddef>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -16,6 +18,56 @@ class ArtifactStore;
 }
 
 namespace loom::deployment {
+
+namespace detail {
+class ConfigurationImageProjectionSessionState;
+}
+
+enum class ConfigurationImageProjectionVerificationDomain : std::uint8_t {
+  SourceInvocation,
+  IndependentReplay,
+};
+
+struct ConfigurationImageProjectionSessionStatistics final {
+  std::uint64_t requests = 0;
+  std::uint64_t cacheHits = 0;
+  std::uint64_t cacheMisses = 0;
+  std::uint64_t uniqueConstructions = 0;
+  std::uint64_t uncachedConstructions = 0;
+  std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t deterministicWork = 0;
+  std::uint64_t retainedBytes = 0;
+  std::uint64_t entryCount = 0;
+};
+
+/// Bounded immutable projection cache for one ArtifactStore verification
+/// domain. Entries are keyed only by complete artifact roots, source kind,
+/// occurrence qualification, and the projection algorithm version.
+class ConfigurationImageProjectionSession final {
+public:
+  ConfigurationImageProjectionSession(const ArtifactStore &store,
+                                      std::size_t entryLimit);
+  ~ConfigurationImageProjectionSession();
+
+  ConfigurationImageProjectionSession(
+      const ConfigurationImageProjectionSession &) = delete;
+  ConfigurationImageProjectionSession &
+  operator=(const ConfigurationImageProjectionSession &) = delete;
+  ConfigurationImageProjectionSession(ConfigurationImageProjectionSession &&) =
+      delete;
+  ConfigurationImageProjectionSession &
+  operator=(ConfigurationImageProjectionSession &&) = delete;
+
+  ConfigurationImageProjectionSessionStatistics statistics() const;
+
+private:
+  std::unique_ptr<detail::ConfigurationImageProjectionSessionState> state_;
+  detail::ConfigurationImageProjectionSessionState *previous_ = nullptr;
+};
+
+void emitConfigurationImageProjectionSessionStatistics(
+    ConfigurationImageProjectionVerificationDomain domain,
+    const ConfigurationImageProjectionSessionStatistics &statistics);
 
 class FinalizedHardwareConfigurationImage;
 

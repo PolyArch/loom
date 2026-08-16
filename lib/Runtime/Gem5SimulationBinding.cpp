@@ -6,6 +6,7 @@
 #include "Fabric/Artifact/InterconnectImplementation.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Runtime/Gem5BridgeABI.h"
+#include "Runtime/Gem5BuiltinModels.h"
 
 #include "llvm/ADT/STLExtras.h"
 
@@ -13,6 +14,8 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <map>
 #include <mutex>
 #include <set>
 #include <string>
@@ -28,11 +31,11 @@ namespace detail {
 
 class Gem5SimulationBindingBuilder final {
 public:
-  static Gem5SimulationBinding create(
-      ArtifactRootReference fabric,
-      ArtifactRootReference interconnectImplementation,
-      Gem5BuildIdentity gem5BuildIdentity, std::string bridgeAbiIdentity,
-      std::vector<Gem5Correspondence> correspondences) {
+  static Gem5SimulationBinding
+  create(ArtifactRootReference fabric,
+         ArtifactRootReference interconnectImplementation,
+         Gem5BuildIdentity gem5BuildIdentity, std::string bridgeAbiIdentity,
+         std::vector<Gem5Correspondence> correspondences) {
     return Gem5SimulationBinding(
         std::move(fabric), std::move(interconnectImplementation),
         std::move(gem5BuildIdentity), std::move(bridgeAbiIdentity),
@@ -78,8 +81,8 @@ void appendBytes(Key &key, llvm::ArrayRef<std::uint8_t> bytes) {
 }
 
 void appendText(Key &key, llvm::StringRef text) {
-  appendBytes(key, {reinterpret_cast<const std::uint8_t *>(text.data()),
-                    text.size()});
+  appendBytes(
+      key, {reinterpret_cast<const std::uint8_t *>(text.data()), text.size()});
 }
 
 template <typename Ref> void appendFabricRef(Key &key, const Ref &reference) {
@@ -88,8 +91,7 @@ template <typename Ref> void appendFabricRef(Key &key, const Ref &reference) {
 
 void appendSpatialBoundary(
     Key &key, const fabric::FabricSpatialAttachmentEndpointRef &reference) {
-  appendBytes(key,
-              fabric::encodeFabricSpatialAttachmentEndpointRef(reference));
+  appendBytes(key, fabric::encodeFabricSpatialAttachmentEndpointRef(reference));
 }
 
 Key objectKey(const Gem5SimObjectRef &object) {
@@ -116,9 +118,8 @@ Key correspondenceKey(const Gem5Correspondence &correspondence) {
     appendU32(key, processor->processor.index());
     std::visit([&](const auto &ref) { appendFabricRef(key, ref); },
                processor->processor);
-  } else if (const auto *bridge =
-                 std::get_if<Gem5SpatialBridgeCorrespondence>(
-                     &correspondence)) {
+  } else if (const auto *bridge = std::get_if<Gem5SpatialBridgeCorrespondence>(
+                 &correspondence)) {
     appendFabricRef(key, bridge->spatialCore);
     appendSpatialBoundary(key, bridge->spatialBoundary);
   } else if (const auto *memory =
@@ -140,19 +141,18 @@ Key correspondenceKey(const Gem5Correspondence &correspondence) {
   return key;
 }
 
-std::optional<fabric::SpatialCoreOccurrenceRef> spatialCoreOf(
-    const fabric::FabricSpatialAttachmentEndpointRef &endpoint) {
+std::optional<fabric::SpatialCoreOccurrenceRef>
+spatialCoreOf(const fabric::FabricSpatialAttachmentEndpointRef &endpoint) {
   if (const auto *transport = endpoint.transport()) {
     if (transport->owner.kind() !=
         fabric::FabricTransportEndpointOwnerKind::SpatialCoreOccurrence)
       return std::nullopt;
-    return std::get<fabric::SpatialCoreOccurrenceRef>(
-        transport->owner.payload);
+    return std::get<fabric::SpatialCoreOccurrenceRef>(transport->owner.payload);
   }
   const auto *memory = endpoint.memory();
-  if (!memory || memory->owner.kind() !=
-                     fabric::FabricMemoryEndpointOwnerKind::
-                         SpatialCoreOccurrence)
+  if (!memory ||
+      memory->owner.kind() !=
+          fabric::FabricMemoryEndpointOwnerKind::SpatialCoreOccurrence)
     return std::nullopt;
   return std::get<fabric::SpatialCoreOccurrenceRef>(memory->owner.payload);
 }
@@ -185,9 +185,9 @@ requiredCorrespondenceKeys(const fabric::FabricSystemRootView &system) {
   }
   for (fabric::SystemMemoryServiceRef service :
        system.artifact().systemMemoryServices()) {
-    Gem5Correspondence row = Gem5MemoryOrServiceCorrespondence{
-        Gem5MemoryOrServiceFabricRef(service), Gem5SimObjectRef{},
-        Gem5SimPortRef{}};
+    Gem5Correspondence row =
+        Gem5MemoryOrServiceCorrespondence{Gem5MemoryOrServiceFabricRef(service),
+                                          Gem5SimObjectRef{}, Gem5SimPortRef{}};
     keys.push_back(correspondenceKey(row));
   }
   for (fabric::SystemServiceEndpointRef endpoint :
@@ -200,8 +200,7 @@ requiredCorrespondenceKeys(const fabric::FabricSystemRootView &system) {
   for (fabric::SystemTransportResourceRef resource :
        system.transportResources()) {
     Gem5Correspondence row = Gem5TransportCorrespondence{
-        Gem5TransportFabricRef(resource), Gem5SimObjectRef{},
-        Gem5SimPortRef{}};
+        Gem5TransportFabricRef(resource), Gem5SimObjectRef{}, Gem5SimPortRef{}};
     keys.push_back(correspondenceKey(row));
   }
   for (const fabric::FabricTransportEndpointRef &endpoint :
@@ -213,8 +212,7 @@ requiredCorrespondenceKeys(const fabric::FabricSystemRootView &system) {
             fabric::FabricTransportEndpointOwnerKind::SystemTransportResource)
       continue;
     Gem5Correspondence row = Gem5TransportCorrespondence{
-        Gem5TransportFabricRef(endpoint), Gem5SimObjectRef{},
-        Gem5SimPortRef{}};
+        Gem5TransportFabricRef(endpoint), Gem5SimObjectRef{}, Gem5SimPortRef{}};
     keys.push_back(correspondenceKey(row));
   }
   for (fabric::ExternalBoundaryRef boundary :
@@ -228,8 +226,7 @@ requiredCorrespondenceKeys(const fabric::FabricSystemRootView &system) {
 }
 
 bool isLowerHex(llvm::StringRef value, std::size_t length) {
-  return value.size() == length &&
-         llvm::all_of(value, [](char character) {
+  return value.size() == length && llvm::all_of(value, [](char character) {
            return std::isdigit(static_cast<unsigned char>(character)) ||
                   (character >= 'a' && character <= 'f');
          });
@@ -247,6 +244,44 @@ llvm::Error validateBuildIdentity(const Gem5BuildIdentity &identity) {
   if (!isLowerHex(identity.binaryFingerprint, 64))
     return invalid("gem5 binary fingerprint is not a canonical SHA-256 hex");
   return llvm::Error::success();
+}
+
+llvm::Error validateBuiltinPolicy(const Gem5BuiltinPlatformPolicy &policy) {
+  if (policy.processorClockPeriodTicks == 0)
+    return invalid("builtin processor clock period is zero");
+  if (policy.spatialBridgeAddressStride == 0 ||
+      policy.spatialBridgeApertureBytes == 0 ||
+      policy.spatialBridgeApertureBytes > policy.spatialBridgeAddressStride)
+    return invalid("builtin spatial bridge address geometry is invalid");
+  if (policy.spatialBridgeLatencyTicks == 0 ||
+      policy.spatialBridgeMaximumMessageBytes < gem5BridgeWireHeaderBytes)
+    return invalid("builtin spatial bridge execution limits are invalid");
+  if (policy.memorySizeBytes == 0 || policy.memoryLatencyTicks == 0 ||
+      policy.memoryBaseAddress >
+          std::numeric_limits<std::uint64_t>::max() - policy.memorySizeBytes)
+    return invalid("builtin memory geometry is invalid");
+  return llvm::Error::success();
+}
+
+Gem5SimObjectRef gem5Object(const Gem5ModelContractDescriptor &descriptor,
+                            std::vector<std::uint8_t> payload) {
+  return {gem5ModelContractDescriptorRef(descriptor), std::move(payload)};
+}
+
+Gem5SimPortRef gem5Port(Gem5SimObjectRef object) {
+  return {std::move(object), 0, {}};
+}
+
+llvm::Expected<const Gem5ModelContractDescriptor *>
+processorModel(const fabric::InstructionCoreMicroarchitecturalRealization
+                   *microarchitecture) {
+  if (!microarchitecture)
+    return invalid("builtin processor has no microarchitectural realization");
+  if (microarchitecture->inOrder())
+    return &gem5RiscvTimingCpuModel();
+  if (microarchitecture->outOfOrder())
+    return &gem5RiscvO3CpuModel();
+  return invalid("builtin processor realization is unsupported");
 }
 
 llvm::Expected<const Gem5ModelContractDescriptor *>
@@ -294,8 +329,8 @@ llvm::Error validateProcessor(
   if (!(**descriptor).validateProcessorCompatibility)
     return invalid("processor model contract has no compatibility owner");
   const fabric::InstructionCoreArchitecturalContract *architecture = nullptr;
-  const fabric::InstructionCoreMicroarchitecturalRealization *microarchitecture =
-      nullptr;
+  const fabric::InstructionCoreMicroarchitecturalRealization
+      *microarchitecture = nullptr;
   std::visit(
       [&](const auto &core) {
         architecture = system.instructionCoreArchitecture(core);
@@ -304,17 +339,19 @@ llvm::Error validateProcessor(
       row.processor);
   if (!architecture || !microarchitecture)
     return invalid("processor correspondence names an unknown core");
-  if (llvm::Error error = (**descriptor).validateProcessorCompatibility(
-          row.simObject.payload, *architecture, *microarchitecture))
+  if (llvm::Error error =
+          (**descriptor)
+              .validateProcessorCompatibility(
+                  row.simObject.payload, *architecture, *microarchitecture))
     return invalid("processor model is incompatible with Fabric: " +
                    llvm::toString(std::move(error)));
   objects.emplace_back(objectKey(row.simObject), *descriptor);
   return llvm::Error::success();
 }
 
-llvm::Error validateCorrespondenceModels(
-    llvm::ArrayRef<Gem5Correspondence> rows,
-    const fabric::FabricSystemRootView &system) {
+llvm::Error
+validateCorrespondenceModels(llvm::ArrayRef<Gem5Correspondence> rows,
+                             const fabric::FabricSystemRootView &system) {
   std::vector<std::pair<Key, const Gem5ModelContractDescriptor *>> objects;
   std::vector<std::pair<Key, const Gem5ModelPortKindDescriptor *>> ports;
   objects.reserve(rows.size());
@@ -337,7 +374,8 @@ llvm::Error validateCorrespondenceModels(
         return kind.takeError();
       const auto *descriptor =
           findGem5ModelContract(bridge->bridgeEndpoint.object.contract);
-      objects.emplace_back(objectKey(bridge->bridgeEndpoint.object), descriptor);
+      objects.emplace_back(objectKey(bridge->bridgeEndpoint.object),
+                           descriptor);
       ports.emplace_back(portKey(bridge->bridgeEndpoint), *kind);
       continue;
     }
@@ -347,9 +385,9 @@ llvm::Error validateCorrespondenceModels(
         return invalid("MemoryOrService object and port owners disagree");
       auto descriptor = validateObject(memory->simObject,
                                        Gem5ModelObjectClass::MemoryOrService);
-      auto kind = validatePort(memory->simPort,
-                               Gem5ModelPortClass::MemoryOrService,
-                               Gem5ModelObjectClass::MemoryOrService);
+      auto kind =
+          validatePort(memory->simPort, Gem5ModelPortClass::MemoryOrService,
+                       Gem5ModelObjectClass::MemoryOrService);
       if (!descriptor)
         return descriptor.takeError();
       if (!kind)
@@ -362,16 +400,17 @@ llvm::Error validateCorrespondenceModels(
             std::get_if<Gem5TransportCorrespondence>(&row)) {
       if (!(transport->simObject == transport->simPort.object))
         return invalid("Transport object and port owners disagree");
-      const bool resource = std::holds_alternative<
-          fabric::SystemTransportResourceRef>(transport->fabricRef);
+      const bool resource =
+          std::holds_alternative<fabric::SystemTransportResourceRef>(
+              transport->fabricRef);
       auto descriptor = validateObject(
           transport->simObject,
           resource ? std::optional(Gem5ModelObjectClass::Transport)
                    : std::nullopt);
-      auto kind = validatePort(
-          transport->simPort, Gem5ModelPortClass::Transport,
-          resource ? std::optional(Gem5ModelObjectClass::Transport)
-                   : std::nullopt);
+      auto kind =
+          validatePort(transport->simPort, Gem5ModelPortClass::Transport,
+                       resource ? std::optional(Gem5ModelObjectClass::Transport)
+                                : std::nullopt);
       if (!descriptor)
         return descriptor.takeError();
       if (!kind)
@@ -383,12 +422,11 @@ llvm::Error validateCorrespondenceModels(
     const auto &external = std::get<Gem5ExternalEndpointCorrespondence>(row);
     if (!(external.simObject == external.simPort.object))
       return invalid("ExternalEndpoint object and port owners disagree");
-    auto descriptor =
-        validateObject(external.simObject,
-                       Gem5ModelObjectClass::ExternalEndpoint);
-    auto kind = validatePort(external.simPort,
-                             Gem5ModelPortClass::ExternalEndpoint,
-                             Gem5ModelObjectClass::ExternalEndpoint);
+    auto descriptor = validateObject(external.simObject,
+                                     Gem5ModelObjectClass::ExternalEndpoint);
+    auto kind =
+        validatePort(external.simPort, Gem5ModelPortClass::ExternalEndpoint,
+                     Gem5ModelObjectClass::ExternalEndpoint);
     if (!descriptor)
       return descriptor.takeError();
     if (!kind)
@@ -406,8 +444,9 @@ llvm::Error validateCorrespondenceModels(
       return invalid("SimObject is bound more than once without declared "
                      "sharing support");
 
-  llvm::sort(ports,
-             [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
+  llvm::sort(ports, [](const auto &lhs, const auto &rhs) {
+    return lhs.first < rhs.first;
+  });
   for (std::size_t index = 1; index < ports.size(); ++index)
     if (ports[index - 1].first == ports[index].first &&
         !ports[index].second->allowsSharedBinding)
@@ -417,8 +456,7 @@ llvm::Error validateCorrespondenceModels(
 }
 
 llvm::Expected<Gem5SimulationBinding>
-canonicalize(Gem5SimulationBindingDraft draft,
-             const ArtifactStore &artifacts) {
+canonicalize(Gem5SimulationBindingDraft draft, const ArtifactStore &artifacts) {
   if (draft.fabric.schemaIdentity != fabric::fabricArtifactSchema.identity ||
       draft.fabric.schemaVersion != fabric::fabricArtifactSchema.version)
     return invalid("Fabric reference has the wrong schema descriptor");
@@ -462,8 +500,7 @@ canonicalize(Gem5SimulationBindingDraft draft,
     return invalid("Bridge ABI identity is unsupported");
 
   llvm::sort(draft.correspondences,
-             [](const Gem5Correspondence &lhs,
-                const Gem5Correspondence &rhs) {
+             [](const Gem5Correspondence &lhs, const Gem5Correspondence &rhs) {
                return correspondenceKey(lhs) < correspondenceKey(rhs);
              });
   std::vector<Key> actual;
@@ -492,8 +529,8 @@ llvm::StringRef asText(llvm::ArrayRef<std::uint8_t> bytes) {
 
 } // namespace
 
-Gem5ModelContractDescriptorRef gem5ModelContractDescriptorRef(
-    const Gem5ModelContractDescriptor &descriptor) {
+Gem5ModelContractDescriptorRef
+gem5ModelContractDescriptorRef(const Gem5ModelContractDescriptor &descriptor) {
   return {descriptor.descriptor.identity.str(), descriptor.descriptor.version};
 }
 
@@ -537,8 +574,8 @@ registerGem5ModelContract(const Gem5ModelContractDescriptor &descriptor) {
   return llvm::Error::success();
 }
 
-const Gem5ModelContractDescriptor *findGem5ModelContract(
-    const Gem5ModelContractDescriptorRef &reference) {
+const Gem5ModelContractDescriptor *
+findGem5ModelContract(const Gem5ModelContractDescriptorRef &reference) {
   std::lock_guard<std::mutex> lock(modelContractMutex());
   auto found = llvm::find_if(modelContracts(), [&](const auto *descriptor) {
     return gem5ModelContractDescriptorRef(*descriptor) == reference;
@@ -546,10 +583,12 @@ const Gem5ModelContractDescriptor *findGem5ModelContract(
   return found == modelContracts().end() ? nullptr : *found;
 }
 
-const Gem5ModelPortKindDescriptor *findGem5ModelPortKind(
-    const Gem5ModelContractDescriptor &descriptor, std::uint32_t kind) {
-  auto found = llvm::find_if(descriptor.portKinds,
-                             [&](const auto &port) { return port.kind == kind; });
+const Gem5ModelPortKindDescriptor *
+findGem5ModelPortKind(const Gem5ModelContractDescriptor &descriptor,
+                      std::uint32_t kind) {
+  auto found = llvm::find_if(descriptor.portKinds, [&](const auto &port) {
+    return port.kind == kind;
+  });
   return found == descriptor.portKinds.end() ? nullptr : &*found;
 }
 
@@ -599,6 +638,122 @@ importGem5SimulationBinding(const ArtifactRootReference &reference,
     return invalid("stored root is not canonical");
   return FinalizedGem5SimulationBinding(reference, std::move(*bytes),
                                         std::move(*binding));
+}
+
+llvm::Expected<FinalizedGem5SimulationBinding>
+finalizeBuiltinGem5SimulationBinding(
+    const ArtifactRootReference &systemReference,
+    Gem5BuildIdentity buildIdentity, Gem5BuiltinPlatformPolicy policy,
+    const ArtifactStore &artifacts) {
+  if (llvm::Error error = validateBuiltinPolicy(policy))
+    return std::move(error);
+  if (llvm::Error error = registerBuiltinGem5ModelContracts())
+    return std::move(error);
+
+  auto system = fabric::importEntireFabricRoot(systemReference, artifacts);
+  if (!system)
+    return system.takeError();
+  auto view = fabric::requireSystemRoot(system->view());
+  if (!view)
+    return view.takeError();
+  auto interconnect = fabric::finalizeGem5EventInterconnectImplementation(
+      systemReference, artifacts);
+  if (!interconnect)
+    return interconnect.takeError();
+
+  Gem5SimulationBindingDraft draft{systemReference,
+                                   interconnect->reference(),
+                                   std::move(buildIdentity),
+                                   gem5BridgeAbiIdentity,
+                                   {}};
+  std::uint64_t cpuId = 0;
+  for (fabric::HostCoreOccurrenceRef core :
+       view->artifact().hostCoreOccurrences()) {
+    auto model = processorModel(view->instructionCoreMicroarchitecture(core));
+    if (!model)
+      return model.takeError();
+    draft.correspondences.push_back(Gem5ProcessorCorrespondence{
+        Gem5ProcessorFabricRef(core),
+        gem5Object(**model, encodeGem5RiscvCpuParameters(
+                                {cpuId++, policy.processorClockPeriodTicks}))});
+  }
+  for (fabric::AccCoreOccurrenceRef core :
+       view->artifact().accCoreOccurrences()) {
+    const fabric::InstructionCoreContextRef context{core};
+    auto model =
+        processorModel(view->instructionCoreMicroarchitecture(context));
+    if (!model)
+      return model.takeError();
+    draft.correspondences.push_back(Gem5ProcessorCorrespondence{
+        Gem5ProcessorFabricRef(context),
+        gem5Object(**model, encodeGem5RiscvCpuParameters(
+                                {cpuId++, policy.processorClockPeriodTicks}))});
+  }
+
+  std::map<Key, Gem5SimObjectRef> bridges;
+  for (const fabric::FabricSpatialAttachmentRecordView &attachment :
+       view->spatialAttachments()) {
+    const auto spatialCore = spatialCoreOf(attachment.spatialEndpoint);
+    if (!spatialCore)
+      return invalid("builtin spatial attachment has no SpatialCore owner");
+    const Key coreKey = fabric::canonicalFabricBytes(*spatialCore);
+    auto [object, inserted] = bridges.try_emplace(coreKey);
+    if (inserted) {
+      const std::uint64_t ordinal = bridges.size() - 1;
+      if (ordinal > (std::numeric_limits<std::uint64_t>::max() -
+                     policy.spatialBridgeBaseAddress) /
+                        policy.spatialBridgeAddressStride)
+        return invalid("builtin spatial bridge address range overflows");
+      const std::uint64_t address = policy.spatialBridgeBaseAddress +
+                                    ordinal * policy.spatialBridgeAddressStride;
+      object->second =
+          gem5Object(gem5SpatialBridgeModel(),
+                     encodeGem5SpatialBridgeParameters(
+                         {address, policy.spatialBridgeApertureBytes,
+                          policy.spatialBridgeLatencyTicks,
+                          policy.spatialBridgeMaximumMessageBytes}));
+    }
+    draft.correspondences.push_back(Gem5SpatialBridgeCorrespondence{
+        *spatialCore, attachment.spatialEndpoint, gem5Port(object->second)});
+  }
+
+  const Gem5SimObjectRef memory =
+      gem5Object(gem5SimpleMemoryModel(),
+                 encodeGem5SimpleMemoryParameters({policy.memoryBaseAddress,
+                                                   policy.memorySizeBytes,
+                                                   policy.memoryLatencyTicks}));
+  for (fabric::SystemMemoryServiceRef service :
+       view->artifact().systemMemoryServices())
+    draft.correspondences.push_back(Gem5MemoryOrServiceCorrespondence{
+        Gem5MemoryOrServiceFabricRef(service), memory, gem5Port(memory)});
+  for (fabric::SystemServiceEndpointRef endpoint :
+       view->artifact().systemServiceEndpoints())
+    draft.correspondences.push_back(Gem5MemoryOrServiceCorrespondence{
+        Gem5MemoryOrServiceFabricRef(endpoint), memory, gem5Port(memory)});
+
+  const Gem5SimObjectRef transport = gem5Object(gem5SystemXBarModel(), {});
+  for (fabric::SystemTransportResourceRef resource : view->transportResources())
+    draft.correspondences.push_back(Gem5TransportCorrespondence{
+        Gem5TransportFabricRef(resource), transport, gem5Port(transport)});
+  for (const fabric::FabricTransportEndpointRef &endpoint :
+       view->artifact().transportEndpoints()) {
+    const auto owner = endpoint.owner.kind();
+    if (owner !=
+            fabric::FabricTransportEndpointOwnerKind::SystemServiceEndpoint &&
+        owner !=
+            fabric::FabricTransportEndpointOwnerKind::SystemTransportResource)
+      continue;
+    draft.correspondences.push_back(Gem5TransportCorrespondence{
+        Gem5TransportFabricRef(endpoint), transport, gem5Port(transport)});
+  }
+
+  const Gem5SimObjectRef external = gem5Object(gem5ExternalEndpointModel(), {});
+  for (fabric::ExternalBoundaryRef boundary :
+       view->artifact().externalBoundaries())
+    draft.correspondences.push_back(Gem5ExternalEndpointCorrespondence{
+        boundary, external, gem5Port(external)});
+
+  return finalizeGem5SimulationBinding(std::move(draft), artifacts);
 }
 
 } // namespace loom::runtime

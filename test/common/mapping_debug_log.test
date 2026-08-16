@@ -24,7 +24,7 @@
 # L1-SAME: "capacity_conflicts":4
 # L1-SAME: "closure_status":"closed"
 # L1-SAME: "negotiated_iterations":11
-# L1-SAME: "schema":"loom.mapping.debug.1"
+# L1-SAME: "schema":"loom.invocation.diagnostic.1"
 # L1-SAME: "stage":"system_pnr"
 
 # L2-COUNT-1: "event":"invocation_begin"

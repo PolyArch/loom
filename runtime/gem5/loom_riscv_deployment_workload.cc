@@ -32,6 +32,9 @@ LoomRiscvDeploymentWorkload::LoomRiscvDeploymentWorkload(const Params &params)
       hostDispatchAddress(params.host_dispatch_address),
       hostMemoryTableAddress(params.host_memory_table_address),
       hostMemoryTableEntries(params.host_memory_table_entries),
+      hostResultAddress(params.host_result_address),
+      hostResultSize(params.host_result_size),
+      hostReturnAddress(params.host_return_address),
       stackBase(params.stack_base), stackStride(params.stack_stride),
       runtimeImagePaths(params.runtime_images),
       runtimeImageAddresses(params.runtime_image_addresses),
@@ -39,6 +42,9 @@ LoomRiscvDeploymentWorkload::LoomRiscvDeploymentWorkload(const Params &params)
       memoryObservationAddresses(params.memory_observation_addresses),
       memoryObservationSizes(params.memory_observation_sizes) {
   fatal_if(hostEntrySymbol.empty(), "Loom host entry symbol is empty");
+  fatal_if((hostResultAddress == 0) != (hostResultSize == 0),
+           "Loom host result address and size are not both present or absent");
+  fatal_if(hostReturnAddress == 0, "Loom host return address is zero");
   fatal_if(stackStride == 0, "Loom per-CPU stack stride is zero");
   fatal_if(runtimeImagePaths.size() != runtimeImageAddresses.size(),
            "Loom runtime image paths and addresses differ in cardinality");
@@ -150,6 +156,9 @@ void LoomRiscvDeploymentWorkload::initState() {
   host->setReg(RiscvISA::int_reg::A1, targets.size());
   host->setReg(RiscvISA::int_reg::A2, hostMemoryTableAddress);
   host->setReg(RiscvISA::int_reg::A3, hostMemoryTableEntries);
+  host->setReg(RiscvISA::int_reg::A4, hostResultAddress);
+  host->setReg(RiscvISA::int_reg::A5, hostResultSize);
+  host->setReg(RiscvISA::int_reg::Ra, hostReturnAddress);
   host->activate();
 }
 
@@ -189,9 +198,12 @@ LoomRiscvDeploymentWorkload::symtab(ThreadContext *context) {
 }
 
 bool LoomRiscvDeploymentWorkload::dispatch(std::uint64_t targetOrdinal,
-                                           Addr completionAddress) {
+                                           Addr completionAddress,
+                                           Addr invocationAddress,
+                                           std::uint64_t invocationSize) {
   if (targetOrdinal >= targets.size() ||
-      activeTargets[targetOrdinal] != noActiveTarget)
+      activeTargets[targetOrdinal] != noActiveTarget ||
+      ((invocationAddress == 0) != (invocationSize == 0)))
     return false;
   const Target &target = targets[targetOrdinal];
   ThreadContext *context = contextForCpu(target.cpuId);
@@ -205,6 +217,8 @@ bool LoomRiscvDeploymentWorkload::dispatch(std::uint64_t targetOrdinal,
   context->setReg(RiscvISA::int_reg::A1, target.launchAddress);
   context->setReg(RiscvISA::int_reg::A2, target.launchSize);
   context->setReg(RiscvISA::int_reg::A3, completionAddress);
+  context->setReg(RiscvISA::int_reg::A4, invocationAddress);
+  context->setReg(RiscvISA::int_reg::A5, invocationSize);
   activeTargets[targetOrdinal] = target.cpuId;
   context->activate();
   return true;

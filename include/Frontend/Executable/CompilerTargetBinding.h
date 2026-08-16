@@ -137,6 +137,24 @@ struct CompilerTargetPolicy final {
   std::vector<CompilerSupportComponent> supportComponents;
 };
 
+/// The first portable stored-program policy. It is kept beside target
+/// reconstruction so product drivers and focused tools cannot independently
+/// spell the ABI, code model, relocation model, or backend CPU.
+CompilerTargetPolicy portableRiscV64CompilerTargetPolicy();
+
+/// Invocation-only projection of one exact binding into the public Clang/LLD
+/// command-line vocabulary. These strings are boundary spellings, not a
+/// second target capability authority.
+struct CompilerTargetCommandLineProjection final {
+  std::string targetTriple;
+  std::string architecture;
+  std::string abi;
+  std::string codeModel;
+  std::string backendCpu;
+  std::string ltoFeatures;
+  bool positionIndependent = false;
+};
+
 class CompilerTargetBinding final {
 public:
   const CompilerProcessorArchitectureRef &processorArchitecture() const {
@@ -304,6 +322,14 @@ llvm::Expected<SystemCompilerTargetBindings>
 resolveSystemCompilerTargetBindings(const fabric::FinalizedFabricRoot &system,
                                     const CompilerTargetPolicy &policy,
                                     const ArtifactStore &store);
+
+llvm::Expected<CompilerTargetCommandLineProjection>
+projectCompilerTargetCommandLine(const CompilerTargetBinding &binding);
+
+llvm::Expected<CompilerTargetCommandLineProjection>
+projectCompilerTargetCommandLine(
+    const fabric::InstructionCoreArchitecturalContract &architecture,
+    const CompilerTargetPolicy &policy);
 
 /// Validates one LLVM module against an exact binding without rewriting
 /// either owner. The target triple must already use the binding's canonical

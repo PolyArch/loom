@@ -192,8 +192,8 @@ materializePortableFixedVectorShuffle(FabricOperationProviderRequest request) {
 
   if (request.capability.configurationFieldSchema.size() != 1)
     return invalid("shuffle capability does not contain exactly one field");
-  const ConfigurationFieldEncoding *field =
-      request.configurationAbi.findOperationField(
+  const ConfigurationEncodingRelation *field =
+      request.configurationAbi.findOperationEncodingRelation(
           request.occurrence,
           request.capability.configurationFieldSchema.front().ordinal);
   if (!field)

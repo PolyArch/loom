@@ -30,9 +30,6 @@ using namespace loom::pnr;
 namespace {
 
 constexpr llvm::StringLiteral frozenArtifact = "FrozenSpatialPnrProblem";
-constexpr PnrCapacityContext nodeCountContext{frozenArtifact, "handshake_nodes",
-                                              "handshake_nodes",
-                                              PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext nodeIndexContext{frozenArtifact, "handshake_nodes",
                                               "handshake_nodes",
                                               PnrCapacityMeasure::Index};
@@ -45,9 +42,6 @@ constexpr PnrCapacityContext arcIndexContext{frozenArtifact, "handshake_arcs",
 constexpr PnrCapacityContext ownerIndexContext{
     frozenArtifact, "handshake_owners", "handshake_owners",
     PnrCapacityMeasure::Index};
-constexpr PnrCapacityContext fragmentCountContext{
-    frozenArtifact, "handshake_fragments", "handshake_fragments",
-    PnrCapacityMeasure::Count};
 constexpr PnrCapacityContext fragmentIndexContext{
     frozenArtifact, "handshake_fragments", "handshake_fragments",
     PnrCapacityMeasure::Index};
@@ -106,6 +100,12 @@ std::string ownerKey(const FabricHandshakeOwner &owner) {
         }
       },
       owner.payload());
+  return byteKey(bytes);
+}
+
+std::string signalKey(const HandshakeSignalRef &signal) {
+  std::vector<std::uint8_t> bytes = canonicalFabricBytes(signal.endpoint);
+  bytes.push_back(static_cast<std::uint8_t>(signal.signal));
   return byteKey(bytes);
 }
 
@@ -214,16 +214,15 @@ public:
     if (!activeModels)
       return activeModels.takeError();
     FrozenSpatialHandshakeIndex result;
-    BuildState state{result, *activeModels, routing};
+    BuildState state{result, *activeModels, dataflow, techMapping, fabric,
+                     realizations, resources, routing, activeRouting};
+    if (llvm::Error error = state.prepareActiveFragments())
+      return std::move(error);
     if (llvm::Error error = state.buildNodesAndArcs())
       return std::move(error);
     if (llvm::Error error = state.buildFragments())
       return std::move(error);
-    if (llvm::Error error = state.buildComputeSelections(dataflow, techMapping,
-                                                         fabric, realizations))
-      return std::move(error);
-    if (llvm::Error error = state.buildMemorySelections(
-            dataflow, techMapping, fabric, realizations, resources))
+    if (llvm::Error error = state.materializeExactSelections())
       return std::move(error);
     if (llvm::Error error = detail::verifyFrozenSpatialHandshakeIndex(
             result, realizations, resources, routing))
@@ -276,67 +275,186 @@ private:
   }
 
   class BuildState final {
+    struct PendingMemoryPlan final {
+      PnrIndex model = 0;
+      PnrIndex usePattern = 0;
+      bool temporalResident = false;
+      std::optional<std::uint32_t> issueLatencyCycles;
+      std::vector<std::uint32_t> localFragments;
+    };
+
   public:
     BuildState(FrozenSpatialHandshakeIndex &result,
                llvm::ArrayRef<const HandshakeOwnerModel *> models,
-               const FrozenSpatialRoutingGraph &routing)
-        : result_(result), models_(models), routing_(routing) {}
+               const dataflow::CanonicalDataflowProgramView &dataflow,
+               const TechMappingView &techMapping,
+               const FabricArtifactView &fabric,
+               const FrozenSpatialRealizationIndex &realizations,
+               const FrozenSpatialResourceIndex &resources,
+               const FrozenSpatialRoutingGraph &routing,
+               const FrozenSpatialActiveRoutingDomain &activeRouting)
+        : result_(result), models_(models), dataflow_(dataflow),
+          techMapping_(techMapping), fabric_(fabric),
+          realizations_(realizations), resources_(resources),
+          routing_(routing), activeRouting_(activeRouting) {}
+
+    llvm::Error prepareActiveFragments() {
+      if (activeRouting_.activeTraversals().size() !=
+          routing_.traversals().size())
+        return invalid("active traversal domain has the wrong width");
+
+      for (auto [modelOrdinal, model] : llvm::enumerate(models_)) {
+        auto ordinal = checked(ownerIndexContext, modelOrdinal);
+        if (!ordinal)
+          return ordinal.takeError();
+        if (!modelOrdinals_.try_emplace(ownerKey(model->owner()), *ordinal)
+                 .second)
+          return invalid("active handshake owner is repeated");
+      }
+      for (auto [ordinal, traversal] : llvm::enumerate(routing_.traversals()))
+        traversalOrdinals_.try_emplace(refKey(traversal.reference),
+                                       static_cast<PnrIndex>(ordinal));
+
+      activeLocalFragments_.resize(models_.size());
+      if (llvm::Error error = prepareComputeSelections())
+        return error;
+      if (llvm::Error error = prepareMemorySelections())
+        return error;
+
+      for (auto [modelOrdinal, modelPointer] : llvm::enumerate(models_)) {
+        const HandshakeOwnerModel &model = *modelPointer;
+        auto &active = activeLocalFragments_[modelOrdinal];
+        for (auto [fragmentOrdinal, fragment] :
+             llvm::enumerate(model.fragments())) {
+          bool retain = false;
+          switch (fragment.activationKind) {
+          case HandshakeActivationKind::Always:
+            retain = true;
+            break;
+          case HandshakeActivationKind::AnyTraversal:
+          case HandshakeActivationKind::AnySwitchActivationTraversal:
+          case HandshakeActivationKind::ExactSwitchActivationTraversal:
+            for (std::uint32_t witness = 0; witness < fragment.witnessCount;
+                 ++witness) {
+              auto activeWitness = traversalIsActive(
+                  model.traversalWitnesses()[fragment.witnessOffset + witness]);
+              if (!activeWitness)
+                return activeWitness.takeError();
+              if (*activeWitness) {
+                retain = true;
+                break;
+              }
+            }
+            break;
+          case HandshakeActivationKind::AllTraversals:
+            retain = fragment.witnessCount != 0;
+            for (std::uint32_t witness = 0;
+                 retain && witness < fragment.witnessCount; ++witness) {
+              auto activeWitness = traversalIsActive(
+                  model.traversalWitnesses()[fragment.witnessOffset + witness]);
+              if (!activeWitness)
+                return activeWitness.takeError();
+              retain = *activeWitness;
+            }
+            break;
+          case HandshakeActivationKind::ExactOwnerSelection:
+            break;
+          }
+          if (retain)
+            active.push_back(static_cast<std::uint32_t>(fragmentOrdinal));
+        }
+        llvm::sort(active);
+        active.erase(std::unique(active.begin(), active.end()), active.end());
+      }
+      return llvm::Error::success();
+    }
 
     llvm::Error buildNodesAndArcs() {
-      auto endpointSignalCount = checkedPnrIndexMultiply(
-          nodeCountContext, routing_.routingEndpoints().size(), 2);
-      if (!endpointSignalCount)
-        return endpointSignalCount.takeError();
-      result_.nodeSignals_.reserve(*endpointSignalCount);
       for (auto [endpointOrdinal, endpoint] :
-           llvm::enumerate(routing_.routingEndpoints())) {
+           llvm::enumerate(routing_.routingEndpoints()))
         endpointOrdinals_.try_emplace(refKey(endpoint.reference),
                                       static_cast<PnrIndex>(endpointOrdinal));
-        result_.nodeSignals_.push_back(
-            HandshakeSignalRef{endpoint.reference, HandshakeSignalKind::Valid});
-        result_.nodeSignals_.push_back(
-            HandshakeSignalRef{endpoint.reference, HandshakeSignalKind::Ready});
-      }
 
       modelNodes_.resize(models_.size());
       modelArcPairs_.resize(models_.size());
       std::vector<ArcPair> allArcs;
       for (auto [modelOrdinal, modelPointer] : llvm::enumerate(models_)) {
         const HandshakeOwnerModel &model = *modelPointer;
-        auto ownerOrdinal = checked(ownerIndexContext, modelOrdinal);
-        if (!ownerOrdinal)
-          return ownerOrdinal.takeError();
         result_.owners_.push_back(model.owner());
-        modelOrdinals_.try_emplace(ownerKey(model.owner()), *ownerOrdinal);
         auto &nodeMap = modelNodes_[modelOrdinal];
-        nodeMap.reserve(model.nodes().size());
-        for (const HandshakeOwnerNode &node : model.nodes()) {
+        nodeMap.assign(model.nodes().size(), getInvalidPnrIndex());
+
+        auto &arcPairs = modelArcPairs_[modelOrdinal];
+        arcPairs.resize(model.arcs().size());
+        std::vector<std::uint32_t> activeArcs;
+        for (std::uint32_t fragmentOrdinal :
+             activeLocalFragments_[modelOrdinal]) {
+          if (fragmentOrdinal >= model.fragments().size())
+            return invalid("active handshake fragment is out of range");
+          const HandshakeActivationFragment &fragment =
+              model.fragments()[fragmentOrdinal];
+          if (fragment.contributionOffset >
+                  model.fragmentContributionOrdinals().size() ||
+              fragment.contributionCount >
+                  model.fragmentContributionOrdinals().size() -
+                      fragment.contributionOffset)
+            return invalid("handshake fragment contribution is out of range");
+          for (std::uint32_t index = 0; index < fragment.contributionCount;
+               ++index)
+            activeArcs.push_back(model.fragmentContributionOrdinals()
+                                     [fragment.contributionOffset + index]);
+        }
+        llvm::sort(activeArcs);
+        activeArcs.erase(std::unique(activeArcs.begin(), activeArcs.end()),
+                         activeArcs.end());
+
+        const auto resolveNode = [&](std::uint32_t localNode)
+            -> llvm::Expected<PnrIndex> {
+          if (localNode >= model.nodes().size())
+            return invalid("handshake owner arc is out of range");
+          if (nodeMap[localNode] != getInvalidPnrIndex())
+            return nodeMap[localNode];
+          const HandshakeOwnerNode &node = model.nodes()[localNode];
           if (node.boundarySignal) {
-            auto endpoint =
-                endpointOrdinals_.find(refKey(node.boundarySignal->endpoint));
-            if (endpoint == endpointOrdinals_.end())
+            if (!endpointOrdinals_.contains(
+                    refKey(node.boundarySignal->endpoint)))
               return invalid(
                   "handshake owner names an unknown routing endpoint");
-            const PnrIndex signal =
-                node.boundarySignal->signal == HandshakeSignalKind::Valid ? 0
-                                                                          : 1;
-            nodeMap.push_back(endpoint->second * 2 + signal);
-            continue;
+            auto [found, inserted] = signalOrdinals_.try_emplace(
+                signalKey(*node.boundarySignal), getInvalidPnrIndex());
+            if (inserted) {
+              auto ordinal =
+                  checked(nodeIndexContext, result_.nodeSignals_.size());
+              if (!ordinal)
+                return ordinal.takeError();
+              found->second = *ordinal;
+              result_.nodeSignals_.push_back(*node.boundarySignal);
+            }
+            nodeMap[localNode] = found->second;
+            return found->second;
           }
           auto ordinal = checked(nodeIndexContext, result_.nodeSignals_.size());
           if (!ordinal)
             return ordinal.takeError();
-          nodeMap.push_back(*ordinal);
+          nodeMap[localNode] = *ordinal;
           result_.nodeSignals_.push_back(std::nullopt);
-        }
+          return *ordinal;
+        };
 
-        auto &arcPairs = modelArcPairs_[modelOrdinal];
-        arcPairs.reserve(model.arcs().size());
-        for (const HandshakeOwnerArc &arc : model.arcs()) {
+        for (std::uint32_t localArc : activeArcs) {
+          if (localArc >= model.arcs().size())
+            return invalid("handshake fragment arc is out of range");
+          const HandshakeOwnerArc &arc = model.arcs()[localArc];
           if (arc.source >= nodeMap.size() || arc.destination >= nodeMap.size())
             return invalid("handshake owner arc is out of range");
-          ArcPair pair{nodeMap[arc.source], nodeMap[arc.destination]};
-          arcPairs.push_back(pair);
+          auto source = resolveNode(arc.source);
+          if (!source)
+            return source.takeError();
+          auto destination = resolveNode(arc.destination);
+          if (!destination)
+            return destination.takeError();
+          ArcPair pair{*source, *destination};
+          arcPairs[localArc] = pair;
           allArcs.push_back(pair);
         }
       }
@@ -384,8 +502,7 @@ private:
     }
 
     llvm::Error buildFragments() {
-      modelFragmentOffsets_.reserve(models_.size() + 1);
-      modelFragmentOffsets_.push_back(0);
+      modelFragmentOrdinals_.resize(models_.size());
       std::vector<std::vector<PnrIndex>> traversalFragments(
           routing_.traversals().size());
       std::vector<std::vector<PnrIndex>> traversalAllGroups(
@@ -420,8 +537,14 @@ private:
 
       for (auto [modelOrdinal, modelPointer] : llvm::enumerate(models_)) {
         const HandshakeOwnerModel &model = *modelPointer;
-        for (auto [localFragmentOrdinal, fragment] :
-             llvm::enumerate(model.fragments())) {
+        auto &fragmentOrdinals = modelFragmentOrdinals_[modelOrdinal];
+        fragmentOrdinals.assign(model.fragments().size(), getInvalidPnrIndex());
+        for (std::uint32_t localFragmentOrdinal :
+             activeLocalFragments_[modelOrdinal]) {
+          if (localFragmentOrdinal >= model.fragments().size())
+            return invalid("active handshake fragment is out of range");
+          const HandshakeActivationFragment &fragment =
+              model.fragments()[localFragmentOrdinal];
           auto globalFragment =
               checked(fragmentIndexContext, result_.fragments_.size());
           auto contributionOffset = checked(
@@ -460,6 +583,7 @@ private:
               {*contributionOffset, *contributionCount});
           result_.fragmentOwnerOrdinals_.push_back(
               static_cast<PnrIndex>(modelOrdinal));
+          fragmentOrdinals[localFragmentOrdinal] = *globalFragment;
 
           switch (fragment.activationKind) {
           case HandshakeActivationKind::Always:
@@ -472,7 +596,8 @@ private:
                   model.traversalWitnesses()[fragment.witnessOffset + witness]);
               if (!traversal)
                 return traversal.takeError();
-              traversalFragments[*traversal].push_back(*globalFragment);
+              if (activeRouting_.traversalIsActive(*traversal))
+                traversalFragments[*traversal].push_back(*globalFragment);
             }
             break;
           case HandshakeActivationKind::AllTraversals: {
@@ -533,6 +658,9 @@ private:
                 model.traversalWitnesses()[fragment.witnessOffset]);
             if (!traversal)
               return traversal.takeError();
+            if (!activeRouting_.traversalIsActive(*traversal))
+              return invalid(
+                  "inactive Temporal switch crosspoint was retained");
             switchTraversalFragments[{key, *traversal}].push_back(
                 *globalFragment);
             break;
@@ -541,10 +669,6 @@ private:
             break;
           }
         }
-        auto end = checked(fragmentCountContext, result_.fragments_.size());
-        if (!end)
-          return end.takeError();
-        modelFragmentOffsets_.push_back(*end);
       }
 
       for (auto &fragments : traversalFragments) {
@@ -624,18 +748,15 @@ private:
       return llvm::Error::success();
     }
 
-    llvm::Error buildComputeSelections(
-        const dataflow::CanonicalDataflowProgramView &dataflow,
-        const TechMappingView &techMapping, const FabricArtifactView &fabric,
-        const FrozenSpatialRealizationIndex &realizations) {
+    llvm::Error prepareComputeSelections() {
       std::vector<std::vector<FabricFuOperationHandshakeBinding>> bindings;
-      bindings.reserve(techMapping.computeRealizations().size());
+      bindings.reserve(techMapping_.computeRealizations().size());
       for (const TechComputeRealizationView &realization :
-           techMapping.computeRealizations()) {
+           techMapping_.computeRealizations()) {
         std::vector<FabricFuOperationHandshakeBinding> actorBindings;
         actorBindings.reserve(realization.actors.size());
         for (const TechComputeActorView &actor : realization.actors) {
-          auto resolved = dataflow.resolve(actor.actor);
+          auto resolved = dataflow_.resolve(actor.actor);
           if (!resolved)
             return resolved.takeError();
           auto projection =
@@ -645,7 +766,7 @@ private:
           auto indexBitWidth = getIndexBitWidth(resolved->op);
           if (!indexBitWidth)
             return indexBitWidth.takeError();
-          auto pointerLayout = pointerLayoutFor(dataflow, *projection);
+          auto pointerLayout = pointerLayoutFor(dataflow_, *projection);
           if (!pointerLayout)
             return pointerLayout.takeError();
           actorBindings.push_back({actor.fabricOperation,
@@ -656,16 +777,16 @@ private:
         bindings.push_back(std::move(actorBindings));
       }
 
-      std::vector<std::vector<PnrIndex>> placementFragments(
-          realizations.computePlacements().size());
+      computePlacementLocalFragments_.resize(
+          realizations_.computePlacements().size());
       for (auto [placementOrdinal, placement] :
-           llvm::enumerate(realizations.computePlacements())) {
-        if (placement.realization >= techMapping.computeRealizations().size())
+           llvm::enumerate(realizations_.computePlacements())) {
+        if (placement.realization >= techMapping_.computeRealizations().size())
           return invalid("compute placement realization is out of range");
         const TechComputeRealizationView &realization =
-            techMapping.computeRealizations()[placement.realization];
+            techMapping_.computeRealizations()[placement.realization];
         auto selection = makeFuHandshakeSelection(
-            fabric, placement.fu, realization.capabilityTemplate,
+            fabric_, placement.fu, realization.capabilityTemplate,
             bindings[placement.realization]);
         if (!selection)
           return selection.takeError();
@@ -677,53 +798,53 @@ private:
         auto activation = resolveSelectedHandshake(*models_[*model], exact);
         if (!activation)
           return activation.takeError();
-        appendResolvedFragments(*model, activation->fragmentOrdinals(),
-                                placementFragments[placementOrdinal]);
+        auto &placementFragments =
+            computePlacementLocalFragments_[placementOrdinal];
+        placementFragments.assign(activation->fragmentOrdinals().begin(),
+                                  activation->fragmentOrdinals().end());
+        auto &active = activeLocalFragments_[*model];
+        active.insert(active.end(), placementFragments.begin(),
+                      placementFragments.end());
       }
-      return flattenSlices(placementFragments,
-                           result_.computePlacementFragmentOffsets_,
-                           result_.computePlacementFragments_);
+      return llvm::Error::success();
     }
 
-    llvm::Error buildMemorySelections(
-        const dataflow::CanonicalDataflowProgramView &dataflow,
-        const TechMappingView &techMapping, const FabricArtifactView &fabric,
-        const FrozenSpatialRealizationIndex &realizations,
-        const FrozenSpatialResourceIndex &resources) {
+    llvm::Error prepareMemorySelections() {
       llvm::StringMap<PnrIndex> usePatternOrdinals;
-      for (auto [ordinal, pattern] : llvm::enumerate(resources.usePatterns()))
+      for (auto [ordinal, pattern] :
+           llvm::enumerate(resources_.usePatterns()))
         usePatternOrdinals.try_emplace(refKey(pattern.reference),
                                        static_cast<PnrIndex>(ordinal));
 
       result_.memoryPlacementDomainOffsets_.reserve(
-          realizations.memoryPlacements().size() + 1);
+          realizations_.memoryPlacements().size() + 1);
       for (auto [placementOrdinal, placement] :
-           llvm::enumerate(realizations.memoryPlacements())) {
+           llvm::enumerate(realizations_.memoryPlacements())) {
         auto domainOffset = checked(memoryDomainOffsetContext,
                                     result_.memoryOperationDomains_.size());
         if (!domainOffset)
           return domainOffset.takeError();
         result_.memoryPlacementDomainOffsets_.push_back(*domainOffset);
-        if (placement.realization >= techMapping.memoryRealizations().size())
+        if (placement.realization >= techMapping_.memoryRealizations().size())
           return invalid("memory placement realization is out of range");
         const TechMemoryRealizationView &realization =
-            techMapping.memoryRealizations()[placement.realization];
+            techMapping_.memoryRealizations()[placement.realization];
         const FrozenSpatialMemoryRealization &frozenRealization =
-            realizations.memoryRealizations()[placement.realization];
-        auto schedule = fabric.memorySchedule(placement.memory);
+            realizations_.memoryRealizations()[placement.realization];
+        auto schedule = fabric_.memorySchedule(placement.memory);
         if (!schedule)
           return invalid("memory placement has no scheduling contract");
         auto model = modelIndex(FabricHandshakeOwner::memory(placement.memory));
         if (!model)
           return model.takeError();
         auto roleDemands = ::loom::mapping::deriveSpatialMemoryActorRoleDemands(
-            dataflow, techMapping, fabric, realization, placement.memory);
+            dataflow_, techMapping_, fabric_, realization, placement.memory);
         if (!roleDemands)
           return roleDemands.takeError();
 
         for (auto [localActorOrdinal, actor] :
              llvm::enumerate(realization.actors)) {
-          auto resolved = dataflow.resolve(actor.actor);
+          auto resolved = dataflow_.resolve(actor.actor);
           if (!resolved)
             return resolved.takeError();
           auto maskForm = memoryMaskForm(resolved->op);
@@ -734,9 +855,9 @@ private:
           const FabricMemoryCapabilityAlternativeRef capability{
               port, actor.capability.ordinal};
           const MemoryCapabilityAlternativeView *alternative =
-              fabric.memoryCapabilityAlternative(capability);
+              fabric_.memoryCapabilityAlternative(capability);
           const ::fabric::MemoryOperationPortRecord *operationPort =
-              fabric.memoryOperationPort(port);
+              fabric_.memoryOperationPort(port);
           if (!alternative || !operationPort)
             return invalid("memory handshake capability does not resolve");
           const ::dataflow::ActorRef actorRef = actor.actor;
@@ -748,7 +869,7 @@ private:
             return invalid("memory handshake actor has no role demand");
 
           auto planOffset =
-              checked(planCountContext, result_.memoryOperationPlans_.size());
+              checked(planCountContext, pendingMemoryPlans_.size());
           if (!planOffset)
             return planOffset.takeError();
           // Every resident context of one Temporal operation port exposes the
@@ -763,7 +884,7 @@ private:
           const bool temporalResident =
               *schedule == ::fabric::Schedule::Temporal;
           if (temporalResident &&
-              fabric.memoryResidentContextCount(placement.memory) == 0)
+              fabric_.memoryResidentContextCount(placement.memory) == 0)
             return invalid("Temporal memory has no resident context");
           const FabricMemoryHandshakePlacement operationPlacement =
               temporalResident ? FabricMemoryHandshakePlacement(
@@ -780,7 +901,8 @@ private:
                   FabricUsePatternOwnerRef(FabricInventoryOwnerRef::of(port)),
                   pattern.ordinal()};
               auto selected = makeMemoryHandshakeSelection(
-                  fabric, operationPlacement, capability, usePattern, *maskForm,
+                  fabric_, operationPlacement, capability, usePattern,
+                  *maskForm,
                   roleDemand->sources, roleDemand->destinations);
               if (!selected)
                 return selected.takeError();
@@ -796,27 +918,22 @@ private:
               if (usePatternOrdinal == usePatternOrdinals.end())
                 return invalid(
                     "memory handshake plan has no frozen use pattern");
-              auto fragmentOffset = checked(
-                  incidenceCountContext, result_.memoryPlanFragments_.size());
-              if (!fragmentOffset)
-                return fragmentOffset.takeError();
-              std::vector<PnrIndex> fragments;
-              appendResolvedFragments(*model, activation->fragmentOrdinals(),
-                                      fragments);
-              auto fragmentCount =
-                  checked(incidenceCountContext, fragments.size());
-              if (!fragmentCount)
-                return fragmentCount.takeError();
-              result_.memoryPlanFragments_.insert(
-                  result_.memoryPlanFragments_.end(), fragments.begin(),
-                  fragments.end());
-              result_.memoryOperationPlans_.push_back(
-                  {usePatternOrdinal->second, temporalResident, *fragmentOffset,
-                   *fragmentCount, *issueLatency});
+              PendingMemoryPlan pending;
+              pending.model = *model;
+              pending.usePattern = usePatternOrdinal->second;
+              pending.temporalResident = temporalResident;
+              pending.issueLatencyCycles = *issueLatency;
+              pending.localFragments.assign(
+                  activation->fragmentOrdinals().begin(),
+                  activation->fragmentOrdinals().end());
+              auto &active = activeLocalFragments_[*model];
+              active.insert(active.end(), pending.localFragments.begin(),
+                            pending.localFragments.end());
+              pendingMemoryPlans_.push_back(std::move(pending));
             }
           }
           const std::size_t planCountValue =
-              result_.memoryOperationPlans_.size() - *planOffset;
+              pendingMemoryPlans_.size() - *planOffset;
           if (planCountValue == 0)
             return infeasible("memory operation has no handshake plan");
           auto planCount = checked(planCountContext, planCountValue);
@@ -837,7 +954,58 @@ private:
       return llvm::Error::success();
     }
 
+    llvm::Error materializeExactSelections() {
+      std::vector<std::vector<PnrIndex>> placementFragments(
+          computePlacementLocalFragments_.size());
+      for (auto [placement, localFragments] :
+           llvm::enumerate(computePlacementLocalFragments_)) {
+        if (placement >= realizations_.computePlacements().size())
+          return invalid("compute handshake placement is out of range");
+        auto model = modelIndex(FabricHandshakeOwner::fu(
+            realizations_.computePlacements()[placement].fu));
+        if (!model)
+          return model.takeError();
+        if (llvm::Error error = appendResolvedFragments(
+                *model, localFragments, placementFragments[placement]))
+          return error;
+      }
+      if (llvm::Error error = flattenSlices(
+              placementFragments, result_.computePlacementFragmentOffsets_,
+              result_.computePlacementFragments_))
+        return error;
+
+      result_.memoryOperationPlans_.reserve(pendingMemoryPlans_.size());
+      for (const PendingMemoryPlan &pending : pendingMemoryPlans_) {
+        auto fragmentOffset = checked(
+            incidenceCountContext, result_.memoryPlanFragments_.size());
+        if (!fragmentOffset)
+          return fragmentOffset.takeError();
+        std::vector<PnrIndex> fragments;
+        if (llvm::Error error = appendResolvedFragments(
+                pending.model, pending.localFragments, fragments))
+          return error;
+        auto fragmentCount = checked(incidenceCountContext, fragments.size());
+        if (!fragmentCount)
+          return fragmentCount.takeError();
+        result_.memoryPlanFragments_.insert(
+            result_.memoryPlanFragments_.end(), fragments.begin(),
+            fragments.end());
+        result_.memoryOperationPlans_.push_back(
+            {pending.usePattern, pending.temporalResident, *fragmentOffset,
+             *fragmentCount, pending.issueLatencyCycles});
+      }
+      return llvm::Error::success();
+    }
+
   private:
+    llvm::Expected<bool>
+    traversalIsActive(const FabricPhysicalTraversalRef &reference) const {
+      auto traversal = traversalIndex(reference);
+      if (!traversal)
+        return traversal.takeError();
+      return activeRouting_.traversalIsActive(*traversal);
+    }
+
     llvm::Expected<PnrIndex>
     traversalIndex(const FabricPhysicalTraversalRef &reference) const {
       auto found = traversalOrdinals_.find(refKey(reference));
@@ -853,26 +1021,45 @@ private:
       return found->second;
     }
 
-    void appendResolvedFragments(PnrIndex model,
-                                 llvm::ArrayRef<std::uint32_t> localFragments,
-                                 std::vector<PnrIndex> &destination) const {
-      for (std::uint32_t fragment : localFragments)
-        destination.push_back(modelFragmentOffsets_[model] + fragment);
+    llvm::Error
+    appendResolvedFragments(PnrIndex model,
+                            llvm::ArrayRef<std::uint32_t> localFragments,
+                            std::vector<PnrIndex> &destination) const {
+      if (model >= modelFragmentOrdinals_.size())
+        return invalid("resolved handshake owner is out of range");
+      for (std::uint32_t fragment : localFragments) {
+        if (fragment >= modelFragmentOrdinals_[model].size() ||
+            modelFragmentOrdinals_[model][fragment] == getInvalidPnrIndex())
+          return invalid("resolved handshake fragment was not retained");
+        destination.push_back(modelFragmentOrdinals_[model][fragment]);
+      }
       llvm::sort(destination);
       destination.erase(std::unique(destination.begin(), destination.end()),
                         destination.end());
+      return llvm::Error::success();
     }
 
     FrozenSpatialHandshakeIndex &result_;
     llvm::ArrayRef<const HandshakeOwnerModel *> models_;
+    const dataflow::CanonicalDataflowProgramView &dataflow_;
+    const TechMappingView &techMapping_;
+    const FabricArtifactView &fabric_;
+    const FrozenSpatialRealizationIndex &realizations_;
+    const FrozenSpatialResourceIndex &resources_;
     const FrozenSpatialRoutingGraph &routing_;
+    const FrozenSpatialActiveRoutingDomain &activeRouting_;
     llvm::StringMap<PnrIndex> endpointOrdinals_;
+    llvm::StringMap<PnrIndex> signalOrdinals_;
     llvm::StringMap<PnrIndex> traversalOrdinals_;
     llvm::StringMap<PnrIndex> modelOrdinals_;
+    std::vector<std::vector<std::uint32_t>> activeLocalFragments_;
+    std::vector<std::vector<std::uint32_t>>
+        computePlacementLocalFragments_;
+    std::vector<PendingMemoryPlan> pendingMemoryPlans_;
     std::vector<std::vector<PnrIndex>> modelNodes_;
     std::vector<std::vector<ArcPair>> modelArcPairs_;
     std::unordered_map<ArcPair, PnrIndex, ArcPairHash> arcOrdinals_;
-    std::vector<PnrIndex> modelFragmentOffsets_;
+    std::vector<std::vector<PnrIndex>> modelFragmentOrdinals_;
   };
 };
 

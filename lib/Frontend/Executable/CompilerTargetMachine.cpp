@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -59,6 +60,16 @@ llvm::StringRef abiSpelling(fabric::RiscVAbi abi) {
     return "lp64d";
   }
   llvm_unreachable("unknown RISC-V ABI");
+}
+
+llvm::StringRef codeModelSpelling(fabric::RiscVCodeModel model) {
+  switch (model) {
+  case fabric::RiscVCodeModel::MediumLow:
+    return "medlow";
+  case fabric::RiscVCodeModel::MediumAny:
+    return "medany";
+  }
+  llvm_unreachable("unknown RISC-V code model");
 }
 
 llvm::StringRef extensionSpelling(fabric::RiscVExtension extension) {
@@ -162,6 +173,80 @@ architectureFor(const fabric::FabricSystemRootView &system, const Ref &ref) {
 }
 
 } // namespace
+
+CompilerTargetPolicy portableRiscV64CompilerTargetPolicyImpl() {
+  return {fabric::RiscVAbi::Lp64d, fabric::RiscVCodeModel::MediumAny,
+          fabric::RelocationModel::Static, "generic-rv64", {}};
+}
+
+llvm::Expected<CompilerTargetCommandLineProjection>
+projectCompilerTargetCommandLineFields(
+    llvm::StringRef targetTriple, CompilerObjectFormat objectFormat,
+    llvm::ArrayRef<std::string> backendFeatures, fabric::RiscVAbi backendAbi,
+    fabric::RiscVCodeModel selectedCodeModel, llvm::StringRef backendCpu,
+    fabric::RelocationModel selectedRelocationModel) {
+  if (objectFormat != CompilerObjectFormat::Elf)
+    return targetError("compiler_target_command_line_unsupported",
+                       "only ELF target bindings have a driver projection");
+  const llvm::Triple triple(targetTriple);
+  llvm::StringRef architecturePrefix;
+  switch (triple.getArch()) {
+  case llvm::Triple::riscv32:
+    architecturePrefix = "rv32";
+    break;
+  case llvm::Triple::riscv64:
+    architecturePrefix = "rv64";
+    break;
+  default:
+    return targetError("compiler_target_command_line_unsupported",
+                       "only RISC-V target bindings have a driver projection");
+  }
+
+  std::set<std::string> featureSet;
+  std::vector<std::string> featureNames;
+  featureNames.reserve(backendFeatures.size());
+  for (llvm::StringRef feature : backendFeatures) {
+    if (!feature.consume_front("+") || feature.empty() ||
+        !llvm::all_of(feature, [](char value) { return llvm::isAlnum(value); }))
+      return targetError("compiler_target_command_line_unsupported",
+                         "binding has a noncanonical positive target feature");
+    if (!featureSet.insert(feature.str()).second)
+      return targetError("compiler_target_command_line_unsupported",
+                         "binding repeats a target feature");
+    featureNames.push_back(feature.str());
+  }
+
+  const bool baseE = featureSet.find("e") != featureSet.end();
+  std::string architecture = architecturePrefix.str();
+  architecture += baseE ? "e" : "i";
+  static constexpr llvm::StringLiteral singleLetterOrder[] = {
+      "m", "a", "f", "d", "c", "v"};
+  for (llvm::StringRef feature : singleLetterOrder)
+    if (featureSet.find(feature.str()) != featureSet.end())
+      architecture += feature;
+  for (llvm::StringRef feature : featureNames) {
+    if (feature == "e" ||
+        llvm::is_contained(singleLetterOrder, feature))
+      continue;
+    architecture += "_";
+    architecture += feature;
+  }
+
+  return CompilerTargetCommandLineProjection{
+      targetTriple.str(), std::move(architecture), abiSpelling(backendAbi).str(),
+      codeModelSpelling(selectedCodeModel).str(), backendCpu.str(),
+      llvm::join(backendFeatures, ","),
+      selectedRelocationModel ==
+          fabric::RelocationModel::PositionIndependent};
+}
+
+llvm::Expected<CompilerTargetCommandLineProjection>
+projectCompilerTargetCommandLineImpl(const CompilerTargetBinding &binding) {
+  return projectCompilerTargetCommandLineFields(
+      binding.targetTriple(), binding.objectFormat(), binding.backendFeatures(),
+      binding.backendAbi(), binding.codeModel(), binding.backendCpu(),
+      binding.relocationModel());
+}
 
 llvm::Expected<fabric::InstructionCoreArchitecturalContract>
 resolveProcessorArchitecture(const CompilerProcessorArchitectureRef &processor,
@@ -276,3 +361,28 @@ createCompilerTargetMachine(llvm::StringRef targetTriple,
 }
 
 } // namespace loom::detail
+
+loom::CompilerTargetPolicy loom::portableRiscV64CompilerTargetPolicy() {
+  return detail::portableRiscV64CompilerTargetPolicyImpl();
+}
+
+llvm::Expected<loom::CompilerTargetCommandLineProjection>
+loom::projectCompilerTargetCommandLine(
+    const CompilerTargetBinding &binding) {
+  return detail::projectCompilerTargetCommandLineImpl(binding);
+}
+
+llvm::Expected<loom::CompilerTargetCommandLineProjection>
+loom::projectCompilerTargetCommandLine(
+    const fabric::InstructionCoreArchitecturalContract &architecture,
+    const CompilerTargetPolicy &policy) {
+  auto target = detail::reconstructCompilerTarget(
+      architecture, policy.backendAbi, policy.codeModel,
+      policy.relocationModel, policy.backendCpu);
+  if (!target)
+    return target.takeError();
+  return detail::projectCompilerTargetCommandLineFields(
+      target->targetTriple, target->objectFormat, target->backendFeatures,
+      policy.backendAbi, policy.codeModel, policy.backendCpu,
+      policy.relocationModel);
+}

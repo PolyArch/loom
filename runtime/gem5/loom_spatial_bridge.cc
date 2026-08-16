@@ -1,5 +1,8 @@
 #include "runtime/gem5/loom_spatial_bridge.hh"
 
+#include "Runtime/Gem5SpatialBridgeABI.h"
+#include "Runtime/SpatialInvocationWire.h"
+
 #include "base/addr_range.hh"
 #include "base/logging.hh"
 #include "mem/packet.hh"
@@ -15,18 +18,18 @@
 namespace gem5 {
 namespace {
 
-constexpr Addr statusRegister = 0x00;
-constexpr Addr controlRegister = 0x04;
-constexpr Addr errorRegister = 0x08;
-constexpr Addr sequenceLowRegister = 0x0c;
-constexpr Addr sequenceHighRegister = 0x10;
-constexpr Addr payloadAddressLowRegister = 0x14;
-constexpr Addr payloadAddressHighRegister = 0x18;
-constexpr Addr payloadSizeRegister = 0x1c;
-constexpr Addr completionTickLowRegister = 0x20;
-constexpr Addr completionTickHighRegister = 0x24;
-constexpr std::uint32_t controlStart = 1u << 0;
-constexpr std::uint32_t controlReset = 1u << 1;
+using namespace loom::runtime;
+
+bool launchFitsMessageLimit(std::uint64_t staticBytes,
+                            std::uint64_t invocationBytes,
+                            std::uint64_t limit) {
+  constexpr std::uint64_t envelopeBytes =
+      loom::runtime::gem5BridgeWireHeaderBytes +
+      loom::runtime::gem5SpatialLaunchHeaderBytes;
+  return envelopeBytes <= limit && staticBytes != 0 &&
+         staticBytes <= limit - envelopeBytes &&
+         invocationBytes <= limit - envelopeBytes - staticBytes;
+}
 
 bool readAll(int descriptor, std::uint8_t *bytes, std::size_t size) {
   while (size != 0) {
@@ -65,9 +68,11 @@ LoomSpatialBridge::LoomSpatialBridge(const Params &params)
       pioDelay(params.pio_latency), engineSocketPath(params.engine_socket),
       resultPath(params.result_path),
       maximumMessageBytes(params.max_message_bytes),
-      launchEvent([this] { fetchLaunchPayload(); }, name() + ".launch"),
-      launchPayloadCompletionEvent([this] { startLaunch(); },
-                                   name() + ".launch_payload_completion"),
+      launchEvent([this] { fetchStaticLaunch(); }, name() + ".launch"),
+      staticLaunchCompletionEvent([this] { fetchInvocation(); },
+                                  name() + ".static_launch_completion"),
+      invocationCompletionEvent([this] { startLaunch(); },
+                                name() + ".invocation_completion"),
       dmaCompletionEvent([this] { completeMemoryRequest(); },
                          name() + ".dma_completion"),
       completionEvent([this] { completeInvocation(); },
@@ -96,11 +101,11 @@ std::uint32_t LoomSpatialBridge::status() const {
     return 0;
   case State::Running:
   case State::WaitingForMemory:
-    return statusBusy;
+    return gem5SpatialBridgeBusy;
   case State::Complete:
-    return statusDone;
+    return gem5SpatialBridgeDone;
   case State::Failed:
-    return statusError;
+    return gem5SpatialBridgeFailed;
   }
   panic("unknown LoomSpatialBridge state");
 }
@@ -111,31 +116,40 @@ Tick LoomSpatialBridge::read(PacketPtr packet) {
            "LoomSpatialBridge requires 32-bit MMIO accesses");
   std::uint32_t value = 0;
   switch (offset) {
-  case statusRegister:
+  case gem5SpatialBridgeStatus:
     value = status();
     break;
-  case errorRegister:
+  case gem5SpatialBridgeError:
     value = errorCode;
     break;
-  case sequenceLowRegister:
+  case gem5SpatialBridgeSequenceLow:
     value = static_cast<std::uint32_t>(nextSequence);
     break;
-  case sequenceHighRegister:
+  case gem5SpatialBridgeSequenceHigh:
     value = static_cast<std::uint32_t>(nextSequence >> 32);
     break;
-  case payloadAddressLowRegister:
-    value = static_cast<std::uint32_t>(launchPayloadAddress);
+  case gem5SpatialBridgeStaticLaunchLow:
+    value = static_cast<std::uint32_t>(staticLaunchAddress);
     break;
-  case payloadAddressHighRegister:
-    value = static_cast<std::uint32_t>(launchPayloadAddress >> 32);
+  case gem5SpatialBridgeStaticLaunchHigh:
+    value = static_cast<std::uint32_t>(staticLaunchAddress >> 32);
     break;
-  case payloadSizeRegister:
-    value = launchPayloadSize;
+  case gem5SpatialBridgeStaticLaunchSize:
+    value = staticLaunchSize;
     break;
-  case completionTickLowRegister:
+  case gem5SpatialBridgeInvocationLow:
+    value = static_cast<std::uint32_t>(invocationAddress);
+    break;
+  case gem5SpatialBridgeInvocationHigh:
+    value = static_cast<std::uint32_t>(invocationAddress >> 32);
+    break;
+  case gem5SpatialBridgeInvocationSize:
+    value = invocationSize;
+    break;
+  case gem5SpatialBridgeCompletionTickLow:
     value = static_cast<std::uint32_t>(lastCompletionTick);
     break;
-  case completionTickHighRegister:
+  case gem5SpatialBridgeCompletionTickHigh:
     value = static_cast<std::uint32_t>(lastCompletionTick >> 32);
     break;
   default:
@@ -153,26 +167,45 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
            "LoomSpatialBridge requires 32-bit MMIO accesses");
   const std::uint32_t value =
       static_cast<std::uint32_t>(packet->getUintX(ByteOrder::little));
-  if (offset == payloadAddressLowRegister) {
-    launchPayloadAddress = (launchPayloadAddress & 0xffffffff00000000ULL) |
-                           static_cast<std::uint64_t>(value);
-  } else if (offset == payloadAddressHighRegister) {
-    launchPayloadAddress =
-        (launchPayloadAddress & 0x00000000ffffffffULL) |
-        (static_cast<std::uint64_t>(value) << 32);
-  } else if (offset == payloadSizeRegister) {
-    launchPayloadSize = value;
-  } else if (offset != controlRegister) {
+  const bool descriptorWrite = offset == gem5SpatialBridgeStaticLaunchLow ||
+                               offset == gem5SpatialBridgeStaticLaunchHigh ||
+                               offset == gem5SpatialBridgeStaticLaunchSize ||
+                               offset == gem5SpatialBridgeInvocationLow ||
+                               offset == gem5SpatialBridgeInvocationHigh ||
+                               offset == gem5SpatialBridgeInvocationSize;
+  if (descriptorWrite && state != State::Idle && state != State::Complete) {
+    fail(2, "launch descriptor changed while the bridge is active");
+  } else if (offset == gem5SpatialBridgeStaticLaunchLow) {
+    staticLaunchAddress = (staticLaunchAddress & 0xffffffff00000000ULL) |
+                          static_cast<std::uint64_t>(value);
+  } else if (offset == gem5SpatialBridgeStaticLaunchHigh) {
+    staticLaunchAddress = (staticLaunchAddress & 0x00000000ffffffffULL) |
+                          (static_cast<std::uint64_t>(value) << 32);
+  } else if (offset == gem5SpatialBridgeStaticLaunchSize) {
+    staticLaunchSize = value;
+  } else if (offset == gem5SpatialBridgeInvocationLow) {
+    invocationAddress = (invocationAddress & 0xffffffff00000000ULL) |
+                        static_cast<std::uint64_t>(value);
+  } else if (offset == gem5SpatialBridgeInvocationHigh) {
+    invocationAddress = (invocationAddress & 0x00000000ffffffffULL) |
+                        (static_cast<std::uint64_t>(value) << 32);
+  } else if (offset == gem5SpatialBridgeInvocationSize) {
+    invocationSize = value;
+  } else if (offset != gem5SpatialBridgeControl) {
     fail(2, "write to an unknown MMIO register");
-  } else if (value & controlReset) {
+  } else if (value & gem5SpatialBridgeReset) {
     resetBridge();
-  } else if (value & controlStart) {
+  } else if (value & gem5SpatialBridgeStart) {
     if (state != State::Idle && state != State::Complete)
       fail(3, "launch requested while the bridge is not idle");
-    else if (launchPayloadSize == 0 ||
-             launchPayloadSize > maximumMessageBytes) {
+    else if (!launchFitsMessageLimit(staticLaunchSize, invocationSize,
+                                     maximumMessageBytes)) {
       fail(17, "launch payload size is outside the bridge limit");
     } else {
+      activeStaticLaunchAddress = staticLaunchAddress;
+      activeStaticLaunchSize = staticLaunchSize;
+      activeInvocationAddress = invocationAddress;
+      activeInvocationSize = invocationSize;
       state = State::Running;
       errorCode = 0;
       schedule(&launchEvent, clockEdge());
@@ -182,14 +215,25 @@ Tick LoomSpatialBridge::write(PacketPtr packet) {
   return pioDelay;
 }
 
-void LoomSpatialBridge::fetchLaunchPayload() {
-  if (launchPayloadSize == 0 || launchPayloadSize > maximumMessageBytes) {
-    fail(18, "launch payload descriptor changed before DMA");
+void LoomSpatialBridge::fetchStaticLaunch() {
+  if (activeStaticLaunchSize == 0 ||
+      activeStaticLaunchSize > maximumMessageBytes) {
+    fail(18, "active static launch descriptor is invalid");
     return;
   }
-  launchPayload.assign(launchPayloadSize, 0);
-  dmaRead(launchPayloadAddress, static_cast<int>(launchPayloadSize),
-          &launchPayloadCompletionEvent, launchPayload.data());
+  staticLaunchPayload.assign(activeStaticLaunchSize, 0);
+  dmaRead(activeStaticLaunchAddress, static_cast<int>(activeStaticLaunchSize),
+          &staticLaunchCompletionEvent, staticLaunchPayload.data());
+}
+
+void LoomSpatialBridge::fetchInvocation() {
+  invocationPayload.assign(activeInvocationSize, 0);
+  if (activeInvocationSize == 0) {
+    startLaunch();
+    return;
+  }
+  dmaRead(activeInvocationAddress, static_cast<int>(activeInvocationSize),
+          &invocationCompletionEvent, invocationPayload.data());
 }
 
 bool LoomSpatialBridge::connectEngine() {
@@ -229,20 +273,18 @@ bool LoomSpatialBridge::receiveMessage(
   std::vector<std::uint8_t> bytes(loom::runtime::gem5BridgeWireHeaderBytes);
   if (!readAll(engineSocket, bytes.data(), bytes.size()))
     return false;
-  const std::uint64_t payloadSize = loom::runtime::detail::readGem5BridgeU64(
-      bytes.data() + 16);
+  const std::uint64_t payloadSize =
+      loom::runtime::detail::readGem5BridgeU64(bytes.data() + 16);
   if (payloadSize > maximumMessageBytes - bytes.size() ||
       payloadSize > std::numeric_limits<std::size_t>::max())
     return false;
   const std::size_t headerSize = bytes.size();
   bytes.resize(headerSize + static_cast<std::size_t>(payloadSize));
-  if (payloadSize != 0 &&
-      !readAll(engineSocket, bytes.data() + headerSize,
-               static_cast<std::size_t>(payloadSize)))
+  if (payloadSize != 0 && !readAll(engineSocket, bytes.data() + headerSize,
+                                   static_cast<std::size_t>(payloadSize)))
     return false;
   std::string diagnostic;
-  return loom::runtime::decodeGem5BridgeWireMessage(bytes, message,
-                                                    diagnostic);
+  return loom::runtime::decodeGem5BridgeWireMessage(bytes, message, diagnostic);
 }
 
 void LoomSpatialBridge::startLaunch() {
@@ -250,6 +292,9 @@ void LoomSpatialBridge::startLaunch() {
     fail(4, "could not connect to the Spatial engine");
     return;
   }
+  std::vector<std::uint8_t> launchPayload =
+      loom::runtime::encodeGem5SpatialLaunchEnvelope(
+          {staticLaunchPayload, invocationPayload});
   const loom::runtime::Gem5BridgeMessage launch{
       loom::runtime::Gem5BridgeMessageKind::SpatialLaunch, nextSequence,
       launchPayload};
@@ -314,6 +359,13 @@ void LoomSpatialBridge::consumeEngineMessage() {
     fail(12, diagnostic);
     return;
   }
+  loom::runtime::SpatialInvocationResultWire invocationResult;
+  if (!loom::runtime::decodeSpatialInvocationResultWire(
+          pendingCompletion.result, invocationResult, diagnostic) ||
+      invocationResult.invocation != invocationPayload) {
+    fail(19, "Spatial completion names a foreign invocation");
+    return;
+  }
   schedule(&completionEvent, curTick() + pendingCompletion.readyAfterTicks);
 }
 
@@ -341,9 +393,9 @@ void LoomSpatialBridge::completeMemoryRequest() {
 void LoomSpatialBridge::completeInvocation() {
   lastCompletionTick = curTick();
   const std::vector<std::uint8_t> normalized =
-      loom::runtime::encodeGem5BridgeResult(
-          {pendingCompletion.status, lastCompletionTick, nextSequence,
-           pendingCompletion.result});
+      loom::runtime::encodeGem5BridgeResult({pendingCompletion.status,
+                                             lastCompletionTick, nextSequence,
+                                             pendingCompletion.result});
   std::ofstream output(resultPath, std::ios::binary | std::ios::trunc);
   if (!output) {
     fail(15, "could not create the normalized result");
@@ -370,17 +422,26 @@ void LoomSpatialBridge::resetBridge() {
   panic_if(dmaPending(), "cannot reset LoomSpatialBridge with pending DMA");
   if (launchEvent.scheduled())
     deschedule(&launchEvent);
-  if (launchPayloadCompletionEvent.scheduled())
-    deschedule(&launchPayloadCompletionEvent);
+  if (staticLaunchCompletionEvent.scheduled())
+    deschedule(&staticLaunchCompletionEvent);
+  if (invocationCompletionEvent.scheduled())
+    deschedule(&invocationCompletionEvent);
   if (completionEvent.scheduled())
     deschedule(&completionEvent);
   memoryBuffer.clear();
-  launchPayload.clear();
+  staticLaunchPayload.clear();
+  invocationPayload.clear();
   pendingMemory = {};
   pendingCompletion = {};
   errorCode = 0;
-  launchPayloadAddress = 0;
-  launchPayloadSize = 0;
+  staticLaunchAddress = 0;
+  staticLaunchSize = 0;
+  invocationAddress = 0;
+  invocationSize = 0;
+  activeStaticLaunchAddress = 0;
+  activeStaticLaunchSize = 0;
+  activeInvocationAddress = 0;
+  activeInvocationSize = 0;
   lastCompletionTick = 0;
   state = State::Idle;
 }

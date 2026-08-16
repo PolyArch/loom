@@ -305,14 +305,14 @@ constructed roots use registry-3.0 refs.
 | 2 | `structured_program_functional_comparison` | `0: selected Structured Program Candidate` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
 | 3 | `canonical_dataflow_simulation` | `0: Canonical Dataflow Program` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
 | 4 | `fpa_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with an FPA prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
-| 5 | `hardware_implementation_physical` | `0: exact loom.hardware_implementation 4.0` | both forbidden |
+| 5 | `hardware_implementation_physical` | `0: exact loom.hardware_implementation 4.1` | both forbidden |
 | 6 | `system_simulation` | `0: Deployment`, `1: Gem5 Simulation Binding` | both required; the workload and runtime input are System roots coupled to the exact Deployment |
 | 7 | `cgra_simulation` | `0: Canonical Dataflow Program`, `1: Fabric`, `2: SpatialMapping` | both required; the workload is Spatial, owns the exact Canonical Dataflow Program, and the runtime input reaches that workload |
 | 8 | `simulation_execution_comparison` | `0: reference SimulationExecution`, `1: candidate SimulationExecution` | both forbidden; each execution's exact Request closure must resolve the same workload and runtime input |
 | 9 | `canonical_dataflow_source_functional_comparison` | `0: Canonical Dataflow Program`, `1: selected Structured Program parent` | both required; the workload owns the exact source Structured Program and the runtime input reaches that workload |
 | 10 | `fabric_hardware_analysis` | `0: Fabric` | both forbidden |
 | 11 | `system_runtime_model_parameter_calibration` | `0: exactly one Model Parameter Bundle with a System Runtime prediction view`, `1: one or more completed ground-truth Evaluation Evidence roots` | both forbidden |
-| 12 | `mapped_rtl_simulation` | `0: exact loom.hardware_implementation 4.0`, `1: Deployment` | both required; the workload and runtime input are Spatial roots, and the Deployment resolves their exact Dataflow launch to the exact SpatialCore occurrence implemented by role 0 |
+| 12 | `mapped_rtl_simulation` | `0: exact loom.hardware_implementation 4.1`, `1: Deployment` | both required; the workload and runtime input are Spatial roots, and the Deployment resolves their exact Dataflow launch to the exact SpatialCore occurrence implemented by role 0 |
 
 The matching initial model descriptors are:
 
@@ -2562,7 +2562,7 @@ kinds 0 through 11:
 | 13 | `spatial_topology_rewrite` | finalized `fabric.module` children |
 | 14 | `spatial_microarchitecture_rewrite` | finalized `fabric.module` children |
 | 15 | `system_composition_rewrite` | finalized `fabric.system` children |
-| 16 | `portable_spatial_core_rtl` | one finalized architecture-only portable RTL `loom.hardware_implementation 4.0` child per AccCore occurrence in the input System |
+| 16 | `portable_spatial_core_rtl` | one finalized architecture-only portable RTL `loom.hardware_implementation 4.1` child per AccCore occurrence in the input System |
 | 17 | `fpa_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.fpa", 3.0, 0)` |
 | 18 | `system_runtime_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.system_runtime", 1.0, 0)` |
 | 19 | `joint_dataflow_frontier` | finalized Canonical Dataflow children produced for an explicit bounded Dataflow/System frontier |
@@ -2769,7 +2769,7 @@ a cross-domain set naturally yield application-specific, domain-specific, and
 general designs without a scope-mode enum.
 
 Hardware generator and evaluator descriptors introduced by this contract
-accept or produce exact `loom.hardware_implementation 4.0` slots. A registry
+accept or produce exact `loom.hardware_implementation 4.1` slots. A registry
 must allocate a new descriptor version or exact reference when changing an
 existing slot from an earlier root shape to 4.0 or when changing an existing
 provider from `InProcess` to `ExternalPrepareImport`; it cannot reinterpret a

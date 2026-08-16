@@ -104,7 +104,7 @@ deriveExternalToolSemanticContract(const EvaluationRequest &request) {
 llvm::Expected<EvaluationEvidence> evaluateRequest(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
-  ArtifactImportCacheScope cacheScope;
+  ArtifactImportCacheScope cacheScope(artifactStore, &blobStore);
   RequestVerifier verifier(resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(request))
     return std::move(error);
@@ -161,7 +161,7 @@ llvm::Expected<EvaluationModelPreparation> prepareEvaluationModelInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore,
     const external_tool::ExternalToolPreparationContext &context) {
-  ArtifactImportCacheScope cacheScope;
+  ArtifactImportCacheScope cacheScope(artifactStore, &blobStore);
   RequestVerifier verifier(resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(request))
     return std::move(error);
@@ -199,7 +199,7 @@ llvm::Expected<EvaluationEvidence> importEvaluationModelInvocation(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const external_tool::PreparedExternalToolInvocation &prepared,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
-  ArtifactImportCacheScope cacheScope;
+  ArtifactImportCacheScope cacheScope(artifactStore, &blobStore);
   RequestVerifier verifier(resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(request))
     return std::move(error);

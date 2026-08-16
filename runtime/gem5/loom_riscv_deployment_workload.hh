@@ -30,7 +30,8 @@ public:
   const loader::SymbolTable &symtab(ThreadContext *context) override;
   void writeMemoryObservations();
 
-  bool dispatch(std::uint64_t targetOrdinal, Addr completionAddress);
+  bool dispatch(std::uint64_t targetOrdinal, Addr completionAddress,
+                Addr invocationAddress, std::uint64_t invocationSize);
   CompletionState complete(std::uint64_t targetOrdinal);
   std::size_t targetCount() const { return targets.size(); }
 
@@ -49,6 +50,9 @@ private:
   const Addr hostDispatchAddress;
   const Addr hostMemoryTableAddress;
   const std::uint64_t hostMemoryTableEntries;
+  const Addr hostResultAddress;
+  const std::uint64_t hostResultSize;
+  const Addr hostReturnAddress;
   const Addr stackBase;
   const Addr stackStride;
   std::vector<std::unique_ptr<loader::ObjectFile>> instructionImages;

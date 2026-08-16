@@ -248,15 +248,23 @@ llvm::Expected<ArtifactRootReference>
 simulationExecutionRequestReference(const ArtifactRootReference &reference,
                                     const ArtifactStore &store);
 
+llvm::Expected<std::vector<std::uint8_t>>
+encodeSpatialEngineBoundaryResult(const SpatialEngineBoundaryResult &result,
+                                  const ArtifactRootReference &workload,
+                                  const ArtifactRootReference &runtimeInput,
+                                  const ArtifactStore &store);
+
 llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
     const SpatialEngineBoundaryResult &result,
-    const ArtifactRootReference &workload,
+    const ImportedSpatialSimulationInputs &inputs);
+
+llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
+    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &workload,
     const ArtifactRootReference &runtimeInput, const ArtifactStore &store);
 
 llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
     llvm::ArrayRef<std::uint8_t> bytes,
-    const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ArtifactStore &store);
+    const ImportedSpatialSimulationInputs &inputs);
 
 } // namespace loom::sim
 

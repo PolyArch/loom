@@ -70,6 +70,22 @@ validateThreadEntries(llvm::ArrayRef<ThreadEntryBinding> entries,
       return binaryError("instruction_core_binary_missing_entry",
                          "root launch selects absent binary entry ordinal " +
                              llvm::Twine(entry.entryOrdinal));
+    if (entry.spatialInvocation) {
+      auto graph =
+          view.resolve(entry.spatialInvocation->graph.staticGraphLaunch);
+      if (!graph)
+        return binaryError("instruction_core_binary_invalid_invocation",
+                           llvm::toString(graph.takeError()));
+      auto rooted = view.projectWholeRootedGraphLogicalDomain(
+          entry.spatialInvocation->graph);
+      if (!rooted)
+        return binaryError("instruction_core_binary_invalid_invocation",
+                           llvm::toString(rooted.takeError()));
+      if (!*rooted)
+        return binaryError(
+            "instruction_core_binary_invalid_invocation",
+            "Spatial invocation graph has no exact rooted logical domain");
+    }
   }
   return llvm::Error::success();
 }
@@ -201,6 +217,15 @@ buildValidatedBinary(detail::DecodedInstructionCoreBinaryFields fields,
 
 llvm::Expected<std::uint64_t>
 InstructionCoreBinary::threadEntry(dataflow::RootThreadLaunchRef root) const {
+  auto binding = threadEntryBinding(root);
+  if (!binding)
+    return binding.takeError();
+  return (*binding)->entryOrdinal;
+}
+
+llvm::Expected<const ThreadEntryBinding *>
+InstructionCoreBinary::threadEntryBinding(
+    dataflow::RootThreadLaunchRef root) const {
   if (root.artifact != canonicalDataflow_.artifact)
     return binaryError("instruction_core_binary_foreign_root",
                        "root launch belongs to another Dataflow artifact");
@@ -213,7 +238,7 @@ InstructionCoreBinary::threadEntry(dataflow::RootThreadLaunchRef root) const {
       found->rootThreadLaunch.entity != root.entity)
     return binaryError("instruction_core_binary_root_unbound",
                        "binary does not implement the root launch");
-  return found->entryOrdinal;
+  return &*found;
 }
 
 llvm::Expected<InstructionCoreBinary>
@@ -311,7 +336,7 @@ importInstructionCoreBinary(const ArtifactRootReference &reference,
   if (reference.schemaIdentity != instructionCoreBinarySchema.identity ||
       reference.schemaVersion != instructionCoreBinarySchema.version)
     return binaryError("instruction_core_binary_schema_unsupported",
-                       "reference is not loom.instruction_core_binary 1.0");
+                       "reference is not loom.instruction_core_binary 1.1");
   auto bytes = artifacts.get(reference);
   if (!bytes)
     return bytes.takeError();

@@ -141,6 +141,7 @@ targetBinding(llvm::StringRef test, const loom::ArtifactStore &store) {
 struct DataflowFixture final {
   loom::ArtifactRootReference reference;
   std::vector<dataflow::RootThreadLaunchRef> roots;
+  std::vector<dataflow::RootedGraphLaunchRef> graphs;
 };
 
 DataflowFixture publishProgram(llvm::StringRef test,
@@ -184,9 +185,18 @@ module {
     roots.push_back(launch.ref);
   require(test, roots.size() == 2,
           "Dataflow fixture did not produce two distinct root launches");
+  std::vector<dataflow::RootedGraphLaunchRef> graphs;
+  view.forEachRootedGraphLaunch(
+      [&](dataflow::RootedGraphLaunchRef graph) { graphs.push_back(graph); });
+  llvm::sort(graphs, [](const auto &lhs, const auto &rhs) {
+    return lhs.rootThreadLaunch.entity.value() <
+           rhs.rootThreadLaunch.entity.value();
+  });
+  require(test, graphs.size() == roots.size(),
+          "Dataflow fixture did not produce one graph per root launch");
   auto reference =
       take(test, dataflow::publishCanonicalDataflow(artifact, store));
-  return {std::move(reference), std::move(roots)};
+  return {std::move(reference), std::move(roots), std::move(graphs)};
 }
 
 void writeBytes(llvm::StringRef test, llvm::StringRef path,
@@ -272,7 +282,10 @@ void exactRootedEntriesRoundTrip() {
   auto finalized =
       take(test, loom::finalizeInstructionCoreBinary(
                      draft(dataflow, target, executable,
-                           {{dataflow.roots[1], 0}, {dataflow.roots[0], 0}}),
+                           {{dataflow.roots[1], 0,
+                             loom::ThreadEntrySpatialInvocationBinding{
+                                 dataflow.graphs[1]}},
+                            {dataflow.roots[0], 0, {}}}),
                      artifacts, blobs));
   auto imported = take(test, loom::importInstructionCoreBinary(
                                  finalized.reference(), artifacts, blobs));
@@ -282,6 +295,12 @@ void exactRootedEntriesRoundTrip() {
           take(test, imported.binary().threadEntry(dataflow.roots[0])) == 0 &&
               take(test, imported.binary().threadEntry(dataflow.roots[1])) == 0,
           "two root launches did not share the exact binary entry");
+  const loom::ThreadEntryBinding *dynamicEntry =
+      take(test, imported.binary().threadEntryBinding(dataflow.roots[1]));
+  require(test,
+          dynamicEntry->spatialInvocation &&
+              dynamicEntry->spatialInvocation->graph == dataflow.graphs[1],
+          "strict import lost the entry Spatial invocation contract");
   require(test, !imported.binary().loadSegments().empty(),
           "real executable produced no canonical load segments");
   bool executableSegment = false;
@@ -316,6 +335,14 @@ void malformedRootRelationsFailClosed() {
                   draft(selected, target, executable, {{foreign.roots[0], 0}}),
                   artifacts, blobs),
               "instruction_core_binary_foreign_root");
+  expectError(test,
+              loom::finalizeInstructionCoreBinary(
+                  draft(selected, target, executable,
+                        {{selected.roots[0], 0,
+                          loom::ThreadEntrySpatialInvocationBinding{
+                              selected.graphs[1]}}}),
+                  artifacts, blobs),
+              "instruction_core_binary_invocation_root_mismatch");
   expectError(test,
               loom::finalizeInstructionCoreBinary(
                   draft(selected, target, executable,

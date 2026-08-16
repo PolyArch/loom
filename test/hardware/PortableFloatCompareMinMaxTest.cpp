@@ -175,7 +175,7 @@ std::string fabricSource(FamilyKind family, FixtureKind kind) {
   const unsigned resultWidth = portWidth;
   const llvm::StringRef schemas =
       scalarSingleton || nnan ? "@arith.cmpf"
-      : vectorSingleton ? "@arith.minimumf"
+      : vectorSingleton       ? "@arith.minimumf"
                         : "@arith.cmpf, @arith.minimumf, @arith.maximumf, "
                           "@arith.minnumf, @arith.maxnumf";
   const llvm::StringRef formats =
@@ -525,7 +525,12 @@ std::vector<Mode> projectedModes(llvm::StringRef test,
         resolved.configurationFieldSchema.front().ordinal);
     require(test, field != nullptr,
             "configured compare/minmax field is absent from ABI2");
-    codebook = std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);
+    const ConfigurationEncodingRelation *encodingRelation =
+        abi.findEncodingRelation(*field);
+    require(test, encodingRelation != nullptr,
+            "configured compare/minmax field has no encoding relation");
+    codebook = std::get_if<FiniteCodebookEncoding>(
+        &encodingRelation->semanticEncoding);
     require(test, codebook != nullptr,
             "configured compare/minmax field is not a finite codebook");
   }
@@ -567,14 +572,18 @@ std::size_t inactiveMode(llvm::StringRef test, llvm::ArrayRef<Mode> modes,
                              resolved.configurationFieldSchema.front().ordinal);
   require(test, field != nullptr,
           "configured compare/minmax field is absent from ABI2");
+  const ConfigurationEncodingRelation *encodingRelation =
+      abi.findEncodingRelation(*field);
+  require(test, encodingRelation != nullptr,
+          "configured compare/minmax field has no encoding relation");
   const auto *codebook =
-      std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);
+      std::get_if<FiniteCodebookEncoding>(&encodingRelation->semanticEncoding);
   require(test, codebook != nullptr,
           "configured compare/minmax field is not a codebook");
   const auto entry = llvm::find_if(
       codebook->entries, [&](const FiniteCodebookEntry &candidate) {
         return llvm::ArrayRef<std::uint8_t>(candidate.semanticValue)
-            .equals(field->inactiveValue);
+            .equals(encodingRelation->inactiveValue);
       });
   require(test, entry != codebook->entries.end(),
           "ABI2 inactive value is outside the behavior domain");

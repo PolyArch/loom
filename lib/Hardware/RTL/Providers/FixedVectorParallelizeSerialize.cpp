@@ -284,8 +284,8 @@ deriveModes(FabricOperationProviderRequest &request,
     return invalid("configured adapter does not have one finite field");
   const auto &semanticField =
       request.capability.configurationFieldSchema.front();
-  const ConfigurationFieldEncoding *field =
-      request.configurationAbi.findOperationField(request.occurrence,
+  const ConfigurationEncodingRelation *field =
+      request.configurationAbi.findOperationEncodingRelation(request.occurrence,
                                                   semanticField.ordinal);
   if (!field)
     return invalid("configured field is absent from the ABI");

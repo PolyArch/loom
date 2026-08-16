@@ -467,14 +467,15 @@ validateShuffle(llvm::ArrayRef<std::uint8_t> value,
   return llvm::Error::success();
 }
 
-bool hasReachableSliceValue(
+std::optional<std::vector<std::uint8_t>> findReachableSliceValue(
     const FixedVectorSliceAlignMergeParams &params,
     ::dataflow::OperationSchemaId schema,
     llvm::ArrayRef<::dataflow::OperationSchemaId> enabledSchemas,
     llvm::ArrayRef<std::uint32_t> physicalInputWidths,
     llvm::ArrayRef<std::uint32_t> physicalResultWidths,
     const FixedVectorSliceAlignMergeConfigurationLayout &layout) {
-  const auto tryWidth = [&](std::uint32_t width) {
+  const auto tryWidth =
+      [&](std::uint32_t width) -> std::optional<std::vector<std::uint8_t>> {
     std::vector<std::uint8_t> value = emptyPackedValue(layout.encodedBitCount);
     if (layout.encodesMode)
       writePackedField(
@@ -486,19 +487,19 @@ bool hasReachableSliceValue(
         validateSlice(value, params, enabledSchemas, physicalInputWidths,
                       physicalResultWidths, layout);
     if (!error)
-      return true;
+      return value;
     llvm::consumeError(std::move(error));
-    return false;
+    return std::nullopt;
   };
   for (IntegerWidth width : integerWidthDomain)
-    if (params.integerElementWidths.contains(width) &&
-        tryWidth(getBitWidth(width)))
-      return true;
+    if (params.integerElementWidths.contains(width))
+      if (auto value = tryWidth(getBitWidth(width)))
+        return value;
   for (FloatFormat format : floatFormatDomain)
-    if (params.floatElementFormats.contains(format) &&
-        tryWidth(getBitWidth(format)))
-      return true;
-  return false;
+    if (params.floatElementFormats.contains(format))
+      if (auto value = tryWidth(getBitWidth(format)))
+        return value;
+  return std::nullopt;
 }
 
 llvm::Expected<FiniteImplementationFamilyBehaviorPoint>
@@ -538,31 +539,32 @@ makeZeroBitSliceWitness(const FixedVectorSliceAlignMergeParams &params,
       std::move(resultPorts));
 }
 
-bool hasReachableShuffleValue(
-    const FixedVectorShuffleParams &params,
-    llvm::ArrayRef<std::uint32_t> physicalInputWidths,
-    llvm::ArrayRef<std::uint32_t> physicalResultWidths,
-    const FixedVectorShuffleConfigurationLayout &layout) {
-  const auto tryWidth = [&](std::uint32_t width) {
+std::optional<std::vector<std::uint8_t>>
+findReachableShuffleValue(const FixedVectorShuffleParams &params,
+                          llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+                          llvm::ArrayRef<std::uint32_t> physicalResultWidths,
+                          const FixedVectorShuffleConfigurationLayout &layout) {
+  const auto tryWidth =
+      [&](std::uint32_t width) -> std::optional<std::vector<std::uint8_t>> {
     std::vector<std::uint8_t> value = emptyPackedValue(layout.encodedBitCount);
     writePackedField(value, layout.blockWidthBitOffset,
                      layout.blockWidthBitCount, width - 1);
     llvm::Error error = validateShuffle(value, params, physicalInputWidths,
                                         physicalResultWidths, layout);
     if (!error)
-      return true;
+      return value;
     llvm::consumeError(std::move(error));
-    return false;
+    return std::nullopt;
   };
   for (IntegerWidth width : integerWidthDomain)
-    if (params.integerElementWidths.contains(width) &&
-        tryWidth(getBitWidth(width)))
-      return true;
+    if (params.integerElementWidths.contains(width))
+      if (auto value = tryWidth(getBitWidth(width)))
+        return value;
   for (FloatFormat format : floatFormatDomain)
-    if (params.floatElementFormats.contains(format) &&
-        tryWidth(getBitWidth(format)))
-      return true;
-  return false;
+    if (params.floatElementFormats.contains(format))
+      if (auto value = tryWidth(getBitWidth(format)))
+        return value;
+  return std::nullopt;
 }
 
 llvm::Expected<::loom::CanonicalSemanticBytes>
@@ -628,7 +630,8 @@ llvm::Error fabric::detail::validateImplementationFamilyBehaviorPoint(
     llvm::ArrayRef<std::uint32_t> physicalResultWidths,
     std::optional<ResolvedIndexWidth> resolvedIndexWidth) {
   if (llvm::Error error = verifyImplementationFamilyPortCorrespondence(
-          family, actor, operandPorts, resultPorts))
+          family, params, actor, operandPorts, resultPorts, physicalInputWidths,
+          physicalResultWidths))
     return error;
   const TypedAdmissionProviderId provider =
       implementationFamily(family).typedAdmissionProvider;
@@ -779,6 +782,7 @@ fabric::resolveFabricOpSemanticFieldRelation(
 
   std::optional<FixedVectorSliceAlignMergeConfigurationLayout> sliceLayout;
   std::optional<FixedVectorShuffleConfigurationLayout> shuffleLayout;
+  std::optional<::loom::CanonicalSemanticBytes> canonicalInactiveValue;
   std::uint32_t directBitCount = 0;
   bool direct = false;
   if (*owner == BehaviorRelationOwner::Direct &&
@@ -792,6 +796,8 @@ fabric::resolveFabricOpSemanticFieldRelation(
         std::min(constant->maxPayloadBits, physicalResultWidths.front());
     if (directBitCount == 0)
       return reject("constant direct carrier has zero width");
+    canonicalInactiveValue =
+        ::loom::CanonicalSemanticBytes(emptyPackedValue(directBitCount));
     direct = true;
   } else if (*owner == BehaviorRelationOwner::Direct &&
              family == ImplementationFamilyId::FixedVectorSliceAlignMerge) {
@@ -804,12 +810,20 @@ fabric::resolveFabricOpSemanticFieldRelation(
       return resolvedLayout.takeError();
     sliceLayout = std::move(*resolvedLayout);
     directBitCount = sliceLayout->encodedBitCount;
-    for (::dataflow::OperationSchemaId schema : enabledSchemas)
-      if (!hasReachableSliceValue(*slice, schema, enabledSchemas,
-                                  physicalInputWidths, physicalResultWidths,
-                                  *sliceLayout))
+    for (::dataflow::OperationSchemaId schema : enabledSchemas) {
+      auto value = findReachableSliceValue(*slice, schema, enabledSchemas,
+                                           physicalInputWidths,
+                                           physicalResultWidths, *sliceLayout);
+      if (!value)
         return reject("vector slice enabled schema has no physically "
                       "reachable behavior");
+      if (!canonicalInactiveValue ||
+          std::lexicographical_compare(value->begin(), value->end(),
+                                       canonicalInactiveValue->bytes().begin(),
+                                       canonicalInactiveValue->bytes().end()))
+        canonicalInactiveValue =
+            ::loom::CanonicalSemanticBytes(std::move(*value));
+    }
     direct = true;
   } else if (*owner == BehaviorRelationOwner::Direct &&
              family == ImplementationFamilyId::FixedVectorShuffle) {
@@ -822,10 +836,12 @@ fabric::resolveFabricOpSemanticFieldRelation(
       return resolvedLayout.takeError();
     shuffleLayout = std::move(*resolvedLayout);
     directBitCount = shuffleLayout->encodedBitCount;
-    if (!hasReachableShuffleValue(*shuffle, physicalInputWidths,
-                                  physicalResultWidths, *shuffleLayout))
+    auto value = findReachableShuffleValue(
+        *shuffle, physicalInputWidths, physicalResultWidths, *shuffleLayout);
+    if (!value)
       return reject("vector shuffle capability has no physically reachable "
                     "behavior");
+    canonicalInactiveValue = ::loom::CanonicalSemanticBytes(std::move(*value));
     direct = true;
   }
 
@@ -849,10 +865,13 @@ fabric::resolveFabricOpSemanticFieldRelation(
                                    physicalInputWidths.end()),
         std::vector<std::uint32_t>(physicalResultWidths.begin(),
                                    physicalResultWidths.end()),
-        std::move(domain), 0, std::move(sliceLayout), std::move(shuffleLayout));
+        std::move(domain), 0, std::nullopt, std::move(sliceLayout),
+        std::move(shuffleLayout));
   }
 
-  if (direct)
+  if (direct) {
+    if (!canonicalInactiveValue)
+      return reject("direct behavior relation has no canonical inactive value");
     return FabricOpSemanticFieldRelation(
         FabricOpSemanticFieldRelationKind::Direct, family, params,
         std::vector<::dataflow::OperationSchemaId>(enabledSchemas.begin(),
@@ -861,7 +880,9 @@ fabric::resolveFabricOpSemanticFieldRelation(
                                    physicalInputWidths.end()),
         std::vector<std::uint32_t>(physicalResultWidths.begin(),
                                    physicalResultWidths.end()),
-        {}, directBitCount, std::move(sliceLayout), std::move(shuffleLayout));
+        {}, directBitCount, std::move(canonicalInactiveValue),
+        std::move(sliceLayout), std::move(shuffleLayout));
+  }
 
   auto domain = [&]()
       -> llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>> {
@@ -936,6 +957,9 @@ fabric::resolveFabricOpSemanticFieldRelation(
     kind = FabricOpSemanticFieldRelationKind::None;
     reachable.front().semanticConfiguration = std::nullopt;
   }
+  std::optional<::loom::CanonicalSemanticBytes> finiteInactive;
+  if (kind == FabricOpSemanticFieldRelationKind::Finite)
+    finiteInactive = *reachable.front().semanticConfiguration;
   return FabricOpSemanticFieldRelation(
       kind, family, params,
       std::vector<::dataflow::OperationSchemaId>(enabledSchemas.begin(),
@@ -944,5 +968,6 @@ fabric::resolveFabricOpSemanticFieldRelation(
                                  physicalInputWidths.end()),
       std::vector<std::uint32_t>(physicalResultWidths.begin(),
                                  physicalResultWidths.end()),
-      std::move(reachable), 0, std::nullopt, std::nullopt);
+      std::move(reachable), 0, std::move(finiteInactive), std::nullopt,
+      std::nullopt);
 }

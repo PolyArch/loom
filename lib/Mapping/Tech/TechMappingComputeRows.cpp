@@ -81,14 +81,14 @@ physicalPorts(const ::loom::fabric::ResolvedFabricOpCapabilityView &capability,
   return result;
 }
 
-std::vector<std::uint64_t> physicalPortOrdinals(
+std::vector<std::uint32_t> physicalPortWidths(
     const ::loom::fabric::ResolvedFabricOpCapabilityView &capability,
     Direction direction) {
   const auto ports = physicalPorts(capability, direction);
-  std::vector<std::uint64_t> result;
+  std::vector<std::uint32_t> result;
   result.reserve(ports.size());
   for (const auto *port : ports)
-    result.push_back(port->reference.ordinal);
+    result.push_back(port->payloadWidthBits);
   return result;
 }
 
@@ -108,12 +108,13 @@ llvm::Error enumerateActorOptions(
       ::dataflow::projectRegisteredActorSchemaProjection(actor.op);
   if (!projection)
     return projection.takeError();
-  const std::vector<std::uint64_t> inputPorts =
-      physicalPortOrdinals(*capability, Direction::Input);
-  const std::vector<std::uint64_t> resultPorts =
-      physicalPortOrdinals(*capability, Direction::Output);
+  const std::vector<std::uint32_t> inputWidths =
+      physicalPortWidths(*capability, Direction::Input);
+  const std::vector<std::uint32_t> resultWidths =
+      physicalPortWidths(*capability, Direction::Output);
   return ::fabric::forEachImplementationFamilyPortCorrespondence(
-      capability->implementationFamily, *projection, inputPorts, resultPorts,
+      capability->implementationFamily, capability->parameterizedCapability,
+      *projection, inputWidths, resultWidths,
       [&](llvm::ArrayRef<std::uint64_t> operandMap,
           llvm::ArrayRef<std::uint64_t> resultMap) {
         return emit(TechComputeActorView{

@@ -44,6 +44,12 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     const JointDesignPolicy &policy,
     const ResolvedConfig &baseConfig, const ArtifactStore &artifactStore);
 
+/// Projects the complete persistent semantic input closure of an authored
+/// joint plan. The result includes frontier workloads and every exact Artifact
+/// binding embedded in the resolved plan, and is canonical and unique.
+std::vector<ArtifactRootReference>
+projectJointDesignSemanticInputs(const JointDesignExplorationPlan &plan);
+
 struct JointMappedPair final {
   JointDesignPair pair;
   std::vector<ArtifactRootReference> systemMappings;

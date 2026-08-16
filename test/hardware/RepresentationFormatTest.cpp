@@ -50,7 +50,7 @@ expectedBinaryReference(RepresentationFormatKind kind) {
   std::vector<std::uint8_t> expected{0, 0, 0, 0, 0, 0, 0, 35};
   expected.insert(expected.end(), identity.bytes_begin(), identity.bytes_end());
   const std::vector<std::uint8_t> suffix{
-      0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, static_cast<std::uint8_t>(kind),
+      0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, static_cast<std::uint8_t>(kind),
   };
   expected.insert(expected.end(), suffix.begin(), suffix.end());
   return expected;
@@ -69,6 +69,8 @@ void exactBinaryCodecIsClosed() {
   const auto defPhysical =
       take(__func__, RepresentationFormatDescriptorRef::get(
                          RepresentationFormatKind::IndexedDefPhysical));
+  const auto model = take(__func__, RepresentationFormatDescriptorRef::get(
+                                        RepresentationFormatKind::FabricModel));
 
   require(__func__,
           hardwareRepresentationFormatRegistry.identity ==
@@ -76,7 +78,7 @@ void exactBinaryCodecIsClosed() {
           "registry identity changed");
   require(__func__,
           hardwareRepresentationFormatRegistry.version ==
-              loom::SchemaVersion{2, 2},
+              loom::SchemaVersion{2, 3},
           "registry version changed");
   require(__func__, rtl.kind() == RepresentationFormatKind::SystemVerilogRtl,
           "RTL kind changed");
@@ -90,6 +92,8 @@ void exactBinaryCodecIsClosed() {
   require(__func__,
           defPhysical.kind() == RepresentationFormatKind::IndexedDefPhysical,
           "indexed-DEF-physical kind changed");
+  require(__func__, model.kind() == RepresentationFormatKind::FabricModel,
+          "FabricModel kind changed");
 
   const std::vector<std::uint8_t> rtlBytes =
       encodeRepresentationFormatDescriptorRef(rtl);
@@ -99,6 +103,8 @@ void exactBinaryCodecIsClosed() {
       encodeRepresentationFormatDescriptorRef(physical);
   const std::vector<std::uint8_t> defPhysicalBytes =
       encodeRepresentationFormatDescriptorRef(defPhysical);
+  const std::vector<std::uint8_t> modelBytes =
+      encodeRepresentationFormatDescriptorRef(model);
   require(__func__, rtlBytes == expectedBinaryReference(rtl.kind()),
           "RTL reference bytes changed");
   require(__func__, netlistBytes == expectedBinaryReference(netlist.kind()),
@@ -108,6 +114,8 @@ void exactBinaryCodecIsClosed() {
   require(__func__,
           defPhysicalBytes == expectedBinaryReference(defPhysical.kind()),
           "indexed-DEF-physical reference bytes changed");
+  require(__func__, modelBytes == expectedBinaryReference(model.kind()),
+          "FabricModel reference bytes changed");
   require(__func__, rtlBytes.size() == 55,
           "reference framing has the wrong size");
   require(__func__,
@@ -126,10 +134,14 @@ void exactBinaryCodecIsClosed() {
           take(__func__, decodeRepresentationFormatDescriptorRef(
                              defPhysicalBytes)) == defPhysical,
           "indexed-DEF-physical binary reference did not round-trip");
+  require(__func__,
+          take(__func__, decodeRepresentationFormatDescriptorRef(modelBytes)) ==
+              model,
+          "FabricModel binary reference did not round-trip");
 
   expectError(__func__,
               RepresentationFormatDescriptorRef::get(
-                  static_cast<RepresentationFormatKind>(4)),
+                  static_cast<RepresentationFormatKind>(5)),
               "kind");
 
   for (std::size_t size = 0; size < rtlBytes.size(); ++size)
@@ -154,7 +166,7 @@ void exactBinaryCodecIsClosed() {
               "version");
 
   std::vector<std::uint8_t> wrongKind = rtlBytes;
-  wrongKind[54] = 4;
+  wrongKind[54] = 5;
   expectError(__func__, decodeRepresentationFormatDescriptorRef(wrongKind),
               "kind");
 }
@@ -172,14 +184,18 @@ void exactJsonCodecIsClosed() {
   const auto defPhysical =
       take(__func__, RepresentationFormatDescriptorRef::get(
                          RepresentationFormatKind::IndexedDefPhysical));
+  const auto model = take(__func__, RepresentationFormatDescriptorRef::get(
+                                        RepresentationFormatKind::FabricModel));
   constexpr llvm::StringLiteral rtlJson =
-      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":0})json";
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":3,"kind":0})json";
   constexpr llvm::StringLiteral netlistJson =
-      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":1})json";
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":3,"kind":1})json";
   constexpr llvm::StringLiteral physicalJson =
-      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":2})json";
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":3,"kind":2})json";
   constexpr llvm::StringLiteral defPhysicalJson =
-      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":3})json";
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":3,"kind":3})json";
+  constexpr llvm::StringLiteral modelJson =
+      R"json({"registry":"loom.hardware_representation_format","major":2,"minor":3,"kind":4})json";
 
   require(__func__,
           serializeRepresentationFormatDescriptorRefJson(rtl) == rtlJson,
@@ -197,6 +213,9 @@ void exactJsonCodecIsClosed() {
               defPhysicalJson,
           "indexed-DEF-physical canonical JSON changed");
   require(__func__,
+          serializeRepresentationFormatDescriptorRefJson(model) == modelJson,
+          "FabricModel canonical JSON changed");
+  require(__func__,
           take(__func__, parseRepresentationFormatDescriptorRefJson(rtlJson)) ==
               rtl,
           "RTL JSON reference did not round-trip");
@@ -212,21 +231,25 @@ void exactJsonCodecIsClosed() {
           take(__func__, parseRepresentationFormatDescriptorRefJson(
                              defPhysicalJson)) == defPhysical,
           "indexed-DEF-physical JSON reference did not round-trip");
+  require(__func__,
+          take(__func__, parseRepresentationFormatDescriptorRefJson(
+                             modelJson)) == model,
+          "FabricModel JSON reference did not round-trip");
 
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"major":2,"registry":"loom.hardware_representation_format","minor":2,"kind":0})json"),
+          R"json({"major":2,"registry":"loom.hardware_representation_format","minor":3,"kind":0})json"),
       "canonical");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":0,"name":"sv"})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":3,"kind":0,"name":"sv"})json"),
       "field");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"other","major":2,"minor":2,"kind":0})json"),
+          R"json({"registry":"other","major":2,"minor":3,"kind":0})json"),
       "registry");
   expectError(
       __func__,
@@ -241,12 +264,12 @@ void exactJsonCodecIsClosed() {
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":4})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":3,"kind":5})json"),
       "kind");
   expectError(
       __func__,
       parseRepresentationFormatDescriptorRefJson(
-          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":2,"kind":-1})json"),
+          R"json({"registry":"loom.hardware_representation_format","major":2,"minor":3,"kind":-1})json"),
       "unsigned");
 }
 
@@ -292,6 +315,9 @@ void staticDescriptorMetadataIsClosedWithoutCirct() {
   const RepresentationFormatDescriptorRef defPhysicalRef =
       take(__func__, RepresentationFormatDescriptorRef::get(
                          RepresentationFormatKind::IndexedDefPhysical));
+  const RepresentationFormatDescriptorRef modelRef =
+      take(__func__, RepresentationFormatDescriptorRef::get(
+                         RepresentationFormatKind::FabricModel));
   const RepresentationFormatDescriptor &rtl =
       getRepresentationFormatDescriptor(rtlRef);
   const RepresentationFormatDescriptor &gate =
@@ -300,11 +326,14 @@ void staticDescriptorMetadataIsClosedWithoutCirct() {
       getRepresentationFormatDescriptor(physicalRef);
   const RepresentationFormatDescriptor &defPhysical =
       getRepresentationFormatDescriptor(defPhysicalRef);
+  const RepresentationFormatDescriptor &model =
+      getRepresentationFormatDescriptor(modelRef);
 
   require(__func__,
           rtl.formatRef == rtlRef && gate.formatRef == gateRef &&
               physical.formatRef == physicalRef &&
-              defPhysical.formatRef == defPhysicalRef,
+              defPhysical.formatRef == defPhysicalRef &&
+              model.formatRef == modelRef,
           "static descriptor changed its exact format reference");
   const RepresentationRootAdmission &rtlAdmission = requireAdmission(
       __func__, rtl, RepresentationRootVariant::Rtl, std::nullopt);
@@ -361,6 +390,16 @@ void staticDescriptorMetadataIsClosedWithoutCirct() {
               defPhysical.languageProfile ==
                   std::optional(RepresentationLanguageProfile::Ieee1364_2005),
           "indexed-DEF-physical descriptor metadata changed");
+  const RepresentationRootAdmission &modelAdmission = requireAdmission(
+      __func__, model, RepresentationRootVariant::FabricModel, std::nullopt);
+  require(__func__, !model.frontendSourceRole && !model.languageProfile &&
+                        model.admittedRoots.size() == 1 &&
+                        modelAdmission.exactRootKind ==
+                            RepresentationObjectKind::Model &&
+                        modelAdmission.payloadContracts.empty(),
+          "FabricModel descriptor metadata changed");
+  requireObjectKinds(__func__, modelAdmission,
+                     {RepresentationObjectKind::Model});
 
   const auto opaque = [](PayloadRole role, std::uint64_t minimum,
                          std::optional<std::uint64_t> maximum = std::nullopt) {

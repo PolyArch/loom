@@ -142,9 +142,10 @@ makeSemanticFixture(const std::filesystem::path &fixtureRoot,
   auto module = makeModule(artifacts);
   auto system = take(
       __func__, hardware::test::makeSingleSpatialCoreSystem(module, artifacts));
-  auto abi = take(
-      __func__, finalizeConfigurationABI(
-                    ConfigurationABIDraft{system.reference(), {}}, artifacts));
+  auto abi =
+      take(__func__,
+           finalizeConfigurationABI(
+               ConfigurationABIDraft{system.reference(), {}, {}}, artifacts));
   auto platform =
       take(__func__, platform::finalizeImplementationPlatform(
                          platform::ImplementationPlatformDraft{
@@ -200,22 +201,21 @@ makeSemanticFixture(const std::filesystem::path &fixtureRoot,
            createImplementationRepresentationRoot(
                RepresentationRootVariant::Rtl, std::nullopt, format,
                {RepresentationObjectKind::Module, "top"}, std::move(payloads)));
-  auto implementation =
-      take(__func__,
-           finalizeHardwareImplementation(
-               HardwareImplementationDraft{
-                   system.reference(),
-                   take(__func__,
-                        hardware::test::requireSingleSpatialCoreOccurrence(
-                            system)),
-                   abi.reference(),
-                   std::move(representation),
-                   platform.reference(),
-                   {},
-                   {{{RepresentationObjectKind::Port, "top.a"}, std::nullopt}},
-                   {},
-                   std::move(externalBindings)},
-               contracts, artifacts, blobs));
+  auto implementation = take(
+      __func__,
+      finalizeHardwareImplementation(
+          HardwareImplementationDraft{
+              system.reference(),
+              take(__func__,
+                   hardware::test::requireSingleSpatialCoreOccurrence(system)),
+              abi.reference(),
+              std::move(representation),
+              platform.reference(),
+              {},
+              {{{RepresentationObjectKind::Port, "top.a"}, std::nullopt}},
+              {},
+              std::move(externalBindings)},
+          contracts, artifacts, blobs));
 
   const std::string liberty = readFile(fixtureRoot / "standard-cell.lib");
   const platform::TechnologyCornerRef corner{platform.reference().artifact,

@@ -369,8 +369,9 @@ enumerateCandidates(ImplementationFamilyId family,
                   family, &params, described->actor))
             return error;
           if (llvm::Error error = verifyImplementationFamilyPortCorrespondence(
-                  family, described->actor, described->operandPorts,
-                  described->resultPorts))
+                  family, params, described->actor, described->operandPorts,
+                  described->resultPorts, physicalInputWidths,
+                  physicalResultWidths))
             return error;
           auto reachable = isPhysicallyReachable(
               *described, physicalInputWidths, physicalResultWidths);

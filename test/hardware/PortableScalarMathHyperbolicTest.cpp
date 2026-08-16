@@ -517,8 +517,12 @@ std::vector<Mode> modes(llvm::StringRef test, const FabricFixture &fixture,
       fixture.physicalOccurrence,
       resolved.configurationFieldSchema.front().ordinal);
   require(test, field != nullptr, "configured ABI field is absent");
+  const ConfigurationEncodingRelation *encodingRelation =
+      abi.abi().findEncodingRelation(*field);
+  require(test, encodingRelation != nullptr,
+          "configured ABI field has no encoding relation");
   const auto *codebook =
-      std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);
+      std::get_if<FiniteCodebookEncoding>(&encodingRelation->semanticEncoding);
   require(test, codebook != nullptr, "configured ABI is not a finite codebook");
   for (const auto &point : relation.finiteBehaviorDomain()) {
     const auto entry =

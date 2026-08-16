@@ -4,6 +4,7 @@
 #include "Fabric/Identity/FabricPeConfiguration.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefImport.h"
+#include "Fabric/Identity/FabricTemporalPeConfiguration.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -76,10 +77,10 @@ switchCrosspoints(const FabricArtifactView &fabric,
                   FabricSwitchOccurrenceRef sw) {
   std::vector<SwitchCrosspoint> result;
   for (const FabricPhysicalTraversalRef &traversal :
-       fabric.admittedTraversals()) {
+       fabric.switchCrosspointTraversals(sw)) {
     const auto *payload =
         std::get_if<FabricSwitchTraversalPayload>(&traversal.payload);
-    if (payload && payload->owner == sw)
+    if (payload)
       result.push_back({payload->input, payload->output});
   }
   llvm::sort(result, [](const SwitchCrosspoint &lhs,
@@ -90,6 +91,31 @@ switchCrosspoints(const FabricArtifactView &fabric,
 }
 
 } // namespace
+
+llvm::Expected<CanonicalSemanticBytes>
+semanticFieldRelationSourceIdentity(
+    const FabricArtifactView &fabric,
+    const FabricSemanticConfigFieldRef &field) {
+  if (llvm::Error error = validateFabricRef(fabric, field))
+    return std::move(error);
+  FabricByteWriter writer;
+  writer.tag(1);
+  const FabricInventoryOwnerRef owner = field.owner.catalog();
+  if (owner.kind() == FabricInventoryOwnerKind::FuOccurrenceNode) {
+    const auto occurrence = std::get<FabricFuOccurrenceNodeRef>(owner.payload);
+    const ResolvedFabricOpCapabilityView *capability =
+        fabric.resolvedFabricOpCapability(occurrence);
+    if (!capability)
+      return rejected("operation field has no concrete capability");
+    writer.tag(1);
+    encodeFabricRef(writer, capability->occurrence);
+    writer.field(field.ordinal);
+  } else {
+    writer.tag(0);
+    encodeFabricRef(writer, field);
+  }
+  return CanonicalSemanticBytes(writer.take());
+}
 
 llvm::Error FabricSemanticFieldRelation::validateSemanticValue(
     llvm::ArrayRef<std::uint8_t> value) const {
@@ -129,6 +155,9 @@ FabricArtifactView::semanticFieldRelation(
       if (!schema)
         return schema.takeError();
       const std::uint64_t width = schema->layout().carrierBitCount;
+      auto inactive = schema->encode(FabricTemporalPeDisabled{});
+      if (!inactive)
+        return inactive.takeError();
       auto shared = std::make_shared<FabricTemporalPeConfigurationSchemaView>(
           std::move(*schema));
       return FabricSemanticFieldRelation(
@@ -138,7 +167,8 @@ FabricArtifactView::semanticFieldRelation(
             if (!decoded)
               return decoded.takeError();
             return llvm::Error::success();
-          });
+          },
+          std::move(*inactive));
     }
     auto schema = spatialPeConfigurationSchema(pe);
     if (!schema)
@@ -192,13 +222,19 @@ FabricArtifactView::semanticFieldRelation(
     }
 
     const std::uint64_t width = *operationRelation->directEncodedBitCount();
+    const CanonicalSemanticBytes *inactive =
+        operationRelation->canonicalInactiveValue();
+    if (!inactive)
+      return rejected("direct operation field has no canonical inactive value");
+    CanonicalSemanticBytes canonicalInactive = *inactive;
     auto shared = std::make_shared<::fabric::FabricOpSemanticFieldRelation>(
         std::move(*operationRelation));
     return FabricSemanticFieldRelation(
         FabricSemanticFieldRelationKind::Direct, {}, width,
         [shared](llvm::ArrayRef<std::uint8_t> value) {
           return shared->validateSemanticValue(value);
-        });
+        },
+        std::move(canonicalInactive));
   }
 
   if (owner.kind() == FabricInventoryOwnerKind::FuOccurrence) {
@@ -229,6 +265,9 @@ FabricArtifactView::semanticFieldRelation(
     if (!schema)
       return schema.takeError();
     const std::uint64_t width = schema->layout().carrierBitCount;
+    auto inactive = schema->encode(FabricMemoryDisabled{});
+    if (!inactive)
+      return inactive.takeError();
     auto shared = std::make_shared<FabricMemoryConfigurationSchemaView>(
         std::move(*schema));
     return FabricSemanticFieldRelation(
@@ -238,7 +277,8 @@ FabricArtifactView::semanticFieldRelation(
           if (!decoded)
             return decoded.takeError();
           return llvm::Error::success();
-        });
+        },
+        std::move(*inactive));
   }
 
   if (owner.kind() == FabricInventoryOwnerKind::FifoOccurrence) {
@@ -282,7 +322,7 @@ FabricArtifactView::semanticFieldRelation(
       };
       return FabricSemanticFieldRelation(
           FabricSemanticFieldRelationKind::Direct, {}, width,
-          std::move(validator));
+          std::move(validator), CanonicalSemanticBytes(zeroBits(width)));
     }
 
     const std::uint64_t rowCount = boundaryLookupTableSize(boundary);
@@ -319,7 +359,8 @@ FabricArtifactView::semanticFieldRelation(
       return llvm::Error::success();
     };
     return FabricSemanticFieldRelation(FabricSemanticFieldRelationKind::Direct,
-                                       {}, width, std::move(validator));
+                                       {}, width, std::move(validator),
+                                       CanonicalSemanticBytes(zeroBits(width)));
   }
 
   if (owner.kind() == FabricInventoryOwnerKind::SwitchOccurrence) {
@@ -398,7 +439,8 @@ FabricArtifactView::semanticFieldRelation(
       return llvm::Error::success();
     };
     return FabricSemanticFieldRelation(FabricSemanticFieldRelationKind::Direct,
-                                       {}, width, std::move(validator));
+                                       {}, width, std::move(validator),
+                                       CanonicalSemanticBytes(zeroBits(width)));
   }
 
   return rejected("field owner has no shared semantic relation");

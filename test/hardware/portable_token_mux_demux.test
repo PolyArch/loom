@@ -11,7 +11,7 @@
 # MUX: data_input_1
 # MUX: data_input_3
 # MUX: data_input_4
-# MUX: input [3:0] config_0
+# MUX: input [4:0] config_0
 # MUX: ready_input_0
 # MUX: ready_input_4
 # MUX: valid_output_0
@@ -19,7 +19,7 @@
 # DEMUX-LABEL: module token_demux
 # DEMUX: input [31:0] data_input_0
 # DEMUX: data_input_1
-# DEMUX: input [3:0] config_0
+# DEMUX: input [4:0] config_0
 # DEMUX: ready_output_0
 # DEMUX: ready_output_3
 # DEMUX: valid_output_0

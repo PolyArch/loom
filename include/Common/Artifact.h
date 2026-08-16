@@ -8,6 +8,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,12 +44,13 @@ struct ArtifactSchemaDescriptor {
 class CanonicalSemanticBytes {
 public:
   explicit CanonicalSemanticBytes(std::vector<std::uint8_t> bytes)
-      : bytes_(std::move(bytes)) {}
+      : bytes_(std::make_shared<const std::vector<std::uint8_t>>(
+            std::move(bytes))) {}
 
-  llvm::ArrayRef<std::uint8_t> bytes() const { return bytes_; }
+  llvm::ArrayRef<std::uint8_t> bytes() const { return *bytes_; }
 
 private:
-  std::vector<std::uint8_t> bytes_;
+  std::shared_ptr<const std::vector<std::uint8_t>> bytes_;
 };
 
 class ArtifactIdentity {

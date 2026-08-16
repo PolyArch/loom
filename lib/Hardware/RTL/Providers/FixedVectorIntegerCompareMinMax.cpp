@@ -213,7 +213,7 @@ materializePortableFixedVectorIntegerCompareMinMax(
     return relation.takeError();
   const auto &domain = relation->finiteBehaviorDomain();
 
-  const ConfigurationFieldEncoding *field = nullptr;
+  const ConfigurationEncodingRelation *field = nullptr;
   const FiniteCodebookEncoding *codebook = nullptr;
   std::vector<Mode> modes;
   if (request.capability.configurationFieldSchema.empty()) {
@@ -230,7 +230,7 @@ materializePortableFixedVectorIntegerCompareMinMax(
     if (request.capability.configurationFieldSchema.size() != 1)
       return invalid(
           "configured compare/min-max capability requires one field");
-    field = request.configurationAbi.findOperationField(
+    field = request.configurationAbi.findOperationEncodingRelation(
         request.occurrence,
         request.capability.configurationFieldSchema.front().ordinal);
     if (!field)

@@ -223,10 +223,10 @@ InvocationFixture makeInvocationFixture(llvm::StringRef test,
                      moduleDesign.roots().front().reference(), artifacts));
   auto system = take(test, loom::hardware::test::makeSingleSpatialCoreSystem(
                                module, artifacts));
-  auto abi = take(
-      test, loom::hardware::finalizeConfigurationABI(
-                loom::hardware::ConfigurationABIDraft{system.reference(), {}},
-                artifacts));
+  auto abi = take(test, loom::hardware::finalizeConfigurationABI(
+                            loom::hardware::ConfigurationABIDraft{
+                                system.reference(), {}, {}},
+                            artifacts));
   auto platform = take(
       test, loom::platform::finalizeImplementationPlatform(
                 loom::platform::ImplementationPlatformDraft{

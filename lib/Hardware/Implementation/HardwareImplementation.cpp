@@ -1,4 +1,5 @@
 #include "Hardware/Implementation/HardwareImplementation.h"
+#include "Hardware/Implementation/FabricModel.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
@@ -595,7 +596,7 @@ llvm::Expected<HardwareImplementationDraft> parse(llvm::StringRef body) {
     return !schema ? schema.takeError() : version.takeError();
   if (*schema != hardwareImplementationSchema.identity ||
       *version != formatSchemaVersion(hardwareImplementationSchema.version))
-    return invalid("root schema is not loom.hardware_implementation 4.0");
+    return invalid("root schema is not loom.hardware_implementation 4.1");
 
   auto fabricObject = requireObject(*root, "fabric_ref", "root");
   auto subjectText =
@@ -1035,7 +1036,7 @@ canonicalize(HardwareImplementationDraft draft,
   if (draft.configurationAbi.schemaIdentity !=
           configurationAbiSchema.identity ||
       draft.configurationAbi.schemaVersion != configurationAbiSchema.version)
-    return invalid("configuration_abi_ref requires loom.configuration_abi 3.0");
+    return invalid("configuration_abi_ref requires loom.configuration_abi 4.0");
   auto abi = importConfigurationABI(draft.configurationAbi, artifacts);
   if (!abi)
     return abi.takeError();
@@ -1047,6 +1048,28 @@ canonicalize(HardwareImplementationDraft draft,
   if (!representationIndex)
     return representationIndex.takeError();
 
+  std::optional<std::vector<ImplementationInterface>> expectedModelInterfaces;
+  if (draft.representationRoot.variant ==
+      RepresentationRootVariant::FabricModel) {
+    if (draft.implementationPlatform)
+      return invalid("FabricModel representation cannot select an "
+                     "implementation platform");
+    if (!draft.activityPoints.empty() || !draft.memoryMacroBindings.empty() ||
+        !draft.externalImplementationBindings.empty())
+      return invalid("FabricModel representation cannot carry materialized "
+                     "implementation state");
+    auto semantics = deriveSpatialCoreImplementationInterfaceSemantics(
+        *abi, draft.subject);
+    if (!semantics)
+      return semantics.takeError();
+    expectedModelInterfaces.emplace();
+    expectedModelInterfaces->reserve(semantics->size());
+    for (ImplementationInterfaceSemanticRef &semantic : *semantics)
+      expectedModelInterfaces->push_back(
+          {std::move(semantic), draft.representationRoot.top, std::nullopt});
+    llvm::sort(*expectedModelInterfaces, interfaceLess);
+  }
+
   std::optional<platform::FinalizedImplementationPlatform> platform;
   if (draft.implementationPlatform) {
     auto imported = platform::importImplementationPlatform(
@@ -1055,7 +1078,9 @@ canonicalize(HardwareImplementationDraft draft,
       return imported.takeError();
     platform = std::move(*imported);
   } else if (draft.representationRoot.variant !=
-             RepresentationRootVariant::Rtl) {
+                 RepresentationRootVariant::Rtl &&
+             draft.representationRoot.variant !=
+                 RepresentationRootVariant::FabricModel) {
     return invalid(
         "non-RTL representation requires an implementation platform");
   }
@@ -1084,6 +1109,10 @@ canonicalize(HardwareImplementationDraft draft,
         return std::move(error);
     }
   }
+  if (expectedModelInterfaces &&
+      draft.interfaces != *expectedModelInterfaces)
+    return invalid("FabricModel interface closure is not the exact "
+                   "System-derived closure");
 
   llvm::sort(draft.activityPoints, activityLess);
   for (std::size_t ordinal = 0; ordinal < draft.activityPoints.size();
@@ -1257,7 +1286,7 @@ llvm::Expected<FinalizedHardwareImplementation> importHardwareImplementation(
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (reference.schemaIdentity != hardwareImplementationSchema.identity ||
       reference.schemaVersion != hardwareImplementationSchema.version)
-    return invalid("reference schema is not loom.hardware_implementation 4.0");
+    return invalid("reference schema is not loom.hardware_implementation 4.1");
   auto bytes = artifacts.get(hardwareImplementationSchema, reference.artifact);
   if (!bytes)
     return bytes.takeError();

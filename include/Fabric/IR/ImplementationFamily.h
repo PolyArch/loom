@@ -699,27 +699,30 @@ llvm::Error verifyImplementationFamilyAdmission(
     unsigned indexBitWidth, const ::loom::PointerLayout &pointerLayout);
 
 /// Enumerates the exact canonical software-to-physical port correspondence
-/// domain admitted by one family over the supplied concrete port inventories.
-/// Concrete Fabric capability queries separately own type capacity and
-/// topology.
+/// domain admitted by one family over dense direction-local physical port
+/// inventories. Routed-token families quotient lanes by their observable
+/// effective capacity. Concrete Fabric capability queries separately own type
+/// admission and FU topology.
 llvm::Error forEachImplementationFamilyPortCorrespondence(
-    ImplementationFamilyId family,
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
     const ::dataflow::CanonicalActorSchemaProjection &actor,
-    llvm::ArrayRef<std::uint64_t> physicalInputPorts,
-    llvm::ArrayRef<std::uint64_t> physicalResultPorts,
+    llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+    llvm::ArrayRef<std::uint32_t> physicalResultWidths,
     llvm::function_ref<
         llvm::Expected<bool>(llvm::ArrayRef<std::uint64_t> operandPorts,
                              llvm::ArrayRef<std::uint64_t> resultPorts)>
         callback);
 
-/// Verifies the semantic role ordering of one software-to-physical port
-/// correspondence. This is the point-query form of the same family-owned
-/// finite domain enumerated above.
+/// Verifies that one software-to-physical port correspondence is the canonical
+/// representative of its family-owned equivalence class. This is the
+/// point-query form of the same finite domain enumerated above.
 llvm::Error verifyImplementationFamilyPortCorrespondence(
-    ImplementationFamilyId family,
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
     const ::dataflow::CanonicalActorSchemaProjection &actor,
     llvm::ArrayRef<std::uint64_t> operandPorts,
-    llvm::ArrayRef<std::uint64_t> resultPorts);
+    llvm::ArrayRef<std::uint64_t> resultPorts,
+    llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+    llvm::ArrayRef<std::uint32_t> physicalResultWidths);
 
 llvm::Expected<::dataflow::CanonicalActorSchemaProjection>
 projectResolvedIndexTypes(
@@ -774,6 +777,9 @@ public:
   finiteBehaviorDomain() const {
     return finiteBehaviorDomain_;
   }
+  const ::loom::CanonicalSemanticBytes *canonicalInactiveValue() const {
+    return canonicalInactiveValue_ ? &*canonicalInactiveValue_ : nullptr;
+  }
   const FixedVectorSliceAlignMergeConfigurationLayout *
   fixedVectorSliceAlignMergeLayout() const {
     return sliceLayout_ ? &*sliceLayout_ : nullptr;
@@ -801,6 +807,7 @@ private:
       std::vector<std::uint32_t> physicalResultWidths,
       std::vector<FiniteImplementationFamilyBehaviorPoint> finiteBehaviorDomain,
       std::uint32_t directEncodedBitCount,
+      std::optional<::loom::CanonicalSemanticBytes> canonicalInactiveValue,
       std::optional<FixedVectorSliceAlignMergeConfigurationLayout> sliceLayout,
       std::optional<FixedVectorShuffleConfigurationLayout> shuffleLayout)
       : kind_(kind), family_(family), params_(std::move(params)),
@@ -809,6 +816,7 @@ private:
         physicalResultWidths_(std::move(physicalResultWidths)),
         finiteBehaviorDomain_(std::move(finiteBehaviorDomain)),
         directEncodedBitCount_(directEncodedBitCount),
+        canonicalInactiveValue_(std::move(canonicalInactiveValue)),
         sliceLayout_(std::move(sliceLayout)),
         shuffleLayout_(std::move(shuffleLayout)) {}
 
@@ -820,6 +828,7 @@ private:
   std::vector<std::uint32_t> physicalResultWidths_;
   std::vector<FiniteImplementationFamilyBehaviorPoint> finiteBehaviorDomain_;
   std::uint32_t directEncodedBitCount_ = 0;
+  std::optional<::loom::CanonicalSemanticBytes> canonicalInactiveValue_;
   std::optional<FixedVectorSliceAlignMergeConfigurationLayout> sliceLayout_;
   std::optional<FixedVectorShuffleConfigurationLayout> shuffleLayout_;
 

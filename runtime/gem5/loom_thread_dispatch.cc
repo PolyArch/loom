@@ -1,5 +1,7 @@
 #include "runtime/gem5/loom_thread_dispatch.hh"
 
+#include "Runtime/Gem5DispatchABI.h"
+
 #include "base/logging.hh"
 #include "mem/packet.hh"
 #include "runtime/gem5/loom_riscv_deployment_workload.hh"
@@ -7,23 +9,13 @@
 namespace gem5 {
 namespace {
 
-constexpr Addr targetLowRegister = 0x00;
-constexpr Addr targetHighRegister = 0x04;
-constexpr Addr controlRegister = 0x08;
-constexpr Addr statusRegister = 0x0c;
-constexpr Addr completionRegister = 0x10;
-constexpr Addr errorRegister = 0x14;
-constexpr std::uint32_t controlStart = 1u << 0;
-constexpr std::uint32_t controlReset = 1u << 1;
-constexpr std::uint32_t statusBusy = 1u << 0;
-constexpr std::uint32_t statusDone = 1u << 1;
-constexpr std::uint32_t statusError = 1u << 2;
-constexpr Addr dispatchApertureBytes = 0x1000;
+using namespace loom::runtime;
 
 } // namespace
 
 LoomThreadDispatch::LoomThreadDispatch(const Params &params)
-    : BasicPioDevice(params, dispatchApertureBytes), workload(params.workload),
+    : BasicPioDevice(params, gem5ThreadDispatchApertureBytes),
+      workload(params.workload),
       dispatchEvent([this] { beginDispatch(); }, name() + ".dispatch"),
       completionEvent([this] { finishDispatch(); }, name() + ".completion") {
   panic_if(!workload, "LoomThreadDispatch workload is absent");
@@ -34,11 +26,11 @@ std::uint32_t LoomThreadDispatch::status() const {
   case State::Idle:
     return 0;
   case State::Running:
-    return statusBusy;
+    return gem5ThreadDispatchBusy;
   case State::Complete:
-    return statusDone;
+    return gem5ThreadDispatchDone;
   case State::Failed:
-    return statusError;
+    return gem5ThreadDispatchFailed;
   }
   panic("unknown LoomThreadDispatch state");
 }
@@ -48,14 +40,20 @@ Tick LoomThreadDispatch::read(PacketPtr packet) {
            "LoomThreadDispatch requires 32-bit MMIO accesses");
   const Addr offset = packet->getAddr() - pioAddr;
   std::uint32_t value = 0;
-  if (offset == targetLowRegister)
+  if (offset == gem5ThreadDispatchTargetLow)
     value = static_cast<std::uint32_t>(selectedTarget);
-  else if (offset == targetHighRegister)
+  else if (offset == gem5ThreadDispatchTargetHigh)
     value = static_cast<std::uint32_t>(selectedTarget >> 32);
-  else if (offset == statusRegister)
+  else if (offset == gem5ThreadDispatchStatus)
     value = status();
-  else if (offset == errorRegister)
+  else if (offset == gem5ThreadDispatchError)
     value = errorCode;
+  else if (offset == gem5ThreadDispatchInvocationLow)
+    value = static_cast<std::uint32_t>(invocationAddress);
+  else if (offset == gem5ThreadDispatchInvocationHigh)
+    value = static_cast<std::uint32_t>(invocationAddress >> 32);
+  else if (offset == gem5ThreadDispatchInvocationSize)
+    value = static_cast<std::uint32_t>(invocationSize);
   else
     fail(1);
   packet->setUintX(value, ByteOrder::little);
@@ -69,37 +67,59 @@ Tick LoomThreadDispatch::write(PacketPtr packet) {
   const Addr offset = packet->getAddr() - pioAddr;
   const std::uint32_t value =
       static_cast<std::uint32_t>(packet->getUintX(ByteOrder::little));
-  if (offset == targetLowRegister) {
-    if (state == State::Running)
-      fail(2);
-    else
-      selectedTarget = (selectedTarget & 0xffffffff00000000ULL) | value;
-  } else if (offset == targetHighRegister) {
-    if (state == State::Running)
-      fail(2);
-    else
-      selectedTarget = (selectedTarget & 0x00000000ffffffffULL) |
-                       (static_cast<std::uint64_t>(value) << 32);
-  } else if (offset == controlRegister && (value & controlReset)) {
+  const bool descriptorWrite = offset == gem5ThreadDispatchTargetLow ||
+                               offset == gem5ThreadDispatchTargetHigh ||
+                               offset == gem5ThreadDispatchInvocationLow ||
+                               offset == gem5ThreadDispatchInvocationHigh ||
+                               offset == gem5ThreadDispatchInvocationSize;
+  if (descriptorWrite && state == State::Running) {
+    fail(2);
+  } else if (offset == gem5ThreadDispatchTargetLow) {
+    selectedTarget = (selectedTarget & 0xffffffff00000000ULL) | value;
+  } else if (offset == gem5ThreadDispatchTargetHigh) {
+    selectedTarget = (selectedTarget & 0x00000000ffffffffULL) |
+                     (static_cast<std::uint64_t>(value) << 32);
+  } else if (offset == gem5ThreadDispatchInvocationLow) {
+    invocationAddress = (invocationAddress & 0xffffffff00000000ULL) | value;
+  } else if (offset == gem5ThreadDispatchInvocationHigh) {
+    invocationAddress = (invocationAddress & 0x00000000ffffffffULL) |
+                        (static_cast<std::uint64_t>(value) << 32);
+  } else if (offset == gem5ThreadDispatchInvocationSize) {
+    invocationSize = value;
+  } else if (offset == gem5ThreadDispatchControl &&
+             (value & gem5ThreadDispatchReset)) {
     if (state == State::Running)
       fail(3);
     else {
       state = State::Idle;
       errorCode = 0;
+      activeInvocationAddress = 0;
+      activeInvocationSize = 0;
     }
-  } else if (offset == controlRegister && (value & controlStart)) {
-    if (state == State::Running || selectedTarget >= workload->targetCount())
+  } else if (offset == gem5ThreadDispatchControl &&
+             (value & gem5ThreadDispatchStart)) {
+    const bool incompleteInvocation =
+        (invocationAddress == 0) != (invocationSize == 0);
+    if (state == State::Running || selectedTarget >= workload->targetCount() ||
+        incompleteInvocation)
       fail(4);
     else {
       state = State::Running;
       errorCode = 0;
+      activeInvocationAddress = invocationAddress;
+      activeInvocationSize = invocationSize;
       schedule(dispatchEvent, clockEdge());
     }
-  } else if (offset == completionRegister && value == 1) {
+  } else if (offset == gem5ThreadDispatchCompletion && value == 1) {
     if (state != State::Running)
       fail(5);
     else
       schedule(completionEvent, clockEdge(Cycles(1)) + pioDelay);
+  } else if (offset == gem5ThreadDispatchWorkerFailure && value != 0) {
+    if (state != State::Running)
+      fail(5);
+    else
+      fail(value);
   } else {
     fail(6);
   }
@@ -109,7 +129,8 @@ Tick LoomThreadDispatch::write(PacketPtr packet) {
 
 void LoomThreadDispatch::beginDispatch() {
   if (state != State::Running ||
-      !workload->dispatch(selectedTarget, pioAddr))
+      !workload->dispatch(selectedTarget, pioAddr, activeInvocationAddress,
+                          activeInvocationSize))
     fail(7);
 }
 
@@ -124,6 +145,8 @@ void LoomThreadDispatch::finishDispatch() {
     return;
   case LoomRiscvDeploymentWorkload::CompletionState::Complete:
     state = State::Complete;
+    activeInvocationAddress = 0;
+    activeInvocationSize = 0;
     return;
   case LoomRiscvDeploymentWorkload::CompletionState::Invalid:
     fail(8);

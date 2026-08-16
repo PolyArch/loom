@@ -18,6 +18,15 @@ namespace loom::fabric {
 
 class FabricArtifactView;
 
+/// Canonical source identity of one semantic configuration relation within a
+/// finalized Fabric. Operation occurrences that resolve to the same concrete
+/// capability template share an identity; shape-dependent resources retain
+/// their exact local field identity. Callers pair this value with the Fabric
+/// artifact identity and their own schema/algorithm version.
+llvm::Expected<CanonicalSemanticBytes>
+semanticFieldRelationSourceIdentity(const FabricArtifactView &fabric,
+                                    const FabricSemanticConfigFieldRef &field);
+
 struct FabricBoundaryTagRewrite final {
   llvm::APInt inputTag;
   llvm::APInt outputTag;
@@ -60,6 +69,9 @@ public:
                ? std::optional<std::uint64_t>(directEncodedBitCount_)
                : std::nullopt;
   }
+  const CanonicalSemanticBytes *canonicalInactiveValue() const {
+    return canonicalInactiveValue_ ? &*canonicalInactiveValue_ : nullptr;
+  }
   llvm::Error validateSemanticValue(llvm::ArrayRef<std::uint8_t> value) const;
 
 private:
@@ -68,15 +80,24 @@ private:
   FabricSemanticFieldRelation(FabricSemanticFieldRelationKind kind,
                               std::vector<CanonicalSemanticBytes> finiteDomain,
                               std::uint64_t directEncodedBitCount,
-                              Validator validator = {})
+                              Validator validator = {},
+                              std::optional<CanonicalSemanticBytes>
+                                  canonicalInactiveValue = std::nullopt)
       : kind_(kind), finiteDomain_(std::move(finiteDomain)),
         directEncodedBitCount_(directEncodedBitCount),
-        validator_(std::move(validator)) {}
+        validator_(std::move(validator)),
+        canonicalInactiveValue_(std::move(canonicalInactiveValue)) {
+    if (!canonicalInactiveValue_ &&
+        kind_ == FabricSemanticFieldRelationKind::Finite &&
+        !finiteDomain_.empty())
+      canonicalInactiveValue_ = finiteDomain_.front();
+  }
 
   FabricSemanticFieldRelationKind kind_ = FabricSemanticFieldRelationKind::None;
   std::vector<CanonicalSemanticBytes> finiteDomain_;
   std::uint64_t directEncodedBitCount_ = 0;
   Validator validator_;
+  std::optional<CanonicalSemanticBytes> canonicalInactiveValue_;
 
   friend class FabricArtifactView;
 };

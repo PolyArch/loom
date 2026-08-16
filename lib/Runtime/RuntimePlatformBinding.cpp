@@ -620,7 +620,7 @@ canonicalize(RuntimePlatformBindingDraft draft, const ArtifactStore &artifacts,
           hardware::hardwareImplementationSchema.version)
     return invalid(
         "hardware_implementation_ref requires loom.hardware_implementation "
-        "4.0");
+        "4.1");
   auto implementation = hardware::importHardwareImplementation(
       draft.hardwareImplementation, artifacts, blobs);
   if (!implementation)

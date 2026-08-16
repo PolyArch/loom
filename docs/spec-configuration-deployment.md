@@ -66,12 +66,12 @@ The complete Artifact families have these fixed schema descriptors:
 ```text
 loom.configuration_abi             3.0
 loom.hardware_configuration_image  3.0
-loom.deployment                    5.0
+loom.deployment                    5.1
 ```
 
 ConfigurationABI and HardwareConfigurationImage 3.0 reject any image that
 omits a configurable Fabric owner and bind the exact
-`loom.hardware_implementation 4.0` occurrence closure. Deployment 5.0 derives
+`loom.hardware_implementation 4.1` occurrence closure. Deployment 5.1 derives
 the exact required SpatialCore occurrence set from its SystemMapping execution
 projection and requires one HardwareImplementation and RuntimePlatformBinding
 per subject. An old validator cannot reinterpret that occurrence coverage or
@@ -307,6 +307,13 @@ Every field validates against one exact sealed
   direct-domain validator; and
 * no other pairing is legal.
 
+Every non-`None` relation also owns one `canonical_inactive_value`. A finite
+relation selects it from its canonically ordered domain. A direct component
+schema encodes its disabled record, while a direct operation relation selects a
+deterministic valid carrier from its typed behavior domain. Configuration ABI
+derivation consumes and revalidates this value; it never guesses zero or an
+operation-specific fallback.
+
 `FabricOpSemanticFieldRelation` and the Spatial PE selector schema are typed
 projections of this shared relation; they do not remain alternate ABI
 contracts. Operation fields retain their existing `None | Finite | Direct`
@@ -466,6 +473,13 @@ DeploymentProgramEntryRef =
 DeploymentExternalInterfaceRef =
   (exact Deployment ArtifactIdentity, external_interface_ordinal)
 ```
+
+Deployment 5.1 admits either the payload-free `FabricModel` implementation
+used by semantic DFG/CGRA providers or an explicitly materialized concrete
+implementation. The RuntimePlatformBinding for each occurrence names that
+exact HardwareImplementation. Selecting `FabricModel` never triggers RTL
+generation as a side effect; an RTL qualification run explicitly selects its
+distinct `Rtl` HardwareImplementation.
 
 The exact Canonical Dataflow Program and architecture-only Fabric are recovered
 from `system_mapping_ref`. Exact Fabric, SpatialCore subject,
@@ -776,7 +790,8 @@ exact Fabric
   -> finalize ConfigurationABI
 
 exact Fabric + ConfigurationABI
-  -> independently derive and finalize HardwareImplementation
+  -> independently derive and finalize declarative FabricModel
+  -> optionally and explicitly materialize another concrete HardwareImplementation
 
 verified SystemMapping closure
   + ConfigurationABI + selected HardwareImplementation
@@ -799,8 +814,9 @@ verified executable leaves + selected HardwareImplementation set
 ConfigurationABI and HardwareImplementation may be finalized without any
 software Mapping. Validation of this branch begins only after those independent
 branches and a verified SystemMapping closure meet. An implementation must not
-impose a hidden sequence in which Mapping is required before ABI or RTL
-generation. Deployment finalization owns complete closure and atomically
+impose a hidden sequence in which Mapping is required before ABI generation or
+in which core semantic execution implicitly requests RTL generation.
+Deployment finalization owns complete closure and atomically
 rejects a missing, ambiguous, foreign, incompatible, or unused binding.
 
 Missing or duplicate fields, an unencodable semantic value, overlapping or

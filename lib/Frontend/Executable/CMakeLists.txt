@@ -22,3 +22,17 @@ add_mlir_library(LoomFrontendExecutable
   MLIRDataflow
   LLVM
 )
+
+add_library(LoomFrontendExecutableLinker
+  CompilerTargetLinker.cpp
+)
+
+target_include_directories(LoomFrontendExecutableLinker PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomFrontendExecutableLinker PUBLIC
+  LoomFrontendExecutable
+  lldELF
+  LLVMSupport
+)

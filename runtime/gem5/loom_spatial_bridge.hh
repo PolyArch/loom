@@ -48,23 +48,32 @@ private:
   State state = State::Idle;
   std::uint32_t errorCode = 0;
   std::uint64_t nextSequence = 0;
-  std::uint64_t launchPayloadAddress = 0;
-  std::uint32_t launchPayloadSize = 0;
+  std::uint64_t staticLaunchAddress = 0;
+  std::uint32_t staticLaunchSize = 0;
+  std::uint64_t invocationAddress = 0;
+  std::uint32_t invocationSize = 0;
+  std::uint64_t activeStaticLaunchAddress = 0;
+  std::uint32_t activeStaticLaunchSize = 0;
+  std::uint64_t activeInvocationAddress = 0;
+  std::uint32_t activeInvocationSize = 0;
   std::uint64_t lastCompletionTick = 0;
-  std::vector<std::uint8_t> launchPayload;
+  std::vector<std::uint8_t> staticLaunchPayload;
+  std::vector<std::uint8_t> invocationPayload;
   std::vector<std::uint8_t> memoryBuffer;
   loom::runtime::Gem5BridgeMemoryRequest pendingMemory;
   loom::runtime::Gem5BridgeCompletion pendingCompletion;
 
   EventFunctionWrapper launchEvent;
-  EventFunctionWrapper launchPayloadCompletionEvent;
+  EventFunctionWrapper staticLaunchCompletionEvent;
+  EventFunctionWrapper invocationCompletionEvent;
   EventFunctionWrapper dmaCompletionEvent;
   EventFunctionWrapper completionEvent;
 
   bool connectEngine();
   bool sendMessage(const loom::runtime::Gem5BridgeMessage &message);
   bool receiveMessage(loom::runtime::Gem5BridgeMessage &message);
-  void fetchLaunchPayload();
+  void fetchStaticLaunch();
+  void fetchInvocation();
   void startLaunch();
   void consumeEngineMessage();
   void completeMemoryRequest();

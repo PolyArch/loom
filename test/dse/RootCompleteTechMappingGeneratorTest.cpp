@@ -223,24 +223,21 @@ void rootCompleteAdapterPublishesExactTechMapping() {
           config));
   auto outcome =
       take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
-  const auto *incomplete =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+  const auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
           &outcome.outcome);
-  if (!incomplete ||
-      incomplete->reason !=
-          loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
-      incomplete->retainedOutputBindings.size() != 1 ||
-      incomplete->retainedOutputBindings.front().artifacts.size() != 1)
-    fail("root-complete adapter lost its retained TechMapping prefix");
-  if (incomplete->lineageEdges.size() != 1 ||
-      incomplete->lineageEdges.front().kind !=
+  if (!completed || completed->outputBindings.size() != 1 ||
+      completed->outputBindings.front().artifacts.size() != 1)
+    fail("root-complete adapter lost its canonical TechMapping singleton");
+  if (completed->lineageEdges.size() != 1 ||
+      completed->lineageEdges.front().kind !=
           loom::dse::CandidateGeneratorLineageEdgeKind::MechanicalDerivation ||
-      !incomplete->lineageEdges.front().parents.empty() ||
-      !incomplete->lineageEdges.front().ownerPayload.empty())
+      !completed->lineageEdges.front().parents.empty() ||
+      !completed->lineageEdges.front().ownerPayload.empty())
     fail("root-complete adapter published non-mechanical lineage");
 
   auto tech = take(loom::mapping::importTechMapping(
-      incomplete->retainedOutputBindings.front().artifacts.front(), store));
+      completed->outputBindings.front().artifacts.front(), store));
   if (tech.view().dataflowIdentity() != dataflowView.identity() ||
       tech.view().fabricIdentity() != fabricRoot.view().identity() ||
       tech.view().covers().size() != dataflowView.graphs().size())
@@ -368,20 +365,17 @@ void finiteDataflowSetComposesIndependentOwnerInvocations() {
           config));
   auto outcome =
       take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
-  const auto *incomplete =
-      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+  const auto *completed =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
           &outcome.outcome);
-  if (!incomplete ||
-      incomplete->reason !=
-          loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
-      incomplete->retainedOutputBindings.front().artifacts.size() != 2 ||
-      incomplete->lineageEdges.size() != 2)
-    fail("finite Dataflow set did not retain two owner invocations");
+  if (!completed || completed->outputBindings.front().artifacts.size() != 2 ||
+      completed->lineageEdges.size() != 2)
+    fail("finite Dataflow set did not complete two owner invocations");
 
   bool sawMultiGraph = false;
   bool sawSingleGraph = false;
   for (const auto &candidate :
-       incomplete->retainedOutputBindings.front().artifacts) {
+       completed->outputBindings.front().artifacts) {
     const auto owner = take(loom::mapping::importTechMapping(candidate, store))
                            .view()
                            .dataflowIdentity();

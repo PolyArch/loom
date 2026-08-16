@@ -42,3 +42,21 @@ add_subdirectory(Generators/Compiler)
 add_subdirectory(Generators/Hardware)
 add_subdirectory(Generators/Modeling)
 add_subdirectory(Feedback)
+
+add_library(LoomDSEProductionOwners
+  ProductionOwners.cpp
+)
+
+target_include_directories(LoomDSEProductionOwners PUBLIC
+  $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+
+target_link_libraries(LoomDSEProductionOwners PUBLIC
+  LoomDSE
+  LoomDSECompilerGenerator
+  LoomDSEFeedback
+  LoomDSEHardwareGenerator
+  LoomDSEMappingGenerator
+  LoomDSEModelingGenerator
+  LLVMSupport
+)

@@ -104,6 +104,14 @@ const RepresentationFormatDescriptorRef indexedPhysicalRef =
     knownRef(RepresentationFormatKind::IndexedPhysical);
 const RepresentationFormatDescriptorRef indexedDefPhysicalRef =
     knownRef(RepresentationFormatKind::IndexedDefPhysical);
+const RepresentationFormatDescriptorRef fabricModelRef =
+    knownRef(RepresentationFormatKind::FabricModel);
+
+constexpr std::array<RepresentationPayloadContract, 0>
+    fabricModelPayloadContracts{};
+
+constexpr std::array<RepresentationObjectKind, 1> fabricModelObjectKinds{
+    RepresentationObjectKind::Model};
 
 constexpr std::array<RepresentationPayloadContract, 3> rtlPayloadContracts{{
     {PayloadRole::RtlSource, "text/x-systemverilog; charset=utf-8", 1,
@@ -233,6 +241,12 @@ constexpr std::array<RepresentationRootAdmission, 1> gateRootAdmissions{{
      gateObjectKinds},
 }};
 
+constexpr std::array<RepresentationRootAdmission, 1> fabricModelAdmissions{{
+    {RepresentationRootVariant::FabricModel, std::nullopt,
+     RepresentationObjectKind::Model, fabricModelPayloadContracts,
+     fabricModelObjectKinds},
+}};
+
 constexpr std::array<RepresentationRootAdmission, 6> physicalRootAdmissions{{
     {RepresentationRootVariant::AsicPhysical,
      RepresentationPhysicalStage::Placed,
@@ -274,7 +288,7 @@ constexpr std::array<RepresentationRootAdmission, 3> defPhysicalRootAdmissions{{
      asicPhysicalObjectKinds},
 }};
 
-const std::array<detail::StaticRepresentationFormatEntry, 4>
+const std::array<detail::StaticRepresentationFormatEntry, 5>
     representationFormats{{
         {{systemVerilogRtlRef, PayloadRole::RtlSource,
           RepresentationLanguageProfile::Ieee1800_2017, rtlRootAdmissions},
@@ -289,6 +303,8 @@ const std::array<detail::StaticRepresentationFormatEntry, 4>
           RepresentationLanguageProfile::Ieee1364_2005,
           defPhysicalRootAdmissions},
          detail::BuiltinRepresentationIndexer::IndexedPhysical},
+        {{fabricModelRef, std::nullopt, std::nullopt, fabricModelAdmissions},
+         detail::BuiltinRepresentationIndexer::FabricModel},
     }};
 
 } // namespace
@@ -300,6 +316,7 @@ RepresentationFormatDescriptorRef::get(RepresentationFormatKind kind) {
   case RepresentationFormatKind::StructuralVerilogGateNetlist:
   case RepresentationFormatKind::IndexedPhysical:
   case RepresentationFormatKind::IndexedDefPhysical:
+  case RepresentationFormatKind::FabricModel:
     return RepresentationFormatDescriptorRef(kind);
   }
   return invalid("representation format kind is unsupported");
@@ -332,12 +349,18 @@ const RepresentationRootAdmission *findRepresentationRootAdmission(
 llvm::Error validateRepresentationPayloadCatalog(
     const RepresentationRootAdmission &admission,
     llvm::ArrayRef<ImplementationPayload> canonicalPayloads) {
-  auto canonical = canonicalizeImplementationPayloadCatalog(canonicalPayloads);
-  if (!canonical)
-    return invalid("payload catalog is invalid: " +
-                   llvm::toString(canonical.takeError()));
-  if (!llvm::equal(*canonical, canonicalPayloads))
-    return invalid("payload catalog is not in canonical order");
+  if (canonicalPayloads.empty()) {
+    if (!admission.payloadContracts.empty())
+      return invalid("payload catalog is empty");
+  } else {
+    auto canonical =
+        canonicalizeImplementationPayloadCatalog(canonicalPayloads);
+    if (!canonical)
+      return invalid("payload catalog is invalid: " +
+                     llvm::toString(canonical.takeError()));
+    if (!llvm::equal(*canonical, canonicalPayloads))
+      return invalid("payload catalog is not in canonical order");
+  }
 
   std::vector<std::uint64_t> counts(admission.payloadContracts.size());
   for (const ImplementationPayload &payload : canonicalPayloads) {

@@ -10,6 +10,7 @@
 #include "Simulator/DFGSimulator.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
+#include "Simulator/SpatialInvocation.h"
 
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
@@ -21,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <string>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -47,7 +49,7 @@ llvm::cl::opt<std::string>
                      llvm::cl::Required);
 llvm::cl::opt<std::string> runtimeInputIdentity(
     "runtime-input", llvm::cl::desc("Spatial runtime input ArtifactIdentity"),
-    llvm::cl::Required);
+    llvm::cl::init(""));
 llvm::cl::opt<std::string> channelProjectionPath(
     "channel-projection",
     llvm::cl::desc("Invocation-local Spatial channel projection"),
@@ -359,6 +361,29 @@ llvm::Error publishChannelOutputs(
   return llvm::Error::success();
 }
 
+llvm::Error publishInvocationResults(
+    int connection, std::uint64_t sequence,
+    llvm::ArrayRef<loom::sim::SpatialInvocationMemoryWrite> writes,
+    std::uint64_t readyAfterTicks, std::uint64_t &requestId) {
+  for (std::size_t ordinal = 0; ordinal != writes.size(); ++ordinal) {
+    const loom::sim::SpatialInvocationMemoryWrite &write = writes[ordinal];
+    loom::runtime::Gem5BridgeMemoryRequest request{
+        loom::runtime::Gem5BridgeMemoryOperation::Write,
+        ordinal == 0 ? readyAfterTicks : 0,
+        requestId++,
+        write.address,
+        write.bytes.size(),
+        write.bytes};
+    auto response =
+        transactMemory(connection, sequence,
+                       loom::runtime::Gem5BridgeMessageKind::MemoryRequest,
+                       std::move(request));
+    if (!response)
+      return response.takeError();
+  }
+  return llvm::Error::success();
+}
+
 llvm::Expected<loom::sim::SpatialEngineBoundaryResult>
 runDfg(const loom::sim::ImportedSpatialSimulationInputs &inputs,
        const loom::sim::CanonicalSimulationRuntimeInput &runtimeInput) {
@@ -446,20 +471,16 @@ int main(int argc, char **argv) {
 
   loom::ArtifactStore store(artifactStorePath);
   auto workload = root(workloadIdentity, loom::sim::simulationWorkloadSchema);
-  auto runtime =
-      root(runtimeInputIdentity, loom::sim::simulationRuntimeInputSchema);
   auto dataflow = root(dataflowIdentity, dataflow::canonicalDataflowSchema);
   if (!workload)
     return report(workload.takeError());
-  if (!runtime)
-    return report(runtime.takeError());
   if (!dataflow)
     return report(dataflow.takeError());
-  auto inputs =
-      loom::sim::importSpatialSimulationInputs(*workload, *runtime, store);
-  if (!inputs)
-    return report(inputs.takeError());
-  if (inputs->dataflow.identity() != dataflow->artifact)
+  auto importedWorkload =
+      loom::sim::importSpatialSimulationWorkload(*workload, store);
+  if (!importedWorkload)
+    return report(importedWorkload.takeError());
+  if (importedWorkload->dataflow.identity() != dataflow->artifact)
     return report(invalid("Spatial inputs name a foreign Dataflow owner"));
   auto expectedLaunch = readFile(expectedLaunchPath);
   if (!expectedLaunch)
@@ -484,10 +505,50 @@ int main(int argc, char **argv) {
     ::close(connection);
     return report(message.takeError());
   }
+  loom::runtime::Gem5SpatialLaunchEnvelope launch;
+  std::string launchDiagnostic;
   if (message->kind != loom::runtime::Gem5BridgeMessageKind::SpatialLaunch ||
-      message->sequence != 0 || message->payload != *expectedLaunch) {
+      message->sequence != 0 ||
+      !loom::runtime::decodeGem5SpatialLaunchEnvelope(message->payload, launch,
+                                                      launchDiagnostic) ||
+      launch.staticLaunch != *expectedLaunch) {
     ::close(connection);
-    return report(invalid("bridge launch does not match the exact Deployment"));
+    return report(
+        invalid("bridge launch does not match the exact Deployment: " +
+                launchDiagnostic));
+  }
+
+  std::optional<loom::runtime::SpatialInvocationWire> invocation;
+  llvm::Expected<loom::sim::ImportedSpatialSimulationInputs> inputs =
+      [&]() -> llvm::Expected<loom::sim::ImportedSpatialSimulationInputs> {
+    if (launch.invocation.empty()) {
+      if (runtimeInputIdentity.empty())
+        return invalid("static launch has no Spatial runtime input");
+      auto runtime =
+          root(runtimeInputIdentity, loom::sim::simulationRuntimeInputSchema);
+      if (!runtime)
+        return runtime.takeError();
+      return loom::sim::importSpatialSimulationInputs(*workload, *runtime,
+                                                      store);
+    }
+    if (!runtimeInputIdentity.empty())
+      return invalid("dynamic invocation has a competing static runtime input");
+    loom::runtime::SpatialInvocationWire wire;
+    std::string diagnostic;
+    if (!loom::runtime::decodeSpatialInvocationWire(launch.invocation, wire,
+                                                    diagnostic))
+      return invalid(diagnostic);
+    invocation = wire;
+    return loom::sim::materializeSpatialInvocationInputs(
+        std::move(*importedWorkload), wire);
+  }();
+  if (!inputs) {
+    ::close(connection);
+    return report(inputs.takeError());
+  }
+  if (inputs->dataflow.identity() != dataflow->artifact) {
+    ::close(connection);
+    return report(invalid("Spatial inputs name a foreign Dataflow owner"));
   }
 
   std::uint64_t requestId = 0;
@@ -497,17 +558,17 @@ int main(int argc, char **argv) {
     ::close(connection);
     return report(dynamicRuntime.takeError());
   }
+  inputs->runtimeInput = std::move(*dynamicRuntime);
 #if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
-  auto result = runDfg(*inputs, *dynamicRuntime);
+  auto result = runDfg(*inputs, inputs->runtimeInput);
 #else
-  auto result = runCgra(*inputs, *dynamicRuntime, store);
+  auto result = runCgra(*inputs, inputs->runtimeInput, store);
 #endif
   if (!result) {
     ::close(connection);
     return report(result.takeError());
   }
-  auto encoded = loom::sim::encodeSpatialEngineBoundaryResult(
-      *result, *workload, *runtime, store);
+  auto encoded = loom::sim::encodeSpatialEngineBoundaryResult(*result, *inputs);
   if (!encoded) {
     ::close(connection);
     return report(encoded.takeError());
@@ -522,11 +583,27 @@ int main(int argc, char **argv) {
     ::close(connection);
     return report(delay.takeError());
   }
+  if (invocation) {
+    auto writes = loom::sim::projectSpatialInvocationResultWrites(
+        *invocation, *inputs, result->functionalObservations);
+    if (!writes) {
+      ::close(connection);
+      return report(writes.takeError());
+    }
+    if (llvm::Error error = publishInvocationResults(
+            connection, message->sequence, *writes, *delay, requestId)) {
+      ::close(connection);
+      return report(std::move(error));
+    }
+  }
   const std::uint32_t status =
       std::holds_alternative<loom::sim::RetiredExecution>(result->terminal) ? 0
                                                                             : 1;
-  const loom::runtime::Gem5BridgeCompletion completion{*delay, status,
-                                                       std::move(*encoded)};
+  std::vector<std::uint8_t> completionResult =
+      loom::runtime::encodeSpatialInvocationResultWire(
+          {launch.invocation, std::move(*encoded)});
+  const loom::runtime::Gem5BridgeCompletion completion{
+      invocation ? 0 : *delay, status, std::move(completionResult)};
   llvm::Error writeError = writeMessage(
       connection,
       {loom::runtime::Gem5BridgeMessageKind::Completion, message->sequence,

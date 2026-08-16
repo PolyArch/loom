@@ -1094,8 +1094,7 @@ buildConfigurationImageCatalog(
       return candidate.reference() == abiReference;
     });
     if (abi == importedAbis.end()) {
-      auto imported =
-          hardware::importConfigurationABI(abiReference, artifacts);
+      auto imported = hardware::importConfigurationABI(abiReference, artifacts);
       if (!imported)
         return imported.takeError();
       importedAbis.push_back(std::move(*imported));
@@ -1112,16 +1111,16 @@ buildConfigurationImageCatalog(
     if (scope.includesDirectSystemResources || scope.spatialCores.size() != 1)
       return invalid("configuration image programming unit is not local to "
                      "one SpatialCore occurrence");
-    ConfigurationImageCatalogEntry entry{
-        reference, {scope.spatialCores.front().core}};
+    ConfigurationImageCatalogEntry entry{reference,
+                                         {scope.spatialCores.front().core}};
     catalog.push_back(std::move(entry));
   }
   return catalog;
 }
 
-std::vector<ArtifactRootReference> configurationImagesFor(
-    fabric::AccCoreOccurrenceRef core,
-    llvm::ArrayRef<ConfigurationImageCatalogEntry> catalog) {
+std::vector<ArtifactRootReference>
+configurationImagesFor(fabric::AccCoreOccurrenceRef core,
+                       llvm::ArrayRef<ConfigurationImageCatalogEntry> catalog) {
   std::vector<ArtifactRootReference> result;
   for (const ConfigurationImageCatalogEntry &entry : catalog)
     if (llvm::is_contained(entry.accCores, core))
@@ -1338,10 +1337,7 @@ llvm::Expected<DerivedRuntimeImages> deriveRuntimeImages(
   auto system = fabric::requireSystemRoot(fabricArtifact->view());
   if (!system)
     return system.takeError();
-  auto closure = mapping::projectSystemMappingClosure(
-      *dataflowView, *system, systemMapping->view(), artifacts);
-  if (!closure)
-    return closure.takeError();
+  const auto *closure = &systemMapping->verifiedClosure();
 
   ReferenceEncoder encoder(dataflowView->identity());
   auto groups = buildActivationGroups(*closure, encoder);

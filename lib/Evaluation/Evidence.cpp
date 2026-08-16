@@ -325,7 +325,7 @@ llvm::Expected<EvaluationEvidence> EvaluationEvidence::get(
     std::vector<ModelOutputBinding> outputBindings,
     EvaluationEvidenceOutcome outcome, const CaseArtifactResolution &resolution,
     const ArtifactStore &artifactStore, const BlobStore &blobStore) {
-  ArtifactImportCacheScope cacheScope;
+  ArtifactImportCacheScope cacheScope(artifactStore, &blobStore);
   RequestVerifier verifier(resolution, artifactStore, blobStore);
   if (llvm::Error error = verifier.verify(request))
     return std::move(error);

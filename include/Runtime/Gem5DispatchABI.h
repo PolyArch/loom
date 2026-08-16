@@ -1,0 +1,28 @@
+#ifndef LOOM_RUNTIME_GEM5DISPATCHABI_H
+#define LOOM_RUNTIME_GEM5DISPATCHABI_H
+
+#include <cstdint>
+
+namespace loom::runtime {
+
+inline constexpr std::uint64_t gem5ThreadDispatchTargetLow = 0x00;
+inline constexpr std::uint64_t gem5ThreadDispatchTargetHigh = 0x04;
+inline constexpr std::uint64_t gem5ThreadDispatchControl = 0x08;
+inline constexpr std::uint64_t gem5ThreadDispatchStatus = 0x0c;
+inline constexpr std::uint64_t gem5ThreadDispatchCompletion = 0x10;
+inline constexpr std::uint64_t gem5ThreadDispatchError = 0x14;
+inline constexpr std::uint64_t gem5ThreadDispatchInvocationLow = 0x18;
+inline constexpr std::uint64_t gem5ThreadDispatchInvocationHigh = 0x1c;
+inline constexpr std::uint64_t gem5ThreadDispatchInvocationSize = 0x20;
+inline constexpr std::uint64_t gem5ThreadDispatchWorkerFailure = 0x24;
+inline constexpr std::uint64_t gem5ThreadDispatchApertureBytes = 0x1000;
+
+inline constexpr std::uint32_t gem5ThreadDispatchStart = 1U << 0;
+inline constexpr std::uint32_t gem5ThreadDispatchReset = 1U << 1;
+inline constexpr std::uint32_t gem5ThreadDispatchBusy = 1U << 0;
+inline constexpr std::uint32_t gem5ThreadDispatchDone = 1U << 1;
+inline constexpr std::uint32_t gem5ThreadDispatchFailed = 1U << 2;
+
+} // namespace loom::runtime
+
+#endif // LOOM_RUNTIME_GEM5DISPATCHABI_H

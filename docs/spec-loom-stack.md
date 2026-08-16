@@ -253,6 +253,30 @@ plan. Cross-pair evaluation occurs only through an explicit bounded frontier
 join; there is no implicit Cartesian product, mutable joint candidate, or
 runtime-owned best design.
 
+The public driver composes these owners through one invocation-local
+`ApplicationBuild`. It consumes the LLVM module and selected-input report from
+the same final link, one exact source invocation, a bounded System frontier,
+exact timing profiles, and one ResolvedConfig. It publishes ordinary
+Structured Program, Canonical Dataflow, SimulationWorkload, Mapping,
+ConfigurationABI, HardwareImplementation, Deployment, and Evidence objects
+through their existing owners. `ApplicationBuild` is not an Artifact family,
+candidate identity, cache namespace, or alternate plan executor.
+
+Preparation first runs the ordinary source-backed pre-Mapping exploration for
+the declared ABI entry. Every retained software candidate then contributes
+its exact Dataflow root and application workload set to the ordinary bounded
+joint frontier. Incomplete and no-feasible pre-Mapping outcomes remain typed
+outcomes with their available Evidence and Generate lineage; the composition
+layer must not convert either into an empty successful plan. Mapping execution
+continues through the shared journal, scheduler, exact repair, and independent
+artifact verifiers.
+
+The joint-plan owner mechanically projects the run's persistent semantic
+closure from the complete software and System frontiers plus every exact plan
+binding. Both CLI and library composition must use that projection when
+forming the run key; timing profiles, Mapping constraints, and application
+workloads must not be reconstructed by a caller-specific list.
+
 ## Compiler Pipeline
 
 The compiler pipeline has four semantic boundaries:
@@ -437,6 +461,27 @@ closure. System + DFG idealizes only the selected SpatialCore execution; it
 does not omit or idealize HostCore, InstructionCore, NoC, cache, external
 memory, dispatch, or runtime execution. Adding another environment or Spatial
 engine requires a registered model descriptor, not another execution schema.
+
+`loom-system-run` is the public core-matrix execution driver for an existing
+Deployment package. It strictly imports the complete package closure, binds
+one exact gem5 build, and runs System DFG followed by System CGRA. The driver
+captures each dynamic Spatial invocation observed at the gem5 bridge and uses
+that exact invocation byte sequence, selected SpatialMapping, configuration,
+and HardwareImplementation to run the corresponding standalone Spatial DFG
+and Spatial CGRA cells. It accepts the run only when the two System functional
+observations agree, each standalone observation agrees with its originating
+System observation, and any requested independent oracle agrees. It may not
+reconstruct an invocation from source constants, select another Mapping, or
+accept a hand-authored Spatial runtime input beside the Deployment.
+
+The driver's `loom.execution_matrix_workspace.1.0` manifest is a nonsemantic
+workspace projection. It records the exact Deployment, binding, workload,
+runtime-input, Request, Evidence, SimulationExecution, Dataflow,
+SpatialMapping, and HardwareImplementation references that already own the
+run. It does not acquire an Artifact identity, cache a mutable execution, or
+replace independent import and verification. Repeating the command in a new
+workspace therefore revalidates the package and result closure even when
+immutable implementation or tool caches are reused.
 
 DFG-sim executes canonical Dataflow semantics without Fabric resource limits.
 CGRA-sim executes mapped SpatialCore behavior using exact Dataflow, Fabric,

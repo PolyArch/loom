@@ -528,7 +528,11 @@ llvm::Expected<std::vector<circt::hw::PortInfo>> deriveFabricOperationLeafPorts(
       return invalid("configuration field is absent from ConfigurationABI: " +
                      fabric::printFabricRef(occurrence) + " / " +
                      fabric::printFabricRef(field));
-    const std::uint64_t width = encoding->encodedBitCount();
+    const ConfigurationEncodingRelation *relation =
+        configurationAbi.findEncodingRelation(*encoding);
+    if (!relation)
+      return invalid("configuration field names an unknown encoding relation");
+    const std::uint64_t width = relation->encodedBitCount();
     if (width == 0)
       return invalid("configuration field has zero encoded width");
     if (width > mlir::IntegerType::kMaxWidth)

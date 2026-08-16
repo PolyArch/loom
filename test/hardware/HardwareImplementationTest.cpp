@@ -16,6 +16,7 @@
 #include "Fabric/IR/OperationResourceContract.h"
 #include "Fabric/IR/ResourceContractRecord.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
+#include "Hardware/Implementation/FabricModel.h"
 #include "Hardware/Implementation/HardwareImplementationLocalReference.h"
 #include "Hardware/Implementation/PhysicalRepresentationIndex.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
@@ -607,17 +608,68 @@ void systemRootAndTypedRepresentationRoundTrip(const ArtifactStore &artifacts,
   require(__func__, first.reference() == second.reference(),
           "authoring order changed HardwareImplementation identity");
   require(__func__,
-          first.reference().schemaVersion == SchemaVersion{4, 0} &&
+          first.reference().schemaVersion == SchemaVersion{4, 1} &&
               first.implementation().fabric() == fixture.system.reference() &&
               first.implementation().representationRoot().variant ==
                   RepresentationRootVariant::Rtl,
-          "finalized root did not retain the exact schema-4.0 owners");
+          "finalized root did not retain the exact schema-4.1 owners");
   const FinalizedHardwareImplementation imported =
       take(__func__,
            importHardwareImplementation(first.reference(), artifacts, blobs));
   require(__func__,
           imported.canonicalBytes().bytes() == first.canonicalBytes().bytes(),
           "strict import changed canonical bytes");
+}
+
+void fabricModelIsDeclarativeAndSystemDerived(const ArtifactStore &artifacts,
+                                              const BlobStore &blobs) {
+  const Fixture fixture = makeFixture(__func__, artifacts);
+  const FinalizedHardwareImplementation model = take(
+      __func__, finalizeFabricModelHardwareImplementation(
+                    fixture.abi, fixture.subject, artifacts, blobs));
+  const auto &implementation = model.implementation();
+  require(__func__,
+          model.reference().schemaVersion == SchemaVersion{4, 1} &&
+              implementation.representationRoot().variant ==
+                  RepresentationRootVariant::FabricModel &&
+              implementation.representationRoot().payloads.empty() &&
+              !implementation.implementationPlatform() &&
+              implementation.activityPoints().empty() &&
+              implementation.memoryMacroBindings().empty() &&
+              implementation.externalImplementationBindings().empty(),
+          "FabricModel materialized concrete implementation state");
+  const auto expectedSemantics = take(
+      __func__, deriveSpatialCoreImplementationInterfaceSemantics(
+                    fixture.abi, fixture.subject));
+  require(__func__,
+          implementation.interfaces().size() == expectedSemantics.size() &&
+              !implementation.interfaces().empty(),
+          "FabricModel lost its System-derived interface closure");
+  for (const ImplementationInterface &interface : implementation.interfaces())
+    require(__func__,
+            interface.representationLocator ==
+                    implementation.representationRoot().top &&
+                !interface.devicePinRef,
+            "FabricModel interface escaped the declarative model root");
+  const FinalizedHardwareImplementation imported = take(
+      __func__, importHardwareImplementation(model.reference(), artifacts,
+                                             blobs));
+  require(__func__, imported.canonicalBytes().bytes() ==
+                        model.canonicalBytes().bytes(),
+          "FabricModel strict import changed canonical bytes");
+
+  HardwareImplementationDraft incomplete{
+      implementation.fabric(), implementation.subject(),
+      implementation.configurationAbi(), implementation.representationRoot(),
+      std::nullopt,
+      std::vector<ImplementationInterface>(implementation.interfaces().begin(),
+                                           implementation.interfaces().end()),
+      {}, {}, {}};
+  incomplete.interfaces.pop_back();
+  expectError(__func__,
+              finalizeHardwareImplementation(std::move(incomplete), artifacts,
+                                             blobs),
+              "exact System-derived closure");
 }
 
 void nonRtlRepresentationRequiresPlatform(const ArtifactStore &artifacts,
@@ -953,7 +1005,7 @@ void ownerLocalReferencesAreExactAndBounded(const ArtifactStore &artifacts,
   expectError(__func__,
               decodeHardwareImplementationLocalReference<
                   HardwareImplementationActivityPointRef>(wrongSchema),
-              "loom.hardware_implementation 4.0");
+              "loom.hardware_implementation 4.1");
 
   EncodedArtifactLocalReference malformed = wrongKind;
   malformed.payload.pop_back();
@@ -1323,6 +1375,7 @@ int main(int argc, char **argv) {
   const BlobStore blobs((root / "blobs").string());
 
   systemRootAndTypedRepresentationRoundTrip(artifacts, blobs);
+  fabricModelIsDeclarativeAndSystemDerived(artifacts, blobs);
   nonRtlRepresentationRequiresPlatform(artifacts, blobs);
   targetSpecializationChangesIdentity(artifacts, blobs);
   configurationAbiRequiresExactFabric(artifacts, blobs);

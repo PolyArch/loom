@@ -10,6 +10,8 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdint>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -20,6 +22,50 @@ class SystemOp;
 } // namespace fabric
 
 namespace loom::fabric {
+
+namespace detail {
+class FabricArtifactImportSessionState;
+}
+
+enum class FabricArtifactImportSessionMode : std::uint8_t {
+  ReuseEnclosing,
+  Isolated,
+};
+
+struct FabricArtifactImportSessionStatistics final {
+  std::uint64_t importRequests = 0;
+  std::uint64_t uniqueConstructions = 0;
+  std::uint64_t cacheHits = 0;
+  std::uint64_t cacheMisses = 0;
+  std::uint64_t bytesRead = 0;
+  std::uint64_t bytesCopied = 0;
+  std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t deterministicWork = 0;
+  std::uint64_t retainedPayloadBytes = 0;
+  std::uint64_t entryCount = 0;
+};
+
+/// Installs one bounded cache of strictly imported immutable Fabric roots for
+/// a synchronous invocation. Isolated scopes never reuse enclosing results and
+/// are used by independent replay verifiers.
+class FabricArtifactImportSession final {
+public:
+  explicit FabricArtifactImportSession(
+      FabricArtifactImportSessionMode mode =
+          FabricArtifactImportSessionMode::ReuseEnclosing);
+  ~FabricArtifactImportSession();
+
+  FabricArtifactImportSession(const FabricArtifactImportSession &) = delete;
+  FabricArtifactImportSession &
+  operator=(const FabricArtifactImportSession &) = delete;
+
+  FabricArtifactImportSessionStatistics statistics() const;
+
+private:
+  std::unique_ptr<detail::FabricArtifactImportSessionState> owned_;
+  detail::FabricArtifactImportSessionState *active_ = nullptr;
+  detail::FabricArtifactImportSessionState *previous_ = nullptr;
+};
 
 /// The immutable result of publishing and independently importing one exact
 /// Fabric root. This is an owner result over loom.fabric 3.x, not another

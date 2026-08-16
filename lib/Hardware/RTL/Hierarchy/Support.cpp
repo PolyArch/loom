@@ -75,7 +75,11 @@ prepareFieldDecoder(const ConfigurationFieldEncoding &encoding,
   const std::size_t transportUnitOrdinal =
       static_cast<std::size_t>(transportUnit - transportLayout.units.data());
 
-  const std::uint64_t width = encoding.encodedBitCount();
+  const ConfigurationEncodingRelation *relation =
+      configurationAbi.findEncodingRelation(encoding);
+  if (!relation)
+    return invalid("configuration field names an unknown encoding relation");
+  const std::uint64_t width = relation->encodedBitCount();
   if (width == 0 || width > mlir::IntegerType::kMaxWidth)
     return unsupported(
         "configuration field width exceeds the CIRCT support envelope");
@@ -166,8 +170,12 @@ prepareFiniteField(fabric::SpatialCoreOccurrenceRef spatialCore,
   if (!encoding)
     return invalid("configuration field is absent from ConfigurationABI: " +
                    fabric::printFabricRef(*physical));
+  const ConfigurationEncodingRelation *relation =
+      configurationAbi.findEncodingRelation(*encoding);
+  if (!relation)
+    return invalid("configuration field names an unknown encoding relation");
   const auto *codebook =
-      std::get_if<FiniteCodebookEncoding>(&encoding->semanticEncoding);
+      std::get_if<FiniteCodebookEncoding>(&relation->semanticEncoding);
   if (!codebook || codebook->encodedBitCount != decoder->encodedBitCount)
     return unsupported("configuration field requires a finite ABI codebook");
   return std::make_pair(std::move(*decoder), codebook);

@@ -547,7 +547,7 @@ materializePortableMathLogarithm(FabricOperationProviderRequest request,
   if (!relation)
     return relation.takeError();
   const auto &domain = relation->finiteBehaviorDomain();
-  const ConfigurationFieldEncoding *field = nullptr;
+  const ConfigurationEncodingRelation *field = nullptr;
   const FiniteCodebookEncoding *codebook = nullptr;
   std::vector<Mode> modes;
   if (request.capability.configurationFieldSchema.empty()) {
@@ -561,7 +561,7 @@ materializePortableMathLogarithm(FabricOperationProviderRequest request,
       return invalid("configured logarithm relation is not finite");
     if (request.capability.configurationFieldSchema.size() != 1)
       return invalid("configured logarithm capability requires one field");
-    field = request.configurationAbi.findOperationField(
+    field = request.configurationAbi.findOperationEncodingRelation(
         request.occurrence,
         request.capability.configurationFieldSchema.front().ordinal);
     if (!field)

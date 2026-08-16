@@ -6,9 +6,11 @@
 #include "Common/BlobStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Deployment/Deployment.h"
+#include "Evaluation/ArtifactImportCache.h"
 
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <system_error>
 #include <utility>
 
@@ -114,9 +116,8 @@ llvm::Expected<ImportedSpatialSimulationInputs> importSpatialSimulationInputs(
 }
 
 llvm::Expected<ImportedSpatialSimulationWorkload>
-importSpatialSimulationWorkload(
-    const ArtifactRootReference &workloadReference,
-    const ArtifactStore &store) {
+importSpatialSimulationWorkload(const ArtifactRootReference &workloadReference,
+                                const ArtifactStore &store) {
   if (!hasSchema(workloadReference, simulationWorkloadSchema))
     return invalid("foreign SimulationWorkload reference schema");
   auto workloadBytes = store.get(workloadReference);
@@ -134,8 +135,8 @@ importSpatialSimulationWorkload(
   auto view = dataflow->view();
   if (!view)
     return view.takeError();
-  auto workload = importSimulationWorkload(
-      workloadBytes->bytes(), *view, workloadReference.artifact);
+  auto workload = importSimulationWorkload(workloadBytes->bytes(), *view,
+                                           workloadReference.artifact);
   if (!workload)
     return workload.takeError();
   return ImportedSpatialSimulationWorkload{std::move(*dataflow),
@@ -210,11 +211,17 @@ importSystemSimulationInputs(const ArtifactRootReference &workloadReference,
   ArtifactRootReference deploymentReference{
       deployment::deploymentSchema.identity.str(),
       deployment::deploymentSchema.version, *deploymentIdentity};
+  const std::array<ArtifactRootReference, 1> deploymentReferences{
+      deploymentReference};
   auto deployment =
-      deployment::importDeployment(deploymentReference, store, blobs);
+      evaluation::importCachedArtifact<deployment::FinalizedDeployment>(
+          store, &blobs, deploymentReferences, [&] {
+            return deployment::importDeployment(deploymentReference, store,
+                                                blobs);
+          });
   if (!deployment)
     return deployment.takeError();
-  auto workload = importSimulationWorkload(workloadBytes->bytes(), *deployment,
+  auto workload = importSimulationWorkload(workloadBytes->bytes(), **deployment,
                                            store, workloadReference.artifact);
   if (!workload)
     return workload.takeError();
@@ -223,12 +230,12 @@ importSystemSimulationInputs(const ArtifactRootReference &workloadReference,
   if (!runtimeBytes)
     return runtimeBytes.takeError();
   auto runtimeInput = importSimulationRuntimeInput(
-      runtimeBytes->bytes(), *workload, *deployment, store,
+      runtimeBytes->bytes(), *workload, **deployment, store,
       runtimeInputReference.artifact);
   if (!runtimeInput)
     return runtimeInput.takeError();
-  return ImportedSystemSimulationInputs{
-      std::move(*deployment), std::move(*workload), std::move(*runtimeInput)};
+  return ImportedSystemSimulationInputs{**deployment, std::move(*workload),
+                                        std::move(*runtimeInput)};
 }
 
 } // namespace loom::sim

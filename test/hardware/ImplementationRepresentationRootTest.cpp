@@ -67,6 +67,11 @@ RepresentationFormatDescriptorRef physicalFormat(llvm::StringRef test) {
                         RepresentationFormatKind::IndexedPhysical));
 }
 
+RepresentationFormatDescriptorRef modelFormat(llvm::StringRef test) {
+  return take(test, RepresentationFormatDescriptorRef::get(
+                        RepresentationFormatKind::FabricModel));
+}
+
 std::vector<ImplementationPayload> rtlPayloads() {
   return {{PayloadRole::RtlSource, "rtl/top.sv", digest("rtl")},
           {PayloadRole::BlackBoxContract, "ip/pll.bb", digest("ip")}};
@@ -212,6 +217,35 @@ void closedVariantsRoundTripExactly() {
   }
 }
 
+void payloadFreeFabricModelRoundTripsExactly() {
+  const ImplementationRepresentationRoot root = take(
+      __func__, createImplementationRepresentationRoot(
+                    RepresentationRootVariant::FabricModel, std::nullopt,
+                    modelFormat(__func__),
+                    {RepresentationObjectKind::Model,
+                     fabricModelRootCanonicalName.str()},
+                    {}));
+  require(__func__, root.payloads.empty(),
+          "FabricModel acquired a representation payload");
+  const std::vector<std::uint8_t> expected = expectedRootBytes(
+      RepresentationRootVariant::FabricModel, std::nullopt,
+      modelFormat(__func__), root.top, {});
+  const std::vector<std::uint8_t> encoded =
+      take(__func__, encodeImplementationRepresentationRoot(root));
+  require(__func__, encoded == expected,
+          "FabricModel binary framing changed");
+  require(__func__,
+          take(__func__, decodeImplementationRepresentationRoot(encoded)) ==
+              root,
+          "FabricModel binary did not round-trip");
+  const std::string json =
+      take(__func__, serializeImplementationRepresentationRootJson(root));
+  require(__func__,
+          take(__func__, parseImplementationRepresentationRootJson(json)) ==
+              root,
+          "FabricModel JSON did not round-trip");
+}
+
 void binaryFramingIsStrict() {
   const ImplementationRepresentationRoot root =
       makeRoot(RepresentationRootVariant::Rtl, std::nullopt,
@@ -229,7 +263,7 @@ void binaryFramingIsStrict() {
               "trailing");
 
   std::vector<std::uint8_t> unknownVariant = bytes;
-  unknownVariant[3] = 5;
+  unknownVariant[3] = 6;
   expectError(__func__, decodeImplementationRepresentationRoot(unknownVariant),
               "variant");
 
@@ -315,6 +349,14 @@ void topKindMatchesVariant() {
                   rtlFormat(__func__),
                   {RepresentationObjectKind::Module, "top"}, rtlPayloads()),
               "top");
+  expectError(__func__,
+              createImplementationRepresentationRoot(
+                  RepresentationRootVariant::FabricModel, std::nullopt,
+                  modelFormat(__func__),
+                  {RepresentationObjectKind::Module,
+                   fabricModelRootCanonicalName.str()},
+                  {}),
+              "top");
 }
 
 void payloadCatalogIsCanonicalAndUnique() {
@@ -323,7 +365,7 @@ void payloadCatalogIsCanonicalAndUnique() {
                   RepresentationRootVariant::Rtl, std::nullopt,
                   rtlFormat(__func__),
                   {RepresentationObjectKind::Module, "top"}, {}),
-              "nonempty");
+              "only FabricModel");
   std::vector<ImplementationPayload> duplicates = rtlPayloads();
   duplicates.push_back(duplicates.front());
   expectError(__func__,
@@ -386,6 +428,8 @@ void descriptorAdmissionIsDataDriven() {
       getRepresentationFormatDescriptor(gateFormat(__func__));
   const RepresentationFormatDescriptor &physical =
       getRepresentationFormatDescriptor(physicalFormat(__func__));
+  const RepresentationFormatDescriptor &model =
+      getRepresentationFormatDescriptor(modelFormat(__func__));
   require(__func__,
           admitsRepresentationRoot(rtl, RepresentationRootVariant::Rtl,
                                    std::nullopt),
@@ -398,6 +442,11 @@ void descriptorAdmissionIsDataDriven() {
           admitsRepresentationRoot(gate, RepresentationRootVariant::GateNetlist,
                                    std::nullopt),
           "gate descriptor lost its stageless GateNetlist admission");
+  require(__func__,
+          admitsRepresentationRoot(model,
+                                   RepresentationRootVariant::FabricModel,
+                                   std::nullopt),
+          "FabricModel descriptor lost its exact admission");
   for (RepresentationRootVariant variant :
        {RepresentationRootVariant::AsicPhysical,
         RepresentationRootVariant::FpgaPhysical,
@@ -422,6 +471,18 @@ void descriptorAdmissionIsDataDriven() {
                RepresentationObjectKind::PhysicalObject, __func__);
   require(__func__, admissionFails(__func__, rtl, physicalRoot),
           "a physical root was admitted without a physical descriptor");
+
+  const ImplementationRepresentationRoot modelRoot = take(
+      __func__, createImplementationRepresentationRoot(
+                    RepresentationRootVariant::FabricModel, std::nullopt,
+                    modelFormat(__func__),
+                    {RepresentationObjectKind::Model,
+                     fabricModelRootCanonicalName.str()},
+                    {}));
+  require(__func__, !admissionFails(__func__, model, modelRoot),
+          "FabricModel root was rejected by its descriptor");
+  require(__func__, admissionFails(__func__, rtl, modelRoot),
+          "FabricModel root was admitted by the RTL descriptor");
 
   struct PhysicalCase final {
     RepresentationRootVariant variant;
@@ -521,12 +582,12 @@ void jsonIsStrictlyCanonical() {
   expectRejection("{\"variant\":\"Rtl\"}", "format_ref");
   expectRejection(
       "{\"variant\":\"rtl\",\"format_ref\":{\"registry\":\"loom.hardware_"
-      "representation_format\",\"major\":2,\"minor\":2,\"kind\":0},\"top\":{"
+      "representation_format\",\"major\":2,\"minor\":3,\"kind\":0},\"top\":{"
       "\"object_kind\":\"Module\",\"canonical_name\":\"top\"},\"payloads\":[]}",
       "variant");
   expectRejection(
       "{\"variant\":\"Rtl\",\"stage\":null,\"format_ref\":{\"registry\":\"loom."
-      "hardware_representation_format\",\"major\":2,\"minor\":2,\"kind\":0}}",
+      "hardware_representation_format\",\"major\":2,\"minor\":3,\"kind\":0}}",
       "stage");
   expectRejection(json + " ", "canonical");
 
@@ -537,7 +598,7 @@ void jsonIsStrictlyCanonical() {
                     RepresentationObjectKind::DeviceResource, __func__)));
   expectRejection(
       "{\"format_ref\":{\"registry\":\"loom.hardware_representation_format\","
-      "\"major\":2,\"minor\":2,\"kind\":0},\"variant\":\"FpgaPhysical\","
+      "\"major\":2,\"minor\":3,\"kind\":0},\"variant\":\"FpgaPhysical\","
       "\"stage\":\"Placed\",\"top\":{\"object_kind\":\"DeviceResource\","
       "\"canonical_name\":\"top\"},\"payloads\":[{\"role\":\"RtlSource\","
       "\"canonical_logical_name\":\"rtl/top.sv\",\"blob_digest\":\"" +
@@ -560,6 +621,7 @@ void jsonIsStrictlyCanonical() {
 
 int main() {
   closedVariantsRoundTripExactly();
+  payloadFreeFabricModelRoundTripsExactly();
   binaryFramingIsStrict();
   variantStageLegalityIsClosedAtAuthoring();
   topKindMatchesVariant();

@@ -1,81 +1,15 @@
 #include "Common/MappingDebugLog.h"
 
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/raw_ostream.h"
-
-#include <mutex>
-#include <string>
+#include "Common/InvocationDiagnosticLog.h"
 
 namespace loom::mapping_debug {
 namespace {
-
-llvm::StringRef spelling(Stage stage) {
-  switch (stage) {
-  case Stage::TechMapping:
-    return "tech_mapping";
-  case Stage::SpatialPnr:
-    return "spatial_pnr";
-  case Stage::SystemPnr:
-    return "system_pnr";
-  }
-  llvm_unreachable("unknown Mapping debug stage");
-}
-
-llvm::StringRef spelling(Event event) {
-  switch (event) {
-  case Event::InvocationBegin:
-    return "invocation_begin";
-  case Event::InvocationEnd:
-    return "invocation_end";
-  case Event::Statistics:
-    return "statistics";
-  case Event::Candidate:
-    return "candidate";
-  case Event::Seed:
-    return "seed";
-  case Event::NegotiationIteration:
-    return "negotiation_iteration";
-  case Event::CapacityConflict:
-    return "capacity_conflict";
-  case Event::ActionProposal:
-    return "action_proposal";
-  case Event::ActionOutcome:
-    return "action_outcome";
-  case Event::ContextChoice:
-    return "context_choice";
-  case Event::NetRoute:
-    return "net_route";
-  case Event::CutAnalysis:
-    return "cut_analysis";
-  case Event::DerivedContext:
-    return "derived_context";
-  case Event::TopologyQuality:
-    return "topology_quality";
-  case Event::TagDomainPressure:
-    return "tag_domain_pressure";
-  case Event::ArithmeticFailure:
-    return "arithmetic_failure";
-  case Event::MappingFailure:
-    return "mapping_failure";
-  }
-  llvm_unreachable("unknown Mapping debug event");
-}
-
-struct OutputState final {
-  std::mutex mutex;
-  std::uint64_t nextSequence = 0;
-};
-
-OutputState &outputState() {
-  static OutputState state;
-  return state;
-}
 
 } // namespace
 
 Level level() { return diagnosticVerbosity(); }
 
-bool enabled(Level minimum) { return diagnosticVerbosityEnabled(minimum); }
+bool enabled(Level minimum) { return invocationDiagnosticEnabled(minimum); }
 
 llvm::StringRef closureStatusSpelling(ClosureStatus status) {
   switch (status) {
@@ -127,28 +61,12 @@ llvm::StringRef closureStatusSpelling(ClosureStatus status) {
 
 void emit(Level minimum, Stage stage, Event event,
           llvm::function_ref<void(llvm::json::Object &)> buildFields) {
-  if (!enabled(minimum))
-    return;
-
-  llvm::json::Object payload;
-  if (buildFields)
-    buildFields(payload);
-
-  OutputState &state = outputState();
-  std::lock_guard<std::mutex> lock(state.mutex);
-  llvm::json::Object envelope;
-  envelope["schema"] = "loom.mapping.debug.1";
-  envelope["level"] = static_cast<std::int64_t>(minimum);
-  envelope["event"] = spelling(event);
-  envelope["stage"] = spelling(stage);
-  envelope["sequence"] = static_cast<std::int64_t>(state.nextSequence++);
-  envelope["payload"] = std::move(payload);
-
-  std::string line;
-  llvm::raw_string_ostream stream(line);
-  stream << llvm::json::Value(std::move(envelope));
-  stream.flush();
-  llvm::errs() << line << '\n';
+  emitInvocationDiagnostic(minimum, stage, event, [&] {
+    llvm::json::Object payload;
+    if (buildFields)
+      buildFields(payload);
+    return llvm::json::Value(std::move(payload));
+  });
 }
 
 void MappingRunStatistics::emit(Stage stage,

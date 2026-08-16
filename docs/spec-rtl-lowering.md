@@ -17,7 +17,7 @@ Fabric-to-RTL consumes:
 * exact provider-owned external input bindings required by selected Fabric
   resources or implementation recipes.
 
-It produces one `loom.hardware_implementation 4.0` whose closed `Rtl`
+It produces one `loom.hardware_implementation 4.1` whose closed `Rtl`
 representation root owns the exact top Module locator and content-addressed
 SystemVerilog source closure for that SpatialCore occurrence. The
 implementation also owns that occurrence's interfaces, constraints, black-box
@@ -42,6 +42,11 @@ The lowering does not consume Dataflow or Mapping and does not create a
 workload-specific RTL design. Workload execution combines the reusable
 `HardwareImplementation` with an exact `Deployment`, configuration images, and
 runtime inputs.
+
+This explicit lowering is distinct from the payload-free `FabricModel`
+HardwareImplementation used by semantic DFG/CGRA execution. Constructing a
+Deployment or requesting core semantic execution must not invoke this lowering,
+emit SystemVerilog, or compile an RTL model as a side effect.
 
 ## Semantic Ownership
 

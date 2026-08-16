@@ -103,9 +103,9 @@ llvm::Error validateO3CpuCompatibility(
                    "architectural register files");
   for (const fabric::ExecutionUnitRecord &unit :
        microarchitecture.executionUnits()) {
-    if (unit.operationClass != fabric::InstructionOperationClass::IntegerAlu &&
-        unit.operationClass != fabric::InstructionOperationClass::LoadStore)
-      return invalid("O3CPU does not model one Fabric execution-unit class");
+    auto operationClasses = projectGem5O3OperationClasses(unit.operationClass);
+    if (!operationClasses)
+      return operationClasses.takeError();
     if (unit.initiationInterval != 1 &&
         unit.initiationInterval != unit.latencyCycles)
       return invalid("O3CPU cannot represent the execution-unit initiation "
@@ -128,6 +128,45 @@ const Gem5ModelPortKindDescriptor kExternalPorts[] = {
 
 } // namespace
 
+llvm::Expected<llvm::ArrayRef<llvm::StringLiteral>>
+projectGem5O3OperationClasses(
+    fabric::InstructionOperationClass operationClass) {
+  static constexpr llvm::StringLiteral integerAlu[] = {"IntAlu"};
+  static constexpr llvm::StringLiteral integerMultiply[] = {"IntMult"};
+  static constexpr llvm::StringLiteral integerDivide[] = {"IntDiv"};
+  static constexpr llvm::StringLiteral loadStore[] = {
+      "MemRead", "MemWrite", "FloatMemRead", "FloatMemWrite"};
+  static constexpr llvm::StringLiteral floatingPointAlu[] = {
+      "FloatAdd", "FloatCmp", "FloatCvt", "FloatMisc", "Bf16Cvt"};
+  static constexpr llvm::StringLiteral floatingPointMultiply[] = {
+      "FloatMult", "FloatMultAcc"};
+  static constexpr llvm::StringLiteral floatingPointDivide[] = {
+      "FloatDiv", "FloatSqrt"};
+
+  switch (operationClass) {
+  case fabric::InstructionOperationClass::IntegerAlu:
+    return integerAlu;
+  case fabric::InstructionOperationClass::IntegerMultiply:
+    return integerMultiply;
+  case fabric::InstructionOperationClass::IntegerDivide:
+    return integerDivide;
+  case fabric::InstructionOperationClass::LoadStore:
+    return loadStore;
+  case fabric::InstructionOperationClass::FloatingPointAlu:
+    return floatingPointAlu;
+  case fabric::InstructionOperationClass::FloatingPointMultiply:
+    return floatingPointMultiply;
+  case fabric::InstructionOperationClass::FloatingPointDivide:
+    return floatingPointDivide;
+  case fabric::InstructionOperationClass::Branch:
+  case fabric::InstructionOperationClass::VectorAlu:
+  case fabric::InstructionOperationClass::VectorMultiply:
+  case fabric::InstructionOperationClass::System:
+    return invalid("O3CPU does not model one Fabric execution-unit class");
+  }
+  llvm_unreachable("unknown instruction operation class");
+}
+
 const Gem5ModelContractDescriptor &gem5RiscvTimingCpuModel() {
   static const Gem5ModelContractDescriptor descriptor{
       {"loom.gem5.riscv_timing_cpu", {1, 0}},
@@ -143,8 +182,8 @@ const Gem5ModelContractDescriptor &gem5RiscvTimingCpuModel() {
 
 const Gem5ModelContractDescriptor &gem5RiscvO3CpuModel() {
   static const Gem5ModelContractDescriptor descriptor{
-      {"loom.gem5.riscv_o3_cpu", {1, 0}},
-      "loom.gem5.riscv_o3_cpu.v1",
+      {"loom.gem5.riscv_o3_cpu", {1, 1}},
+      "loom.gem5.riscv_o3_cpu.v1.1",
       "RiscvO3CPU",
       Gem5ModelObjectClass::Processor,
       false,

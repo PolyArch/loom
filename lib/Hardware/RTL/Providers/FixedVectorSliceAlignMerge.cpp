@@ -246,9 +246,9 @@ materializePortableFixedVectorSliceAlignMerge(
         outputs[0]->payloadWidthBits < parameters->maxContainerPayloadBits)))
     return unsupported(request);
 
-  const ConfigurationFieldEncoding *field = nullptr;
+  const ConfigurationEncodingRelation *field = nullptr;
   if (hasConfigurationField) {
-    field = request.configurationAbi.findOperationField(
+    field = request.configurationAbi.findOperationEncodingRelation(
         request.occurrence,
         request.capability.configurationFieldSchema.front().ordinal);
     if (!field)

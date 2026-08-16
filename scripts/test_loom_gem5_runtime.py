@@ -23,8 +23,12 @@ TEST_RUN_ROOT = REPOSITORY_ROOT / "build" / "test-runs"
 
 WIRE_MAGIC = b"LGB1"
 RESULT_MAGIC = b"LGR1"
+SPATIAL_LAUNCH_MAGIC = b"LGL1"
+INVOCATION_RESULT_MAGIC = b"LGX1"
 WIRE_HEADER = struct.Struct(">4sIQQ")
 RESULT_HEADER = struct.Struct(">4sIQQQ")
+SPATIAL_LAUNCH_HEADER = struct.Struct(">4sQQ")
+INVOCATION_RESULT_HEADER = struct.Struct("<4sQQ")
 MEMORY_REQUEST_HEADER = struct.Struct(">IQQQQ")
 MEMORY_RESPONSE_HEADER = struct.Struct(">QIQ")
 COMPLETION_HEADER = struct.Struct(">QIQ")
@@ -184,6 +188,44 @@ def receive_message(connection: socket.socket) -> tuple[int, int, bytes]:
     return kind, sequence, read_exact(connection, payload_size)
 
 
+def decode_spatial_launch_envelope(payload: bytes) -> tuple[bytes, bytes]:
+    if len(payload) < SPATIAL_LAUNCH_HEADER.size:
+        raise RuntimeError("Spatial launch envelope is truncated")
+    magic, static_size, invocation_size = SPATIAL_LAUNCH_HEADER.unpack_from(payload)
+    if magic != SPATIAL_LAUNCH_MAGIC:
+        raise RuntimeError("Spatial launch envelope has the wrong magic")
+    if static_size + invocation_size != len(payload) - SPATIAL_LAUNCH_HEADER.size:
+        raise RuntimeError("Spatial launch envelope lengths are not canonical")
+    static_end = SPATIAL_LAUNCH_HEADER.size + static_size
+    return payload[SPATIAL_LAUNCH_HEADER.size : static_end], payload[static_end:]
+
+
+def invocation_result(invocation: bytes, boundary_result: bytes) -> bytes:
+    return (
+        INVOCATION_RESULT_HEADER.pack(
+            INVOCATION_RESULT_MAGIC, len(invocation), len(boundary_result)
+        )
+        + invocation
+        + boundary_result
+    )
+
+
+def decode_invocation_result(payload: bytes) -> tuple[bytes, bytes]:
+    if len(payload) < INVOCATION_RESULT_HEADER.size:
+        raise RuntimeError("Spatial invocation result is truncated")
+    magic, invocation_size, boundary_size = INVOCATION_RESULT_HEADER.unpack_from(
+        payload
+    )
+    if magic != INVOCATION_RESULT_MAGIC:
+        raise RuntimeError("Spatial invocation result has the wrong magic")
+    if invocation_size + boundary_size != (
+        len(payload) - INVOCATION_RESULT_HEADER.size
+    ):
+        raise RuntimeError("Spatial invocation result lengths are not canonical")
+    invocation_end = INVOCATION_RESULT_HEADER.size + invocation_size
+    return payload[INVOCATION_RESULT_HEADER.size : invocation_end], payload[invocation_end:]
+
+
 def send_message(
     connection: socket.socket, kind: int, sequence: int, payload: bytes
 ) -> None:
@@ -223,9 +265,15 @@ def run_engine(arguments: argparse.Namespace) -> int:
     try:
         connection, _ = server.accept()
         with connection:
-            kind, sequence, launch = receive_message(connection)
+            kind, sequence, payload = receive_message(connection)
+            launch, invocation = decode_spatial_launch_envelope(payload)
             expected_launch = arguments.expected_launch.read_bytes()
-            if kind != SPATIAL_LAUNCH or sequence != 0 or launch != expected_launch:
+            if (
+                kind != SPATIAL_LAUNCH
+                or sequence != 0
+                or launch != expected_launch
+                or invocation
+            ):
                 raise RuntimeError("bridge launch differs from the expected payload")
 
             value = EXPECTED_VALUE.to_bytes(8, byteorder="little")
@@ -241,8 +289,9 @@ def run_engine(arguments: argparse.Namespace) -> int:
             send_message(connection, MEMORY_REQUEST, sequence, read_payload)
             require_memory_response(connection, sequence, 2, value)
 
-            completion = COMPLETION_HEADER.pack(13, 0, len(EXPECTED_RESULT))
-            send_message(connection, COMPLETION, sequence, completion + EXPECTED_RESULT)
+            result = invocation_result(invocation, EXPECTED_RESULT)
+            completion = COMPLETION_HEADER.pack(13, 0, len(result))
+            send_message(connection, COMPLETION, sequence, completion + result)
             arguments.trace.write_text(
                 json.dumps(
                     {
@@ -416,7 +465,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             for ordinal in range(2)
         ]
         projection = {
-            "schema": "loom.gem5_system_projection.3",
+            "schema": "loom.gem5_system_projection.5",
             "gem5_binary_sha256": binary_digest(gem5),
             "clock": "1GHz",
             "memory": {"base": MEMORY_BASE, "size": MEMORY_SIZE, "latency": "20ns"},
@@ -424,6 +473,9 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                 "elf": str(host_image),
                 "cpu_id": 0,
                 "entry_symbol": "loom_host_entry",
+                "result_address": 0,
+                "result_size": 0,
+                "return_address": HOST_LOAD_ADDRESS,
             },
             "instruction_images": [str(instruction_image)],
             "runtime_images": [
@@ -474,7 +526,7 @@ def run_smoke(arguments: argparse.Namespace) -> int:
                     "num_threads": 1,
                     "execution_units": [
                         {
-                            "operation_class": 0,
+                            "operation_classes": ["IntAlu"],
                             "count": 1,
                             "latency_cycles": 1,
                             "initiation_interval": 1,
@@ -544,7 +596,13 @@ def run_smoke(arguments: argparse.Namespace) -> int:
             status, completion_tick, sequence, result = decode_bridge_result(
                 bridge_result_path
             )
-            if status != 0 or sequence != 0 or result != EXPECTED_RESULT:
+            invocation, boundary_result = decode_invocation_result(result)
+            if (
+                status != 0
+                or sequence != 0
+                or invocation
+                or boundary_result != EXPECTED_RESULT
+            ):
                 raise RuntimeError(
                     "Spatial bridge result differs from the engine completion"
                 )

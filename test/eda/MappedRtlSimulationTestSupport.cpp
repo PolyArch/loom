@@ -618,6 +618,15 @@ pnr::ResolvedPnrConfigView spatialConfig(llvm::StringRef test) {
       ResolvedPnrViolationKind::UnroutedObligation,
       ResolvedPnrViolationKind::CapacityOveruse};
   config.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 2;
+  auto &search = config.dse.spatialPnr.search;
+  search.initializer.seedAttemptCount = 1;
+  search.actionProposal = {1, 0, 0};
+  search.annealing.calibrationProposalCount = 1;
+  search.annealing.fallbackTemperature = 1;
+  search.annealing.minimumTemperature = 1;
+  search.annealing.coolingRatio = {1, 2};
+  search.annealing.proposalsPerLevelBase = 1;
+  search.annealing.proposalsPerMovableDecision = 0;
   return take(test, pnr::projectResolvedSpatialPnrConfigView(config));
 }
 

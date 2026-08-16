@@ -17,6 +17,20 @@ using ImplementationFamilyBehaviorKeyComponent =
     std::variant<std::uint32_t, ::loom::CanonicalSemanticBytes,
                  ImplementationFamilyBehaviorLaneImage>;
 
+struct CanonicalRoutedTokenLaneImage final {
+  std::vector<std::uint64_t> operandPorts;
+  std::vector<std::uint64_t> resultPorts;
+  std::vector<std::uint32_t> effectivePayloadWidths;
+};
+
+llvm::Error forEachCanonicalRoutedTokenLaneImage(
+    ImplementationFamilyId family, const FamilyCapabilityParams &params,
+    llvm::ArrayRef<std::uint32_t> physicalInputWidths,
+    llvm::ArrayRef<std::uint32_t> physicalResultWidths,
+    std::uint32_t laneCount,
+    llvm::function_ref<llvm::Expected<bool>(
+        const CanonicalRoutedTokenLaneImage &)> callback);
+
 llvm::Expected<::loom::CanonicalSemanticBytes>
 encodeImplementationFamilyBehaviorKey(
     ImplementationFamilyId family, llvm::StringRef role,

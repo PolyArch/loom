@@ -36,15 +36,17 @@ void appendFramed(Bytes &bytes, llvm::ArrayRef<std::uint8_t> value) {
   bytes.insert(bytes.end(), value.begin(), value.end());
 }
 
-void appendEncoding(Bytes &bytes, const ConfigurationFieldEncoding &field) {
+void appendEncoding(Bytes &bytes,
+                    const ConfigurationEncodingRelation &relation,
+                    const ConfigurationFieldEncoding &field) {
   if (const auto *direct =
-          std::get_if<DirectBitsEncoding>(&field.semanticEncoding)) {
+          std::get_if<DirectBitsEncoding>(&relation.semanticEncoding)) {
     bytes.push_back(0);
     appendU64(bytes, direct->encodedBitCount);
   } else {
     bytes.push_back(1);
     const auto &codebook =
-        std::get<FiniteCodebookEncoding>(field.semanticEncoding);
+        std::get<FiniteCodebookEncoding>(relation.semanticEncoding);
     appendU64(bytes, codebook.encodedBitCount);
     appendU64(bytes, codebook.entries.size());
     for (const FiniteCodebookEntry &entry : codebook.entries) {
@@ -58,11 +60,12 @@ void appendEncoding(Bytes &bytes, const ConfigurationFieldEncoding &field) {
     appendU64(bytes, slice.destinationBitOffset);
     appendU64(bytes, slice.bitCount);
   }
-  appendFramed(bytes, field.inactiveValue);
+  appendFramed(bytes, relation.inactiveValue);
 }
 
 llvm::Expected<Bytes>
-definitionKey(const ProgrammingUnit &unit,
+definitionKey(const ConfigurationABI &configurationAbi,
+              const ProgrammingUnit &unit,
               fabric::SpatialCoreOccurrenceRef spatialCore) {
   std::vector<Bytes> closure;
   closure.reserve(unit.exactFabricResourceClosure.size());
@@ -94,9 +97,13 @@ definitionKey(const ProgrammingUnit &unit,
     if (internal.spatialCore != spatialCore)
       return unsupported(
           "a local programming unit field names another SpatialCore");
+    const ConfigurationEncodingRelation *relation =
+        configurationAbi.findEncodingRelation(field);
+    if (!relation)
+      return invalid("configuration field names an unknown encoding relation");
     Bytes key;
     appendFramed(key, fabric::canonicalFabricBytes(internal.slot));
-    appendEncoding(key, field);
+    appendEncoding(key, *relation, field);
     fields.push_back(std::move(key));
   }
   llvm::sort(fields);
@@ -145,7 +152,7 @@ derivePortableConfigurationTransportLayout(
           "a programming unit selected by the local transport crosses its "
           "SpatialCore occurrence");
 
-    auto key = definitionKey(unit, spatialCore);
+    auto key = definitionKey(configurationAbi.abi(), unit, spatialCore);
     if (!key)
       return key.takeError();
     auto inactive = configurationAbi.abi().encode(unit.id, {});

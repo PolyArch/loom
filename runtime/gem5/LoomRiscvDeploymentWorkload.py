@@ -18,6 +18,9 @@ class LoomRiscvDeploymentWorkload(RiscvBareMetal):
     host_memory_table_entries = Param.UInt64(
         0, "System memory-interface table entry count"
     )
+    host_result_address = Param.Addr(0, "Program value-result storage address")
+    host_result_size = Param.UInt64(0, "Program value-result storage size")
+    host_return_address = Param.Addr("HostCore return trampoline address")
     stack_base = Param.Addr("Lowest per-CPU stack address")
     stack_stride = Param.Addr("Per-CPU stack allocation size")
     instruction_images = VectorParam.String(

@@ -1,0 +1,47 @@
+# RUN: env -u LOOM_VERBOSE_LEVEL %loom-hardware-configuration-diagnostics-test 2>&1 | count 0
+# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-hardware-configuration-diagnostics-test 2>&1 | FileCheck %s
+
+# CHECK: {"event":"configuration_abi_derivation","level":1
+# CHECK-SAME: "payload":{"configuration_field_count":10
+# CHECK-SAME: "construction_count":1
+# CHECK-SAME: "construction_time_ns":2
+# CHECK-SAME: "deterministic_work":8
+# CHECK-SAME: "encoding_relation_count":11
+# CHECK-SAME: "programming_unit_count":9
+# CHECK-SAME: "relation_cache_hits":5
+# CHECK-SAME: "relation_cache_misses":6
+# CHECK-SAME: "retained_cache_bytes":7
+# CHECK-SAME: "source_cache_hits":3
+# CHECK-SAME: "source_cache_misses":4
+# CHECK-SAME: "schema":"loom.invocation.diagnostic.1"
+# CHECK-SAME: "sequence":0
+# CHECK-SAME: "stage":"hardware_configuration"
+# CHECK-NEXT: {"event":"configuration_abi_construction","level":1
+# CHECK-SAME: "payload":{"cache_hits":14
+# CHECK-SAME: "cache_misses":15
+# CHECK-SAME: "canonical_byte_count":21
+# CHECK-SAME: "canonicalization_count":12
+# CHECK-SAME: "configuration_field_count":20
+# CHECK-SAME: "construction_time_ns":13
+# CHECK-SAME: "deterministic_work":18
+# CHECK-SAME: "encoding_relation_count":19
+# CHECK-SAME: "physical_slot_validation_count":16
+# CHECK-SAME: "retained_cache_bytes":17
+# CHECK-SAME: "schema":"loom.invocation.diagnostic.1"
+# CHECK-SAME: "sequence":1
+# CHECK-SAME: "stage":"hardware_configuration"
+# CHECK-NEXT: {"event":"configuration_abi_import_session","level":1
+# CHECK-SAME: "payload":{"bytes_copied":27
+# CHECK-SAME: "bytes_read":26
+# CHECK-SAME: "cache_hits":24
+# CHECK-SAME: "cache_misses":25
+# CHECK-SAME: "construction_time_ns":28
+# CHECK-SAME: "deterministic_work":29
+# CHECK-SAME: "entry_count":31
+# CHECK-SAME: "import_requests":22
+# CHECK-SAME: "retained_bytes":30
+# CHECK-SAME: "unique_constructions":23
+# CHECK-SAME: "verification_domain":"source_invocation"
+# CHECK-SAME: "schema":"loom.invocation.diagnostic.1"
+# CHECK-SAME: "sequence":2
+# CHECK-SAME: "stage":"hardware_configuration"

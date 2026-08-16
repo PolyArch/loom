@@ -1,5 +1,6 @@
 add_library(LoomHardwareConfiguration
   ConfigurationABI.cpp
+  ConfigurationDiagnostics.cpp
   PackedConfigurationABI.cpp
   ProgrammingUnitRef.cpp
 )

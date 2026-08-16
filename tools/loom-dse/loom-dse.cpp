@@ -12,6 +12,7 @@
 #include "DSE/ModelParameterCalibrationAcquisition.h"
 #include "DSE/ModelParameterTrainingCandidateGenerator.h"
 #include "DSE/PortableSpatialCoreRtlCandidateGenerator.h"
+#include "DSE/ProductionOwners.h"
 #include "DSE/RootCompleteSpatialPnrCandidateGenerator.h"
 #include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
@@ -215,40 +216,6 @@ void requestStopFromSignal(int) { stopSignal = 1; }
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "loom_dse_invalid: " + message);
-}
-
-llvm::Error registerProductionOwners() {
-  if (llvm::Error error = evaluation::registerProductionEvaluationRegistry())
-    return error;
-  const std::array registrations = {
-      &registerStructuredOwnershipCandidateGenerator,
-      &registerStructuredScheduleCandidateGenerator,
-      &registerStructuredExecutionShapeCandidateGenerator,
-      &registerStructuredSpecialMathAccuracyCandidateGenerator,
-      &registerStructuredMemoryCommunicationCandidateGenerator,
-      &registerDataflowRewriteCandidateGenerator,
-      &registerSpatialPnrCandidateGenerator,
-      &registerRootCompleteTechMappingCandidateGenerator,
-      &registerApplicationGraphTechMappingCandidateGenerator,
-      &registerRootCompleteSpatialPnrCandidateGenerator,
-      &registerSpatialMappingFeedbackCandidateGenerator,
-      &registerRootCompleteSystemPnrCandidateGenerator,
-      &registerApplicationSystemPnrCandidateGenerator,
-      &registerFabricTemplateCandidateGenerator,
-      &registerSpatialTopologyCandidateGenerator,
-      &registerSpatialMicroarchitectureCandidateGenerator,
-      &registerSystemCompositionCandidateGenerator,
-      &registerPortableSpatialCoreRtlCandidateGenerator,
-      &registerFpaGbdtTrainingCandidateGenerator,
-      &registerSystemRuntimeGbdtTrainingCandidateGenerator,
-      &registerStructuredEvaluationPromotionAcquisition,
-      &registerDataflowEvaluationPromotionAcquisition,
-      &registerSpatialMappingEvaluationPromotionAcquisition,
-      &registerModelParameterCalibrationPromotionAcquisitions};
-  for (llvm::Error (*registration)() : registrations)
-    if (llvm::Error error = registration())
-      return error;
-  return llvm::Error::success();
 }
 
 llvm::Expected<ArtifactRootReference> loadRootReference(llvm::StringRef path) {
@@ -456,7 +423,7 @@ llvm::Expected<int> run() {
   if (std::error_code error = llvm::sys::fs::create_directories(runRoot))
     return llvm::errorCodeToError(error);
 
-  if (llvm::Error error = registerProductionOwners())
+  if (llvm::Error error = registerProductionDseOwners())
     return error;
   auto config = loadResolvedConfig(configPath);
   if (!config)
@@ -518,16 +485,10 @@ llvm::Expected<int> run() {
         *policy, *config, artifacts);
     if (!plan)
       return plan.takeError();
-    for (const JointSoftwareScope &scope : plan->frontier.softwareFrontier) {
-      semanticInputs->push_back(scope.dataflow);
-      semanticInputs->insert(semanticInputs->end(), scope.workloads.begin(),
-                             scope.workloads.end());
-    }
-    semanticInputs->insert(semanticInputs->end(),
-                           plan->frontier.systemFrontier.begin(),
-                           plan->frontier.systemFrontier.end());
-    semanticInputs->insert(semanticInputs->end(), timingProfiles->begin(),
-                           timingProfiles->end());
+    std::vector<ArtifactRootReference> jointInputs =
+        projectJointDesignSemanticInputs(*plan);
+    semanticInputs->insert(semanticInputs->end(), jointInputs.begin(),
+                           jointInputs.end());
     canonicalizeRootUnion(*semanticInputs);
     llvm::errs() << "joint_frontier_eligible="
                  << plan->frontier.eligiblePairCount

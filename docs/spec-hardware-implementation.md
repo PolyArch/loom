@@ -1,14 +1,17 @@
 # Hardware Implementation
 
-This document defines the immutable hardware-state artifact produced by
-Fabric-to-RTL and downstream ASIC or FPGA implementation flows. Fabric remains
-the hardware semantic authority. A HardwareImplementation records concrete
-implementation state that cannot be recovered from Fabric alone.
+This document defines the immutable implementation relation for one exact
+SpatialCore occurrence. Fabric remains the hardware semantic authority. A
+HardwareImplementation either records the payload-free Fabric behavioral model
+used by semantic runtimes or concrete state produced by RTL, ASIC, or FPGA
+implementation flows. Concrete representation state cannot be recovered from
+Fabric; the behavioral form is mechanically revalidated against Fabric and the
+ConfigurationABI rather than copying them.
 
 ## Artifact Family
 
 ```text
-loom.hardware_implementation 4.0
+loom.hardware_implementation 4.1
 ```
 
 ```text
@@ -29,7 +32,7 @@ HardwareImplementation {
 `fabric_ref` is an exact `loom.fabric 5.0` System root,
 `spatial_core_occurrence_ref` is one exact SpatialCore occurrence in that
 System, and `configuration_abi_ref` is an exact
-`loom.configuration_abi 3.0` root bound to the same System. Every interface,
+`loom.configuration_abi 4.0` root bound to the same System. Every interface,
 activity point, configuration unit, memory macro, recipe, and external binding
 is confined to that occurrence. Imported Module internals use exact
 occurrence-qualified physical targets. A bare Module root, an unqualified
@@ -44,19 +47,25 @@ facts until an independent physical provider implements them.
 The artifact does not store Mapping, workload, configuration images, QoR
 metrics, tool logs, report paths, or pass/fail signoff booleans.
 
-`implementation_platform_ref` is absent only for a target-independent RTL
-representation. It is mandatory when the represented RTL is specialized to an
-ASIC technology release or FPGA ordering code, and for GateNetlist, every ASIC
-physical variant, every FPGA physical variant, and an FPGA image. Dependence on
-DesignWare, ChipWare, another tool-bundled library, or an explicit user IP does
-not by itself create a target manifest; that dependence is recorded by an
-external implementation binding.
+`implementation_platform_ref` is absent for `FabricModel` and for
+target-independent RTL. It is forbidden for `FabricModel`, mandatory when the
+represented RTL is specialized to an ASIC technology release or FPGA ordering
+code, and mandatory for GateNetlist, every ASIC physical variant, every FPGA
+physical variant, and an FPGA image. Dependence on DesignWare, ChipWare,
+another tool-bundled library, or an explicit user IP does not by itself create
+a target manifest; that dependence is recorded by an external implementation
+binding.
 
 ## Representation Root
 
 ```text
 ImplementationRepresentationRoot =
-    Rtl {
+    FabricModel {
+      format_ref: RepresentationFormatDescriptorRef
+      top: RepresentationLocator<Model>("fabric_model")
+      payloads[]: exact empty array
+    }
+  | Rtl {
       format_ref: RepresentationFormatDescriptorRef
       top: RepresentationLocator<Module>
       payloads[]: canonical nonempty array<ImplementationPayload>
@@ -95,12 +104,13 @@ ImplementationPayloadRef =
 ```
 
 The stable root-variant tags are `Rtl = 0`, `GateNetlist = 1`,
-`AsicPhysical = 2`, `FpgaPhysical = 3`, and `FpgaImage = 4`. ASIC stage tags
-are `Placed = 0`, `Routed = 1`, and `Extracted = 2`; FPGA physical stage tags
-are `Placed = 0` and `Routed = 1`. Payload-role and representation-object tags
-follow their displayed declaration order below. Binary encoding uses `u32be`
-for every tag and `u64be` length framing for variable byte strings and arrays.
-Canonical JSON uses the exact displayed spellings and contains no aliases.
+`AsicPhysical = 2`, `FpgaPhysical = 3`, `FpgaImage = 4`, and
+`FabricModel = 5`. ASIC stage tags are `Placed = 0`, `Routed = 1`, and
+`Extracted = 2`; FPGA physical stage tags are `Placed = 0` and `Routed = 1`.
+Payload-role and representation-object tags follow their displayed declaration
+order below. Binary encoding uses `u32be` for every tag and `u64be` length
+framing for variable byte strings and arrays. Canonical JSON uses the exact
+displayed spellings and contains no aliases.
 
 Payloads sort by `(role tag, canonical logical-name bytes, BlobDigest bytes)`.
 The pair `(role, canonical_logical_name)` is unique. A logical name is a
@@ -142,13 +152,13 @@ RepresentationObjectFacts {
 ```
 
 The registry identity is
-`loom.hardware_representation_format`, version `2.2`. Its exact reference bytes
+`loom.hardware_representation_format`, version `2.3`. Its exact reference bytes
 are `u64be(identity length) || identity bytes || u32be(major) || u32be(minor) ||
 u32be(format kind)`. Existing format kinds retain their numeric meaning. A new
 major version owns an incompatible indexer, object-fact, locator, or
 failure-classification contract; a minor version is reserved for
 backward-compatible additions. A prior-version reference is never
-reinterpreted as `2.2`: there is no compatibility execution path or alias.
+reinterpreted as `2.3`: there is no compatibility execution path or alias.
 A canonical JSON reference is exactly the object fields `registry`, `major`,
 `minor`, and `kind` in that order, with the registry string above and canonical
 unsigned integers.
@@ -163,7 +173,7 @@ payload, locator, object fact, unresolved-definition fact, or failure
 classification, the registry version changes. A second semantic identity field
 or provider-private descriptor revision is forbidden.
 
-Registry 2.2 owns these format kinds:
+Registry 2.3 owns these format kinds:
 
 | Kind | Stable spelling | Admitted root | Payload contract |
 | ---: | --- | --- | --- |
@@ -171,6 +181,23 @@ Registry 2.2 owns these format kinds:
 | 1 | `structural_verilog_gate_netlist` | `GateNetlist` | one or more `Netlist`; zero or more `GenerationConstraint` and `BlackBoxContract` |
 | 2 | `indexed_physical` | every `AsicPhysical`, `FpgaPhysical`, and `FpgaImage` form listed below | the exact selected physical row, including exactly one `RepresentationIndex` |
 | 3 | `indexed_def_physical` | `AsicPhysical::Placed`, `AsicPhysical::Routed`, and `AsicPhysical::Extracted` | one or more structural-Verilog `Netlist`, exactly one DEF `PhysicalDatabase`, one or more `GenerationConstraint`, exactly one `RepresentationIndex`, plus the optional physical roles admitted by the selected stage |
+| 4 | `fabric_model` | `FabricModel` | no payloads |
+
+The `fabric_model` descriptor admits exactly one `Model` object whose canonical
+name is `fabric_model`. Its removable index contains only that root. It parses
+no payload, owns no physical or HDL object inventory, and cannot carry an
+ImplementationPlatform, activity point, memory-macro binding, or external
+implementation binding. The exact System and ConfigurationABI already named
+by HardwareImplementation are its semantic closure. The finalizer mechanically
+derives every subject-local Data, Memory, Clock, Reset, and Configuration
+interface from those owners, binds each to the model root, and requires exact
+equality on both finalization and import. Omitting, adding, or rebinding an
+interface is invalid.
+
+`FabricModel` is the declarative implementation relation consumed by core DFG
+and CGRA runtimes. Finalizing it performs no CIRCT lowering, HDL emission,
+Verilator compilation, or RTL execution. Materializing an `Rtl` root is a
+separate explicit request and produces a distinct HardwareImplementation.
 
 The two HDL descriptors use the exact media-type spellings
 `text/x-systemverilog; charset=utf-8` for `RtlSource`,
@@ -501,6 +528,7 @@ locator, admitted payload roles, and required cardinalities:
 
 | Variant | Complete allowed payload-role catalog |
 | --- | --- |
+| `FabricModel` | no payloads |
 | `Rtl` | one or more `RtlSource`; zero or more `GenerationConstraint` and `BlackBoxContract` |
 | `GateNetlist` | one or more `Netlist`; zero or more `GenerationConstraint` and `BlackBoxContract` |
 | `AsicPhysical::Placed` | exactly one `RepresentationIndex`; one or more `PhysicalDatabase`; zero or more `Netlist`, `GenerationConstraint`, and `BlackBoxContract` |
@@ -519,9 +547,10 @@ logical payload closure. The root cannot be inferred from a filename, first
 parsed module, tool default, or report.
 
 The closed variant identifies the semantic implementation state represented
-by its payload closure. It is not a linear mandatory pipeline: a selected flow
-may omit forms it does not materialize. A generic stage string, flat payload
-catalog outside this root, or bag of optional format fields is forbidden.
+by its exact owner closure and, except for `FabricModel`, its payload closure.
+It is not a linear mandatory pipeline: a selected flow may omit forms it does
+not materialize. A generic stage string, flat payload catalog outside this
+root, or bag of optional format fields is forbidden.
 
 ## Semantic Closure And Derivation
 
@@ -624,9 +653,10 @@ RepresentationObjectKind =
   | Pin
   | PhysicalObject
   | DeviceResource
+  | Model
 ```
 
-The displayed order fixes stable representation-object tags `0` through `9`.
+The displayed order fixes stable representation-object tags `0` through `10`.
 Every locator encodes its `u32be` object-kind tag followed by the
 `u64be`-length-framed canonical-name bytes. Locator arrays are sorted by these
 canonical bytes and reject duplicates.
@@ -652,6 +682,13 @@ consumer declares the semantic interfaces it requires and rejects an absent or
 ambiguous match before execution. This keeps protocol decomposition with the
 consumer or provider that owns it instead of making HardwareImplementation a
 second AXI, JTAG, MMIO, memory, or external-protocol schema.
+
+For `FabricModel`, the catalog is not caller-declared: the finalizer derives
+the complete subject-local interface closure from the exact System and ABI.
+All records use the sole `Model("fabric_model")` locator because a behavioral
+model has no separately materialized signal objects. RuntimePlatformBinding
+still binds each typed semantic interface independently; sharing the model
+locator does not merge their identities or endpoint contracts.
 
 Several `Configuration(ProgrammingUnitRef)` records may intentionally name the
 same top-module locator when one shared transport serves their exact
@@ -688,7 +725,7 @@ the exact consumer contract owns that grouping. Their dense ordinals are
 derived only after sorting; no caller-authored interface or activity ID enters
 identity.
 
-The schema-2.2 owner-local reference catalog is:
+The HardwareImplementation 4.1 owner-local reference catalog is:
 
 ```text
 0  HardwareImplementationInterfaceRef

@@ -4,6 +4,8 @@
 #include "Common/Artifact.h"
 #include "Common/BlobDigest.h"
 #include "Dataflow/IR/DataflowCanonicalEntity.h"
+#include "Dataflow/IR/DataflowStructuralRefs.h"
+#include "Frontend/Executable/ExecutableElf.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
@@ -23,42 +25,33 @@ class InstructionCoreBinaryBuilder;
 }
 
 inline constexpr ArtifactSchemaDescriptor instructionCoreBinarySchema{
-    "loom.instruction_core_binary", SchemaVersion{1, 0}};
+    "loom.instruction_core_binary", SchemaVersion{1, 1}};
 
-struct InstructionLoadSegment final {
-  std::uint64_t ordinal;
-  std::uint64_t virtualAddress;
-  std::uint64_t fileOffset;
-  std::uint64_t fileSize;
-  std::uint64_t memorySize;
-  std::uint64_t alignment;
-  bool readable;
-  bool writable;
-  bool executable;
+using InstructionLoadSegment = ExecutableLoadSegment;
 
-  friend bool operator==(const InstructionLoadSegment &lhs,
-                         const InstructionLoadSegment &rhs) {
-    return lhs.ordinal == rhs.ordinal &&
-           lhs.virtualAddress == rhs.virtualAddress &&
-           lhs.fileOffset == rhs.fileOffset && lhs.fileSize == rhs.fileSize &&
-           lhs.memorySize == rhs.memorySize && lhs.alignment == rhs.alignment &&
-           lhs.readable == rhs.readable && lhs.writable == rhs.writable &&
-           lhs.executable == rhs.executable;
-  }
-  friend bool operator!=(const InstructionLoadSegment &lhs,
-                         const InstructionLoadSegment &rhs) {
-    return !(lhs == rhs);
+/// A non-empty invocation accepted by this entry through the canonical
+/// loom.spatial_invocation_abi.v1 wire. Value geometry is derived from the
+/// exact rooted graph and is not duplicated here.
+struct ThreadEntrySpatialInvocationBinding final {
+  dataflow::RootedGraphLaunchRef graph;
+
+  friend bool operator==(const ThreadEntrySpatialInvocationBinding &lhs,
+                         const ThreadEntrySpatialInvocationBinding &rhs) {
+    return lhs.graph == rhs.graph;
   }
 };
 
 struct ThreadEntryBinding final {
   dataflow::RootThreadLaunchRef rootThreadLaunch;
   std::uint64_t entryOrdinal;
+  std::optional<ThreadEntrySpatialInvocationBinding> spatialInvocation =
+      std::nullopt;
 
   friend bool operator==(const ThreadEntryBinding &lhs,
                          const ThreadEntryBinding &rhs) {
     return lhs.rootThreadLaunch == rhs.rootThreadLaunch &&
-           lhs.entryOrdinal == rhs.entryOrdinal;
+           lhs.entryOrdinal == rhs.entryOrdinal &&
+           lhs.spatialInvocation == rhs.spatialInvocation;
   }
 };
 
@@ -103,6 +96,8 @@ public:
 
   llvm::Expected<std::uint64_t>
   threadEntry(dataflow::RootThreadLaunchRef root) const;
+  llvm::Expected<const ThreadEntryBinding *>
+  threadEntryBinding(dataflow::RootThreadLaunchRef root) const;
 
 private:
   InstructionCoreBinary(ArtifactRootReference canonicalDataflow,

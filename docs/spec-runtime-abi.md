@@ -21,14 +21,15 @@ record or completion domain.
 The persistent runtime-owned families are:
 
 ```text
-loom.runtime_platform_binding 3.0
+loom.runtime_platform_binding 3.1
 loom.gem5_simulation_binding  2.0
 ```
 
-The major versions change because the first root admits an exact
-`loom.hardware_implementation 4.0` and the second admits exact
-`loom.fabric 5.0` roots. Their record shapes remain as specified below; no 1.0
-reference is reinterpreted with a different accepted dependency schema.
+RuntimePlatformBinding 3.1 extends its exact dependency admission to
+`loom.hardware_implementation 4.1`, including the payload-free `FabricModel`;
+Gem5SimulationBinding 2.0 admits exact `loom.fabric 5.0` roots. Their record
+shapes remain as specified below; no prior-version reference is reinterpreted
+with a different accepted dependency schema.
 
 Concrete device handles, leases, addresses, queues, and process state remain
 transient. There is no generic runtime manifest or public manual-launch schema.
@@ -119,6 +120,38 @@ Thread Dispatch never directly invokes a SpatialCore simulator. The selected
 InstructionCore binary issues Spatial Launch requests for its local graph
 launches.
 
+For every committed thread occurrence, generated host glue forms one closed
+`SpatialInvocationDemand` from the exact Canonical Dataflow boundary and the
+concrete source-language call. The demand contains the Canonical Dataflow
+identity, rooted thread and graph launch references, dense coordinates, typed
+value tokens, authorized memory capabilities, and result destinations. Its
+serialized Runtime ABI is invocation-local and disappears after execution; it
+is not another workload, Mapping, or Deployment artifact.
+
+The generated host glue, Thread Dispatch device, InstructionCore entry, Spatial
+Bridge, and Spatial engine must transport this same byte sequence. None of
+them may independently infer argument order, payload width, result ownership,
+or memory authorization. Decoding reprojects the boundary shapes from the
+exact Canonical Dataflow owner and rejects a foreign identity, reference,
+coordinate rank, non-dense value ordinal, width mismatch, noncanonical padding,
+or result destination outside the admitted capability surface.
+
+A graph whose complete runtime input is already derived from Deployment and
+System channel state has no source-call value or result payload. Its Thread
+Dispatch invocation descriptor is the canonical zero-address, zero-size pair,
+and the Spatial engine consumes the exact stored runtime input named by the
+static launch projection. A nonzero address with zero size, or zero address
+with nonzero size, is malformed. The empty descriptor cannot replace a
+required dynamic demand or introduce another runtime-input owner.
+
+The compiled contract is owned by the selected `ThreadEntryBinding` in
+`loom.instruction_core_binary`. Its optional `spatial_invocation` names one
+exact rooted graph and `loom.spatial_invocation_abi.v1`. Runtime projection,
+Thread Dispatch, and the Spatial engine use that field to distinguish the
+non-empty wire form from the static form. They must not infer the distinction
+from graph operand/result counts, result uses, workload observability, or an
+engine-specific heuristic.
+
 ### SpatialLaunchImage
 
 Runtime consumes `SpatialLaunchImage` to evaluate the immutable Graph Execution
@@ -131,6 +164,24 @@ services, not a new endpoint type or record family. Completion returns graph
 results and graph-local done to the issuing InstructionCore context. It does
 not complete the enclosing thread unless the Canonical Dataflow Program makes
 that relation explicit.
+
+The launch request carries two distinct planes. The immutable plane is the
+exact Deployment `SpatialLaunchImage` payload. The dynamic plane is the
+`SpatialInvocationDemand` received through Thread Dispatch. The Bridge keeps
+both planes separate, validates their total size, and sends one framed request
+to the selected engine. The engine must byte-compare the immutable plane with
+the Deployment projection and independently decode the dynamic plane against
+the same rooted graph launch. Treating a static launch image as if it supplied
+runtime values is invalid.
+
+For value results, the dynamic demand owns exact destination capabilities. The
+engine derives result bytes only from the selected Spatial workload's typed
+functional observations and writes them through the Bridge before publishing
+completion. The InstructionCore then completes Thread Dispatch, and only then
+may host glue read the result. This ordering is the mechanical connection
+between the original software call and the Spatial execution; a detached
+Spatial launch performed beside an unmodified HostCore call is not System
+execution evidence.
 
 ### AdmissionImage
 
@@ -194,6 +245,13 @@ Runtime owns transient state only:
 These values disappear after execution and never enter artifact identity.
 They may affect when an immutable choice executes, but not which mapping choice
 is selected.
+
+An invocation result envelope retains the exact dynamic-demand bytes beside
+the normalized Spatial boundary result in external-tool attempt material. The
+System importer reconstructs the transient Spatial runtime input from those
+bytes, revalidates the workload and result shapes, and checks every result write
+against the decoded destination table. The envelope has no ArtifactIdentity
+and cannot substitute for final `SimulationExecution` validation.
 
 ### Channel Event Execution
 
@@ -594,6 +652,16 @@ execution advances to its next system-boundary observable, such as a memory
 request, completion, interrupt, mapped boundary transfer, or deterministic
 wakeup time. The Bridge translates that event and resumes execution when the
 corresponding gem5 event or response occurs.
+
+The gem5 Thread Dispatch MMIO surface carries both target selection and the
+address and size of the dynamic invocation wire. Dispatch snapshots all fields
+atomically before activating an InstructionCore. That core receives the exact
+static launch descriptor and dynamic invocation descriptor in separate ABI
+registers. The zero-address, zero-size pair selects the static runtime-input
+form defined above; all other dispatches require both fields. The Spatial
+Bridge performs separate DMA reads and frames them only after the required
+reads complete. Mutable MMIO registers, DMA scratch buffers, CPU state, socket
+state, and event budgets are never cached as candidate-invariant state.
 
 Gem5 executes concrete arbiter, queue, credit, protocol, cache, and memory
 microstate from the selected implementation. Every cycle-visible grant follows

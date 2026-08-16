@@ -256,12 +256,12 @@ laneMask(llvm::StringRef test,
           !point.operandPorts.empty() &&
               point.operandPorts == point.resultPorts,
           "sync relation does not preserve its positional lane image");
-  require(test, llvm::is_sorted(point.operandPorts),
-          "sync relation lane image is not ordered");
   std::uint64_t mask = 0;
   for (std::uint64_t ordinal : point.operandPorts) {
     require(test, ordinal < physicalLaneCount && ordinal < 64,
             "sync relation lane image is out of range");
+    require(test, (mask & (std::uint64_t{1} << ordinal)) == 0,
+            "sync relation lane image contains a duplicate lane");
     mask |= std::uint64_t{1} << ordinal;
   }
   return mask;
@@ -363,8 +363,12 @@ LeafSyncCodes leafSyncCodes(llvm::StringRef test, const FabricFixture &fixture,
       resolved.configurationFieldSchema.front().ordinal);
   require(test, field != nullptr,
           "finalized ABI does not own the sync operation field");
+  const ConfigurationEncodingRelation *encodingRelation =
+      abi.abi().findEncodingRelation(*field);
+  require(test, encodingRelation != nullptr,
+          "finalized sync field has no encoding relation");
   const auto *codebook =
-      std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);
+      std::get_if<FiniteCodebookEncoding>(&encodingRelation->semanticEncoding);
   require(test, codebook != nullptr && codebook->encodedBitCount < 16,
           "finalized sync field does not have a small finite codebook");
 
@@ -636,10 +640,10 @@ module provider_testbench;
 
     sync_config_0 = SYNC_SINGLE_LANE_CODE;
     #1;
-    check(!sync_ready_input_0 && sync_ready_input_1 &&
-              !sync_ready_input_2 && !sync_valid_output_0 &&
-              sync_valid_output_1 && !sync_valid_output_2 &&
-              sync_data_output_1 == 8'hcd,
+    check(sync_ready_input_0 && !sync_ready_input_1 &&
+              !sync_ready_input_2 && sync_valid_output_0 &&
+              !sync_valid_output_1 && !sync_valid_output_2 &&
+              sync_data_output_0 == 12'h05a,
           "single selected sync lane did not preserve its positional payload");
 
     sync_config_0 = SYNC_ALL_LANES_CODE;
@@ -1080,7 +1084,7 @@ void emitArtifacts(const std::filesystem::path &root) {
                                   dataflow::OperationSchemaId::DataflowSync,
                                   {8, 16, 24}, {12, 8, 24});
   FinalizedConfigurationABI syncAbi = makeSyncAbi(test, store, sync, 5);
-  const LeafSyncCodes syncCodes = leafSyncCodes(test, sync, syncAbi, 5, 2, 7);
+  const LeafSyncCodes syncCodes = leafSyncCodes(test, sync, syncAbi, 5, 1, 7);
   FabricFixture singleton =
       makeFabric(test, store, "portable-token-sync-singleton",
                  fabric::ImplementationFamilyId::TokenSync,

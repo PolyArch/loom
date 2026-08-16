@@ -391,7 +391,7 @@ llvm::Expected<OpenRoadGateFixture> makeOpenRoadGateFixture(
   if (!subject)
     return subject.takeError();
   auto abi = hardware::finalizeConfigurationABI(
-      hardware::ConfigurationABIDraft{system->reference(), {}}, artifacts);
+      hardware::ConfigurationABIDraft{system->reference(), {}, {}}, artifacts);
   if (!abi)
     return abi.takeError();
   auto platform = platform::finalizeImplementationPlatform(

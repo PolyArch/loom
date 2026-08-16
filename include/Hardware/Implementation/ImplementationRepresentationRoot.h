@@ -20,14 +20,15 @@ class Object;
 
 namespace loom::hardware {
 
-/// Canonical typed representation root for HardwareImplementation 4.0.
+/// Canonical typed representation root for HardwareImplementation 4.1.
 struct ImplementationRepresentationRoot final {
   RepresentationRootVariant variant;
   /// Present exactly for the physical variants.
   std::optional<RepresentationPhysicalStage> stage;
   RepresentationFormatDescriptorRef formatRef;
   RepresentationLocator top;
-  /// Canonical and nonempty, owned by the ImplementationPayload rules.
+  /// Canonical and admitted by the selected representation format. FabricModel
+  /// is the sole payload-free representation.
   std::vector<ImplementationPayload> payloads;
 
   friend bool operator==(const ImplementationRepresentationRoot &lhs,

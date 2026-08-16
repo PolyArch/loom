@@ -168,17 +168,7 @@ std::optional<FabricModuleTemplateRef>
 FabricArtifactView::moduleRootTemplate() const {
   if (rootKind() != FabricRootKind::Module)
     return std::nullopt;
-
-  std::optional<FabricModuleTemplateRef> result;
-  for (FabricEntityId id = 0; id < storage_->data.entities.size(); ++id) {
-    if (storage_->data.entities[id].kind !=
-        FabricEntityKind::FabricModuleTemplate)
-      continue;
-    if (result)
-      return std::nullopt;
-    result = FabricModuleTemplateRef(id);
-  }
-  return result;
+  return storage_->moduleRootTemplate;
 }
 
 llvm::ArrayRef<FabricArtifactView> FabricArtifactView::importedModules() const {
@@ -761,6 +751,15 @@ bool FabricArtifactView::admitsTraversal(
 llvm::ArrayRef<FabricPhysicalTraversalRef>
 FabricArtifactView::admittedTraversals() const {
   return storage_->data.admittedTraversals;
+}
+
+llvm::ArrayRef<FabricPhysicalTraversalRef>
+FabricArtifactView::switchCrosspointTraversals(
+    FabricSwitchOccurrenceRef occurrence) const {
+  if (!storage_->entity(occurrence) ||
+      occurrence.id() >= storage_->switchTraversals.size())
+    return {};
+  return storage_->switchTraversals[occurrence.id()];
 }
 
 llvm::ArrayRef<FabricPhysicalTraversalView>
@@ -1420,6 +1419,8 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
   std::vector<FabricTransportEndpointRef> transportEndpoints;
   std::vector<FabricFuTemplateRef> fuTemplates;
   std::vector<FabricMemoryEngineTemplateRef> memoryEngineTemplates;
+  std::optional<FabricModuleTemplateRef> moduleRootTemplate;
+  bool moduleRootTemplateIsAmbiguous = false;
   for (auto [entityId, entity] : llvm::enumerate(data.entities)) {
     std::optional<FabricTransportEndpointOwnerRef> transportOwner;
     switch (entity.kind) {
@@ -1492,6 +1493,12 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
         transportEndpoints.push_back({owner, ordinal});
     }
 
+    if (entity.kind == FabricEntityKind::FabricModuleTemplate) {
+      if (moduleRootTemplate)
+        moduleRootTemplateIsAmbiguous = true;
+      else
+        moduleRootTemplate = FabricModuleTemplateRef(entityId);
+    }
     if (entity.kind == FabricEntityKind::FabricFuTemplate)
       fuTemplates.emplace_back(entityId);
     if (entity.kind == FabricEntityKind::FabricMemoryEngineTemplate)
@@ -1512,6 +1519,17 @@ loom::fabric::detail::buildFabricArtifactView(FabricArtifactViewData data) {
             });
 
   auto storage = std::make_shared<FabricArtifactView::Storage>(std::move(data));
+  if (!moduleRootTemplateIsAmbiguous)
+    storage->moduleRootTemplate = moduleRootTemplate;
+  storage->switchTraversals.resize(storage->data.entities.size());
+  for (const FabricPhysicalTraversalRef &traversal :
+       storage->data.admittedTraversals)
+    if (const auto *crosspoint =
+            std::get_if<FabricSwitchTraversalPayload>(&traversal.payload)) {
+      if (crosspoint->owner.id() >= storage->switchTraversals.size())
+        return invalidView("switch traversal owner is outside the Fabric");
+      storage->switchTraversals[crosspoint->owner.id()].push_back(traversal);
+    }
   storage->peOccurrences = std::move(peOccurrences);
   storage->fuOccurrences = std::move(fuOccurrences);
   storage->memoryOccurrences = std::move(memoryOccurrences);

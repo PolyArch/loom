@@ -7,7 +7,7 @@
 
 #include <cstdint>
 #include <limits>
-#include <set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -27,13 +27,8 @@ llvm::Expected<std::uint32_t> checkedSize(const T &container,
   return static_cast<std::uint32_t>(container.size());
 }
 
-std::vector<std::uint8_t>
-junctionKey(llvm::ArrayRef<std::uint8_t> ownerLocalKey) {
-  std::vector<std::uint8_t> key;
-  key.reserve(ownerLocalKey.size() + 1);
-  key.push_back(1);
-  key.insert(key.end(), ownerLocalKey.begin(), ownerLocalKey.end());
-  return key;
+std::uint64_t packedArc(std::uint32_t source, std::uint32_t destination) {
+  return (static_cast<std::uint64_t>(source) << 32) | destination;
 }
 
 } // namespace
@@ -47,33 +42,36 @@ std::vector<std::uint8_t> handshakeSignalKey(const HandshakeSignalRef &signal) {
 
 HandshakeOwnerModelBuilder::HandshakeOwnerModelBuilder(
     FabricHandshakeOwner owner)
-    : model_(std::move(owner)) {}
+    : model_(std::move(owner)) {
+  boundaryNodes_.reserve(32);
+  junctionNodes_.reserve(64);
+}
 
 std::uint32_t
 HandshakeOwnerModelBuilder::boundarySignal(HandshakeSignalRef signal) {
-  const std::vector<std::uint8_t> key = handshakeSignalKey(signal);
-  auto found = nodes_.find(key);
-  if (found != nodes_.end())
+  std::vector<std::uint8_t> key = canonicalFabricBytes(signal.endpoint);
+  key.push_back(static_cast<std::uint8_t>(signal.signal));
+  auto found = boundaryNodes_.find(key);
+  if (found != boundaryNodes_.end())
     return found->second;
   const std::uint32_t ordinal =
       static_cast<std::uint32_t>(model_.nodes_.size());
   model_.nodes_.push_back(
       {HandshakeOwnerNodeKind::BoundarySignal, std::move(signal)});
-  nodes_.emplace(key, ordinal);
+  boundaryNodes_.emplace(std::move(key), ordinal);
   return ordinal;
 }
 
 std::uint32_t HandshakeOwnerModelBuilder::junction(
-    llvm::ArrayRef<std::uint8_t> ownerLocalKey) {
-  const std::vector<std::uint8_t> key = junctionKey(ownerLocalKey);
-  auto found = nodes_.find(key);
-  if (found != nodes_.end())
+    std::vector<std::uint8_t> ownerLocalKey) {
+  const auto found = junctionNodes_.find(ownerLocalKey);
+  if (found != junctionNodes_.end())
     return found->second;
   const std::uint32_t ordinal =
       static_cast<std::uint32_t>(model_.nodes_.size());
   model_.nodes_.push_back(
       {HandshakeOwnerNodeKind::OwnerLocalJunction, std::nullopt});
-  nodes_.emplace(key, ordinal);
+  junctionNodes_.emplace(std::move(ownerLocalKey), ordinal);
   return ordinal;
 }
 
@@ -87,19 +85,26 @@ llvm::Expected<HandshakeOwnerModel> HandshakeOwnerModelBuilder::finish() {
   if (auto count = checkedSize(model_.nodes_, "handshake node count"); !count)
     return count.takeError();
 
-  std::set<std::pair<std::uint32_t, std::uint32_t>> uniqueArcs;
+  std::vector<std::uint64_t> uniqueArcs;
   for (const PendingFragment &fragment : pending_)
-    uniqueArcs.insert(fragment.arcs.begin(), fragment.arcs.end());
+    for (const auto &[source, destination] : fragment.arcs)
+      uniqueArcs.push_back(packedArc(source, destination));
+  llvm::sort(uniqueArcs);
+  uniqueArcs.erase(std::unique(uniqueArcs.begin(), uniqueArcs.end()),
+                   uniqueArcs.end());
   if (uniqueArcs.size() > std::numeric_limits<std::uint32_t>::max())
     return invalid("handshake arc count exceeds the owner-model index domain");
 
-  std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> arcOrdinals;
+  std::unordered_map<std::uint64_t, std::uint32_t> arcOrdinals;
+  arcOrdinals.reserve(uniqueArcs.size());
   model_.arcs_.reserve(uniqueArcs.size());
-  for (const auto &arc : uniqueArcs) {
+  for (const std::uint64_t arc : uniqueArcs) {
     const std::uint32_t ordinal =
         static_cast<std::uint32_t>(model_.arcs_.size());
     arcOrdinals.emplace(arc, ordinal);
-    model_.arcs_.push_back({arc.first, arc.second});
+    model_.arcs_.push_back(
+        {static_cast<std::uint32_t>(arc >> 32),
+         static_cast<std::uint32_t>(arc)});
   }
 
   model_.fragments_.reserve(pending_.size());
@@ -107,8 +112,9 @@ llvm::Expected<HandshakeOwnerModel> HandshakeOwnerModelBuilder::finish() {
   for (PendingFragment &pending : pending_) {
     std::vector<std::uint32_t> contributions;
     contributions.reserve(pending.arcs.size());
-    for (const auto &arc : pending.arcs)
-      contributions.push_back(arcOrdinals.at(arc));
+    for (const auto &[source, destination] : pending.arcs)
+      contributions.push_back(
+          arcOrdinals.at(packedArc(source, destination)));
     llvm::sort(contributions);
     contributions.erase(std::unique(contributions.begin(), contributions.end()),
                         contributions.end());
@@ -153,12 +159,26 @@ llvm::Expected<HandshakeOwnerModel> HandshakeOwnerModelBuilder::finish() {
             HandshakeActivationKind::AnySwitchActivationTraversal ||
         activationKind ==
             HandshakeActivationKind::ExactSwitchActivationTraversal) {
-      witnesses = pending.selector.traversalWitnesses;
-      llvm::sort(witnesses, [](const auto &lhs, const auto &rhs) {
-        return canonicalFabricBytes(lhs) < canonicalFabricBytes(rhs);
+      struct KeyedTraversal final {
+        std::vector<std::uint8_t> key;
+        FabricPhysicalTraversalRef traversal;
+      };
+      std::vector<KeyedTraversal> keyed;
+      keyed.reserve(pending.selector.traversalWitnesses.size());
+      for (const FabricPhysicalTraversalRef &traversal :
+           pending.selector.traversalWitnesses)
+        keyed.push_back({canonicalFabricBytes(traversal), traversal});
+      llvm::sort(keyed, [](const auto &lhs, const auto &rhs) {
+        return lhs.key < rhs.key;
       });
-      witnesses.erase(std::unique(witnesses.begin(), witnesses.end()),
-                      witnesses.end());
+      keyed.erase(std::unique(keyed.begin(), keyed.end(),
+                              [](const auto &lhs, const auto &rhs) {
+                                return lhs.traversal == rhs.traversal;
+                              }),
+                  keyed.end());
+      witnesses.reserve(keyed.size());
+      for (KeyedTraversal &entry : keyed)
+        witnesses.push_back(std::move(entry.traversal));
       if (witnesses.empty())
         return invalid("traversal-selected fragment has no witness");
     }

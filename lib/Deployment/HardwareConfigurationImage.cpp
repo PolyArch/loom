@@ -2,31 +2,123 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
+#include "Common/InvocationDiagnosticLog.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/ConfiguredHardwareProjection.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/IR/MappingSchema.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <iterator>
+#include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace loom::deployment {
+namespace detail {
+
+inline constexpr std::uint64_t configurationImageProjectionAlgorithmVersion =
+    1;
+
+struct ConfigurationImageProjectionSessionKey final {
+  ArtifactRootReference configurationAbi;
+  ConfigurationImageSourceKind sourceKind;
+  ArtifactRootReference sourceMapping;
+  std::optional<::loom::fabric::SpatialCoreOccurrenceRef> spatialOccurrence;
+  std::uint64_t algorithmVersion =
+      configurationImageProjectionAlgorithmVersion;
+
+  friend bool operator==(const ConfigurationImageProjectionSessionKey &lhs,
+                         const ConfigurationImageProjectionSessionKey &rhs) {
+    return lhs.configurationAbi == rhs.configurationAbi &&
+           lhs.sourceKind == rhs.sourceKind &&
+           lhs.sourceMapping == rhs.sourceMapping &&
+           lhs.spatialOccurrence == rhs.spatialOccurrence &&
+           lhs.algorithmVersion == rhs.algorithmVersion;
+  }
+};
+
+struct ConfigurationImageProjectionSessionEntry final {
+  ConfigurationImageProjectionSessionKey key;
+  std::shared_ptr<
+      const mapping::PhysicalConfiguredHardwareProjectionView>
+      projection;
+  std::uint64_t retainedBytes = 0;
+};
+
+class ConfigurationImageProjectionSessionState final {
+public:
+  ConfigurationImageProjectionSessionState(const ArtifactStore &store,
+                                            std::size_t entryLimit)
+      : store_(&store), entryLimit_(entryLimit) {}
+
+  bool owns(const ArtifactStore &store) const { return store_ == &store; }
+
+  std::shared_ptr<const mapping::PhysicalConfiguredHardwareProjectionView>
+  find(const ConfigurationImageProjectionSessionKey &key) {
+    ++statistics_.requests;
+    ++statistics_.deterministicWork;
+    const auto found = llvm::find_if(
+        entries_, [&](const auto &entry) { return entry.key == key; });
+    if (found == entries_.end()) {
+      ++statistics_.cacheMisses;
+      return {};
+    }
+    ++statistics_.cacheHits;
+    return found->projection;
+  }
+
+  std::shared_ptr<const mapping::PhysicalConfiguredHardwareProjectionView>
+  insert(ConfigurationImageProjectionSessionKey key,
+         std::shared_ptr<
+             const mapping::PhysicalConfiguredHardwareProjectionView>
+             projection,
+         std::uint64_t retainedBytes,
+         std::uint64_t constructionNanoseconds) {
+    ++statistics_.uniqueConstructions;
+    statistics_.constructionNanoseconds += constructionNanoseconds;
+    statistics_.deterministicWork += projection->fields().size();
+    if (entries_.size() >= entryLimit_) {
+      ++statistics_.uncachedConstructions;
+      return projection;
+    }
+    entries_.push_back({std::move(key), projection, retainedBytes});
+    statistics_.retainedBytes += retainedBytes;
+    statistics_.entryCount = entries_.size();
+    return projection;
+  }
+
+  ConfigurationImageProjectionSessionStatistics statistics() const {
+    return statistics_;
+  }
+
+private:
+  const ArtifactStore *store_ = nullptr;
+  std::size_t entryLimit_ = 0;
+  std::vector<ConfigurationImageProjectionSessionEntry> entries_;
+  ConfigurationImageProjectionSessionStatistics statistics_;
+};
+
+} // namespace detail
 namespace {
 
 using ByteVector = std::vector<std::uint8_t>;
+using MonotonicClock = std::chrono::steady_clock;
+
+thread_local detail::ConfigurationImageProjectionSessionState
+    *currentProjectionSession = nullptr;
 
 struct ParsedImage final {
   HardwareConfigurationImageDraft draft;
@@ -368,32 +460,87 @@ configurationProjection(const HardwareConfigurationImageDraft &draft,
   llvm_unreachable("unknown configuration image source kind");
 }
 
+llvm::Expected<detail::ConfigurationImageProjectionSessionKey>
+configurationProjectionKey(const HardwareConfigurationImageDraft &draft,
+                           const hardware::FinalizedConfigurationABI &abi,
+                           const hardware::ProgrammingUnit &unit) {
+  std::optional<::loom::fabric::SpatialCoreOccurrenceRef> occurrence;
+  if (draft.sourceMapping.kind ==
+      ConfigurationImageSourceKind::SpatialMapping) {
+    auto resolved = spatialOccurrence(unit);
+    if (!resolved)
+      return resolved.takeError();
+    occurrence = *resolved;
+  }
+  return detail::ConfigurationImageProjectionSessionKey{
+      abi.reference(), draft.sourceMapping.kind, draft.sourceMapping.mapping,
+      occurrence};
+}
+
+std::uint64_t retainedProjectionBytes(
+    const mapping::PhysicalConfiguredHardwareProjectionView &projection) {
+  std::uint64_t bytes = sizeof(projection);
+  bytes += projection.fields().size() *
+           sizeof(mapping::PhysicalConfiguredHardwareFieldValueView);
+  for (const auto &field : projection.fields())
+    bytes += field.value.bytes().size();
+  return bytes;
+}
+
+llvm::Expected<
+    std::shared_ptr<const mapping::PhysicalConfiguredHardwareProjectionView>>
+resolveConfigurationProjection(
+    const HardwareConfigurationImageDraft &draft,
+    const hardware::FinalizedConfigurationABI &abi,
+    const hardware::ProgrammingUnit &unit, const ArtifactStore &store) {
+  auto key = configurationProjectionKey(draft, abi, unit);
+  if (!key)
+    return key.takeError();
+  if (currentProjectionSession && !currentProjectionSession->owns(store))
+    return invalid("configuration projection session crosses its ArtifactStore "
+                   "verification domain");
+  if (currentProjectionSession)
+    if (auto cached = currentProjectionSession->find(*key))
+      return cached;
+
+  const auto begin = MonotonicClock::now();
+  auto projected = configurationProjection(draft, abi.abi(), unit, store);
+  if (!projected)
+    return projected.takeError();
+  auto result = std::make_shared<
+      const mapping::PhysicalConfiguredHardwareProjectionView>(
+      std::move(*projected));
+  if (!currentProjectionSession)
+    return result;
+  const std::uint64_t constructionNanoseconds =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          MonotonicClock::now() - begin)
+          .count();
+  return currentProjectionSession->insert(
+      std::move(*key), result, retainedProjectionBytes(*result),
+      constructionNanoseconds);
+}
+
 llvm::Expected<ByteVector>
 derivePayload(const HardwareConfigurationImageDraft &draft,
               const hardware::FinalizedConfigurationABI &finalizedAbi,
-              const ArtifactStore &store) {
+              const mapping::PhysicalConfiguredHardwareProjectionView
+                  &projection) {
   const hardware::ProgrammingUnit *unit =
       finalizedAbi.abi().findProgrammingUnit(draft.programmingUnitId);
   if (!unit)
     return invalid("configuration_abi_ref has no programming_unit_id");
-  auto projection =
-      configurationProjection(draft, finalizedAbi.abi(), *unit, store);
-  if (!projection)
-    return projection.takeError();
-
-  std::set<ByteVector> unitFields;
-  for (const hardware::ConfigurationFieldEncoding &field : unit->fields)
-    unitFields.emplace(::loom::fabric::canonicalFabricBytes(field.slot));
 
   std::vector<hardware::SemanticConfigurationValue> values;
   for (const mapping::PhysicalConfiguredHardwareFieldValueView &field :
-       projection->fields()) {
-    const ByteVector key = ::loom::fabric::canonicalFabricBytes(field.slot);
-    if (!finalizedAbi.abi().findField(field.slot))
-      return invalid("Mapping projection names a field outside the exact ABI");
-    if (unitFields.count(key))
+       projection.fields()) {
+    if (finalizedAbi.abi().findField(unit->id, field.slot)) {
       values.push_back({field.slot, ByteVector(field.value.bytes().begin(),
                                                field.value.bytes().end())});
+      continue;
+    }
+    if (!finalizedAbi.abi().findField(field.slot))
+      return invalid("Mapping projection names a field outside the exact ABI");
   }
   return finalizedAbi.abi().encode(draft.programmingUnitId, values);
 }
@@ -409,7 +556,60 @@ importAbi(const HardwareConfigurationImageDraft &draft,
   return hardware::importConfigurationABI(draft.configurationAbi, store);
 }
 
+llvm::StringRef spelling(
+    ConfigurationImageProjectionVerificationDomain domain) {
+  switch (domain) {
+  case ConfigurationImageProjectionVerificationDomain::SourceInvocation:
+    return "source_invocation";
+  case ConfigurationImageProjectionVerificationDomain::IndependentReplay:
+    return "independent_replay";
+  }
+  llvm_unreachable("unknown configuration image projection domain");
+}
+
 } // namespace
+
+ConfigurationImageProjectionSession::ConfigurationImageProjectionSession(
+    const ArtifactStore &store, std::size_t entryLimit)
+    : state_(std::make_unique<
+             detail::ConfigurationImageProjectionSessionState>(store,
+                                                               entryLimit)),
+      previous_(currentProjectionSession) {
+  currentProjectionSession = state_.get();
+}
+
+ConfigurationImageProjectionSession::~ConfigurationImageProjectionSession() {
+  currentProjectionSession = previous_;
+}
+
+ConfigurationImageProjectionSessionStatistics
+ConfigurationImageProjectionSession::statistics() const {
+  return state_->statistics();
+}
+
+void emitConfigurationImageProjectionSessionStatistics(
+    ConfigurationImageProjectionVerificationDomain domain,
+    const ConfigurationImageProjectionSessionStatistics &statistics) {
+  emitInvocationDiagnostic(
+      DiagnosticVerbosity::Summary,
+      InvocationDiagnosticStage::HardwareConfiguration,
+      InvocationDiagnosticEvent::ConfigurationImageProjectionSession, [&] {
+        llvm::json::Object payload;
+        payload["verification_domain"] = spelling(domain);
+        payload["requests"] = statistics.requests;
+        payload["cache_hits"] = statistics.cacheHits;
+        payload["cache_misses"] = statistics.cacheMisses;
+        payload["unique_constructions"] = statistics.uniqueConstructions;
+        payload["uncached_constructions"] =
+            statistics.uncachedConstructions;
+        payload["construction_time_ns"] =
+            statistics.constructionNanoseconds;
+        payload["deterministic_work"] = statistics.deterministicWork;
+        payload["retained_bytes"] = statistics.retainedBytes;
+        payload["entry_count"] = statistics.entryCount;
+        return llvm::json::Value(std::move(payload));
+      });
+}
 
 llvm::Expected<FinalizedHardwareConfigurationImage>
 finalizeHardwareConfigurationImage(HardwareConfigurationImageDraft draft,
@@ -421,7 +621,10 @@ finalizeHardwareConfigurationImage(HardwareConfigurationImageDraft draft,
       abi->abi().findProgrammingUnit(draft.programmingUnitId);
   if (!unit)
     return invalid("configuration_abi_ref has no programming_unit_id");
-  auto payload = derivePayload(draft, *abi, store);
+  auto projection = resolveConfigurationProjection(draft, *abi, *unit, store);
+  if (!projection)
+    return projection.takeError();
+  auto payload = derivePayload(draft, *abi, **projection);
   if (!payload)
     return payload.takeError();
   CanonicalSemanticBytes bytes =
@@ -456,7 +659,11 @@ importHardwareConfigurationImage(const ArtifactRootReference &reference,
     return invalid("configuration_abi_ref has no programming_unit_id");
   if (parsed->payloadBitCount != unit->payloadBitCount)
     return invalid("payload_bit_count disagrees with the programming unit");
-  auto expected = derivePayload(parsed->draft, *abi, store);
+  auto projection =
+      resolveConfigurationProjection(parsed->draft, *abi, *unit, store);
+  if (!projection)
+    return projection.takeError();
+  auto expected = derivePayload(parsed->draft, *abi, **projection);
   if (!expected)
     return expected.takeError();
   if (*expected != parsed->payload)

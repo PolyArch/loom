@@ -4,6 +4,7 @@
 #include "Common/ArtifactStore.h"
 #include "Common/ArtifactText.h"
 #include "Common/BlobStore.h"
+#include "Common/InvocationDiagnosticLog.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Deployment/HardwareConfigurationImage.h"
 #include "Fabric/Artifact/FabricArtifact.h"
@@ -11,6 +12,7 @@
 #include "Frontend/Executable/CompilerTargetBinding.h"
 #include "Frontend/Executable/InstructionCoreBinary.h"
 #include "Hardware/Configuration/ConfigurationABI.h"
+#include "Hardware/Configuration/ConfigurationDiagnostics.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
 #include "ImplementationPlatform/ImplementationPlatform.h"
 #include "Mapping/Artifact/MappingArtifact.h"
@@ -30,6 +32,7 @@
 #endif
 
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <fcntl.h>
 #include <filesystem>
@@ -44,6 +47,48 @@
 
 namespace loom::deployment {
 namespace {
+
+using MonotonicClock = std::chrono::steady_clock;
+
+llvm::StringRef spelling(DeploymentPackageOperation operation) {
+  switch (operation) {
+  case DeploymentPackageOperation::SourceClosure:
+    return "source_closure";
+  case DeploymentPackageOperation::StagingWrite:
+    return "staging_write";
+  case DeploymentPackageOperation::IndependentRootImport:
+    return "independent_root_import";
+  case DeploymentPackageOperation::IndependentClosure:
+    return "independent_closure";
+  case DeploymentPackageOperation::StagingEntryValidation:
+    return "staging_entry_validation";
+  case DeploymentPackageOperation::AtomicPublish:
+    return "atomic_publish";
+  }
+  llvm_unreachable("unknown Deployment package operation");
+}
+
+std::uint64_t elapsedNanoseconds(MonotonicClock::time_point begin) {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             MonotonicClock::now() - begin)
+      .count();
+}
+
+DeploymentPackageOperationStatistics operationStatistics(
+    DeploymentPackageOperation operation, MonotonicClock::time_point begin,
+    const fabric::FabricArtifactImportSessionStatistics &before,
+    const fabric::FabricArtifactImportSessionStatistics &after,
+    std::uint64_t artifactCount, std::uint64_t blobCount) {
+  return {operation,
+          elapsedNanoseconds(begin),
+          artifactCount,
+          blobCount,
+          after.cacheHits - before.cacheHits,
+          after.cacheMisses - before.cacheMisses,
+          after.constructionNanoseconds - before.constructionNanoseconds,
+          after.deterministicWork - before.deterministicWork,
+          after.retainedPayloadBytes};
+}
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -71,7 +116,7 @@ public:
 
   llvm::Expected<DerivedPackageClosure>
   derive(const FinalizedDeployment &deployment) {
-    if (llvm::Error error = addArtifact(deployment.reference()))
+    if (llvm::Error error = addArtifactLeaf(deployment.reference()))
       return error;
 
     const Deployment &root = deployment.deployment();
@@ -97,7 +142,7 @@ public:
       if (llvm::Error error = addConfigurationImage(reference))
         return error;
     for (const StaticMemoryImageLeaf &memory : root.staticMemoryImages()) {
-      if (llvm::Error error = addArtifact(memory.canonicalDataflow()))
+      if (llvm::Error error = addArtifactLeaf(memory.canonicalDataflow()))
         return error;
       if (llvm::Error error = addCompilerTarget(memory.layoutBinding()))
         return error;
@@ -114,10 +159,11 @@ public:
   }
 
 private:
-  llvm::Error addArtifact(const ArtifactRootReference &reference) {
+  llvm::Expected<bool>
+  addArtifact(const ArtifactRootReference &reference) {
     auto exact = llvm::find(artifactsInClosure_, reference);
     if (exact != artifactsInClosure_.end())
-      return llvm::Error::success();
+      return false;
     auto colliding = llvm::find_if(
         artifactsInClosure_, [&](const ArtifactRootReference &existing) {
           return existing.artifact == reference.artifact;
@@ -128,6 +174,13 @@ private:
     if (!object)
       return object.takeError();
     artifactsInClosure_.push_back(reference);
+    return true;
+  }
+
+  llvm::Error addArtifactLeaf(const ArtifactRootReference &reference) {
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
     return llvm::Error::success();
   }
 
@@ -142,8 +195,11 @@ private:
   }
 
   llvm::Error addFabric(const ArtifactRootReference &reference) {
-    if (llvm::Error error = addArtifact(reference))
-      return error;
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
+    if (!*added)
+      return llvm::Error::success();
     auto fabric = fabric::importEntireFabricRoot(reference, artifacts_);
     if (!fabric)
       return fabric.takeError();
@@ -155,8 +211,11 @@ private:
   }
 
   llvm::Error addSystemMapping(const ArtifactRootReference &reference) {
-    if (llvm::Error error = addArtifact(reference))
-      return error;
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
+    if (!*added)
+      return llvm::Error::success();
     auto system = mapping::importSystemMapping(reference, artifacts_);
     if (!system)
       return system.takeError();
@@ -167,14 +226,17 @@ private:
     const ArtifactRootReference fabricReference{
         fabric::fabricArtifactSchema.identity.str(),
         fabric::fabricArtifactSchema.version, system->view().fabricIdentity()};
-    if (llvm::Error error = addArtifact(dataflowReference))
+    if (llvm::Error error = addArtifactLeaf(dataflowReference))
       return error;
     if (llvm::Error error = addFabric(fabricReference))
       return error;
     for (const ArtifactRootReference &spatialReference :
          system->view().executionBindings().spatialMappingImports()) {
-      if (llvm::Error error = addArtifact(spatialReference))
-        return error;
+      auto spatialAdded = addArtifact(spatialReference);
+      if (!spatialAdded)
+        return spatialAdded.takeError();
+      if (!*spatialAdded)
+        continue;
       auto spatial =
           mapping::importSpatialMapping(spatialReference, artifacts_);
       if (!spatial)
@@ -183,8 +245,11 @@ private:
           mapping::mappingArtifactSchema.identity.str(),
           mapping::mappingArtifactSchema.version,
           spatial->view().techMappingIdentity()};
-      if (llvm::Error error = addArtifact(techReference))
-        return error;
+      auto techAdded = addArtifact(techReference);
+      if (!techAdded)
+        return techAdded.takeError();
+      if (!*techAdded)
+        continue;
       auto tech = mapping::importTechMapping(techReference, artifacts_);
       if (!tech)
         return tech.takeError();
@@ -193,8 +258,11 @@ private:
   }
 
   llvm::Error addCompilerTarget(const ArtifactRootReference &reference) {
-    if (llvm::Error error = addArtifact(reference))
-      return error;
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
+    if (!*added)
+      return llvm::Error::success();
     auto target = importCompilerTargetBinding(reference, artifacts_);
     if (!target)
       return target.takeError();
@@ -212,12 +280,16 @@ private:
   }
 
   llvm::Error addInstructionBinary(const ArtifactRootReference &reference) {
-    if (llvm::Error error = addArtifact(reference))
-      return error;
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
+    if (!*added)
+      return llvm::Error::success();
     auto binary = importInstructionCoreBinary(reference, artifacts_, blobs_);
     if (!binary)
       return binary.takeError();
-    if (llvm::Error error = addArtifact(binary->binary().canonicalDataflow()))
+    if (llvm::Error error =
+            addArtifactLeaf(binary->binary().canonicalDataflow()))
       return error;
     if (llvm::Error error =
             addCompilerTarget(binary->binary().compilerTargetBinding()))
@@ -226,8 +298,11 @@ private:
   }
 
   llvm::Error addConfigurationAbi(const ArtifactRootReference &reference) {
-    if (llvm::Error error = addArtifact(reference))
-      return error;
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
+    if (!*added)
+      return llvm::Error::success();
     auto abi = hardware::importConfigurationABI(reference, artifacts_);
     if (!abi)
       return abi.takeError();
@@ -236,8 +311,11 @@ private:
 
   llvm::Error
   addHardwareImplementation(const ArtifactRootReference &reference) {
-    if (llvm::Error error = addArtifact(reference))
-      return error;
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
+    if (!*added)
+      return llvm::Error::success();
     auto implementation =
         hardware::importHardwareImplementation(reference, artifacts_, blobs_);
     if (!implementation)
@@ -249,12 +327,15 @@ private:
     if (llvm::Error error = addConfigurationAbi(value.configurationAbi()))
       return error;
     if (value.implementationPlatform()) {
-      if (llvm::Error error = addArtifact(*value.implementationPlatform()))
-        return error;
-      auto platform = platform::importImplementationPlatform(
-          *value.implementationPlatform(), artifacts_);
-      if (!platform)
-        return platform.takeError();
+      auto platformAdded = addArtifact(*value.implementationPlatform());
+      if (!platformAdded)
+        return platformAdded.takeError();
+      if (*platformAdded) {
+        auto platform = platform::importImplementationPlatform(
+            *value.implementationPlatform(), artifacts_);
+        if (!platform)
+          return platform.takeError();
+      }
     }
     for (const hardware::ImplementationPayload &payload :
          value.representationRoot().payloads)
@@ -264,8 +345,11 @@ private:
   }
 
   llvm::Error addRuntimeBinding(const ArtifactRootReference &reference) {
-    if (llvm::Error error = addArtifact(reference))
-      return error;
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
+    if (!*added)
+      return llvm::Error::success();
     auto binding =
         runtime::importRuntimePlatformBinding(reference, artifacts_, blobs_);
     if (!binding)
@@ -280,15 +364,18 @@ private:
   }
 
   llvm::Error addConfigurationImage(const ArtifactRootReference &reference) {
-    if (llvm::Error error = addArtifact(reference))
-      return error;
+    auto added = addArtifact(reference);
+    if (!added)
+      return added.takeError();
+    if (!*added)
+      return llvm::Error::success();
     auto image = importHardwareConfigurationImage(reference, artifacts_);
     if (!image)
       return image.takeError();
     if (llvm::Error error =
             addConfigurationAbi(image->image().configurationAbi()))
       return error;
-    return addArtifact(image->image().sourceMapping().mapping);
+    return addArtifactLeaf(image->image().sourceMapping().mapping);
   }
 
   const ArtifactStore &artifacts_;
@@ -357,14 +444,30 @@ llvm::Error validateNames(llvm::StringRef directory,
 llvm::Error validateStaging(llvm::StringRef staging,
                             const ArtifactRootReference &root,
                             const DeploymentPackageClosure &expected) {
+  fabric::FabricArtifactImportSession importSession(
+      fabric::FabricArtifactImportSessionMode::Isolated);
+  hardware::ConfigurationABIImportSession configurationAbiImportSession(
+      hardware::ConfigurationABIImportSessionMode::Isolated);
+  auto before = importSession.statistics();
+  auto begin = MonotonicClock::now();
   const std::string objects = childPath(staging, "objects");
   const std::string blobs = childPath(staging, "blobs");
   ArtifactStore artifactStore(objects);
   BlobStore blobStore(blobs);
+  mapping::SystemMappingImportSession systemMappingImportSession(artifactStore,
+                                                                 1);
+  ConfigurationImageProjectionSession projectionSession(artifactStore, 1);
   auto deployment = importDeployment(root, artifactStore, blobStore);
   if (!deployment)
     return invalid("staging package cannot import its root: " +
                    llvm::toString(deployment.takeError()));
+  emitDeploymentPackageOperationStatistics(operationStatistics(
+      DeploymentPackageOperation::IndependentRootImport, begin, before,
+      importSession.statistics(), expected.artifacts().size(),
+      expected.blobs().size()));
+
+  before = importSession.statistics();
+  begin = MonotonicClock::now();
   ClosureBuilder builder(artifactStore, blobStore);
   auto actual = deriveDeploymentPackageClosure(*deployment, artifactStore,
                                                 blobStore);
@@ -373,7 +476,12 @@ llvm::Error validateStaging(llvm::StringRef staging,
   if (actual->artifacts() != expected.artifacts() ||
       actual->blobs() != expected.blobs())
     return invalid("staging package closure differs after empty-store import");
+  emitDeploymentPackageOperationStatistics(operationStatistics(
+      DeploymentPackageOperation::IndependentClosure, begin, before,
+      importSession.statistics(), actual->artifacts().size(),
+      actual->blobs().size()));
 
+  begin = MonotonicClock::now();
   std::vector<std::string> artifactNames;
   artifactNames.reserve(expected.artifacts().size());
   for (const ArtifactRootReference &reference : expected.artifacts())
@@ -384,7 +492,22 @@ llvm::Error validateStaging(llvm::StringRef staging,
   blobNames.reserve(expected.blobs().size());
   for (const BlobDigest &digest : expected.blobs())
     blobNames.push_back(formatBlobDigestHex(digest));
-  return validateNames(blobs, std::move(blobNames));
+  if (llvm::Error error = validateNames(blobs, std::move(blobNames)))
+    return error;
+  emitDeploymentPackageOperationStatistics(operationStatistics(
+      DeploymentPackageOperation::StagingEntryValidation, begin,
+      importSession.statistics(), importSession.statistics(),
+      expected.artifacts().size(), expected.blobs().size()));
+  hardware::emitConfigurationABIImportSessionStatistics(
+      hardware::ConfigurationABIImportVerificationDomain::IndependentReplay,
+      configurationAbiImportSession.statistics());
+  emitConfigurationImageProjectionSessionStatistics(
+      ConfigurationImageProjectionVerificationDomain::IndependentReplay,
+      projectionSession.statistics());
+  mapping::emitSystemMappingImportSessionStatistics(
+      mapping::SystemMappingImportVerificationDomain::IndependentReplay,
+      systemMappingImportSession.statistics());
+  return llvm::Error::success();
 }
 
 llvm::Error publishNoReplace(llvm::StringRef staging,
@@ -407,6 +530,30 @@ llvm::Error publishNoReplace(llvm::StringRef staging,
 
 } // namespace
 
+void emitDeploymentPackageOperationStatistics(
+    const DeploymentPackageOperationStatistics &statistics) {
+  emitInvocationDiagnostic(
+      DiagnosticVerbosity::Summary, InvocationDiagnosticStage::Deployment,
+      InvocationDiagnosticEvent::DeploymentPackageStatistics, [&] {
+        llvm::json::Object payload;
+        payload["operation"] = spelling(statistics.operation);
+        payload["duration_ns"] = statistics.durationNanoseconds;
+        payload["artifact_count"] = statistics.artifactCount;
+        payload["blob_count"] = statistics.blobCount;
+        payload["fabric_import_cache_hits"] =
+            statistics.fabricImportCacheHits;
+        payload["fabric_import_cache_misses"] =
+            statistics.fabricImportCacheMisses;
+        payload["fabric_import_construction_time_ns"] =
+            statistics.fabricImportConstructionNanoseconds;
+        payload["fabric_import_deterministic_work"] =
+            statistics.fabricImportDeterministicWork;
+        payload["fabric_import_retained_payload_bytes"] =
+            statistics.fabricImportRetainedPayloadBytes;
+        return llvm::json::Value(std::move(payload));
+      });
+}
+
 llvm::Expected<DeploymentPackageClosure>
 deriveDeploymentPackageClosure(const FinalizedDeployment &deployment,
                                const ArtifactStore &artifacts,
@@ -423,12 +570,20 @@ llvm::Error publishDeploymentPackage(const FinalizedDeployment &deployment,
                                      llvm::StringRef outputPath,
                                      const ArtifactStore &artifacts,
                                      const BlobStore &blobs) {
+  fabric::FabricArtifactImportSession importSession;
+  hardware::ConfigurationABIImportSession configurationAbiImportSession;
   if (outputPath.empty())
     return invalid("deployment package output path is empty");
+  auto before = importSession.statistics();
+  auto begin = MonotonicClock::now();
   auto closure =
       deriveDeploymentPackageClosure(deployment, artifacts, blobs);
   if (!closure)
     return closure.takeError();
+  emitDeploymentPackageOperationStatistics(operationStatistics(
+      DeploymentPackageOperation::SourceClosure, begin, before,
+      importSession.statistics(), closure->artifacts().size(),
+      closure->blobs().size()));
 
   llvm::SmallString<256> destination(outputPath);
   llvm::sys::path::remove_dots(destination, true);
@@ -440,7 +595,7 @@ llvm::Error publishDeploymentPackage(const FinalizedDeployment &deployment,
     parent = ".";
   llvm::SmallString<256> stagingModel(parent);
   llvm::sys::path::append(stagingModel,
-                          ("." + filename + ".loom-package-%%%%%%").str());
+                          ("." + filename + ".loom-package").str());
   llvm::SmallString<256> staging;
   if (std::error_code error =
           llvm::sys::fs::createUniqueDirectory(stagingModel, staging))
@@ -451,6 +606,8 @@ llvm::Error publishDeploymentPackage(const FinalizedDeployment &deployment,
       std::filesystem::remove_all(staging.str().str());
   });
 
+  before = importSession.statistics();
+  begin = MonotonicClock::now();
   const std::string objects = childPath(staging, "objects");
   const std::string blobDirectory = childPath(staging, "blobs");
   if (std::error_code error = llvm::sys::fs::create_directory(objects))
@@ -480,11 +637,23 @@ llvm::Error publishDeploymentPackage(const FinalizedDeployment &deployment,
             childPath(blobDirectory, formatBlobDigestHex(digest)), *bytes))
       return error;
   }
+  emitDeploymentPackageOperationStatistics(operationStatistics(
+      DeploymentPackageOperation::StagingWrite, begin, before,
+      importSession.statistics(), closure->artifacts().size(),
+      closure->blobs().size()));
   if (llvm::Error error =
           validateStaging(staging, deployment.reference(), *closure))
     return error;
+  begin = MonotonicClock::now();
   if (llvm::Error error = publishNoReplace(staging, destination))
     return error;
+  emitDeploymentPackageOperationStatistics(operationStatistics(
+      DeploymentPackageOperation::AtomicPublish, begin,
+      importSession.statistics(), importSession.statistics(),
+      closure->artifacts().size(), closure->blobs().size()));
+  hardware::emitConfigurationABIImportSessionStatistics(
+      hardware::ConfigurationABIImportVerificationDomain::SourceInvocation,
+      configurationAbiImportSession.statistics());
   stagingExists = false;
   return llvm::Error::success();
 }

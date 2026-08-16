@@ -107,7 +107,7 @@ struct ResolvedFabricOpCapabilityView {
       const ::loom::PointerLayout *pointerLayout = nullptr) const;
 
   /// Rebuilds the exact sealed relation that owns this capability's semantic
-  /// field. ConfigurationABI 3.0 consumes this relation directly; it does not
+  /// field. ConfigurationABI 4.0 consumes this relation directly; it does not
   /// reinterpret family parameters or maintain a second behavior domain.
   llvm::Expected<::fabric::FabricOpSemanticFieldRelation>
   resolveSemanticFieldRelation(::mlir::MLIRContext &context) const;
@@ -652,6 +652,12 @@ public:
 
   /// Whether the owning resource contract admits this traversal.
   llvm::ArrayRef<FabricPhysicalTraversalRef> admittedTraversals() const;
+
+  /// Exact admitted crosspoint traversals owned by one switch occurrence.
+  /// The immutable owner-local index is derived once while importing the
+  /// Fabric; consumers do not rescan the root-wide traversal inventory.
+  llvm::ArrayRef<FabricPhysicalTraversalRef>
+  switchCrosspointTraversals(FabricSwitchOccurrenceRef occurrence) const;
   llvm::ArrayRef<FabricPhysicalTraversalView> physicalTraversals() const;
   bool admitsTraversal(const FabricPhysicalTraversalRef &traversal) const;
 

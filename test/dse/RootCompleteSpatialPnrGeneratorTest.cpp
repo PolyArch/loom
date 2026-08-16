@@ -81,9 +81,12 @@ void requireSuccess(llvm::Error error) {
     fail(llvm::toString(std::move(error)));
 }
 
-const loom::dse::CompletedDsePlanExecution &requireRetainedSemanticLimit(
+const loom::dse::CompletedDsePlanExecution &requireClosedPlan(
     const loom::dse::DsePlanExecutionOutcome &outcome,
     std::uint64_t nodeOrdinal) {
+  if (const auto *completed =
+          std::get_if<loom::dse::CompletedDsePlanExecution>(&outcome))
+    return *completed;
   const auto *incomplete =
       std::get_if<loom::dse::IncompleteDsePlanExecution>(&outcome);
   const auto *reason =
@@ -94,7 +97,7 @@ const loom::dse::CompletedDsePlanExecution &requireRetainedSemanticLimit(
       *reason != loom::dse::CandidateGeneratorIncompleteReason::
                      SemanticLimitReached ||
       incomplete->executionStopped())
-    fail("DSE plan lost retained semantic-limit closure state");
+    fail("DSE plan did not close or retain its semantic-limit prefix");
   return incomplete->availableExecution();
 }
 
@@ -403,8 +406,8 @@ generateTechMappingSet(const loom::ArtifactRootReference &dataflow,
   auto outcome =
       take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
   const auto &outputs = techMappingOutputs(outcome);
-  if (outputs.size() < 2)
-    fail("TechMapping fixture did not publish two distinct candidates");
+  if (outputs.empty())
+    fail("TechMapping fixture did not publish a candidate");
   return outputs;
 }
 
@@ -467,7 +470,7 @@ std::vector<loom::ArtifactRootReference> generateSpatialMappingSet(
     const loom::ArtifactRootReference &fabric, loom::ArtifactStore &store,
     const loom::BlobStore &blobs) {
   loom::ResolvedConfig resolved = buildSpatialResolvedConfig();
-  resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 1;
+  resolved.dse.spatialPnr.search.initializer.seedAttemptCount = 4;
   resolved.dse.spatialPnr.search.routing.negotiationIterationLimit = 8;
   resolved.dse.spatialPnr.search.routing.negotiation =
       loom::ResolvedPathFinderPolicy{
@@ -677,7 +680,7 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
   };
   auto view = take(loom::dse::projectResolvedDseConfigView(resolved));
   auto outcome = take(loom::dse::executeDsePlan(view, store, blobs));
-  const auto &completed = requireRetainedSemanticLimit(outcome, 0);
+  const auto &completed = requireClosedPlan(outcome, 0);
   if (completed.generateInvocations().size() != 2 ||
       completed.resolve(loom::dse::PlanOutputRef{0, 0}).size() != 1 ||
       completed.resolve(loom::dse::PlanOutputRef{1, 0}).size() != 1)
@@ -726,7 +729,9 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
     fail("wrong Mapping profile rejection lost its owner diagnostic");
 
   auto repeated = take(loom::dse::executeDsePlan(view, store, blobs));
-  const auto &repeatedCompleted = requireRetainedSemanticLimit(repeated, 0);
+  const auto &repeatedCompleted = requireClosedPlan(repeated, 0);
+  if (!std::holds_alternative<loom::dse::CompletedDsePlanExecution>(repeated))
+    fail("canonical singleton Mapping plan did not complete");
   if (repeatedCompleted.resolve(loom::dse::PlanOutputRef{0, 0}) !=
           completed.resolve(loom::dse::PlanOutputRef{0, 0}) ||
       repeatedCompleted.resolve(loom::dse::PlanOutputRef{1, 0}) !=
@@ -761,12 +766,7 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       store));
   auto manifest = take(loom::dse::InvocationManifest::get(
       std::move(closure), 0, std::nullopt, resolved, manifestRecords,
-      loom::dse::InvocationIncomplete{
-          0,
-          loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached,
-          {},
-          {selectedMapping},
-          {}},
+      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}},
       store));
   auto reorderedClosure = take(loom::dse::DseRunClosure::get(
       take(loom::dse::DseProducerSemanticBuildIdentity::get(
@@ -775,12 +775,7 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       store));
   auto reorderedManifest = take(loom::dse::InvocationManifest::get(
       std::move(reorderedClosure), 0, std::nullopt, resolved, manifestRecords,
-      loom::dse::InvocationIncomplete{
-          0,
-          loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached,
-          {},
-          {selectedMapping},
-          {}},
+      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}},
       store));
   if (reorderedManifest.canonicalBytes() != manifest.canonicalBytes())
     fail("semantic-input authoring order changed production Manifest bytes");
@@ -1236,7 +1231,7 @@ void spatialMappingPromotionExecutesExactCgraCase() {
   };
   auto planView = take(loom::dse::projectResolvedDseConfigView(resolved));
   auto planOutcome = take(loom::dse::executeDsePlan(planView, store, blobs));
-  const auto &planExecution = requireRetainedSemanticLimit(planOutcome, 0);
+  const auto &planExecution = requireClosedPlan(planOutcome, 0);
   if (planExecution.generateInvocations().size() != 2 ||
       planExecution.resolve({1, 0}).size() != 1 ||
       planExecution.resolve({2, 0}) != planExecution.resolve({1, 0}) ||
@@ -1435,7 +1430,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
   };
   auto planView = take(loom::dse::projectResolvedDseConfigView(planConfig));
   auto planOutcome = take(loom::dse::executeDsePlan(planView, store, blobs));
-  const auto *completed = &requireRetainedSemanticLimit(planOutcome, 2);
+  const auto *completed = &requireClosedPlan(planOutcome, 2);
   if (completed->generateInvocations().size() != 2)
     fail("central Mapping feedback plan changed its Generate invocation count");
   if (completed->resolve({0, 0}) !=
@@ -1611,7 +1606,7 @@ void spatialMappingFeedbackPublishesNarrowImmutableDataflow() {
   llvm::consumeError(ambiguous.takeError());
 
   auto repeated = take(loom::dse::executeDsePlan(planView, store, blobs));
-  const auto &repeatedExecution = requireRetainedSemanticLimit(repeated, 2);
+  const auto &repeatedExecution = requireClosedPlan(repeated, 2);
   if (repeatedExecution.resolve({0, 0}) != completed->resolve({0, 0}) ||
       repeatedExecution.resolve({0, 1}) != completed->resolve({0, 1}) ||
       repeatedExecution.resolve({1, 0}) != completed->resolve({1, 0}) ||

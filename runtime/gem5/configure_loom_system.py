@@ -31,7 +31,7 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.3"
+CONFIG_SCHEMA = "loom.gem5_system_projection.5"
 
 PROCESSOR_FIELDS = {
     "cpu_id",
@@ -194,16 +194,22 @@ def build_o3_execution_units(records: list[dict]) -> FUPool:
     for ordinal, record in enumerate(records):
         require_keys(
             record,
-            {"operation_class", "count", "latency_cycles", "initiation_interval"},
+            {
+                "operation_classes",
+                "count",
+                "latency_cycles",
+                "initiation_interval",
+            },
             f"execution unit {ordinal}",
         )
-        operation_class = record["operation_class"]
-        if operation_class == 0:
-            op_classes = ["IntAlu"]
-        elif operation_class == 4:
-            op_classes = ["MemRead", "MemWrite"]
-        else:
-            raise ValueError("O3 processor has an unsupported execution-unit class")
+        op_classes = record["operation_classes"]
+        if (
+            not isinstance(op_classes, list)
+            or not op_classes
+            or not all(isinstance(value, str) and value for value in op_classes)
+            or len(set(op_classes)) != len(op_classes)
+        ):
+            raise ValueError("O3 execution-unit operation classes are invalid")
         latency = record["latency_cycles"]
         interval = record["initiation_interval"]
         if not all(
@@ -273,7 +279,18 @@ def build_system(projection: dict) -> RiscvSystem:
     memory = projection["memory"]
     require_keys(memory, {"base", "size", "latency"}, "memory")
     host = projection["host"]
-    require_keys(host, {"elf", "cpu_id", "entry_symbol"}, "host")
+    require_keys(
+        host,
+        {
+            "elf",
+            "cpu_id",
+            "entry_symbol",
+            "result_address",
+            "result_size",
+            "return_address",
+        },
+        "host",
+    )
     dispatch = projection["dispatch"]
     require_keys(
         dispatch,
@@ -357,6 +374,9 @@ def build_system(projection: dict) -> RiscvSystem:
         host_dispatch_address=dispatch["pio_address"],
         host_memory_table_address=system_memory["interface_table_address"],
         host_memory_table_entries=system_memory["interface_table_entries"],
+        host_result_address=host["result_address"],
+        host_result_size=host["result_size"],
+        host_return_address=host["return_address"],
         stack_base=dispatch["stack_base"],
         stack_stride=dispatch["stack_stride"],
         instruction_images=instruction_images,

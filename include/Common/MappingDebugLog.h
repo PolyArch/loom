@@ -2,42 +2,17 @@
 #define LOOM_COMMON_MAPPINGDEBUGLOG_H
 
 #include "Common/DiagnosticVerbosity.h"
+#include "Common/InvocationDiagnosticLog.h"
 
 #include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/JSON.h"
 
-#include <cstdint>
-
 namespace loom::mapping_debug {
 
 using Level = DiagnosticVerbosity;
-
-enum class Stage : std::uint8_t {
-  TechMapping,
-  SpatialPnr,
-  SystemPnr,
-};
-
-enum class Event : std::uint8_t {
-  InvocationBegin,
-  InvocationEnd,
-  Statistics,
-  Candidate,
-  Seed,
-  NegotiationIteration,
-  CapacityConflict,
-  ActionProposal,
-  ActionOutcome,
-  ContextChoice,
-  NetRoute,
-  CutAnalysis,
-  DerivedContext,
-  TopologyQuality,
-  TagDomainPressure,
-  ArithmeticFailure,
-  MappingFailure,
-};
+using Stage = InvocationDiagnosticStage;
+using Event = InvocationDiagnosticEvent;
 
 enum class ClosureStatus : std::uint8_t {
   Internal,

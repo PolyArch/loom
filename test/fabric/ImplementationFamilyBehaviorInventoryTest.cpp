@@ -670,7 +670,7 @@ void vectorAdaptersQuotientByElementWidthAndLaneCount() {
           "single-element adapter omitted its lane-count quotient");
 }
 
-void routedTokensOwnOrderedPhysicalLaneImages() {
+void routedTokensOwnObservablePhysicalLaneImages() {
   const char *test = __func__;
   mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   const FamilyCapabilityParams params = RoutedTokenParams{32, 3};
@@ -683,18 +683,19 @@ void routedTokensOwnOrderedPhysicalLaneImages() {
                      syncWidths, syncWidths, context));
   require(test,
           sync.kind() == FabricOpSemanticFieldRelationKind::Finite &&
-              sync.finiteBehaviorDomain().size() == 7,
-          "sync did not enumerate every nonempty ordered lane image");
+              sync.finiteBehaviorDomain().size() == 3,
+          "sync did not quotient symmetric lane subsets");
 
+  const auto i1 = mlir::IntegerType::get(&context, 1);
   const auto i32 = mlir::IntegerType::get(&context, 32);
   const ::dataflow::CanonicalActorSchemaProjection twoLaneSync{
       OperationSchemaId::DataflowSync,
       mlir::FunctionType::get(&context, {i32, i32}, {i32, i32}),
       ::dataflow::NoPayload{}};
-  constexpr std::array<std::uint64_t, 2> noncontiguous = {0, 2};
+  constexpr std::array<std::uint64_t, 2> canonicalSync = {0, 1};
   const ::loom::CanonicalSemanticBytes syncKey =
-      take(test, sync.projectSemanticValue(twoLaneSync, noncontiguous,
-                                           noncontiguous));
+      take(test, sync.projectSemanticValue(twoLaneSync, canonicalSync,
+                                           canonicalSync));
   if (llvm::Error error = sync.validateSemanticValue(syncKey.bytes()))
     fail(test, llvm::toString(std::move(error)));
   constexpr std::array<std::uint8_t, 80> expectedSyncKey = {
@@ -703,14 +704,20 @@ void routedTokensOwnOrderedPhysicalLaneImages() {
       'o', 'r', '-', 'k', 'e', 'y', 0,   0,   0,   0,   1,   0,   0,   0,
       0,   0,   0,   0,   9,   'T', 'o', 'k', 'e', 'n', 'S', 'y', 'n', 'c',
       0,   0,   0,   0,   0,   0,   0,   2,   0,   0,   0,   0,   0,   0,
-      0,   0,   0,   0,   0,   0,   0,   0,   0,   2};
+      0,   0,   0,   0,   0,   0,   0,   0,   0,   1};
   require(test, syncKey.bytes().equals(expectedSyncKey),
-          "sync lane image escaped the canonical literal codec");
-  constexpr std::array<std::uint64_t, 2> reversed = {2, 0};
+          "sync embedding escaped the canonical literal codec");
+  constexpr std::array<std::uint64_t, 2> noncanonical = {0, 2};
+  auto redundant =
+      sync.projectSemanticValue(twoLaneSync, noncanonical, noncanonical);
+  require(test, !redundant,
+          "sync accepted a redundant symmetric-lane embedding");
+  llvm::consumeError(redundant.takeError());
+  constexpr std::array<std::uint64_t, 2> reversed = {1, 0};
   auto invalid = sync.projectSemanticValue(twoLaneSync, reversed, reversed);
   require(test, !invalid, "sync accepted a reversed physical lane image");
   const std::string invalidMessage = llvm::toString(invalid.takeError());
-  require(test, llvm::StringRef(invalidMessage).contains("ordered"),
+  require(test, llvm::StringRef(invalidMessage).contains("canonical"),
           "sync rejected a reversed lane image for an unrelated reason");
 
   constexpr std::array muxSchemas = {OperationSchemaId::DataflowMux};
@@ -722,9 +729,21 @@ void routedTokensOwnOrderedPhysicalLaneImages() {
                      muxInputs, muxResults, context));
   require(test,
           mux.kind() == FabricOpSemanticFieldRelationKind::Finite &&
-              mux.finiteBehaviorDomain().size() == 4,
+              mux.finiteBehaviorDomain().size() == 2,
           "mux exposed " + std::to_string(mux.finiteBehaviorDomain().size()) +
-              " rather than four ordered data-input images");
+              " rather than two canonical lane-count embeddings");
+  const ::dataflow::CanonicalActorSchemaProjection twoChoiceMux{
+      OperationSchemaId::DataflowMux,
+      mlir::FunctionType::get(&context, {i1, i32, i32}, {i32}),
+      ::dataflow::NoPayload{}};
+  constexpr std::array<std::uint64_t, 3> canonicalMux = {0, 1, 2};
+  constexpr std::array<std::uint64_t, 1> fixedResult = {0};
+  take(test, mux.projectSemanticValue(twoChoiceMux, canonicalMux, fixedResult));
+  auto redundantMux =
+      mux.projectSemanticValue(twoChoiceMux, {0, 1, 3}, fixedResult);
+  require(test, !redundantMux,
+          "mux accepted a redundant symmetric-lane embedding");
+  llvm::consumeError(redundantMux.takeError());
 
   constexpr std::array demuxSchemas = {OperationSchemaId::DataflowDemux};
   constexpr std::array demuxInputs = {32U, 32U};
@@ -735,10 +754,60 @@ void routedTokensOwnOrderedPhysicalLaneImages() {
                      demuxInputs, demuxResults, context));
   require(test,
           demux.kind() == FabricOpSemanticFieldRelationKind::Finite &&
-              demux.finiteBehaviorDomain().size() == 4,
+              demux.finiteBehaviorDomain().size() == 2,
           "demux exposed " +
               std::to_string(demux.finiteBehaviorDomain().size()) +
-              " rather than four ordered data-result images");
+              " rather than two canonical lane-count embeddings");
+  const ::dataflow::CanonicalActorSchemaProjection twoChoiceDemux{
+      OperationSchemaId::DataflowDemux,
+      mlir::FunctionType::get(&context, {i1, i32}, {i32, i32}),
+      ::dataflow::NoPayload{}};
+  constexpr std::array<std::uint64_t, 2> fixedOperands = {0, 1};
+  constexpr std::array<std::uint64_t, 2> canonicalDemux = {0, 1};
+  take(test, demux.projectSemanticValue(twoChoiceDemux, fixedOperands,
+                                        canonicalDemux));
+  auto redundantDemux =
+      demux.projectSemanticValue(twoChoiceDemux, fixedOperands, {0, 2});
+  require(test, !redundantDemux,
+          "demux accepted a redundant symmetric-lane embedding");
+  llvm::consumeError(redundantDemux.takeError());
+
+  constexpr std::array asymmetricWidths = {16U, 32U, 32U};
+  const FabricOpSemanticFieldRelation asymmetric =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::TokenSync, params, syncSchemas,
+                     asymmetricWidths, asymmetricWidths, context));
+  require(test,
+          asymmetric.kind() == FabricOpSemanticFieldRelationKind::Finite &&
+              asymmetric.finiteBehaviorDomain().size() == 5,
+          "sync collapsed physically asymmetric lane classes");
+  const auto i16 = mlir::IntegerType::get(&context, 16);
+  const ::dataflow::CanonicalActorSchemaProjection narrowThenWide{
+      OperationSchemaId::DataflowSync,
+      mlir::FunctionType::get(&context, {i16, i32}, {i16, i32}),
+      ::dataflow::NoPayload{}};
+  const ::dataflow::CanonicalActorSchemaProjection wideThenNarrow{
+      OperationSchemaId::DataflowSync,
+      mlir::FunctionType::get(&context, {i32, i16}, {i32, i16}),
+      ::dataflow::NoPayload{}};
+  const ::loom::CanonicalSemanticBytes narrowWideKey = take(
+      test, asymmetric.projectSemanticValue(narrowThenWide, {0, 1}, {0, 1}));
+  const ::loom::CanonicalSemanticBytes wideNarrowKey = take(
+      test, asymmetric.projectSemanticValue(wideThenNarrow, {1, 0}, {1, 0}));
+  require(test, narrowWideKey.bytes().equals(wideNarrowKey.bytes()),
+          "sync distinguished lane orders that activate the same hardware");
+  const ::dataflow::CanonicalActorSchemaProjection narrowLane{
+      OperationSchemaId::DataflowSync,
+      mlir::FunctionType::get(&context, {i16}, {i16}), ::dataflow::NoPayload{}};
+  const ::dataflow::CanonicalActorSchemaProjection wideLane{
+      OperationSchemaId::DataflowSync,
+      mlir::FunctionType::get(&context, {i32}, {i32}), ::dataflow::NoPayload{}};
+  const ::loom::CanonicalSemanticBytes narrowKey =
+      take(test, asymmetric.projectSemanticValue(narrowLane, {0}, {0}));
+  const ::loom::CanonicalSemanticBytes wideKey =
+      take(test, asymmetric.projectSemanticValue(wideLane, {1}, {1}));
+  require(test, !narrowKey.bytes().equals(wideKey.bytes()),
+          "sync merged physically distinct active lane sets");
 }
 
 void singletonControlRelationsStillValidateTheirCapability() {
@@ -783,7 +852,7 @@ int main() {
   physicalCapacityEliminatesRedundantBehavior();
   loopControlRelationOwnsTheReachableQuotient();
   vectorAdaptersQuotientByElementWidthAndLaneCount();
-  routedTokensOwnOrderedPhysicalLaneImages();
+  routedTokensOwnObservablePhysicalLaneImages();
   singletonControlRelationsStillValidateTheirCapability();
   return EXIT_SUCCESS;
 }

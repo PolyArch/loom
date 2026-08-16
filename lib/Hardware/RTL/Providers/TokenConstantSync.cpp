@@ -153,8 +153,8 @@ materializePortableTokenConstant(FabricOperationProviderRequest request) {
   const unsigned carrierWidth = *relation->directEncodedBitCount();
   const auto &semanticField =
       request.capability.configurationFieldSchema.front();
-  const ConfigurationFieldEncoding *field =
-      request.configurationAbi.findOperationField(request.occurrence,
+  const ConfigurationEncodingRelation *field =
+      request.configurationAbi.findOperationEncodingRelation(request.occurrence,
                                                   semanticField.ordinal);
   if (!field)
     return invalid("constant direct carrier is absent from the ABI");
@@ -237,14 +237,13 @@ deriveSyncMode(const ::fabric::FiniteImplementationFamilyBehaviorPoint &point,
 
   SyncMode mode;
   mode.lanes.reserve(point.operandPorts.size());
-  std::optional<std::uint64_t> previous;
+  std::vector<bool> used(ports.inputs.size(), false);
   for (auto [laneOrdinal, physicalOrdinal] :
        llvm::enumerate(point.operandPorts)) {
     if (physicalOrdinal >= ports.inputs.size() ||
-        physicalOrdinal >= ports.outputs.size() ||
-        (previous && physicalOrdinal <= *previous))
-      return invalid("sync relation lane image is not ordered and unique");
-    previous = physicalOrdinal;
+        physicalOrdinal >= ports.outputs.size() || used[physicalOrdinal])
+      return invalid("sync relation lane image is not unique and in range");
+    used[physicalOrdinal] = true;
     mlir::Type inputType = point.representativeActor.type.getInput(laneOrdinal);
     mlir::Type resultType =
         point.representativeActor.type.getResult(laneOrdinal);
@@ -380,7 +379,7 @@ materializePortableTokenSync(FabricOperationProviderRequest request) {
   if (domain.empty())
     return invalid("sync relation has an empty behavior domain");
 
-  const ConfigurationFieldEncoding *field = nullptr;
+  const ConfigurationEncodingRelation *field = nullptr;
   const FiniteCodebookEncoding *codebook = nullptr;
   std::vector<SyncMode> modes;
   modes.reserve(domain.size());
@@ -398,7 +397,7 @@ materializePortableTokenSync(FabricOperationProviderRequest request) {
       return invalid("configured sync relation does not own one field");
     const auto &semanticField =
         request.capability.configurationFieldSchema.front();
-    field = request.configurationAbi.findOperationField(request.occurrence,
+    field = request.configurationAbi.findOperationEncodingRelation(request.occurrence,
                                                         semanticField.ordinal);
     if (!field)
       return invalid("sync configuration field is absent from the ABI");

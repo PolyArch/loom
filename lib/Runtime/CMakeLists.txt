@@ -1,4 +1,5 @@
 add_library(LoomRuntimePlatformBinding
+  FabricModelPlatform.cpp
   Gem5BridgeABI.cpp
   Gem5BuiltinModels.cpp
   Gem5SimulationBinding.cpp
@@ -58,6 +59,7 @@ target_compile_definitions(LoomGem5SystemExecution PRIVATE
   LOOM_GEM5_RTL_ENGINE_SOURCE_PATH="${LOOM_SOURCE_DIR}/runtime/gem5/loom_gem5_rtl_engine.cpp"
   LOOM_GEM5_BRIDGE_HEADER_PATH="${LOOM_SOURCE_DIR}/include/Runtime/Gem5BridgeWire.h"
   LOOM_GEM5_CHANNEL_PLAN_HEADER_PATH="${LOOM_SOURCE_DIR}/include/Runtime/Gem5SpatialChannelPlan.h"
+  LOOM_GEM5_INVOCATION_WIRE_HEADER_PATH="${LOOM_SOURCE_DIR}/include/Runtime/SpatialInvocationWire.h"
 )
 
 add_dependencies(LoomGem5SystemExecution

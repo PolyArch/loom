@@ -33,8 +33,10 @@
 #include "Runtime/Gem5SimulationBinding.h"
 #include "Runtime/Gem5SpatialChannel.h"
 #include "Runtime/Gem5SpatialChannelPlan.h"
+#include "Runtime/SpatialInvocationWire.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
+#include "Simulator/SpatialInvocation.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -76,6 +78,9 @@
 #endif
 #ifndef LOOM_GEM5_BRIDGE_HEADER_PATH
 #error "LOOM_GEM5_BRIDGE_HEADER_PATH is required"
+#endif
+#ifndef LOOM_GEM5_INVOCATION_WIRE_HEADER_PATH
+#error "LOOM_GEM5_INVOCATION_WIRE_HEADER_PATH is required"
 #endif
 #ifndef LOOM_GEM5_CHANNEL_PLAN_HEADER_PATH
 #error "LOOM_GEM5_CHANNEL_PLAN_HEADER_PATH is required"
@@ -190,8 +195,23 @@ inheritedEnvironment(const LocalToolConfig &config,
   return configured->second.inheritEnvironment;
 }
 
-std::string renderProjection(const Gem5SystemFacts &facts,
-                             const ReadinessIdentity &readiness) {
+llvm::Expected<std::string>
+renderProjection(const Gem5SystemFacts &facts,
+                 const ReadinessIdentity &readiness) {
+  std::vector<std::vector<llvm::ArrayRef<llvm::StringLiteral>>>
+      processorOperationClasses;
+  processorOperationClasses.reserve(facts.processors.size());
+  for (const Gem5ProcessorProjection &processor : facts.processors) {
+    std::vector<llvm::ArrayRef<llvm::StringLiteral>> operationClasses;
+    operationClasses.reserve(processor.executionUnits.size());
+    for (const fabric::ExecutionUnitRecord &unit : processor.executionUnits) {
+      auto projected = projectGem5O3OperationClasses(unit.operationClass);
+      if (!projected)
+        return projected.takeError();
+      operationClasses.push_back(*projected);
+    }
+    processorOperationClasses.push_back(std::move(operationClasses));
+  }
   std::string output;
   llvm::raw_string_ostream stream(output);
   llvm::json::OStream json(stream, 0);
@@ -201,7 +221,7 @@ std::string renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.3");
+    json.attribute("schema", "loom.gem5_system_projection.5");
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
@@ -214,6 +234,11 @@ std::string renderProjection(const Gem5SystemFacts &facts,
       json.attribute("elf", kHostElfPath);
       json.attribute("cpu_id", facts.hostCpuId);
       json.attribute("entry_symbol", facts.hostEntrySymbol);
+      json.attribute("result_address",
+                     facts.programResult ? facts.programResult->address : 0);
+      json.attribute("result_size",
+                     facts.programResult ? facts.programResult->size : 0);
+      json.attribute("return_address", facts.hostReturnAddress);
     });
     json.attributeArray("instruction_images", [&] {
       for (const Gem5InstructionImage &image : facts.instructionImages)
@@ -233,6 +258,11 @@ std::string renderProjection(const Gem5SystemFacts &facts,
                      facts.memoryInterfaceTableEntries);
       json.attribute("observation_path", kMemoryResultPath);
       json.attributeArray("observations", [&] {
+        if (facts.programResult)
+          json.object([&] {
+            json.attribute("address", facts.programResult->address);
+            json.attribute("size", facts.programResult->size);
+          });
         for (const Gem5MemoryObservationProjection &observation :
              facts.memoryObservations)
           json.object([&] {
@@ -262,7 +292,10 @@ std::string renderProjection(const Gem5SystemFacts &facts,
       });
     });
     json.attributeArray("processors", [&] {
-      for (const Gem5ProcessorProjection &processor : facts.processors) {
+      for (std::size_t processorOrdinal = 0;
+           processorOrdinal != facts.processors.size(); ++processorOrdinal) {
+        const Gem5ProcessorProjection &processor =
+            facts.processors[processorOrdinal];
         json.object([&] {
           json.attribute("cpu_id", processor.parameters.cpuId);
           json.attribute("model",
@@ -271,15 +304,22 @@ std::string renderProjection(const Gem5SystemFacts &facts,
                              : "o3");
           json.attribute("num_threads", processor.hardwareThreadCount);
           json.attributeArray("execution_units", [&] {
-            for (const fabric::ExecutionUnitRecord &unit :
-                 processor.executionUnits)
+            for (std::size_t unitOrdinal = 0;
+                 unitOrdinal != processor.executionUnits.size();
+                 ++unitOrdinal) {
+              const fabric::ExecutionUnitRecord &unit =
+                  processor.executionUnits[unitOrdinal];
               json.object([&] {
-                json.attribute("operation_class",
-                               static_cast<std::uint32_t>(unit.operationClass));
+                json.attributeArray("operation_classes", [&] {
+                  for (llvm::StringLiteral operationClass :
+                       processorOperationClasses[processorOrdinal][unitOrdinal])
+                    json.value(operationClass);
+                });
                 json.attribute("count", unit.count);
                 json.attribute("latency_cycles", unit.latencyCycles);
                 json.attribute("initiation_interval", unit.initiationInterval);
               });
+            }
           });
           json.attributeObject("pipeline", [&] {
             if (!processor.outOfOrder)
@@ -330,9 +370,11 @@ std::string renderProjection(const Gem5SystemFacts &facts,
             json.value("--workload");
             json.value(
                 formatArtifactIdentityHex(launch.spatialWorkload.artifact));
-            json.value("--runtime-input");
-            json.value(
-                formatArtifactIdentityHex(launch.spatialRuntimeInput.artifact));
+            if (launch.spatialRuntimeInput) {
+              json.value("--runtime-input");
+              json.value(formatArtifactIdentityHex(
+                  launch.spatialRuntimeInput->artifact));
+            }
             json.value("--channel-projection");
             json.value(launch.channelProjectionPath);
             json.value("--dataflow");
@@ -411,6 +453,8 @@ llvm::Expected<eda::open_source::MappedRtlExecutionClosure>
 mappedRtlClosure(const EvaluationRequest &request, const Gem5SystemFacts &facts,
                  const Gem5SpatialLaunchProjection &launch,
                  const ExternalToolSemanticContract &contract) {
+  if (!launch.spatialRuntimeInput)
+    return invalid("gem5 RTL does not admit dynamic Spatial invocation");
   const auto *binding = request.modelBinding()
                             .resolvedModelConfig()
                             .getIf<models::MappedRtlSimulatorBinding>();
@@ -424,7 +468,7 @@ mappedRtlClosure(const EvaluationRequest &request, const Gem5SystemFacts &facts,
       launch.hardwareImplementation,
       facts.deployment,
       launch.spatialWorkload,
-      launch.spatialRuntimeInput};
+      *launch.spatialRuntimeInput};
 }
 
 EvaluationModelResult terminalResult(EvaluationEvidenceOutcome outcome) {
@@ -493,25 +537,37 @@ parseMemoryResult(llvm::StringRef bytes, const Gem5SystemFacts &facts) {
   auto count = readResultU64(bytes, offset);
   if (!count)
     return count.takeError();
-  if (*count != facts.memoryObservations.size())
+  const std::size_t expectedCount =
+      facts.memoryObservations.size() + (facts.programResult ? 1 : 0);
+  if (*count != expectedCount)
     return invalid("System memory result has the wrong observation count");
   std::vector<std::vector<std::uint8_t>> result;
-  result.reserve(facts.memoryObservations.size());
-  for (const Gem5MemoryObservationProjection &expected :
-       facts.memoryObservations) {
+  result.reserve(expectedCount);
+  const auto readSnapshot = [&](std::uint64_t expectedAddress,
+                                std::uint64_t expectedSize) -> llvm::Error {
     auto address = readResultU64(bytes, offset);
     auto size = readResultU64(bytes, offset);
     if (!address || !size)
       return llvm::joinErrors(address ? llvm::Error::success()
                                       : address.takeError(),
                               size ? llvm::Error::success() : size.takeError());
-    if (*address != expected.address || *size != expected.size)
+    if (*address != expectedAddress || *size != expectedSize)
       return invalid("System memory result differs from its exact projection");
     if (*size > bytes.size() - offset)
       return invalid("System memory result payload is truncated");
     result.emplace_back(bytes.bytes_begin() + offset,
                         bytes.bytes_begin() + offset + *size);
     offset += static_cast<std::size_t>(*size);
+    return llvm::Error::success();
+  };
+  if (facts.programResult)
+    if (llvm::Error error = readSnapshot(facts.programResult->address,
+                                         facts.programResult->size))
+      return std::move(error);
+  for (const Gem5MemoryObservationProjection &expected :
+       facts.memoryObservations) {
+    if (llvm::Error error = readSnapshot(expected.address, expected.size))
+      return std::move(error);
   }
   if (offset != bytes.size())
     return invalid("System memory result has trailing bytes");
@@ -522,13 +578,40 @@ llvm::Expected<sim::SystemFunctionalObservations>
 projectSystemObservations(const Gem5SystemFacts &facts,
                           const sim::ImportedSystemSimulationInputs &inputs,
                           llvm::ArrayRef<std::vector<std::uint8_t>> snapshots) {
-  if (snapshots.size() != facts.memoryObservations.size())
+  const std::size_t memoryOffset = facts.programResult ? 1 : 0;
+  if (snapshots.size() != facts.memoryObservations.size() + memoryOffset)
     return invalid("System memory snapshot count is not total");
   const sim::SystemSimulationRuntimeInput &runtime =
       *inputs.runtimeInput.system();
   sim::SystemFunctionalObservations observations;
-  observations.memories.reserve(snapshots.size());
-  for (std::size_t ordinal = 0; ordinal != snapshots.size(); ++ordinal) {
+  if (facts.programResult) {
+    const Gem5ProgramResultProjection &projection = *facts.programResult;
+    if (snapshots.front().size() != projection.size ||
+        projection.shape.lanesPerToken == 0 ||
+        projection.shape.laneBitWidth == 0 ||
+        projection.shape.lanesPerToken > std::numeric_limits<unsigned>::max() /
+                                             projection.shape.laneBitWidth)
+      return invalid("System program result snapshot has the wrong shape");
+    const unsigned bitCount = static_cast<unsigned>(
+        projection.shape.lanesPerToken * projection.shape.laneBitWidth);
+    llvm::APInt bits(bitCount, 0);
+    for (std::size_t byte = 0; byte != snapshots.front().size(); ++byte) {
+      const std::size_t orderedByte =
+          projection.littleEndian ? byte : snapshots.front().size() - 1 - byte;
+      for (unsigned bit = 0; bit != 8; ++bit)
+        if ((snapshots.front()[byte] & (1U << bit)) != 0)
+          bits.setBit(static_cast<unsigned>(orderedByte * 8 + bit));
+    }
+    auto lanes = sim::unpackDefinedSpatialSimulationToken(
+        bits, {projection.shape.lanesPerToken, projection.shape.laneBitWidth});
+    if (!lanes)
+      return lanes.takeError();
+    observations.valueResults.push_back(sim::PublishedValueResult{
+        sim::CanonicalValueSequence{1, std::move(*lanes)}});
+  }
+  observations.memories.reserve(facts.memoryObservations.size());
+  for (std::size_t ordinal = 0; ordinal != facts.memoryObservations.size();
+       ++ordinal) {
     const Gem5MemoryObservationProjection &projection =
         facts.memoryObservations[ordinal];
     if (projection.objectOrdinal >= runtime.memoryObjects.size())
@@ -538,11 +621,11 @@ projectSystemObservations(const Gem5SystemFacts &facts,
     if (projection.objectByteOffset > object.initialBytes.size() ||
         projection.size !=
             object.initialBytes.size() - projection.objectByteOffset ||
-        snapshots[ordinal].size() != projection.size)
+        snapshots[memoryOffset + ordinal].size() != projection.size)
       return invalid("System memory projection no longer matches its baseline");
     std::vector<sim::SemanticMemoryByte> finalBytes;
-    finalBytes.reserve(snapshots[ordinal].size());
-    for (std::uint8_t byte : snapshots[ordinal])
+    finalBytes.reserve(snapshots[memoryOffset + ordinal].size());
+    for (std::uint8_t byte : snapshots[memoryOffset + ordinal])
       finalBytes.push_back({sim::SemanticState::Defined, byte});
     if (projection.form == sim::MemoryObservationForm::FullState) {
       observations.memories.push_back(
@@ -626,8 +709,11 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
   std::vector<MaterializedBundleFile> files = std::move(facts.semanticInputs);
   files.push_back({kConfigurationScriptPath.str(), std::move(*configuration),
                    std::nullopt, false});
-  files.push_back({kProjectionPath.str(), renderProjection(facts, *readiness),
-                   std::nullopt, false});
+  auto projection = renderProjection(facts, *readiness);
+  if (!projection)
+    return projection.takeError();
+  files.push_back({kProjectionPath.str(), std::move(*projection), std::nullopt,
+                   false});
 
   if (facts.engine == Gem5SystemEngine::Rtl) {
     auto options = eda::open_source::resolveMappedRtlExecutionAttemptOptions(
@@ -661,12 +747,15 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
     auto engineSource = readFile(LOOM_GEM5_RTL_ENGINE_SOURCE_PATH);
     auto bridgeHeader = readFile(LOOM_GEM5_BRIDGE_HEADER_PATH);
     auto channelPlanHeader = readFile(LOOM_GEM5_CHANNEL_PLAN_HEADER_PATH);
+    auto invocationWireHeader = readFile(LOOM_GEM5_INVOCATION_WIRE_HEADER_PATH);
     if (!engineSource)
       return engineSource.takeError();
     if (!bridgeHeader)
       return bridgeHeader.takeError();
     if (!channelPlanHeader)
       return channelPlanHeader.takeError();
+    if (!invocationWireHeader)
+      return invocationWireHeader.takeError();
 
     std::vector<std::vector<std::string>> commands;
     std::vector<std::string> executables;
@@ -716,6 +805,11 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
             std::filesystem::path(kChannelPlanHeaderPath.str()).filename())
                .generic_string(),
            *channelPlanHeader, std::nullopt, false});
+      files.push_back(
+          {(engineDirectory /
+            std::filesystem::path(kInvocationWireHeaderPath.str()).filename())
+               .generic_string(),
+           *invocationWireHeader, std::nullopt, false});
       files.insert(files.end(),
                    std::make_move_iterator(rtl.semanticInputs.begin()),
                    std::make_move_iterator(rtl.semanticInputs.end()));
@@ -935,6 +1029,12 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
         bridgeResult.completionTick < systemResult->entryTick ||
         bridgeResult.completionTick > systemResult->exitTick)
       return invalid("bridge completion is inconsistent with gem5 time");
+    SpatialInvocationResultWire invocationResult;
+    std::string invocationDiagnostic;
+    if (!decodeSpatialInvocationResultWire(
+            bridgeResult.result, invocationResult, invocationDiagnostic))
+      return invalid("bridge invocation result is invalid: " +
+                     invocationDiagnostic);
 
     std::optional<sim::SpatialEngineBoundaryResult> spatialResult;
     if (facts.engine == Gem5SystemEngine::Rtl) {
@@ -947,7 +1047,9 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
       const llvm::ArrayRef<std::uint8_t> mappedBytes(
           reinterpret_cast<const std::uint8_t *>(mappedText->data()),
           mappedText->size());
-      if (mappedBytes != llvm::ArrayRef<std::uint8_t>(bridgeResult.result))
+      if (!invocationResult.invocation.empty() ||
+          mappedBytes != llvm::ArrayRef<std::uint8_t>(
+                             invocationResult.spatialBoundaryResult))
         return invalid("bridge payload differs from the mapped RTL result");
       auto mappedResult =
           eda::open_source::parseMappedRtlSimulationResult(*mappedText);
@@ -969,9 +1071,38 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
         return boundary.takeError();
       spatialResult = std::move(*boundary);
     } else {
-      auto boundary = sim::decodeSpatialEngineBoundaryResult(
-          bridgeResult.result, launch.spatialWorkload,
-          launch.spatialRuntimeInput, artifacts);
+      llvm::Expected<sim::SpatialEngineBoundaryResult> boundary =
+          [&]() -> llvm::Expected<sim::SpatialEngineBoundaryResult> {
+        if (invocationResult.invocation.empty())
+          if (!launch.spatialRuntimeInput)
+            return invalid("static bridge result has no Spatial runtime input");
+        if (invocationResult.invocation.empty())
+          return sim::decodeSpatialEngineBoundaryResult(
+              invocationResult.spatialBoundaryResult, launch.spatialWorkload,
+              *launch.spatialRuntimeInput, artifacts);
+        auto workload = sim::importSpatialSimulationWorkload(
+            launch.spatialWorkload, artifacts);
+        if (!workload)
+          return workload.takeError();
+        SpatialInvocationWire wire;
+        std::string diagnostic;
+        if (!decodeSpatialInvocationWire(invocationResult.invocation, wire,
+                                         diagnostic))
+          return invalid(diagnostic);
+        auto invocationInputs =
+            sim::materializeSpatialInvocationInputs(std::move(*workload), wire);
+        if (!invocationInputs)
+          return invocationInputs.takeError();
+        auto decoded = sim::decodeSpatialEngineBoundaryResult(
+            invocationResult.spatialBoundaryResult, *invocationInputs);
+        if (!decoded)
+          return decoded.takeError();
+        auto writes = sim::projectSpatialInvocationResultWrites(
+            wire, *invocationInputs, decoded->functionalObservations);
+        if (!writes)
+          return writes.takeError();
+        return decoded;
+      }();
       if (!boundary)
         return boundary.takeError();
       const std::uint32_t expectedStatus =

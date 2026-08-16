@@ -67,38 +67,18 @@ encodeCanonical(const SpatialEngineBoundaryResult &result,
   return bytes;
 }
 
-} // namespace
-
-llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
-    const SpatialEngineBoundaryResult &result,
-    const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ArtifactStore &store) {
-  auto context = detail::resolveSpatialEngineResultContext(
-      workload, runtimeInput, store);
-  if (!context)
-    return context.takeError();
-  if (llvm::Error error = validateResult(result, *context))
-    return std::move(error);
-  return encodeCanonical(result, *context);
-}
-
-llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
-    llvm::ArrayRef<std::uint8_t> bytes,
-    const ArtifactRootReference &workload,
-    const ArtifactRootReference &runtimeInput, const ArtifactStore &store) {
+llvm::Expected<SpatialEngineBoundaryResult>
+decodeCanonical(llvm::ArrayRef<std::uint8_t> bytes,
+                const detail::SpatialExecutionContext &context) {
   if (bytes.size() < kMagic.size() ||
       !std::equal(kMagic.begin(), kMagic.end(), bytes.begin()))
     return invalid("wrong or truncated wire identity");
-  auto context = detail::resolveSpatialEngineResultContext(
-      workload, runtimeInput, store);
-  if (!context)
-    return context.takeError();
   detail::WireReader reader(bytes.drop_front(kMagic.size()));
   auto terminal = decodeTerminal(reader);
   if (!terminal)
     return terminal.takeError();
   auto functional =
-      detail::decodeSpatialFunctionalObservations(reader, *context);
+      detail::decodeSpatialFunctionalObservations(reader, context);
   if (!functional)
     return functional.takeError();
   auto progress = detail::decodeSpatialProgressObservations(reader);
@@ -112,13 +92,57 @@ llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
   SpatialEngineBoundaryResult result{
       std::move(*terminal), std::move(*functional), std::move(*progress),
       std::move(*activities)};
-  if (llvm::Error error = validateResult(result, *context))
+  if (llvm::Error error = validateResult(result, context))
     return std::move(error);
-  const std::vector<std::uint8_t> canonical =
-      encodeCanonical(result, *context);
-  if (llvm::ArrayRef<std::uint8_t>(canonical) != bytes)
+  if (llvm::ArrayRef<std::uint8_t>(encodeCanonical(result, context)) != bytes)
     return invalid("wire bytes are not canonical");
   return result;
+}
+
+} // namespace
+
+llvm::Expected<std::vector<std::uint8_t>>
+encodeSpatialEngineBoundaryResult(const SpatialEngineBoundaryResult &result,
+                                  const ArtifactRootReference &workload,
+                                  const ArtifactRootReference &runtimeInput,
+                                  const ArtifactStore &store) {
+  auto context =
+      detail::resolveSpatialEngineResultContext(workload, runtimeInput, store);
+  if (!context)
+    return context.takeError();
+  if (llvm::Error error = validateResult(result, *context))
+    return std::move(error);
+  return encodeCanonical(result, *context);
+}
+
+llvm::Expected<std::vector<std::uint8_t>> encodeSpatialEngineBoundaryResult(
+    const SpatialEngineBoundaryResult &result,
+    const ImportedSpatialSimulationInputs &inputs) {
+  auto context = detail::resolveSpatialEngineResultContext(inputs);
+  if (!context)
+    return context.takeError();
+  if (llvm::Error error = validateResult(result, *context))
+    return std::move(error);
+  return encodeCanonical(result, *context);
+}
+
+llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
+    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ArtifactStore &store) {
+  auto context =
+      detail::resolveSpatialEngineResultContext(workload, runtimeInput, store);
+  if (!context)
+    return context.takeError();
+  return decodeCanonical(bytes, *context);
+}
+
+llvm::Expected<SpatialEngineBoundaryResult> decodeSpatialEngineBoundaryResult(
+    llvm::ArrayRef<std::uint8_t> bytes,
+    const ImportedSpatialSimulationInputs &inputs) {
+  auto context = detail::resolveSpatialEngineResultContext(inputs);
+  if (!context)
+    return context.takeError();
+  return decodeCanonical(bytes, *context);
 }
 
 } // namespace loom::sim

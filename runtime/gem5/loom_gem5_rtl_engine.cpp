@@ -1,5 +1,6 @@
 #include "Gem5BridgeWire.h"
 #include "Gem5SpatialChannelPlan.h"
+#include "SpatialInvocationWire.h"
 #include "Vloom_mapped_rtl_testbench.h"
 #include "verilated.h"
 
@@ -635,9 +636,15 @@ int main(int argc, char **argv) {
     return 6;
   }
   loom::runtime::Gem5BridgeMessage launch;
+  loom::runtime::Gem5SpatialLaunchEnvelope launchEnvelope;
+  std::string launchDiagnostic;
   if (!receiveLaunch(connection, launch) ||
       launch.kind != loom::runtime::Gem5BridgeMessageKind::SpatialLaunch ||
-      launch.sequence != 0 || launch.payload != expectedLaunch) {
+      launch.sequence != 0 ||
+      !loom::runtime::decodeGem5SpatialLaunchEnvelope(
+          launch.payload, launchEnvelope, launchDiagnostic) ||
+      launchEnvelope.staticLaunch != expectedLaunch ||
+      !launchEnvelope.invocation.empty()) {
     ::close(connection);
     if (!options.peer)
       stopChild(gem5);
@@ -748,7 +755,8 @@ int main(int argc, char **argv) {
   }
   if (!sendCompletion(connection, launch.sequence,
                       cycles * options.ticksPerCycle, retired ? 0U : 1U,
-                      std::move(result))) {
+                      loom::runtime::encodeSpatialInvocationResultWire(
+                          {launchEnvelope.invocation, std::move(result)}))) {
     ::close(connection);
     if (!options.peer)
       stopChild(gem5);

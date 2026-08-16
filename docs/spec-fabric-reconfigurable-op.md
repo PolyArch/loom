@@ -415,9 +415,32 @@ The finite integer, loop-control, adapter, and routed-token quotients are:
 | `LoopStream` | `(active_integer_width, continuation_predicate)` |
 | `FixedVectorParallelize` | `(element_bit_width, lane_count)` |
 | `FixedVectorSerialize` | `(element_bit_width, lane_count)` |
-| `TokenSync` | `ordered_sync_lane_image[]` |
-| `TokenMux` | `ordered_data_input_lane_image[]` |
-| `TokenDemux` | `ordered_data_result_lane_image[]` |
+| `TokenSync` | `canonical_sync_active_lane_set[]` |
+| `TokenMux` | `canonical_ordered_data_input_lane_embedding[]` |
+| `TokenDemux` | `canonical_ordered_data_result_lane_embedding[]` |
+
+Routed-token lane correspondence is a family-owned quotient, not a raw
+physical-port subset. For each routed lane, the family derives the effective
+payload capacity observable through that family: `TokenSync` uses the minimum
+of the input, result, and family payload capacities; `TokenMux` uses the
+minimum of the selected data input, fixed result, and family payload
+capacities; and `TokenDemux` uses the minimum of the fixed data input,
+selected result, and family payload capacities. Lanes with the same effective
+capacity belong to one equivalence class. A logical ordered lane sequence
+selects equivalence classes in logical order and uses the lowest unused
+physical ordinal in each selected class. This is the unique canonical ordered
+embedding for that class sequence.
+
+Equal lanes therefore do not create a binomial family of configured
+behaviors. Different equivalence-class sequences remain distinct where lane
+order is physically observable. `TokenSync` further projects each ordered
+TechMapping embedding to its active physical lane set, so permutations with
+the same set share one configured behavior. The canonical correspondence
+stores the concrete representative ordinals required by TechMapping, while
+the behavior relation stores the family-observable projection consumed by
+configuration and RTL. FU capability-template boundary selection and topology
+are independent TechMapping decisions and are never folded into this lane
+quotient.
 
 The finite floating-point quotients are:
 
@@ -521,12 +544,15 @@ representation width therefore collapse for `FixedVectorParallelize` and
 representation, not arithmetic type identity. The complete exact actor type
 still participates in admission.
 
-The routed-token lane images contain concrete physical port ordinals in actor
-lane order. `TokenSync` uses its equal ordered operand/result image, `TokenMux`
-uses data inputs after the runtime selector operand, and `TokenDemux` uses data
-results. Noncontiguous images are valid. A different order is a different key;
-payload type spelling, token availability, and the runtime mux or demux
-selector are not key components.
+The routed-token lane images contain concrete physical port ordinals.
+`TokenSync` configuration owns the sorted set of simultaneously active equal
+operand/result lanes because its hardware has no lane-order selector. Distinct
+canonical TechMapping embeddings that activate the same set therefore project
+to one configuration key. `TokenMux` uses data inputs after the runtime
+selector operand, and `TokenDemux` uses data results; their actor-lane order is
+observable through the selector and remains part of the key. Noncontiguous
+images are valid. Payload type spelling, token availability, and the runtime
+mux or demux selector value are not key components.
 
 Semantic aliases collapse before quotienting. `llvm.or` with the disjoint
 promise maps to `Or`; the promise restricts defined inputs but does not select

@@ -184,34 +184,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
 }
 
 dataflow::CanonicalDataflowArtifact
-buildWideSyncDataflow(mlir::MLIRContext &context) {
-  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
-module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
-  dataflow.graph private @wide_sync(
-      %start: none, %v0: i32, %v1: i32, %v2: i32, %v3: i32,
-      %v4: i32, %v5: i32, %v6: i32)
-      -> (i32, i32, i32, i32, i32, i32, i32)
-      attributes {input_segments = array<i32: 7, 0, 0>,
-                  result_segments = array<i32: 7, 0, 0>} {
-    %result:8 = dataflow.sync %start, %v0, %v1, %v2, %v3,
-        %v4, %v5, %v6
-        : (none, i32, i32, i32, i32, i32, i32, i32)
-          -> (none, i32, i32, i32, i32, i32, i32, i32)
-    dataflow.graph.return values(
-        %result#1, %result#2, %result#3, %result#4,
-        %result#5, %result#6, %result#7
-        : i32, i32, i32, i32, i32, i32, i32)
-        streams() memories() complete(%result#0 : none)
-  }
-}
-)mlir",
-                                                        &context);
-  if (!module)
-    fail("cannot parse wide-sync Dataflow fixture");
-  return take(dataflow::finalizeCanonicalDataflow(*module));
-}
-
-dataflow::CanonicalDataflowArtifact
 buildIntegerAddChainDataflow(mlir::MLIRContext &context) {
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
@@ -783,28 +755,28 @@ void serialTopologyPrunesIndependentActorScale() {
   const auto outcome = loom::mapping::generateTechMappings(
       {dataflow, covers, fabric.view(), config, store});
   const auto elapsed = std::chrono::steady_clock::now() - start;
-  const auto *incomplete =
-      std::get_if<loom::mapping::IncompleteTechMappingGeneration>(&outcome);
-  if (!incomplete || incomplete->accounting.matchRowAttempts != 1000 ||
-      incomplete->accounting.matchRowFirstVisits != 1000 ||
-      incomplete->accounting.matchRowCursorResumptions == 0 ||
-      incomplete->accounting.matchRowReplayVisits != 0)
-    fail("independent-actor scale fixture did not stop at its semantic limit");
+  const auto *infeasible =
+      std::get_if<loom::mapping::ProvenInfeasibleTechMapping>(&outcome);
+  if (!infeasible || infeasible->accounting.matchRowAttempts != 1000 ||
+      infeasible->accounting.matchRowFirstVisits != 1000 ||
+      infeasible->accounting.matchRowCursorResumptions == 0 ||
+      infeasible->accounting.matchRowReplayVisits != 0)
+    fail("independent-actor scale fixture did not exhaust its linear domain");
   if (elapsed >= std::chrono::seconds(10))
     fail("independent actors caused factorial serial-topology enumeration");
 }
 
-void wideTokenSyncUsesFamilyCorrespondenceDomain() {
+void narrowTokenSyncUsesCanonicalFamilyEmbedding() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
-  auto dataflowArtifact = buildWideSyncDataflow(context);
+  auto dataflowArtifact = buildSingleSyncDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
-  const auto fabric = buildTokenSyncFabric(store, 8);
+  const auto fabric = buildTokenSyncFabric(store, 4);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
-  resolved.dse.techMapping.candidatePublicationLimit = 1;
+  resolved.dse.techMapping.candidatePublicationLimit = 8;
   const auto config =
       take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
   const std::array<dataflow::GraphRef, 1> covers = {
@@ -816,10 +788,12 @@ void wideTokenSyncUsesFamilyCorrespondenceDomain() {
   const auto *generated =
       std::get_if<loom::mapping::GeneratedTechMappings>(&outcome);
   if (!generated || generated->candidates.size() != 1 ||
-      generated->accounting.matchRowAttempts != 1)
-    fail("wide token sync did not produce its unique family correspondence");
+      generated->accounting.matchRowAttempts != 1 ||
+      generated->termination !=
+          loom::mapping::TechMappingGenerationTermination::SearchExhausted)
+    fail("narrow token sync did not exhaust one canonical correspondence");
   if (elapsed >= std::chrono::seconds(5))
-    fail("wide token sync enumerated a factorial port-map product");
+    fail("narrow token sync repeated symmetric lane embeddings");
 }
 
 void branchingFuBoundariesEnumerateLegalCorrespondences() {
@@ -1275,7 +1249,7 @@ void completedCoverSurvivesExpansionLimit() {
   auto dataflowArtifact = buildSingleSyncDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
-  const auto fabric = buildSmallFabric(store);
+  const auto fabric = buildBranchingTokenSyncFabric(store);
   const std::array<dataflow::GraphRef, 1> covers = {
       dataflow.graphs().front().ref};
 
@@ -1288,7 +1262,7 @@ void completedCoverSurvivesExpansionLimit() {
   const auto *all =
       std::get_if<loom::mapping::GeneratedTechMappings>(&exhaustiveOutcome);
   if (!all || all->candidates.size() < 2)
-    fail("single-sync expansion fixture has fewer than two exact covers");
+    fail("branching-sync expansion fixture has fewer than two exact covers");
 
   loom::ResolvedConfig limited = loom::defaultResolvedConfig();
   limited.dse.techMapping.partialCoverExpansionLimit = 1;
@@ -1522,7 +1496,7 @@ int main() {
   serialComputeTemplateAcceptsExactActorChain();
   matchRowLimitPreservesGlobalActorOrder();
   serialTopologyPrunesIndependentActorScale();
-  wideTokenSyncUsesFamilyCorrespondenceDomain();
+  narrowTokenSyncUsesCanonicalFamilyEmbedding();
   branchingFuBoundariesEnumerateLegalCorrespondences();
   unrelatedBuiltinOperationsDoNotConsumeSeedBudget();
   mixedRowFamiliesCannotStarveMemory();

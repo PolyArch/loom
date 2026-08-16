@@ -44,6 +44,8 @@ inline constexpr llvm::StringLiteral kBridgeHeaderPath =
     "drivers/Gem5BridgeWire.h";
 inline constexpr llvm::StringLiteral kChannelPlanHeaderPath =
     "drivers/Gem5SpatialChannelPlan.h";
+inline constexpr llvm::StringLiteral kInvocationWireHeaderPath =
+    "drivers/SpatialInvocationWire.h";
 inline constexpr llvm::StringLiteral kRtlPeerManifestPath =
     "drivers/gem5-rtl-peers.txt";
 inline constexpr llvm::StringLiteral kPackageObjectPath =
@@ -54,6 +56,8 @@ inline constexpr llvm::StringLiteral kThreadDispatchPath =
 inline constexpr llvm::StringLiteral kAdmissionPath = "inputs/admission.bin";
 inline constexpr llvm::StringLiteral kMemoryTablePath =
     "inputs/system-memory-table.bin";
+inline constexpr llvm::StringLiteral kHostResultPath = "inputs/host-result.bin";
+inline constexpr llvm::StringLiteral kHostReturnPath = "inputs/host-return.bin";
 inline constexpr std::uint64_t kMaximumGem5Ticks = 20'000'000;
 inline constexpr std::uint64_t kMaximumSpatialWork = 1'000'000;
 inline constexpr std::uint64_t kGem5PageBytes = 4096;
@@ -101,6 +105,14 @@ struct Gem5MemoryObservationProjection final {
   sim::MemoryObservationForm form = sim::MemoryObservationForm::FullState;
 };
 
+struct Gem5ProgramResultProjection final {
+  std::uint64_t resultOrdinal = 0;
+  std::uint64_t address = 0;
+  std::uint64_t size = 0;
+  sim::SystemSimulationValueShape shape;
+  bool littleEndian = false;
+};
+
 struct ReadinessIdentity final {
   std::string binarySha256;
   external_tool::ExternalFileFingerprint binaryFingerprint;
@@ -111,7 +123,7 @@ struct Gem5SpatialLaunchProjection final {
   ArtifactRootReference spatialMapping;
   ArtifactRootReference hardwareImplementation;
   ArtifactRootReference spatialWorkload;
-  ArtifactRootReference spatialRuntimeInput;
+  std::optional<ArtifactRootReference> spatialRuntimeInput;
   std::string channelProjectionPath;
   std::string channelEnginePlanPath;
   std::vector<std::uint8_t> launchPayload;
@@ -133,7 +145,9 @@ struct Gem5SystemFacts final {
   std::vector<Gem5RuntimeImage> runtimeImages;
   std::uint64_t memoryInterfaceTableAddress = 0;
   std::uint64_t memoryInterfaceTableEntries = 0;
+  std::optional<Gem5ProgramResultProjection> programResult;
   std::vector<Gem5MemoryObservationProjection> memoryObservations;
+  std::uint64_t hostReturnAddress = 0;
   std::uint64_t dispatchAddress = 0;
   std::uint64_t stackBase = 0;
   std::uint64_t stackStride = 0;

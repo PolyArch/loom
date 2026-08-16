@@ -172,10 +172,9 @@ lowerMode(const ::fabric::FiniteImplementationFamilyBehaviorPoint &point,
              point.resolvedIndexWidth != ::fabric::ResolvedIndexWidth::I32) {
     return invalid("wide routed mode does not use its resolved i32 selector");
   }
-  if (!llvm::is_sorted(mode.lanes) ||
-      std::adjacent_find(mode.lanes.begin(), mode.lanes.end()) !=
-          mode.lanes.end())
-    return invalid("routed-token lane image is not strictly ordered");
+  if (std::set<std::uint64_t>(mode.lanes.begin(), mode.lanes.end()).size() !=
+      mode.lanes.size())
+    return invalid("routed-token lane image contains a duplicate lane");
   return mode;
 }
 
@@ -383,7 +382,7 @@ materializePortableTokenRouting(FabricOperationProviderRequest request,
   if (domain.empty())
     return invalid("Fabric returned an empty routed-token behavior domain");
 
-  const ConfigurationFieldEncoding *field = nullptr;
+  const ConfigurationEncodingRelation *field = nullptr;
   const FiniteCodebookEncoding *codebook = nullptr;
   if (request.capability.configurationFieldSchema.empty()) {
     if (relation->kind() != ::fabric::FabricOpSemanticFieldRelationKind::None ||
@@ -396,7 +395,7 @@ materializePortableTokenRouting(FabricOperationProviderRequest request,
       return invalid("configured routed capability is not one finite field");
     const auto fieldOrdinal =
         request.capability.configurationFieldSchema.front().ordinal;
-    field = request.configurationAbi.findOperationField(request.occurrence,
+    field = request.configurationAbi.findOperationEncodingRelation(request.occurrence,
                                                         fieldOrdinal);
     if (!field)
       return invalid("configured routed field is absent from ABI 3.0");

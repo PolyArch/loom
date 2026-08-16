@@ -61,6 +61,17 @@ bool behaviorEqual(const Candidate &lhs, const Candidate &rhs) {
              });
 }
 
+bool sameLaneSet(llvm::ArrayRef<std::uint64_t> lhs,
+                 llvm::ArrayRef<std::uint64_t> rhs) {
+  if (lhs.size() != rhs.size())
+    return false;
+  std::vector<std::uint64_t> sortedLhs(lhs.begin(), lhs.end());
+  std::vector<std::uint64_t> sortedRhs(rhs.begin(), rhs.end());
+  llvm::sort(sortedLhs);
+  llvm::sort(sortedRhs);
+  return sortedLhs == sortedRhs;
+}
+
 llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
 finalizeDomain(ImplementationFamilyId family, std::vector<Candidate> candidates,
                std::string firstRejection) {
@@ -284,24 +295,6 @@ resolveAdapter(ImplementationFamilyId family,
                         std::move(firstRejection));
 }
 
-template <typename Callback>
-void enumerateSubsets(std::uint32_t count, std::uint32_t minimumSize,
-                      std::uint32_t maximumSize, Callback &&callback) {
-  std::vector<std::uint64_t> selected;
-  const auto visit = [&](auto &&self, std::uint32_t next) -> void {
-    if (selected.size() >= minimumSize)
-      callback(llvm::ArrayRef<std::uint64_t>(selected));
-    if (selected.size() == maximumSize)
-      return;
-    for (std::uint32_t ordinal = next; ordinal < count; ++ordinal) {
-      selected.push_back(ordinal);
-      self(self, ordinal + 1);
-      selected.pop_back();
-    }
-  };
-  visit(visit, 0);
-}
-
 llvm::Expected<std::vector<FiniteImplementationFamilyBehaviorPoint>>
 resolveRoutedToken(ImplementationFamilyId family,
                    const FamilyCapabilityParams &params,
@@ -331,106 +324,124 @@ resolveRoutedToken(ImplementationFamilyId family,
   if (family == ImplementationFamilyId::TokenSync) {
     const std::uint32_t portCount = static_cast<std::uint32_t>(
         std::min(physicalInputWidths.size(), physicalResultWidths.size()));
-    enumerateSubsets(
-        portCount, 1, std::min(typed->maxFan, portCount),
-        [&](llvm::ArrayRef<std::uint64_t> image) {
-          std::vector<mlir::Type> laneTypes;
-          laneTypes.reserve(image.size());
-          for (std::uint64_t port : image) {
-            const std::uint32_t width =
-                std::min({typed->maxPayloadBits, physicalInputWidths[port],
-                          physicalResultWidths[port]});
-            laneTypes.push_back(payloadType(context, width));
-          }
-          ::dataflow::CanonicalActorSchemaProjection actor{
-              schema, mlir::FunctionType::get(&context, laneTypes, laneTypes),
-              ::dataflow::NoPayload{}};
-          std::vector<std::uint64_t> ports(image.begin(), image.end());
-          appendReachableCandidate(
+    for (std::uint32_t laneCount = 1;
+         laneCount <= std::min(typed->maxFan, portCount); ++laneCount) {
+      if (llvm::Error error = detail::forEachCanonicalRoutedTokenLaneImage(
               family, params, physicalInputWidths, physicalResultWidths,
-              Candidate{
-                  {std::move(actor), std::nullopt, std::nullopt, ports, ports},
-                  {detail::ImplementationFamilyBehaviorLaneImage{ports,
-                                                                 portCount}}},
-              candidates, firstRejection);
-        });
+              laneCount,
+              [&](const detail::CanonicalRoutedTokenLaneImage &image)
+                  -> llvm::Expected<bool> {
+                std::vector<std::uint64_t> ports = image.operandPorts;
+                llvm::sort(ports);
+                std::vector<mlir::Type> laneTypes;
+                laneTypes.reserve(ports.size());
+                for (std::uint64_t port : ports) {
+                  const std::uint32_t width = std::min(
+                      {typed->maxPayloadBits, physicalInputWidths[port],
+                       physicalResultWidths[port]});
+                  laneTypes.push_back(payloadType(context, width));
+                }
+                ::dataflow::CanonicalActorSchemaProjection actor{
+                    schema,
+                    mlir::FunctionType::get(&context, laneTypes, laneTypes),
+                    ::dataflow::NoPayload{}};
+                appendReachableCandidate(
+                    family, params, physicalInputWidths, physicalResultWidths,
+                    Candidate{{std::move(actor), std::nullopt, std::nullopt,
+                               ports, ports},
+                              {detail::ImplementationFamilyBehaviorLaneImage{
+                                  ports, portCount}}},
+                    candidates, firstRejection);
+                return true;
+              }))
+        return std::move(error);
+    }
   } else if (family == ImplementationFamilyId::TokenMux) {
     if (physicalInputWidths.empty() || physicalResultWidths.empty())
       return reject("token mux physical role inventory is incomplete");
     const std::uint32_t dataPortCount =
         static_cast<std::uint32_t>(physicalInputWidths.size() - 1);
-    enumerateSubsets(
-        dataPortCount, 2, std::min(typed->maxFan, dataPortCount),
-        [&](llvm::ArrayRef<std::uint64_t> localImage) {
-          std::vector<std::uint64_t> image;
-          image.reserve(localImage.size());
-          for (std::uint64_t port : localImage)
-            image.push_back(port + 1);
-          std::uint32_t width =
-              std::min(typed->maxPayloadBits, physicalResultWidths.front());
-          for (std::uint64_t port : image)
-            width = std::min(width, physicalInputWidths[port]);
-          const bool indexSelector = image.size() > 2;
-          const mlir::Type selector =
-              indexSelector ? mlir::Type(mlir::IndexType::get(&context))
-                            : mlir::Type(mlir::IntegerType::get(&context, 1));
-          const mlir::Type payload = payloadType(context, width);
-          std::vector<mlir::Type> inputs(1, selector);
-          inputs.insert(inputs.end(), image.size(), payload);
-          ::dataflow::CanonicalActorSchemaProjection actor{
-              schema, mlir::FunctionType::get(&context, inputs, {payload}),
-              ::dataflow::NoPayload{}};
-          std::vector<std::uint64_t> operandPorts{0};
-          operandPorts.insert(operandPorts.end(), image.begin(), image.end());
-          appendReachableCandidate(
+    for (std::uint32_t laneCount = 2;
+         laneCount <= std::min(typed->maxFan, dataPortCount); ++laneCount) {
+      if (llvm::Error error = detail::forEachCanonicalRoutedTokenLaneImage(
               family, params, physicalInputWidths, physicalResultWidths,
-              Candidate{{std::move(actor),
-                         std::nullopt,
+              laneCount,
+              [&](const detail::CanonicalRoutedTokenLaneImage &image)
+                  -> llvm::Expected<bool> {
+                const std::uint32_t width =
+                    *std::min_element(image.effectivePayloadWidths.begin(),
+                                      image.effectivePayloadWidths.end());
+                const bool indexSelector = laneCount > 2;
+                const mlir::Type selector =
+                    indexSelector
+                        ? mlir::Type(mlir::IndexType::get(&context))
+                        : mlir::Type(mlir::IntegerType::get(&context, 1));
+                const mlir::Type payload = payloadType(context, width);
+                std::vector<mlir::Type> inputs(1, selector);
+                inputs.insert(inputs.end(), laneCount, payload);
+                ::dataflow::CanonicalActorSchemaProjection actor{
+                    schema,
+                    mlir::FunctionType::get(&context, inputs, {payload}),
+                    ::dataflow::NoPayload{}};
+                std::vector<std::uint64_t> dataImage(
+                    image.operandPorts.begin() + 1, image.operandPorts.end());
+                appendReachableCandidate(
+                    family, params, physicalInputWidths, physicalResultWidths,
+                    Candidate{
+                        {std::move(actor), std::nullopt,
                          indexSelector ? std::optional<ResolvedIndexWidth>(
                                              ResolvedIndexWidth::I32)
                                        : std::nullopt,
-                         std::move(operandPorts),
-                         {0}},
+                         image.operandPorts, image.resultPorts},
                         {detail::ImplementationFamilyBehaviorLaneImage{
-                            image, physicalInputWidths.size()}}},
-              candidates, firstRejection);
-        });
+                            std::move(dataImage), physicalInputWidths.size()}}},
+                    candidates, firstRejection);
+                return true;
+              }))
+        return std::move(error);
+    }
   } else {
     if (physicalInputWidths.size() < 2)
       return reject("token demux physical role inventory is incomplete");
     const std::uint32_t resultPortCount =
         static_cast<std::uint32_t>(physicalResultWidths.size());
-    enumerateSubsets(
-        resultPortCount, 2, std::min(typed->maxFan, resultPortCount),
-        [&](llvm::ArrayRef<std::uint64_t> imageRef) {
-          std::vector<std::uint64_t> image(imageRef.begin(), imageRef.end());
-          std::uint32_t width =
-              std::min(typed->maxPayloadBits, physicalInputWidths[1]);
-          for (std::uint64_t port : image)
-            width = std::min(width, physicalResultWidths[port]);
-          const bool indexSelector = image.size() > 2;
-          const mlir::Type selector =
-              indexSelector ? mlir::Type(mlir::IndexType::get(&context))
-                            : mlir::Type(mlir::IntegerType::get(&context, 1));
-          const mlir::Type payload = payloadType(context, width);
-          std::vector<mlir::Type> results(image.size(), payload);
-          ::dataflow::CanonicalActorSchemaProjection actor{
-              schema,
-              mlir::FunctionType::get(&context, {selector, payload}, results),
-              ::dataflow::NoPayload{}};
-          appendReachableCandidate(
+    for (std::uint32_t laneCount = 2;
+         laneCount <= std::min(typed->maxFan, resultPortCount); ++laneCount) {
+      if (llvm::Error error = detail::forEachCanonicalRoutedTokenLaneImage(
               family, params, physicalInputWidths, physicalResultWidths,
-              Candidate{{std::move(actor),
-                         std::nullopt,
+              laneCount,
+              [&](const detail::CanonicalRoutedTokenLaneImage &image)
+                  -> llvm::Expected<bool> {
+                const std::uint32_t width =
+                    *std::min_element(image.effectivePayloadWidths.begin(),
+                                      image.effectivePayloadWidths.end());
+                const bool indexSelector = laneCount > 2;
+                const mlir::Type selector =
+                    indexSelector
+                        ? mlir::Type(mlir::IndexType::get(&context))
+                        : mlir::Type(mlir::IntegerType::get(&context, 1));
+                const mlir::Type payload = payloadType(context, width);
+                std::vector<mlir::Type> results(laneCount, payload);
+                ::dataflow::CanonicalActorSchemaProjection actor{
+                    schema,
+                    mlir::FunctionType::get(&context, {selector, payload},
+                                            results),
+                    ::dataflow::NoPayload{}};
+                appendReachableCandidate(
+                    family, params, physicalInputWidths, physicalResultWidths,
+                    Candidate{
+                        {std::move(actor), std::nullopt,
                          indexSelector ? std::optional<ResolvedIndexWidth>(
                                              ResolvedIndexWidth::I32)
                                        : std::nullopt,
-                         {0, 1},
-                         image},
+                         image.operandPorts, image.resultPorts},
                         {detail::ImplementationFamilyBehaviorLaneImage{
-                            image, physicalResultWidths.size()}}},
-              candidates, firstRejection);
-        });
+                            image.resultPorts, physicalResultWidths.size()}}},
+                    candidates, firstRejection);
+                return true;
+              }))
+        return std::move(error);
+    }
   }
   return finalizeDomain(family, std::move(candidates),
                         std::move(firstRejection));
@@ -471,7 +482,7 @@ bool sameProjectedBehavior(
     return adapterBehavior(family, point.representativeActor) ==
            adapterBehavior(family, actor);
   if (family == ImplementationFamilyId::TokenSync)
-    return llvm::ArrayRef<std::uint64_t>(point.operandPorts) == operandPorts;
+    return sameLaneSet(point.operandPorts, operandPorts);
   if (family == ImplementationFamilyId::TokenMux)
     return llvm::ArrayRef<std::uint64_t>(point.operandPorts).drop_front() ==
            operandPorts.drop_front();

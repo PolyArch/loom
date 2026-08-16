@@ -56,6 +56,8 @@ bool validRepresentation(RepresentationRootVariant representation) {
   case RepresentationRootVariant::FpgaPhysical:
   case RepresentationRootVariant::FpgaImage:
     return true;
+  case RepresentationRootVariant::FabricModel:
+    return false;
   }
   return false;
 }

@@ -22,7 +22,7 @@ class ArtifactStore;
 namespace loom::fabric {
 class InstructionCoreArchitecturalContract;
 class InstructionCoreMicroarchitecturalRealization;
-}
+} // namespace loom::fabric
 
 namespace loom::runtime {
 
@@ -87,17 +87,18 @@ struct Gem5ModelContractDescriptor final {
   llvm::ArrayRef<Gem5ModelPortKindDescriptor> portKinds;
 };
 
-Gem5ModelContractDescriptorRef gem5ModelContractDescriptorRef(
-    const Gem5ModelContractDescriptor &descriptor);
+Gem5ModelContractDescriptorRef
+gem5ModelContractDescriptorRef(const Gem5ModelContractDescriptor &descriptor);
 
 llvm::Error
 registerGem5ModelContract(const Gem5ModelContractDescriptor &descriptor);
 
-const Gem5ModelContractDescriptor *findGem5ModelContract(
-    const Gem5ModelContractDescriptorRef &reference);
+const Gem5ModelContractDescriptor *
+findGem5ModelContract(const Gem5ModelContractDescriptorRef &reference);
 
-const Gem5ModelPortKindDescriptor *findGem5ModelPortKind(
-    const Gem5ModelContractDescriptor &descriptor, std::uint32_t kind);
+const Gem5ModelPortKindDescriptor *
+findGem5ModelPortKind(const Gem5ModelContractDescriptor &descriptor,
+                      std::uint32_t kind);
 
 struct Gem5SimObjectRef final {
   Gem5ModelContractDescriptorRef contract;
@@ -114,8 +115,7 @@ struct Gem5SimPortRef final {
   std::uint32_t kind = 0;
   std::vector<std::uint8_t> payload;
 
-  friend bool operator==(const Gem5SimPortRef &lhs,
-                         const Gem5SimPortRef &rhs) {
+  friend bool operator==(const Gem5SimPortRef &lhs, const Gem5SimPortRef &rhs) {
     return lhs.object == rhs.object && lhs.kind == rhs.kind &&
            lhs.payload == rhs.payload;
   }
@@ -136,9 +136,23 @@ struct Gem5BuildIdentity final {
   }
 };
 
-using Gem5ProcessorFabricRef =
-    std::variant<fabric::HostCoreOccurrenceRef,
-                 fabric::InstructionCoreContextRef>;
+/// Invocation-independent parameters of the builtin gem5 syscall-emulation
+/// platform. The System remains the architecture owner; this policy selects
+/// concrete simulator models and address ranges for its exact inventory.
+struct Gem5BuiltinPlatformPolicy final {
+  std::uint64_t processorClockPeriodTicks = 1000;
+  std::uint64_t spatialBridgeBaseAddress = 0x10000000;
+  std::uint64_t spatialBridgeAddressStride = 0x10000;
+  std::uint64_t spatialBridgeApertureBytes = 0x1000;
+  std::uint64_t spatialBridgeLatencyTicks = 10000;
+  std::uint64_t spatialBridgeMaximumMessageBytes = 1ULL << 20;
+  std::uint64_t memoryBaseAddress = 0x80000000;
+  std::uint64_t memorySizeBytes = 0x20000000;
+  std::uint64_t memoryLatencyTicks = 20000;
+};
+
+using Gem5ProcessorFabricRef = std::variant<fabric::HostCoreOccurrenceRef,
+                                            fabric::InstructionCoreContextRef>;
 
 struct Gem5ProcessorCorrespondence final {
   Gem5ProcessorFabricRef processor;
@@ -161,9 +175,8 @@ struct Gem5MemoryOrServiceCorrespondence final {
   Gem5SimPortRef simPort;
 };
 
-using Gem5TransportFabricRef =
-    std::variant<fabric::SystemTransportResourceRef,
-                 fabric::FabricTransportEndpointRef>;
+using Gem5TransportFabricRef = std::variant<fabric::SystemTransportResourceRef,
+                                            fabric::FabricTransportEndpointRef>;
 
 struct Gem5TransportCorrespondence final {
   Gem5TransportFabricRef fabricRef;
@@ -178,10 +191,8 @@ struct Gem5ExternalEndpointCorrespondence final {
 };
 
 using Gem5Correspondence =
-    std::variant<Gem5ProcessorCorrespondence,
-                 Gem5SpatialBridgeCorrespondence,
-                 Gem5MemoryOrServiceCorrespondence,
-                 Gem5TransportCorrespondence,
+    std::variant<Gem5ProcessorCorrespondence, Gem5SpatialBridgeCorrespondence,
+                 Gem5MemoryOrServiceCorrespondence, Gem5TransportCorrespondence,
                  Gem5ExternalEndpointCorrespondence>;
 
 struct Gem5SimulationBindingDraft final {
@@ -211,11 +222,11 @@ public:
   }
 
 private:
-  Gem5SimulationBinding(
-      ArtifactRootReference fabric,
-      ArtifactRootReference interconnectImplementation,
-      Gem5BuildIdentity gem5BuildIdentity, std::string bridgeAbiIdentity,
-      std::vector<Gem5Correspondence> correspondences)
+  Gem5SimulationBinding(ArtifactRootReference fabric,
+                        ArtifactRootReference interconnectImplementation,
+                        Gem5BuildIdentity gem5BuildIdentity,
+                        std::string bridgeAbiIdentity,
+                        std::vector<Gem5Correspondence> correspondences)
       : fabric_(std::move(fabric)),
         interconnectImplementation_(std::move(interconnectImplementation)),
         gem5BuildIdentity_(std::move(gem5BuildIdentity)),
@@ -263,6 +274,16 @@ finalizeGem5SimulationBinding(Gem5SimulationBindingDraft draft,
 llvm::Expected<FinalizedGem5SimulationBinding>
 importGem5SimulationBinding(const ArtifactRootReference &reference,
                             const ArtifactStore &artifacts);
+
+/// Materializes the builtin gem5 SE platform for one exact System. The event
+/// interconnect is derived from that System, and every processor, spatial
+/// attachment, service, transport resource, and external boundary receives
+/// one total typed correspondence before ordinary binding finalization.
+llvm::Expected<FinalizedGem5SimulationBinding>
+finalizeBuiltinGem5SimulationBinding(const ArtifactRootReference &system,
+                                     Gem5BuildIdentity buildIdentity,
+                                     Gem5BuiltinPlatformPolicy policy,
+                                     const ArtifactStore &artifacts);
 
 } // namespace loom::runtime
 

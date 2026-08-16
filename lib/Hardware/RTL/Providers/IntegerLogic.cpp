@@ -137,7 +137,7 @@ llvm::Expected<FabricOperationProviderOutput> materializePortableIntegerLogic(
   if (domain.empty())
     return invalid("Fabric returned an empty behavior domain");
 
-  const ConfigurationFieldEncoding *field = nullptr;
+  const ConfigurationEncodingRelation *field = nullptr;
   const FiniteCodebookEncoding *codebook = nullptr;
   std::vector<Mode> modes;
   modes.reserve(domain.size());
@@ -155,7 +155,7 @@ llvm::Expected<FabricOperationProviderOutput> materializePortableIntegerLogic(
       return invalid("configured logic relation is not finite");
     if (request.capability.configurationFieldSchema.size() != 1)
       return invalid("configured logic capability requires one field");
-    field = request.configurationAbi.findOperationField(
+    field = request.configurationAbi.findOperationEncodingRelation(
         request.occurrence,
         request.capability.configurationFieldSchema.front().ordinal);
     if (!field)

@@ -7,6 +7,7 @@
 
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactLocalReference.h"
+#include "Common/InvocationDiagnosticLog.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Identity/FabricRefBytes.h"
@@ -22,8 +23,10 @@
 #include "mlir/Parser/Parser.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/JSON.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -35,6 +38,82 @@
 #include <vector>
 
 namespace loom::mapping {
+namespace detail {
+
+inline constexpr std::uint64_t systemMappingImportAlgorithmVersion = 2;
+
+struct SystemMappingImportSessionKey final {
+  ArtifactRootReference reference;
+  std::uint64_t algorithmVersion = systemMappingImportAlgorithmVersion;
+
+  friend bool operator==(const SystemMappingImportSessionKey &lhs,
+                         const SystemMappingImportSessionKey &rhs) {
+    return lhs.reference == rhs.reference &&
+           lhs.algorithmVersion == rhs.algorithmVersion;
+  }
+};
+
+struct SystemMappingImportSessionEntry final {
+  SystemMappingImportSessionKey key;
+  std::shared_ptr<const FinalizedSystemMapping> mapping;
+  std::uint64_t retainedBytes = 0;
+};
+
+class SystemMappingImportSessionState final {
+public:
+  SystemMappingImportSessionState(const ArtifactStore &store,
+                                  std::size_t entryLimit)
+      : store_(&store), entryLimit_(entryLimit) {}
+
+  bool owns(const ArtifactStore &store) const { return store_ == &store; }
+
+  std::shared_ptr<const FinalizedSystemMapping>
+  find(const ArtifactRootReference &reference) {
+    ++statistics_.importRequests;
+    ++statistics_.deterministicWork;
+    const SystemMappingImportSessionKey key{reference};
+    const auto found = llvm::find_if(
+        entries_, [&](const auto &entry) { return entry.key == key; });
+    if (found == entries_.end()) {
+      ++statistics_.cacheMisses;
+      return {};
+    }
+    ++statistics_.cacheHits;
+    return found->mapping;
+  }
+
+  std::shared_ptr<const FinalizedSystemMapping>
+  insert(const ArtifactRootReference &reference,
+         std::shared_ptr<const FinalizedSystemMapping> mapping,
+         std::uint64_t retainedBytes, std::uint64_t constructionNanoseconds,
+         std::uint64_t deterministicWork) {
+    ++statistics_.uniqueConstructions;
+    statistics_.bytesRead += mapping->canonicalBytes().bytes().size();
+    statistics_.constructionNanoseconds += constructionNanoseconds;
+    statistics_.deterministicWork += deterministicWork;
+    if (entries_.size() >= entryLimit_) {
+      ++statistics_.uncachedConstructions;
+      return mapping;
+    }
+    entries_.push_back({{reference}, mapping, retainedBytes});
+    statistics_.retainedBytes += retainedBytes;
+    statistics_.entryCount = entries_.size();
+    return mapping;
+  }
+
+  SystemMappingImportSessionStatistics statistics() const {
+    return statistics_;
+  }
+
+private:
+  const ArtifactStore *store_ = nullptr;
+  std::size_t entryLimit_ = 0;
+  std::vector<SystemMappingImportSessionEntry> entries_;
+  SystemMappingImportSessionStatistics statistics_;
+};
+
+} // namespace detail
+
 char SystemMappingIncompleteError::ID;
 
 SystemMappingIncompleteError::SystemMappingIncompleteError(
@@ -63,12 +142,114 @@ std::error_code SystemMappingRejectedError::convertToErrorCode() const {
   return llvm::inconvertibleErrorCode();
 }
 
+const SystemMappingClosureProjection &
+FinalizedSystemMapping::verifiedClosure() const {
+  return *verifiedClosure_;
+}
+
 namespace {
+
+using MonotonicClock = std::chrono::steady_clock;
+
+thread_local detail::SystemMappingImportSessionState
+    *currentSystemMappingImportSession = nullptr;
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "system_mapping_execution_invalid: " +
                                      message);
+}
+
+std::uint64_t
+retainedSystemMappingBytes(const FinalizedSystemMapping &mapping) {
+  const SystemMappingView &view = mapping.view();
+  const SystemMappingClosureProjection &closure = mapping.verifiedClosure();
+  std::uint64_t closureBytes =
+      sizeof(closure) +
+      closure.executionContexts.instructionDomains.capacity() *
+          sizeof(SystemInstructionContextDomain) +
+      closure.executionContexts.spatialDomains.capacity() *
+          sizeof(SystemSpatialContextDomain) +
+      closure.serviceRealizations.capacity() *
+          sizeof(SystemServiceRealizationView) +
+      closure.routeObligations.capacity() *
+          sizeof(MappingRouteProgressObligationProjection) +
+      closure.capacityCells.capacity() * sizeof(SystemCapacityCellProjection) +
+      closure.resourceActivations.capacity() *
+          sizeof(SystemResourceActivationProjection);
+  for (const auto &domain : closure.executionContexts.instructionDomains)
+    closureBytes += domain.cells.capacity() * sizeof(SystemPresburgerCell);
+  for (const auto &domain : closure.executionContexts.spatialDomains)
+    closureBytes += domain.cells.capacity() * sizeof(SystemPresburgerCell);
+  for (const auto &activation : closure.resourceActivations) {
+    closureBytes +=
+        activation.relationDomain.capacity() * sizeof(SystemPresburgerCell) +
+        activation.triggerAlternatives.capacity() *
+            sizeof(::dataflow::EventFamilyKey) +
+        activation.parameters.capacity() * sizeof(::fabric::UsePatternValue) +
+        activation.sharingAssignments.capacity() *
+            sizeof(::fabric::UsePatternValue) +
+        activation.capacityClaims.capacity() *
+            sizeof(SystemCapacityClaimProjection) +
+        activation.causalRelease.capacity() *
+            sizeof(SystemCausalReleasePointProjection);
+    for (const auto &release : activation.causalRelease)
+      closureBytes +=
+          release.alternatives.capacity() * sizeof(::dataflow::EventFamilyKey) +
+          (release.guaranteedOffset ? release.guaranteedOffset->capacity() : 0);
+  }
+  return sizeof(mapping) + mapping.canonicalBytes().bytes().size() +
+         view.executionBindings().spatialMappingImports().size() *
+             sizeof(ArtifactRootReference) +
+         view.executionBindings().threadBindings().size() *
+             sizeof(SystemThreadExecutionBindingView) +
+         view.executionBindings().graphBindings().size() *
+             sizeof(SystemGraphExecutionBindingView) +
+         view.serviceRealizations().size() *
+             sizeof(SystemServiceRealizationView) +
+         view.resourceUses().size() * sizeof(SystemResourceUseView) +
+         closureBytes;
+}
+
+std::uint64_t
+deterministicSystemMappingWork(const FinalizedSystemMapping &mapping) {
+  const SystemMappingView &view = mapping.view();
+  const SystemMappingClosureProjection &closure = mapping.verifiedClosure();
+  std::uint64_t closureWork =
+      1 + closure.executionContexts.instructionDomains.size() +
+      closure.executionContexts.spatialDomains.size() +
+      closure.serviceRealizations.size() + closure.routeObligations.size() +
+      closure.capacityCells.size() + closure.resourceActivations.size();
+  for (const auto &domain : closure.executionContexts.instructionDomains)
+    closureWork += domain.cells.size();
+  for (const auto &domain : closure.executionContexts.spatialDomains)
+    closureWork += domain.cells.size();
+  for (const auto &activation : closure.resourceActivations) {
+    closureWork +=
+        activation.relationDomain.size() +
+        activation.triggerAlternatives.size() + activation.parameters.size() +
+        activation.sharingAssignments.size() +
+        activation.capacityClaims.size() + activation.causalRelease.size();
+    for (const auto &release : activation.causalRelease)
+      closureWork +=
+          release.alternatives.size() +
+          (release.guaranteedOffset ? release.guaranteedOffset->size() : 0);
+  }
+  return 1 + view.executionBindings().spatialMappingImports().size() +
+         view.executionBindings().threadBindings().size() +
+         view.executionBindings().graphBindings().size() +
+         view.serviceRealizations().size() + view.resourceUses().size() +
+         closureWork;
+}
+
+llvm::StringRef spelling(SystemMappingImportVerificationDomain domain) {
+  switch (domain) {
+  case SystemMappingImportVerificationDomain::SourceInvocation:
+    return "source_invocation";
+  case SystemMappingImportVerificationDomain::IndependentReplay:
+    return "independent_replay";
+  }
+  llvm_unreachable("unknown SystemMapping import verification domain");
 }
 
 std::vector<std::uint8_t> unsignedBytes(mlir::DenseI8ArrayAttr record) {
@@ -438,6 +619,45 @@ llvm::Error validateSpatialMappingImportContext(
 
 } // namespace
 
+SystemMappingImportSession::SystemMappingImportSession(
+    const ArtifactStore &store, std::size_t entryLimit)
+    : state_(std::make_unique<detail::SystemMappingImportSessionState>(
+          store, entryLimit)),
+      previous_(currentSystemMappingImportSession) {
+  currentSystemMappingImportSession = state_.get();
+}
+
+SystemMappingImportSession::~SystemMappingImportSession() {
+  currentSystemMappingImportSession = previous_;
+}
+
+SystemMappingImportSessionStatistics
+SystemMappingImportSession::statistics() const {
+  return state_->statistics();
+}
+
+void emitSystemMappingImportSessionStatistics(
+    SystemMappingImportVerificationDomain domain,
+    const SystemMappingImportSessionStatistics &statistics) {
+  emitInvocationDiagnostic(
+      DiagnosticVerbosity::Summary, InvocationDiagnosticStage::SystemPnr,
+      InvocationDiagnosticEvent::SystemMappingImportSession, [&] {
+        llvm::json::Object payload;
+        payload["verification_domain"] = spelling(domain);
+        payload["import_requests"] = statistics.importRequests;
+        payload["cache_hits"] = statistics.cacheHits;
+        payload["cache_misses"] = statistics.cacheMisses;
+        payload["unique_constructions"] = statistics.uniqueConstructions;
+        payload["uncached_constructions"] = statistics.uncachedConstructions;
+        payload["bytes_read"] = statistics.bytesRead;
+        payload["construction_time_ns"] = statistics.constructionNanoseconds;
+        payload["deterministic_work"] = statistics.deterministicWork;
+        payload["retained_bytes"] = statistics.retainedBytes;
+        payload["entry_count"] = statistics.entryCount;
+        return llvm::json::Value(std::move(payload));
+      });
+}
+
 llvm::Expected<SystemExecutionBindingView> strictImportSystemExecutionBindings(
     const CanonicalSemanticBytes &bytes,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -681,7 +901,8 @@ llvm::Expected<SystemMappingView> importSystemMappingView(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
     const ArtifactStore &store,
-    const SpatialMappingImportContext *spatialMappings) {
+    const SpatialMappingImportContext *spatialMappings,
+    std::shared_ptr<const SystemMappingClosureProjection> *verifiedClosure) {
   auto canonical = writeCanonicalSystemMappingAssembly(root);
   if (!canonical)
     return canonical.takeError();
@@ -746,6 +967,9 @@ llvm::Expected<SystemMappingView> importSystemMappingView(
         "system route, service, and resource progress proof is not "
         "established");
   }
+  if (verifiedClosure)
+    *verifiedClosure = std::make_shared<const SystemMappingClosureProjection>(
+        std::move(*projected));
   return result;
 }
 
@@ -764,7 +988,7 @@ SystemMappingBaseVerification verifySystemMappingBase(
       finalizeArtifactIdentity(mappingArtifactSchema, assembly->bytes);
   auto view = importSystemMappingView(
       identity, mlir::cast<::mapping::SystemOp>(assembly->root.get()), dataflow,
-      fabric, store, nullptr);
+      fabric, store, nullptr, nullptr);
   if (!view) {
     std::optional<SystemMappingBaseVerification> typed;
     llvm::Error remaining = llvm::handleErrors(
@@ -823,10 +1047,13 @@ finalizeSystemMapping(::mapping::SystemOp source,
   const ArtifactIdentity identity =
       finalizeArtifactIdentity(mappingArtifactSchema, assembly->bytes);
   auto root = mlir::cast<::mapping::SystemOp>(assembly->root.get());
+  std::shared_ptr<const SystemMappingClosureProjection> verifiedClosure;
   auto view = importSystemMappingView(identity, root, dataflow, fabric, store,
-                                      spatialMappings);
+                                      spatialMappings, &verifiedClosure);
   if (!view)
     return view.takeError();
+  if (!verifiedClosure)
+    return invalid("strict import did not publish its verified closure");
   if (constraints.rootThreadLaunches() !=
       view->executionBindings().rootThreadLaunches())
     return invalid("System constraint root scope does not match Mapping");
@@ -842,7 +1069,8 @@ finalizeSystemMapping(::mapping::SystemOp source,
   ArtifactRootReference reference{mappingArtifactSchema.identity.str(),
                                   mappingArtifactSchema.version, identity};
   return FinalizedSystemMapping(std::move(reference),
-                                std::move(assembly->bytes), std::move(*view));
+                                std::move(assembly->bytes), std::move(*view),
+                                std::move(verifiedClosure));
 }
 
 llvm::Expected<FinalizedSystemMapping>
@@ -851,6 +1079,15 @@ importSystemMapping(const ArtifactRootReference &reference,
   if (reference.schemaIdentity != mappingArtifactSchema.identity ||
       reference.schemaVersion != mappingArtifactSchema.version)
     return invalid("root reference has the wrong Mapping schema");
+  if (currentSystemMappingImportSession &&
+      !currentSystemMappingImportSession->owns(store))
+    return invalid("SystemMapping import session crosses its ArtifactStore "
+                   "verification domain");
+  if (currentSystemMappingImportSession)
+    if (auto cached = currentSystemMappingImportSession->find(reference))
+      return *cached;
+
+  const auto begin = MonotonicClock::now();
   auto canonical = store.get(reference);
   if (!canonical)
     return canonical.takeError();
@@ -891,12 +1128,28 @@ importSystemMapping(const ArtifactRootReference &reference,
   auto system = ::loom::fabric::requireSystemRoot(fabric->view());
   if (!system)
     return system.takeError();
-  auto view = importSystemMappingView(reference.artifact, parsed->root,
-                                      *dataflowView, *system, store, nullptr);
+  std::shared_ptr<const SystemMappingClosureProjection> verifiedClosure;
+  auto view =
+      importSystemMappingView(reference.artifact, parsed->root, *dataflowView,
+                              *system, store, nullptr, &verifiedClosure);
   if (!view)
     return view.takeError();
-  return FinalizedSystemMapping(reference, std::move(*canonical),
-                                std::move(*view));
+  if (!verifiedClosure)
+    return invalid("strict import did not publish its verified closure");
+  FinalizedSystemMapping value(reference, std::move(*canonical),
+                               std::move(*view), std::move(verifiedClosure));
+  auto imported =
+      std::make_shared<const FinalizedSystemMapping>(std::move(value));
+  if (!currentSystemMappingImportSession)
+    return *imported;
+  const std::uint64_t constructionNanoseconds =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          MonotonicClock::now() - begin)
+          .count();
+  auto cached = currentSystemMappingImportSession->insert(
+      reference, imported, retainedSystemMappingBytes(*imported),
+      constructionNanoseconds, deterministicSystemMappingWork(*imported));
+  return *cached;
 }
 
 } // namespace loom::mapping

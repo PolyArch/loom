@@ -29,76 +29,6 @@ llvm::Error elfError(llvm::StringRef kind, const llvm::Twine &message) {
                                  kind + ": " + message);
 }
 
-template <typename ELFT>
-llvm::Expected<std::vector<InstructionLoadSegment>>
-parseLoadSegments(const llvm::object::ELFObjectFile<ELFT> &object,
-                  std::size_t blobSize) {
-  auto headers = object.getELFFile().program_headers();
-  if (!headers)
-    return headers.takeError();
-
-  std::vector<InstructionLoadSegment> result;
-  for (const auto &header : *headers) {
-    if (header.p_type != llvm::ELF::PT_LOAD)
-      continue;
-    const std::uint64_t offset = header.p_offset;
-    const std::uint64_t fileSize = header.p_filesz;
-    const std::uint64_t memorySize = header.p_memsz;
-    const std::uint64_t alignment = header.p_align;
-    if (fileSize > memorySize)
-      return elfError("instruction_core_binary_invalid_segment",
-                      "PT_LOAD file size exceeds memory size");
-    if (offset > blobSize || fileSize > blobSize - offset)
-      return elfError("instruction_core_binary_invalid_segment",
-                      "PT_LOAD file range escapes code_blob");
-    if (alignment != 0 && !llvm::isPowerOf2_64(alignment))
-      return elfError("instruction_core_binary_invalid_segment",
-                      "PT_LOAD alignment is not zero or a power of two");
-    if (alignment != 0 && header.p_vaddr % alignment != offset % alignment)
-      return elfError("instruction_core_binary_invalid_segment",
-                      "PT_LOAD virtual address and file offset are not "
-                      "alignment-congruent");
-    result.push_back({0, header.p_vaddr, offset, fileSize, memorySize,
-                      alignment, (header.p_flags & llvm::ELF::PF_R) != 0,
-                      (header.p_flags & llvm::ELF::PF_W) != 0,
-                      (header.p_flags & llvm::ELF::PF_X) != 0});
-  }
-  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
-    return std::tuple{lhs.virtualAddress, lhs.fileOffset, lhs.readable,
-                      lhs.writable,       lhs.executable, lhs.fileSize,
-                      lhs.memorySize,     lhs.alignment} <
-           std::tuple{rhs.virtualAddress, rhs.fileOffset, rhs.readable,
-                      rhs.writable,       rhs.executable, rhs.fileSize,
-                      rhs.memorySize,     rhs.alignment};
-  });
-  if (result.empty())
-    return elfError("instruction_core_binary_missing_load_segment",
-                    "ELF executable has no PT_LOAD segment");
-  if (!llvm::any_of(result,
-                    [](const auto &segment) { return segment.executable; }))
-    return elfError("instruction_core_binary_missing_executable_segment",
-                    "ELF executable has no executable PT_LOAD segment");
-  for (std::uint64_t ordinal = 0; ordinal < result.size(); ++ordinal)
-    result[ordinal].ordinal = ordinal;
-  return result;
-}
-
-llvm::Expected<std::vector<InstructionLoadSegment>>
-parseLoadSegments(const llvm::object::ELFObjectFileBase &object,
-                  std::size_t blobSize) {
-  if (const auto *value =
-          llvm::dyn_cast<llvm::object::ELF32LEObjectFile>(&object))
-    return parseLoadSegments(*value, blobSize);
-  if (const auto *value =
-          llvm::dyn_cast<llvm::object::ELF64LEObjectFile>(&object))
-    return parseLoadSegments(*value, blobSize);
-  if (const auto *value =
-          llvm::dyn_cast<llvm::object::ELF32BEObjectFile>(&object))
-    return parseLoadSegments(*value, blobSize);
-  return parseLoadSegments(
-      *llvm::cast<llvm::object::ELF64BEObjectFile>(&object), blobSize);
-}
-
 llvm::Expected<std::uint64_t> parseEntryOrdinal(llvm::StringRef name) {
   llvm::StringRef suffix = name.drop_front(entrySymbolPrefix.size());
   if (suffix.empty())
@@ -262,7 +192,7 @@ parseInstructionElf(llvm::ArrayRef<std::uint8_t> bytes,
   if (llvm::Error error = validateElfTarget(*elf, target))
     return elfError("instruction_core_binary_target_mismatch",
                     llvm::toString(std::move(error)));
-  auto segments = parseLoadSegments(*elf, bytes.size());
+  auto segments = projectExecutableLoadSegments(*elf, bytes.size());
   if (!segments)
     return segments.takeError();
   auto entryCount = parseEntryCatalog(*elf, *segments);

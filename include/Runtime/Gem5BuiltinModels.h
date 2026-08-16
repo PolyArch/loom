@@ -55,6 +55,9 @@ const Gem5ModelContractDescriptor &gem5SimpleMemoryModel();
 const Gem5ModelContractDescriptor &gem5SystemXBarModel();
 const Gem5ModelContractDescriptor &gem5ExternalEndpointModel();
 
+llvm::Expected<llvm::ArrayRef<llvm::StringLiteral>>
+projectGem5O3OperationClasses(fabric::InstructionOperationClass operationClass);
+
 llvm::Error registerBuiltinGem5ModelContracts();
 
 std::vector<std::uint8_t>

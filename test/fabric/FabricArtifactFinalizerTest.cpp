@@ -737,9 +737,10 @@ void canonicalPublicationAndStrictImport() {
                              foreign, loom::fabric::FabricRootKind::Module}),
                      loom::fabric::FabricRefErrorKind::ForeignArtifact);
 
-  FinalizedFabricRoot imported =
-      take(test, loom::fabric::importEntireFabricRoot(firstResult.reference(),
-                                                      store));
+  loom::fabric::FabricArtifactImportSession importSession;
+  FinalizedFabricRoot imported = take(
+      test,
+      loom::fabric::importEntireFabricRoot(firstResult.reference(), store));
   require(test,
           imported.reference().artifact == firstResult.reference().artifact,
           "strict import changed Fabric identity");
@@ -753,6 +754,46 @@ void canonicalPublicationAndStrictImport() {
           importedView.domainSlots() == moduleView.domainSlots() &&
               importedView.domainAssignments() == assignments,
           "strict import changed the materialized Module domain relation");
+  FinalizedFabricRoot cached = take(
+      test,
+      loom::fabric::importEntireFabricRoot(firstResult.reference(), store));
+  require(test,
+          cached.canonicalBytes().bytes().equals(
+              firstResult.canonicalBytes().bytes()),
+          "cached strict import changed canonical bytes");
+  const auto sharedStatistics = importSession.statistics();
+  require(test,
+          sharedStatistics.cacheMisses == 1 &&
+              sharedStatistics.cacheHits == 1 &&
+              sharedStatistics.importRequests == 2 &&
+              sharedStatistics.uniqueConstructions == 1 &&
+              sharedStatistics.bytesRead ==
+                  firstResult.canonicalBytes().bytes().size() &&
+              sharedStatistics.bytesCopied == sharedStatistics.bytesRead &&
+              sharedStatistics.entryCount == 1 &&
+              sharedStatistics.deterministicWork == 2 &&
+              sharedStatistics.retainedPayloadBytes != 0,
+          "invocation-local strict import statistics are incomplete");
+
+  loom::fabric::FabricArtifactImportSession isolated(
+      loom::fabric::FabricArtifactImportSessionMode::Isolated);
+  FinalizedFabricRoot independentlyImported = take(
+      test,
+      loom::fabric::importEntireFabricRoot(firstResult.reference(), store));
+  require(test,
+          independentlyImported.canonicalBytes().bytes().equals(
+              firstResult.canonicalBytes().bytes()),
+          "isolated strict import changed canonical bytes");
+  const auto isolatedStatistics = isolated.statistics();
+  require(test,
+          isolatedStatistics.cacheMisses == 1 &&
+              isolatedStatistics.cacheHits == 0 &&
+              isolatedStatistics.importRequests == 1 &&
+              isolatedStatistics.uniqueConstructions == 1 &&
+              isolatedStatistics.bytesRead ==
+                  firstResult.canonicalBytes().bytes().size() &&
+              isolatedStatistics.entryCount == 1,
+          "isolated strict import reused an enclosing result");
 }
 
 void boundaryTagContinuityProjection() {
@@ -1336,14 +1377,17 @@ void fuCapabilityTemplatesComeFromThePhysicalGraph() {
   syncSource->walk([&](::dataflow::SyncOp op) { sync = op; });
   auto syncProjection =
       take(test, ::dataflow::projectRegisteredActorSchemaProjection(sync));
+  const ::fabric::FamilyCapabilityParams syncParams =
+      ::fabric::RoutedTokenParams{32, 3};
+  constexpr std::array<std::uint32_t, 3> syncWidths = {32, 32, 32};
   if (llvm::Error error =
           ::fabric::verifyImplementationFamilyPortCorrespondence(
-              ::fabric::ImplementationFamilyId::TokenSync, syncProjection,
-              {0, 2}, {0, 2}))
+              ::fabric::ImplementationFamilyId::TokenSync, syncParams,
+              syncProjection, {0, 1}, {0, 1}, syncWidths, syncWidths))
     fail(test, llvm::toString(std::move(error)));
   llvm::Error crossed = ::fabric::verifyImplementationFamilyPortCorrespondence(
-      ::fabric::ImplementationFamilyId::TokenSync, syncProjection, {0, 2},
-      {2, 0});
+      ::fabric::ImplementationFamilyId::TokenSync, syncParams, syncProjection,
+      {0, 1}, {1, 0}, syncWidths, syncWidths);
   require(test, static_cast<bool>(crossed),
           "token sync accepted crossed input and output lane images");
   llvm::consumeError(std::move(crossed));

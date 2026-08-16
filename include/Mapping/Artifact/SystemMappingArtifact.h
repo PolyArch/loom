@@ -14,6 +14,9 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -22,7 +25,53 @@
 
 namespace loom::mapping {
 
+namespace detail {
+class SystemMappingImportSessionState;
+}
+
+enum class SystemMappingImportVerificationDomain : std::uint8_t {
+  SourceInvocation,
+  IndependentReplay,
+};
+
+struct SystemMappingImportSessionStatistics final {
+  std::uint64_t importRequests = 0;
+  std::uint64_t cacheHits = 0;
+  std::uint64_t cacheMisses = 0;
+  std::uint64_t uniqueConstructions = 0;
+  std::uint64_t uncachedConstructions = 0;
+  std::uint64_t bytesRead = 0;
+  std::uint64_t constructionNanoseconds = 0;
+  std::uint64_t deterministicWork = 0;
+  std::uint64_t retainedBytes = 0;
+  std::uint64_t entryCount = 0;
+};
+
+class SystemMappingImportSession final {
+public:
+  SystemMappingImportSession(const ArtifactStore &store,
+                             std::size_t entryLimit);
+  ~SystemMappingImportSession();
+
+  SystemMappingImportSession(const SystemMappingImportSession &) = delete;
+  SystemMappingImportSession &
+  operator=(const SystemMappingImportSession &) = delete;
+  SystemMappingImportSession(SystemMappingImportSession &&) = delete;
+  SystemMappingImportSession &operator=(SystemMappingImportSession &&) = delete;
+
+  SystemMappingImportSessionStatistics statistics() const;
+
+private:
+  std::unique_ptr<detail::SystemMappingImportSessionState> state_;
+  detail::SystemMappingImportSessionState *previous_ = nullptr;
+};
+
+void emitSystemMappingImportSessionStatistics(
+    SystemMappingImportVerificationDomain domain,
+    const SystemMappingImportSessionStatistics &statistics);
+
 class SystemMappingConstraintSetView;
+struct SystemMappingClosureProjection;
 
 template <typename Target> struct SystemPresburgerClauseView final {
   std::vector<SystemPresburgerCell> cells;
@@ -216,12 +265,12 @@ private:
   std::vector<SystemResourceUseView> resourceUses_;
 
   friend class FinalizedSystemMapping;
-  friend llvm::Expected<SystemMappingView>
-  importSystemMappingView(const ArtifactIdentity &, ::mapping::SystemOp,
-                          const ::dataflow::CanonicalDataflowProgramView &,
-                          const ::loom::fabric::FabricSystemRootView &,
-                          const ArtifactStore &,
-                          const SpatialMappingImportContext *);
+  friend llvm::Expected<SystemMappingView> importSystemMappingView(
+      const ArtifactIdentity &, ::mapping::SystemOp,
+      const ::dataflow::CanonicalDataflowProgramView &,
+      const ::loom::fabric::FabricSystemRootView &, const ArtifactStore &,
+      const SpatialMappingImportContext *,
+      std::shared_ptr<const SystemMappingClosureProjection> *);
 };
 
 class FinalizedSystemMapping final {
@@ -230,18 +279,23 @@ public:
   const CanonicalSemanticBytes &canonicalBytes() const {
     return canonicalBytes_;
   }
-  const SystemMappingView &view() const { return view_; }
+  const SystemMappingView &view() const { return *view_; }
+  const SystemMappingClosureProjection &verifiedClosure() const;
 
 private:
-  FinalizedSystemMapping(ArtifactRootReference reference,
-                         CanonicalSemanticBytes canonicalBytes,
-                         SystemMappingView view)
+  FinalizedSystemMapping(
+      ArtifactRootReference reference, CanonicalSemanticBytes canonicalBytes,
+      SystemMappingView view,
+      std::shared_ptr<const SystemMappingClosureProjection> verifiedClosure)
       : reference_(std::move(reference)),
-        canonicalBytes_(std::move(canonicalBytes)), view_(std::move(view)) {}
+        canonicalBytes_(std::move(canonicalBytes)),
+        view_(std::make_shared<const SystemMappingView>(std::move(view))),
+        verifiedClosure_(std::move(verifiedClosure)) {}
 
   ArtifactRootReference reference_;
   CanonicalSemanticBytes canonicalBytes_;
-  SystemMappingView view_;
+  std::shared_ptr<const SystemMappingView> view_;
+  std::shared_ptr<const SystemMappingClosureProjection> verifiedClosure_;
 
   friend llvm::Expected<FinalizedSystemMapping> finalizeSystemMapping(
       ::mapping::SystemOp, const ::dataflow::CanonicalDataflowProgramView &,

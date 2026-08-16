@@ -3,8 +3,8 @@
 #include "Common/ArtifactFinalizer.h"
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
-#include "Evaluation/Evidence.h"
 #include "Evaluation/ArtifactImportCache.h"
+#include "Evaluation/Evidence.h"
 #include "Evaluation/ModelDescriptor.h"
 
 #include <algorithm>
@@ -46,15 +46,14 @@ using detail::WireReader;
 using detail::WireWriter;
 
 llvm::Expected<std::shared_ptr<const evaluation::EvaluationRequest>>
-importCachedRequest(
-    const ArtifactRootReference &reference,
-    const evaluation::CaseArtifactResolution &resolution,
-    const ArtifactStore &store, const BlobStore &blobs) {
+importCachedRequest(const ArtifactRootReference &reference,
+                    const evaluation::CaseArtifactResolution &resolution,
+                    const ArtifactStore &store, const BlobStore &blobs) {
   const std::array<ArtifactRootReference, 1> references{reference};
   return evaluation::importCachedArtifact<evaluation::EvaluationRequest>(
       store, &blobs, references, [&]() {
-        return evaluation::importEvaluationRequest(reference, resolution,
-                                                   store, blobs);
+        return evaluation::importEvaluationRequest(reference, resolution, store,
+                                                   blobs);
       });
 }
 
@@ -62,8 +61,7 @@ llvm::Expected<std::shared_ptr<const ImportedSpatialSimulationInputs>>
 importCachedSpatialInputs(const ArtifactRootReference &workload,
                           const ArtifactRootReference &runtimeInput,
                           const ArtifactStore &store) {
-  const std::array<ArtifactRootReference, 2> references{workload,
-                                                       runtimeInput};
+  const std::array<ArtifactRootReference, 2> references{workload, runtimeInput};
   return evaluation::importCachedArtifact<ImportedSpatialSimulationInputs>(
       store, nullptr, references, [&]() {
         return importSpatialSimulationInputs(workload, runtimeInput, store);
@@ -428,8 +426,8 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialExecutionContext(
     const ArtifactRootReference &requestReference,
     const evaluation::CaseArtifactResolution &resolution,
     const ArtifactStore &store, const BlobStore &blobs) {
-  auto request = importCachedRequest(requestReference, resolution, store,
-                                     blobs);
+  auto request =
+      importCachedRequest(requestReference, resolution, store, blobs);
   if (!request)
     return request.takeError();
   auto stoppedCardinality = resolveSimulationOutputCardinality(**request);
@@ -475,14 +473,41 @@ llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
   if (!launch)
     return launch.takeError();
   return SpatialExecutionContext{
-      {}, std::move(*inputs), std::move(*view), std::move(*launch),
-      evaluation::ArtifactCollectionCardinality::OneOrMore, nullptr, &store,
+      {},
+      std::move(*inputs),
+      std::move(*view),
+      std::move(*launch),
+      evaluation::ArtifactCollectionCardinality::OneOrMore,
+      nullptr,
+      &store,
       nullptr};
 }
 
-llvm::Error validateSpatialProgressObservations(
-    const SpatialProgressObservations &progress,
-    const ExecutionTerminal &terminal) {
+llvm::Expected<SpatialExecutionContext> resolveSpatialEngineResultContext(
+    const ImportedSpatialSimulationInputs &inputs) {
+  auto view = inputs.dataflow.view();
+  if (!view)
+    return view.takeError();
+  auto launch =
+      resolveLaunchContext(*view, inputs.workload.spatial()->launchRef);
+  if (!launch)
+    return launch.takeError();
+  std::shared_ptr<const ImportedSpatialSimulationInputs> borrowedInputs(
+      &inputs, [](const ImportedSpatialSimulationInputs *) {});
+  return SpatialExecutionContext{
+      {},
+      std::move(borrowedInputs),
+      std::move(*view),
+      std::move(*launch),
+      evaluation::ArtifactCollectionCardinality::OneOrMore,
+      nullptr,
+      nullptr,
+      nullptr};
+}
+
+llvm::Error
+validateSpatialProgressObservations(const SpatialProgressObservations &progress,
+                                    const ExecutionTerminal &terminal) {
   return validateProgress(progress, terminal);
 }
 

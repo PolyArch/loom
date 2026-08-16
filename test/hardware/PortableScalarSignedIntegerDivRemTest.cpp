@@ -486,16 +486,16 @@ FinalizedConfigurationABI makeConfigurationAbi(
 unsigned modeCode(llvm::StringRef test, const FabricFixture &fixture,
                   const FinalizedConfigurationABI &abi, Schema schema,
                   unsigned width) {
-  auto relation = take(
+  auto semanticRelation = take(
       test,
       capability(test, fixture).resolveSemanticFieldRelation(fabricContext()));
   const auto point = llvm::find_if(
-      relation.finiteBehaviorDomain(), [&](const auto &candidate) {
+      semanticRelation.finiteBehaviorDomain(), [&](const auto &candidate) {
         return candidate.representativeActor.schema == schema &&
                actorWidth(candidate.representativeActor) == width;
       });
   require(test,
-          point != relation.finiteBehaviorDomain().end() &&
+          point != semanticRelation.finiteBehaviorDomain().end() &&
               point->semanticConfiguration.has_value(),
           "configured relation has no requested signed div/rem mode");
   const auto &resolved = capability(test, fixture);
@@ -505,8 +505,12 @@ unsigned modeCode(llvm::StringRef test, const FabricFixture &fixture,
       fixture.physicalOccurrence,
       resolved.configurationFieldSchema.front().ordinal);
   require(test, field != nullptr, "finalized ABI has no operation field");
+  const ConfigurationEncodingRelation *encodingRelation =
+      abi.abi().findEncodingRelation(*field);
+  require(test, encodingRelation != nullptr,
+          "finalized ABI field has no encoding relation");
   const auto *codebook =
-      std::get_if<FiniteCodebookEncoding>(&field->semanticEncoding);
+      std::get_if<FiniteCodebookEncoding>(&encodingRelation->semanticEncoding);
   require(test, codebook != nullptr, "finalized ABI field has no codebook");
   const auto entry =
       llvm::find_if(codebook->entries, [&](const auto &candidate) {

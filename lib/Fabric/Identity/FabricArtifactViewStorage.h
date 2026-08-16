@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -17,6 +18,7 @@ struct FabricArtifactView::Storage {
       : data(std::move(data)) {}
 
   detail::FabricArtifactViewData data;
+  std::optional<FabricModuleTemplateRef> moduleRootTemplate;
   std::vector<FabricPeOccurrenceRef> peOccurrences;
   std::vector<FabricFuOccurrenceRef> fuOccurrences;
   std::vector<FabricMemoryOccurrenceRef> memoryOccurrences;
@@ -41,6 +43,7 @@ struct FabricArtifactView::Storage {
   std::vector<FabricFuTemplateRef> fuTemplates;
   std::vector<FabricMemoryEngineTemplateRef> memoryEngineTemplates;
   std::vector<std::vector<FabricMemoryOperationPortRef>> memoryPortRefs;
+  std::vector<std::vector<FabricPhysicalTraversalRef>> switchTraversals;
   std::vector<std::vector<std::uint8_t>> pointConnectionKeys;
   std::vector<std::vector<std::uint8_t>> memoryServiceConnectionKeys;
   std::vector<std::vector<std::uint8_t>> traversalKeys;

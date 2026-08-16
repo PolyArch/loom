@@ -61,8 +61,15 @@ class Gem5BuildHelperTest(unittest.TestCase):
         bridge.mkdir(parents=True)
         include.mkdir(parents=True)
         (bridge / "SConscript").write_text("first\n", encoding="utf-8")
-        wire = include / "Gem5BridgeWire.h"
-        wire.write_text("wire\n", encoding="utf-8")
+        owned_headers = [
+            "Gem5BridgeWire.h",
+            "Gem5DispatchABI.h",
+            "Gem5SpatialBridgeABI.h",
+            "SpatialInvocationWire.h",
+        ]
+        for name in owned_headers:
+            (include / name).write_text(f"{name}\n", encoding="utf-8")
+        wire = include / owned_headers[0]
         first = self.module.bridge_source_digest(repository)
         wire.write_text("changed\n", encoding="utf-8")
         second = self.module.bridge_source_digest(repository)

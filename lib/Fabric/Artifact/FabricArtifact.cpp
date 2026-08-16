@@ -54,12 +54,12 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <list>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -607,7 +607,11 @@ llvm::Expected<FabricArtifactView> buildModuleView(
   return std::move(*view);
 }
 
-struct StrictImportResult {
+} // namespace
+
+namespace detail {
+
+struct FabricStrictImportResult final {
   DecodedFabricArtifact decoded;
   FabricArtifactView view;
   std::vector<detail::FabricModuleBoundaryEndpointViewData>
@@ -616,51 +620,127 @@ struct StrictImportResult {
       moduleBoundaryOutputs;
 };
 
-constexpr std::size_t strictImportCacheCapacity = 8;
+constexpr std::uint64_t fabricArtifactImportAlgorithmVersion = 1;
 
-struct StrictImportCacheEntry final {
-  ArtifactIdentity::Storage identity;
-  StrictImportResult imported;
+struct FabricArtifactImportSessionKey final {
+  ArtifactRootReference reference;
+  std::uint64_t algorithmVersion = fabricArtifactImportAlgorithmVersion;
 };
 
-struct StrictImportCache final {
-  std::mutex mutex;
-  std::list<StrictImportCacheEntry> entries;
+bool operator==(const FabricArtifactImportSessionKey &lhs,
+                const FabricArtifactImportSessionKey &rhs) {
+  return lhs.reference == rhs.reference &&
+         lhs.algorithmVersion == rhs.algorithmVersion;
+}
+
+struct FabricArtifactImportSessionEntry final {
+  FabricArtifactImportSessionKey key;
+  CanonicalSemanticBytes canonicalBytes;
+  std::shared_ptr<const FabricStrictImportResult> imported;
+  std::uint64_t retainedPayloadBytes = 0;
 };
 
-StrictImportCache &strictImportCache() {
-  static StrictImportCache cache;
-  return cache;
-}
-
-std::optional<StrictImportResult>
-findCachedStrictImport(const ArtifactIdentity &identity) {
-  StrictImportCache &cache = strictImportCache();
-  std::lock_guard<std::mutex> lock(cache.mutex);
-  const auto found = llvm::find_if(cache.entries, [&](const auto &entry) {
-    return entry.identity == identity.bytes();
-  });
-  if (found == cache.entries.end())
-    return std::nullopt;
-  StrictImportResult result = found->imported;
-  cache.entries.splice(cache.entries.begin(), cache.entries, found);
-  return result;
-}
-
-void cacheStrictImport(const ArtifactIdentity &identity,
-                       const StrictImportResult &imported) {
-  StrictImportCache &cache = strictImportCache();
-  std::lock_guard<std::mutex> lock(cache.mutex);
-  const auto found = llvm::find_if(cache.entries, [&](const auto &entry) {
-    return entry.identity == identity.bytes();
-  });
-  if (found != cache.entries.end()) {
-    cache.entries.splice(cache.entries.begin(), cache.entries, found);
-    return;
+class FabricArtifactImportSessionState final {
+public:
+  std::shared_ptr<const FabricArtifactImportSessionEntry>
+  find(const ArtifactRootReference &reference) {
+    ++statistics_.importRequests;
+    ++statistics_.deterministicWork;
+    const FabricArtifactImportSessionKey key{reference};
+    const auto found = llvm::find_if(
+        entries_, [&](const auto &entry) { return entry->key == key; });
+    if (found == entries_.end()) {
+      ++statistics_.cacheMisses;
+      return {};
+    }
+    ++statistics_.cacheHits;
+    return *found;
   }
-  cache.entries.push_front({identity.bytes(), imported});
-  if (cache.entries.size() > strictImportCacheCapacity)
-    cache.entries.pop_back();
+
+  void recordRead(std::uint64_t byteCount) {
+    statistics_.bytesRead += byteCount;
+    statistics_.bytesCopied += byteCount;
+  }
+
+  std::shared_ptr<const FabricArtifactImportSessionEntry>
+  insert(const ArtifactRootReference &reference,
+         CanonicalSemanticBytes canonicalBytes,
+         std::shared_ptr<const FabricStrictImportResult> imported,
+         std::uint64_t retainedPayloadBytes,
+         std::uint64_t constructionNanoseconds) {
+    const FabricArtifactImportSessionKey key{reference};
+    const auto found = llvm::find_if(
+        entries_, [&](const auto &entry) { return entry->key == key; });
+    statistics_.constructionNanoseconds += constructionNanoseconds;
+    if (found != entries_.end())
+      return *found;
+    auto entry = std::make_shared<const FabricArtifactImportSessionEntry>(
+        FabricArtifactImportSessionEntry{
+            key, std::move(canonicalBytes), std::move(imported),
+            retainedPayloadBytes});
+    entries_.push_back(entry);
+    ++statistics_.uniqueConstructions;
+    statistics_.retainedPayloadBytes += retainedPayloadBytes;
+    statistics_.entryCount = entries_.size();
+    return entry;
+  }
+
+  FabricArtifactImportSessionStatistics statistics() const {
+    return statistics_;
+  }
+
+private:
+  std::list<std::shared_ptr<const FabricArtifactImportSessionEntry>> entries_;
+  FabricArtifactImportSessionStatistics statistics_;
+};
+
+} // namespace detail
+
+namespace {
+
+using StrictImportResult = detail::FabricStrictImportResult;
+
+thread_local detail::FabricArtifactImportSessionState *currentImportSession =
+    nullptr;
+
+std::uint64_t retainedPayloadBytes(const StrictImportResult &imported) {
+  std::uint64_t bytes = imported.decoded.canonicalMlirBytecode.size();
+  bytes += imported.decoded.dependencies.capacity() *
+           sizeof(FabricDirectDependency);
+  const auto addBoundaryBytes = [&](const auto &boundaries) {
+    bytes += boundaries.capacity() *
+             sizeof(detail::FabricModuleBoundaryEndpointViewData);
+    for (const auto &boundary : boundaries)
+      bytes += boundary.canonicalType.capacity();
+  };
+  addBoundaryBytes(imported.moduleBoundaryInputs);
+  addBoundaryBytes(imported.moduleBoundaryOutputs);
+  return bytes;
+}
+
+std::shared_ptr<const detail::FabricArtifactImportSessionEntry>
+findCachedStrictImport(const ArtifactRootReference &reference) {
+  return currentImportSession ? currentImportSession->find(reference) : nullptr;
+}
+
+void recordFabricImportRead(std::uint64_t byteCount) {
+  if (currentImportSession)
+    currentImportSession->recordRead(byteCount);
+}
+
+std::shared_ptr<const StrictImportResult> cacheStrictImport(
+    const ArtifactRootReference &reference,
+    CanonicalSemanticBytes canonicalBytes,
+    std::shared_ptr<const StrictImportResult> imported,
+    std::uint64_t constructionNanoseconds) {
+  const std::uint64_t retainedBytes =
+      retainedPayloadBytes(*imported) + canonicalBytes.bytes().size();
+  if (!currentImportSession)
+    return imported;
+  return currentImportSession
+      ->insert(reference, std::move(canonicalBytes), std::move(imported),
+               retainedBytes, constructionNanoseconds)
+      ->imported;
 }
 
 llvm::Expected<StrictImportResult>
@@ -762,11 +842,13 @@ llvm::Expected<FabricEntityId> canonicalEntityId(Operation *operation) {
 }
 
 llvm::Expected<const StrictImportResult *>
-resolveImportedModule(llvm::ArrayRef<StrictImportResult> importedModules,
-                      const FabricImportedModuleTargetRef &target) {
+resolveImportedModule(
+    llvm::ArrayRef<std::shared_ptr<const StrictImportResult>> importedModules,
+    const FabricImportedModuleTargetRef &target) {
   if (target.dependencyOrdinal >= importedModules.size())
     return invalid("System field references a dependency outside its table");
-  const StrictImportResult &module = importedModules[target.dependencyOrdinal];
+  const StrictImportResult &module =
+      *importedModules[target.dependencyOrdinal];
   if (llvm::Error error = validateFabricRef(module.view, target.target))
     return std::move(error);
   return &module;
@@ -774,7 +856,7 @@ resolveImportedModule(llvm::ArrayRef<StrictImportResult> importedModules,
 
 llvm::Expected<const detail::FabricModuleBoundaryEndpointViewData *>
 resolveImportedModuleBoundary(
-    llvm::ArrayRef<StrictImportResult> importedModules,
+    llvm::ArrayRef<std::shared_ptr<const StrictImportResult>> importedModules,
     const FabricImportedModuleBoundaryEndpointRef &reference) {
   auto module = resolveImportedModule(
       importedModules,
@@ -864,7 +946,8 @@ llvm::Error validateServiceCapabilityReferences(
 llvm::Error
 validateSystemRelations(::fabric::SystemOp root,
                         const FabricSystemRootView &systemView,
-                        llvm::ArrayRef<StrictImportResult> importedModules) {
+                        llvm::ArrayRef<std::shared_ptr<const StrictImportResult>>
+                            importedModules) {
   if (llvm::Error error = detail::validateInstructionCoreCohort(root))
     return error;
   const FabricArtifactView &view = systemView.artifact();
@@ -1190,7 +1273,7 @@ validateSystemRelations(::fabric::SystemOp root,
     if (!target || target->dependencyOrdinal >= importedModules.size())
       return invalid("AccCore has no valid imported SpatialCore target");
     const StrictImportResult &module =
-        importedModules[target->dependencyOrdinal];
+        *importedModules[target->dependencyOrdinal];
     const std::size_t expected = module.moduleBoundaryInputs.size() +
                                  module.moduleBoundaryOutputs.size();
     if (attachmentCoverage[id].size() != expected)
@@ -1212,14 +1295,15 @@ llvm::Expected<FabricArtifactView>
 buildSystemView(::fabric::SystemOp root,
                 const detail::FabricSystemCanonicalLabeling &labeling,
                 const ArtifactIdentity &identity,
-                llvm::ArrayRef<StrictImportResult> importedModules,
+                llvm::ArrayRef<std::shared_ptr<const StrictImportResult>>
+                    importedModules,
                 std::shared_ptr<mlir::MLIRContext> contextOwner) {
   detail::FabricArtifactViewData data(identity, FabricRootKind::System);
   data.contextOwner = std::move(contextOwner);
   data.entities.resize(labeling.carriers.size());
   data.importedModules.reserve(importedModules.size());
-  for (const StrictImportResult &module : importedModules)
-    data.importedModules.push_back(module.view);
+  for (const auto &module : importedModules)
+    data.importedModules.push_back(module->view);
 
   std::vector<bool> dependencyUsed(importedModules.size(), false);
 
@@ -1512,18 +1596,20 @@ strictImportSystem(const ArtifactRootReference &reference,
                    const CanonicalSemanticBytes &canonicalBytes,
                    DecodedFabricArtifact decoded, const ArtifactStore &store);
 
-llvm::Expected<StrictImportResult>
+llvm::Expected<std::shared_ptr<const StrictImportResult>>
 strictImport(const ArtifactRootReference &reference,
              const CanonicalSemanticBytes &canonicalBytes,
-             const ArtifactStore &store) {
+             const ArtifactStore &store, bool lookupCache = true) {
   if (reference.schemaIdentity != fabricArtifactSchema.identity ||
       reference.schemaVersion != fabricArtifactSchema.version)
     return invalid("root reference has the wrong Fabric schema");
   if (finalizeArtifactIdentity(fabricArtifactSchema, canonicalBytes) !=
       reference.artifact)
     return invalid("root reference identity does not match canonical bytes");
-  if (auto cached = findCachedStrictImport(reference.artifact))
-    return std::move(*cached);
+  if (lookupCache)
+    if (auto cached = findCachedStrictImport(reference))
+      return cached->imported;
+  const auto constructionBegin = std::chrono::steady_clock::now();
   auto decoded = decodeFabricArtifactEnvelope(canonicalBytes.bytes());
   if (!decoded)
     return decoded.takeError();
@@ -1546,8 +1632,14 @@ strictImport(const ArtifactRootReference &reference,
   }();
   if (!imported)
     return imported.takeError();
-  cacheStrictImport(reference.artifact, *imported);
-  return imported;
+  const std::uint64_t constructionNanoseconds =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - constructionBegin)
+          .count();
+  return cacheStrictImport(
+      reference, canonicalBytes,
+      std::make_shared<const StrictImportResult>(std::move(*imported)),
+      constructionNanoseconds);
 }
 
 llvm::Expected<StrictImportResult>
@@ -1557,20 +1649,27 @@ strictImportSystem(const ArtifactRootReference &reference,
   if (decoded.rootKind != FabricRootKind::System)
     return invalid("System importer received the wrong root kind");
 
-  std::vector<StrictImportResult> importedModules;
+  std::vector<std::shared_ptr<const StrictImportResult>> importedModules;
   importedModules.reserve(decoded.dependencies.size());
   for (const FabricDirectDependency &dependency : decoded.dependencies) {
     if (dependency.role != FabricDependencyRole::ImportedModule)
       return invalid("System root has a non-ImportedModule dependency");
-    auto bytes = store.get(dependency.root);
-    if (!bytes)
-      return bytes.takeError();
-    auto imported = strictImport(dependency.root, *bytes, store);
-    if (!imported)
-      return imported.takeError();
+    std::shared_ptr<const StrictImportResult> imported;
+    if (auto cached = findCachedStrictImport(dependency.root)) {
+      imported = cached->imported;
+    } else {
+      auto bytes = store.get(dependency.root);
+      if (!bytes)
+        return bytes.takeError();
+      recordFabricImportRead(bytes->bytes().size());
+      auto constructed = strictImport(dependency.root, *bytes, store, false);
+      if (!constructed)
+        return constructed.takeError();
+      imported = std::move(*constructed);
+    }
     if (imported->view.rootKind() != FabricRootKind::Module)
       return invalid("ImportedModule dependency has the wrong root kind");
-    importedModules.push_back(std::move(*imported));
+    importedModules.push_back(std::move(imported));
   }
 
   auto parsed =
@@ -1782,6 +1881,30 @@ llvm::Expected<OwningOpRef<ModuleOp>> buildCanonicalCandidate(
 
 } // namespace
 
+FabricArtifactImportSession::FabricArtifactImportSession(
+    FabricArtifactImportSessionMode mode)
+    : previous_(currentImportSession) {
+  if (mode == FabricArtifactImportSessionMode::ReuseEnclosing &&
+      currentImportSession) {
+    active_ = currentImportSession;
+    return;
+  }
+  owned_ = std::make_unique<detail::FabricArtifactImportSessionState>();
+  active_ = owned_.get();
+  currentImportSession = active_;
+}
+
+FabricArtifactImportSession::~FabricArtifactImportSession() {
+  if (owned_)
+    currentImportSession = previous_;
+}
+
+FabricArtifactImportSessionStatistics
+FabricArtifactImportSession::statistics() const {
+  return active_ ? active_->statistics()
+                 : FabricArtifactImportSessionStatistics{};
+}
+
 llvm::Expected<FinalizedFabricRoot>
 finalizeFabricRoot(::fabric::ModuleOp source, const ArtifactStore &store) {
   ::fabric::ModuleDomainAuthoringRelation empty;
@@ -1818,8 +1941,8 @@ llvm::Expected<FinalizedFabricRoot> finalizeFabricRoot(
   if (*stored != reference.artifact)
     return invalid("ArtifactStore returned a different Fabric identity");
   return FinalizedFabricRoot(reference, std::move(*canonical),
-                             std::move(imported->decoded.dependencies),
-                             std::move(imported->view));
+                             (*imported)->decoded.dependencies,
+                             (*imported)->view);
 }
 
 llvm::Expected<FinalizedFabricRoot>
@@ -1852,26 +1975,34 @@ finalizeFabricRoot(::fabric::SystemOp source,
   if (*stored != reference.artifact)
     return invalid("ArtifactStore returned a different Fabric identity");
   return FinalizedFabricRoot(reference, std::move(*canonical),
-                             std::move(imported->decoded.dependencies),
-                             std::move(imported->view));
+                             (*imported)->decoded.dependencies,
+                             (*imported)->view);
 }
 
 llvm::Expected<FinalizedFabricRoot>
 importEntireFabricRoot(const ArtifactRootReference &reference,
                        const ArtifactStore &store) {
+  if (reference.schemaIdentity != fabricArtifactSchema.identity ||
+      reference.schemaVersion != fabricArtifactSchema.version)
+    return invalid("root reference has the wrong Fabric schema");
+  if (auto cached = findCachedStrictImport(reference))
+    return FinalizedFabricRoot(reference, cached->canonicalBytes,
+                               cached->imported->decoded.dependencies,
+                               cached->imported->view);
   auto canonical = store.get(reference);
   if (!canonical)
     return canonical.takeError();
+  recordFabricImportRead(canonical->bytes().size());
   if (llvm::Error error =
           detail::validateFabricArtifactDependencyFramingClosure(store,
                                                                  *canonical))
     return std::move(error);
-  auto imported = strictImport(reference, *canonical, store);
+  auto imported = strictImport(reference, *canonical, store, false);
   if (!imported)
     return imported.takeError();
   return FinalizedFabricRoot(reference, std::move(*canonical),
-                             std::move(imported->decoded.dependencies),
-                             std::move(imported->view));
+                             (*imported)->decoded.dependencies,
+                             (*imported)->view);
 }
 
 } // namespace loom::fabric

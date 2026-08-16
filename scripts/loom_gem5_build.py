@@ -138,6 +138,9 @@ def bridge_source_digest(repository_root: pathlib.Path) -> str:
     roots = [
         repository_root / "runtime" / "gem5",
         repository_root / "include" / "Runtime" / "Gem5BridgeWire.h",
+        repository_root / "include" / "Runtime" / "Gem5DispatchABI.h",
+        repository_root / "include" / "Runtime" / "Gem5SpatialBridgeABI.h",
+        repository_root / "include" / "Runtime" / "SpatialInvocationWire.h",
     ]
     files: list[pathlib.Path] = []
     for root in roots:

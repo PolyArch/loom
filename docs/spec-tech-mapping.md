@@ -164,6 +164,15 @@ SpatialMapping derives occurrence conflicts from those same keys when separate
 realizations would otherwise become indistinguishable on one Temporal
 occurrence.
 
+For routed-token actors, the seed begins with the one canonical ordered lane
+embedding derived by the Fabric implementation-family relation for each
+sequence of physically asymmetric lane classes. It does not enumerate raw
+ordinal subsets inside an equivalence class. The concrete capability query,
+TechMapping generator, independent TechMapping verifier, configuration
+projection, and backend providers all consume that same relation. A selected
+FU boundary or topology alternative remains a separate seed component, so
+canonical lane embedding cannot erase a physically distinct attachment.
+
 Seed keys are the corresponding prospective persistent payload keys before
 validation and Mapping-local identity assignment. One FU capability template
 or one Memory Operation Engine template defines one closed seed family. The

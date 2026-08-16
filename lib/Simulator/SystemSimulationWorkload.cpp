@@ -10,6 +10,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/IR/DataLayout.h"
 
 #include <algorithm>
 #include <utility>
@@ -394,6 +395,9 @@ llvm::Expected<ResolvedSystemContext> resolveSystemContext(
       deployment.deployment().hostProgram().compilerTargetBinding(), store);
   if (!target)
     return target.takeError();
+  auto dataLayout = llvm::DataLayout::parse(target->binding().dataLayout());
+  if (!dataLayout)
+    return dataLayout.takeError();
 
   mlir::MLIRContext &mlirContext = typeContext();
   mlir::OwningOpRef<mlir::ModuleOp> layoutScope(
@@ -402,9 +406,14 @@ llvm::Expected<ResolvedSystemContext> resolveSystemContext(
       "llvm.data_layout",
       mlir::StringAttr::get(&mlirContext, target->binding().dataLayout()));
 
-  ResolvedSystemContext context{
-      entryReference.deployment, **entry, {}, {}, {}, {},
-      std::move(layoutScope)};
+  ResolvedSystemContext context{entryReference.deployment,
+                                **entry,
+                                {},
+                                {},
+                                {},
+                                {},
+                                dataLayout->isLittleEndian(),
+                                std::move(layoutScope)};
   context.valueArgumentShapes.reserve((*entry)->valueArgumentTypes.size());
   for (const deployment::CanonicalTypeBytes &bytes :
        (*entry)->valueArgumentTypes) {
@@ -577,6 +586,28 @@ systemWorkloadOwnerIdentity(llvm::ArrayRef<std::uint8_t> bytes) {
 }
 
 } // namespace detail
+
+llvm::Expected<SystemSimulationBoundaryShapes>
+projectSystemSimulationBoundaryShapes(
+    const deployment::FinalizedDeployment &deployment,
+    const deployment::DeploymentProgramEntryRef &entry,
+    const ArtifactStore &store) {
+  auto context = detail::resolveSystemContext(deployment, entry, store);
+  if (!context)
+    return context.takeError();
+
+  const auto project = [](llvm::ArrayRef<detail::LaneShape> shapes) {
+    std::vector<SystemSimulationValueShape> result;
+    result.reserve(shapes.size());
+    for (const detail::LaneShape &shape : shapes)
+      result.push_back({shape.lanesPerToken, shape.laneBitWidth,
+                        shape.pointerLayout.has_value()});
+    return result;
+  };
+  return SystemSimulationBoundaryShapes{context->littleEndian,
+                                        project(context->valueArgumentShapes),
+                                        project(context->valueResultShapes)};
+}
 
 llvm::Expected<CanonicalSimulationWorkload>
 finalizeSimulationWorkload(const SystemSimulationWorkload &workload,

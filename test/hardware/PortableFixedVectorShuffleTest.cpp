@@ -546,10 +546,15 @@ std::vector<std::uint8_t> encodedConfiguration(
       });
   require(test, unit != abi.programmingUnits().end(),
           "shuffle operation field has no programming unit");
+  const ConfigurationEncodingRelation *encodingRelation =
+      abi.findEncodingRelation(*field);
+  require(test, encodingRelation != nullptr,
+          "shuffle operation field has no encoding relation");
   const std::vector<std::uint8_t> payload =
       take(test, abi.encode(unit->id, values));
   std::vector<std::uint8_t> physical(
-      static_cast<std::size_t>((field->encodedBitCount() + 7) / 8), 0);
+      static_cast<std::size_t>((encodingRelation->encodedBitCount() + 7) / 8),
+      0);
   for (const DestinationSlice &slice : field->destinationSlices)
     for (std::uint64_t bit = 0; bit != slice.bitCount; ++bit)
       if (((payload[(slice.destinationBitOffset + bit) / 8] >>
@@ -677,9 +682,12 @@ void configuredBehaviorAndDeterminism(const std::filesystem::path &root) {
   const ConfigurationFieldEncoding *field = abi.abi().findOperationField(
       fabric.physicalOccurrence,
       resolved.configurationFieldSchema.front().ordinal);
+  const ConfigurationEncodingRelation *encodingRelation =
+      field ? abi.abi().findEncodingRelation(*field) : nullptr;
   const auto *direct =
-      field ? std::get_if<DirectBitsEncoding>(&field->semanticEncoding)
-            : nullptr;
+      encodingRelation
+          ? std::get_if<DirectBitsEncoding>(&encodingRelation->semanticEncoding)
+          : nullptr;
   require(test, direct && direct->encodedBitCount == layout.encodedBitCount,
           "ConfigurationABI did not preserve the exact DirectBits field");
 

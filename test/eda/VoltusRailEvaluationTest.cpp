@@ -165,9 +165,10 @@ FinalizedHardwareImplementation makePhysicalImplementation(
   const loom::fabric::FinalizedFabricRoot module = makeModule(artifacts);
   const loom::fabric::FinalizedFabricRoot system = take(
       __func__, hardware::test::makeSingleSpatialCoreSystem(module, artifacts));
-  const FinalizedConfigurationABI abi = take(
-      __func__, finalizeConfigurationABI(
-                    ConfigurationABIDraft{system.reference(), {}}, artifacts));
+  const FinalizedConfigurationABI abi =
+      take(__func__,
+           finalizeConfigurationABI(
+               ConfigurationABIDraft{system.reference(), {}, {}}, artifacts));
 
   std::vector<ImplementationPayload> payloads{
       putPayload(blobs, PayloadRole::Netlist, "netlist/top.v",
@@ -208,21 +209,21 @@ FinalizedHardwareImplementation makePhysicalImplementation(
               contracts.find(synopsysDesignCompilerStandardCellContractRef) &&
               contracts.find(openSourceYosysStandardCellContractRef),
           "shared standard-cell contract catalog is incomplete");
-  return take(__func__,
-              finalizeHardwareImplementation(
-                  HardwareImplementationDraft{system.reference(),
-                                              take(__func__,
-                                                   hardware::test::
-                                                       requireSingleSpatialCoreOccurrence(
-                                                           system)),
-                                              abi.reference(),
-                                              std::move(representation),
-                                              platform.reference(),
-                                              {},
-                                              {},
-                                              {},
-                                              {}},
-                  contracts, artifacts, blobs));
+  return take(
+      __func__,
+      finalizeHardwareImplementation(
+          HardwareImplementationDraft{
+              system.reference(),
+              take(__func__,
+                   hardware::test::requireSingleSpatialCoreOccurrence(system)),
+              abi.reference(),
+              std::move(representation),
+              platform.reference(),
+              {},
+              {},
+              {},
+              {}},
+          contracts, artifacts, blobs));
 }
 
 SubjectTargetRef rootTarget(const ArtifactRootReference &hardware) {

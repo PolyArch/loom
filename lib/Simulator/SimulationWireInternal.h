@@ -218,6 +218,7 @@ struct ResolvedSystemContext {
   std::vector<LaneShape> valueArgumentShapes;
   std::vector<LaneShape> valueResultShapes;
   std::vector<std::optional<LaneShape>> externalInterfaceShapes;
+  bool littleEndian = false;
   mlir::OwningOpRef<mlir::ModuleOp> layoutScope;
 
   mlir::Operation *layoutOperation() const {

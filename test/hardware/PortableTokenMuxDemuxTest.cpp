@@ -158,12 +158,16 @@ FinalizedFabricRoot makeModule(llvm::StringRef test, ArtifactStore &store,
   using loom::adg::PortType;
 
   const PortType outer = take(test, PortType::bits(32));
+  const PortType narrow = take(test, PortType::bits(8));
+  const PortType wide = take(test, PortType::bits(16));
   const std::vector<PortType> inputTypes =
-      family == FamilyKind::Mux ? std::vector<PortType>(5, outer)
-                                : std::vector<PortType>(2, outer);
+      family == FamilyKind::Mux
+          ? std::vector<PortType>{outer, narrow, narrow, wide, wide}
+          : std::vector<PortType>{outer, wide};
   const std::vector<PortType> outputTypes =
-      family == FamilyKind::Mux ? std::vector<PortType>(1, outer)
-                                : std::vector<PortType>(4, outer);
+      family == FamilyKind::Mux
+          ? std::vector<PortType>{wide}
+          : std::vector<PortType>{narrow, narrow, wide, wide};
   const std::vector<PortType> outerInputTypes(inputTypes.size(), outer);
   const std::vector<PortType> outerOutputTypes(outputTypes.size(), outer);
 
@@ -180,7 +184,8 @@ FinalizedFabricRoot makeModule(llvm::StringRef test, ArtifactStore &store,
   std::vector<loom::adg::PeValue> peInputs;
   for (std::size_t ordinal = 0; ordinal != outerInputTypes.size(); ++ordinal)
     peInputs.push_back(take(test, pe.input(ordinal)));
-  auto fu = take(test, pe.addFu(peInputs, FuSpec{inputTypes, outputTypes}));
+  auto fu =
+      take(test, pe.addFu(peInputs, FuSpec{inputTypes, outerOutputTypes}));
   std::vector<loom::adg::FuValue> fuInputs;
   for (std::size_t ordinal = 0; ordinal != inputTypes.size(); ++ordinal)
     fuInputs.push_back(take(test, fu.input(ordinal)));
@@ -189,7 +194,7 @@ FinalizedFabricRoot makeModule(llvm::StringRef test, ArtifactStore &store,
       fu.addOperation(
           fuInputs, OperationCapabilitySpec{
                         familyId(family),
-                        ::fabric::RoutedTokenParams{8, 4},
+                        ::fabric::RoutedTokenParams{16, 4},
                         {family == FamilyKind::Mux
                              ? ::dataflow::OperationSchemaId::DataflowMux
                              : ::dataflow::OperationSchemaId::DataflowDemux},
@@ -237,8 +242,8 @@ makeCodebook(llvm::StringRef test, FamilyKind family,
   require(test,
           relation.kind() ==
                   ::fabric::FabricOpSemanticFieldRelationKind::Finite &&
-              relation.finiteBehaviorDomain().size() == 11,
-          "routed-token relation is not the sealed eleven-mode domain");
+              relation.finiteBehaviorDomain().size() == 16,
+          "routed-token relation lost an observable asymmetric lane order");
 
   const std::vector<std::uint64_t> target =
       family == FamilyKind::Mux ? std::vector<std::uint64_t>{0, 1, 3, 4}
@@ -264,7 +269,7 @@ makeCodebook(llvm::StringRef test, FamilyKind family,
       code = 1;
       result.inactiveSemantic = semantic;
     } else {
-      while (nextCode == 1 || nextCode == 10 || nextCode == 15)
+      while (nextCode == 1 || nextCode == 10 || nextCode == 31)
         ++nextCode;
       code = nextCode++;
     }
@@ -321,7 +326,7 @@ Fixture makeFixture(llvm::StringRef test, ArtifactStore &store,
                operation.physicalOccurrence,
                operation.capability->configurationFieldSchema.front().ordinal));
   loom::hardware::test::ConfigurationFieldEncodingOverride override{
-      physicalField, FiniteCodebookEncoding{4, std::move(codebook.entries)},
+      physicalField, FiniteCodebookEncoding{5, std::move(codebook.entries)},
       codebook.inactiveSemantic};
   FinalizedConfigurationABI abi = take(
       test,
@@ -555,7 +560,7 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
     for (std::uint64_t bit = 0; bit != slice.bitCount; ++bit) {
       const std::uint64_t source = slice.sourceBitOffset + bit;
       writeBit(invalid, slice.destinationBitOffset + bit,
-               ((std::uint64_t{15} >> source) & 1U) != 0);
+               ((std::uint64_t{31} >> source) & 1U) != 0);
     }
   return {take(test, loom::hardware::test::derivePortableConfigurationTarget(
                          fixture.abi, fixture.spatialCore, owner->id)),
@@ -565,24 +570,25 @@ ConfigurationImages makeConfigurationImages(llvm::StringRef test,
 std::string leafTestbench() {
   return R"sv(module testbench;
   logic [31:0] mux_data_input_0;
-  logic [31:0] mux_data_input_1, mux_data_input_2, mux_data_input_3, mux_data_input_4;
+  logic [7:0] mux_data_input_1, mux_data_input_2;
+  logic [15:0] mux_data_input_3, mux_data_input_4;
   logic mux_valid_input_0, mux_valid_input_1, mux_valid_input_2;
   logic mux_valid_input_3, mux_valid_input_4, mux_ready_output_0;
-  logic [3:0] mux_config_0;
+  logic [4:0] mux_config_0;
   logic mux_ready_input_0, mux_ready_input_1, mux_ready_input_2;
   logic mux_ready_input_3, mux_ready_input_4;
-  logic [31:0] mux_data_output_0;
+  logic [15:0] mux_data_output_0;
   logic mux_valid_output_0;
 
   logic [31:0] demux_data_input_0;
-  logic [31:0] demux_data_input_1;
+  logic [15:0] demux_data_input_1;
   logic demux_valid_input_0, demux_valid_input_1;
   logic demux_ready_output_0, demux_ready_output_1;
   logic demux_ready_output_2, demux_ready_output_3;
-  logic [3:0] demux_config_0;
+  logic [4:0] demux_config_0;
   logic demux_ready_input_0, demux_ready_input_1;
-  logic [31:0] demux_data_output_0, demux_data_output_1;
-  logic [31:0] demux_data_output_2, demux_data_output_3;
+  logic [7:0] demux_data_output_0, demux_data_output_1;
+  logic [15:0] demux_data_output_2, demux_data_output_3;
   logic demux_valid_output_0, demux_valid_output_1;
   logic demux_valid_output_2, demux_valid_output_3;
 
@@ -618,7 +624,7 @@ std::string leafTestbench() {
     mux_data_input_0 = 0;
     mux_data_input_1 = 8'h11;
     mux_data_input_2 = 8'h22;
-    mux_data_input_3 = 32'habcd0033;
+    mux_data_input_3 = 16'h0033;
     mux_data_input_4 = 8'h44;
     mux_valid_input_0 = 1;
     mux_valid_input_1 = 1;
@@ -626,7 +632,7 @@ std::string leafTestbench() {
     mux_valid_input_3 = 1;
     mux_valid_input_4 = 1;
     mux_ready_output_0 = 1;
-    mux_config_0 = 4'ha;
+    mux_config_0 = 5'ha;
     #1;
     check(mux_valid_output_0 && mux_data_output_0 == 8'h11 &&
               mux_ready_input_0 && mux_ready_input_1 &&
@@ -667,7 +673,7 @@ std::string leafTestbench() {
     check(!mux_valid_output_0 && mux_ready_input_0 && !mux_ready_input_3,
           "mux consumed selected data without its selector");
     mux_valid_input_0 = 1;
-    mux_config_0 = 4'hf;
+    mux_config_0 = 5'h1f;
     #1;
     check(mux_valid_output_0 && mux_data_output_0 == 8'h22 &&
               mux_ready_input_2 && !mux_ready_input_1 &&
@@ -675,14 +681,14 @@ std::string leafTestbench() {
           "mux unmatched code did not use the ABI inactive mode");
 
     demux_data_input_0 = 1;
-    demux_data_input_1 = 32'hffff005a;
+    demux_data_input_1 = 16'h005a;
     demux_valid_input_0 = 1;
     demux_valid_input_1 = 1;
     demux_ready_output_0 = 1;
     demux_ready_output_1 = 1;
     demux_ready_output_2 = 1;
     demux_ready_output_3 = 1;
-    demux_config_0 = 4'ha;
+    demux_config_0 = 5'ha;
     #1;
     check(demux_ready_input_0 && demux_ready_input_1 &&
               !demux_valid_output_0 && !demux_valid_output_1 &&
@@ -720,7 +726,7 @@ std::string leafTestbench() {
               demux_ready_input_1,
           "demux consumed a selector without its data");
     demux_valid_input_1 = 1;
-    demux_config_0 = 4'hf;
+    demux_config_0 = 5'h1f;
     #1;
     check(demux_valid_output_1 && !demux_valid_output_0 &&
               !demux_valid_output_2 && !demux_valid_output_3,

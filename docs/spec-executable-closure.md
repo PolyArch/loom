@@ -24,7 +24,7 @@ resolves a target or substitutes a compatible binary.
 
 ```text
 loom.compiler_target_binding   1.0
-loom.instruction_core_binary   1.0
+loom.instruction_core_binary   1.1
 ```
 
 Host program bytes and Dataflow-visible static memory images are typed
@@ -146,6 +146,10 @@ InstructionCoreBinary {
 ThreadEntryBinding {
   root_thread_launch_ref
   entry_ordinal
+  spatial_invocation? {
+    abi
+    rooted_graph_launch_ref
+  }
 }
 
 RuntimeImport {
@@ -162,6 +166,16 @@ Each key is a `RootThreadLaunchRef` owned by the exact
 root-launch keys may share one ordinal when they reuse identical compiled
 code. Distinct roots may use distinct ordinals for launch-context
 specialization even when they resolve to the same thread definition.
+
+`spatial_invocation`, when present, is the compiled entry contract for a
+non-empty `loom.spatial_invocation_abi.v1` descriptor. Its rooted graph must
+belong to the entry's exact root launch and Canonical Dataflow artifact. The
+graph identity is stored because it selects the invocation consumer; value and
+result geometry, wire layout, and canonical template bytes are always rebuilt
+from that graph and the ABI. Absence means that the entry accepts the canonical
+zero-address, zero-size static form and consumes its finalized Spatial runtime
+input. A graph merely declaring value operands or results does not create a
+dynamic invocation contract.
 
 The table is a compiled-support relation: it states which entry in this exact
 binary implements each admitted root launch. It does not choose an AccCore or
@@ -182,7 +196,7 @@ unresolved import must appear in the closed typed `runtime_imports` set and
 resolve to exactly one dynamic support component of that binding. ABI symbol
 names are externally visible linkage semantics, not entity identity.
 
-For the `InstructionCoreBinary 1.0` ELF payload, the executable entry catalog
+For the `InstructionCoreBinary 1.1` ELF payload, the executable entry catalog
 is derived from defined global
 function symbols named `__loom_thread_entry_<ordinal>`, where `<ordinal>` is
 the canonical unsigned decimal spelling with no leading zero except the value
@@ -349,6 +363,25 @@ Host and InstructionCore code generation may consume the same linked program,
 but they use independently exact CompilerTargetBindings. Ordinary host
 `-target`, `-mcpu`, and feature options do not select an accelerator
 InstructionCore target.
+
+Generated runtime glue is derived only after the exact SystemMapping has
+selected executable contexts. A host callable may be replaced by Thread
+Dispatch glue only when Canonical Dataflow proves a total value-only boundary:
+one rank-zero root occurrence, one direct graph launch, dense value operand and
+result ordinals, and no residual computation between the graph result and the
+callable result. Unsupported shapes fail closed. The original source-facing
+entry remains in the ELF catalog; a reserved runtime entry initializes
+invocation-local handles, calls that entry, records its typed result, and uses a
+runtime-supplied termination capability.
+
+Every generated executable is linked into a deterministic, aligned,
+nonoverlapping physical interval. Placement begins from one policy-owned base,
+advances from the independently parsed `PT_LOAD` extent of the preceding ELF,
+and is verified again against every binary before Deployment publication and
+runtime loading. Host and InstructionCore images may not rely on separate
+address spaces unless the selected System contract explicitly provides them.
+Pathnames, temporary files, and linker process order do not participate in the
+placement key.
 
 ## Canonical Wire And Publication
 

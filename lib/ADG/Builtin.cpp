@@ -111,9 +111,10 @@ outOfOrderMicroarchitecture() {
   if (!resources)
     return resources.takeError();
   loom::fabric::InstructionCoreCommonDeclaration common{
-      2,
+      1,
       {{loom::fabric::InstructionOperationClass::IntegerAlu, 2, 1, 1},
        {loom::fabric::InstructionOperationClass::IntegerMultiply, 1, 3, 1},
+       {loom::fabric::InstructionOperationClass::IntegerDivide, 1, 12, 12},
        {loom::fabric::InstructionOperationClass::LoadStore, 2, 2, 1},
        {loom::fabric::InstructionOperationClass::FloatingPointAlu, 2, 3, 1},
        {loom::fabric::InstructionOperationClass::FloatingPointMultiply, 1, 4,
@@ -122,7 +123,7 @@ outOfOrderMicroarchitecture() {
         12}},
       std::move(*resources)};
   loom::fabric::OutOfOrderMicroarchitectureDeclaration pipeline{
-      2, 2, 2, 2, 2, 2, 2, 32, 16, 8, 8, 64, 32, 32};
+      2, 2, 2, 2, 2, 2, 2, 32, 16, 8, 8, 64, 64, 64};
   return loom::fabric::InstructionCoreMicroarchitecturalRealization::
       createOutOfOrder(std::move(common), pipeline);
 }

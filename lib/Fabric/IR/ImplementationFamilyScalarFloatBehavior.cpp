@@ -837,8 +837,9 @@ fabric::detail::resolveScalarFloatBehaviorDomain(
             family, &params, candidate.actor))
       return std::move(error);
     if (llvm::Error error = verifyImplementationFamilyPortCorrespondence(
-            family, candidate.actor, candidate.operandPorts,
-            candidate.resultPorts))
+            family, params, candidate.actor, candidate.operandPorts,
+            candidate.resultPorts, physicalInputWidths,
+            physicalResultWidths))
       return std::move(error);
     auto physical = isPhysicallyReachable(candidate, physicalInputWidths,
                                           physicalResultWidths);

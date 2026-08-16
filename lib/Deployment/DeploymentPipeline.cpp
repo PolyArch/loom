@@ -1,4 +1,5 @@
 #include "Deployment/DeploymentPipeline.h"
+#include "Deployment/DeploymentDiagnostics.h"
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
@@ -13,6 +14,7 @@
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
+#include <chrono>
 #include <map>
 #include <optional>
 #include <system_error>
@@ -143,9 +145,18 @@ llvm::Expected<std::vector<StaticMemoryImageLeaf>> deriveStaticMemoryImages(
 llvm::Expected<FinalizedDeployment> buildDeploymentFromLinkedProgram(
     DeploymentPipelineInputs inputs, const llvm::Module &finalLinkedModule,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
+  const auto staticMemoryBegin = std::chrono::steady_clock::now();
   auto staticMemory =
       deriveStaticMemoryImages(inputs.systemMapping, inputs.hostProgram,
                                finalLinkedModule, artifacts, blobs);
+  emitDeploymentConstructionOperationStatistics(
+      {DeploymentConstructionMode::Build,
+       DeploymentConstructionOperation::StaticMemoryDerivation,
+       static_cast<std::uint64_t>(
+           std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now() - staticMemoryBegin)
+               .count()),
+       staticMemory ? staticMemory->size() : 0});
   if (!staticMemory)
     return staticMemory.takeError();
 

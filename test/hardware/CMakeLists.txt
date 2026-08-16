@@ -28,6 +28,14 @@ target_link_libraries(loom-hardware-configuration-abi-test PRIVATE
   LLVMSupport
 )
 
+add_executable(loom-hardware-configuration-diagnostics-test
+  ConfigurationDiagnosticsTest.cpp
+)
+
+target_link_libraries(loom-hardware-configuration-diagnostics-test PRIVATE
+  LoomHardwareConfiguration
+)
+
 add_executable(loom-hardware-implementation-test
   HardwareImplementationTest.cpp
 )
