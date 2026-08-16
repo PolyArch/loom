@@ -86,6 +86,8 @@ struct SpatialTagAssignmentSummary final {
   std::vector<PnrIndex> netDomainUseDomains;
   std::vector<std::uint64_t> netDomainMarginalResidentCounts;
   std::vector<std::uint64_t> netUnassignedCounts;
+  std::vector<std::size_t> netTagValueOffsets;
+  std::vector<std::optional<llvm::APInt>> netTagValues;
 };
 
 /// Reusable transaction storage for route-local Physical Tag updates. The

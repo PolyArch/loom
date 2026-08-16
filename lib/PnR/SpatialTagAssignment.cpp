@@ -1304,7 +1304,9 @@ llvm::Expected<SpatialTagAssignmentSummary> summarizeTagAssignmentState(
 
   summary.netDomainUseOffsets.reserve(storage.nets.size() + 1);
   summary.netUnassignedCounts.reserve(storage.nets.size());
+  summary.netTagValueOffsets.reserve(storage.nets.size() + 1);
   summary.netDomainUseOffsets.push_back(0);
+  summary.netTagValueOffsets.push_back(0);
   std::vector<std::map<PnrIndex, std::uint64_t>> marginalRows(
       storage.nets.size());
   const auto netOffsets = storage.interference.netSegmentOffsets();
@@ -1337,6 +1339,8 @@ llvm::Expected<SpatialTagAssignmentSummary> summarizeTagAssignmentState(
     const loom::pnr::detail::SpatialTagNetState &net = storage.nets[logicalNet];
     summary.netUnassignedCounts.push_back(llvm::count_if(
         net.values, [](const auto &value) { return !value.has_value(); }));
+    summary.netTagValues.insert(summary.netTagValues.end(), net.values.begin(),
+                                net.values.end());
     for (PnrIndex segment = 0; segment < net.values.size(); ++segment)
       for (PnrIndex domain : ::segmentDomains(net, segment))
         if (!net.values[segment] ||
@@ -1351,6 +1355,7 @@ llvm::Expected<SpatialTagAssignmentSummary> summarizeTagAssignmentState(
       summary.netDomainMarginalResidentCounts.push_back(count);
     }
     summary.netDomainUseOffsets.push_back(summary.netDomainUseDomains.size());
+    summary.netTagValueOffsets.push_back(summary.netTagValues.size());
   }
   return summary;
 }

@@ -26,6 +26,8 @@ struct loom::pnr::detail::SpatialRouteCostSwitchRowState final {
   bool enabled = false;
   std::vector<std::vector<SpatialTemporalSwitchSegmentDemand>> netDemands;
   std::vector<std::uint8_t> netDemandsSettled;
+  std::vector<std::size_t> netTagValueOffsets;
+  std::vector<std::optional<llvm::APInt>> netTagValues;
   std::vector<SpatialTemporalSwitchSegmentDemand> selectedNetDemands;
 
   std::size_t retainedStorageBytes() const {
@@ -42,6 +44,8 @@ struct loom::pnr::detail::SpatialRouteCostSwitchRowState final {
       }
     }
     bytes += netDemandsSettled.capacity() * sizeof(std::uint8_t);
+    bytes += netTagValueOffsets.capacity() * sizeof(std::size_t);
+    bytes += netTagValues.capacity() * sizeof(std::optional<llvm::APInt>);
     bytes += selectedNetDemands.capacity() *
              sizeof(SpatialTemporalSwitchSegmentDemand);
     for (const auto &demand : selectedNetDemands) {
@@ -1038,10 +1042,20 @@ llvm::Error SpatialRouteCostState::updateSelectedLogicalNetTagUses(
     std::optional<llvm::APInt> tag;
   };
   std::vector<std::vector<CandidateDemand>> baseDemands(domains.size());
+  if (switchRows_->netTagValueOffsets.size() != logicalNetCount_ + 1 ||
+      switchRows_->netTagValueOffsets.back() !=
+          switchRows_->netTagValues.size())
+    return routeCostStateError("settled switch tag snapshot is unavailable");
   for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
     if (logicalNet == *selectedLogicalNet_)
       continue;
-    const auto values = candidate_->tagValues(logicalNet);
+    const std::size_t valueBegin = switchRows_->netTagValueOffsets[logicalNet];
+    const std::size_t valueEnd =
+        switchRows_->netTagValueOffsets[logicalNet + 1];
+    if (valueBegin > valueEnd || valueEnd > switchRows_->netTagValues.size())
+      return routeCostStateError("settled switch tag range is invalid");
+    const llvm::ArrayRef<std::optional<llvm::APInt>> values(
+        switchRows_->netTagValues.data() + valueBegin, valueEnd - valueBegin);
     for (const Demand &demand : switchRows_->netDemands[logicalNet]) {
       if (demand.domain >= domains.size() ||
           (switchRows_->netDemandsSettled[logicalNet] &&
@@ -1189,11 +1203,43 @@ llvm::Error SpatialRouteCostState::synchronizeTagProjection(
       summary.netDomainUseDomains.size() !=
           summary.netDomainMarginalResidentCounts.size() ||
       summary.netUnassignedCounts.size() != logicalNetCount_ ||
-      summary.netDomainUseOffsets.back() != summary.netDomainUseDomains.size())
+      summary.netDomainUseOffsets.back() !=
+          summary.netDomainUseDomains.size() ||
+      summary.netTagValueOffsets.size() != logicalNetCount_ + 1 ||
+      summary.netTagValueOffsets.back() != summary.netTagValues.size())
     return routeCostStateError("tag projection dimensions are inconsistent");
 
   if (llvm::Error error = synchronizeCandidateSwitchRows(changedLogicalNets))
     return error;
+  std::uint64_t unassignedCount = 0;
+  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
+    const std::size_t begin = summary.netTagValueOffsets[logicalNet];
+    const std::size_t end = summary.netTagValueOffsets[logicalNet + 1];
+    if (begin > end || end > summary.netTagValues.size())
+      return routeCostStateError("tag projection value range is invalid");
+    const std::uint64_t netUnassigned =
+        llvm::count_if(llvm::ArrayRef<std::optional<llvm::APInt>>(
+                           summary.netTagValues.data() + begin, end - begin),
+                       [](const auto &value) { return !value.has_value(); });
+    if (netUnassigned != summary.netUnassignedCounts[logicalNet])
+      return routeCostStateError(
+          "tag projection unassigned count disagrees with its values");
+    unassignedCount = saturatedAdd(unassignedCount, netUnassigned);
+    if (switchRows_ && switchRows_->enabled)
+      for (const auto &demand : switchRows_->netDemands[logicalNet])
+        if (demand.segment >= end - begin)
+          return routeCostStateError(
+              "switch row demand is outside the synchronized tag snapshot");
+  }
+  if (unassignedCount != summary.unassignedCount)
+    return routeCostStateError(
+        "tag projection total unassigned count disagrees with its values");
+  if (switchRows_ && switchRows_->enabled) {
+    switchRows_->netTagValueOffsets = summary.netTagValueOffsets;
+    switchRows_->netTagValues = summary.netTagValues;
+    std::fill(switchRows_->netDemandsSettled.begin(),
+              switchRows_->netDemandsSettled.end(), 1);
+  }
   tagDomainConflictCounts_ = summary.domainConflictCounts;
   logicalNetTagUnassignedCounts_ = summary.netUnassignedCounts;
   const auto updateLogicalNet = [&](PnrIndex logicalNet) -> llvm::Error {
@@ -1242,7 +1288,23 @@ llvm::Error SpatialRouteCostState::rebuildSwitchRowProjectionFromCandidate() {
     return llvm::Error::success();
   switchRows_->netDemands.assign(logicalNetCount_, {});
   switchRows_->netDemandsSettled.assign(logicalNetCount_, 0);
-  return synchronizeCandidateSwitchRows({});
+  switchRows_->netTagValueOffsets.clear();
+  switchRows_->netTagValues.clear();
+  if (llvm::Error error = synchronizeCandidateSwitchRows({}))
+    return error;
+  switchRows_->netTagValueOffsets.reserve(logicalNetCount_ + 1);
+  switchRows_->netTagValueOffsets.push_back(0);
+  for (PnrIndex logicalNet = 0; logicalNet < logicalNetCount_; ++logicalNet) {
+    const auto values = candidate_->tagValues(logicalNet);
+    switchRows_->netTagValues.insert(switchRows_->netTagValues.end(),
+                                     values.begin(), values.end());
+    switchRows_->netTagValueOffsets.push_back(switchRows_->netTagValues.size());
+    for (const auto &demand : switchRows_->netDemands[logicalNet])
+      if (demand.segment >= values.size())
+        return routeCostStateError(
+            "candidate switch row demand is outside its tag snapshot");
+  }
+  return llvm::Error::success();
 }
 
 llvm::Error SpatialRouteCostState::synchronizeCandidateSwitchRows(
