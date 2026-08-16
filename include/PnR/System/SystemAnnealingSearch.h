@@ -49,6 +49,7 @@ private:
 
 struct SystemAnnealingStatistics final {
   bool interrupted = false;
+  bool completionGoalReached = false;
   std::uint64_t calibrationProposalSlots = 0;
   std::uint64_t annealingBaseProposalSlots = 0;
   std::uint64_t annealingMovableProposalSlots = 0;
@@ -64,6 +65,7 @@ struct SystemAnnealingStatistics final {
   friend bool operator==(const SystemAnnealingStatistics &lhs,
                          const SystemAnnealingStatistics &rhs) {
     return lhs.interrupted == rhs.interrupted &&
+           lhs.completionGoalReached == rhs.completionGoalReached &&
            lhs.calibrationProposalSlots == rhs.calibrationProposalSlots &&
            lhs.annealingBaseProposalSlots == rhs.annealingBaseProposalSlots &&
            lhs.annealingMovableProposalSlots ==

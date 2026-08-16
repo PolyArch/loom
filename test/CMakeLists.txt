@@ -116,6 +116,7 @@ set(LOOM_TEST_DEPENDS
   loom-root-complete-spatial-pnr-generator-test
   loom-dfg-sim
   loom-dfg-run
+  loom-system-run
   loom-dse
   loom-pre-mapping
   loom-tech-map

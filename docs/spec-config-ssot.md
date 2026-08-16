@@ -95,7 +95,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 6.0`. Version 2.0 was an
+The current schema is `loom.config.resolved 7.0`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -186,6 +186,12 @@ may reject one exact TechMapping and continue the canonical domain. A 5.0
 reader has no bound for that continuation and rejects the new canonical field,
 so this is an incompatible change rather than an inferred multiple of another
 limit.
+
+Version 7.0 adds the required typed PnR search completion goal to both Spatial
+and System policy records. This is incompatible because the goal changes the
+configured candidate prefix and termination class. Earlier schemas cannot
+infer whether an invocation owned exhaustive quality exploration or requested
+the first independently verified candidate.
 
 `dse.evaluation_and_objective_catalogs` materializes exactly the owner tables
 of the [Resolved Configuration View](spec-dse-feedback.md#resolved-configuration-view):

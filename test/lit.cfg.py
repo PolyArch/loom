@@ -143,6 +143,7 @@ tools = [
     "loom-evaluation-fabric-fast-evaluation-test",
     "loom-dfg-sim",
     "loom-dfg-run",
+    "loom-system-run",
     "loom-pre-mapping",
     "loom-tech-map",
     "loom-tech-mapping-activity-definedness-test",

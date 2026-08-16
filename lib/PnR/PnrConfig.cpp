@@ -32,8 +32,8 @@ struct ResolvedPnrConfigViewAccess final {
 namespace {
 
 constexpr llvm::StringLiteral spatialDescriptor =
-    "loom.spatial_pnr.config.13.0";
-constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.5.0";
+    "loom.spatial_pnr.config.14.0";
+constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.6.0";
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -54,9 +54,10 @@ validateObjectiveArithmetic(const ResolvedObjectiveCatalogs &catalogs) {
   return llvm::Error::success();
 }
 
-llvm::Error validateDomainCapabilities(
-    PnrConfigDomain domain, const ResolvedPnrPolicyConfig &policy,
-    const ResolvedObjectiveCatalogs &catalogs) {
+llvm::Error
+validateDomainCapabilities(PnrConfigDomain domain,
+                           const ResolvedPnrPolicyConfig &policy,
+                           const ResolvedObjectiveCatalogs &catalogs) {
   for (const ResolvedObjectiveDimension &dimension : catalogs.dimensions)
     if (std::holds_alternative<ResolvedEvaluationMetricObjectiveSource>(
             dimension.source))
@@ -220,6 +221,7 @@ void encodePolicy(Encoder &encoder, const ResolvedPnrPolicyConfig &policy) {
     encoder.u64(search.exactRepair.maxRegionDecisions);
     encoder.u64(search.exactRepair.maxSolverCalls);
   }
+  encoder.u32(static_cast<std::uint32_t>(search.completionGoal));
   encoder.u64(policy.determinism.masterSeed);
   encoder.u32(static_cast<std::uint32_t>(policy.determinism.prngProtocol));
   encoder.u32(
@@ -446,6 +448,15 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
     repair.maxSolverCalls = *calls;
   }
 
+  auto completionTag = decoder.u32();
+  if (!completionTag)
+    return completionTag.takeError();
+  if (*completionTag > static_cast<std::uint32_t>(
+                           ResolvedPnrCompletionGoal::FirstVerifiedCandidate))
+    return invalid("unknown search completion goal");
+  const auto completionGoal =
+      static_cast<ResolvedPnrCompletionGoal>(*completionTag);
+
   auto masterSeed = decoder.u64();
   auto prng = decoder.u32();
   auto acceptanceProtocol = decoder.u32();
@@ -486,7 +497,7 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
        ResolvedPnrAnnealingPolicy{*calibration, *quantile, *acceptance,
                                   *fallback, *minimum, *cooling, *levelBase,
                                   *perMovable},
-       repair},
+       repair, completionGoal},
       ResolvedPnrDeterminismPolicy{
           *masterSeed,
           ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
@@ -715,8 +726,8 @@ makeProjectedView(PnrConfigDomain domain, const ResolvedPnrPolicyConfig &policy,
   auto selected = projectSelectedClosure(policy, catalogs);
   if (!selected)
     return selected.takeError();
-  if (llvm::Error error = validateDomainCapabilities(
-          domain, selected->first, selected->second))
+  if (llvm::Error error =
+          validateDomainCapabilities(domain, selected->first, selected->second))
     return std::move(error);
   std::vector<std::uint8_t> bytes =
       encodeView(selected->first, selected->second);

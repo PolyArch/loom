@@ -58,12 +58,12 @@ void projectionAndAdoptionAreDomainTyped() {
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               spatial.schemaDescriptorBytes().data()),
                           spatial.schemaDescriptorBytes().size()) ==
-              "loom.spatial_pnr.config.13.0",
+              "loom.spatial_pnr.config.14.0",
           "Spatial PnR view has the wrong schema descriptor");
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               system.schemaDescriptorBytes().data()),
                           system.schemaDescriptorBytes().size()) ==
-              "loom.system_pnr.config.5.0",
+              "loom.system_pnr.config.6.0",
           "System PnR view has the wrong schema descriptor");
   require(spatial.digest() != system.digest(),
           "domain-distinct views have the same digest");
@@ -94,6 +94,16 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
       take(loom::pnr::projectResolvedSpatialPnrConfigView(selectedChange));
   require(selectedView.digest() != baseView.digest(),
           "selected policy change did not affect the view digest");
+
+  loom::ResolvedConfig completionChange = base;
+  completionChange.dse.spatialPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  const loom::pnr::ResolvedPnrConfigView completionView =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(completionChange));
+  require(completionView.digest() != baseView.digest() &&
+              completionView.policy().search.completionGoal ==
+                  loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate,
+          "search completion goal did not enter the projected policy");
 
   loom::ResolvedConfig unselectedChange = base;
   auto &catalogs = unselectedChange.dse.objectiveCatalogs;
@@ -199,7 +209,7 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
 }
 
 void resolvedConfigUsesTheIndependentViolationCatalog() {
-  require(loom::ResolvedConfig::artifactSchema.version.major == 6 &&
+  require(loom::ResolvedConfig::artifactSchema.version.major == 7 &&
               loom::ResolvedConfig::artifactSchema.version.minor == 0,
           "ResolvedConfig has the wrong schema version");
   const std::string canonical =

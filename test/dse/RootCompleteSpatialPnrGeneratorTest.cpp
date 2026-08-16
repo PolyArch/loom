@@ -81,9 +81,9 @@ void requireSuccess(llvm::Error error) {
     fail(llvm::toString(std::move(error)));
 }
 
-const loom::dse::CompletedDsePlanExecution &requireClosedPlan(
-    const loom::dse::DsePlanExecutionOutcome &outcome,
-    std::uint64_t nodeOrdinal) {
+const loom::dse::CompletedDsePlanExecution &
+requireClosedPlan(const loom::dse::DsePlanExecutionOutcome &outcome,
+                  std::uint64_t nodeOrdinal) {
   if (const auto *completed =
           std::get_if<loom::dse::CompletedDsePlanExecution>(&outcome))
     return *completed;
@@ -94,8 +94,8 @@ const loom::dse::CompletedDsePlanExecution &requireClosedPlan(
                        &incomplete->reason())
                  : nullptr;
   if (!incomplete || incomplete->nodeOrdinal() != nodeOrdinal || !reason ||
-      *reason != loom::dse::CandidateGeneratorIncompleteReason::
-                     SemanticLimitReached ||
+      *reason !=
+          loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
       incomplete->executionStopped())
     fail("DSE plan did not close or retain its semantic-limit prefix");
   return incomplete->availableExecution();
@@ -766,8 +766,7 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       store));
   auto manifest = take(loom::dse::InvocationManifest::get(
       std::move(closure), 0, std::nullopt, resolved, manifestRecords,
-      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}},
-      store));
+      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store));
   auto reorderedClosure = take(loom::dse::DseRunClosure::get(
       take(loom::dse::DseProducerSemanticBuildIdentity::get(
           "loom.test.root_complete_spatial_pnr.v1")),
@@ -775,8 +774,7 @@ void rootCompleteAdapterPublishesPhysicalMapping() {
       store));
   auto reorderedManifest = take(loom::dse::InvocationManifest::get(
       std::move(reorderedClosure), 0, std::nullopt, resolved, manifestRecords,
-      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}},
-      store));
+      loom::dse::InvocationCompletedSelection{{selectedMapping}, {}}, store));
   if (reorderedManifest.canonicalBytes() != manifest.canonicalBytes())
     fail("semantic-input authoring order changed production Manifest bytes");
   auto adopted = take(loom::dse::adoptInvocationManifest(
@@ -978,6 +976,61 @@ void candidateWorkerCountPreservesFormalResult() {
         parallelMapping.canonicalBytes().bytes())
       fail("candidate worker count changed canonical Spatial Mapping bytes");
   }
+}
+
+void firstVerifiedCandidateRetainsTypedPrefix() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
+  mlir::MLIRContext context = makeContext();
+  Fixture fixture = buildFixture(context, store, blobs);
+  auto dataflow = take(fixture.dataflow.view());
+  auto tech = take(
+      loom::mapping::importTechMapping(fixture.techMappingReference, store));
+  auto constraints =
+      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
+          dataflow, tech.view(), fixture.fabric.view(), store));
+  auto physicalTiming =
+      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
+          fixture.fabric.view()));
+
+  const auto exhaustive = loom::pnr::generateSpatialMappings(
+      {dataflow, tech.view(), fixture.fabric.view(), physicalTiming,
+       buildSpatialConfig(), constraints.view(), store, 1});
+  loom::ResolvedConfig boundedResolved = buildSpatialResolvedConfig();
+  boundedResolved.dse.spatialPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  const auto boundedConfig =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(boundedResolved));
+  const auto bounded = loom::pnr::generateSpatialMappings(
+      {dataflow, tech.view(), fixture.fabric.view(), physicalTiming,
+       boundedConfig, constraints.view(), store, 2});
+
+  const auto *exhaustiveGenerated =
+      std::get_if<loom::pnr::GeneratedSpatialMappings>(&exhaustive);
+  const auto *boundedGenerated =
+      std::get_if<loom::pnr::GeneratedSpatialMappings>(&bounded);
+  if (!exhaustiveGenerated || !boundedGenerated ||
+      exhaustiveGenerated->termination !=
+          loom::pnr::PnrGenerationTermination::FixedAttemptsCompleted ||
+      boundedGenerated->termination !=
+          loom::pnr::PnrGenerationTermination::SemanticLimitReached ||
+      boundedGenerated->candidates.size() != 1 ||
+      boundedGenerated->accounting.seedAttemptSlots != 1 ||
+      boundedGenerated->accounting.calibrationProposalSlots != 0 ||
+      boundedGenerated->accounting.annealingBaseProposalSlots != 0 ||
+      boundedGenerated->accounting.annealingMovableProposalSlots != 0 ||
+      boundedGenerated->accounting.finalClosureAttempts == 0 ||
+      boundedGenerated->accounting.finalizedRestarts != 1 ||
+      boundedGenerated->accounting.publicationSlots != 1 ||
+      exhaustiveGenerated->accounting.calibrationProposalSlots == 0)
+    fail("first-verified Spatial search lost its verified bounded prefix");
+  (void)take(loom::mapping::importSpatialMapping(
+      boundedGenerated->candidates.front(), store));
 }
 
 void interruptionReturnsTypedSpatialSnapshot() {
@@ -1852,6 +1905,8 @@ int main(int argc, char **argv) {
           .Case("finite-set-traversal",
                 finiteSetTraversesEveryCanonicalTechMapping)
           .Case("worker-invariance", candidateWorkerCountPreservesFormalResult)
+          .Case("first-verified-prefix",
+                firstVerifiedCandidateRetainsTypedPrefix)
           .Case("typed-interruption", interruptionReturnsTypedSpatialSnapshot)
           .Case("unavailable-negotiation",
                 unavailableNegotiationFailsClosedAtConfigProjection)

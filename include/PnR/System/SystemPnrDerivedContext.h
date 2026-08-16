@@ -82,6 +82,16 @@ void emitSystemStaticContextStatistics(const SystemStaticContext &context,
                                        std::uint64_t hits,
                                        std::uint64_t misses);
 
+/// Rebuilds and verifies the candidate-invariant SpatialMapping catalog for an
+/// exact Dataflow/System pair. This is the input-admission boundary used when
+/// no active System demand exists and therefore no SystemActiveContext is
+/// constructed.
+llvm::Error validateSystemSpatialMappingSet(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &system,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+    const ArtifactStore &store);
+
 struct SystemActiveContextStatistics final {
   DerivedContextConstructionStatistics context;
   std::uint64_t spatialMappingCount = 0;

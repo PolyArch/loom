@@ -109,6 +109,8 @@ llvm::json::Object pnrPolicyJson(const loom::ResolvedPnrPolicyConfig &policy) {
   return llvm::json::Object{
       {"search_policy",
        llvm::json::Object{
+           {"completion_goal",
+            loom::resolvedPnrCompletionGoalSpelling(search.completionGoal)},
            {"initializer",
             llvm::json::Object{
                 {"seed_attempt_count", search.initializer.seedAttemptCount},

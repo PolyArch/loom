@@ -214,6 +214,44 @@ std::uint64_t retainedSpatialCatalogBytes(
   return bytes;
 }
 
+struct ValidatedSpatialCatalog final {
+  std::vector<ArtifactRootReference> canonicalMappings;
+  ::loom::mapping::SpatialMappingImportContext imports;
+  std::vector<loom::pnr::detail::SpatialCatalogEntry> catalog;
+  loom::pnr::detail::SpatialCatalogImportStatistics statistics;
+};
+
+llvm::Expected<ValidatedSpatialCatalog> buildValidatedSpatialCatalog(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const FabricSystemRootView &system,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+    const ArtifactStore &store) {
+  std::vector<ArtifactRootReference> canonicalMappings(spatialMappings.begin(),
+                                                       spatialMappings.end());
+  llvm::sort(canonicalMappings, artifactRootReferenceLess);
+  if (std::adjacent_find(canonicalMappings.begin(), canonicalMappings.end()) !=
+      canonicalMappings.end())
+    return invalid("System SpatialMapping set has a duplicate");
+
+  auto imports = ::loom::mapping::buildSpatialMappingImportContext(
+      canonicalMappings, store);
+  if (!imports)
+    return imports.takeError();
+  loom::pnr::detail::SpatialCatalogImportStatistics statistics;
+  auto catalog = loom::pnr::detail::importSpatialCatalog(
+      canonicalMappings, dataflow, system, store, &*imports, &statistics);
+  if (!catalog)
+    return catalog.takeError();
+  if (statistics.techMappingImportRequests != canonicalMappings.size() ||
+      statistics.techMappingImportHits + statistics.techMappingImportMisses !=
+          statistics.techMappingImportRequests)
+    return invalid("System SpatialMapping TechMapping import accounting is "
+                   "inconsistent");
+  return ValidatedSpatialCatalog{std::move(canonicalMappings),
+                                 std::move(*imports), std::move(*catalog),
+                                 statistics};
+}
+
 llvm::Error addWork(std::uint64_t &work, std::uint64_t amount) {
   if (amount > std::numeric_limits<std::uint64_t>::max() - work)
     return invalid("SystemStaticContext deterministic work overflows u64");
@@ -461,6 +499,18 @@ void loom::pnr::emitSystemStaticContextStatistics(
       });
 }
 
+llvm::Error loom::pnr::validateSystemSpatialMappingSet(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const FabricSystemRootView &system,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+    const ArtifactStore &store) {
+  auto catalog =
+      buildValidatedSpatialCatalog(dataflow, system, spatialMappings, store);
+  if (!catalog)
+    return catalog.takeError();
+  return llvm::Error::success();
+}
+
 llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
     const SystemStaticContext &staticContext,
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -475,36 +525,19 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
       constraints.view().fabricIdentity() != system.artifact().identity())
     return invalid("SystemActiveContext constraint owners do not match D/F");
 
-  std::vector<ArtifactRootReference> canonicalMappings(spatialMappings.begin(),
-                                                       spatialMappings.end());
-  llvm::sort(canonicalMappings, artifactRootReferenceLess);
-  if (std::adjacent_find(canonicalMappings.begin(), canonicalMappings.end()) !=
-      canonicalMappings.end())
-    return invalid("SystemActiveContext SpatialMapping set has a duplicate");
   for (const ArtifactRootReference &required :
        constraints.view().spatialMappingReferences())
-    if (!llvm::is_contained(canonicalMappings, required))
+    if (!llvm::is_contained(spatialMappings, required))
       return invalid(
           "SystemActiveContext omits a constraint-owned SpatialMapping");
 
   const auto begin = std::chrono::steady_clock::now();
-  auto imports = ::loom::mapping::buildSpatialMappingImportContext(
-      canonicalMappings, store);
-  if (!imports)
-    return imports.takeError();
-  loom::pnr::detail::SpatialCatalogImportStatistics catalogImportStatistics;
-  auto catalog = loom::pnr::detail::importSpatialCatalog(
-      canonicalMappings, dataflow, system, store, &*imports,
-      &catalogImportStatistics);
-  if (!catalog)
-    return catalog.takeError();
-  if (catalogImportStatistics.techMappingImportRequests !=
-          canonicalMappings.size() ||
-      catalogImportStatistics.techMappingImportHits +
-              catalogImportStatistics.techMappingImportMisses !=
-          catalogImportStatistics.techMappingImportRequests)
-    return invalid("SystemActiveContext TechMapping import accounting is "
-                   "inconsistent");
+  auto validated =
+      buildValidatedSpatialCatalog(dataflow, system, spatialMappings, store);
+  if (!validated)
+    return validated.takeError();
+  auto &canonicalMappings = validated->canonicalMappings;
+  auto &catalog = validated->catalog;
 
   std::map<ArtifactIdentity::Storage, const FabricPhysicalTimingProfileView *>
       timingByModule;
@@ -551,8 +584,8 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
         static_cast<PnrIndex>(ordinal));
   }
   std::vector<PnrIndex> mappingTargetClasses;
-  mappingTargetClasses.reserve(catalog->size());
-  for (loom::pnr::detail::SpatialCatalogEntry &entry : *catalog) {
+  mappingTargetClasses.reserve(catalog.size());
+  for (loom::pnr::detail::SpatialCatalogEntry &entry : catalog) {
     const auto timing =
         timingByModule.find(entry.mapping->view().fabricIdentity().bytes());
     if (timing == timingByModule.end())
@@ -591,10 +624,10 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
 
   auto importOwner =
       std::make_shared<const ::loom::mapping::SpatialMappingImportContext>(
-          std::move(*imports));
+          std::move(validated->imports));
   auto catalogOwner = std::make_shared<
       const std::vector<loom::pnr::detail::SpatialCatalogEntry>>(
-      std::move(*catalog));
+      std::move(catalog));
   auto classOwner = std::make_shared<const std::vector<PnrIndex>>(
       std::move(mappingTargetClasses));
 
@@ -607,11 +640,11 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
   statistics.spatialMappingCount = catalogOwner->size();
   statistics.timingProfileCount = physicalTimingProfiles.size();
   statistics.techMappingImportRequests =
-      catalogImportStatistics.techMappingImportRequests;
+      validated->statistics.techMappingImportRequests;
   statistics.techMappingImportHits =
-      catalogImportStatistics.techMappingImportHits;
+      validated->statistics.techMappingImportHits;
   statistics.techMappingImportMisses =
-      catalogImportStatistics.techMappingImportMisses;
+      validated->statistics.techMappingImportMisses;
   for (const auto &entry : *catalogOwner) {
     statistics.coveredGraphCount += entry.covers.size();
     statistics.schedulePressureCount +=

@@ -32,32 +32,26 @@ struct BuiltinLimits final {
 constexpr BuiltinLimits limitsFor(ResolvedProfilePreset preset) {
   switch (preset) {
   case ResolvedProfilePreset::ReportOnly:
-    return {
-        1, 4096, 16384, 8, 16, 16, 1, ResolvedPnrExactRepairKind::Disabled,
-        0, 0};
+    return {1, 4096, 16384, 8, 16, 16, 1, ResolvedPnrExactRepairKind::Disabled,
+            0, 0};
   case ResolvedProfilePreset::QuickExplore:
-    return {
-        2,  16384, 65536, 16, 64, 64, 2, ResolvedPnrExactRepairKind::CpSat,
-        64, 128};
+    return {2,  16384, 65536, 16, 64, 64, 2, ResolvedPnrExactRepairKind::CpSat,
+            64, 128};
   case ResolvedProfilePreset::BalancedExplore:
-    return {4,   65536, 262144,
-            64,  256,   128,
-            8,   ResolvedPnrExactRepairKind::CpSat,
+    return {4,   65536, 262144, 64,
+            256, 128,   8,      ResolvedPnrExactRepairKind::CpSat,
             256, 1024};
   case ResolvedProfilePreset::PerformanceExplore:
-    return {8,   262144, 1048576,
-            128, 512,    256,
-            16,  ResolvedPnrExactRepairKind::CpSat,
+    return {8,   262144, 1048576, 128,
+            512, 256,    16,      ResolvedPnrExactRepairKind::CpSat,
             512, 4096};
   case ResolvedProfilePreset::Implementation:
-    return {16,   524288, 2097152,
-            256,  1024,   512,
-            24,   ResolvedPnrExactRepairKind::CpSat,
+    return {16,   524288, 2097152, 256,
+            1024, 512,    24,      ResolvedPnrExactRepairKind::CpSat,
             1024, 8192};
   case ResolvedProfilePreset::StrictImplementation:
-    return {32,   1048576, 4194304,
-            512,  2048,    1024,
-            32,   ResolvedPnrExactRepairKind::CpSat,
+    return {32,   1048576, 4194304, 512,
+            2048, 1024,    32,      ResolvedPnrExactRepairKind::CpSat,
             2048, 16384};
   }
   llvm_unreachable("all resolved profile presets are handled");
@@ -174,6 +168,26 @@ bool totalOrderingLess(const ResolvedTotalOrdering &left,
 
 } // namespace
 
+llvm::StringRef
+resolvedPnrCompletionGoalSpelling(ResolvedPnrCompletionGoal goal) {
+  switch (goal) {
+  case ResolvedPnrCompletionGoal::ExhaustConfiguredWork:
+    return "exhaust_configured_work";
+  case ResolvedPnrCompletionGoal::FirstVerifiedCandidate:
+    return "first_verified_candidate";
+  }
+  llvm_unreachable("unknown PnR completion goal");
+}
+
+std::optional<ResolvedPnrCompletionGoal>
+parseResolvedPnrCompletionGoal(llvm::StringRef spelling) {
+  if (spelling == "exhaust_configured_work")
+    return ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
+  if (spelling == "first_verified_candidate")
+    return ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  return std::nullopt;
+}
+
 ResolvedPnrPolicyConfig
 resolvedBuiltinSpatialPnrPolicy(ResolvedProfilePreset preset) {
   const BuiltinLimits limits = limitsFor(preset);
@@ -190,7 +204,8 @@ resolvedBuiltinSpatialPnrPolicy(ResolvedProfilePreset preset) {
                ResolvedExactRatio{4, 5}, 1024, 1, ResolvedExactRatio{19, 20},
                limits.levelBase, limits.perMovable},
            ResolvedPnrExactRepairPolicy{
-               limits.repairKind, limits.repairDecisions, limits.solverCalls}},
+               limits.repairKind, limits.repairDecisions, limits.solverCalls},
+           ResolvedPnrCompletionGoal::ExhaustConfiguredWork},
           ResolvedPnrDeterminismPolicy{
               0, ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,
               ResolvedPnrAcceptanceProtocol::ExpNegativeQ64Table_1_0},
@@ -246,10 +261,10 @@ ResolvedObjectiveCatalogs resolvedBuiltinObjectiveCatalogs() {
        ++dimension) {
     timing.terms.push_back({dimension, 1});
     const bool transport =
-        dimension == resolvedPnrViolationKindCount +
-                         static_cast<std::uint32_t>(
-                             BuiltinMappingMeasureKind::
-                                 TransportBitCycleDemand);
+        dimension ==
+        resolvedPnrViolationKindCount +
+            static_cast<std::uint32_t>(
+                BuiltinMappingMeasureKind::TransportBitCycleDemand);
     energy.terms.push_back(
         {dimension, transport ? UINT64_C(1) : UINT64_C(4294967296)});
   }
@@ -487,6 +502,10 @@ validateResolvedPnrPolicyConfig(const ResolvedPnrPolicyConfig &policy,
   } else if (repair.maxRegionDecisions == 0 || repair.maxSolverCalls == 0) {
     return invalid("CP-SAT exact repair limits must be positive");
   }
+  if (static_cast<std::uint32_t>(policy.search.completionGoal) >
+      static_cast<std::uint32_t>(
+          ResolvedPnrCompletionGoal::FirstVerifiedCandidate))
+    return invalid("search completion goal is unknown");
 
   std::uint32_t previousViolation = 0;
   bool firstViolation = true;

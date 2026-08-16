@@ -263,9 +263,14 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   roots.reserve(dataflow->rootThreadLaunches().size());
   for (const auto &root : dataflow->rootThreadLaunches())
     roots.push_back(root.ref);
-  if (roots.empty())
+  if (roots.empty()) {
+    if (llvm::Error error = ::loom::pnr::validateSystemSpatialMappingSet(
+            *dataflow, *system,
+            inputBindings[SpatialMappingCandidatesInput].artifacts, store))
+      return std::move(error);
     return CandidateGeneratorProviderResult{
         completed({}), rootCompleteSystemPnrCandidateGeneratorWorkSummary({})};
+  }
 
   auto constraints = ::loom::mapping::finalizeEmptySystemMappingConstraintSet(
       *dataflow, *system, roots, store);

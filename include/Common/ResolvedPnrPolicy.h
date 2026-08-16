@@ -1,6 +1,7 @@
 #ifndef LOOM_COMMON_RESOLVEDPNRPOLICY_H
 #define LOOM_COMMON_RESOLVEDPNRPOLICY_H
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
 #include <cstdint>
@@ -97,12 +98,24 @@ struct ResolvedPnrExactRepairPolicy final {
   std::uint64_t maxSolverCalls;
 };
 
+enum class ResolvedPnrCompletionGoal : std::uint32_t {
+  ExhaustConfiguredWork,
+  FirstVerifiedCandidate,
+};
+
+llvm::StringRef
+resolvedPnrCompletionGoalSpelling(ResolvedPnrCompletionGoal goal);
+std::optional<ResolvedPnrCompletionGoal>
+parseResolvedPnrCompletionGoal(llvm::StringRef spelling);
+
 struct ResolvedPnrSearchPolicy final {
   ResolvedPnrInitializerPolicy initializer;
   ResolvedPnrActionProposalPolicy actionProposal;
   ResolvedPnrRoutingPolicy routing;
   ResolvedPnrAnnealingPolicy annealing;
   ResolvedPnrExactRepairPolicy exactRepair;
+  ResolvedPnrCompletionGoal completionGoal =
+      ResolvedPnrCompletionGoal::ExhaustConfiguredWork;
 };
 
 enum class ResolvedPnrPrngProtocol : std::uint32_t {

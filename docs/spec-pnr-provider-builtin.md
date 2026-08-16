@@ -11,13 +11,13 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.13.0
+  loom.spatial_pnr.config.14.0
   loom.spatial_pnr.freeze.2.19
   loom.mapping.pnr.objective 3.0
   selected FabricPhysicalTimingProfile descriptor and digest
 
 System:
-  loom.system_pnr.config.5.0
+  loom.system_pnr.config.6.0
   loom.system_pnr_search_domain.4.0
   loom.mapping.pnr.objective 3.0
   exact selected SpatialMapping references
@@ -40,6 +40,15 @@ requires changing the descriptor that owns that behavior.
 | Focused Evaluation closure | Absent | Absent |
 | Online Evaluation objective | Absent | Absent |
 | Flat Spatial reopening | Absent | Absent |
+
+Both providers consume the config-owned `completion_goal`. The
+`exhaust_configured_work` goal executes every configured restart and annealing
+slot. The `first_verified_candidate` goal follows the same canonical work
+order, may stop annealing when a feasible incumbent is available, and stops
+later restarts only after final closure, independent verification,
+finalization, and publication. The latter returns retained candidates with
+`SemanticLimitReached`; it is a bounded usable prefix, not an exhaustive
+search claim.
 
 Config projection and adoption fail closed for every unsupported combination.
 There is no compatibility fallback, ignored field, focused-closure field,

@@ -259,8 +259,7 @@ llvm::Error accumulateAnnealing(const SpatialAnnealingStatistics &source,
                                      target.negotiationIterationSlots,
                                      "annealing negotiation iterations"))
     return error;
-  return checkedAdd(source.acceptedActionCount,
-                    target.annealingAcceptedActions,
+  return checkedAdd(source.acceptedActionCount, target.annealingAcceptedActions,
                     "annealing accepted Actions");
 }
 
@@ -685,7 +684,7 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
   return {SpatialRestartDisposition::Candidate,
           std::move(accounting),
           std::move(seed->candidate),
-          false,
+          annealed->completionGoalReached,
           InternalSpatialPnrGenerationReason::CandidateVerification,
           {}};
 }
@@ -1023,15 +1022,29 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
         InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
         "candidate worker count must be positive"};
 
-  std::vector<SpatialRestartResult> restartResults(restartCount);
+  std::vector<SpatialRestartResult> restartResults;
   const auto runRestart = [&](std::uint32_t attempt) {
-    restartResults[attempt] =
-        runSpatialRestart(*problem, attempt, inputs.executionControl);
+    return runSpatialRestart(*problem, attempt, inputs.executionControl);
   };
-  if (workerCount == 1) {
+  const bool firstVerifiedCandidate =
+      inputs.config.policy().search.completionGoal ==
+      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  if (firstVerifiedCandidate) {
+    restartResults.reserve(restartCount);
+    for (std::uint32_t attempt = 0; attempt != restartCount; ++attempt) {
+      restartResults.push_back(runRestart(attempt));
+      if (restartResults.back().disposition ==
+              SpatialRestartDisposition::Candidate ||
+          restartResults.back().disposition ==
+              SpatialRestartDisposition::ProvenInfeasible)
+        break;
+    }
+  } else if (workerCount == 1) {
+    restartResults.reserve(restartCount);
     for (std::uint32_t attempt = 0; attempt != restartCount; ++attempt)
-      runRestart(attempt);
+      restartResults.push_back(runRestart(attempt));
   } else {
+    restartResults.resize(restartCount);
     llvm::DefaultThreadPool pool(llvm::heavyweight_hardware_concurrency(
         static_cast<unsigned>(workerCount)));
     std::atomic_uint32_t nextRestart{0};
@@ -1042,14 +1055,14 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
               nextRestart.fetch_add(1, std::memory_order_relaxed);
           if (attempt >= restartCount)
             break;
-          runRestart(attempt);
+          restartResults[attempt] = runRestart(attempt);
         }
       });
     pool.wait();
   }
 
   std::vector<ArtifactRootReference> candidates;
-  bool semanticLimitReached = false;
+  bool semanticLimitReached = restartResults.size() != restartCount;
   bool proofNotEstablished = false;
   const SpatialRestartResult *incompleteRepresentative = nullptr;
   const SpatialRestartResult *semanticLimitRepresentative = nullptr;
@@ -1079,6 +1092,7 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   for (SpatialRestartResult &restart : restartResults) {
     switch (restart.disposition) {
     case SpatialRestartDisposition::Candidate:
+      semanticLimitReached |= restart.semanticLimitReached;
       break;
     case SpatialRestartDisposition::ProvenInfeasible:
       if (hasCandidateRestart)

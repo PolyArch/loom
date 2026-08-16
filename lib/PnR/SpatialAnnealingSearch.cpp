@@ -313,9 +313,10 @@ SpatialAnnealingSearchScratch::run(SpatialPathFinderSeed &seed,
   return run(seed.candidate, seed.attemptOrdinal, executionControl);
 }
 
-llvm::Expected<SpatialAnnealingStatistics> SpatialAnnealingSearchScratch::run(
-    SpatialCandidateStateHandle &candidateHandle,
-    std::uint64_t seedAttemptOrdinal, ExecutionControlView executionControl) {
+llvm::Expected<SpatialAnnealingStatistics>
+SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
+                                   std::uint64_t seedAttemptOrdinal,
+                                   ExecutionControlView executionControl) {
   if (!candidateHandle)
     return searchError("candidate owner is null");
   SpatialCandidateState &candidate = *candidateHandle;
@@ -323,6 +324,27 @@ llvm::Expected<SpatialAnnealingStatistics> SpatialAnnealingSearchScratch::run(
   const ResolvedPnrPolicyConfig &policy = problem.config().policy();
   if (seedAttemptOrdinal >= policy.search.initializer.seedAttemptCount)
     return searchError("seed attempt ordinal is outside the fixed slot set");
+
+  SpatialAnnealingStatistics statistics;
+  auto exactClosure = spatialMappingViolationsAreZero(candidate);
+  if (!exactClosure)
+    return exactClosure.takeError();
+  if (*exactClosure && policy.search.completionGoal ==
+                           ResolvedPnrCompletionGoal::FirstVerifiedCandidate) {
+    statistics.exactClosureReached = true;
+    statistics.completionGoalReached = true;
+    loom::mapping_debug::emit(loom::mapping_debug::Level::Summary,
+                              loom::mapping_debug::Stage::SpatialPnr,
+                              loom::mapping_debug::Event::Statistics,
+                              [&](llvm::json::Object &fields) {
+                                fields["operation"] = "annealing_incumbent";
+                                fields["seed_attempt"] = seedAttemptOrdinal;
+                                fields["reason"] = "completion_goal_on_entry";
+                              });
+    if (llvm::Error error = candidate.verify())
+      return std::move(error);
+    return statistics;
+  }
   if (llvm::Error error = actionDomain_.prepare(problem))
     return std::move(error);
   if (llvm::Error error = actionExecutor_.prepare(candidate))
@@ -359,10 +381,6 @@ llvm::Expected<SpatialAnnealingStatistics> SpatialAnnealingSearchScratch::run(
     return llvm::Error::success();
   };
 
-  SpatialAnnealingStatistics statistics;
-  auto exactClosure = spatialMappingViolationsAreZero(candidate);
-  if (!exactClosure)
-    return exactClosure.takeError();
   SpatialCandidateStateHandle bestFeasibleIncumbent;
   std::optional<dse::ObjectiveVector> bestFeasibleObjective;
   if (*exactClosure) {
@@ -395,6 +413,28 @@ llvm::Expected<SpatialAnnealingStatistics> SpatialAnnealingSearchScratch::run(
     }
     if (llvm::Error error = candidateHandle->verify())
       return std::move(error);
+    return statistics;
+  };
+  const auto finishAtCompletionGoal =
+      [&]() -> llvm::Expected<SpatialAnnealingStatistics> {
+    if (!bestFeasibleIncumbent)
+      return searchError("completion goal has no feasible incumbent");
+    statistics.completionGoalReached = true;
+    statistics.endpointExpansions = actionExecutor_.endpointExpansionCount();
+    statistics.negotiationIterations =
+        actionExecutor_.negotiationIterationCount();
+    if (llvm::Error error = bestFeasibleIncumbent->verify())
+      return std::move(error);
+    candidateHandle = std::move(bestFeasibleIncumbent);
+    statistics.bestFeasibleIncumbentRestored = true;
+    loom::mapping_debug::emit(loom::mapping_debug::Level::Summary,
+                              loom::mapping_debug::Stage::SpatialPnr,
+                              loom::mapping_debug::Event::Statistics,
+                              [&](llvm::json::Object &fields) {
+                                fields["operation"] = "annealing_incumbent";
+                                fields["seed_attempt"] = seedAttemptOrdinal;
+                                fields["reason"] = "completion_goal_reached";
+                              });
     return statistics;
   };
   DeterministicPnrRandomStream calibrationStream =
@@ -693,6 +733,10 @@ llvm::Expected<SpatialAnnealingStatistics> SpatialAnnealingSearchScratch::run(
                                       : SpatialActionOutcome::Rejected,
                              difference);
       statistics.exactClosureReached = static_cast<bool>(bestFeasibleIncumbent);
+      if (accepted && *proposedClosure &&
+          policy.search.completionGoal ==
+              ResolvedPnrCompletionGoal::FirstVerifiedCandidate)
+        return finishAtCompletionGoal();
     }
     loom::mapping_debug::emit(
         loom::mapping_debug::Level::Summary,

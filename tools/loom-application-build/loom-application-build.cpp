@@ -244,6 +244,10 @@ llvm::Expected<PreparedProductTarget> prepareProductTarget() {
   auto config = loom::resolveConfigProfile(accelerationProfile);
   if (!config)
     return config.takeError();
+  config->dse.spatialPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  config->dse.systemPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
   auto design = loom::adg::buildBuiltinTarget(
       (*workspace)->artifacts(), config->hardwareTarget.templateIdentity,
       config->hardwareTarget.schemaVersion.major,
@@ -464,17 +468,27 @@ llvm::Expected<loom::dse::JointDesignExecution> executeProductMapping(
       target.workspace->artifacts(), target.workspace->blobs());
   if (!execution)
     return execution.takeError();
-  if (const auto *incomplete =
-          std::get_if<loom::dse::IncompleteDsePlanExecution>(
-              &execution->planExecution))
-    return productError("loom_mapping_incomplete",
-                        "joint Mapping ended at node " +
-                            llvm::Twine(incomplete->nodeOrdinal()) +
-                            " with reason " +
-                            loom::dse::toString(incomplete->reason()));
   std::size_t mappingCount = 0;
   for (const loom::dse::JointMappedPair &pair : execution->mappedPairs)
     mappingCount += pair.systemMappings.size();
+  if (const auto *incomplete =
+          std::get_if<loom::dse::IncompleteDsePlanExecution>(
+              &execution->planExecution)) {
+    const auto *generationReason =
+        std::get_if<loom::dse::CandidateGeneratorIncompleteReason>(
+            &incomplete->reason());
+    const bool hasUsableBoundedResult =
+        mappingCount != 0 && !incomplete->executionStopped() &&
+        generationReason &&
+        *generationReason ==
+            loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached;
+    if (!hasUsableBoundedResult)
+      return productError("loom_mapping_incomplete",
+                          "joint Mapping ended at node " +
+                              llvm::Twine(incomplete->nodeOrdinal()) +
+                              " with reason " +
+                              loom::dse::toString(incomplete->reason()));
+  }
   if (mappingCount == 0)
     return productError("loom_mapping_no_feasible_candidate",
                         "joint Mapping selected no SystemMapping");

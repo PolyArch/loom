@@ -957,10 +957,21 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
     return fieldsOrErr.takeError();
   auto searchOrErr = ClosedMapping::parse(
       fieldsOrErr->at("search_policy"), key + ".search_policy",
-      {"initializer", "action_proposal", "routing", "annealing",
-       "exact_repair"});
+      {"completion_goal", "initializer", "action_proposal", "routing",
+       "annealing", "exact_repair"});
   if (!searchOrErr)
     return searchOrErr.takeError();
+
+  auto completionName =
+      requireScalarString(searchOrErr->at("completion_goal"),
+                          key + ".search_policy.completion_goal");
+  if (!completionName)
+    return completionName.takeError();
+  const auto completionGoal =
+      loom::parseResolvedPnrCompletionGoal(*completionName);
+  if (!completionGoal)
+    return diagnostic("config_unknown_enum",
+                      key + ".search_policy.completion_goal", *completionName);
 
   auto initializerOrErr = ClosedMapping::parse(
       searchOrErr->at("initializer"), key + ".search_policy.initializer",
@@ -1179,7 +1190,7 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
        loom::ResolvedPnrAnnealingPolicy{*calibration, *quantile, *acceptance,
                                         *fallback, *minimum, *cooling,
                                         *levelBase, *perMovable},
-       repair},
+       repair, *completionGoal},
       loom::ResolvedPnrDeterminismPolicy{
           *masterSeed,
           loom::ResolvedPnrPrngProtocol::Sha256SeededXoshiro256StarStar_1_0,

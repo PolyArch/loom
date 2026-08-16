@@ -323,6 +323,14 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
     return std::move(error);
 
   SystemAnnealingStatistics statistics;
+  if (candidate->capacityOveruse() == 0 &&
+      policy.search.completionGoal ==
+          ResolvedPnrCompletionGoal::FirstVerifiedCandidate) {
+    statistics.completionGoalReached = true;
+    if (llvm::Error error = candidate->verify())
+      return std::move(error);
+    return statistics;
+  }
   const auto finishInterrupted =
       [&]() -> llvm::Expected<SystemAnnealingStatistics> {
     statistics.interrupted = true;
@@ -530,6 +538,12 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
                             schedule->temperature(),
                             *accepted ? "accepted" : "rejected",
                             probe->energyDifference, &probe->mutation);
+      if (*accepted && candidate->capacityOveruse() == 0 &&
+          policy.search.completionGoal ==
+              ResolvedPnrCompletionGoal::FirstVerifiedCandidate) {
+        statistics.completionGoalReached = true;
+        return statistics;
+      }
     }
     ++temperatureLevel;
   } while (schedule->advanceAfterCompletedLevel());

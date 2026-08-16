@@ -218,7 +218,7 @@ MappingConstraintSet over the exact `D/T/F` tuple. All upstream identities must
 match exactly. The empty constraint set is a real Artifact; absence is invalid.
 
 The current in-tree Spatial config descriptor is
-`loom.spatial_pnr.config.13.0`. A config digest from another domain or version
+`loom.spatial_pnr.config.14.0`. A config digest from another domain or version
 cannot be adopted. The config is invocation input and does not enter the
 semantic identity of a published SpatialMapping.
 
@@ -250,7 +250,7 @@ The current descriptors are:
 
 ```text
 loom.system_pnr_search_domain.4.0
-loom.system_pnr.config.5.0
+loom.system_pnr.config.6.0
 ```
 
 System search is hierarchical. A rooted graph selects one immutable compatible
@@ -736,7 +736,14 @@ global spec owns only these invariants:
 * parallel workers reduce results in canonical slot order;
 * every accepted mutation is atomic and rollback restores all derived state;
 * search always retains the best feasible incumbent found in a restart;
-* finding a legal candidate does not stop quality optimization for that slot;
+* `ExhaustConfiguredWork` does not stop quality optimization merely because a
+  legal candidate was found;
+* `FirstVerifiedCandidate` may stop annealing when a feasible incumbent is
+  available, but may stop later restart slots only after that incumbent passes
+  final global closure, independent verification, finalization, and
+  publication;
+* a first-candidate result reports `SemanticLimitReached`, never exhaustive
+  completion or infeasibility;
 * the selected incumbent always receives final global closure and independent
   verification;
 * one incomplete parent or restart does not suppress independent work;

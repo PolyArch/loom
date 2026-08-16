@@ -20,6 +20,7 @@ struct SpatialPathFinderSeed;
 struct SpatialAnnealingStatistics final {
   bool interrupted = false;
   bool exactClosureReached = false;
+  bool completionGoalReached = false;
   std::uint64_t initialTemperature = 0;
   std::uint64_t calibrationProposalSlots = 0;
   std::uint64_t calibrationProbeCount = 0;
@@ -44,6 +45,7 @@ struct SpatialAnnealingStatistics final {
                          const SpatialAnnealingStatistics &rhs) {
     return lhs.interrupted == rhs.interrupted &&
            lhs.exactClosureReached == rhs.exactClosureReached &&
+           lhs.completionGoalReached == rhs.completionGoalReached &&
            lhs.initialTemperature == rhs.initialTemperature &&
            lhs.calibrationProposalSlots == rhs.calibrationProposalSlots &&
            lhs.calibrationProbeCount == rhs.calibrationProbeCount &&
