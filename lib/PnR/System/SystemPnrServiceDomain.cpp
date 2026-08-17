@@ -741,6 +741,20 @@ projectSystemMemoryServiceBindings(
                         fabric, pair.systemEndpoint);
       if (!targetPlans)
         return targetPlans.takeError();
+      std::optional<std::uint64_t> completionCycles;
+      if (member) {
+        const auto *memberSubject =
+            std::get_if<SystemServiceMemberTargetSubject>(&subject);
+        if (!memberSubject)
+          return invalid("operation service binding has no member subject");
+        auto projected = ::loom::mapping::projectSystemOperationCompletion(
+            dataflow, fabric, pair.systemEndpoint, spatialCore->core,
+            memberSubject->member);
+        if (!projected)
+          return projected.takeError();
+        if (projected->admitted)
+          completionCycles = projected->maxIssueToRetireCycles;
+      }
       std::vector<FrozenSystemMemoryServiceBinding::UsePatternDomain> patterns;
       if (member && member->addressed) {
         const auto *memberSubject =
@@ -757,9 +771,9 @@ projectSystemMemoryServiceBindings(
       }
       result.push_back({obligation.key, subject, entry.reference,
                         spatialCore->core, pair.systemEndpoint,
-                        pair.occurrenceEndpoint, std::move(*targetPlans),
-                        std::move(patterns), metadata.interval,
-                        metadata.exposureTerminal});
+                        pair.occurrenceEndpoint, completionCycles,
+                        std::move(*targetPlans), std::move(patterns),
+                        metadata.interval, metadata.exposureTerminal});
     }
     return llvm::Error::success();
   };

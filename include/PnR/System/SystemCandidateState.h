@@ -24,13 +24,40 @@ class SystemCandidateProjectionCache;
 using SystemMemoryServiceTargetPlan =
     ::loom::fabric::FabricMemoryServiceTargetPlan;
 
+struct SystemMemoryServiceTargetDomain final {
+  std::vector<std::vector<SystemMemoryServiceTargetPlan>> plansBySubject;
+};
+
+struct SystemConsistencyServiceTargetDomain final {
+  std::vector<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>
+      domainsBySubject;
+};
+
 using SystemServiceTargetDomain =
-    std::variant<std::vector<SystemMemoryServiceTargetPlan>,
-                 std::vector<::loom::fabric::MemoryConsistencyDomainRef>>;
+    std::variant<SystemMemoryServiceTargetDomain,
+                 SystemConsistencyServiceTargetDomain>;
+
+struct SystemMemoryServiceTargetSelection final {
+  std::vector<SystemMemoryServiceTargetPlan> plansBySubject;
+
+  friend bool operator==(const SystemMemoryServiceTargetSelection &lhs,
+                         const SystemMemoryServiceTargetSelection &rhs) {
+    return lhs.plansBySubject == rhs.plansBySubject;
+  }
+};
+
+struct SystemConsistencyServiceTargetSelection final {
+  std::vector<::loom::fabric::MemoryConsistencyDomainRef> domainsBySubject;
+
+  friend bool operator==(const SystemConsistencyServiceTargetSelection &lhs,
+                         const SystemConsistencyServiceTargetSelection &rhs) {
+    return lhs.domainsBySubject == rhs.domainsBySubject;
+  }
+};
 
 using SystemServiceTargetSelection =
-    std::variant<std::monostate, SystemMemoryServiceTargetPlan,
-                 ::loom::fabric::MemoryConsistencyDomainRef>;
+    std::variant<std::monostate, SystemMemoryServiceTargetSelection,
+                 SystemConsistencyServiceTargetSelection>;
 
 struct SystemServiceRouteNodeSelection final {
   PnrIndex endpoint = 0;

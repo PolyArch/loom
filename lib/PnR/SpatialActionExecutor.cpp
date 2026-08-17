@@ -1534,7 +1534,15 @@ llvm::Error SpatialActionExecutorScratch::routeAffectedNets(
 
 llvm::Error
 SpatialActionExecutorScratch::restoreAfterFailure(SpatialMoveTransaction &move,
-                                                  llvm::Error failure) {
+                                                  llvm::Error failure,
+                                                  bool resetNegotiationState) {
+  if (resetNegotiationState) {
+    move.rollback();
+    if (llvm::Error restoration = routeCosts_->resetFromVerifiedCandidate())
+      return llvm::joinErrors(std::move(failure), std::move(restoration));
+    return failure;
+  }
+
   routeCostTraversals_.assign(move.touchedRouteTraversals().begin(),
                               move.touchedRouteTraversals().end());
   routeCostLogicalNets_.assign(move.touchedRouteLogicalNets().begin(),
@@ -1629,16 +1637,16 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
   SpatialMoveTransaction move = std::move(*moveOrError);
   for (const SpatialMappingAction &action : actions)
     if (llvm::Error error = apply(move, candidate, action))
-      return restoreAfterFailure(move, std::move(error));
+      return restoreAfterFailure(move, std::move(error), false);
   if (llvm::Error error =
           reconcileExplicitLogicalMemoryBindings(move, candidate))
-    return restoreAfterFailure(move, std::move(error));
+    return restoreAfterFailure(move, std::move(error), false);
   if (llvm::Error error = reconcileExplicitMemoryExposures(move, candidate))
-    return restoreAfterFailure(move, std::move(error));
+    return restoreAfterFailure(move, std::move(error), false);
   if (llvm::Error error = reconcileExplicitMemoryDispatches(move, candidate))
-    return restoreAfterFailure(move, std::move(error));
+    return restoreAfterFailure(move, std::move(error), false);
   if (llvm::Error error = reconcileBindingRelations(move, candidate))
-    return restoreAfterFailure(move, std::move(error));
+    return restoreAfterFailure(move, std::move(error), false);
 
   const bool negotiatedRouting =
       globalRouting_ || (context != SpatialActionExecutionContext::Search &&
@@ -1666,28 +1674,29 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
         {}, closureRequirement, exactRegionalLogicalNetLimit);
     if (!closure)
       return restoreAfterFailure(
-          move, classifyTransitionFailure(closure.takeError(), context));
+          move, classifyTransitionFailure(closure.takeError(), context), true);
   } else if (llvm::Error error = routeAffectedNets(move, candidate)) {
     return restoreAfterFailure(
-        move, classifyTransitionFailure(std::move(error), context));
+        move, classifyTransitionFailure(std::move(error), context), false);
   }
 
   std::optional<SpatialCandidateRouteProjection> negotiatedProjection;
   if (negotiatedRouting) {
     auto projected = move.projectCurrentRoutes();
     if (!projected)
-      return restoreAfterFailure(move, projected.takeError());
+      return restoreAfterFailure(move, projected.takeError(), true);
     negotiatedProjection = std::move(*projected);
   }
 
   auto closed = move.close();
   if (!closed)
-    return restoreAfterFailure(move, closed.takeError());
+    return restoreAfterFailure(move, closed.takeError(), negotiatedRouting);
   if (!*closed)
     return restoreAfterFailure(
         move, llvm::make_error<SpatialActionTransitionFailure>(
                   SpatialActionTransitionFailureKind::IntrinsicInvalid,
-                  "Spatial Action selected a combinational handshake cycle"));
+                  "Spatial Action selected a combinational handshake cycle"),
+        negotiatedRouting);
   if (negotiatedProjection &&
       (candidate.unroutedObligationCount() !=
            negotiatedProjection->unroutedObligationCount ||
@@ -1712,7 +1721,8 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
            negotiatedProjection->totalRouteNegativeSlackQuanta))
     return restoreAfterFailure(
         move, executorError(
-                  "closed route-derived state disagrees with its RouteTrees"));
+                  "closed route-derived state disagrees with its RouteTrees"),
+        true);
   routeCostTraversals_.assign(move.touchedRouteTraversals().begin(),
                               move.touchedRouteTraversals().end());
   routeCostLogicalNets_.assign(move.touchedRouteLogicalNets().begin(),
@@ -1720,14 +1730,15 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
   const bool routeTagsSynchronized = move.hasRouteTreeChange();
   if (llvm::Error error =
           routeCosts_->synchronizeCandidateTraversals(routeCostTraversals_))
-    return restoreAfterFailure(move, std::move(error));
+    return restoreAfterFailure(move, std::move(error), negotiatedRouting);
   if (routeTagsSynchronized) {
     auto tagSummary = move.summarizeCurrentTagAssignments();
     if (!tagSummary)
-      return restoreAfterFailure(move, tagSummary.takeError());
+      return restoreAfterFailure(move, tagSummary.takeError(),
+                                 negotiatedRouting);
     if (llvm::Error error = routeCosts_->synchronizeTagProjection(
             *tagSummary, routeCostLogicalNets_))
-      return restoreAfterFailure(move, std::move(error));
+      return restoreAfterFailure(move, std::move(error), negotiatedRouting);
   }
 
   const bool semanticChange = move.hasSemanticChange();
@@ -1736,13 +1747,15 @@ llvm::Expected<SpatialActionProbe> SpatialActionExecutorScratch::probeBatch(
   if (semanticChange) {
     auto evaluated = candidate.problem().objectiveProgram().evaluate(candidate);
     if (!evaluated)
-      return restoreAfterFailure(move, evaluated.takeError());
+      return restoreAfterFailure(move, evaluated.takeError(),
+                                 negotiatedRouting);
     objective = std::move(*evaluated);
     auto evaluatedDifference =
         candidate.problem().objectiveProgram().selectedEnergyDifference(
             objective, *currentObjective_);
     if (!evaluatedDifference)
-      return restoreAfterFailure(move, evaluatedDifference.takeError());
+      return restoreAfterFailure(move, evaluatedDifference.takeError(),
+                                 negotiatedRouting);
     difference = *evaluatedDifference;
   }
 

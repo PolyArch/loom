@@ -290,7 +290,8 @@ loom::pnr::freezeEndpointRoutingTopology(const FabricArtifactView &fabric) {
     result.traversalReplicationGroups_.push_back(replicationGroup);
     result.traversals_.push_back(
         {traversal.reference, *sourceOffset, *sourceCount, *destinationOffset,
-         *destinationCount, *capacityClaimOffset, *capacityClaimCount});
+         *destinationCount, *capacityClaimOffset, *capacityClaimCount,
+         traversal.timing.architecturalLatencyCycles});
 
     auto arcProduct = checkedPnrIndexMultiply(arcContext, sources.size(),
                                               destinations.size());

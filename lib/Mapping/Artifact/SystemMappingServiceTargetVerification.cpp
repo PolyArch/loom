@@ -675,6 +675,25 @@ compatibleMemoryPlans(const ::dataflow::CanonicalDataflowProgramView &dataflow,
   return result;
 }
 
+llvm::Error verifyOperationPlanLegs(
+    const SystemServiceObligationProjection &obligation,
+    const ServicePlanSelectionAnchor &anchor,
+    const SystemServicePlanView &plan) {
+  std::vector<CanonicalServiceLegKey> expected;
+  if (const auto *member =
+          std::get_if<ServiceMemberPlanSelectionAnchor>(&anchor))
+    for (const CanonicalServiceLegKey &leg : obligation.legs)
+      if (leg.member == member->member)
+        expected.push_back(leg);
+  if (plan.transferLegs.size() != expected.size())
+    return invalid("operation plan does not match its selected anchor legs");
+  for (const CanonicalServiceLegKey &leg : expected)
+    if (std::count_if(plan.transferLegs.begin(), plan.transferLegs.end(),
+                      [&](const auto &route) { return route.leg == leg; }) != 1)
+      return invalid("operation plan does not match its selected anchor legs");
+  return llvm::Error::success();
+}
+
 llvm::Error
 verifyMemoryTarget(const ::dataflow::CanonicalDataflowProgramView &dataflow,
                    const ::loom::fabric::FabricSystemRootView &fabric,
@@ -682,6 +701,8 @@ verifyMemoryTarget(const ::dataflow::CanonicalDataflowProgramView &dataflow,
                    const ServicePlanSelectionAnchor &anchor,
                    const SystemSpatialMemoryBindingProjection &binding,
                    const SystemServicePlanView &plan, PlanMarks &marks) {
+  if (llvm::Error error = verifyOperationPlanLegs(obligation, anchor, plan))
+    return error;
   const auto *operation =
       std::get_if<OperationServiceObligationFamilyKey>(&obligation.key);
   const auto *logicalMemory =
@@ -768,6 +789,8 @@ llvm::Error verifyConsistencyTarget(
     const ServicePlanSelectionAnchor &anchor,
     const SystemSpatialMemoryBindingProjection &binding,
     const SystemServicePlanView &plan, PlanMarks &marks) {
+  if (llvm::Error error = verifyOperationPlanLegs(obligation, anchor, plan))
+    return error;
   const auto *member = std::get_if<ServiceMemberPlanSelectionAnchor>(&anchor);
   if (!member ||
       !std::holds_alternative<::dataflow::FenceActorMemberRef>(member->member))

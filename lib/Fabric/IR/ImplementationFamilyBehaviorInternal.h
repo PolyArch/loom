@@ -43,7 +43,8 @@ llvm::Error validateImplementationFamilyBehaviorPoint(
     llvm::ArrayRef<std::uint64_t> resultPorts,
     llvm::ArrayRef<std::uint32_t> physicalInputWidths,
     llvm::ArrayRef<std::uint32_t> physicalResultWidths,
-    std::optional<ResolvedIndexWidth> resolvedIndexWidth = std::nullopt);
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth = std::nullopt,
+    const ::loom::PointerLayout *pointerLayout = nullptr);
 
 bool ownsControlBehaviorRelation(ImplementationFamilyId family);
 

@@ -1,5 +1,8 @@
 #include "TechMappingCandidate.h"
 
+#include "Common/MappingDebugLog.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
+
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -7,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <queue>
@@ -18,6 +22,197 @@ namespace loom::mapping::detail {
 namespace {
 
 using ActorMask = std::vector<std::uint64_t>;
+
+std::uint64_t saturatingAdd(std::uint64_t lhs, std::uint64_t rhs) {
+  return rhs > std::numeric_limits<std::uint64_t>::max() - lhs
+             ? std::numeric_limits<std::uint64_t>::max()
+             : lhs + rhs;
+}
+
+std::uint64_t rowSupplyBreadth(const TechMatchRow &row) {
+  if (std::holds_alternative<TechComputeRealizationView>(row.realization))
+    return row.computeContextValues.size();
+  return row.memoryOccurrenceDemand
+             ? row.memoryOccurrenceDemand->occurrences.size()
+             : 0;
+}
+
+std::uint64_t coverSupplyBreadth(llvm::ArrayRef<const TechMatchRow *> cover) {
+  std::uint64_t result = 0;
+  for (const TechMatchRow *row : cover)
+    result = saturatingAdd(result, rowSupplyBreadth(*row));
+  return result;
+}
+
+SpatialComputeContextSupplyAnalysis
+analyzeComputeContextSupply(llvm::ArrayRef<const TechMatchRow *> rows,
+                            const TechMatchDomain &domain,
+                            TechMappingGenerationAccounting &accounting) {
+  std::vector<std::vector<std::size_t>> domains;
+  for (const TechMatchRow *row : rows)
+    if (std::holds_alternative<TechComputeRealizationView>(row->realization))
+      domains.push_back(row->computeContextValues);
+  ++accounting.computeContextMatchingChecks;
+  SpatialComputeContextSupplyAnalysis analysis =
+      llvm::cantFail(analyzeSpatialComputeContextSupply(
+          domains, domain.computeContextValueCount));
+  accounting.computeContextMatchingWork = saturatingAdd(
+      accounting.computeContextMatchingWork, analysis.deterministicWork);
+  accounting.computeContextRejectedChecks += !analysis.admissible();
+  return analysis;
+}
+
+enum class MemorySupplyCheckScope : std::uint8_t {
+  PartialCover,
+  FullCover,
+};
+
+SpatialMemoryOccurrenceSupplyAnalysis
+analyzeMemoryOccurrenceSupply(llvm::ArrayRef<const TechMatchRow *> rows,
+                              TechMappingGenerationAccounting &accounting,
+                              MemorySupplyCheckScope scope) {
+  std::vector<const SpatialMemoryOccurrenceDemandView *> demands;
+  for (const TechMatchRow *row : rows) {
+    if (!std::holds_alternative<TechMemoryRealizationView>(row->realization))
+      continue;
+    assert(row->memoryOccurrenceDemand &&
+           "memory Tech row has no occurrence-demand projection");
+    demands.push_back(&*row->memoryOccurrenceDemand);
+  }
+  ++accounting.memorySupplyChecks;
+  if (scope == MemorySupplyCheckScope::PartialCover)
+    ++accounting.memorySupplyPartialChecks;
+  else
+    ++accounting.memorySupplyFullChecks;
+  SpatialMemoryOccurrenceSupplyAnalysis analysis =
+      llvm::cantFail(analyzeSpatialMemoryOccurrenceSupply(demands));
+  accounting.memorySupplySearchWork = saturatingAdd(
+      accounting.memorySupplySearchWork, analysis.deterministicWork);
+  if (!analysis.admissible()) {
+    ++accounting.memorySupplyRejectedChecks;
+    switch (analysis.failure) {
+    case SpatialMemoryOccurrenceSupplyFailureKind::None:
+      llvm_unreachable("an admissible memory supply was classified rejected");
+    case SpatialMemoryOccurrenceSupplyFailureKind::EmptyOccurrenceDomain:
+      ++accounting.memorySupplyEmptyDomainRejections;
+      break;
+    case SpatialMemoryOccurrenceSupplyFailureKind::ExclusiveResourceDeficit:
+      ++accounting.memorySupplyExclusiveResourceRejections;
+      assert(analysis.failingResourceKind &&
+             "exclusive-resource failure has no resource kind");
+      switch (*analysis.failingResourceKind) {
+      case SpatialMemoryExclusiveResourceKind::SpatialOperationPort:
+        ++accounting.memorySupplySpatialPortRejections;
+        break;
+      case SpatialMemoryExclusiveResourceKind::TemporalExternalIngress:
+        ++accounting.memorySupplyTemporalIngressRejections;
+        break;
+      case SpatialMemoryExclusiveResourceKind::InternalConnection:
+        ++accounting.memorySupplyInternalConnectionRejections;
+        break;
+      }
+      break;
+    case SpatialMemoryOccurrenceSupplyFailureKind::ResidentCapacityDeficit:
+      ++accounting.memorySupplyResidentCapacityRejections;
+      break;
+    case SpatialMemoryOccurrenceSupplyFailureKind::JointAssignmentInfeasible:
+      ++accounting.memorySupplyJointAssignmentRejections;
+      break;
+    }
+  }
+  return analysis;
+}
+
+void emitComputeContextRejection(
+    std::uint64_t coverOrdinal, llvm::ArrayRef<const TechMatchRow *> rows,
+    const SpatialComputeContextSupplyAnalysis &analysis) {
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::TechMapping,
+      mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+        std::vector<const TechMatchRow *> computeRows;
+        std::map<std::uint64_t, std::uint64_t> widths;
+        for (const TechMatchRow *row : rows) {
+          if (!std::holds_alternative<TechComputeRealizationView>(
+                  row->realization))
+            continue;
+          computeRows.push_back(row);
+          ++widths[row->computeContextValues.size()];
+        }
+        std::map<std::uint64_t, std::uint64_t> hallWidths;
+        for (const std::uint64_t demand : analysis.hallDemands)
+          ++hallWidths[computeRows[demand]->computeContextValues.size()];
+        const auto histogram = [](const auto &counts) {
+          llvm::json::Array result;
+          for (const auto &[width, count] : counts) {
+            llvm::json::Object bucket;
+            bucket["domain_width"] = width;
+            bucket["demand_count"] = count;
+            result.push_back(std::move(bucket));
+          }
+          return result;
+        };
+        fields["failure_scope"] = "tech_cover_compute_context_supply";
+        fields["closure_status"] = "proven_infeasible";
+        fields["cover_ordinal"] = coverOrdinal;
+        fields["row_count"] = rows.size();
+        fields["compute_demand_count"] = analysis.demandCount;
+        fields["compute_context_value_count"] = analysis.valueCount;
+        fields["compute_context_edge_count"] = analysis.edgeCount;
+        fields["compute_context_maximum_matching"] = analysis.maximumMatching;
+        fields["compute_hall_demand_count"] = analysis.hallDemands.size();
+        fields["compute_hall_context_value_count"] = analysis.hallValueCount;
+        fields["domain_width_histogram"] = histogram(widths);
+        fields["hall_domain_width_histogram"] = histogram(hallWidths);
+      });
+}
+
+void emitMemorySupplyRejection(
+    std::uint64_t coverOrdinal, llvm::ArrayRef<const TechMatchRow *> rows,
+    const SpatialMemoryOccurrenceSupplyAnalysis &analysis) {
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::TechMapping,
+      mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+        fields["failure_scope"] = "tech_cover_memory_occurrence_supply";
+        fields["closure_status"] = "proven_infeasible";
+        fields["cover_ordinal"] = coverOrdinal;
+        fields["row_count"] = rows.size();
+        fields["failure_kind"] =
+            spatialMemoryOccurrenceSupplyFailureKindSpelling(analysis.failure);
+        fields["memory_demand_count"] = analysis.demandCount;
+        fields["memory_occurrence_value_count"] = analysis.occurrenceValueCount;
+        fields["memory_occurrence_choice_count"] =
+            analysis.occurrenceChoiceCount;
+        fields["memory_exclusive_relation_count"] =
+            analysis.exclusiveRelationCount;
+        fields["memory_assignment_attempts"] = analysis.assignmentAttempts;
+        fields["failing_demand_count"] = analysis.failingDemandCount;
+        fields["failing_occurrence_count"] = analysis.failingOccurrenceCount;
+        fields["failing_resident_demand"] = analysis.failingResidentDemand;
+        fields["failing_resident_capacity"] = analysis.failingResidentCapacity;
+        if (analysis.failingResourceKind)
+          fields["failing_resource_kind"] =
+              spatialMemoryExclusiveResourceKindSpelling(
+                  *analysis.failingResourceKind);
+      });
+}
+
+bool rootSupplyAdmissible(llvm::ArrayRef<const TechMatchRow *> rows,
+                          const TechMatchDomain &domain,
+                          TechMappingGenerationAccounting &accounting) {
+  const std::size_t computeCount = llvm::count_if(rows, [](const auto *row) {
+    return std::holds_alternative<TechComputeRealizationView>(row->realization);
+  });
+  if (computeCount > 1 &&
+      !analyzeComputeContextSupply(rows, domain, accounting).admissible())
+    return false;
+  const std::size_t memoryCount = llvm::count_if(rows, [](const auto *row) {
+    return std::holds_alternative<TechMemoryRealizationView>(row->realization);
+  });
+  return memoryCount <= 1 ||
+         analyzeMemoryOccurrenceSupply(rows, accounting,
+                                       MemorySupplyCheckScope::PartialCover)
+             .admissible();
+}
 
 std::size_t actorMaskWordCount(std::size_t actorCount) {
   return (actorCount + 63) / 64;
@@ -59,18 +254,20 @@ struct ComponentSearchState final {
   ActorMask covered;
   std::vector<std::size_t> selectedRows;
   std::vector<std::size_t> lowerBound;
+  std::uint64_t lowerBoundSupplyBreadth = 0;
 };
 
 // `lowerBound` is a lower bound in the complete-cover order. Its length is an
 // admissible realization-count bound. At that length, its row sequence is the
-// lexicographically smallest unconstrained completion of the selected rows.
-// Every complete cover reachable from a state therefore sorts at or after the
-// state's bound.
+// most root-flexible unconstrained completion of the selected rows. Canonical
+// row order is the final deterministic tie-break.
 struct ComponentStateGreater final {
   bool operator()(const ComponentSearchState &lhs,
                   const ComponentSearchState &rhs) const {
     if (lhs.lowerBound.size() != rhs.lowerBound.size())
       return lhs.lowerBound.size() > rhs.lowerBound.size();
+    if (lhs.lowerBoundSupplyBreadth != rhs.lowerBoundSupplyBreadth)
+      return lhs.lowerBoundSupplyBreadth < rhs.lowerBoundSupplyBreadth;
     if (lhs.lowerBound != rhs.lowerBound)
       return lhs.lowerBound > rhs.lowerBound;
     return lhs.selectedRows > rhs.selectedRows;
@@ -201,7 +398,8 @@ public:
           seal();
           return nextSealed();
         }
-        if (propagation == PropagationResult::Viable && setLowerBound(child))
+        if (propagation == PropagationResult::Viable &&
+            rootSupplyAdmissible(child) && setLowerBound(child))
           pending_.push(std::move(child));
       }
     }
@@ -242,6 +440,14 @@ private:
     mergeMask(state.covered, rowMasks_[row]);
   }
 
+  bool rootSupplyAdmissible(const ComponentSearchState &state) const {
+    std::vector<const TechMatchRow *> rows;
+    rows.reserve(state.selectedRows.size());
+    for (const std::size_t row : state.selectedRows)
+      rows.push_back(&domain_.rows[row]);
+    return detail::rootSupplyAdmissible(rows, domain_, accounting_);
+  }
+
   bool consumeExpansion() {
     if (accounting_.partialCoverExpansions >=
         config_.partialCoverExpansionLimit()) {
@@ -279,6 +485,10 @@ private:
 
   bool setLowerBound(ComponentSearchState &state) const {
     state.lowerBound = state.selectedRows;
+    state.lowerBoundSupplyBreadth = 0;
+    for (const std::size_t row : state.selectedRows)
+      state.lowerBoundSupplyBreadth = saturatingAdd(
+          state.lowerBoundSupplyBreadth, rowSupplyBreadth(domain_.rows[row]));
     std::size_t uncoveredActorCount = 0;
     for (std::size_t actor : component_.actors)
       uncoveredActorCount += !covered(state, actor);
@@ -302,6 +512,17 @@ private:
         maximumNewActorsPerRow;
     if (availableRows.size() < additionalRowLowerBound)
       return false;
+    llvm::sort(availableRows, [&](std::size_t lhs, std::size_t rhs) {
+      const std::uint64_t lhsBreadth = rowSupplyBreadth(domain_.rows[lhs]);
+      const std::uint64_t rhsBreadth = rowSupplyBreadth(domain_.rows[rhs]);
+      if (lhsBreadth != rhsBreadth)
+        return lhsBreadth > rhsBreadth;
+      return domain_.rows[lhs].key < domain_.rows[rhs].key;
+    });
+    for (std::size_t ordinal = 0; ordinal != additionalRowLowerBound; ++ordinal)
+      state.lowerBoundSupplyBreadth =
+          saturatingAdd(state.lowerBoundSupplyBreadth,
+                        rowSupplyBreadth(domain_.rows[availableRows[ordinal]]));
     state.lowerBound.insert(state.lowerBound.end(), availableRows.begin(),
                             availableRows.begin() + additionalRowLowerBound);
     llvm::sort(state.lowerBound);
@@ -311,7 +532,7 @@ private:
   void initialize() {
     initialized_ = true;
     ComponentSearchState initial{
-        ActorMask(actorMaskWordCount(component_.actors.size()), 0), {}, {}};
+        ActorMask(actorMaskWordCount(component_.actors.size()), 0), {}, {}, 0};
     const PropagationResult propagation = propagate(initial);
     if (propagation == PropagationResult::Interrupted)
       return;
@@ -320,7 +541,7 @@ private:
       return;
     }
     if (propagation == PropagationResult::Infeasible ||
-        !setLowerBound(initial)) {
+        !rootSupplyAdmissible(initial) || !setLowerBound(initial)) {
       exhausted_ = true;
       return;
     }
@@ -341,6 +562,16 @@ private:
     llvm::sort(sealedCovers_, [&](const auto &lhs, const auto &rhs) {
       if (lhs.size() != rhs.size())
         return lhs.size() < rhs.size();
+      const auto supplyBreadth = [&](const auto &rows) {
+        std::uint64_t result = 0;
+        for (const std::size_t row : rows)
+          result = saturatingAdd(result, rowSupplyBreadth(domain_.rows[row]));
+        return result;
+      };
+      const std::uint64_t lhsBreadth = supplyBreadth(lhs);
+      const std::uint64_t rhsBreadth = supplyBreadth(rhs);
+      if (lhsBreadth != rhsBreadth)
+        return lhsBreadth > rhsBreadth;
       return std::lexicographical_compare(
           lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
           [&](std::size_t lhsRow, std::size_t rhsRow) {
@@ -442,6 +673,7 @@ void forEachDifferingComponent(const SparseProductIndex &lhs,
 struct ProductState final {
   SparseProductIndex indices;
   std::size_t rowCount = 0;
+  std::uint64_t supplyBreadth = 0;
 };
 
 struct ProductGreater final {
@@ -466,6 +698,8 @@ struct ProductGreater final {
   bool operator()(const ProductState &lhs, const ProductState &rhs) const {
     if (lhs.rowCount != rhs.rowCount)
       return lhs.rowCount > rhs.rowCount;
+    if (lhs.supplyBreadth != rhs.supplyBreadth)
+      return lhs.supplyBreadth < rhs.supplyBreadth;
     const std::vector<const TechMatchRow *> lhsRows = differingRows(lhs, rhs);
     const std::vector<const TechMatchRow *> rhsRows = differingRows(rhs, lhs);
     std::size_t lhsRow = 0;
@@ -586,12 +820,17 @@ TechCoverSearchResult searchTechMatchCovers(
   }
 
   ProductState initial;
-  for (const LazyComponentCovers &component : components)
+  for (const LazyComponentCovers &component : components) {
     initial.rowCount += component.discovered.front().size();
+    initial.supplyBreadth =
+        saturatingAdd(initial.supplyBreadth,
+                      coverSupplyBreadth(component.discovered.front()));
+  }
   std::priority_queue<ProductState, std::vector<ProductState>, ProductGreater>
       pending(ProductGreater{&components});
   pending.push(initial);
   std::set<SparseProductIndex> visited{{}};
+  std::uint64_t fullSupplyChecks = 0;
   while (!pending.empty()) {
     if (executionControl.stopRequested()) {
       result.exhausted = false;
@@ -600,7 +839,41 @@ TechCoverSearchResult searchTechMatchCovers(
     }
     ProductState current = pending.top();
     pending.pop();
-    result.covers.push_back(materializeCover(components, current));
+    std::vector<const TechMatchRow *> currentCover =
+        materializeCover(components, current);
+    if (fullSupplyChecks >= config.candidateEvaluationLimit()) {
+      result.exhausted = false;
+      return result;
+    }
+    ++fullSupplyChecks;
+    const std::size_t computeCount =
+        llvm::count_if(currentCover, [](const auto *row) {
+          return std::holds_alternative<TechComputeRealizationView>(
+              row->realization);
+        });
+    bool supplyAdmissible = true;
+    if (computeCount > 1) {
+      const SpatialComputeContextSupplyAnalysis supply =
+          analyzeComputeContextSupply(currentCover, domain, accounting);
+      supplyAdmissible = supply.admissible();
+      if (!supplyAdmissible)
+        emitComputeContextRejection(fullSupplyChecks - 1, currentCover, supply);
+    }
+    const std::size_t memoryCount =
+        llvm::count_if(currentCover, [](const auto *row) {
+          return std::holds_alternative<TechMemoryRealizationView>(
+              row->realization);
+        });
+    if (supplyAdmissible && memoryCount > 1) {
+      const SpatialMemoryOccurrenceSupplyAnalysis supply =
+          analyzeMemoryOccurrenceSupply(currentCover, accounting,
+                                        MemorySupplyCheckScope::FullCover);
+      supplyAdmissible = supply.admissible();
+      if (!supplyAdmissible)
+        emitMemorySupplyRejection(fullSupplyChecks - 1, currentCover, supply);
+    }
+    if (supplyAdmissible)
+      result.covers.push_back(std::move(currentCover));
     for (std::size_t component = 0; component < components.size();
          ++component) {
       const std::size_t currentIndex =
@@ -628,9 +901,17 @@ TechCoverSearchResult searchTechMatchCovers(
         continue;
       const auto &currentCover = lazy.discovered[currentIndex];
       const auto &nextCover = lazy.discovered[nextIndex];
-      pending.push(ProductState{std::move(next), current.rowCount -
-                                                     currentCover.size() +
-                                                     nextCover.size()});
+      const std::uint64_t currentComponentBreadth =
+          coverSupplyBreadth(currentCover);
+      const std::uint64_t nextComponentBreadth = coverSupplyBreadth(nextCover);
+      const std::uint64_t baseBreadth =
+          current.supplyBreadth == std::numeric_limits<std::uint64_t>::max()
+              ? current.supplyBreadth
+              : current.supplyBreadth - currentComponentBreadth;
+      pending.push(ProductState{
+          std::move(next),
+          current.rowCount - currentCover.size() + nextCover.size(),
+          saturatingAdd(baseBreadth, nextComponentBreadth)});
     }
     if (result.covers.size() >= coverLimit) {
       result.exhausted =

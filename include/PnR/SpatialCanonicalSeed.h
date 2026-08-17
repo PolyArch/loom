@@ -1,6 +1,7 @@
 #ifndef LOOM_PNR_SPATIALCANONICALSEED_H
 #define LOOM_PNR_SPATIALCANONICALSEED_H
 
+#include "PnR/SpatialCandidateInitializer.h"
 #include "PnR/SpatialPathFinderRouter.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -19,6 +20,7 @@ struct SpatialPathFinderSeedWorkSummary final {
 struct SpatialPathFinderSeed final {
   SpatialCandidateStateHandle candidate;
   std::uint32_t attemptOrdinal = 0;
+  SpatialCandidateInitializerPreference initializerPreference;
 };
 
 /// Builds one exact initializer slot and applies its explicit global

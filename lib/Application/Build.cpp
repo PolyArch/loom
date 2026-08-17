@@ -22,6 +22,7 @@
 #include "Hardware/Implementation/FabricModel.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
 #include "Runtime/FabricModelPlatform.h"
+#include "Simulator/SpatialInvocation.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -30,10 +31,13 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
 #include <algorithm>
@@ -402,6 +406,16 @@ publishApplicationWorkloads(
           shapes->valueResults.size());
       std::iota(workloadDraft.observableContract.valueResults.begin(),
                 workloadDraft.observableContract.valueResults.end(), 0);
+      auto writableRoots =
+          sim::projectSpatialInvocationWritableMemoryRoots(*view, launch);
+      if (!writableRoots) {
+        workloadError = writableRoots.takeError();
+        return;
+      }
+      for (dataflow::LogicalMemoryRootRef memory : *writableRoots)
+        workloadDraft.observableContract.memories.push_back(
+            {dataflow::LogicalMemoryRootOrViewRef{memory},
+             sim::MemoryObservationForm::DiffFromRuntimeInput});
       auto workload = sim::finalizeSimulationWorkload(workloadDraft, *view);
       if (!workload) {
         workloadError = workload.takeError();
@@ -447,6 +461,20 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
       request.compilationOptions.raising);
   if (!source)
     return source.takeError();
+  if (!request.operatorProtocolSymbols.empty()) {
+    if (!request.preMappingOptions.ownership.protocolCallableRoots.empty())
+      return invalid("operator protocol has two competing declarations");
+    llvm::SmallVector<llvm::StringRef> symbols;
+    symbols.reserve(request.operatorProtocolSymbols.size());
+    for (const std::string &symbol : request.operatorProtocolSymbols)
+      symbols.push_back(symbol);
+    auto roots = frontend::resolveDefinedLlvmCallables(
+        source->structuredProgram, symbols);
+    if (!roots)
+      return roots.takeError();
+    request.preMappingOptions.ownership.protocolCallableRoots =
+        std::move(*roots);
+  }
   auto sourceInputs = makeSourceSimulationInputs(source->structuredProgram,
                                                  request.sourceInvocation);
   if (!sourceInputs)
@@ -470,11 +498,23 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
       std::get<dse::CompletedPreMappingSelection>(std::move(*preMapping));
   if (completed.selected.empty())
     return invalid("completed pre-Mapping selection is empty");
+  for (std::size_t index = 0; index != completed.selected.size(); ++index)
+    if (completed.selected[index].preferenceRank != index)
+      return invalid("pre-Mapping software preference ranks are not dense");
+  if (completed.selected.size() > request.jointPolicy.maximumSoftwareFrontier())
+    return invalid("pre-Mapping software frontier exceeds its joint bound");
+  if (completed.selected.size() > request.jointPolicy.maximumPairEvaluations())
+    return invalid("pre-Mapping alternatives exceed the pair-evaluation "
+                   "bound");
 
   std::vector<PreparedApplicationSoftware> preparedSoftware;
-  std::vector<std::vector<ArtifactRootReference>> applicationScopes;
+  std::vector<PreparedApplicationMappingAlternative> mappingAlternatives;
   preparedSoftware.reserve(completed.selected.size());
-  applicationScopes.reserve(completed.selected.size());
+  mappingAlternatives.reserve(completed.selected.size());
+  auto alternativePolicy = dse::JointDesignPolicy::get(
+      1, 1, 1, request.jointPolicy.maximumSpatialMappingsPerPair());
+  if (!alternativePolicy)
+    return alternativePolicy.takeError();
   for (dse::SelectedPreMappingCompilation &selected : completed.selected) {
     auto published =
         frontend::publishPreMappingCompilation(selected.compilation, artifacts);
@@ -490,20 +530,22 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
       return ApplicationBuildPreparationOutcome{std::move(*unsupported)};
     auto roots =
         std::get<std::vector<ArtifactRootReference>>(std::move(*workloads));
-    applicationScopes.push_back(roots);
-    preparedSoftware.push_back({std::move(*published), std::move(roots)});
+    auto mappingPlan = dse::buildJointDesignExplorationPlan(
+        {{roots}, {request.system}}, request.physicalTimingProfiles,
+        *alternativePolicy, request.resolvedConfig, artifacts);
+    if (!mappingPlan)
+      return mappingPlan.takeError();
+    const ArtifactRootReference dataflow = published->canonicalDataflow;
+    mappingAlternatives.push_back(
+        {selected.preferenceRank, dataflow, std::move(*mappingPlan)});
+    preparedSoftware.push_back(
+        {selected.preferenceRank, std::move(*published), std::move(roots)});
   }
-
-  auto mappingPlan = dse::buildJointDesignExplorationPlan(
-      {std::move(applicationScopes), {request.system}},
-      request.physicalTimingProfiles, request.jointPolicy,
-      request.resolvedConfig, artifacts);
-  if (!mappingPlan)
-    return mappingPlan.takeError();
   return ApplicationBuildPreparationOutcome{PreparedApplicationBuild{
       std::move(request.sourceInvocation), std::move(preparedSoftware),
       std::move(completed.satisfiedEvidence),
-      std::move(completed.planGenerateInvocations), std::move(*mappingPlan)}};
+      std::move(completed.planGenerateInvocations),
+      std::move(mappingAlternatives)}};
 }
 
 llvm::Expected<dse::JointDesignExecution>
@@ -517,37 +559,70 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
     return std::move(error);
   if (request.journalRoot.empty())
     return invalid("Mapping execution requires a journal root");
+  if (prepared.mappingAlternatives.empty())
+    return invalid("Mapping execution has no software alternative");
+  for (std::size_t index = 0; index != prepared.mappingAlternatives.size();
+       ++index)
+    if (prepared.mappingAlternatives[index].preferenceRank != index)
+      return invalid("Mapping alternative preference ranks are not dense");
 
-  const ResolvedConfig &config = prepared.mappingPlan.resolvedConfig;
-  auto publishedConfig = artifacts.put(ResolvedConfig::artifactSchema,
-                                       canonicalResolvedConfigBytes(config));
-  if (!publishedConfig)
-    return publishedConfig.takeError();
-  if (*publishedConfig != resolvedConfigIdentity(config))
-    return invalid("ResolvedConfig publication changed its identity");
-
-  std::vector<ArtifactRootReference> semanticInputs =
-      dse::projectJointDesignSemanticInputs(prepared.mappingPlan);
   std::vector<ArtifactRootReference> evidence = prepared.satisfiedEvidence;
   evidence.insert(evidence.end(), request.preexistingEvidence.begin(),
                   request.preexistingEvidence.end());
-  auto closure = dse::DseRunClosure::get(
-      std::move(request.producer), semanticInputs, config, evidence, artifacts);
-  if (!closure)
-    return closure.takeError();
-  auto configView = dse::projectResolvedDseConfigView(config);
-  if (!configView)
-    return configView.takeError();
-  auto journal =
-      dse::openExecutionJournal(request.journalRoot, *closure, *configView);
-  if (!journal)
-    return journal.takeError();
   auto scheduler = dse::SiteScheduler::create(std::move(request.siteCapacity));
   if (!scheduler)
     return scheduler.takeError();
-  return dse::executeJointDesignExploration(
-      prepared.mappingPlan, *closure, *journal, *scheduler,
-      request.executionPolicy, artifacts, blobs);
+
+  std::optional<dse::JointDesignExecution> lastCompletedNoFeasible;
+  for (const PreparedApplicationMappingAlternative &alternative :
+       prepared.mappingAlternatives) {
+    const ResolvedConfig &config = alternative.plan.resolvedConfig;
+    auto publishedConfig = artifacts.put(ResolvedConfig::artifactSchema,
+                                         canonicalResolvedConfigBytes(config));
+    if (!publishedConfig)
+      return publishedConfig.takeError();
+    if (*publishedConfig != resolvedConfigIdentity(config))
+      return invalid("ResolvedConfig publication changed its identity");
+
+    std::vector<ArtifactRootReference> semanticInputs =
+        dse::projectJointDesignSemanticInputs(alternative.plan);
+    auto closure = dse::DseRunClosure::get(request.producer, semanticInputs,
+                                           config, evidence, artifacts);
+    if (!closure)
+      return closure.takeError();
+    auto configView = dse::projectResolvedDseConfigView(config);
+    if (!configView)
+      return configView.takeError();
+
+    llvm::SmallString<256> alternativeJournal(request.journalRoot);
+    llvm::sys::path::append(
+        alternativeJournal,
+        llvm::toHex(closure->runKey().bytes(), /*LowerCase=*/true));
+    if (std::error_code error =
+            llvm::sys::fs::create_directories(alternativeJournal))
+      return invalid("cannot create Mapping alternative journal: " +
+                     error.message());
+    auto journal =
+        dse::openExecutionJournal(alternativeJournal, *closure, *configView);
+    if (!journal)
+      return journal.takeError();
+    auto execution = dse::executeJointDesignExploration(
+        alternative.plan, *closure, *journal, *scheduler,
+        request.executionPolicy, artifacts, blobs);
+    if (!execution)
+      return execution.takeError();
+
+    std::size_t mappingCount = 0;
+    for (const dse::JointMappedPair &pair : execution->mappedPairs)
+      mappingCount += pair.systemMappings.size();
+    if (mappingCount != 0)
+      return std::move(*execution);
+    if (std::holds_alternative<dse::IncompleteDsePlanExecution>(
+            execution->planExecution))
+      return std::move(*execution);
+    lastCompletedNoFeasible = std::move(*execution);
+  }
+  return std::move(*lastCompletedNoFeasible);
 }
 
 llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(

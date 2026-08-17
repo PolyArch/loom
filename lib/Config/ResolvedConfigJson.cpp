@@ -147,6 +147,8 @@ llvm::json::Object pnrPolicyJson(const loom::ResolvedPnrPolicyConfig &policy) {
                 {"fallback_temperature", search.annealing.fallbackTemperature},
                 {"minimum_temperature", search.annealing.minimumTemperature},
                 {"cooling_ratio", ratioJson(search.annealing.coolingRatio)},
+                {"temperature_level_limit",
+                 search.annealing.temperatureLevelLimit},
                 {"proposals_per_level_base",
                  search.annealing.proposalsPerLevelBase},
                 {"proposals_per_movable_decision",
@@ -287,6 +289,18 @@ llvm::json::Object objectiveCatalogsJson(const loom::ResolvedDseConfig &dse) {
 llvm::json::Object
 resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
   const loom::adg::BuiltinTargetScale &scale = config.hardwareTarget.parameters;
+  const auto fuOccurrences =
+      [](const loom::adg::BuiltinFuOccurrenceCounts &counts) {
+        return llvm::json::Object{
+            {"dedicated_scalar_add", counts.dedicatedScalarAdd},
+            {"mac", counts.mac},
+            {"vector_compute", counts.vectorCompute},
+            {"loop_control", counts.loopControl},
+            {"token_control", counts.tokenControl},
+            {"vector_adapter", counts.vectorAdapter},
+            {"vector_structural", counts.vectorStructural},
+            {"special_math", counts.specialMath}};
+      };
   llvm::json::Object evaluation;
   if (config.evaluation.cadenceVoltusStaticRail) {
     const auto &binding = *config.evaluation.cadenceVoltusStaticRail;
@@ -334,9 +348,15 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
                 {"mesh_dimension", scale.meshDimension},
                 {"spatial_pe_count", scale.spatialPeCount},
                 {"temporal_pe_count", scale.temporalPeCount},
+                {"spatial_fu_occurrences",
+                 fuOccurrences(scale.spatialFuOccurrences)},
+                {"temporal_fu_occurrences",
+                 fuOccurrences(scale.temporalFuOccurrences)},
                 {"spatial_memory_count", scale.spatialMemoryCount},
                 {"temporal_memory_count", scale.temporalMemoryCount},
                 {"temporal_resident_contexts", scale.temporalResidentContexts},
+                {"cross_schedule_boundary_lanes_per_temporal_pe",
+                 scale.crossScheduleBoundaryLanesPerTemporalPe},
                 {"gateway_count", scale.gatewayCount},
                 {"memory_capacity_bytes", scale.memoryCapacityBytes}}}}},
       {"dse",

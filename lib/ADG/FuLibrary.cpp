@@ -720,12 +720,15 @@ llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
   if (!bits1)
     return bits1.takeError();
 
-  auto fu = pe.addFu(inputs, FuSpec{{*bits128, *bits128, *bits128, *bits1},
-                                    {*bits128, *bits128, *bits128}});
+  llvm::SmallVector<PeValue, 5> fuInputs = {inputs[0], inputs[1], inputs[2],
+                                            inputs[3], inputs[3]};
+  auto fu =
+      pe.addFu(fuInputs, FuSpec{{*bits128, *bits128, *bits128, *bits1, *bits1},
+                                {*bits128, *bits128, *bits128}});
   if (!fu)
     return fu.takeError();
-  llvm::SmallVector<FuValue, 4> boundary;
-  for (std::size_t ordinal = 0; ordinal != 4; ++ordinal) {
+  llvm::SmallVector<FuValue, 5> boundary;
+  for (std::size_t ordinal = 0; ordinal != 5; ++ordinal) {
     auto value = fu->input(ordinal);
     if (!value)
       return value.takeError();
@@ -744,6 +747,9 @@ llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
   auto phase = fu->addDemux(boundary[3], 5);
   if (!phase)
     return phase.takeError();
+  auto fusedGatePhase = fu->addDemux(boundary[4], 2);
+  if (!fusedGatePhase)
+    return fusedGatePhase.takeError();
   auto d0Values = nodeOutputs(*d0, 5);
   if (!d0Values)
     return d0Values.takeError();
@@ -756,6 +762,9 @@ llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
   auto phaseValues = nodeOutputs(*phase, 5);
   if (!phaseValues)
     return phaseValues.takeError();
+  auto fusedGatePhaseValues = nodeOutputs(*fusedGatePhase, 2);
+  if (!fusedGatePhaseValues)
+    return fusedGatePhaseValues.takeError();
 
   auto carryPhase = fu->addMux({(*phaseValues)[0], (*phaseValues)[3]});
   if (!carryPhase)
@@ -763,8 +772,8 @@ llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
   auto invariantPhase = fu->addMux({(*phaseValues)[1], (*phaseValues)[4]});
   if (!invariantPhase)
     return invariantPhase.takeError();
-  auto gatePhase =
-      fu->addMux({(*phaseValues)[2], (*phaseValues)[3], (*phaseValues)[4]});
+  auto gatePhase = fu->addMux({(*phaseValues)[2], (*fusedGatePhaseValues)[0],
+                               (*fusedGatePhaseValues)[1]});
   if (!gatePhase)
     return gatePhase.takeError();
   auto carryPhaseValue = carryPhase->output(0);
@@ -919,6 +928,7 @@ llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
                                                 {*p0, 2}}))
     return error;
   if (llvm::Error error = addTemplate({*carry, *gate}, {{*phase, 3},
+                                                        {*fusedGatePhase, 0},
                                                         {*carryPhase, 1},
                                                         {*gatePhase, 1},
                                                         {*d0, 2},
@@ -933,6 +943,7 @@ llvm::Error addLoopControlFu(PeBuilder &pe, llvm::ArrayRef<PeValue> inputs,
     return error;
   if (llvm::Error error =
           addTemplate({*invariant, *gate}, {{*phase, 4},
+                                            {*fusedGatePhase, 1},
                                             {*invariantPhase, 1},
                                             {*gatePhase, 2},
                                             {*d0, 3},

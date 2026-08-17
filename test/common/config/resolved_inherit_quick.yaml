@@ -1,0 +1,5 @@
+inherits: quick_explore
+dse:
+  tech_mapping:
+    candidate_evaluation_limit: 64
+    candidate_publication_limit: 8

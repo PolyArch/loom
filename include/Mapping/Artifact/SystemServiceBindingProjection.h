@@ -33,6 +33,11 @@ struct SystemMemoryUsePatternDomainView final {
   std::vector<::loom::fabric::FabricUsePatternRef> patterns;
 };
 
+struct SystemOperationCompletionProjection final {
+  bool admitted = false;
+  std::optional<std::uint64_t> maxIssueToRetireCycles;
+};
+
 using SystemMessageExecutionOwner =
     std::variant<::loom::fabric::HostCoreOccurrenceRef,
                  ::loom::fabric::AccCoreOccurrenceRef>;
@@ -89,9 +94,21 @@ projectSystemFenceTargetDomains(
     ::loom::fabric::SystemServiceEndpointRef endpoint,
     const ::dataflow::ServiceMemberRef &member);
 
+/// Projects whether one endpoint admits the operation and, when admitted,
+/// converts its progress guarantee into cycles of the exact issuing
+/// SpatialCore occurrence. Fair-eventual service has no numeric bound.
+llvm::Expected<SystemOperationCompletionProjection>
+projectSystemOperationCompletion(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    ::loom::fabric::SystemServiceEndpointRef endpoint,
+    ::loom::fabric::AccCoreOccurrenceRef accCore,
+    const ::dataflow::ServiceMemberRef &member);
+
 /// Derives the complete Fabric target-plan domain for one logical-memory
-/// interval. A whole interval without a static byte extent has no finite
-/// persistent target plan.
+/// interval. A finite interval is checked exactly. A dynamically unbounded
+/// whole interval selects a structural service envelope whose concrete range
+/// remains subject to Runtime ABI admission.
 llvm::Expected<std::vector<::loom::fabric::FabricMemoryServiceTargetPlan>>
 projectSystemMemoryTargetPlans(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,

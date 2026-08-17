@@ -11,6 +11,7 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrDerivedContext.h"
 #include "PnR/PnrGeneration.h"
+#include "PnR/SpatialPnrProblem.h"
 
 #include "llvm/ADT/StringRef.h"
 
@@ -201,6 +202,8 @@ struct SpatialPnrGenerationInputs final {
   const FabricDerivedContextBundle *derivedContexts = nullptr;
   const ::loom::fabric::FabricTopologyQualityReport *topologyQualityDiagnostic =
       nullptr;
+  FrozenSpatialPnrProblemHandle preparedActiveProblem = nullptr;
+  bool emitTopologyQualityDiagnostic = true;
 };
 
 /// Runs the fixed canonical Spatial restart sequence for one exact D/T/F/C/K

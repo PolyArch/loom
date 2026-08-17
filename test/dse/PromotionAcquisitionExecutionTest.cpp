@@ -596,6 +596,11 @@ void topKAcquiresOnlyTheRequiredFunctionalPrefix() {
   if (completed->resolve({0, 0}) !=
       llvm::ArrayRef<ArtifactRootReference>(expected))
     fail("TopK did not refill its semantically valid candidate set");
+  const std::array<ArtifactRootReference, 2> expectedPreference = {second,
+                                                                   third};
+  if (completed->resolvePreferenceOrder({0, 0}) !=
+      llvm::ArrayRef<ArtifactRootReference>(expectedPreference))
+    fail("TopK lost its invocation-local objective preference order");
   if (completed->resolve({0, 1}).size() != 7)
     fail("TopK retained evidence outside the required functional prefix");
   if (resolvedTaskCounts[*runtimeOrdinal] != 4 ||

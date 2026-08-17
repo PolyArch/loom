@@ -239,28 +239,33 @@ struct SystemInterruptionBestProjection final {
       violationValues;
 };
 
-void considerInterruptionCandidate(const SystemCandidateState &candidate,
-                                   SystemInterruptionBestProjection &best) {
-  auto objective = candidate.problem().objectiveProgram().evaluate(candidate);
+llvm::Error considerInterruptionCandidate(
+    const SystemCandidateState &candidate,
+    SystemInterruptionBestProjection &best,
+    const dse::ObjectiveVector *knownObjective = nullptr) {
+  std::optional<dse::ObjectiveVector> evaluatedObjective;
+  if (!knownObjective) {
+    auto objective = candidate.problem().objectiveProgram().evaluate(candidate);
+    if (!objective)
+      return objective.takeError();
+    evaluatedObjective.emplace(std::move(*objective));
+    knownObjective = &*evaluatedObjective;
+  }
   bool selected = !best.violationValues;
-  if (!objective) {
-    llvm::consumeError(objective.takeError());
-  } else if (!best.objective) {
+  if (!best.objective) {
     selected = true;
   } else {
     auto comparison =
         candidate.problem().objectiveProgram().compareSelectedRank(
-            *objective, {}, *best.objective, {});
+            *knownObjective, {}, *best.objective, {});
     if (!comparison)
-      llvm::consumeError(comparison.takeError());
-    else
-      selected = *comparison < 0;
+      return comparison.takeError();
+    selected = *comparison < 0;
   }
   if (!selected)
-    return;
+    return llvm::Error::success();
 
-  if (objective)
-    best.objective = std::move(*objective);
+  best.objective = *knownObjective;
   std::array<std::optional<std::uint64_t>, resolvedPnrViolationKindCount>
       values{};
   for (std::uint32_t ordinal = 0; ordinal != resolvedPnrViolationKindCount;
@@ -268,11 +273,11 @@ void considerInterruptionCandidate(const SystemCandidateState &candidate,
     auto value = systemMappingViolationValue(
         candidate, static_cast<ResolvedPnrViolationKind>(ordinal));
     if (!value)
-      llvm::consumeError(value.takeError());
-    else
-      values[ordinal] = *value;
+      return value.takeError();
+    values[ordinal] = *value;
   }
   best.violationValues = std::move(values);
+  return llvm::Error::success();
 }
 
 SystemPnrInterruptionSnapshot
@@ -628,7 +633,11 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
 
     ++accounting.preparedSeeds;
     SystemCandidateStateHandle candidate = std::move(initialized->state);
-    considerInterruptionCandidate(*candidate, interruptionBest);
+    if (llvm::Error error =
+            considerInterruptionCandidate(*candidate, interruptionBest))
+      return internal(
+          InternalSystemPnrGenerationReason::CandidateInitialization,
+          accounting, std::move(error));
     if (inputs.executionControl.stopRequested())
       return interruptedOutcome(SystemPnrInterruptionStage::Annealing, attempt,
                                 accounting, std::move(candidates),
@@ -641,7 +650,10 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
       return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
                       accounting, std::move(error));
     semanticLimitReached |= annealed->completionGoalReached;
-    considerInterruptionCandidate(*candidate, interruptionBest);
+    if (llvm::Error error =
+            considerInterruptionCandidate(*candidate, interruptionBest))
+      return internal(InternalSystemPnrGenerationReason::Annealing, accounting,
+                      std::move(error));
     if (annealed->interrupted)
       return interruptedOutcome(SystemPnrInterruptionStage::Annealing, attempt,
                                 accounting, std::move(candidates),
@@ -701,8 +713,11 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
           diagnostic.empty() ? "final global Action lost its failure cause"
                              : diagnostic);
     }
+    if (llvm::Error error = considerInterruptionCandidate(
+            *closed->candidate, interruptionBest, &closed->objective))
+      return internal(InternalSystemPnrGenerationReason::FinalClosure,
+                      accounting, std::move(error));
     candidate = std::move(closed->candidate);
-    considerInterruptionCandidate(*candidate, interruptionBest);
     if (candidate->capacityOveruse() != 0) {
       rememberIncomplete(
           "strict final global Action retained full CapacityOveruse", false);

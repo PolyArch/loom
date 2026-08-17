@@ -109,6 +109,61 @@ maximumTargetRatioIndex(ResolvedExactRatio target) {
   return static_cast<std::uint64_t>(firstMiss);
 }
 
+bool powerAtMost(std::uint64_t base, std::uint64_t exponent,
+                 std::uint64_t limit) {
+  std::uint64_t result = 1;
+  std::uint64_t factor = base;
+  while (exponent != 0) {
+    if ((exponent & 1) != 0) {
+      if (factor != 0 && result > limit / factor)
+        return false;
+      result *= factor;
+    }
+    exponent >>= 1;
+    if (exponent == 0)
+      break;
+    if (factor != 0 && factor > limit / factor)
+      return false;
+    factor *= factor;
+  }
+  return result <= limit;
+}
+
+std::uint64_t floorUnsignedRoot(std::uint64_t value,
+                                std::uint64_t degree) {
+  assert(value != 0 && degree != 0);
+  std::uint64_t lower = 1;
+  std::uint64_t upper = value;
+  while (lower < upper) {
+    const std::uint64_t middle =
+        lower + (upper - lower) / 2 + (upper - lower) % 2;
+    if (powerAtMost(middle, degree, value))
+      lower = middle;
+    else
+      upper = middle - 1;
+  }
+  return lower;
+}
+
+std::uint64_t boundedCoolingTarget(std::uint64_t temperature,
+                                   std::uint64_t minimumTemperature,
+                                   std::uint64_t remainingTransitions) {
+  assert(temperature > minimumTemperature && remainingTransitions != 0);
+  const std::uint64_t quotient = temperature / minimumTemperature;
+  const std::uint64_t ratio =
+      quotient + (temperature % minimumTemperature != 0 ? 1 : 0);
+  const std::uint64_t divisor =
+      floorUnsignedRoot(ratio, remainingTransitions);
+  if (divisor > 1)
+    return std::max(temperature / divisor, minimumTemperature);
+
+  const std::uint64_t distance = temperature - minimumTemperature;
+  const std::uint64_t decrement =
+      distance / remainingTransitions +
+      (distance % remainingTransitions != 0 ? 1 : 0);
+  return temperature - decrement;
+}
+
 } // namespace
 
 DeterministicPnrRandomStream
@@ -229,15 +284,29 @@ AnnealingTemperatureSchedule::create(const ResolvedPnrAnnealingPolicy &policy,
         "initial annealing temperature must be positive");
   return AnnealingTemperatureSchedule(
       policy.minimumTemperature, policy.coolingRatio,
-      std::max(initialTemperature, policy.minimumTemperature));
+      policy.temperatureLevelLimit,
+      policy.temperatureLevelLimit == 1
+          ? policy.minimumTemperature
+          : std::max(initialTemperature, policy.minimumTemperature));
 }
 
 bool AnnealingTemperatureSchedule::advanceAfterCompletedLevel() {
   if (isFinalLevel())
     return false;
+  ++completedLevelCount_;
+  if (completedLevelCount_ + 1 >= levelLimit_) {
+    temperature_ = minimumTemperature_;
+    return true;
+  }
   llvm::APInt next(128, temperature_);
   next *= llvm::APInt(128, coolingRatio_.numerator);
   next = next.udiv(llvm::APInt(128, coolingRatio_.denominator));
-  temperature_ = std::max(next.getZExtValue(), minimumTemperature_);
+  const std::uint64_t natural =
+      std::max(next.getZExtValue(), minimumTemperature_);
+  const std::uint64_t remainingTransitions =
+      levelLimit_ - completedLevelCount_;
+  temperature_ = std::min(
+      natural, boundedCoolingTarget(temperature_, minimumTemperature_,
+                                    remainingTransitions));
   return true;
 }

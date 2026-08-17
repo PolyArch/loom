@@ -5,6 +5,7 @@
 #include "Common/IndexWidth.h"
 #include "Frontend/IR/LoomOps.h"
 #include "Frontend/Lowering/ExactMemRefLayout.h"
+#include "Frontend/Raising/MemoryProvenance.h"
 
 #include "Dataflow/IR/DataflowOps.h"
 
@@ -628,7 +629,7 @@ bool areDistinctAtEveryRootLaunch(mlir::Value source, mlir::Value output,
     ++launchCount;
     if (*sourceOrdinal >= launch.getBodyOperands().size() ||
         *outputOrdinal >= launch.getBodyOperands().size() ||
-        !detail::areKnownDistinctMemoryRoots(
+        !raising::haveProvenDistinctMemoryRoots(
             launch.getBodyOperands()[*sourceOrdinal],
             launch.getBodyOperands()[*outputOrdinal]))
       distinct = false;

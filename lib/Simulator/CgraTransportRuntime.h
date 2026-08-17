@@ -245,10 +245,16 @@ private:
   };
 
   struct OperandQueueBinding final {
+    struct Consumer final {
+      ChannelOrdinal channel = 0;
+      std::uint64_t semanticActorOrdinal = 0;
+      unsigned inputOrdinal = 0;
+    };
+
     ::fabric::LogicalOperandQueueKey queue;
-    ChannelOrdinal channel = 0;
     std::uint64_t unitBinding = invalidCgraTransportOrdinal;
     std::uint32_t occupancy = 0;
+    std::vector<Consumer> consumers;
   };
 
   struct PublicationGroup final {

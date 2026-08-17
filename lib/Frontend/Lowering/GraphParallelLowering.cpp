@@ -35,19 +35,101 @@ namespace lowering {
 
 namespace {
 
-std::optional<int64_t> getConstantIndex(::mlir::Value value) {
+std::optional<::llvm::APInt> getConstantInteger(::mlir::Value value) {
   ::mlir::APInt constant;
-  if (!::mlir::matchPattern(value, ::mlir::m_ConstantInt(&constant)) ||
-      !constant.isSignedIntN(64))
+  if (::mlir::matchPattern(value, ::mlir::m_ConstantInt(&constant)))
+    return constant;
+
+  auto resultWidth = [&](::mlir::Type type) -> std::optional<unsigned> {
+    if (auto integer = ::llvm::dyn_cast<::mlir::IntegerType>(type))
+      return integer.getWidth();
+    if (!type.isIndex())
+      return std::nullopt;
+    auto width = ::loom::getIndexBitWidth(value.getDefiningOp());
+    if (!width) {
+      ::llvm::consumeError(width.takeError());
+      return std::nullopt;
+    }
+    return *width;
+  };
+  if (auto cast = value.getDefiningOp<::mlir::arith::IndexCastOp>()) {
+    auto input = getConstantInteger(cast.getIn());
+    auto width = resultWidth(cast.getType());
+    if (!input || !width)
+      return std::nullopt;
+    return input->sextOrTrunc(*width);
+  }
+  if (auto cast = value.getDefiningOp<::mlir::arith::IndexCastUIOp>()) {
+    auto input = getConstantInteger(cast.getIn());
+    auto width = resultWidth(cast.getType());
+    if (!input || !width)
+      return std::nullopt;
+    return input->zextOrTrunc(*width);
+  }
+  if (auto cast = value.getDefiningOp<::mlir::arith::ExtSIOp>()) {
+    auto input = getConstantInteger(cast.getIn());
+    if (!input)
+      return std::nullopt;
+    return input->sext(
+        ::llvm::cast<::mlir::IntegerType>(cast.getType()).getWidth());
+  }
+  if (auto cast = value.getDefiningOp<::mlir::arith::ExtUIOp>()) {
+    auto input = getConstantInteger(cast.getIn());
+    if (!input)
+      return std::nullopt;
+    return input->zext(
+        ::llvm::cast<::mlir::IntegerType>(cast.getType()).getWidth());
+  }
+  if (auto cast = value.getDefiningOp<::mlir::arith::TruncIOp>()) {
+    auto input = getConstantInteger(cast.getIn());
+    if (!input)
+      return std::nullopt;
+    return input->trunc(
+        ::llvm::cast<::mlir::IntegerType>(cast.getType()).getWidth());
+  }
+  return std::nullopt;
+}
+
+std::optional<int64_t> getConstantIndex(::mlir::Value value) {
+  auto constant = getConstantInteger(value);
+  if (!constant || !constant->isSignedIntN(64))
     return std::nullopt;
-  return constant.getSExtValue();
+  return constant->getSExtValue();
+}
+
+std::optional<int64_t> getConstantIndex(::mlir::OpFoldResult value) {
+  if (::llvm::isa<::mlir::Attribute>(value)) {
+    auto attribute = ::llvm::dyn_cast<::mlir::IntegerAttr>(
+        ::llvm::cast<::mlir::Attribute>(value));
+    if (!attribute)
+      return std::nullopt;
+    const ::llvm::APInt &constant = attribute.getValue();
+    if (!constant.isSignedIntN(64))
+      return std::nullopt;
+    return constant.getSExtValue();
+  }
+  return getConstantIndex(::llvm::cast<::mlir::Value>(value));
+}
+
+template <typename Range>
+std::optional<::llvm::SmallVector<int64_t, 4>>
+getConstantIndices(Range values) {
+  ::llvm::SmallVector<int64_t, 4> result;
+  result.reserve(values.size());
+  for (::mlir::OpFoldResult value : values) {
+    auto constant = getConstantIndex(value);
+    if (!constant)
+      return std::nullopt;
+    result.push_back(*constant);
+  }
+  return result;
 }
 
 std::optional<FixedParallelDomain>
 getFixedParallelDomain(::mlir::scf::ForallOp forall) {
-  auto lower = ::mlir::getConstantIntValues(forall.getMixedLowerBound());
-  auto upper = ::mlir::getConstantIntValues(forall.getMixedUpperBound());
-  auto step = ::mlir::getConstantIntValues(forall.getMixedStep());
+  auto lower = getConstantIndices(forall.getMixedLowerBound());
+  auto upper = getConstantIndices(forall.getMixedUpperBound());
+  auto step = getConstantIndices(forall.getMixedStep());
   if (!lower || !upper || !step)
     return std::nullopt;
   return FixedParallelDomain{std::move(*lower), std::move(*upper),

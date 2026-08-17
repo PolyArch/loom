@@ -23,6 +23,7 @@ if str(TEST_ROOT) not in sys.path:
 import corpus_gate  # noqa: E402
 import corpus_inventory  # noqa: E402
 import corpus_target_profile  # noqa: E402
+from corpus_simulation_report import parse_dse_execution_projection  # noqa: E402
 
 
 EXPECTED_WORKLOAD_COUNT = 892
@@ -88,6 +89,10 @@ def _validate_dfg_projection(value: object, identity: str) -> Mapping[str, objec
         _artifact_identity(artifacts[field], f"{identity} {field}")
     if projection.get("execution_terminal") != "retired":
         raise BaselineError(f"{identity} did not retire")
+    try:
+        parse_dse_execution_projection(projection.get("dse_execution"))
+    except ValueError as exc:
+        raise BaselineError(f"{identity} has invalid DSE execution: {exc}") from exc
     for field in ("dynamic_calls", "event_count", "wavefront_steps"):
         _integer(projection.get(field), f"{identity} {field}", minimum=1)
     value_lanes = _integer(
@@ -267,6 +272,7 @@ def _semantic_case_projection(case: Mapping[str, object]) -> dict[str, object]:
                 field: dfg.get(field)
                 for field in (
                     "artifacts",
+                    "dse_execution",
                     "dynamic_calls",
                     "event_count",
                     "execution_terminal",
@@ -519,7 +525,7 @@ def run_baseline(args: argparse.Namespace) -> dict[str, object]:
 
     builtins: dict[str, object] = {}
     loom_adg = build_root / "tools" / "loom-adg" / "loom-adg"
-    for preset in ("small", "default", "large"):
+    for preset in ("small", "coverage", "large"):
         preset_root = output_root / "fabric" / preset
         store = preset_root / "store"
         store.mkdir(parents=True)

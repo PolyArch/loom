@@ -11,13 +11,13 @@ digests; this document introduces no new persistent schema:
 
 ```text
 Spatial:
-  loom.spatial_pnr.config.14.0
-  loom.spatial_pnr.freeze.2.19
+  loom.spatial_pnr.config.15.0
+  loom.spatial_pnr.freeze.2.21
   loom.mapping.pnr.objective 3.0
   selected FabricPhysicalTimingProfile descriptor and digest
 
 System:
-  loom.system_pnr.config.6.0
+  loom.system_pnr.config.7.0
   loom.system_pnr_search_domain.4.0
   loom.mapping.pnr.objective 3.0
   exact selected SpatialMapping references
@@ -61,7 +61,7 @@ profile, and all finite owner domains before candidate allocation. It derives
 canonical compute and memory choices, attachment alternatives, RegFIFO
 alternatives, residual nets, routing topology, resource contracts, packed-row
 fragments, tags, progress dependencies, objective inputs, and reverse indexes.
-Freeze descriptor `loom.spatial_pnr.freeze.2.19` covers those observable
+Freeze descriptor `loom.spatial_pnr.freeze.2.21` covers those observable
 domains. Internal storage layout is not replay state.
 
 System freeze validates exact `D/F/R/H/C/K`, imports and independently verifies
@@ -349,14 +349,22 @@ trend window `4`, positive-delta quantile `3/4`, target initial acceptance
 `4/5`, fallback temperature `1024`, minimum temperature `1`, cooling `19/20`,
 master seed `0`, and the deterministic protocols above.
 
-| Preset | Seeds | Assignments | Endpoint expansions | Negotiations | Calibration | Level base | Per movable |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `report_only` | 1 | 4096 | 16384 | 8 | 16 | 16 | 1 |
-| `quick_explore` | 2 | 16384 | 65536 | 16 | 64 | 64 | 2 |
-| `balanced_explore` | 4 | 65536 | 262144 | 64 | 256 | 128 | 8 |
-| `performance_explore` | 8 | 262144 | 1048576 | 128 | 512 | 256 | 16 |
-| `implementation` | 16 | 524288 | 2097152 | 256 | 1024 | 512 | 24 |
-| `strict_implementation` | 32 | 1048576 | 4194304 | 512 | 2048 | 1024 | 32 |
+| Preset | Seeds | Assignments | Endpoint expansions | Negotiations | Calibration | Temperature levels | Level base | Per movable |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `report_only` | 1 | 4096 | 16384 | 8 | 16 | 4 | 16 | 1 |
+| `quick_explore` | 2 | 16384 | 65536 | 16 | 64 | 8 | 64 | 2 |
+| `balanced_explore` | 4 | 65536 | 262144 | 64 | 256 | 16 | 128 | 8 |
+| `performance_explore` | 8 | 262144 | 1048576 | 128 | 512 | 32 | 256 | 16 |
+| `implementation` | 16 | 524288 | 2097152 | 256 | 1024 | 64 | 512 | 24 |
+| `strict_implementation` | 32 | 1048576 | 4194304 | 512 | 2048 | 128 | 1024 | 32 |
+
+`temperature_level_limit` is a semantic work bound. Cooling proceeds normally
+when that schedule reaches the minimum within the bound. Otherwise each level
+uses the colder of ordinary cooling and a deterministic integer envelope over
+the remaining range, and the last permitted level is the unique
+minimum-temperature level. Consequently, an energy weight or calibrated delta
+can change acceptance probabilities but cannot silently increase the number
+of proposal slots or collapse every non-final level into the same hot regime.
 
 Spatial `report_only` disables repair. Other Spatial presets select CP-SAT
 with `(max_region_decisions, max_solver_calls)` of `(64,128)`, `(256,1024)`,

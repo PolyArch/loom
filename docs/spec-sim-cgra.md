@@ -164,6 +164,26 @@ accesses and exported capabilities to Fabric memory services and service
 routes. CGRA-sim models the selected physical width, capacity, ports, queues,
 banks, internal dependency forwarding, and protocol-visible timing.
 
+A rooted use selected as `LocalMemoryServiceRef` executes the exact local
+service physical action frozen by SpatialMapping. A use selected as
+`ManagerEndpointRef` instead requires one execution-scoped external memory
+provider and must not acquire or synthesize a local service action. The
+provider request contains the selected endpoint, canonical runtime-object
+ordinal, complete active element geometry, defined write bytes when present,
+and the exact Spatial ready coordinate. Missing provider support is typed
+`Unsupported`.
+
+The standalone CGRA Evaluation model derives its provider state from the exact
+immutable `SpatialSimulationRuntimeInput`; provider writes update only that
+execution-scoped state. The gem5 Spatial engine implements the same provider
+boundary by transacting against the invocation's guest objects. Neither
+provider chooses an object, service, route, access shape, or Mapping decision.
+Standalone CGRA cycle evidence covers the SpatialCore subject and therefore
+adds no invented System-memory latency. The gem5 provider separately advances
+System time while servicing the request, so System evidence retains that
+latency without changing the Spatial event coordinate or the CGRA cycle
+metric.
+
 For every load or store, the simulator derives the same
 `CanonicalMemoryAccessView` used by TechMapping and executes the exact selected
 Fabric operation port and use pattern. It distinguishes element, contiguous,
@@ -288,13 +308,17 @@ A physical action names either one Fabric use pattern or the exact selected
 traversal set with its canonical set of Fabric-owned use patterns. The set is
 empty for a contention-free direct transfer, a singleton for one ordinary
 resource-bearing traversal, and contains every per-traversal pattern in one
-derived atomic broadcast activation. Compute, memory, temporal-switch,
-broadcast, buffered-route, and direct point-transfer behavior therefore use
-the same closed algebra. The request-to-grant interval is the stall; equal
-coordinates mean no stall. Queue changes, occupancy, resource-state
-transitions, Tags, configurations, and blocker strings are derived from the
-exact Fabric contract, Mapping, and lifecycle and are not duplicated as trace
-events.
+derived atomic broadcast activation. The activation identity is derived from
+Mapping: `(switch occurrence, input)` for a Spatial switch and
+`(switch occurrence, configured row, input)` for a Temporal switch. A
+Fabric-owned requester group is the resource-arbitration or configuration
+identity and cannot substitute for that execution identity. Compute, memory,
+temporal-switch, broadcast, buffered-route, and direct point-transfer behavior
+therefore use the same closed algebra. The request-to-grant interval is the
+stall; equal coordinates mean no stall. Queue changes, occupancy,
+resource-state transitions, Tags, configurations, and blocker strings are
+derived from the exact Fabric contract, Mapping, and lifecycle and are not
+duplicated as trace events.
 
 Implementation lane or beat actions remain deterministic child physical
 actions of one canonical actor transition and do not appear as additional

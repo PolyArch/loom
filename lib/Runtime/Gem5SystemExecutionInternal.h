@@ -58,7 +58,7 @@ inline constexpr llvm::StringLiteral kMemoryTablePath =
     "inputs/system-memory-table.bin";
 inline constexpr llvm::StringLiteral kHostResultPath = "inputs/host-result.bin";
 inline constexpr llvm::StringLiteral kHostReturnPath = "inputs/host-return.bin";
-inline constexpr std::uint64_t kMaximumGem5Ticks = 20'000'000;
+inline constexpr std::uint64_t kMaximumGem5Ticks = 30'000'000;
 inline constexpr std::uint64_t kMaximumSpatialWork = 1'000'000;
 inline constexpr std::uint64_t kGem5PageBytes = 4096;
 inline constexpr std::uint64_t kGem5StackBytes = 64 * 1024;

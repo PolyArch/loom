@@ -617,7 +617,11 @@ pnr::ResolvedPnrConfigView spatialConfig(llvm::StringRef test) {
   config.dse.spatialPnr.temporaryViolations.admitted = {
       ResolvedPnrViolationKind::UnroutedObligation,
       ResolvedPnrViolationKind::CapacityOveruse};
-  config.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 2;
+  const auto &selection = config.dse.spatialPnr.objectiveSelection;
+  config.dse.spatialPnr.objectiveSelection.selectedSearchEnergy =
+      config.dse.objectiveCatalogs
+          .totalOrderings[selection.selectedTotalOrdering]
+          .weightedLevels.front();
   auto &search = config.dse.spatialPnr.search;
   search.initializer.seedAttemptCount = 1;
   search.actionProposal = {1, 0, 0};

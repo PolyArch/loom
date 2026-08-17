@@ -29,6 +29,7 @@ namespace loom::pnr {
 namespace detail {
 class InitializerRelationModel;
 class SystemCapacityModel;
+class FrozenSpatialRecurrenceTimingDemand;
 } // namespace detail
 
 class FrozenSystemPnrProblem;
@@ -126,6 +127,7 @@ struct FrozenSystemMemoryServiceBinding final {
   ::loom::fabric::AccCoreOccurrenceRef accCore;
   ::loom::fabric::SystemServiceEndpointRef systemEndpoint;
   ::loom::fabric::FabricMemoryEndpointRef occurrenceEndpoint;
+  std::optional<std::uint64_t> maxIssueToRetireCycles;
   std::vector<::loom::fabric::FabricMemoryServiceTargetPlan> targetPlans;
   struct UsePatternDomain final {
     ::loom::fabric::FabricMemoryServiceRegionRef region;
@@ -254,8 +256,8 @@ public:
   llvm::ArrayRef<PnrIndex> graphChoiceCatalogOrdinals(PnrIndex decision) const;
   llvm::ArrayRef<std::uint64_t>
   graphChoiceStaticSchedulePressures(PnrIndex decision) const;
-  llvm::ArrayRef<SpatialRecurrenceTimingProjection>
-  graphChoiceRecurrenceTimings(PnrIndex decision) const;
+  const std::shared_ptr<const detail::FrozenSpatialRecurrenceTimingDemand> &
+  graphChoiceRecurrenceDemand(PnrIndex decision, PnrIndex choice) const;
   llvm::ArrayRef<PnrIndex> graphThreadOverlaps(PnrIndex decision) const;
   llvm::ArrayRef<PnrIndex> serviceLegSinkTerminals(PnrIndex leg) const;
   PnrIndex accCoreTargetClass(PnrIndex core) const;
@@ -294,8 +296,9 @@ private:
       std::vector<FrozenSystemGraphExecutionDecision> graphDecisions,
       std::vector<PnrIndex> graphChoiceCatalogOrdinals,
       std::vector<std::uint64_t> graphChoiceStaticSchedulePressures,
-      std::vector<SpatialRecurrenceTimingProjection>
-          graphChoiceRecurrenceTimings,
+      std::vector<
+          std::shared_ptr<const detail::FrozenSpatialRecurrenceTimingDemand>>
+          graphChoiceRecurrenceDemands,
       std::vector<PnrIndex> graphThreadOverlapOffsets,
       std::vector<PnrIndex> graphThreadOverlaps,
       std::shared_ptr<const FrozenEndpointRoutingTopology> routingTopology,
@@ -346,7 +349,9 @@ private:
   std::vector<FrozenSystemGraphExecutionDecision> graphDecisions_;
   std::vector<PnrIndex> graphChoiceCatalogOrdinals_;
   std::vector<std::uint64_t> graphChoiceStaticSchedulePressures_;
-  std::vector<SpatialRecurrenceTimingProjection> graphChoiceRecurrenceTimings_;
+  std::vector<
+      std::shared_ptr<const detail::FrozenSpatialRecurrenceTimingDemand>>
+      graphChoiceRecurrenceDemands_;
   std::vector<PnrIndex> graphThreadOverlapOffsets_;
   std::vector<PnrIndex> graphThreadOverlaps_;
   std::shared_ptr<const FrozenEndpointRoutingTopology> routingTopology_;
@@ -413,12 +418,6 @@ freezeSystemPnrProblemWithNormalizedTiming(
     const ArtifactStore &store,
     const SystemStaticContext *staticContext = nullptr,
     const SystemActiveContext *activeContext = nullptr);
-
-/// Rebuilds the selected graph recurrence projection from the frozen catalog
-/// that was cold-derived from each persistent SpatialMapping dependency tuple.
-llvm::Expected<SpatialRecurrenceTimingProjection>
-projectSystemRecurrenceTiming(const FrozenSystemPnrProblem &problem,
-                              llvm::ArrayRef<PnrIndex> graphChoices);
 
 } // namespace loom::pnr
 

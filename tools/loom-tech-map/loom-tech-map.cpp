@@ -56,11 +56,10 @@ llvm::cl::list<std::string> fabricReferenceFiles(
                    "System root identity with one imported Module"),
     llvm::cl::value_desc("path"), llvm::cl::OneOrMore);
 
-llvm::cl::opt<std::string>
-    accelerationProfile(
-        "loom-accel-profile",
-        llvm::cl::desc("builtin acceleration preset or configuration path"),
-        llvm::cl::value_desc("preset-or-path"), llvm::cl::init(""));
+llvm::cl::opt<std::string> accelerationProfile(
+    "loom-accel-profile",
+    llvm::cl::desc("builtin acceleration preset or configuration path"),
+    llvm::cl::value_desc("preset-or-path"), llvm::cl::init(""));
 
 llvm::cl::opt<std::string> reportPath("report",
                                       llvm::cl::desc("coverage report JSON"),
@@ -109,6 +108,33 @@ accounting(const loom::mapping::TechMappingGenerationAccounting &value) {
   llvm::json::Object result;
   result["match_row_attempts"] = value.matchRowAttempts;
   result["partial_cover_expansions"] = value.partialCoverExpansions;
+  result["compute_context_projection_work"] =
+      value.computeContextProjectionWork;
+  result["compute_context_matching_checks"] =
+      value.computeContextMatchingChecks;
+  result["compute_context_rejected_checks"] =
+      value.computeContextRejectedChecks;
+  result["compute_context_matching_work"] = value.computeContextMatchingWork;
+  result["memory_supply_projection_work"] = value.memorySupplyProjectionWork;
+  result["memory_supply_checks"] = value.memorySupplyChecks;
+  result["memory_supply_partial_checks"] = value.memorySupplyPartialChecks;
+  result["memory_supply_full_checks"] = value.memorySupplyFullChecks;
+  result["memory_supply_rejected_checks"] = value.memorySupplyRejectedChecks;
+  result["memory_supply_empty_domain_rejections"] =
+      value.memorySupplyEmptyDomainRejections;
+  result["memory_supply_exclusive_resource_rejections"] =
+      value.memorySupplyExclusiveResourceRejections;
+  result["memory_supply_spatial_port_rejections"] =
+      value.memorySupplySpatialPortRejections;
+  result["memory_supply_temporal_ingress_rejections"] =
+      value.memorySupplyTemporalIngressRejections;
+  result["memory_supply_internal_connection_rejections"] =
+      value.memorySupplyInternalConnectionRejections;
+  result["memory_supply_resident_capacity_rejections"] =
+      value.memorySupplyResidentCapacityRejections;
+  result["memory_supply_joint_assignment_rejections"] =
+      value.memorySupplyJointAssignmentRejections;
+  result["memory_supply_search_work"] = value.memorySupplySearchWork;
   result["publication_slots"] = value.publicationSlots;
   return result;
 }

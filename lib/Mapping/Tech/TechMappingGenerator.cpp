@@ -143,6 +143,33 @@ interruptionPayload(const TechMappingInterruptionSnapshot &snapshot) {
   return payload;
 }
 
+void emitTechMatchDomainStatistics(
+    const detail::TechMatchDomain &domain,
+    const detail::TechMatchDomainStatistics &statistics) {
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::TechMapping,
+      mapping_debug::Event::Statistics, [&](llvm::json::Object &fields) {
+        fields["statistics_kind"] = "tech_match_domain";
+        fields["row_count"] = statistics.rowCount;
+        fields["compute_row_count"] = statistics.computeRowCount;
+        fields["memory_row_count"] = statistics.memoryRowCount;
+        fields["domain_exhausted"] = domain.exhausted;
+        llvm::json::Array buckets;
+        for (const detail::TechMatchMemoryDomainBucket &bucket :
+             statistics.memoryBuckets) {
+          llvm::json::Object value;
+          value["schedule"] = bucket.schedule == ::fabric::Schedule::Temporal
+                                  ? "temporal"
+                                  : "spatial";
+          value["actor_count"] = bucket.actorCount;
+          value["occurrence_domain_width"] = bucket.occurrenceDomainWidth;
+          value["row_count"] = bucket.rowCount;
+          buckets.push_back(std::move(value));
+        }
+        fields["memory_buckets"] = std::move(buckets);
+      });
+}
+
 } // namespace
 
 llvm::StringRef
@@ -221,6 +248,39 @@ generateTechMappings(const TechMappingGenerationInputs &inputs) {
           fields["match_row_replay_visits"] = accounting.matchRowReplayVisits;
           fields["partial_cover_expansions"] =
               accounting.partialCoverExpansions;
+          fields["compute_context_projection_work"] =
+              accounting.computeContextProjectionWork;
+          fields["compute_context_matching_checks"] =
+              accounting.computeContextMatchingChecks;
+          fields["compute_context_rejected_checks"] =
+              accounting.computeContextRejectedChecks;
+          fields["compute_context_matching_work"] =
+              accounting.computeContextMatchingWork;
+          fields["memory_supply_projection_work"] =
+              accounting.memorySupplyProjectionWork;
+          fields["memory_supply_checks"] = accounting.memorySupplyChecks;
+          fields["memory_supply_partial_checks"] =
+              accounting.memorySupplyPartialChecks;
+          fields["memory_supply_full_checks"] =
+              accounting.memorySupplyFullChecks;
+          fields["memory_supply_rejected_checks"] =
+              accounting.memorySupplyRejectedChecks;
+          fields["memory_supply_empty_domain_rejections"] =
+              accounting.memorySupplyEmptyDomainRejections;
+          fields["memory_supply_exclusive_resource_rejections"] =
+              accounting.memorySupplyExclusiveResourceRejections;
+          fields["memory_supply_spatial_port_rejections"] =
+              accounting.memorySupplySpatialPortRejections;
+          fields["memory_supply_temporal_ingress_rejections"] =
+              accounting.memorySupplyTemporalIngressRejections;
+          fields["memory_supply_internal_connection_rejections"] =
+              accounting.memorySupplyInternalConnectionRejections;
+          fields["memory_supply_resident_capacity_rejections"] =
+              accounting.memorySupplyResidentCapacityRejections;
+          fields["memory_supply_joint_assignment_rejections"] =
+              accounting.memorySupplyJointAssignmentRejections;
+          fields["memory_supply_search_work"] =
+              accounting.memorySupplySearchWork;
           fields["candidate_evaluations"] = accounting.candidateEvaluations;
           fields["publication_slots"] = accounting.publicationSlots;
           if (interruption)
@@ -256,6 +316,9 @@ generateTechMappings(const TechMappingGenerationInputs &inputs) {
     return finish(TechMappingGenerationOutcome(
         interrupted(TechMappingInterruptionStage::MatchRowDerivation, {},
                     accounting, domain->actors.size(), resources)));
+  const detail::TechMatchDomainStatistics domainStatistics =
+      detail::summarizeTechMatchDomain(*domain);
+  emitTechMatchDomainStatistics(*domain, domainStatistics);
 
   auto search = detail::searchTechMatchCovers(
       *domain, inputs.config, accounting,
@@ -347,6 +410,9 @@ enumerateTechMappingCandidates(
         interruptionSnapshot(TechMappingInterruptionStage::MatchRowDerivation,
                              accounting, std::nullopt, domain->actors.size(), 0,
                              resources)};
+  const detail::TechMatchDomainStatistics domainStatistics =
+      detail::summarizeTechMatchDomain(*domain);
+  emitTechMatchDomainStatistics(*domain, domainStatistics);
   auto search = detail::searchTechMatchCovers(
       *domain, inputs.config, accounting,
       inputs.config.candidateEvaluationLimit(), inputs.executionControl);

@@ -2,6 +2,7 @@
 // RUN: loom-config-test --resolved-json | FileCheck %s --check-prefix=NO-TECHMAP
 // RUN: loom-config-test --resolved-identity | FileCheck %s --check-prefix=IDENTITY
 // RUN: loom-config-test --resolved-json --loom-accel-profile=quick_explore | FileCheck %s --check-prefix=QUICK
+// RUN: loom-config-test --resolved-json --loom-accel-profile=%p/resolved_inherit_quick.yaml | FileCheck %s --check-prefix=QUICK-INHERIT
 // RUN: loom-config-test --resolved-json --loom-accel-profile=implementation | FileCheck %s --check-prefix=IMPLEMENTATION
 // RUN: loom-config-test --resolved-json > %t.canonical.json
 // RUN: loom-config-test --resolved-json --loom-accel-profile=%t.canonical.json > %t.reparsed.json
@@ -12,12 +13,15 @@
 
 // JSON-DAG: "hardware_target"
 // JSON-DAG: "template_identity": "loom.adg.builtin.general_purpose"
-// JSON-DAG: "schema_major": 5
+// JSON-DAG: "schema_major": 6
 // JSON-DAG: "schema_minor": 0
 // JSON-DAG: "acc_core_count": 8
 // JSON-DAG: "mesh_dimension": 6
 // JSON-DAG: "spatial_pe_count": 27
 // JSON-DAG: "temporal_pe_count": 9
+// JSON-DAG: "spatial_fu_occurrences"
+// JSON-DAG: "token_control": 8
+// JSON-DAG: "temporal_fu_occurrences"
 // JSON-DAG: "memory_capacity_bytes": 262144
 // JSON-DAG: "dse"
 // JSON-DAG: "structured_ownership"
@@ -44,10 +48,11 @@
 // JSON-DAG: "price_kernel": "multiplicative"
 // JSON-DAG: "calibration_proposal_count": 256
 // JSON-DAG: "minimum_temperature": 1
+// JSON-DAG: "temperature_level_limit": 16
 // JSON-DAG: "max_region_decisions": 256
 // JSON-DAG: "max_solver_calls": 1024
 // JSON-DAG: "selected_total_ordering": 0
-// JSON-DAG: "selected_search_energy": 4
+// JSON-DAG: "selected_search_energy": 5
 // JSON-NOT: "config_id"
 // JSON-NOT: "global"
 // JSON-NOT: "ranking_policy"
@@ -59,6 +64,13 @@
 // QUICK-DAG: "endpoint_expansion_limit": 65536
 // QUICK-DAG: "max_region_decisions": 64
 // QUICK-DAG: "max_solver_calls": 128
+// QUICK-INHERIT-DAG: "candidate_evaluation_limit": 64
+// QUICK-INHERIT-DAG: "candidate_publication_limit": 8
+// QUICK-INHERIT-DAG: "seed_attempt_count": 2
+// QUICK-INHERIT-DAG: "assignment_attempt_limit_per_seed": 16384
+// QUICK-INHERIT-DAG: "endpoint_expansion_limit": 65536
+// QUICK-INHERIT-DAG: "max_region_decisions": 64
+// QUICK-INHERIT-DAG: "max_solver_calls": 128
 // IMPLEMENTATION-DAG: "seed_attempt_count": 16
 // IMPLEMENTATION-DAG: "assignment_attempt_limit_per_seed": 524288
 // IMPLEMENTATION-DAG: "endpoint_expansion_limit": 2097152

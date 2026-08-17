@@ -9,8 +9,6 @@
 
 namespace loom::frontend::detail {
 
-bool areKnownDistinctMemoryRoots(mlir::Value lhs, mlir::Value rhs);
-
 bool canPromoteOrderedBufferToChannel(mlir::memref::AllocOp allocation);
 bool canPromoteOrderedBufferToChannel(mlir::LLVM::AllocaOp allocation);
 

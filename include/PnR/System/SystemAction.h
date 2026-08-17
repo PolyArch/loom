@@ -65,6 +65,7 @@ using SystemTransportRoutingAction =
 
 struct SystemServiceTargetAction final {
   PnrIndex context = 0;
+  PnrIndex subject = 0;
   PnrIndex choice = 0;
 };
 

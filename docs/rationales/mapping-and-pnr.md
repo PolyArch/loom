@@ -921,8 +921,15 @@ probability of a local search move.
 The minimum-temperature level is explicit for the same replay reason. Stopping
 as soon as cooling reaches the minimum can either skip that level or execute it
 twice depending on loop shape. Executing exactly one complete level at the
-minimum gives one finite rule without a second temperature-level budget or a
-host-time termination heuristic.
+minimum gives one finite rule. An explicit temperature-level limit is also
+required because calibrated energy magnitude is not a work budget: without
+that owner, multiplying an objective weight can multiply runtime while every
+configured proposal count remains unchanged. If ordinary cooling cannot reach
+the minimum within the limit, an integer geometric envelope distributes the
+remaining temperature range and the last permitted level is the minimum. A
+linear envelope handles ratios too small for an integer divisor. This keeps
+work bounded without a host-time termination heuristic and avoids spending
+all non-final work at effectively one hot temperature.
 
 An exact all-zero final violation vector is different from heuristic no
 progress. It is already the condition the independent final verifier requires,
@@ -1001,16 +1008,18 @@ frozen connectivity.
 
 Canonical owner order necessarily hides a root's not-yet-processed compute
 neighbors during the first preference pass. Reversing the order only moves
-that blind spot, and mixing partial-neighbor schedule pressure into the same
-greedy choice can worsen the complete schedule objective. Once every compute
-root has a choice, the initializer therefore performs one bounded coordinate
-pass over unconstrained roots. It holds each root's selected schedule fixed,
-temporarily releases its current instruction context, and ranks only
-same-schedule choices against all selected neighbors and boundary anchors.
-This preserves the structural schedule objective and hard context
-disjointness while removing the canonical-order locality bias. A separate
-iterative placer was rejected because it would need another convergence rule,
-work budget, and mutable placement authority before routing has begun.
+that blind spot. The first pass therefore projects each choice's actor
+contribution and every incident schedule-crossing edge whose other root is
+already selected. Once every compute root has a choice, one bounded coordinate
+pass repeats the projection against all selected compute neighbors while
+temporarily releasing the current instruction context. This pass may change
+the schedule as well as the occurrence, so an early partial choice cannot
+freeze a high-pressure Spatial/Temporal cut. Memory roots then use the same
+projection against all compute roots and earlier memory roots. The hard
+relation solver validates the resulting preferences and remains the sole
+feasibility owner. A separate iterative placer was rejected because it would
+need another convergence rule, work budget, and mutable placement authority
+before routing has begun.
 
 Schedule is also a physical seed property rather than an interchangeable
 placement label. A Temporal placement terminates configured instruction and

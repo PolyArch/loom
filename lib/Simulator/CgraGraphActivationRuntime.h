@@ -33,7 +33,8 @@ public:
          const ::dataflow::CanonicalDataflowProgramView &dataflow,
          ::dataflow::RootedGraphLaunchRef launch, ::dataflow::GraphRef graph,
          const PreparedGraphExecution &execution, SimulatorState &state,
-         bool captureMicroarchitecture);
+         bool captureMicroarchitecture,
+         CgraExternalMemoryProvider *externalMemoryProvider = nullptr);
 
   llvm::Error start(SpatialEventCoordinate coordinate,
                     llvm::MutableArrayRef<GraphIngressEmission> ingress);

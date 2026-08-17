@@ -74,7 +74,7 @@ ActionKey anchorKey(const SystemResourceAllocationAction &action) {
       [](const auto &value) {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, SystemServiceTargetAction>)
-          return ActionKey{{0, value.context}};
+          return ActionKey{{0, value.context, value.subject}};
         else if constexpr (std::is_same_v<T, SystemInstructionUsePatternAction>)
           return ActionKey{{1, value.use}};
         else

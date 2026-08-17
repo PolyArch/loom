@@ -15,7 +15,7 @@ namespace loom::pnr::detail {
 
 llvm::Expected<std::vector<SystemServiceTargetSelection>>
 systemServiceTargetChoices(const SystemCandidateState &candidate,
-                           PnrIndex context);
+                           PnrIndex context, PnrIndex subject);
 
 llvm::Expected<std::vector<::loom::fabric::FabricUsePatternRef>>
 systemInstructionUsePatternChoices(const SystemCandidateState &candidate,
@@ -27,7 +27,8 @@ systemServiceUsePatternChoices(const SystemCandidateState &candidate,
 
 llvm::Expected<SystemCandidateStateHandle>
 rebuildSystemCandidateWithServiceTarget(const SystemCandidateState &candidate,
-                                        PnrIndex context, PnrIndex choice);
+                                        PnrIndex context, PnrIndex subject,
+                                        PnrIndex choice);
 
 llvm::Expected<SystemCandidateStateHandle>
 rebuildSystemCandidateWithInstructionUsePattern(

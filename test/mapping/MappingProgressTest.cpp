@@ -2,6 +2,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Mapping/Artifact/MappingProgressAnalysis.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
@@ -12,6 +13,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,7 +33,7 @@ template <typename T> T take(llvm::Expected<T> value) {
 
 void initializedFeedbackProgressBasis() {
   mlir::DialectRegistry registry;
-  registry.insert<dataflow::DataflowDialect>();
+  registry.insert<dataflow::DataflowDialect, mlir::func::FuncDialect>();
   mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
   auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
 module {
@@ -44,6 +46,18 @@ module {
         : (i1, none) -> (none, none)
     dataflow.graph.return values() streams() memories()
         complete(%lanes#0 : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
+      %phase: i1) ctrl (%start: none) {
+    %done = dataflow.graph.launch @feedback deps(%start) values(%phase)
+        stream_inputs() memories() stream_outputs()
+        : (none, i1) -> none
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host(%phase: i1) {
+    %completion = dataflow.thread.launch @worker(%phase)
+        : (i1) -> !dataflow.thread_token
+    return
   }
 }
 
@@ -83,6 +97,68 @@ module {
           .kind !=
       loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
     fail("durable initialized feedback did not close progress");
+
+  std::vector<dataflow::RootedGraphLaunchRef> launches;
+  view.forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
+    launches.push_back(launch);
+  });
+  if (launches.size() != 1)
+    fail("initialized feedback fixture has no unique rooted launch");
+  std::optional<dataflow::ActorRef> carry;
+  std::optional<dataflow::ActorRef> demux;
+  for (const dataflow::CanonicalActorView &actor : view.actors()) {
+    const llvm::StringRef name = actor.op->getName().getStringRef();
+    if (name == "dataflow.carry")
+      carry = actor.ref;
+    else if (name == "dataflow.demux")
+      demux = actor.ref;
+  }
+  if (!carry || !demux)
+    fail("initialized feedback fixture lost its actor pair");
+  const auto transition = [&](dataflow::ActorRef actor) {
+    return dataflow::EventFamilyKey(dataflow::ContextualActorTransitionEventRef{
+        dataflow::ContextualActorRef{launches.front(), actor}, 0});
+  };
+  const auto carryTransition = transition(*carry);
+  const auto demuxTransition = transition(*demux);
+  const auto eventModel = take(loom::mapping::freezeMappingProgressModel(
+      view, {carryTransition, demuxTransition}));
+  loom::mapping::MappingProgressProjection eventProjection;
+  eventProjection.basis = basis;
+  eventProjection.routeObligations.push_back({true});
+  eventProjection.capacityCells.push_back({1, 0});
+  const loom::mapping::InstructionExecutionContextKey contextKey{
+      loom::fabric::AccCoreOccurrenceRef{}};
+  eventProjection.resourceActivations.push_back(
+      {contextKey,
+       {loom::mapping::SystemPresburgerCell{}},
+       {carryTransition},
+       {{0, 1}},
+       {{{carryTransition}}},
+       {"feedback-event-causality", 0,
+        loom::mapping::MappingResourceGrantPolicyKind::None}});
+  eventProjection.resourceActivations.push_back(
+      {contextKey,
+       {loom::mapping::SystemPresburgerCell{}},
+       {demuxTransition},
+       {{0, 1}},
+       {},
+       {"feedback-event-causality", 0,
+        loom::mapping::MappingResourceGrantPolicyKind::None}});
+  if (take(loom::mapping::deriveMappingProgressClosure(eventModel,
+                                                       eventProjection))
+          .kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("initialized feedback formed false same-coordinate event causality");
+  eventProjection.resourceActivations.front()
+      .causalRelease.front()
+      .alternatives.push_back(demuxTransition);
+  if (take(loom::mapping::deriveMappingProgressClosure(eventModel,
+                                                       eventProjection))
+          .kind !=
+      loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet)
+    fail("a satisfied release alternative extended the holder interval");
+
   projection.basis.kind =
       loom::mapping::MappingDataflowProgressBasisKind::Cyclic;
   if (take(loom::mapping::deriveMappingProgressClosure(model, projection))

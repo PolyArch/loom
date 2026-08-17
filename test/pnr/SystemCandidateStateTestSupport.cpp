@@ -70,9 +70,19 @@ void verifyProgressGrantPolicyContrast(
       dataflow.rootThreadLaunches().front().ref;
   const ::dataflow::RootThreadBoundaryTransferRef startTransfer(
       ::dataflow::RootThreadStartTransferRef{root});
+  const ::dataflow::RootThreadBoundaryTransferRef completionTransfer(
+      ::dataflow::RootThreadCompletionTransferRef{root});
+  const ::dataflow::EventFamilyKey startProduced(
+      ::dataflow::StaticTransferEventRef(::dataflow::ProducedTransferEventRef{
+          ::dataflow::CanonicalProducerTerminalRef(
+              ::dataflow::RootThreadBoundarySourceRef{startTransfer})}));
   const ::dataflow::EventFamilyKey trigger(::dataflow::StaticTransferEventRef(
       ::dataflow::ConsumedTransferEventRef{::dataflow::CanonicalSinkTerminalRef(
           ::dataflow::RootThreadBoundarySinkRef{startTransfer})}));
+  const ::dataflow::EventFamilyKey completionProduced(
+      ::dataflow::StaticTransferEventRef(::dataflow::ProducedTransferEventRef{
+          ::dataflow::CanonicalProducerTerminalRef(
+              ::dataflow::RootThreadBoundarySourceRef{completionTransfer})}));
   auto model =
       take(loom::mapping::freezeMappingProgressModel(dataflow, {trigger}));
   const auto project =
@@ -100,6 +110,46 @@ void verifyProgressGrantPolicyContrast(
       project(loom::mapping::MappingResourceGrantPolicyKind::RoundRobin).kind ==
           loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet,
       "round-robin contention did not establish progress");
+
+  const auto intervalModel = take(loom::mapping::freezeMappingProgressModel(
+      dataflow, {startProduced, trigger, completionProduced}));
+  const loom::mapping::InstructionExecutionContextKey context{
+      candidate.problem().accCores().front()};
+  const auto intervalProjection =
+      [&](const ::dataflow::EventFamilyKey &holderTrigger,
+          const ::dataflow::EventFamilyKey &holderRelease) {
+        loom::mapping::MappingProgressProjection projection;
+        projection.basis = {
+            loom::mapping::MappingDataflowProgressBasisKind::Acyclic};
+        projection.capacityCells.push_back({1, 0});
+        projection.resourceActivations.push_back(
+            {context,
+             {loom::mapping::SystemPresburgerCell{}},
+             {holderTrigger},
+             {{0, 1}},
+             {{{holderRelease}}},
+             {"event-interval", 0,
+              loom::mapping::MappingResourceGrantPolicyKind::None}});
+        projection.resourceActivations.push_back(
+            {context,
+             {loom::mapping::SystemPresburgerCell{}},
+             {trigger},
+             {{0, 1}},
+             {},
+             {"event-interval", 0,
+              loom::mapping::MappingResourceGrantPolicyKind::None}});
+        return take(loom::mapping::deriveMappingProgressClosure(intervalModel,
+                                                                projection));
+      };
+  require(intervalProjection(completionProduced, completionProduced).kind ==
+              loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet,
+          "a request preceding holder acquisition created a false wait cycle");
+  require(intervalProjection(startProduced, trigger).kind ==
+              loom::mapping::MappingProgressClosureKind::ProvenNoClosedWaitSet,
+          "same-coordinate replacement created a false wait cycle");
+  require(intervalProjection(startProduced, completionProduced).kind ==
+              loom::mapping::MappingProgressClosureKind::ProofNotEstablished,
+          "a real hold-and-wait interval lost its possible-cycle witness");
 }
 
 void verifySelectedRouteCapacity(
@@ -816,7 +866,8 @@ void loom::pnr::test::verifyFinalizedSystemMappingWorkflow(
   const auto strictProgress =
       take(loom::mapping::deriveSystemMappingProgressClosure(dataflow, fabric,
                                                              physicalClosure));
-  require(strictProgress.kind == candidate.progressClosure().kind,
+  require(strictProgress.kind == candidate.progressClosure().kind &&
+              strictProgress.reason == candidate.progressClosure().reason,
           "candidate and strict System progress projections diverged");
 
   auto draft = take(materializeSystemCandidateDraft(candidate, context));
@@ -1006,6 +1057,11 @@ void loom::pnr::test::verifySystemServiceTargetRejections(
   const auto updateResourceOwners = [&](::mapping::SystemOp root,
                                         ::mapping::MemoryRegionTargetOp target,
                                         bool matchRegion) {
+    auto targetPlan = target->getParentOfType<::mapping::ServicePlanOp>();
+    auto targetService =
+        target->getParentOfType<::mapping::ServiceRealizationOp>();
+    require(targetPlan && targetService,
+            "memory target has no persistent plan owner");
     for (auto use : root.getBody().front().getOps<::mapping::ResourceUseOp>()) {
       auto owner =
           mlir::dyn_cast<::mapping::ServicePlanElementRefAttr>(use.getOwner());
@@ -1013,7 +1069,9 @@ void loom::pnr::test::verifySystemServiceTargetRejections(
         continue;
       auto element = mlir::dyn_cast<::mapping::MemoryRegionElementKeyAttr>(
           owner.getElement());
-      if (!element || element.getLogicalMemory() != target.getLogicalMemory() ||
+      if (!element || owner.getService() != targetService.getKey() ||
+          owner.getPlanOrdinal() != targetPlan.getPlanOrdinal() ||
+          element.getLogicalMemory() != target.getLogicalMemory() ||
           element.getInterval() != target.getInterval() ||
           (matchRegion &&
            element.getServiceRegion() != target.getServiceRegion()))
@@ -1076,12 +1134,14 @@ void loom::pnr::test::verifySystemResourceAction(
   const auto subtree = llvm::find_if(routingChoices, [](const auto &action) {
     return std::holds_alternative<SystemRootedSubtreeRoutingAction>(action);
   });
-  const auto global = llvm::find_if(routingChoices, [](const auto &action) {
+  const bool hasGlobalProposal =
+      llvm::any_of(routingChoices, [](const auto &action) {
     return std::holds_alternative<SystemGlobalRoutingAction>(action);
   });
-  require(single != routingChoices.end() && subtree != routingChoices.end() &&
-              global != routingChoices.end(),
-          "System routing domain omitted a closed negotiated scope");
+  require(single != routingChoices.end() && subtree != routingChoices.end(),
+          "System routing domain omitted an incremental negotiated scope");
+  require(!hasGlobalProposal,
+          "System proposal domain admitted the final global closure Action");
 
   const auto sameRoute = [](const SystemCandidateState &lhs,
                             const SystemCandidateState &rhs, PnrIndex leg) {
@@ -1230,7 +1290,10 @@ void loom::pnr::test::verifySystemResourceAction(
       take(candidate->problem().objectiveProgram().evaluate(*candidate));
   SystemActionProbeAccounting globalWork;
   auto globalProbe = take(probeSystemAction(
-      candidate, objective, SystemMappingAction{*global}, globalWork));
+      candidate, objective,
+      SystemMappingAction{
+          SystemTransportRoutingAction{SystemGlobalRoutingAction{}}},
+      globalWork));
   require(globalWork.assignmentAttempts == 0 &&
               globalWork.negotiationIterations != 0,
           "Global routing Action did not consume negotiated routing work");

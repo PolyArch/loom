@@ -354,7 +354,15 @@ void loom::test::exerciseSpatialTagConstraintRelations(
   const auto disjoint = buildConstraints("disjoint", true);
   auto disjointResolved = buildSpatialPnrTestResolvedConfig();
   disjointResolved.dse.objectiveCatalogs = resolvedBuiltinObjectiveCatalogs();
-  disjointResolved.dse.spatialPnr.objectiveSelection = {0, 2};
+  auto &disjointSelection =
+      disjointResolved.dse.spatialPnr.objectiveSelection;
+  disjointSelection =
+      resolvedBuiltinSpatialPnrPolicy(ResolvedProfilePreset::BalancedExplore)
+          .objectiveSelection;
+  disjointSelection.selectedSearchEnergy =
+      disjointResolved.dse.objectiveCatalogs
+          .totalOrderings[disjointSelection.selectedTotalOrdering]
+          .weightedLevels.front();
   disjointResolved.dse.spatialPnr.temporaryViolations.admitted.push_back(
       ResolvedPnrViolationKind::TagUnassigned);
   const auto disjointPnrConfig =
@@ -415,7 +423,8 @@ namespace {
 
 loom::adg::FinalizedFabricDesign
 buildTemporalComputeFabric(const loom::ArtifactStore &store,
-                           bool routeThroughPackedSwitch) {
+                           bool routeThroughPackedSwitch,
+                           std::uint64_t residentRows = 2) {
   using namespace loom::adg;
 
   DesignBuilder design(store);
@@ -442,7 +451,7 @@ buildTemporalComputeFabric(const loom::ArtifactStore &store,
       auto switched = take(spatial.addSwitch(
           peInputs,
           SwitchSpec::temporal(
-              switchTypes, switchTypes, sourcesByOutput, 2,
+              switchTypes, switchTypes, sourcesByOutput, residentRows,
               ::fabric::TemporalSwitchFixedPriority{switchInputsByPriority})));
       peInputs.assign(switched.values().begin(), switched.values().end());
     }
@@ -477,8 +486,9 @@ loom::test::buildTemporalCapacityFabric(const ArtifactStore &store) {
 }
 
 loom::adg::FinalizedFabricDesign
-loom::test::buildTemporalSwitchPackingFabric(const ArtifactStore &store) {
-  return buildTemporalComputeFabric(store, true);
+loom::test::buildTemporalSwitchPackingFabric(const ArtifactStore &store,
+                                             std::uint64_t residentRows) {
+  return buildTemporalComputeFabric(store, true, residentRows);
 }
 
 void loom::test::exerciseHandshakeCandidateRefcounts(
@@ -1444,6 +1454,10 @@ void loom::test::exerciseSpatialActionDomainAndObjective(
       firstDomain.transportChoices.empty() &&
       firstDomain.resourceChoices.empty())
     fail("canonical candidate has no dynamic Spatial Action");
+  if (llvm::any_of(firstDomain.transportChoices, [](const auto &action) {
+        return std::holds_alternative<pnr::SpatialGlobalRoutingAction>(action);
+      }))
+    fail("Spatial proposal domain admitted the final global closure Action");
   pnr::DeterministicPnrRandomStream proposalStream =
       pnr::DeterministicPnrRandomStream::create(
           UINT64_C(0x0123456789abcdef), 0,
@@ -1527,6 +1541,10 @@ void loom::test::exerciseSpatialAnnealingReplay(
   const auto &realizations = problem->realizations();
   auto annealedFirst = take(pnr::createCanonicalSpatialCandidate(problem));
   auto annealedReplay = take(pnr::createCanonicalSpatialCandidate(problem));
+  const auto firstEntryObjective =
+      take(problem->objectiveProgram().evaluate(*annealedFirst));
+  const bool firstEntryFullyRouted =
+      annealedFirst->unroutedObligationCount() == 0;
   pnr::SpatialAnnealingSearchScratch firstSearch;
   const auto firstStatistics = take(firstSearch.run(annealedFirst, 0));
   const std::size_t warmStorage = firstSearch.retainedStorageBytes();
@@ -1549,6 +1567,17 @@ void loom::test::exerciseSpatialAnnealingReplay(
   if (firstStatistics.exactClosureReached &&
       !firstStatistics.bestFeasibleIncumbentRestored)
     fail("Spatial annealing did not restore its best feasible incumbent");
+  if (!firstStatistics.exactClosureReached && firstEntryFullyRouted) {
+    if (!firstStatistics.bestSelectedRankIncumbentRestored)
+      fail("Spatial annealing did not restore its best selected-rank "
+           "incumbent");
+    const auto resultObjective =
+        take(problem->objectiveProgram().evaluate(*annealedFirst));
+    if (take(problem->objectiveProgram().compareSelectedRank(
+            resultObjective, {}, firstEntryObjective, {})) > 0)
+      fail("Spatial annealing returned a candidate worse than its entry "
+           "incumbent");
+  }
   if (firstStatistics.acceptedWorseningActionCount == 0)
     fail("Spatial annealing never traversed an accepted worsening state");
 

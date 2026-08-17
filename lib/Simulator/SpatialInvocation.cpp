@@ -1,5 +1,8 @@
 #include "Simulator/SpatialInvocation.h"
 
+#include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/DataflowServiceSchema.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -106,13 +109,55 @@ validateResultDestinations(const runtime::SpatialInvocationWire &wire,
              [](const AddressInterval &lhs, const AddressInterval &rhs) {
                return lhs.begin < rhs.begin;
              });
-  for (std::size_t ordinal = 1; ordinal != intervals.size(); ++ordinal)
+  for (std::size_t ordinal = 1; ordinal < intervals.size(); ++ordinal)
     if (intervals[ordinal - 1].end > intervals[ordinal].begin)
       return invalid("result destination address ranges overlap");
   return llvm::Error::success();
 }
 
 } // namespace
+
+llvm::Expected<std::vector<dataflow::LogicalMemoryRootRef>>
+projectSpatialInvocationWritableMemoryRoots(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    dataflow::RootedGraphLaunchRef launch) {
+  std::vector<dataflow::LogicalMemoryRootRef> roots;
+  llvm::Error error = dataflow.forEachContextualServiceActor(
+      launch.rootThreadLaunch,
+      [&](dataflow::ContextualActorRef actorRef) -> llvm::Error {
+        if (actorRef.launch != launch)
+          return llvm::Error::success();
+        auto actor = dataflow.resolve(actorRef.actor);
+        if (!actor)
+          return actor.takeError();
+        if (llvm::isa<dataflow::FenceOp>(actor->op))
+          return llvm::Error::success();
+        auto access =
+            dataflow::semantics::getCanonicalMemoryAccessView(actor->op);
+        if (!access)
+          return access.takeError();
+        using dataflow::semantics::MemoryAccessOperation;
+        if (access->operation() == MemoryAccessOperation::Load)
+          return llvm::Error::success();
+        auto memory = dataflow.resolveAddressedMemory(actorRef);
+        if (!memory)
+          return memory.takeError();
+        if (const auto *root =
+                std::get_if<dataflow::LogicalMemoryRootRef>(&*memory))
+          roots.push_back(*root);
+        else
+          roots.push_back(
+              std::get<dataflow::LogicalMemoryViewRef>(*memory).root);
+        return llvm::Error::success();
+      });
+  if (error)
+    return std::move(error);
+  llvm::sort(roots, [](const auto &lhs, const auto &rhs) {
+    return lhs.entity.value() < rhs.entity.value();
+  });
+  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+  return roots;
+}
 
 llvm::Expected<CanonicalSimulationRuntimeInput>
 materializeSpatialInvocationRuntimeInput(
@@ -133,15 +178,60 @@ materializeSpatialInvocationRuntimeInput(
   auto memoryInputs = view->graphMemoryInputs(spatial->launchRef);
   if (!memoryInputs)
     return memoryInputs.takeError();
-  if (!shapes->streamInputs.empty() || !memoryInputs->empty() ||
-      !spatial->observableContract.streamOutputs.empty() ||
-      !spatial->observableContract.memories.empty())
-    return invalid("dynamic invocation currently admits value-only graphs");
+  if (!shapes->streamInputs.empty() ||
+      !spatial->observableContract.streamOutputs.empty())
+    return invalid("dynamic invocation currently admits no stream boundary");
+  auto writableRoots =
+      projectSpatialInvocationWritableMemoryRoots(*view, spatial->launchRef);
+  if (!writableRoots)
+    return writableRoots.takeError();
+  if (spatial->observableContract.memories.size() != writableRoots->size())
+    return invalid("dynamic invocation memory observations are not exact");
+  for (std::size_t ordinal = 0; ordinal != writableRoots->size(); ++ordinal) {
+    const SpatialMemoryObservable &observable =
+        spatial->observableContract.memories[ordinal];
+    const auto *role =
+        std::get_if<dataflow::LogicalMemoryRootOrViewRef>(&observable.target);
+    const auto *root =
+        role ? std::get_if<dataflow::LogicalMemoryRootRef>(role) : nullptr;
+    if (!root || *root != (*writableRoots)[ordinal] ||
+        observable.form != MemoryObservationForm::DiffFromRuntimeInput)
+      return invalid("dynamic invocation memory observation differs from "
+                     "Dataflow write effects");
+  }
   if (wire.values.size() != spatial->valueInputPlan.size() ||
       wire.values.size() != shapes->valueInputs.size())
     return invalid("invocation values are not total over graph value inputs");
 
   SpatialSimulationRuntimeInputDraft draft{workload.workload.identity()};
+  draft.memoryObjects.reserve(wire.memoryObjects.size());
+  for (const runtime::SpatialInvocationMemoryObject &object :
+       wire.memoryObjects) {
+    RuntimeMemoryObject runtimeObject;
+    runtimeObject.initialBytes.reserve(object.initialBytes.size());
+    for (std::uint8_t byte : object.initialBytes)
+      runtimeObject.initialBytes.push_back({SemanticState::Defined, byte});
+    draft.memoryObjects.push_back(std::move(runtimeObject));
+  }
+  draft.memoryRootBindings.reserve(wire.memoryRootBindings.size());
+  for (const runtime::SpatialInvocationMemoryRootBinding &binding :
+       wire.memoryRootBindings)
+    draft.memoryRootBindings.push_back(
+        {dataflow::LogicalMemoryRootRef{
+             view->identity(),
+             dataflow::LogicalMemoryRootId(binding.logicalMemoryRootEntity)},
+         binding.objectOrdinal, binding.byteOffset});
+
+  auto graphRef = view->resolve(spatial->launchRef);
+  if (!graphRef)
+    return graphRef.takeError();
+  auto graphView = view->resolve(*graphRef);
+  if (!graphView)
+    return graphView.takeError();
+  auto graph = llvm::dyn_cast<dataflow::GraphOp>(graphView->op);
+  if (!graph)
+    return invalid("dynamic invocation launch does not resolve to a graph");
+  mlir::TypeRange graphInputs = graph.getFunctionType().getInputs();
   draft.runtimeValues.reserve(wire.values.size());
   for (std::size_t ordinal = 0; ordinal != wire.values.size(); ++ordinal) {
     if (!std::holds_alternative<RuntimeValueInput>(
@@ -152,11 +242,50 @@ materializeSpatialInvocationRuntimeInput(
       return bitCount.takeError();
     if (wire.values[ordinal].bitCount != *bitCount)
       return invalid("invocation value width differs from the graph input");
+    auto pointerType =
+        llvm::dyn_cast<mlir::LLVM::LLVMPointerType>(graphInputs[ordinal]);
+    if (static_cast<bool>(pointerType) !=
+        wire.values[ordinal].pointerTarget.has_value())
+      return invalid("invocation pointer provenance differs from graph type");
+    if (pointerType) {
+      const runtime::SpatialInvocationPointerTarget &target =
+          *wire.values[ordinal].pointerTarget;
+      if (target.objectOrdinal >= wire.memoryObjects.size())
+        return invalid("invocation pointer target object is absent");
+      auto pointerLayout = view->pointerLayout(pointerType.getAddressSpace());
+      if (!pointerLayout)
+        return pointerLayout.takeError();
+      if (pointerLayout->representationBits != wire.values[ordinal].bitCount ||
+          llvm::APInt(64, target.byteOffset).getActiveBits() >
+              pointerLayout->addressBits)
+        return invalid("invocation pointer target has the wrong layout");
+      const runtime::SpatialInvocationMemoryObject &object =
+          wire.memoryObjects[target.objectOrdinal];
+      if (target.byteOffset >
+          std::numeric_limits<std::uint64_t>::max() - object.address)
+        return invalid("invocation pointer guest address overflows");
+      const llvm::APInt raw = unpackLittleEndianBits(wire.values[ordinal]);
+      if (raw.zextOrTrunc(64) !=
+          llvm::APInt(64, object.address + target.byteOffset))
+        return invalid("invocation pointer bits differ from its guest object");
+    }
     auto lanes = unpackDefinedSpatialSimulationToken(
         unpackLittleEndianBits(wire.values[ordinal]),
         shapes->valueInputs[ordinal]);
     if (!lanes)
       return lanes.takeError();
+    if (pointerType) {
+      if (lanes->size() != 1)
+        return invalid("invocation pointer input is not scalar");
+      const runtime::SpatialInvocationPointerTarget &target =
+          *wire.values[ordinal].pointerTarget;
+      auto pointerLayout = view->pointerLayout(pointerType.getAddressSpace());
+      if (!pointerLayout)
+        return pointerLayout.takeError();
+      lanes->front().pointerTarget = PointerTarget{
+          target.objectOrdinal,
+          llvm::APInt(pointerLayout->addressBits, target.byteOffset)};
+    }
     draft.runtimeValues.push_back(
         {ordinal, CanonicalValueSequence{1, std::move(*lanes)}});
   }
@@ -197,9 +326,12 @@ projectResultWrites(const runtime::SpatialInvocationWire &wire,
     return std::move(error);
   if (observations.valueResults.size() != wire.results.size())
     return invalid("execution did not return every invocation value result");
+  if (observations.memories.size() !=
+      spatial->observableContract.memories.size())
+    return invalid("execution did not return every invocation memory result");
 
   std::vector<SpatialInvocationMemoryWrite> writes;
-  writes.reserve(wire.results.size());
+  writes.reserve(wire.results.size() + observations.memories.size());
   for (std::size_t ordinal = 0; ordinal != wire.results.size(); ++ordinal) {
     const auto *published =
         std::get_if<PublishedValueResult>(&observations.valueResults[ordinal]);
@@ -214,7 +346,83 @@ projectResultWrites(const runtime::SpatialInvocationWire &wire,
     writes.push_back(
         {wire.results[ordinal].address, packLittleEndianBits(*packed)});
   }
-  return writes;
+
+  auto writableRoots =
+      projectSpatialInvocationWritableMemoryRoots(*view, spatial->launchRef);
+  if (!writableRoots)
+    return writableRoots.takeError();
+  if (writableRoots->size() != observations.memories.size())
+    return invalid("invocation memory results differ from Dataflow effects");
+  for (std::size_t ordinal = 0; ordinal != writableRoots->size(); ++ordinal) {
+    const dataflow::LogicalMemoryRootRef root = (*writableRoots)[ordinal];
+    const SpatialMemoryObservable &observable =
+        spatial->observableContract.memories[ordinal];
+    const auto *target =
+        std::get_if<dataflow::LogicalMemoryRootOrViewRef>(&observable.target);
+    const auto *targetRoot =
+        target ? std::get_if<dataflow::LogicalMemoryRootRef>(target) : nullptr;
+    if (!targetRoot || *targetRoot != root ||
+        observable.form != MemoryObservationForm::DiffFromRuntimeInput)
+      return invalid("invocation memory result has the wrong logical root");
+    const auto binding =
+        llvm::find_if(wire.memoryRootBindings, [&](const auto &candidate) {
+          return candidate.logicalMemoryRootEntity == root.entity.value();
+        });
+    if (binding == wire.memoryRootBindings.end() ||
+        binding->objectOrdinal >= wire.memoryObjects.size())
+      return invalid("invocation memory result has no guest object");
+    const runtime::SpatialInvocationMemoryObject &object =
+        wire.memoryObjects[binding->objectOrdinal];
+    const auto *diff =
+        std::get_if<DiffMemoryObservation>(&observations.memories[ordinal]);
+    if (!diff || binding->byteOffset > object.initialBytes.size() ||
+        diff->byteCount != object.initialBytes.size() - binding->byteOffset)
+      return invalid("invocation memory diff has the wrong object extent");
+    for (const MemoryDiffRun &run : diff->runs) {
+      if (run.byteOffset > diff->byteCount ||
+          run.changedBytes.size() > diff->byteCount - run.byteOffset)
+        return invalid("invocation memory diff run exceeds its object");
+      if (binding->byteOffset >
+              std::numeric_limits<std::uint64_t>::max() - run.byteOffset ||
+          object.address > std::numeric_limits<std::uint64_t>::max() -
+                               (binding->byteOffset + run.byteOffset))
+        return invalid("invocation memory write address overflows");
+      SpatialInvocationMemoryWrite write{
+          object.address + binding->byteOffset + run.byteOffset, {}};
+      write.bytes.reserve(run.changedBytes.size());
+      for (const SemanticMemoryByte &byte : run.changedBytes) {
+        if (byte.state != SemanticState::Defined)
+          return invalid("invocation cannot write an exceptional memory byte");
+        write.bytes.push_back(byte.value);
+      }
+      writes.push_back(std::move(write));
+    }
+  }
+
+  llvm::sort(writes, [](const auto &lhs, const auto &rhs) {
+    return lhs.address < rhs.address;
+  });
+  std::vector<SpatialInvocationMemoryWrite> merged;
+  for (SpatialInvocationMemoryWrite &write : writes) {
+    if (write.bytes.empty())
+      continue;
+    if (merged.empty() ||
+        write.address > merged.back().address + merged.back().bytes.size()) {
+      merged.push_back(std::move(write));
+      continue;
+    }
+    SpatialInvocationMemoryWrite &prior = merged.back();
+    const std::size_t priorOffset =
+        static_cast<std::size_t>(write.address - prior.address);
+    const std::size_t overlap =
+        std::min(write.bytes.size(), prior.bytes.size() - priorOffset);
+    for (std::size_t index = 0; index != overlap; ++index)
+      if (prior.bytes[priorOffset + index] != write.bytes[index])
+        return invalid("aliased invocation memory results disagree");
+    prior.bytes.insert(prior.bytes.end(), write.bytes.begin() + overlap,
+                       write.bytes.end());
+  }
+  return merged;
 }
 
 } // namespace

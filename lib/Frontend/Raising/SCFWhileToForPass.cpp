@@ -1,5 +1,4 @@
-// Uplift a counted scf.while loop into scf.for, using the upstream
-// `scf::upliftWhileToForLoop` utility.
+// Normalize an exactly proven counted scf.while loop into scf.for.
 //
 // The upstream utility recognizes the pre-tested counted-loop shape -- a
 // `before` block whose only comparison is an arith.cmpi slt/sgt against a
@@ -24,15 +23,15 @@
 // the accepted shape -- the yielded induction add and its step operand --
 // to prove it, and every other structural check stays with the utility.
 //
-// The post-tested (do-while) shape that CFG-to-SCF structuring emits for a
-// counted loop -- increment and comparison in the `before` block, condition
-// on the bumped induction value -- is NOT uplifted. Its body runs at least
-// once even when %lb >= %ub, it can fail to terminate, and the failed
-// condition forwards an induction value that overshoots the bound unless the
-// step lands on it exactly. Proving trip-count and exit-value equivalence
-// for that shape needs a loop-semantics analysis this mechanical pass does
-// not own, so those loops are left as legal scf.while.
+// CFG-to-SCF also emits a post-tested shape whose body precedes the latch
+// comparison. The shared ExactPostTestedCountedLoopProjection accepts only a
+// closed finite subset: constant nonnegative lower bound, positive constant
+// step, exact landing on a greater constant upper bound, `next != upper`, and
+// ordinal identity feedback through an otherwise empty after-region. That
+// proof makes the body domain and every exit result exact, so this pass can
+// mechanically build scf.for. Every other post-tested shape stays scf.while.
 
+#include "Frontend/Raising/CountedLoopProjection.h"
 #include "Frontend/Raising/Passes.h"
 
 #include "CallableRegions.h"
@@ -43,6 +42,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -51,6 +51,97 @@ namespace {
 
 using loom::raising::carryLoopAnnotation;
 using loom::raising::loopAnnotationName;
+
+struct UpliftExactPostTestedCountedWhileToFor
+    : public ::mlir::OpRewritePattern<::mlir::scf::WhileOp> {
+  explicit UpliftExactPostTestedCountedWhileToFor(::mlir::MLIRContext *context)
+      : OpRewritePattern(context, /*benefit=*/2) {}
+
+  ::mlir::LogicalResult
+  matchAndRewrite(::mlir::scf::WhileOp loop,
+                  ::mlir::PatternRewriter &rewriter) const override {
+    std::optional<loom::raising::ExactPostTestedCountedLoopProjection>
+        projection = loom::raising::projectExactPostTestedCountedLoop(loop);
+    if (!projection)
+      return ::mlir::failure();
+
+    ::llvm::SmallVector<::mlir::Value, 4> initArgs;
+    for (unsigned lane = 0; lane < loop.getInits().size(); ++lane)
+      if (lane != projection->inductionLane)
+        initArgs.push_back(loop.getInits()[lane]);
+
+    ::mlir::Operation *inductionUpdate =
+        loop.getConditionOp()
+            .getArgs()[projection->inductionLane]
+            .getDefiningOp();
+    ::mlir::Operation *latchCompare =
+        loop.getConditionOp().getCondition().getDefiningOp();
+    bool elideInductionUpdate = inductionUpdate && latchCompare;
+    unsigned updateCompareUses = 0;
+    unsigned updateConditionUses = 0;
+    if (elideInductionUpdate) {
+      for (::mlir::OpOperand &use : inductionUpdate->getResult(0).getUses()) {
+        updateCompareUses += use.getOwner() == latchCompare;
+        updateConditionUses +=
+            use.getOwner() == loop.getConditionOp().getOperation();
+        if (use.getOwner() != latchCompare &&
+            use.getOwner() != loop.getConditionOp().getOperation())
+          elideInductionUpdate = false;
+      }
+      elideInductionUpdate = elideInductionUpdate && updateCompareUses == 1 &&
+                             updateConditionUses == 1;
+    }
+    const bool elideLatchCompare =
+        latchCompare && latchCompare->getNumResults() == 1 &&
+        latchCompare->getResult(0).hasOneUse() &&
+        latchCompare->getResult(0).use_begin()->getOwner() ==
+            loop.getConditionOp().getOperation();
+
+    rewriter.setInsertionPoint(loop);
+    auto counted = ::mlir::scf::ForOp::create(
+        rewriter, loop.getLoc(), projection->lowerBound, projection->upperBound,
+        projection->step, initArgs,
+        [&](::mlir::OpBuilder &builder, ::mlir::Location location,
+            ::mlir::Value induction, ::mlir::ValueRange regionIterArgs) {
+          ::mlir::IRMapping mapping;
+          unsigned stateOrdinal = 0;
+          for (unsigned lane = 0;
+               lane < loop.getBeforeBody()->getNumArguments(); ++lane) {
+            ::mlir::Value replacement = lane == projection->inductionLane
+                                            ? induction
+                                            : regionIterArgs[stateOrdinal++];
+            mapping.map(loop.getBeforeBody()->getArgument(lane), replacement);
+          }
+
+          for (::mlir::Operation &operation :
+               loop.getBeforeBody()->without_terminator()) {
+            if ((elideInductionUpdate && &operation == inductionUpdate) ||
+                (elideLatchCompare && &operation == latchCompare))
+              continue;
+            builder.clone(operation, mapping);
+          }
+
+          ::llvm::SmallVector<::mlir::Value, 4> nextState;
+          for (unsigned lane = 0; lane < loop.getConditionOp().getArgs().size();
+               ++lane)
+            if (lane != projection->inductionLane)
+              nextState.push_back(mapping.lookupOrDefault(
+                  loop.getConditionOp().getArgs()[lane]));
+          ::mlir::scf::YieldOp::create(builder, location, nextState);
+        });
+    ::mlir::Attribute annotation = loop->getAttr(loopAnnotationName);
+    carryLoopAnnotation(annotation, counted);
+
+    ::llvm::SmallVector<::mlir::Value, 4> replacements;
+    unsigned stateOrdinal = 0;
+    for (unsigned lane = 0; lane < loop->getNumResults(); ++lane)
+      replacements.push_back(lane == projection->inductionLane
+                                 ? projection->upperBound
+                                 : counted.getResult(stateOrdinal++));
+    rewriter.replaceOp(loop, replacements);
+    return ::mlir::success();
+  }
+};
 
 // Prove the induction step of the pre-tested counted shape is a positive
 // constant. The before block's condition comparison must test a before
@@ -145,9 +236,9 @@ struct SCFWhileToForPass
   }
   ::llvm::StringRef getDescription() const final {
     return "Uplift counted scf.while loops into scf.for when the upstream "
-           "utility proves a structurally equivalent trip count, the "
-           "induction step is a proven positive constant, and no loop "
-           "result is observable.";
+           "utility proves a structurally equivalent pre-tested trip count, "
+           "or the shared exact projection proves a finite post-tested "
+           "domain and exact exit values.";
   }
 
   void getDependentDialects(::mlir::DialectRegistry &registry) const final {
@@ -159,7 +250,9 @@ struct SCFWhileToForPass
     ::mlir::MLIRContext *ctx = &getContext();
 
     ::mlir::RewritePatternSet patterns(ctx);
-    patterns.add<UpliftCountedWhileToFor>(ctx);
+    patterns
+        .add<UpliftExactPostTestedCountedWhileToFor, UpliftCountedWhileToFor>(
+            ctx);
     ::mlir::FrozenRewritePatternSet frozen(std::move(patterns));
 
     (void)loom::raising::forEachCallableRegion(

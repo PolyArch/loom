@@ -55,17 +55,6 @@ RefBytes bytes(const ::loom::fabric::FabricPhysicalTraversalRef &reference) {
   return ::loom::fabric::canonicalFabricBytes(reference);
 }
 
-RefBytes requesterGroupBytes(
-    const ::loom::fabric::FabricTraversalRequesterGroupView &group) {
-  RefBytes result = ::loom::fabric::canonicalFabricBytes(group.owner);
-  const auto kind = static_cast<std::uint32_t>(group.kind);
-  for (int shift = 24; shift >= 0; shift -= 8)
-    result.push_back(static_cast<std::uint8_t>(kind >> shift));
-  for (int shift = 56; shift >= 0; shift -= 8)
-    result.push_back(static_cast<std::uint8_t>(group.ordinal >> shift));
-  return result;
-}
-
 template <typename Ref>
 llvm::Expected<RefBytes>
 dataflowBytes(const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -90,6 +79,52 @@ struct StorageKey final {
            std::tie(other.kind, other.owner, other.ordinal);
   }
 };
+
+enum class TraversalActivationKeyKind : std::uint8_t {
+  UsePatternRequester,
+  SpatialSwitchInput,
+};
+
+struct TraversalActivationKey final {
+  TraversalActivationKeyKind kind =
+      TraversalActivationKeyKind::UsePatternRequester;
+  RefBytes owner;
+  ::loom::fabric::FabricOrdinal ordinal = 0;
+
+  bool operator<(const TraversalActivationKey &other) const {
+    return std::tie(kind, owner, ordinal) <
+           std::tie(other.kind, other.owner, other.ordinal);
+  }
+};
+
+llvm::Expected<TraversalActivationKey> traversalActivationKey(
+    const ::loom::fabric::FabricArtifactView &fabric,
+    const ::loom::fabric::FabricPhysicalTraversalRef &traversal,
+    const ::loom::fabric::FabricTraversalUseView &use) {
+  if (const auto *sw =
+          std::get_if<::loom::fabric::FabricSwitchTraversalPayload>(
+              &traversal.payload)) {
+    if (fabric.switchSchedule(sw->owner) != ::fabric::Schedule::Spatial)
+      return invalid("Temporal switch activation bypassed packed-row "
+                     "projection");
+    if (use.requesterGroup.kind !=
+            ::loom::fabric::FabricTraversalRequesterGroupKind::
+                SwitchRequester ||
+        use.requesterGroup.owner !=
+            ::loom::fabric::FabricInventoryOwnerRef::of(sw->owner))
+      return invalid("Spatial switch traversal has a foreign requester");
+    return TraversalActivationKey{
+        TraversalActivationKeyKind::SpatialSwitchInput,
+        ::loom::fabric::canonicalFabricBytes(sw->owner), sw->input};
+  }
+  if (use.requesterGroup.kind !=
+      ::loom::fabric::FabricTraversalRequesterGroupKind::UsePattern)
+    return invalid("ordinary traversal has a switch requester");
+  return TraversalActivationKey{
+      TraversalActivationKeyKind::UsePatternRequester,
+      ::loom::fabric::canonicalFabricBytes(use.requesterGroup.owner),
+      use.requesterGroup.ordinal};
+}
 
 struct StorageProjection final {
   CgraTraversalStorageKind accessKind = CgraTraversalStorageKind::None;
@@ -235,10 +270,19 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     if (!matchCount)
       return matchCount.takeError();
     const std::uint64_t matchOffset = result.operandQueueMatches.size();
-    for (const auto &match : group.matches)
+    for (const auto &match : group.matches) {
+      auto consumerCount =
+          checkedU32(match.consumers.size(), "CGRA PE operand consumer count");
+      if (!consumerCount)
+        return consumerCount.takeError();
+      const std::uint64_t consumerOffset =
+          result.operandQueueConsumers.size();
+      for (const auto &consumer : match.consumers)
+        result.operandQueueConsumers.push_back({consumer});
       result.operandQueueMatches.push_back(
-          {match.sink, match.queue, match.allocationUnit,
-           match.entryCapacity});
+          {match.queue, match.allocationUnit, match.entryCapacity,
+           consumerOffset, *consumerCount});
+    }
     result.operandQueueActivations.push_back(
         {group.logicalNet, group.ingress, group.tag, matchOffset, *matchCount});
   }
@@ -353,7 +397,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
   }
   std::map<RefBytes, std::uint64_t> selectedOrdinals;
   std::map<StorageKey, std::uint64_t> storageOrdinals;
-  std::map<RefBytes, std::uint64_t> activationInstances;
+  std::map<TraversalActivationKey, std::uint64_t> activationInstances;
   std::uint64_t nextActivationInstance = 0;
   result.traversals.reserve(selected.size());
   for (const auto &[key, reference] : selected) {
@@ -400,9 +444,11 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
                              ::fabric::Schedule::Temporal;
     if (!temporalSwitch)
       for (const auto &use : found->second->impliedUses) {
-        const RefBytes requesterKey = requesterGroupBytes(use.requesterGroup);
+        auto key = traversalActivationKey(fabric, reference, use);
+        if (!key)
+          return key.takeError();
         auto [instance, inserted] = activationInstances.try_emplace(
-            requesterKey, nextActivationInstance);
+            std::move(*key), nextActivationInstance);
         if (inserted)
           ++nextActivationInstance;
         result.traversalUses.push_back({use.pattern, use.requesterGroup,

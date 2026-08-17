@@ -32,8 +32,8 @@ struct ResolvedPnrConfigViewAccess final {
 namespace {
 
 constexpr llvm::StringLiteral spatialDescriptor =
-    "loom.spatial_pnr.config.14.0";
-constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.6.0";
+    "loom.spatial_pnr.config.15.0";
+constexpr llvm::StringLiteral systemDescriptor = "loom.system_pnr.config.7.0";
 
 llvm::Error invalid(const llvm::Twine &detail) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -214,6 +214,7 @@ void encodePolicy(Encoder &encoder, const ResolvedPnrPolicyConfig &policy) {
   encoder.u64(search.annealing.fallbackTemperature);
   encoder.u64(search.annealing.minimumTemperature);
   encoder.ratio(search.annealing.coolingRatio);
+  encoder.u64(search.annealing.temperatureLevelLimit);
   encoder.u64(search.annealing.proposalsPerLevelBase);
   encoder.u64(search.annealing.proposalsPerMovableDecision);
   encoder.u32(static_cast<std::uint32_t>(search.exactRepair.kind));
@@ -410,6 +411,7 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
   auto fallback = decoder.u64();
   auto minimum = decoder.u64();
   auto cooling = decoder.ratio();
+  auto temperatureLevelLimit = decoder.u64();
   auto levelBase = decoder.u64();
   auto perMovable = decoder.u64();
   if (!calibration)
@@ -424,6 +426,8 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
     return minimum.takeError();
   if (!cooling)
     return cooling.takeError();
+  if (!temperatureLevelLimit)
+    return temperatureLevelLimit.takeError();
   if (!levelBase)
     return levelBase.takeError();
   if (!perMovable)
@@ -495,7 +499,8 @@ llvm::Expected<ResolvedPnrPolicyConfig> decodePolicy(Decoder &decoder) {
                                 *noProgressLimit, *noProgressTrendWindow,
                                 std::move(*negotiation)},
        ResolvedPnrAnnealingPolicy{*calibration, *quantile, *acceptance,
-                                  *fallback, *minimum, *cooling, *levelBase,
+                                  *fallback, *minimum, *cooling,
+                                  *temperatureLevelLimit, *levelBase,
                                   *perMovable},
        repair, completionGoal},
       ResolvedPnrDeterminismPolicy{
@@ -825,6 +830,8 @@ deriveDeterministicWorkBudgetView(const ResolvedPnrConfigView &view) {
        search.routing.noProgressTrendWindow},
       {PnrWorkUnit::CalibrationProposal,
        search.annealing.calibrationProposalCount},
+      {PnrWorkUnit::TemperatureLevel,
+       search.annealing.temperatureLevelLimit},
       {PnrWorkUnit::ProposalPerLevelBase,
        search.annealing.proposalsPerLevelBase},
       {PnrWorkUnit::ProposalPerMovableDecision,

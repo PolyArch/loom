@@ -24,8 +24,7 @@ bool isSupportedEvaluationSchema(SchemaVersion version) {
   return version == evaluationSchema30;
 }
 
-bool schemaContainsCaseKind(SchemaVersion version,
-                            EvaluationCaseKind) {
+bool schemaContainsCaseKind(SchemaVersion version, EvaluationCaseKind) {
   return version == evaluationSchema30;
 }
 
@@ -44,8 +43,12 @@ std::mutex &caseSignatureMutex() {
   return mutex;
 }
 
-llvm::Error unresolvedArtifact(llvm::StringRef reference) {
-  return evaluationError(reference + " artifact is unresolved");
+llvm::Error unresolvedArtifact(llvm::StringRef reference,
+                               llvm::StringRef caseSignature,
+                               const ArtifactRootReference &artifact) {
+  return evaluationError(
+      reference + " artifact " + formatArtifactRootReferenceJson(artifact) +
+      " is unresolved in case signature '" + caseSignature + "'");
 }
 
 llvm::Error validateAcceptedSchema(
@@ -78,7 +81,7 @@ llvm::Error validateReferenceRequirement(
     return evaluationError("case signature '" + signature.spelling +
                            "' forbids a " + reference + " reference");
   if (!resolution.find(*value))
-    return unresolvedArtifact(reference);
+    return unresolvedArtifact(reference, signature.spelling, *value);
   return validateAcceptedSchema(reference, accepted, *value);
 }
 
@@ -368,7 +371,7 @@ llvm::Expected<EvaluationCase> EvaluationCase::get(
       const std::string reference =
           ("subject role '" + role.semanticRole + "'").str();
       if (!resolution.find(subject))
-        return unresolvedArtifact(reference);
+        return unresolvedArtifact(reference, descriptor->spelling, subject);
       if (llvm::Error error =
               validateAcceptedSchema(reference, role.acceptedSchemas, subject))
         return std::move(error);

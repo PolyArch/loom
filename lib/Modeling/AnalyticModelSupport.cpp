@@ -6,6 +6,7 @@
 #include "Common/VectorWidth.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowStaticScheduleAnalysis.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
@@ -18,6 +19,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -762,6 +764,42 @@ projectCanonicalDataflowWorkloadImpl(
                                "Canonical Dataflow memory transactions"))
         return std::move(error);
   }
+
+  llvm::SmallVector<dataflow::GraphRef> coveredGraphs;
+  if (selectedGraph) {
+    coveredGraphs.push_back(*selectedGraph);
+  } else {
+    coveredGraphs.reserve(program.graphs().size());
+    for (const dataflow::CanonicalGraphView &graph : program.graphs())
+      coveredGraphs.push_back(graph.ref);
+  }
+  auto schedule =
+      dataflow::deriveStaticScheduleAnalysis(program, coveredGraphs);
+  if (!schedule)
+    return schedule.takeError();
+  std::uint64_t criticalPathPressure = 0;
+  if (selectedGraph) {
+    criticalPathPressure = schedule->graphCriticalLength(*selectedGraph);
+  } else if (!program.staticGraphLaunches().empty()) {
+    for (const dataflow::CanonicalStaticGraphLaunchView &launch :
+         program.staticGraphLaunches()) {
+      const std::optional<std::uint64_t> updated = llvm::checkedAddUnsigned(
+          criticalPathPressure,
+          schedule->graphCriticalLength(launch.callee));
+      if (!updated)
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "low_confidence_model_overflow: graph critical path pressure");
+      criticalPathPressure = *updated;
+    }
+  } else {
+    for (dataflow::GraphRef graph : coveredGraphs)
+      criticalPathPressure =
+          std::max(criticalPathPressure,
+                   schedule->graphCriticalLength(graph));
+  }
+  workload.schedulingPressure =
+      std::max(workload.schedulingPressure, criticalPathPressure);
 
   workload.graphActivations =
       selectedGraph ? 1 : program.staticGraphLaunches().size();

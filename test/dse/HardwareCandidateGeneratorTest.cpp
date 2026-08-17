@@ -164,7 +164,7 @@ void parameterizedTemplateScale(
       16 * scale.meshDimension * (scale.meshDimension - 1);
   const std::uint64_t expectedAdapterFifos =
       3 * (scale.spatialMemoryCount + scale.temporalMemoryCount) +
-      2 * scale.temporalPeCount;
+      2 * scale.temporalPeCount * scale.crossScheduleBoundaryLanesPerTemporalPe;
   require(module.view().fifoOccurrences().size() ==
               expectedMeshLinkFifos + expectedAdapterFifos,
           "resolved mesh dimension did not reach the Module topology");

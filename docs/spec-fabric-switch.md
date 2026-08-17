@@ -377,17 +377,20 @@ uses even though their alternative patterns share the one configuration
 requester. A temporal switch can make several input requesters eligible at
 runtime and therefore owns the exact GrantPolicy required by such fan-in.
 
-For one selected broadcast, the traversal uses have the same packed-row and
-input activation instance, trigger, and concrete logical parameters and
-therefore form the derived atomic activation set defined by
-`docs/spec-pnr.md`. Its execution grouping key is `(configured row, input)`,
-not every selected traversal with the same switch owner or input. Repeated
-claims on that activation's shared ingress normalize to one physical claim.
-The source cannot retire until its exact output set acquires and commits, so no
-egress can be granted independently. Another tag row at the same input is a
-different activation instance. The Fabric requester group continues to own
-physical input arbitration; it does not merge activation instances. Fabric
-does not enumerate the power set of possible broadcast destinations.
+For one selected broadcast, traversal uses with the same Mapping-derived
+activation, trigger, and concrete logical parameters form the exact atomic
+activation set defined by `docs/spec-pnr.md`. A Spatial switch groups selected
+outputs by `(switch occurrence, input)`: outputs selected from one input commit
+as one broadcast, while different inputs remain different activations even
+though every Spatial traversal shares the switch's static-configuration
+requester. A Temporal switch instead groups by `(configured row, input)`, so
+another resident tag row at the same input is a different activation.
+Repeated claims on one activation's shared ingress normalize to one physical
+claim. The source cannot retire until its exact output set acquires and
+commits, so no egress can be granted independently. In both schedules the
+Fabric requester group owns resource arbitration or configuration; it never
+merges Mapping-derived execution activations. Fabric does not enumerate the
+power set of possible broadcast destinations.
 
 Fabric 1.0 requires an exact policy whenever temporal physical connectivity
 admits fan-in between runtime requesters. A later exact Fabric-owned refinement

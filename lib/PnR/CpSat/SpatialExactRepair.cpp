@@ -288,15 +288,28 @@ addMutationCountObjective(CpModelBuilder &model,
                           llvm::ArrayRef<IntVar> variables,
                           const SpatialCandidateState &candidate,
                           const detail::SpatialBindingRelationModel &bindings,
-                          llvm::ArrayRef<PnrIndex> decisions) {
+                          llvm::ArrayRef<PnrIndex> decisions,
+                          llvm::ArrayRef<int> mutationParentLocals = {},
+                          llvm::ArrayRef<IntVar> additionalVariables = {},
+                          llvm::ArrayRef<std::int64_t> additionalCurrentValues =
+                              {}) {
   if (variables.size() != decisions.size())
     return invocationError(
         "mutation objective variable and decision counts disagree");
-  if (decisions.size() > static_cast<std::size_t>(INT64_MAX))
+  if (additionalVariables.size() != additionalCurrentValues.size())
+    return invocationError(
+        "additional mutation variable and current-value counts disagree");
+  if (!mutationParentLocals.empty() &&
+      mutationParentLocals.size() != decisions.size())
+    return invocationError(
+        "mutation parent and decision counts disagree");
+  if (decisions.size() > static_cast<std::size_t>(INT64_MAX) ||
+      additionalVariables.size() >
+          static_cast<std::size_t>(INT64_MAX) - decisions.size())
     return invocationError("mutation objective domain is not encodable");
 
-  std::vector<BoolVar> changed;
-  changed.reserve(decisions.size());
+  std::vector<BoolVar> decisionChanged;
+  decisionChanged.reserve(decisions.size());
   for (auto [local, decision] : llvm::enumerate(decisions)) {
     auto current = currentBindingChoice(candidate, bindings, decision);
     if (!current)
@@ -304,11 +317,41 @@ addMutationCountObjective(CpModelBuilder &model,
     const BoolVar differs = model.NewBoolVar();
     model.AddNotEqual(variables[local], *current).OnlyEnforceIf(differs);
     model.AddEquality(variables[local], *current).OnlyEnforceIf(differs.Not());
+    decisionChanged.push_back(differs);
+  }
+
+  std::vector<BoolVar> changed;
+  changed.reserve(decisions.size() + additionalVariables.size());
+  for (std::size_t local = 0; local < decisionChanged.size(); ++local) {
+    const int parent = mutationParentLocals.empty()
+                           ? -1
+                           : mutationParentLocals[local];
+    if (parent < 0) {
+      changed.push_back(decisionChanged[local]);
+      continue;
+    }
+    if (static_cast<std::size_t>(parent) >= decisionChanged.size() ||
+        static_cast<std::size_t>(parent) == local)
+      return invocationError("mutation parent is invalid");
+    const BoolVar independentlyChanged = model.NewBoolVar();
+    model
+        .AddBoolAnd({decisionChanged[local], decisionChanged[parent].Not()})
+        .OnlyEnforceIf(independentlyChanged);
+    model
+        .AddBoolOr({decisionChanged[local].Not(), decisionChanged[parent]})
+        .OnlyEnforceIf(independentlyChanged.Not());
+    changed.push_back(independentlyChanged);
+  }
+  for (auto [variable, current] :
+       llvm::zip_equal(additionalVariables, additionalCurrentValues)) {
+    const BoolVar differs = model.NewBoolVar();
+    model.AddNotEqual(variable, current).OnlyEnforceIf(differs);
+    model.AddEquality(variable, current).OnlyEnforceIf(differs.Not());
     changed.push_back(differs);
   }
 
-  const IntVar mutationCount =
-      model.NewIntVar(Domain(0, static_cast<std::int64_t>(decisions.size())));
+  const IntVar mutationCount = model.NewIntVar(
+      Domain(0, static_cast<std::int64_t>(changed.size())));
   model.AddEquality(mutationCount, LinearExpr::Sum(changed));
   model.Minimize(mutationCount);
   return mutationCount;
@@ -874,6 +917,23 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
     return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
                   "realization PortDemand reverse index is malformed");
 
+  const auto portDemandOwnerDecision =
+      [&](PnrIndex demand) -> llvm::Expected<PnrIndex> {
+    if (demand >= ports.portDemands().size())
+      return invocationError("route repair PortDemand is out of range");
+    const FrozenSpatialPortDemand &record = ports.portDemands()[demand];
+    if (record.kind == FrozenSpatialPortDemandKind::Compute) {
+      if (record.realization >= bindings.computeDecisionCount())
+        return invocationError(
+            "route repair PortDemand has a foreign compute owner");
+      return record.realization;
+    }
+    if (record.realization >= bindings.memoryDecisionCount())
+      return invocationError(
+          "route repair PortDemand has a foreign memory owner");
+    return memoryOffset + record.realization;
+  };
+
   const auto addDecision = [&](PnrIndex decision) -> llvm::Error {
     if (decision >= decisionIncluded_.size())
       return invocationError("route repair decision is out of range");
@@ -1092,16 +1152,14 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       }
     } else if (decision < boundaryOffset) {
       const PnrIndex demand = decision - portOffset;
-      if (demand >= ports.portDemands().size())
+      auto owner = portDemandOwnerDecision(demand);
+      if (!owner)
         return result(SpatialExactRepairResultKind::InternalError, 0, 0, 0,
-                      "route repair PortDemand is out of range");
-      const FrozenSpatialPortDemand &record = ports.portDemands()[demand];
-      const PnrIndex owner = record.kind == FrozenSpatialPortDemandKind::Compute
-                                 ? record.realization
-                                 : memoryOffset + record.realization;
-      if (llvm::Error error = addDecision(owner))
+                      llvm::toString(owner.takeError()));
+      if (llvm::Error error = addDecision(*owner))
         return std::move(error);
-      if (llvm::Error error = addRoutingNet(record.logicalNet))
+      if (llvm::Error error =
+              addRoutingNet(ports.portDemands()[demand].logicalNet))
         return std::move(error);
     } else {
       const PnrIndex boundary = decision - boundaryOffset;
@@ -1298,8 +1356,27 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
         localDispositions->variables()[local]);
   }
 
-  auto mutationCount = addMutationCountObjective(model, variables, candidate,
-                                                 bindings, decisions_);
+  std::vector<int> mutationParentLocals(decisions_.size(), -1);
+  for (auto [local, decision] : llvm::enumerate(decisions_)) {
+    if (decision < portOffset || decision >= boundaryOffset)
+      continue;
+    auto owner = portDemandOwnerDecision(decision - portOffset);
+    if (!owner)
+      return result(SpatialExactRepairResultKind::InternalError,
+                    canonicalRegionDecisionCount, 0, 0,
+                    llvm::toString(owner.takeError()));
+    if (*owner >= decisionVariables_.size() ||
+        decisionVariables_[*owner] < 0)
+      return result(SpatialExactRepairResultKind::InternalError,
+                    canonicalRegionDecisionCount, 0, 0,
+                    "route repair omitted a PortDemand owner decision");
+    mutationParentLocals[local] = decisionVariables_[*owner];
+  }
+
+  auto mutationCount = addMutationCountObjective(
+      model, variables, candidate, bindings, decisions_,
+      mutationParentLocals, localDispositions->variables(),
+      localDispositions->currentValues());
   if (!mutationCount)
     return mutationCount.takeError();
 
@@ -1436,8 +1513,12 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
       }
     }
     for (PnrIndex local = 0; local < affectedNets_.size(); ++local) {
+      const std::int64_t selectedDisposition =
+          solved->assignment[decisions_.size() + local];
+      if (selectedDisposition == localDispositions->currentValues()[local])
+        continue;
       auto localOption = localDispositions->selectedOption(
-          local, solved->assignment[decisions_.size() + local]);
+          local, selectedDisposition);
       if (!localOption)
         return executedResult(SpatialExactRepairResultKind::InternalError,
                               llvm::toString(localOption.takeError()));
@@ -1448,6 +1529,9 @@ SpatialExactRepairScratch::repairTransportClosureRegion(
                            : SpatialWholeNetDispositionKind::External,
               *localOption ? **localOption : getInvalidPnrIndex()}});
     }
+    actions_.push_back(SpatialTransportRoutingAction{
+        SpatialWitnessRegionRoutingAction{primaryWitnessKind,
+                                          primaryWitnessOrdinal}});
     for (auto [local, decision] : llvm::enumerate(decisions_)) {
       const std::int64_t selected = solved->assignment[local];
       if (decision < portOffset)

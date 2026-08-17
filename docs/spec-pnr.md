@@ -218,7 +218,7 @@ MappingConstraintSet over the exact `D/T/F` tuple. All upstream identities must
 match exactly. The empty constraint set is a real Artifact; absence is invalid.
 
 The current in-tree Spatial config descriptor is
-`loom.spatial_pnr.config.14.0`. A config digest from another domain or version
+`loom.spatial_pnr.config.15.0`. A config digest from another domain or version
 cannot be adopted. The config is invocation input and does not enter the
 semantic identity of a published SpatialMapping.
 
@@ -250,7 +250,7 @@ The current descriptors are:
 
 ```text
 loom.system_pnr_search_domain.4.0
-loom.system_pnr.config.6.0
+loom.system_pnr.config.7.0
 ```
 
 System search is hierarchical. A rooted graph selects one immutable compatible
@@ -481,8 +481,10 @@ both.
 ### Temporal PE Ingress
 
 Fabric exposes each logical operand queue as a typed durable progress boundary.
-For one exact physical input and Physical Tag, all matching operand queues form
-one atomic ingress group:
+One queue may serve several FU-local SSA consumers through the FU's explicit
+broadcast semantics; those consumers share one queue entry and one common
+dequeue. For one exact physical input and Physical Tag, all distinct matching
+operand queues form one atomic ingress group:
 
 ```text
 ready = any_match && all(!match[i] || queue_ready[i])
@@ -497,17 +499,24 @@ Each queue-ready term observes only capacity free at the start of the PE clock
 cycle, so neither valid nor ready propagates combinationally through the
 ingress traversal. A PE selector or endpoint alone is not durable storage.
 
+Before placement search, the physical-demand projection groups external actor
+operands in each Tech Compute Realization by their concrete FU boundary input.
+Producer-identity verification proves that consumers in one group belong to
+the same logical net. Their attachment decisions form a structural equality
+relation over the exact selector disposition, while the RouteTree retains
+every logical sink obligation. Strict SpatialMapping import rebuilds one
+physical logical-queue match with the complete canonical consumer set.
+
 The frozen attachment domain records the Fabric-derived operand allocation
 unit only when every resident-context choice for that concrete FU input names
-the same unit. For each residual logical net, sink decisions that select the
-same ingress endpoint and that same shared unit form one structural disjoint
-relation before routing. A context-dedicated unit needs no extra relation
-because distinct context choices already select distinct units. Thus an
-inadmissible same-unit fanout feeds binding, placement, and attachment search;
-PathFinder never receives it and never attempts a compensating route back to
-an endpoint already in the tree. The strict physical-demand projection still
-reconstructs the exact `(ingress, Physical Tag)` match group from the selected
-artifact and validates it with the Fabric operand-buffer contract.
+the same unit. Each FU-boundary broadcast class contributes one representative
+to the structural disjoint relation for distinct queues that select the same
+ingress endpoint and shared unit. Other consumers in the class are tied to the
+representative by selector equality and do not consume another enqueue service
+or entry. A context-dedicated unit needs no extra relation because distinct
+context choices already select distinct units. The strict physical-demand
+projection reconstructs the exact `(ingress, Physical Tag)` match group and
+validates its unique queue set with the Fabric operand-buffer contract.
 
 ### Temporal Memory
 
@@ -558,6 +567,15 @@ An incompatible same-tag row remains one physical row and one explicit
 `TagConflict` during repair. PnR derives its actual combined handshake demand
 instead of erasing it. Strict Mapping verification rejects that row before
 configuration or execution.
+
+A search candidate may temporarily require more packed rows than the Fabric
+owns. The complete row projection remains the owner of
+`TagResidentCapacityOveruse` and route cost. Handshake projection instantiates
+only the occurrence-local resident-row prefix because an overflow row has no
+physical activation. This does not make the candidate publishable: after row
+pressure returns within capacity, every surviving row is reconstructed and
+must pass the full row-aware handshake check. Strict Mapping verification and
+configuration reject any remaining overflow independently.
 
 The atomic execution key is `(resident row, input)`. A Fabric requester group
 may arbitrate a physical owner, but it cannot merge different configured rows
@@ -637,6 +655,21 @@ must satisfy exact thread-to-AccCore and graph-to-SpatialMapping binding,
 service target selection, terminal attachment, System RouteTrees, resource
 states, tags, capacity, configuration, and `K` admission.
 
+System service-target decisions are keyed by the exact
+`ServicePlanSelectionAnchor` inside an execution context. Each addressed
+memory member, fence member, and memory exposure selects from the exact target
+domain derived from its own Spatial attachment. PnR must not intersect those
+domains merely because the anchors share an execution context. A candidate
+may share one plan only when the complete selected target and route semantics
+are identical; materialization and the independent verifier reconstruct that
+equivalence rather than assuming it.
+
+For a finite logical-memory interval, this target domain is the exact
+address-relation closure. For a dynamically unbounded `Whole` interval, it is
+the complete structural service-envelope domain. PnR still selects one fixed
+plan; invocation-specific extent and address admission remain Runtime ABI
+state and cannot alter that selection.
+
 System progress is candidate-dependent. The proof must rebuild the following
 from selected Spatial mappings, System routes, services, UsePatterns, and
 Fabric ResourceContracts:
@@ -659,6 +692,15 @@ different wait-for nodes. An active holder waits for pending groups whose
 trigger is a causal predecessor of its release. A pending group waits for
 active holders whose claims block its capacity. Ordinary contention between
 two pending groups is not hold-and-wait.
+
+The holder-to-pending edge uses the exact open activation interval. The two
+activation relation domains must have a nonempty Presburger intersection, and
+one compatible trigger alternative must be proven strictly after holder
+acquisition and strictly before causal release. Fabric applies release before
+acquisition at one event coordinate, so same-coordinate replacement and an
+event preceding holder acquisition cannot manufacture a physical wait cycle.
+Unordered alternatives do not establish a mandatory holder-to-pending wait
+and therefore do not create an edge.
 
 The proof returns `ProvenNoClosedWaitSet` only when the reconstructed wait-for
 graph is acyclic and every arbitration case has a sufficient Fabric progress
@@ -729,9 +771,28 @@ domain. PnR config rejects Evaluation metric dimensions because the current
 provider has no online Evaluation owner. Missing measures cannot be replaced
 with zero. Objective arithmetic is checked and cannot saturate.
 
+The builtin Spatial policy excludes
+`RecurrenceMinimumInitiationIntervalCycles` from its selected ordering and
+search energy because a Spatial boundary proxy deliberately leaves the
+provider service plan to SystemMapping. The builtin System policy selects the
+otherwise identical ordering and energy with recurrence included. A custom
+Spatial policy may select recurrence only when every admitted candidate has a
+complete local timing owner; an external manager dispatch then terminates as
+`ProofNotEstablished` rather than receiving a provisional latency.
+
 The selected total ordering ranks candidates. The selected search energy may
 guide stochastic acceptance but cannot legalize a violation. Final independent
 verification remains authoritative even when a candidate has the best rank.
+
+Annealing owns an explicit positive temperature-level limit in addition to its
+per-level proposal formula. Calibration and objective magnitude affect the
+temperature values and acceptance probabilities, never the maximum number of
+levels. A bounded schedule executes at most that many levels and exactly one
+minimum-temperature level. Each transition selects the colder of the ordinary
+cooling result and the integer geometric envelope required to reach the
+minimum within the remaining levels; a linear integer envelope covers the
+sub-two ratio case. The deterministic work-budget projection publishes this
+limit independently of the proposal counts.
 
 ## Search Policy And Determinism
 

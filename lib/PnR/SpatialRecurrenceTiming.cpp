@@ -1,4 +1,5 @@
 #include "SpatialRecurrenceTimingInternal.h"
+#include "SpatialRecurrenceTimingPersistent.h"
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowServiceSchema.h"
@@ -13,6 +14,7 @@
 #include "StaticSchedulePressure.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
 
 #include <algorithm>
 #include <array>
@@ -154,6 +156,17 @@ SpatialRecurrenceTimingProjection proofNotEstablished(llvm::StringRef reason) {
   result.kind = SpatialRecurrenceTimingProofKind::ProofNotEstablished;
   result.diagnostic = reason.str();
   return result;
+}
+
+std::string missingPublicationTiming(const FrozenRecurrenceActor &actor,
+                                     std::uint64_t resultOrdinal) {
+  const llvm::StringRef owner =
+      actor.ownerKind == FrozenRecurrenceActorOwnerKind::Compute ? "compute"
+                                                                 : "memory";
+  return (llvm::Twine("actor_publication_timing_not_established:actor=") +
+          llvm::Twine(actor.actor.entity.value()) +
+          ":result=" + llvm::Twine(resultOrdinal) + ":owner=" + owner)
+      .str();
 }
 
 llvm::Expected<std::optional<std::uint64_t>> computePublicationLatency(
@@ -374,8 +387,8 @@ projectEdge(const SpatialCandidateState &candidate,
   if (!publication)
     return publication.takeError();
   if (!*publication)
-    return ProjectionValue{std::nullopt,
-                           "actor_publication_timing_not_established"};
+    return ProjectionValue{std::nullopt, missingPublicationTiming(
+                                             producer, edge.producer.ordinal)};
 
   SpatialRecurrenceEdgeDisposition disposition =
       SpatialRecurrenceEdgeDisposition::ComputeInternal;
@@ -1259,12 +1272,8 @@ projectPersistentLocalCompletion(const FabricArtifactView &fabric,
   return result;
 }
 
-struct PersistentActorTiming final {
-  std::vector<std::optional<std::uint64_t>> publications;
-  std::optional<std::uint64_t> nextState;
-};
-
-llvm::Expected<PersistentActorTiming> projectPersistentComputeTiming(
+llvm::Expected<FrozenPersistentRecurrenceActorTiming>
+projectPersistentComputeTiming(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
     const SpatialMappingView &mapping, const FrozenRecurrenceActor &actor) {
@@ -1294,10 +1303,10 @@ llvm::Expected<PersistentActorTiming> projectPersistentComputeTiming(
       *dataflowActor, capability->resourceStateAndTimingContract, nextState);
   if (!publications)
     return publications.takeError();
-  PersistentActorTiming result;
-  result.publications.reserve(publications->size());
+  FrozenPersistentRecurrenceActorTiming result;
+  result.fixedPublications.reserve(publications->size());
   for (const auto publication : *publications)
-    result.publications.push_back(
+    result.fixedPublications.push_back(
         publication ? std::optional<std::uint64_t>(*publication)
                     : std::optional<std::uint64_t>{});
   if (nextState)
@@ -1305,7 +1314,8 @@ llvm::Expected<PersistentActorTiming> projectPersistentComputeTiming(
   return result;
 }
 
-llvm::Expected<PersistentActorTiming> projectPersistentMemoryTiming(
+llvm::Expected<FrozenPersistentRecurrenceActorTiming>
+projectPersistentMemoryTiming(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
     const SpatialMappingView &mapping, const FrozenRecurrenceActor &actor) {
@@ -1351,14 +1361,16 @@ llvm::Expected<PersistentActorTiming> projectPersistentMemoryTiming(
   if (!issue)
     return issue.takeError();
 
-  std::optional<std::uint64_t> maximumCompletion = 0;
+  FrozenPersistentRecurrenceActorTiming result;
+  result.fixedPublications.resize(dataflowActor->op->getNumResults());
+  result.memoryIssueLatencyCycles = *issue;
   if (const auto *addressed =
           std::get_if<SpatialAddressedMemoryOperationView>(operation)) {
     for (const SpatialAddressedMemoryUseView &use : addressed->uses) {
       const auto *local = std::get_if<LocalMemoryServiceRef>(&use.dispatch);
       if (!local) {
-        maximumCompletion.reset();
-        break;
+        result.memoryUses.push_back({use.launch, std::nullopt, true});
+        continue;
       }
       auto servicePattern = findPersistentMemoryPattern(
           dataflow, mapping, actor.actor, false, use.binding);
@@ -1368,26 +1380,19 @@ llvm::Expected<PersistentActorTiming> projectPersistentMemoryTiming(
           fabric, *dataflowActor, *local, *servicePattern);
       if (!completion)
         return completion.takeError();
-      if (!*completion) {
-        maximumCompletion.reset();
-        break;
-      }
-      maximumCompletion = std::max(*maximumCompletion, **completion);
+      result.memoryUses.push_back({use.launch, *completion, false});
     }
   } else {
-    maximumCompletion.reset();
+    const auto &fence = std::get<SpatialFenceMemoryOperationView>(*operation);
+    for (const SpatialFenceMemoryUseView &use : fence.uses) {
+      const bool boundary =
+          std::holds_alternative<::loom::fabric::ManagerEndpointRef>(
+              use.consistency);
+      result.memoryUses.push_back({use.launch, std::nullopt, boundary});
+    }
   }
-
-  std::optional<std::uint64_t> publication;
-  if (*issue && maximumCompletion) {
-    auto total = checkedAdd(**issue, *maximumCompletion,
-                            "persistent memory publication latency");
-    if (!total)
-      return total.takeError();
-    publication = *total;
-  }
-  PersistentActorTiming result;
-  result.publications.assign(dataflowActor->op->getNumResults(), publication);
+  if (result.memoryUses.empty())
+    return projectionInvalid("persistent memory actor has no rooted use");
   return result;
 }
 
@@ -1511,22 +1516,96 @@ projectPersistentResidualTransport(const FabricArtifactView &fabric,
   return std::pair{SpatialRecurrenceEdgeDisposition::ExternalRouteTree, total};
 }
 
-llvm::Expected<SpatialRecurrenceTimingProjection>
-projectPersistentRecurrenceTiming(
+llvm::Expected<std::optional<std::uint64_t>> projectFrozenActorPublication(
+    const FrozenSpatialRecurrenceTimingDemand &demand, PnrIndex actorOrdinal,
+    std::uint64_t resultOrdinal,
+    std::optional<::dataflow::RootedGraphLaunchRef> exactLaunch,
+    SpatialBoundaryMemoryCompletionResolver boundaryCompletion) {
+  if (actorOrdinal >= demand.actors().size() ||
+      actorOrdinal >= demand.actorTimings().size())
+    return projectionInvalid("persistent recurrence actor timing is absent");
+  const FrozenRecurrenceActor &actor = demand.actors()[actorOrdinal];
+  const FrozenPersistentRecurrenceActorTiming &timing =
+      demand.actorTimings()[actorOrdinal];
+  if (resultOrdinal >= timing.fixedPublications.size())
+    return projectionInvalid(
+        "persistent recurrence result timing is out of range");
+  if (actor.ownerKind == FrozenRecurrenceActorOwnerKind::Compute)
+    return timing.fixedPublications[resultOrdinal];
+  if (!timing.memoryIssueLatencyCycles)
+    return std::optional<std::uint64_t>{};
+
+  bool matchedUse = false;
+  std::uint64_t maximumCompletion = 0;
+  for (const FrozenPersistentMemoryUseTiming &use : timing.memoryUses) {
+    if (exactLaunch && use.launch != *exactLaunch)
+      continue;
+    matchedUse = true;
+    std::optional<std::uint64_t> completion = use.localCompletionCycles;
+    if (use.requiresBoundaryCompletion) {
+      auto resolved = boundaryCompletion({use.launch, actor.actor});
+      if (!resolved)
+        return resolved.takeError();
+      completion = *resolved;
+    }
+    if (!completion)
+      return std::optional<std::uint64_t>{};
+    maximumCompletion = std::max(maximumCompletion, *completion);
+  }
+  if (!matchedUse)
+    return projectionInvalid(
+        "persistent recurrence actor has no use in the selected launch");
+  return checkedAdd(*timing.memoryIssueLatencyCycles, maximumCompletion,
+                    "persistent memory publication latency");
+}
+
+} // namespace
+
+std::uint64_t
+loom::pnr::detail::FrozenSpatialRecurrenceTimingDemand::retainedBytes() const {
+  std::uint64_t bytes =
+      sizeof(*this) + actors_.capacity() * sizeof(FrozenRecurrenceActor) +
+      edges_.capacity() * sizeof(FrozenRecurrenceEdge) +
+      graphs_.capacity() * sizeof(FrozenRecurrenceGraph) +
+      graphActors_.capacity() * sizeof(PnrIndex) +
+      graphEdges_.capacity() * sizeof(PnrIndex) +
+      graphTopologicalActors_.capacity() * sizeof(PnrIndex) +
+      feedbackEdges_.capacity() * sizeof(PnrIndex) +
+      actorTimings_.capacity() * sizeof(FrozenPersistentRecurrenceActorTiming) +
+      edgeTimings_.capacity() * sizeof(FrozenPersistentRecurrenceEdgeTiming);
+  for (const FrozenPersistentRecurrenceActorTiming &timing : actorTimings_) {
+    bytes += timing.fixedPublications.capacity() *
+             sizeof(std::optional<std::uint64_t>);
+    bytes +=
+        timing.memoryUses.capacity() * sizeof(FrozenPersistentMemoryUseTiming);
+  }
+  return bytes;
+}
+
+llvm::Expected<std::shared_ptr<const FrozenSpatialRecurrenceTimingDemand>>
+loom::pnr::detail::freezeSpatialMappingGraphRecurrenceTimingDemand(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
-    const SpatialMappingView &mapping,
-    llvm::ArrayRef<::dataflow::GraphRef> covers) {
+    const SpatialMappingView &mapping, ::dataflow::GraphRef graph) {
   if (mapping.dataflowIdentity() != dataflow.identity() ||
       mapping.techMappingIdentity() != techMapping.identity() ||
       mapping.fabricIdentity() != fabric.identity())
     return projectionInvalid("persistent recurrence dependency tuple differs");
+  const std::array<::dataflow::GraphRef, 1> covers{graph};
   auto index = buildPersistentRecurrenceIndex(dataflow, techMapping, covers);
   if (!index)
     return index.takeError();
-  std::vector<PersistentActorTiming> timings;
-  timings.reserve(index->actors().size());
-  for (const FrozenRecurrenceActor &actor : index->actors()) {
+
+  auto demand = std::make_shared<FrozenSpatialRecurrenceTimingDemand>();
+  demand->actors_ = std::move(index->actorRecords);
+  demand->edges_ = std::move(index->edgeRecords);
+  demand->graphs_ = std::move(index->graphRecords);
+  demand->graphActors_ = std::move(index->graphActorOrdinals);
+  demand->graphEdges_ = std::move(index->graphEdgeOrdinals);
+  demand->graphTopologicalActors_ = std::move(index->topologicalActorOrdinals);
+  demand->feedbackEdges_ = std::move(index->feedbackEdgeOrdinals);
+  demand->actorTimings_.reserve(demand->actors_.size());
+  for (const FrozenRecurrenceActor &actor : demand->actors_) {
     auto timing = actor.ownerKind == FrozenRecurrenceActorOwnerKind::Compute
                       ? projectPersistentComputeTiming(dataflow, techMapping,
                                                        fabric, mapping, actor)
@@ -1534,51 +1613,68 @@ projectPersistentRecurrenceTiming(
                                                       fabric, mapping, actor);
     if (!timing)
       return timing.takeError();
-    timings.push_back(std::move(*timing));
+    demand->actorTimings_.push_back(std::move(*timing));
   }
+  demand->edgeTimings_.reserve(demand->edges_.size());
+  for (const FrozenRecurrenceEdge &edge : demand->edges_) {
+    FrozenPersistentRecurrenceEdgeTiming timing;
+    if (edge.disposition == FrozenRecurrenceEdgeDisposition::MemoryInternal) {
+      timing.disposition = SpatialRecurrenceEdgeDisposition::MemoryInternal;
+    } else if (edge.disposition == FrozenRecurrenceEdgeDisposition::Residual) {
+      auto projected =
+          projectPersistentResidualTransport(fabric, mapping, edge);
+      if (!projected)
+        return projected.takeError();
+      timing.disposition = projected->first;
+      timing.transportLatencyCycles = projected->second;
+    }
+    demand->edgeTimings_.push_back(timing);
+  }
+  return std::shared_ptr<const FrozenSpatialRecurrenceTimingDemand>(
+      std::move(demand));
+}
+
+llvm::Expected<SpatialRecurrenceTimingProjection>
+loom::pnr::detail::projectFrozenSpatialRecurrenceTimingDemand(
+    const FrozenSpatialRecurrenceTimingDemand &demand,
+    std::optional<::dataflow::RootedGraphLaunchRef> exactLaunch,
+    SpatialBoundaryMemoryCompletionResolver boundaryCompletion) {
+  if (demand.actorTimings().size() != demand.actors().size() ||
+      demand.edgeTimings().size() != demand.edges().size())
+    return projectionInvalid("persistent recurrence demand is incomplete");
   return projectRecurrenceCycles(
-      *index, [&](PnrIndex ordinal) -> llvm::Expected<ProjectionValue> {
-        if (ordinal >= index->edges().size())
+      demand, [&](PnrIndex ordinal) -> llvm::Expected<ProjectionValue> {
+        if (ordinal >= demand.edges().size())
           return projectionInvalid(
               "persistent recurrence edge is out of range");
-        const FrozenRecurrenceEdge &edge = index->edges()[ordinal];
-        if (edge.producerActor >= timings.size() ||
-            edge.consumerActor >= timings.size())
+        const FrozenRecurrenceEdge &edge = demand.edges()[ordinal];
+        if (edge.producerActor >= demand.actorTimings().size() ||
+            edge.consumerActor >= demand.actorTimings().size())
           return projectionInvalid(
               "persistent recurrence timing is out of range");
-        const PersistentActorTiming &producer = timings[edge.producerActor];
-        if (edge.producer.ordinal >= producer.publications.size())
-          return projectionInvalid(
-              "persistent recurrence result timing is out of range");
-        const auto publication = producer.publications[edge.producer.ordinal];
+        auto publication = projectFrozenActorPublication(
+            demand, edge.producerActor, edge.producer.ordinal, exactLaunch,
+            boundaryCompletion);
         if (!publication)
-          return ProjectionValue{std::nullopt,
-                                 "actor_publication_timing_not_established"};
-        SpatialRecurrenceEdgeDisposition disposition =
-            SpatialRecurrenceEdgeDisposition::ComputeInternal;
-        std::uint64_t transport = 0;
-        if (edge.disposition ==
-            FrozenRecurrenceEdgeDisposition::MemoryInternal) {
-          disposition = SpatialRecurrenceEdgeDisposition::MemoryInternal;
-        } else if (edge.disposition ==
-                   FrozenRecurrenceEdgeDisposition::Residual) {
-          auto projected =
-              projectPersistentResidualTransport(fabric, mapping, edge);
-          if (!projected)
-            return projected.takeError();
-          disposition = projected->first;
-          transport = projected->second;
-        }
+          return publication.takeError();
+        if (!*publication)
+          return ProjectionValue{
+              std::nullopt,
+              missingPublicationTiming(demand.actors()[edge.producerActor],
+                                       edge.producer.ordinal)};
+        const FrozenPersistentRecurrenceEdgeTiming &edgeTiming =
+            demand.edgeTimings()[ordinal];
         std::uint64_t nextState = 0;
         if (edge.feedback) {
-          const auto next = timings[edge.consumerActor].nextState;
+          const auto next = demand.actorTimings()[edge.consumerActor].nextState;
           if (!next)
             return ProjectionValue{std::nullopt,
                                    "carry_next_state_timing_not_established"};
           nextState = *next;
         }
-        auto partial = checkedAdd(*publication, transport,
-                                  "persistent recurrence edge latency");
+        auto partial =
+            checkedAdd(**publication, edgeTiming.transportLatencyCycles,
+                       "persistent recurrence edge latency");
         if (!partial)
           return partial.takeError();
         auto total = checkedAdd(*partial, nextState,
@@ -1586,21 +1682,45 @@ projectPersistentRecurrenceTiming(
         if (!total)
           return total.takeError();
         return ProjectionValue{SpatialRecurrenceTimingEdgeWitness{
-                                   edge.producer, edge.consumer, disposition,
-                                   *publication, transport, nextState, *total},
+                                   edge.producer, edge.consumer,
+                                   edgeTiming.disposition, **publication,
+                                   edgeTiming.transportLatencyCycles, nextState,
+                                   *total},
                                {}};
       });
 }
-
-} // namespace
 
 llvm::Expected<SpatialRecurrenceTimingProjection>
 loom::pnr::projectSpatialMappingRecurrenceTiming(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
     const SpatialMappingView &mapping) {
-  return projectPersistentRecurrenceTiming(dataflow, techMapping, fabric,
-                                           mapping, techMapping.covers());
+  SpatialRecurrenceTimingProjection result;
+  for (const ::dataflow::GraphRef graph : techMapping.covers()) {
+    auto demand = freezeSpatialMappingGraphRecurrenceTimingDemand(
+        dataflow, techMapping, fabric, mapping, graph);
+    if (!demand)
+      return demand.takeError();
+    auto projection = projectFrozenSpatialRecurrenceTimingDemand(
+        **demand, std::nullopt,
+        [](const ::dataflow::ContextualActorRef &)
+            -> llvm::Expected<std::optional<std::uint64_t>> {
+          return std::optional<std::uint64_t>{};
+        });
+    if (!projection)
+      return projection.takeError();
+    if (projection->kind ==
+        SpatialRecurrenceTimingProofKind::ProofNotEstablished)
+      return std::move(*projection);
+    result.recurrenceMinimumInitiationIntervalCycles =
+        std::max(result.recurrenceMinimumInitiationIntervalCycles,
+                 projection->recurrenceMinimumInitiationIntervalCycles);
+    result.witnesses.insert(
+        result.witnesses.end(),
+        std::make_move_iterator(projection->witnesses.begin()),
+        std::make_move_iterator(projection->witnesses.end()));
+  }
+  return result;
 }
 
 llvm::Expected<SpatialRecurrenceTimingProjection>
@@ -1608,7 +1728,14 @@ loom::pnr::projectSpatialMappingGraphRecurrenceTiming(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
     const SpatialMappingView &mapping, ::dataflow::GraphRef graph) {
-  const std::array<::dataflow::GraphRef, 1> covers{graph};
-  return projectPersistentRecurrenceTiming(dataflow, techMapping, fabric,
-                                           mapping, covers);
+  auto demand = freezeSpatialMappingGraphRecurrenceTimingDemand(
+      dataflow, techMapping, fabric, mapping, graph);
+  if (!demand)
+    return demand.takeError();
+  return projectFrozenSpatialRecurrenceTimingDemand(
+      **demand, std::nullopt,
+      [](const ::dataflow::ContextualActorRef &)
+          -> llvm::Expected<std::optional<std::uint64_t>> {
+        return std::optional<std::uint64_t>{};
+      });
 }

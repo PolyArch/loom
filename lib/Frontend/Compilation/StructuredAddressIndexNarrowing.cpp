@@ -4,6 +4,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Frontend/IR/LoomDialect.h"
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
+#include "Frontend/Raising/CountedLoopProjection.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -66,69 +67,17 @@ bool provesPostTestedInductionDomain(mlir::Value value, unsigned targetWidth) {
   if (!loop || induction.getOwner() != loop.getBeforeBody())
     return false;
 
-  const unsigned lane = induction.getArgNumber();
-  if (lane >= loop.getInits().size())
-    return false;
-  mlir::IntegerAttr startAttr = integerConstant(loop.getInits()[lane]);
-  if (!startAttr || startAttr.getType() != induction.getType())
-    return false;
-
-  mlir::scf::ConditionOp condition = loop.getConditionOp();
-  if (lane >= condition.getArgs().size())
-    return false;
-  auto update = condition.getArgs()[lane].getDefiningOp<mlir::arith::AddIOp>();
-  if (!update || update->getParentRegion() != &loop.getBefore() ||
-      !mlir::arith::bitEnumContainsAny(update.getOverflowFlags(),
-                                       mlir::arith::IntegerOverflowFlags::nsw))
-    return false;
-
-  mlir::Value stepValue;
-  if (update.getLhs() == induction)
-    stepValue = update.getRhs();
-  else if (update.getRhs() == induction)
-    stepValue = update.getLhs();
-  else
-    return false;
-  mlir::IntegerAttr stepAttr = integerConstant(stepValue);
-  if (!stepAttr || stepAttr.getType() != induction.getType() ||
-      !stepAttr.getValue().isStrictlyPositive())
-    return false;
-
-  auto compare = condition.getCondition().getDefiningOp<mlir::arith::CmpIOp>();
-  if (!compare || compare->getParentRegion() != &loop.getBefore())
-    return false;
-  mlir::Value boundValue;
-  if (compare.getLhs() == update.getResult())
-    boundValue = compare.getRhs();
-  else if (compare.getRhs() == update.getResult())
-    boundValue = compare.getLhs();
-  else
-    return false;
-  mlir::IntegerAttr boundAttr = integerConstant(boundValue);
-  if (!boundAttr || boundAttr.getType() != induction.getType())
-    return false;
-
-  mlir::Block *afterBody = loop.getAfterBody();
-  mlir::scf::YieldOp yield = loop.getYieldOp();
-  if (lane >= afterBody->getNumArguments() ||
-      lane >= yield.getResults().size() ||
-      yield.getResults()[lane] != afterBody->getArgument(lane))
+  std::optional<loom::raising::ExactPostTestedCountedLoopProjection>
+      projection = loom::raising::projectExactPostTestedCountedLoop(loop);
+  if (!projection || projection->inductionLane != induction.getArgNumber())
     return false;
 
   auto sourceType = llvm::dyn_cast<mlir::IntegerType>(induction.getType());
   if (!sourceType || sourceType.getWidth() <= targetWidth)
     return false;
-  const unsigned arithmeticWidth = sourceType.getWidth() + 1;
-  llvm::APInt start = startAttr.getValue().sext(arithmeticWidth);
-  llvm::APInt step = stepAttr.getValue().sext(arithmeticWidth);
-  llvm::APInt bound = boundAttr.getValue().sext(arithmeticWidth);
-  if (!start.slt(bound))
-    return false;
-  llvm::APInt distance = bound - start;
-  if (!distance.urem(step).isZero())
-    return false;
-  llvm::APInt last = bound - step;
-  return start.isSignedIntN(targetWidth) && last.isSignedIntN(targetWidth);
+  llvm::APInt last = projection->upperBoundValue - projection->stepValue;
+  return projection->lowerBoundValue.isSignedIntN(targetWidth) &&
+         last.isSignedIntN(targetWidth);
 }
 
 bool provesSignedFit(mlir::Value value, unsigned targetWidth) {

@@ -253,6 +253,35 @@ bytes, revalidates the workload and result shapes, and checks every result write
 against the decoded destination table. The envelope has no ArtifactIdentity
 and cannot substitute for final `SimulationExecution` validation.
 
+The dynamic Spatial invocation wire has one current incompatible identity,
+`loom.spatial_invocation_abi.v2`. Its canonical payload is:
+
+```text
+SpatialInvocationWire {
+  thread_launch_entity
+  graph_launch_entity
+  dense_coordinates
+  values[ordinal] {
+    bit_count
+    pointer_target = absent | { object_ordinal, byte_offset }
+    little_endian_bits
+  }
+  memory_objects[ordinal] { guest_address, initial_bytes }
+  memory_root_bindings { logical_memory_root_entity,
+                         object_ordinal, byte_offset }
+  result_destinations[ordinal] { bit_count, guest_address }
+}
+```
+
+Object ordinals preserve the exact invocation-local alias classes captured
+from the source execution. Pointer provenance, memory-root bindings, and
+memory-service requests all refer to that one object table; guest addresses
+are transient transport coordinates rather than persistent storage identity.
+Every writable logical root is observed as `DiffFromRuntimeInput`, and the
+engine returns the resulting nonconflicting byte writes through the exact guest
+addresses. Runtime admission rejects missing, overlapping, out-of-range, or
+type-inconsistent records. Version 1 is not retained as a compatibility path.
+
 ### Channel Event Execution
 
 Logical channel message correspondence is owned exclusively by
@@ -280,6 +309,11 @@ authorization to an already selected logical-memory obligation, physical
 service envelope, address range, and permission contract. Runtime may choose a
 concrete address or handle within that envelope. It may not choose a new bank,
 service, route, coherence policy, address transform, or storage identity.
+For a dynamically unbounded `Whole` logical interval, admission reprojects the
+descriptor's concrete positive byte range through the selected Fabric
+transform paths and proves exact coverage by the selected terminal regions.
+Failure to fit or cover that range rejects the invocation; it does not trigger
+remapping or truncation.
 
 Value, stream, control, completion, and cross-AccCore token traffic use typed
 transfer contracts selected by `ServiceRealization`. Memory uses the typed

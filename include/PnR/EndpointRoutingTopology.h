@@ -26,6 +26,7 @@ struct EndpointRoutingTraversal final {
   PnrIndex destinationCount = 0;
   PnrIndex capacityClaimOffset = 0;
   PnrIndex capacityClaimCount = 0;
+  std::uint32_t architecturalLatencyCycles = 0;
 };
 
 struct EndpointRoutingCapacityCell final {

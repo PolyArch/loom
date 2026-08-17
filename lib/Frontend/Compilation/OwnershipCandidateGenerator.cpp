@@ -1534,7 +1534,12 @@ prepareSpatialOwnershipSelection(
             selection->clone.get(), operation);
     if (!specialized)
       return specialized.takeError();
-    operation = *specialized;
+    if (!*specialized)
+      return reject(
+          SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+          "uniform exact call argument specialization removed the selected "
+          "scope");
+    operation = **specialized;
     if (llvm::Error error = retainLiveBlockLineage(*selection))
       return std::move(error);
   }

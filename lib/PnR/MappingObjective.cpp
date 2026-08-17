@@ -3,6 +3,7 @@
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/MappingProgressAnalysis.h"
 #include "PnR/SpatialCandidateState.h"
 #include "PnR/SpatialPnrProblem.h"
 #include "PnR/System/SystemCandidateState.h"
@@ -11,6 +12,7 @@
 #include "SpatialProgressAnalysis.h"
 
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <array>
@@ -54,6 +56,40 @@ llvm::Error unavailable(llvm::StringRef source) {
       "objective_unavailable: required Mapping objective source '%s' is "
       "absent",
       source.str().c_str());
+}
+
+llvm::Error unavailableSystemProgress(
+    const ::loom::mapping::MappingProgressClosure &closure) {
+  std::string diagnostic;
+  llvm::raw_string_ostream stream(diagnostic);
+  stream << "proof_not_established: System progress closure is unavailable: "
+         << ::loom::mapping::mappingProgressClosureReasonSpelling(
+                closure.reason);
+  if (!closure.possibleWaitCycle.empty()) {
+    stream << " [";
+    for (const auto &[ordinal, node] :
+         llvm::enumerate(closure.possibleWaitCycle)) {
+      if (ordinal != 0)
+        stream << "; ";
+      stream << (node.kind ==
+                         ::loom::mapping::MappingProgressWaitNodeKind::Active
+                     ? "active"
+                     : "pending")
+             << " group=" << node.activationGroupOrdinal << " activations=";
+      llvm::interleaveComma(node.activationOrdinals, stream);
+      stream << " cells=";
+      llvm::interleaveComma(node.capacityCellOrdinals, stream);
+      stream << " triggers=";
+      llvm::interleaveComma(node.triggerEventOrdinals, stream);
+      stream << " releases=";
+      llvm::interleaveComma(node.causalReleaseEventOrdinals, stream);
+    }
+    stream << ']';
+  }
+  stream.flush();
+  return llvm::createStringError(
+      std::make_error_code(std::errc::operation_not_supported), "%s",
+      diagnostic.c_str());
 }
 
 llvm::Error invalidObjectiveReference(llvm::StringRef detail) {
@@ -287,9 +323,7 @@ loom::pnr::systemMappingViolationValue(const SystemCandidateState &candidate,
     case ::loom::mapping::MappingProgressClosureKind::ProvenClosedWaitSet:
       return 1;
     case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:
-      return llvm::createStringError(
-          std::make_error_code(std::errc::operation_not_supported),
-          "proof_not_established: System progress closure is unavailable");
+      return unavailableSystemProgress(candidate.progressClosure());
     }
     llvm_unreachable("unknown System progress closure kind");
   }
@@ -468,16 +502,17 @@ MappingObjectiveProgram::evaluate(const SystemCandidateState &candidate) const {
     return traversalClaim.takeError();
   return evaluateSystemProjection(
       candidate.problem(), candidate.graphChoices(),
-      candidate.capacityOveruse(), *traversalClaim,
-      candidate.resourceMinimumInitiationIntervalCycles(),
+      candidate.recurrenceTiming(), candidate.capacityOveruse(),
+      *traversalClaim, candidate.resourceMinimumInitiationIntervalCycles(),
       candidate.transportBitCycleDemand(), candidate.progressClosure());
 }
 
 llvm::Expected<dse::ObjectiveVector>
 MappingObjectiveProgram::evaluateSystemProjection(
     const FrozenSystemPnrProblem &problem,
-    llvm::ArrayRef<PnrIndex> graphChoices, std::uint64_t capacityOveruse,
-    std::uint64_t totalSelectedTraversalClaim,
+    llvm::ArrayRef<PnrIndex> graphChoices,
+    const SpatialRecurrenceTimingProjection &recurrenceTiming,
+    std::uint64_t capacityOveruse, std::uint64_t totalSelectedTraversalClaim,
     std::uint64_t resourceMinimumInitiationIntervalCycles,
     std::uint64_t transportBitCycleDemand,
     const ::loom::mapping::MappingProgressClosure &progressClosure) const {
@@ -507,9 +542,7 @@ MappingObjectiveProgram::evaluateSystemProjection(
         violations[ordinal] = 1;
         break;
       case ::loom::mapping::MappingProgressClosureKind::ProofNotEstablished:
-        return llvm::createStringError(
-            std::make_error_code(std::errc::operation_not_supported),
-            "proof_not_established: System progress closure is unavailable");
+        return unavailableSystemProgress(progressClosure);
       }
       break;
     }
@@ -538,10 +571,7 @@ MappingObjectiveProgram::evaluateSystemProjection(
       break;
     }
     case MappingMeasureKind::RecurrenceMinimumInitiationIntervalCycles: {
-      auto recurrence = projectSystemRecurrenceTiming(problem, graphChoices);
-      if (!recurrence)
-        return recurrence.takeError();
-      auto value = recurrenceMinimumInitiationInterval(*recurrence, 0);
+      auto value = recurrenceMinimumInitiationInterval(recurrenceTiming, 0);
       if (!value)
         return value.takeError();
       measures[ordinal] = *value;

@@ -15,7 +15,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -102,16 +101,6 @@ intervalAttr(mlir::MLIRContext *context,
                                              range.sizeBytes);
 }
 
-std::tuple<std::uint32_t, std::uint64_t, std::uint64_t>
-intervalKey(const ::loom::mapping::SpatialMemoryIntervalView &interval) {
-  if (std::holds_alternative<::loom::mapping::SpatialMemoryWholeIntervalView>(
-          interval))
-    return {0, 0, 0};
-  const auto &range =
-      std::get<::loom::mapping::SpatialMemoryByteRangeView>(interval);
-  return {1, range.offsetBytes, range.sizeBytes};
-}
-
 std::vector<std::vector<std::uint8_t>>
 targetRegionKey(const SystemMemoryServiceTargetPlan &plan) {
   std::vector<std::vector<std::uint8_t>> result;
@@ -124,18 +113,19 @@ targetRegionKey(const SystemMemoryServiceTargetPlan &plan) {
 
 llvm::Expected<bool>
 requiresExplicitTransformPaths(const SystemCandidateState &candidate,
-                               PnrIndex context,
+                               PnrIndex context, PnrIndex subject,
                                const SystemMemoryServiceTargetPlan &selected) {
   auto domain = candidate.serviceTargetDomain(context);
   if (!domain)
     return domain.takeError();
-  const auto *plans =
-      std::get_if<std::vector<SystemMemoryServiceTargetPlan>>(&*domain);
-  if (!plans)
+  const auto *memory =
+      std::get_if<SystemMemoryServiceTargetDomain>(&*domain);
+  if (!memory || subject >= memory->plansBySubject.size())
     return invalid("memory target has a non-memory target domain");
   const auto selectedRegions = targetRegionKey(selected);
   std::size_t matchingRegionSets = 0;
-  for (const SystemMemoryServiceTargetPlan &plan : *plans)
+  for (const SystemMemoryServiceTargetPlan &plan :
+       memory->plansBySubject[subject])
     if (targetRegionKey(plan) == selectedRegions)
       ++matchingRegionSets;
   return matchingRegionSets != 1;
@@ -356,11 +346,12 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
   };
   struct ServiceGroup final {
     ::loom::mapping::SystemServiceObligationKey key;
-    std::map<PnrIndex, PlanGroup> plans;
+    std::map<std::pair<PnrIndex, PnrIndex>, PlanGroup> plans;
   };
-  std::map<PnrIndex, std::pair<::loom::mapping::SystemServiceObligationKey,
-                               std::uint64_t>>
-      persistentPlanByContext;
+  std::map<std::pair<PnrIndex, PnrIndex>,
+           std::pair<::loom::mapping::SystemServiceObligationKey,
+                     std::uint64_t>>
+      persistentPlanBySubject;
   std::map<std::vector<std::uint8_t>, ServiceGroup> serviceGroups;
   for (const auto &[contextOrdinal, context] :
        llvm::enumerate(problem.serviceContexts())) {
@@ -374,8 +365,21 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
     auto service =
         serviceGroups.try_emplace(*keyBytes, ServiceGroup{obligation, {}})
             .first;
-    service->second.plans.try_emplace(static_cast<PnrIndex>(contextOrdinal),
-                                      PlanGroup{});
+    const PnrIndex frozenContext = static_cast<PnrIndex>(contextOrdinal);
+    if (std::holds_alternative<
+            ::loom::mapping::TransferObligationFamilyKey>(obligation)) {
+      service->second.plans.try_emplace(
+          std::make_pair(frozenContext, getInvalidPnrIndex()), PlanGroup{});
+      continue;
+    }
+    for (const auto &[subjectOrdinal, subject] :
+         llvm::enumerate(context.subjects)) {
+      (void)subject;
+      service->second.plans.try_emplace(
+          std::make_pair(frozenContext,
+                         static_cast<PnrIndex>(subjectOrdinal)),
+          PlanGroup{});
+    }
   }
   for (const auto &[routeOrdinal, route] :
        llvm::enumerate(candidate.serviceRoutes())) {
@@ -393,8 +397,23 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
     auto found =
         serviceGroups.try_emplace(*keyBytes, ServiceGroup{leg.obligation, {}})
             .first;
-    auto plan =
-        found->second.plans.try_emplace(serviceContext, PlanGroup{}).first;
+    PnrIndex subject = getInvalidPnrIndex();
+    if (!std::holds_alternative<
+            ::loom::mapping::TransferObligationFamilyKey>(leg.obligation)) {
+      const auto &subjects = problem.serviceContexts()[serviceContext].subjects;
+      const auto matching = llvm::find_if(subjects, [&](const auto &candidate) {
+        const auto *member =
+            std::get_if<SystemServiceMemberTargetSubject>(&candidate);
+        return member && member->member == leg.member;
+      });
+      if (matching == subjects.end())
+        return invalid("service route has no matching target subject");
+      subject = static_cast<PnrIndex>(matching - subjects.begin());
+    }
+    auto plan = found->second.plans
+                    .try_emplace(std::make_pair(serviceContext, subject),
+                                 PlanGroup{})
+                    .first;
     plan->second.routes.push_back(static_cast<PnrIndex>(routeOrdinal));
   }
   for (const auto &[keyBytes, group] : serviceGroups) {
@@ -409,20 +428,31 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         ::mapping::SystemServiceObligationKeyAttr::get(
             &context, bytesAttr(&context, *obligationBytes)));
     service.getBody().emplaceBlock();
-    std::map<PnrIndex, std::uint64_t> planOrdinals;
-    for (const auto &[contextOrdinal, groupedPlan] : group.plans) {
+    std::map<std::pair<PnrIndex, PnrIndex>, std::uint64_t> planOrdinals;
+    for (const auto &[planKey, groupedPlan] : group.plans) {
+      const PnrIndex contextOrdinal = planKey.first;
+      const PnrIndex subjectOrdinal = planKey.second;
+      if (contextOrdinal >= problem.serviceContexts().size())
+        return invalid("service plan context is out of range");
       const std::uint64_t authoredOrdinal = planOrdinals.size();
-      planOrdinals.emplace(contextOrdinal, authoredOrdinal);
-      persistentPlanByContext.emplace(
-          contextOrdinal, std::make_pair(group.key, authoredOrdinal));
+      planOrdinals.emplace(planKey, authoredOrdinal);
+      persistentPlanBySubject.emplace(
+          planKey, std::make_pair(group.key, authoredOrdinal));
       builder.setInsertionPointToEnd(&service.getBody().front());
       auto plan =
           ::mapping::ServicePlanOp::create(builder, location, authoredOrdinal);
       plan.getBody().emplaceBlock();
       const auto &selectedTarget = candidate.serviceTarget(contextOrdinal);
-      if (const auto *targetPlan =
-              std::get_if<SystemMemoryServiceTargetPlan>(&selectedTarget)) {
-        if (targetPlan->branches.empty())
+      const auto &serviceContext = problem.serviceContexts()[contextOrdinal];
+      if (const auto *targetSelection =
+              std::get_if<SystemMemoryServiceTargetSelection>(
+                  &selectedTarget)) {
+        if (subjectOrdinal >= serviceContext.subjects.size() ||
+            subjectOrdinal >= targetSelection->plansBySubject.size())
+          return invalid("memory service plan subject is out of range");
+        const auto &targetPlan =
+            targetSelection->plansBySubject[subjectOrdinal];
+        if (targetPlan.branches.empty())
           return invalid("selected memory target plan has no terminal branch");
         const auto *operation =
             std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
@@ -434,79 +464,63 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         if (!logicalMemory)
           return invalid(
               "memory region target belongs to a non-memory service");
-        struct MemoryTargetDraft final {
-          ::loom::mapping::SpatialMemoryIntervalView interval;
-          std::vector<std::pair<::dataflow::MemoryExposureRef,
-                                ::loom::fabric::SubordinateEndpointRef>>
-              exposures;
-        };
-        std::map<std::tuple<std::uint32_t, std::uint64_t, std::uint64_t>,
-                 MemoryTargetDraft>
-            targets;
-        const auto &serviceContext = problem.serviceContexts()[contextOrdinal];
-        for (const SystemServiceTargetSubject &subject :
-             serviceContext.subjects) {
-          auto binding = detail::resolveSystemMemoryServiceBinding(
-              problem, contextOrdinal, subject, candidate.threadChoices(),
-              candidate.graphChoices());
-          if (!binding)
-            return binding.takeError();
-          if (!(*binding)->interval)
-            return invalid("memory target subject has no logical interval");
-          const auto key = intervalKey(*(*binding)->interval);
-          auto inserted = targets.try_emplace(
-              key, MemoryTargetDraft{*(*binding)->interval, {}});
-          if (const auto *exposure =
-                  std::get_if<SystemMemoryExposureTargetSubject>(&subject)) {
-            if (!(*binding)->exposureTerminal)
-              return invalid("memory exposure target has no provider terminal");
-            inserted.first->second.exposures.push_back(
-                {exposure->exposure, *(*binding)->exposureTerminal});
-          }
-        }
+        const auto &subject = serviceContext.subjects[subjectOrdinal];
+        auto binding = detail::resolveSystemMemoryServiceBinding(
+            problem, contextOrdinal, subject, candidate.threadChoices(),
+            candidate.graphChoices());
+        if (!binding)
+          return binding.takeError();
+        if (!(*binding)->interval)
+          return invalid("memory target subject has no logical interval");
+        const auto *exposure =
+            std::get_if<SystemMemoryExposureTargetSubject>(&subject);
+        if (exposure && !(*binding)->exposureTerminal)
+          return invalid("memory exposure target has no provider terminal");
         auto logicalAttr =
             dataflowRefAttr<::mapping::LogicalMemoryRootOrViewRefAttr>(
                 &context, problem.dataflowIdentity(), *logicalMemory);
         if (!logicalAttr)
           return logicalAttr.takeError();
         auto explicitPaths = requiresExplicitTransformPaths(
-            candidate, contextOrdinal, *targetPlan);
+            candidate, contextOrdinal, subjectOrdinal, targetPlan);
         if (!explicitPaths)
           return explicitPaths.takeError();
-        for (const auto &branch : targetPlan->branches) {
+        for (const auto &branch : targetPlan.branches) {
           llvm::SmallVector<mlir::Attribute> transformPath;
           if (*explicitPaths)
             for (const auto transform : branch.transformPath)
               transformPath.push_back(
                   fabricRefAttr<::mapping::SystemServiceTransformRefAttr>(
                       &context, transform));
-          for (auto &[key, target] : targets) {
-            (void)key;
-            builder.setInsertionPointToEnd(&plan.getBody().front());
-            auto targetOp = ::mapping::MemoryRegionTargetOp::create(
-                builder, location, *logicalAttr,
-                intervalAttr(&context, target.interval),
-                fabricRefAttr<::mapping::FabricMemoryServiceRegionRefAttr>(
-                    &context, branch.region),
-                builder.getArrayAttr(transformPath));
-            targetOp.getBody().emplaceBlock();
+          builder.setInsertionPointToEnd(&plan.getBody().front());
+          auto targetOp = ::mapping::MemoryRegionTargetOp::create(
+              builder, location, *logicalAttr,
+              intervalAttr(&context, *(*binding)->interval),
+              fabricRefAttr<::mapping::FabricMemoryServiceRegionRefAttr>(
+                  &context, branch.region),
+              builder.getArrayAttr(transformPath));
+          targetOp.getBody().emplaceBlock();
+          if (exposure) {
+            auto exposureAttr =
+                dataflowRefAttr<::mapping::MemoryExposureRefAttr>(
+                    &context, problem.dataflowIdentity(), exposure->exposure);
+            if (!exposureAttr)
+              return exposureAttr.takeError();
             builder.setInsertionPointToEnd(&targetOp.getBody().front());
-            for (const auto &[exposure, terminal] : target.exposures) {
-              auto exposureAttr =
-                  dataflowRefAttr<::mapping::MemoryExposureRefAttr>(
-                      &context, problem.dataflowIdentity(), exposure);
-              if (!exposureAttr)
-                return exposureAttr.takeError();
-              ::mapping::SystemMemoryExposureOp::create(
-                  builder, location, *exposureAttr,
-                  fabricRefAttr<::mapping::SubordinateEndpointRefAttr>(
-                      &context, terminal));
-            }
+            ::mapping::SystemMemoryExposureOp::create(
+                builder, location, *exposureAttr,
+                fabricRefAttr<::mapping::SubordinateEndpointRefAttr>(
+                    &context, *(*binding)->exposureTerminal));
           }
         }
-      } else if (const auto *domain =
-                     std::get_if<::loom::fabric::MemoryConsistencyDomainRef>(
+      } else if (const auto *targetSelection =
+                     std::get_if<SystemConsistencyServiceTargetSelection>(
                          &selectedTarget)) {
+        if (subjectOrdinal >= serviceContext.subjects.size() ||
+            subjectOrdinal >= targetSelection->domainsBySubject.size())
+          return invalid("consistency service plan subject is out of range");
+        const auto domain =
+            targetSelection->domainsBySubject[subjectOrdinal];
         const auto *operation =
             std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
                 &group.key);
@@ -523,9 +537,11 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         ::mapping::ConsistencyTargetOp::create(
             builder, location, *fenceAttr,
             fabricRefAttr<::mapping::MemoryConsistencyDomainRefAttr>(&context,
-                                                                     *domain));
+                                                                     domain));
       } else if (!std::holds_alternative<std::monostate>(selectedTarget)) {
         return invalid("service context has an unknown selected target kind");
+      } else if (subjectOrdinal != getInvalidPnrIndex()) {
+        return invalid("operation service plan has no selected target");
       }
       for (PnrIndex routeOrdinal : groupedPlan.routes) {
         const SystemServiceRouteSelection &selected =
@@ -589,7 +605,9 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
           clauses;
     };
     std::map<std::vector<std::uint8_t>, SelectionDraft> selections;
-    for (const auto &[contextOrdinal, authoredOrdinal] : planOrdinals) {
+    for (const auto &[planKey, authoredOrdinal] : planOrdinals) {
+      const PnrIndex contextOrdinal = planKey.first;
+      const PnrIndex selectedSubject = planKey.second;
       const auto &serviceContext = problem.serviceContexts()[contextOrdinal];
       if (serviceContext.threadDecision >= problem.threadDecisions().size())
         return invalid("service selection has an invalid thread dependency");
@@ -608,8 +626,21 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
       }
       if (serviceContext.cells.empty())
         return invalid("service context has no selection relation cell");
-      for (const SystemServiceTargetSubject &subject :
-           serviceContext.subjects) {
+      std::vector<PnrIndex> subjectOrdinals;
+      if (selectedSubject == getInvalidPnrIndex()) {
+        subjectOrdinals.reserve(serviceContext.subjects.size());
+        for (const auto &[subjectOrdinal, subject] :
+             llvm::enumerate(serviceContext.subjects)) {
+          (void)subject;
+          subjectOrdinals.push_back(static_cast<PnrIndex>(subjectOrdinal));
+        }
+      } else {
+        if (selectedSubject >= serviceContext.subjects.size())
+          return invalid("service selection subject is out of range");
+        subjectOrdinals.push_back(selectedSubject);
+      }
+      for (PnrIndex subjectOrdinal : subjectOrdinals) {
+        const auto &subject = serviceContext.subjects[subjectOrdinal];
         ::loom::mapping::ServicePlanSelectionAnchor anchor;
         if (const auto *member =
                 std::get_if<SystemServiceMemberTargetSubject>(&subject))
@@ -691,8 +722,9 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
         &serviceContext.subjects[selected.subject]);
     if (!memberSubject)
       return invalid("memory exposure unexpectedly selected a ResourceUse");
-    const auto persisted = persistentPlanByContext.find(selected.context);
-    if (persisted == persistentPlanByContext.end())
+    const auto persisted = persistentPlanBySubject.find(
+        std::make_pair(selected.context, selected.subject));
+    if (persisted == persistentPlanBySubject.end())
       return invalid("service ResourceUse has no persistent ServicePlan");
     auto serviceBytes = ::loom::mapping::encodeSystemServiceObligationKey(
         problem.dataflowIdentity(), persisted->second.first);
@@ -703,9 +735,12 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
 
     mlir::Attribute element;
     const auto &target = candidate.serviceTarget(selected.context);
-    if (const auto *plan =
-            std::get_if<SystemMemoryServiceTargetPlan>(&target)) {
-      if (selected.branch >= plan->branches.size())
+    if (const auto *selection =
+            std::get_if<SystemMemoryServiceTargetSelection>(&target)) {
+      if (selected.subject >= selection->plansBySubject.size())
+        return invalid("service ResourceUse target subject is out of range");
+      const auto &plan = selection->plansBySubject[selected.subject];
+      if (selected.branch >= plan.branches.size())
         return invalid("service ResourceUse branch is out of range");
       auto binding = detail::resolveSystemMemoryServiceBinding(
           problem, selected.context, serviceContext.subjects[selected.subject],
@@ -729,32 +764,35 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
       if (!logicalAttr)
         return logicalAttr.takeError();
       llvm::SmallVector<mlir::Attribute> transforms;
-      auto explicitPaths =
-          requiresExplicitTransformPaths(candidate, selected.context, *plan);
+      auto explicitPaths = requiresExplicitTransformPaths(
+          candidate, selected.context, selected.subject, plan);
       if (!explicitPaths)
         return explicitPaths.takeError();
       if (*explicitPaths)
-        for (const auto transform :
-             plan->branches[selected.branch].transformPath)
+        for (const auto transform : plan.branches[selected.branch].transformPath)
           transforms.push_back(
               fabricRefAttr<::mapping::SystemServiceTransformRefAttr>(
                   &context, transform));
       element = ::mapping::MemoryRegionElementKeyAttr::get(
           &context, *logicalAttr, intervalAttr(&context, *(*binding)->interval),
           fabricRefAttr<::mapping::FabricMemoryServiceRegionRefAttr>(
-              &context, plan->branches[selected.branch].region),
+              &context, plan.branches[selected.branch].region),
           builder.getArrayAttr(transforms));
     } else {
-      const auto *domain =
-          std::get_if<::loom::fabric::MemoryConsistencyDomainRef>(&target);
+      const auto *consistencySelection =
+          std::get_if<SystemConsistencyServiceTargetSelection>(&target);
       const auto *operation =
           std::get_if<::loom::mapping::OperationServiceObligationFamilyKey>(
               &persisted->second.first);
       const auto *fence =
           operation ? std::get_if<::dataflow::FenceActorFamilyRef>(operation)
                     : nullptr;
-      if (!domain || !fence)
+      if (!consistencySelection ||
+          selected.subject >= consistencySelection->domainsBySubject.size() ||
+          !fence)
         return invalid("consistency ResourceUse has no fence target");
+      const auto domain =
+          consistencySelection->domainsBySubject[selected.subject];
       auto fenceAttr = dataflowRefAttr<::mapping::FenceActorFamilyRefAttr>(
           &context, problem.dataflowIdentity(), *fence);
       if (!fenceAttr)
@@ -762,7 +800,7 @@ materializeSystemCandidateDraft(const SystemCandidateState &candidate,
       element = ::mapping::ConsistencyElementKeyAttr::get(
           &context, *fenceAttr,
           fabricRefAttr<::mapping::MemoryConsistencyDomainRefAttr>(&context,
-                                                                   *domain));
+                                                                   domain));
     }
     auto owner = ::mapping::ServicePlanElementRefAttr::get(
         &context, serviceAttr, persisted->second.second, element);

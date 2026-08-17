@@ -21,6 +21,7 @@ struct SpatialAnnealingStatistics final {
   bool interrupted = false;
   bool exactClosureReached = false;
   bool completionGoalReached = false;
+  bool repairReadyHandoff = false;
   std::uint64_t initialTemperature = 0;
   std::uint64_t calibrationProposalSlots = 0;
   std::uint64_t calibrationProbeCount = 0;
@@ -37,8 +38,10 @@ struct SpatialAnnealingStatistics final {
   std::uint64_t semanticNoopActionCount = 0;
   std::uint64_t cachedInactiveActionCount = 0;
   std::uint64_t annealingTransitionFailureCount = 0;
+  std::uint64_t incumbentSnapshotCount = 0;
   std::uint64_t endpointExpansions = 0;
   std::uint64_t negotiationIterations = 0;
+  bool bestSelectedRankIncumbentRestored = false;
   bool bestFeasibleIncumbentRestored = false;
 
   friend bool operator==(const SpatialAnnealingStatistics &lhs,
@@ -46,6 +49,7 @@ struct SpatialAnnealingStatistics final {
     return lhs.interrupted == rhs.interrupted &&
            lhs.exactClosureReached == rhs.exactClosureReached &&
            lhs.completionGoalReached == rhs.completionGoalReached &&
+           lhs.repairReadyHandoff == rhs.repairReadyHandoff &&
            lhs.initialTemperature == rhs.initialTemperature &&
            lhs.calibrationProposalSlots == rhs.calibrationProposalSlots &&
            lhs.calibrationProbeCount == rhs.calibrationProbeCount &&
@@ -67,8 +71,11 @@ struct SpatialAnnealingStatistics final {
            lhs.cachedInactiveActionCount == rhs.cachedInactiveActionCount &&
            lhs.annealingTransitionFailureCount ==
                rhs.annealingTransitionFailureCount &&
+           lhs.incumbentSnapshotCount == rhs.incumbentSnapshotCount &&
            lhs.endpointExpansions == rhs.endpointExpansions &&
            lhs.negotiationIterations == rhs.negotiationIterations &&
+           lhs.bestSelectedRankIncumbentRestored ==
+               rhs.bestSelectedRankIncumbentRestored &&
            lhs.bestFeasibleIncumbentRestored ==
                rhs.bestFeasibleIncumbentRestored;
   }

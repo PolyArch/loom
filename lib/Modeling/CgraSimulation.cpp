@@ -11,8 +11,10 @@
 #include "Simulator/SimulationExecution.h"
 
 #include "llvm/Support/Error.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <limits>
+#include <optional>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -235,6 +237,81 @@ buildResolution(const sim::CgraExecutionOwnerReferences &owners,
        {runtimeInput, {owners.dataflow, workload}}});
 }
 
+class RuntimeInputCgraMemoryProvider final
+    : public sim::CgraExternalMemoryProvider {
+public:
+  explicit RuntimeInputCgraMemoryProvider(
+      const sim::SpatialSimulationRuntimeInput &input) {
+    objects_.reserve(input.memoryObjects.size());
+    for (const sim::RuntimeMemoryObject &object : input.memoryObjects)
+      objects_.push_back(object.initialBytes);
+  }
+
+  llvm::Expected<sim::CgraExternalMemoryResponse>
+  transact(const sim::CgraExternalMemoryRequest &request) override {
+    if (request.elements.empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "CGRA runtime-input memory request has no active element");
+    if (request.objectOrdinal >= objects_.size())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "CGRA runtime-input memory request names no object");
+    if (lastCoordinate_ && sim::compareSpatialEventCoordinates(
+                               *lastCoordinate_, request.readyCoordinate) > 0)
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "CGRA runtime-input memory requests are not time ordered");
+
+    const bool write =
+        request.operation == sim::CgraExternalMemoryOperation::Write;
+    std::vector<sim::SemanticMemoryByte> &object =
+        objects_[request.objectOrdinal];
+    for (const sim::CgraExternalMemoryElement &element : request.elements) {
+      if (element.byteCount == 0 || element.byteOffset > object.size() ||
+          element.byteCount > object.size() - element.byteOffset)
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "CGRA runtime-input memory element exceeds its object");
+      if ((write && element.writeData.size() != element.byteCount) ||
+          (!write && !element.writeData.empty()))
+        return llvm::createStringError(
+            std::errc::invalid_argument,
+            "CGRA runtime-input memory element has the wrong payload");
+      if (!write)
+        for (std::uint64_t byte = 0; byte != element.byteCount; ++byte)
+          if (object[element.byteOffset + byte].state !=
+              sim::SemanticState::Defined)
+            return llvm::createStringError(
+                std::errc::not_supported,
+                "CGRA external read observes an exceptional runtime byte");
+    }
+
+    sim::CgraExternalMemoryResponse response;
+    if (write) {
+      for (const sim::CgraExternalMemoryElement &element : request.elements)
+        for (std::uint64_t byte = 0; byte != element.byteCount; ++byte)
+          object[element.byteOffset + byte] = sim::SemanticMemoryByte{
+              sim::SemanticState::Defined, element.writeData[byte]};
+    } else {
+      response.readData.reserve(request.elements.size());
+      for (const sim::CgraExternalMemoryElement &element : request.elements) {
+        std::vector<std::uint8_t> bytes;
+        bytes.reserve(element.byteCount);
+        for (std::uint64_t byte = 0; byte != element.byteCount; ++byte)
+          bytes.push_back(object[element.byteOffset + byte].value);
+        response.readData.push_back(std::move(bytes));
+      }
+    }
+    lastCoordinate_ = request.readyCoordinate;
+    return response;
+  }
+
+private:
+  std::vector<std::vector<sim::SemanticMemoryByte>> objects_;
+  std::optional<sim::SpatialEventCoordinate> lastCoordinate_;
+};
+
 llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
     const EvaluationRequest &request, const CaseArtifactResolution &resolution,
     const sim::PreparedCgraExecution &execution,
@@ -252,9 +329,16 @@ llvm::Expected<EvaluationModelResult> evaluateWithPrepared(
         "cgra_simulation_model_invalid: attempt requires a positive event "
         "frame limit");
 
-  auto outcome = sim::simulateCgraWorkload(execution, workload, runtimeInput,
-                                           limits.maxEventFrames,
-                                           limits.executionDeadline);
+  const sim::SpatialSimulationRuntimeInput *spatialInput =
+      runtimeInput.spatial();
+  if (!spatialInput)
+    return llvm::createStringError(
+        std::errc::invalid_argument,
+        "cgra_simulation_model_invalid: runtime input is not Spatial");
+  RuntimeInputCgraMemoryProvider externalMemory(*spatialInput);
+  auto outcome = sim::simulateCgraWorkload(
+      execution, workload, runtimeInput, limits.maxEventFrames,
+      limits.executionDeadline, &externalMemory);
   if (!outcome)
     return classifyExecutionFailure(outcome.takeError());
   if (outcome->state == sim::SpatialExecutionSessionState::StoppedByLimit)

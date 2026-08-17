@@ -195,9 +195,9 @@ VALID_COUNT_VALUES = {
     "graphs": 1,
 }
 VALID_COUNTS = json.dumps(VALID_COUNT_VALUES, sort_keys=True) + "\n"
-GRAPH_FREE_COUNTS = json.dumps(
-    {**VALID_COUNT_VALUES, "actors": 0, "graphs": 0}, sort_keys=True
-) + "\n"
+GRAPH_FREE_COUNTS = (
+    json.dumps({**VALID_COUNT_VALUES, "actors": 0, "graphs": 0}, sort_keys=True) + "\n"
+)
 VALID_DFG_REPORT = (
     json.dumps(
         {
@@ -223,6 +223,16 @@ VALID_DFG_REPORT = (
                 "target_triple": corpus_gate.LLVM_TRIPLE_LINE.split('"')[1],
             },
             "dynamic_calls": 1,
+            "dse_execution": {
+                "generate_invocations": 5,
+                "generate_lineage_edges": 24,
+                "incomplete_generate_invocations": 0,
+                "input_artifacts": 54,
+                "input_bindings": 10,
+                "output_artifacts": 69,
+                "output_bindings": 6,
+                "plan_executions": 2,
+            },
             "event_count": 11,
             "execution_terminal": "retired",
             "floating_variance_bytes": 0,

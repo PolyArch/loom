@@ -1863,7 +1863,23 @@ loom::pnr::createSpatialCandidateInitializerAttempt(
   auto candidate = SpatialCandidateState::create(problem, initialization);
   if (!candidate)
     return candidate.takeError();
-  return SpatialCandidateInitializerAttempt{std::move(*candidate)};
+  std::uint64_t selectedRegisterFifoTransferCount = 0;
+  for (PnrIndex logicalNet = 0;
+       logicalNet < problem->transfers().logicalNets().size(); ++logicalNet)
+    selectedRegisterFifoTransferCount +=
+        (*candidate)->usesRegisterFifo(logicalNet);
+  SpatialCandidateInitializerPreference preference{
+      (*candidate)->unroutedObligationCount(),
+      selectedRegisterFifoTransferCount,
+      preferred->topologyUnreachableSelections,
+      preferred->topologyHopSum,
+      preferred->topologyRefinementUnreachableSelections,
+      preferred->topologyRefinementHopSum,
+      preferred->maximumComputeOccurrenceSelections,
+      preferred->maximumEndpointSelections,
+      (*candidate)->staticSchedulePressure()};
+  return SpatialCandidateInitializerAttempt{std::move(*candidate),
+                                            preference};
 }
 
 llvm::Expected<SpatialCandidateStateHandle>

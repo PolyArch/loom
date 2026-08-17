@@ -209,7 +209,7 @@ public:
   /// Reconstructs an independent candidate from this candidate's selected
   /// decisions and complete RouteTrees. Rebuildable capacity, tag, handshake,
   /// timing, and objective state is derived again from its semantic owners.
-  /// This is the snapshot boundary used for a best feasible incumbent.
+  /// This is the snapshot boundary used for routed search incumbents.
   llvm::Expected<SpatialCandidateStateHandle> cloneFullyRouted() const;
 
   SpatialCandidateState(const SpatialCandidateState &) = delete;

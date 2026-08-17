@@ -3,6 +3,7 @@
 
 #include "CgraComputeRuntime.h"
 
+#include "Simulator/CgraExternalMemoryProvider.h"
 #include "Simulator/SpatialTrace.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -37,7 +38,8 @@ public:
          const ::dataflow::CanonicalDataflowProgramView &dataflow,
          ::dataflow::RootedGraphLaunchRef launch, ::dataflow::GraphRef graph,
          const PreparedGraphExecution &execution, SimulatorState &state,
-         CgraPhysicalActionRuntime &physical);
+         CgraPhysicalActionRuntime &physical,
+         CgraExternalMemoryProvider *externalMemoryProvider);
 
   llvm::Error start(SpatialEventCoordinate coordinate);
 
@@ -111,10 +113,11 @@ private:
   CgraMemoryRuntime(const CgraFrozenExecutionPlan &plan, SimulatorState &state,
                     std::vector<ActorBinding> bindings,
                     std::vector<std::uint64_t> bindingBySemanticActor,
-                    CgraPhysicalActionRuntime &physical)
+                    CgraPhysicalActionRuntime &physical,
+                    CgraExternalMemoryProvider *externalMemoryProvider)
       : plan_(&plan), state_(&state), bindings_(std::move(bindings)),
         bindingBySemanticActor_(std::move(bindingBySemanticActor)),
-        physical_(&physical),
+        physical_(&physical), externalMemoryProvider_(externalMemoryProvider),
         nextActionOccurrence_(plan.physicalUseTimings.size(), 0) {}
 
   llvm::Error scheduleReady(SpatialEventCoordinate coordinate);
@@ -140,6 +143,7 @@ private:
   std::vector<ActorBinding> bindings_;
   std::vector<std::uint64_t> bindingBySemanticActor_;
   CgraPhysicalActionRuntime *physical_ = nullptr;
+  CgraExternalMemoryProvider *externalMemoryProvider_ = nullptr;
   CgraEventQueue requestedEvents_{"CGRA memory request"};
   std::vector<std::uint64_t> nextActionOccurrence_;
   std::vector<Firing> firings_;

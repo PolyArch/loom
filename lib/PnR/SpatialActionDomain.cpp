@@ -674,13 +674,6 @@ SpatialActionDomainScratch::rebuild(const SpatialCandidateState &candidate) {
               appendWitness(ResolvedPnrViolationKind::TagConflict, domain))
         return error;
 
-  if (externalNetCount != 0) {
-    const std::size_t offset = transportChoices_.size();
-    transportChoices_.emplace_back(SpatialGlobalRoutingAction{});
-    if (llvm::Error error = appendTransportRange(offset))
-      return error;
-  }
-
   const auto appendResourceRange = [&](std::size_t offset) -> llvm::Error {
     if (resourceChoices_.size() == offset)
       return llvm::Error::success();

@@ -30,6 +30,12 @@ at most one builtin preset and apply schema-declared semantic overrides. Loom
 does not support arbitrary profile chains, sibling merge order, import graphs,
 or format-specific inheritance semantics.
 
+The optional top-level authoring field `inherits` names that one builtin
+preset. When absent, a custom profile inherits `balanced_explore`. The field is
+resolved before overrides are applied and is excluded from flattened canonical
+ResolvedConfig bytes; an unknown preset is rejected rather than treated as a
+path or a new profile domain.
+
 The EDA-style acceleration profile is orthogonal to hardware-target selection.
 It may contain one typed `hardware.target` domain, but `quick_explore`,
 `implementation`, and the other flow-intent names are not Fabric target names.
@@ -40,8 +46,8 @@ Resolution replaces that enum with the selected ADG template identity,
 template schema version, and complete typed parameter values. The enum spelling
 is recorded only as invocation provenance and is excluded from canonical
 ResolvedConfig bytes. All builtin presets resolve to
-`loom.adg.builtin.general_purpose` version `5.0`; only their default parameter
-values differ. Omitting hardware selection resolves the `Default` scale; it
+`loom.adg.builtin.general_purpose` version `6.0`; only their default parameter
+values differ. Omitting hardware selection resolves the `Coverage` scale; it
 does not produce a target-less configuration.
 
 An external `--loom-hardware=<fabric.mlir>` binding is mutually exclusive with
@@ -95,7 +101,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 7.0`. Version 2.0 was an
+The current schema is `loom.config.resolved 8.0`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -192,6 +198,14 @@ and System policy records. This is incompatible because the goal changes the
 configured candidate prefix and termination class. Earlier schemas cannot
 infer whether an invocation owned exhaustive quality exploration or requested
 the first independently verified candidate.
+
+Version 8.0 adds the required `spatial_fu_occurrences` and
+`temporal_fu_occurrences` records to `hardware_target.parameters`. Each record
+owns the schedule-local occurrence count of every optional builtin FU family;
+counts may be zero and may not exceed the corresponding PE count. This is
+incompatible because version 7 delegated those multiplicities to an implicit
+PE-density formula, so it cannot reconstruct a resolved hardware candidate or
+its identity after one family is independently resized.
 
 `dse.evaluation_and_objective_catalogs` materializes exactly the owner tables
 of the [Resolved Configuration View](spec-dse-feedback.md#resolved-configuration-view):
@@ -324,6 +338,14 @@ including seeds, proposal weights, semantic work limits, cooling parameters,
 PathFinder pressure parameters, and repair bounds, are emitted explicitly by
 the 3.0 resolver. No PnR kernel supplies a missing value or chooses a profile
 default.
+
+The annealing authoring record includes `temperature_level_limit`. It bounds
+the number of temperature levels independently of calibrated energy magnitude,
+while `proposals_per_level_base` and `proposals_per_movable_decision` bound the
+work inside each level. All three are projected as deterministic work-budget
+entries. The cooling ratio is an upper envelope on the next temperature: the
+bounded schedule may cool faster when that is necessary to cover the complete
+calibrated-to-minimum range within the declared level limit.
 
 The limit counts complete ownership-scope expansions. Expanding one scope
 enumerates its entire finite typed decision domain; it does not truncate that

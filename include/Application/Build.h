@@ -54,6 +54,7 @@ struct ApplicationSourceInvocation final {
 
 struct ApplicationBuildRequest final {
   ApplicationSourceInvocation sourceInvocation;
+  std::vector<std::string> operatorProtocolSymbols;
   ArtifactRootReference system;
   std::vector<ArtifactRootReference> physicalTimingProfiles;
   ResolvedConfig resolvedConfig;
@@ -63,8 +64,15 @@ struct ApplicationBuildRequest final {
 };
 
 struct PreparedApplicationSoftware final {
+  std::uint64_t preferenceRank = 0;
   frontend::PublishedPreMappingCompilation compilation;
   std::vector<ArtifactRootReference> workloads;
+};
+
+struct PreparedApplicationMappingAlternative final {
+  std::uint64_t preferenceRank = 0;
+  ArtifactRootReference dataflow;
+  dse::JointDesignExplorationPlan plan;
 };
 
 struct PreparedApplicationBuild final {
@@ -73,7 +81,10 @@ struct PreparedApplicationBuild final {
   std::vector<ArtifactRootReference> satisfiedEvidence;
   std::vector<dse::DsePlanGenerateInvocationRecords>
       preMappingGenerateInvocations;
-  dse::JointDesignExplorationPlan mappingPlan;
+  /// Best-first bounded alternatives. Each plan owns exactly one software
+  /// candidate so completed infeasibility can fall through without executing
+  /// unrelated lower-ranked Mapping work.
+  std::vector<PreparedApplicationMappingAlternative> mappingAlternatives;
 };
 
 struct ApplicationDeploymentRequest final {

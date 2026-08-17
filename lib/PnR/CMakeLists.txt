@@ -51,6 +51,7 @@ add_mlir_library(LoomPnR
   SpatialPnrTagContinuityIndex.cpp
   SpatialPnrTransferIndex.cpp
   SpatialRouteCostState.cpp
+  SpatialRootSupplyAdmission.cpp
   SpatialRouteConstraintModel.cpp
   SpatialRouteResourceState.cpp
   SpatialRouteTreePruning.cpp
@@ -69,6 +70,7 @@ add_mlir_library(LoomPnR
   System/SystemPresburgerPartition.cpp
   System/SystemPnrProblem.cpp
   System/SystemPnrProblemView.cpp
+  System/SystemRecurrenceTiming.cpp
   System/SystemAction.cpp
   System/SystemActionDomain.cpp
   System/SystemActionExecutor.cpp

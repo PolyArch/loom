@@ -278,6 +278,9 @@ CgraPhysicalActionRuntime::advance() {
       result.events.push_back({CgraPhysicalLifecycleKind::Committed,
                                action.actionOrdinal, action.occurrenceOrdinal,
                                event.ownerEventOrdinal, result.coordinate});
+      action.intrinsicReleaseReached = true;
+      if (use.requiresCausalRelease && !action.causalReleaseReached)
+        break;
       if (llvm::Error error = resources_.release(*action.envelope))
         return std::move(error);
       action.state = ActionState::Retired;
@@ -331,11 +334,10 @@ CgraPhysicalActionRuntime::advance() {
       result.events.push_back({CgraPhysicalLifecycleKind::Granted,
                                action.actionOrdinal, action.occurrenceOrdinal,
                                use.acquireEventOrdinal, result.coordinate});
-      const bool atomicCommitRelease =
+      const bool combinedCommitRelease =
           use.commitRank && *use.commitRank == use.releaseRank &&
-          *use.commitEventOrdinal == use.releaseEventOrdinal &&
-          !use.requiresCausalRelease;
-      if (atomicCommitRelease) {
+          *use.commitEventOrdinal == use.releaseEventOrdinal;
+      if (combinedCommitRelease) {
         auto commitRelease =
             addCycles(result.coordinate, *use.commitRank - use.acquireRank);
         if (!commitRelease)
@@ -353,7 +355,7 @@ CgraPhysicalActionRuntime::advance() {
                                          *use.commitEventOrdinal))
           return std::move(error);
       }
-      if (!atomicCommitRelease) {
+      if (!combinedCommitRelease) {
         auto release =
             addCycles(result.coordinate, use.releaseRank - use.acquireRank);
         if (!release)

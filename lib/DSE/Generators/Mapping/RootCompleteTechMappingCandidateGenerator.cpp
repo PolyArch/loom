@@ -1,16 +1,20 @@
 #include "DSE/RootCompleteTechMappingCandidateGenerator.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactText.h"
+#include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
+#include "PnR/SpatialRootSupplyAdmission.h"
 
 #include "llvm/ADT/STLExtras.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -96,7 +100,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteTechMappingCandidateGeneratorKind,
     "mapping.root_complete_tech_mapping",
-    "loom.mapping.root_complete_tech_mapping.generator.v4",
+    "loom.mapping.root_complete_tech_mapping.generator.v5",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -111,7 +115,7 @@ const CandidateGeneratorDescriptor descriptor{
 const CandidateGeneratorDescriptor applicationGraphDescriptor{
     applicationGraphTechMappingCandidateGeneratorKind,
     "mapping.application_graph_tech_mapping",
-    "loom.mapping.application_graph_tech_mapping.generator.v5",
+    "loom.mapping.application_graph_tech_mapping.generator.v8",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -156,6 +160,79 @@ accumulate(const ::loom::mapping::TechMappingGenerationAccounting &source,
   if (llvm::Error error =
           accumulate(source.partialCoverExpansions,
                      target.partialCoverExpansions, "partial-cover expansion"))
+    return error;
+  if (llvm::Error error = accumulate(source.computeContextProjectionWork,
+                                     target.computeContextProjectionWork,
+                                     "compute-context projection work"))
+    return error;
+  if (llvm::Error error = accumulate(source.computeContextMatchingChecks,
+                                     target.computeContextMatchingChecks,
+                                     "compute-context matching check"))
+    return error;
+  if (llvm::Error error = accumulate(source.computeContextRejectedChecks,
+                                     target.computeContextRejectedChecks,
+                                     "compute-context rejected check"))
+    return error;
+  if (llvm::Error error = accumulate(source.computeContextMatchingWork,
+                                     target.computeContextMatchingWork,
+                                     "compute-context matching work"))
+    return error;
+  if (llvm::Error error = accumulate(source.memorySupplyProjectionWork,
+                                     target.memorySupplyProjectionWork,
+                                     "memory-supply projection work"))
+    return error;
+  if (llvm::Error error =
+          accumulate(source.memorySupplyChecks, target.memorySupplyChecks,
+                     "memory-supply check"))
+    return error;
+  if (llvm::Error error = accumulate(source.memorySupplyPartialChecks,
+                                     target.memorySupplyPartialChecks,
+                                     "memory-supply partial check"))
+    return error;
+  if (llvm::Error error =
+          accumulate(source.memorySupplyFullChecks,
+                     target.memorySupplyFullChecks, "memory-supply full check"))
+    return error;
+  if (llvm::Error error = accumulate(source.memorySupplyRejectedChecks,
+                                     target.memorySupplyRejectedChecks,
+                                     "memory-supply rejected check"))
+    return error;
+  if (llvm::Error error = accumulate(source.memorySupplyEmptyDomainRejections,
+                                     target.memorySupplyEmptyDomainRejections,
+                                     "memory-supply empty-domain rejection"))
+    return error;
+  if (llvm::Error error =
+          accumulate(source.memorySupplyExclusiveResourceRejections,
+                     target.memorySupplyExclusiveResourceRejections,
+                     "memory-supply exclusive-resource rejection"))
+    return error;
+  if (llvm::Error error = accumulate(source.memorySupplySpatialPortRejections,
+                                     target.memorySupplySpatialPortRejections,
+                                     "memory-supply Spatial-port rejection"))
+    return error;
+  if (llvm::Error error =
+          accumulate(source.memorySupplyTemporalIngressRejections,
+                     target.memorySupplyTemporalIngressRejections,
+                     "memory-supply Temporal-ingress rejection"))
+    return error;
+  if (llvm::Error error =
+          accumulate(source.memorySupplyInternalConnectionRejections,
+                     target.memorySupplyInternalConnectionRejections,
+                     "memory-supply internal-connection rejection"))
+    return error;
+  if (llvm::Error error =
+          accumulate(source.memorySupplyResidentCapacityRejections,
+                     target.memorySupplyResidentCapacityRejections,
+                     "memory-supply resident-capacity rejection"))
+    return error;
+  if (llvm::Error error =
+          accumulate(source.memorySupplyJointAssignmentRejections,
+                     target.memorySupplyJointAssignmentRejections,
+                     "memory-supply joint-assignment rejection"))
+    return error;
+  if (llvm::Error error = accumulate(source.memorySupplySearchWork,
+                                     target.memorySupplySearchWork,
+                                     "memory-supply search work"))
     return error;
   if (llvm::Error error =
           accumulate(source.candidateEvaluations, target.candidateEvaluations,
@@ -409,6 +486,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorLineageEdge> lineage;
   ::loom::mapping::TechMappingGenerationAccounting accounting;
+  std::uint64_t rootSupplyAdmissions = 0;
+  std::uint64_t rootSupplyRejections = 0;
+  std::uint64_t rootSupplyDeterministicWork = 0;
+  std::uint64_t rootSupplyConstructionNanoseconds = 0;
   std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
   const auto rememberIncomplete =
       [&](CandidateGeneratorIncompleteReason reason) {
@@ -421,19 +502,219 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
       };
   for (const ::dataflow::GraphRef &graph : graphs) {
     const std::array cover = {graph};
-    auto incomplete = consumeTechMappingOutcome(
-        ::loom::mapping::generateTechMappings({*dataflow, cover, fabric->view(),
-                                               *config, store,
-                                               invocation.executionControl()}),
-        accounting, outputs, lineage);
-    if (!incomplete)
-      return incomplete.takeError();
-    if (*incomplete)
-      rememberIncomplete(**incomplete);
+    std::uint64_t admittedForGraph = 0;
+    std::uint64_t candidateOrdinalForGraph = 0;
+    auto enumeration = ::loom::mapping::enumerateTechMappingCandidates(
+        {*dataflow, cover, fabric->view(), *config, store,
+         invocation.executionControl()},
+        [&](const ArtifactRootReference &candidate)
+            -> llvm::Expected<
+                ::loom::mapping::TechMappingCandidateEnumerationControl> {
+          const std::uint64_t candidateOrdinal = candidateOrdinalForGraph++;
+          const auto constructionBegin = std::chrono::steady_clock::now();
+          auto tech = ::loom::mapping::importTechMapping(candidate, store);
+          if (!tech)
+            return tech.takeError();
+          auto admission = ::loom::pnr::analyzeSpatialRootSupply(
+              tech->view(), *dataflow, fabric->view());
+          if (!admission)
+            return admission.takeError();
+          const auto elapsed =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::steady_clock::now() - constructionBegin)
+                  .count();
+          if (elapsed > 0)
+            if (llvm::Error error =
+                    accumulate(static_cast<std::uint64_t>(elapsed),
+                               rootSupplyConstructionNanoseconds,
+                               "root-supply construction nanosecond"))
+              return std::move(error);
+          if (llvm::Error error = accumulate(admission->deterministicWork,
+                                             rootSupplyDeterministicWork,
+                                             "root-supply deterministic work"))
+            return std::move(error);
+          std::uint64_t residualSinkCount = 0;
+          for (const auto &net : tech->view().residualLogicalNets())
+            if (llvm::Error error =
+                    accumulate(net.sinks.size(), residualSinkCount,
+                               "residual logical-net sink"))
+              return std::move(error);
+          ::loom::mapping_debug::emit(
+              ::loom::mapping_debug::Level::Decision,
+              ::loom::mapping_debug::Stage::TechMapping,
+              ::loom::mapping_debug::Event::Candidate,
+              [&](llvm::json::Object &fields) {
+                fields["candidate_ordinal"] = candidateOrdinal;
+                fields["tech_mapping"] =
+                    formatArtifactIdentityHex(candidate.artifact);
+                fields["compute_realization_count"] =
+                    tech->view().computeRealizations().size();
+                fields["memory_realization_count"] =
+                    tech->view().memoryRealizations().size();
+                fields["residual_logical_net_count"] =
+                    tech->view().residualLogicalNets().size();
+                fields["residual_sink_count"] = residualSinkCount;
+                fields["compute_demand_count"] = admission->computeDemandCount;
+                fields["compute_context_value_count"] =
+                    admission->computeContextValueCount;
+                fields["compute_context_edge_count"] =
+                    admission->computeContextEdgeCount;
+                fields["compute_context_maximum_matching"] =
+                    admission->computeContextMaximumMatching;
+                fields["compute_hall_demand_count"] =
+                    admission->computeHallDemandCount;
+                fields["compute_hall_context_value_count"] =
+                    admission->computeHallContextValueCount;
+                llvm::json::Array hallRealizations;
+                for (const std::uint64_t realization :
+                     admission->computeHallRealizations)
+                  hallRealizations.push_back(realization);
+                fields["compute_hall_realizations"] =
+                    std::move(hallRealizations);
+                fields["memory_demand_count"] = admission->memoryDemandCount;
+                fields["memory_occurrence_value_count"] =
+                    admission->memoryOccurrenceValueCount;
+                fields["memory_occurrence_choice_count"] =
+                    admission->memoryOccurrenceChoiceCount;
+                fields["memory_exclusive_relation_count"] =
+                    admission->memoryExclusiveRelationCount;
+                fields["memory_assignment_attempts"] =
+                    admission->memoryAssignmentAttempts;
+                fields["memory_supply_failure"] = ::loom::mapping::
+                    spatialMemoryOccurrenceSupplyFailureKindSpelling(
+                        admission->memoryFailure);
+                fields["disposition"] =
+                    admission->disposition ==
+                            ::loom::pnr::SpatialRootSupplyDisposition::
+                                ProvenInfeasible
+                        ? "proven_infeasible"
+                        : "admissible";
+              });
+          if (admission->disposition ==
+              ::loom::pnr::SpatialRootSupplyDisposition::ProvenInfeasible) {
+            ++rootSupplyRejections;
+            ::loom::mapping_debug::emit(
+                ::loom::mapping_debug::Level::Decision,
+                ::loom::mapping_debug::Stage::TechMapping,
+                ::loom::mapping_debug::Event::MappingFailure,
+                [&](llvm::json::Object &fields) {
+                  fields["failure_scope"] = "root_supply_admission";
+                  fields["closure_status"] = "proven_infeasible";
+                  fields["tech_mapping"] =
+                      formatArtifactIdentityHex(candidate.artifact);
+                  fields["compute_demand_count"] =
+                      admission->computeDemandCount;
+                  fields["compute_context_value_count"] =
+                      admission->computeContextValueCount;
+                  fields["compute_context_maximum_matching"] =
+                      admission->computeContextMaximumMatching;
+                  fields["compute_hall_demand_count"] =
+                      admission->computeHallDemandCount;
+                  fields["compute_hall_context_value_count"] =
+                      admission->computeHallContextValueCount;
+                  fields["memory_demand_count"] = admission->memoryDemandCount;
+                  fields["memory_occurrence_value_count"] =
+                      admission->memoryOccurrenceValueCount;
+                  fields["memory_occurrence_choice_count"] =
+                      admission->memoryOccurrenceChoiceCount;
+                  fields["memory_exclusive_relation_count"] =
+                      admission->memoryExclusiveRelationCount;
+                  fields["memory_assignment_attempts"] =
+                      admission->memoryAssignmentAttempts;
+                  fields["memory_supply_failure"] = ::loom::mapping::
+                      spatialMemoryOccurrenceSupplyFailureKindSpelling(
+                          admission->memoryFailure);
+                  fields["diagnostic"] = admission->diagnostic;
+                });
+            return ::loom::mapping::TechMappingCandidateEnumerationControl::
+                Continue;
+          }
+
+          ++rootSupplyAdmissions;
+          if (!llvm::is_contained(outputs, candidate)) {
+            outputs.push_back(candidate);
+            lineage.push_back(CandidateGeneratorLineageEdge{
+                CandidateGeneratorLineageEdgeKind::MechanicalDerivation,
+                CandidateGeneratorOutputSlotRef(0),
+                candidate,
+                {},
+                {}});
+            ++admittedForGraph;
+          }
+          return admittedForGraph >= config->candidatePublicationLimit()
+                     ? ::loom::mapping::TechMappingCandidateEnumerationControl::
+                           Stop
+                     : ::loom::mapping::TechMappingCandidateEnumerationControl::
+                           Continue;
+        });
+    if (!enumeration)
+      return enumeration.takeError();
+    if (llvm::Error error = accumulate(enumeration->accounting, accounting))
+      return std::move(error);
+    if (llvm::Error error =
+            accumulate(admittedForGraph, accounting.publicationSlots,
+                       "admitted publication slot"))
+      return std::move(error);
+    if (enumeration->interruption)
+      rememberIncomplete(
+          CandidateGeneratorIncompleteReason::CancelledOrTimeout);
+    else if (enumeration->termination ==
+             ::loom::mapping::TechMappingGenerationTermination::
+                 SemanticLimitReached)
+      rememberIncomplete(
+          admittedForGraph >= config->candidatePublicationLimit()
+              ? CandidateGeneratorIncompleteReason::SemanticLimitReached
+              : CandidateGeneratorIncompleteReason::ProofNotEstablished);
     if (incompleteReason ==
         CandidateGeneratorIncompleteReason::CancelledOrTimeout)
       break;
   }
+  ::loom::mapping_debug::emit(
+      ::loom::mapping_debug::Level::Summary,
+      ::loom::mapping_debug::Stage::TechMapping,
+      ::loom::mapping_debug::Event::Statistics,
+      [&](llvm::json::Object &fields) {
+        fields["statistics_kind"] = "application_tech_root_supply_frontier";
+        fields["root_supply_admissions"] = rootSupplyAdmissions;
+        fields["root_supply_rejections"] = rootSupplyRejections;
+        fields["root_supply_construction_time_ns"] =
+            rootSupplyConstructionNanoseconds;
+        fields["root_supply_deterministic_work"] = rootSupplyDeterministicWork;
+        fields["compute_context_projection_work"] =
+            accounting.computeContextProjectionWork;
+        fields["compute_context_matching_checks"] =
+            accounting.computeContextMatchingChecks;
+        fields["compute_context_rejected_checks"] =
+            accounting.computeContextRejectedChecks;
+        fields["compute_context_matching_work"] =
+            accounting.computeContextMatchingWork;
+        fields["memory_supply_projection_work"] =
+            accounting.memorySupplyProjectionWork;
+        fields["memory_supply_checks"] = accounting.memorySupplyChecks;
+        fields["memory_supply_partial_checks"] =
+            accounting.memorySupplyPartialChecks;
+        fields["memory_supply_full_checks"] = accounting.memorySupplyFullChecks;
+        fields["memory_supply_rejected_checks"] =
+            accounting.memorySupplyRejectedChecks;
+        fields["memory_supply_empty_domain_rejections"] =
+            accounting.memorySupplyEmptyDomainRejections;
+        fields["memory_supply_exclusive_resource_rejections"] =
+            accounting.memorySupplyExclusiveResourceRejections;
+        fields["memory_supply_spatial_port_rejections"] =
+            accounting.memorySupplySpatialPortRejections;
+        fields["memory_supply_temporal_ingress_rejections"] =
+            accounting.memorySupplyTemporalIngressRejections;
+        fields["memory_supply_internal_connection_rejections"] =
+            accounting.memorySupplyInternalConnectionRejections;
+        fields["memory_supply_resident_capacity_rejections"] =
+            accounting.memorySupplyResidentCapacityRejections;
+        fields["memory_supply_joint_assignment_rejections"] =
+            accounting.memorySupplyJointAssignmentRejections;
+        fields["memory_supply_search_work"] = accounting.memorySupplySearchWork;
+        fields["partial_cover_expansions"] = accounting.partialCoverExpansions;
+        fields["candidate_evaluations"] = accounting.candidateEvaluations;
+        fields["candidate_publications"] = outputs.size();
+      });
   if (incompleteReason)
     return CandidateGeneratorProviderResult{
         IncompleteCandidateGeneratorResult{

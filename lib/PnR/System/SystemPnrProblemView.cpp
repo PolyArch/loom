@@ -46,7 +46,9 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
     std::vector<FrozenSystemGraphExecutionDecision> graphDecisions,
     std::vector<PnrIndex> graphChoiceCatalogOrdinals,
     std::vector<std::uint64_t> graphChoiceStaticSchedulePressures,
-    std::vector<SpatialRecurrenceTimingProjection> graphChoiceRecurrenceTimings,
+    std::vector<
+        std::shared_ptr<const detail::FrozenSpatialRecurrenceTimingDemand>>
+        graphChoiceRecurrenceDemands,
     std::vector<PnrIndex> graphThreadOverlapOffsets,
     std::vector<PnrIndex> graphThreadOverlaps,
     std::shared_ptr<const FrozenEndpointRoutingTopology> routingTopology,
@@ -92,7 +94,7 @@ FrozenSystemPnrProblem::FrozenSystemPnrProblem(
       graphChoiceCatalogOrdinals_(std::move(graphChoiceCatalogOrdinals)),
       graphChoiceStaticSchedulePressures_(
           std::move(graphChoiceStaticSchedulePressures)),
-      graphChoiceRecurrenceTimings_(std::move(graphChoiceRecurrenceTimings)),
+      graphChoiceRecurrenceDemands_(std::move(graphChoiceRecurrenceDemands)),
       graphThreadOverlapOffsets_(std::move(graphThreadOverlapOffsets)),
       graphThreadOverlaps_(std::move(graphThreadOverlaps)),
       routingTopology_(std::move(routingTopology)),
@@ -137,12 +139,14 @@ FrozenSystemPnrProblem::graphChoiceStaticSchedulePressures(
       .slice(record.choiceOffset, record.choiceCount);
 }
 
-llvm::ArrayRef<SpatialRecurrenceTimingProjection>
-FrozenSystemPnrProblem::graphChoiceRecurrenceTimings(PnrIndex decision) const {
+const std::shared_ptr<const detail::FrozenSpatialRecurrenceTimingDemand> &
+FrozenSystemPnrProblem::graphChoiceRecurrenceDemand(PnrIndex decision,
+                                                    PnrIndex choice) const {
   assert(decision < graphDecisions_.size());
   const auto &record = graphDecisions_[decision];
-  return llvm::ArrayRef(graphChoiceRecurrenceTimings_)
-      .slice(record.choiceOffset, record.choiceCount);
+  assert(choice < record.choiceCount);
+  assert(record.choiceOffset + choice < graphChoiceRecurrenceDemands_.size());
+  return graphChoiceRecurrenceDemands_[record.choiceOffset + choice];
 }
 
 llvm::ArrayRef<PnrIndex>

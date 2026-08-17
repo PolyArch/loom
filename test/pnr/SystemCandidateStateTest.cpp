@@ -666,26 +666,36 @@ void memoryServiceWorkflow() {
       bindingProblem, memoryThreadChoices, memoryGraphChoices));
   auto selectedTargetDomain = take(
       supportedCandidate->serviceTargetDomain(memoryContextOrdinals.front()));
-  const auto *selectedPlans =
-      std::get_if<std::vector<loom::pnr::SystemMemoryServiceTargetPlan>>(
+  const auto *selectedDomains =
+      std::get_if<loom::pnr::SystemMemoryServiceTargetDomain>(
           &selectedTargetDomain);
-  require(selectedPlans && !selectedPlans->empty(),
-          "matching target rows did not retain their nonempty intersection");
-  const auto *selectedPlan =
-      std::get_if<loom::pnr::SystemMemoryServiceTargetPlan>(
+  const auto *selectedTargets =
+      std::get_if<loom::pnr::SystemMemoryServiceTargetSelection>(
           &supportedCandidate->serviceTarget(memoryContextOrdinals.front()));
-  require(selectedPlan && *selectedPlan == selectedPlans->front() &&
-              selectedPlan->branches.size() == 1,
-          "canonical candidate did not select the first exact target");
-  const auto selectedRegion = selectedPlan->branches.front().region;
+  require(selectedDomains && selectedTargets &&
+              selectedDomains->plansBySubject.size() ==
+                  memoryContext.subjects.size() &&
+              selectedTargets->plansBySubject.size() ==
+                  memoryContext.subjects.size(),
+          "matching target rows did not retain per-subject domains");
+  for (const auto &[selected, domain] :
+       llvm::zip_equal(selectedTargets->plansBySubject,
+                       selectedDomains->plansBySubject))
+    require(!domain.empty() && selected == domain.front() &&
+                selected.branches.size() == 1,
+            "canonical candidate did not select each first exact target");
+  const auto selectedRegion =
+      selectedTargets->plansBySubject.front().branches.front().region;
 
   std::vector<loom::pnr::SystemServiceTargetSelection> foreignTargets(
       supportedCandidate->serviceTargets().begin(),
       supportedCandidate->serviceTargets().end());
-  auto foreignPlan = *selectedPlan;
+  auto foreignSelection = *selectedTargets;
+  auto &foreignPlan = foreignSelection.plansBySubject.front();
   auto &foreignRegion = foreignPlan.branches.front().region;
   foreignRegion.ordinal += 1000;
-  foreignTargets[memoryContextOrdinals.front()] = foreignPlan;
+  foreignTargets[memoryContextOrdinals.front()] =
+      std::move(foreignSelection);
   requireFailureContains(
       loom::pnr::SystemCandidateState::create(
           bindingProblem,
@@ -722,8 +732,11 @@ void memoryServiceWorkflow() {
         require(target.getTransformPath().empty(),
                 "direct service target gained a transform path");
       }
-  require(memoryTargetCount == 1,
-          "one memory service context did not materialize one target");
+  std::size_t expectedMemoryTargetCount = 0;
+  for (const auto &selected : selectedTargets->plansBySubject)
+    expectedMemoryTargetCount += selected.branches.size();
+  require(memoryTargetCount == expectedMemoryTargetCount,
+          "memory service context did not materialize per-subject targets");
 
   verifySystemServiceTargetRejections(
       memoryRoot, memoryDataflow, endpointSystem, store, context,
@@ -731,14 +744,13 @@ void memoryServiceWorkflow() {
 
   require(!supportedCandidate->instructionResourceUses().empty(),
           "candidate omitted InstructionCore occupancy choices");
-  const std::size_t expectedServiceUseCount =
-      llvm::count_if(memoryContext.subjects,
-                     [](const auto &subject) {
-                       return std::holds_alternative<
-                           loom::pnr::SystemServiceMemberTargetSubject>(
-                           subject);
-                     }) *
-      selectedPlan->branches.size();
+  std::size_t expectedServiceUseCount = 0;
+  for (const auto &[subjectOrdinal, subject] :
+       llvm::enumerate(memoryContext.subjects))
+    if (std::holds_alternative<
+            loom::pnr::SystemServiceMemberTargetSubject>(subject))
+      expectedServiceUseCount +=
+          selectedTargets->plansBySubject[subjectOrdinal].branches.size();
   require(supportedCandidate->serviceResourceUses().size() ==
               expectedServiceUseCount,
           "addressed members and target branches did not select exact uses");
@@ -873,7 +885,7 @@ void memoryServiceWorkflow() {
   requireFailureContains(
       loom::pnr::initializeSystemCandidate(bindingProblem, memoryThreadChoices,
                                            memoryGraphChoices),
-      "matching service target rows have an empty intersection");
+      "has an empty exact H domain");
   requireFailureContains(
       loom::pnr::SystemCandidateState::create(
           bindingProblem, {memoryThreadChoices, memoryGraphChoices,
@@ -883,7 +895,7 @@ void memoryServiceWorkflow() {
                            supportedCandidate->serviceTargets(),
                            supportedCandidate->instructionResourceUses(),
                            supportedCandidate->serviceResourceUses()}),
-      "matching service target rows have an empty intersection");
+      "has an empty exact H domain");
 
   const auto belongsToSupportedExecution = [&](const auto &row) {
     const auto &endpoint =

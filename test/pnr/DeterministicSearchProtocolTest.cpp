@@ -144,7 +144,8 @@ void acceptanceConsumesOnlyItsSpecifiedWords() {
 
 loom::ResolvedPnrAnnealingPolicy policy() {
   return loom::ResolvedPnrAnnealingPolicy{16, {3, 4}, {4, 5}, 1024,
-                                          1,  {1, 2}, 7,      11};
+                                          1,  {1, 2}, 4,      7,
+                                          11};
 }
 
 void calibrationUsesExactQuantileAndTarget() {
@@ -196,6 +197,41 @@ void proposalCountAndCoolingAreChecked() {
   require(schedule.isFinalLevel(),
           "schedule did not stop at the minimum temperature");
 
+  loom::ResolvedPnrAnnealingPolicy bounded = annealing;
+  bounded.temperatureLevelLimit = 3;
+  loom::pnr::AnnealingTemperatureSchedule boundedSchedule =
+      take(loom::pnr::AnnealingTemperatureSchedule::create(bounded, 100));
+  levels.clear();
+  while (true) {
+    levels.push_back(boundedSchedule.temperature());
+    if (!boundedSchedule.advanceAfterCompletedLevel())
+      break;
+  }
+  require(levels == std::vector<std::uint64_t>({100, 10, 1}),
+          "bounded cooling did not span its configured temperature range");
+
+  loom::ResolvedPnrAnnealingPolicy slowCooling = annealing;
+  slowCooling.coolingRatio = {UINT64_MAX - 1, UINT64_MAX};
+  slowCooling.temperatureLevelLimit = 4;
+  loom::pnr::AnnealingTemperatureSchedule slow =
+      take(loom::pnr::AnnealingTemperatureSchedule::create(slowCooling, 100));
+  levels.clear();
+  while (true) {
+    levels.push_back(slow.temperature());
+    if (!slow.advanceAfterCompletedLevel())
+      break;
+  }
+  require(levels == std::vector<std::uint64_t>({100, 25, 5, 1}),
+          "bounded cooling retained a near-constant hot schedule");
+
+  bounded.temperatureLevelLimit = 1;
+  loom::pnr::AnnealingTemperatureSchedule minimumOnly =
+      take(loom::pnr::AnnealingTemperatureSchedule::create(bounded, 100));
+  require(minimumOnly.temperature() == bounded.minimumTemperature &&
+              minimumOnly.isFinalLevel() &&
+              !minimumOnly.advanceAfterCompletedLevel(),
+          "one-level schedule did not execute only the minimum temperature");
+
   loom::ResolvedPnrAnnealingPolicy minimumThree = annealing;
   minimumThree.minimumTemperature = 3;
   loom::pnr::AnnealingTemperatureSchedule clamped =
@@ -206,6 +242,9 @@ void proposalCountAndCoolingAreChecked() {
 
   loom::ResolvedPnrAnnealingPolicy wideCooling = annealing;
   wideCooling.coolingRatio = {UINT64_MAX - 1, UINT64_MAX};
+  wideCooling.minimumTemperature = UINT64_MAX - 2;
+  wideCooling.fallbackTemperature = UINT64_MAX - 2;
+  wideCooling.temperatureLevelLimit = 3;
   loom::pnr::AnnealingTemperatureSchedule wide = take(
       loom::pnr::AnnealingTemperatureSchedule::create(wideCooling, UINT64_MAX));
   require(wide.advanceAfterCompletedLevel() &&

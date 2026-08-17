@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -145,10 +146,6 @@ std::vector<bool> distributedSites(std::uint32_t siteCount,
   return result;
 }
 
-std::uint32_t ceilDiv(std::uint32_t value, std::uint32_t divisor) {
-  return (value + divisor - 1) / divisor;
-}
-
 struct FuDistribution final {
   std::vector<bool> scalarAdd;
   std::vector<bool> mac;
@@ -191,16 +188,17 @@ struct DistributedCellCursor final {
 };
 
 FuDistribution makeFuDistribution(std::uint32_t count,
+                                  const BuiltinFuOccurrenceCounts &occurrences,
                                   std::uint32_t &nextLoopOrdinal) {
   FuDistribution distribution{
-      distributedSites(count, std::max(1u, ceilDiv(count, 8)), 6),
-      distributedSites(count, ceilDiv(count, 2), 0),
-      distributedSites(count, ceilDiv(count, 4), 1),
-      distributedSites(count, ceilDiv(count, 4), 2),
-      distributedSites(count, ceilDiv(count, 4), 3),
-      distributedSites(count, std::max(1u, ceilDiv(count, 8)), 4),
-      distributedSites(count, std::max(1u, ceilDiv(count, 8)), 5),
-      distributedSites(count, std::max(1u, ceilDiv(count, 16)), 7),
+      distributedSites(count, occurrences.dedicatedScalarAdd, 6),
+      distributedSites(count, occurrences.mac, 0),
+      distributedSites(count, occurrences.vectorCompute, 1),
+      distributedSites(count, occurrences.loopControl, 2),
+      distributedSites(count, occurrences.tokenControl, 3),
+      distributedSites(count, occurrences.vectorAdapter, 4),
+      distributedSites(count, occurrences.vectorStructural, 5),
+      distributedSites(count, occurrences.specialMath, 7),
       std::vector<std::optional<std::uint32_t>>(count)};
   for (std::uint32_t site = 0; site != count; ++site)
     if (distribution.loopControl[site])
@@ -353,7 +351,8 @@ llvm::Expected<BuiltinSpatialCoreExpansion>
 expandBuiltinSpatialCoreImpl(DesignBuilder &design,
                              const BuiltinTargetScale &scale) {
   if (!isValidBuiltinTargetScale(scale))
-    return invalid("all builtin target scale values must be positive");
+    return invalid("builtin target base scale is invalid or an FU occurrence "
+                   "count exceeds its PE count");
   const std::uint32_t temporalTagWidth =
       builtinTemporalTagWidth(scale.temporalResidentContexts);
   auto bits128 = PortType::bits(128);
@@ -394,6 +393,14 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   if (!temporalMemory)
     return temporalMemory.takeError();
 
+  constexpr std::uint32_t peInputPortCount = 5;
+  constexpr std::uint32_t peOutputPortCount = 4;
+  const std::uint32_t crossSchedulePortsPerTemporalPe =
+      scale.crossScheduleBoundaryLanesPerTemporalPe;
+  if (scale.temporalPeCount > std::numeric_limits<std::uint32_t>::max() /
+                                  crossSchedulePortsPerTemporalPe)
+    return invalid("builtin cross-schedule boundary count exceeds u32");
+
   const std::uint32_t meshDimension = scale.meshDimension;
   const std::uint64_t meshCellCount =
       static_cast<std::uint64_t>(meshDimension) * meshDimension;
@@ -411,20 +418,22 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   // compute that generates cross-domain traffic. Sizing both from one
   // parameter left a converter pair per external port while cross-domain
   // dataflow edges grew with the mesh area, and every mixed-schedule mapping
-  // funnelled through those few cells. One converter pair per Temporal PE lets
-  // the Temporal domain absorb one cross-domain stream per PE, and placing
-  // them on the same distributed phase as the PEs keeps each conversion local.
-  const std::uint32_t domainConverterCount = scale.temporalPeCount;
+  // funnelled through those few cells. A boundary occurrence carries one
+  // statically routed logical stream, while one Temporal PE exposes several
+  // independently routable inputs and outputs. Derive converter supply from
+  // that physical boundary width so resident contexts do not acquire an
+  // artificial one-stream-per-PE cut. Placing the pairs on the same
+  // distributed phase as the PEs keeps each conversion local.
   DistributedCellCursor moduleGatewayCells(meshCellCount, scale.gatewayCount);
-  DistributedCellCursor s2tSpatialCells(meshCellCount, domainConverterCount);
-  DistributedCellCursor t2sSpatialCells(meshCellCount, domainConverterCount);
+  DistributedCellCursor s2tSpatialCells(meshCellCount, scale.temporalPeCount);
+  DistributedCellCursor t2sSpatialCells(meshCellCount, scale.temporalPeCount);
   DistributedCellCursor temporalPeCells(meshCellCount, scale.temporalPeCount);
   DistributedCellCursor temporalMemoryFirstCells(meshCellCount,
                                                  scale.temporalMemoryCount);
   DistributedCellCursor temporalMemorySecondCells(
       meshCellCount, scale.temporalMemoryCount, halfMesh);
   DistributedCellCursor temporalGatewayCells(meshCellCount,
-                                             domainConverterCount);
+                                             scale.temporalPeCount);
   auto appendAttachment = [&](std::vector<MeshCellAttachmentSpec> &attachments,
                               DistributedCellCursor &cellCursor,
                               std::vector<PortType> inputTypes,
@@ -464,8 +473,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   for (std::uint32_t site = 0; site != scale.spatialPeCount; ++site)
     spatialPeAttachments.push_back(
         appendAttachment(spatialAttachmentSpecs, spatialPeCells,
-                         std::vector<PortType>(5, *bits128),
-                         std::vector<PortType>(4, *bits128)));
+                         std::vector<PortType>(peInputPortCount, *bits128),
+                         std::vector<PortType>(peOutputPortCount, *bits128)));
   std::vector<MemoryMeshAttachments> spatialMemoryAttachments;
   for (std::uint32_t memory = 0; memory != scale.spatialMemoryCount; ++memory) {
     auto attachments = appendMemoryAttachments(
@@ -481,21 +490,21 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   for (std::uint32_t gateway = 0; gateway != scale.gatewayCount; ++gateway)
     moduleGatewayAttachments.push_back(appendAttachment(
         spatialAttachmentSpecs, moduleGatewayCells, {*bits128}, {*bits128}));
-  for (std::uint32_t converter = 0; converter != domainConverterCount;
-       ++converter)
+  for (std::uint32_t site = 0; site != scale.temporalPeCount; ++site)
     s2tSpatialAttachments.push_back(appendAttachment(
-        spatialAttachmentSpecs, s2tSpatialCells, {*bits128}, {}));
-  for (std::uint32_t converter = 0; converter != domainConverterCount;
-       ++converter)
+        spatialAttachmentSpecs, s2tSpatialCells,
+        std::vector<PortType>(crossSchedulePortsPerTemporalPe, *bits128), {}));
+  for (std::uint32_t site = 0; site != scale.temporalPeCount; ++site)
     t2sSpatialAttachments.push_back(appendAttachment(
-        spatialAttachmentSpecs, t2sSpatialCells, {}, {*bits128}));
+        spatialAttachmentSpecs, t2sSpatialCells, {},
+        std::vector<PortType>(crossSchedulePortsPerTemporalPe, *bits128)));
 
   std::vector<std::size_t> temporalPeAttachments;
   for (std::uint32_t site = 0; site != scale.temporalPeCount; ++site)
     temporalPeAttachments.push_back(
         appendAttachment(temporalAttachmentSpecs, temporalPeCells,
-                         std::vector<PortType>(5, *tagged128),
-                         std::vector<PortType>(4, *tagged128)));
+                         std::vector<PortType>(peInputPortCount, *tagged128),
+                         std::vector<PortType>(peOutputPortCount, *tagged128)));
   std::vector<MemoryMeshAttachments> temporalMemoryAttachments;
   for (std::uint32_t memory = 0; memory != scale.temporalMemoryCount;
        ++memory) {
@@ -507,11 +516,11 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     temporalMemoryAttachments.push_back(*attachments);
   }
   std::vector<std::size_t> temporalGatewayAttachments;
-  for (std::uint32_t converter = 0; converter != domainConverterCount;
-       ++converter)
-    temporalGatewayAttachments.push_back(
-        appendAttachment(temporalAttachmentSpecs, temporalGatewayCells,
-                         {*tagged128}, {*tagged128}));
+  for (std::uint32_t site = 0; site != scale.temporalPeCount; ++site)
+    temporalGatewayAttachments.push_back(appendAttachment(
+        temporalAttachmentSpecs, temporalGatewayCells,
+        std::vector<PortType>(crossSchedulePortsPerTemporalPe, *tagged128),
+        std::vector<PortType>(crossSchedulePortsPerTemporalPe, *tagged128)));
 
   auto spatialNetworkSpec =
       MeshSwitchNetworkSpec::spatial(meshDimension, meshDimension, 2, *bits128,
@@ -532,12 +541,12 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     return temporalNetwork.takeError();
 
   std::uint32_t nextLoopOrdinal = 0;
-  const FuDistribution spatialDistribution =
-      makeFuDistribution(scale.spatialPeCount, nextLoopOrdinal);
-  const FuDistribution temporalDistribution =
-      makeFuDistribution(scale.temporalPeCount, nextLoopOrdinal);
-  const std::vector<PortType> spatialPeInputs(5, *bits128);
-  const std::vector<PortType> spatialPeOutputs(4, *bits128);
+  const FuDistribution spatialDistribution = makeFuDistribution(
+      scale.spatialPeCount, scale.spatialFuOccurrences, nextLoopOrdinal);
+  const FuDistribution temporalDistribution = makeFuDistribution(
+      scale.temporalPeCount, scale.temporalFuOccurrences, nextLoopOrdinal);
+  const std::vector<PortType> spatialPeInputs(peInputPortCount, *bits128);
+  const std::vector<PortType> spatialPeOutputs(peOutputPortCount, *bits128);
   for (std::uint32_t site = 0; site != scale.spatialPeCount; ++site) {
     auto attachment = spatialNetwork->attachment(spatialPeAttachments[site]);
     if (!attachment)
@@ -550,7 +559,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     if (llvm::Error error = addFuCatalog(*pe, site, spatialDistribution))
       return std::move(error);
     std::vector<SpatialValue> outputs;
-    for (std::size_t output = 0; output != 4; ++output) {
+    for (std::size_t output = 0; output != peOutputPortCount; ++output) {
       auto value = pe->output(output);
       if (!value)
         return value.takeError();
@@ -596,8 +605,8 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       return std::move(error);
   }
 
-  const std::vector<PortType> temporalPeInputs(5, *bits128);
-  const std::vector<PortType> temporalPeOutputs(4, *tagged128);
+  const std::vector<PortType> temporalPeInputs(peInputPortCount, *bits128);
+  const std::vector<PortType> temporalPeOutputs(peOutputPortCount, *tagged128);
   const TemporalPeParameters temporalParameters{
       scale.temporalResidentContexts, FuConfigurationMode::PerInstruction,
       ::fabric::OperandBufferMode::PerInstruction,
@@ -617,7 +626,7 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
     if (llvm::Error error = addFuCatalog(*pe, site, temporalDistribution))
       return std::move(error);
     std::vector<SpatialValue> outputs;
-    for (std::size_t output = 0; output != 4; ++output) {
+    for (std::size_t output = 0; output != peOutputPortCount; ++output) {
       auto value = pe->output(output);
       if (!value)
         return value.takeError();
@@ -665,42 +674,50 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
       return std::move(error);
   }
 
-  for (std::uint32_t converter = 0; converter != domainConverterCount;
-       ++converter) {
+  for (std::uint32_t site = 0; site != scale.temporalPeCount; ++site) {
     auto spatialAttachment =
-        spatialNetwork->attachment(s2tSpatialAttachments[converter]);
+        spatialNetwork->attachment(s2tSpatialAttachments[site]);
     if (!spatialAttachment)
       return spatialAttachment.takeError();
     auto temporalAttachment =
-        temporalNetwork->attachment(temporalGatewayAttachments[converter]);
+        temporalNetwork->attachment(temporalGatewayAttachments[site]);
     if (!temporalAttachment)
       return temporalAttachment.takeError();
-    auto outputs = spatial->addBoundary(
-        spatialAttachment->inputs(),
-        BoundarySpec::s2tWithConfiguredTag(*bits128, *tagged128));
-    if (!outputs)
-      return outputs.takeError();
-    auto tagged = spatial->addFifo(
-        outputs->values().front(),
-        FifoSpec{*tagged128, scale.temporalResidentContexts, false});
-    if (!tagged)
-      return tagged.takeError();
-    if (llvm::Error error =
-            temporalAttachment->connectOutputs({tagged->value()}))
+    if (spatialAttachment->inputs().size() != crossSchedulePortsPerTemporalPe ||
+        temporalAttachment->inputs().size() != crossSchedulePortsPerTemporalPe)
+      return invalid("builtin cross-schedule attachment width changed");
+
+    std::vector<SpatialValue> taggedOutputs;
+    taggedOutputs.reserve(crossSchedulePortsPerTemporalPe);
+    for (SpatialValue input : spatialAttachment->inputs()) {
+      auto outputs = spatial->addBoundary(
+          {input}, BoundarySpec::s2tWithConfiguredTag(*bits128, *tagged128));
+      if (!outputs)
+        return outputs.takeError();
+      auto tagged = spatial->addFifo(
+          outputs->values().front(),
+          FifoSpec{*tagged128, scale.temporalResidentContexts, false});
+      if (!tagged)
+        return tagged.takeError();
+      taggedOutputs.push_back(tagged->value());
+    }
+    if (llvm::Error error = temporalAttachment->connectOutputs(taggedOutputs))
       return std::move(error);
-    auto t2sOutputs =
-        spatial->addBoundary(temporalAttachment->inputs(),
-                             BoundarySpec::t2s(*tagged128, {*bits128}));
-    if (!t2sOutputs)
-      return t2sOutputs.takeError();
+
     auto t2sAttachment =
-        spatialNetwork->attachment(t2sSpatialAttachments[converter]);
+        spatialNetwork->attachment(t2sSpatialAttachments[site]);
     if (!t2sAttachment)
       return t2sAttachment.takeError();
     std::vector<SpatialValue> routedOutputs;
-    for (SpatialValue output : t2sOutputs->values()) {
+    routedOutputs.reserve(crossSchedulePortsPerTemporalPe);
+    for (SpatialValue input : temporalAttachment->inputs()) {
+      auto outputs = spatial->addBoundary(
+          {input}, BoundarySpec::t2s(*tagged128, {*bits128}));
+      if (!outputs)
+        return outputs.takeError();
       auto fifo = spatial->addFifo(
-          output, FifoSpec{*bits128, scale.temporalResidentContexts, false});
+          outputs->values().front(),
+          FifoSpec{*bits128, scale.temporalResidentContexts, false});
       if (!fifo)
         return fifo.takeError();
       routedOutputs.push_back(fifo->value());
@@ -730,7 +747,8 @@ llvm::Expected<SystemBuilder>
 expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
                         const loom::fabric::FinalizedFabricRoot &module) {
   if (!isValidBuiltinTargetScale(scale))
-    return invalid("all builtin target scale values must be positive");
+    return invalid("builtin target base scale is invalid or an FU occurrence "
+                   "count exceeds its PE count");
   auto system = design.createSystem("builtin-system");
   if (!system)
     return system.takeError();
@@ -822,16 +840,25 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
   auto clock = system->createHardwareDomain();
   if (!clock)
     return clock.takeError();
-  auto clockContract =
-      loom::fabric::ClockDomainContractRecord::create(1'000, 0);
+  auto clockContract = loom::fabric::ClockDomainContractRecord::create(
+      builtinSystemClockPeriodFs, 0);
   if (!clockContract)
     return clockContract.takeError();
-  auto serviceRate = system->createServiceRate(
+  auto memoryServiceRate = system->createServiceRate(
+      *clock, 1, 1, scale.temporalResidentContexts,
+      loom::fabric::ServiceProgress(
+          std::in_place_type<::fabric::BoundedCompletion>,
+          ::fabric::BoundedCompletion{
+              loom::fabric::ClockDomainRef(clock->reference()),
+              builtinSystemMemoryCompletionCycles}));
+  if (!memoryServiceRate)
+    return memoryServiceRate.takeError();
+  auto messageServiceRate = system->createServiceRate(
       *clock, 1, 1, scale.temporalResidentContexts,
       loom::fabric::ServiceProgress(
           std::in_place_type<::fabric::FairEventual>));
-  if (!serviceRate)
-    return serviceRate.takeError();
+  if (!messageServiceRate)
+    return messageServiceRate.takeError();
   auto systemMemoryCapacity = llvm::checkedMulUnsigned<std::uint64_t>(
       scale.memoryCapacityBytes, scale.accCoreCount);
   if (!systemMemoryCapacity)
@@ -841,7 +868,7 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
     return memoryAccessDomain.takeError();
   auto systemMemory = makeGeneral64SystemMemory(
       {0, *systemMemoryCapacity, std::move(*memoryAccessDomain), 128},
-      std::move(*serviceRate));
+      std::move(*memoryServiceRate));
   if (!systemMemory)
     return systemMemory.takeError();
   auto memoryService = system->addMemoryService(systemMemory->contract);
@@ -920,13 +947,13 @@ expandBuiltinSystemImpl(DesignBuilder &design, const BuiltinTargetScale &scale,
       loom::fabric::CanonicalServiceCapabilityRecord::create(
           dataflow::semantics::ServiceKind::MessageTransfer,
           loom::fabric::CanonicalServiceEndpointRole::Initiate, *messageDomain,
-          *serviceRate);
+          *messageServiceRate);
   if (!initiateCapability)
     return initiateCapability.takeError();
   auto serveCapability = loom::fabric::CanonicalServiceCapabilityRecord::create(
       dataflow::semantics::ServiceKind::MessageTransfer,
       loom::fabric::CanonicalServiceEndpointRole::Serve, *messageDomain,
-      *serviceRate);
+      *messageServiceRate);
   if (!serveCapability)
     return serveCapability.takeError();
   auto initiateSet = loom::fabric::CanonicalServiceCapabilitySet::create(
@@ -1035,7 +1062,7 @@ getBuiltinInstructionCoreArchitecture() {
 llvm::Expected<BuiltinTargetPreset>
 parseBuiltinTargetPreset(llvm::StringRef spelling) {
   for (const BuiltinTargetDescriptor *descriptor :
-       {&builtinSmallTarget, &builtinDefaultTarget, &builtinLargeTarget})
+       {&builtinSmallTarget, &builtinCoverageTarget, &builtinLargeTarget})
     if (spelling == descriptor->name)
       return descriptor->preset;
   return invalid("unknown builtin target preset '" + spelling + "'");

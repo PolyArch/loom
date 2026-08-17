@@ -7,6 +7,8 @@
 #include "PnR/SpatialExactRepair.h"
 #include "PnR/SpatialPnrProblem.h"
 
+#include <cstdint>
+
 namespace mlir {
 class MLIRContext;
 }
@@ -20,7 +22,8 @@ adg::FinalizedFabricDesign
 buildTemporalCapacityFabric(const ArtifactStore &store);
 
 adg::FinalizedFabricDesign
-buildTemporalSwitchPackingFabric(const ArtifactStore &store);
+buildTemporalSwitchPackingFabric(const ArtifactStore &store,
+                                 std::uint64_t residentRows = 2);
 
 ResolvedConfig buildSpatialPnrTestResolvedConfig();
 

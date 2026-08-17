@@ -75,12 +75,15 @@ public:
 private:
   AnnealingTemperatureSchedule(std::uint64_t minimumTemperature,
                                ResolvedExactRatio coolingRatio,
+                               std::uint64_t levelLimit,
                                std::uint64_t temperature)
       : minimumTemperature_(minimumTemperature), coolingRatio_(coolingRatio),
-        temperature_(temperature) {}
+        levelLimit_(levelLimit), temperature_(temperature) {}
 
   std::uint64_t minimumTemperature_;
   ResolvedExactRatio coolingRatio_;
+  std::uint64_t levelLimit_;
+  std::uint64_t completedLevelCount_ = 0;
   std::uint64_t temperature_;
 };
 

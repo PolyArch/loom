@@ -251,7 +251,7 @@ ResolvedFabricOpCapabilityView::encodeSemanticConfiguration(
     return rejected("operation capability has no semantic field relation");
   return relation->projectSemanticValue(
       actor, operandPorts, resultPorts,
-      ::fabric::symbolizeResolvedIndexWidth(indexBitWidth));
+      ::fabric::symbolizeResolvedIndexWidth(indexBitWidth), pointerLayout);
 }
 
 llvm::Expected<::fabric::FabricOpSemanticFieldRelation>

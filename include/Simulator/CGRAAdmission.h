@@ -18,6 +18,7 @@ class ArtifactStore;
 namespace loom::sim {
 
 class CgraExecutionSession;
+class CgraExternalMemoryProvider;
 enum class TraceCaptureLevel : std::uint32_t;
 
 struct CgraExecutionPlanSummary final {
@@ -88,7 +89,8 @@ private:
   startCgraExecutionSession(const PreparedCgraExecution &,
                             const CanonicalSimulationWorkload &,
                             const CanonicalSimulationRuntimeInput &,
-                            std::optional<TraceCaptureLevel>);
+                            std::optional<TraceCaptureLevel>,
+                            CgraExternalMemoryProvider *);
 };
 
 /// Strictly imports and couples one Canonical Dataflow, Fabric, TechMapping,

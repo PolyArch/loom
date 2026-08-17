@@ -1,17 +1,60 @@
 #include "TechMappingCandidateDomain.h"
 
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
+
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <iterator>
+#include <limits>
+#include <map>
 #include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
 
 namespace loom::mapping::detail {
+namespace {
+
+void saturatingAdd(std::uint64_t source, std::uint64_t &target) {
+  if (source > std::numeric_limits<std::uint64_t>::max() - target)
+    target = std::numeric_limits<std::uint64_t>::max();
+  else
+    target += source;
+}
+
+} // namespace
+
+TechMatchDomainStatistics
+summarizeTechMatchDomain(const TechMatchDomain &domain) {
+  using BucketKey = std::tuple<std::uint8_t, std::uint64_t, std::uint64_t>;
+  TechMatchDomainStatistics statistics;
+  statistics.rowCount = domain.rows.size();
+  std::map<BucketKey, std::uint64_t> memoryBuckets;
+  for (const TechMatchRow &row : domain.rows) {
+    if (std::holds_alternative<TechComputeRealizationView>(row.realization)) {
+      ++statistics.computeRowCount;
+      continue;
+    }
+    ++statistics.memoryRowCount;
+    assert(row.memoryOccurrenceDemand &&
+           "memory Tech row has no occurrence-demand projection");
+    const SpatialMemoryOccurrenceDemandView &demand =
+        *row.memoryOccurrenceDemand;
+    ++memoryBuckets[{static_cast<std::uint8_t>(demand.schedule),
+                     row.actorSlots.size(), demand.occurrences.size()}];
+  }
+  statistics.memoryBuckets.reserve(memoryBuckets.size());
+  for (const auto &[key, rowCount] : memoryBuckets) {
+    statistics.memoryBuckets.push_back(
+        {static_cast<::fabric::Schedule>(std::get<0>(key)), std::get<1>(key),
+         std::get<2>(key), rowCount});
+  }
+  return statistics;
+}
+
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "tech_mapping_generation_invalid: " + message);
@@ -106,8 +149,11 @@ llvm::Error TechMatchRowCollector::admit(
   llvm::sort(slots);
   if (std::adjacent_find(slots.begin(), slots.end()) != slots.end())
     return invalid("match row covers one actor more than once");
-  rows_.push_back(TechMatchRow{std::move(*activeSeedKey_), std::move(slots),
-                               std::move(realization)});
+  rows_.push_back(TechMatchRow{std::move(*activeSeedKey_),
+                               std::move(slots),
+                               std::move(realization),
+                               {},
+                               std::nullopt});
   activeSeedKey_.reset();
   return llvm::Error::success();
 }
@@ -273,8 +319,63 @@ deriveTechMatchDomain(const TechMappingGenerationInputs &inputs,
                            return lhs.key == rhs.key;
                          }),
              rows.end());
+
+  std::map<std::vector<std::uint8_t>,
+           std::vector<SpatialComputeContextPlacementDomainView>>
+      placementsByCapability;
+  std::map<std::vector<std::uint8_t>, std::size_t> contextOrdinals;
+  for (TechMatchRow &row : rows) {
+    const auto *compute =
+        std::get_if<TechComputeRealizationView>(&row.realization);
+    if (!compute) {
+      const auto *memory =
+          std::get_if<TechMemoryRealizationView>(&row.realization);
+      assert(memory && "Tech match row has an unknown realization kind");
+      auto demand = deriveSpatialMemoryOccurrenceDemand(
+          *memory, inputs.dataflow, inputs.fabric);
+      if (!demand)
+        return demand.takeError();
+      saturatingAdd(demand->projectionWork,
+                    accounting.memorySupplyProjectionWork);
+      row.memoryOccurrenceDemand = std::move(*demand);
+      continue;
+    }
+    const std::vector<std::uint8_t> capabilityKey =
+        ::loom::fabric::canonicalFabricBytes(compute->capabilityTemplate);
+    auto found = placementsByCapability.find(capabilityKey);
+    if (found == placementsByCapability.end()) {
+      auto placements = deriveSpatialComputeContextPlacementDomain(
+          compute->capabilityTemplate, inputs.fabric);
+      if (!placements)
+        return placements.takeError();
+      saturatingAdd(inputs.fabric.fuOccurrences().size(),
+                    accounting.computeContextProjectionWork);
+      for (const auto &placement : *placements) {
+        saturatingAdd(placement.contexts.size(),
+                      accounting.computeContextProjectionWork);
+      }
+      found = placementsByCapability
+                  .try_emplace(capabilityKey, std::move(*placements))
+                  .first;
+    }
+    std::vector<std::size_t> values;
+    for (const auto &placement : found->second) {
+      for (const auto &context : placement.contexts) {
+        const std::vector<std::uint8_t> key =
+            ::loom::fabric::canonicalFabricBytes(context);
+        auto [ordinal, inserted] =
+            contextOrdinals.try_emplace(key, contextOrdinals.size());
+        (void)inserted;
+        values.push_back(ordinal->second);
+      }
+    }
+    llvm::sort(values);
+    values.erase(std::unique(values.begin(), values.end()), values.end());
+    row.computeContextValues = std::move(values);
+  }
   return TechMatchDomain{std::move(actors), std::move(rows),
-                         exhausted && !interrupted, interrupted};
+                         contextOrdinals.size(), exhausted && !interrupted,
+                         interrupted};
 }
 
 } // namespace loom::mapping::detail

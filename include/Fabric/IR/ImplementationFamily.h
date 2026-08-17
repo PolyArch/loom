@@ -791,12 +791,12 @@ public:
 
   llvm::Error validateSemanticValue(llvm::ArrayRef<std::uint8_t> value) const;
 
-  llvm::Expected<::loom::CanonicalSemanticBytes>
-  projectSemanticValue(const ::dataflow::CanonicalActorSchemaProjection &actor,
-                       llvm::ArrayRef<std::uint64_t> operandPorts,
-                       llvm::ArrayRef<std::uint64_t> resultPorts,
-                       std::optional<ResolvedIndexWidth> resolvedIndexWidth =
-                           std::nullopt) const;
+  llvm::Expected<::loom::CanonicalSemanticBytes> projectSemanticValue(
+      const ::dataflow::CanonicalActorSchemaProjection &actor,
+      llvm::ArrayRef<std::uint64_t> operandPorts,
+      llvm::ArrayRef<std::uint64_t> resultPorts,
+      std::optional<ResolvedIndexWidth> resolvedIndexWidth = std::nullopt,
+      const ::loom::PointerLayout *pointerLayout = nullptr) const;
 
 private:
   FabricOpSemanticFieldRelation(

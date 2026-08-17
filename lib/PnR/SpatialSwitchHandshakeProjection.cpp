@@ -63,9 +63,8 @@ bool loom::pnr::detail::hasSpatialTemporalSwitchHandshakeDomain(
     const FrozenSpatialPnrProblem &problem) {
   return llvm::any_of(
       problem.routing().tagContinuity().matchDomains(), [](const auto &domain) {
-        return domain.kind == ::loom::fabric::
-                                  FabricPhysicalTagMatchDomainKind::
-                                      TemporalSwitchTable;
+        return domain.kind == ::loom::fabric::FabricPhysicalTagMatchDomainKind::
+                                  TemporalSwitchTable;
       });
 }
 
@@ -136,8 +135,7 @@ loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeFragments(
         candidateDemandViews.push_back({{signatures}, std::nullopt});
         continue;
       }
-      const llvm::APInt &tag =
-          *tagValues[demand.logicalNet][demand.segment];
+      const llvm::APInt &tag = *tagValues[demand.logicalNet][demand.segment];
       if (!::fabric::isRepresentablePhysicalTagValue(
               matchDomains[domain].tagWidthBits, tag))
         return invalid("switch route demand has an out-of-range Physical Tag");
@@ -172,6 +170,10 @@ loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeFragments(
   for (const auto &[domain, domainRows] : rows) {
     const auto &domainDemands = demandsByDomain.find(domain)->second;
     for (auto [rowOrdinal, rowDemands] : llvm::enumerate(domainRows)) {
+      const std::optional<std::uint64_t> residentCapacity =
+          matchDomains[domain].residentEntryCapacity;
+      if (residentCapacity && rowOrdinal >= *residentCapacity)
+        continue;
       std::map<::loom::fabric::FabricOrdinal, std::vector<PnrIndex>> byInput;
       for (std::uint64_t demandOrdinal : rowDemands) {
         if (demandOrdinal >= domainDemands.size())
@@ -192,7 +194,10 @@ loom::pnr::detail::deriveSpatialTemporalSwitchHandshakeFragments(
             handshake, domain,
             static_cast<::loom::fabric::FabricOrdinal>(rowOrdinal), input);
         if (!activation)
-          return invalid("configured switch row has no frozen activation");
+          return invalid(llvm::Twine("resident switch domain ") +
+                         llvm::Twine(domain) + " row " +
+                         llvm::Twine(rowOrdinal) + " input " +
+                         llvm::Twine(input) + " has no frozen activation");
         const auto base = handshake.switchActivationBaseFragments().slice(
             activation->baseFragmentOffset, activation->baseFragmentCount);
         fragments.insert(fragments.end(), base.begin(), base.end());

@@ -1,5 +1,6 @@
 #include "ADGBuilderTestSupport.h"
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -9,6 +10,18 @@ int main(int argc, char **argv) {
   if (argc != 2) {
     llvm::errs() << "usage: loom-adg-builder-api-test <test-group>\n";
     return EXIT_FAILURE;
+  }
+
+  if (llvm::StringRef(argv[1]) == "--conformance-anchors") {
+    loom::adg::test::runBuilderTests();
+    loom::adg::test::runBuiltinTests();
+    loom::adg::test::runTopologyTests();
+    llvm::outs() << "{\"anchors\":[\"regular-topology\","
+                    "\"irregular-directed-topology\","
+                    "\"heterogeneous-multi-acc-core\","
+                    "\"temporal-resource-grant\","
+                    "\"memory-service-forwarding\"]}\n";
+    return EXIT_SUCCESS;
   }
 
   using TestFunction = void (*)();

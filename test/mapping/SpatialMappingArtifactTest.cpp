@@ -3,6 +3,7 @@
 #include "ADG/MemoryLibrary.h"
 #include "CgraAdmissionTestSupport.h"
 #include "SpatialCandidateSelectionTestSupport.h"
+#include "TemporalMappingFabricTestSupport.h"
 #include "TemporalPeTagDomainTestSupport.h"
 #include "TechMappingCandidateTestSupport.h"
 
@@ -304,35 +305,6 @@ loom::adg::MemorySpec makeStorageProvider(mlir::MLIRContext &context) {
                                             std::move(connectivitySpec)));
 }
 
-void addTokenSyncFu(loom::adg::PeBuilder &pe,
-                    llvm::ArrayRef<loom::adg::PeValue> inputs,
-                    const loom::adg::PortType &type,
-                    const ::fabric::ResourceContract &contract =
-                        ::fabric::oneCycleElasticOperationResourceContract()) {
-  using loom::adg::FuCapabilityTemplateSpec;
-  using loom::adg::FuSpec;
-  using loom::adg::OperationCapabilitySpec;
-
-  const std::vector<loom::adg::PortType> types(4, type);
-  auto fu = take(pe.addFu(inputs, FuSpec{types, types}));
-  std::vector<loom::adg::FuValue> fuInputs;
-  for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
-    fuInputs.push_back(take(fu.input(ordinal)));
-  auto operation = take(fu.addOperation(
-      fuInputs,
-      OperationCapabilitySpec{::fabric::ImplementationFamilyId::TokenSync,
-                              ::fabric::RoutedTokenParams{128, 4},
-                              {::dataflow::OperationSchemaId::DataflowSync},
-                              types,
-                              contract}));
-  requireSuccess(
-      fu.addCapabilityTemplate(FuCapabilityTemplateSpec{{operation}, {}}));
-  std::vector<loom::adg::FuValue> outputs;
-  for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
-    outputs.push_back(take(operation.output(ordinal)));
-  requireSuccess(fu.close(outputs));
-}
-
 enum class ComputeContractKind { OneCycleElastic, LoopStream, Transparent };
 
 const ::fabric::ResourceContract &
@@ -366,7 +338,8 @@ loom::fabric::FinalizedFabricRoot buildFabric(
   std::vector<loom::adg::PeValue> peInputs;
   for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
     peInputs.push_back(take(pe.input(ordinal)));
-  addTokenSyncFu(pe, peInputs, bits128, computeContract(contractKind));
+  loom::test::addTokenSyncFu(pe, peInputs, bits128,
+                             computeContract(contractKind));
   requireSuccess(pe.close());
   std::vector<loom::adg::SpatialValue> outputs;
   for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
@@ -428,80 +401,19 @@ buildTemporalFabric(loom::ArtifactStore &store) {
 }
 
 loom::fabric::FinalizedFabricRoot
-buildTemporalSwitchPackingFabric(loom::ArtifactStore &store) {
-  auto design = loom::test::buildTemporalSwitchPackingFabric(store);
+buildTemporalSwitchPackingFabric(loom::ArtifactStore &store,
+                                 std::uint64_t residentRows = 2) {
+  auto design =
+      loom::test::buildTemporalSwitchPackingFabric(store, residentRows);
   if (design.roots().size() != 1)
     fail("Temporal switch fixture did not publish exactly one root");
-  return design.roots().front();
-}
-
-loom::fabric::FinalizedFabricRoot
-buildBoundaryTemporalFabric(loom::ArtifactStore &store) {
-  using namespace loom::adg;
-
-  const PortType bits4 = take(PortType::bits(4));
-  const PortType bits128 = take(PortType::bits(128));
-  const PortType tagged128 = take(PortType::taggedBits(128, 4));
-  std::vector<PortType> moduleInputs;
-  moduleInputs.reserve(10);
-  for (unsigned input = 0; input != 5; ++input) {
-    moduleInputs.push_back(bits128);
-    moduleInputs.push_back(bits4);
-  }
-  std::vector<PortType> moduleOutputs;
-  moduleOutputs.reserve(8);
-  for (unsigned output = 0; output != 4; ++output) {
-    moduleOutputs.push_back(bits128);
-    moduleOutputs.push_back(bits4);
-  }
-
-  DesignBuilder builder(store);
-  auto spatial = take(builder.createSpatialCore("boundary-temporal",
-                                                moduleInputs, moduleOutputs));
-  std::vector<SpatialValue> taggedInputs;
-  taggedInputs.reserve(5);
-  for (unsigned input = 0; input != 5; ++input) {
-    const std::array<SpatialValue, 2> boundaryInputs = {
-        take(spatial.input(input * 2)), take(spatial.input(input * 2 + 1))};
-    auto outputs = take(spatial.addBoundary(
-        boundaryInputs, BoundarySpec::s2t(bits128, bits4, tagged128)));
-    taggedInputs.push_back(outputs.front());
-  }
-  auto pe = take(spatial.addPe(
-      taggedInputs,
-      PeSpec::temporal(
-          std::vector<PortType>(5, bits128),
-          std::vector<PortType>(4, tagged128),
-          TemporalPeParameters{2, FuConfigurationMode::PerInstruction,
-                               ::fabric::OperandBufferMode::PerInstruction, 2,
-                               std::nullopt})));
-  std::vector<PeValue> peInputs;
-  peInputs.reserve(4);
-  for (unsigned input = 0; input != 4; ++input)
-    peInputs.push_back(take(pe.input(input)));
-  addTokenSyncFu(pe, peInputs, bits128);
-  requireSuccess(pe.close());
-
-  std::vector<SpatialValue> untaggedOutputs;
-  untaggedOutputs.reserve(8);
-  for (unsigned output = 0; output != 4; ++output) {
-    auto split = take(
-        spatial.addBoundary({take(pe.output(output))},
-                            BoundarySpec::t2s(tagged128, {bits128, bits4})));
-    untaggedOutputs.insert(untaggedOutputs.end(), split.values().begin(),
-                           split.values().end());
-  }
-  requireSuccess(spatial.close(untaggedOutputs));
-  auto design = take(std::move(builder).finalize());
-  if (design.roots().size() != 1)
-    fail("boundary Temporal Fabric did not publish exactly one root");
   return design.roots().front();
 }
 
 void temporalPeTagMatchDomainsAreIngressLocal() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
-  const auto fabric = buildBoundaryTemporalFabric(store);
+  const auto fabric = loom::test::buildBoundaryTemporalFabric(store);
   requireSuccess(loom::test::verifyTemporalPeIngressTagDomains(fabric));
 }
 
@@ -615,11 +527,17 @@ void selectLegalTemporalBinding(loom::pnr::SpatialCandidateState &candidate,
   requireSuccess(move.commit());
 }
 
+enum class SwitchResidencyExpectation : std::uint8_t {
+  Fits,
+  ExceedsCapacity,
+};
+
 void completeCandidateRoundTrip(
     bool temporal, bool boundaryWrapped = false, bool forceTagConflict = false,
     ComputeContractKind contractKind = ComputeContractKind::OneCycleElastic,
-    bool switchPackingFabric = false,
-    bool requireSeparatedSwitchRows = false) {
+    bool switchPackingFabric = false, bool requireSeparatedSwitchRows = false,
+    SwitchResidencyExpectation switchResidency =
+        SwitchResidencyExpectation::Fits) {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   llvm::SmallString<128> blobPath(directory.path());
@@ -633,11 +551,14 @@ void completeCandidateRoundTrip(
   const auto dataflowReference =
       take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
-  const auto fabric = boundaryWrapped ? buildBoundaryTemporalFabric(store)
-                      : switchPackingFabric
-                          ? buildTemporalSwitchPackingFabric(store)
-                      : temporal ? buildTemporalFabric(store)
-                                 : buildFabric(store, contractKind);
+  const std::uint64_t switchResidentRows =
+      switchResidency == SwitchResidencyExpectation::ExceedsCapacity ? 1 : 2;
+  const auto fabric =
+      boundaryWrapped ? loom::test::buildBoundaryTemporalFabric(store)
+      : switchPackingFabric
+          ? buildTemporalSwitchPackingFabric(store, switchResidentRows)
+      : temporal ? buildTemporalFabric(store)
+                 : buildFabric(store, contractKind);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
   resolved.dse.techMapping.candidatePublicationLimit = 1;
@@ -796,7 +717,7 @@ void completeCandidateRoundTrip(
     const auto wrongDomainConfig =
         take(loom::pnr::projectResolvedSystemPnrConfigView(generatorResolved));
     const loom::pnr::SpatialPnrGenerationInputs wrongDomainInputs{
-        dataflow, tech.view(), fabric.view(), physicalTiming,
+        dataflow,          tech.view(),        fabric.view(), physicalTiming,
         wrongDomainConfig, constraints.view(), store};
     const auto wrongDomainOutcome =
         loom::pnr::generateSpatialMappings(wrongDomainInputs);
@@ -841,7 +762,8 @@ void completeCandidateRoundTrip(
                                    requireSeparatedSwitchRows,
                                switchPackingFabric &&
                                    !requireSeparatedSwitchRows);
-    if (forceTagConflict) {
+    if (forceTagConflict ||
+        switchResidency == SwitchResidencyExpectation::ExceedsCapacity) {
       auto costs = take(loom::pnr::SpatialRouteCostState::create(*candidate));
       loom::pnr::SpatialNetRouterScratch router;
       requireSuccess(router.prepare(*problem));
@@ -859,13 +781,19 @@ void completeCandidateRoundTrip(
         requireSuccess(router.finishConstraintNet(logicalNet));
       }
       if (!take(move.close()))
-        fail("conflicting tag fixture closed a selected handshake cycle");
+        fail("tag-pressure fixture closed a selected handshake cycle");
       requireSuccess(move.commit());
       requireSuccess(costs.resetFromCandidate());
+      if (!costs.hasTagPressureViolation())
+        fail("PathFinder cost state ignored committed tag pressure");
+      if (switchResidency == SwitchResidencyExpectation::ExceedsCapacity) {
+        if (candidate->tagResidentCapacityOveruse() == 0)
+          fail("Temporal switch fixture did not exceed resident capacity");
+        requireSuccess(candidate->verify());
+        return;
+      }
       if (candidate->tagConflictCount() == 0)
         fail("conflicting tag fixture did not construct a collision");
-      if (!costs.hasTagPressureViolation())
-        fail("PathFinder cost state ignored a committed tag collision");
       const std::vector<loom::pnr::RouteCost> baselineTagCosts(
           costs.currentArcCosts().begin(), costs.currentArcCosts().end());
       requireSuccess(costs.advancePathFinderIteration());
@@ -1987,6 +1915,9 @@ int main() {
                              ComputeContractKind::OneCycleElastic, true);
   completeCandidateRoundTrip(true, false, false,
                              ComputeContractKind::OneCycleElastic, true, true);
+  completeCandidateRoundTrip(true, false, false,
+                             ComputeContractKind::OneCycleElastic, true, true,
+                             SwitchResidencyExpectation::ExceedsCapacity);
   completeCandidateRoundTrip(true, false, true,
                              ComputeContractKind::OneCycleElastic, true);
   completeCandidateRoundTrip(true, true);

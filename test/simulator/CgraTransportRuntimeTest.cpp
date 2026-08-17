@@ -738,8 +738,10 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
   plan.transport.localTransferSinks.push_back({rightSink});
   plan.transport.consumedUses.push_back({leftSink, 0, 0});
   plan.transport.consumedUses.push_back({rightSink, 0, 0});
-  plan.transport.operandQueueMatches.push_back({leftSink, leftQueue, 0, 2});
-  plan.transport.operandQueueMatches.push_back({rightSink, rightQueue, 1, 2});
+  plan.transport.operandQueueConsumers.push_back({leftSink});
+  plan.transport.operandQueueConsumers.push_back({rightSink});
+  plan.transport.operandQueueMatches.push_back({leftQueue, 0, 2, 0, 1});
+  plan.transport.operandQueueMatches.push_back({rightQueue, 1, 2, 1, 1});
   plan.transport.operandQueueActivations.push_back(
       {producer,
        {loom::fabric::FabricTransportEndpointOwnerRef::of(pe), 0},

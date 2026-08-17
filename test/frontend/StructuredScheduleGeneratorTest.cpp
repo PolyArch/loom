@@ -391,7 +391,7 @@ void transformationsAreTypedCapacityBoundAndDependenceChecked() {
   auto safe = parseProgram(R"mlir(
 #layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
 module attributes {dlti.dl_spec = #layout} {
-  func.func @kernel(%out: memref<32xi32>) {
+  func.func @kernel(%out: memref<8x4xi32>) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
@@ -401,7 +401,7 @@ module attributes {dlti.dl_spec = #layout} {
         %row = arith.muli %i, %c4 : index
         %index = arith.addi %row, %j : index
         %value = arith.index_cast %index : index to i32
-        memref.store %value, %out[%index] : memref<32xi32>
+        memref.store %value, %out[%i, %j] : memref<8x4xi32>
       }
     }
     return

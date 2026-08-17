@@ -178,7 +178,7 @@ void exerciseJointExploration() {
   auto small = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
   auto alternate = take(loom::adg::buildBuiltinTarget(
-      store, loom::adg::BuiltinTargetPreset::Default));
+      store, loom::adg::BuiltinTargetPreset::Coverage));
   if (small.roots().size() != 1 || alternate.roots().size() != 1)
     fail("builtin fixture did not publish one complete System");
   const loom::ArtifactRootReference system = small.roots().front().reference();

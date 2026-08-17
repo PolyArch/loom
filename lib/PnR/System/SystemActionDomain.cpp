@@ -133,29 +133,28 @@ SystemActionDomainScratch::rebuild(const SystemCandidateState &candidate) {
                         routingMovableDecisionCount_, "routingChoices", false))
       return error;
   }
-  if (!candidate.serviceRoutes().empty()) {
-    const std::size_t offset = routingChoices_.size();
-    routingChoices_.emplace_back(SystemGlobalRoutingAction{});
-    if (llvm::Error error =
-            appendRange(offset, routingChoices_, routingAnchors_,
-                        routingMovableDecisionCount_, "routingChoices", false))
-      return error;
-  }
-
   for (PnrIndex context = 0; context < candidate.serviceTargets().size();
        ++context) {
-    const std::size_t offset = resourceChoices_.size();
-    auto choices = detail::systemServiceTargetChoices(candidate, context);
-    if (!choices)
-      return choices.takeError();
-    for (PnrIndex choice = 0; choice < choices->size(); ++choice)
-      if (!((*choices)[choice] == candidate.serviceTarget(context)))
-        resourceChoices_.emplace_back(
-            SystemServiceTargetAction{context, choice});
-    if (llvm::Error error =
-            appendRange(offset, resourceChoices_, resourceAnchors_,
-                        resourceMovableDecisionCount_, "resourceChoices"))
-      return error;
+    if (context >= candidate.problem().serviceContexts().size())
+      return invalid("service target context is outside the frozen problem");
+    for (PnrIndex subject = 0;
+         subject <
+         candidate.problem().serviceContexts()[context].subjects.size();
+         ++subject) {
+      const std::size_t offset = resourceChoices_.size();
+      auto choices =
+          detail::systemServiceTargetChoices(candidate, context, subject);
+      if (!choices)
+        return choices.takeError();
+      for (PnrIndex choice = 0; choice < choices->size(); ++choice)
+        if (!((*choices)[choice] == candidate.serviceTarget(context)))
+          resourceChoices_.emplace_back(
+              SystemServiceTargetAction{context, subject, choice});
+      if (llvm::Error error = appendRange(
+              offset, resourceChoices_, resourceAnchors_,
+              resourceMovableDecisionCount_, "resourceChoices"))
+        return error;
+    }
   }
   for (PnrIndex use = 0; use < candidate.instructionResourceUses().size();
        ++use) {

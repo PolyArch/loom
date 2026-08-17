@@ -90,10 +90,11 @@ struct LoomDriverOptions final {
   std::string hardwarePath;
   std::string visualizationPath;
   std::string deploymentPath;
+  std::vector<std::string> operatorProtocolSymbols;
 
   bool requestsProductFlow() const {
     return !hardwarePath.empty() || !visualizationPath.empty() ||
-           !deploymentPath.empty();
+           !deploymentPath.empty() || !operatorProtocolSymbols.empty();
   }
 };
 
@@ -160,6 +161,21 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
       return deployment.takeError();
     if (*deployment)
       continue;
+    std::string protocolSymbol;
+    std::set<std::string> protocolOptionSeen;
+    auto protocol = consumeLoomOption(
+        argument, "--loom-operator-protocol-symbol", index, arguments,
+        protocolOptionSeen, protocolSymbol);
+    if (!protocol)
+      return protocol.takeError();
+    if (*protocol) {
+      if (llvm::is_contained(options.operatorProtocolSymbols,
+                             protocolSymbol))
+        return productError("loom_driver_option_invalid",
+                            "operator protocol symbol is duplicated");
+      options.operatorProtocolSymbols.push_back(std::move(protocolSymbol));
+      continue;
+    }
     retained.push_back(arguments[index]);
   }
   arguments.assign(retained.begin(), retained.end());
@@ -170,8 +186,7 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
                         "mutually exclusive");
   if (options.requestsProductFlow() && options.deploymentPath.empty())
     return productError("loom_driver_option_unsupported",
-                        "hardware and visualization bindings currently require "
-                        "a Deployment output");
+                        "product options require a Deployment output");
   return options;
 }
 
@@ -223,6 +238,8 @@ productHelperOptions(const LoomDriverOptions &options) {
     result.push_back("--hardware=" + options.hardwarePath);
   if (!options.visualizationPath.empty())
     result.push_back("--visualization=" + options.visualizationPath);
+  for (const std::string &symbol : options.operatorProtocolSymbols)
+    result.push_back("--operator-protocol-symbol=" + symbol);
   return result;
 }
 

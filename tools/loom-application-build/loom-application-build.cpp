@@ -93,6 +93,10 @@ llvm::cl::opt<std::string>
     visualizationPath("visualization",
                       llvm::cl::desc("Mapping visualization destination"),
                       llvm::cl::value_desc("path"));
+llvm::cl::list<std::string> operatorProtocolSymbols(
+    "operator-protocol-symbol",
+    llvm::cl::desc("Select a defined callable as an operator protocol root"),
+    llvm::cl::value_desc("symbol"), llvm::cl::ZeroOrMore);
 
 llvm::Error productError(llvm::StringRef kind, const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -388,6 +392,7 @@ importProductFinalLink(llvm::LLVMContext &context) {
 llvm::Expected<loom::application::PreparedApplicationBuild>
 prepareMappedApplication(const llvm::Module &module,
                          PreparedProductTarget &target) {
+  constexpr std::uint64_t kSoftwareFrontierLimit = 4;
   const llvm::Function *entry = module.getFunction("main");
   if (!entry || entry->isDeclaration())
     return productError("loom_application_entry_unsupported",
@@ -397,14 +402,15 @@ prepareMappedApplication(const llvm::Module &module,
         "loom_application_entry_unsupported",
         "the initial product entry supports only a nullary main function");
 
-  auto jointPolicy = loom::dse::JointDesignPolicy::get(1, 1, 1, 1);
+  auto jointPolicy = loom::dse::JointDesignPolicy::get(
+      kSoftwareFrontierLimit, 1, kSoftwareFrontierLimit, 1);
   if (!jointPolicy)
     return jointPolicy.takeError();
   loom::frontend::PreMappingCompilationOptions compilationOptions;
   loom::dse::PreMappingExplorationOptions preMappingOptions{
       {compilationOptions.lowering,
        {loom::evaluation::MetricRequestOrdinal(0),
-        loom::ResolvedObjectiveDirection::Minimize, 1},
+        loom::ResolvedObjectiveDirection::Minimize, kSoftwareFrontierLimit},
        1}};
   preMappingOptions.ownership.selectionMode =
       loom::dse::StructuredOwnershipSelectionMode::SemanticConformance;
@@ -414,7 +420,10 @@ prepareMappedApplication(const llvm::Module &module,
 
   auto outcome = loom::application::prepareApplicationBuild(
       module,
-      {std::move(sourceInvocation), target.system.reference(),
+      {std::move(sourceInvocation),
+       std::vector<std::string>(operatorProtocolSymbols.begin(),
+                                operatorProtocolSymbols.end()),
+       target.system.reference(),
        target.physicalTimingProfiles, target.config, std::move(*jointPolicy),
        std::move(compilationOptions), std::move(preMappingOptions)},
       target.workspace->artifacts(), target.workspace->blobs());

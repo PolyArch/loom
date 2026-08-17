@@ -264,7 +264,8 @@ llvm::Error validatePhysicalCapacity(
     llvm::ArrayRef<std::uint64_t> resultPorts,
     llvm::ArrayRef<std::uint32_t> physicalInputWidths,
     llvm::ArrayRef<std::uint32_t> physicalResultWidths,
-    std::optional<ResolvedIndexWidth> resolvedIndexWidth) {
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth,
+    const ::loom::PointerLayout *pointerLayout) {
   if (operandPorts.size() != actor.type.getNumInputs() ||
       resultPorts.size() != actor.type.getNumResults())
     return reject("actor and physical port correspondence arity disagree");
@@ -278,15 +279,17 @@ llvm::Error validatePhysicalCapacity(
     represented = std::move(*projected);
   }
 
-  const auto verify = [](llvm::ArrayRef<::mlir::Type> types,
-                         llvm::ArrayRef<std::uint64_t> ports,
-                         llvm::ArrayRef<std::uint32_t> widths,
-                         llvm::StringRef direction) -> llvm::Error {
+  const auto verify =
+      [pointerLayout](llvm::ArrayRef<::mlir::Type> types,
+                      llvm::ArrayRef<std::uint64_t> ports,
+                      llvm::ArrayRef<std::uint32_t> widths,
+                      llvm::StringRef direction) -> llvm::Error {
     for (auto [type, port] : llvm::zip(types, ports)) {
       if (port >= widths.size())
         return reject("physical " + direction + " port is missing");
       std::string message;
-      auto semanticWidth = getSemanticPayloadWidth(type, message);
+      auto semanticWidth =
+          getSemanticPayloadWidth(type, pointerLayout, message);
       if (::mlir::failed(semanticWidth))
         return reject(message);
       if (*semanticWidth > widths[port])
@@ -628,7 +631,8 @@ llvm::Error fabric::detail::validateImplementationFamilyBehaviorPoint(
     llvm::ArrayRef<std::uint64_t> resultPorts,
     llvm::ArrayRef<std::uint32_t> physicalInputWidths,
     llvm::ArrayRef<std::uint32_t> physicalResultWidths,
-    std::optional<ResolvedIndexWidth> resolvedIndexWidth) {
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth,
+    const ::loom::PointerLayout *pointerLayout) {
   if (llvm::Error error = verifyImplementationFamilyPortCorrespondence(
           family, params, actor, operandPorts, resultPorts, physicalInputWidths,
           physicalResultWidths))
@@ -638,7 +642,14 @@ llvm::Error fabric::detail::validateImplementationFamilyBehaviorPoint(
   const bool routedSelector =
       provider == TypedAdmissionProviderId::MuxTokenAdmission ||
       provider == TypedAdmissionProviderId::DemuxTokenAdmission;
-  if (resolvedIndexWidth && !routedSelector) {
+  if (pointerLayout) {
+    if (!resolvedIndexWidth)
+      return reject("pointer behavior point requires a resolved index width");
+    if (llvm::Error error = verifyImplementationFamilyAdmission(
+            family, &params, actor,
+            getResolvedIndexBitWidth(*resolvedIndexWidth), *pointerLayout))
+      return error;
+  } else if (resolvedIndexWidth && !routedSelector) {
     if (llvm::Error error = verifyImplementationFamilyAdmission(
             family, &params, actor,
             getResolvedIndexBitWidth(*resolvedIndexWidth)))
@@ -649,7 +660,7 @@ llvm::Error fabric::detail::validateImplementationFamilyBehaviorPoint(
   }
   return validatePhysicalCapacity(actor, operandPorts, resultPorts,
                                   physicalInputWidths, physicalResultWidths,
-                                  resolvedIndexWidth);
+                                  resolvedIndexWidth, pointerLayout);
 }
 
 llvm::Error fabric::FabricOpSemanticFieldRelation::validateSemanticValue(
@@ -686,7 +697,8 @@ fabric::FabricOpSemanticFieldRelation::projectSemanticValue(
     const ::dataflow::CanonicalActorSchemaProjection &actor,
     llvm::ArrayRef<std::uint64_t> operandPorts,
     llvm::ArrayRef<std::uint64_t> resultPorts,
-    std::optional<ResolvedIndexWidth> resolvedIndexWidth) const {
+    std::optional<ResolvedIndexWidth> resolvedIndexWidth,
+    const ::loom::PointerLayout *pointerLayout) const {
   if (kind_ == FabricOpSemanticFieldRelationKind::None)
     return reject("capability has no semantic field");
   if (!llvm::is_contained(enabledSchemas_, actor.schema))
@@ -696,7 +708,8 @@ fabric::FabricOpSemanticFieldRelation::projectSemanticValue(
     return canonicalActor.takeError();
   if (llvm::Error error = detail::validateImplementationFamilyBehaviorPoint(
           family_, params_, actor, operandPorts, resultPorts,
-          physicalInputWidths_, physicalResultWidths_, resolvedIndexWidth))
+          physicalInputWidths_, physicalResultWidths_, resolvedIndexWidth,
+          pointerLayout))
     return std::move(error);
 
   ::dataflow::CanonicalActorSchemaProjection representedActor = actor;

@@ -3,6 +3,7 @@
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricRefText.h"
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -61,6 +62,40 @@ struct TraversalStepKey final {
            physicalTagOrdinal == other.physicalTagOrdinal;
   }
 };
+
+std::string traversalStepSetText(
+    const std::set<TraversalStepKey> &steps) {
+  std::string result = "[";
+  bool first = true;
+  for (const TraversalStepKey &step : steps) {
+    if (!first)
+      result += ",";
+    first = false;
+    result += std::to_string(static_cast<unsigned>(step.kind));
+    result += ":";
+    result += std::to_string(step.ordinal);
+    result += ":";
+    result += std::to_string(step.physicalTagOrdinal);
+  }
+  result += "]";
+  return result;
+}
+
+std::string traversalTargetSetText(
+    const std::map<RefBytes,
+                   ::loom::fabric::FabricPhysicalTraversalRef> &targets) {
+  std::string result = "[";
+  bool first = true;
+  for (const auto &[key, target] : targets) {
+    (void)key;
+    if (!first)
+      result += ",";
+    first = false;
+    result += ::loom::fabric::printFabricRef(target);
+  }
+  result += "]";
+  return result;
+}
 
 template <typename Ref>
 llvm::Expected<RefBytes>
@@ -333,8 +368,14 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
       auto [position, inserted] =
           builder.traversalPredecessors.try_emplace(action, causalPredecessors);
       if (!inserted && position->second != causalPredecessors)
-        return invalid("CGRA route reuses one traversal activation at "
-                       "incompatible causal positions");
+        return invalid(
+            llvm::Twine("CGRA route reuses traversal activation action ") +
+            llvm::Twine(action.ordinal) + " tag " +
+            llvm::Twine(action.physicalTagOrdinal) + " selected by " +
+            traversalTargetSetText(builder.traversalTargets[action]) +
+            " and " + ::loom::fabric::printFabricRef(selected.reference) +
+            " with predecessors " + traversalStepSetText(position->second) +
+            " and " + traversalStepSetText(causalPredecessors));
       builder.traversalTargets[action].try_emplace(
           ::loom::fabric::canonicalFabricBytes(selected.reference),
           selected.reference);
@@ -495,28 +536,38 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
     for (const CgraPeOperandQueueMatchPlan &match :
          llvm::ArrayRef(plan.transport.operandQueueMatches)
              .slice(activation.matchOffset, activation.matchCount)) {
-      if (!llvm::is_contained(builder->second.sinks, match.sink))
-        return invalid("CGRA PE operand activation names another transfer "
-                       "sink");
+      if (match.consumerOffset > plan.transport.operandQueueConsumers.size() ||
+          match.consumerCount > plan.transport.operandQueueConsumers.size() -
+                                    match.consumerOffset ||
+          match.consumerCount == 0)
+        return invalid("CGRA PE operand consumer slice is malformed");
       if (activation.ingress.owner !=
           ::loom::fabric::FabricTransportEndpointOwnerRef::of(
               match.queue.context.pe))
         return invalid("CGRA PE operand activation spans physical PEs");
-      auto sinkKey = dataflowBytes(dataflow, match.sink);
-      if (!sinkKey)
-        return sinkKey.takeError();
       if (match.entryCapacity == 0)
         return invalid("CGRA PE operand queue has zero entry capacity");
-      if (!projectedQueueSinks
-               .try_emplace(*sinkKey,
-                            OperandQueueProjection{match.queue,
-                                                   match.allocationUnit,
-                                                   match.entryCapacity})
-               .second)
-        return invalid("CGRA PE operand sink belongs to multiple atomic "
-                       "activations");
-      if (consumedUses.find(*sinkKey) == consumedUses.end())
-        return invalid("CGRA PE operand activation has no enqueue ResourceUse");
+      for (const CgraPeOperandQueueConsumerPlan &consumer :
+           llvm::ArrayRef(plan.transport.operandQueueConsumers)
+               .slice(match.consumerOffset, match.consumerCount)) {
+        if (!llvm::is_contained(builder->second.sinks, consumer.consumer))
+          return invalid("CGRA PE operand activation names another transfer "
+                         "consumer");
+        auto sinkKey = dataflowBytes(dataflow, consumer.consumer);
+        if (!sinkKey)
+          return sinkKey.takeError();
+        if (!projectedQueueSinks
+                 .try_emplace(*sinkKey,
+                              OperandQueueProjection{match.queue,
+                                                     match.allocationUnit,
+                                                     match.entryCapacity})
+                 .second)
+          return invalid("CGRA PE operand consumer belongs to multiple atomic "
+                         "activations");
+        if (consumedUses.find(*sinkKey) == consumedUses.end())
+          return invalid(
+              "CGRA PE operand activation has no enqueue ResourceUse");
+      }
     }
   }
 
@@ -531,6 +582,8 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings;
   std::map<std::pair<RefBytes, std::uint32_t>, std::uint64_t>
       operandQueueUnitByKey;
+  std::map<::fabric::LogicalOperandQueueKey, std::uint64_t>
+      operandQueueBindingByKey;
   std::vector<OperandQueueUnitBinding> operandQueueUnits;
   std::vector<OperandQueueBinding> operandQueues;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
@@ -680,6 +733,9 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
             &actor->op->getOpOperand(operand->ordinal));
         if (channel == execution.channelOrdinals.end())
           return invalid("CGRA transport actor operand has no channel slot");
+        auto semantic = semanticOrdinals.find(actor->op);
+        if (semantic == semanticOrdinals.end())
+          return invalid("CGRA PE operand consumer has no semantic actor");
         std::uint64_t operandQueueBinding = invalidCgraTransportOrdinal;
         auto queueProjection = projectedQueueSinks.find(*sinkKey);
         if (queueProjection != projectedQueueSinks.end()) {
@@ -702,22 +758,46 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
               return invalid("CGRA PE operand allocation-unit projection is "
                              "inconsistent");
           }
-          if (state.channelSlots[channel->second].ready.size() >
-              std::numeric_limits<std::uint32_t>::max())
-            return invalid("CGRA PE operand queue occupancy exceeds u32");
-          const std::uint32_t initialOccupancy = static_cast<std::uint32_t>(
-              state.channelSlots[channel->second].ready.size());
-          OperandQueueUnitBinding &unit =
-              operandQueueUnits[unitPosition->second];
-          if (initialOccupancy > unit.capacity - unit.occupancy)
-            return invalid("CGRA PE operand allocation unit starts overfull");
-          unit.occupancy += initialOccupancy;
-          operandQueueBinding = operandQueues.size();
-          operandQueues.push_back({projected.queue, channel->second,
-                                   unitPosition->second, initialOccupancy});
-          auto semantic = semanticOrdinals.find(actor->op);
-          if (semantic == semanticOrdinals.end() ||
-              !actorInputQueueBindings
+          auto [queuePosition, insertedQueue] =
+              operandQueueBindingByKey.try_emplace(projected.queue,
+                                                   operandQueues.size());
+          operandQueueBinding = queuePosition->second;
+          if (insertedQueue) {
+            if (state.channelSlots[channel->second].ready.size() >
+                std::numeric_limits<std::uint32_t>::max())
+              return invalid("CGRA PE operand queue occupancy exceeds u32");
+            const std::uint32_t initialOccupancy = static_cast<std::uint32_t>(
+                state.channelSlots[channel->second].ready.size());
+            OperandQueueUnitBinding &unit =
+                operandQueueUnits[unitPosition->second];
+            if (unit.occupancy > unit.capacity ||
+                initialOccupancy > unit.capacity - unit.occupancy)
+              return invalid("CGRA PE operand allocation unit starts overfull");
+            unit.occupancy += initialOccupancy;
+            operandQueues.push_back(
+                {projected.queue, unitPosition->second, initialOccupancy, {}});
+          } else {
+            if (operandQueueBinding >= operandQueues.size())
+              return invalid("CGRA PE operand queue index is malformed");
+            const OperandQueueBinding &queue =
+                operandQueues[operandQueueBinding];
+            if (queue.queue != projected.queue ||
+                queue.unitBinding != unitPosition->second ||
+                state.channelSlots[channel->second].ready.size() !=
+                    queue.occupancy)
+              return invalid(
+                  "CGRA PE operand broadcast consumers disagree on state");
+          }
+          OperandQueueBinding &queue = operandQueues[operandQueueBinding];
+          if (llvm::any_of(queue.consumers, [&](const auto &consumer) {
+                return consumer.semanticActorOrdinal == semantic->second &&
+                       consumer.inputOrdinal == operand->ordinal;
+              }))
+            return invalid(
+                "CGRA PE operand queue repeats a broadcast consumer");
+          queue.consumers.push_back({channel->second, semantic->second,
+                                     static_cast<unsigned>(operand->ordinal)});
+          if (!actorInputQueueBindings
                    .try_emplace({semantic->second, operand->ordinal},
                                 operandQueueBinding)
                    .second)
@@ -818,97 +898,6 @@ llvm::Expected<CgraTransportRuntime> CgraTransportRuntime::create(
       std::move(storages), std::move(operandQueueUnits),
       std::move(operandQueues), std::move(actorSourceBindings),
       std::move(ingressSourceBindings), std::move(actorInputQueueBindings));
-}
-
-llvm::Error CgraTransportRuntime::scheduleArrival(
-    std::uint64_t slot, const SpatialEventCoordinate &coordinate) {
-  if (slot >= inFlight_.size() || !inFlight_[slot].active)
-    return invalid("CGRA transport arrival names an inactive token");
-  InFlight &inFlight = inFlight_[slot];
-  if (inFlight.arrivalScheduled || inFlight.consumedRequested)
-    return invalid("CGRA transport arrival was scheduled twice");
-  arrivalEvents_.schedule(
-      {{coordinate, inFlight.bindingOrdinal, inFlight.occurrenceOrdinal, 0},
-       slot});
-  inFlight.arrivalScheduled = true;
-  return llvm::Error::success();
-}
-
-llvm::Expected<bool> CgraTransportRuntime::scheduleReadyTraversals(
-    std::uint64_t slot, const SpatialEventCoordinate &coordinate) {
-  if (slot >= inFlight_.size() || !inFlight_[slot].active)
-    return invalid("CGRA traversal event names an inactive token");
-  const InFlight &inFlight = inFlight_[slot];
-  const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
-  bool scheduled = false;
-  for (std::uint64_t nodeOrdinal = binding.traversalNodeOffset;
-       nodeOrdinal != binding.traversalNodeOffset + binding.traversalNodeCount;
-       ++nodeOrdinal) {
-    if (traversalNodeStates_[nodeOrdinal] != TraversalNodeState::Idle ||
-        traversalRemainingPredecessors_[nodeOrdinal] != 0)
-      continue;
-    const TraversalNodeBinding &node = traversalNodes_[nodeOrdinal];
-    if (node.kind != TraversalNodeKind::PhysicalAction) {
-      if (node.storageOrdinal >= storages_.size())
-        return invalid("CGRA traversal storage ordinal is out of range");
-      StorageBinding &storage = storages_[node.storageOrdinal];
-      const bool buffered =
-          node.kind == TraversalNodeKind::BufferedStorage &&
-          storage.kind == CgraTraversalStorageKind::BufferedFifo;
-      const bool registerWrite =
-          node.kind == TraversalNodeKind::RegisterStorageWrite &&
-          storage.kind != CgraTraversalStorageKind::BufferedFifo;
-      const bool registerRead =
-          node.kind == TraversalNodeKind::RegisterStorageRead &&
-          storage.kind != CgraTraversalStorageKind::BufferedFifo;
-      if (!buffered && !registerWrite && !registerRead)
-        return invalid("CGRA traversal disagrees with its storage owner");
-      if (registerRead)
-        storage.pendingDequeueNodes.push_back(nodeOrdinal);
-      else
-        storage.pendingEnqueueNodes.push_back(nodeOrdinal);
-      traversalNodeStates_[nodeOrdinal] = TraversalNodeState::WaitingStorage;
-      if (llvm::Error error = scheduleStorage(node.storageOrdinal, coordinate))
-        return std::move(error);
-      scheduled = true;
-      continue;
-    }
-    traversalEvents_.schedule(
-        {{coordinate, nodeOrdinal, inFlight.occurrenceOrdinal,
-          static_cast<std::uint32_t>(nodeOrdinal -
-                                     binding.traversalNodeOffset)},
-         nodeOrdinal});
-    traversalNodeStates_[nodeOrdinal] = TraversalNodeState::Scheduled;
-    scheduled = true;
-  }
-  return scheduled;
-}
-
-llvm::Error CgraTransportRuntime::scheduleStorage(
-    std::uint64_t storageOrdinal, const SpatialEventCoordinate &coordinate) {
-  if (storageOrdinal >= storages_.size())
-    return invalid("CGRA storage event names an unknown queue");
-  StorageBinding &storage = storages_[storageOrdinal];
-  if (storage.eventScheduled || storage.activeActionCount != 0)
-    return llvm::Error::success();
-  if (storage.pendingEnqueueNodes.empty() &&
-      storage.pendingDequeueNodes.empty() && storage.queue.empty())
-    return llvm::Error::success();
-  storageEvents_.schedule({{coordinate, storageOrdinal, 0, 0}, storageOrdinal});
-  storage.eventScheduled = true;
-  return llvm::Error::success();
-}
-
-llvm::Error CgraTransportRuntime::schedulePublication(
-    std::uint64_t slot, const SpatialEventCoordinate &coordinate) {
-  if (slot >= inFlight_.size() || !inFlight_[slot].active)
-    return invalid("CGRA transport publication names an inactive token");
-  InFlight &inFlight = inFlight_[slot];
-  if (inFlight.publicationScheduled || inFlight.published)
-    return invalid("CGRA transport publication was scheduled twice");
-  scheduleAt(slot, coordinate);
-  inFlight.publicationScheduled = true;
-  return llvm::Error::success();
 }
 
 llvm::Expected<std::vector<CgraTransportCompletion>>
@@ -1468,7 +1457,7 @@ CgraTransportRuntime::acceptPhysicalEvents(
         return scheduled.takeError();
     }
     if (!inFlight.publicationScheduled && !inFlight.published &&
-        inFlight.consumedRequested &&
+        inFlight.consumedRequested && delta.consumedPermitted != 0 &&
         inFlight.consumedPermitted == binding.consumedPhysicalUseCount) {
       if (!next)
         return invalid("CGRA transport publication lost its next delta");

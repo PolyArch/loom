@@ -17,9 +17,40 @@ enum class MappingProgressClosureKind : std::uint8_t {
   ProofNotEstablished,
 };
 
+/// Exact reason selected by the shared progress kernel. This is derived
+/// diagnostic state, not a persisted proof label or another legality owner.
+enum class MappingProgressClosureReason : std::uint8_t {
+  None,
+  CyclicDataflowBasis,
+  MissingDurableBoundary,
+  ActivationCapacityExceeded,
+  FixedPriorityStarvation,
+  PossibleWaitCycle,
+};
+
+enum class MappingProgressWaitNodeKind : std::uint8_t {
+  Active,
+  Pending,
+};
+
+/// One node in a deterministic possible wait-cycle witness. Activation and
+/// capacity-cell ordinals address the exact ephemeral projection consumed by
+/// the shared kernel; they are diagnostics, not persistent artifact keys.
+struct MappingProgressWaitCycleNode final {
+  std::uint64_t activationGroupOrdinal = 0;
+  MappingProgressWaitNodeKind kind = MappingProgressWaitNodeKind::Active;
+  std::vector<std::uint64_t> activationOrdinals;
+  std::vector<std::uint64_t> capacityCellOrdinals;
+  std::vector<std::uint32_t> triggerEventOrdinals;
+  std::vector<std::uint32_t> causalReleaseEventOrdinals;
+};
+
 struct MappingProgressClosure final {
   MappingProgressClosureKind kind =
       MappingProgressClosureKind::ProofNotEstablished;
+  MappingProgressClosureReason reason =
+      MappingProgressClosureReason::CyclicDataflowBasis;
+  std::vector<MappingProgressWaitCycleNode> possibleWaitCycle;
 };
 
 enum class MappingDataflowProgressBasisKind : std::uint8_t {

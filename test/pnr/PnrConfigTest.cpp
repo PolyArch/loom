@@ -58,15 +58,35 @@ void projectionAndAdoptionAreDomainTyped() {
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               spatial.schemaDescriptorBytes().data()),
                           spatial.schemaDescriptorBytes().size()) ==
-              "loom.spatial_pnr.config.14.0",
+              "loom.spatial_pnr.config.15.0",
           "Spatial PnR view has the wrong schema descriptor");
   require(llvm::StringRef(reinterpret_cast<const char *>(
                               system.schemaDescriptorBytes().data()),
                           system.schemaDescriptorBytes().size()) ==
-              "loom.system_pnr.config.6.0",
+              "loom.system_pnr.config.7.0",
           "System PnR view has the wrong schema descriptor");
   require(spatial.digest() != system.digest(),
           "domain-distinct views have the same digest");
+
+  const auto selectsRecurrence =
+      [](const loom::pnr::ResolvedPnrConfigView &view) {
+        return llvm::any_of(
+            view.selectedObjectiveCatalogs().dimensions,
+            [](const loom::ResolvedObjectiveDimension &dimension) {
+              const auto *measure =
+                  std::get_if<loom::ResolvedMappingMeasureObjectiveSource>(
+                      &dimension.source);
+              return measure &&
+                     measure->ordinal ==
+                         static_cast<std::uint32_t>(
+                             loom::pnr::MappingMeasureKind::
+                                 RecurrenceMinimumInitiationIntervalCycles);
+            });
+      };
+  require(!selectsRecurrence(spatial),
+          "Spatial objective selected System-owned recurrence timing");
+  require(selectsRecurrence(system),
+          "System objective omitted recurrence timing");
 
   const loom::pnr::ResolvedPnrConfigView adopted =
       take(loom::pnr::adoptResolvedSpatialPnrConfigView(
@@ -116,9 +136,10 @@ void selectedAndUnselectedRecordsHaveExactDependencies() {
       static_cast<std::uint32_t>(catalogs.dimensions.size() - 1);
   catalogs.weightedLevels.insert(catalogs.weightedLevels.begin() + 2,
                                  {{{unselectedDimension, 1}}});
-  catalogs.totalOrderings.front().weightedLevels = {3, 4, 1, 0};
-  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 5;
-  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 5;
+  catalogs.totalOrderings[0].weightedLevels = {4, 3, 1, 0};
+  catalogs.totalOrderings[1].weightedLevels = {4, 5, 1, 0};
+  unselectedChange.dse.spatialPnr.objectiveSelection.selectedSearchEnergy = 6;
+  unselectedChange.dse.systemPnr.objectiveSelection.selectedSearchEnergy = 7;
 
   const loom::pnr::ResolvedPnrConfigView unselectedView =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(unselectedChange));
@@ -137,6 +158,7 @@ void workBudgetIsDerivedFromTheSelectedPolicy() {
   config.dse.spatialPnr.search.routing.endpointExpansionLimit = 123;
   config.dse.spatialPnr.search.routing.noProgressIterationLimit = 17;
   config.dse.spatialPnr.search.routing.noProgressTrendWindow = 5;
+  config.dse.spatialPnr.search.annealing.temperatureLevelLimit = 19;
   config.dse.spatialPnr.search.exactRepair.maxSolverCalls = 456;
   const loom::pnr::ResolvedPnrConfigView view =
       take(loom::pnr::projectResolvedSpatialPnrConfigView(config));
@@ -157,6 +179,8 @@ void workBudgetIsDerivedFromTheSelectedPolicy() {
           "no-progress budget was not derived");
   require(find(loom::pnr::PnrWorkUnit::NoProgressTrendTransition) == 5,
           "no-progress trend window was not derived");
+  require(find(loom::pnr::PnrWorkUnit::TemperatureLevel) == 19,
+          "temperature-level budget was not derived");
   require(find(loom::pnr::PnrWorkUnit::ExactRepairSolverCall) == 456,
           "exact-repair budget was not derived");
 }
@@ -209,7 +233,7 @@ void mappingObjectiveRegistryIsClosedAndTyped() {
 }
 
 void resolvedConfigUsesTheIndependentViolationCatalog() {
-  require(loom::ResolvedConfig::artifactSchema.version.major == 7 &&
+  require(loom::ResolvedConfig::artifactSchema.version.major == 8 &&
               loom::ResolvedConfig::artifactSchema.version.minor == 0,
           "ResolvedConfig has the wrong schema version");
   const std::string canonical =
@@ -223,7 +247,7 @@ void resolvedConfigUsesTheIndependentViolationCatalog() {
 
 void objectiveArithmeticIsPreflightedByThePnrView() {
   loom::ResolvedConfig config = loom::defaultResolvedConfig();
-  auto &energy = config.dse.objectiveCatalogs.weightedLevels[4];
+  auto &energy = config.dse.objectiveCatalogs.weightedLevels[5];
   energy.terms[0].weight = UINT64_MAX;
   energy.terms[1].weight = UINT64_MAX - 1;
   requireRejected(loom::pnr::projectResolvedSpatialPnrConfigView(config),

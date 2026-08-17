@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <sys/socket.h>
@@ -215,6 +216,156 @@ transactMemory(int connection, std::uint64_t sequence,
     return invalid("bridge memory write returned unexpected data");
   return response;
 }
+
+llvm::Expected<std::uint64_t>
+spatialCoordinateTicks(const loom::sim::SpatialEventCoordinate &coordinate) {
+  using u128 = unsigned __int128;
+  const u128 scaled = static_cast<u128>(coordinate.referenceCycle.numerator()) *
+                      static_cast<std::uint64_t>(ticksPerCycle);
+  const std::uint64_t denominator = coordinate.referenceCycle.denominator();
+  if (scaled % denominator != 0 ||
+      scaled / denominator > std::numeric_limits<std::uint64_t>::max())
+    return invalid("Spatial service coordinate is not an integral gem5 tick");
+  return static_cast<std::uint64_t>(scaled / denominator);
+}
+
+class Gem5CgraExternalMemoryProvider final
+    : public loom::sim::CgraExternalMemoryProvider {
+public:
+  Gem5CgraExternalMemoryProvider(
+      int connection, std::uint64_t sequence,
+      const loom::runtime::SpatialInvocationWire &invocation,
+      std::uint64_t &requestId)
+      : connection_(connection), sequence_(sequence), invocation_(&invocation),
+        requestId_(&requestId) {}
+
+  llvm::Expected<loom::sim::CgraExternalMemoryResponse>
+  transact(const loom::sim::CgraExternalMemoryRequest &request) override {
+    if (request.elements.empty())
+      return invalid("CGRA external memory request has no active element");
+    if (request.objectOrdinal >= invocation_->memoryObjects.size())
+      return invalid("CGRA external memory request names no guest object");
+    if (lastCoordinate_ && loom::sim::compareSpatialEventCoordinates(
+                               *lastCoordinate_, request.readyCoordinate) > 0)
+      return invalid("CGRA external memory requests are not time ordered");
+    auto readyTick = spatialCoordinateTicks(request.readyCoordinate);
+    if (!readyTick)
+      return readyTick.takeError();
+    std::uint64_t priorTick = 0;
+    if (lastCoordinate_) {
+      auto projected = spatialCoordinateTicks(*lastCoordinate_);
+      if (!projected)
+        return projected.takeError();
+      priorTick = *projected;
+    }
+    if (*readyTick < priorTick)
+      return invalid("CGRA external memory tick projection moved backward");
+    const std::uint64_t initialDelay = *readyTick - priorTick;
+
+    const loom::runtime::SpatialInvocationMemoryObject &object =
+        invocation_->memoryObjects[request.objectOrdinal];
+    loom::sim::CgraExternalMemoryResponse result;
+    if (request.operation == loom::sim::CgraExternalMemoryOperation::Read)
+      result.readData.reserve(request.elements.size());
+    for (std::size_t ordinal = 0; ordinal != request.elements.size();
+         ++ordinal) {
+      const loom::sim::CgraExternalMemoryElement &element =
+          request.elements[ordinal];
+      if (element.byteCount == 0 ||
+          element.byteOffset > object.initialBytes.size() ||
+          element.byteCount > object.initialBytes.size() - element.byteOffset ||
+          object.address >
+              std::numeric_limits<std::uint64_t>::max() - element.byteOffset)
+        return invalid("CGRA external memory element exceeds its guest object");
+      const bool write =
+          request.operation == loom::sim::CgraExternalMemoryOperation::Write;
+      if ((write && element.writeData.size() != element.byteCount) ||
+          (!write && !element.writeData.empty()))
+        return invalid("CGRA external memory element has the wrong payload");
+      loom::runtime::Gem5BridgeMemoryRequest bridgeRequest{
+          write ? loom::runtime::Gem5BridgeMemoryOperation::Write
+                : loom::runtime::Gem5BridgeMemoryOperation::Read,
+          ordinal == 0 ? initialDelay : 0,
+          (*requestId_)++,
+          object.address + element.byteOffset,
+          element.byteCount,
+          element.writeData};
+      auto response =
+          transactMemory(connection_, sequence_,
+                         loom::runtime::Gem5BridgeMessageKind::MemoryRequest,
+                         std::move(bridgeRequest));
+      if (!response)
+        return response.takeError();
+      if (write) {
+        for (std::size_t byte = 0; byte != element.writeData.size(); ++byte)
+          externallyCommittedBytes_[object.address + element.byteOffset +
+                                    byte] = element.writeData[byte];
+      } else {
+        result.readData.push_back(std::move(response->data));
+      }
+    }
+    lastCoordinate_ = request.readyCoordinate;
+    return result;
+  }
+
+  std::optional<loom::sim::SpatialEventCoordinate> lastCoordinate() const {
+    return lastCoordinate_;
+  }
+
+  std::vector<loom::sim::SpatialInvocationMemoryWrite> retainUncommittedWrites(
+      llvm::ArrayRef<loom::sim::SpatialInvocationMemoryWrite> writes) const {
+    struct Interval final {
+      std::uint64_t begin = 0;
+      std::uint64_t end = 0;
+    };
+    std::vector<Interval> resultDestinations;
+    resultDestinations.reserve(invocation_->results.size());
+    for (const auto &destination : invocation_->results) {
+      const std::uint64_t byteCount =
+          (static_cast<std::uint64_t>(destination.bitCount) + 7) / 8;
+      resultDestinations.push_back(
+          {destination.address, destination.address + byteCount});
+    }
+    const auto isResultDestination = [&](std::uint64_t address) {
+      return llvm::any_of(resultDestinations, [&](const Interval &interval) {
+        return interval.begin <= address && address < interval.end;
+      });
+    };
+
+    std::vector<loom::sim::SpatialInvocationMemoryWrite> retained;
+    for (const loom::sim::SpatialInvocationMemoryWrite &write : writes) {
+      std::optional<loom::sim::SpatialInvocationMemoryWrite> run;
+      for (std::size_t ordinal = 0; ordinal != write.bytes.size(); ++ordinal) {
+        const std::uint64_t address = write.address + ordinal;
+        auto committed = externallyCommittedBytes_.find(address);
+        const bool keep = isResultDestination(address) ||
+                          committed == externallyCommittedBytes_.end() ||
+                          committed->second != write.bytes[ordinal];
+        if (!keep) {
+          if (run) {
+            retained.push_back(std::move(*run));
+            run.reset();
+          }
+          continue;
+        }
+        if (!run)
+          run = loom::sim::SpatialInvocationMemoryWrite{address, {}};
+        run->bytes.push_back(write.bytes[ordinal]);
+      }
+      if (run)
+        retained.push_back(std::move(*run));
+    }
+    return retained;
+  }
+
+private:
+  int connection_ = -1;
+  std::uint64_t sequence_ = 0;
+  const loom::runtime::SpatialInvocationWire *invocation_ = nullptr;
+  std::uint64_t *requestId_ = nullptr;
+  std::optional<loom::sim::SpatialEventCoordinate> lastCoordinate_;
+  std::map<std::uint64_t, std::uint8_t> externallyCommittedBytes_;
+};
 
 llvm::Expected<std::vector<std::uint8_t>>
 readChannelPayload(int connection, std::uint64_t sequence,
@@ -438,9 +589,11 @@ runDfg(const loom::sim::PreparedDfgExecution &prepared,
 llvm::Expected<loom::sim::SpatialEngineBoundaryResult>
 runCgra(const loom::sim::PreparedCgraExecution &prepared,
         const loom::sim::ImportedSpatialSimulationWorkload &workload,
-        const loom::sim::CanonicalSimulationRuntimeInput &runtimeInput) {
-  auto outcome = loom::sim::simulateCgraWorkload(prepared, workload.workload,
-                                                 runtimeInput, maximumWork);
+        const loom::sim::CanonicalSimulationRuntimeInput &runtimeInput,
+        loom::sim::CgraExternalMemoryProvider *externalMemoryProvider) {
+  auto outcome = loom::sim::simulateCgraWorkload(
+      prepared, workload.workload, runtimeInput, maximumWork, std::nullopt,
+      externalMemoryProvider);
   if (!outcome)
     return outcome.takeError();
   if (outcome->state == loom::sim::SpatialExecutionSessionState::StoppedByLimit)
@@ -457,20 +610,31 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
 }
 #endif
 
-llvm::Expected<std::uint64_t>
-completionDelay(const loom::sim::SpatialEngineBoundaryResult &result) {
+llvm::Expected<std::uint64_t> completionDelay(
+    const loom::sim::SpatialEngineBoundaryResult &result,
+    std::optional<loom::sim::SpatialEventCoordinate> externallyServicedThrough =
+        std::nullopt) {
 #if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
   return 0;
 #else
   if (!result.progressObservations.graphRetirementVisible)
     return 0;
-  const loom::evaluation::ExactRatio cycles =
-      result.progressObservations.graphRetirementVisible->referenceCycle;
-  if (cycles.denominator() != 1 ||
-      cycles.numerator() >
-          std::numeric_limits<std::uint64_t>::max() / ticksPerCycle)
-    return invalid("Spatial completion delay is not an integral gem5 tick");
-  return cycles.numerator() * ticksPerCycle;
+  const loom::sim::SpatialEventCoordinate terminal =
+      *result.progressObservations.graphRetirementVisible;
+  auto terminalTick = spatialCoordinateTicks(terminal);
+  if (!terminalTick)
+    return terminalTick.takeError();
+  if (!externallyServicedThrough)
+    return *terminalTick;
+  if (loom::sim::compareSpatialEventCoordinates(*externallyServicedThrough,
+                                                terminal) > 0)
+    return invalid("external memory service follows Spatial retirement");
+  auto servicedTick = spatialCoordinateTicks(*externallyServicedThrough);
+  if (!servicedTick)
+    return servicedTick.takeError();
+  if (*servicedTick > *terminalTick)
+    return invalid("external memory service tick follows Spatial retirement");
+  return *terminalTick - *servicedTick;
 #endif
 }
 
@@ -610,8 +774,18 @@ int main(int argc, char **argv) {
     }
 #if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
     auto result = runDfg(*prepared, *importedWorkload, *runtime);
+    std::optional<loom::sim::SpatialEventCoordinate> externallyServicedThrough;
 #else
-    auto result = runCgra(*prepared, *importedWorkload, *runtime);
+    std::optional<Gem5CgraExternalMemoryProvider> externalMemoryProvider;
+    if (invocation)
+      externalMemoryProvider.emplace(connection, message->sequence, *invocation,
+                                     requestId);
+    auto result =
+        runCgra(*prepared, *importedWorkload, *runtime,
+                externalMemoryProvider ? &*externalMemoryProvider : nullptr);
+    std::optional<loom::sim::SpatialEventCoordinate> externallyServicedThrough;
+    if (externalMemoryProvider)
+      externallyServicedThrough = externalMemoryProvider->lastCoordinate();
 #endif
     if (!result) {
       ::close(connection);
@@ -628,11 +802,12 @@ int main(int argc, char **argv) {
       ::close(connection);
       return report(std::move(error));
     }
-    auto delay = completionDelay(*result);
+    auto delay = completionDelay(*result, externallyServicedThrough);
     if (!delay) {
       ::close(connection);
       return report(delay.takeError());
     }
+    bool invocationDelayApplied = false;
     if (invocation) {
       auto writes = loom::sim::projectSpatialInvocationResultWrites(
           *invocation, *importedWorkload, result->functionalObservations);
@@ -640,6 +815,11 @@ int main(int argc, char **argv) {
         ::close(connection);
         return report(writes.takeError());
       }
+#if !defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+      if (externalMemoryProvider)
+        *writes = externalMemoryProvider->retainUncommittedWrites(*writes);
+#endif
+      invocationDelayApplied = !writes->empty();
       if (llvm::Error error = publishInvocationResults(
               connection, message->sequence, *writes, *delay, requestId)) {
         ::close(connection);
@@ -654,7 +834,8 @@ int main(int argc, char **argv) {
         loom::runtime::encodeSpatialInvocationResultWire(
             {launch.invocation, std::move(*encoded)});
     const loom::runtime::Gem5BridgeCompletion completion{
-        invocation ? 0 : *delay, status, std::move(completionResult)};
+        invocationDelayApplied ? 0 : *delay, status,
+        std::move(completionResult)};
     if (llvm::Error error = writeMessage(
             connection,
             {loom::runtime::Gem5BridgeMessageKind::Completion,

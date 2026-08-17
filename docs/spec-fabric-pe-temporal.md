@@ -402,6 +402,14 @@ Their canonical ordering is the lexicographic order of the typed components,
 using `InstructionContextRef` order first, then concrete FU occurrence order,
 then FU input ordinal.
 
+One outer FU input owns one active logical queue key. When that input has
+several FU-local SSA uses, the queue head is the physical source of the
+Fabric-defined broadcast: all consumers observe the same token and participate
+in one common dequeue handshake. The queue entry retires once, only when every
+consumer accepts it. Mapping preserves every logical consumer obligation but
+must not allocate, fill, or retire a second queue entry for another use of the
+same FU boundary input.
+
 Every shared pool maintains independent FIFO head and tail state for each
 logical queue. Allocation may use a shared free-entry pool, but dequeue
 eligibility is determined from the selected logical queue's head. A shared
@@ -423,9 +431,10 @@ only after all of its required logical heads and finite output-delivery
 capacity are available. Shared-pool exhaustion and route backpressure remain
 real dependencies in the final progress and deadlock closure.
 
-One incoming boundary token may match several active logical operand queues.
-For match vector `match[i]`, the PE performs one atomic fanout rather than a
-sequence of independent enqueues:
+One incoming boundary token may match several distinct active logical operand
+queues. Each queue may in turn feed several FU-local broadcast consumers. For
+match vector `match[i]`, the PE performs one atomic multi-queue enqueue rather
+than a sequence of independent enqueues:
 
 ```text
 any_match = OR(match[i])
@@ -462,12 +471,13 @@ head/tail positions, grant cursors, and in-flight transitions are nonpersistent
 execution state.
 
 The CGRA execution-plan importer consumes the same projected logical queue,
-allocation-unit ordinal, and entry capacity. Its runtime reserves every unit
-in one ingress match group before requesting the selected enqueue actions,
-commits all matching queue tails together, and applies queue-head removals from
-the committed Canonical actor handshake case. Software channel storage is only
-the dense token representation of those logical queues; it cannot impose a
-one-token default or bypass shared-unit occupancy and Fabric grant policy.
+its complete consumer set, allocation-unit ordinal, and entry capacity. Its
+runtime reserves every distinct unit in one ingress match group before
+requesting the selected enqueue actions, commits all matching queue tails
+together, and retires one physical queue head only on the common consumer
+handshake. Software channel storage is only the dense per-consumer token view
+of those physical queues; it cannot multiply physical occupancy, impose a
+one-token default, or bypass shared-unit occupancy and Fabric grant policy.
 
 For operand buffering, the finalizer derives one exact resource contract from
 the two hardware parameters:

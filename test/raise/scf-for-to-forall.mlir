@@ -64,8 +64,9 @@ func.func @reduction_kept(%buf: memref<?xf32>, %n: index) -> f32 {
 // CHECK: scf.forall
 // CHECK: scf.for {{.*}} iter_args
 // CHECK: memref.store
-func.func @nested_outer_parallel(%mat: memref<?x?xf32>, %out: memref<?xf32>,
-                                 %m: index, %n: index) {
+func.func @nested_outer_parallel(
+    %mat: memref<?x?xf32> {llvm.noalias},
+    %out: memref<?xf32> {llvm.noalias}, %m: index, %n: index) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %f0 = arith.constant 0.0 : f32
@@ -116,8 +117,9 @@ llvm.func @parallel_i64(%base: !llvm.ptr) {
 // CHECK-COUNT-2: scf.forall
 // CHECK-NOT: scf.for %
 
-func.func @parallel_lane_local_while(%input: memref<?xi32>, %output: memref<?xi32>,
-                                     %n: index) {
+func.func @parallel_lane_local_while(
+    %input: memref<?xi32> {llvm.noalias},
+    %output: memref<?xi32> {llvm.noalias}, %n: index) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %i32_zero = arith.constant 0 : i32

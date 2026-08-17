@@ -74,18 +74,15 @@ std::unique_ptr<::mlir::Pass> createNormalizeLiftedSCFExitPass();
 // semantically identical PHIs, not an SCF optimization decision.
 std::unique_ptr<::mlir::Pass> createDeduplicateSCFWhileStatePass();
 
-// Uplift a counted scf.while loop inside a callable region into scf.for with
-// the upstream counted-loop utility, keeping the loop's imported annotation on
-// the uplifted loop. The utility recognizes the pre-tested counted shape,
-// whose trip count is structurally equivalent to scf.for. Two exactness gates
-// apply because the utility stops short of proving them: it reconstructs the
-// exit induction value rather than forwarding the exact failed-condition
-// value, so the rewrite is offered only when the loop has no external users;
-// and it accepts a loop-invariant step of unproven sign, so the step must be
-// a statically proven positive constant. The post-tested (do-while) counted
-// shape is not equivalent to scf.for without a loop-semantics analysis this
-// pass does not own, so it and every other unsupported shape are left as
-// legal scf.while. Each existing operation is offered the transform once.
+// Uplift an exactly proven counted scf.while loop inside a callable region into
+// scf.for, keeping the imported loop annotation. The upstream utility owns the
+// pre-tested shape and is gated by dead results plus a positive constant step.
+// The shared exact post-tested projection owns the finite latch-tested subset:
+// constant nonnegative lower bound, positive constant step, exact landing on a
+// greater constant upper bound, next != upper, and ordinal identity feedback
+// through an empty after-region. Every exit value is then exact, including the
+// final induction value. Unsupported or dynamic shapes remain legal scf.while.
+// Each existing operation is offered the transform once.
 std::unique_ptr<::mlir::Pass> createSCFWhileToForPass();
 
 // The closed set of execution shapes an `llvm.intr.fmuladd` can be

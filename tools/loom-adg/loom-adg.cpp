@@ -17,7 +17,7 @@ namespace {
 
 llvm::cl::opt<std::string>
     builtinName("builtin", llvm::cl::desc("builtin Fabric target preset"),
-                llvm::cl::value_desc("small|default|large"),
+                llvm::cl::value_desc("small|coverage|large"),
                 llvm::cl::init(""));
 
 llvm::cl::opt<std::string>

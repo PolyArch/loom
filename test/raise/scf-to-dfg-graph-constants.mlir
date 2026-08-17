@@ -40,6 +40,23 @@ dataflow.graph private @g_no_streaming_user(%arg0: none,
   dataflow.graph.return %arg0, %0 : none, f32
 }
 
+// Identical graph-start constants are one actor with multicast consumers. A
+// cloned lane must not consume another resident TokenControl context.
+
+// CHECK-LABEL: dataflow.graph private @g_shared_constant
+// CHECK: %[[ZERO:.*]] = dataflow.constant %arg0 {const_value = 0 : i64} : i64
+// CHECK-NOT: dataflow.constant %arg0 {const_value = 0 : i64} : i64
+// CHECK: arith.addi %arg1, %[[ZERO]] : i64
+// CHECK: arith.addi %arg2, %[[ZERO]] : i64
+dataflow.graph private @g_shared_constant(%arg0: none, %arg1: i64,
+                                          %arg2: i64) -> (i64, i64) {
+  %zero0 = arith.constant 0 : i64
+  %zero1 = arith.constant 0 : i64
+  %lhs = arith.addi %arg1, %zero0 : i64
+  %rhs = arith.addi %arg2, %zero1 : i64
+  dataflow.graph.return %arg0, %lhs, %rhs : none, i64, i64
+}
+
 // Poison is not a literal and cannot be assigned defined bits by constant
 // lowering. It remains explicit until the canonical operation schema owns its
 // propagation and observation semantics.

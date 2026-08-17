@@ -480,9 +480,9 @@ void centralPlanEvaluatesScheduleChildren() {
   bool sawCanonicalGeneratorOrder = false;
   const std::vector<std::string> expectedGeneratorOrder = {
       "compiler.structured_ownership", "compiler.structured_execution_shape",
-      "compiler.structured_special_math_accuracy",
       "compiler.structured_schedule",
-      "compiler.structured_memory_communication"};
+      "compiler.structured_memory_communication",
+      "compiler.structured_special_math_accuracy"};
   for (const loom::dse::DsePlanGenerateInvocationRecords &planInvocation :
        selection->planGenerateInvocations) {
     if (!planInvocation.incomplete().empty())
@@ -773,6 +773,14 @@ void verifyStagedOwnershipEvidence(
     if (const auto *candidate =
             std::get_if<loom::ArtifactRootReference>(&disposition.result))
       closures[*candidate];
+  for (const loom::dse::DsePlanGenerateInvocationRecords &planInvocation :
+       selection.planGenerateInvocations)
+    for (const loom::dse::GenerateInvocationRecord &record :
+         planInvocation.completed())
+      for (const loom::dse::CandidateGeneratorOutputBinding &binding :
+           record.outputBindings)
+        for (const loom::ArtifactRootReference &candidate : binding.artifacts)
+          closures[candidate];
   for (const loom::dse::SelectedPreMappingCompilation &selected :
        selection.selected) {
     const auto structured = take(loom::frontend::publishStructuredProgram(

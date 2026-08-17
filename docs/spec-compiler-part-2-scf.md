@@ -68,6 +68,16 @@ both lanes feed those values back through their respective identity
 results. No value numbering, pointer-alias assumption, or performance choice
 participates in this exact quotient.
 
+A latch-tested counted `scf.while` normalizes to `scf.for` only through the
+shared exact counted-loop projection. The projection requires a constant
+nonnegative lower bound, a positive constant step, a greater constant upper
+bound reached exactly without wrapping, a `next != upper` latch, and an empty
+after-region that returns every state lane by ordinal identity. Its body domain
+is therefore exactly `lower, lower + step, ..., upper - step`, and the failed
+condition publishes `upper` as the induction result. Address-width reasoning
+consumes this same projection. Dynamic bounds, non-landing steps, wrapping
+domains, reordered feedback, or after-region effects remain `scf.while`.
+
 The lift-owned exit scaffold may publish a `scf.while` result through a value
 defined outside and dominating the loop. Mechanical raising projects that
 result directly to the exact published SSA value while retaining the loop and
@@ -670,10 +680,16 @@ results into `scf.forall`. It uses that same common dependence/effect owner and
 requires the loop bounds and step to be invariant at the resulting parallel
 scope. Unknown aliasing, calls with unresolved effects, volatile or atomic
 effects without an exact supported relation, or an unproved cross-iteration
-dependence reject the decision. The child stores the logical parallel domain
-in ordinary SCF; it carries no physical coordinate, AccCore binding, placement,
-or routing fact. A later ownership decision may retain that domain inside one
-Spatial graph or materialize it as a logical `dataflow.thread` domain.
+dependence reject the decision. Different SSA pointer or memref values are not
+an alias proof. Cross-root write/read and write/write pairs require distinct
+allocation operations, distinct static object symbols, allocation-versus-input
+provenance, or explicit `llvm.noalias` on both distinct function arguments.
+Exact direct-call inlining may expose caller allocations that establish this
+proof for one ownership candidate while the uninlined callee remains serial.
+The child stores the logical parallel domain in ordinary SCF; it carries no
+physical coordinate, AccCore binding, placement, or routing fact. A later
+ownership decision may retain that domain inside one Spatial graph or
+materialize it as a logical `dataflow.thread` domain.
 Unroll-and-jam uses the same perfect-nest and independence proof, additionally
 requires every nested loop bound and step to be invariant to the selected
 outer loop, and obeys the same exact aggregate Fabric-capacity bound as

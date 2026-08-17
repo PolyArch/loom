@@ -211,7 +211,8 @@ private:
   llvm::Error markWitnessRegion(SpatialWitnessRegionRoutingAction action);
   void beginDependencyClosure();
   llvm::Error restoreAfterFailure(SpatialMoveTransaction &move,
-                                  llvm::Error failure);
+                                  llvm::Error failure,
+                                  bool resetNegotiationState);
   llvm::Error
   synchronizeCandidateTags(llvm::ArrayRef<PnrIndex> changedLogicalNets);
 

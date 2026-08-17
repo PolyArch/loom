@@ -306,6 +306,29 @@ void mergeReferences(std::vector<ArtifactRootReference> &destination,
                     destination.end());
 }
 
+llvm::Expected<std::vector<ArtifactRootReference>> selectedPreferenceOrder(
+    const CompletedDsePlanExecution &execution, PlanOutputRef selectedOutput) {
+  const llvm::ArrayRef<ArtifactRootReference> canonical =
+      execution.resolve(selectedOutput);
+  const llvm::ArrayRef<ArtifactRootReference> preferred =
+      execution.resolvePreferenceOrder(selectedOutput);
+  if (canonical.empty())
+    return std::vector<ArtifactRootReference>{};
+  if (preferred.size() != canonical.size())
+    return invalid("objective preference order changed the selected set size");
+
+  std::vector<ArtifactRootReference> checked(preferred.begin(),
+                                             preferred.end());
+  std::vector<ArtifactRootReference> canonicalized = checked;
+  llvm::sort(canonicalized, artifactRootReferenceLess);
+  if (std::adjacent_find(canonicalized.begin(), canonicalized.end()) !=
+          canonicalized.end() ||
+      !std::equal(canonicalized.begin(), canonicalized.end(),
+                  canonical.begin(), canonical.end()))
+    return invalid("objective preference order changed the selected set");
+  return checked;
+}
+
 std::vector<ArtifactRootReference>
 retainedEvidence(const IncompleteDsePlanExecution &incomplete,
                  llvm::ArrayRef<ArtifactRootReference> baselineEvidence) {
@@ -328,6 +351,7 @@ retainedEvidence(const IncompleteDsePlanExecution &incomplete,
 struct CompletedOwnershipSelection final {
   std::unique_ptr<StructuredOwnershipInvocation> invocation;
   std::vector<ArtifactRootReference> selected;
+  std::vector<ArtifactRootReference> preferenceOrder;
   std::vector<ArtifactRootReference> evidence;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   DsePlanGenerateInvocationRecords generateInvocations;
@@ -526,18 +550,22 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
   auto &completed = std::get<CompletedDsePlanExecution>(*executed);
   std::vector<ArtifactRootReference> selected(completed.resolve({5, 0}).begin(),
                                               completed.resolve({5, 0}).end());
+  auto preferenceOrder = selectedPreferenceOrder(completed, {5, 0});
+  if (!preferenceOrder)
+    return preferenceOrder.takeError();
   std::vector<ArtifactRootReference> evidence = std::move(baselineEvidence);
   mergeReferences(evidence, completed.resolve({5, 1}));
   std::vector<StructuredOwnershipCandidateDisposition> dispositions(
       invocation->dispositions().begin(), invocation->dispositions().end());
   return OwnershipSelectionOutcome{CompletedOwnershipSelection{
-      std::move(invocation), std::move(selected), std::move(evidence),
-      std::move(dispositions),
+      std::move(invocation), std::move(selected),
+      std::move(*preferenceOrder), std::move(evidence), std::move(dispositions),
       takeDsePlanGenerateInvocationRecords(std::move(*executed))}};
 }
 
 struct CompletedDataflowSelection final {
   std::vector<ArtifactRootReference> selected;
+  std::vector<ArtifactRootReference> preferenceOrder;
   std::vector<ArtifactRootReference> evidence;
   DsePlanGenerateInvocationRecords generateInvocations;
 };
@@ -656,10 +684,14 @@ exploreDataflowCandidates(const ArtifactRootReference &d0,
   auto &completed = std::get<CompletedDsePlanExecution>(*executed);
   std::vector<ArtifactRootReference> selected =
       completed.resolve({selectionNode, 0}).vec();
+  auto preferenceOrder =
+      selectedPreferenceOrder(completed, {selectionNode, 0});
+  if (!preferenceOrder)
+    return preferenceOrder.takeError();
   std::vector<ArtifactRootReference> evidence =
       completed.resolve({selectionNode, 1}).vec();
   return DataflowSelectionOutcome{CompletedDataflowSelection{
-      std::move(selected), std::move(evidence),
+      std::move(selected), std::move(*preferenceOrder), std::move(evidence),
       takeDsePlanGenerateInvocationRecords(std::move(*executed))}};
 }
 
@@ -728,6 +760,7 @@ exploreStructuredCompilationToPreMapping(
   struct RetainedOwnershipSelection final {
     std::unique_ptr<StructuredOwnershipInvocation> invocation;
     std::vector<ArtifactRootReference> selected;
+    std::vector<ArtifactRootReference> preferenceOrder;
   };
   std::vector<RetainedOwnershipSelection> generations;
   std::vector<ArtifactRootReference> satisfiedEvidence;
@@ -785,7 +818,8 @@ exploreStructuredCompilationToPreMapping(
                         std::make_move_iterator(completed.dispositions.end()));
     planGenerateInvocations.push_back(std::move(completed.generateInvocations));
     generations.push_back(RetainedOwnershipSelection{
-        std::move(completed.invocation), std::move(completed.selected)});
+        std::move(completed.invocation), std::move(completed.selected),
+        std::move(completed.preferenceOrder)});
     const std::size_t generationIndex = generations.size() - 1;
     RetainedOwnershipSelection &generation = generations.back();
 
@@ -808,17 +842,17 @@ exploreStructuredCompilationToPreMapping(
     }
 
     priorSelectedGeneration = generationIndex;
-    priorSelectedReference = generation.selected.front();
+    priorSelectedReference = generation.preferenceOrder.front();
     priorDerivationsIncluded = false;
     if (transformationOrdinal + 1 == ownershipGenerationCount) {
       finalGeneration = generationIndex;
-      finalReferences = generation.selected;
+      finalReferences = generation.preferenceOrder;
       break;
     }
 
     StructuredOwnershipInvocationScope generationScope(*generation.invocation);
     auto selected = generation.invocation->materializeSelectedCandidate(
-        generation.selected.front(), artifactStore);
+        generation.preferenceOrder.front(), artifactStore);
     if (!selected)
       return selected.takeError();
     ownershipPrefix.insert(
@@ -889,6 +923,7 @@ exploreStructuredCompilationToPreMapping(
                         candidate.memoryCommunicationDerivations.end()));
     }
     return SelectedPreMappingCompilation{
+        0,
         frontend::PreMappingCompilation{
             sourceCompilation.fabric, sourceCompilation.staticGlobalMemory,
             std::move(candidate.candidate.structuredProgram),
@@ -943,7 +978,7 @@ exploreStructuredCompilationToPreMapping(
     planGenerateInvocations.push_back(
         std::move(dataflowCompleted.generateInvocations));
     for (const ArtifactRootReference &dataflowReference :
-         dataflowCompleted.selected) {
+         dataflowCompleted.preferenceOrder) {
       auto candidate =
           terminalGeneration.invocation->materializeSelectedDataflowCandidate(
               reference, dataflowReference, artifactStore);
@@ -952,6 +987,23 @@ exploreStructuredCompilationToPreMapping(
       selected.push_back(assemble(std::move(*candidate)));
     }
   }
+  std::vector<SelectedPreMappingCompilation> bounded;
+  bounded.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(
+      options.ownership.selection.k, selected.size())));
+  std::vector<ArtifactIdentity> retainedDataflows;
+  retainedDataflows.reserve(bounded.capacity());
+  for (SelectedPreMappingCompilation &candidate : selected) {
+    const ArtifactIdentity identity =
+        candidate.compilation.canonicalDataflow.identity();
+    if (llvm::is_contained(retainedDataflows, identity))
+      continue;
+    candidate.preferenceRank = bounded.size();
+    retainedDataflows.push_back(identity);
+    bounded.push_back(std::move(candidate));
+    if (bounded.size() == options.ownership.selection.k)
+      break;
+  }
+  selected = std::move(bounded);
   if (selected.empty())
     return PreMappingExplorationOutcome{CompletedPreMappingNoFeasibleCandidate{
         std::move(satisfiedEvidence), std::move(planGenerateInvocations)}};

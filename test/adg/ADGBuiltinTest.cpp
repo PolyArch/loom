@@ -9,6 +9,7 @@
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Artifact/FabricTopologyQuality.h"
 #include "Fabric/IR/OperationResourceContract.h"
+#include "Fabric/Identity/FabricFuCapabilityTemplate.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -79,7 +80,7 @@ void builtinPresetsExpandThroughPublicBuilder() {
   };
   const std::array<Expectation, 3> expectations{{
       {loom::adg::BuiltinTargetPreset::Small, 4, 12, 4, 1, 1, 4},
-      {loom::adg::BuiltinTargetPreset::Default, 8, 27, 9, 2, 2, 6},
+      {loom::adg::BuiltinTargetPreset::Coverage, 8, 27, 9, 2, 2, 6},
       {loom::adg::BuiltinTargetPreset::Large, 16, 48, 16, 4, 4, 8},
   }};
 
@@ -95,7 +96,7 @@ void builtinPresetsExpandThroughPublicBuilder() {
             descriptor.scale.spatialMemoryCount == expected.spatialMemories &&
             descriptor.scale.temporalMemoryCount == expected.temporalMemories,
         "builtin descriptor changed its scale contract");
-    require(test, descriptor.schemaMajor == 5 && descriptor.schemaMinor == 0,
+    require(test, descriptor.schemaMajor == 6 && descriptor.schemaMinor == 0,
             "builtin descriptor did not select the parameterized mesh recipe");
 
     auto target =
@@ -171,7 +172,8 @@ void builtinPresetsExpandThroughPublicBuilder() {
     }
     require(test,
             clockDomain && resetDomain && clockContract && resetContract &&
-                clockContract->periodFs() == 1'000 &&
+                clockContract->periodFs() ==
+                    loom::adg::builtinSystemClockPeriodFs &&
                 clockContract->phaseFs() == 0 &&
                 resetContract->polarity() ==
                     loom::fabric::ResetPolarity::ActiveHigh &&
@@ -369,13 +371,67 @@ void builtinPresetsExpandThroughPublicBuilder() {
                     loom::fabric::FabricEntityKind::FabricMemoryOccurrence) ==
                     expected.spatialMemories + expected.temporalMemories,
             "builtin SpatialCore lost its PE or memory scale");
+
+    std::optional<loom::fabric::FabricFuTemplateRef> tokenControl;
+    for (const loom::fabric::FabricFuTemplateRef definition :
+         module.view().fuTemplates()) {
+      const auto capabilities =
+          module.view().resolvedFabricOpCapabilities(definition);
+      unsigned familyMask = 0;
+      bool exactTokenControl = capabilities.size() == 4;
+      for (const auto &capability : capabilities) {
+        switch (capability.implementationFamily) {
+        case ::fabric::ImplementationFamilyId::TokenConstant:
+          familyMask |= 1U << 0;
+          break;
+        case ::fabric::ImplementationFamilyId::TokenSync:
+          familyMask |= 1U << 1;
+          break;
+        case ::fabric::ImplementationFamilyId::TokenMux:
+          familyMask |= 1U << 2;
+          break;
+        case ::fabric::ImplementationFamilyId::TokenDemux:
+          familyMask |= 1U << 3;
+          break;
+        default:
+          exactTokenControl = false;
+          break;
+        }
+      }
+      if (!exactTokenControl || familyMask != 0xf)
+        continue;
+      require(test, !tokenControl,
+              "builtin has multiple TokenControl FU definitions");
+      tokenControl = definition;
+    }
+    require(test, tokenControl.has_value(),
+            "builtin has no TokenControl FU definition");
+    std::uint64_t tokenControlResidentContexts = 0;
+    for (const loom::fabric::FabricFuOccurrenceRef occurrence :
+         module.view().fuOccurrences()) {
+      if (module.view().fuTemplateOf(occurrence) != tokenControl)
+        continue;
+      const auto parent = module.view().parentPeOf(occurrence);
+      require(test, parent.has_value(),
+              "builtin TokenControl FU occurrence has no parent PE");
+      tokenControlResidentContexts +=
+          module.view().peResidentContextCount(*parent);
+    }
+    require(test,
+            tokenControlResidentContexts ==
+                descriptor.scale.spatialFuOccurrences.tokenControl +
+                    descriptor.scale.temporalFuOccurrences.tokenControl *
+                        descriptor.scale.temporalResidentContexts,
+            "builtin TokenControl resident-context capacity changed");
+
     const std::uint64_t expectedMeshLinkFifos =
         16 * descriptor.scale.meshDimension *
         (descriptor.scale.meshDimension - 1);
-    // Spatial-to-Temporal converters are sized by the Temporal PE count, not
-    // by the SpatialCore's external module gateway width.
+    // Converter supply is a typed hardware-scale dimension independent of the
+    // SpatialCore's external module gateway width.
     const std::uint64_t expectedDomainConverters =
-        descriptor.scale.temporalPeCount;
+        descriptor.scale.temporalPeCount *
+        descriptor.scale.crossScheduleBoundaryLanesPerTemporalPe;
     const std::uint64_t expectedAdapterFifos =
         3 * (expected.spatialMemories + expected.temporalMemories) +
         2 * expectedDomainConverters;
@@ -585,36 +641,40 @@ void publicFuLibraryBuildsTypedGraphs() {
   DesignBuilder design(store);
   const PortType bits128 = take(test, PortType::bits(128));
 
-  auto spatial =
-      take(test, design.createSpatialCore("fu-library",
-                                          {bits128, bits128, bits128, bits128},
-                                          {bits128, bits128, bits128}));
+  auto spatial = take(test, design.createSpatialCore(
+                                "fu-library",
+                                {bits128, bits128, bits128, bits128, bits128},
+                                {bits128, bits128, bits128}));
   auto pe = take(
       test, spatial.addPe(
                 {take(test, spatial.input(0)), take(test, spatial.input(1)),
-                 take(test, spatial.input(2)), take(test, spatial.input(3))},
-                PeSpec::spatial({bits128, bits128, bits128, bits128},
+                 take(test, spatial.input(2)), take(test, spatial.input(3)),
+                 take(test, spatial.input(4))},
+                PeSpec::spatial({bits128, bits128, bits128, bits128, bits128},
                                 {bits128, bits128, bits128})));
   std::vector<loom::adg::PeValue> inputs;
-  for (std::size_t ordinal = 0; ordinal != 4; ++ordinal)
+  for (std::size_t ordinal = 0; ordinal != 5; ++ordinal)
     inputs.push_back(take(test, pe.input(ordinal)));
+  const llvm::ArrayRef<loom::adg::PeValue> fourInputs =
+      llvm::ArrayRef(inputs).take_front(4);
   if (llvm::Error error = loom::adg::addCoreAluFu(
           pe, llvm::ArrayRef<loom::adg::PeValue>(inputs).take_front(3),
           ::fabric::ResolvedIndexWidthSet::get(
               {::fabric::ResolvedIndexWidth::I64})))
     fail(test, llvm::toString(std::move(error)));
-  if (llvm::Error error = loom::adg::addMacFu(pe, inputs))
+  if (llvm::Error error = loom::adg::addMacFu(pe, fourInputs))
     fail(test, llvm::toString(std::move(error)));
   expectError(test,
-              loom::adg::addLoopControlFu(pe, inputs,
+              loom::adg::addLoopControlFu(pe, fourInputs,
                                           ::dataflow::StreamStepKind::Add,
                                           ::dataflow::StreamStepKind::Add),
               "distinct step kinds");
   if (llvm::Error error = loom::adg::addLoopControlFu(
-          pe, inputs, ::dataflow::StreamStepKind::Add,
+          pe, fourInputs, ::dataflow::StreamStepKind::Add,
           ::dataflow::StreamStepKind::Sub))
     fail(test, llvm::toString(std::move(error)));
-  if (llvm::Error error = loom::adg::addVectorComputeFu(pe, inputs, {128, 128}))
+  if (llvm::Error error =
+          loom::adg::addVectorComputeFu(pe, fourInputs, {128, 128}))
     fail(test, llvm::toString(std::move(error)));
   if (llvm::Error error = loom::adg::addSpecialMathFu(
           pe, llvm::ArrayRef<loom::adg::PeValue>(inputs).take_front(2)))
@@ -659,10 +719,37 @@ void publicFuLibraryBuildsTypedGraphs() {
     if (templates.size() == 7) {
       unsigned fusedTemplates = 0;
       for (const auto &record : templates) {
-        unsigned activeOperations = 0;
+        std::vector<loom::fabric::FabricFuTemplateNodeRef> activeOperations;
         for (const auto &node : record.activeNodes)
-          activeOperations += node.node == loom::fabric::FabricFuNodeKind::Op;
-        fusedTemplates += activeOperations == 2;
+          if (node.node == loom::fabric::FabricFuNodeKind::Op)
+            activeOperations.push_back(node);
+        if (activeOperations.size() != 2)
+          continue;
+        ++fusedTemplates;
+
+        const auto terminalEdges = take(
+            test, loom::fabric::projectFabricFuCapabilityTemplateTerminalEdges(
+                      record));
+        std::vector<loom::fabric::FabricFuTemplatePortRef> phaseInputs;
+        for (const auto &operation : activeOperations) {
+          for (const auto &edge : terminalEdges) {
+            const auto *source =
+                std::get_if<loom::fabric::FabricFuTemplatePortRef>(
+                    &edge.source.payload);
+            const auto *destination =
+                std::get_if<loom::fabric::FabricFuNodePortRef>(
+                    &edge.destination.payload);
+            if (!source || !destination || destination->node != operation ||
+                destination->direction !=
+                    loom::fabric::FabricPortDirection::Input ||
+                destination->ordinal != 0)
+              continue;
+            phaseInputs.push_back(*source);
+          }
+        }
+        require(test,
+                phaseInputs.size() == 2 && phaseInputs[0] != phaseInputs[1],
+                "fused loop-control actors share one phase ingress");
       }
       sawLoopControlDomain |= fusedTemplates == 2;
     }
@@ -1050,13 +1137,10 @@ void builtinCoreCapabilitiesCoverTypedDomains() {
        module.view().fuOccurrences())
     dedicatedScalarAddOccurrences +=
         module.view().fuTemplateOf(occurrence) == dedicatedScalarAdd;
-  const auto distributedCount = [](std::uint32_t peCount) {
-    return std::max(1u, (peCount + 7) / 8);
-  };
   require(test,
           dedicatedScalarAddOccurrences ==
-              distributedCount(descriptor.scale.spatialPeCount) +
-                  distributedCount(descriptor.scale.temporalPeCount),
+              descriptor.scale.spatialFuOccurrences.dedicatedScalarAdd +
+                  descriptor.scale.temporalFuOccurrences.dedicatedScalarAdd,
           "builtin dedicated scalar add/sub FU distribution changed");
 
   mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);

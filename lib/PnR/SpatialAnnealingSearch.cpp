@@ -74,6 +74,22 @@ llvm::Error addCount(std::uint64_t &target, std::uint64_t amount,
   return llvm::Error::success();
 }
 
+llvm::Expected<bool>
+spatialMappingIsCapacityRepairReady(const SpatialCandidateState &candidate) {
+  for (std::uint32_t ordinal = 0;
+       ordinal != resolvedPnrViolationKindCount; ++ordinal) {
+    const auto kind = static_cast<ResolvedPnrViolationKind>(ordinal);
+    if (kind == ResolvedPnrViolationKind::CapacityOveruse)
+      continue;
+    auto value = spatialMappingViolationValue(candidate, kind);
+    if (!value)
+      return value.takeError();
+    if (*value != 0)
+      return false;
+  }
+  return true;
+}
+
 llvm::Expected<std::uint64_t>
 multiplyCount(std::uint64_t lhs, std::uint64_t rhs, llvm::StringRef subject) {
   if (lhs != 0 && rhs > std::numeric_limits<std::uint64_t>::max() / lhs)
@@ -381,14 +397,62 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
     return llvm::Error::success();
   };
 
+  SpatialCandidateStateHandle bestSelectedRankIncumbent;
+  std::optional<dse::ObjectiveVector> bestSelectedRankObjective;
   SpatialCandidateStateHandle bestFeasibleIncumbent;
   std::optional<dse::ObjectiveVector> bestFeasibleObjective;
-  if (*exactClosure) {
+  const auto captureIncumbent =
+      [&](const dse::ObjectiveVector &objective,
+          bool feasible) -> llvm::Error {
+    bool improvesSelectedRank = !bestSelectedRankObjective;
+    if (bestSelectedRankObjective) {
+      auto comparison = problem.objectiveProgram().compareSelectedRank(
+          objective, {}, *bestSelectedRankObjective, {});
+      if (!comparison)
+        return comparison.takeError();
+      improvesSelectedRank = *comparison < 0;
+    }
+    bool improvesFeasible = feasible && !bestFeasibleObjective;
+    if (feasible && bestFeasibleObjective) {
+      auto comparison = problem.objectiveProgram().compareSelectedRank(
+          objective, {}, *bestFeasibleObjective, {});
+      if (!comparison)
+        return comparison.takeError();
+      improvesFeasible = *comparison < 0;
+    }
+    if (!improvesSelectedRank && !improvesFeasible)
+      return llvm::Error::success();
+    if (candidate.unroutedObligationCount() != 0) {
+      if (feasible)
+        return searchError("a feasible incumbent is incompletely routed");
+      return llvm::Error::success();
+    }
     auto snapshot = candidate.cloneFullyRouted();
     if (!snapshot)
       return snapshot.takeError();
-    bestFeasibleIncumbent = std::move(*snapshot);
-    bestFeasibleObjective = actionExecutor_.currentObjective();
+    auto snapshotObjective = problem.objectiveProgram().evaluate(**snapshot);
+    if (!snapshotObjective)
+      return snapshotObjective.takeError();
+    if (snapshotObjective->codes() != objective.codes())
+      return searchError("search incumbent snapshot changed its objective");
+    if (statistics.incumbentSnapshotCount ==
+        std::numeric_limits<std::uint64_t>::max())
+      return searchError("search incumbent snapshot count overflows u64");
+    ++statistics.incumbentSnapshotCount;
+    if (improvesSelectedRank) {
+      bestSelectedRankIncumbent = *snapshot;
+      bestSelectedRankObjective = *snapshotObjective;
+    }
+    if (improvesFeasible) {
+      bestFeasibleIncumbent = std::move(*snapshot);
+      bestFeasibleObjective = std::move(*snapshotObjective);
+    }
+    return llvm::Error::success();
+  };
+  if (llvm::Error error =
+          captureIncumbent(actionExecutor_.currentObjective(), *exactClosure))
+    return std::move(error);
+  if (*exactClosure) {
     statistics.exactClosureReached = true;
     loom::mapping_debug::emit(loom::mapping_debug::Level::Summary,
                               loom::mapping_debug::Stage::SpatialPnr,
@@ -410,6 +474,11 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
         return std::move(error);
       candidateHandle = std::move(bestFeasibleIncumbent);
       statistics.bestFeasibleIncumbentRestored = true;
+    } else if (bestSelectedRankIncumbent) {
+      if (llvm::Error error = bestSelectedRankIncumbent->verify())
+        return std::move(error);
+      candidateHandle = std::move(bestSelectedRankIncumbent);
+      statistics.bestSelectedRankIncumbentRestored = true;
     }
     if (llvm::Error error = candidateHandle->verify())
       return std::move(error);
@@ -434,6 +503,26 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["operation"] = "annealing_incumbent";
                                 fields["seed_attempt"] = seedAttemptOrdinal;
                                 fields["reason"] = "completion_goal_reached";
+                              });
+    return statistics;
+  };
+  const auto finishAtRepairReadyHandoff =
+      [&]() -> llvm::Expected<SpatialAnnealingStatistics> {
+    if (llvm::Error error = candidate.verify())
+      return std::move(error);
+    statistics.repairReadyHandoff = true;
+    statistics.endpointExpansions = actionExecutor_.endpointExpansionCount();
+    statistics.negotiationIterations =
+        actionExecutor_.negotiationIterationCount();
+    loom::mapping_debug::emit(loom::mapping_debug::Level::Summary,
+                              loom::mapping_debug::Stage::SpatialPnr,
+                              loom::mapping_debug::Event::Statistics,
+                              [&](llvm::json::Object &fields) {
+                                fields["operation"] = "annealing_incumbent";
+                                fields["seed_attempt"] = seedAttemptOrdinal;
+                                fields["reason"] = "capacity_repair_handoff";
+                                fields["temperature_levels"] =
+                                    statistics.temperatureLevelCount;
                               });
     return statistics;
   };
@@ -541,6 +630,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
         fields["minimum_temperature"] = annealing.minimumTemperature;
         fields["cooling_numerator"] = annealing.coolingRatio.numerator;
         fields["cooling_denominator"] = annealing.coolingRatio.denominator;
+        fields["temperature_level_limit"] =
+            annealing.temperatureLevelLimit;
         fields["calibration_slots"] = statistics.calibrationProposalSlots;
         fields["calibration_probes"] = statistics.calibrationProbeCount;
         fields["semantic_noop_actions"] = statistics.semanticNoopActionCount;
@@ -700,30 +791,9 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
             return std::move(error);
         domainCurrent = false;
         inactiveActionKeys_.clear();
-        if (*proposedClosure) {
-          bool improvesBest = !bestFeasibleObjective;
-          if (bestFeasibleObjective) {
-            auto comparison = problem.objectiveProgram().compareSelectedRank(
-                proposedObjective, {}, *bestFeasibleObjective, {});
-            if (!comparison)
-              return comparison.takeError();
-            improvesBest = *comparison < 0;
-          }
-          if (improvesBest) {
-            auto snapshot = candidate.cloneFullyRouted();
-            if (!snapshot)
-              return snapshot.takeError();
-            auto snapshotObjective =
-                problem.objectiveProgram().evaluate(**snapshot);
-            if (!snapshotObjective)
-              return snapshotObjective.takeError();
-            if (snapshotObjective->codes() != proposedObjective.codes())
-              return searchError(
-                  "best feasible snapshot changed its objective");
-            bestFeasibleIncumbent = std::move(*snapshot);
-            bestFeasibleObjective = std::move(*snapshotObjective);
-          }
-        }
+        if (llvm::Error error =
+                captureIncumbent(proposedObjective, *proposedClosure))
+          return std::move(error);
       }
       emitSpatialActionEvent(loom::mapping_debug::Event::ActionOutcome,
                              **action, SpatialSearchScope::Annealing,
@@ -786,6 +856,8 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
           fields["heuristic_cache_retained_bytes"] =
               actionExecutor_.heuristicCacheRetainedBytes();
           fields["inactive_cache_size"] = inactiveActionKeys_.size();
+          fields["incumbent_snapshots"] =
+              statistics.incumbentSnapshotCount;
           fields["movable_decisions"] = movableDecisionCount;
           fields["realization_choices"] = domain.realizationChoices.size();
           fields["realization_choices_examined"] =
@@ -802,6 +874,15 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
           fields["objective_codes"] = std::move(objectiveCodes);
           fields["exact_closure"] = statistics.exactClosureReached;
         });
+    auto repairReady = spatialMappingIsCapacityRepairReady(candidate);
+    if (!repairReady)
+      return repairReady.takeError();
+    if (*repairReady &&
+        policy.search.completionGoal ==
+            ResolvedPnrCompletionGoal::FirstVerifiedCandidate &&
+        policy.search.exactRepair.kind !=
+            ResolvedPnrExactRepairKind::Disabled)
+      return finishAtRepairReadyHandoff();
   } while (schedule->advanceAfterCompletedLevel());
 
   if (executionControl.stopRequested())
@@ -836,6 +917,33 @@ SpatialAnnealingSearchScratch::run(SpatialCandidateStateHandle &candidateHandle,
                                 fields["reason"] = "best_feasible_restored";
                                 fields["accepted_worsening_actions"] =
                                     statistics.acceptedWorseningActionCount;
+                                fields["incumbent_snapshots"] =
+                                    statistics.incumbentSnapshotCount;
+                              });
+  } else if (bestSelectedRankIncumbent) {
+    auto restoredObjective =
+        problem.objectiveProgram().evaluate(*bestSelectedRankIncumbent);
+    if (!restoredObjective)
+      return restoredObjective.takeError();
+    if (!bestSelectedRankObjective ||
+        restoredObjective->codes() != bestSelectedRankObjective->codes())
+      return searchError("best selected-rank incumbent objective changed");
+    if (llvm::Error error = bestSelectedRankIncumbent->verify())
+      return std::move(error);
+    candidateHandle = std::move(bestSelectedRankIncumbent);
+    statistics.bestSelectedRankIncumbentRestored = true;
+    loom::mapping_debug::emit(loom::mapping_debug::Level::Summary,
+                              loom::mapping_debug::Stage::SpatialPnr,
+                              loom::mapping_debug::Event::Statistics,
+                              [&](llvm::json::Object &fields) {
+                                fields["operation"] = "annealing_incumbent";
+                                fields["seed_attempt"] = seedAttemptOrdinal;
+                                fields["reason"] =
+                                    "best_selected_rank_restored";
+                                fields["accepted_worsening_actions"] =
+                                    statistics.acceptedWorseningActionCount;
+                                fields["incumbent_snapshots"] =
+                                    statistics.incumbentSnapshotCount;
                               });
   }
   return statistics;

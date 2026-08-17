@@ -1,4 +1,5 @@
 #include "SystemNegotiatedRouter.h"
+#include "SystemRecurrenceTiming.h"
 
 #include "SystemCapacityProjection.h"
 
@@ -539,9 +540,14 @@ detail::negotiateSystemServiceRoutes(
                    built->selections.sinks});
     if (!traversalClaim)
       return traversalClaim.takeError();
+    auto recurrence = projectSystemRecurrenceTiming(
+        problem, threadChoices, graphChoices, built->selections.routes,
+        built->selections.nodes, built->selections.sinks);
+    if (!recurrence)
+      return recurrence.takeError();
     auto objective = problem.objectiveProgram().evaluateSystemProjection(
-        problem, graphChoices, capacity->capacity.total, *traversalClaim,
-        capacity->timing.minimumInitiationIntervalCycles,
+        problem, graphChoices, *recurrence, capacity->capacity.total,
+        *traversalClaim, capacity->timing.minimumInitiationIntervalCycles,
         capacity->timing.transportBitCycleDemand, capacity->progress);
     if (!objective)
       return objective.takeError();

@@ -14,7 +14,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.fabric_template_generator.config.4.0";
+    "loom.fabric_template_generator.config.5.0";
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
     {CandidateGeneratorOutputSlotRef(0), "fabric", PlanValueRole::CandidateSet,
@@ -49,7 +49,7 @@ void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
 std::vector<std::uint8_t>
 encodeConfig(const loom::adg::BuiltinTargetScale &scale) {
   const loom::adg::BuiltinTargetDescriptor &descriptor =
-      loom::adg::builtinDefaultTarget;
+      loom::adg::builtinCoverageTarget;
   std::vector<std::uint8_t> bytes;
   appendU32(bytes, descriptor.templateIdentity.size());
   bytes.insert(bytes.end(), descriptor.templateIdentity.begin(),
@@ -60,9 +60,22 @@ encodeConfig(const loom::adg::BuiltinTargetScale &scale) {
   appendU32(bytes, scale.meshDimension);
   appendU32(bytes, scale.spatialPeCount);
   appendU32(bytes, scale.temporalPeCount);
+  const auto appendOccurrences = [&](const auto &occurrences) {
+    appendU32(bytes, occurrences.dedicatedScalarAdd);
+    appendU32(bytes, occurrences.mac);
+    appendU32(bytes, occurrences.vectorCompute);
+    appendU32(bytes, occurrences.loopControl);
+    appendU32(bytes, occurrences.tokenControl);
+    appendU32(bytes, occurrences.vectorAdapter);
+    appendU32(bytes, occurrences.vectorStructural);
+    appendU32(bytes, occurrences.specialMath);
+  };
+  appendOccurrences(scale.spatialFuOccurrences);
+  appendOccurrences(scale.temporalFuOccurrences);
   appendU32(bytes, scale.spatialMemoryCount);
   appendU32(bytes, scale.temporalMemoryCount);
   appendU32(bytes, scale.temporalResidentContexts);
+  appendU32(bytes, scale.crossScheduleBoundaryLanesPerTemporalPe);
   appendU32(bytes, scale.gatewayCount);
   appendU64(bytes, scale.memoryCapacityBytes);
   return bytes;
@@ -83,7 +96,7 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     return invalid("truncated template descriptor identity");
   llvm::StringRef identity(reinterpret_cast<const char *>(bytes.data()), size);
   bytes = bytes.drop_front(size);
-  if (bytes.size() != 48)
+  if (bytes.size() != 116)
     return invalid("template descriptor and scale are not canonical");
   std::uint32_t major = 0;
   std::uint32_t minor = 0;
@@ -99,14 +112,28 @@ llvm::Expected<DecodedConfig> decodeConfig(llvm::ArrayRef<std::uint8_t> bytes) {
     bytes = bytes.drop_front(4);
     return value;
   };
-  loom::adg::BuiltinTargetScale scale{readU32(), readU32(), readU32(),
-                                      readU32(), readU32(), readU32(),
-                                      readU32(), readU32(), 0};
+  const auto readOccurrences = [&]() {
+    return loom::adg::BuiltinFuOccurrenceCounts{readU32(), readU32(), readU32(),
+                                                readU32(), readU32(), readU32(),
+                                                readU32(), readU32()};
+  };
+  loom::adg::BuiltinTargetScale scale{};
+  scale.accCoreCount = readU32();
+  scale.meshDimension = readU32();
+  scale.spatialPeCount = readU32();
+  scale.temporalPeCount = readU32();
+  scale.spatialFuOccurrences = readOccurrences();
+  scale.temporalFuOccurrences = readOccurrences();
+  scale.spatialMemoryCount = readU32();
+  scale.temporalMemoryCount = readU32();
+  scale.temporalResidentContexts = readU32();
+  scale.crossScheduleBoundaryLanesPerTemporalPe = readU32();
+  scale.gatewayCount = readU32();
   for (std::uint8_t byte : bytes)
     scale.memoryCapacityBytes = (scale.memoryCapacityBytes << 8) | byte;
   if (!loom::adg::isValidBuiltinTargetScale(scale))
-    return invalid("mesh dimension must exceed one and all other template "
-                   "scale values must be positive");
+    return invalid("template base scale is invalid or an FU occurrence count "
+                   "exceeds its schedule-local PE count");
   const auto *descriptor =
       loom::adg::findBuiltinTargetDescriptor(identity, major, minor);
   if (descriptor)
@@ -127,7 +154,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     fabricTemplateCandidateGeneratorKind,
     "fabric_template",
-    "loom.fabric_template.generator.v4",
+    "loom.fabric_template.generator.v5",
     {},
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -188,8 +215,8 @@ llvm::Expected<ResolvedFabricTemplateConfigView> resolveFabricTemplateConfig(
     llvm::StringRef templateIdentity, std::uint32_t schemaMajor,
     std::uint32_t schemaMinor, const loom::adg::BuiltinTargetScale &scale) {
   if (!loom::adg::isValidBuiltinTargetScale(scale))
-    return invalid("mesh dimension must exceed one and all other template "
-                   "scale values must be positive");
+    return invalid("template base scale is invalid or an FU occurrence count "
+                   "exceeds its schedule-local PE count");
   const auto *descriptor = loom::adg::findBuiltinTargetDescriptor(
       templateIdentity, schemaMajor, schemaMinor);
   if (!descriptor)

@@ -9,9 +9,11 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -168,6 +170,50 @@ llvm::Expected<const CanonicalServiceCapabilityRecord *> matchingCapability(
   if (!matches)
     return matches.takeError();
   return *matches ? result : nullptr;
+}
+
+llvm::Expected<const ::loom::fabric::ClockDomainContractRecord *>
+clockContract(const ::loom::fabric::FabricSystemRootView &fabric,
+              ::loom::fabric::ClockDomainRef clock) {
+  const auto *domain = fabric.hardwareDomainContract(clock.underlying());
+  const auto *contract =
+      domain ? std::get_if<::loom::fabric::ClockDomainContractRecord>(
+                   &domain->contract())
+             : nullptr;
+  if (!contract)
+    return invalid("service progress clock does not resolve");
+  return contract;
+}
+
+llvm::Expected<::loom::fabric::ClockDomainRef>
+ownerClock(const ::loom::fabric::FabricSystemRootView &fabric,
+           const ::loom::fabric::FabricInventoryOwnerRef &owner) {
+  std::optional<::loom::fabric::ClockDomainRef> result;
+  for (const auto domain : fabric.hardwareDomains()) {
+    const auto *record = fabric.hardwareDomainContract(domain);
+    if (!record ||
+        !std::holds_alternative<::loom::fabric::ClockDomainContractRecord>(
+            record->contract()) ||
+        !llvm::is_contained(record->members(), owner))
+      continue;
+    if (result)
+      return invalid("service issuer belongs to multiple clock domains");
+    result = ::loom::fabric::ClockDomainRef(domain);
+  }
+  if (!result)
+    return invalid("service issuer has no clock domain");
+  return *result;
+}
+
+llvm::Expected<std::uint64_t>
+convertCompletionTicks(std::uint64_t ticks, std::uint64_t progressPeriodFs,
+                       std::uint64_t issuerPeriodFs) {
+  auto scaled =
+      llvm::checkedMulUnsigned<std::uint64_t>(ticks, progressPeriodFs);
+  if (!scaled || *scaled > std::numeric_limits<std::uint64_t>::max() -
+                               (issuerPeriodFs - 1))
+    return invalid("service completion conversion exceeds u64");
+  return (*scaled + issuerPeriodFs - 1) / issuerPeriodFs;
 }
 
 llvm::Expected<bool>
@@ -457,6 +503,51 @@ projectSystemFenceTargetDomains(
       fence->consistencyDomain()};
 }
 
+llvm::Expected<SystemOperationCompletionProjection>
+projectSystemOperationCompletion(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric,
+    ::loom::fabric::SystemServiceEndpointRef endpoint,
+    ::loom::fabric::AccCoreOccurrenceRef accCore,
+    const ::dataflow::ServiceMemberRef &member) {
+  auto resolved = resolveOperationMember(dataflow, member);
+  if (!resolved)
+    return resolved.takeError();
+  const auto *capabilities = fabric.serviceEndpointCapabilities(endpoint);
+  if (!capabilities ||
+      capabilities->plane() != CanonicalServiceEndpointPlane::Memory)
+    return invalid("bound System endpoint has no memory capability set");
+  auto capability = matchingCapability(*capabilities, *resolved);
+  if (!capability)
+    return capability.takeError();
+  if (!*capability)
+    return SystemOperationCompletionProjection{};
+  const auto *bounded = std::get_if<::fabric::BoundedCompletion>(
+      &(*capability)->rate().progress());
+  if (!bounded)
+    return SystemOperationCompletionProjection{true, std::nullopt};
+
+  auto progressClock = clockContract(fabric, bounded->progressClock);
+  if (!progressClock)
+    return progressClock.takeError();
+  auto issuerClock = ownerClock(
+      fabric, ::loom::fabric::FabricInventoryOwnerRef::of(
+                  ::loom::fabric::SpatialCoreOccurrenceRef{accCore}));
+  if (!issuerClock)
+    return issuerClock.takeError();
+  auto issuerClockContract = clockContract(fabric, *issuerClock);
+  if (!issuerClockContract)
+    return issuerClockContract.takeError();
+  auto cycles = convertCompletionTicks(bounded->maxIssueToRetireTicks,
+                                       (*progressClock)->periodFs(),
+                                       (*issuerClockContract)->periodFs());
+  if (!cycles)
+    return cycles.takeError();
+  if (*cycles == 0)
+    return invalid("bounded service completion converted to zero cycles");
+  return SystemOperationCompletionProjection{true, *cycles};
+}
+
 llvm::Expected<std::vector<::loom::fabric::FabricMemoryServiceTargetPlan>>
 projectSystemMemoryTargetPlans(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
@@ -473,7 +564,8 @@ projectSystemMemoryTargetPlans(
     if (!extent)
       return extent.takeError();
     if (!*extent)
-      return std::vector<::loom::fabric::FabricMemoryServiceTargetPlan>{};
+      return ::loom::fabric::projectFabricMemoryServiceTargetPlans(fabric,
+                                                                   endpoint);
     source = ::loom::fabric::FabricMemoryServiceSourceInterval{0, **extent};
   }
   return ::loom::fabric::projectFabricMemoryServiceTargetPlans(fabric, endpoint,

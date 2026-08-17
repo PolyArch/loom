@@ -29,6 +29,7 @@ enum class PnrWorkUnit : std::uint32_t {
   ConsecutiveNoProgressIteration,
   NoProgressTrendTransition,
   CalibrationProposal,
+  TemperatureLevel,
   ProposalPerLevelBase,
   ProposalPerMovableDecision,
   ExactRepairRegionDecision,

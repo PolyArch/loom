@@ -48,6 +48,7 @@ llvm::Expected<bool> CgraTransportRuntime::reserveOperandQueueCapacity(
   const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
 
   llvm::SmallVector<std::uint64_t, 4> units;
+  llvm::SmallDenseSet<std::uint64_t, 4> uniqueQueues;
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueUnits;
   for (const SinkBinding &sink :
        llvm::ArrayRef(sinks_).slice(binding.sinkOffset, binding.sinkCount)) {
@@ -56,11 +57,22 @@ llvm::Expected<bool> CgraTransportRuntime::reserveOperandQueueCapacity(
     if (sink.kind != SinkKind::Channel ||
         sink.operandQueueBinding >= operandQueues_.size())
       return invalid("CGRA PE operand sink has an invalid queue binding");
-    const OperandQueueBinding &queue = operandQueues_[sink.operandQueueBinding];
-    if (queue.channel != sink.channel ||
-        queue.unitBinding >= operandQueueUnits_.size() ||
-        state_->channelSlots[queue.channel].ready.size() != queue.occupancy)
+    const OperandQueueBinding &queue =
+        operandQueues_[sink.operandQueueBinding];
+    if (queue.unitBinding >= operandQueueUnits_.size() ||
+        llvm::none_of(queue.consumers, [&](const auto &consumer) {
+          return consumer.channel == sink.channel;
+        }))
       return invalid("CGRA PE operand queue state diverged from its channel");
+    for (const auto &consumer : queue.consumers)
+      if (consumer.channel >= state_->channelSlots.size() ||
+          state_->channelSlots[consumer.channel].ready.size() !=
+              queue.occupancy)
+        return invalid(
+            "CGRA PE operand broadcast consumer state diverged from its "
+            "queue");
+    if (!uniqueQueues.insert(sink.operandQueueBinding).second)
+      continue;
     if (!uniqueUnits.insert(queue.unitBinding).second)
       return invalid("CGRA PE operand activation repeats an allocation unit");
     units.push_back(queue.unitBinding);
@@ -93,6 +105,7 @@ CgraTransportRuntime::commitOperandQueueEnqueue(std::uint64_t slot) {
   InFlight &inFlight = inFlight_[slot];
   const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
   llvm::SmallVector<std::uint64_t, 4> queues;
+  llvm::SmallDenseSet<std::uint64_t, 4> uniqueQueues;
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueUnits;
   for (const SinkBinding &sink :
        llvm::ArrayRef(sinks_).slice(binding.sinkOffset, binding.sinkCount)) {
@@ -100,11 +113,21 @@ CgraTransportRuntime::commitOperandQueueEnqueue(std::uint64_t slot) {
       continue;
     if (sink.operandQueueBinding >= operandQueues_.size())
       return invalid("CGRA PE operand enqueue has an invalid queue binding");
-    const OperandQueueBinding &queue = operandQueues_[sink.operandQueueBinding];
+    const OperandQueueBinding &queue =
+        operandQueues_[sink.operandQueueBinding];
     if (queue.unitBinding >= operandQueueUnits_.size() ||
-        queue.channel != sink.channel ||
-        state_->channelSlots[queue.channel].ready.size() != queue.occupancy)
+        llvm::none_of(queue.consumers, [&](const auto &consumer) {
+          return consumer.channel == sink.channel;
+        }))
       return invalid("CGRA PE operand enqueue found divergent queue state");
+    for (const auto &consumer : queue.consumers)
+      if (consumer.channel >= state_->channelSlots.size() ||
+          state_->channelSlots[consumer.channel].ready.size() !=
+              queue.occupancy)
+        return invalid(
+            "CGRA PE operand enqueue found divergent broadcast state");
+    if (!uniqueQueues.insert(sink.operandQueueBinding).second)
+      continue;
     if (!uniqueUnits.insert(queue.unitBinding).second)
       return invalid("CGRA PE operand enqueue repeats an allocation unit");
     const OperandQueueUnitBinding &unit = operandQueueUnits_[queue.unitBinding];
@@ -138,6 +161,8 @@ llvm::Error CgraTransportRuntime::acceptActorCommits(
     std::uint64_t unit = 0;
   };
   llvm::SmallVector<Dequeue, 8> dequeues;
+  llvm::SmallDenseSet<std::pair<std::uint64_t, unsigned>, 8> consumedInputs;
+  llvm::SmallDenseSet<std::uint64_t, 8> touchedQueues;
   llvm::SmallDenseSet<std::uint64_t, 8> frameUnits;
   if (!events.empty()) {
     const auto &cycle = events.front().coordinate.referenceCycle;
@@ -166,21 +191,51 @@ llvm::Error CgraTransportRuntime::acceptActorCommits(
         continue;
       if (found->second >= operandQueues_.size())
         return invalid("CGRA PE operand dequeue has an invalid queue binding");
-      const OperandQueueBinding &queue = operandQueues_[found->second];
-      if (queue.unitBinding >= operandQueueUnits_.size() ||
-          queue.channel >= state_->channelSlots.size() ||
-          queue.occupancy == 0 ||
-          operandQueueUnits_[queue.unitBinding].occupancy == 0)
-        return invalid("CGRA PE operand dequeue underflows its queue");
+      if (!consumedInputs.insert({event.semanticActorOrdinal, input}).second)
+        return invalid("CGRA PE operand dequeue repeats an actor input");
+      touchedQueues.insert(found->second);
+    }
+  }
+  llvm::SmallVector<std::uint64_t, 8> orderedQueues(touchedQueues.begin(),
+                                                    touchedQueues.end());
+  llvm::sort(orderedQueues);
+  for (std::uint64_t queueOrdinal : orderedQueues) {
+    if (queueOrdinal >= operandQueues_.size())
+      return invalid("CGRA PE operand dequeue has an invalid queue binding");
+    const OperandQueueBinding &queue = operandQueues_[queueOrdinal];
+    if (queue.unitBinding >= operandQueueUnits_.size() ||
+        queue.occupancy == 0 ||
+        operandQueueUnits_[queue.unitBinding].occupancy == 0 ||
+        queue.consumers.empty())
+      return invalid("CGRA PE operand dequeue underflows its queue");
+    for (const auto &consumer : queue.consumers) {
+      if (!consumedInputs.contains(
+              {consumer.semanticActorOrdinal, consumer.inputOrdinal})) {
+        std::string diagnostic =
+            "CGRA PE operand broadcast queue " +
+            std::to_string(queueOrdinal) + " omitted actor " +
+            std::to_string(consumer.semanticActorOrdinal) + " input " +
+            std::to_string(consumer.inputOrdinal) + "; committed actors";
+        for (const CgraActorLifecycleEvent &event : events)
+          diagnostic += " " + std::to_string(event.semanticActorOrdinal);
+        diagnostic += "; queue consumers";
+        for (const auto &member : queue.consumers)
+          diagnostic += " " + std::to_string(member.semanticActorOrdinal) +
+                        ":" + std::to_string(member.inputOrdinal);
+        return invalid(diagnostic);
+      }
+      if (consumer.channel >= state_->channelSlots.size())
+        return invalid("CGRA PE operand consumer channel is out of range");
       const std::size_t channelOccupancy =
-          state_->channelSlots[queue.channel].ready.size();
+          state_->channelSlots[consumer.channel].ready.size();
       if (channelOccupancy == std::numeric_limits<std::size_t>::max() ||
           channelOccupancy + 1 != queue.occupancy)
-        return invalid("CGRA PE operand dequeue diverged from actor commit");
-      if (!frameUnits.insert(queue.unitBinding).second)
-        return invalid("CGRA PE operand dequeue service committed twice");
-      dequeues.push_back({found->second, queue.unitBinding});
+        return invalid(
+            "CGRA PE operand dequeue diverged from a broadcast consumer");
     }
+    if (!frameUnits.insert(queue.unitBinding).second)
+      return invalid("CGRA PE operand dequeue service committed twice");
+    dequeues.push_back({queueOrdinal, queue.unitBinding});
   }
   for (const Dequeue &dequeue : dequeues) {
     --operandQueues_[dequeue.queue].occupancy;

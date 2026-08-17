@@ -469,6 +469,14 @@ address transform, provider, or system route. A dynamically unbounded
 pre-Mapping specialization has already produced a finite bound. SystemMapping
 derives the existing operation-service obligation from the logical owner and
 interval, then selects its real provider region and address transform.
+For a finite `ByteRange` or statically bounded `Whole`, the selected complete
+target plan must cover the exact source interval once. For a dynamically
+unbounded `Whole`, SystemMapping instead selects one complete structural
+service envelope derived from Fabric connectivity, transforms, and terminal
+regions. This fixes every region and transform-path choice without claiming a
+static object size. The Runtime ABI must admit each concrete invocation range
+inside that selected envelope or reject the invocation; it cannot choose a
+different target plan.
 
 Multiple disjoint records represent partitioning. Replication, mirroring,
 coherence, or overlapping placement requires an explicit Fabric composite
@@ -918,6 +926,15 @@ legal may-domain. The relation in each row is total and single-valued over that
 row's context-restricted domain. Across all rows, the finite unique union of
 relation ranges is exactly the ServiceRealization's canonical plan-ordinal set;
 a missing selection, unreachable row, or unselected plan is invalid.
+
+The anchor is also the atomic service-target selection unit. Distinct member
+or exposure anchors in the same execution context may select distinct plans;
+their attachment-bound target domains are not intersected into one
+context-wide target. Plans with identical complete semantics may still be
+canonicalized to one owner-local ordinal. An exposure-selected memory plan may
+contain only its complete `MemoryRegionTarget` branch set and exposure
+children: an exposure has no request or response leg, so such a nonempty plan
+does not acquire a synthetic `TransferLegRealization`.
 
 For the singleton `MessageTransfer` anchor, relation inputs are the producer
 event's exact Dataflow-owned `EventLogicalProjection` and, for DynamicWork,

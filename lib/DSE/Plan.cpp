@@ -394,6 +394,7 @@ void canonicalizeReferences(std::vector<ArtifactRootReference> &references) {
 
 struct CompletedStagedTopK final {
   std::vector<ArtifactRootReference> selected;
+  std::vector<ArtifactRootReference> preferenceOrder;
   std::vector<ArtifactRootReference> evidence;
 };
 
@@ -562,10 +563,12 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
     cursor += batchSize;
   }
 
+  std::vector<ArtifactRootReference> preferenceOrder = selected;
   llvm::sort(selected, artifactRootReferenceLess);
   canonicalizeReferences(retainedEvidence);
-  return StagedTopKOutcome{
-      CompletedStagedTopK{std::move(selected), std::move(retainedEvidence)}};
+  return StagedTopKOutcome{CompletedStagedTopK{
+      std::move(selected), std::move(preferenceOrder),
+      std::move(retainedEvidence)}};
 }
 
 llvm::Expected<std::vector<ArtifactRootReference>>
@@ -660,8 +663,10 @@ public:
 
   static void appendPromote(
       CompletedDsePlanExecution &completed,
-      std::vector<std::vector<ArtifactRootReference>> outputBindings) {
-    completed.appendPromote(std::move(outputBindings));
+      std::vector<std::vector<ArtifactRootReference>> outputBindings,
+      std::vector<ArtifactRootReference> preferenceOrder = {}) {
+    completed.appendPromote(std::move(outputBindings),
+                            std::move(preferenceOrder));
   }
 
   static IncompleteDsePlanExecution
@@ -901,6 +906,17 @@ CompletedDsePlanExecution::resolve(PlanOutputRef output) const {
       .outputBindings[output.outputSlotOrdinal];
 }
 
+llvm::ArrayRef<ArtifactRootReference>
+CompletedDsePlanExecution::resolvePreferenceOrder(PlanOutputRef output) const {
+  if (!hasOutput(output) || output.outputSlotOrdinal != 0)
+    return {};
+  const NodeOutputs &node = nodeOutputs_[output.producerNodeOrdinal];
+  const auto *promote = std::get_if<PromoteNodeOutputs>(&node);
+  return promote ? llvm::ArrayRef<ArtifactRootReference>(
+                       promote->preferenceOrder)
+                 : llvm::ArrayRef<ArtifactRootReference>();
+}
+
 bool CompletedDsePlanExecution::hasOutput(PlanOutputRef output) const {
   if (output.producerNodeOrdinal >= nodeOutputs_.size())
     return false;
@@ -934,8 +950,10 @@ llvm::Error CompletedDsePlanExecution::appendGenerate(
 }
 
 void CompletedDsePlanExecution::appendPromote(
-    std::vector<std::vector<ArtifactRootReference>> outputBindings) {
-  nodeOutputs_.push_back(PromoteNodeOutputs{std::move(outputBindings)});
+    std::vector<std::vector<ArtifactRootReference>> outputBindings,
+    std::vector<ArtifactRootReference> preferenceOrder) {
+  nodeOutputs_.push_back(PromoteNodeOutputs{std::move(outputBindings),
+                                            std::move(preferenceOrder)});
 }
 
 std::size_t IncompleteDsePlanExecution::retainedOutputCount() const {
@@ -1411,7 +1429,8 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
       auto &stagedCompleted = std::get<CompletedStagedTopK>(*staged);
       DsePlanExecutionBuilder::appendPromote(
           completed, {std::move(stagedCompleted.selected),
-                      std::move(stagedCompleted.evidence)});
+                      std::move(stagedCompleted.evidence)},
+          std::move(stagedCompleted.preferenceOrder));
       continue;
     }
 

@@ -6,21 +6,40 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace loom::runtime {
 
 inline constexpr char spatialInvocationAbiIdentity[] =
-    "loom.spatial_invocation_abi.v1";
+    "loom.spatial_invocation_abi.v2";
 inline constexpr std::array<std::uint8_t, 4> spatialInvocationWireMagic{
-    'L', 'G', 'I', '1'};
-inline constexpr std::size_t spatialInvocationWireHeaderBytes = 68;
+    'L', 'G', 'I', '2'};
+inline constexpr std::size_t spatialInvocationWireHeaderBytes = 76;
+
+struct SpatialInvocationPointerTarget final {
+  std::uint32_t objectOrdinal = 0;
+  std::uint64_t byteOffset = 0;
+};
 
 struct SpatialInvocationValue final {
   std::uint32_t ordinal = 0;
   std::uint32_t bitCount = 0;
+  std::optional<SpatialInvocationPointerTarget> pointerTarget;
   std::vector<std::uint8_t> littleEndianBits;
+};
+
+struct SpatialInvocationMemoryObject final {
+  std::uint32_t ordinal = 0;
+  std::uint64_t address = 0;
+  std::vector<std::uint8_t> initialBytes;
+};
+
+struct SpatialInvocationMemoryRootBinding final {
+  std::uint64_t logicalMemoryRootEntity = 0;
+  std::uint32_t objectOrdinal = 0;
+  std::uint64_t byteOffset = 0;
 };
 
 struct SpatialInvocationResultDestination final {
@@ -35,12 +54,25 @@ struct SpatialInvocationWire final {
   std::uint64_t graphLaunchEntity = 0;
   std::vector<std::uint64_t> denseCoordinates;
   std::vector<SpatialInvocationValue> values;
+  std::vector<SpatialInvocationMemoryObject> memoryObjects;
+  std::vector<SpatialInvocationMemoryRootBinding> memoryRootBindings;
   std::vector<SpatialInvocationResultDestination> results;
+};
+
+struct SpatialInvocationValueLayout final {
+  std::uint32_t bitCount = 0;
+  std::optional<SpatialInvocationPointerTarget> pointerTarget;
+};
+
+struct SpatialInvocationMemoryObjectLayout final {
+  std::uint64_t byteCount = 0;
 };
 
 struct SpatialInvocationWireLayout final {
   std::vector<std::uint8_t> templateBytes;
   std::vector<std::size_t> valuePayloadOffsets;
+  std::vector<std::size_t> memoryAddressOffsets;
+  std::vector<std::size_t> memoryPayloadOffsets;
   std::vector<std::size_t> resultAddressOffsets;
 };
 
@@ -116,6 +148,9 @@ inline bool validateSpatialInvocationWire(const SpatialInvocationWire &wire,
   if (wire.denseCoordinates.size() >
           std::numeric_limits<std::uint32_t>::max() ||
       wire.values.size() > std::numeric_limits<std::uint32_t>::max() ||
+      wire.memoryObjects.size() > std::numeric_limits<std::uint32_t>::max() ||
+      wire.memoryRootBindings.size() >
+          std::numeric_limits<std::uint32_t>::max() ||
       wire.results.size() > std::numeric_limits<std::uint32_t>::max()) {
     error = "invocation collection exceeds its wire count domain";
     return false;
@@ -131,6 +166,64 @@ inline bool validateSpatialInvocationWire(const SpatialInvocationWire &wire,
       error = "invocation value table is not dense and canonical";
       return false;
     }
+    if (value.pointerTarget &&
+        (value.pointerTarget->objectOrdinal >= wire.memoryObjects.size() ||
+         value.pointerTarget->byteOffset >=
+             wire.memoryObjects[value.pointerTarget->objectOrdinal]
+                 .initialBytes.size())) {
+      error = "invocation pointer target is outside its memory object";
+      return false;
+    }
+  }
+  struct AddressInterval final {
+    std::uint64_t begin = 0;
+    std::uint64_t end = 0;
+  };
+  std::vector<AddressInterval> intervals;
+  intervals.reserve(wire.memoryObjects.size());
+  for (std::size_t ordinal = 0; ordinal != wire.memoryObjects.size();
+       ++ordinal) {
+    const SpatialInvocationMemoryObject &object = wire.memoryObjects[ordinal];
+    if (object.ordinal != ordinal || object.address == 0 ||
+        object.initialBytes.empty() ||
+        object.initialBytes.size() >
+            std::numeric_limits<std::uint64_t>::max() - object.address) {
+      error = "invocation memory object table is not dense and finite";
+      return false;
+    }
+    intervals.push_back(
+        {object.address, object.address + object.initialBytes.size()});
+  }
+  std::sort(intervals.begin(), intervals.end(),
+            [](const AddressInterval &lhs, const AddressInterval &rhs) {
+              return lhs.begin < rhs.begin;
+            });
+  for (std::size_t ordinal = 1; ordinal != intervals.size(); ++ordinal) {
+    if (intervals[ordinal - 1].end > intervals[ordinal].begin) {
+      error = "invocation memory object address ranges overlap";
+      return false;
+    }
+  }
+  std::vector<bool> referencedObjects(wire.memoryObjects.size(), false);
+  for (std::size_t ordinal = 0; ordinal != wire.memoryRootBindings.size();
+       ++ordinal) {
+    const SpatialInvocationMemoryRootBinding &binding =
+        wire.memoryRootBindings[ordinal];
+    if ((ordinal != 0 &&
+         binding.logicalMemoryRootEntity <=
+             wire.memoryRootBindings[ordinal - 1].logicalMemoryRootEntity) ||
+        binding.objectOrdinal >= wire.memoryObjects.size() ||
+        binding.byteOffset >=
+            wire.memoryObjects[binding.objectOrdinal].initialBytes.size()) {
+      error = "invocation memory-root binding table is not canonical";
+      return false;
+    }
+    referencedObjects[binding.objectOrdinal] = true;
+  }
+  if (std::find(referencedObjects.begin(), referencedObjects.end(), false) !=
+      referencedObjects.end()) {
+    error = "invocation memory object has no logical-root binding";
+    return false;
   }
   for (std::size_t ordinal = 0; ordinal != wire.results.size(); ++ordinal) {
     const SpatialInvocationResultDestination &result = wire.results[ordinal];
@@ -152,8 +245,9 @@ encodeSpatialInvocationWire(const SpatialInvocationWire &wire) {
     return {};
   std::vector<std::uint8_t> bytes;
   bytes.reserve(spatialInvocationWireHeaderBytes +
-                wire.denseCoordinates.size() * 8 + wire.values.size() * 8 +
-                wire.results.size() * 16);
+                wire.denseCoordinates.size() * 8 + wire.values.size() * 24 +
+                wire.memoryObjects.size() * 24 +
+                wire.memoryRootBindings.size() * 24 + wire.results.size() * 16);
   bytes.insert(bytes.end(), spatialInvocationWireMagic.begin(),
                spatialInvocationWireMagic.end());
   bytes.insert(bytes.end(), wire.canonicalDataflowIdentity.begin(),
@@ -165,6 +259,10 @@ encodeSpatialInvocationWire(const SpatialInvocationWire &wire) {
   spatial_invocation_detail::appendU32(
       bytes, static_cast<std::uint32_t>(wire.values.size()));
   spatial_invocation_detail::appendU32(
+      bytes, static_cast<std::uint32_t>(wire.memoryObjects.size()));
+  spatial_invocation_detail::appendU32(
+      bytes, static_cast<std::uint32_t>(wire.memoryRootBindings.size()));
+  spatial_invocation_detail::appendU32(
       bytes, static_cast<std::uint32_t>(wire.results.size()));
   spatial_invocation_detail::appendU32(bytes, 0);
   for (std::uint64_t coordinate : wire.denseCoordinates)
@@ -172,8 +270,29 @@ encodeSpatialInvocationWire(const SpatialInvocationWire &wire) {
   for (const SpatialInvocationValue &value : wire.values) {
     spatial_invocation_detail::appendU32(bytes, value.ordinal);
     spatial_invocation_detail::appendU32(bytes, value.bitCount);
+    spatial_invocation_detail::appendU32(bytes, value.pointerTarget ? 1U : 0U);
+    spatial_invocation_detail::appendU32(
+        bytes, value.pointerTarget ? value.pointerTarget->objectOrdinal : 0U);
+    spatial_invocation_detail::appendU64(
+        bytes, value.pointerTarget ? value.pointerTarget->byteOffset : 0U);
     bytes.insert(bytes.end(), value.littleEndianBits.begin(),
                  value.littleEndianBits.end());
+  }
+  for (const SpatialInvocationMemoryObject &object : wire.memoryObjects) {
+    spatial_invocation_detail::appendU32(bytes, object.ordinal);
+    spatial_invocation_detail::appendU32(bytes, 0);
+    spatial_invocation_detail::appendU64(bytes, object.address);
+    spatial_invocation_detail::appendU64(bytes, object.initialBytes.size());
+    bytes.insert(bytes.end(), object.initialBytes.begin(),
+                 object.initialBytes.end());
+  }
+  for (const SpatialInvocationMemoryRootBinding &binding :
+       wire.memoryRootBindings) {
+    spatial_invocation_detail::appendU64(bytes,
+                                         binding.logicalMemoryRootEntity);
+    spatial_invocation_detail::appendU32(bytes, binding.objectOrdinal);
+    spatial_invocation_detail::appendU32(bytes, 0);
+    spatial_invocation_detail::appendU64(bytes, binding.byteOffset);
   }
   for (const SpatialInvocationResultDestination &result : wire.results) {
     spatial_invocation_detail::appendU32(bytes, result.ordinal);
@@ -205,9 +324,13 @@ inline bool decodeSpatialInvocationWire(const std::vector<std::uint8_t> &bytes,
       spatial_invocation_detail::readU32(bytes.data() + 52);
   const std::uint32_t valueCount =
       spatial_invocation_detail::readU32(bytes.data() + 56);
-  const std::uint32_t resultCount =
+  const std::uint32_t memoryObjectCount =
       spatial_invocation_detail::readU32(bytes.data() + 60);
-  if (spatial_invocation_detail::readU32(bytes.data() + 64) != 0) {
+  const std::uint32_t memoryRootBindingCount =
+      spatial_invocation_detail::readU32(bytes.data() + 64);
+  const std::uint32_t resultCount =
+      spatial_invocation_detail::readU32(bytes.data() + 68);
+  if (spatial_invocation_detail::readU32(bytes.data() + 72) != 0) {
     error = "invocation reserved header field is nonzero";
     return false;
   }
@@ -234,7 +357,7 @@ inline bool decodeSpatialInvocationWire(const std::vector<std::uint8_t> &bytes,
   wire.values.reserve(valueCount);
   for (std::uint32_t ordinal = 0; ordinal != valueCount; ++ordinal) {
     std::size_t headerEnd = 0;
-    if (!spatial_invocation_detail::checkedAdd(cursor, 8, headerEnd) ||
+    if (!spatial_invocation_detail::checkedAdd(cursor, 24, headerEnd) ||
         headerEnd > bytes.size()) {
       error = "invocation value header is truncated";
       return false;
@@ -243,6 +366,24 @@ inline bool decodeSpatialInvocationWire(const std::vector<std::uint8_t> &bytes,
         spatial_invocation_detail::readU32(bytes.data() + cursor);
     const std::uint32_t bitCount =
         spatial_invocation_detail::readU32(bytes.data() + cursor + 4);
+    const std::uint32_t pointerPresent =
+        spatial_invocation_detail::readU32(bytes.data() + cursor + 8);
+    if (pointerPresent > 1) {
+      error = "invocation pointer-target discriminant is invalid";
+      return false;
+    }
+    std::optional<SpatialInvocationPointerTarget> pointerTarget;
+    const std::uint32_t pointerObject =
+        spatial_invocation_detail::readU32(bytes.data() + cursor + 12);
+    const std::uint64_t pointerOffset =
+        spatial_invocation_detail::readU64(bytes.data() + cursor + 16);
+    if (pointerPresent)
+      pointerTarget =
+          SpatialInvocationPointerTarget{pointerObject, pointerOffset};
+    else if (pointerObject != 0 || pointerOffset != 0) {
+      error = "invocation absent pointer target has a nonzero payload";
+      return false;
+    }
     std::size_t byteCount = 0;
     std::size_t valueEnd = 0;
     if (!spatial_invocation_detail::encodedByteCount(bitCount, byteCount) ||
@@ -253,10 +394,69 @@ inline bool decodeSpatialInvocationWire(const std::vector<std::uint8_t> &bytes,
       return false;
     }
     wire.values.push_back(
-        {encodedOrdinal, bitCount,
+        {encodedOrdinal, bitCount, std::move(pointerTarget),
          std::vector<std::uint8_t>(bytes.begin() + headerEnd,
                                    bytes.begin() + valueEnd)});
     cursor = valueEnd;
+  }
+  wire.memoryObjects.clear();
+  wire.memoryObjects.reserve(memoryObjectCount);
+  for (std::uint32_t ordinal = 0; ordinal != memoryObjectCount; ++ordinal) {
+    std::size_t headerEnd = 0;
+    if (!spatial_invocation_detail::checkedAdd(cursor, 24, headerEnd) ||
+        headerEnd > bytes.size()) {
+      error = "invocation memory object header is truncated";
+      return false;
+    }
+    const std::uint32_t encodedOrdinal =
+        spatial_invocation_detail::readU32(bytes.data() + cursor);
+    if (spatial_invocation_detail::readU32(bytes.data() + cursor + 4) != 0) {
+      error = "invocation memory object reserved field is nonzero";
+      return false;
+    }
+    const std::uint64_t address =
+        spatial_invocation_detail::readU64(bytes.data() + cursor + 8);
+    const std::uint64_t byteCount =
+        spatial_invocation_detail::readU64(bytes.data() + cursor + 16);
+    if (byteCount > std::numeric_limits<std::size_t>::max()) {
+      error = "invocation memory object exceeds the host size domain";
+      return false;
+    }
+    std::size_t objectEnd = 0;
+    if (!spatial_invocation_detail::checkedAdd(
+            headerEnd, static_cast<std::size_t>(byteCount), objectEnd) ||
+        objectEnd > bytes.size()) {
+      error = "invocation memory object payload is truncated";
+      return false;
+    }
+    wire.memoryObjects.push_back(
+        {encodedOrdinal, address,
+         std::vector<std::uint8_t>(bytes.begin() + headerEnd,
+                                   bytes.begin() + objectEnd)});
+    cursor = objectEnd;
+  }
+  wire.memoryRootBindings.clear();
+  wire.memoryRootBindings.reserve(memoryRootBindingCount);
+  for (std::uint32_t ordinal = 0; ordinal != memoryRootBindingCount;
+       ++ordinal) {
+    std::size_t bindingEnd = 0;
+    if (!spatial_invocation_detail::checkedAdd(cursor, 24, bindingEnd) ||
+        bindingEnd > bytes.size()) {
+      error = "invocation memory-root binding table is truncated";
+      return false;
+    }
+    const std::uint64_t rootEntity =
+        spatial_invocation_detail::readU64(bytes.data() + cursor);
+    const std::uint32_t objectOrdinal =
+        spatial_invocation_detail::readU32(bytes.data() + cursor + 8);
+    if (spatial_invocation_detail::readU32(bytes.data() + cursor + 12) != 0) {
+      error = "invocation memory-root binding reserved field is nonzero";
+      return false;
+    }
+    const std::uint64_t byteOffset =
+        spatial_invocation_detail::readU64(bytes.data() + cursor + 16);
+    wire.memoryRootBindings.push_back({rootEntity, objectOrdinal, byteOffset});
+    cursor = bindingEnd;
   }
   wire.results.clear();
   wire.results.reserve(resultCount);
@@ -284,11 +484,15 @@ inline bool projectSpatialInvocationWireLayout(
     const std::array<std::uint8_t, 32> &canonicalDataflowIdentity,
     std::uint64_t rootThreadLaunchEntity, std::uint64_t graphLaunchEntity,
     const std::vector<std::uint64_t> &denseCoordinates,
-    const std::vector<std::uint32_t> &valueBitCounts,
+    const std::vector<SpatialInvocationValueLayout> &valueLayouts,
+    const std::vector<SpatialInvocationMemoryObjectLayout> &memoryObjects,
+    const std::vector<SpatialInvocationMemoryRootBinding> &memoryRootBindings,
     const std::vector<std::uint32_t> &resultBitCounts,
     SpatialInvocationWireLayout &layout, std::string &error) {
   if (denseCoordinates.size() > std::numeric_limits<std::uint32_t>::max() ||
-      valueBitCounts.size() > std::numeric_limits<std::uint32_t>::max() ||
+      valueLayouts.size() > std::numeric_limits<std::uint32_t>::max() ||
+      memoryObjects.size() > std::numeric_limits<std::uint32_t>::max() ||
+      memoryRootBindings.size() > std::numeric_limits<std::uint32_t>::max() ||
       resultBitCounts.size() > std::numeric_limits<std::uint32_t>::max()) {
     error = "invocation layout collection exceeds its wire count domain";
     return false;
@@ -301,20 +505,48 @@ inline bool projectSpatialInvocationWireLayout(
   std::size_t cursor = spatialInvocationWireHeaderBytes +
                        denseCoordinates.size() * sizeof(std::uint64_t);
   layout.valuePayloadOffsets.clear();
-  for (std::size_t ordinal = 0; ordinal != valueBitCounts.size(); ++ordinal) {
+  for (std::size_t ordinal = 0; ordinal != valueLayouts.size(); ++ordinal) {
     std::size_t byteCount = 0;
-    if (!spatial_invocation_detail::encodedByteCount(valueBitCounts[ordinal],
-                                                     byteCount)) {
+    if (!spatial_invocation_detail::encodedByteCount(
+            valueLayouts[ordinal].bitCount, byteCount)) {
       error = "invocation layout has a zero-width value";
       return false;
     }
     wire.values.push_back({static_cast<std::uint32_t>(ordinal),
-                           valueBitCounts[ordinal],
+                           valueLayouts[ordinal].bitCount,
+                           valueLayouts[ordinal].pointerTarget,
                            std::vector<std::uint8_t>(byteCount, 0)});
-    cursor += 8;
+    cursor += 24;
     layout.valuePayloadOffsets.push_back(cursor);
     cursor += byteCount;
   }
+  layout.memoryAddressOffsets.clear();
+  layout.memoryPayloadOffsets.clear();
+  std::uint64_t templateAddress = 1;
+  for (std::size_t ordinal = 0; ordinal != memoryObjects.size(); ++ordinal) {
+    if (memoryObjects[ordinal].byteCount == 0 ||
+        memoryObjects[ordinal].byteCount >
+            std::numeric_limits<std::size_t>::max()) {
+      error = "invocation layout has a non-finite memory object";
+      return false;
+    }
+    wire.memoryObjects.push_back(
+        {static_cast<std::uint32_t>(ordinal), templateAddress,
+         std::vector<std::uint8_t>(
+             static_cast<std::size_t>(memoryObjects[ordinal].byteCount), 0)});
+    if (memoryObjects[ordinal].byteCount >
+        std::numeric_limits<std::uint64_t>::max() - templateAddress - 1) {
+      error = "invocation layout memory address domain is exhausted";
+      return false;
+    }
+    templateAddress += memoryObjects[ordinal].byteCount + 1;
+    layout.memoryAddressOffsets.push_back(cursor + 8);
+    cursor += 24;
+    layout.memoryPayloadOffsets.push_back(cursor);
+    cursor += static_cast<std::size_t>(memoryObjects[ordinal].byteCount);
+  }
+  wire.memoryRootBindings = memoryRootBindings;
+  cursor += memoryRootBindings.size() * 24;
   layout.resultAddressOffsets.clear();
   for (std::size_t ordinal = 0; ordinal != resultBitCounts.size(); ++ordinal) {
     wire.results.push_back(

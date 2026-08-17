@@ -93,7 +93,8 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     ::dataflow::RootedGraphLaunchRef launch, ::dataflow::GraphRef graph,
     const PreparedGraphExecution &execution, SimulatorState &state,
-    CgraPhysicalActionRuntime &physical) {
+    CgraPhysicalActionRuntime &physical,
+    CgraExternalMemoryProvider *externalMemoryProvider) {
   if (state.execution != &execution)
     return invalid("CGRA memory state does not use the prepared graph");
   auto launchedGraph = dataflow.resolve(launch);
@@ -186,16 +187,26 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
     }
     if (!selectedUse)
       return invalid("CGRA memory actor has no exact rooted use");
-    if (!std::holds_alternative<::loom::fabric::LocalMemoryServiceRef>(
-            selectedUse->target))
+    if (std::holds_alternative<::loom::fabric::LocalMemoryServiceRef>(
+            selectedUse->target)) {
+      if (!selectedUse->localServicePhysicalUseOrdinal ||
+          *selectedUse->localServicePhysicalUseOrdinal >=
+              plan.physicalUseClients.size() ||
+          plan.physicalUseClients[*selectedUse
+                                       ->localServicePhysicalUseOrdinal] !=
+              CgraPhysicalUseClientKind::MemoryTransition)
+        return invalid("CGRA local memory service action is not selected");
+    } else if (std::holds_alternative<::loom::fabric::ManagerEndpointRef>(
+                   selectedUse->target)) {
+      if (selectedUse->localServicePhysicalUseOrdinal)
+        return invalid("CGRA manager memory use selected a local action");
+      if (!externalMemoryProvider)
+        return unsupported(
+            "CGRA manager memory target requires an external provider");
+    } else {
       return unsupported(
-          "CGRA memory service target has no registered execution provider");
-    if (!selectedUse->localServicePhysicalUseOrdinal ||
-        *selectedUse->localServicePhysicalUseOrdinal >=
-            plan.physicalUseClients.size() ||
-        plan.physicalUseClients[*selectedUse->localServicePhysicalUseOrdinal] !=
-            CgraPhysicalUseClientKind::MemoryTransition)
-      return invalid("CGRA local memory service action is not selected");
+          "CGRA addressed memory use selected a consistency-only target");
+    }
 
     auto service =
         ::dataflow::semantics::CanonicalService::forActor(resolved->op);
@@ -226,9 +237,9 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
       if (activeSources[role])
         return invalid("CGRA memory activation repeats an input role");
       activeSources[role] = true;
-      const auto *internal = std::get_if<
-          ::loom::fabric::FabricMemoryHandshakeInternalRoleSource>(
-          &*actor.roleSources[role]);
+      const auto *internal =
+          std::get_if<::loom::fabric::FabricMemoryHandshakeInternalRoleSource>(
+              &*actor.roleSources[role]);
       if (internal) {
         if (connections.size() != 1 ||
             plan.memory.internalConnections[connections.front()].connection !=
@@ -255,8 +266,8 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
       if (!value)
         return value.takeError();
       const ::dataflow::ActorTokenResultRef producer{
-          actor.actor, static_cast<::dataflow::StructuralOrdinal>(
-                           value->getResultNumber())};
+          actor.actor,
+          static_cast<::dataflow::StructuralOrdinal>(value->getResultNumber())};
       llvm::SmallVector<std::uint64_t, 2> connectionRows;
       std::vector<::loom::fabric::FabricOrdinal> connectionOrdinals;
       for (auto [connectionOrdinal, connection] :
@@ -323,19 +334,17 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
       return consumer.takeError();
     if (producer->graph != consumer->graph)
       return invalid("CGRA memory internal connection spans graphs");
-    if (producer->graph == graph &&
-        (!internalProducerValidated[ordinal] ||
-         !internalConsumerValidated[ordinal]))
+    if (producer->graph == graph && (!internalProducerValidated[ordinal] ||
+                                     !internalConsumerValidated[ordinal]))
       return invalid("CGRA memory internal connection activation is open");
   }
-  switch (
-      ::loom::fabric::deriveFabricMemoryInternalConnectionClosure(closureUses)) {
+  switch (::loom::fabric::deriveFabricMemoryInternalConnectionClosure(
+      closureUses)) {
   case ::loom::fabric::FabricMemoryInternalConnectionClosure::Closed:
     break;
   case ::loom::fabric::FabricMemoryInternalConnectionClosure::Open:
     return invalid("CGRA memory internal connection activation is open");
-  case ::loom::fabric::FabricMemoryInternalConnectionClosure::
-      MultipleProducers:
+  case ::loom::fabric::FabricMemoryInternalConnectionClosure::MultipleProducers:
     return invalid("CGRA memory internal connection has multiple producers");
   }
 
@@ -345,7 +354,8 @@ llvm::Expected<CgraMemoryRuntime> CgraMemoryRuntime::create(
       return invalid("CGRA memory execution lacks a selected actor binding");
 
   return CgraMemoryRuntime(plan, state, std::move(bindings),
-                           std::move(bindingBySemanticActor), physical);
+                           std::move(bindingBySemanticActor), physical,
+                           externalMemoryProvider);
 }
 
 bool CgraMemoryRuntime::ownsActor(std::uint64_t semanticActorOrdinal) const {
@@ -370,6 +380,9 @@ CgraMemoryRuntime::allocateFiring(std::uint64_t bindingOrdinal,
                        ready.activeLanes);
   if (!childCount)
     return childCount.takeError();
+  if (!std::holds_alternative<::loom::fabric::LocalMemoryServiceRef>(
+          binding.rootedUse->target))
+    *childCount = 0;
   std::uint64_t slot = 0;
   if (freeFiringSlots_.empty()) {
     slot = firings_.size();
@@ -504,15 +517,17 @@ CgraMemoryRuntime::commitIssue(std::uint64_t firingSlot,
        firing.actorOccurrenceOrdinal, 0,
        static_cast<std::uint32_t>(binding.results.size()), coordinate});
 
-  const std::uint64_t serviceAction =
-      *binding.rootedUse->localServicePhysicalUseOrdinal;
-  for (std::uint32_t child = 0; child != firing.activeChildCount; ++child) {
-    auto requested = requestAction(firingSlot, serviceAction,
-                                   /*localActionOrdinal=*/1 + child,
-                                   /*operation=*/false, coordinate);
-    if (!requested)
-      return requested.takeError();
-    frame.physicalEvents.push_back(std::move(*requested));
+  if (binding.rootedUse->localServicePhysicalUseOrdinal) {
+    const std::uint64_t serviceAction =
+        *binding.rootedUse->localServicePhysicalUseOrdinal;
+    for (std::uint32_t child = 0; child != firing.activeChildCount; ++child) {
+      auto requested = requestAction(firingSlot, serviceAction,
+                                     /*localActionOrdinal=*/1 + child,
+                                     /*operation=*/false, coordinate);
+      if (!requested)
+        return requested.takeError();
+      frame.physicalEvents.push_back(std::move(*requested));
+    }
   }
   if (firing.activeChildCount == 0)
     return linearize(firingSlot, frame);
@@ -566,7 +581,88 @@ llvm::Error CgraMemoryRuntime::linearize(std::uint64_t firingSlot,
                                     *binding.semantic->memory, *state_);
     if (!write)
       return executionFailure(*state_, "CGRA memory write preparation failed");
-  } else {
+  }
+
+  const auto *manager = std::get_if<::loom::fabric::ManagerEndpointRef>(
+      &binding.rootedUse->target);
+  if (manager && !firing.ready->activeLanes.isZero()) {
+    if (!externalMemoryProvider_)
+      return unsupported("CGRA manager memory provider disappeared");
+    CgraExternalMemoryRequest request{*manager,
+                                      firing.ready->view.memory->logicalRootId,
+                                      write ? CgraExternalMemoryOperation::Write
+                                            : CgraExternalMemoryOperation::Read,
+                                      {},
+                                      frame.coordinate};
+    request.elements.reserve(firing.ready->slots.size());
+    if (write && write->elements.size() != firing.ready->slots.size())
+      return invalid("CGRA external write element projection is incomplete");
+    for (std::size_t ordinal = 0; ordinal != firing.ready->slots.size();
+         ++ordinal) {
+      CgraExternalMemoryElement element{
+          firing.ready->slots[ordinal],
+          binding.semantic->memory->elementLayout.byteCount,
+          {}};
+      if (write) {
+        const DataflowMemoryWrite::Element &prepared = write->elements[ordinal];
+        if (prepared.byteOffset != element.byteOffset ||
+            prepared.bytes.size() != element.byteCount)
+          return invalid(
+              "CGRA external write geometry disagrees with Dataflow");
+        element.writeData.reserve(prepared.bytes.size());
+        for (const SemanticMemoryByte &byte : prepared.bytes) {
+          if (byte.state != SemanticState::Defined)
+            return unsupported(
+                "CGRA external provider cannot publish exceptional bytes");
+          element.writeData.push_back(byte.value);
+        }
+      }
+      request.elements.push_back(std::move(element));
+    }
+    auto response = externalMemoryProvider_->transact(request);
+    if (!response)
+      return response.takeError();
+    if (write) {
+      if (!response->readData.empty())
+        return invalid("CGRA external write returned read data");
+    } else {
+      if (response->readData.size() != request.elements.size())
+        return invalid("CGRA external read response is incomplete");
+      for (std::size_t ordinal = 0; ordinal != request.elements.size();
+           ++ordinal) {
+        const CgraExternalMemoryElement &element = request.elements[ordinal];
+        const std::vector<std::uint8_t> &bytes = response->readData[ordinal];
+        if (bytes.size() != element.byteCount)
+          return invalid("CGRA external read returned the wrong byte count");
+        bool changed = false;
+        for (std::size_t byte = 0; byte != bytes.size(); ++byte) {
+          const std::size_t offset =
+              static_cast<std::size_t>(element.byteOffset) + byte;
+          if (!firing.ready->view.memory->initialized[offset] ||
+              firing.ready->view.memory->bytes[offset].state !=
+                  SemanticState::Defined ||
+              firing.ready->view.memory->bytes[offset].value != bytes[byte]) {
+            changed = true;
+            break;
+          }
+        }
+        if (!changed)
+          continue;
+        if (binding.semantic->memory->access.dataPointerLayout)
+          return unsupported(
+              "CGRA external pointer read changed without provenance");
+        llvm::SmallVector<SemanticMemoryByte, 8> projected;
+        projected.reserve(bytes.size());
+        for (std::uint8_t byte : bytes)
+          projected.push_back({SemanticState::Defined, byte});
+        writeMemoryElement(firing.ready->view,
+                           static_cast<std::size_t>(element.byteOffset),
+                           projected);
+      }
+    }
+  }
+
+  if (!write) {
     read = preparePlainMemoryRead(*firing.ready, *binding.semantic->memory,
                                   *state_);
     if (!read)

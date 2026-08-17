@@ -20,14 +20,32 @@ func.func @anti_dependence(%buf: memref<?xf32>, %n: index) {
     return
 }
 
-// True parallel-init loop with a separate base pointer for the store
-// (no aliasing read). This MUST still lift to scf.forall so the
-// matcher does not regress on the obviously-safe shape.
+// Different SSA roots are not an alias proof. Without explicit provenance the
+// source and destination may denote the same object, so this sibling remains
+// serial.
+
+// CHECK-LABEL: func.func @unproven_distinct_init
+// CHECK: scf.for
+// CHECK-NOT: scf.forall
+func.func @unproven_distinct_init(%dst: memref<?xf32>, %src: memref<?xf32>,
+                                  %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    scf.for %i = %c0 to %n step %c1 {
+      %v = memref.load %src[%i] : memref<?xf32>
+      memref.store %v, %dst[%i] : memref<?xf32>
+    }
+    return
+}
+
+// Explicit noalias provenance on both roots proves the same elementwise
+// transfer independent and permits the parallel candidate.
 
 // CHECK-LABEL: func.func @disjoint_init
 // CHECK: scf.forall
 // CHECK-NOT: scf.for
-func.func @disjoint_init(%dst: memref<?xf32>, %src: memref<?xf32>,
+func.func @disjoint_init(%dst: memref<?xf32> {llvm.noalias},
+                         %src: memref<?xf32> {llvm.noalias},
                          %n: index) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
@@ -85,8 +103,9 @@ func.func @same_base_read_write_shifted(%buf: memref<?xf32>, %n: index) {
 // CHECK: scf.forall
 // CHECK-COUNT-3: memref.store
 // CHECK-NOT: scf.for
-func.func @disjoint_lane_stores_same_base(%dst: memref<?xf32>, %src: memref<?xf32>,
-                                          %n: index) {
+func.func @disjoint_lane_stores_same_base(
+    %dst: memref<?xf32> {llvm.noalias},
+    %src: memref<?xf32> {llvm.noalias}, %n: index) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index

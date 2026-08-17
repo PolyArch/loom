@@ -6,7 +6,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
+
+
+TEST_ROOT = Path(__file__).resolve().parents[1]
+if str(TEST_ROOT) not in sys.path:
+    sys.path.insert(0, str(TEST_ROOT))
+
+from corpus_simulation_report import parse_dse_execution_projection  # noqa: E402
 
 
 ARTIFACT_FIELDS = {
@@ -133,16 +141,10 @@ def main() -> int:
         "selected source provenance omitted the anchor source",
     )
 
-    dse = report.get("dse_execution")
-    require(isinstance(dse, dict), "DSE execution summary is absent")
-    require(positive_integer(dse.get("plan_executions")), "DSE plan did not execute")
-    require(
-        positive_integer(dse.get("generate_invocations")), "Generate did not execute"
-    )
-    require(dse.get("incomplete_generate_invocations") == 0, "Generate was incomplete")
-    require(
-        positive_integer(dse.get("generate_lineage_edges")), "Generate lineage is empty"
-    )
+    try:
+        parse_dse_execution_projection(report.get("dse_execution"))
+    except ValueError as exc:
+        raise ValueError(f"invalid DSE execution summary: {exc}") from exc
     return 0
 
 

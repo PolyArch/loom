@@ -1,10 +1,12 @@
 add_mlir_library(LoomFrontendRaising
   ConstantCallbackSpecialization.cpp
+  CountedLoopProjection.cpp
   DeduplicateSCFWhileStatePass.cpp
   LiftCFToSCFPass.cpp
   LLVMArithToArithPass.cpp
   LLVMCfToCfPass.cpp
   MaterializeFMulAddPass.cpp
+  MemoryProvenance.cpp
   NormalizeLiftedSCFExitPass.cpp
   Pipeline.cpp
   SCFForToForallPass.cpp

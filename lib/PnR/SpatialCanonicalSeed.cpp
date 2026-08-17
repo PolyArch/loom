@@ -50,6 +50,8 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
       workSummary.initializerAssignmentAttempts);
   if (!initialized)
     return initialized.takeError();
+  const SpatialCandidateInitializerPreference initializerPreference =
+      initialized->preference;
   SpatialCandidateStateHandle candidate = std::move(initialized->candidate);
 
   SpatialCandidateScratch candidateScratch;
@@ -90,7 +92,8 @@ llvm::Expected<SpatialPathFinderSeed> loom::pnr::createPathFinderSpatialSeed(
   }
   if (llvm::Error error = candidate->verify())
     return std::move(error);
-  return SpatialPathFinderSeed{std::move(candidate), attemptOrdinal};
+  return SpatialPathFinderSeed{std::move(candidate), attemptOrdinal,
+                               initializerPreference};
 }
 
 llvm::Expected<SpatialPathFinderSeed>

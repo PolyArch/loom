@@ -2,6 +2,7 @@
 #define LOOM_SIMULATOR_CGRASIMULATOR_H
 
 #include "Simulator/CGRAAdmission.h"
+#include "Simulator/CgraExternalMemoryProvider.h"
 #include "Simulator/SimulationExecution.h"
 #include "Simulator/SpatialExecutionSession.h"
 #include "Simulator/SpatialTrace.h"
@@ -80,19 +81,22 @@ private:
   startCgraExecutionSession(const PreparedCgraExecution &,
                             const CanonicalSimulationWorkload &,
                             const CanonicalSimulationRuntimeInput &,
-                            std::optional<TraceCaptureLevel>);
+                            std::optional<TraceCaptureLevel>,
+                            CgraExternalMemoryProvider *);
   friend llvm::Expected<CgraSimulationOutcome>
   simulateCgraWorkload(const PreparedCgraExecution &,
                        const CanonicalSimulationWorkload &,
                        const CanonicalSimulationRuntimeInput &, std::uint64_t,
-                       std::optional<std::chrono::steady_clock::time_point>);
+                       std::optional<std::chrono::steady_clock::time_point>,
+                       CgraExternalMemoryProvider *);
 };
 
 llvm::Expected<CgraExecutionSession> startCgraExecutionSession(
     const PreparedCgraExecution &prepared,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
-    std::optional<TraceCaptureLevel> traceLevel = std::nullopt);
+    std::optional<TraceCaptureLevel> traceLevel = std::nullopt,
+    CgraExternalMemoryProvider *externalMemoryProvider = nullptr);
 
 llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     const PreparedCgraExecution &prepared,
@@ -100,7 +104,8 @@ llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     const CanonicalSimulationRuntimeInput &runtimeInput,
     std::uint64_t maxEventFrames,
     std::optional<std::chrono::steady_clock::time_point> executionDeadline =
-        std::nullopt);
+        std::nullopt,
+    CgraExternalMemoryProvider *externalMemoryProvider = nullptr);
 
 } // namespace loom::sim
 

@@ -79,6 +79,35 @@ void appendComponent(ProjectionKey &bytes,
   bytes.insert(bytes.end(), component.begin(), component.end());
 }
 
+ProjectionKey attachmentDispositionKey(
+    const FrozenSpatialAttachmentOption &attachment) {
+  ProjectionKey key;
+  key.reserve(18);
+  appendU32Be(key, attachment.endpoint);
+  key.push_back(attachment.localTraversal.has_value());
+  appendU32Be(key, attachment.localTraversal.value_or(0));
+  appendU32Be(key, static_cast<std::uint32_t>(attachment.progressBoundary));
+  key.push_back(attachment.sharedOperandEnqueueUnit.has_value());
+  appendU32Be(key, attachment.sharedOperandEnqueueUnit.value_or(0));
+  return key;
+}
+
+std::optional<ProjectionKey>
+fuBoundaryBroadcastKey(const FrozenSpatialPortDemand &demand) {
+  if (demand.kind != FrozenSpatialPortDemandKind::Compute ||
+      !std::holds_alternative<::dataflow::ActorTokenOperandRef>(
+          demand.terminal))
+    return std::nullopt;
+  const auto *port =
+      std::get_if<FabricFuTemplatePortRef>(&demand.templateTerminal);
+  if (!port || port->direction != FabricPortDirection::Input)
+    return std::nullopt;
+  ProjectionKey key;
+  appendU32Be(key, demand.realization);
+  appendComponent(key, canonicalFabricBytes(*port));
+  return key;
+}
+
 ProjectionKey
 computeProjectionKey(Projection projection,
                      const FrozenSpatialRealizationIndex &realizations,
@@ -583,13 +612,93 @@ SpatialBindingRelationModel::create(
   std::vector<InitializerRelationInput> relationInputs;
   std::vector<SpatialBindingRelationRole> relationRoles;
 
-  // A Temporal PE ingress activation is keyed by the selected endpoint and
-  // Physical Tag. Sinks of one logical net that select the same endpoint also
-  // necessarily share the same tag-continuity node, so Fabric's one-enqueue
-  // service rule is an attachment relation, not a routing heuristic. Only
-  // units shared by every resident-context choice appear here; context-local
-  // units are already separated by the resident-context relation below.
+  // One FU boundary input is one physical selector and one logical operand
+  // queue even when its SSA value has several consumers. Tie those attachment
+  // decisions together first, then let one representative participate in the
+  // distinct-queue enqueue-service relation.
   for (const FrozenSpatialLogicalNet &net : transfers.logicalNets()) {
+    std::map<ProjectionKey, std::vector<PnrIndex>> broadcastClasses;
+    for (PnrIndex sink = 0; sink < net.sinkCount; ++sink) {
+      const PnrIndex globalSink = net.sinkOffset + sink;
+      if (globalSink >= transfers.logicalNetSinkBindings().size())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "FU boundary broadcast names a foreign sink");
+      const FrozenSpatialTerminalBinding binding =
+          transfers.logicalNetSinkBindings()[globalSink];
+      if (binding.kind != FrozenSpatialTerminalBindingKind::PortDemand ||
+          binding.index >= ports.portDemands().size())
+        continue;
+      const auto key =
+          fuBoundaryBroadcastKey(ports.portDemands()[binding.index]);
+      if (key)
+        broadcastClasses[*key].push_back(binding.index);
+    }
+
+    std::set<PnrIndex> nonRepresentativeBroadcastDecisions;
+    for (auto &[key, demands] : broadcastClasses) {
+      (void)key;
+      llvm::sort(demands);
+      if (std::adjacent_find(demands.begin(), demands.end()) != demands.end())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "FU boundary broadcast repeats one sink decision");
+      if (demands.size() < 2)
+        continue;
+
+      InitializerRelationInput selectorEquality;
+      selectorEquality.kind = InitializerRelationKind::Equal;
+      std::vector<std::vector<ProjectionKey>> memberKeys;
+      std::vector<ProjectionKey> universe;
+      selectorEquality.members.reserve(demands.size());
+      memberKeys.reserve(demands.size());
+      for (PnrIndex demand : demands) {
+        const PnrIndex decision = portDecisionOffset + demand;
+        const auto choices =
+            llvm::ArrayRef(attachmentChoices)
+                .slice(portAttachmentChoiceOffsets[demand],
+                       portAttachmentChoiceOffsets[demand + 1] -
+                           portAttachmentChoiceOffsets[demand]);
+        std::vector<ProjectionKey> keys;
+        keys.reserve(choices.size());
+        for (PnrIndex option : choices) {
+          if (option >= ports.attachmentOptions().size())
+            return invalid(Projection::SpatialTransferAttachment,
+                           "FU boundary broadcast names a foreign option");
+          keys.push_back(
+              attachmentDispositionKey(ports.attachmentOptions()[option]));
+        }
+        universe.insert(universe.end(), keys.begin(), keys.end());
+        memberKeys.push_back(std::move(keys));
+        selectorEquality.members.push_back({decision, {}});
+      }
+      llvm::sort(universe);
+      universe.erase(std::unique(universe.begin(), universe.end()),
+                     universe.end());
+      if (universe.size() > getPnrIndexMax())
+        return invalid(Projection::SpatialTransferAttachment,
+                       "FU boundary broadcast value domain overflows "
+                       "PnrIndex");
+      for (std::size_t member = 0; member < memberKeys.size(); ++member) {
+        auto &values = selectorEquality.members[member].projectedValues;
+        values.reserve(memberKeys[member].size());
+        for (const ProjectionKey &value : memberKeys[member]) {
+          const auto found = llvm::lower_bound(universe, value);
+          assert(found != universe.end() && *found == value);
+          values.push_back(static_cast<PnrIndex>(found - universe.begin()));
+        }
+      }
+      relationInputs.push_back(std::move(selectorEquality));
+      relationRoles.push_back(SpatialBindingRelationRole::Structural);
+      for (std::size_t member = 1; member < demands.size(); ++member)
+        nonRepresentativeBroadcastDecisions.insert(portDecisionOffset +
+                                                   demands[member]);
+    }
+
+    // A Temporal PE ingress activation is keyed by the selected endpoint and
+    // Physical Tag. Distinct queues on one logical net that select the same
+    // endpoint also share the same tag-continuity node, so Fabric's one-
+    // enqueue-service rule is an attachment relation, not a routing heuristic.
+    // Only units shared by every resident-context choice appear here; context-
+    // local units are separated by the resident-context relation below.
     InitializerRelationInput ingressServices;
     ingressServices.kind = InitializerRelationKind::Disjoint;
     std::vector<std::vector<ProjectionKey>> memberKeys;
@@ -610,6 +719,8 @@ SpatialBindingRelationModel::create(
       if (demand.kind != FrozenSpatialPortDemandKind::Compute)
         continue;
       const PnrIndex decision = portDecisionOffset + binding.index;
+      if (nonRepresentativeBroadcastDecisions.count(decision) != 0)
+        continue;
       const auto choices =
           llvm::ArrayRef(attachmentChoices)
               .slice(portAttachmentChoiceOffsets[binding.index],

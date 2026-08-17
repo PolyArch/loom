@@ -622,6 +622,14 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
       shapes->valueResults.size());
   std::iota(workloadDraft.observableContract.valueResults.begin(),
             workloadDraft.observableContract.valueResults.end(), 0);
+  auto writableRoots = loom::sim::projectSpatialInvocationWritableMemoryRoots(
+      *dataflowView, graph);
+  if (!writableRoots)
+    return writableRoots.takeError();
+  for (dataflow::LogicalMemoryRootRef memory : *writableRoots)
+    workloadDraft.observableContract.memories.push_back(
+        {dataflow::LogicalMemoryRootOrViewRef{memory},
+         loom::sim::MemoryObservationForm::DiffFromRuntimeInput});
   auto workload =
       loom::sim::finalizeSimulationWorkload(workloadDraft, *dataflowView);
   if (!workload)

@@ -83,6 +83,7 @@ struct ResolvedPnrAnnealingPolicy final {
   std::uint64_t fallbackTemperature;
   std::uint64_t minimumTemperature;
   ResolvedExactRatio coolingRatio;
+  std::uint64_t temperatureLevelLimit;
   std::uint64_t proposalsPerLevelBase;
   std::uint64_t proposalsPerMovableDecision;
 };

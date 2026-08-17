@@ -2,6 +2,7 @@
 
 #include "Config/ResolvedConfig.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -37,10 +38,43 @@ dataflow::ActorRef actor(const loom::ArtifactIdentity &owner,
   return dataflow::ActorRef{owner, dataflow::ActorId(ordinal)};
 }
 
-loom::mapping::detail::TechMatchRow row(std::uint8_t key,
-                                        std::vector<std::size_t> actors) {
+loom::mapping::detail::TechMatchRow
+row(std::uint8_t key, std::vector<std::size_t> actors,
+    std::vector<std::size_t> contexts = {}) {
   return loom::mapping::detail::TechMatchRow{
-      {key}, std::move(actors), loom::mapping::TechComputeRealizationView{}};
+      {key},
+      std::move(actors),
+      loom::mapping::TechComputeRealizationView{},
+      std::move(contexts),
+      std::nullopt};
+}
+
+loom::mapping::detail::TechMatchRow memoryRow(
+    std::uint8_t key, std::vector<std::size_t> actors, std::uint8_t resource,
+    loom::mapping::SpatialMemoryExclusiveResourceKind resourceKind = loom::
+        mapping::SpatialMemoryExclusiveResourceKind::SpatialOperationPort) {
+  loom::mapping::SpatialMemoryOccurrenceDemandView demand;
+  demand.schedule = resourceKind ==
+                            loom::mapping::SpatialMemoryExclusiveResourceKind::
+                                SpatialOperationPort
+                        ? fabric::Schedule::Spatial
+                        : fabric::Schedule::Temporal;
+  demand.occurrences = {{loom::fabric::FabricMemoryOccurrenceRef(1), 0},
+                        {loom::fabric::FabricMemoryOccurrenceRef(2), 0}};
+  demand.exclusiveResources = {{resourceKind, {resource}}};
+  return loom::mapping::detail::TechMatchRow{
+      {key},
+      std::move(actors),
+      loom::mapping::TechMemoryRealizationView{},
+      {},
+      std::move(demand)};
+}
+
+void assignIndependentComputeContextSupply(
+    loom::mapping::detail::TechMatchDomain &domain) {
+  domain.computeContextValueCount = domain.rows.size();
+  for (auto [ordinal, candidate] : llvm::enumerate(domain.rows))
+    candidate.computeContextValues = {ordinal};
 }
 
 loom::mapping::ResolvedTechMappingConfigView
@@ -68,6 +102,7 @@ void completedProductSurvivesExpansionLimit() {
       row(0, {2}),    row(1, {0}), row(2, {1}),
       row(3, {0, 1}), row(4, {3}), row(5, {2, 3}),
   };
+  assignIndependentComputeContextSupply(domain);
 
   loom::mapping::TechMappingGenerationAccounting accounting;
   const auto result = loom::mapping::detail::searchTechMatchCovers(
@@ -91,6 +126,7 @@ void sealedCoversFollowFormalRank() {
       row(8, {1, 2}),  row(9, {1, 3}),       row(10, {1, 3}), row(11, {1, 4}),
       row(12, {1, 4}), row(13, {1, 3, 4}),
   };
+  assignIndependentComputeContextSupply(domain);
 
   loom::mapping::TechMappingGenerationAccounting accounting;
   const auto result = loom::mapping::detail::searchTechMatchCovers(
@@ -129,6 +165,7 @@ void independentComponentFrontierIsCompact() {
     domain.rows.back().key.push_back(
         static_cast<std::uint8_t>(((ordinal * 2) + 1) & 0xff));
   }
+  assignIndependentComputeContextSupply(domain);
 
   const long rssBefore = peakRssKiB();
   const auto start = std::chrono::steady_clock::now();
@@ -155,6 +192,7 @@ void realizationCountLowerBoundIsAdmissible() {
       row(0, {0}), row(1, {0, 1}), row(2, {1}),
       row(3, {2}), row(4, {3}),    row(5, {1, 2, 3}),
   };
+  assignIndependentComputeContextSupply(domain);
 
   loom::mapping::TechMappingGenerationAccounting accounting;
   const auto result = loom::mapping::detail::searchTechMatchCovers(
@@ -162,6 +200,110 @@ void realizationCountLowerBoundIsAdmissible() {
   if (result.covers.size() != 2 || result.covers.front().size() != 2 ||
       coverKey(result.covers.front()) != std::vector<std::uint8_t>({0, 5}))
     fail("a realization-count estimate reordered a smaller exact cover");
+}
+
+void exactComputeContextSupplyShapesFrontier() {
+  const loom::ArtifactIdentity owner = identity();
+  loom::mapping::detail::TechMatchDomain domain;
+  for (std::uint64_t ordinal = 0; ordinal < 4; ++ordinal)
+    domain.actors.push_back(actor(owner, ordinal));
+  domain.computeContextValueCount = 4;
+  domain.rows = {
+      row(0, {0}, {0, 1, 3}), row(1, {0}, {2}),       row(2, {1}, {0, 1, 3}),
+      row(3, {2}, {0, 1, 3}), row(4, {3}, {0, 1, 3}),
+  };
+
+  loom::mapping::TechMappingGenerationAccounting accounting;
+  const auto result = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(1024, 1), accounting);
+  if (result.covers.size() != 1 || coverKey(result.covers.front()) !=
+                                       std::vector<std::uint8_t>({1, 2, 3, 4}))
+    fail("the frontier did not replace an overlapping broad root domain");
+  if (accounting.computeContextRejectedChecks != 1 ||
+      accounting.computeContextMatchingChecks <=
+          accounting.computeContextRejectedChecks ||
+      accounting.computeContextMatchingWork == 0)
+    fail("compute-context matching work was not accounted exactly");
+}
+
+void exactMemoryOccurrenceSupplyShapesFrontier() {
+  const loom::ArtifactIdentity owner = identity();
+  loom::mapping::detail::TechMatchDomain domain;
+  for (std::uint64_t ordinal = 0; ordinal < 3; ++ordinal)
+    domain.actors.push_back(actor(owner, ordinal));
+  domain.rows = {
+      memoryRow(0, {0}, 7),
+      memoryRow(1, {1}, 7),
+      memoryRow(2, {2}, 7),
+      memoryRow(3, {2}, 9),
+  };
+
+  loom::mapping::TechMappingGenerationAccounting accounting;
+  const auto result = loom::mapping::detail::searchTechMatchCovers(
+      domain, config(1024, 1), accounting);
+  if (result.covers.size() != 1 ||
+      coverKey(result.covers.front()) != std::vector<std::uint8_t>({0, 1, 3}))
+    fail("the frontier retained an overcommitted Spatial memory port");
+  if (accounting.memorySupplyRejectedChecks != 1 ||
+      accounting.memorySupplyChecks <= accounting.memorySupplyRejectedChecks ||
+      accounting.memorySupplyChecks != accounting.memorySupplyPartialChecks +
+                                           accounting.memorySupplyFullChecks ||
+      accounting.memorySupplyFullChecks == 0 ||
+      accounting.memorySupplyExclusiveResourceRejections != 1 ||
+      accounting.memorySupplySpatialPortRejections != 1 ||
+      accounting.memorySupplyTemporalIngressRejections != 0 ||
+      accounting.memorySupplyInternalConnectionRejections != 0 ||
+      accounting.memorySupplySearchWork == 0) {
+    llvm::errs() << "memory supply counters: checks="
+                 << accounting.memorySupplyChecks
+                 << " partial=" << accounting.memorySupplyPartialChecks
+                 << " full=" << accounting.memorySupplyFullChecks
+                 << " rejected=" << accounting.memorySupplyRejectedChecks
+                 << " exclusive="
+                 << accounting.memorySupplyExclusiveResourceRejections
+                 << " spatial_port="
+                 << accounting.memorySupplySpatialPortRejections
+                 << " temporal_ingress="
+                 << accounting.memorySupplyTemporalIngressRejections
+                 << " internal_connection="
+                 << accounting.memorySupplyInternalConnectionRejections
+                 << " work=" << accounting.memorySupplySearchWork << '\n';
+    fail("memory occurrence-supply work was not accounted exactly");
+  }
+
+  loom::mapping::SpatialMemoryOccurrenceDemandView ingressA;
+  ingressA.schedule = fabric::Schedule::Temporal;
+  ingressA.occurrences = {{loom::fabric::FabricMemoryOccurrenceRef(3), 4}};
+  ingressA.exclusiveResources = {{
+      loom::mapping::SpatialMemoryExclusiveResourceKind::
+          TemporalExternalIngress,
+      {1},
+  }};
+  ingressA.residentDemand = 1;
+  auto ingressB = ingressA;
+  const std::array<const loom::mapping::SpatialMemoryOccurrenceDemandView *, 2>
+      ingressDemands = {&ingressA, &ingressB};
+  const auto ingressSupply =
+      take(loom::mapping::analyzeSpatialMemoryOccurrenceSupply(ingressDemands));
+  if (ingressSupply.failure !=
+          loom::mapping::SpatialMemoryOccurrenceSupplyFailureKind::
+              ExclusiveResourceDeficit ||
+      ingressSupply.failingResourceKind !=
+          loom::mapping::SpatialMemoryExclusiveResourceKind::
+              TemporalExternalIngress)
+    fail("Temporal memory ingress exclusivity lost its typed failure");
+
+  ingressB.exclusiveResources.front().key = {2};
+  ingressA.residentDemand = 3;
+  ingressB.residentDemand = 3;
+  const auto capacitySupply =
+      take(loom::mapping::analyzeSpatialMemoryOccurrenceSupply(ingressDemands));
+  if (capacitySupply.failure !=
+          loom::mapping::SpatialMemoryOccurrenceSupplyFailureKind::
+              ResidentCapacityDeficit ||
+      capacitySupply.failingResidentDemand != 6 ||
+      capacitySupply.failingResidentCapacity != 4)
+    fail("Temporal memory capacity lost its occurrence-global accounting");
 }
 
 void prospectiveSeedHasOneKeyedOutcome() {
@@ -226,6 +368,8 @@ void canonicalRejectedRangePreservesLimitAccounting() {
 int main() {
   independentComponentFrontierIsCompact();
   realizationCountLowerBoundIsAdmissible();
+  exactComputeContextSupplyShapesFrontier();
+  exactMemoryOccurrenceSupplyShapesFrontier();
   completedProductSurvivesExpansionLimit();
   sealedCoversFollowFormalRank();
   prospectiveSeedHasOneKeyedOutcome();

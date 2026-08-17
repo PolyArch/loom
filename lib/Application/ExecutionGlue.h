@@ -3,6 +3,7 @@
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Runtime/SpatialInvocationWire.h"
+#include "Simulator/SimulationInputCapture.h"
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
@@ -22,13 +23,18 @@ inline constexpr llvm::StringLiteral applicationHostEntrySymbol{
     "__loom_host_entry"};
 
 struct ApplicationSpatialInvocationPlan final {
+  struct Site final {
+    sim::DirectCallSimulationInputCapturePlan capture;
+    runtime::SpatialInvocationWireLayout wireLayout;
+  };
+
   dataflow::RootThreadLaunchRef root;
   dataflow::RootedGraphLaunchRef graph;
   std::string sourceCallableSymbol;
   std::uint64_t dispatchTargetOrdinal = 0;
   std::vector<std::uint32_t> valueBitCounts;
   std::vector<std::uint32_t> resultBitCounts;
-  runtime::SpatialInvocationWireLayout wireLayout;
+  std::vector<Site> sites;
 };
 
 llvm::Expected<ApplicationSpatialInvocationPlan>

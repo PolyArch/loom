@@ -188,6 +188,12 @@ public:
 
   bool hasOutput(PlanOutputRef output) const;
   llvm::ArrayRef<ArtifactRootReference> resolve(PlanOutputRef output) const;
+  /// Returns the invocation-local best-first order for a selected-candidate
+  /// output when its Promote node used an objective total ordering. The
+  /// ordinary output remains the canonical candidate set and is the only
+  /// representation consumed by plan use-def edges.
+  llvm::ArrayRef<ArtifactRootReference>
+  resolvePreferenceOrder(PlanOutputRef output) const;
   const ComponentViewDigest &resolvedDseConfigViewDigest() const {
     return resolvedDseConfigViewDigest_;
   }
@@ -205,6 +211,7 @@ private:
 
   struct PromoteNodeOutputs final {
     std::vector<std::vector<ArtifactRootReference>> outputBindings;
+    std::vector<ArtifactRootReference> preferenceOrder;
   };
 
   using NodeOutputs = std::variant<GenerateNodeOutputs, PromoteNodeOutputs>;
@@ -214,7 +221,8 @@ private:
   llvm::Error appendGenerate(GenerateInvocationRecord invocation,
                              GenerateInvocationWorkSummary workSummary);
   void
-  appendPromote(std::vector<std::vector<ArtifactRootReference>> outputBindings);
+  appendPromote(std::vector<std::vector<ArtifactRootReference>> outputBindings,
+                std::vector<ArtifactRootReference> preferenceOrder = {});
 
   std::vector<NodeOutputs> nodeOutputs_;
   std::vector<GenerateInvocationRecord> generateInvocations_;

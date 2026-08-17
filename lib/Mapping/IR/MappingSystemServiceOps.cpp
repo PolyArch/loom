@@ -351,8 +351,6 @@ LogicalResult mapping::ServicePlanOp::verify() {
       return emitOpError("transfer plan must not contain a service target");
     return success();
   }
-  if (legs.empty())
-    return emitOpError("non-message plan requires a TransferLegRealization");
   const auto &operation =
       std::get<::loom::mapping::OperationServiceObligationFamilyKey>(
           *obligation);
@@ -361,8 +359,11 @@ LogicalResult mapping::ServicePlanOp::verify() {
     if (memoryTargets.empty() || !consistencyTargets.empty())
       return emitOpError(
           "memory plan requires a MemoryRegionTarget and no ConsistencyTarget");
-  } else if (memoryTargets.size() != 0 || consistencyTargets.size() != 1) {
-    return emitOpError("fence plan requires exactly one ConsistencyTarget");
+  } else {
+    if (legs.empty())
+      return emitOpError("fence plan requires a TransferLegRealization");
+    if (memoryTargets.size() != 0 || consistencyTargets.size() != 1)
+      return emitOpError("fence plan requires exactly one ConsistencyTarget");
   }
   return success();
 }

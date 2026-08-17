@@ -208,8 +208,13 @@ std::uint64_t retainedSpatialCatalogBytes(
           progress.routeObligations.size() *
           sizeof(::loom::mapping::MappingRouteProgressObligationProjection);
     bytes += entry.graphStaticSchedulePressures.size() * sizeof(std::uint64_t);
-    bytes += entry.graphRecurrenceTimings.size() *
-             sizeof(SpatialRecurrenceTimingProjection);
+    bytes +=
+        entry.graphRecurrenceDemands.capacity() *
+        sizeof(std::shared_ptr<
+               const loom::pnr::detail::FrozenSpatialRecurrenceTimingDemand>);
+    for (const auto &demand : entry.graphRecurrenceDemands)
+      if (demand)
+        bytes += demand->retainedBytes();
   }
   return bytes;
 }
@@ -649,7 +654,7 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
     statistics.coveredGraphCount += entry.covers.size();
     statistics.schedulePressureCount +=
         entry.graphStaticSchedulePressures.size();
-    statistics.recurrenceProjectionCount += entry.graphRecurrenceTimings.size();
+    statistics.recurrenceDemandCount += entry.graphRecurrenceDemands.size();
     for (const auto &progress : entry.graphProgress)
       statistics.routeProgressObligationCount +=
           progress.routeObligations.size();
@@ -662,15 +667,14 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
       classOwner->size() * sizeof(PnrIndex);
   statistics.context.deterministicWork =
       importOwner->statistics().deterministicWork;
-  if (llvm::Error error = addWork(statistics.context.deterministicWork,
-                                  statistics.spatialMappingCount +
-                                      statistics.coveredGraphCount +
-                                      statistics.routeProgressObligationCount +
-                                      statistics.schedulePressureCount +
-                                      statistics.recurrenceProjectionCount +
-                                      statistics.timingProfileCount +
-                                      statistics.techMappingImportRequests +
-                                      statistics.techMappingImportMisses))
+  if (llvm::Error error = addWork(
+          statistics.context.deterministicWork,
+          statistics.spatialMappingCount + statistics.coveredGraphCount +
+              statistics.routeProgressObligationCount +
+              statistics.schedulePressureCount +
+              statistics.recurrenceDemandCount + statistics.timingProfileCount +
+              statistics.techMappingImportRequests +
+              statistics.techMappingImportMisses))
     return std::move(error);
 
   auto storage =
@@ -751,8 +755,7 @@ void loom::pnr::emitSystemActiveContextStatistics(
         fields["route_progress_obligation_count"] =
             statistics.routeProgressObligationCount;
         fields["schedule_pressure_count"] = statistics.schedulePressureCount;
-        fields["recurrence_projection_count"] =
-            statistics.recurrenceProjectionCount;
+        fields["recurrence_demand_count"] = statistics.recurrenceDemandCount;
         fields["timing_profile_count"] = statistics.timingProfileCount;
         fields["tech_mapping_import_requests"] =
             statistics.techMappingImportRequests;

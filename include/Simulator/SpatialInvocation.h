@@ -16,6 +16,14 @@ struct SpatialInvocationMemoryWrite final {
   std::vector<std::uint8_t> bytes;
 };
 
+/// Derives the sorted logical roots whose canonical actors can modify memory
+/// during one exact rooted graph invocation. Dataflow actor semantics remain
+/// the owner; invocation producers and consumers share this projection.
+llvm::Expected<std::vector<dataflow::LogicalMemoryRootRef>>
+projectSpatialInvocationWritableMemoryRoots(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    dataflow::RootedGraphLaunchRef launch);
+
 llvm::Expected<CanonicalSimulationRuntimeInput>
 materializeSpatialInvocationRuntimeInput(
     const ImportedSpatialSimulationWorkload &workload,

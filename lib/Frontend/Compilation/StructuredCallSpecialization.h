@@ -19,7 +19,10 @@ llvm::Expected<bool>
 hasUniformExactCallArgumentSpecialization(mlir::ModuleOp module,
                                           mlir::Operation *selection);
 
-llvm::Expected<mlir::Operation *>
+/// Returns nullopt when exact specialization legitimately removes the selected
+/// nested scope. The caller owns classification of that candidate-local
+/// outcome; malformed input and broken specialization invariants remain errors.
+llvm::Expected<std::optional<mlir::Operation *>>
 materializeUniformExactCallArgumentSpecialization(mlir::ModuleOp module,
                                                   mlir::Operation *selection);
 

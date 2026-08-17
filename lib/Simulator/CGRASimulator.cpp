@@ -309,7 +309,8 @@ llvm::Expected<CgraExecutionSession>
 startCgraExecutionSession(const PreparedCgraExecution &prepared,
                           const CanonicalSimulationWorkload &workload,
                           const CanonicalSimulationRuntimeInput &runtimeInput,
-                          std::optional<TraceCaptureLevel> traceLevel) {
+                          std::optional<TraceCaptureLevel> traceLevel,
+                          CgraExternalMemoryProvider *externalMemoryProvider) {
   if (!prepared.impl_)
     return invalid("prepared CGRA execution is empty");
   const SpatialSimulationWorkload *spatial = workload.spatial();
@@ -353,7 +354,8 @@ startCgraExecutionSession(const PreparedCgraExecution &prepared,
   auto runtime = detail::CgraGraphActivationRuntime::create(
       prepared.impl_->executionPlan, prepared.impl_->dataflowView,
       spatial->launchRef, *graph, graphExecution->execution, impl->dynamicState,
-      traceLevel == TraceCaptureLevel::Microarchitecture);
+      traceLevel == TraceCaptureLevel::Microarchitecture,
+      externalMemoryProvider);
   if (!runtime)
     return runtime.takeError();
   impl->runtime.emplace(std::move(*runtime));
@@ -372,10 +374,13 @@ llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
     std::uint64_t maxEventFrames,
-    std::optional<std::chrono::steady_clock::time_point> executionDeadline) {
+    std::optional<std::chrono::steady_clock::time_point> executionDeadline,
+    CgraExternalMemoryProvider *externalMemoryProvider) {
   if (maxEventFrames == 0)
     return invalid("CGRA simulation requires a positive event-frame limit");
-  auto session = startCgraExecutionSession(prepared, workload, runtimeInput);
+  auto session = startCgraExecutionSession(prepared, workload, runtimeInput,
+                                           std::nullopt,
+                                           externalMemoryProvider);
   if (!session)
     return session.takeError();
   auto advanced = session->advance(maxEventFrames, executionDeadline);

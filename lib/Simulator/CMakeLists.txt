@@ -12,6 +12,7 @@ add_mlir_library(LoomSimulator
   CGRAMemoryPlan.cpp
   CGRATransportPlan.cpp
   CgraTransportIngressRuntime.cpp
+  CgraTransportScheduling.cpp
   CgraTransportStorageRuntime.cpp
   CgraTransportTrace.cpp
   CgraTransportRuntime.cpp

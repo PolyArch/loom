@@ -5,10 +5,28 @@
 
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
+
 namespace loom::pnr {
+
+/// Immutable projection of the canonical root-placement preference used by
+/// one initializer attempt. It contains no CandidateState, solver journal,
+/// scratch storage, random stream, or remaining-work state.
+struct SpatialCandidateInitializerPreference final {
+  std::uint64_t residualExternalSinkCount = 0;
+  std::uint64_t selectedRegisterFifoTransferCount = 0;
+  std::uint64_t topologyUnreachableSelectionCount = 0;
+  std::uint64_t topologyHopSum = 0;
+  std::uint64_t topologyRefinementUnreachableSelectionCount = 0;
+  std::uint64_t topologyRefinementHopSum = 0;
+  std::uint64_t maximumComputeOccurrenceSelections = 0;
+  std::uint64_t maximumEndpointSelections = 0;
+  std::uint64_t staticSchedulePressure = 0;
+};
 
 struct SpatialCandidateInitializerAttempt final {
   SpatialCandidateStateHandle candidate;
+  SpatialCandidateInitializerPreference preference;
 };
 
 /// Builds one exact fixed initializer-attempt slot. Attempt zero uses

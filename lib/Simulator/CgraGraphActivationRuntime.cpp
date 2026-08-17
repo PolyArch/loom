@@ -38,7 +38,8 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     ::dataflow::RootedGraphLaunchRef launch, ::dataflow::GraphRef graph,
     const PreparedGraphExecution &execution, SimulatorState &state,
-    bool captureMicroarchitecture) {
+    bool captureMicroarchitecture,
+    CgraExternalMemoryProvider *externalMemoryProvider) {
   auto physicalRuntime = CgraPhysicalActionRuntime::create(
       plan.resources, plan.physicalUseTimings);
   if (!physicalRuntime)
@@ -50,7 +51,8 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
   if (!computeRuntime)
     return computeRuntime.takeError();
   auto memoryRuntime = CgraMemoryRuntime::create(plan, dataflow, launch, graph,
-                                                 execution, state, *physical);
+                                                 execution, state, *physical,
+                                                 externalMemoryProvider);
   if (!memoryRuntime)
     return memoryRuntime.takeError();
   auto transportRuntime = CgraTransportRuntime::create(

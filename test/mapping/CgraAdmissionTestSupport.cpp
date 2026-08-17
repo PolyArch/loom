@@ -10,6 +10,7 @@
 #include "Evaluation/Models/DfgSimulation.h"
 #include "Evaluation/Models/SimulationComparison.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/IR/MappingSchema.h"
@@ -23,6 +24,7 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -164,6 +166,49 @@ void verifySameInputDistinctTemporalSwitchRows(
     fail("fixture did not expose two tag rows at one Temporal switch input");
 }
 
+void verifySpatialSwitchActivationIdentity(
+    const loom::sim::detail::CgraFrozenExecutionPlan &plan,
+    const loom::fabric::FabricArtifactView &fabric) {
+  using OwnerKey = std::vector<std::uint8_t>;
+  std::map<OwnerKey, std::map<loom::fabric::FabricOrdinal, std::uint64_t>>
+      instances;
+  for (const auto &traversal : plan.transport.traversals) {
+    const auto *sw =
+        std::get_if<loom::fabric::FabricSwitchTraversalPayload>(
+            &traversal.reference.payload);
+    if (!sw || fabric.switchSchedule(sw->owner) != ::fabric::Schedule::Spatial)
+      continue;
+    if (traversal.impliedUseOffset > plan.transport.traversalUses.size() ||
+        traversal.impliedUseCount == 0 ||
+        traversal.impliedUseCount >
+            plan.transport.traversalUses.size() - traversal.impliedUseOffset)
+      fail("Spatial switch traversal has an incomplete activation");
+    const auto uses = llvm::ArrayRef(plan.transport.traversalUses)
+                          .slice(traversal.impliedUseOffset,
+                                 traversal.impliedUseCount);
+    const std::uint64_t instance = uses.front().activationInstanceOrdinal;
+    if (instance == loom::sim::detail::invalidCgraTransportOrdinal ||
+        llvm::any_of(uses, [&](const auto &use) {
+          return use.activationInstanceOrdinal != instance;
+        }))
+      fail("one Spatial switch traversal gained multiple activations");
+    auto [position, inserted] =
+        instances[loom::fabric::canonicalFabricBytes(sw->owner)].try_emplace(
+            sw->input, instance);
+    if (!inserted && position->second != instance)
+      fail("one Spatial switch input gained multiple activations");
+  }
+
+  for (const auto &[owner, inputs] : instances) {
+    (void)owner;
+    for (auto lhs = inputs.begin(); lhs != inputs.end(); ++lhs)
+      for (auto rhs = std::next(lhs); rhs != inputs.end(); ++rhs) {
+        if (lhs->second == rhs->second)
+          fail("different Spatial switch inputs shared one activation");
+      }
+  }
+}
+
 } // namespace
 
 void loom::test::exerciseCgraAdmission(
@@ -184,20 +229,20 @@ void loom::test::exerciseCgraAdmission(
       view.rootThreadLaunches().front().ref,
       view.staticGraphLaunches().front().ref};
 
-  if (expectSameInputDistinctSwitchRows) {
-    auto fabric = take(
-        ::loom::fabric::importEntireFabricRoot(fabricReference, store));
-    auto spatial = take(
-        ::loom::mapping::importSpatialMapping(spatialMappingReference, store));
-    const ArtifactRootReference techReference{
-        ::loom::mapping::mappingArtifactSchema.identity.str(),
-        ::loom::mapping::mappingArtifactSchema.version,
-        spatial.view().techMappingIdentity()};
-    auto tech = take(::loom::mapping::importTechMapping(techReference, store));
-    auto plan = take(sim::detail::freezeCgraExecutionPlan(
-        view, tech.view(), fabric.view(), spatial.view()));
+  auto fabric =
+      take(::loom::fabric::importEntireFabricRoot(fabricReference, store));
+  auto spatial = take(
+      ::loom::mapping::importSpatialMapping(spatialMappingReference, store));
+  const ArtifactRootReference techReference{
+      ::loom::mapping::mappingArtifactSchema.identity.str(),
+      ::loom::mapping::mappingArtifactSchema.version,
+      spatial.view().techMappingIdentity()};
+  auto tech = take(::loom::mapping::importTechMapping(techReference, store));
+  auto plan = take(sim::detail::freezeCgraExecutionPlan(
+      view, tech.view(), fabric.view(), spatial.view()));
+  verifySpatialSwitchActivationIdentity(plan, fabric.view());
+  if (expectSameInputDistinctSwitchRows)
     verifySameInputDistinctTemporalSwitchRows(plan, fabric.view());
-  }
 
   sim::SpatialSimulationWorkload workloadDraft{launch};
   workloadDraft.valueInputPlan = {sim::RuntimeValueInput{}};

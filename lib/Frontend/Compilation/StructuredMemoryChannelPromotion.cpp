@@ -2,6 +2,7 @@
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "Frontend/IR/LoomOps.h"
+#include "Frontend/Raising/MemoryProvenance.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -35,60 +36,6 @@ llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       llvm::inconvertibleErrorCode(),
       "structured_memory_channel_promotion_invalid: " + message);
-}
-
-mlir::Value exactMemoryRoot(mlir::Value value) {
-  while (true) {
-    if (auto cast = value.getDefiningOp<mlir::memref::CastOp>()) {
-      value = cast.getSource();
-      continue;
-    }
-    if (auto view = value.getDefiningOp<mlir::memref::SubViewOp>()) {
-      value = view.getSource();
-      continue;
-    }
-    if (auto reinterpret =
-            value.getDefiningOp<mlir::memref::ReinterpretCastOp>()) {
-      value = reinterpret.getSource();
-      continue;
-    }
-    if (auto gep = value.getDefiningOp<mlir::LLVM::GEPOp>()) {
-      value = gep.getBase();
-      continue;
-    }
-    return value;
-  }
-}
-
-bool isEnclosingBlockArgument(mlir::Value value, mlir::Operation *operation) {
-  auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
-  if (!argument)
-    return false;
-  for (mlir::Operation *current = operation; current;
-       current = current->getParentOp())
-    if (current->getBlock() == argument.getOwner())
-      return true;
-  return false;
-}
-
-bool areDistinctNoAliasFunctionArguments(mlir::Value lhs, mlir::Value rhs) {
-  auto lhsArgument = llvm::dyn_cast<mlir::BlockArgument>(lhs);
-  auto rhsArgument = llvm::dyn_cast<mlir::BlockArgument>(rhs);
-  if (!lhsArgument || !rhsArgument ||
-      lhsArgument.getOwner() != rhsArgument.getOwner() ||
-      lhsArgument.getArgNumber() == rhsArgument.getArgNumber())
-    return false;
-  auto function = llvm::dyn_cast_or_null<mlir::LLVM::LLVMFuncOp>(
-      lhsArgument.getOwner()->getParentOp());
-  if (!function)
-    return false;
-  mlir::DictionaryAttr lhsAttrs = mlir::function_interface_impl::getArgAttrDict(
-      function, lhsArgument.getArgNumber());
-  mlir::DictionaryAttr rhsAttrs = mlir::function_interface_impl::getArgAttrDict(
-      function, rhsArgument.getArgNumber());
-  llvm::StringRef noAlias = mlir::LLVM::LLVMDialect::getNoAliasAttrName();
-  return lhsAttrs && rhsAttrs && lhsAttrs.contains(noAlias) &&
-         rhsAttrs.contains(noAlias);
 }
 
 enum class EndpointKind { Producer, Consumer };
@@ -198,7 +145,7 @@ threadFormalForSpatialMemory(loom::SpatialRegionOp spatial,
 
 std::optional<unsigned>
 threadFormalForSpatialValue(loom::SpatialRegionOp spatial, mlir::Value value) {
-  value = exactMemoryRoot(value);
+  value = raising::projectMemoryRoot(value);
   auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
   if (!argument || argument.getOwner() != &spatial.getBody().front() ||
       argument.getArgNumber() >= spatial.getValueInputs().size())
@@ -421,7 +368,8 @@ analyzeSourceEndpoint(dataflow::ThreadLaunchOp launch, unsigned formalOrdinal,
       event = gep.getRes().use_begin()->getOwner();
     }
     if (!llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(event) ||
-        exactMemoryRoot(llvmMemoryAddress(event)) != pointerArgument) {
+        raising::projectMemoryRoot(llvmMemoryAddress(event)) !=
+            pointerArgument) {
       return std::nullopt;
     }
     const EndpointKind kind = llvm::isa<mlir::LLVM::StoreOp>(event)
@@ -867,7 +815,7 @@ bool haveIndependentRemainingEffects(const LhsPlan &lhs, const RhsPlan &rhs) {
     std::optional<mlir::Value> lhsRoot = launchOperand(lhs, lhsOrdinal);
     std::optional<mlir::Value> rhsRoot = launchOperand(rhs, rhsOrdinal);
     return lhsRoot && rhsRoot &&
-           areKnownDistinctMemoryRoots(*lhsRoot, *rhsRoot);
+           raising::haveProvenDistinctMemoryRoots(*lhsRoot, *rhsRoot);
   };
   for (unsigned write : lhs.writeOrdinals) {
     for (unsigned read : rhs.readOrdinals)
@@ -1440,38 +1388,6 @@ llvm::Error rewriteSourceEndpoint(SourceEndpointPlan &plan,
 }
 
 } // namespace
-
-bool areKnownDistinctMemoryRoots(mlir::Value lhs, mlir::Value rhs) {
-  lhs = exactMemoryRoot(lhs);
-  rhs = exactMemoryRoot(rhs);
-  if (lhs == rhs)
-    return false;
-  if (areDistinctNoAliasFunctionArguments(lhs, rhs))
-    return true;
-  auto lhsGlobal = lhs.getDefiningOp<mlir::memref::GetGlobalOp>();
-  auto rhsGlobal = rhs.getDefiningOp<mlir::memref::GetGlobalOp>();
-  auto lhsAlloc = lhs.getDefiningOp<mlir::memref::AllocOp>();
-  auto rhsAlloc = rhs.getDefiningOp<mlir::memref::AllocOp>();
-  auto lhsAlloca = lhs.getDefiningOp<mlir::LLVM::AllocaOp>();
-  auto rhsAlloca = rhs.getDefiningOp<mlir::LLVM::AllocaOp>();
-  auto lhsAddress = lhs.getDefiningOp<mlir::LLVM::AddressOfOp>();
-  auto rhsAddress = rhs.getDefiningOp<mlir::LLVM::AddressOfOp>();
-  if (lhsAlloca && rhsAlloca)
-    return true;
-  if (lhsAlloca)
-    return rhsAlloc || rhsGlobal || rhsAddress ||
-           isEnclosingBlockArgument(rhs, lhsAlloca);
-  if (rhsAlloca)
-    return lhsAlloc || lhsGlobal || lhsAddress ||
-           isEnclosingBlockArgument(lhs, rhsAlloca);
-  if (lhsAddress && rhsAddress)
-    return lhsAddress.getGlobalName() != rhsAddress.getGlobalName();
-  if (lhsGlobal && rhsGlobal)
-    return lhsGlobal.getName() != rhsGlobal.getName();
-  if (lhsAlloc && rhsAlloc)
-    return lhsAlloc != rhsAlloc;
-  return (lhsGlobal && rhsAlloc) || (lhsAlloc && rhsGlobal);
-}
 
 bool canPromoteOrderedBufferToChannel(mlir::memref::AllocOp allocation) {
   return analyzeChannel(allocation).has_value();

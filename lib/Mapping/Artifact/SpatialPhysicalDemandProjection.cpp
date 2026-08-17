@@ -15,6 +15,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <system_error>
 #include <tuple>
 #include <vector>
@@ -222,7 +223,494 @@ struct SwitchTraversalUse final {
   llvm::APInt tag = llvm::APInt(1, 0);
 };
 
+void saturatingIncrement(std::uint64_t &value) {
+  if (value != std::numeric_limits<std::uint64_t>::max())
+    ++value;
+}
+
+bool augmentComputeContextSupply(
+    std::size_t demand, llvm::ArrayRef<std::vector<std::size_t>> domains,
+    std::vector<std::optional<std::size_t>> &ownerByValue,
+    std::vector<std::uint8_t> &visited, std::uint64_t &deterministicWork) {
+  for (const std::size_t value : domains[demand]) {
+    saturatingIncrement(deterministicWork);
+    if (visited[value])
+      continue;
+    visited[value] = 1;
+    if (!ownerByValue[value] ||
+        augmentComputeContextSupply(*ownerByValue[value], domains,
+                                    ownerByValue, visited,
+                                    deterministicWork)) {
+      ownerByValue[value] = demand;
+      return true;
+    }
+  }
+  return false;
+}
+
+using MemoryExclusiveKey =
+    std::pair<std::uint8_t, std::vector<std::uint8_t>>;
+
+MemoryExclusiveKey
+memoryExclusiveKey(const SpatialMemoryExclusiveResourceView &resource) {
+  return {static_cast<std::uint8_t>(resource.kind), resource.key};
+}
+
+struct PreparedMemoryOccurrenceDemand final {
+  std::vector<std::size_t> choices;
+  std::vector<MemoryExclusiveKey> resources;
+  std::uint64_t residentDemand = 0;
+};
+
+bool memoryChoiceIsLegal(
+    const PreparedMemoryOccurrenceDemand &demand, std::size_t occurrence,
+    llvm::ArrayRef<std::uint64_t> capacities,
+    llvm::ArrayRef<std::uint64_t> usedCapacity,
+    llvm::ArrayRef<std::set<MemoryExclusiveKey>> usedResources,
+    std::uint64_t &deterministicWork) {
+  saturatingIncrement(deterministicWork);
+  if (demand.residentDemand >
+      capacities[occurrence] - usedCapacity[occurrence])
+    return false;
+  for (const MemoryExclusiveKey &resource : demand.resources) {
+    saturatingIncrement(deterministicWork);
+    if (usedResources[occurrence].count(resource))
+      return false;
+  }
+  return true;
+}
+
+bool searchMemoryOccurrenceAssignment(
+    llvm::ArrayRef<PreparedMemoryOccurrenceDemand> demands,
+    llvm::ArrayRef<std::uint64_t> capacities,
+    std::vector<std::optional<std::size_t>> &assignment,
+    std::vector<std::uint64_t> &usedCapacity,
+    std::vector<std::set<MemoryExclusiveKey>> &usedResources,
+    SpatialMemoryOccurrenceSupplyAnalysis &analysis) {
+  std::size_t selected = demands.size();
+  std::vector<std::size_t> selectedChoices;
+  for (std::size_t demandOrdinal = 0; demandOrdinal != demands.size();
+       ++demandOrdinal) {
+    if (assignment[demandOrdinal])
+      continue;
+    std::vector<std::size_t> legalChoices;
+    for (const std::size_t occurrence : demands[demandOrdinal].choices)
+      if (memoryChoiceIsLegal(demands[demandOrdinal], occurrence, capacities,
+                              usedCapacity, usedResources,
+                              analysis.deterministicWork))
+        legalChoices.push_back(occurrence);
+    if (legalChoices.empty())
+      return false;
+    if (selected == demands.size() ||
+        legalChoices.size() < selectedChoices.size()) {
+      selected = demandOrdinal;
+      selectedChoices = std::move(legalChoices);
+    }
+  }
+  if (selected == demands.size())
+    return true;
+
+  const PreparedMemoryOccurrenceDemand &demand = demands[selected];
+  for (const std::size_t occurrence : selectedChoices) {
+    saturatingIncrement(analysis.assignmentAttempts);
+    assignment[selected] = occurrence;
+    usedCapacity[occurrence] += demand.residentDemand;
+    for (const MemoryExclusiveKey &resource : demand.resources)
+      usedResources[occurrence].insert(resource);
+    if (searchMemoryOccurrenceAssignment(demands, capacities, assignment,
+                                         usedCapacity, usedResources,
+                                         analysis))
+      return true;
+    for (const MemoryExclusiveKey &resource : demand.resources)
+      usedResources[occurrence].erase(resource);
+    usedCapacity[occurrence] -= demand.residentDemand;
+    assignment[selected].reset();
+  }
+  return false;
+}
+
 } // namespace
+
+llvm::Expected<std::vector<SpatialComputeContextPlacementDomainView>>
+deriveSpatialComputeContextPlacementDomain(
+    ::loom::fabric::FabricFuCapabilityTemplateRef capabilityTemplate,
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  std::vector<SpatialComputeContextPlacementDomainView> placements;
+  for (const ::loom::fabric::FabricFuOccurrenceRef fu :
+       fabric.fuOccurrences()) {
+    const std::optional<::loom::fabric::FabricFuTemplateRef> definition =
+        fabric.fuTemplateOf(fu);
+    if (!definition || *definition != capabilityTemplate.fu)
+      continue;
+    const std::optional<::loom::fabric::FabricPeOccurrenceRef> parent =
+        fabric.parentPeOf(fu);
+    if (!parent)
+      return invalid("a Fabric FU occurrence has no parent PE relation");
+    const std::optional<::fabric::Schedule> schedule =
+        fabric.peSchedule(*parent);
+    if (!schedule)
+      return invalid("a Fabric PE occurrence has no scheduling contract");
+
+    SpatialComputeContextPlacementDomainView placement{fu, *parent, *schedule,
+                                                       {}};
+    const std::uint64_t contextCount = fabric.peResidentContextCount(*parent);
+    placement.contexts.reserve(contextCount);
+    for (std::uint64_t ordinal = 0; ordinal != contextCount; ++ordinal)
+      placement.contexts.push_back({*parent, ordinal});
+    placements.push_back(std::move(placement));
+  }
+  return placements;
+}
+
+llvm::Expected<std::vector<SpatialComputeContextDemandView>>
+deriveSpatialComputeContextDemands(
+    const TechMappingView &techMapping,
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  if (techMapping.fabricIdentity() != fabric.identity())
+    return invalid("TechMapping is bound to a foreign Fabric");
+
+  std::vector<SpatialComputeContextDemandView> demands;
+  std::map<std::vector<std::uint8_t>,
+           std::vector<SpatialComputeContextPlacementDomainView>>
+      basePlacements;
+  demands.reserve(techMapping.computeRealizations().size());
+  for (auto [realizationOrdinal, realization] :
+       llvm::enumerate(techMapping.computeRealizations())) {
+    SpatialComputeContextDemandView demand{
+        static_cast<std::uint64_t>(realizationOrdinal),
+        realization.capabilityTemplate,
+        {}};
+    const std::vector<std::uint8_t> capabilityKey =
+        ::loom::fabric::canonicalFabricBytes(realization.capabilityTemplate);
+    auto [found, inserted] = basePlacements.try_emplace(capabilityKey);
+    if (inserted) {
+      auto placements = deriveSpatialComputeContextPlacementDomain(
+          realization.capabilityTemplate, fabric);
+      if (!placements)
+        return placements.takeError();
+      found->second = std::move(*placements);
+    }
+    demand.candidatePlacementCount = found->second.size();
+    demand.placements = found->second;
+    demands.push_back(std::move(demand));
+  }
+  return demands;
+}
+
+llvm::Expected<SpatialComputeContextSupplyAnalysis>
+analyzeSpatialComputeContextSupply(
+    llvm::ArrayRef<std::vector<std::size_t>> domains,
+    std::size_t valueCount) {
+  SpatialComputeContextSupplyAnalysis result;
+  result.demandCount = domains.size();
+  result.valueCount = valueCount;
+  for (const auto &domain : domains) {
+    if (!llvm::is_sorted(domain) ||
+        std::adjacent_find(domain.begin(), domain.end()) != domain.end())
+      return invalid("compute-context domain is not a canonical set");
+    if (!domain.empty() && domain.back() >= valueCount)
+      return invalid("compute-context domain contains an unknown value");
+    if (domain.size() > std::numeric_limits<std::uint64_t>::max() -
+                            result.edgeCount)
+      result.edgeCount = std::numeric_limits<std::uint64_t>::max();
+    else
+      result.edgeCount += domain.size();
+  }
+
+  std::vector<std::optional<std::size_t>> ownerByValue(valueCount);
+  for (std::size_t demand = 0; demand != domains.size(); ++demand) {
+    std::vector<std::uint8_t> visited(valueCount, 0);
+    result.maximumMatching += augmentComputeContextSupply(
+        demand, domains, ownerByValue, visited, result.deterministicWork);
+  }
+  if (result.admissible())
+    return result;
+
+  std::vector<std::optional<std::size_t>> valueByDemand(domains.size());
+  for (auto [value, owner] : llvm::enumerate(ownerByValue))
+    if (owner)
+      valueByDemand[*owner] = value;
+
+  std::vector<std::uint8_t> reachedDemands(domains.size(), 0);
+  std::vector<std::uint8_t> reachedValues(valueCount, 0);
+  llvm::SmallVector<std::size_t, 16> pending;
+  for (std::size_t demand = 0; demand != domains.size(); ++demand) {
+    if (valueByDemand[demand])
+      continue;
+    reachedDemands[demand] = 1;
+    pending.push_back(demand);
+  }
+  for (std::size_t cursor = 0; cursor != pending.size(); ++cursor) {
+    const std::size_t demand = pending[cursor];
+    for (const std::size_t value : domains[demand]) {
+      saturatingIncrement(result.deterministicWork);
+      if (valueByDemand[demand] == value || reachedValues[value])
+        continue;
+      reachedValues[value] = 1;
+      const std::optional<std::size_t> owner = ownerByValue[value];
+      if (!owner || reachedDemands[*owner])
+        continue;
+      reachedDemands[*owner] = 1;
+      pending.push_back(*owner);
+    }
+  }
+  for (auto [demand, reached] : llvm::enumerate(reachedDemands))
+    if (reached)
+      result.hallDemands.push_back(demand);
+  result.hallValueCount =
+      llvm::count(reachedValues, static_cast<std::uint8_t>(1));
+  return result;
+}
+
+llvm::Expected<SpatialMemoryOccurrenceDemandView>
+deriveSpatialMemoryOccurrenceDemand(
+    const TechMemoryRealizationView &realization,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  const auto *engine = fabric.memoryEngineTemplate(realization.engine);
+  if (!engine)
+    return invalid("memory realization names a foreign engine template");
+
+  SpatialMemoryOccurrenceDemandView demand;
+  demand.engine = realization.engine;
+  demand.schedule = engine->schedule;
+  demand.residentDemand = engine->schedule == ::fabric::Schedule::Temporal
+                              ? realization.actors.size()
+                              : 0;
+  saturatingIncrement(demand.projectionWork);
+  for (const ::loom::fabric::FabricMemoryOccurrenceRef occurrence :
+       fabric.memoryOccurrences()) {
+    saturatingIncrement(demand.projectionWork);
+    const auto definition = fabric.memoryEngineTemplateOf(occurrence);
+    if (!definition || *definition != realization.engine)
+      continue;
+    if (fabric.memorySchedule(occurrence) != engine->schedule)
+      return invalid("memory occurrence disagrees with its engine schedule");
+    demand.occurrences.push_back(
+        {occurrence, engine->residentContextCount.value_or(0)});
+  }
+  llvm::sort(demand.occurrences, [](const auto &lhs, const auto &rhs) {
+    return ::loom::fabric::canonicalFabricBytes(lhs.occurrence) <
+           ::loom::fabric::canonicalFabricBytes(rhs.occurrence);
+  });
+
+  if (engine->schedule == ::fabric::Schedule::Spatial) {
+    for (const TechMemoryActorView &actor : realization.actors) {
+      saturatingIncrement(demand.projectionWork);
+      demand.exclusiveResources.push_back(
+          {SpatialMemoryExclusiveResourceKind::SpatialOperationPort,
+           ::loom::fabric::canonicalFabricBytes(actor.operationPort)});
+    }
+  } else {
+    auto ingresses = deriveTechMemoryExternalIngresses(realization, dataflow);
+    if (!ingresses)
+      return ingresses.takeError();
+    for (const TechMemoryExternalIngressView &ingress : *ingresses) {
+      saturatingIncrement(demand.projectionWork);
+      auto key = canonicalTechMemoryExternalIngressKey(ingress,
+                                                       dataflow.identity());
+      if (!key)
+        return key.takeError();
+      demand.exclusiveResources.push_back(
+          {SpatialMemoryExclusiveResourceKind::TemporalExternalIngress,
+           std::move(*key)});
+    }
+  }
+  for (const TechMemoryInternalEdgeView &edge : realization.internalEdges) {
+    saturatingIncrement(demand.projectionWork);
+    demand.exclusiveResources.push_back(
+        {SpatialMemoryExclusiveResourceKind::InternalConnection,
+         ::loom::fabric::canonicalFabricBytes(edge.connection)});
+  }
+  llvm::sort(demand.exclusiveResources, [](const auto &lhs, const auto &rhs) {
+    return memoryExclusiveKey(lhs) < memoryExclusiveKey(rhs);
+  });
+  demand.exclusiveResources.erase(
+      std::unique(demand.exclusiveResources.begin(),
+                  demand.exclusiveResources.end(),
+                  [](const auto &lhs, const auto &rhs) {
+                    return lhs.kind == rhs.kind && lhs.key == rhs.key;
+                  }),
+      demand.exclusiveResources.end());
+  return demand;
+}
+
+llvm::StringRef spatialMemoryExclusiveResourceKindSpelling(
+    SpatialMemoryExclusiveResourceKind kind) {
+  switch (kind) {
+  case SpatialMemoryExclusiveResourceKind::SpatialOperationPort:
+    return "spatial_operation_port";
+  case SpatialMemoryExclusiveResourceKind::TemporalExternalIngress:
+    return "temporal_external_ingress";
+  case SpatialMemoryExclusiveResourceKind::InternalConnection:
+    return "internal_connection";
+  }
+  llvm_unreachable("unknown memory exclusive-resource kind");
+}
+
+llvm::StringRef spatialMemoryOccurrenceSupplyFailureKindSpelling(
+    SpatialMemoryOccurrenceSupplyFailureKind failure) {
+  switch (failure) {
+  case SpatialMemoryOccurrenceSupplyFailureKind::None:
+    return "none";
+  case SpatialMemoryOccurrenceSupplyFailureKind::EmptyOccurrenceDomain:
+    return "empty_occurrence_domain";
+  case SpatialMemoryOccurrenceSupplyFailureKind::ExclusiveResourceDeficit:
+    return "exclusive_resource_deficit";
+  case SpatialMemoryOccurrenceSupplyFailureKind::ResidentCapacityDeficit:
+    return "resident_capacity_deficit";
+  case SpatialMemoryOccurrenceSupplyFailureKind::JointAssignmentInfeasible:
+    return "joint_assignment_infeasible";
+  }
+  llvm_unreachable("unknown memory occurrence-supply failure");
+}
+
+llvm::Expected<std::vector<SpatialMemoryOccurrenceDemandView>>
+deriveSpatialMemoryOccurrenceDemands(
+    const TechMappingView &techMapping,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricArtifactView &fabric) {
+  if (techMapping.fabricIdentity() != fabric.identity())
+    return invalid("TechMapping is bound to a foreign Fabric");
+  if (techMapping.dataflowIdentity() != dataflow.identity())
+    return invalid("TechMapping is bound to a foreign Dataflow");
+
+  std::vector<SpatialMemoryOccurrenceDemandView> demands;
+  demands.reserve(techMapping.memoryRealizations().size());
+  for (auto [ordinal, realization] :
+       llvm::enumerate(techMapping.memoryRealizations())) {
+    auto demand =
+        deriveSpatialMemoryOccurrenceDemand(realization, dataflow, fabric);
+    if (!demand)
+      return demand.takeError();
+    demand->realization = ordinal;
+    demands.push_back(std::move(*demand));
+  }
+  return demands;
+}
+
+llvm::Expected<SpatialMemoryOccurrenceSupplyAnalysis>
+analyzeSpatialMemoryOccurrenceSupply(
+    llvm::ArrayRef<const SpatialMemoryOccurrenceDemandView *> demands) {
+  SpatialMemoryOccurrenceSupplyAnalysis analysis;
+  analysis.demandCount = demands.size();
+  std::map<std::vector<std::uint8_t>, std::size_t> occurrenceOrdinals;
+  std::vector<std::uint64_t> capacities;
+  std::vector<PreparedMemoryOccurrenceDemand> prepared;
+  prepared.reserve(demands.size());
+  std::map<MemoryExclusiveKey, std::vector<std::size_t>> resourceUsers;
+  std::map<std::vector<std::uint8_t>, std::vector<std::size_t>> engineUsers;
+
+  for (auto [demandOrdinal, source] : llvm::enumerate(demands)) {
+    if (!source)
+      return invalid("memory occurrence supply contains a null demand");
+    PreparedMemoryOccurrenceDemand demand;
+    demand.residentDemand = source->residentDemand;
+    if (source->occurrences.empty()) {
+      analysis.failure =
+          SpatialMemoryOccurrenceSupplyFailureKind::EmptyOccurrenceDomain;
+      analysis.failingDemandCount = 1;
+      return analysis;
+    }
+    std::vector<std::uint8_t> previousOccurrence;
+    bool firstOccurrence = true;
+    for (const SpatialMemoryOccurrenceSupplyView &supply :
+         source->occurrences) {
+      const std::vector<std::uint8_t> key =
+          ::loom::fabric::canonicalFabricBytes(supply.occurrence);
+      if (!firstOccurrence && key <= previousOccurrence)
+        return invalid("memory occurrence domain is not a canonical set");
+      firstOccurrence = false;
+      previousOccurrence = key;
+      auto [found, inserted] =
+          occurrenceOrdinals.try_emplace(key, occurrenceOrdinals.size());
+      if (inserted)
+        capacities.push_back(supply.residentCapacity);
+      else if (capacities[found->second] != supply.residentCapacity)
+        return invalid("one memory occurrence has inconsistent capacity");
+      demand.choices.push_back(found->second);
+      saturatingIncrement(analysis.occurrenceChoiceCount);
+    }
+    for (const SpatialMemoryExclusiveResourceView &resource :
+         source->exclusiveResources) {
+      const MemoryExclusiveKey key = memoryExclusiveKey(resource);
+      if (!demand.resources.empty() && key <= demand.resources.back())
+        return invalid("memory exclusive resources are not a canonical set");
+      demand.resources.push_back(key);
+      resourceUsers[key].push_back(demandOrdinal);
+    }
+    engineUsers[::loom::fabric::canonicalFabricBytes(source->engine)]
+        .push_back(demandOrdinal);
+    prepared.push_back(std::move(demand));
+  }
+  analysis.occurrenceValueCount = occurrenceOrdinals.size();
+
+  for (const auto &[resource, users] : resourceUsers) {
+    if (users.size() < 2)
+      continue;
+    saturatingIncrement(analysis.exclusiveRelationCount);
+    std::set<std::size_t> values;
+    for (const std::size_t demand : users)
+      values.insert(prepared[demand].choices.begin(),
+                    prepared[demand].choices.end());
+    analysis.deterministicWork +=
+        std::min<std::uint64_t>(
+            users.size() + values.size(),
+            std::numeric_limits<std::uint64_t>::max() -
+                analysis.deterministicWork);
+    if (users.size() <= values.size())
+      continue;
+    analysis.failure =
+        SpatialMemoryOccurrenceSupplyFailureKind::ExclusiveResourceDeficit;
+    analysis.failingResourceKind =
+        static_cast<SpatialMemoryExclusiveResourceKind>(resource.first);
+    analysis.failingDemandCount = users.size();
+    analysis.failingOccurrenceCount = values.size();
+    return analysis;
+  }
+
+  for (const auto &[engine, users] : engineUsers) {
+    (void)engine;
+    std::uint64_t residentDemand = 0;
+    std::map<std::size_t, std::uint64_t> available;
+    for (const std::size_t demand : users) {
+      if (prepared[demand].residentDemand >
+          std::numeric_limits<std::uint64_t>::max() - residentDemand)
+        residentDemand = std::numeric_limits<std::uint64_t>::max();
+      else
+        residentDemand += prepared[demand].residentDemand;
+      for (const std::size_t occurrence : prepared[demand].choices)
+        available.try_emplace(occurrence, capacities[occurrence]);
+    }
+    std::uint64_t residentCapacity = 0;
+    for (const auto &[occurrence, capacity] : available) {
+      (void)occurrence;
+      if (capacity >
+          std::numeric_limits<std::uint64_t>::max() - residentCapacity)
+        residentCapacity = std::numeric_limits<std::uint64_t>::max();
+      else
+        residentCapacity += capacity;
+    }
+    if (residentDemand <= residentCapacity)
+      continue;
+    analysis.failure =
+        SpatialMemoryOccurrenceSupplyFailureKind::ResidentCapacityDeficit;
+    analysis.failingDemandCount = users.size();
+    analysis.failingOccurrenceCount = available.size();
+    analysis.failingResidentDemand = residentDemand;
+    analysis.failingResidentCapacity = residentCapacity;
+    return analysis;
+  }
+
+  std::vector<std::optional<std::size_t>> assignment(prepared.size());
+  std::vector<std::uint64_t> usedCapacity(capacities.size(), 0);
+  std::vector<std::set<MemoryExclusiveKey>> usedResources(capacities.size());
+  if (!searchMemoryOccurrenceAssignment(prepared, capacities, assignment,
+                                        usedCapacity, usedResources, analysis))
+    analysis.failure =
+        SpatialMemoryOccurrenceSupplyFailureKind::JointAssignmentInfeasible;
+  return analysis;
+}
 
 llvm::Expected<::loom::fabric::FabricOrdinal>
 deriveSpatialMemoryInternalConnectionOrdinal(
@@ -964,12 +1452,17 @@ deriveSpatialPeOperandQueueMatchGroups(
                    route.logicalNet, selector->source, *tag, {}});
       if (!inserted && found->second.logicalNet != route.logicalNet)
         return invalid("PE operand match group spans multiple logical nets");
-      if (llvm::any_of(found->second.matches, [&](const auto &match) {
-            return match.queue == *(*boundary)->operandQueue;
-          }))
-        return invalid("PE operand match group repeats a logical queue");
-      found->second.matches.push_back(
-          {sink.sink, *(*boundary)->operandQueue, 0, 0});
+      auto queue = llvm::find_if(found->second.matches, [&](const auto &match) {
+        return match.queue == *(*boundary)->operandQueue;
+      });
+      if (queue == found->second.matches.end()) {
+        found->second.matches.push_back(
+            {{sink.sink}, *(*boundary)->operandQueue, 0, 0});
+      } else {
+        if (llvm::is_contained(queue->consumers, sink.sink))
+          return invalid("PE operand match group repeats a consumer");
+        queue->consumers.push_back(sink.sink);
+      }
     }
   }
 
@@ -980,6 +1473,23 @@ deriveSpatialPeOperandQueueMatchGroups(
     llvm::sort(group.matches, [](const auto &lhs, const auto &rhs) {
       return lhs.queue < rhs.queue;
     });
+    for (auto &match : group.matches) {
+      if (llvm::any_of(match.consumers, [](const auto &consumer) {
+            return !std::holds_alternative<
+                ::dataflow::ActorTokenOperandRef>(consumer);
+          }))
+        return invalid("PE operand queue has a non-actor consumer");
+      llvm::sort(match.consumers, [](const auto &lhs, const auto &rhs) {
+        const auto &lhsOperand =
+            std::get<::dataflow::ActorTokenOperandRef>(lhs);
+        const auto &rhsOperand =
+            std::get<::dataflow::ActorTokenOperandRef>(rhs);
+        return std::make_pair(lhsOperand.actor.entity.value(),
+                              lhsOperand.ordinal) <
+               std::make_pair(rhsOperand.actor.entity.value(),
+                              rhsOperand.ordinal);
+      });
+    }
     if (llvm::Error error = verifyMatchGroupCapacity(fabric, group))
       return std::move(error);
     result.push_back(std::move(group));

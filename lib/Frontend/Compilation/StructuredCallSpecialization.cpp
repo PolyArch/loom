@@ -195,7 +195,7 @@ hasUniformExactCallArgumentSpecialization(mlir::ModuleOp module,
                       [](mlir::Operation *binding) { return binding; });
 }
 
-llvm::Expected<mlir::Operation *>
+llvm::Expected<std::optional<mlir::Operation *>>
 materializeUniformExactCallArgumentSpecialization(mlir::ModuleOp module,
                                                   mlir::Operation *selection) {
   auto proof = deriveUniformBindings(module, selection);
@@ -242,7 +242,7 @@ materializeUniformExactCallArgumentSpecialization(mlir::ModuleOp module,
     return invalid("specialized Structured Program does not verify");
 
   if (selectsFunction)
-    return proof->function.getOperation();
+    return std::optional<mlir::Operation *>(proof->function.getOperation());
   mlir::Operation *specializedSelection = nullptr;
   bool duplicateMarker = false;
   proof->function.walk([&](mlir::Operation *operation) {
@@ -255,9 +255,9 @@ materializeUniformExactCallArgumentSpecialization(mlir::ModuleOp module,
   if (duplicateMarker)
     return invalid("selected nested scope marker was duplicated");
   if (!specializedSelection)
-    return invalid("selected nested scope was removed by specialization");
+    return std::optional<mlir::Operation *>{};
   specializedSelection->removeAttr(selectionMarker);
-  return specializedSelection;
+  return std::optional<mlir::Operation *>(specializedSelection);
 }
 
 bool isExactDirectCallSiteInlineable(mlir::ModuleOp module,

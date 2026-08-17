@@ -192,6 +192,7 @@ void encodeSystemAction(llvm::json::Object &fields,
                                              SystemServiceTargetAction>) {
                   fields["action_kind"] = "service_target";
                   fields["context"] = choice.context;
+                  fields["subject"] = choice.subject;
                   fields["choice"] = choice.choice;
                 } else if constexpr (std::is_same_v<
                                          Choice,

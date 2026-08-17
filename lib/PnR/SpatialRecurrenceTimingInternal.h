@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_PNR_SPATIALRECURRENCETIMINGINTERNAL_H
 #define LOOM_LIB_PNR_SPATIALRECURRENCETIMINGINTERNAL_H
 
+#include "Dataflow/IR/DataflowStaticScheduleAnalysis.h"
 #include "PnR/PnrIndex.h"
 #include "PnR/SpatialRecurrenceTiming.h"
 
@@ -36,7 +37,7 @@ class SpatialCandidateState;
 
 namespace detail {
 
-class StaticScheduleAnalysis;
+using StaticScheduleAnalysis = ::dataflow::StaticScheduleAnalysis;
 
 enum class FrozenRecurrenceActorOwnerKind : std::uint8_t {
   Compute,

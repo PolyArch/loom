@@ -17,7 +17,7 @@
 namespace loom::mapping {
 struct MappingProgressClosure;
 class SpatialMappingView;
-}
+} // namespace loom::mapping
 
 namespace loom::pnr {
 
@@ -25,6 +25,7 @@ class FrozenSpatialPnrProblem;
 class FrozenSystemPnrProblem;
 class SpatialCandidateState;
 struct SpatialCandidateRouteProjection;
+struct SpatialRecurrenceTimingProjection;
 class SystemCandidateState;
 
 struct SpatialMappingTraversalClaimContribution final {
@@ -125,15 +126,14 @@ public:
       const SpatialCandidateRouteProjection &projection) const;
   llvm::Expected<dse::ObjectiveVector>
   evaluate(const SystemCandidateState &candidate) const;
-  llvm::Expected<dse::ObjectiveVector>
-  evaluateSystemProjection(const FrozenSystemPnrProblem &problem,
-                           llvm::ArrayRef<PnrIndex> graphChoices,
-                           std::uint64_t capacityOveruse,
-                           std::uint64_t totalSelectedTraversalClaim,
-                           std::uint64_t resourceMinimumInitiationIntervalCycles,
-                           std::uint64_t transportBitCycleDemand,
-                           const ::loom::mapping::MappingProgressClosure
-                               &progressClosure) const;
+  llvm::Expected<dse::ObjectiveVector> evaluateSystemProjection(
+      const FrozenSystemPnrProblem &problem,
+      llvm::ArrayRef<PnrIndex> graphChoices,
+      const SpatialRecurrenceTimingProjection &recurrenceTiming,
+      std::uint64_t capacityOveruse, std::uint64_t totalSelectedTraversalClaim,
+      std::uint64_t resourceMinimumInitiationIntervalCycles,
+      std::uint64_t transportBitCycleDemand,
+      const ::loom::mapping::MappingProgressClosure &progressClosure) const;
   llvm::Expected<dse::ObjectiveWideValue>
   selectedEnergy(const dse::ObjectiveVector &vector) const;
   llvm::Expected<dse::ObjectiveSignedDifference>

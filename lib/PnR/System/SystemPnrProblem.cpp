@@ -1023,13 +1023,16 @@ llvm::Expected<std::vector<std::uint64_t>> buildGraphChoiceSchedulePressures(
   return result;
 }
 
-llvm::Expected<std::vector<SpatialRecurrenceTimingProjection>>
-buildGraphChoiceRecurrenceTimings(
+llvm::Expected<std::vector<
+    std::shared_ptr<const detail::FrozenSpatialRecurrenceTimingDemand>>>
+buildGraphChoiceRecurrenceDemands(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const Catalogs &catalogs, const Decisions &decisions) {
   if (catalogs.spatialCatalog->size() != catalogs.mappings.size())
     return invalid("SpatialMapping recurrence catalog has the wrong width");
-  std::vector<SpatialRecurrenceTimingProjection> result;
+  std::vector<
+      std::shared_ptr<const detail::FrozenSpatialRecurrenceTimingDemand>>
+      result;
   result.reserve(decisions.graphChoices.size());
   for (const FrozenSystemGraphExecutionDecision &decision : decisions.graphs) {
     auto graph = dataflow.resolve(decision.launch);
@@ -1042,17 +1045,21 @@ buildGraphChoiceRecurrenceTimings(
         return invalid("graph choice recurrence names a foreign mapping");
       const detail::SpatialCatalogEntry &entry =
           (*catalogs.spatialCatalog)[mapping];
-      if (entry.covers.size() != entry.graphRecurrenceTimings.size())
+      if (entry.covers.size() != entry.graphRecurrenceDemands.size())
         return invalid("SpatialMapping graph recurrence has the wrong width");
       const auto covered = llvm::find(entry.covers, *graph);
       if (covered == entry.covers.end())
         return invalid("graph choice recurrence is absent from its mapping");
-      result.push_back(entry.graphRecurrenceTimings[static_cast<std::size_t>(
-          covered - entry.covers.begin())]);
+      const auto &demand =
+          entry.graphRecurrenceDemands[static_cast<std::size_t>(
+              covered - entry.covers.begin())];
+      if (!demand)
+        return invalid("SpatialMapping graph recurrence demand is null");
+      result.push_back(demand);
     }
   }
   if (result.size() != decisions.graphChoices.size())
-    return invalid("graph choice recurrence projection is incomplete");
+    return invalid("graph choice recurrence demand is incomplete");
   return result;
 }
 
@@ -1500,35 +1507,6 @@ buildServiceContexts(const ::dataflow::CanonicalDataflowProgramView &dataflow,
 
 } // namespace
 
-llvm::Expected<SpatialRecurrenceTimingProjection>
-loom::pnr::projectSystemRecurrenceTiming(
-    const FrozenSystemPnrProblem &problem,
-    llvm::ArrayRef<PnrIndex> graphChoices) {
-  if (graphChoices.size() != problem.graphDecisions().size())
-    return invalid("System recurrence graph choice count is incomplete");
-  SpatialRecurrenceTimingProjection result;
-  for (PnrIndex decision = 0; decision < graphChoices.size(); ++decision) {
-    const auto domain = problem.graphChoiceRecurrenceTimings(decision);
-    if (graphChoices[decision] >= domain.size())
-      return invalid("System recurrence graph choice is out of range");
-    const SpatialRecurrenceTimingProjection &selected =
-        domain[graphChoices[decision]];
-    if (selected.kind ==
-        SpatialRecurrenceTimingProofKind::ProofNotEstablished) {
-      result.kind = SpatialRecurrenceTimingProofKind::ProofNotEstablished;
-      result.diagnostic = selected.diagnostic;
-      result.witnesses.clear();
-      return result;
-    }
-    result.recurrenceMinimumInitiationIntervalCycles =
-        std::max(result.recurrenceMinimumInitiationIntervalCycles,
-                 selected.recurrenceMinimumInitiationIntervalCycles);
-    result.witnesses.insert(result.witnesses.end(), selected.witnesses.begin(),
-                            selected.witnesses.end());
-  }
-  return result;
-}
-
 llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,
@@ -1587,10 +1565,10 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       buildGraphChoiceSchedulePressures(dataflow, *catalogs, *decisions);
   if (!graphChoiceSchedulePressures)
     return graphChoiceSchedulePressures.takeError();
-  auto graphChoiceRecurrenceTimings =
-      buildGraphChoiceRecurrenceTimings(dataflow, *catalogs, *decisions);
-  if (!graphChoiceRecurrenceTimings)
-    return graphChoiceRecurrenceTimings.takeError();
+  auto graphChoiceRecurrenceDemands =
+      buildGraphChoiceRecurrenceDemands(dataflow, *catalogs, *decisions);
+  if (!graphChoiceRecurrenceDemands)
+    return graphChoiceRecurrenceDemands.takeError();
   std::vector<::dataflow::GraphRef> coveredGraphs;
   std::set<std::uint64_t> coveredGraphOrdinals;
   coveredGraphs.reserve(decisions->graphs.size());
@@ -1690,7 +1668,7 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
       std::move(decisions->threads), std::move(decisions->threadChoices),
       std::move(decisions->graphs), std::move(decisions->graphChoices),
       std::move(*graphChoiceSchedulePressures),
-      std::move(*graphChoiceRecurrenceTimings), std::move(overlapOffsets),
+      std::move(*graphChoiceRecurrenceDemands), std::move(overlapOffsets),
       std::move(overlaps), staticStorage.routingTopology,
       std::move(routing->terminals), std::move(routing->ownerDomains),
       std::move(routing->endpointChoices), std::move(serviceDomains),

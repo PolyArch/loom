@@ -501,7 +501,7 @@ runSpatialRestart(const FrozenSpatialPnrProblemHandle &problem,
       DeterministicPnrRandomStream::create(
           problem->config().policy().determinism.masterSeed, attempt,
           PnrRandomStreamPurpose::ExactRepair);
-  bool transportRepairRequested = false;
+  bool transportRepairRequested = annealed->repairReadyHandoff;
   bool finalClosureRequired = true;
 
   while (true) {
@@ -951,10 +951,11 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
         *derivedContexts, mapping_debug::Stage::SpatialPnr, 1, 0, 1, 0);
   }
 
-  if (inputs.topologyQualityDiagnostic) {
+  if (inputs.emitTopologyQualityDiagnostic &&
+      inputs.topologyQualityDiagnostic) {
     emitFabricTopologyQuality(*inputs.topologyQualityDiagnostic,
                               mapping_debug::Stage::SpatialPnr);
-  } else {
+  } else if (inputs.emitTopologyQualityDiagnostic) {
     auto topology = analyzeFabricTopologyQualityForDiagnostics(inputs.fabric);
     if (!topology)
       return InvalidSpatialPnrGeneration{
@@ -964,10 +965,13 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
       emitFabricTopologyQuality(**topology, mapping_debug::Stage::SpatialPnr);
   }
   llvm::Expected<FrozenSpatialPnrProblemHandle> problem =
-      freezeSpatialPnrProblem(inputs.dataflow, inputs.techMapping,
-                              inputs.fabric, inputs.physicalTiming,
-                              inputs.config, inputs.constraints,
-                              derivedContexts);
+      inputs.preparedActiveProblem
+          ? llvm::Expected<FrozenSpatialPnrProblemHandle>(
+                inputs.preparedActiveProblem)
+          : freezeSpatialPnrProblem(inputs.dataflow, inputs.techMapping,
+                                    inputs.fabric, inputs.physicalTiming,
+                                    inputs.config, inputs.constraints,
+                                    derivedContexts);
   if (!problem) {
     FreezeFailure failure = classifyFreezeFailure(problem.takeError());
     switch (failure.kind) {
@@ -984,8 +988,18 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
           accounting, failure.diagnostic);
     }
   }
-  emitSpatialActiveProblemStatistics(**problem,
-                                     mapping_debug::Stage::SpatialPnr, 0, 1);
+  if (inputs.preparedActiveProblem) {
+    if (llvm::Error error = revalidateFrozenSpatialPnrCacheHit(
+            **problem, inputs.dataflow, inputs.techMapping, inputs.fabric,
+            inputs.physicalTiming, inputs.config, inputs.constraints))
+      return InvalidSpatialPnrGeneration{
+          InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
+          llvm::toString(std::move(error))};
+  }
+  emitSpatialActiveProblemStatistics(
+      **problem, mapping_debug::Stage::SpatialPnr,
+      inputs.preparedActiveProblem ? 1 : 0,
+      inputs.preparedActiveProblem ? 0 : 1);
   if (inputs.executionControl.stopRequested())
     return interruptedOutcome(
         SpatialPnrInterruptionStage::FrozenModelConstruction, std::nullopt,

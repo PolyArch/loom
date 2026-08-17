@@ -63,6 +63,8 @@ module {
   const std::array<dataflow::GraphRef, 1> covers = {view.graphs().front().ref};
   const auto analysis =
       take(loom::pnr::detail::deriveStaticScheduleAnalysis(view, covers));
+  require(analysis.graphCriticalLength(covers.front()) == 2,
+          "Dataflow graph critical path projection changed");
 
   std::map<dataflow::OperationSchemaId,
            const loom::pnr::detail::StaticActorCriticality *>

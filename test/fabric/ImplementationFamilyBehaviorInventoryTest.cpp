@@ -8,6 +8,7 @@
 #include "ImplementationFamilyVectorFloatBehavior.h"
 #include "ImplementationFamilyVectorIntegerBehavior.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -672,7 +673,10 @@ void vectorAdaptersQuotientByElementWidthAndLaneCount() {
 
 void routedTokensOwnObservablePhysicalLaneImages() {
   const char *test = __func__;
-  mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
+  mlir::DialectRegistry registry;
+  registry.insert<mlir::LLVM::LLVMDialect>();
+  mlir::MLIRContext context(registry, mlir::MLIRContext::Threading::DISABLED);
+  context.loadDialect<mlir::LLVM::LLVMDialect>();
   const FamilyCapabilityParams params = RoutedTokenParams{32, 3};
 
   constexpr std::array syncSchemas = {OperationSchemaId::DataflowSync};
@@ -707,6 +711,28 @@ void routedTokensOwnObservablePhysicalLaneImages() {
       0,   0,   0,   0,   0,   0,   0,   0,   0,   1};
   require(test, syncKey.bytes().equals(expectedSyncKey),
           "sync embedding escaped the canonical literal codec");
+
+  constexpr std::array pointerWidths = {64U, 64U};
+  const FabricOpSemanticFieldRelation pointerSync =
+      take(test, resolveFabricOpSemanticFieldRelation(
+                     ImplementationFamilyId::TokenSync,
+                     FamilyCapabilityParams(RoutedTokenParams{64, 2}),
+                     syncSchemas, pointerWidths, pointerWidths, context));
+  const auto pointer = mlir::LLVM::LLVMPointerType::get(&context);
+  const ::dataflow::CanonicalActorSchemaProjection pointerActor{
+      OperationSchemaId::DataflowSync,
+      mlir::FunctionType::get(&context, {pointer}, {pointer}),
+      ::dataflow::NoPayload{}};
+  constexpr std::array<std::uint64_t, 1> pointerPorts = {0};
+  auto missingPointerLayout = pointerSync.projectSemanticValue(
+      pointerActor, pointerPorts, pointerPorts, ResolvedIndexWidth::I64);
+  expectError(test, std::move(missingPointerLayout), "exact pointer layout");
+  const ::loom::PointerLayout pointerLayout{
+      0, 64, 64, ::loom::PointerLayoutKind::StableIntegral};
+  take(test, pointerSync.projectSemanticValue(
+                 pointerActor, pointerPorts, pointerPorts,
+                 ResolvedIndexWidth::I64, &pointerLayout));
+
   constexpr std::array<std::uint64_t, 2> noncanonical = {0, 2};
   auto redundant =
       sync.projectSemanticValue(twoLaneSync, noncanonical, noncanonical);

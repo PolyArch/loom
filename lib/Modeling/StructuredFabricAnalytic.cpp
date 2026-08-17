@@ -15,10 +15,12 @@
 #include "Frontend/IR/LoomOps.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
 #include "Frontend/Lowering/CanonicalDataflowLowering.h"
+#include "Frontend/Lowering/GraphParallelLowering.h"
 #include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
@@ -27,6 +29,7 @@
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -152,7 +155,7 @@ const ModeledPhenomenon kModeledPhenomena[] = {
 const EvaluationModelDescriptor kModelDescriptor{
     builtinEvaluationModelKind(kModel),
     "structured_fabric_low_confidence",
-    "loom.structured_fabric.low_confidence.v2",
+    "loom.structured_fabric.low_confidence.v4",
     caseSignatureRef(),
     {},
     kMetricCapabilities,
@@ -190,6 +193,11 @@ struct BlockActivityProjection final {
 struct ScopeDynamicWork final {
   std::uint64_t instructionLeafExecutions = 0;
   std::uint64_t dynamicActivations = 0;
+};
+
+struct SpatialDynamicWork final {
+  std::uint64_t dynamicLeafExecutions = 0;
+  std::uint64_t loweredLeafCopies = 0;
 };
 
 struct ResolvedScopeActivity final {
@@ -232,6 +240,121 @@ llvm::Expected<std::uint64_t> checkedScaledCount(std::uint64_t count,
                                    "structured_fabric_model_overflow: %s",
                                    context.str().c_str());
   return *result;
+}
+
+llvm::Expected<std::uint64_t>
+fixedParallelCardinality(mlir::Operation *operation) {
+  std::optional<lowering::FixedParallelDomain> domain =
+      lowering::getFixedParallelDomain(operation);
+  if (!domain || domain->lower.size() != domain->upper.size() ||
+      domain->lower.size() != domain->step.size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: graph-owned parallel operation "
+        "has no fixed domain");
+
+  std::uint64_t cardinality = 1;
+  for (auto [lower, upper, step] :
+       llvm::zip_equal(domain->lower, domain->upper, domain->step)) {
+    if (step <= 0)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: graph-owned parallel operation "
+          "has a non-positive step");
+    if (upper <= lower)
+      return std::uint64_t{0};
+    const unsigned __int128 extent = static_cast<unsigned __int128>(
+        static_cast<__int128>(upper) - static_cast<__int128>(lower));
+    const unsigned __int128 dimension =
+        (extent + static_cast<unsigned __int128>(step) - 1) /
+        static_cast<unsigned __int128>(step);
+    const unsigned __int128 product =
+        static_cast<unsigned __int128>(cardinality) * dimension;
+    if (product > std::numeric_limits<std::uint64_t>::max())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_overflow: fixed parallel lane count");
+    cardinality = static_cast<std::uint64_t>(product);
+  }
+  return cardinality;
+}
+
+llvm::Expected<SpatialDynamicWork>
+projectSpatialDynamicWork(const BlockActivityProjection &activity,
+                          ::loom::SpatialRegionOp spatial) {
+  SpatialDynamicWork result;
+  llvm::DenseMap<mlir::Operation *, std::uint64_t> parallelCardinalities;
+  llvm::Error failure = llvm::Error::success();
+  spatial.walk([&](mlir::Operation *operation) {
+    if (failure || !isExecutableLeaf(operation))
+      return;
+    auto activation = activity.activations.find(operation->getBlock());
+    if (activation == activity.activations.end()) {
+      failure = llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: Spatial leaf has no dynamic "
+          "activity projection");
+      return;
+    }
+    const std::optional<std::uint64_t> dynamic = llvm::checkedAddUnsigned(
+        result.dynamicLeafExecutions, activation->second);
+    if (!dynamic) {
+      failure = llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_overflow: Spatial dynamic leaf work");
+      return;
+    }
+    result.dynamicLeafExecutions = *dynamic;
+
+    std::uint64_t copies = 1;
+    for (mlir::Operation *parent = operation->getParentOp();
+         parent && parent != spatial.getOperation();
+         parent = parent->getParentOp()) {
+      if (!llvm::isa<mlir::scf::ForallOp, mlir::scf::ParallelOp>(parent))
+        continue;
+      auto found = parallelCardinalities.find(parent);
+      if (found == parallelCardinalities.end()) {
+        auto cardinality = fixedParallelCardinality(parent);
+        if (!cardinality) {
+          failure = cardinality.takeError();
+          return;
+        }
+        found = parallelCardinalities.try_emplace(parent, *cardinality).first;
+      }
+      const std::optional<std::uint64_t> product =
+          llvm::checkedMulUnsigned(copies, found->second);
+      if (!product) {
+        failure = llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "structured_fabric_model_overflow: lowered parallel leaf copies");
+        return;
+      }
+      copies = *product;
+    }
+    const std::optional<std::uint64_t> totalCopies =
+        llvm::checkedAddUnsigned(result.loweredLeafCopies, copies);
+    if (!totalCopies) {
+      failure = llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_overflow: lowered Spatial leaf copies");
+      return;
+    }
+    result.loweredLeafCopies = *totalCopies;
+  });
+  if (failure)
+    return std::move(failure);
+
+  if (result.loweredLeafCopies == 0) {
+    auto activation = activity.activations.find(&spatial.getBody().front());
+    if (activation == activity.activations.end())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "structured_fabric_model_invalid: empty Spatial owner has no "
+          "activity projection");
+    result.dynamicLeafExecutions = activation->second;
+    result.loweredLeafCopies = 1;
+  }
+  return result;
 }
 
 llvm::Expected<BlockActivityProjection> projectBlockActivity(
@@ -451,17 +574,48 @@ llvm::Error accumulateScaledCount(std::uint64_t &destination,
   return llvm::Error::success();
 }
 
+llvm::Error accumulateScaledRatio(std::uint64_t &destination,
+                                  std::uint64_t value, std::uint64_t numerator,
+                                  std::uint64_t denominator,
+                                  llvm::StringRef context) {
+  if (denominator == 0)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_invalid: zero %s denominator",
+        context.str().c_str());
+  const unsigned __int128 product =
+      static_cast<unsigned __int128>(value) * numerator;
+  const unsigned __int128 scaled =
+      product / denominator + (product % denominator != 0 ? 1 : 0);
+  if (scaled > std::numeric_limits<std::uint64_t>::max())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_overflow: scaled %s", context.str().c_str());
+  const std::optional<std::uint64_t> updated =
+      llvm::checkedAddUnsigned(destination, static_cast<std::uint64_t>(scaled));
+  if (!updated)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "structured_fabric_model_overflow: accumulated %s",
+        context.str().c_str());
+  destination = *updated;
+  return llvm::Error::success();
+}
+
 llvm::Error
 accumulateGraphWorkload(detail::AnalyticWorkloadEstimate &destination,
                         const detail::AnalyticWorkloadEstimate &graph,
-                        std::uint64_t activations) {
-  if (llvm::Error error = accumulateScaledCount(
-          destination.schedulingPressure, graph.schedulingPressure, activations,
+                        std::uint64_t activations,
+                        const SpatialDynamicWork &dynamicWork) {
+  if (llvm::Error error = accumulateScaledRatio(
+          destination.schedulingPressure, graph.schedulingPressure,
+          dynamicWork.dynamicLeafExecutions, dynamicWork.loweredLeafCopies,
           "Spatial scheduling pressure"))
     return error;
-  if (llvm::Error error =
-          accumulateScaledCount(destination.activityUnits, graph.activityUnits,
-                                activations, "Spatial activity"))
+  if (llvm::Error error = accumulateScaledRatio(
+          destination.activityUnits, graph.activityUnits,
+          dynamicWork.dynamicLeafExecutions, dynamicWork.loweredLeafCopies,
+          "Spatial activity"))
     return error;
   if (llvm::Error error = accumulateScaledCount(
           destination.graphActivations, graph.graphActivations, activations,
@@ -475,9 +629,10 @@ accumulateGraphWorkload(detail::AnalyticWorkloadEstimate &destination,
           destination.memoryBoundaryBindings, graph.memoryBoundaryBindings,
           activations, "memory boundary bindings"))
     return error;
-  return accumulateScaledCount(destination.memoryTransactions,
-                               graph.memoryTransactions, activations,
-                               "memory transactions");
+  return accumulateScaledRatio(
+      destination.memoryTransactions, graph.memoryTransactions,
+      dynamicWork.dynamicLeafExecutions, dynamicWork.loweredLeafCopies,
+      "memory transactions");
 }
 
 llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
@@ -541,8 +696,11 @@ llvm::Expected<std::optional<detail::LowConfidenceMetricSet>> estimateMetrics(
       return graph.takeError();
     if (!*graph)
       return std::optional<detail::LowConfidenceMetricSet>{};
-    if (llvm::Error error =
-            accumulateGraphWorkload(pressure, **graph, found->second))
+    auto dynamicWork = projectSpatialDynamicWork(activity, spatial);
+    if (!dynamicWork)
+      return dynamicWork.takeError();
+    if (llvm::Error error = accumulateGraphWorkload(
+            pressure, **graph, found->second, *dynamicWork))
       return std::move(error);
   }
 

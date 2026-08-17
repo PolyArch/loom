@@ -150,7 +150,10 @@ void builtinOrderingEnergyAndParetoUseOneVector() {
       take(program.compareTotalOrdering(left, leftKey, right, rightKey, 0)) > 0,
       "violation level did not dominate traversal quality");
 
-  constexpr std::uint32_t searchEnergyLevel = 4;
+  const std::uint32_t searchEnergyLevel =
+      loom::resolvedBuiltinSpatialPnrPolicy(
+          loom::ResolvedProfilePreset::BalancedExplore)
+          .objectiveSelection.selectedSearchEnergy;
   const loom::dse::ObjectiveWideValue leftEnergy =
       take(program.weightedLevelValue(left, searchEnergyLevel));
   require(leftEnergy.high == 0 &&

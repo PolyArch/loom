@@ -43,6 +43,27 @@ void require(bool condition, llvm::StringRef message) {
     fail(message);
 }
 
+class FixedExternalMemoryProvider final
+    : public loom::sim::CgraExternalMemoryProvider {
+public:
+  llvm::Expected<loom::sim::CgraExternalMemoryResponse>
+  transact(const loom::sim::CgraExternalMemoryRequest &request) override {
+    if (request.objectOrdinal != 0 ||
+        request.operation != loom::sim::CgraExternalMemoryOperation::Read ||
+        request.elements.size() != 1 ||
+        request.elements.front().byteOffset != 4 ||
+        request.elements.front().byteCount != 4 ||
+        !request.elements.front().writeData.empty())
+      return llvm::createStringError(
+          std::errc::invalid_argument,
+          "external memory provider received the wrong logical request");
+    ++requestCount;
+    return loom::sim::CgraExternalMemoryResponse{{{13, 0, 0, 0}}};
+  }
+
+  std::uint64_t requestCount = 0;
+};
+
 mlir::MLIRContext &context() {
   static mlir::MLIRContext *instance = [] {
     mlir::DialectRegistry registry;
@@ -478,10 +499,20 @@ void graphActivationExecutesSelectedLocalMemory() {
        fabric::MemoryResultAssemblyStrategy::PassThroughParent, std::nullopt,
        std::nullopt});
   plan.memory.actors.push_back(
-      {load->ref, load->graph, occurrence,
+      {load->ref,
+       load->graph,
+       occurrence,
        loom::mapping::SpatialMemoryOperationPlacementView(port),
        loom::fabric::FabricMemoryCapabilityAlternativeRef{port, 0},
-       operationAction, 0, 1, 0, 1, 0, 1, {}, {}});
+       operationAction,
+       0,
+       1,
+       0,
+       1,
+       0,
+       1,
+       {},
+       {}});
   selectExternalMemoryRoles(plan.memory.actors.back(), load->op);
 
   appendTransfer(
@@ -514,43 +545,78 @@ void graphActivationExecutesSelectedLocalMemory() {
                                                  &contract};
   plan.resources = take(freezeCgraResourceRuntimePlan(contracts, selections));
 
-  SimulatorState state;
-  state.graphScope = graph.getOperation();
-  initializeRunState(state, *prepared);
-  auto memory = std::make_shared<MemoryValue>();
-  memory->logicalRootId = 0;
-  for (std::uint32_t element : {3u, 11u, 5u, 7u}) {
-    auto bytes = take(encodeMemoryElement(
-        take(tokenFromBitPattern(llvm::APInt(32, element),
-                                 mlir::IntegerType::get(&context(), 32))),
-        mlir::IntegerType::get(&context(), 32), graph.getOperation()));
-    memory->bytes.append(bytes.begin(), bytes.end());
-  }
-  memory->initialized = llvm::SmallBitVector(memory->bytes.size(), true);
-
-  llvm::SmallVector<GraphIngressEmission, 2> ingress;
-  state.graphIngressCapture = &ingress;
   mlir::Block &entry = graph.getBody().front();
-  seedBlockArgument(state, entry.getArgument(0), noneToken());
-  seedBlockArgument(state, entry.getArgument(1),
-                    indexToken(llvm::APInt(64, 1)));
-  state.graphIngressCapture = nullptr;
-  state.memories[entry.getArgument(2)] = memory;
-  state.memoryViews[entry.getArgument(2)] = MemoryView{
-      memory, entry.getArgument(2), 0, mlir::IntegerType::get(&context(), 32)};
+  const auto seedState =
+      [&](SimulatorState &state,
+          llvm::SmallVectorImpl<GraphIngressEmission> &ingress) {
+        state.graphScope = graph.getOperation();
+        initializeRunState(state, *prepared);
+        auto memory = std::make_shared<MemoryValue>();
+        memory->logicalRootId = 0;
+        for (std::uint32_t element : {3u, 11u, 5u, 7u}) {
+          auto bytes = take(encodeMemoryElement(
+              take(tokenFromBitPattern(llvm::APInt(32, element),
+                                       mlir::IntegerType::get(&context(), 32))),
+              mlir::IntegerType::get(&context(), 32), graph.getOperation()));
+          memory->bytes.append(bytes.begin(), bytes.end());
+        }
+        memory->initialized = llvm::SmallBitVector(memory->bytes.size(), true);
+        state.graphIngressCapture = &ingress;
+        seedBlockArgument(state, entry.getArgument(0), noneToken());
+        seedBlockArgument(state, entry.getArgument(1),
+                          indexToken(llvm::APInt(64, 1)));
+        state.graphIngressCapture = nullptr;
+        state.memories[entry.getArgument(2)] = memory;
+        state.memoryViews[entry.getArgument(2)] =
+            MemoryView{memory, entry.getArgument(2), 0,
+                       mlir::IntegerType::get(&context(), 32)};
+      };
 
   plan.memory.rootedUses.front().target =
       loom::fabric::ManagerEndpointRef(loom::fabric::FabricMemoryEndpointRef{
           loom::fabric::FabricMemoryEndpointOwnerRef::of(occurrence), 0});
+  plan.memory.rootedUses.front().localServicePhysicalUseOrdinal.reset();
+  SimulatorState externalState;
+  llvm::SmallVector<GraphIngressEmission, 2> externalIngress;
+  seedState(externalState, externalIngress);
   auto unsupportedRuntime = CgraGraphActivationRuntime::create(
-      plan, view, launch, load->graph, *prepared, state,
+      plan, view, launch, load->graph, *prepared, externalState,
       /*captureMicroarchitecture=*/false);
   require(!unsupportedRuntime,
           "manager memory target unexpectedly acquired a CGRA provider");
   require(llvm::errorToErrorCode(unsupportedRuntime.takeError()) ==
               std::make_error_code(std::errc::not_supported),
           "manager memory target did not fail as typed unsupported");
+
+  FixedExternalMemoryProvider externalMemory;
+  auto externalRuntime = take(CgraGraphActivationRuntime::create(
+      plan, view, launch, load->graph, *prepared, externalState,
+      /*captureMicroarchitecture=*/false, &externalMemory));
+  if (llvm::Error error = externalRuntime.start(coordinate(0), externalIngress))
+    fail(llvm::toString(std::move(error)));
+  for (unsigned iteration = 0;
+       iteration != 96 && externalRuntime.hasPendingEvents(); ++iteration) {
+    auto frame = take(externalRuntime.advance());
+    require(frame.has_value(),
+            "external memory activation lost its pending frame");
+  }
+  require(!externalRuntime.hasPendingEvents() &&
+              externalMemory.requestCount == 1,
+          "manager memory activation did not use its external provider once");
+  auto externalOutput = externalState.observedOutputs.find(
+      graph.getBody().front().back().getOperand(0));
+  require(externalOutput != externalState.observedOutputs.end() &&
+              externalOutput->second.size() == 1 &&
+              take(tokenBitPattern(externalOutput->second.front(),
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 26),
+          "manager memory activation ignored its provider response");
+
   plan.memory.rootedUses.front().target = service;
+  plan.memory.rootedUses.front().localServicePhysicalUseOrdinal = serviceAction;
+  SimulatorState state;
+  llvm::SmallVector<GraphIngressEmission, 2> ingress;
+  seedState(state, ingress);
 
   auto runtime = take(CgraGraphActivationRuntime::create(
       plan, view, launch, load->graph, *prepared, state,
@@ -635,15 +701,35 @@ void graphActivationExecutesExactMemoryInternalConnections() {
   const loom::fabric::FabricMemoryOperationPortRef loadPort{occurrence, 0};
   const loom::fabric::FabricMemoryOperationPortRef storePort{occurrence, 1};
   plan.memory.actors.push_back(
-      {load->ref, load->graph, occurrence,
+      {load->ref,
+       load->graph,
+       occurrence,
        loom::mapping::SpatialMemoryOperationPlacementView(loadPort),
        loom::fabric::FabricMemoryCapabilityAlternativeRef{loadPort, 0},
-       0, 0, 1, 0, 1, 0, 1, {}, {}});
+       0,
+       0,
+       1,
+       0,
+       1,
+       0,
+       1,
+       {},
+       {}});
   plan.memory.actors.push_back(
-      {store->ref, store->graph, occurrence,
+      {store->ref,
+       store->graph,
+       occurrence,
        loom::mapping::SpatialMemoryOperationPlacementView(storePort),
        loom::fabric::FabricMemoryCapabilityAlternativeRef{storePort, 0},
-       2, 1, 1, 1, 1, 1, 0, {}, {}});
+       2,
+       1,
+       1,
+       1,
+       1,
+       1,
+       0,
+       {},
+       {}});
   selectExternalMemoryRoles(plan.memory.actors[0], load->op);
   selectExternalMemoryRoles(plan.memory.actors[1], store->op);
 
@@ -652,8 +738,7 @@ void graphActivationExecutesExactMemoryInternalConnections() {
   auto storeService =
       take(dataflow::semantics::CanonicalService::forActor(store->op));
   loom::fabric::FabricOrdinal nextConnection = 0;
-  for (auto [resultOrdinal, result] :
-       llvm::enumerate(loadService.results())) {
+  for (auto [resultOrdinal, result] : llvm::enumerate(loadService.results())) {
     auto resultValue = loadService.resultValue(load->op, resultOrdinal);
     if (!resultValue)
       fail(llvm::toString(resultValue.takeError()));
@@ -675,15 +760,14 @@ void graphActivationExecutesExactMemoryInternalConnections() {
             "store consumer has no canonical service role");
     const std::size_t resultRole = static_cast<std::size_t>(result.role);
     const std::size_t argumentRole = static_cast<std::size_t>(*storeRole);
-    auto &destination =
-        *plan.memory.actors[0].roleDestinations[resultRole];
+    auto &destination = *plan.memory.actors[0].roleDestinations[resultRole];
     destination.externalEndpoint.reset();
     destination.internalConnections = {nextConnection};
     plan.memory.actors[1].roleSources[argumentRole] =
-        loom::fabric::FabricMemoryHandshakeInternalRoleSource{
-            nextConnection};
+        loom::fabric::FabricMemoryHandshakeInternalRoleSource{nextConnection};
     plan.memory.internalConnections.push_back(
-         {occurrence, nextConnection,
+        {occurrence,
+         nextConnection,
          {load->ref, static_cast<dataflow::StructuralOrdinal>(
                          resultValue->getResultNumber())},
          {store->ref, static_cast<dataflow::StructuralOrdinal>(
@@ -693,41 +777,39 @@ void graphActivationExecutesExactMemoryInternalConnections() {
   require(plan.memory.internalConnections.size() == 2,
           "memory chain did not select both internal connections");
 
-  const auto appendExternalInputs = [&](
-                                        const dataflow::CanonicalActorView &actor,
-                                        const CgraMemoryActorPlan &memoryActor,
-                                        std::uint32_t addressInput,
-                                        bool hasControl) {
-    auto actorService =
-        take(dataflow::semantics::CanonicalService::forActor(actor.op));
-    for (auto [argumentOrdinal, argument] :
-         llvm::enumerate(actorService.arguments())) {
-      const std::size_t role = static_cast<std::size_t>(argument.role);
-      if (!memoryActor.roleSources[role] ||
-          !std::holds_alternative<
-              loom::fabric::FabricMemoryHandshakeExternalRoleSource>(
-              *memoryActor.roleSources[role]))
-        continue;
-      auto value = actorService.argumentValue(actor.op, argumentOrdinal);
-      if (!value)
-        fail(llvm::toString(value.takeError()));
-      dataflow::CanonicalGraphProducerEndpointRef producer(
-          dataflow::GraphIngressTokenRef{
-              dataflow::GraphValueInputTokenRef{actor.graph, addressInput}});
-      if (argument.role ==
-              dataflow::semantics::ServiceValueRole::Control &&
-          hasControl) {
-        producer = dataflow::GraphIngressTokenRef{
-            dataflow::GraphStartTokenRef{actor.graph}};
-      }
-      appendTransfer(
-          plan, std::move(producer),
-          dataflow::ActorTokenOperandRef{
-              actor.ref, static_cast<dataflow::StructuralOrdinal>(
-                             (*value)->getOperandNumber())},
-          actor.graph);
-    }
-  };
+  const auto appendExternalInputs =
+      [&](const dataflow::CanonicalActorView &actor,
+          const CgraMemoryActorPlan &memoryActor, std::uint32_t addressInput,
+          bool hasControl) {
+        auto actorService =
+            take(dataflow::semantics::CanonicalService::forActor(actor.op));
+        for (auto [argumentOrdinal, argument] :
+             llvm::enumerate(actorService.arguments())) {
+          const std::size_t role = static_cast<std::size_t>(argument.role);
+          if (!memoryActor.roleSources[role] ||
+              !std::holds_alternative<
+                  loom::fabric::FabricMemoryHandshakeExternalRoleSource>(
+                  *memoryActor.roleSources[role]))
+            continue;
+          auto value = actorService.argumentValue(actor.op, argumentOrdinal);
+          if (!value)
+            fail(llvm::toString(value.takeError()));
+          dataflow::CanonicalGraphProducerEndpointRef producer(
+              dataflow::GraphIngressTokenRef{dataflow::GraphValueInputTokenRef{
+                  actor.graph, addressInput}});
+          if (argument.role == dataflow::semantics::ServiceValueRole::Control &&
+              hasControl) {
+            producer = dataflow::GraphIngressTokenRef{
+                dataflow::GraphStartTokenRef{actor.graph}};
+          }
+          appendTransfer(
+              plan, std::move(producer),
+              dataflow::ActorTokenOperandRef{
+                  actor.ref, static_cast<dataflow::StructuralOrdinal>(
+                                 (*value)->getOperandNumber())},
+              actor.graph);
+        }
+      };
   appendExternalInputs(*load, plan.memory.actors[0], 0, true);
   appendExternalInputs(*store, plan.memory.actors[1], 1, false);
   appendTransfer(
@@ -747,9 +829,8 @@ void graphActivationExecutesExactMemoryInternalConnections() {
     auto memory = std::make_shared<MemoryValue>();
     for (std::uint32_t value : values) {
       auto bytes = take(encodeMemoryElement(
-          take(tokenFromBitPattern(
-              llvm::APInt(32, value),
-              mlir::IntegerType::get(&context(), 32))),
+          take(tokenFromBitPattern(llvm::APInt(32, value),
+                                   mlir::IntegerType::get(&context(), 32))),
           mlir::IntegerType::get(&context(), 32), graph.getOperation()));
       memory->bytes.append(bytes.begin(), bytes.end());
     }
@@ -781,11 +862,11 @@ void graphActivationExecutesExactMemoryInternalConnections() {
   CgraFrozenExecutionPlan tampered = plan;
   bool changedConnection = false;
   for (auto &source : tampered.memory.actors[1].roleSources) {
-    auto *internal = source
-                         ? std::get_if<loom::fabric::
-                                           FabricMemoryHandshakeInternalRoleSource>(
-                               &*source)
-                         : nullptr;
+    auto *internal =
+        source ? std::get_if<
+                     loom::fabric::FabricMemoryHandshakeInternalRoleSource>(
+                     &*source)
+               : nullptr;
     if (!internal)
       continue;
     ++internal->connection;
@@ -829,10 +910,9 @@ void graphActivationExecutesExactMemoryInternalConnections() {
   auto stored = readMemoryElement(
       storeView, 8, mlir::IntegerType::get(&context(), 32), state,
       graph.getOperation(), "internal-memory verification");
-  require(stored &&
-              take(tokenBitPattern(*stored,
-                                   mlir::IntegerType::get(&context(), 32))) ==
-                  llvm::APInt(32, 11),
+  require(stored && take(tokenBitPattern(
+                        *stored, mlir::IntegerType::get(&context(), 32))) ==
+                        llvm::APInt(32, 11),
           "exact memory internal connections did not feed the store");
 }
 

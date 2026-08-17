@@ -13,6 +13,7 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingIdentity.h"
+#include "Mapping/Artifact/SystemServiceBindingProjection.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -347,6 +348,39 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
                                                         &context);
   if (!module)
     fail("cannot parse memory Dataflow fixture");
+  return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+dataflow::CanonicalDataflowArtifact
+buildDynamicMemoryDataflow(mlir::MLIRContext &context) {
+  auto module = mlir::parseSourceString<mlir::ModuleOp>(R"mlir(
+module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
+  dataflow.graph private @load(%ctrl: none, %memory: memref<?xi32>)
+      -> (i32, memref<?xi32>)
+      attributes {input_segments = array<i32: 0, 0, 1>,
+                  result_segments = array<i32: 1, 0, 1>} {
+    %index = arith.constant 0 : index
+    %value, %done = dataflow.load %memory[%index] %ctrl : memref<?xi32>
+    dataflow.graph.return values(%value : i32) streams()
+        memories(%memory : memref<?xi32>) complete(%done : none)
+  }
+  dataflow.thread private @worker domain(#dataflow.thread_domain<dense>)(
+      %memory: memref<?xi32>) ctrl (%ctrl: none) {
+    %value, %result, %done = dataflow.graph.launch @load deps(%ctrl)
+        values() stream_inputs() memories(%memory) stream_outputs()
+        : (none, memref<?xi32>) -> (i32, memref<?xi32>, none)
+    dataflow.thread.yield %done : none
+  }
+  func.func private @host(%memory: memref<?xi32>) {
+    %completion = dataflow.thread.launch @worker(%memory)
+        : (memref<?xi32>) -> !dataflow.thread_token
+    return
+  }
+}
+)mlir",
+                                                        &context);
+  if (!module)
+    fail("cannot parse dynamic memory Dataflow fixture");
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
@@ -949,6 +983,60 @@ int main() {
                    loom::fabric::FabricMemoryServiceSourceInterval{0, 64}))
               .empty(),
           "exact address closure accepted an out-of-region transform");
+
+  const dataflow::LogicalMemoryRootOrViewRef *staticLogicalMemory = nullptr;
+  for (const auto &obligation : obligations) {
+    const auto *operation =
+        std::get_if<loom::mapping::OperationServiceObligationFamilyKey>(
+            &obligation.key);
+    if (operation)
+      staticLogicalMemory =
+          std::get_if<dataflow::LogicalMemoryRootOrViewRef>(operation);
+    if (staticLogicalMemory)
+      break;
+  }
+  require(staticLogicalMemory,
+          "static fixture has no addressed logical-memory obligation");
+  require(take(loom::mapping::projectSystemMemoryTargetPlans(
+                   dataflowView, adverseTransformSystem, adverseEndpoint,
+                   *staticLogicalMemory,
+                   loom::mapping::SpatialMemoryWholeIntervalView{}))
+              .empty(),
+          "finite Whole target projection bypassed exact address closure");
+
+  auto dynamicDataflow = buildDynamicMemoryDataflow(context);
+  take(dataflow::publishCanonicalDataflow(dynamicDataflow, store));
+  auto dynamicView = take(dynamicDataflow.view());
+  std::vector<dataflow::RootThreadLaunchRef> dynamicRoots{
+      dynamicView.rootThreadLaunches().front().ref};
+  auto dynamicObligations = take(loom::mapping::projectSystemServiceObligations(
+      dynamicView, dynamicRoots));
+  const dataflow::LogicalMemoryRootOrViewRef *dynamicLogicalMemory = nullptr;
+  for (const auto &obligation : dynamicObligations) {
+    const auto *operation =
+        std::get_if<loom::mapping::OperationServiceObligationFamilyKey>(
+            &obligation.key);
+    if (operation)
+      dynamicLogicalMemory =
+          std::get_if<dataflow::LogicalMemoryRootOrViewRef>(operation);
+    if (dynamicLogicalMemory)
+      break;
+  }
+  require(dynamicLogicalMemory,
+          "dynamic fixture has no addressed logical-memory obligation");
+  auto dynamicExtent =
+      take(dynamicView.staticMemoryByteExtent(*dynamicLogicalMemory));
+  require(!dynamicExtent,
+          "dynamic fixture unexpectedly acquired a static memory extent");
+  const auto structuralPlans =
+      take(loom::fabric::projectFabricMemoryServiceTargetPlans(
+          adverseTransformSystem, adverseEndpoint));
+  const auto dynamicPlans = take(loom::mapping::projectSystemMemoryTargetPlans(
+      dynamicView, adverseTransformSystem, adverseEndpoint,
+      *dynamicLogicalMemory, loom::mapping::SpatialMemoryWholeIntervalView{}));
+  require(!dynamicPlans.empty() && dynamicPlans == structuralPlans,
+          "dynamic Whole target projection lost its structural service "
+          "envelope");
 
   auto coherentDesign =
       buildCoherentAlternativeFabric(store, design.roots().front());

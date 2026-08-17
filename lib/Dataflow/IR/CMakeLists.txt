@@ -36,6 +36,7 @@ add_mlir_dialect_library(MLIRDataflow
   DataflowOps.cpp
   DataflowReferenceCodec.cpp
   DataflowServiceSchema.cpp
+  DataflowStaticScheduleAnalysis.cpp
   DataflowStructuralView.cpp
   OperationSchema.cpp
   OperationSchemaAtomCodec.cpp

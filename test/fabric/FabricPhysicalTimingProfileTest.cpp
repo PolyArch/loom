@@ -59,7 +59,7 @@ void artifactRoundTrip(loom::ArtifactStore &store) {
   const auto module = importBuiltinModule(
       __func__, store, loom::adg::BuiltinTargetPreset::Small);
   const auto otherModule = importBuiltinModule(
-      __func__, store, loom::adg::BuiltinTargetPreset::Default);
+      __func__, store, loom::adg::BuiltinTargetPreset::Coverage);
 
   const auto normalized =
       take(__func__, loom::fabric::projectNormalizedFabricPhysicalTimingProfile(

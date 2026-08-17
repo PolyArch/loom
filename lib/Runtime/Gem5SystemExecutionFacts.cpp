@@ -34,6 +34,7 @@
 #include "Runtime/Gem5SpatialChannelPlan.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
+#include "Simulator/SpatialInvocation.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -581,7 +582,7 @@ deriveFacts(const EvaluationRequest &request,
     if (!launch)
       return launch.takeError();
     auto launchOp = llvm::dyn_cast<dataflow::GraphLaunchOp>(launch->op);
-    if (!launchOp || !launchOp.getMemoryInputs().empty())
+    if (!launchOp)
       return Gem5SystemFactsOrUnsupported{
           UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
     for (const std::vector<std::uint64_t> &point : **coordinates) {
@@ -773,6 +774,9 @@ deriveFacts(const EvaluationRequest &request,
     pending.instructionEntry = std::move(*instruction);
     const bool dynamicInvocation =
         pending.instructionEntry->spatialInvocation == pending.graph;
+    if (!dynamicInvocation && !launchOp.getMemoryInputs().empty())
+      return Gem5SystemFactsOrUnsupported{
+          UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
     if (dynamicInvocation &&
         (!launchOp.getStreamInputs().empty() ||
          !launchOp.getStreamOutputs().empty() ||
@@ -792,6 +796,14 @@ deriveFacts(const EvaluationRequest &request,
           launchOp.getValueResults().size());
       std::iota(workloadDraft.observableContract.valueResults.begin(),
                 workloadDraft.observableContract.valueResults.end(), 0);
+      auto writableRoots = sim::projectSpatialInvocationWritableMemoryRoots(
+          *dataflowView, pending.graph);
+      if (!writableRoots)
+        return writableRoots.takeError();
+      for (dataflow::LogicalMemoryRootRef memory : *writableRoots)
+        workloadDraft.observableContract.memories.push_back(
+            {dataflow::LogicalMemoryRootOrViewRef{memory},
+             sim::MemoryObservationForm::DiffFromRuntimeInput});
     } else {
       for (const PendingChannelOutput &output : pending.channelOutputs)
         workloadDraft.observableContract.streamOutputs.push_back(

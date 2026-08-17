@@ -134,9 +134,10 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
     if (!pressures)
       return pressures.takeError();
     std::vector<SpatialCatalogGraphProgress> graphProgress;
-    std::vector<SpatialRecurrenceTimingProjection> graphRecurrenceTimings;
+    std::vector<std::shared_ptr<const FrozenSpatialRecurrenceTimingDemand>>
+        graphRecurrenceDemands;
     graphProgress.reserve(techView.covers().size());
-    graphRecurrenceTimings.reserve(techView.covers().size());
+    graphRecurrenceDemands.reserve(techView.covers().size());
     for (const ::dataflow::GraphRef graph : techView.covers()) {
       const std::array<::dataflow::GraphRef, 1> selected{graph};
       auto progress = ::loom::mapping::projectSpatialMappingProgress(
@@ -147,11 +148,11 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
       if (!progress)
         return progress.takeError();
       graphProgress.push_back({graph, std::move(progress->routeObligations)});
-      auto recurrence = projectSpatialMappingGraphRecurrenceTiming(
+      auto recurrence = freezeSpatialMappingGraphRecurrenceTimingDemand(
           dataflow, techView, *spatialModule, (*spatial)->view(), graph);
       if (!recurrence)
         return recurrence.takeError();
-      graphRecurrenceTimings.push_back(std::move(*recurrence));
+      graphRecurrenceDemands.push_back(std::move(*recurrence));
     }
     result.push_back(
         {reference,
@@ -161,7 +162,7 @@ llvm::Expected<std::vector<SpatialCatalogEntry>> importSpatialCatalog(
                                            techView.covers().end()),
          std::move(graphProgress),
          std::move(*pressures),
-         std::move(graphRecurrenceTimings),
+         std::move(graphRecurrenceDemands),
          0,
          0,
          {},

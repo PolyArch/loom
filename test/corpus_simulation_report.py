@@ -11,6 +11,76 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
+class DseExecutionMetrics:
+    plan_executions: int
+    generate_invocations: int
+    incomplete_generate_invocations: int
+    input_bindings: int
+    input_artifacts: int
+    output_bindings: int
+    output_artifacts: int
+    generate_lineage_edges: int
+
+    @staticmethod
+    def zero() -> "DseExecutionMetrics":
+        return DseExecutionMetrics(0, 0, 0, 0, 0, 0, 0, 0)
+
+    def combine(self, other: "DseExecutionMetrics") -> "DseExecutionMetrics":
+        return DseExecutionMetrics(
+            plan_executions=self.plan_executions + other.plan_executions,
+            generate_invocations=(
+                self.generate_invocations + other.generate_invocations
+            ),
+            incomplete_generate_invocations=(
+                self.incomplete_generate_invocations
+                + other.incomplete_generate_invocations
+            ),
+            input_bindings=self.input_bindings + other.input_bindings,
+            input_artifacts=self.input_artifacts + other.input_artifacts,
+            output_bindings=self.output_bindings + other.output_bindings,
+            output_artifacts=self.output_artifacts + other.output_artifacts,
+            generate_lineage_edges=(
+                self.generate_lineage_edges + other.generate_lineage_edges
+            ),
+        )
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "generate_invocations": self.generate_invocations,
+            "generate_lineage_edges": self.generate_lineage_edges,
+            "incomplete_generate_invocations": (self.incomplete_generate_invocations),
+            "input_artifacts": self.input_artifacts,
+            "input_bindings": self.input_bindings,
+            "output_artifacts": self.output_artifacts,
+            "output_bindings": self.output_bindings,
+            "plan_executions": self.plan_executions,
+        }
+
+
+def parse_dse_execution_projection(value: object) -> DseExecutionMetrics:
+    if not isinstance(value, dict):
+        raise ValueError("DSE execution summary is not an object")
+    expected_fields = set(DseExecutionMetrics.__dataclass_fields__)
+    if set(value) != expected_fields:
+        raise ValueError("DSE execution summary field inventory changed")
+    counts: dict[str, int] = {}
+    for field in expected_fields:
+        count = value[field]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError(f"DSE execution summary has invalid {field}")
+        counts[field] = count
+    if counts["plan_executions"] == 0:
+        raise ValueError("DSE execution summary has no plan execution")
+    if counts["generate_invocations"] == 0:
+        raise ValueError("DSE execution summary has no Generate invocation")
+    if counts["incomplete_generate_invocations"] != 0:
+        raise ValueError("DSE execution summary retains incomplete Generate")
+    if counts["generate_lineage_edges"] == 0:
+        raise ValueError("DSE execution summary has no Generate lineage")
+    return DseExecutionMetrics(**counts)
+
+
+@dataclass(frozen=True)
 class DfgSimulationMetrics:
     graphs: int
     actors: int
@@ -23,6 +93,7 @@ class DfgSimulationMetrics:
     simulation_seconds: float
     operation_firings: dict[str, int]
     selected_source_files: tuple[str, ...]
+    dse_execution: DseExecutionMetrics | None = None
     canonical_dataflow_identity: str | None = None
     simulation_workload_identity: str | None = None
     simulation_runtime_input_identity: str | None = None
@@ -64,6 +135,11 @@ class DfgSimulationMetrics:
                     set(self.selected_source_files) | set(other.selected_source_files)
                 )
             ),
+            dse_execution=(
+                self.dse_execution.combine(other.dse_execution)
+                if self.dse_execution is not None and other.dse_execution is not None
+                else self.dse_execution or other.dse_execution
+            ),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -95,6 +171,8 @@ class DfgSimulationMetrics:
             }
         if self.execution_terminal is not None:
             payload["execution_terminal"] = self.execution_terminal
+        if self.dse_execution is not None:
+            payload["dse_execution"] = self.dse_execution.as_dict()
         return payload
 
 
@@ -116,6 +194,7 @@ def parse_dfg_simulation_report(
         "artifacts",
         "compiler_target",
         "dynamic_calls",
+        "dse_execution",
         "event_count",
         "execution_terminal",
         "floating_variance_bytes",
@@ -233,6 +312,11 @@ def parse_dfg_simulation_report(
             return None, f"DFG simulation report has invalid transform lineage: {path}"
     if payload["execution_terminal"] != "retired":
         return None, f"DFG simulation report has invalid execution terminal: {path}"
+
+    try:
+        dse_execution = parse_dse_execution_projection(payload["dse_execution"])
+    except ValueError as exc:
+        return None, f"DFG simulation report has invalid DSE execution: {exc}: {path}"
 
     instruction_bindings = target["instruction_bindings"]
     instruction_core_count = target["instruction_core_count"]
@@ -360,6 +444,7 @@ def parse_dfg_simulation_report(
             simulation_seconds=float(seconds),
             operation_firings=firings,
             selected_source_files=tuple(raw_source_files),
+            dse_execution=dse_execution,
             canonical_dataflow_identity=artifacts["canonical_dataflow"],
             simulation_workload_identity=artifacts["simulation_workload"],
             simulation_runtime_input_identity=artifacts["simulation_runtime_input"],

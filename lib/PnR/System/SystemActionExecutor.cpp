@@ -394,7 +394,7 @@ executeResource(const SystemCandidateStateHandle &current,
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, SystemServiceTargetAction>)
           return detail::rebuildSystemCandidateWithServiceTarget(
-              *current, value.context, value.choice);
+              *current, value.context, value.subject, value.choice);
         else if constexpr (std::is_same_v<T, SystemInstructionUsePatternAction>)
           return detail::rebuildSystemCandidateWithInstructionUsePattern(
               *current, value.use, value.choice);

@@ -537,11 +537,11 @@ the already finalized Fabric.
 The initial general-purpose template has three closed authoring presets:
 
 ```text
-BuiltinTargetPreset = Small | Default | Large
+BuiltinTargetPreset = Small | Coverage | Large
 ```
 
 Every preset resolves to the single template identity
-`loom.adg.builtin.general_purpose` at schema version `5.0`. Their prior recipes
+`loom.adg.builtin.general_purpose` at schema version `6.0`. Their prior recipes
 are not retained as compatibility expansions.
 Version 3 replaced runtime tag-token gateway inputs with Mapping-configured tag
 writers, derived the minimum positive tag width from resident route capacity,
@@ -563,6 +563,18 @@ shape without enumerating shapes or treating equal widths as equal types.
 Version 5 removes preset names from the template identity and generated Fabric
 labels. A preset now supplies only a default `BuiltinTargetScale`; the complete
 resolved scale is the sole builtin sizing input to the shared recipe.
+Version 6 makes the Spatial and Temporal FU occurrence inventories required
+typed scale parameters. The resolved scale, rather than a hidden PE-density
+formula, now owns each optional FU-family multiplicity. Counts may be zero for
+capability-limited DSE candidates and may not exceed the schedule-local PE
+count. The `Coverage` preset replaces the ambiguous `Default` name and carries
+an explicitly complete inventory; other scales can shrink one FU family
+without changing PE count or inventing a mapper-side hardware mutation. The
+same version makes `crossScheduleBoundaryLanesPerTemporalPe` a required
+positive scale parameter. It owns the uniform number of independently routed
+single-stream converter lanes in each direction at every Temporal PE site, so
+Hardware DSE may trade mixed-schedule routability against Fabric size without
+changing the mapper or the template identity.
 
 The public builtin boundary is:
 
@@ -666,7 +678,7 @@ Cross-schedule ingress uses a Mapping-configured tag writer and both directions
 contain one non-bypassable FIFO, so the two meshes cannot form a combinational
 ready/valid cycle. The required `meshDimension` scale field exceeds one and is
 the common width and height of both meshes. Its preset defaults are `4`, `6`,
-and `8` for `Small`, `Default`, and `Large`, respectively. The dimension
+and `8` for `Small`, `Coverage`, and `Large`, respectively. The dimension
 generates graph topology only; it does not become a semantic coordinate.
 Interior transit switches are `8 x 8`, edge and corner transit switches are
 smaller, and every local attachment switch is at most `8 x 8`.
@@ -677,16 +689,17 @@ distributed independently across the complete mesh instead of inheriting a
 prefix from Builder construction order.
 
 The Spatial and Temporal meshes carry different transport kinds, so a
-cross-schedule boundary pair is the only path between them. That pair is
-therefore sized by the compute that produces cross-schedule dataflow, not by
-the SpatialCore's external transport width: the recipe emits one
-Spatial-to-Temporal and one Temporal-to-Spatial boundary per Temporal PE
-occurrence, on the same distributed phase as the Temporal PEs. The Temporal
-domain can then absorb one cross-schedule stream per PE, and a conversion stays
-inside the neighborhood that needs it. Sizing the pair by the Module gateway
-anchor instead makes the two meshes effectively disconnected once a Mapping
-places one graph across both schedules, because the mesh area and its resident
-compute grow while that anchor does not. Every memory occurrence uses two
+cross-schedule boundary lane is the only path between them. The resolved
+`crossScheduleBoundaryLanesPerTemporalPe` emits that many Spatial-to-Temporal
+boundaries and that many Temporal-to-Spatial boundaries at each Temporal PE
+site, on the same distributed phase as those PEs. Each lane carries one
+independently routed logical stream. The preset value is five; the former value
+one left a hard one-stream-per-PE cut even though each Temporal PE exposes five
+operand inputs. The lane count remains an explicit Hardware DSE dimension
+rather than a mapper-side mutation or an implicit function of Module gateway
+width. A conversion stays inside the neighborhood that needs it, while a
+smaller resolved value deliberately retains finite mixed-schedule pressure.
+Every memory occurrence uses two
 transport banks separated by half the mesh cell domain, and every response
 passes through a non-bypassable FIFO before network injection; its manager
 capability remains direct. No switch is incident to all PEs, memories, or
@@ -697,7 +710,7 @@ fixture.
 
 The initial scale anchors are:
 
-| property                         | `Small` | `Default` | `Large` |
+| property                         | `Small` | `Coverage` | `Large` |
 | -------------------------------- | ------: | --------: | ------: |
 | AccCore occurrences              |       4 |         8 |      16 |
 | mesh width and height            |       4 |         6 |       8 |
@@ -706,8 +719,9 @@ The initial scale anchors are:
 | memory occurrences per core      |       2 |         4 |       8 |
 | Spatial : Temporal memory ratio  |     1:1 |       2:2 |     4:4 |
 | Temporal resident-context anchor |       2 |         4 |       8 |
+| cross-schedule lanes / Temporal PE |     5 |         5 |       5 |
 | Module transport gateway anchor  |       2 |         4 |       8 |
-| cross-schedule boundary pairs    |       4 |         9 |      16 |
+| cross-schedule boundary pairs    |      20 |        45 |      80 |
 
 These values are resolved inputs to one template, not fields persisted in
 Fabric in addition to the resources they generate. Exact per-helper resource
@@ -725,8 +739,9 @@ capacity is derived exactly as `AccCore occurrences * memoryCapacityBytes`, it
 admits the `makeGeneral64SystemMemory` read/write domain, and it exposes one
 Serve endpoint in the System clock domain. Its service rate is one operation
 per System clock tick, with `temporalResidentContexts` outstanding operations
-and fair-eventual progress. These are expanded Fabric facts, not additional
-preset fields or backend defaults.
+and bounded completion within 20 ticks of the builtin System clock. That clock
+has period `1,000,000 fs` and phase zero. These are expanded Fabric facts, not
+additional preset fields or backend defaults.
 
 Every builtin SpatialCore Module declares one Clock slot and one Reset slot
 and explicitly associates every boundary and every Module physical owner with
@@ -917,7 +932,7 @@ scalar accesses. A `vector<2xf64>` is therefore admitted when its exact
 contiguous or indexed relation fits; equal total width alone still admits
 nothing.
 
-Small, Default, and Large use the General64 recipes for every local and System
+Small, Coverage, and Large use the General64 recipes for every local and System
 memory. This makes the preset-wide common scalar type floor truthful for
 memory actors as well as FU actors. Their version 2 catalog policy supplies
 128-bit data, scalar-address, and indexed-address endpoints, a 16-bit mask
@@ -1057,14 +1072,15 @@ inner roles:
   d1: bits<D>
   d2: bits<D>
   c0: bits<1>
+  c1: bits<1>
     -> r0: bits<D>
        r1: bits<D>
        p0: bits<1>
 ```
 
 Expansion uses the ordinary anonymous-FU boundary rule to truncate the low bit
-of the fourth outer input into `c0`, adapt `O` and `D` by the canonical LSB
-rule, and zero-extend `p0` into the third outer result.
+of the fourth outer input independently into `c0` and `c1`, adapt `O` and `D`
+by the canonical LSB rule, and zero-extend `p0` into the third outer result.
 `LoopStream` actors use only their selected exact low 8, 16, 32, or 64 bits;
 the transparent payload resources may carry an exact supported scalar or
 fixed-ranked vector up to `D` bits. The role names above are stable catalog
@@ -1078,20 +1094,25 @@ The active structural template is exactly one member of this closed set:
 | `carry` | `c0`, `d0`, `d1` | `r0` | One `LoopCarry` |
 | `invariant` | `c0`, `d0` | `r0` | One `LoopInvariant` |
 | `gate` | `c0`, `d0` | `r0`, `p0` | One `LoopGate` |
-| `carry -> gate` | `c0`, `d0`, `d1` | `r0`, `r1`, `p0` | Raw carry output on `r0`; the same value is gated onto `r1` |
-| `invariant -> gate` | `c0`, `d0` | `r0`, `r1`, `p0` | Raw invariant output on `r0`; the same value is gated onto `r1` |
+| `carry -> gate` | `c0`, `c1`, `d0`, `d1` | `r0`, `r1`, `p0` | Raw carry output on `r0`; the same value is gated onto `r1` |
+| `invariant -> gate` | `c0`, `c1`, `d0` | `r0`, `r1`, `p0` | Raw invariant output on `r0`; the same value is gated onto `r1` |
 
-For the two fused templates, the selected `c0` token is a real software-graph
-broadcast to both stateful actors. The carry or invariant output is likewise
-broadcast to the raw FU result and the gate value input. Preserving the raw
-parent-domain value is necessary for an external exit or frontier projection;
-the projected value and phase belong to the child domain.
+For the two fused templates, `c0` and `c1` are distinct FU-boundary
+correspondences for the same software phase producer. On a Temporal PE they
+therefore name distinct logical operand queues populated by the ordinary
+atomic multi-queue ingress broadcast. The carry or invariant actor and the
+gate actor may consume their copies independently, as required by Canonical
+Dataflow. The carry or invariant output remains a direct FU-internal broadcast
+to the raw FU result and the gate value input. Preserving the raw parent-domain
+value is necessary for an external exit or frontier projection; the projected
+value and phase belong to the child domain.
 
 All mutually exclusive input routes, operation inputs, result roles, and
 output routes use explicit coherent `fabric.demux` and `fabric.mux` topology.
-Direct SSA multi-use occurs only for the two broadcasts above. An operation
-result that changes between a raw output and an internal gate input uses an
-explicit demux before those mutually exclusive routes.
+Direct FU-internal SSA multi-use occurs only for the carry or invariant result
+broadcast. An operation result that changes between a raw output and an
+internal gate input uses an explicit demux before those mutually exclusive
+routes.
 
 `FuConfiguration` remains `Disabled` or one active template. The valid
 configuration domain is the normalized sum of the table rows and the exact
@@ -1313,7 +1334,7 @@ structural templates, not one shared token-control circuit.
 
 ### Builtin Payload And Type Floor
 
-The Small, Default, and Large policy explicitly passes a 128-bit
+The Small, Coverage, and Large policy explicitly passes a 128-bit
 ordinary PE and intra-SpatialCore data-transport payload capacity to the typed
 recipes above. This shared catalog value is not a Fabric-root field, ADG
 Builder default, or Loom-wide maximum. Narrower scalar values
@@ -1353,21 +1374,27 @@ both occupy 128 payload bits.
 
 ### Deterministic FU Distribution
 
-FU occurrence density is applied independently to the Spatial and Temporal PE
-sets of every SpatialCore. For one schedule kind with `n` PEs, the recipe
-constructs:
+FU occurrence counts are explicit in `BuiltinTargetScale` independently for
+the Spatial and Temporal PE sets of every SpatialCore. For one schedule kind
+with `n` PEs, each count is in `[0, n]`:
 
-| FU helper          | occurrence count            | ordinal offset |
-| ------------------ | ---------------------------: | -------------: |
-| `CoreAluFu`        |                         `n`   | all sites      |
-| dedicated scalar add/sub FU | `max(1, ceil(n / 8))` |              6 |
-| `MacFu`            |               `ceil(n / 2)`  |              0 |
-| `VectorComputeFu`  |               `ceil(n / 4)`  |              1 |
-| `LoopControlFu`    |               `ceil(n / 4)`  |              2 |
-| `TokenControlFu`   |               `ceil(n / 4)`  |              3 |
-| `VectorAdapterFu`  |       `max(1, ceil(n / 8))`  |              4 |
-| `VectorStructuralFu` |     `max(1, ceil(n / 8))`  |              5 |
-| `SpecialMathFu`    |      `max(1, ceil(n / 16))`  |              7 |
+| FU helper | Scale field | Balanced preset default | ordinal offset |
+|-----------|-------------|-------------------------:|---------------:|
+| `CoreAluFu` | implicit | `n` | all sites |
+| dedicated scalar add/sub FU | `dedicatedScalarAdd` | `max(1, ceil(n / 8))` | 6 |
+| `MacFu` | `mac` | `ceil(n / 2)` | 0 |
+| `VectorComputeFu` | `vectorCompute` | `ceil(n / 4)` | 1 |
+| `LoopControlFu` | `loopControl` | `ceil(n / 4)` | 2 |
+| `TokenControlFu` | `tokenControl` | `ceil(n / 4)` | 3 |
+| `VectorAdapterFu` | `vectorAdapter` | `max(1, ceil(n / 8))` | 4 |
+| `VectorStructuralFu` | `vectorStructural` | `max(1, ceil(n / 8))` | 5 |
+| `SpecialMathFu` | `specialMath` | `max(1, ceil(n / 16))` | 7 |
+
+The formulas above define preset defaults only; they are not consulted after
+configuration resolution. The Coverage preset uses those values except for
+eight Spatial `TokenControlFu` occurrences across 27 Spatial PEs. Together
+with three Temporal occurrences and four resident contexts per Temporal PE,
+that exposes 20 token-control instruction contexts.
 
 For a non-core family with count `k`, occurrence `j` selects the schedule-local
 canonical site ordinal:
@@ -1406,7 +1433,7 @@ This assignment adds no profile enum or second capability table; it supplies
 the two fixed `LoopStream` parameters of each explicit helper expansion. Every
 preset therefore exposes all eight stream step kinds in each SpatialCore.
 The Small preset has exactly four total `LoopControlFu` occurrences and covers
-the list once. Default and Large repeat the same four-pair catalog and increase
+the list once. Coverage and Large repeat the same four-pair catalog and increase
 multiplicity without changing the software capability set.
 
 Applying the occurrence-density rule separately guarantees that every helper
@@ -1447,7 +1474,7 @@ The focused `loom-adg` executable exposes this production path during hardware
 development:
 
 ```text
-loom-adg --builtin=<small|default|large> \
+loom-adg --builtin=<small|coverage|large> \
   --artifact-store=<existing-directory> --output=<output-base>
 
 loom-adg --config=<resolved-config> \

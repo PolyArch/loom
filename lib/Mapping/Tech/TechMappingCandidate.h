@@ -1,6 +1,7 @@
 #ifndef LOOM_LIB_MAPPING_TECH_TECHMAPPINGCANDIDATE_H
 #define LOOM_LIB_MAPPING_TECH_TECHMAPPINGCANDIDATE_H
 
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -8,6 +9,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -20,14 +22,38 @@ struct TechMatchRow final {
   std::vector<std::uint8_t> key;
   std::vector<std::size_t> actorSlots;
   TechMatchRealization realization;
+  /// Invocation-local ordinals into TechMatchDomain's resident-context
+  /// supply. Empty for memory rows and for compute rows with no physical root.
+  std::vector<std::size_t> computeContextValues;
+  /// Immutable active-demand projection for a memory row. This is derived
+  /// once per invocation and never contains an occurrence selection.
+  std::optional<SpatialMemoryOccurrenceDemandView> memoryOccurrenceDemand;
 };
 
 struct TechMatchDomain final {
   std::vector<::dataflow::ActorRef> actors;
   std::vector<TechMatchRow> rows;
+  std::size_t computeContextValueCount = 0;
   bool exhausted = true;
   bool interrupted = false;
 };
+
+struct TechMatchMemoryDomainBucket final {
+  ::fabric::Schedule schedule = ::fabric::Schedule::Spatial;
+  std::uint64_t actorCount = 0;
+  std::uint64_t occurrenceDomainWidth = 0;
+  std::uint64_t rowCount = 0;
+};
+
+struct TechMatchDomainStatistics final {
+  std::uint64_t rowCount = 0;
+  std::uint64_t computeRowCount = 0;
+  std::uint64_t memoryRowCount = 0;
+  std::vector<TechMatchMemoryDomainBucket> memoryBuckets;
+};
+
+TechMatchDomainStatistics
+summarizeTechMatchDomain(const TechMatchDomain &domain);
 
 llvm::Expected<TechMatchDomain> deriveTechMatchDomain(
     const TechMappingGenerationInputs &inputs,

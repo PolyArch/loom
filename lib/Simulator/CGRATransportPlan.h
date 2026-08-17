@@ -39,8 +39,9 @@ struct CgraTraversalUsePlan final {
   /// Fabric-owned requester or ordinary UsePattern group used for resource
   /// arbitration. It is deliberately broader than the Mapping activation.
   ::loom::fabric::FabricTraversalRequesterGroupView requesterGroup;
-  /// Dense Mapping-derived atomic activation identity. Temporal switch uses
-  /// distinguish resident `(row, input)` instances that share one requester.
+  /// Dense Mapping-derived atomic activation identity. Spatial switch uses
+  /// `(occurrence, input)`; Temporal switch uses `(row, input)`. Both may be
+  /// finer than the Fabric requester used for arbitration or configuration.
   std::uint64_t activationInstanceOrdinal = invalidCgraTransportOrdinal;
   std::uint64_t physicalUseOrdinal = invalidCgraTransportOrdinal;
 };
@@ -121,10 +122,15 @@ struct CgraConsumedPhysicalUsePlan final {
 };
 
 struct CgraPeOperandQueueMatchPlan final {
-  ::dataflow::CanonicalGraphConsumerEndpointRef sink;
   ::fabric::LogicalOperandQueueKey queue;
   std::uint32_t allocationUnit = 0;
   std::uint32_t entryCapacity = 0;
+  std::uint64_t consumerOffset = 0;
+  std::uint32_t consumerCount = 0;
+};
+
+struct CgraPeOperandQueueConsumerPlan final {
+  ::dataflow::CanonicalGraphConsumerEndpointRef consumer;
 };
 
 struct CgraPeOperandQueueActivationPlan final {
@@ -154,6 +160,7 @@ struct CgraTransportPlan final {
   std::vector<std::uint64_t> endpointPhysicalUses;
   std::vector<CgraPeOperandQueueActivationPlan> operandQueueActivations;
   std::vector<CgraPeOperandQueueMatchPlan> operandQueueMatches;
+  std::vector<CgraPeOperandQueueConsumerPlan> operandQueueConsumers;
 };
 
 llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(

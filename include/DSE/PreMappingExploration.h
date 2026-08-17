@@ -7,6 +7,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <cstdint>
 #include <variant>
 #include <vector>
 
@@ -17,6 +18,10 @@ struct PreMappingExplorationOptions final {
 };
 
 struct SelectedPreMappingCompilation final {
+  /// Invocation-local rank in the bounded software frontier. This value is
+  /// derived from completed objective Evidence and does not enter any
+  /// compilation or Dataflow Artifact identity.
+  std::uint64_t preferenceRank = 0;
   frontend::PreMappingCompilation compilation;
   std::vector<StructuredOwnershipDerivation> derivations;
   std::vector<StructuredExecutionShapeDerivation> executionShapeDerivations;

@@ -8,6 +8,7 @@
 #include "SystemCapacityProjection.h"
 #include "SystemNegotiatedRouter.h"
 #include "SystemPnrSearchDomainInternal.h"
+#include "SystemRecurrenceTiming.h"
 #include "SystemServiceRouter.h"
 
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -123,17 +124,32 @@ relationChoices(const FrozenSystemPnrProblem &problem,
 
 bool targetInDomain(const SystemServiceTargetSelection &target,
                     const SystemServiceTargetDomain &domain) {
-  if (const auto *plan = std::get_if<SystemMemoryServiceTargetPlan>(&target)) {
-    const auto *plans =
-        std::get_if<std::vector<SystemMemoryServiceTargetPlan>>(&domain);
-    return plans && llvm::is_contained(*plans, *plan);
+  if (const auto *selected =
+          std::get_if<SystemMemoryServiceTargetSelection>(&target)) {
+    const auto *available =
+        std::get_if<SystemMemoryServiceTargetDomain>(&domain);
+    if (!available ||
+        selected->plansBySubject.size() != available->plansBySubject.size())
+      return false;
+    return llvm::all_of(
+        llvm::zip_equal(selected->plansBySubject, available->plansBySubject),
+        [](const auto &entry) {
+          return llvm::is_contained(std::get<1>(entry), std::get<0>(entry));
+        });
   }
-  if (const auto *consistency =
-          std::get_if<::loom::fabric::MemoryConsistencyDomainRef>(&target)) {
-    const auto *domains =
-        std::get_if<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(
-            &domain);
-    return domains && llvm::is_contained(*domains, *consistency);
+  if (const auto *selected =
+          std::get_if<SystemConsistencyServiceTargetSelection>(&target)) {
+    const auto *available =
+        std::get_if<SystemConsistencyServiceTargetDomain>(&domain);
+    if (!available ||
+        selected->domainsBySubject.size() != available->domainsBySubject.size())
+      return false;
+    return llvm::all_of(llvm::zip_equal(selected->domainsBySubject,
+                                        available->domainsBySubject),
+                        [](const auto &entry) {
+                          return llvm::is_contained(std::get<1>(entry),
+                                                    std::get<0>(entry));
+                        });
   }
   return false;
 }
@@ -187,12 +203,26 @@ selectCanonicalServiceTargets(const FrozenSystemPnrProblem &problem,
         problem, static_cast<PnrIndex>(ordinal), threadChoices, graphChoices);
     if (!domain)
       return domain.takeError();
-    std::visit(
-        [&](const auto &values) {
-          assert(!values.empty());
-          result.emplace_back(values.front());
-        },
-        *domain);
+    if (const auto *memory =
+            std::get_if<SystemMemoryServiceTargetDomain>(&*domain)) {
+      SystemMemoryServiceTargetSelection selected;
+      selected.plansBySubject.reserve(memory->plansBySubject.size());
+      for (const auto &plans : memory->plansBySubject) {
+        assert(!plans.empty());
+        selected.plansBySubject.push_back(plans.front());
+      }
+      result.emplace_back(std::move(selected));
+      continue;
+    }
+    const auto &consistency =
+        std::get<SystemConsistencyServiceTargetDomain>(*domain);
+    SystemConsistencyServiceTargetSelection selected;
+    selected.domainsBySubject.reserve(consistency.domainsBySubject.size());
+    for (const auto &domains : consistency.domainsBySubject) {
+      assert(!domains.empty());
+      selected.domainsBySubject.push_back(domains.front());
+    }
+    result.emplace_back(std::move(selected));
   }
   return result;
 }
@@ -261,15 +291,19 @@ requiredServiceUses(const FrozenSystemPnrProblem &problem,
          llvm::enumerate(context.subjects)) {
       if (!std::holds_alternative<SystemServiceMemberTargetSubject>(subject))
         continue;
-      if (const auto *plan = std::get_if<SystemMemoryServiceTargetPlan>(
-              &targets[contextOrdinal])) {
+      if (const auto *selection =
+              std::get_if<SystemMemoryServiceTargetSelection>(
+                  &targets[contextOrdinal])) {
+        if (subjectOrdinal >= selection->plansBySubject.size())
+          return invalid("memory service target subject closure is incomplete");
+        const auto &plan = selection->plansBySubject[subjectOrdinal];
         auto binding = detail::resolveSystemMemoryServiceBinding(
             problem, static_cast<PnrIndex>(contextOrdinal), subject,
             threadChoices, graphChoices);
         if (!binding)
           return binding.takeError();
         for (const auto &[branchOrdinal, branch] :
-             llvm::enumerate(plan->branches)) {
+             llvm::enumerate(plan.branches)) {
           const auto branchRegion = branch.region;
           const auto domain = llvm::find_if(
               (*binding)->usePatternDomains, [&](const auto &candidate) {
@@ -286,14 +320,18 @@ requiredServiceUses(const FrozenSystemPnrProblem &problem,
         }
         continue;
       }
-      const auto *consistency =
-          std::get_if<::loom::fabric::MemoryConsistencyDomainRef>(
+      const auto *selection =
+          std::get_if<SystemConsistencyServiceTargetSelection>(
               &targets[contextOrdinal]);
-      if (!consistency)
+      if (!selection)
         continue;
+      if (subjectOrdinal >= selection->domainsBySubject.size())
+        return invalid(
+            "consistency service target subject closure is incomplete");
+      const auto consistency = selection->domainsBySubject[subjectOrdinal];
       const auto domain = llvm::find_if(
           problem.consistencyUsePatternDomains(), [&](const auto &candidate) {
-            return candidate.domain == *consistency;
+            return candidate.domain == consistency;
           });
       if (domain == problem.consistencyUsePatternDomains().end() ||
           domain->patterns.empty())
@@ -493,8 +531,10 @@ llvm::Expected<SystemCandidateStateHandle> SystemCandidateState::createImpl(
           : problem->capacityModel().projectWithCache(*problem, capacityView);
   if (!capacity)
     return capacity.takeError();
-  auto recurrence = projectSystemRecurrenceTiming(
-      *problem, initialization.graphChoices);
+  auto recurrence = detail::projectSystemRecurrenceTiming(
+      *problem, initialization.threadChoices, initialization.graphChoices,
+      initialization.serviceRoutes, initialization.serviceRouteNodes,
+      initialization.serviceRouteSinks);
   if (!recurrence)
     return recurrence.takeError();
   if (capacity->demand.capacity.total != 0 && !admitsCapacityOveruse(*problem))
@@ -599,9 +639,12 @@ llvm::Error SystemCandidateState::verify() const {
     return capacity.takeError();
   if (capacity->capacity.total != capacityOveruse_)
     return invalid("cached CapacityOveruse projection diverged");
-  if (capacity->progress.kind != progressClosure_.kind)
+  if (capacity->progress.kind != progressClosure_.kind ||
+      capacity->progress.reason != progressClosure_.reason)
     return invalid("cached progress projection diverged");
-  auto recurrence = projectSystemRecurrenceTiming(*problem_, graphChoices_);
+  auto recurrence = detail::projectSystemRecurrenceTiming(
+      *problem_, threadChoices_, graphChoices_, serviceRoutes_,
+      serviceRouteNodes_, serviceRouteSinks_);
   if (!recurrence)
     return recurrence.takeError();
   if (!(*recurrence == recurrenceTiming_))
@@ -893,7 +936,7 @@ loom::pnr::initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,
 
 llvm::Expected<std::vector<SystemServiceTargetSelection>>
 loom::pnr::detail::systemServiceTargetChoices(
-    const SystemCandidateState &candidate, PnrIndex context) {
+    const SystemCandidateState &candidate, PnrIndex context, PnrIndex subject) {
   if (context >= candidate.problem().serviceContexts().size())
     return invalid("service target Action context is out of range");
   const FrozenSystemServiceContext &record =
@@ -901,17 +944,44 @@ loom::pnr::detail::systemServiceTargetChoices(
   if (record.service >= candidate.problem().serviceDomains().size())
     return invalid("service target Action context has no H service domain");
   if (std::holds_alternative<::loom::mapping::TransferObligationFamilyKey>(
-          candidate.problem().serviceDomains()[record.service].key))
+          candidate.problem().serviceDomains()[record.service].key)) {
+    if (subject >= record.subjects.size())
+      return invalid("service target Action subject is out of range");
     return std::vector<SystemServiceTargetSelection>{std::monostate{}};
+  }
   auto domain = candidate.serviceTargetDomain(context);
   if (!domain)
     return domain.takeError();
-  return std::visit(
-      [](const auto &values) {
-        return std::vector<SystemServiceTargetSelection>(values.begin(),
-                                                         values.end());
-      },
-      *domain);
+  std::vector<SystemServiceTargetSelection> result;
+  if (const auto *memory =
+          std::get_if<SystemMemoryServiceTargetDomain>(&*domain)) {
+    const auto *selected = std::get_if<SystemMemoryServiceTargetSelection>(
+        &candidate.serviceTarget(context));
+    if (!selected || subject >= memory->plansBySubject.size() ||
+        subject >= selected->plansBySubject.size())
+      return invalid("memory service target Action subject is out of range");
+    result.reserve(memory->plansBySubject[subject].size());
+    for (const auto &plan : memory->plansBySubject[subject]) {
+      SystemMemoryServiceTargetSelection replacement = *selected;
+      replacement.plansBySubject[subject] = plan;
+      result.emplace_back(std::move(replacement));
+    }
+    return result;
+  }
+  const auto &consistency =
+      std::get<SystemConsistencyServiceTargetDomain>(*domain);
+  const auto *selected = std::get_if<SystemConsistencyServiceTargetSelection>(
+      &candidate.serviceTarget(context));
+  if (!selected || subject >= consistency.domainsBySubject.size() ||
+      subject >= selected->domainsBySubject.size())
+    return invalid("consistency service target Action subject is out of range");
+  result.reserve(consistency.domainsBySubject[subject].size());
+  for (const auto target : consistency.domainsBySubject[subject]) {
+    SystemConsistencyServiceTargetSelection replacement = *selected;
+    replacement.domainsBySubject[subject] = target;
+    result.emplace_back(std::move(replacement));
+  }
+  return result;
 }
 
 llvm::Expected<std::vector<::loom::fabric::FabricUsePatternRef>>
@@ -943,8 +1013,9 @@ loom::pnr::detail::systemServiceUsePatternChoices(
 
 llvm::Expected<SystemCandidateStateHandle>
 loom::pnr::detail::rebuildSystemCandidateWithServiceTarget(
-    const SystemCandidateState &candidate, PnrIndex context, PnrIndex choice) {
-  auto choices = systemServiceTargetChoices(candidate, context);
+    const SystemCandidateState &candidate, PnrIndex context, PnrIndex subject,
+    PnrIndex choice) {
+  auto choices = systemServiceTargetChoices(candidate, context, subject);
   if (!choices)
     return choices.takeError();
   if (choice >= choices->size())

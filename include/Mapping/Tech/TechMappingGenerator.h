@@ -28,6 +28,23 @@ struct TechMappingGenerationAccounting final {
   std::uint64_t matchRowCursorResumptions = 0;
   std::uint64_t matchRowReplayVisits = 0;
   std::uint64_t partialCoverExpansions = 0;
+  std::uint64_t computeContextProjectionWork = 0;
+  std::uint64_t computeContextMatchingChecks = 0;
+  std::uint64_t computeContextRejectedChecks = 0;
+  std::uint64_t computeContextMatchingWork = 0;
+  std::uint64_t memorySupplyProjectionWork = 0;
+  std::uint64_t memorySupplyChecks = 0;
+  std::uint64_t memorySupplyPartialChecks = 0;
+  std::uint64_t memorySupplyFullChecks = 0;
+  std::uint64_t memorySupplyRejectedChecks = 0;
+  std::uint64_t memorySupplyEmptyDomainRejections = 0;
+  std::uint64_t memorySupplyExclusiveResourceRejections = 0;
+  std::uint64_t memorySupplySpatialPortRejections = 0;
+  std::uint64_t memorySupplyTemporalIngressRejections = 0;
+  std::uint64_t memorySupplyInternalConnectionRejections = 0;
+  std::uint64_t memorySupplyResidentCapacityRejections = 0;
+  std::uint64_t memorySupplyJointAssignmentRejections = 0;
+  std::uint64_t memorySupplySearchWork = 0;
   std::uint64_t candidateEvaluations = 0;
   std::uint64_t publicationSlots = 0;
 
@@ -38,6 +55,33 @@ struct TechMappingGenerationAccounting final {
            lhs.matchRowCursorResumptions == rhs.matchRowCursorResumptions &&
            lhs.matchRowReplayVisits == rhs.matchRowReplayVisits &&
            lhs.partialCoverExpansions == rhs.partialCoverExpansions &&
+           lhs.computeContextProjectionWork ==
+               rhs.computeContextProjectionWork &&
+           lhs.computeContextMatchingChecks ==
+               rhs.computeContextMatchingChecks &&
+           lhs.computeContextRejectedChecks ==
+               rhs.computeContextRejectedChecks &&
+           lhs.computeContextMatchingWork == rhs.computeContextMatchingWork &&
+           lhs.memorySupplyProjectionWork == rhs.memorySupplyProjectionWork &&
+           lhs.memorySupplyChecks == rhs.memorySupplyChecks &&
+           lhs.memorySupplyPartialChecks == rhs.memorySupplyPartialChecks &&
+           lhs.memorySupplyFullChecks == rhs.memorySupplyFullChecks &&
+           lhs.memorySupplyRejectedChecks == rhs.memorySupplyRejectedChecks &&
+           lhs.memorySupplyEmptyDomainRejections ==
+               rhs.memorySupplyEmptyDomainRejections &&
+           lhs.memorySupplyExclusiveResourceRejections ==
+               rhs.memorySupplyExclusiveResourceRejections &&
+           lhs.memorySupplySpatialPortRejections ==
+               rhs.memorySupplySpatialPortRejections &&
+           lhs.memorySupplyTemporalIngressRejections ==
+               rhs.memorySupplyTemporalIngressRejections &&
+           lhs.memorySupplyInternalConnectionRejections ==
+               rhs.memorySupplyInternalConnectionRejections &&
+           lhs.memorySupplyResidentCapacityRejections ==
+               rhs.memorySupplyResidentCapacityRejections &&
+           lhs.memorySupplyJointAssignmentRejections ==
+               rhs.memorySupplyJointAssignmentRejections &&
+           lhs.memorySupplySearchWork == rhs.memorySupplySearchWork &&
            lhs.candidateEvaluations == rhs.candidateEvaluations &&
            lhs.publicationSlots == rhs.publicationSlots;
   }

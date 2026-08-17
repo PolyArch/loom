@@ -1,6 +1,7 @@
 #include "SystemCandidateServiceResolver.h"
 
 #include "Fabric/Identity/FabricRefBytes.h"
+#include "Fabric/Identity/FabricRefText.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -97,17 +98,6 @@ resolveBinding(const FrozenSystemPnrProblem &problem, PnrIndex contextOrdinal,
   return SelectedServiceBinding{&context, selected};
 }
 
-template <typename Ref>
-std::vector<Ref> intersectDomains(const std::vector<Ref> &left,
-                                  const std::vector<Ref> &right) {
-  std::vector<Ref> result;
-  result.reserve(std::min(left.size(), right.size()));
-  for (const Ref &value : left)
-    if (llvm::is_contained(right, value))
-      result.push_back(value);
-  return result;
-}
-
 llvm::Expected<const SystemSearchServiceTargetCompatibility *>
 findTargetRow(const SystemSearchServiceDomain &service,
               const SystemServiceTargetSubject &subject,
@@ -179,8 +169,11 @@ loom::pnr::detail::resolveSystemServiceTargetDomain(
     return invalid("service context has no H service domain");
   const auto &service = problem.serviceDomains()[context.service];
 
-  std::optional<SystemServiceTargetDomain> intersection;
-  for (const SystemServiceTargetSubject &subject : context.subjects) {
+  std::optional<bool> memoryTargets;
+  SystemMemoryServiceTargetDomain memoryDomain;
+  SystemConsistencyServiceTargetDomain consistencyDomain;
+  for (const auto &[subjectOrdinal, subject] :
+       llvm::enumerate(context.subjects)) {
     auto selected = resolveBinding(problem, contextOrdinal, subject,
                                    threadChoices, graphChoices);
     if (!selected)
@@ -189,10 +182,12 @@ loom::pnr::detail::resolveSystemServiceTargetDomain(
         findTargetRow(service, subject, selected->binding->systemEndpoint);
     if (!row)
       return row.takeError();
-    SystemServiceTargetDomain subjectDomain;
     if (const auto *regions = std::get_if<
             std::vector<::loom::fabric::FabricMemoryServiceRegionRef>>(
             &(*row)->compatibleTargets)) {
+      if (memoryTargets && !*memoryTargets)
+        return invalid("one service context mixes target-domain kinds");
+      memoryTargets = true;
       std::vector<SystemMemoryServiceTargetPlan> plans;
       for (const SystemMemoryServiceTargetPlan &plan :
            selected->binding->targetPlans) {
@@ -203,41 +198,41 @@ loom::pnr::detail::resolveSystemServiceTargetDomain(
             }))
           plans.push_back(plan);
       }
-      subjectDomain = std::move(plans);
+      if (plans.empty())
+        return infeasible(llvm::Twine("memory service target context ") +
+                          llvm::Twine(contextOrdinal) + " subject " +
+                          llvm::Twine(subjectOrdinal) +
+                          " has an empty exact H domain at " +
+                          ::loom::fabric::printFabricRef(
+                              selected->binding->systemEndpoint) +
+                          " (target plans " +
+                          llvm::Twine(selected->binding->targetPlans.size()) +
+                          ", compatible regions " +
+                          llvm::Twine(regions->size()) + ")");
+      memoryDomain.plansBySubject.push_back(std::move(plans));
     } else {
-      subjectDomain =
+      if (memoryTargets && *memoryTargets)
+        return invalid("one service context mixes target-domain kinds");
+      memoryTargets = false;
+      auto domains =
           std::get<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(
               (*row)->compatibleTargets);
-    }
-    if (!intersection) {
-      intersection = std::move(subjectDomain);
-      continue;
-    }
-    if (intersection->index() != subjectDomain.index())
-      return invalid("one service context mixes target-domain kinds");
-    if (auto *plans = std::get_if<std::vector<SystemMemoryServiceTargetPlan>>(
-            &*intersection)) {
-      *plans = intersectDomains(
-          *plans,
-          std::get<std::vector<SystemMemoryServiceTargetPlan>>(subjectDomain));
-    } else {
-      auto &domains =
-          std::get<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(
-              *intersection);
-      domains = intersectDomains(
-          domains,
-          std::get<std::vector<::loom::fabric::MemoryConsistencyDomainRef>>(
-              subjectDomain));
+      if (domains.empty())
+        return infeasible(llvm::Twine("consistency service target context ") +
+                          llvm::Twine(contextOrdinal) + " subject " +
+                          llvm::Twine(subjectOrdinal) +
+                          " has an empty exact H domain at " +
+                          ::loom::fabric::printFabricRef(
+                              selected->binding->systemEndpoint) +
+                          " (compatible domains 0)");
+      consistencyDomain.domainsBySubject.push_back(std::move(domains));
     }
   }
-  if (!intersection)
+  if (!memoryTargets)
     return invalid("service context did not resolve a target domain");
-  const bool empty = std::visit(
-      [](const auto &values) { return values.empty(); }, *intersection);
-  if (empty)
-    return infeasible(
-        "matching service target rows have an empty intersection");
-  return std::move(*intersection);
+  if (*memoryTargets)
+    return SystemServiceTargetDomain(std::move(memoryDomain));
+  return SystemServiceTargetDomain(std::move(consistencyDomain));
 }
 
 llvm::Expected<std::vector<PnrIndex>>

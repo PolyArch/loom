@@ -2,6 +2,7 @@
 #define LOOM_LIB_PNR_STATICSCHEDULEPRESSURE_H
 
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Dataflow/IR/DataflowStaticScheduleAnalysis.h"
 #include "Fabric/Identity/FabricRefImport.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "PnR/PnrIndex.h"
@@ -20,62 +21,13 @@ class SpatialCandidateState;
 
 namespace detail {
 
-struct StaticActorCriticality final {
-  ::dataflow::ActorRef actor;
-  ::dataflow::GraphRef graph;
-  std::uint64_t graphCriticalLength = 0;
-  std::uint64_t recurrenceCriticalLength = 0;
-  bool temporalStateCarrier = false;
-};
-
-struct StaticActorEdgeCriticality final {
-  ::dataflow::ActorTokenResultRef producer;
-  ::dataflow::ActorTokenOperandRef consumer;
-  ::dataflow::GraphRef graph;
-  std::uint64_t weight = 0;
-  bool initializedFeedback = false;
-};
-
-/// One canonical timing recurrence edge projected from the registered
-/// Dataflow actor semantics.
-struct StaticRecurrenceFeedback final {
-  ::dataflow::ActorTokenResultRef producer;
-  ::dataflow::ActorTokenOperandRef consumer;
-  ::dataflow::GraphRef graph;
-  std::uint64_t dependenceDistance = 1;
-};
-
-struct StaticGraphRecurrenceTopology final {
-  ::dataflow::GraphRef graph;
-  bool postInitializationAcyclic = true;
-};
-
-class StaticScheduleAnalysis final {
-public:
-  llvm::ArrayRef<StaticActorCriticality> actors() const { return actors_; }
-  llvm::ArrayRef<StaticActorEdgeCriticality> edges() const { return edges_; }
-  llvm::ArrayRef<StaticRecurrenceFeedback> feedbacks() const {
-    return feedbacks_;
-  }
-  llvm::ArrayRef<StaticGraphRecurrenceTopology> recurrenceTopologies() const {
-    return recurrenceTopologies_;
-  }
-
-  const StaticActorCriticality *findActor(::dataflow::ActorRef actor) const;
-  std::uint64_t
-  edgeWeight(const ::dataflow::ActorTokenResultRef &producer,
-             const ::dataflow::ActorTokenOperandRef &consumer) const;
-
-  // Internal frozen analysis storage. This header is private to LoomPnR.
-  std::vector<StaticActorCriticality> actors_;
-  std::vector<StaticActorEdgeCriticality> edges_;
-  std::vector<StaticRecurrenceFeedback> feedbacks_;
-  std::vector<StaticGraphRecurrenceTopology> recurrenceTopologies_;
-};
-
-llvm::Expected<StaticScheduleAnalysis> deriveStaticScheduleAnalysis(
-    const ::dataflow::CanonicalDataflowProgramView &dataflow,
-    llvm::ArrayRef<::dataflow::GraphRef> covers);
+using StaticActorCriticality = ::dataflow::StaticActorCriticality;
+using StaticActorEdgeCriticality = ::dataflow::StaticActorEdgeCriticality;
+using StaticRecurrenceFeedback = ::dataflow::StaticRecurrenceFeedback;
+using StaticGraphRecurrenceTopology =
+    ::dataflow::StaticGraphRecurrenceTopology;
+using StaticScheduleAnalysis = ::dataflow::StaticScheduleAnalysis;
+using ::dataflow::deriveStaticScheduleAnalysis;
 
 struct SpatialSchedulePressureEdge final {
   PnrIndex firstRoot = 0;

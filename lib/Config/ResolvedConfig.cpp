@@ -22,6 +22,11 @@
 
 using llvm::StringRef;
 
+static std::optional<loom::ResolvedProfilePreset>
+profilePresetForName(llvm::StringRef spelling);
+static loom::ResolvedConfig
+builtinResolvedConfig(loom::ResolvedProfilePreset preset);
+
 namespace {
 
 llvm::Error makeErr(const llvm::Twine &msg) {
@@ -220,6 +225,7 @@ llvm::Expected<std::uint64_t> requirePositiveU64(const ConfigSyntax *node,
 }
 
 struct ConfigPatch {
+  std::optional<loom::ResolvedProfilePreset> inheritedPreset;
   std::optional<loom::ResolvedHardwareTargetConfig> hardwareTarget;
   std::optional<
       loom::evaluation::models::CadenceVoltusStaticRailProviderBinding>
@@ -368,6 +374,46 @@ parseExactRatio(const ConfigSyntax *node, const llvm::Twine &key) {
   return loom::ResolvedExactRatio{*numeratorOrErr, *denominatorOrErr};
 }
 
+llvm::Expected<loom::adg::BuiltinFuOccurrenceCounts>
+parseBuiltinFuOccurrences(const ConfigSyntax *node, llvm::StringRef key) {
+  auto fieldsOrErr = ClosedMapping::parse(
+      node, key,
+      {"dedicated_scalar_add", "mac", "vector_compute", "loop_control",
+       "token_control", "vector_adapter", "vector_structural", "special_math"});
+  if (!fieldsOrErr)
+    return fieldsOrErr.takeError();
+  const auto read = [&](llvm::StringRef field) {
+    return requireU32(fieldsOrErr->at(field), llvm::Twine(key) + "." + field);
+  };
+  auto dedicatedScalarAdd = read("dedicated_scalar_add");
+  auto mac = read("mac");
+  auto vectorCompute = read("vector_compute");
+  auto loopControl = read("loop_control");
+  auto tokenControl = read("token_control");
+  auto vectorAdapter = read("vector_adapter");
+  auto vectorStructural = read("vector_structural");
+  auto specialMath = read("special_math");
+  if (!dedicatedScalarAdd)
+    return dedicatedScalarAdd.takeError();
+  if (!mac)
+    return mac.takeError();
+  if (!vectorCompute)
+    return vectorCompute.takeError();
+  if (!loopControl)
+    return loopControl.takeError();
+  if (!tokenControl)
+    return tokenControl.takeError();
+  if (!vectorAdapter)
+    return vectorAdapter.takeError();
+  if (!vectorStructural)
+    return vectorStructural.takeError();
+  if (!specialMath)
+    return specialMath.takeError();
+  return loom::adg::BuiltinFuOccurrenceCounts{
+      *dedicatedScalarAdd, *mac,           *vectorCompute,    *loopControl,
+      *tokenControl,       *vectorAdapter, *vectorStructural, *specialMath};
+}
+
 llvm::Expected<loom::ResolvedHardwareTargetConfig>
 parseHardwareTarget(const ConfigSyntax *node) {
   auto fieldsOrErr = ClosedMapping::parse(
@@ -391,8 +437,11 @@ parseHardwareTarget(const ConfigSyntax *node) {
   auto parametersOrErr = ClosedMapping::parse(
       fieldsOrErr->at("parameters"), "hardware_target.parameters",
       {"acc_core_count", "mesh_dimension", "spatial_pe_count",
-       "temporal_pe_count", "spatial_memory_count", "temporal_memory_count",
-       "temporal_resident_contexts", "gateway_count", "memory_capacity_bytes"});
+       "temporal_pe_count", "spatial_fu_occurrences", "temporal_fu_occurrences",
+       "spatial_memory_count", "temporal_memory_count",
+       "temporal_resident_contexts",
+       "cross_schedule_boundary_lanes_per_temporal_pe", "gateway_count",
+       "memory_capacity_bytes"});
   if (!parametersOrErr)
     return parametersOrErr.takeError();
 
@@ -408,9 +457,17 @@ parseHardwareTarget(const ConfigSyntax *node) {
   auto meshDimension = positiveU32("mesh_dimension");
   auto spatialPes = positiveU32("spatial_pe_count");
   auto temporalPes = positiveU32("temporal_pe_count");
+  auto spatialFuOccurrences = parseBuiltinFuOccurrences(
+      parametersOrErr->at("spatial_fu_occurrences"),
+      "hardware_target.parameters.spatial_fu_occurrences");
+  auto temporalFuOccurrences = parseBuiltinFuOccurrences(
+      parametersOrErr->at("temporal_fu_occurrences"),
+      "hardware_target.parameters.temporal_fu_occurrences");
   auto spatialMemories = positiveU32("spatial_memory_count");
   auto temporalMemories = positiveU32("temporal_memory_count");
   auto residentContexts = positiveU32("temporal_resident_contexts");
+  auto crossScheduleBoundaryLanes =
+      positiveU32("cross_schedule_boundary_lanes_per_temporal_pe");
   auto gateways = positiveU32("gateway_count");
   auto memoryCapacity =
       requirePositiveU64(parametersOrErr->at("memory_capacity_bytes"),
@@ -423,12 +480,18 @@ parseHardwareTarget(const ConfigSyntax *node) {
     return spatialPes.takeError();
   if (!temporalPes)
     return temporalPes.takeError();
+  if (!spatialFuOccurrences)
+    return spatialFuOccurrences.takeError();
+  if (!temporalFuOccurrences)
+    return temporalFuOccurrences.takeError();
   if (!spatialMemories)
     return spatialMemories.takeError();
   if (!temporalMemories)
     return temporalMemories.takeError();
   if (!residentContexts)
     return residentContexts.takeError();
+  if (!crossScheduleBoundaryLanes)
+    return crossScheduleBoundaryLanes.takeError();
   if (!gateways)
     return gateways.takeError();
   if (!memoryCapacity)
@@ -437,8 +500,10 @@ parseHardwareTarget(const ConfigSyntax *node) {
   return loom::ResolvedHardwareTargetConfig{
       *templateOrErr,
       {*majorOrErr, *minorOrErr},
-      {*accCores, *meshDimension, *spatialPes, *temporalPes, *spatialMemories,
-       *temporalMemories, *residentContexts, *gateways, *memoryCapacity}};
+      {*accCores, *meshDimension, *spatialPes, *temporalPes,
+       *spatialFuOccurrences, *temporalFuOccurrences, *spatialMemories,
+       *temporalMemories, *residentContexts, *crossScheduleBoundaryLanes,
+       *gateways, *memoryCapacity}};
 }
 
 enum class ParsedObjectiveSourceKind {
@@ -1048,8 +1113,8 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
       searchOrErr->at("annealing"), key + ".search_policy.annealing",
       {"calibration_proposal_count", "positive_delta_quantile",
        "target_initial_acceptance", "fallback_temperature",
-       "minimum_temperature", "cooling_ratio", "proposals_per_level_base",
-       "proposals_per_movable_decision"});
+       "minimum_temperature", "cooling_ratio", "temperature_level_limit",
+       "proposals_per_level_base", "proposals_per_movable_decision"});
   if (!annealingOrErr)
     return annealingOrErr.takeError();
   auto calibration =
@@ -1070,6 +1135,9 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
   auto cooling =
       parseExactRatio(annealingOrErr->at("cooling_ratio"),
                       key + ".search_policy.annealing.cooling_ratio");
+  auto temperatureLevelLimit =
+      requireU64(annealingOrErr->at("temperature_level_limit"),
+                 key + ".search_policy.annealing.temperature_level_limit");
   auto levelBase =
       requireU64(annealingOrErr->at("proposals_per_level_base"),
                  key + ".search_policy.annealing.proposals_per_level_base");
@@ -1088,6 +1156,8 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
     return minimum.takeError();
   if (!cooling)
     return cooling.takeError();
+  if (!temperatureLevelLimit)
+    return temperatureLevelLimit.takeError();
   if (!levelBase)
     return levelBase.takeError();
   if (!perMovable)
@@ -1187,9 +1257,9 @@ parsePnrPolicy(const ConfigSyntax *node, const llvm::Twine &key) {
        loom::ResolvedPnrRoutingPolicy{*endpointLimit, *negotiationLimit,
                                       *noProgressLimit, *noProgressTrendWindow,
                                       std::move(*negotiation)},
-       loom::ResolvedPnrAnnealingPolicy{*calibration, *quantile, *acceptance,
-                                        *fallback, *minimum, *cooling,
-                                        *levelBase, *perMovable},
+       loom::ResolvedPnrAnnealingPolicy{
+           *calibration, *quantile, *acceptance, *fallback, *minimum, *cooling,
+           *temperatureLevelLimit, *levelBase, *perMovable},
        repair, *completionGoal},
       loom::ResolvedPnrDeterminismPolicy{
           *masterSeed,
@@ -1552,7 +1622,14 @@ parseConfigPatchFromMapping(const ConfigSyntax &topMap,
   ConfigPatch local;
   for (const auto &[keyStorage, value] : topMap.mapping) {
     StringRef key(keyStorage);
-    if (key == "hardware_target") {
+    if (key == "inherits") {
+      auto spelling = requireScalarString(&value, "inherits");
+      if (!spelling)
+        return spelling.takeError();
+      local.inheritedPreset = profilePresetForName(*spelling);
+      if (!local.inheritedPreset)
+        return diagnostic("config_unknown_enum", "inherits", *spelling);
+    } else if (key == "hardware_target") {
       auto targetOrErr = parseHardwareTarget(&value);
       if (!targetOrErr)
         return targetOrErr.takeError();
@@ -1578,14 +1655,11 @@ llvm::Error validateResolvedConfig(const loom::ResolvedConfig &config) {
     return diagnostic("config_missing_required_profile",
                       "hardware_target.template_identity");
   const loom::adg::BuiltinTargetScale &scale = config.hardwareTarget.parameters;
-  if (scale.accCoreCount == 0 || scale.meshDimension <= 1 ||
-      scale.spatialPeCount == 0 || scale.temporalPeCount == 0 ||
-      scale.spatialMemoryCount == 0 || scale.temporalMemoryCount == 0 ||
-      scale.temporalResidentContexts == 0 || scale.gatewayCount == 0 ||
-      scale.memoryCapacityBytes == 0)
+  if (!loom::adg::isValidBuiltinTargetScale(scale))
     return diagnostic("config_range_violation", "hardware_target.parameters",
-                      "mesh_dimension must exceed one and all other target "
-                      "scale values must be positive");
+                      "base scale values must be positive, mesh_dimension "
+                      "must exceed one, and each FU occurrence count must not "
+                      "exceed its schedule-local PE count");
   if (config.dse.structuredOwnership.scopeExpansionLimit == 0 ||
       config.dse.schedule.scopeExpansionLimit == 0 ||
       config.dse.memoryCommunication.scopeExpansionLimit == 0 ||
@@ -1645,10 +1719,10 @@ static loom::ResolvedConfig
 builtinResolvedConfig(loom::ResolvedProfilePreset preset) {
   loom::ResolvedConfig config;
   config.hardwareTarget = {
-      loom::adg::builtinDefaultTarget.templateIdentity.str(),
-      {loom::adg::builtinDefaultTarget.schemaMajor,
-       loom::adg::builtinDefaultTarget.schemaMinor},
-      loom::adg::builtinDefaultTarget.scale};
+      loom::adg::builtinCoverageTarget.templateIdentity.str(),
+      {loom::adg::builtinCoverageTarget.schemaMajor,
+       loom::adg::builtinCoverageTarget.schemaMinor},
+      loom::adg::builtinCoverageTarget.scale};
   config.dse.objectiveCatalogs = loom::resolvedBuiltinObjectiveCatalogs();
   config.dse.spatialPnr = loom::resolvedBuiltinSpatialPnrPolicy(preset);
   config.dse.systemPnr = loom::resolvedBuiltinSystemPnrPolicy(preset);
@@ -1697,7 +1771,9 @@ loom::parseResolvedConfig(llvm::StringRef body, llvm::StringRef sourceName) {
   if (!patchOrErr)
     return patchOrErr.takeError();
 
-  ResolvedConfig config = defaultResolvedConfig();
+  ResolvedConfig config =
+      builtinResolvedConfig(patchOrErr->inheritedPreset.value_or(
+          ResolvedProfilePreset::BalancedExplore));
   applyPatch(config, *patchOrErr);
   if (llvm::Error error = validateResolvedConfig(config))
     return std::move(error);
@@ -1710,7 +1786,9 @@ loom::loadResolvedConfig(llvm::StringRef path) {
   if (!patchOrErr)
     return patchOrErr.takeError();
 
-  ResolvedConfig config = defaultResolvedConfig();
+  ResolvedConfig config =
+      builtinResolvedConfig(patchOrErr->inheritedPreset.value_or(
+          ResolvedProfilePreset::BalancedExplore));
   applyPatch(config, *patchOrErr);
   if (llvm::Error error = validateResolvedConfig(config))
     return std::move(error);

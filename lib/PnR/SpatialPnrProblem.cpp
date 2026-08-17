@@ -1380,6 +1380,14 @@ private:
       return std::move(error);
 
     FrozenSpatialRealizationIndex result;
+    auto computeContextDemands =
+        ::loom::mapping::deriveSpatialComputeContextDemands(techMapping,
+                                                            fabric);
+    if (!computeContextDemands)
+      return computeContextDemands.takeError();
+    if (computeContextDemands->size() !=
+        techMapping.computeRealizations().size())
+      return invalid("compute context demand projection is incomplete");
     result.computeRealizations_.reserve(
         techMapping.computeRealizations().size());
     for (auto [realizationOrdinal, realization] :
@@ -1419,34 +1427,26 @@ private:
       const auto correlatedDomain = restriction(
           constraints, SpatialConstraintProjection::ComputeFuContext, subject);
 
-      for (FabricFuOccurrenceRef fu : fabric.fuOccurrences()) {
-        const std::optional<FabricFuTemplateRef> definition =
-            fabric.fuTemplateOf(fu);
-        if (!definition || *definition != realization.capabilityTemplate.fu ||
-            !domainContains(fuDomain, fu))
+      const auto &contextDemand = (*computeContextDemands)[realizationOrdinal];
+      if (contextDemand.realization != realizationOrdinal ||
+          contextDemand.capabilityTemplate != realization.capabilityTemplate)
+        return invalid("compute context demand projection changed owner");
+      for (const auto &placementSupply : contextDemand.placements) {
+        const FabricFuOccurrenceRef fu = placementSupply.fu;
+        if (!domainContains(fuDomain, fu))
           continue;
-        const std::optional<FabricPeOccurrenceRef> parent =
-            fabric.parentPeOf(fu);
-        if (!parent)
-          return invalid("a Fabric FU occurrence has no parent PE relation");
-        const std::optional<::fabric::Schedule> schedule =
-            fabric.peSchedule(*parent);
-        if (!schedule)
-          return invalid("a Fabric PE occurrence has no scheduling contract");
-        if (!domainContains(peDomain, *parent))
+        const FabricPeOccurrenceRef parent = placementSupply.parentPe;
+        if (!domainContains(peDomain, parent))
           continue;
         auto contextOffset = checked(contextOffsetContext,
                                      result.computeInstructionContexts_.size());
         if (!contextOffset)
           return contextOffset.takeError();
-        const std::uint64_t contextCount =
-            fabric.peResidentContextCount(*parent);
         if (llvm::Error error = preflightAppend(
                 contextCountContext, result.computeInstructionContexts_.size(),
-                contextCount))
+                placementSupply.contexts.size()))
           return error;
-        for (std::uint64_t ordinal = 0; ordinal < contextCount; ++ordinal) {
-          const InstructionContextRef context{*parent, ordinal};
+        for (const InstructionContextRef &context : placementSupply.contexts) {
           if (!domainContains(contextDomain, context) ||
               !domainContains(correlatedDomain,
                               SpatialConstraintFuContext{fu, context}))
@@ -1464,9 +1464,9 @@ private:
         if (llvm::Error error = preflightAppend(
                 placementCountContext, result.computePlacements_.size(), 1))
           return error;
-        result.computePlacements_.push_back({*realizationIndex, fu, *parent,
-                                             *schedule, *contextOffset,
-                                             *frozenContextCount});
+        result.computePlacements_.push_back(
+            {*realizationIndex, fu, parent, placementSupply.schedule,
+             *contextOffset, *frozenContextCount});
       }
       const std::size_t placementCountValue =
           result.computePlacements_.size() - *placementOffset;

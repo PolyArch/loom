@@ -28,8 +28,10 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
 namespace {
@@ -70,7 +72,25 @@ unsigned rewriteOneGraph(::dataflow::GraphOp graph, ::mlir::Value ctrl,
   });
 
   unsigned converted = 0;
+  ::mlir::DominanceInfo dominance(graph.getOperation());
+  ::llvm::DenseMap<::mlir::Attribute,
+                   ::llvm::SmallVector<::dataflow::ConstantOp, 2>>
+      available;
   for (ScalarSource target : targets) {
+    ::dataflow::ConstantOp shared;
+    for (::dataflow::ConstantOp candidate : available[target.valueAttr]) {
+      if (dominance.properlyDominates(candidate.getOperation(), target.op)) {
+        shared = candidate;
+        break;
+      }
+    }
+    if (shared) {
+      target.op->getResult(0).replaceAllUsesWith(shared.getValue());
+      target.op->erase();
+      ++converted;
+      continue;
+    }
+
     ::mlir::OpBuilder::InsertionGuard g(builder);
     builder.setInsertionPointAfter(target.op);
     auto dconst = ::dataflow::ConstantOp::create(
@@ -78,6 +98,7 @@ unsigned rewriteOneGraph(::dataflow::GraphOp graph, ::mlir::Value ctrl,
         ::mlir::cast<::mlir::Attribute>(target.valueAttr));
     target.op->getResult(0).replaceAllUsesWith(dconst.getValue());
     target.op->erase();
+    available[target.valueAttr].push_back(dconst);
     ++converted;
   }
   return converted;

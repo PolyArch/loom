@@ -20,8 +20,10 @@ bool hasSpatialTemporalSwitchHandshakeDomain(
     const FrozenSpatialPnrProblem &problem);
 
 /// Rebuilds the exact Temporal switch handshake fragment set selected by the
-/// current routes. Every configured `(row, input)` activation must exist in
-/// the frozen handshake inventory; missing owner data is a candidate error.
+/// current routes. Rows beyond Fabric resident capacity remain visible to the
+/// independent TagResidentCapacityOveruse owner but have no physical
+/// activation. Every resident `(row, input)` activation must exist in the
+/// frozen handshake inventory; missing owner data is a candidate error.
 llvm::Expected<std::vector<PnrIndex>>
 deriveSpatialTemporalSwitchHandshakeFragments(
     const FrozenSpatialPnrProblem &problem,

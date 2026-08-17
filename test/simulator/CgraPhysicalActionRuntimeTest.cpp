@@ -235,11 +235,47 @@ void causalReleaseConjoinsWithIntrinsicRelease() {
     fail("causal release did not retire the complete claim envelope");
 }
 
+void equalOwnerEventStillWaitsForCausalRelease() {
+  const fabric::ResourceContract contract = createAtomicContract();
+  const fabric::ResourceContract *contracts[] = {&contract};
+  const loom::sim::detail::CgraResourcePatternSelection selections[] = {
+      {0, fabric::UsePatternKey(0)}};
+  const auto resources = take(
+      loom::sim::detail::freezeCgraResourceRuntimePlan(contracts, selections));
+  const loom::sim::detail::CgraPhysicalUseTiming uses[] = {
+      {0, 0, 0, 0, 0, 0, 0, true}};
+  auto runtime = take(
+      loom::sim::detail::CgraPhysicalActionRuntime::create(resources, uses));
+  (void)take(runtime.request(0, 5, coordinate(11)));
+
+  auto frame = take(runtime.advance());
+  if (!frame || frame->events.size() != 1 ||
+      frame->events.front().kind !=
+          loom::sim::detail::CgraPhysicalLifecycleKind::Granted)
+    fail("combined causal owner event did not acquire");
+  frame = take(runtime.advance());
+  if (!frame || frame->events.size() != 1 ||
+      frame->events.front().kind !=
+          loom::sim::detail::CgraPhysicalLifecycleKind::Committed ||
+      !runtime.hasPendingActions())
+    fail("combined owner event released before its causal condition");
+
+  if (llvm::Error error = runtime.satisfyCausalRelease(0, 5, coordinate(12)))
+    fail(llvm::toString(std::move(error)));
+  frame = take(runtime.advance());
+  if (!frame || frame->coordinate.delta != 1 || frame->events.size() != 1 ||
+      frame->events.front().kind !=
+          loom::sim::detail::CgraPhysicalLifecycleKind::Retired ||
+      runtime.hasPendingActions())
+    fail("combined owner event did not retire after causal release");
+}
+
 } // namespace
 
 int main() {
   contentionProducesExactLifecycleAndStall();
   equalOwnerEventCommitsAndReleasesAtomically();
   causalReleaseConjoinsWithIntrinsicRelease();
+  equalOwnerEventStillWaitsForCausalRelease();
   return EXIT_SUCCESS;
 }
