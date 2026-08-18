@@ -154,16 +154,17 @@ public:
   static llvm::Expected<FrozenSpatialHandshakeIndex>
   build(const dataflow::CanonicalDataflowProgramView &dataflow,
         const TechMappingView &techMapping, const FabricArtifactView &fabric,
-        llvm::ArrayRef<HandshakeOwnerModel> handshakeOwnerModels,
+        const FabricHandshakeContext &handshakeContext,
         const FrozenSpatialRealizationIndex &realizations,
         const FrozenSpatialResourceIndex &resources,
         const FrozenSpatialRoutingGraph &routing,
         const FrozenSpatialActiveRoutingDomain &activeRouting) {
-    auto activeModels = selectActiveModels(handshakeOwnerModels, realizations,
+    auto activeModels = selectActiveModels(handshakeContext.ownerModels(), realizations,
                                            routing, activeRouting);
     if (!activeModels)
       return activeModels.takeError();
     FrozenSpatialHandshakeIndex result;
+    result.fabricContext_ = handshakeContext;
     BuildState state{result,      *activeModels, dataflow,
                      techMapping, fabric,        realizations,
                      resources,   routing,       activeRouting};
@@ -865,13 +866,13 @@ llvm::Expected<FrozenSpatialHandshakeIndex>
 loom::pnr::detail::buildFrozenSpatialHandshakeIndex(
     const dataflow::CanonicalDataflowProgramView &dataflow,
     const TechMappingView &techMapping, const FabricArtifactView &fabric,
-    llvm::ArrayRef<HandshakeOwnerModel> handshakeOwnerModels,
+    const FabricHandshakeContext &handshakeContext,
     const FrozenSpatialRealizationIndex &realizations,
     const FrozenSpatialResourceIndex &resources,
     const FrozenSpatialRoutingGraph &routing,
     const FrozenSpatialActiveRoutingDomain &activeRouting) {
   return FrozenSpatialHandshakeIndexBuilder::build(
-      dataflow, techMapping, fabric, handshakeOwnerModels, realizations,
+      dataflow, techMapping, fabric, handshakeContext, realizations,
       resources, routing, activeRouting);
 }
 
@@ -881,6 +882,8 @@ llvm::Error loom::pnr::detail::verifyFrozenSpatialHandshakeIndex(
     const FrozenSpatialResourceIndex &resources,
     const FrozenSpatialRoutingGraph &routing) {
   (void)resources;
+  if (!handshake.fabricContext())
+    return invalid("handshake index has no Fabric static context");
   const auto models = handshake.ownerModels();
   llvm::StringMap<bool> owners;
   for (const HandshakeOwnerModel &model : models)

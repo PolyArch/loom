@@ -8,6 +8,7 @@
 #include <limits>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace loom::runtime {
@@ -71,17 +72,26 @@ struct SpatialInvocationMemoryObjectLayout final {
 struct SpatialInvocationWireLayout final {
   std::vector<std::uint8_t> templateBytes;
   std::vector<std::size_t> valuePayloadOffsets;
+  std::vector<std::optional<std::size_t>> valuePointerTargetOffsetOffsets;
   std::vector<std::size_t> memoryAddressOffsets;
   std::vector<std::size_t> memoryPayloadOffsets;
+  std::vector<std::size_t> memoryRootByteOffsetOffsets;
   std::vector<std::size_t> resultAddressOffsets;
 };
 
 inline constexpr std::array<std::uint8_t, 4> spatialInvocationResultMagic{
-    'L', 'G', 'X', '1'};
-inline constexpr std::size_t spatialInvocationResultHeaderBytes = 20;
+    'L', 'G', 'X', '3'};
+inline constexpr std::size_t spatialInvocationResultHeaderBytes = 68;
+
+struct SpatialInvocationRuntimeInputSnapshot final {
+  std::array<std::uint8_t, 32> identity{};
+  std::vector<std::uint8_t> canonicalBytes;
+};
 
 struct SpatialInvocationResultWire final {
+  std::uint64_t sessionEntryOrdinal = 0;
   std::vector<std::uint8_t> invocation;
+  std::optional<SpatialInvocationRuntimeInputSnapshot> runtimeInput;
   std::vector<std::uint8_t> spatialBoundaryResult;
 };
 
@@ -176,6 +186,7 @@ inline bool validateSpatialInvocationWire(const SpatialInvocationWire &wire,
     }
   }
   struct AddressInterval final {
+    std::size_t ordinal = 0;
     std::uint64_t begin = 0;
     std::uint64_t end = 0;
   };
@@ -192,15 +203,23 @@ inline bool validateSpatialInvocationWire(const SpatialInvocationWire &wire,
       return false;
     }
     intervals.push_back(
-        {object.address, object.address + object.initialBytes.size()});
+        {ordinal, object.address, object.address + object.initialBytes.size()});
   }
   std::sort(intervals.begin(), intervals.end(),
             [](const AddressInterval &lhs, const AddressInterval &rhs) {
-              return lhs.begin < rhs.begin;
+              return std::tie(lhs.begin, lhs.end, lhs.ordinal) <
+                     std::tie(rhs.begin, rhs.end, rhs.ordinal);
             });
-  for (std::size_t ordinal = 1; ordinal != intervals.size(); ++ordinal) {
+  for (std::size_t ordinal = 1; ordinal < intervals.size(); ++ordinal) {
     if (intervals[ordinal - 1].end > intervals[ordinal].begin) {
-      error = "invocation memory object address ranges overlap";
+      const AddressInterval &prior = intervals[ordinal - 1];
+      const AddressInterval &current = intervals[ordinal];
+      error = "invocation memory object address ranges overlap: object " +
+              std::to_string(prior.ordinal) + " [" +
+              std::to_string(prior.begin) + ", " + std::to_string(prior.end) +
+              ") and object " + std::to_string(current.ordinal) + " [" +
+              std::to_string(current.begin) + ", " +
+              std::to_string(current.end) + ")";
       return false;
     }
   }
@@ -505,6 +524,7 @@ inline bool projectSpatialInvocationWireLayout(
   std::size_t cursor = spatialInvocationWireHeaderBytes +
                        denseCoordinates.size() * sizeof(std::uint64_t);
   layout.valuePayloadOffsets.clear();
+  layout.valuePointerTargetOffsetOffsets.clear();
   for (std::size_t ordinal = 0; ordinal != valueLayouts.size(); ++ordinal) {
     std::size_t byteCount = 0;
     if (!spatial_invocation_detail::encodedByteCount(
@@ -516,6 +536,10 @@ inline bool projectSpatialInvocationWireLayout(
                            valueLayouts[ordinal].bitCount,
                            valueLayouts[ordinal].pointerTarget,
                            std::vector<std::uint8_t>(byteCount, 0)});
+    layout.valuePointerTargetOffsetOffsets.push_back(
+        valueLayouts[ordinal].pointerTarget
+            ? std::optional<std::size_t>(cursor + 16)
+            : std::nullopt);
     cursor += 24;
     layout.valuePayloadOffsets.push_back(cursor);
     cursor += byteCount;
@@ -546,7 +570,13 @@ inline bool projectSpatialInvocationWireLayout(
     cursor += static_cast<std::size_t>(memoryObjects[ordinal].byteCount);
   }
   wire.memoryRootBindings = memoryRootBindings;
-  cursor += memoryRootBindings.size() * 24;
+  layout.memoryRootByteOffsetOffsets.clear();
+  layout.memoryRootByteOffsetOffsets.reserve(memoryRootBindings.size());
+  for (std::size_t ordinal = 0; ordinal != memoryRootBindings.size();
+       ++ordinal) {
+    layout.memoryRootByteOffsetOffsets.push_back(cursor + 16);
+    cursor += 24;
+  }
   layout.resultAddressOffsets.clear();
   for (std::size_t ordinal = 0; ordinal != resultBitCounts.size(); ++ordinal) {
     wire.results.push_back(
@@ -564,15 +594,31 @@ inline bool projectSpatialInvocationWireLayout(
 
 inline std::vector<std::uint8_t>
 encodeSpatialInvocationResultWire(const SpatialInvocationResultWire &result) {
+  if (result.runtimeInput && result.runtimeInput->canonicalBytes.empty())
+    return {};
   std::vector<std::uint8_t> bytes;
-  bytes.reserve(spatialInvocationResultHeaderBytes + result.invocation.size() +
-                result.spatialBoundaryResult.size());
+  bytes.reserve(
+      spatialInvocationResultHeaderBytes + result.invocation.size() +
+      (result.runtimeInput ? result.runtimeInput->canonicalBytes.size() : 0) +
+      result.spatialBoundaryResult.size());
   bytes.insert(bytes.end(), spatialInvocationResultMagic.begin(),
                spatialInvocationResultMagic.end());
+  spatial_invocation_detail::appendU64(bytes, result.sessionEntryOrdinal);
   spatial_invocation_detail::appendU64(bytes, result.invocation.size());
+  spatial_invocation_detail::appendU64(
+      bytes,
+      result.runtimeInput ? result.runtimeInput->canonicalBytes.size() : 0);
   spatial_invocation_detail::appendU64(bytes,
                                        result.spatialBoundaryResult.size());
+  if (result.runtimeInput)
+    bytes.insert(bytes.end(), result.runtimeInput->identity.begin(),
+                 result.runtimeInput->identity.end());
+  else
+    bytes.insert(bytes.end(), 32, 0);
   bytes.insert(bytes.end(), result.invocation.begin(), result.invocation.end());
+  if (result.runtimeInput)
+    bytes.insert(bytes.end(), result.runtimeInput->canonicalBytes.begin(),
+                 result.runtimeInput->canonicalBytes.end());
   bytes.insert(bytes.end(), result.spatialBoundaryResult.begin(),
                result.spatialBoundaryResult.end());
   return bytes;
@@ -588,11 +634,16 @@ decodeSpatialInvocationResultWire(const std::vector<std::uint8_t> &bytes,
     error = "wrong or truncated invocation result header";
     return false;
   }
-  const std::uint64_t invocationSize =
+  const std::uint64_t sessionEntryOrdinal =
       spatial_invocation_detail::readU64(bytes.data() + 4);
-  const std::uint64_t boundarySize =
+  const std::uint64_t invocationSize =
       spatial_invocation_detail::readU64(bytes.data() + 12);
+  const std::uint64_t runtimeInputSize =
+      spatial_invocation_detail::readU64(bytes.data() + 20);
+  const std::uint64_t boundarySize =
+      spatial_invocation_detail::readU64(bytes.data() + 28);
   if (invocationSize > std::numeric_limits<std::size_t>::max() ||
+      runtimeInputSize > std::numeric_limits<std::size_t>::max() ||
       boundarySize > std::numeric_limits<std::size_t>::max()) {
     error = "invocation result length exceeds the host size domain";
     return false;
@@ -600,17 +651,37 @@ decodeSpatialInvocationResultWire(const std::vector<std::uint8_t> &bytes,
   std::size_t payloadSize = 0;
   if (!spatial_invocation_detail::checkedAdd(
           static_cast<std::size_t>(invocationSize),
-          static_cast<std::size_t>(boundarySize), payloadSize) ||
+          static_cast<std::size_t>(runtimeInputSize), payloadSize) ||
+      !spatial_invocation_detail::checkedAdd(
+          payloadSize, static_cast<std::size_t>(boundarySize), payloadSize) ||
       payloadSize != bytes.size() - spatialInvocationResultHeaderBytes) {
     error = "invocation result lengths do not match the envelope";
+    return false;
+  }
+  const auto identityBegin = bytes.begin() + 36;
+  const bool zeroIdentity =
+      std::all_of(identityBegin, identityBegin + 32,
+                  [](std::uint8_t byte) { return byte == 0; });
+  if ((runtimeInputSize == 0) != zeroIdentity) {
+    error = "invocation result runtime identity is not canonical";
     return false;
   }
   const auto invocationEnd = bytes.begin() +
                              spatialInvocationResultHeaderBytes +
                              static_cast<std::size_t>(invocationSize);
+  result.sessionEntryOrdinal = sessionEntryOrdinal;
   result.invocation.assign(bytes.begin() + spatialInvocationResultHeaderBytes,
                            invocationEnd);
-  result.spatialBoundaryResult.assign(invocationEnd, bytes.end());
+  const auto runtimeInputEnd =
+      invocationEnd + static_cast<std::size_t>(runtimeInputSize);
+  result.runtimeInput.reset();
+  if (runtimeInputSize != 0) {
+    SpatialInvocationRuntimeInputSnapshot snapshot;
+    std::copy(identityBegin, identityBegin + 32, snapshot.identity.begin());
+    snapshot.canonicalBytes.assign(invocationEnd, runtimeInputEnd);
+    result.runtimeInput.emplace(std::move(snapshot));
+  }
+  result.spatialBoundaryResult.assign(runtimeInputEnd, bytes.end());
   return true;
 }
 

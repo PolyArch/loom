@@ -400,7 +400,10 @@ struct CompletedStagedTopK final {
 
 struct IncompleteStagedTopK final {
   DsePlanIncompleteReason reason;
+  std::vector<ArtifactRootReference> selected;
+  std::vector<ArtifactRootReference> preferenceOrder;
   std::vector<ArtifactRootReference> evidence;
+  bool executionStopped = true;
 };
 
 using StagedTopKOutcome =
@@ -431,8 +434,12 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
     auto retained = publishEvidence(incomplete->retainedEvidence, store);
     if (!retained)
       return retained.takeError();
-    return StagedTopKOutcome{IncompleteStagedTopK{
-        DsePlanIncompleteReason{incomplete->reason}, std::move(*retained)}};
+    return StagedTopKOutcome{
+        IncompleteStagedTopK{DsePlanIncompleteReason{incomplete->reason},
+                             {},
+                             {},
+                             std::move(*retained),
+                             true}};
   }
   std::vector<PromotionEvidence> objectiveEvidence = std::move(
       std::get<CompletedPromotionAcquisition>(*objectiveAcquisition).evidence);
@@ -444,7 +451,10 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
   if (auto *incomplete = std::get_if<IncompleteSelection>(&*ranking))
     return StagedTopKOutcome{
         IncompleteStagedTopK{DsePlanIncompleteReason{incomplete->reason},
-                             std::move(incomplete->retainedEvidence)}};
+                             {},
+                             {},
+                             std::move(incomplete->retainedEvidence),
+                             true}};
 
   auto &ranked = std::get<CompletedCandidateObjectiveRanking>(*ranking);
   std::vector<ArtifactRootReference> retainedEvidence =
@@ -469,14 +479,12 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
       objectiveEvidence.size() !=
           candidateSet.candidates().size() * objectiveCount)
     return invalid("objective acquisition lost its positional task shape");
+  std::optional<DsePlanIncompleteReason> retainedIncompleteness;
 
   std::size_t cursor = 0;
   while (cursor < ranked.rankedCandidates.size() &&
          selected.size() < selection.k) {
-    const std::uint64_t missing = selection.k - selected.size();
-    const std::size_t batchSize =
-        static_cast<std::size_t>(std::min<std::uint64_t>(
-            missing, ranked.rankedCandidates.size() - cursor));
+    const std::size_t batchSize = 1;
     llvm::ArrayRef<ArtifactRootReference> rankedBatch(
         ranked.rankedCandidates.data() + cursor, batchSize);
     std::vector<ArtifactRootReference> candidateDomain(rankedBatch.begin(),
@@ -498,9 +506,22 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
         return references.takeError();
       appendReferences(retainedEvidence, *references);
       canonicalizeReferences(retainedEvidence);
+      if (incomplete->reason ==
+              PromotionAcquisitionIncompleteReason::Unsupported &&
+          incomplete->candidate &&
+          *incomplete->candidate == rankedBatch.front()) {
+        if (!retainedIncompleteness)
+          retainedIncompleteness = DsePlanIncompleteReason{incomplete->reason};
+        ++cursor;
+        continue;
+      }
+      const bool executionStopped = selected.empty();
+      std::vector<ArtifactRootReference> preferenceOrder = selected;
+      llvm::sort(selected, artifactRootReferenceLess);
       return StagedTopKOutcome{
           IncompleteStagedTopK{DsePlanIncompleteReason{incomplete->reason},
-                               std::move(retainedEvidence)}};
+                               std::move(selected), std::move(preferenceOrder),
+                               std::move(retainedEvidence), executionStopped}};
     }
 
     auto &completedDeferred = std::get<CompletedPromotionAcquisition>(deferred);
@@ -547,9 +568,20 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
       if (auto *incomplete = std::get_if<IncompleteSelection>(&*gate)) {
         appendReferences(retainedEvidence, incomplete->retainedEvidence);
         canonicalizeReferences(retainedEvidence);
-        return StagedTopKOutcome{
-            IncompleteStagedTopK{DsePlanIncompleteReason{incomplete->reason},
-                                 std::move(retainedEvidence)}};
+        if (incomplete->reason ==
+            IncompleteSelectionReason::UnsupportedEvidence) {
+          if (!retainedIncompleteness)
+            retainedIncompleteness =
+                DsePlanIncompleteReason{incomplete->reason};
+          continue;
+        }
+        const bool executionStopped = selected.empty();
+        std::vector<ArtifactRootReference> preferenceOrder = selected;
+        llvm::sort(selected, artifactRootReferenceLess);
+        return StagedTopKOutcome{IncompleteStagedTopK{
+            DsePlanIncompleteReason{incomplete->reason}, std::move(selected),
+            std::move(preferenceOrder), std::move(retainedEvidence),
+            executionStopped}};
       }
       if (auto *passed = std::get_if<CompletedSelection>(&*gate)) {
         selected.push_back(candidate);
@@ -566,9 +598,16 @@ llvm::Expected<StagedTopKOutcome> executeStagedTopK(
   std::vector<ArtifactRootReference> preferenceOrder = selected;
   llvm::sort(selected, artifactRootReferenceLess);
   canonicalizeReferences(retainedEvidence);
-  return StagedTopKOutcome{CompletedStagedTopK{
-      std::move(selected), std::move(preferenceOrder),
-      std::move(retainedEvidence)}};
+  if (retainedIncompleteness) {
+    const bool executionStopped = selected.empty();
+    return StagedTopKOutcome{
+        IncompleteStagedTopK{std::move(*retainedIncompleteness),
+                             std::move(selected), std::move(preferenceOrder),
+                             std::move(retainedEvidence), executionStopped}};
+  }
+  return StagedTopKOutcome{CompletedStagedTopK{std::move(selected),
+                                               std::move(preferenceOrder),
+                                               std::move(retainedEvidence)}};
 }
 
 llvm::Expected<std::vector<ArtifactRootReference>>
@@ -661,10 +700,10 @@ public:
                                     std::move(workSummary));
   }
 
-  static void appendPromote(
-      CompletedDsePlanExecution &completed,
-      std::vector<std::vector<ArtifactRootReference>> outputBindings,
-      std::vector<ArtifactRootReference> preferenceOrder = {}) {
+  static void
+  appendPromote(CompletedDsePlanExecution &completed,
+                std::vector<std::vector<ArtifactRootReference>> outputBindings,
+                std::vector<ArtifactRootReference> preferenceOrder = {}) {
     completed.appendPromote(std::move(outputBindings),
                             std::move(preferenceOrder));
   }
@@ -678,14 +717,26 @@ public:
                                       executionStopped);
   }
 
+  static IncompleteDsePlanExecution
+  incompleteRetained(std::uint64_t nodeOrdinal, DsePlanIncompleteReason reason,
+                     CompletedDsePlanExecution availableExecution,
+                     bool generateNode) {
+    return IncompleteDsePlanExecution(nodeOrdinal, std::move(reason),
+                                      std::move(availableExecution),
+                                      generateNode, false);
+  }
+
   static IncompleteDsePlanExecution incompletePromote(
       std::uint64_t nodeOrdinal, DsePlanIncompleteReason reason,
       CompletedDsePlanExecution availableExecution,
-      std::vector<std::vector<ArtifactRootReference>> outputBindings) {
-    availableExecution.appendPromote(std::move(outputBindings));
+      std::vector<std::vector<ArtifactRootReference>> outputBindings,
+      std::vector<ArtifactRootReference> preferenceOrder = {},
+      bool executionStopped = true) {
+    availableExecution.appendPromote(std::move(outputBindings),
+                                     std::move(preferenceOrder));
     return IncompleteDsePlanExecution(nodeOrdinal, std::move(reason),
                                       std::move(availableExecution), false,
-                                      true);
+                                      executionStopped);
   }
 
   static DsePlanGenerateInvocationRecords
@@ -912,9 +963,9 @@ CompletedDsePlanExecution::resolvePreferenceOrder(PlanOutputRef output) const {
     return {};
   const NodeOutputs &node = nodeOutputs_[output.producerNodeOrdinal];
   const auto *promote = std::get_if<PromoteNodeOutputs>(&node);
-  return promote ? llvm::ArrayRef<ArtifactRootReference>(
-                       promote->preferenceOrder)
-                 : llvm::ArrayRef<ArtifactRootReference>();
+  return promote
+             ? llvm::ArrayRef<ArtifactRootReference>(promote->preferenceOrder)
+             : llvm::ArrayRef<ArtifactRootReference>();
 }
 
 bool CompletedDsePlanExecution::hasOutput(PlanOutputRef output) const {
@@ -1169,7 +1220,7 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
   const ResolvedDsePlan &plan = view.plan();
   CompletedDsePlanExecution completed =
       DsePlanExecutionBuilder::createCompleted(view.digest());
-  std::optional<std::pair<std::uint64_t, CandidateGeneratorIncompleteReason>>
+  std::optional<std::pair<std::uint64_t, DsePlanIncompleteReason>>
       retainedIncompleteness;
   const auto canContinue = [](CandidateGeneratorIncompleteReason reason) {
     return reason == CandidateGeneratorIncompleteReason::ProofNotEstablished ||
@@ -1257,7 +1308,8 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
           if (canContinue(incomplete->reason)) {
             if (!retainedIncompleteness)
               retainedIncompleteness =
-                  std::pair{task.planNodeOrdinal, incomplete->reason};
+                  std::pair{task.planNodeOrdinal,
+                            DsePlanIncompleteReason{incomplete->reason}};
           } else if (!blockingIncompleteness) {
             blockingIncompleteness =
                 std::pair{task.planNodeOrdinal, incomplete->reason};
@@ -1338,8 +1390,9 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
           return std::move(error);
         if (canContinue(incomplete->reason)) {
           if (!retainedIncompleteness)
-            retainedIncompleteness = std::pair{
-                static_cast<std::uint64_t>(nodeIndex), incomplete->reason};
+            retainedIncompleteness =
+                std::pair{static_cast<std::uint64_t>(nodeIndex),
+                          DsePlanIncompleteReason{incomplete->reason}};
           continue;
         }
         return DsePlanExecutionOutcome{
@@ -1421,15 +1474,29 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
           *plan.objectiveProgram(), *topK, store, blobs, executor);
       if (!staged)
         return staged.takeError();
-      if (auto *incomplete = std::get_if<IncompleteStagedTopK>(&*staged))
-        return DsePlanExecutionOutcome{
-            DsePlanExecutionBuilder::incompletePromote(
-                static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
-                std::move(completed), {{}, std::move(incomplete->evidence)})};
+      if (auto *incomplete = std::get_if<IncompleteStagedTopK>(&*staged)) {
+        if (incomplete->executionStopped)
+          return DsePlanExecutionOutcome{
+              DsePlanExecutionBuilder::incompletePromote(
+                  static_cast<std::uint64_t>(nodeIndex), incomplete->reason,
+                  std::move(completed),
+                  {std::move(incomplete->selected),
+                   std::move(incomplete->evidence)},
+                  std::move(incomplete->preferenceOrder), true)};
+        DsePlanExecutionBuilder::appendPromote(
+            completed,
+            {std::move(incomplete->selected), std::move(incomplete->evidence)},
+            std::move(incomplete->preferenceOrder));
+        if (!retainedIncompleteness)
+          retainedIncompleteness = std::pair{
+              static_cast<std::uint64_t>(nodeIndex), incomplete->reason};
+        continue;
+      }
       auto &stagedCompleted = std::get<CompletedStagedTopK>(*staged);
       DsePlanExecutionBuilder::appendPromote(
-          completed, {std::move(stagedCompleted.selected),
-                      std::move(stagedCompleted.evidence)},
+          completed,
+          {std::move(stagedCompleted.selected),
+           std::move(stagedCompleted.evidence)},
           std::move(stagedCompleted.preferenceOrder));
       continue;
     }
@@ -1472,10 +1539,14 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
                       std::move(selected.satisfiedEvidence)});
     }
   }
-  if (retainedIncompleteness)
-    return DsePlanExecutionOutcome{DsePlanExecutionBuilder::incompleteGenerate(
+  if (retainedIncompleteness) {
+    const bool generateNode =
+        std::holds_alternative<CandidateGeneratorIncompleteReason>(
+            retainedIncompleteness->second);
+    return DsePlanExecutionOutcome{DsePlanExecutionBuilder::incompleteRetained(
         retainedIncompleteness->first, retainedIncompleteness->second,
-        std::move(completed), false)};
+        std::move(completed), generateNode)};
+  }
   return DsePlanExecutionOutcome{std::move(completed)};
 }
 

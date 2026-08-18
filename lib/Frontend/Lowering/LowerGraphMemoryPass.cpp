@@ -96,6 +96,15 @@ struct ImportedViewKeyInfo {
 
 ::mlir::FailureOr<::mlir::Type> storageElementType(::mlir::Operation *access,
                                                    ::mlir::Type dataType) {
+  if (auto vector = ::llvm::dyn_cast<::mlir::VectorType>(dataType)) {
+    if (vector.isScalable() || vector.getRank() == 0 ||
+        vector.getNumElements() == 0) {
+      access->emitError(
+          "LLVM vector memory access requires a fixed nonempty lane shape");
+      return ::mlir::failure();
+    }
+    return vector.getElementType();
+  }
   auto pointerType = ::llvm::dyn_cast<::mlir::LLVM::LLVMPointerType>(dataType);
   if (!pointerType)
     return dataType;

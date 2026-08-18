@@ -1127,6 +1127,7 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
         "TechMapping upstream closure disagrees with SpatialMapping");
   std::vector<SpatialComputeBindingView> computeBindings;
   std::set<std::uint64_t> boundComputes;
+  std::set<std::vector<std::uint8_t>> occupiedComputeContexts;
   for (auto record :
        root.getBody().front().getOps<::mapping::ComputeBindingOp>()) {
     auto binding = importComputeBinding(record, techMapping, fabric);
@@ -1134,6 +1135,10 @@ importView(const ArtifactIdentity &mappingIdentity, ::mapping::SpatialOp root,
       return binding.takeError();
     if (!boundComputes.insert(binding->realization).second)
       return invalid("duplicate ComputeBinding realization");
+    if (!occupiedComputeContexts
+             .insert(::loom::fabric::canonicalFabricBytes(binding->context))
+             .second)
+      return invalid("multiple ComputeBindings occupy one resident context");
     computeBindings.push_back(std::move(*binding));
   }
   if (computeBindings.size() != techMapping.computeRealizations().size())

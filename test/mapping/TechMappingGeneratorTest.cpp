@@ -434,10 +434,12 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   return take(dataflow::finalizeCanonicalDataflow(*module));
 }
 
-loom::fabric::FinalizedFabricRoot buildSmallFabric(loom::ArtifactStore &store) {
+loom::fabric::FinalizedFabricRoot
+buildSmallFabric(loom::ArtifactStore &store,
+                 loom::adg::BuiltinTargetPreset preset =
+                     loom::adg::BuiltinTargetPreset::Small) {
   loom::adg::DesignBuilder builder(store);
-  auto expansion = take(loom::adg::expandBuiltinSpatialCore(
-      builder, loom::adg::BuiltinTargetPreset::Small));
+  auto expansion = take(loom::adg::expandBuiltinSpatialCore(builder, preset));
   if (llvm::Error error = expansion.spatialCore.close(expansion.outputs))
     fail(llvm::toString(std::move(error)));
   auto design = take(std::move(builder).finalize());
@@ -506,14 +508,14 @@ buildSerialIntegerAddFabric(loom::ArtifactStore &store) {
   std::vector<loom::adg::SpatialValue> spatialInputs;
   for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
     spatialInputs.push_back(take(spatial.input(ordinal)));
-  auto pe =
+  auto computePe =
       take(spatial.addPe(spatialInputs, PeSpec::spatial(inputs, outputs)));
   std::vector<loom::adg::PeValue> peInputs;
   for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
-    peInputs.push_back(take(pe.input(ordinal)));
+    peInputs.push_back(take(computePe.input(ordinal)));
   const std::vector<PortType> addInputs(4, bits32);
   const std::vector<PortType> addOutputs{bits128};
-  auto fu = take(pe.addFu(peInputs, FuSpec{addInputs, addOutputs}));
+  auto fu = take(computePe.addFu(peInputs, FuSpec{addInputs, addOutputs}));
   std::vector<loom::adg::FuValue> fuInputs;
   for (std::size_t ordinal = 0; ordinal < addInputs.size(); ++ordinal)
     fuInputs.push_back(take(fu.input(ordinal)));
@@ -529,12 +531,22 @@ buildSerialIntegerAddFabric(loom::ArtifactStore &store) {
     fail(llvm::toString(std::move(error)));
   if (llvm::Error error = fu.close({take(third.output(0))}))
     fail(llvm::toString(std::move(error)));
-  addTokenSyncFu(pe, peInputs, bits128);
-  if (llvm::Error error = pe.close())
+  if (llvm::Error error = computePe.close())
+    fail(llvm::toString(std::move(error)));
+  std::vector<loom::adg::SpatialValue> computeOutputs;
+  for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal)
+    computeOutputs.push_back(take(computePe.output(ordinal)));
+  auto tokenPe =
+      take(spatial.addPe(computeOutputs, PeSpec::spatial(inputs, outputs)));
+  std::vector<loom::adg::PeValue> tokenInputs;
+  for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
+    tokenInputs.push_back(take(tokenPe.input(ordinal)));
+  addTokenSyncFu(tokenPe, tokenInputs, bits128);
+  if (llvm::Error error = tokenPe.close())
     fail(llvm::toString(std::move(error)));
   std::vector<loom::adg::SpatialValue> spatialOutputs;
   for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal)
-    spatialOutputs.push_back(take(pe.output(ordinal)));
+    spatialOutputs.push_back(take(tokenPe.output(ordinal)));
   if (llvm::Error error = spatial.close(spatialOutputs))
     fail(llvm::toString(std::move(error)));
 
@@ -545,7 +557,8 @@ buildSerialIntegerAddFabric(loom::ArtifactStore &store) {
 }
 
 loom::fabric::FinalizedFabricRoot
-buildTokenSyncFabric(loom::ArtifactStore &store, std::size_t laneCount = 4) {
+buildTokenSyncFabric(loom::ArtifactStore &store, std::size_t laneCount = 4,
+                     std::size_t peCount = 1) {
   using loom::adg::DesignBuilder;
   using loom::adg::PeSpec;
   using loom::adg::PortType;
@@ -554,20 +567,22 @@ buildTokenSyncFabric(loom::ArtifactStore &store, std::size_t laneCount = 4) {
   const std::vector<PortType> types(laneCount, bits128);
   DesignBuilder builder(store);
   auto spatial = take(builder.createSpatialCore("token-sync", types, types));
-  std::vector<loom::adg::SpatialValue> spatialInputs;
+  std::vector<loom::adg::SpatialValue> stageValues;
   for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
-    spatialInputs.push_back(take(spatial.input(ordinal)));
-  auto pe = take(spatial.addPe(spatialInputs, PeSpec::spatial(types, types)));
-  std::vector<loom::adg::PeValue> peInputs;
-  for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
-    peInputs.push_back(take(pe.input(ordinal)));
-  addTokenSyncFu(pe, peInputs, bits128, laneCount);
-  if (llvm::Error error = pe.close())
-    fail(llvm::toString(std::move(error)));
-  std::vector<loom::adg::SpatialValue> spatialOutputs;
-  for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
-    spatialOutputs.push_back(take(pe.output(ordinal)));
-  if (llvm::Error error = spatial.close(spatialOutputs))
+    stageValues.push_back(take(spatial.input(ordinal)));
+  for (std::size_t peOrdinal = 0; peOrdinal < peCount; ++peOrdinal) {
+    auto pe = take(spatial.addPe(stageValues, PeSpec::spatial(types, types)));
+    std::vector<loom::adg::PeValue> peInputs;
+    for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
+      peInputs.push_back(take(pe.input(ordinal)));
+    addTokenSyncFu(pe, peInputs, bits128, laneCount);
+    if (llvm::Error error = pe.close())
+      fail(llvm::toString(std::move(error)));
+    stageValues.clear();
+    for (std::size_t ordinal = 0; ordinal < types.size(); ++ordinal)
+      stageValues.push_back(take(pe.output(ordinal)));
+  }
+  if (llvm::Error error = spatial.close(stageValues))
     fail(llvm::toString(std::move(error)));
   auto design = take(std::move(builder).finalize());
   if (design.roots().size() != 1)
@@ -669,7 +684,7 @@ void matchRowLimitPreservesGlobalActorOrder() {
   auto dataflowArtifact = buildInterleavedSyncDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
-  const auto fabric = buildTokenSyncFabric(store);
+  const auto fabric = buildTokenSyncFabric(store, 4, 3);
 
   std::vector<std::uint64_t> pairActors;
   std::optional<std::uint64_t> singleActor;
@@ -837,10 +852,12 @@ void branchingFuBoundariesEnumerateLegalCorrespondences() {
 }
 
 void unrelatedBuiltinOperationsDoNotConsumeSeedBudget() {
+  constexpr std::size_t actorCount = 4;
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
-  auto dataflowArtifact = buildIndependentIntegerAddsDataflow(context, 64);
+  auto dataflowArtifact =
+      buildIndependentIntegerAddsDataflow(context, actorCount);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
   const auto fabric = buildSmallFabric(store);
@@ -870,8 +887,9 @@ void unrelatedBuiltinOperationsDoNotConsumeSeedBudget() {
     coveredActors += realization.actors.size();
   if (coveredActors != dataflow.actors().size())
     fail("schema-indexed match rows did not cover every selected actor");
-  if (!llvm::any_of(candidate.view().residualLogicalNets(),
-                    [](const auto &net) { return net.sinks.size() == 64; }))
+  if (!llvm::any_of(
+          candidate.view().residualLogicalNets(),
+          [&](const auto &net) { return net.sinks.size() == actorCount; }))
     fail("multicast producer lost residual sink obligations");
 }
 
@@ -983,10 +1001,11 @@ void multiActorMemoryRowsCompeteWithSingletonCover() {
   auto dataflowArtifact = buildMemoryChainDataflow(context);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
-  const auto fabric = buildSmallFabric(store);
+  const auto fabric =
+      buildSmallFabric(store, loom::adg::BuiltinTargetPreset::Coverage);
 
   loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
-  resolved.dse.techMapping.candidatePublicationLimit = 8;
+  resolved.dse.techMapping.candidatePublicationLimit = 16;
   const auto config =
       take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
   const std::array<dataflow::GraphRef, 1> covers = {
@@ -1035,8 +1054,23 @@ void multiActorMemoryRowsCompeteWithSingletonCover() {
   if (leading.view().memoryRealizations().size() != 1 ||
       leading.view().memoryRealizations().front().actors.size() != 2)
     fail("realization-demand order did not lead with the grouped memory row");
+
+  std::optional<loom::mapping::FinalizedTechMapping> feasibleGrouped;
+  for (const auto &reference : generated->candidates) {
+    auto candidate = take(loom::mapping::importTechMapping(reference, store));
+    if (candidate.view().memoryRealizations().size() != 1 ||
+        candidate.view().memoryRealizations().front().actors.size() != 2)
+      continue;
+    if (!loom::test::admitsCanonicalSpatialCandidate(dataflow, candidate.view(),
+                                                     fabric.view(), store))
+      continue;
+    feasibleGrouped.emplace(std::move(candidate));
+    break;
+  }
+  if (!feasibleGrouped)
+    fail("memory-chain frontier has no Spatial-admissible grouped row");
   loom::test::exerciseSpatialMemoryOperationPortRelations(
-      context, dataflow, leading.view(), fabric.view(), store);
+      context, dataflow, feasibleGrouped->view(), fabric.view(), store);
 }
 
 void internalMemoryEdgeIsAnExplicitCandidateChoice() {

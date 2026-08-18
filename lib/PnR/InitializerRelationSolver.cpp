@@ -1595,10 +1595,19 @@ InitializerRelationSolver::solveCanonicalWithFixedChoices(
 llvm::Expected<InitializerRelationSolveResult>
 InitializerRelationSolver::solveCanonicalWithPreferredChoices(
     std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> preferredChoices) {
+  return solveCanonicalWithPreferredChoices(
+      assignmentLimit, preferredChoices,
+      [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
+}
+
+llvm::Expected<InitializerRelationSolveResult>
+InitializerRelationSolver::solveCanonicalWithPreferredChoices(
+    std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> preferredChoices,
+    llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+        validateCompleteAssignment) {
   std::vector<PnrIndex> fixed(domainCounts_.size(), getInvalidPnrIndex());
   return solveCanonicalWithFixedAndPreferredChoices(
-      assignmentLimit, fixed, preferredChoices,
-      [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
+      assignmentLimit, fixed, preferredChoices, validateCompleteAssignment);
 }
 
 llvm::Expected<InitializerRelationSolveResult>

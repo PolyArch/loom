@@ -8,6 +8,7 @@
 #include "Evaluation/ModelProvider.h"
 #include "ExternalTool/InvocationBundle.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "PnR/PnrDerivedContext.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -273,7 +274,9 @@ public:
                               const PlanExecutionPolicy &policy)
       : journal_(journal), scheduler_(scheduler), policy_(policy),
         fabricImportAttachment_(
-            fabric::FabricArtifactImportSession::currentAttachment()) {}
+            fabric::FabricArtifactImportSession::currentAttachment()),
+        derivedContextAttachment_(
+            pnr::PnrDerivedContextSession::currentAttachment()) {}
 
   bool shouldStopBeforeDispatch() const override {
     return journal_.gracefulStopRequested() ||
@@ -334,6 +337,7 @@ private:
   std::vector<EvidenceObligationTemplateRef> promotionObligations_;
   std::atomic_uint64_t dispatched_{0};
   fabric::FabricArtifactImportSession::Attachment fabricImportAttachment_;
+  pnr::PnrDerivedContextSession::Attachment derivedContextAttachment_;
 };
 
 bool RecoverablePlanWorkExecutor::reserveDispatch() {
@@ -763,9 +767,14 @@ RecoverablePlanWorkExecutor::executeGenerateBatch(
   for (std::size_t worker = 0; worker != workerCount; ++worker)
     pool.async([&] {
       std::unique_ptr<fabric::FabricArtifactImportSession> importSession;
+      std::unique_ptr<pnr::PnrDerivedContextSession> derivedContextSession;
       if (fabricImportAttachment_)
         importSession = std::make_unique<fabric::FabricArtifactImportSession>(
             fabricImportAttachment_);
+      if (derivedContextAttachment_)
+        derivedContextSession =
+            std::make_unique<pnr::PnrDerivedContextSession>(
+                derivedContextAttachment_);
       while (true) {
         const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
         if (index >= tasks.size())
@@ -1039,9 +1048,14 @@ RecoverablePlanWorkExecutor::execute(
   for (std::size_t worker = 0; worker != workerCount; ++worker)
     pool.async([&] {
       std::unique_ptr<fabric::FabricArtifactImportSession> importSession;
+      std::unique_ptr<pnr::PnrDerivedContextSession> derivedContextSession;
       if (fabricImportAttachment_)
         importSession = std::make_unique<fabric::FabricArtifactImportSession>(
             fabricImportAttachment_);
+      if (derivedContextAttachment_)
+        derivedContextSession =
+            std::make_unique<pnr::PnrDerivedContextSession>(
+                derivedContextAttachment_);
       while (true) {
         const std::size_t index = next.fetch_add(1, std::memory_order_relaxed);
         if (index >= tasks.size())

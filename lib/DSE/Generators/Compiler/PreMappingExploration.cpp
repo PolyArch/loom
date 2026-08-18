@@ -1,6 +1,7 @@
 #include "DSE/PreMappingExploration.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/MappingDebugLog.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/DataflowEvaluationAcquisition.h"
 #include "DSE/DataflowRewriteCandidateGenerator.h"
@@ -97,6 +98,32 @@ bool authorizationLess(const ModelAuthorization &lhs,
                                      rhs.descriptor.schemaVersion().minor,
                                      rhs.descriptor.modelKind().ordinal());
   return left < right;
+}
+
+void emitOwnershipRejections(
+    llvm::ArrayRef<StructuredOwnershipCandidateDisposition> dispositions) {
+  for (const auto &disposition : dispositions) {
+    const auto *rejection =
+        std::get_if<StructuredOwnershipCandidateRejectionRecord>(
+            &disposition.result);
+    if (!rejection)
+      continue;
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+          fields["failure_scope"] = "structured_ownership_candidate";
+          fields["closure_status"] = "proven_infeasible";
+          fields["rejection_kind"] =
+              rejection->kind ==
+                      frontend::SpatialOwnershipCandidateRejectionKind::
+                          NonFinalizable
+                  ? "non_finalizable"
+                  : "exact_fabric_inadmissible";
+          fields["diagnostic"] = rejection->message;
+          fields["scope_ordinal"] =
+              disposition.coordinate.scope.selection.ordinal;
+        });
+  }
 }
 
 std::vector<ModelAuthorization>
@@ -306,8 +333,9 @@ void mergeReferences(std::vector<ArtifactRootReference> &destination,
                     destination.end());
 }
 
-llvm::Expected<std::vector<ArtifactRootReference>> selectedPreferenceOrder(
-    const CompletedDsePlanExecution &execution, PlanOutputRef selectedOutput) {
+llvm::Expected<std::vector<ArtifactRootReference>>
+selectedPreferenceOrder(const CompletedDsePlanExecution &execution,
+                        PlanOutputRef selectedOutput) {
   const llvm::ArrayRef<ArtifactRootReference> canonical =
       execution.resolve(selectedOutput);
   const llvm::ArrayRef<ArtifactRootReference> preferred =
@@ -323,8 +351,8 @@ llvm::Expected<std::vector<ArtifactRootReference>> selectedPreferenceOrder(
   llvm::sort(canonicalized, artifactRootReferenceLess);
   if (std::adjacent_find(canonicalized.begin(), canonicalized.end()) !=
           canonicalized.end() ||
-      !std::equal(canonicalized.begin(), canonicalized.end(),
-                  canonical.begin(), canonical.end()))
+      !std::equal(canonicalized.begin(), canonicalized.end(), canonical.begin(),
+                  canonical.end()))
     return invalid("objective preference order changed the selected set");
   return checked;
 }
@@ -355,6 +383,7 @@ struct CompletedOwnershipSelection final {
   std::vector<ArtifactRootReference> evidence;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   DsePlanGenerateInvocationRecords generateInvocations;
+  std::optional<RetainedDsePlanIncompleteness> retainedIncompleteness;
 };
 
 using OwnershipSelectionOutcome =
@@ -535,32 +564,63 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
   auto executed = executeDsePlan(*view, artifactStore, blobStore);
   if (!executed)
     return executed.takeError();
+  const CompletedDsePlanExecution *selectionExecution =
+      std::get_if<CompletedDsePlanExecution>(&*executed);
+  std::optional<RetainedDsePlanIncompleteness> retainedIncompleteness;
   if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed)) {
-    const std::uint64_t nodeOrdinal = incomplete->nodeOrdinal();
-    const DsePlanIncompleteReason reason = incomplete->reason();
-    auto evidence = retainedEvidence(*incomplete, baselineEvidence);
-    std::vector<DsePlanGenerateInvocationRecords> generateInvocations;
-    generateInvocations.push_back(
-        takeDsePlanGenerateInvocationRecords(std::move(*executed)));
-    return OwnershipSelectionOutcome{IncompletePreMappingExploration{
-        nodeOrdinal, reason, std::move(evidence),
-        std::move(generateInvocations)}};
+    selectionExecution = &incomplete->availableExecution();
+    if (incomplete->executionStopped() ||
+        selectionExecution->resolve({5, 0}).empty()) {
+      const std::uint64_t nodeOrdinal = incomplete->nodeOrdinal();
+      const DsePlanIncompleteReason reason = incomplete->reason();
+      auto evidence = retainedEvidence(*incomplete, baselineEvidence);
+      std::vector<DsePlanGenerateInvocationRecords> generateInvocations;
+      generateInvocations.push_back(
+          takeDsePlanGenerateInvocationRecords(std::move(*executed)));
+      return OwnershipSelectionOutcome{IncompletePreMappingExploration{
+          nodeOrdinal, reason, std::move(evidence),
+          std::move(generateInvocations)}};
+    }
+    retainedIncompleteness.emplace(RetainedDsePlanIncompleteness{
+        selectionExecution->resolvedDseConfigViewDigest(),
+        incomplete->nodeOrdinal(), incomplete->reason()});
   }
 
-  auto &completed = std::get<CompletedDsePlanExecution>(*executed);
-  std::vector<ArtifactRootReference> selected(completed.resolve({5, 0}).begin(),
-                                              completed.resolve({5, 0}).end());
-  auto preferenceOrder = selectedPreferenceOrder(completed, {5, 0});
+  if (!selectionExecution)
+    return invalid("DSE plan outcome has no available execution");
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        const auto count = [&](std::uint64_t node, std::uint32_t slot) {
+          const PlanOutputRef output{node, slot};
+          return selectionExecution->hasOutput(output)
+                     ? selectionExecution->resolve(output).size()
+                     : 0;
+        };
+        fields["context_kind"] = "structured_compiler_frontier";
+        fields["ownership_count"] = count(0, 1);
+        fields["execution_shape_count"] = count(1, 0);
+        fields["schedule_count"] = count(2, 0);
+        fields["memory_communication_count"] = count(3, 0);
+        fields["special_math_count"] = count(4, 0);
+        fields["selected_count"] = count(5, 0);
+        fields["evidence_count"] = count(5, 1);
+      });
+  std::vector<ArtifactRootReference> selected(
+      selectionExecution->resolve({5, 0}).begin(),
+      selectionExecution->resolve({5, 0}).end());
+  auto preferenceOrder = selectedPreferenceOrder(*selectionExecution, {5, 0});
   if (!preferenceOrder)
     return preferenceOrder.takeError();
   std::vector<ArtifactRootReference> evidence = std::move(baselineEvidence);
-  mergeReferences(evidence, completed.resolve({5, 1}));
+  mergeReferences(evidence, selectionExecution->resolve({5, 1}));
   std::vector<StructuredOwnershipCandidateDisposition> dispositions(
       invocation->dispositions().begin(), invocation->dispositions().end());
   return OwnershipSelectionOutcome{CompletedOwnershipSelection{
-      std::move(invocation), std::move(selected),
-      std::move(*preferenceOrder), std::move(evidence), std::move(dispositions),
-      takeDsePlanGenerateInvocationRecords(std::move(*executed))}};
+      std::move(invocation), std::move(selected), std::move(*preferenceOrder),
+      std::move(evidence), std::move(dispositions),
+      takeDsePlanGenerateInvocationRecords(std::move(*executed)),
+      std::move(retainedIncompleteness)}};
 }
 
 struct CompletedDataflowSelection final {
@@ -568,6 +628,7 @@ struct CompletedDataflowSelection final {
   std::vector<ArtifactRootReference> preferenceOrder;
   std::vector<ArtifactRootReference> evidence;
   DsePlanGenerateInvocationRecords generateInvocations;
+  std::optional<RetainedDsePlanIncompleteness> retainedIncompleteness;
 };
 
 using DataflowSelectionOutcome =
@@ -670,29 +731,41 @@ exploreDataflowCandidates(const ArtifactRootReference &d0,
   auto executed = executeDsePlan(*view, store, blobs);
   if (!executed)
     return executed.takeError();
+  const CompletedDsePlanExecution *selectionExecution =
+      std::get_if<CompletedDsePlanExecution>(&*executed);
+  std::optional<RetainedDsePlanIncompleteness> retainedIncompleteness;
   if (auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&*executed)) {
-    const std::uint64_t nodeOrdinal = incomplete->nodeOrdinal();
-    const DsePlanIncompleteReason reason = incomplete->reason();
-    auto evidence = retainedEvidence(*incomplete, {});
-    std::vector<DsePlanGenerateInvocationRecords> generateInvocations;
-    generateInvocations.push_back(
-        takeDsePlanGenerateInvocationRecords(std::move(*executed)));
-    return DataflowSelectionOutcome{IncompletePreMappingExploration{
-        nodeOrdinal, reason, std::move(evidence),
-        std::move(generateInvocations)}};
+    selectionExecution = &incomplete->availableExecution();
+    if (incomplete->executionStopped() ||
+        selectionExecution->resolve({selectionNode, 0}).empty()) {
+      const std::uint64_t nodeOrdinal = incomplete->nodeOrdinal();
+      const DsePlanIncompleteReason reason = incomplete->reason();
+      auto evidence = retainedEvidence(*incomplete, {});
+      std::vector<DsePlanGenerateInvocationRecords> generateInvocations;
+      generateInvocations.push_back(
+          takeDsePlanGenerateInvocationRecords(std::move(*executed)));
+      return DataflowSelectionOutcome{IncompletePreMappingExploration{
+          nodeOrdinal, reason, std::move(evidence),
+          std::move(generateInvocations)}};
+    }
+    retainedIncompleteness.emplace(RetainedDsePlanIncompleteness{
+        selectionExecution->resolvedDseConfigViewDigest(),
+        incomplete->nodeOrdinal(), incomplete->reason()});
   }
-  auto &completed = std::get<CompletedDsePlanExecution>(*executed);
+  if (!selectionExecution)
+    return invalid("DSE plan outcome has no available execution");
   std::vector<ArtifactRootReference> selected =
-      completed.resolve({selectionNode, 0}).vec();
+      selectionExecution->resolve({selectionNode, 0}).vec();
   auto preferenceOrder =
-      selectedPreferenceOrder(completed, {selectionNode, 0});
+      selectedPreferenceOrder(*selectionExecution, {selectionNode, 0});
   if (!preferenceOrder)
     return preferenceOrder.takeError();
   std::vector<ArtifactRootReference> evidence =
-      completed.resolve({selectionNode, 1}).vec();
+      selectionExecution->resolve({selectionNode, 1}).vec();
   return DataflowSelectionOutcome{CompletedDataflowSelection{
       std::move(selected), std::move(*preferenceOrder), std::move(evidence),
-      takeDsePlanGenerateInvocationRecords(std::move(*executed))}};
+      takeDsePlanGenerateInvocationRecords(std::move(*executed)),
+      std::move(retainedIncompleteness)}};
 }
 
 } // namespace
@@ -750,8 +823,6 @@ exploreStructuredCompilationToPreMapping(
               StructuredOwnershipSelectionMode::SemanticConformance
           ? std::max<std::size_t>(1, callableSymbols->size())
           : 1;
-  if (ownershipGenerationCount > 1 && options.ownership.selection.k != 1)
-    return invalid("multiple protocol roots require TopK(1) ownership");
   std::vector<std::unique_ptr<frontend::StructuredCompilation>> parents;
   parents.push_back(std::make_unique<frontend::StructuredCompilation>(
       std::move(compilation)));
@@ -766,6 +837,7 @@ exploreStructuredCompilationToPreMapping(
   std::vector<ArtifactRootReference> satisfiedEvidence;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
+  std::vector<RetainedDsePlanIncompleteness> retainedPlanIncompleteness;
   std::vector<StructuredOwnershipDerivation> ownershipPrefix;
   std::vector<StructuredExecutionShapeDerivation> executionShapePrefix;
   std::vector<StructuredSpecialMathAccuracyDerivation> specialMathPrefix;
@@ -793,6 +865,10 @@ exploreStructuredCompilationToPreMapping(
       return protocolRoots.takeError();
     StructuredOwnershipExplorationOptions generationOptions = options.ownership;
     generationOptions.protocolCallableRoots = std::move(*protocolRoots);
+    if (options.ownership.selectionMode ==
+            StructuredOwnershipSelectionMode::SemanticConformance &&
+        transformationOrdinal + 1 != ownershipGenerationCount)
+      generationOptions.selection.k = 1;
     auto explored = exploreOwnershipCandidates(
         parent, *parentReference, sourceCompilation.structuredProgram,
         *sourceReference, workload, *workloadReference, runtimeInput,
@@ -817,6 +893,9 @@ exploreStructuredCompilationToPreMapping(
                         std::make_move_iterator(completed.dispositions.begin()),
                         std::make_move_iterator(completed.dispositions.end()));
     planGenerateInvocations.push_back(std::move(completed.generateInvocations));
+    if (completed.retainedIncompleteness)
+      retainedPlanIncompleteness.push_back(
+          std::move(*completed.retainedIncompleteness));
     generations.push_back(RetainedOwnershipSelection{
         std::move(completed.invocation), std::move(completed.selected),
         std::move(completed.preferenceOrder)});
@@ -826,11 +905,13 @@ exploreStructuredCompilationToPreMapping(
     if (generation.selected.empty()) {
       if (!priorSelectedGeneration) {
         if (options.ownership.selectionMode ==
-            StructuredOwnershipSelectionMode::SemanticConformance)
+            StructuredOwnershipSelectionMode::SemanticConformance) {
+          emitOwnershipRejections(dispositions);
           return PreMappingExplorationOutcome{
               CompletedPreMappingNoFeasibleCandidate{
                   std::move(satisfiedEvidence),
                   std::move(planGenerateInvocations)}};
+        }
         finalGeneration = generationIndex;
         finalReferences = {*sourceReference};
         break;
@@ -977,6 +1058,9 @@ exploreStructuredCompilationToPreMapping(
     mergeReferences(satisfiedEvidence, dataflowCompleted.evidence);
     planGenerateInvocations.push_back(
         std::move(dataflowCompleted.generateInvocations));
+    if (dataflowCompleted.retainedIncompleteness)
+      retainedPlanIncompleteness.push_back(
+          std::move(*dataflowCompleted.retainedIncompleteness));
     for (const ArtifactRootReference &dataflowReference :
          dataflowCompleted.preferenceOrder) {
       auto candidate =
@@ -988,8 +1072,8 @@ exploreStructuredCompilationToPreMapping(
     }
   }
   std::vector<SelectedPreMappingCompilation> bounded;
-  bounded.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(
-      options.ownership.selection.k, selected.size())));
+  bounded.reserve(static_cast<std::size_t>(
+      std::min<std::uint64_t>(options.ownership.selection.k, selected.size())));
   std::vector<ArtifactIdentity> retainedDataflows;
   retainedDataflows.reserve(bounded.capacity());
   for (SelectedPreMappingCompilation &candidate : selected) {
@@ -1004,12 +1088,20 @@ exploreStructuredCompilationToPreMapping(
       break;
   }
   selected = std::move(bounded);
+  if (selected.empty() && !retainedPlanIncompleteness.empty()) {
+    const RetainedDsePlanIncompleteness &first =
+        retainedPlanIncompleteness.front();
+    return PreMappingExplorationOutcome{IncompletePreMappingExploration{
+        first.nodeOrdinal, first.reason, std::move(satisfiedEvidence),
+        std::move(planGenerateInvocations)}};
+  }
   if (selected.empty())
     return PreMappingExplorationOutcome{CompletedPreMappingNoFeasibleCandidate{
         std::move(satisfiedEvidence), std::move(planGenerateInvocations)}};
   return PreMappingExplorationOutcome{CompletedPreMappingSelection{
       std::move(selected), std::move(satisfiedEvidence),
-      std::move(dispositions), std::move(planGenerateInvocations)}};
+      std::move(dispositions), std::move(planGenerateInvocations),
+      std::move(retainedPlanIncompleteness)}};
 }
 
 } // namespace loom::dse

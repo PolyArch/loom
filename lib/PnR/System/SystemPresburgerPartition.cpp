@@ -57,6 +57,44 @@ denseMayDomain(const ::dataflow::CanonicalRootThreadLogicalDomainView &domain) {
   return ::loom::mapping::canonicalizeSystemPresburgerCell(cell);
 }
 
+llvm::Expected<std::vector<SystemPresburgerCell>>
+cyclicCells(const SystemPresburgerCell &domain, std::size_t partitionCount) {
+  if (partitionCount == 0)
+    return invalid("cyclic partition count is zero");
+  if (partitionCount == 1 || domain.dimensionCount == 0)
+    return std::vector<SystemPresburgerCell>{domain};
+  if (partitionCount >
+      static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max()))
+    return invalid("cyclic partition count exceeds i64");
+
+  std::vector<SystemPresburgerCell> cells;
+  cells.reserve(partitionCount);
+  for (std::size_t residue = 0; residue < partitionCount; ++residue) {
+    SystemPresburgerCell cell = domain;
+    const std::size_t localColumn =
+        static_cast<std::size_t>(cell.dimensionCount) + cell.symbolCount +
+        cell.localCount;
+    ++cell.localCount;
+    for (auto &row : cell.equalities)
+      row.insert(row.begin() + localColumn, 0);
+    for (auto &row : cell.inequalities)
+      row.insert(row.begin() + localColumn, 0);
+    std::vector<std::int64_t> congruence(
+        static_cast<std::size_t>(cell.dimensionCount) + cell.symbolCount +
+            cell.localCount + 1,
+        0);
+    congruence[cell.dimensionCount - 1] = 1;
+    congruence[localColumn] = -static_cast<std::int64_t>(partitionCount);
+    congruence.back() = -static_cast<std::int64_t>(residue);
+    cell.equalities.push_back(std::move(congruence));
+    auto canonical = ::loom::mapping::canonicalizeSystemPresburgerCell(cell);
+    if (!canonical)
+      return canonical.takeError();
+    cells.push_back(std::move(*canonical));
+  }
+  return cells;
+}
+
 struct ExpectedBinding final {
   SystemSearchBindingKey key;
   SystemPresburgerCell legalDomain;
@@ -279,6 +317,39 @@ projectWholeDomainPresburgerPartitionPlan(
   for (ExpectedBinding &binding : *expected)
     plan.bindings.push_back(
         {std::move(binding.key), {std::move(binding.legalDomain)}});
+  return plan;
+}
+
+llvm::Expected<SystemBindingPartitionPlan>
+projectCyclicPresburgerPartitionPlan(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
+    std::size_t partitionCount) {
+  auto roots =
+      detail::canonicalRootThreadLaunchSet(dataflow, rootThreadLaunches);
+  if (!roots)
+    return roots.takeError();
+  auto expected = collectExpectedBindings(dataflow, *roots);
+  if (!expected)
+    return expected.takeError();
+  SystemBindingPartitionPlan plan;
+  plan.bindings.reserve(expected->size());
+  for (ExpectedBinding &binding : *expected) {
+    auto cells = cyclicCells(binding.legalDomain, partitionCount);
+    if (!cells)
+      return cells.takeError();
+    plan.bindings.push_back(
+        {std::move(binding.key), std::move(*cells)});
+  }
+  auto canonical = detail::canonicalizeAndValidateSystemPartition(
+      dataflow, *roots, plan);
+  if (!canonical)
+    return canonical.takeError();
+  plan.bindings.clear();
+  plan.bindings.reserve(canonical->size());
+  for (detail::CanonicalSystemPartitionBinding &binding : *canonical)
+    plan.bindings.push_back(
+        {std::move(binding.key), std::move(binding.cells)});
   return plan;
 }
 

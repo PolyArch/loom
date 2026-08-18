@@ -32,7 +32,9 @@
 // A loop that does not satisfy the matcher remains an scf.for so later
 // lowerings can preserve its sequential semantics.
 
-#include "Frontend/Raising/MemoryProvenance.h"
+#include "Common/IndexWidth.h"
+#include "Frontend/Analysis/DenseParallelMemoryProjection.h"
+#include "Frontend/Analysis/MemoryProvenance.h"
 #include "Frontend/Raising/Passes.h"
 
 #include "CallableRegions.h"
@@ -582,7 +584,8 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
         if (::mlir::Value loadPtr = getLoadPointer(op, isVol)) {
           if (isVol)
             return ::mlir::WalkResult::interrupt();
-          ::mlir::Value base = loom::raising::projectMemoryRoot(loadPtr);
+          ::mlir::Value base =
+              loom::frontend::analysis::projectMemoryRoot(loadPtr);
           readBases.insert(base);
           loadsByBase[base].push_back(op);
           return ::mlir::WalkResult::advance();
@@ -593,7 +596,8 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
         if (::mlir::Value storePtr = getStorePointer(op, isVol)) {
           if (isVol)
             return ::mlir::WalkResult::interrupt();
-          ::mlir::Value base = loom::raising::projectMemoryRoot(storePtr);
+          ::mlir::Value base =
+              loom::frontend::analysis::projectMemoryRoot(storePtr);
           writeBases.insert(base);
           stores.push_back(op);
           storesByBase[base].push_back(op);
@@ -622,11 +626,13 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
             loadsByBase.lookup(w), storesByBase.lookup(w), loop))
       return ::mlir::failure();
     for (::mlir::Value read : readBases)
-      if (read != w && !loom::raising::haveProvenDistinctMemoryRoots(w, read))
+      if (read != w &&
+          !loom::frontend::analysis::haveProvenDistinctMemoryRoots(w, read))
         return ::mlir::failure();
     for (::mlir::Value otherWrite : writeBases)
       if (otherWrite != w &&
-          !loom::raising::haveProvenDistinctMemoryRoots(w, otherWrite))
+          !loom::frontend::analysis::haveProvenDistinctMemoryRoots(w,
+                                                                   otherWrite))
         return ::mlir::failure();
   }
   // WAW: same-base stores are allowed only for fixed-width lane groups,
@@ -658,6 +664,88 @@ bool bodyHasMultipleSuccessorTerminator(::mlir::scf::ForOp loop) {
   }
 
   return ::mlir::success();
+}
+
+bool hasZeroBasedUnitStep(::mlir::scf::ForOp loop) {
+  return getConstantInt(loop.getLowerBound()) == std::optional<int64_t>{0} &&
+         getConstantInt(loop.getStep()) == std::optional<int64_t>{1};
+}
+
+bool isPerfectRectangularNest(::llvm::ArrayRef<::mlir::scf::ForOp> nest) {
+  if (nest.size() < 2)
+    return false;
+  ::mlir::scf::ForOp root = nest.front();
+  for (std::size_t dimension = 0; dimension < nest.size(); ++dimension) {
+    ::mlir::scf::ForOp loop = nest[dimension];
+    if (!loop || !loop.getInitArgs().empty() || !hasZeroBasedUnitStep(loop) ||
+        !isDefinedOutside(loop.getLowerBound(), root) ||
+        !isDefinedOutside(loop.getUpperBound(), root) ||
+        !isDefinedOutside(loop.getStep(), root))
+      return false;
+    if (dimension + 1 == nest.size())
+      continue;
+
+    ::mlir::scf::ForOp child = nest[dimension + 1];
+    if (child->getParentOp() != loop.getOperation())
+      return false;
+    for (::mlir::Operation &operation : loop.getBody()->without_terminator()) {
+      if (&operation == child.getOperation())
+        continue;
+      if (operation.getNumRegions() != 0 ||
+          !::mlir::isMemoryEffectFree(&operation))
+        return false;
+    }
+  }
+  return true;
+}
+
+bool hasIndependentDenseStores(::llvm::ArrayRef<::mlir::scf::ForOp> nest) {
+  ::llvm::DenseSet<::mlir::Value> readRoots;
+  ::llvm::DenseMap<::mlir::Value, ::mlir::Operation *> storesByRoot;
+  ::llvm::SmallVector<::mlir::Operation *, 4> stores;
+  ::mlir::scf::ForOp innermost = nest.back();
+  auto walked = loom::raising::forEachOwnedOperation(
+      innermost.getRegion(), [&](::mlir::Operation *operation) {
+        bool isVolatile = false;
+        if (::mlir::Value pointer = getLoadPointer(operation, isVolatile)) {
+          readRoots.insert(
+              loom::frontend::analysis::projectMemoryRoot(pointer));
+          return ::mlir::WalkResult::advance();
+        }
+        if (::mlir::Value pointer = getStorePointer(operation, isVolatile)) {
+          ::mlir::Value root =
+              loom::frontend::analysis::projectMemoryRoot(pointer);
+          if (storesByRoot.count(root))
+            return ::mlir::WalkResult::interrupt();
+          storesByRoot[root] = operation;
+          stores.push_back(operation);
+        }
+        return ::mlir::WalkResult::advance();
+      });
+  if (walked.wasInterrupted())
+    return false;
+  for (const auto &entry : storesByRoot)
+    if (readRoots.count(entry.first))
+      return false;
+  auto indexWidth = ::loom::getIndexBitWidth(innermost);
+  if (!indexWidth) {
+    ::llvm::consumeError(indexWidth.takeError());
+    return false;
+  }
+  ::llvm::SmallVector<::mlir::Value, 4> coordinates;
+  ::llvm::SmallVector<::mlir::OpFoldResult, 4> upperBounds;
+  coordinates.reserve(nest.size());
+  upperBounds.reserve(nest.size());
+  for (::mlir::scf::ForOp loop : nest) {
+    coordinates.push_back(loop.getInductionVar());
+    upperBounds.push_back(loop.getUpperBound());
+  }
+  for (::mlir::Operation *store : stores)
+    if (!::loom::frontend::analysis::
+            hasExactDenseCoordinateStoreProjection(
+                store, coordinates, upperBounds, *indexWidth))
+      return false;
+  return true;
 }
 
 // Materialise an Index-typed value from `v`. If `v` is already index,
@@ -794,6 +882,14 @@ namespace raising {
 
 bool hasProvenIndependentIterations(::mlir::scf::ForOp loop) {
   return ::mlir::succeeded(checkBodyParallel(loop));
+}
+
+bool hasProvenIndependentIterations(::llvm::ArrayRef<::mlir::scf::ForOp> nest) {
+  if (!isPerfectRectangularNest(nest))
+    return false;
+  ::mlir::scf::ForOp innermost = nest.back();
+  return ::mlir::succeeded(checkBodyParallel(innermost)) &&
+         hasIndependentDenseStores(nest);
 }
 
 ::mlir::LogicalResult

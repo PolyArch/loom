@@ -143,7 +143,7 @@ CgraPhysicalActionRuntime::requestBatch(
       slot = actions_.size();
       actions_.push_back(
           Action{request.actionOrdinal, request.occurrenceOrdinal,
-                 ActionState::Requested, std::nullopt, false, false});
+                 ActionState::Requested, std::nullopt, false, false, false});
     } else {
       slot = freeActionSlots_.back();
       freeActionSlots_.pop_back();
@@ -151,6 +151,7 @@ CgraPhysicalActionRuntime::requestBatch(
                               request.occurrenceOrdinal,
                               ActionState::Requested,
                               std::nullopt,
+                              false,
                               false,
                               false};
     }
@@ -242,6 +243,7 @@ CgraPhysicalActionRuntime::advance() {
 
   std::vector<CgraResourceRequest> requests;
   std::vector<std::uint64_t> requestSlots;
+  bool releasedCapacity = false;
   for (const Due &event : due) {
     Action &action = actions_[event.slot];
     const CgraPhysicalUseTiming &use = uses_[action.actionOrdinal];
@@ -261,6 +263,7 @@ CgraPhysicalActionRuntime::advance() {
         break;
       if (llvm::Error error = resources_.release(*action.envelope))
         return std::move(error);
+      releasedCapacity = true;
       action.state = ActionState::Retired;
       action.envelope.reset();
       activeActions_.erase(
@@ -283,6 +286,7 @@ CgraPhysicalActionRuntime::advance() {
         break;
       if (llvm::Error error = resources_.release(*action.envelope))
         return std::move(error);
+      releasedCapacity = true;
       action.state = ActionState::Retired;
       action.envelope.reset();
       activeActions_.erase(
@@ -294,13 +298,23 @@ CgraPhysicalActionRuntime::advance() {
                                event.ownerEventOrdinal, result.coordinate});
       break;
     case InternalKind::Acquire:
-      if (action.state != ActionState::Requested)
+      if (action.state != ActionState::Requested || action.acquisitionParked)
         return invalid("CGRA physical acquisition has invalid action state");
       requests.push_back({use.selectedUseOrdinal, action.occurrenceOrdinal});
       requestSlots.push_back(event.slot);
       break;
     }
   }
+
+  if (releasedCapacity)
+    for (auto [slot, action] : llvm::enumerate(actions_)) {
+      if (action.state != ActionState::Requested || !action.acquisitionParked)
+        continue;
+      action.acquisitionParked = false;
+      const CgraPhysicalUseTiming &use = uses_[action.actionOrdinal];
+      requests.push_back({use.selectedUseOrdinal, action.occurrenceOrdinal});
+      requestSlots.push_back(slot);
+    }
 
   if (!requests.empty()) {
     llvm::SmallVector<CgraResourceGrant, 8> grants;
@@ -320,12 +334,7 @@ CgraPhysicalActionRuntime::advance() {
       auto accepted = granted.find(
           std::make_pair(use.selectedUseOrdinal, action.occurrenceOrdinal));
       if (accepted == granted.end()) {
-        auto retry = addCycles(result.coordinate, 1);
-        if (!retry)
-          return retry.takeError();
-        if (llvm::Error error = schedule(slot, InternalKind::Acquire, *retry,
-                                         use.acquireEventOrdinal))
-          return std::move(error);
+        action.acquisitionParked = true;
         continue;
       }
 
@@ -375,6 +384,27 @@ CgraPhysicalActionRuntime::advance() {
                     rhs.ownerEventOrdinal, rhs.kind);
   });
   return std::optional<CgraPhysicalLifecycleFrame>(std::move(result));
+}
+
+std::vector<CgraPendingPhysicalActionDiagnostic>
+CgraPhysicalActionRuntime::pendingActionDiagnostics() const {
+  std::vector<CgraPendingPhysicalActionDiagnostic> result;
+  result.reserve(activeActions_.size());
+  for (const auto &[key, slot] : activeActions_) {
+    if (slot >= actions_.size() || key.first >= uses_.size())
+      continue;
+    const Action &action = actions_[slot];
+    const CgraPhysicalUseTiming &use = uses_[key.first];
+    result.push_back(
+        {key.first, key.second, action.state == ActionState::Granted,
+         use.commitRank.has_value(), use.requiresCausalRelease,
+         action.intrinsicReleaseReached, action.causalReleaseReached});
+  }
+  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.actionOrdinal, lhs.occurrenceOrdinal) <
+           std::tie(rhs.actionOrdinal, rhs.occurrenceOrdinal);
+  });
+  return result;
 }
 
 } // namespace loom::sim::detail

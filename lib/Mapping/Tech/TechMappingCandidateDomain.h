@@ -41,6 +41,7 @@ public:
   }
   bool truncated() const { return truncated_; }
   bool interrupted() const { return interrupted_; }
+  void recordMemoryRowFrontierLimit() { ++accounting_.memoryRowFrontierLimits; }
   llvm::Expected<bool> beginSeed(std::vector<std::uint8_t> key);
   llvm::Error reject(TechMatchSeedRejectionReason reason);
   llvm::Error rejectCanonicalSeedRange(std::vector<std::uint8_t> firstKey,

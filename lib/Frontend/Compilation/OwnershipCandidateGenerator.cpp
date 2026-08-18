@@ -21,6 +21,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -856,6 +857,202 @@ llvm::Error materializePreparedForallThreadDomain(
   return llvm::Error::success();
 }
 
+llvm::Expected<mlir::Value> projectThreadValueToLaunch(
+    mlir::Value value, loom::SpatialRegionOp spatial, dataflow::ThreadOp thread,
+    dataflow::ThreadLaunchOp launch, mlir::scf::ForallOp selected,
+    mlir::OpBuilder &builder,
+    llvm::DenseMap<mlir::Value, mlir::Value> &projected) {
+  if (auto found = projected.find(value); found != projected.end())
+    return found->second;
+
+  if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(value)) {
+    if (argument.getOwner() == &spatial.getBody().front()) {
+      if (argument.getArgNumber() >= spatial->getNumOperands())
+        return invalid("Spatial argument has no owning operand");
+      auto result = projectThreadValueToLaunch(
+          spatial->getOperand(argument.getArgNumber()), spatial, thread, launch,
+          selected, builder, projected);
+      if (!result)
+        return result.takeError();
+      projected.try_emplace(value, *result);
+      return *result;
+    }
+    if (argument.getOwner() == &thread.getBody().front()) {
+      const std::size_t inputCount = thread.getFunctionType().getNumInputs();
+      if (argument.getArgNumber() >= inputCount)
+        return invalid("thread control or coordinate cannot define a launch "
+                       "extent");
+      if (argument.getArgNumber() >= launch.getBodyOperands().size())
+        return invalid("thread launch operand projection is not total");
+      mlir::Value result = launch.getBodyOperands()[argument.getArgNumber()];
+      projected.try_emplace(value, result);
+      return result;
+    }
+    return invalid("nested block argument cannot define a root thread "
+                   "extent");
+  }
+
+  mlir::Operation *definition = value.getDefiningOp();
+  if (!definition || !thread->isAncestor(definition) ||
+      selected->isAncestor(definition))
+    return invalid("thread extent is not launch-projectable");
+  if (definition->getNumRegions() != 0 || definition->getNumSuccessors() != 0 ||
+      !mlir::isPure(definition))
+    return invalid("thread extent depends on a non-speculatable operation");
+
+  mlir::IRMapping mapping;
+  for (mlir::Value operand : definition->getOperands()) {
+    auto mapped = projectThreadValueToLaunch(operand, spatial, thread, launch,
+                                             selected, builder, projected);
+    if (!mapped)
+      return mapped.takeError();
+    mapping.map(operand, *mapped);
+  }
+  builder.clone(*definition, mapping);
+  for (mlir::Value result : definition->getResults()) {
+    mlir::Value mapped = mapping.lookupOrNull(result);
+    if (!mapped)
+      return invalid("cloned thread extent operation lost a result");
+    projected.try_emplace(result, mapped);
+  }
+  auto found = projected.find(value);
+  if (found == projected.end())
+    return invalid("thread extent projection lost the requested value");
+  return found->second;
+}
+
+llvm::Expected<mlir::OpFoldResult> projectThreadBoundToLaunch(
+    mlir::OpFoldResult bound, loom::SpatialRegionOp spatial,
+    dataflow::ThreadOp thread, dataflow::ThreadLaunchOp launch,
+    mlir::scf::ForallOp selected, mlir::OpBuilder &builder,
+    llvm::DenseMap<mlir::Value, mlir::Value> &projected) {
+  if (auto attribute = llvm::dyn_cast<mlir::Attribute>(bound))
+    return mlir::OpFoldResult(attribute);
+  auto value =
+      projectThreadValueToLaunch(llvm::cast<mlir::Value>(bound), spatial,
+                                 thread, launch, selected, builder, projected);
+  if (!value)
+    return value.takeError();
+  return mlir::OpFoldResult(*value);
+}
+
+llvm::Error
+materializeOwnedSpatialForallThreadDomainImpl(mlir::scf::ForallOp forall) {
+  if (!forall)
+    return invalid("thread-domain promotion has no forall");
+  auto spatial = forall->getParentOfType<loom::SpatialRegionOp>();
+  auto thread = spatial ? spatial->getParentOfType<dataflow::ThreadOp>()
+                        : dataflow::ThreadOp{};
+  if (!spatial || !thread || spatial->getBlock() != &thread.getBody().front())
+    return invalid("thread-domain forall is not inside one owned Spatial "
+                   "carrier");
+  const std::size_t inputCount = thread.getFunctionType().getNumInputs();
+  mlir::Block &threadEntry = thread.getBody().front();
+  if (threadEntry.getNumArguments() != inputCount + 1)
+    return invalid("only a rank-zero thread can acquire a scheduled domain");
+  if (llvm::Error error = verifyThreadDomainForall(forall))
+    return error;
+  auto indexWidth = ::loom::getIndexBitWidth(forall);
+  if (!indexWidth)
+    return indexWidth.takeError();
+  if (llvm::Error error = verifyDynamicThreadDomainWidth(forall, *indexWidth))
+    return error;
+
+  mlir::ModuleOp module = thread->getParentOfType<mlir::ModuleOp>();
+  mlir::SymbolTableCollection symbols;
+  llvm::SmallVector<dataflow::ThreadLaunchOp, 2> launches;
+  module.walk([&](dataflow::ThreadLaunchOp launch) {
+    if (symbols.lookupNearestSymbolFrom<dataflow::ThreadOp>(
+            launch, launch.getCalleeAttr()) == thread)
+      launches.push_back(launch);
+  });
+  if (launches.empty())
+    return invalid("owned thread has no exact launch");
+
+  struct LaunchExtents final {
+    dataflow::ThreadLaunchOp launch;
+    llvm::SmallVector<mlir::Value, 4> values;
+  };
+  llvm::SmallVector<LaunchExtents, 2> launchExtents;
+  launchExtents.reserve(launches.size());
+  for (dataflow::ThreadLaunchOp launch : launches) {
+    mlir::OpBuilder builder(launch);
+    llvm::DenseMap<mlir::Value, mlir::Value> projected;
+    LaunchExtents extents{launch, {}};
+    extents.values.reserve(forall.getRank());
+    for (auto [lower, upper, step] :
+         llvm::zip_equal(forall.getMixedLowerBound(),
+                         forall.getMixedUpperBound(), forall.getMixedStep())) {
+      auto projectedLower = projectThreadBoundToLaunch(
+          lower, spatial, thread, launch, forall, builder, projected);
+      if (!projectedLower)
+        return projectedLower.takeError();
+      auto projectedUpper = projectThreadBoundToLaunch(
+          upper, spatial, thread, launch, forall, builder, projected);
+      if (!projectedUpper)
+        return projectedUpper.takeError();
+      auto projectedStep = projectThreadBoundToLaunch(
+          step, spatial, thread, launch, forall, builder, projected);
+      if (!projectedStep)
+        return projectedStep.takeError();
+      auto extent =
+          materializeThreadExtent(builder, forall.getLoc(), *projectedLower,
+                                  *projectedUpper, *projectedStep, *indexWidth);
+      if (!extent)
+        return extent.takeError();
+      extents.values.push_back(*extent);
+    }
+    launchExtents.push_back(std::move(extents));
+  }
+
+  mlir::Block &spatialEntry = spatial.getBody().front();
+  llvm::SmallVector<mlir::Value, 4> coordinates;
+  coordinates.reserve(forall.getRank());
+  for (unsigned dimension = 0; dimension < forall.getRank(); ++dimension) {
+    mlir::BlockArgument threadCoordinate = threadEntry.addArgument(
+        mlir::IndexType::get(module.getContext()), forall.getLoc());
+    const std::size_t valueOrdinal = spatial.getValueInputs().size();
+    spatial.getValueInputsMutable().append(threadCoordinate);
+    coordinates.push_back(spatialEntry.insertArgument(
+        valueOrdinal, mlir::IndexType::get(module.getContext()),
+        forall.getLoc()));
+  }
+
+  mlir::OpBuilder builder(forall);
+  mlir::IRMapping mapping;
+  for (auto [dimension, induction] :
+       llvm::enumerate(forall.getInductionVars())) {
+    mlir::OpFoldResult mixedLower = forall.getMixedLowerBound()[dimension];
+    mlir::OpFoldResult mixedStep = forall.getMixedStep()[dimension];
+    std::optional<mlir::Value> lower;
+    std::optional<mlir::Value> step;
+    if (mlir::getConstantIntValue(mixedLower) != 0) {
+      auto value = materializeIndexValue(builder, forall.getLoc(), mixedLower);
+      if (!value)
+        return value.takeError();
+      lower = *value;
+    }
+    if (mlir::getConstantIntValue(mixedStep) != 1) {
+      auto value = materializeIndexValue(builder, forall.getLoc(), mixedStep);
+      if (!value)
+        return value.takeError();
+      step = *value;
+    }
+    auto sourceInduction = materializeSourceInduction(builder, forall.getLoc(),
+                                                      coordinates[dimension],
+                                                      lower, step, *indexWidth);
+    if (!sourceInduction)
+      return sourceInduction.takeError();
+    mapping.map(induction, *sourceInduction);
+  }
+  for (mlir::Operation &operation : forall.getBody()->without_terminator())
+    builder.clone(operation, mapping);
+  forall.erase();
+  for (LaunchExtents &extents : launchExtents)
+    extents.launch.getGridUpperBoundsMutable().append(extents.values);
+  return llvm::Error::success();
+}
+
 llvm::Error
 materializePreparedOperation(PreparedSpatialOwnershipSelection &prepared,
                              mlir::Operation *operation) {
@@ -1057,6 +1254,11 @@ finalizeStructuredOwnershipCandidate(
   mlir::ModuleOp module = prepared.module.get();
   if (!prepared.materializedSpatialRegion)
     return invalid("ownership decision created no Spatial carrier");
+  if (std::optional<std::string> rejection =
+          lowering::explainSpatialCarrierParallelRejection(
+              prepared.materializedSpatialRegion))
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  *rejection);
   if (mlir::failed(mlir::verify(module)))
     return invalid("materialized Structured Program does not verify");
 
@@ -1244,6 +1446,14 @@ enumerateSpatialOwnershipScopeDomainImpl(
 
 } // namespace
 
+llvm::Error
+materializeOwnedSpatialForallThreadDomain(mlir::scf::ForallOp forall) {
+  if (llvm::Error error = materializeOwnedSpatialForallThreadDomainImpl(forall))
+    return reject(SpatialOwnershipCandidateRejectionKind::NonFinalizable,
+                  std::move(error));
+  return llvm::Error::success();
+}
+
 llvm::Expected<std::vector<StructuredEntityRef>>
 resolveDefinedLlvmCallables(const StructuredProgramCandidate &parent,
                             llvm::ArrayRef<llvm::StringRef> symbols) {
@@ -1271,7 +1481,8 @@ resolveDefinedLlvmCallables(const StructuredProgramCandidate &parent,
       reference = entity.reference;
     }
     if (!reference)
-      return invalid("callable symbol does not resolve in the parent");
+      return invalid("callable symbol '" + symbol +
+                     "' does not resolve in the parent");
     resolved.push_back(*reference);
   }
   return resolved;

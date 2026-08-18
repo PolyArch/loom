@@ -1,6 +1,6 @@
-#include <math.h>
-#include <stdint.h>
+#if !defined(LOOM_ATTENTION_PRODUCT_EXECUTION)
 #include <stdio.h>
+#endif
 
 enum {
   TOKEN_COUNT = 4,
@@ -9,17 +9,25 @@ enum {
   STATISTIC_COUNT = 4,
 };
 
-#if defined(__clang__)
+#if defined(__clang__) && !defined(LOOM_ATTENTION_RETAIN_LOOPS)
 #define LOOM_UNROLL_FULL _Pragma("clang loop unroll(full)")
 #else
 #define LOOM_UNROLL_FULL
 #endif
 
+static float absolute_value(float value) {
+  return value < 0.0f ? -value : value;
+}
+
+static int outside_tolerance(float actual, float expected) {
+  return absolute_value(actual - expected) > 1.0e-4f;
+}
+
 __attribute__((weak)) void
 project_audio(const float input[restrict TOKEN_COUNT][SENSOR_LANE_COUNT],
               float output[restrict TOKEN_COUNT][FEATURE_LANE_COUNT]) {
   LOOM_UNROLL_FULL
-  for (uint32_t token = 0; token < TOKEN_COUNT; ++token) {
+  for (unsigned int token = 0; token < TOKEN_COUNT; ++token) {
     const float x = input[token][0];
     const float y = input[token][1];
     const float z = input[token][2];
@@ -34,7 +42,7 @@ __attribute__((weak)) void
 project_imu(const float input[restrict TOKEN_COUNT][SENSOR_LANE_COUNT],
             float output[restrict TOKEN_COUNT][FEATURE_LANE_COUNT]) {
   LOOM_UNROLL_FULL
-  for (uint32_t token = 0; token < TOKEN_COUNT; ++token) {
+  for (unsigned int token = 0; token < TOKEN_COUNT; ++token) {
     const float x = input[token][0];
     const float y = input[token][1];
     const float z = input[token][2];
@@ -55,22 +63,22 @@ fuse_attention(const float query[restrict TOKEN_COUNT][FEATURE_LANE_COUNT],
   float probabilities[TOKEN_COUNT];
 
   LOOM_UNROLL_FULL
-  for (uint32_t token = 0; token < TOKEN_COUNT; ++token) {
+  for (unsigned int token = 0; token < TOKEN_COUNT; ++token) {
     LOOM_UNROLL_FULL
-    for (uint32_t lane = 0; lane < FEATURE_LANE_COUNT; ++lane) {
+    for (unsigned int lane = 0; lane < FEATURE_LANE_COUNT; ++lane) {
       query_local[token][lane] = query[token][lane];
       key_value_local[token][lane] = key_value[token][lane];
     }
   }
 
   LOOM_UNROLL_FULL
-  for (uint32_t row = 0; row < TOKEN_COUNT; ++row) {
+  for (unsigned int row = 0; row < TOKEN_COUNT; ++row) {
     float maximum = 0.0f;
     LOOM_UNROLL_FULL
-    for (uint32_t column = 0; column < TOKEN_COUNT; ++column) {
+    for (unsigned int column = 0; column < TOKEN_COUNT; ++column) {
       float dot = 0.0f;
       LOOM_UNROLL_FULL
-      for (uint32_t lane = 0; lane < FEATURE_LANE_COUNT; ++lane)
+      for (unsigned int lane = 0; lane < FEATURE_LANE_COUNT; ++lane)
         dot += query_local[row][lane] * key_value_local[column][lane];
       scores[column] = dot * 0.5f;
       if (column == 0 || scores[column] > maximum)
@@ -79,16 +87,16 @@ fuse_attention(const float query[restrict TOKEN_COUNT][FEATURE_LANE_COUNT],
 
     float denominator = 0.0f;
     LOOM_UNROLL_FULL
-    for (uint32_t column = 0; column < TOKEN_COUNT; ++column) {
-      probabilities[column] = expf(scores[column] - maximum);
+    for (unsigned int column = 0; column < TOKEN_COUNT; ++column) {
+      probabilities[column] = __builtin_expf(scores[column] - maximum);
       denominator += probabilities[column];
     }
 
     LOOM_UNROLL_FULL
-    for (uint32_t lane = 0; lane < FEATURE_LANE_COUNT; ++lane) {
+    for (unsigned int lane = 0; lane < FEATURE_LANE_COUNT; ++lane) {
       float value = 0.0f;
       LOOM_UNROLL_FULL
-      for (uint32_t column = 0; column < TOKEN_COUNT; ++column)
+      for (unsigned int column = 0; column < TOKEN_COUNT; ++column)
         value += probabilities[column] * key_value_local[column][lane];
       output[row][lane] = value / denominator;
     }
@@ -106,9 +114,9 @@ __attribute__((weak)) void reduce_statistics(
   float maximum_magnitude = 0.0f;
 
   LOOM_UNROLL_FULL
-  for (uint32_t token = 0; token < TOKEN_COUNT; ++token) {
+  for (unsigned int token = 0; token < TOKEN_COUNT; ++token) {
     LOOM_UNROLL_FULL
-    for (uint32_t lane = 0; lane < FEATURE_LANE_COUNT; ++lane) {
+    for (unsigned int lane = 0; lane < FEATURE_LANE_COUNT; ++lane) {
       const float projection = projected_audio[token][lane];
       const float value = attention[token][lane];
       const float magnitude = value < 0.0f ? -value : value;
@@ -161,6 +169,15 @@ int main(void) {
   loom_multisensor_attention(audio, imu, output, statistics);
   const float combined = statistics[2] + 3.0f * statistics[0] +
                          7.0f * statistics[1] + 11.0f * statistics[3];
+  if (outside_tolerance(statistics[0], 9.62500f) ||
+      outside_tolerance(statistics[1], 3.93196f) ||
+      outside_tolerance(statistics[2], 24.58165f) ||
+      outside_tolerance(statistics[3], 0.73098f) ||
+      outside_tolerance(combined, 89.02110f))
+    return 1;
+#if defined(LOOM_ATTENTION_PRODUCT_EXECUTION)
+  return 0;
+#else
   printf("attention checksum: %.5f\n", statistics[2]);
   printf("projection energy: %.5f\n", statistics[0]);
   printf("attention sum: %.5f\n", statistics[1]);
@@ -168,4 +185,5 @@ int main(void) {
   printf("combined checksum: %.5f\n", combined);
   printf("PASSED\n");
   return 0;
+#endif
 }

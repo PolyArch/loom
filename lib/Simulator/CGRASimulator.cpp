@@ -164,9 +164,72 @@ struct CgraExecutionSession::Impl final {
     }
 
     lifecycle = SpatialExecutionSessionState::Halted;
-    closedWait = CgraClosedWaitSetDiagnostic{
-        runtime->pendingActorFiringCount(), runtime->pendingTransferCount(),
-        runtime->pendingPhysicalActionCount(), graphRetirement.has_value()};
+    closedWait =
+        CgraClosedWaitSetDiagnostic{runtime->pendingActorFiringCount(),
+                                    runtime->pendingTransferCount(),
+                                    runtime->pendingPhysicalActionCount(),
+                                    graphRetirement.has_value(),
+                                    {},
+                                    {},
+                                    {}};
+    for (const auto &firing : runtime->pendingActorFiringDiagnostics())
+      closedWait->actorFirings.push_back(
+          {firing.semanticActorOrdinal, firing.occurrenceOrdinal,
+           firing.transitionCaseOrdinal, firing.expectedTransfers,
+           firing.completedTransfers, firing.physicalComplete,
+           firing.causalReleaseSatisfied});
+    for (const auto &transfer : runtime->pendingTransferDiagnostics())
+      closedWait->transfers.push_back(
+          {transfer.bindingOrdinal,
+           transfer.occurrenceOrdinal,
+           transfer.blocked,
+           transfer.arrivalScheduled,
+           transfer.publicationReady,
+           transfer.published,
+           transfer.consumedRequested,
+           transfer.operandCapacityReserved,
+           transfer.operandCapacityBlocked,
+           transfer.producedPermitted,
+           transfer.producedRetired,
+           transfer.traversalPermitted,
+           transfer.traversalRetired,
+           transfer.traversalTerminalsPermitted,
+           transfer.consumedPermitted,
+           transfer.consumedRetired,
+           transfer.readySinkCount,
+           transfer.publishedSinkCount,
+           transfer.sinkCount,
+           transfer.publicationCount,
+           transfer.requestedPublicationCount,
+           transfer.publishedPublicationCount,
+           transfer.unpublishedActorOrdinals,
+           transfer.unpublishedInputOrdinals,
+           transfer.unpublishedReadyTokenCounts,
+           transfer.blockingTraversalNodeOrdinal,
+           transfer.blockingStorageOrdinal,
+           transfer.blockingStorageOccupancy,
+           transfer.blockingStorageReservations,
+           transfer.blockingStorageCapacity,
+           transfer.blockingTraversalState,
+           transfer.blockingDownstreamStorageCount,
+           transfer.blockingUnbufferedSinkCount,
+           transfer.blockingDownstreamStorageOrdinal,
+           transfer.blockingDownstreamStorageOccupancy,
+           transfer.blockingDownstreamStorageReservations,
+           transfer.blockingDownstreamStorageCapacity,
+           transfer.blockingDownstreamStorageReserved,
+           transfer.blockingActorOrdinal,
+           transfer.blockingReadyTokenCount,
+           transfer.blockingQueueOccupancy,
+           transfer.blockingQueueReservations,
+           transfer.blockingQueueCapacity});
+    for (const auto &action : runtime->pendingPhysicalActionDiagnostics())
+      closedWait->physicalActions.push_back(
+          {action.action.actionOrdinal, action.action.occurrenceOrdinal,
+           static_cast<std::uint8_t>(action.client), action.action.granted,
+           action.action.hasCommit, action.action.requiresCausalRelease,
+           action.action.intrinsicReleaseReached,
+           action.action.causalReleaseReached});
     return llvm::Error::success();
   }
 };
@@ -234,6 +297,15 @@ llvm::Expected<SpatialExecutionSessionState> CgraExecutionSession::advance(
     impl_->lastCoordinate = (**frame).coordinate;
     ++impl_->counters.eventFrameCount;
     ++advanced;
+    impl_->counters.emptyEventFrameCount +=
+        (**frame).physicalEvents.empty() && (**frame).actorEvents.empty() &&
+        (**frame).publications.empty() &&
+        (**frame).memoryLinearizations.empty();
+    impl_->counters.computeSourceFrameCount += ((**frame).sourceMask & 1) != 0;
+    impl_->counters.memorySourceFrameCount += ((**frame).sourceMask & 2) != 0;
+    impl_->counters.transportSourceFrameCount +=
+        ((**frame).sourceMask & 4) != 0;
+    impl_->counters.physicalSourceFrameCount += ((**frame).sourceMask & 8) != 0;
     for (const detail::CgraActorLifecycleEvent &event : (**frame).actorEvents) {
       if (event.kind == detail::CgraActorLifecycleKind::Committed)
         ++impl_->counters.actorCommitCount;
@@ -378,9 +450,8 @@ llvm::Expected<CgraSimulationOutcome> simulateCgraWorkload(
     CgraExternalMemoryProvider *externalMemoryProvider) {
   if (maxEventFrames == 0)
     return invalid("CGRA simulation requires a positive event-frame limit");
-  auto session = startCgraExecutionSession(prepared, workload, runtimeInput,
-                                           std::nullopt,
-                                           externalMemoryProvider);
+  auto session = startCgraExecutionSession(
+      prepared, workload, runtimeInput, std::nullopt, externalMemoryProvider);
   if (!session)
     return session.takeError();
   auto advanced = session->advance(maxEventFrames, executionDeadline);

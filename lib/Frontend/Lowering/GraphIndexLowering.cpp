@@ -147,41 +147,17 @@ private:
     }
   }
 
-  if (auto invariant = value.getDefiningOp<::dataflow::InvariantOp>()) {
-    bool projected = !value.use_empty();
-    for (::mlir::OpOperand &use : value.getUses()) {
-      auto gate = ::llvm::dyn_cast<::dataflow::GateOp>(use.getOwner());
-      if (!gate || gate.getBeforeValue() != value ||
-          gate.getBeforeCond() != invariant.getCond()) {
-        projected = false;
-        break;
-      }
-    }
-    if (!projected)
-      return {};
-    ::mlir::Value init = materializeIndexDomainValue(invariant.getInit(),
-                                                     builder, cache, indexBits);
-    if (!init)
-      return {};
-    auto indexInvariant = ::dataflow::InvariantOp::create(
-        builder, invariant.getLoc(), builder.getIndexType(),
-        invariant.getCond(), init);
-    cache[value] = indexInvariant.getOutput();
-    return indexInvariant.getOutput();
-  }
-
-  if (auto gate = value.getDefiningOp<::dataflow::GateOp>()) {
-    if (gate.getAfterValue() != value)
-      return {};
-    ::mlir::Value before = materializeIndexDomainValue(
-        gate.getBeforeValue(), builder, cache, indexBits);
-    if (!before)
-      return {};
-    auto indexGate = ::dataflow::GateOp::create(
-        builder, gate.getLoc(), builder.getI1Type(), builder.getIndexType(),
-        gate.getBeforeCond(), before);
-    cache[value] = indexGate.getAfterValue();
-    return indexGate.getAfterValue();
+  // Stateful actors own reset and retirement in their source domain. Cloning
+  // one to move a cast across it would create a second close obligation that
+  // is absent from the enclosing loop's path-sensitive retirement frontier.
+  // A stateless cast at the actor result preserves that ownership while still
+  // allowing all downstream address-only arithmetic to use the index domain.
+  if (::llvm::isa_and_nonnull<::dataflow::InvariantOp, ::dataflow::GateOp>(
+          value.getDefiningOp())) {
+    auto indexCast = ::mlir::arith::IndexCastOp::create(
+        builder, value.getLoc(), builder.getIndexType(), value);
+    cache[value] = indexCast.getResult();
+    return indexCast.getResult();
   }
 
   if (::llvm::isa_and_nonnull<::dataflow::CarryOp, ::dataflow::DemuxOp>(

@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <system_error>
@@ -89,6 +90,13 @@ constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {
       PlanValueRole::CandidateSet, &::loom::mapping::mappingArtifactSchema,
       PlanValueCardinality::FiniteSet}}};
 
+std::size_t defaultSystemPartitionCount(
+    const ::loom::fabric::FabricSystemRootView &system) {
+  constexpr std::size_t binaryCyclicPartitionCount = 2;
+  return std::min(system.artifact().accCoreOccurrences().size(),
+                  binaryCyclicPartitionCount);
+}
+
 llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
                            const ComponentViewDigest &digest) {
   auto adopted = ::loom::pnr::adoptResolvedSystemPnrConfigView(
@@ -114,7 +122,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSystemPnrCandidateGeneratorKind,
     "mapping.root_complete_system_pnr",
-    "loom.mapping.root_complete_system_pnr.generator.v7",
+    "loom.mapping.root_complete_system_pnr.generator.v8",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -129,7 +137,7 @@ const CandidateGeneratorDescriptor descriptor{
 const CandidateGeneratorDescriptor applicationDescriptor{
     applicationSystemPnrCandidateGeneratorKind,
     "mapping.application_system_pnr",
-    "loom.mapping.application_system_pnr.generator.v6",
+    "loom.mapping.application_system_pnr.generator.v7",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -249,11 +257,14 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   auto system = ::loom::fabric::requireSystemRoot(fabricArtifact->view());
   if (!system)
     return system.takeError();
-  auto staticContext = ::loom::pnr::buildSystemStaticContext(*system);
+  ::loom::pnr::DerivedContextCacheAccess staticAccess;
+  auto staticContext =
+      ::loom::pnr::buildSystemStaticContext(*system, &staticAccess);
   if (!staticContext)
     return staticContext.takeError();
   ::loom::pnr::emitSystemStaticContextStatistics(
-      *staticContext, ::loom::mapping_debug::Stage::SystemPnr, 0, 1);
+      *staticContext, ::loom::mapping_debug::Stage::SystemPnr,
+      staticAccess.hits, staticAccess.misses);
   auto physicalTimingProfiles = importPhysicalTimingProfiles(
       inputBindings[PhysicalTimingProfilesInput].artifacts, *system, store);
   if (!physicalTimingProfiles)
@@ -276,15 +287,19 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       *dataflow, *system, roots, store);
   if (!constraints)
     return constraints.takeError();
+  ::loom::pnr::DerivedContextCacheAccess activeAccess;
   auto activeContext = ::loom::pnr::buildSystemActiveContext(
       *staticContext, *dataflow, *system, *physicalTimingProfiles, *constraints,
-      inputBindings[SpatialMappingCandidatesInput].artifacts, store);
+      inputBindings[SpatialMappingCandidatesInput].artifacts, store,
+      &activeAccess);
   if (!activeContext)
     return activeContext.takeError();
   ::loom::pnr::emitSystemActiveContextStatistics(
-      *activeContext, ::loom::mapping_debug::Stage::SystemPnr, 0, 1);
-  auto partition = ::loom::pnr::projectWholeDomainPresburgerPartitionPlan(
-      *dataflow, constraints->view().rootThreadLaunches());
+      *activeContext, ::loom::mapping_debug::Stage::SystemPnr,
+      activeAccess.hits, activeAccess.misses);
+  auto partition = ::loom::pnr::projectCyclicPresburgerPartitionPlan(
+      *dataflow, constraints->view().rootThreadLaunches(),
+      defaultSystemPartitionCount(*system));
   if (!partition)
     return partition.takeError();
   ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{
@@ -386,11 +401,14 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
   auto system = ::loom::fabric::requireSystemRoot(fabricArtifact->view());
   if (!system)
     return system.takeError();
-  auto staticContext = ::loom::pnr::buildSystemStaticContext(*system);
+  ::loom::pnr::DerivedContextCacheAccess staticAccess;
+  auto staticContext =
+      ::loom::pnr::buildSystemStaticContext(*system, &staticAccess);
   if (!staticContext)
     return staticContext.takeError();
   ::loom::pnr::emitSystemStaticContextStatistics(
-      *staticContext, ::loom::mapping_debug::Stage::SystemPnr, 0, 1);
+      *staticContext, ::loom::mapping_debug::Stage::SystemPnr,
+      staticAccess.hits, staticAccess.misses);
   auto physicalTimingProfiles = importPhysicalTimingProfiles(
       inputBindings[ApplicationPhysicalTimingProfilesInput].artifacts, *system,
       store);
@@ -407,16 +425,20 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
         llvm::inconvertibleErrorCode(),
         "application_system_pnr_generator_invalid: constraints bind foreign "
         "Dataflow or Fabric owners");
+  ::loom::pnr::DerivedContextCacheAccess activeAccess;
   auto activeContext = ::loom::pnr::buildSystemActiveContext(
       *staticContext, *dataflow, *system, *physicalTimingProfiles, *constraints,
-      inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts, store);
+      inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts, store,
+      &activeAccess);
   if (!activeContext)
     return activeContext.takeError();
   ::loom::pnr::emitSystemActiveContextStatistics(
-      *activeContext, ::loom::mapping_debug::Stage::SystemPnr, 0, 1);
+      *activeContext, ::loom::mapping_debug::Stage::SystemPnr,
+      activeAccess.hits, activeAccess.misses);
 
-  auto partition = ::loom::pnr::projectWholeDomainPresburgerPartitionPlan(
-      *dataflow, constraints->view().rootThreadLaunches());
+  auto partition = ::loom::pnr::projectCyclicPresburgerPartitionPlan(
+      *dataflow, constraints->view().rootThreadLaunches(),
+      defaultSystemPartitionCount(*system));
   if (!partition)
     return partition.takeError();
   ::loom::pnr::SystemHierarchicalGraphSearchInput graphSearch{

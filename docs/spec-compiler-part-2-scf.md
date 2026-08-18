@@ -69,14 +69,17 @@ results. No value numbering, pointer-alias assumption, or performance choice
 participates in this exact quotient.
 
 A latch-tested counted `scf.while` normalizes to `scf.for` only through the
-shared exact counted-loop projection. The projection requires a constant
-nonnegative lower bound, a positive constant step, a greater constant upper
-bound reached exactly without wrapping, a `next != upper` latch, and an empty
-after-region that returns every state lane by ordinal identity. Its body domain
-is therefore exactly `lower, lower + step, ..., upper - step`, and the failed
-condition publishes `upper` as the induction result. Address-width reasoning
-consumes this same projection. Dynamic bounds, non-landing steps, wrapping
-domains, reordered feedback, or after-region effects remain `scf.while`.
+shared exact counted-loop projection. The projection accepts either a constant
+nonnegative lower bound, positive constant step, and greater constant upper
+bound reached exactly without wrapping, or the narrower dynamic shape with
+zero lower bound, unit positive step, and an upper bound proven strictly
+positive by an enclosing true branch. Both require a `next != upper` latch and
+an empty after-region that returns every state lane by ordinal identity. Their
+body domain is therefore exactly `lower, lower + step, ..., upper - step`, and
+the failed condition publishes `upper` as the induction result. Address-width
+reasoning consumes only the constant-domain member of this same projection.
+Unproved dynamic bounds, non-landing steps, wrapping domains, reordered
+feedback, or after-region effects remain `scf.while`.
 
 The lift-owned exit scaffold may publish a `scf.while` result through a value
 defined outside and dominating the loop. Mechanical raising projects that
@@ -671,6 +674,16 @@ number of admitted concrete Fabric occurrences by the group's body
 multiplicity; the minimum quotient bounds the unroll factor. This projection
 does not prove placement, routing, contention freedom, or performance.
 
+An unresolved selected-Spatial special-math operation is intentionally not yet
+a final actor projection. The SpecialMathAccuracy owner projects its complete
+currently legal tier domain without selecting a member. Schedule capacity
+groups the operation by the first canonical domain projection and uses the
+maximum admitted concrete occurrence count over every legal tier as a sound
+non-pruning upper bound. The tier remains absent from the Structured parent;
+the terminal SpecialMathAccuracy generator alone selects it and performs exact
+Fabric admission. Schedule must not call the final actor projector on an
+unresolved special-math operation or treat missing tier state as malformed.
+
 Interchange is one adjacent swap of a perfect two-loop nest. Both loops must
 have no loop-carried results, inner bounds and step must be invariant to the
 outer loop, and the common dependence/effect analysis must prove independent
@@ -690,6 +703,26 @@ The child stores the logical parallel domain in ordinary SCF; it carries no
 physical coordinate, AccCore binding, placement, or routing fact. A later
 ownership decision may retain that domain inside one Spatial graph or
 materialize it as a logical `dataflow.thread` domain.
+ParallelizeNest is the arbitrary-rank form of the same decision. It consumes a
+maximal rectangular chain rooted at the selected loop and emits one rank-N
+`scf.forall`. Its joint proof requires zero-based unit-step loops, bounds
+invariant to the root, and only regionless memory-effect-free scalar or address
+calculations between adjacent loops. The innermost body must pass the common
+effect and alias proof. Each written memory root has one store whose memref
+indices exactly equal the loop coordinates, or whose inbounds same-element-type
+GEP chain encodes each coordinate as that induction variable multiplied by all
+inner extents. Read/write overlap, repeated stores to one root, wrapping
+products, sparse layouts, and unknown coordinates reject the decision. The
+materialized forall is the sole coordinate authority; the source loops and the
+temporary joint proof do not survive in the child. When the selected nest is
+inside an already materialized rank-zero Spatial ownership carrier, the same
+atomic decision promotes the new forall to the carrier's dense logical thread
+domain. Ownership remains the sole owner of extent arithmetic and
+source-induction reconstruction: every exact thread launch must project all
+bounds from its body operands, the thread and Spatial ABIs acquire the rank-N
+coordinate suffix, and no graph-owned forall remains. An unprojectable bound
+rejects only that candidate. The transformation never weakens the fixed-domain
+requirement for a retained graph-owned parallel form.
 Unroll-and-jam uses the same perfect-nest and independence proof, additionally
 requires every nested loop bound and step to be invariant to the selected
 outer loop, and obeys the same exact aggregate Fabric-capacity bound as
@@ -720,9 +753,8 @@ hardware requirement. This is hard-negative capability pruning, not a
 placement, routing, contention, or QoR conclusion.
 
 The provider for this behavior has implementation semantic identity
-`loom.compiler.structured_schedule.generator.v2`. The historical v1 provider
-performed complete D0 admission before downstream Structured transforms and
-cannot be reinterpreted as v2.
+`loom.compiler.structured_schedule.generator.v3`. Results from an earlier
+semantic identity cannot be reinterpreted as this candidate domain.
 
 ### Structured ExecutionShape Generator
 

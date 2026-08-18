@@ -771,7 +771,7 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
       llvm::json::Array logicalNetDetails;
       llvm::json::Array traversalDetails;
       llvm::json::Array endpointDetails;
-      if (emitDetails)
+      if (emitDetails || certificate)
         for (PnrIndex logicalNet : cutContributingNets_)
           logicalNetDetails.push_back(
               encodeLogicalNetDetail(candidate, logicalNet));
@@ -783,7 +783,7 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
           ++traversalCount;
           if (traversals.size() < sampleLimit) {
             traversals.push_back(traversal);
-            if (emitDetails) {
+            if (emitDetails || certificate) {
               llvm::json::Object row;
               row["ref"] = loom::fabric::printFabricRef(
                   routing.traversals()[traversal].reference);
@@ -798,7 +798,7 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
           ++endpointCount;
           if (endpoints.size() < sampleLimit) {
             endpoints.push_back(endpoint);
-            if (emitDetails) {
+            if (emitDetails || certificate) {
               llvm::json::Object row;
               row["endpoint"] = endpoint;
               row["ref"] = loom::fabric::printFabricRef(
@@ -864,6 +864,23 @@ SpatialPathFinderRouterScratch::analyzeCapacityConflicts(
               fields["claim_sample"] = std::move(claims);
               fields["traversal_sample"] = std::move(traversals);
               fields["endpoint_sample"] = std::move(endpoints);
+              if (certificate) {
+                fields["certificate_logical_net_details"] =
+                    std::move(logicalNetDetails);
+                fields["certificate_traversal_details"] =
+                    std::move(traversalDetails);
+                fields["certificate_endpoint_details"] =
+                    std::move(endpointDetails);
+                llvm::json::Array forcedCuts;
+                for (const SpatialFixedTerminalCutNet &cut :
+                     cutCertificateForcedNetCuts_) {
+                  llvm::json::Object row;
+                  row["logical_net"] = cut.logicalNet;
+                  row["unreachable_sink"] = cut.unreachableSink;
+                  forcedCuts.push_back(std::move(row));
+                }
+                fields["forced_net_cuts"] = std::move(forcedCuts);
+              }
             }
           });
     }

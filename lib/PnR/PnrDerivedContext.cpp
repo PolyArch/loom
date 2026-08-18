@@ -2,6 +2,7 @@
 
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/SHA256.h"
 
 #include <cstdint>
@@ -76,7 +77,8 @@ std::uint64_t loom::pnr::detail::staticContextRetainedBytes(
     const FrozenSpatialResourceIndex &resources,
     const FrozenEndpointRoutingTopology &topology,
     const FrozenSpatialTagContinuityIndex &tags,
-    const FabricHandshakeContext &handshake) {
+    const FabricHandshakeContext &handshake,
+    const std::optional<FabricTopologyQualityReport> &quality) {
   std::uint64_t bytes = sizeof(FabricStaticContext);
   bytes +=
       resources.resourceOwners().size() * sizeof(FrozenSpatialResourceOwner);
@@ -112,7 +114,47 @@ std::uint64_t loom::pnr::detail::staticContextRetainedBytes(
       tags.matchDomains().size() * sizeof(FabricPhysicalTagMatchDomainView);
   bytes += tags.endpointMatchDomainOrdinals().size() * sizeof(PnrIndex);
   bytes += handshake.statistics().retainedBytes;
+  if (quality)
+    bytes += topologyQualityRetainedBytes(*quality);
   return bytes;
+}
+
+std::uint64_t loom::pnr::detail::topologyQualityRetainedBytes(
+    const FabricTopologyQualityReport &report) {
+  std::uint64_t bytes = sizeof(FabricTopologyQualityReport);
+  bytes += report.owners.capacity() * sizeof(FabricTopologyOwnerQuality);
+  for (const FabricTopologyOwnerQuality &owner : report.owners) {
+      bytes += owner.ports.capacity() * sizeof(FabricTopologyPortQuality);
+      bytes += owner.distinctRoutingResources.capacity() *
+               sizeof(FabricTransportEndpointOwnerRef);
+      bytes += owner.distinctDirectResources.capacity() *
+               sizeof(FabricTransportEndpointOwnerRef);
+      for (const FabricTopologyPortQuality &port : owner.ports) {
+        bytes += port.routingResources.capacity() *
+                 sizeof(FabricTransportEndpointOwnerRef);
+        bytes += port.directResources.capacity() *
+                 sizeof(FabricTransportEndpointOwnerRef);
+      }
+  }
+  bytes +=
+      report.schedules.capacity() * sizeof(FabricTopologyScheduleQuality);
+  bytes += report.capabilities.capacity() *
+           sizeof(FabricTopologyCapabilityQuality);
+  for (const FabricTopologyCapabilityQuality &capability : report.capabilities)
+    bytes += capability.supportingPes.capacity() * sizeof(FabricPeOccurrenceRef);
+  return bytes;
+}
+
+std::uint64_t loom::pnr::detail::topologyQualityDeterministicWork(
+    const FabricTopologyQualityReport &report) {
+  std::uint64_t work = report.owners.size() + report.schedules.size() +
+                       report.capabilities.size();
+  for (const FabricTopologyOwnerQuality &owner : report.owners)
+    work += owner.ports.size() + owner.distinctRoutingResources.size() +
+            owner.distinctDirectResources.size();
+  for (const FabricTopologyCapabilityQuality &capability : report.capabilities)
+    work += capability.supportingPes.size();
+  return work;
 }
 
 std::uint64_t loom::pnr::detail::timingContextRetainedBytes(
@@ -141,6 +183,16 @@ loom::pnr::FabricDerivedContextBundle::physicalTimingDigestBytes() const {
   return storage_->timingContext->physicalTimingDigestBytes;
 }
 
+llvm::ArrayRef<std::uint8_t>
+loom::pnr::FabricDerivedContextBundle::staticContextKey() const {
+  return storage_->staticContext->key;
+}
+
+llvm::ArrayRef<std::uint8_t>
+loom::pnr::FabricDerivedContextBundle::timingContextKey() const {
+  return storage_->timingContext->key;
+}
+
 const FabricDerivedContextStatistics &
 loom::pnr::FabricDerivedContextBundle::statistics() const {
   return storage_->statistics;
@@ -151,18 +203,26 @@ loom::pnr::FabricDerivedContextBundle::handshakeContext() const {
   return storage_->staticContext->handshake;
 }
 
+const FabricTopologyQualityReport *
+loom::pnr::FabricDerivedContextBundle::topologyQualityDiagnostic() const {
+  const auto &quality = storage_->staticContext->topologyQuality;
+  return quality ? &*quality : nullptr;
+}
+
 void loom::pnr::emitFabricDerivedContextStatistics(
     const FabricDerivedContextBundle &bundle, mapping_debug::Stage stage,
     std::uint64_t staticHits, std::uint64_t staticMisses,
     std::uint64_t timingHits, std::uint64_t timingMisses) {
   const FabricDerivedContextStatistics &statistics = bundle.statistics();
   const auto emit = [&](llvm::StringRef kind,
+                        llvm::ArrayRef<std::uint8_t> key,
                         const DerivedContextConstructionStatistics &context,
                         std::uint64_t hits, std::uint64_t misses) {
     mapping_debug::emit(
         mapping_debug::Level::Summary, stage,
         mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
           fields["context_kind"] = kind;
+          fields["context_key"] = llvm::toHex(key, /*LowerCase=*/true);
           fields["cache_hits"] = hits;
           fields["cache_misses"] = misses;
           fields["construction_count"] = context.constructionCount;
@@ -192,6 +252,8 @@ void loom::pnr::emitFabricDerivedContextStatistics(
               statistics.handshakeFragmentCount;
         });
   };
-  emit("fabric_static", statistics.staticContext, staticHits, staticMisses);
-  emit("fabric_timing", statistics.timingContext, timingHits, timingMisses);
+  emit("fabric_static", bundle.staticContextKey(), statistics.staticContext,
+       staticHits, staticMisses);
+  emit("fabric_timing", bundle.timingContextKey(), statistics.timingContext,
+       timingHits, timingMisses);
 }

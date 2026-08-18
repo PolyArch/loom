@@ -399,6 +399,7 @@ void localRealizationEdgePublishesThroughExactConsumer() {
   bool sawBlocked = false;
   bool sawDequeue = false;
   bool sawPublication = false;
+  bool sawProducerCompletion = false;
   for (unsigned iteration = 0; iteration != 32 && !sawPublication;
        ++iteration) {
     const auto transportCoordinate = bufferedTransport.nextCoordinate();
@@ -412,7 +413,7 @@ void localRealizationEdgePublishesThroughExactConsumer() {
       auto frame = take(bufferedPhysical.advance());
       require(frame.has_value(), "buffered physical event disappeared");
       auto completions = take(bufferedTransport.acceptPhysicalEvents(*frame));
-      (void)completions;
+      sawProducerCompletion |= !completions.empty();
       continue;
     }
     require(transportCoordinate.has_value(),
@@ -439,7 +440,8 @@ void localRealizationEdgePublishesThroughExactConsumer() {
       sawPublication = true;
     }
   }
-  require(sawEnqueue && sawBlocked && sawDequeue && sawPublication &&
+  require(sawEnqueue && sawBlocked && sawProducerCompletion && sawDequeue &&
+              sawPublication &&
               channelQueue(state, sync->op->getOpOperand(1)).size() == 1 &&
               take(tokenBitPattern(
                   channelQueue(state, sync->op->getOpOperand(1)).front(),
@@ -696,6 +698,75 @@ void registerFifoWriteAndReadShareOneDurableQueue() {
           "dual-port full-queue replacement was not one atomic cycle update");
 }
 
+void ordinaryFanoutPublicationsProgressIndependently() {
+  auto artifact = fanoutProgram();
+  auto view = take(artifact.view());
+  llvm::SmallVector<const dataflow::CanonicalActorView *, 3> adds;
+  for (const dataflow::CanonicalActorView &actor : view.actors())
+    if (dataflow::operationSchemaOf(actor.op) ==
+        dataflow::OperationSchemaId::ArithAddI)
+      adds.push_back(&actor);
+  require(adds.size() == 3, "ordinary fanout fixture lacks its add actors");
+  const dataflow::CanonicalActorView &left = *adds[0];
+  const dataflow::CanonicalActorView &right = *adds[1];
+  auto graphView = take(view.resolve(left.graph));
+  auto graph = mlir::cast<dataflow::GraphOp>(graphView.op);
+  GraphPreparationResult preparedResult =
+      take(prepareGraphExecution(artifact.module(), graph));
+  auto *prepared = std::get_if<PreparedGraphExecution>(&preparedResult);
+  require(prepared, "ordinary fanout graph preparation failed");
+
+  const dataflow::CanonicalGraphProducerEndpointRef producer(
+      dataflow::GraphIngressTokenRef{
+          dataflow::GraphValueInputTokenRef{left.graph, 0}});
+  CgraFrozenExecutionPlan plan;
+  plan.transport.localTransfers.push_back({producer, left.graph, 0, 2});
+  plan.transport.localTransferSinks.push_back(
+      {{dataflow::ActorTokenOperandRef{left.ref, 0}}});
+  plan.transport.localTransferSinks.push_back(
+      {{dataflow::ActorTokenOperandRef{right.ref, 0}}});
+
+  SimulatorState state;
+  state.graphScope = graph.getOperation();
+  initializeRunState(state, *prepared);
+  TokenQueue &leftChannel = channelQueue(state, left.op->getOpOperand(0));
+  TokenQueue &rightChannel = channelQueue(state, right.op->getOpOperand(0));
+  leftChannel.push_back(take(tokenFromBitPattern(
+      llvm::APInt(32, 7), mlir::IntegerType::get(&context(), 32))));
+  auto physical = take(CgraPhysicalActionRuntime::create(
+      plan.resources, plan.physicalUseTimings));
+  auto transport = take(CgraTransportRuntime::create(
+      plan, view, left.graph, *prepared, state, physical));
+
+  llvm::SmallVector<GraphIngressEmission, 1> ingress;
+  ingress.push_back(
+      {1, 0,
+       take(tokenFromBitPattern(llvm::APInt(32, 19),
+                                mlir::IntegerType::get(&context(), 32)))});
+  if (llvm::Error error =
+          transport.acceptGraphIngressEmissions(coordinate(60), ingress))
+    fail(llvm::toString(std::move(error)));
+  auto partial = take(transport.advance());
+  require(partial && partial->publications.empty() &&
+              partial->blockedTransfers.size() == 1 &&
+              leftChannel.size() == 1 && rightChannel.size() == 1,
+          "ordinary fanout did not publish its ready branch independently");
+
+  leftChannel.pop_front();
+  if (llvm::Error error = transport.retryBlocked(partial->coordinate))
+    fail(llvm::toString(std::move(error)));
+  auto completed = take(transport.advance());
+  require(completed && completed->publications.size() == 1 &&
+              leftChannel.size() == 1 && rightChannel.size() == 1 &&
+              take(tokenBitPattern(leftChannel.front(),
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 19) &&
+              take(tokenBitPattern(rightChannel.front(),
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 19),
+          "ordinary fanout retry duplicated or lost a branch token");
+}
+
 void temporalOperandQueueCapacityAndFanoutAreAtomic() {
   auto artifact = fanoutProgram();
   auto view = take(artifact.view());
@@ -814,6 +885,7 @@ void temporalOperandQueueCapacityAndFanoutAreAtomic() {
 int main() {
   localRealizationEdgePublishesThroughExactConsumer();
   registerFifoWriteAndReadShareOneDurableQueue();
+  ordinaryFanoutPublicationsProgressIndependently();
   temporalOperandQueueCapacityAndFanoutAreAtomic();
   return EXIT_SUCCESS;
 }

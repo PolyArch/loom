@@ -1,3 +1,3 @@
-# REQUIRES: openroad-2026-08-06
+# REQUIRES: openroad-2026-08-16
 # RUN: rm -rf %t
-# RUN: timeout 600s bash -c 'source /etc/profile.d/modules.sh && module load openroad/2026.08.06-b9a38929e342 && %loom-openroad-static-fpa-test --real-smoke %t "$(command -v openroad)" "$(openroad -version)" /mnt/nas0/eda.libs/cadence_pdk/gpdk045/gsclib045_all_v4.7/gsclib045/lef/gsclib045_tech.lef /mnt/nas0/eda.libs/cadence_pdk/gpdk045/gsclib045_all_v4.7/gsclib045/lef/gsclib045_macro.lef /mnt/nas0/eda.libs/cadence_pdk/gpdk045/gsclib045_all_v4.7/gsclib045/timing/slow_vdd1v0_basicCells.lib'
+# RUN: timeout 600s bash -c 'source /etc/profile.d/modules.sh && module load openroad/2026.08.16-cbc7678e45cc && %loom-openroad-static-fpa-test --real-smoke %t "$(command -v openroad)" "$(openroad -version)" /mnt/nas0/eda.libs/cadence_pdk/gpdk045/gsclib045_all_v4.7/gsclib045/lef/gsclib045_tech.lef /mnt/nas0/eda.libs/cadence_pdk/gpdk045/gsclib045_all_v4.7/gsclib045/lef/gsclib045_macro.lef /mnt/nas0/eda.libs/cadence_pdk/gpdk045/gsclib045_all_v4.7/gsclib045/timing/slow_vdd1v0_basicCells.lib'

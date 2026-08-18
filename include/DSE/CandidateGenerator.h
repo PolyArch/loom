@@ -200,6 +200,18 @@ struct CandidateGeneratorOwnerLineagePayloadContract final {
       const ArtifactStore &store);
 };
 
+/// Descriptor-owned validation for one invocation-local hardware-demand or
+/// other search-feedback payload. The payload is never persisted by the
+/// generic controller; a domain-specific bounded reopen may consume it before
+/// the invocation ends.
+struct CandidateGeneratorOwnerFeedbackPayloadContract final {
+  llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes;
+  llvm::Error (*validateCanonical)(
+      llvm::ArrayRef<std::uint8_t>,
+      llvm::ArrayRef<CandidateGeneratorInputBinding> canonicalInputs,
+      const ArtifactStore &store);
+};
+
 struct CandidateGeneratorDescriptor;
 
 class CandidateGeneratorDescriptorRef final {
@@ -247,6 +259,8 @@ struct CandidateGeneratorDescriptor final {
   /// The closed provider form of this descriptor, recovered from the exact
   /// registry-3.0 descriptor reference before any implementation lookup.
   ProviderForm providerForm;
+  const CandidateGeneratorOwnerFeedbackPayloadContract *ownerFeedbackPayload =
+      nullptr;
 
   CandidateGeneratorDescriptorRef reference() const;
   const CandidateGeneratorInputSlotDescriptor *
@@ -348,6 +362,10 @@ using CandidateGeneratorProviderOutcome =
 struct CandidateGeneratorProviderResult final {
   CandidateGeneratorProviderOutcome outcome;
   std::vector<CandidateGeneratorWorkUnitSummary> workSummary;
+  /// Optional descriptor-owned transient feedback. It is validated against
+  /// the exact invocation inputs, excluded from Artifact and journal identity,
+  /// and unavailable to terminal replay unless promoted by its semantic owner.
+  std::optional<std::vector<std::uint8_t>> ownerFeedback = std::nullopt;
 };
 
 using CandidateGeneratorProviderFunction =

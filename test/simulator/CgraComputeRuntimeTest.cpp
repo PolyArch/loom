@@ -217,8 +217,7 @@ CgraFrozenExecutionPlan selectedPlan(const dataflow::CanonicalActorView &actor,
        std::nullopt,
        0});
   std::vector<CgraResourcePatternSelection> selections;
-  const fabric::UsePattern use =
-      contract.usePattern(fabric::UsePatternKey(0));
+  const fabric::UsePattern use = contract.usePattern(fabric::UsePatternKey(0));
   const auto ranks = contract.eventOrder(use.timingAndProgress);
   for (const auto &transition : semantic.handshakeCases) {
     const std::uint64_t action = plan.physicalUseTimings.size();
@@ -227,13 +226,11 @@ CgraFrozenExecutionPlan selectedPlan(const dataflow::CanonicalActorView &actor,
     plan.physicalUseClients.push_back(
         CgraPhysicalUseClientKind::ComputeTransition);
     plan.physicalUseTimings.push_back(
-        {action,
-         ranks[use.acquire.ordinal()],
-         use.commit ? std::optional<std::uint32_t>(
-                          ranks[use.commit->event.ordinal()])
-                    : std::nullopt,
-         ranks[use.release.ordinal()],
-         use.acquire.ordinal(),
+        {action, ranks[use.acquire.ordinal()],
+         use.commit
+             ? std::optional<std::uint32_t>(ranks[use.commit->event.ordinal()])
+             : std::nullopt,
+         ranks[use.release.ordinal()], use.acquire.ordinal(),
          use.release.ordinal(),
          use.commit ? std::optional<std::uint32_t>(use.commit->event.ordinal())
                     : std::nullopt});
@@ -268,9 +265,9 @@ void temporalDispatchFollowsFabricRoundRobinSlots() {
 
   loom::sim::SpatialEventCoordinate halfCycle{
       take(loom::evaluation::ExactRatio::get(1, 2)), 7};
-  require(isCoordinate(take(projectCgraTemporalDispatchCoordinate(
-                           domain, 1, halfCycle)),
-                       coordinate(1)),
+  require(isCoordinate(
+              take(projectCgraTemporalDispatchCoordinate(domain, 1, halfCycle)),
+              coordinate(1)),
           "fractional request did not wait for the next selected PE slot");
 
   domain.resetPosition = 1;
@@ -343,13 +340,13 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
   require(physicalFrame && physicalFrame->events.size() == 2,
           "shared physical calendar did not retain both clients");
   auto computePhysical = take(runtime.acceptPhysicalEvents(*physicalFrame));
-  require(computePhysical.coordinate.referenceCycle ==
-                  take(loom::evaluation::ExactRatio::get(0, 1)) &&
-              computePhysical.coordinate.delta == 0 &&
-              hasPhysical(computePhysical, CgraPhysicalLifecycleKind::Granted,
-                          0) &&
-              computePhysical.actorEvents.empty(),
-          "compute client did not receive its exact grant");
+  require(
+      computePhysical.coordinate.referenceCycle ==
+              take(loom::evaluation::ExactRatio::get(0, 1)) &&
+          computePhysical.coordinate.delta == 0 &&
+          hasPhysical(computePhysical, CgraPhysicalLifecycleKind::Granted, 0) &&
+          computePhysical.actorEvents.empty(),
+      "compute client did not receive its exact grant");
 
   physicalFrame = take(physical.advance());
   require(physicalFrame && loom::sim::compareSpatialEventCoordinates(
@@ -393,7 +390,8 @@ void computeCommitWaitsForExactPhysicalLifecycle() {
           "actor commit did not hand its shared-provider token to transport");
   require(!take(physical.advance()),
           "intrinsic result-slot lifecycle retained a later physical event");
-  if (llvm::Error error = runtime.retireActor(0, 0, coordinate(1, 1)))
+  if (llvm::Error error =
+          runtime.retireActor(0, 0, coordinate(1, 1), /*reschedule=*/true))
     fail(llvm::toString(std::move(error)));
   require(!runtime.hasActiveActors(),
           "coordinated actor retirement did not release the firing");
@@ -540,7 +538,8 @@ void structuralVectorUsesSharedPhysicalLifecycle() {
           "shuffle physical execution did not retire");
   if (llvm::Error error =
           runtime.retireActor(committedActor.semanticActorOrdinal,
-                              committedActor.occurrenceOrdinal, coordinate(2)))
+                              committedActor.occurrenceOrdinal, coordinate(2),
+                              /*reschedule=*/true))
     fail(llvm::toString(std::move(error)));
   require(!runtime.hasActiveActors(),
           "shuffle actor stayed active after coordinated retirement");

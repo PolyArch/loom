@@ -39,26 +39,37 @@ llvm::Error CgraTransportRuntime::beginOperandQueueCycle(
 }
 
 llvm::Expected<bool> CgraTransportRuntime::reserveOperandQueueCapacity(
-    std::uint64_t slot, const SpatialEventCoordinate &coordinate) {
+    std::uint64_t slot, std::uint64_t publicationBinding,
+    const SpatialEventCoordinate &coordinate) {
   if (slot >= inFlight_.size() || !inFlight_[slot].active)
     return invalid("CGRA PE operand reservation names an inactive token");
   InFlight &inFlight = inFlight_[slot];
-  if (inFlight.operandCapacityReserved)
-    return invalid("CGRA PE operand capacity was reserved twice");
   const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  if (publicationBinding < binding.publicationOffset ||
+      publicationBinding >=
+          binding.publicationOffset + binding.publicationCount)
+    return invalid("CGRA PE operand reservation names another publication");
+  InFlight::PublicationState &state =
+      inFlight.publications[publicationBinding - binding.publicationOffset];
+  if (state.capacityReserved)
+    return invalid("CGRA PE operand capacity was reserved twice");
+  const PublicationBinding &publication = publications_[publicationBinding];
 
   llvm::SmallVector<std::uint64_t, 4> units;
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueQueues;
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueUnits;
-  for (const SinkBinding &sink :
-       llvm::ArrayRef(sinks_).slice(binding.sinkOffset, binding.sinkCount)) {
+  for (std::uint32_t localSink :
+       llvm::ArrayRef(publicationSinks_)
+           .slice(publication.sinkOffset, publication.sinkCount)) {
+    if (localSink >= binding.sinkCount)
+      return invalid("CGRA PE operand publication names an unknown sink");
+    const SinkBinding &sink = sinks_[binding.sinkOffset + localSink];
     if (sink.operandQueueBinding == invalidCgraTransportOrdinal)
       continue;
     if (sink.kind != SinkKind::Channel ||
         sink.operandQueueBinding >= operandQueues_.size())
       return invalid("CGRA PE operand sink has an invalid queue binding");
-    const OperandQueueBinding &queue =
-        operandQueues_[sink.operandQueueBinding];
+    const OperandQueueBinding &queue = operandQueues_[sink.operandQueueBinding];
     if (queue.unitBinding >= operandQueueUnits_.size() ||
         llvm::none_of(queue.consumers, [&](const auto &consumer) {
           return consumer.channel == sink.channel;
@@ -86,35 +97,47 @@ llvm::Expected<bool> CgraTransportRuntime::reserveOperandQueueCapacity(
     if (unit.occupancy > unit.capacity ||
         unit.reservations > unit.capacity - unit.occupancy)
       return invalid("CGRA PE operand allocation-unit occupancy is invalid");
-    if (unit.admissionCredits == 0)
+    if (unit.admissionCredits == 0) {
+      state.capacityBlocked = true;
       return false;
+    }
   }
   for (std::uint64_t unitOrdinal : units) {
     --operandQueueUnits_[unitOrdinal].admissionCredits;
     ++operandQueueUnits_[unitOrdinal].reservations;
   }
-  inFlight.operandCapacityReserved = !units.empty();
-  inFlight.operandCapacityBlocked = false;
+  state.capacityReserved = !units.empty();
+  state.capacityBlocked = false;
   return true;
 }
 
-llvm::Error
-CgraTransportRuntime::commitOperandQueueEnqueue(std::uint64_t slot) {
+llvm::Error CgraTransportRuntime::commitOperandQueueEnqueue(
+    std::uint64_t slot, std::uint64_t publicationBinding) {
   if (slot >= inFlight_.size() || !inFlight_[slot].active)
     return invalid("CGRA PE operand enqueue names an inactive token");
   InFlight &inFlight = inFlight_[slot];
   const TransferBinding &binding = bindings_[inFlight.bindingOrdinal];
+  if (publicationBinding < binding.publicationOffset ||
+      publicationBinding >=
+          binding.publicationOffset + binding.publicationCount)
+    return invalid("CGRA PE operand enqueue names another publication");
+  InFlight::PublicationState &state =
+      inFlight.publications[publicationBinding - binding.publicationOffset];
+  const PublicationBinding &publication = publications_[publicationBinding];
   llvm::SmallVector<std::uint64_t, 4> queues;
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueQueues;
   llvm::SmallDenseSet<std::uint64_t, 4> uniqueUnits;
-  for (const SinkBinding &sink :
-       llvm::ArrayRef(sinks_).slice(binding.sinkOffset, binding.sinkCount)) {
+  for (std::uint32_t localSink :
+       llvm::ArrayRef(publicationSinks_)
+           .slice(publication.sinkOffset, publication.sinkCount)) {
+    if (localSink >= binding.sinkCount)
+      return invalid("CGRA PE operand publication names an unknown sink");
+    const SinkBinding &sink = sinks_[binding.sinkOffset + localSink];
     if (sink.operandQueueBinding == invalidCgraTransportOrdinal)
       continue;
     if (sink.operandQueueBinding >= operandQueues_.size())
       return invalid("CGRA PE operand enqueue has an invalid queue binding");
-    const OperandQueueBinding &queue =
-        operandQueues_[sink.operandQueueBinding];
+    const OperandQueueBinding &queue = operandQueues_[sink.operandQueueBinding];
     if (queue.unitBinding >= operandQueueUnits_.size() ||
         llvm::none_of(queue.consumers, [&](const auto &consumer) {
           return consumer.channel == sink.channel;
@@ -136,11 +159,11 @@ CgraTransportRuntime::commitOperandQueueEnqueue(std::uint64_t slot) {
     queues.push_back(sink.operandQueueBinding);
   }
   if (queues.empty()) {
-    if (inFlight.operandCapacityReserved)
+    if (state.capacityReserved)
       return invalid("CGRA non-queue transfer retained operand capacity");
     return llvm::Error::success();
   }
-  if (!inFlight.operandCapacityReserved)
+  if (!state.capacityReserved)
     return invalid("CGRA PE operand enqueue was not atomically reserved");
 
   for (std::uint64_t queueOrdinal : queues) {
@@ -150,7 +173,7 @@ CgraTransportRuntime::commitOperandQueueEnqueue(std::uint64_t slot) {
     ++unit.occupancy;
     ++queue.occupancy;
   }
-  inFlight.operandCapacityReserved = false;
+  state.capacityReserved = false;
   return llvm::Error::success();
 }
 
@@ -212,10 +235,10 @@ llvm::Error CgraTransportRuntime::acceptActorCommits(
       if (!consumedInputs.contains(
               {consumer.semanticActorOrdinal, consumer.inputOrdinal})) {
         std::string diagnostic =
-            "CGRA PE operand broadcast queue " +
-            std::to_string(queueOrdinal) + " omitted actor " +
-            std::to_string(consumer.semanticActorOrdinal) + " input " +
-            std::to_string(consumer.inputOrdinal) + "; committed actors";
+            "CGRA PE operand broadcast queue " + std::to_string(queueOrdinal) +
+            " omitted actor " + std::to_string(consumer.semanticActorOrdinal) +
+            " input " + std::to_string(consumer.inputOrdinal) +
+            "; committed actors";
         for (const CgraActorLifecycleEvent &event : events)
           diagnostic += " " + std::to_string(event.semanticActorOrdinal);
         diagnostic += "; queue consumers";

@@ -4,6 +4,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Common/MappingDebugLog.h"
 #include "Config/ResolvedConfig.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/StandardFindings.h"
@@ -194,8 +195,16 @@ llvm::Expected<CachedReplayResult> classifyReplayResult(
                           failure.log(stream);
                         });
   stream.flush();
-  if (code == std::make_error_code(std::errc::not_supported))
+  if (code == std::make_error_code(std::errc::not_supported)) {
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+          fields["failure_scope"] = "structured_functional_replay";
+          fields["closure_status"] = "proven_infeasible";
+          fields["diagnostic"] = message;
+        });
     return CachedReplayResult{ReplayResultKind::Unsupported, std::nullopt};
+  }
   return llvm::createStringError(code ? code : llvm::inconvertibleErrorCode(),
                                  "%s", message.c_str());
 }
@@ -482,8 +491,6 @@ llvm::Error primeStructuredProgramFunctionalReplay(
     return inputs.takeError();
   if (inputs->structuredProgram.identity() !=
           invocation.sourceProgram.identity() ||
-      invocation.scope.selection.parent !=
-          invocation.generationParent.identity() ||
       inputs->workload.identity() != invocation.simulationWorkload.identity() ||
       inputs->runtimeInput.identity() !=
           invocation.simulationRuntimeInput.identity() ||
@@ -505,13 +512,32 @@ llvm::Error primeStructuredProgramFunctionalReplay(
     return error;
 
   auto classified = classifyReplayResult(sim::validateSourceBackedDfgReplay(
-      invocation.generationParent, invocation.sourceProgram, invocation.scope,
-      invocation.decision, invocation.executionShapeDecisions,
-      invocation.candidate, invocation.simulationWorkload,
-      invocation.simulationRuntimeInput, invocation.limits,
-      &invocation.sourceObservations));
+      invocation.sourceProgram, invocation.candidate,
+      invocation.simulationWorkload, invocation.simulationRuntimeInput,
+      invocation.limits, &invocation.sourceObservations));
   if (!classified)
     return classified.takeError();
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        llvm::StringRef kind;
+        switch (classified->kind) {
+        case ReplayResultKind::Equivalent:
+          kind = "equivalent";
+          break;
+        case ReplayResultKind::Mismatch:
+          kind = "mismatch";
+          break;
+        case ReplayResultKind::Inapplicable:
+          kind = "inapplicable";
+          break;
+        case ReplayResultKind::Unsupported:
+          kind = "unsupported";
+          break;
+        }
+        fields["context_kind"] = "structured_functional_replay";
+        fields["replay_kind"] = kind;
+      });
   const detail::StructuredFunctionalCacheKey key = replayCacheKey(
       candidateReference, invocation.workload, invocation.runtimeInput);
   auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);

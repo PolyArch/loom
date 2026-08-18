@@ -13,6 +13,7 @@ namespace loom {
 /// Closed stages represented by the process-wide invocation diagnostic
 /// stream. Domain serializers own payload meaning; Common owns the envelope.
 enum class InvocationDiagnosticStage : std::uint8_t {
+  DataflowLowering,
   TechMapping,
   SpatialPnr,
   SystemPnr,

@@ -10,6 +10,7 @@
 #include "Simulator/DFGSimulator.h"
 #include "Simulator/SimulationArtifacts.h"
 #include "Simulator/SimulationExecution.h"
+#include "Simulator/SpatialChannelWire.h"
 #include "Simulator/SpatialInvocation.h"
 
 #include "llvm/Support/CommandLine.h"
@@ -40,32 +41,31 @@ llvm::cl::opt<std::string>
 llvm::cl::opt<std::string>
     socketPath("socket", llvm::cl::desc("Invocation-local bridge socket"),
                llvm::cl::Required);
-llvm::cl::opt<std::string>
-    expectedLaunchPath("expected-launch",
-                       llvm::cl::desc("Exact launch payload"),
-                       llvm::cl::Required);
-llvm::cl::opt<std::string>
-    workloadIdentity("workload",
-                     llvm::cl::desc("Spatial workload ArtifactIdentity"),
-                     llvm::cl::Required);
-llvm::cl::opt<std::string> runtimeInputIdentity(
-    "runtime-input", llvm::cl::desc("Spatial runtime input ArtifactIdentity"),
-    llvm::cl::init(""));
-llvm::cl::opt<std::string> channelProjectionPath(
+llvm::cl::list<std::string>
+    expectedLaunchPaths("expected-launch",
+                        llvm::cl::desc("Exact launch payload"),
+                        llvm::cl::OneOrMore);
+llvm::cl::list<std::string>
+    workloadIdentities("workload",
+                       llvm::cl::desc("Spatial workload ArtifactIdentity"),
+                       llvm::cl::OneOrMore);
+llvm::cl::list<std::string> runtimeInputIdentities(
+    "runtime-input",
+    llvm::cl::desc("Spatial runtime input ArtifactIdentity or 'none'"),
+    llvm::cl::OneOrMore);
+llvm::cl::list<std::string> channelProjectionPaths(
     "channel-projection",
     llvm::cl::desc("Invocation-local Spatial channel projection"),
-    llvm::cl::Required);
+    llvm::cl::OneOrMore);
 llvm::cl::opt<std::string>
     dataflowIdentity("dataflow",
                      llvm::cl::desc("Canonical Dataflow ArtifactIdentity"),
                      llvm::cl::Required);
-llvm::cl::opt<std::string>
-    fabricIdentity("fabric", llvm::cl::desc("Fabric ArtifactIdentity"),
-                   llvm::cl::init(""));
-llvm::cl::opt<std::string>
-    spatialMappingIdentity("spatial-mapping",
-                           llvm::cl::desc("SpatialMapping ArtifactIdentity"),
-                           llvm::cl::init(""));
+llvm::cl::list<std::string>
+    fabricIdentities("fabric", llvm::cl::desc("Fabric ArtifactIdentity"));
+llvm::cl::list<std::string>
+    spatialMappingIdentities("spatial-mapping",
+                             llvm::cl::desc("SpatialMapping ArtifactIdentity"));
 llvm::cl::opt<std::uint64_t>
     maximumWork("maximum-work", llvm::cl::desc("Engine semantic work limit"),
                 llvm::cl::init(100000));
@@ -411,48 +411,21 @@ readChannelPayload(int connection, std::uint64_t sequence,
                                  "channel input did not become ready");
 }
 
-struct ChannelInputContext final {
-  loom::sim::ImportedSpatialSimulationInputs inputs;
-  std::size_t streamObservation = 0;
-};
-
-llvm::Expected<std::vector<ChannelInputContext>> importChannelInputContexts(
-    const loom::runtime::Gem5SpatialChannelProjection &projection,
-    const loom::ArtifactStore &store) {
-  std::vector<ChannelInputContext> contexts;
-  contexts.reserve(projection.inputs.size());
-  for (const loom::runtime::Gem5SpatialChannelInput &channel :
-       projection.inputs) {
-    auto inputs = loom::sim::importSpatialSimulationInputs(
-        channel.producerWorkload, channel.producerRuntimeInput, store);
-    if (!inputs)
-      return inputs.takeError();
-    const auto *workload = inputs->workload.spatial();
-    if (!workload)
-      return invalid("channel producer workload lost its typed payload");
-    const auto found = llvm::find(workload->observableContract.streamOutputs,
-                                  channel.producerStreamOutputOrdinal);
-    if (found == workload->observableContract.streamOutputs.end())
-      return invalid("channel producer output is not observable");
-    const std::size_t observation = static_cast<std::size_t>(std::distance(
-        workload->observableContract.streamOutputs.begin(), found));
-    contexts.push_back({std::move(*inputs), observation});
-  }
-  return contexts;
-}
-
 llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> bindChannelInputs(
     int connection, std::uint64_t sequence,
     const loom::runtime::Gem5SpatialChannelProjection &projection,
-    llvm::ArrayRef<ChannelInputContext> channelContexts,
     const loom::sim::ImportedSpatialSimulationWorkload &workload,
     const loom::sim::CanonicalSimulationRuntimeInput &runtimeInput,
     std::uint64_t &requestId) {
-  if (channelContexts.size() != projection.inputs.size())
-    return invalid("channel input context is not total over the projection");
   const auto *base = runtimeInput.spatial();
   if (!base)
     return invalid("Spatial runtime input lost its typed payload");
+  const auto *spatialWorkload = workload.workload.spatial();
+  if (!spatialWorkload)
+    return invalid("Spatial workload lost its typed payload");
+  auto view = workload.dataflow.view();
+  if (!view)
+    return view.takeError();
   loom::sim::SpatialSimulationRuntimeInputDraft draft{
       workload.workload.identity()};
   draft.runtimeValues = base->runtimeValues;
@@ -465,31 +438,21 @@ llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> bindChannelInputs(
                                         binding.binding.objectOrdinal,
                                         binding.binding.byteOffset});
 
-  for (const auto indexed : llvm::enumerate(projection.inputs)) {
-    const loom::runtime::Gem5SpatialChannelInput &channel = indexed.value();
-    const ChannelInputContext &context = channelContexts[indexed.index()];
+  for (const loom::runtime::Gem5SpatialChannelInput &channel :
+       projection.inputs) {
     if (channel.consumerStreamInputOrdinal >= draft.runtimeStreams.size())
       return invalid("channel projection names an absent consumer input");
     auto payload = readChannelPayload(connection, sequence, channel, requestId);
     if (!payload)
       return payload.takeError();
-    auto producerResult =
-        loom::sim::decodeSpatialEngineBoundaryResult(*payload, context.inputs);
-    if (!producerResult)
-      return producerResult.takeError();
-    if (!std::holds_alternative<loom::sim::RetiredExecution>(
-            producerResult->terminal))
-      return invalid("channel producer did not retire");
-    if (context.streamObservation >=
-        producerResult->functionalObservations.streamOutputs.size())
-      return invalid("channel producer omitted its selected stream output");
+    auto stream = loom::sim::decodeSpatialChannelStream(
+        *payload, *view, spatialWorkload->launchRef,
+        channel.consumerStreamInputOrdinal, draft.memoryObjects.size());
+    if (!stream)
+      return stream.takeError();
     draft.runtimeStreams[channel.consumerStreamInputOrdinal] =
-        producerResult->functionalObservations
-            .streamOutputs[context.streamObservation];
+        std::move(*stream);
   }
-  auto view = workload.dataflow.view();
-  if (!view)
-    return view.takeError();
   return loom::sim::finalizeSimulationRuntimeInput(draft, workload.workload,
                                                    *view);
 }
@@ -497,29 +460,59 @@ llvm::Expected<loom::sim::CanonicalSimulationRuntimeInput> bindChannelInputs(
 llvm::Error publishChannelOutputs(
     int connection, std::uint64_t sequence,
     const loom::runtime::Gem5SpatialChannelProjection &projection,
-    llvm::ArrayRef<std::uint8_t> encodedResult, std::uint64_t &requestId) {
+    const loom::sim::SpatialEngineBoundaryResult &result,
+    const loom::sim::ImportedSpatialSimulationWorkload &workload,
+    const loom::sim::CanonicalSimulationRuntimeInput &runtimeInput,
+    std::uint64_t &requestId) {
+  if (projection.outputs.empty())
+    return llvm::Error::success();
+  if (!std::holds_alternative<loom::sim::RetiredExecution>(result.terminal))
+    return invalid("channel producer did not retire");
+  const auto *spatialWorkload = workload.workload.spatial();
+  const auto *spatialRuntime = runtimeInput.spatial();
+  if (!spatialWorkload || !spatialRuntime)
+    return invalid("Spatial channel owner lost its typed payload");
+  auto view = workload.dataflow.view();
+  if (!view)
+    return view.takeError();
   for (const loom::runtime::Gem5SpatialChannelOutput &channel :
        projection.outputs) {
-    if (encodedResult.empty() ||
-        encodedResult.size() >
+    const auto found =
+        llvm::find(spatialWorkload->observableContract.streamOutputs,
+                   channel.producerStreamOutputOrdinal);
+    if (found == spatialWorkload->observableContract.streamOutputs.end())
+      return invalid("channel producer output is not observable");
+    const std::size_t observation = static_cast<std::size_t>(std::distance(
+        spatialWorkload->observableContract.streamOutputs.begin(), found));
+    if (observation >= result.functionalObservations.streamOutputs.size())
+      return invalid("channel producer omitted its selected stream output");
+    auto encodedStream = loom::sim::encodeSpatialChannelStream(
+        result.functionalObservations.streamOutputs[observation], *view,
+        spatialWorkload->launchRef, channel.producerStreamOutputOrdinal,
+        spatialRuntime->memoryObjects.size());
+    if (!encodedStream)
+      return encodedStream.takeError();
+    if (encodedStream->empty() ||
+        encodedStream->size() >
             channel.capacityBytes -
                 loom::runtime::gem5SpatialChannelBufferHeaderBytes)
-      return invalid("channel result exceeds its selected buffer");
+      return invalid("channel stream exceeds its selected buffer");
+    const std::size_t payloadBytes = encodedStream->size();
     loom::runtime::Gem5BridgeMemoryRequest payload{
         loom::runtime::Gem5BridgeMemoryOperation::Write,
         0,
         requestId++,
         channel.address + loom::runtime::gem5SpatialChannelBufferHeaderBytes,
-        encodedResult.size(),
-        std::vector<std::uint8_t>(encodedResult.begin(), encodedResult.end())};
+        payloadBytes,
+        std::move(*encodedStream)};
     auto payloadResponse =
         transactMemory(connection, sequence,
                        loom::runtime::Gem5BridgeMessageKind::ChannelTransfer,
                        std::move(payload));
     if (!payloadResponse)
       return payloadResponse.takeError();
-    const auto header = loom::runtime::encodeGem5SpatialChannelBufferHeader(
-        encodedResult.size());
+    const auto header =
+        loom::runtime::encodeGem5SpatialChannelBufferHeader(payloadBytes);
     loom::runtime::Gem5BridgeMemoryRequest commit{
         loom::runtime::Gem5BridgeMemoryOperation::Write,
         0,
@@ -597,11 +590,141 @@ runCgra(const loom::sim::PreparedCgraExecution &prepared,
   if (!outcome)
     return outcome.takeError();
   if (outcome->state == loom::sim::SpatialExecutionSessionState::StoppedByLimit)
-    return llvm::createStringError(std::errc::timed_out,
-                                   "CGRA engine reached its work limit");
+    return llvm::createStringError(
+        std::make_error_code(std::errc::timed_out),
+        "CGRA engine reached its work limit: frames=" +
+            std::to_string(outcome->counters.eventFrameCount) +
+            ", actor_commits=" +
+            std::to_string(outcome->counters.actorCommitCount) +
+            ", actor_retirements=" +
+            std::to_string(outcome->counters.actorRetirementCount) +
+            ", token_publications=" +
+            std::to_string(outcome->counters.tokenPublicationCount) +
+            ", physical_requests=" +
+            std::to_string(outcome->counters.physicalRequestCount) +
+            ", physical_grants=" +
+            std::to_string(outcome->counters.physicalGrantCount) +
+            ", physical_retirements=" +
+            std::to_string(outcome->counters.physicalRetirementCount) +
+            ", empty_frames=" +
+            std::to_string(outcome->counters.emptyEventFrameCount) +
+            ", source_frames=" +
+            std::to_string(outcome->counters.computeSourceFrameCount) + "/" +
+            std::to_string(outcome->counters.memorySourceFrameCount) + "/" +
+            std::to_string(outcome->counters.transportSourceFrameCount) + "/" +
+            std::to_string(outcome->counters.physicalSourceFrameCount));
   if (outcome->state != loom::sim::SpatialExecutionSessionState::Retired ||
-      !outcome->retired)
-    return invalid("CGRA engine did not retire the graph");
+      !outcome->retired) {
+    const llvm::StringRef state = [&] {
+      switch (outcome->state) {
+      case loom::sim::SpatialExecutionSessionState::Runnable:
+        return llvm::StringRef("runnable");
+      case loom::sim::SpatialExecutionSessionState::Retired:
+        return llvm::StringRef("retired_without_result");
+      case loom::sim::SpatialExecutionSessionState::Halted:
+        return llvm::StringRef("halted");
+      case loom::sim::SpatialExecutionSessionState::StoppedByLimit:
+        return llvm::StringRef("stopped_by_limit");
+      case loom::sim::SpatialExecutionSessionState::Failed:
+        return llvm::StringRef("failed");
+      }
+      llvm_unreachable("unknown Spatial execution session state");
+    }();
+    std::string diagnostic;
+    llvm::raw_string_ostream stream(diagnostic);
+    stream << "CGRA engine did not retire the graph: state=" << state
+           << ", frames=" << outcome->counters.eventFrameCount
+           << ", actor_commits=" << outcome->counters.actorCommitCount
+           << ", actor_retirements=" << outcome->counters.actorRetirementCount
+           << ", token_publications=" << outcome->counters.tokenPublicationCount
+           << ", memory_linearizations="
+           << outcome->counters.memoryLinearizationCount
+           << ", physical_requests=" << outcome->counters.physicalRequestCount
+           << ", physical_grants=" << outcome->counters.physicalGrantCount
+           << ", physical_retirements="
+           << outcome->counters.physicalRetirementCount;
+    if (outcome->closedWaitSet)
+      stream << ", pending_actor_firings="
+             << outcome->closedWaitSet->pendingActorFirings
+             << ", pending_transfers="
+             << outcome->closedWaitSet->pendingTransfers
+             << ", pending_physical_actions="
+             << outcome->closedWaitSet->pendingPhysicalActions
+             << ", graph_retirement_visible="
+             << outcome->closedWaitSet->graphRetirementVisible;
+    if (outcome->closedWaitSet)
+      for (const auto &firing : outcome->closedWaitSet->actorFirings)
+        stream << ", actor_firing={actor=" << firing.semanticActorOrdinal
+               << ", occurrence=" << firing.occurrenceOrdinal
+               << ", transition=" << firing.transitionCaseOrdinal
+               << ", transfers=" << firing.completedTransfers << "/"
+               << firing.expectedTransfers
+               << ", physical_complete=" << firing.physicalComplete
+               << ", causal_release=" << firing.causalReleaseSatisfied << "}";
+    if (outcome->closedWaitSet)
+      for (const auto &transfer : outcome->closedWaitSet->transfers) {
+        stream << ", transfer={binding=" << transfer.bindingOrdinal
+               << ", occurrence=" << transfer.occurrenceOrdinal
+               << ", blocked=" << transfer.blocked
+               << ", arrival_scheduled=" << transfer.arrivalScheduled
+               << ", publication_ready=" << transfer.publicationReady
+               << ", published=" << transfer.published
+               << ", consumed_requested=" << transfer.consumedRequested
+               << ", operand_reserved=" << transfer.operandCapacityReserved
+               << ", operand_blocked=" << transfer.operandCapacityBlocked
+               << ", produced=" << transfer.producedRetired << "/"
+               << transfer.producedPermitted
+               << ", traversal=" << transfer.traversalRetired << "/"
+               << transfer.traversalPermitted << ", traversal_terminals="
+               << transfer.traversalTerminalsPermitted
+               << ", consumed=" << transfer.consumedRetired << "/"
+               << transfer.consumedPermitted
+               << ", ready_sinks=" << transfer.readySinkCount
+               << ", published_sinks=" << transfer.publishedSinkCount << "/"
+               << transfer.sinkCount
+               << ", publications=" << transfer.publishedPublicationCount << "/"
+               << transfer.requestedPublicationCount << "/"
+               << transfer.publicationCount << ", blocking_traversal="
+               << transfer.blockingTraversalNodeOrdinal << ":"
+               << static_cast<unsigned>(transfer.blockingTraversalState)
+               << ", blocking_storage=" << transfer.blockingStorageOrdinal
+               << ":" << transfer.blockingStorageOccupancy << "+"
+               << transfer.blockingStorageReservations << "/"
+               << transfer.blockingStorageCapacity
+               << ", downstream=" << transfer.blockingDownstreamStorageCount
+               << ":" << transfer.blockingUnbufferedSinkCount << ":"
+               << transfer.blockingDownstreamStorageOrdinal << ":"
+               << transfer.blockingDownstreamStorageOccupancy << "+"
+               << transfer.blockingDownstreamStorageReservations << "/"
+               << transfer.blockingDownstreamStorageCapacity << ":"
+               << transfer.blockingDownstreamStorageReserved
+               << ", blocking_actor=" << transfer.blockingActorOrdinal
+               << ", blocking_ready=" << transfer.blockingReadyTokenCount
+               << ", blocking_queue=" << transfer.blockingQueueOccupancy << "+"
+               << transfer.blockingQueueReservations << "/"
+               << transfer.blockingQueueCapacity << ", unpublished=[";
+        for (std::size_t index = 0;
+             index != transfer.unpublishedActorOrdinals.size(); ++index) {
+          if (index != 0)
+            stream << ",";
+          stream << transfer.unpublishedActorOrdinals[index] << ":"
+                 << transfer.unpublishedInputOrdinals[index] << ":"
+                 << transfer.unpublishedReadyTokenCounts[index];
+        }
+        stream << "]}";
+      }
+    if (outcome->closedWaitSet)
+      for (const auto &action : outcome->closedWaitSet->physicalActions)
+        stream << ", physical_action={action=" << action.actionOrdinal
+               << ", occurrence=" << action.occurrenceOrdinal
+               << ", client=" << static_cast<unsigned>(action.clientKind)
+               << ", granted=" << action.granted
+               << ", has_commit=" << action.hasCommit
+               << ", requires_causal_release=" << action.requiresCausalRelease
+               << ", intrinsic_release=" << action.intrinsicReleaseReached
+               << ", causal_release=" << action.causalReleaseReached << "}";
+    return invalid(diagnostic);
+  }
   return loom::sim::SpatialEngineBoundaryResult{
       loom::sim::RetiredExecution{},
       std::move(outcome->retired->observations),
@@ -638,6 +761,68 @@ llvm::Expected<std::uint64_t> completionDelay(
 #endif
 }
 
+#if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+using PreparedSpatialExecution = loom::sim::PreparedDfgExecution;
+#else
+using PreparedSpatialExecution = loom::sim::PreparedCgraExecution;
+#endif
+
+struct SpatialSessionEntry final {
+  loom::sim::ImportedSpatialSimulationWorkload workload;
+  std::optional<loom::sim::CanonicalSimulationRuntimeInput> staticRuntime;
+  loom::runtime::Gem5SpatialChannelProjection channels;
+  std::vector<std::uint8_t> expectedLaunch;
+  std::size_t preparedOrdinal = 0;
+};
+
+#if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+void appendKeyU64(std::string &key, std::uint64_t value) {
+  for (unsigned byte = 0; byte != 8; ++byte)
+    key.push_back(static_cast<char>(value >> (byte * 8)));
+}
+#endif
+
+void appendKeyIdentity(std::string &key,
+                       const loom::ArtifactIdentity &identity) {
+  const auto &bytes = identity.bytes();
+  key.append(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+}
+
+llvm::Expected<std::size_t> selectSessionEntry(
+    llvm::ArrayRef<SpatialSessionEntry> entries,
+    const loom::runtime::Gem5SpatialLaunchEnvelope &launch,
+    const std::optional<loom::runtime::SpatialInvocationWire> &invocation) {
+  std::optional<std::size_t> selected;
+  for (const auto indexed : llvm::enumerate(entries)) {
+    const SpatialSessionEntry &entry = indexed.value();
+    if (entry.expectedLaunch != launch.staticLaunch)
+      continue;
+    const auto *workload = entry.workload.workload.spatial();
+    if (!workload)
+      return invalid("Spatial session entry lost its workload payload");
+    bool matches = false;
+    if (invocation) {
+      matches = invocation->canonicalDataflowIdentity ==
+                    entry.workload.dataflow.identity().bytes() &&
+                invocation->rootThreadLaunchEntity ==
+                    workload->launchRef.rootThreadLaunch.entity.value() &&
+                invocation->graphLaunchEntity ==
+                    workload->launchRef.staticGraphLaunch.entity.value() &&
+                invocation->denseCoordinates == workload->denseCoordinates;
+    } else {
+      matches = entry.staticRuntime.has_value();
+    }
+    if (!matches)
+      continue;
+    if (selected)
+      return invalid("Spatial launch matches multiple session entries");
+    selected = indexed.index();
+  }
+  if (!selected)
+    return invalid("Spatial launch matches no session entry");
+  return *selected;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -648,64 +833,105 @@ int main(int argc, char **argv) {
                           "positive"));
 
   loom::ArtifactStore store(artifactStorePath);
-  auto workload = root(workloadIdentity, loom::sim::simulationWorkloadSchema);
   auto dataflow = root(dataflowIdentity, dataflow::canonicalDataflowSchema);
-  if (!workload)
-    return report(workload.takeError());
   if (!dataflow)
     return report(dataflow.takeError());
-  auto importedWorkload =
-      loom::sim::importSpatialSimulationWorkload(*workload, store);
-  if (!importedWorkload)
-    return report(importedWorkload.takeError());
-  if (importedWorkload->dataflow.identity() != dataflow->artifact)
-    return report(invalid("Spatial inputs name a foreign Dataflow owner"));
-  std::optional<loom::sim::CanonicalSimulationRuntimeInput> staticRuntime;
-  if (!runtimeInputIdentity.empty()) {
-    auto runtime =
-        root(runtimeInputIdentity, loom::sim::simulationRuntimeInputSchema);
-    if (!runtime)
-      return report(runtime.takeError());
-    auto imported = loom::sim::importSpatialSimulationRuntimeInput(
-        *runtime, *importedWorkload, store);
-    if (!imported)
-      return report(imported.takeError());
-    staticRuntime.emplace(std::move(*imported));
-  }
+  const std::size_t entryCount = workloadIdentities.size();
+  if (expectedLaunchPaths.size() != entryCount ||
+      runtimeInputIdentities.size() != entryCount ||
+      channelProjectionPaths.size() != entryCount)
+    return report(invalid("Spatial session argument tables have different "
+                          "lengths"));
 #if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
-  const auto *spatialWorkload = importedWorkload->workload.spatial();
-  if (!spatialWorkload)
-    return report(invalid("Spatial workload lost its typed payload"));
-  auto prepared = loom::sim::prepareDfgExecution(importedWorkload->dataflow,
-                                                 spatialWorkload->launchRef);
+  if (!fabricIdentities.empty() || !spatialMappingIdentities.empty())
+    return report(invalid("DFG session received CGRA owner references"));
 #else
-  if (fabricIdentity.empty() || spatialMappingIdentity.empty())
-    return report(invalid("CGRA engine owner references are not total"));
-  auto fabric = root(fabricIdentity, loom::fabric::fabricArtifactSchema);
-  auto mapping =
-      root(spatialMappingIdentity, loom::mapping::mappingArtifactSchema);
-  if (!fabric)
-    return report(fabric.takeError());
-  if (!mapping)
-    return report(mapping.takeError());
-  auto prepared =
-      loom::sim::prepareCgraExecution(*dataflow, *fabric, *mapping, store);
+  if (fabricIdentities.size() != entryCount ||
+      spatialMappingIdentities.size() != entryCount)
+    return report(invalid("CGRA session owner tables are not total"));
 #endif
-  if (!prepared)
-    return report(prepared.takeError());
-  auto expectedLaunch = readFile(expectedLaunchPath);
-  if (!expectedLaunch)
-    return report(expectedLaunch.takeError());
-  auto channelBytes = readFile(channelProjectionPath);
-  if (!channelBytes)
-    return report(channelBytes.takeError());
-  auto channels =
-      loom::runtime::decodeGem5SpatialChannelProjection(*channelBytes);
-  if (!channels)
-    return report(channels.takeError());
-  auto channelContexts = importChannelInputContexts(*channels, store);
-  if (!channelContexts)
-    return report(channelContexts.takeError());
+
+  std::vector<SpatialSessionEntry> entries;
+  entries.reserve(entryCount);
+  std::vector<PreparedSpatialExecution> preparedExecutions;
+  std::map<std::string, std::size_t> preparedByKey;
+  for (std::size_t ordinal = 0; ordinal != entryCount; ++ordinal) {
+    auto workload =
+        root(workloadIdentities[ordinal], loom::sim::simulationWorkloadSchema);
+    if (!workload)
+      return report(workload.takeError());
+    auto importedWorkload =
+        loom::sim::importSpatialSimulationWorkload(*workload, store);
+    if (!importedWorkload)
+      return report(importedWorkload.takeError());
+    if (importedWorkload->dataflow.identity() != dataflow->artifact)
+      return report(invalid("Spatial inputs name a foreign Dataflow owner"));
+    std::optional<loom::sim::CanonicalSimulationRuntimeInput> staticRuntime;
+    if (runtimeInputIdentities[ordinal] != "none") {
+      auto runtime = root(runtimeInputIdentities[ordinal],
+                          loom::sim::simulationRuntimeInputSchema);
+      if (!runtime)
+        return report(runtime.takeError());
+      auto imported = loom::sim::importSpatialSimulationRuntimeInput(
+          *runtime, *importedWorkload, store);
+      if (!imported)
+        return report(imported.takeError());
+      staticRuntime.emplace(std::move(*imported));
+    }
+    auto expectedLaunch = readFile(expectedLaunchPaths[ordinal]);
+    if (!expectedLaunch)
+      return report(expectedLaunch.takeError());
+    auto channelBytes = readFile(channelProjectionPaths[ordinal]);
+    if (!channelBytes)
+      return report(channelBytes.takeError());
+    auto channels =
+        loom::runtime::decodeGem5SpatialChannelProjection(*channelBytes);
+    if (!channels)
+      return report(channels.takeError());
+    std::string preparedKey;
+    appendKeyIdentity(preparedKey, dataflow->artifact);
+#if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+    const auto *spatialWorkload = importedWorkload->workload.spatial();
+    if (!spatialWorkload)
+      return report(invalid("Spatial workload lost its typed payload"));
+    appendKeyU64(preparedKey,
+                 spatialWorkload->launchRef.rootThreadLaunch.entity.value());
+    appendKeyU64(preparedKey,
+                 spatialWorkload->launchRef.staticGraphLaunch.entity.value());
+#else
+    auto fabric =
+        root(fabricIdentities[ordinal], loom::fabric::fabricArtifactSchema);
+    auto mapping = root(spatialMappingIdentities[ordinal],
+                        loom::mapping::mappingArtifactSchema);
+    if (!fabric)
+      return report(fabric.takeError());
+    if (!mapping)
+      return report(mapping.takeError());
+    appendKeyIdentity(preparedKey, fabric->artifact);
+    appendKeyIdentity(preparedKey, mapping->artifact);
+#endif
+    auto prepared = preparedByKey.find(preparedKey);
+    std::size_t preparedOrdinal = 0;
+    if (prepared == preparedByKey.end()) {
+#if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
+      auto built = loom::sim::prepareDfgExecution(importedWorkload->dataflow,
+                                                  spatialWorkload->launchRef);
+#else
+      auto built =
+          loom::sim::prepareCgraExecution(*dataflow, *fabric, *mapping, store);
+#endif
+      if (!built)
+        return report(built.takeError());
+      preparedOrdinal = preparedExecutions.size();
+      preparedExecutions.push_back(std::move(*built));
+      preparedByKey.emplace(std::move(preparedKey), preparedOrdinal);
+    } else {
+      preparedOrdinal = prepared->second;
+    }
+    entries.push_back({std::move(*importedWorkload), std::move(staticRuntime),
+                       std::move(*channels), std::move(*expectedLaunch),
+                       preparedOrdinal});
+  }
 
   auto server = openServer();
   if (!server)
@@ -725,8 +951,7 @@ int main(int argc, char **argv) {
     if (message->kind != loom::runtime::Gem5BridgeMessageKind::SpatialLaunch ||
         message->sequence != sequence ||
         !loom::runtime::decodeGem5SpatialLaunchEnvelope(
-            message->payload, launch, launchDiagnostic) ||
-        launch.staticLaunch != *expectedLaunch) {
+            message->payload, launch, launchDiagnostic)) {
       ::close(connection);
       return report(
           invalid("bridge launch does not match the exact Deployment: " +
@@ -735,17 +960,7 @@ int main(int argc, char **argv) {
 
     std::optional<loom::runtime::SpatialInvocationWire> invocation;
     std::optional<loom::sim::CanonicalSimulationRuntimeInput> invocationRuntime;
-    if (launch.invocation.empty()) {
-      if (!staticRuntime) {
-        ::close(connection);
-        return report(invalid("static launch has no Spatial runtime input"));
-      }
-    } else {
-      if (staticRuntime) {
-        ::close(connection);
-        return report(
-            invalid("dynamic invocation has a competing static runtime input"));
-      }
+    if (!launch.invocation.empty()) {
       loom::runtime::SpatialInvocationWire wire;
       std::string diagnostic;
       if (!loom::runtime::decodeSpatialInvocationWire(launch.invocation, wire,
@@ -753,36 +968,53 @@ int main(int argc, char **argv) {
         ::close(connection);
         return report(invalid(diagnostic));
       }
+      invocation = std::move(wire);
+    }
+    auto selected = selectSessionEntry(entries, launch, invocation);
+    if (!selected) {
+      ::close(connection);
+      return report(selected.takeError());
+    }
+    SpatialSessionEntry &entry = entries[*selected];
+    if (invocation) {
+      if (entry.staticRuntime) {
+        ::close(connection);
+        return report(
+            invalid("dynamic invocation has a competing static runtime input"));
+      }
       auto runtime = loom::sim::materializeSpatialInvocationRuntimeInput(
-          *importedWorkload, wire);
+          entry.workload, *invocation);
       if (!runtime) {
         ::close(connection);
         return report(runtime.takeError());
       }
-      invocation = std::move(wire);
       invocationRuntime.emplace(std::move(*runtime));
+    } else if (!entry.staticRuntime) {
+      ::close(connection);
+      return report(invalid("static launch has no Spatial runtime input"));
     }
     const loom::sim::CanonicalSimulationRuntimeInput &baseRuntime =
-        invocationRuntime ? *invocationRuntime : *staticRuntime;
+        invocationRuntime ? *invocationRuntime : *entry.staticRuntime;
     std::uint64_t requestId = 0;
-    auto runtime = bindChannelInputs(connection, message->sequence, *channels,
-                                     *channelContexts, *importedWorkload,
-                                     baseRuntime, requestId);
+    auto runtime =
+        bindChannelInputs(connection, message->sequence, entry.channels,
+                          entry.workload, baseRuntime, requestId);
     if (!runtime) {
       ::close(connection);
       return report(runtime.takeError());
     }
 #if defined(LOOM_GEM5_SPATIAL_ENGINE_DFG)
-    auto result = runDfg(*prepared, *importedWorkload, *runtime);
+    auto result = runDfg(preparedExecutions[entry.preparedOrdinal],
+                         entry.workload, *runtime);
     std::optional<loom::sim::SpatialEventCoordinate> externallyServicedThrough;
 #else
     std::optional<Gem5CgraExternalMemoryProvider> externalMemoryProvider;
     if (invocation)
       externalMemoryProvider.emplace(connection, message->sequence, *invocation,
                                      requestId);
-    auto result =
-        runCgra(*prepared, *importedWorkload, *runtime,
-                externalMemoryProvider ? &*externalMemoryProvider : nullptr);
+    auto result = runCgra(
+        preparedExecutions[entry.preparedOrdinal], entry.workload, *runtime,
+        externalMemoryProvider ? &*externalMemoryProvider : nullptr);
     std::optional<loom::sim::SpatialEventCoordinate> externallyServicedThrough;
     if (externalMemoryProvider)
       externallyServicedThrough = externalMemoryProvider->lastCoordinate();
@@ -792,13 +1024,14 @@ int main(int argc, char **argv) {
       return report(result.takeError());
     }
     auto encoded = loom::sim::encodeSpatialEngineBoundaryResult(
-        *result, *importedWorkload, *runtime);
+        *result, entry.workload, *runtime);
     if (!encoded) {
       ::close(connection);
       return report(encoded.takeError());
     }
     if (llvm::Error error = publishChannelOutputs(
-            connection, message->sequence, *channels, *encoded, requestId)) {
+            connection, message->sequence, entry.channels, *result,
+            entry.workload, *runtime, requestId)) {
       ::close(connection);
       return report(std::move(error));
     }
@@ -810,7 +1043,7 @@ int main(int argc, char **argv) {
     bool invocationDelayApplied = false;
     if (invocation) {
       auto writes = loom::sim::projectSpatialInvocationResultWrites(
-          *invocation, *importedWorkload, result->functionalObservations);
+          *invocation, entry.workload, result->functionalObservations);
       if (!writes) {
         ::close(connection);
         return report(writes.takeError());
@@ -830,9 +1063,23 @@ int main(int argc, char **argv) {
         std::holds_alternative<loom::sim::RetiredExecution>(result->terminal)
             ? 0
             : 1;
+    std::optional<loom::runtime::SpatialInvocationRuntimeInputSnapshot>
+        runtimeSnapshot;
+    if (invocation)
+      runtimeSnapshot.emplace(
+          loom::runtime::SpatialInvocationRuntimeInputSnapshot{
+              runtime->identity().bytes(),
+              std::vector<std::uint8_t>(
+                  runtime->canonicalBytes().bytes().begin(),
+                  runtime->canonicalBytes().bytes().end())});
     std::vector<std::uint8_t> completionResult =
         loom::runtime::encodeSpatialInvocationResultWire(
-            {launch.invocation, std::move(*encoded)});
+            {*selected, launch.invocation, std::move(runtimeSnapshot),
+             std::move(*encoded)});
+    if (completionResult.empty()) {
+      ::close(connection);
+      return report(invalid("cannot encode Spatial invocation result"));
+    }
     const loom::runtime::Gem5BridgeCompletion completion{
         invocationDelayApplied ? 0 : *delay, status,
         std::move(completionResult)};

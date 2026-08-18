@@ -1,6 +1,7 @@
 #ifndef LOOM_MAPPING_ARTIFACT_MAPPINGPROGRESSANALYSIS_H
 #define LOOM_MAPPING_ARTIFACT_MAPPINGPROGRESSANALYSIS_H
 
+#include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingProgressProjection.h"
@@ -81,6 +82,13 @@ mappingProgressClosureReasonSpelling(MappingProgressClosureReason reason);
 llvm::Expected<MappingDataflowProgressBasis> deriveMappingDataflowProgressBasis(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::GraphRef> coveredGraphs);
+
+/// Emits the already-derived basis and canonical residual cycle without
+/// rerunning graph analysis. This presentation cannot change Mapping state.
+void emitMappingDataflowProgressBasisDiagnostic(
+    const MappingDataflowProgressBasis &basis,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    mapping_debug::Stage stage);
 
 /// Completes the System progress proof from the one shared physical closure
 /// projection. Resource uses that share an activation trigger are acquired as

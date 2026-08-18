@@ -4,7 +4,6 @@
 #include "SimulationWireInternal.h"
 #include "StructuredProgramNativeExecutionInternal.h"
 
-#include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Frontend/IR/LoomOps.h"
@@ -14,7 +13,6 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/APFloat.h"
@@ -23,9 +21,7 @@
 
 #include <chrono>
 #include <cstdint>
-#include <deque>
 #include <limits>
-#include <map>
 #include <optional>
 #include <system_error>
 #include <utility>
@@ -177,204 +173,6 @@ llvm::Error requireSameCanonicalType(mlir::Type graphType,
   return llvm::Error::success();
 }
 
-llvm::Expected<std::vector<mlir::Value>> deriveDenseCoordinateBoundaries(
-    const frontend::PreparedSpatialOwnershipSelection &prepared) {
-  if (!prepared.sourceInductions)
-    return std::vector<mlir::Value>{};
-  auto forall = llvm::dyn_cast<mlir::scf::ForallOp>(prepared.operation);
-  if (!forall || prepared.sourceInductions->size() !=
-                     static_cast<std::size_t>(forall.getRank()))
-    return invalid("thread coordinate source binding is not total");
-
-  std::vector<mlir::Value> coordinates;
-  coordinates.reserve(forall.getRank());
-  mlir::OpBuilder builder = mlir::OpBuilder::atBlockBegin(forall.getBody());
-  for (auto [dimension, sourceInduction] :
-       llvm::enumerate(forall.getInductionVars())) {
-    const auto &binding = (*prepared.sourceInductions)[dimension];
-    auto resolveInput = [&](std::optional<std::uint64_t> ordinal)
-        -> llvm::Expected<std::optional<mlir::Value>> {
-      if (!ordinal)
-        return std::optional<mlir::Value>{};
-      if (*ordinal >= prepared.liveIns.size())
-        return invalid("source induction input exceeds the selected boundary");
-      mlir::Value value = prepared.liveIns[*ordinal];
-      if (!value.getType().isIndex())
-        return invalid("source induction input is not index-typed");
-      return std::optional<mlir::Value>(value);
-    };
-    auto lower = resolveInput(binding.lowerInputOrdinal);
-    if (!lower)
-      return lower.takeError();
-    auto step = resolveInput(binding.stepInputOrdinal);
-    if (!step)
-      return step.takeError();
-
-    mlir::Value coordinate = sourceInduction;
-    if (*lower || *step) {
-      auto sourceWidth = ::loom::getIndexBitWidth(forall);
-      if (!sourceWidth)
-        return sourceWidth.takeError();
-      if (*sourceWidth == 0 || *sourceWidth > 64)
-        return invalid("coordinate recovery requires a 32-bit or 64-bit "
-                       "selected index ABI");
-      mlir::IntegerType wideType = builder.getIntegerType(*sourceWidth * 2);
-      auto widen = [&](mlir::Value value) {
-        return mlir::arith::IndexCastOp::create(builder, forall.getLoc(),
-                                                wideType, value)
-            .getResult();
-      };
-      coordinate = widen(sourceInduction);
-      if (*lower)
-        coordinate = mlir::arith::SubIOp::create(builder, forall.getLoc(),
-                                                 coordinate, widen(**lower));
-      if (*step)
-        coordinate = mlir::arith::DivSIOp::create(builder, forall.getLoc(),
-                                                  coordinate, widen(**step));
-      coordinate = mlir::arith::IndexCastOp::create(
-          builder, forall.getLoc(), builder.getIndexType(), coordinate);
-    }
-    coordinates.push_back(coordinate);
-  }
-  return coordinates;
-}
-
-llvm::Expected<WorkloadBackedSimulationInputCapturePlan>
-deriveSourceCapturePlan(
-    const dataflow::CanonicalDataflowProgramView &view,
-    dataflow::RootedGraphLaunchRef launch,
-    const frontend::PreparedSpatialOwnershipSelection &prepared) {
-  auto context = detail::resolveLaunchContext(view, launch);
-  if (!context)
-    return context.takeError();
-  if (prepared.liveOuts.size() != context->numValueResults)
-    return invalid("selected live-out count differs from graph results");
-  auto denseCoordinates = deriveDenseCoordinateBoundaries(prepared);
-  if (!denseCoordinates)
-    return denseCoordinates.takeError();
-  if (denseCoordinates->size() != context->threadRank)
-    return invalid("selected dense coordinate rank differs from graph ABI");
-  WorkloadBackedSimulationInputCapturePlan plan{launch, {}, {}, {}, {}, {}, {}};
-  plan.denseCoordinates.reserve(denseCoordinates->size());
-  for (auto [dimension, coordinate] : llvm::enumerate(*denseCoordinates)) {
-    auto bytes = fixedTypeByteCount(prepared.operation, coordinate.getType());
-    if (!bytes)
-      return bytes.takeError();
-    plan.denseCoordinates.push_back(
-        {static_cast<std::uint64_t>(dimension), coordinate, *bytes});
-  }
-
-  auto boundaryValueForThreadFormal =
-      [&](mlir::Value graphBinding) -> llvm::Expected<mlir::Value> {
-    auto argument = llvm::dyn_cast<mlir::BlockArgument>(graphBinding);
-    if (!argument ||
-        argument.getOwner()->getParentOp() != context->thread.getOperation())
-      return unsupported("graph input is not a selected thread formal");
-    const std::uint64_t inputCount =
-        context->thread.getFunctionType().getNumInputs();
-    const std::uint64_t argumentOrdinal = argument.getArgNumber();
-    if (argumentOrdinal < inputCount) {
-      if (argumentOrdinal >= prepared.liveIns.size())
-        return invalid("thread formal exceeds the selected boundary");
-      return prepared.liveIns[argumentOrdinal];
-    }
-    if (argumentOrdinal == inputCount)
-      return invalid("graph value input is bound to the thread control token");
-    const std::uint64_t coordinateOrdinal = argumentOrdinal - inputCount - 1;
-    if (coordinateOrdinal >= denseCoordinates->size())
-      return invalid("thread coordinate has no exact source induction binding");
-    return (*denseCoordinates)[coordinateOrdinal];
-  };
-
-  plan.valueInputs.reserve(context->numValueInputs);
-  for (std::uint64_t ordinal = 0; ordinal < context->numValueInputs;
-       ++ordinal) {
-    auto boundary = boundaryValueForThreadFormal(
-        context->graphLaunchOp.getValueInputs()[ordinal]);
-    if (!boundary)
-      return boundary.takeError();
-    mlir::Type graphType = context->graphOp.getFunctionType().getInput(ordinal);
-    if (llvm::Error error =
-            requireSameCanonicalType(graphType, boundary->getType()))
-      return std::move(error);
-    const detail::LaneShape &shape = context->valueInputShapes[ordinal];
-    auto fixed = fixedValueOf(*boundary, shape);
-    if (!fixed)
-      return fixed.takeError();
-    std::uint64_t byteCount = 0;
-    if (!*fixed) {
-      auto bytes = fixedTypeByteCount(boundary->getDefiningOp()
-                                          ? boundary->getDefiningOp()
-                                          : prepared.operation,
-                                      boundary->getType());
-      if (!bytes)
-        return bytes.takeError();
-      if (!fitsStorageExtent(shape, *bytes))
-        return invalid("graph input does not fit selected storage extent");
-      byteCount = *bytes;
-    }
-    plan.valueInputs.push_back(SimulationValueInputCapture{
-        ordinal, std::nullopt, *boundary, shape.lanesPerToken,
-        shape.laneBitWidth, byteCount, std::move(*fixed), std::nullopt});
-  }
-
-  plan.valueResults.reserve(context->numValueResults);
-  for (std::uint64_t ordinal = 0; ordinal < context->numValueResults;
-       ++ordinal) {
-    mlir::Value boundary = prepared.liveOuts[ordinal];
-    mlir::Type graphType =
-        context->graphOp.getFunctionType().getResult(ordinal);
-    if (llvm::Error error =
-            requireSameCanonicalType(graphType, boundary.getType()))
-      return std::move(error);
-    const detail::LaneShape &shape = context->valueResultShapes[ordinal];
-    auto bytes =
-        fixedTypeByteCount(boundary.getDefiningOp() ? boundary.getDefiningOp()
-                                                    : prepared.operation,
-                           boundary.getType());
-    if (!bytes)
-      return bytes.takeError();
-    if (!fitsStorageExtent(shape, *bytes))
-      return invalid("graph result does not fit selected storage extent");
-    plan.valueResults.push_back(SimulationValueResultCapture{
-        ordinal, boundary, shape.lanesPerToken, shape.laneBitWidth, *bytes});
-  }
-
-  plan.memoryRoots.reserve(context->importedRoots.size());
-  for (dataflow::LogicalMemoryRootRef root : context->importedRoots) {
-    auto resolved = view.resolve(root);
-    if (!resolved)
-      return resolved.takeError();
-    auto threadSource =
-        capture_detail::threadMemorySourceForRoot(*resolved, *context);
-    if (!threadSource)
-      return threadSource.takeError();
-    mlir::Value boundary = *threadSource;
-    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(boundary)) {
-      if (argument.getArgNumber() >= prepared.liveIns.size())
-        return invalid("imported memory root exceeds the selected boundary");
-      boundary = prepared.liveIns[argument.getArgNumber()];
-    }
-    if (!llvm::isa<mlir::LLVM::LLVMPointerType>(boundary.getType()))
-      return invalid("imported memory root is not pointer-valued");
-    plan.memoryRoots.push_back({root, boundary});
-  }
-  for (std::uint64_t valueOrdinal = 0; valueOrdinal < context->numValueInputs;
-       ++valueOrdinal) {
-    auto projection = capture_detail::pointerValueTargetForInput(view, *context,
-                                                                 valueOrdinal);
-    if (!projection)
-      return projection.takeError();
-    if (!*projection)
-      continue;
-    if (plan.valueInputs[valueOrdinal].fixedValue)
-      return unsupported(
-          "fixed first-class pointer inputs have no runtime object binding");
-    plan.valueInputs[valueOrdinal].pointerTarget = (*projection)->target;
-  }
-  return plan;
-}
-
 llvm::Expected<WorkloadBackedStreamCapture>
 deriveStreamCapture(std::uint64_t ordinal, mlir::BlockArgument channel,
                     const detail::LaneShape &shape, mlir::Type graphType,
@@ -416,19 +214,23 @@ deriveStreamCapture(std::uint64_t ordinal, mlir::BlockArgument channel,
 }
 
 llvm::Expected<WorkloadBackedSimulationInputCapturePlan>
-deriveSelectedStreamCapturePlan(
-    const dataflow::CanonicalDataflowProgramView &view,
-    dataflow::RootedGraphLaunchRef launch, dataflow::ThreadOp thread,
-    loom::SpatialRegionOp spatial) {
+deriveSelectedCapturePlan(const dataflow::CanonicalDataflowProgramView &view,
+                          dataflow::RootedGraphLaunchRef launch,
+                          dataflow::ThreadOp thread,
+                          loom::SpatialRegionOp spatial) {
   auto context = detail::resolveLaunchContext(view, launch);
   if (!context)
     return context.takeError();
-  if (spatial.getStreamInputs().size() != context->numStreamInputs ||
+  if (spatial.getValueInputs().size() != context->numValueInputs ||
+      spatial.getValueResults().size() != context->numValueResults ||
+      spatial.getStreamInputs().size() != context->numStreamInputs ||
       spatial.getStreamOutputs().size() != context->numStreamOutputs)
-    return invalid("selected Spatial stream boundary differs from graph ABI");
+    return invalid("selected Spatial boundary differs from graph ABI");
   if (thread.getBody().empty() || spatial.getBody().empty())
     return invalid("selected Spatial carrier has no body");
   const std::uint64_t inputCount = thread.getFunctionType().getNumInputs();
+  if (inputCount != context->thread.getFunctionType().getNumInputs())
+    return invalid("selected thread value ABI differs from graph owner");
   mlir::Block &threadEntry = thread.getBody().front();
   if (threadEntry.getNumArguments() < inputCount + 1)
     return invalid("selected thread has no control boundary");
@@ -445,6 +247,100 @@ deriveSelectedStreamCapturePlan(
     if (!byteCount)
       return byteCount.takeError();
     plan.denseCoordinates.push_back({dimension, coordinate, *byteCount});
+  }
+
+  plan.valueInputs.reserve(context->numValueInputs);
+  for (std::uint64_t ordinal = 0; ordinal < context->numValueInputs;
+       ++ordinal) {
+    mlir::Value boundary = spatial.getValueInputs()[ordinal];
+    mlir::Type graphType = context->graphOp.getFunctionType().getInput(ordinal);
+    if (llvm::Error error =
+            requireSameCanonicalType(graphType, boundary.getType()))
+      return std::move(error);
+    const detail::LaneShape &shape = context->valueInputShapes[ordinal];
+    auto fixed = fixedValueOf(boundary, shape);
+    if (!fixed)
+      return fixed.takeError();
+    std::uint64_t byteCount = 0;
+    if (!*fixed) {
+      auto bytes = fixedTypeByteCount(
+          boundary.getDefiningOp() ? boundary.getDefiningOp() : spatial,
+          boundary.getType());
+      if (!bytes)
+        return bytes.takeError();
+      if (!fitsStorageExtent(shape, *bytes))
+        return invalid("graph input does not fit selected storage extent");
+      byteCount = *bytes;
+    }
+    plan.valueInputs.push_back({ordinal, std::nullopt, boundary,
+                                shape.lanesPerToken, shape.laneBitWidth,
+                                byteCount, std::move(*fixed), std::nullopt,
+                                std::nullopt});
+  }
+
+  plan.valueResults.reserve(context->numValueResults);
+  for (std::uint64_t ordinal = 0; ordinal < context->numValueResults;
+       ++ordinal) {
+    mlir::Value boundary = spatial.getValueResults()[ordinal];
+    mlir::Type graphType =
+        context->graphOp.getFunctionType().getResult(ordinal);
+    if (llvm::Error error =
+            requireSameCanonicalType(graphType, boundary.getType()))
+      return std::move(error);
+    const detail::LaneShape &shape = context->valueResultShapes[ordinal];
+    auto bytes = fixedTypeByteCount(spatial, boundary.getType());
+    if (!bytes)
+      return bytes.takeError();
+    if (!fitsStorageExtent(shape, *bytes))
+      return invalid("graph result does not fit selected storage extent");
+    plan.valueResults.push_back(
+        {ordinal, boundary, shape.lanesPerToken, shape.laneBitWidth, *bytes});
+  }
+
+  plan.memoryRoots.reserve(context->importedRoots.size());
+  for (dataflow::LogicalMemoryRootRef root : context->importedRoots) {
+    auto resolved = view.resolve(root);
+    if (!resolved)
+      return resolved.takeError();
+    auto source =
+        capture_detail::threadMemorySourceForRoot(*resolved, *context);
+    if (!source)
+      return source.takeError();
+    mlir::Value boundary;
+    if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(*source)) {
+      if (argument.getOwner() != &context->thread.getBody().front() ||
+          argument.getArgNumber() >= inputCount)
+        return invalid("memory root has a non-input thread formal");
+      boundary = threadEntry.getArgument(argument.getArgNumber());
+    } else {
+      for (auto [ordinal, input] :
+           llvm::enumerate(context->graphLaunchOp.getValueInputs()))
+        if (input == *source)
+          boundary = spatial.getValueInputs()[ordinal];
+      for (auto [ordinal, input] :
+           llvm::enumerate(context->graphLaunchOp.getMemoryInputs()))
+        if (!boundary && input == *source &&
+            ordinal < spatial.getMemoryInputs().size())
+          boundary = spatial.getMemoryInputs()[ordinal];
+      if (!boundary)
+        return invalid("memory root has no selected Spatial boundary");
+    }
+    if (!llvm::isa<mlir::LLVM::LLVMPointerType>(boundary.getType()))
+      return invalid("imported memory root is not pointer-valued");
+    plan.memoryRoots.push_back({root, boundary});
+  }
+  for (std::uint64_t ordinal = 0; ordinal < context->numValueInputs;
+       ++ordinal) {
+    auto projection =
+        capture_detail::pointerValueTargetForInput(view, *context, ordinal);
+    if (!projection)
+      return projection.takeError();
+    if (!*projection)
+      continue;
+    if (plan.valueInputs[ordinal].fixedValue)
+      return unsupported(
+          "fixed first-class pointer inputs have no runtime object binding");
+    plan.valueInputs[ordinal].pointerTarget = (*projection)->target;
   }
 
   mlir::Block &spatialEntry = spatial.getBody().front();
@@ -535,7 +431,7 @@ llvm::Expected<SelectedActivationCapture> deriveSelectedActivationCapture(
       return invalid(
           "unprojected candidate has no unique thread/spatial carrier");
   }
-  auto plan = deriveSelectedStreamCapturePlan(view, launch, thread, spatial);
+  auto plan = deriveSelectedCapturePlan(view, launch, thread, spatial);
   if (!plan)
     return plan.takeError();
   return SelectedActivationCapture{std::move(module), spatial,
@@ -813,12 +709,7 @@ finalizeReplayWorkload(const WorkloadBackedSimulationInputCapturePlan &plan,
 } // namespace
 
 llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
-    const frontend::StructuredProgramCandidate &generationParent,
     const frontend::StructuredProgramCandidate &sourceProgram,
-    const frontend::SpatialOwnershipScope &scope,
-    const frontend::SpatialOwnershipDecisionPoint &decision,
-    llvm::ArrayRef<frontend::StructuredExecutionShapeDecision>
-        executionShapeDecisions,
     const frontend::MaterializedOwnershipCandidate &candidate,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,
@@ -829,15 +720,15 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
       limits.maxSimulationWallTime <
           std::chrono::steady_clock::duration::zero())
     return invalid("execution limits must be positive");
-  auto prepared = frontend::prepareSpatialOwnershipSelection(generationParent,
-                                                             scope, decision);
-  if (!prepared)
-    return prepared.takeError();
-  if (executionShapeDecisions.size() > 1)
-    return invalid("source replay has multiple fmuladd shape decisions");
-  if (!executionShapeDecisions.empty())
-    raising::materializeFMulAddInOperation(
-        *prepared->operation, executionShapeDecisions.front().fmuladdShape);
+  std::optional<NativeStructuredProgramObservations> ownedSourceObservations;
+  if (!sourceObservations) {
+    auto observed =
+        executeNativeStructuredProgram(sourceProgram, workload, runtimeInput);
+    if (!observed)
+      return observed.takeError();
+    ownedSourceObservations.emplace(std::move(*observed));
+    sourceObservations = &*ownedSourceObservations;
+  }
   auto view = candidate.canonicalDataflow.view();
   if (!view)
     return view.takeError();
@@ -851,83 +742,11 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
   if (!launchContext)
     return launchContext.takeError();
 
-  auto sourcePlan = deriveSourceCapturePlan(*view, *launch, *prepared);
-  if (!sourcePlan)
-    return sourcePlan.takeError();
   auto selected = deriveSelectedActivationCapture(candidate, *view, *launch);
   if (!selected)
     return selected.takeError();
-  if (selected->plan.denseCoordinates.size() !=
-      sourcePlan->denseCoordinates.size())
-    return invalid("selected coordinate rank differs from its source");
-
-  struct StreamCapture final {
-    std::vector<CanonicalStreamSequence> inputs;
-    std::vector<CanonicalStreamSequence> outputs;
-  };
-  std::map<std::vector<std::uint64_t>, std::deque<StreamCapture>>
-      selectedStreams;
-  std::uint64_t selectedStreamBytes = 0;
-  auto retainSelectedStreams =
-      [&](NativeSimulationCallCapture &&call) -> llvm::Error {
-    if (!call.runtimeValues.empty() || !call.valueResults.empty() ||
-        !call.objects.empty() || !call.memoryRootObjectOrdinals.empty() ||
-        !call.memoryRootByteOffsets.empty())
-      return executionFailed(
-          "selected stream capture contains value or memory state");
-    std::uint64_t retained =
-        sizeof(std::uint64_t) * (2 + call.denseCoordinates.size());
-    auto account =
-        [&](llvm::ArrayRef<CanonicalStreamSequence> streams,
-            llvm::ArrayRef<WorkloadBackedStreamCapture> plans) -> llvm::Error {
-      if (streams.size() != plans.size())
-        return executionFailed("selected stream capture is not total");
-      for (auto [stream, plan] : llvm::zip_equal(streams, plans)) {
-        if (stream.termination != StreamTermination::ClosedAfterLast ||
-            stream.values.tokenCount >
-                std::numeric_limits<std::uint64_t>::max() / plan.byteCount)
-          return executionFailed("selected stream capture is not finite");
-        const std::uint64_t bytes = stream.values.tokenCount * plan.byteCount;
-        if (retained > std::numeric_limits<std::uint64_t>::max() - bytes)
-          return executionLimit("selected stream capture size overflowed");
-        retained += bytes;
-      }
-      return llvm::Error::success();
-    };
-    if (llvm::Error error =
-            account(call.runtimeStreams, selected->plan.streamInputs))
-      return error;
-    if (llvm::Error error =
-            account(call.streamOutputs, selected->plan.streamOutputs))
-      return error;
-    if (selectedStreamBytes >
-            std::numeric_limits<std::uint64_t>::max() - retained ||
-        selectedStreamBytes + retained > limits.maxRetainedCaptureBytes)
-      return executionLimit(
-          "selected stream summary exceeded the execution limit");
-    selectedStreamBytes += retained;
-    selectedStreams[std::move(call.denseCoordinates)].push_back(StreamCapture{
-        std::move(call.runtimeStreams), std::move(call.streamOutputs)});
-    return llvm::Error::success();
-  };
-  auto selectedObservations =
-      native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
-          std::move(selected->module), selected->spatial, selected->plan,
-          sourceProgram, workload, runtimeInput, limits.maxRetainedCaptureBytes,
-          retainSelectedStreams);
-  if (!selectedObservations)
-    return selectedObservations.takeError();
-
-  WorkloadBackedSimulationInputCapturePlan replayPlan = *sourcePlan;
-  replayPlan.streamInputs = selected->plan.streamInputs;
-  replayPlan.streamOutputs = selected->plan.streamOutputs;
-  for (WorkloadBackedStreamCapture &stream : replayPlan.streamInputs)
-    stream.endpoints.clear();
-  for (WorkloadBackedStreamCapture &stream : replayPlan.streamOutputs)
-    stream.endpoints.clear();
-
-  bool activationMismatch = false;
-  std::uint64_t sourceActivationCount = 0;
+  const WorkloadBackedSimulationInputCapturePlan &replayPlan = selected->plan;
+  std::uint64_t activationCount = 0;
   SourceBackedDfgValidationResult result;
   result.status = SourceBackedDfgValidationStatus::Equivalent;
   std::chrono::steady_clock::duration remainingSimulationWallTime =
@@ -1025,64 +844,37 @@ llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
     return accountExecution(execution->report);
   };
   std::optional<llvm::Error> deferredReplayFailure;
-  auto censusAndReplay =
+  auto captureAndReplay =
       [&](NativeSimulationCallCapture &&call) -> llvm::Error {
-    if (sourceActivationCount == std::numeric_limits<std::uint64_t>::max())
-      return executionFailed("source activation count overflowed");
-    ++sourceActivationCount;
-    auto selectedActivation = selectedStreams.find(call.denseCoordinates);
-    if (selectedActivation == selectedStreams.end() ||
-        selectedActivation->second.empty()) {
-      activationMismatch = true;
-      return llvm::Error::success();
-    }
-    StreamCapture streams = std::move(selectedActivation->second.front());
-    selectedActivation->second.pop_front();
-    call.runtimeStreams = std::move(streams.inputs);
-    call.streamOutputs = std::move(streams.outputs);
+    if (activationCount == std::numeric_limits<std::uint64_t>::max())
+      return executionFailed("selected activation count overflowed");
+    ++activationCount;
     if (deferredReplayFailure)
       return llvm::Error::success();
     if (llvm::Error error = replayActivation(std::move(call)))
       deferredReplayFailure.emplace(std::move(error));
     return llvm::Error::success();
   };
-  if (selectedStreamBytes >= limits.maxRetainedCaptureBytes)
-    return executionLimit(
-        "selected streams exhausted the source capture budget");
-  const std::uint64_t remainingCaptureBytes =
-      limits.maxRetainedCaptureBytes - selectedStreamBytes;
-  llvm::Error sourceCaptureError = [&]() -> llvm::Error {
-    if (generationParent.identity() == sourceProgram.identity())
-      return visitWorkloadBackedSimulationInputCaptures(
-          std::move(prepared->module), prepared->operation, *sourcePlan,
-          sourceProgram, workload, runtimeInput, remainingCaptureBytes,
-          censusAndReplay);
-    auto parentObservations =
-        native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
-            std::move(prepared->module), prepared->operation, *sourcePlan,
-            sourceProgram, workload, runtimeInput, remainingCaptureBytes,
-            censusAndReplay);
-    if (!parentObservations)
-      return parentObservations.takeError();
-    return llvm::Error::success();
-  }();
-  if (sourceCaptureError) {
+  auto selectedObservations =
+      native_detail::visitProjectedWorkloadBackedSimulationInputCaptures(
+          std::move(selected->module), selected->spatial, selected->plan,
+          sourceProgram, workload, runtimeInput, limits.maxRetainedCaptureBytes,
+          captureAndReplay);
+  if (!selectedObservations) {
     if (deferredReplayFailure)
-      return llvm::joinErrors(std::move(sourceCaptureError),
+      return llvm::joinErrors(selectedObservations.takeError(),
                               std::move(*deferredReplayFailure));
-    return std::move(sourceCaptureError);
+    return selectedObservations.takeError();
   }
-  activationMismatch |= llvm::any_of(
-      selectedStreams, [](const auto &entry) { return !entry.second.empty(); });
   const bool wholeProgramMismatch =
       sourceObservations && !haveEquivalentFunctionalObservations(
                                 *sourceObservations, *selectedObservations);
-  if (activationMismatch || wholeProgramMismatch) {
+  if (wholeProgramMismatch) {
     if (deferredReplayFailure)
       llvm::consumeError(std::move(*deferredReplayFailure));
     SourceBackedDfgValidationResult mismatch;
     mismatch.status = SourceBackedDfgValidationStatus::Mismatch;
-    mismatch.dynamicActivations = sourceActivationCount;
+    mismatch.dynamicActivations = activationCount;
     return mismatch;
   }
   if (deferredReplayFailure)

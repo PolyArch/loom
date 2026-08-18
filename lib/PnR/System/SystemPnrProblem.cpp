@@ -905,7 +905,8 @@ struct Decisions final {
 };
 
 llvm::Expected<Decisions>
-buildDecisions(const SystemPnrSearchDomainView &searchDomain,
+buildDecisions(const ::dataflow::CanonicalDataflowProgramView &dataflow,
+               const SystemPnrSearchDomainView &searchDomain,
                const Catalogs &catalogs) {
   Decisions result;
   std::map<std::string, PnrIndex> coreOrdinals;
@@ -964,8 +965,17 @@ buildDecisions(const SystemPnrSearchDomainView &searchDomain,
           std::get_if<SystemHierarchicalGraphBindingDomain>(&atom.domain);
       if (!domain)
         return invalid("graph atom has an ill-typed H target domain");
-      if (domain->compatibleSpatialMappings.empty())
-        return infeasible("graph atom has no compatible SpatialMapping");
+      if (domain->compatibleSpatialMappings.empty()) {
+        auto graph = dataflow.resolve(launch);
+        if (!graph)
+          return graph.takeError();
+        return infeasible(
+            "graph atom has no compatible SpatialMapping for root launch " +
+            llvm::Twine(launch.rootThreadLaunch.entity.value()) +
+            ", static graph launch " +
+            llvm::Twine(launch.staticGraphLaunch.entity.value()) + ", graph " +
+            llvm::Twine(graph->entity.value()));
+      }
       auto offset = checked(choiceOffsetContext, result.graphChoices.size());
       auto count =
           checked(choiceCountContext, domain->compatibleSpatialMappings.size());
@@ -1558,7 +1568,7 @@ llvm::Expected<FrozenSystemPnrProblemHandle> loom::pnr::freezeSystemPnrProblem(
   auto catalogs = buildCatalogs(staticStorage, activeStorage, searchDomain);
   if (!catalogs)
     return catalogs.takeError();
-  auto decisions = buildDecisions(searchDomain, *catalogs);
+  auto decisions = buildDecisions(dataflow, searchDomain, *catalogs);
   if (!decisions)
     return decisions.takeError();
   auto graphChoiceSchedulePressures =

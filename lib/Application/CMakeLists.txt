@@ -1,3 +1,5 @@
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
 add_library(LoomApplicationPortfolio
   Manifest.cpp
   SourceAdmission.cpp
@@ -12,14 +14,68 @@ target_link_libraries(LoomApplicationPortfolio PUBLIC
   LLVMSupport
 )
 
+file(GLOB_RECURSE LOOM_LLVM_LIBC_MATH_HEADERS CONFIGURE_DEPENDS
+  "${LOOM_SOURCE_DIR}/externals/llvm/libc/hdr/*.h"
+  "${LOOM_SOURCE_DIR}/externals/llvm/libc/src/__support/*.h"
+)
+set(LOOM_FREESTANDING_MATH_BITCODE
+  "${CMAKE_CURRENT_BINARY_DIR}/LoomFreestandingMath.bc")
+set(LOOM_FREESTANDING_MATH_HEADER
+  "${CMAKE_CURRENT_BINARY_DIR}/LoomFreestandingMathBitcode.h")
+add_custom_command(
+  OUTPUT "${LOOM_FREESTANDING_MATH_BITCODE}"
+  COMMAND "${LLVM_TOOLS_BINARY_DIR}/clang++"
+    --target=riscv64-unknown-elf
+    -march=rv64imafdc_zicsr_zifencei
+    -mabi=lp64d
+    -mcmodel=medany
+    -mcpu=generic-rv64
+    -std=c++17
+    -O2
+    -ffreestanding
+    -fno-exceptions
+    -fno-rtti
+    -fno-math-errno
+    -DLIBC_NAMESPACE=loom_libc
+    -DLIBC_FULL_BUILD
+    -DLIBC_COPT_PUBLIC_PACKAGING
+    -DLIBC_MATH_HAS_ASSUME_ROUND_NEAREST_ONLY
+    -DLIBC_MATH_HAS_NO_ERRNO
+    -DLIBC_MATH_HAS_NO_EXCEPT
+    -I${LOOM_SOURCE_DIR}/externals/llvm/libc
+    -emit-llvm
+    -c "${LOOM_SOURCE_DIR}/externals/llvm/libc/src/math/generic/expf.cpp"
+    -o "${LOOM_FREESTANDING_MATH_BITCODE}"
+  DEPENDS
+    "${LOOM_SOURCE_DIR}/externals/llvm/libc/src/math/generic/expf.cpp"
+    ${LOOM_LLVM_LIBC_MATH_HEADERS}
+  VERBATIM
+)
+add_custom_command(
+  OUTPUT "${LOOM_FREESTANDING_MATH_HEADER}"
+  COMMAND "${Python3_EXECUTABLE}"
+    "${LOOM_SOURCE_DIR}/scripts/embed_binary.py"
+    --input "${LOOM_FREESTANDING_MATH_BITCODE}"
+    --output "${LOOM_FREESTANDING_MATH_HEADER}"
+    --symbol freestandingMathBitcode
+  DEPENDS
+    "${LOOM_FREESTANDING_MATH_BITCODE}"
+    "${LOOM_SOURCE_DIR}/scripts/embed_binary.py"
+  VERBATIM
+)
+
 add_library(LoomApplicationBuild
   Build.cpp
   BuildDiagnostics.cpp
   ExecutionGlue.cpp
+  "${LOOM_FREESTANDING_MATH_HEADER}"
 )
 
 target_include_directories(LoomApplicationBuild PUBLIC
   $<BUILD_INTERFACE:${LOOM_SOURCE_DIR}/include>
+)
+target_include_directories(LoomApplicationBuild PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}"
 )
 
 target_link_libraries(LoomApplicationBuild PUBLIC
@@ -38,6 +94,25 @@ target_link_libraries(LoomApplicationBuild PUBLIC
   LoomRuntimePlatformBinding
   LoomSimulator
   LLVMCore
+  LLVMipo
   LLVMTransformUtils
   LLVMSupport
+)
+
+mlir_target_link_libraries(LoomApplicationBuild PRIVATE
+  MLIRArithToLLVM
+  MLIRBuiltinToLLVMIRTranslation
+  MLIRControlFlowToLLVM
+  MLIRConvertToLLVM
+  MLIRFuncToLLVM
+  MLIRIndexToLLVM
+  MLIRLLVMDialect
+  MLIRLLVMToLLVMIRTranslation
+  MLIRMathToLLVM
+  MLIRMemRefToLLVM
+  MLIRPass
+  MLIRSCFToControlFlow
+  MLIRTargetLLVMIRExport
+  MLIRUBToLLVM
+  MLIRVectorToLLVM
 )

@@ -505,7 +505,7 @@ void techMappingCompletesWithinBudget() {
   auto dataflowArtifact = buildSyncChain(context, actorCount);
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
-  auto fabric = buildBoundedMeshFabric(store, 9, 14, 3, 2);
+  auto fabric = buildBoundedMeshFabric(store, 16, 16, 2, 4);
   auto tech = generateTechMapping(dataflow, fabric.view(), store);
   if (tech.view().computeRealizations().size() != dataflow.actors().size())
     fail("scale TechMapping did not retain singleton actor rows");
@@ -521,35 +521,33 @@ void irregularMeshProvesResidentContextPigeonhole() {
   take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
   auto fabric = buildBoundedMeshFabric(store, 9, 14, 2, 4);
-  auto tech = generateTechMapping(dataflow, fabric.view(), store);
-  if (tech.view().computeRealizations().size() != actorCount)
-    fail("irregular scale TechMapping did not retain singleton actor rows");
-  auto constraints =
-      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
-          dataflow, tech.view(), fabric.view(), store));
-  auto config = scalePnrConfig();
-  auto physicalTiming =
-      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
-          fabric.view()));
-  loom::pnr::SpatialPnrGenerationOutcome outcome;
-  const ScaleObservation observation =
-      observeSpatialPnr(dataflow, tech.view(), fabric.view(), physicalTiming,
-                        config, constraints.view(), store, outcome);
+  loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+  resolved.dse.techMapping.matchRowAttemptLimit = UINT64_C(2000000);
+  resolved.dse.techMapping.partialCoverExpansionLimit = UINT64_C(2000000);
+  resolved.dse.techMapping.candidatePublicationLimit = 1;
+  const auto config =
+      take(loom::mapping::projectResolvedTechMappingConfigView(resolved));
+  const std::array<dataflow::GraphRef, 1> covers = {
+      dataflow.graphs().front().ref};
+  const std::uint64_t cpuStart = processCpuNanoseconds();
+  const auto wallStart = std::chrono::steady_clock::now();
+  const auto outcome = loom::mapping::generateTechMappings(
+      {dataflow, covers, fabric.view(), config, store});
+  const auto wallEnd = std::chrono::steady_clock::now();
+  const ScaleObservation observation{
+      static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(wallEnd -
+                                                               wallStart)
+              .count()),
+      processCpuNanoseconds() - cpuStart, peakResidentBytes()};
   const auto *proof =
-      std::get_if<loom::pnr::ProvenInfeasibleSpatialMapping>(&outcome);
+      std::get_if<loom::mapping::ProvenInfeasibleTechMapping>(&outcome);
   if (!proof)
-    fail("resident context pigeonhole changed typed outcome: " +
-         spatialOutcomeDiagnostic(outcome));
-  if (proof->accounting.preparedSeeds != 0 ||
-      proof->accounting.initializerAssignmentAttempts != 0 ||
-      proof->accounting.endpointExpansionSlots != 0 ||
-      proof->accounting.negotiationIterationSlots != 0 ||
-      proof->accounting.annealingBaseProposalSlots != 0 ||
-      proof->accounting.annealingMovableProposalSlots != 0 ||
-      proof->accounting.exactRepairInvocations != 0 ||
-      proof->accounting.finalClosureAttempts != 0 ||
+    fail("resident context pigeonhole was not proven by Tech root supply");
+  if (proof->accounting.computeContextRejectedChecks == 0 ||
+      proof->accounting.candidateEvaluations != 0 ||
       proof->accounting.publicationSlots != 0)
-    fail("resident context pigeonhole consumed search or routing work");
+    fail("resident context pigeonhole consumed candidate or publication work");
   const std::uint64_t totalWallNanoseconds =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - caseStart)
@@ -558,8 +556,19 @@ void irregularMeshProvesResidentContextPigeonhole() {
     fail("irregular scale Mapping exceeded its ninety-second budget");
   if (observation.peakResidentBytes >= UINT64_C(8) * 1024 * 1024 * 1024)
     fail("irregular scale Spatial PnR exceeded its 8 GiB resident budget");
-  printObservation("irregular_infeasible", actorCount, observation,
-                   totalWallNanoseconds, proof->accounting);
+  llvm::outs() << "tech_mapping_root_supply kind=irregular_infeasible actors="
+               << actorCount << " total_wall_ns=" << totalWallNanoseconds
+               << " wall_ns=" << observation.wallNanoseconds
+               << " cpu_ns=" << observation.cpuNanoseconds
+               << " peak_rss_bytes=" << observation.peakResidentBytes
+               << " context_checks="
+               << proof->accounting.computeContextMatchingChecks
+               << " context_rejections="
+               << proof->accounting.computeContextRejectedChecks
+               << " candidate_evaluations="
+               << proof->accounting.candidateEvaluations
+               << " publications=" << proof->accounting.publicationSlots
+               << '\n';
 }
 
 void irregularMeshProducesTypedOutcome() {

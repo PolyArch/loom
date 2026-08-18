@@ -170,6 +170,7 @@ struct SourceBackedCompilation final {
   std::vector<loom::dse::DsePlanGenerateInvocationRecords>
       planGenerateInvocations;
   loom::dse::DsePlanGenerateInvocationSummary planGenerateSummary;
+  bool searchComplete = true;
 };
 
 llvm::Expected<NullaryProgramInputs> makeNullaryProgramInputs(
@@ -301,15 +302,19 @@ compileTarget(std::unique_ptr<llvm::Module> module,
       std::get<loom::dse::CompletedPreMappingSelection>(std::move(*outcome));
   if (completed.selected.size() != 1)
     return invalid("TopK(1) did not select exactly one candidate");
-  if (generateSummary->completedInvocations == 0 ||
-      generateSummary->incompleteInvocations != 0)
+  const bool searchComplete = completed.searchComplete();
+  if (generateSummary->completedInvocations == 0 &&
+      generateSummary->incompleteInvocations == 0)
     return invalid("completed central DSE has invalid Generate provenance");
+  if (searchComplete && generateSummary->incompleteInvocations != 0)
+    return invalid("exhaustive central DSE retained incomplete Generate work");
   return SourceBackedCompilation{std::move(completed.selected.front()),
                                  structuredInitialIdentity,
                                  workloadIdentity,
                                  runtimeInputIdentity,
                                  std::move(completed.planGenerateInvocations),
-                                 *generateSummary};
+                                 *generateSummary,
+                                 searchComplete};
 }
 
 llvm::Expected<loom::ArtifactIdentity> initialCanonicalDataflowIdentity(
@@ -464,10 +469,14 @@ writeReport(llvm::StringRef path,
   root["transform_lineage"] = std::move(transformLineage);
 
   const auto &planGenerateSummary = compilation.planGenerateSummary;
-  if (planGenerateSummary.completedInvocations == 0 ||
-      planGenerateSummary.incompleteInvocations != 0)
+  if (planGenerateSummary.completedInvocations == 0 &&
+      planGenerateSummary.incompleteInvocations == 0)
     return invalid("completed DSE retained no Generate provenance");
+  if (compilation.searchComplete &&
+      planGenerateSummary.incompleteInvocations != 0)
+    return invalid("exhaustive DSE retained incomplete Generate work");
   llvm::json::Object dseExecution;
+  dseExecution["search_complete"] = compilation.searchComplete;
   dseExecution["plan_executions"] = planGenerateSummary.planExecutions;
   dseExecution["generate_invocations"] =
       planGenerateSummary.completedInvocations;

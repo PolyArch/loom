@@ -351,8 +351,9 @@ deriveInternalEdges(const TechMappingGenerationInputs &inputs,
 class MemorySelectionCursor final {
 public:
   MemorySelectionCursor(std::vector<MemoryActorDomain> domains,
-                        std::size_t maxActorCount)
-      : domains_(std::move(domains)), maxActorCount_(maxActorCount) {
+                        std::size_t maxActorCount, bool distinctOperationPorts)
+      : domains_(std::move(domains)), maxActorCount_(maxActorCount),
+        distinctOperationPorts_(distinctOperationPorts) {
     resetTarget();
   }
 
@@ -392,6 +393,14 @@ public:
         }
         const std::size_t actor = frame.actor;
         const std::size_t option = frame.option++;
+        if (distinctOperationPorts_ &&
+            llvm::any_of(choices_, [&](const Choice &selected) {
+              return domains_[selected.actor]
+                         .options[selected.option]
+                         .actor.operationPort ==
+                     domains_[actor].options[option].actor.operationPort;
+            }))
+          continue;
         const ::dataflow::GraphRef graph =
             frame.graph ? *frame.graph : domains_[actor].actor->graph;
         choices_.push_back({actor, option});
@@ -437,6 +446,7 @@ private:
   std::vector<Frame> frames_;
   std::size_t maxActorCount_ = 0;
   std::size_t targetActorCount_ = 1;
+  bool distinctOperationPorts_ = false;
   bool yielded_ = false;
   bool exhausted_ = false;
 };
@@ -546,26 +556,54 @@ public:
       const TechMappingGenerationInputs &inputs,
       ::loom::fabric::FabricMemoryEngineTemplateRef engine,
       const ::loom::fabric::FabricMemoryEngineTemplateRecord &engineRecord,
-      MemorySelectionCursor selections)
+      MemorySelectionCursor selections, bool boundedFrontier)
       : inputs_(inputs), engine_(engine), engineRecord_(engineRecord),
-        selections_(std::move(selections)) {}
+        selections_(std::move(selections)) {
+    const std::uint64_t publication =
+        inputs_.config.candidatePublicationLimit();
+    const std::uint64_t evaluation = inputs_.config.candidateEvaluationLimit();
+    const std::uint64_t scaled =
+        publication > std::numeric_limits<std::uint64_t>::max() / evaluation
+            ? std::numeric_limits<std::uint64_t>::max()
+            : publication * evaluation;
+    const std::uint64_t diversified =
+        scaled > std::numeric_limits<std::uint64_t>::max() / 4
+            ? std::numeric_limits<std::uint64_t>::max()
+            : scaled * 4;
+    rowVisitLimit_ = boundedFrontier
+                         ? std::min(inputs_.config.matchRowAttemptLimit(),
+                                    std::max<std::uint64_t>(1024, diversified))
+                         : inputs_.config.matchRowAttemptLimit();
+  }
 
   llvm::Error advance(TechMatchRowCollector &collector) override {
+    if (frontierLimited_)
+      return llvm::Error::success();
     while (!collector.truncated() && !collector.interrupted()) {
       if (!seed_) {
-        auto prepared = prepareNextSelection();
+        auto prepared = prepareNextSelection(collector);
         if (!prepared)
           return prepared.takeError();
         if (!*prepared) {
+          if (frontierLimited_)
+            return llvm::Error::success();
+          if (collector.atLimit() || collector.truncated() ||
+              collector.interrupted())
+            return llvm::Error::success();
           exhausted_ = true;
           return llvm::Error::success();
         }
       }
       if (!seed_->pending) {
-        auto prepared = prepareNextSubset();
+        auto prepared = prepareNextSubset(collector);
         if (!prepared)
           return prepared.takeError();
         if (!*prepared) {
+          if (frontierLimited_)
+            return llvm::Error::success();
+          if (collector.atLimit() || collector.truncated() ||
+              collector.interrupted())
+            return llvm::Error::success();
           seed_.reset();
           continue;
         }
@@ -580,6 +618,7 @@ public:
         return entered.takeError();
       if (!*entered)
         return llvm::Error::success();
+      ++rowVisits_;
       if (llvm::Error error =
               collector.admit(std::move(*seed_->pending), seed_->coveredActors))
         return error;
@@ -591,7 +630,39 @@ public:
   bool exhausted() const override { return exhausted_; }
 
 private:
-  llvm::Expected<bool> prepareNextSelection() {
+  void limitFrontier(TechMatchRowCollector &collector) {
+    if (frontierLimited_)
+      return;
+    frontierLimited_ = true;
+    collector.recordMemoryRowFrontierLimit();
+  }
+
+  llvm::Expected<bool>
+  rejectProspectiveRow(const TechMemoryRealizationView &realization,
+                       TechMatchRowCollector &collector) {
+    auto key =
+        canonicalTechMatchRowKey(realization, inputs_.dataflow.identity());
+    if (!key)
+      return key.takeError();
+    auto entered = collector.beginSeed(std::move(*key));
+    if (!entered)
+      return entered.takeError();
+    if (!*entered)
+      return false;
+    ++rowVisits_;
+    if (llvm::Error error = collector.reject(
+            TechMatchSeedRejectionReason::RealizationInadmissible))
+      return std::move(error);
+    return true;
+  }
+
+  llvm::Expected<bool> prepareNextSelection(TechMatchRowCollector &collector) {
+    if (rowVisits_ >= rowVisitLimit_) {
+      limitFrontier(collector);
+      return false;
+    }
+    if (collector.atLimit())
+      return false;
     while (auto selection = selections_.next()) {
       auto boundaries =
           collectBoundaries(*selection, inputs_.dataflow.identity());
@@ -601,8 +672,15 @@ private:
           mergeBoundaries(*selection, inputs_.dataflow.identity());
       if (!mergedBoundaries)
         return mergedBoundaries.takeError();
-      if (!*mergedBoundaries)
-        continue;
+
+      std::vector<TechMemoryActorView> actors;
+      std::vector<::dataflow::ActorRef> covered;
+      actors.reserve(selection->size());
+      covered.reserve(selection->size());
+      for (const MemoryActorOption *option : *selection) {
+        actors.push_back(option->actor);
+        covered.push_back(option->actor.actor);
+      }
 
       bool capacityAdmitted = true;
       if (engineRecord_.schedule == ::fabric::Schedule::Temporal) {
@@ -619,20 +697,23 @@ private:
             std::adjacent_find(selectedPorts.begin(), selectedPorts.end()) ==
             selectedPorts.end();
       }
-      if (!capacityAdmitted)
+      if (!*mergedBoundaries || !capacityAdmitted) {
+        const TechMemoryRealizationView rejected{
+            0, engine_, std::move(actors), std::move(*boundaries), {}};
+        if (!rejectProspectiveRow(rejected, collector))
+          return false;
+        if (rowVisits_ >= rowVisitLimit_) {
+          limitFrontier(collector);
+          return false;
+        }
+        if (collector.atLimit())
+          return false;
         continue;
+      }
 
       auto internalEdges = deriveInternalEdges(inputs_, engine_, *selection);
       if (!internalEdges)
         return internalEdges.takeError();
-      std::vector<TechMemoryActorView> actors;
-      std::vector<::dataflow::ActorRef> covered;
-      actors.reserve(selection->size());
-      covered.reserve(selection->size());
-      for (const MemoryActorOption *option : *selection) {
-        actors.push_back(option->actor);
-        covered.push_back(option->actor.actor);
-      }
       seed_.emplace(
           TechMemoryRealizationView{
               0, engine_, std::move(actors), std::move(*boundaries), {}},
@@ -643,7 +724,13 @@ private:
     return false;
   }
 
-  llvm::Expected<bool> prepareNextSubset() {
+  llvm::Expected<bool> prepareNextSubset(TechMatchRowCollector &collector) {
+    if (rowVisits_ >= rowVisitLimit_) {
+      limitFrontier(collector);
+      return false;
+    }
+    if (collector.atLimit())
+      return false;
     while (auto subset = seed_->subsets.next()) {
       TechMemoryRealizationView row = seed_->base;
       row.internalEdges.reserve(subset->size());
@@ -661,8 +748,17 @@ private:
             techMemoryExternalIngressesAreDistinct(row, inputs_.dataflow);
         if (!distinct)
           return distinct.takeError();
-        if (!*distinct)
+        if (!*distinct) {
+          if (!rejectProspectiveRow(row, collector))
+            return false;
+          if (rowVisits_ >= rowVisitLimit_) {
+            limitFrontier(collector);
+            return false;
+          }
+          if (collector.atLimit())
+            return false;
           continue;
+        }
       }
       row.graphBoundaries = seed_->boundaries;
       seed_->pending.emplace(std::move(row));
@@ -676,6 +772,9 @@ private:
   const ::loom::fabric::FabricMemoryEngineTemplateRecord &engineRecord_;
   MemorySelectionCursor selections_;
   std::optional<MemorySeedState> seed_;
+  std::uint64_t rowVisitLimit_ = 0;
+  std::uint64_t rowVisits_ = 0;
+  bool frontierLimited_ = false;
   bool exhausted_ = false;
 };
 
@@ -704,17 +803,26 @@ createMemoryRowFamilyCursor(
   llvm::sort(domains, [](const auto &lhs, const auto &rhs) {
     return lhs.actor->ref.entity.value() < rhs.actor->ref.entity.value();
   });
-  const std::size_t maxActorCount =
+  std::size_t maxActorCount =
       graphActorCounts.empty()
           ? 0
           : llvm::max_element(graphActorCounts, [](const auto &lhs,
                                                    const auto &rhs) {
               return lhs.second < rhs.second;
             })->second;
+  if (engineRecord->schedule == ::fabric::Schedule::Temporal)
+    maxActorCount = std::min<std::size_t>(
+        maxActorCount, engineRecord->residentContextCount.value_or(0));
+  else
+    maxActorCount =
+        std::min(maxActorCount, engineRecord->operationPorts.size());
   std::unique_ptr<TechMatchRowFamilyCursor> cursor =
       std::make_unique<MemoryRowFamilyCursor>(
           inputs, family, *engineRecord,
-          MemorySelectionCursor(std::move(domains), maxActorCount));
+          MemorySelectionCursor(std::move(domains), maxActorCount,
+                                engineRecord->schedule ==
+                                    ::fabric::Schedule::Spatial),
+          selectedActors.size() >= 128);
   return cursor;
 }
 

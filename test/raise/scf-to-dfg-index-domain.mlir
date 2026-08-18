@@ -103,17 +103,18 @@ dataflow.graph private @rollback_partial_compare(
   dataflow.graph.return %done, %body_data : none, f32
 }
 
-// Address-only offset and mask arithmetic is narrowed before mapping.
+// Address-only arithmetic is narrowed without cloning stateful actors. Their
+// source-width results remain the unique owners of reset and retirement.
 // CHECK-LABEL: dataflow.graph private @narrow_address_mask
 // CHECK: %[[MASK_INDEX:.*]], %[[MASK_PHASE:.*]] = dataflow.stream %arg1, %arg2, %arg3
+// CHECK: %[[MASK_OFFSET_RAW:.*]] = dataflow.invariant %[[MASK_PHASE]], %arg4 : i64
+// CHECK: %{{.*}}, %[[MASK_OFFSET_WIDE:.*]] = dataflow.gate %[[MASK_PHASE]], %[[MASK_OFFSET_RAW]] : i64
+// CHECK: %[[MASK_RAW:.*]] = dataflow.invariant %[[MASK_PHASE]], %arg5 : i64
+// CHECK: %{{.*}}, %[[MASK_WIDE:.*]] = dataflow.gate %[[MASK_PHASE]], %[[MASK_RAW]] : i64
 // CHECK: %[[MASK_IV:.*]] = arith.index_cast %[[MASK_INDEX]] : i64 to index
-// CHECK: %[[MASK_OFFSET_ARG:.*]] = arith.index_cast %arg4 : i64 to index
-// CHECK: %[[MASK_OFFSET_RAW:.*]] = dataflow.invariant %[[MASK_PHASE]], %[[MASK_OFFSET_ARG]] : index
-// CHECK: %{{.*}}, %[[MASK_OFFSET:.*]] = dataflow.gate %[[MASK_PHASE]], %[[MASK_OFFSET_RAW]] : index
+// CHECK: %[[MASK_OFFSET:.*]] = arith.index_cast %[[MASK_OFFSET_WIDE]] : i64 to index
 // CHECK: %[[MASK_ADD:.*]] = arith.addi %[[MASK_IV]], %[[MASK_OFFSET]] : index
-// CHECK: %[[MASK_ARG:.*]] = arith.index_cast %arg5 : i64 to index
-// CHECK: %[[MASK_RAW:.*]] = dataflow.invariant %[[MASK_PHASE]], %[[MASK_ARG]] : index
-// CHECK: %{{.*}}, %[[MASK_VALUE:.*]] = dataflow.gate %[[MASK_PHASE]], %[[MASK_RAW]] : index
+// CHECK: %[[MASK_VALUE:.*]] = arith.index_cast %[[MASK_WIDE]] : i64 to index
 // CHECK: %[[MASK_ADDR:.*]] = arith.andi %[[MASK_ADD]], %[[MASK_VALUE]] : index
 // CHECK: dataflow.load %arg6[%[[MASK_ADDR]]]
 dataflow.graph private @narrow_address_mask(
@@ -137,14 +138,14 @@ dataflow.graph private @narrow_address_mask(
 // Guarded address arithmetic, comparison, and select share one index domain.
 // CHECK-LABEL: dataflow.graph private @narrow_guarded_address
 // CHECK: %[[GUARD_INDEX:.*]], %[[GUARD_PHASE:.*]] = dataflow.stream %arg1, %arg2, %arg3
-// CHECK: %[[GUARD_UB_ARG:.*]] = arith.index_cast %arg5 : i64 to index
-// CHECK: %[[GUARD_UB_RAW:.*]] = dataflow.invariant %[[GUARD_PHASE]], %[[GUARD_UB_ARG]] : index
-// CHECK: %{{.*}}, %[[GUARD_UB:.*]] = dataflow.gate %[[GUARD_PHASE]], %[[GUARD_UB_RAW]] : index
+// CHECK: %[[GUARD_LB_RAW:.*]] = dataflow.invariant %[[GUARD_PHASE]], %arg4 : i64
+// CHECK: %{{.*}}, %[[GUARD_LB_WIDE:.*]] = dataflow.gate %[[GUARD_PHASE]], %[[GUARD_LB_RAW]] : i64
+// CHECK: %[[GUARD_UB_RAW:.*]] = dataflow.invariant %[[GUARD_PHASE]], %arg5 : i64
+// CHECK: %{{.*}}, %[[GUARD_UB_WIDE:.*]] = dataflow.gate %[[GUARD_PHASE]], %[[GUARD_UB_RAW]] : i64
+// CHECK: %[[GUARD_UB:.*]] = arith.index_cast %[[GUARD_UB_WIDE]] : i64 to index
 // CHECK: %[[GUARD_IV:.*]] = arith.index_cast %[[GUARD_INDEX]] : i64 to index
 // CHECK: %[[GUARD_DELTA:.*]] = arith.subi %[[GUARD_UB]], %[[GUARD_IV]] : index
-// CHECK: %[[GUARD_LB_ARG:.*]] = arith.index_cast %arg4 : i64 to index
-// CHECK: %[[GUARD_LB_RAW:.*]] = dataflow.invariant %[[GUARD_PHASE]], %[[GUARD_LB_ARG]] : index
-// CHECK: %{{.*}}, %[[GUARD_LB:.*]] = dataflow.gate %[[GUARD_PHASE]], %[[GUARD_LB_RAW]] : index
+// CHECK: %[[GUARD_LB:.*]] = arith.index_cast %[[GUARD_LB_WIDE]] : i64 to index
 // CHECK: %[[GUARD_PRED:.*]] = arith.cmpi sgt, %[[GUARD_DELTA]], %[[GUARD_LB]] : index
 // CHECK: %[[GUARD_SAFE:.*]] = arith.select %[[GUARD_PRED]], %[[GUARD_DELTA]], %{{.*}} : index
 // CHECK: dataflow.load %arg6[%[[GUARD_SAFE]]]

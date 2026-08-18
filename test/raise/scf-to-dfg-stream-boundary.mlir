@@ -82,7 +82,7 @@
 // CHECK: dataflow.graph.launch @dependent_consumer_graph
 // CHECK-SAME: stream_inputs(%arg0 source_map #[[SOURCE_MAP]])
 // CHECK-LABEL: dataflow.graph private @producer_graph(
-// CHECK-SAME: %{{.*}}: none, %[[PRODUCER_PAYLOAD:[[:alnum:]_]+]]: i32, %{{.*}}: memref<1xi32>) -> i32
+// CHECK-SAME: %{{.*}}: none, %[[PRODUCER_PAYLOAD:[[:alnum:]_]+]]: i32, %{{.*}}: memref<1xi32> {llvm.noalias}) -> i32
 // CHECK-SAME: input_segments = array<i32: 1, 0, 1>
 // CHECK-SAME: result_segments = array<i32: 0, 1, 0>
 // CHECK: %[[PRODUCER_STORE_DONE:[[:alnum:]_]+]] = dataflow.store
@@ -90,7 +90,7 @@
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
 // CHECK-LABEL: dataflow.graph private @consumer_graph(
-// CHECK-SAME: %{{.*}}: none, %{{.*}}: i32, %{{.*}}: memref<1xi32>) -> ()
+// CHECK-SAME: %{{.*}}: none, %{{.*}}: i32, %{{.*}}: memref<1xi32> {llvm.noalias}) -> ()
 // CHECK-SAME: input_segments = array<i32: 0, 1, 1>
 // CHECK-SAME: result_segments = array<i32: 0, 0, 0>
 // CHECK: dataflow.sync
@@ -129,7 +129,7 @@
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return values() streams(%[[SEQUENCE_DRAIN]]#1 : i32)
 // CHECK-LABEL: dataflow.graph private @sequential_consumer_graph(
-// CHECK-SAME: %{{.*}}: none, %[[SEQUENCE_INPUT:[[:alnum:]_]+]]: i32, %{{.*}}: memref<2xi32>)
+// CHECK-SAME: %{{.*}}: none, %[[SEQUENCE_INPUT:[[:alnum:]_]+]]: i32, %{{.*}}: memref<2xi32> {llvm.noalias})
 // CHECK: %[[SEQUENCE_INPUT_IV:[[:alnum:]_]+]], %{{.*}} = dataflow.stream
 // CHECK: %[[SEQUENCE_INPUT_SELECTOR:[[:alnum:]_]+]] = arith.cmpi uge, %[[SEQUENCE_INPUT_IV]], %{{.*}} : i32
 // CHECK: dataflow.demux %[[SEQUENCE_INPUT_SELECTOR]], %[[SEQUENCE_INPUT]] : (i1, i32) -> (i32, i32)
@@ -164,7 +164,7 @@
 // CHECK-NOT: dataflow.channel
 // CHECK: dataflow.graph.return values() streams(%{{.*}} : i32)
 // CHECK-LABEL: dataflow.graph private @dependent_consumer_graph(
-// CHECK-SAME: %{{.*}}: none, %[[DEPENDENT_INPUT:[[:alnum:]_]+]]: i32, %{{.*}}: memref<2xi32>)
+// CHECK-SAME: %{{.*}}: none, %[[DEPENDENT_INPUT:[[:alnum:]_]+]]: i32, %{{.*}}: memref<2xi32> {llvm.noalias})
 // CHECK: %[[DEPENDENT_CONDITION:[[:alnum:]_]+]] = arith.cmpi ne, %[[FIRST_SYNC:[[:alnum:]_]+]]#1, %{{.*}} : i32
 // CHECK: %[[DEPENDENT_IV:[[:alnum:]_]+]], %{{.*}} = dataflow.stream
 // CHECK: %[[DEPENDENT_STATIC:[[:alnum:]_]+]] = arith.cmpi uge, %[[DEPENDENT_IV]], %{{.*}} : i32

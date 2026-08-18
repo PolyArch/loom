@@ -520,10 +520,11 @@ findVecaddLoop(const char *test,
     if (!scope)
       continue;
     auto entity = take(test, view.resolve(scope->selection));
-    auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
-    if (!loop)
+    if (!llvm::isa_and_nonnull<mlir::scf::ForOp, mlir::scf::WhileOp>(
+            entity.operation))
       continue;
-    auto callable = loop->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    auto callable =
+        entity.operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
     if (callable && callable.getSymName() == "vecadd")
       return scope->selection;
   }
@@ -543,10 +544,11 @@ findStructuredLoop(const char *test,
     if (!scope)
       continue;
     auto entity = take(test, view.resolve(scope->selection));
-    auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
-    if (!loop)
+    if (!llvm::isa_and_nonnull<mlir::scf::ForOp, mlir::scf::WhileOp>(
+            entity.operation))
       continue;
-    auto callable = loop->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    auto callable =
+        entity.operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
     if (callable && callable.getSymName() == callableName)
       return scope->selection;
   }
@@ -566,10 +568,13 @@ loom::frontend::StructuredEntityRef findNestedStructuredLoop(
     if (!scope)
       continue;
     auto entity = take(test, view.resolve(scope->selection));
-    auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
-    if (!loop || !loop->getParentOfType<mlir::scf::WhileOp>())
+    if (!llvm::isa_and_nonnull<mlir::scf::ForOp, mlir::scf::WhileOp>(
+            entity.operation) ||
+        (!entity.operation->getParentOfType<mlir::scf::ForOp>() &&
+         !entity.operation->getParentOfType<mlir::scf::WhileOp>()))
       continue;
-    auto callable = loop->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    auto callable =
+        entity.operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
     if (callable && callable.getSymName() == callableName)
       return scope->selection;
   }

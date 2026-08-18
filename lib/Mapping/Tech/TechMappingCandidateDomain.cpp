@@ -324,6 +324,7 @@ deriveTechMatchDomain(const TechMappingGenerationInputs &inputs,
            std::vector<SpatialComputeContextPlacementDomainView>>
       placementsByCapability;
   std::map<std::vector<std::uint8_t>, std::size_t> contextOrdinals;
+  std::vector<::loom::fabric::InstructionContextRef> computeContexts;
   for (TechMatchRow &row : rows) {
     const auto *compute =
         std::get_if<TechComputeRealizationView>(&row.realization);
@@ -365,7 +366,8 @@ deriveTechMatchDomain(const TechMappingGenerationInputs &inputs,
             ::loom::fabric::canonicalFabricBytes(context);
         auto [ordinal, inserted] =
             contextOrdinals.try_emplace(key, contextOrdinals.size());
-        (void)inserted;
+        if (inserted)
+          computeContexts.push_back(context);
         values.push_back(ordinal->second);
       }
     }
@@ -373,9 +375,9 @@ deriveTechMatchDomain(const TechMappingGenerationInputs &inputs,
     values.erase(std::unique(values.begin(), values.end()), values.end());
     row.computeContextValues = std::move(values);
   }
-  return TechMatchDomain{std::move(actors), std::move(rows),
-                         contextOrdinals.size(), exhausted && !interrupted,
-                         interrupted};
+  return TechMatchDomain{std::move(actors),         std::move(rows),
+                         contextOrdinals.size(),    std::move(computeContexts),
+                         exhausted && !interrupted, interrupted};
 }
 
 } // namespace loom::mapping::detail

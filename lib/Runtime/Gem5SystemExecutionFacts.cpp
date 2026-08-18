@@ -367,58 +367,6 @@ std::string mappedRtlLaunchResultPath(std::size_t ordinal) {
              .str();
 }
 
-llvm::Expected<std::optional<std::vector<std::vector<std::uint64_t>>>>
-enumerateDenseCoordinates(
-    const dataflow::CanonicalDataflowProgramView &dataflow,
-    dataflow::RootedGraphLaunchRef graph) {
-  auto logical = dataflow.projectWholeRootedGraphLogicalDomain(graph);
-  if (!logical)
-    return logical.takeError();
-  if (!*logical ||
-      (*logical)->kind != dataflow::ThreadDomainKind::DenseRectangular)
-    return std::optional<std::vector<std::vector<std::uint64_t>>>{};
-  auto root = dataflow.resolve(graph.rootThreadLaunch);
-  if (!root)
-    return root.takeError();
-  auto launch = llvm::dyn_cast<dataflow::ThreadLaunchOp>(root->op);
-  if (!launch)
-    return invalid("root thread reference does not resolve a launch");
-  std::vector<std::uint64_t> extents;
-  extents.reserve(launch.getGridUpperBounds().size());
-  std::uint64_t count = 1;
-  for (mlir::Value bound : launch.getGridUpperBounds()) {
-    mlir::Attribute constant;
-    if (!mlir::matchPattern(bound, mlir::m_Constant(&constant)))
-      return std::optional<std::vector<std::vector<std::uint64_t>>>{};
-    auto integer = llvm::dyn_cast<mlir::IntegerAttr>(constant);
-    if (!integer || integer.getValue().isNegative() ||
-        integer.getValue().getActiveBits() > 64)
-      return std::optional<std::vector<std::vector<std::uint64_t>>>{};
-    const std::uint64_t extent = integer.getValue().getZExtValue();
-    if (extent == 0)
-      return std::vector<std::vector<std::uint64_t>>{};
-    if (count > kMaximumDenseSpatialLaunches / extent)
-      return std::optional<std::vector<std::vector<std::uint64_t>>>{};
-    count *= extent;
-    extents.push_back(extent);
-  }
-  if (count > kMaximumDenseSpatialLaunches)
-    return std::optional<std::vector<std::vector<std::uint64_t>>>{};
-  std::vector<std::vector<std::uint64_t>> coordinates;
-  coordinates.reserve(static_cast<std::size_t>(count));
-  for (std::uint64_t linear = 0; linear != count; ++linear) {
-    std::uint64_t remainder = linear;
-    std::vector<std::uint64_t> point(extents.size(), 0);
-    for (std::size_t dimension = extents.size(); dimension != 0; --dimension) {
-      point[dimension - 1] = remainder % extents[dimension - 1];
-      remainder /= extents[dimension - 1];
-    }
-    coordinates.push_back(std::move(point));
-  }
-  return std::optional<std::vector<std::vector<std::uint64_t>>>(
-      std::move(coordinates));
-}
-
 llvm::Expected<std::vector<std::uint64_t>>
 evaluateSourceMap(mlir::AffineMap map,
                   llvm::ArrayRef<std::uint64_t> consumerCoordinates) {
@@ -570,9 +518,9 @@ deriveFacts(const EvaluationRequest &request,
            std::tuple(rhs.rootThreadLaunch.entity.value(),
                       rhs.staticGraphLaunch.entity.value());
   });
-  std::set<std::vector<std::uint8_t>> selectedAccCores;
   for (const dataflow::RootedGraphLaunchRef &graph : graphs) {
-    auto coordinates = enumerateDenseCoordinates(*dataflowView, graph);
+    auto coordinates = dataflowView->enumerateStaticDenseCoordinates(
+        graph, gem5MaximumDynamicSpatialInvocations);
     if (!coordinates)
       return coordinates.takeError();
     if (!*coordinates || (*coordinates)->empty())
@@ -590,11 +538,6 @@ deriveFacts(const EvaluationRequest &request,
           inputs.deployment, graph, point, artifacts, blobs);
       if (!selection)
         return selection.takeError();
-      const std::vector<std::uint8_t> coreKey = fabric::canonicalFabricBytes(
-          fabric::SpatialCoreOccurrenceRef{selection->context.accCore});
-      if (!selectedAccCores.insert(coreKey).second)
-        return Gem5SystemFactsOrUnsupported{
-            UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
       auto spatialMapping =
           mapping::importSpatialMapping(selection->spatialMapping, artifacts);
       if (!spatialMapping)
@@ -777,11 +720,7 @@ deriveFacts(const EvaluationRequest &request,
     if (!dynamicInvocation && !launchOp.getMemoryInputs().empty())
       return Gem5SystemFactsOrUnsupported{
           UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
-    if (dynamicInvocation &&
-        (!launchOp.getStreamInputs().empty() ||
-         !launchOp.getStreamOutputs().empty() ||
-         !launchOp.getMemoryResults().empty() ||
-         !pending.channelInputs.empty() || !pending.channelOutputs.empty()))
+    if (dynamicInvocation && !launchOp.getMemoryResults().empty())
       return Gem5SystemFactsOrUnsupported{
           UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
     if (dynamicInvocation && selectedEngine(request) == Gem5SystemEngine::Rtl)
@@ -804,12 +743,11 @@ deriveFacts(const EvaluationRequest &request,
         workloadDraft.observableContract.memories.push_back(
             {dataflow::LogicalMemoryRootOrViewRef{memory},
              sim::MemoryObservationForm::DiffFromRuntimeInput});
-    } else {
-      for (const PendingChannelOutput &output : pending.channelOutputs)
-        workloadDraft.observableContract.streamOutputs.push_back(
-            output.producerStreamOutputOrdinal);
-      llvm::sort(workloadDraft.observableContract.streamOutputs);
     }
+    for (const PendingChannelOutput &output : pending.channelOutputs)
+      workloadDraft.observableContract.streamOutputs.push_back(
+          output.producerStreamOutputOrdinal);
+    llvm::sort(workloadDraft.observableContract.streamOutputs);
     auto workload =
         sim::finalizeSimulationWorkload(workloadDraft, *dataflowView);
     if (!workload)
@@ -1244,6 +1182,8 @@ deriveFacts(const EvaluationRequest &request,
 
   std::vector<Gem5SpatialLaunchProjection> spatialLaunches;
   spatialLaunches.reserve(pendingLaunches.size());
+  std::vector<Gem5SpatialBridgeSession> spatialBridgeSessions;
+  spatialBridgeSessions.reserve(bridges.size());
   for (const auto indexed : llvm::enumerate(pendingLaunches)) {
     const PendingSpatialLaunch &pending = indexed.value();
     const Gem5ProcessorProjection *instructionProcessor = nullptr;
@@ -1269,6 +1209,19 @@ deriveFacts(const EvaluationRequest &request,
           UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
     if (!pending.instructionEntry)
       return invalid("pending Spatial launch has no InstructionCore entry");
+    auto session = llvm::find_if(
+        spatialBridgeSessions, [&](const Gem5SpatialBridgeSession &candidate) {
+          return candidate.accCore == pending.accCore;
+        });
+    if (session == spatialBridgeSessions.end()) {
+      spatialBridgeSessions.push_back(
+          {pending.accCore, *selectedBridge, {}});
+      session = std::prev(spatialBridgeSessions.end());
+    } else if (!(session->bridge == *selectedBridge)) {
+      return invalid("one AccCore selects inconsistent Spatial Bridges");
+    }
+    const std::size_t bridgeSessionOrdinal =
+        static_cast<std::size_t>(session - spatialBridgeSessions.begin());
     Gem5DispatchTarget dispatch{
         instructionProcessor->parameters.cpuId,
         pending.instructionEntry->imageOrdinal,
@@ -1289,8 +1242,6 @@ deriveFacts(const EvaluationRequest &request,
       const PendingSpatialLaunch &producer =
           pendingLaunches[input.producerLaunch];
       const PendingChannelBuffer &buffer = channelBuffers[input.buffer];
-      if (!producer.spatialWorkload || !producer.spatialRuntimeInput)
-        return invalid("Spatial channel producer has no finalized inputs");
       if (input.consumerStreamInputOrdinal >=
               pending.streamInputBitWidths.size() ||
           input.producerStreamOutputOrdinal >=
@@ -1308,9 +1259,9 @@ deriveFacts(const EvaluationRequest &request,
       if (producerWidth != consumerWidth)
         return invalid("Spatial channel changes token bit width");
       channelProjection.inputs.push_back(
-          {*producer.spatialWorkload, *producer.spatialRuntimeInput,
-           input.producerStreamOutputOrdinal, input.consumerStreamInputOrdinal,
-           buffer.address, kSpatialChannelBufferBytes});
+          {input.producerStreamOutputOrdinal,
+           input.consumerStreamInputOrdinal, buffer.address,
+           kSpatialChannelBufferBytes});
       enginePlan.inputs.push_back(
           {input.consumerStreamInputOrdinal,
            static_cast<std::uint64_t>(std::distance(
@@ -1343,11 +1294,14 @@ deriveFacts(const EvaluationRequest &request,
          encodeGem5SpatialChannelEnginePlan(std::move(enginePlan)),
          inputs.deployment.reference(), false});
     spatialLaunches.push_back(
-        {pending.fabric, pending.spatialMapping, pending.hardwareImplementation,
-         *pending.spatialWorkload, pending.spatialRuntimeInput,
+        {pending.context, pending.fabric, pending.spatialMapping,
+         pending.hardwareImplementation, *pending.spatialWorkload,
+         pending.spatialRuntimeInput,
          std::move(channelPath), std::move(enginePlanPath),
          std::vector<std::uint8_t>(launchBytes.begin(), launchBytes.end()),
-         std::move(dispatch), *selectedBridge});
+         std::move(dispatch), bridgeSessionOrdinal});
+    session = spatialBridgeSessions.begin() + bridgeSessionOrdinal;
+    session->launchOrdinals.push_back(indexed.index());
   }
 
   const sim::SystemSimulationRuntimeInput &systemRuntime =
@@ -1476,6 +1430,7 @@ deriveFacts(const EvaluationRequest &request,
                       binding->reference(),
                       std::move(dataflowReference),
                       std::move(spatialLaunches),
+                      std::move(spatialBridgeSessions),
                       std::move(*semanticInputs),
                       std::move(processors),
                       (*hostEntry)->abiSymbol,

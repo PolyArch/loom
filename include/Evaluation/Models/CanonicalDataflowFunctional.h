@@ -30,12 +30,7 @@ struct PreparedCanonicalDataflowFunctionalEvaluation final {
 struct CanonicalDataflowFunctionalReplayInvocation final {
   const ArtifactRootReference &workload;
   const ArtifactRootReference &runtimeInput;
-  const frontend::StructuredProgramCandidate &generationParent;
   const frontend::StructuredProgramCandidate &sourceProgram;
-  const frontend::SpatialOwnershipScope &scope;
-  const frontend::SpatialOwnershipDecisionPoint &decision;
-  llvm::ArrayRef<frontend::StructuredExecutionShapeDecision>
-      executionShapeDecisions;
   const frontend::MaterializedOwnershipCandidate &candidate;
   const sim::CanonicalSimulationWorkload &simulationWorkload;
   const sim::CanonicalSimulationRuntimeInput &simulationRuntimeInput;

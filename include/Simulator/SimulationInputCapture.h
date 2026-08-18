@@ -88,6 +88,9 @@ struct SimulationValueInputCapture {
   std::uint64_t byteCount = 0;
   std::optional<CanonicalValueSequence> fixedValue;
   std::optional<SimulationPointerValueTargetCapture> pointerTarget;
+  /// Present only when this graph input is one exact root-thread dense
+  /// coordinate rather than a fixed value or source boundary operand.
+  std::optional<std::uint64_t> denseCoordinateDimension;
 };
 
 /// One graph value result and its exact source value at the selected

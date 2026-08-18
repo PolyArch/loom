@@ -116,6 +116,29 @@ implicit thread-body argument, and cannot select Mapping, binary, route, or
 configuration state. Repeated execution of the same root launch therefore
 reuses its persistent bindings while retaining distinct runtime state.
 
+For a statically bounded dense root, Canonical Dataflow alone enumerates the
+finite coordinate tuples in row-major order under the runtime invocation
+bound. Generated host glue emits one completed Thread Dispatch per tuple and
+evaluates the verified SystemMapping relation to select the corresponding
+Deployment target. Dispatches may select the same InstructionCore more than
+once: those occurrences are ordered, mutually exclusive uses of one compiled
+context, not additional resident contexts. Each occurrence rebuilds its
+invocation wire and memory snapshot after the preceding occurrence completes;
+no mutable wire, queue, CPU, bridge, or engine state is reused as a derived
+fact. A dynamic-bound, nested, non-dense, or over-bound domain remains typed
+Unsupported rather than being truncated or assigned an inferred coordinate.
+
+Reachable selected roots need not share one source callable. Generated host
+glue groups the flat rooted-launch set by its exact callable owner while
+preserving global launch and dispatch-target ordinals. It materializes concrete
+call sites in decreasing direct-call-path depth. When a selected callable
+directly invokes another selected callable on the same path, the outer clone's
+exact call site is rebound to the already materialized inner clone; calls with
+another caller, callee, ordinal, or path prefix are unchanged. This composes
+nested operator protocols without treating a symbol name as a global call-site
+selector or executing an unmodified inner callable from an accelerated outer
+clone.
+
 Thread Dispatch never directly invokes a SpatialCore simulator. The selected
 InstructionCore binary issues Spatial Launch requests for its local graph
 launches.
@@ -208,6 +231,14 @@ release point has observed any one member of its own alternative set. Runtime
 must not wait for every mutually exclusive actor transition and must not treat
 one alternative as a second acquisition.
 
+For a CGRA actor action with causal release, owner work completion and physical
+claim retirement are distinct events. Grant or owner commit completes the
+intrinsic operation and permits the actor's selected transport instances to
+advance. The physical claim retires only after those instances satisfy the
+Mapping-derived causal release. Treating claim retirement as actor work
+completion creates a self-wait; treating owner completion as claim retirement
+releases the physical resource too early.
+
 ## Admission
 
 For one concrete event occurrence, runtime first checks explicit dependencies,
@@ -253,6 +284,25 @@ bytes, revalidates the workload and result shapes, and checks every result write
 against the decoded destination table. The envelope has no ArtifactIdentity
 and cannot substitute for final `SimulationExecution` validation.
 
+A Deployment dispatch target, a physical Spatial Bridge, and a dynamic Spatial
+invocation have independent cardinalities. A dispatch target selects one exact
+InstructionCore entry, Spatial workload, SpatialMapping, configuration, and
+execution context. All targets assigned to the same AccCore share one physical
+Bridge session and one PIO range. Any target in that session may be invoked
+more than once by the target program. The Bridge therefore publishes one dense
+dynamic result sequence for the session, not one result per dispatch target.
+
+The current incompatible invocation-result envelope has magic `LGX3`. In
+addition to the exact invocation bytes, effective runtime-input snapshot, and
+Spatial boundary result, it carries the session-local entry ordinal selected
+by the engine. The ordinal is validated against the immutable ordered target
+table in the gem5 projection; it is not an Artifact identity, Mapping choice,
+Physical Tag, or mutable cache key. Importers use the selected table entry to
+recover the exact workload and execution context, then perform the ordinary
+runtime-input reconstruction and result verification. Every declared session
+entry must occur in accepted execution evidence, and changing result count or
+entry ownership cannot bypass independent validation.
+
 The dynamic Spatial invocation wire has one current incompatible identity,
 `loom.spatial_invocation_abi.v2`. Its canonical payload is:
 
@@ -277,10 +327,24 @@ Object ordinals preserve the exact invocation-local alias classes captured
 from the source execution. Pointer provenance, memory-root bindings, and
 memory-service requests all refer to that one object table; guest addresses
 are transient transport coordinates rather than persistent storage identity.
+Each object address is the canonical backing-allocation base for that dynamic
+call, not the current graph view pointer. The host dispatch projection carries
+that exact base as an ephemeral helper argument, snapshots the complete object
+from it, and derives every memory-root and pointer-target byte offset from the
+actual boundary pointer minus that base for each invocation. A repeated loop
+call may therefore select a different subview without creating an overlapping
+object or retaining a stale static offset. The base argument and patched wire
+offsets are transient ABI state and never become Mapping or Artifact fields.
 Every writable logical root is observed as `DiffFromRuntimeInput`, and the
 engine returns the resulting nonconflicting byte writes through the exact guest
 addresses. Runtime admission rejects missing, overlapping, out-of-range, or
 type-inconsistent records. Version 1 is not retained as a compatibility path.
+
+The result-destination table is finite and ordered but not restricted to one
+entry. One selected callable may publish several scalar or fixed-width value
+results through distinct caller-owned destinations; the graph boundary,
+capture plan, wire table, engine result, and independent verifier must agree on
+the complete ordered count and widths.
 
 ### Channel Event Execution
 

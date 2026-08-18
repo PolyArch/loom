@@ -1299,6 +1299,13 @@ finished, it names the first such Generate node in `PlanNodeRef` order. The
 per-record booleans remain the complete authority for which Generate domains
 were exhausted; the outer outcome is not used to infer a completed prefix.
 
+A higher-level compiler selection may consume the completed downstream Promote
+output of such an execution when it contains a verified incumbent. That
+selection remains usable while its nested Generate records report the
+non-exhaustive search. An empty downstream selection cannot become completed
+infeasibility because the unvisited generator domain may still contain a
+feasible candidate.
+
 Mechanical lowering cannot be represented as an optimization decision, and a
 decision edge cannot replace an Artifact's own dependency closure. If several
 paths produce the same ArtifactIdentity, the central set contains one candidate
@@ -1492,6 +1499,21 @@ Pareto { objective_dimensions }
 `TopK` and `Pareto` consume the same central objective facts. Pareto retains
 all nondominated candidates in the deterministic finite input set; there is no
 implicit cap based on container size, arrival order, or Execution Limits.
+
+After every candidate has comparable completed objective Evidence, `TopK`
+acquires deferred gate Evidence one candidate at a time in the resolved total
+order until it has selected `k` independently verified candidates or exhausted
+that order. A candidate-local Unsupported result does not prove that candidate
+feasible or infeasible. The controller retains the typed incompleteness, skips
+that candidate for incumbent selection, and continues with the next candidate.
+If this produces a verified incumbent, the Promote output remains available to
+downstream plan nodes while the plan outcome reports that search did not
+complete. Without an incumbent, execution remains stopped and no empty output
+can imply proven infeasibility. Provider-wide acquisition failure, incomplete
+objective Evidence, ExecutionFailed, and CancelledOrTimeout still stop the
+promotion; they cannot be attributed to and skipped as one candidate. This
+bounded acquisition order does not weaken exact Evidence validation or any
+independent verifier applied to a selected candidate.
 
 Every candidate entering one comparison receives same-shaped Evidence
 obligations. A missing result is never interpreted as zero, infinity, or worst
@@ -1723,7 +1745,7 @@ does not acquire a constraint language, Mapping state, or search algorithm.
 The built-in root-complete System PnR generator composes the final Mapping
 boundary without widening the central plan. Its descriptor has kind 9,
 spelling `mapping.root_complete_system_pnr`, schema
-`loom.mapping.root_complete_system_pnr.generator.v6`, and exact input slots
+`loom.mapping.root_complete_system_pnr.generator.v8`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, and
 `fabric: ExactlyOne`. Its sole output slot is
 `system_mapping: CandidateSet<loom.mapping 6.0>, FiniteSet`; its resolved view
@@ -1754,7 +1776,7 @@ not registered.
 The built-in application-scoped System PnR generator is the strict-scope
 counterpart. Its descriptor has kind 22, spelling
 `mapping.application_system_pnr`, implementation semantic identity
-`loom.mapping.application_system_pnr.generator.v5`, and exact input slots
+`loom.mapping.application_system_pnr.generator.v7`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, `fabric: ExactlyOne`, and
 `system_constraints: ExactlyOne`. The constraint root must bind exactly that
 Dataflow and Fabric System. Its non-empty `root_thread_launches` is the sole
@@ -2320,6 +2342,7 @@ CandidateGeneratorDescriptor {
   typed_output_slot_descriptors
   resolved_generator_config_view_contract
   optional owner_lineage_payload_contract
+  optional owner_feedback_payload_contract
   determinism_contract
   owner_local_work_unit_descriptors
 }
@@ -2347,6 +2370,13 @@ OwnerLineagePayloadContract {
   encode(owner-typed decision) -> canonical_payload_bytes
   adopt(canonical_payload_bytes, canonical exact parent references)
     -> owner-typed decision
+}
+
+OwnerFeedbackPayloadContract {
+  schema_descriptor_bytes
+  encode(owner-typed invocation-local feedback) -> canonical_payload_bytes
+  adopt(canonical_payload_bytes, exact typed input bindings)
+    -> owner-typed invocation-local feedback
 }
 ```
 
@@ -2475,6 +2505,8 @@ CandidateGeneratorProviderResult {
     }
   work_summary:
     dense array<CandidateGeneratorWorkUnitRef, planned, consumed>
+  owner_feedback:
+    absent | descriptor-owned canonical payload bytes
 }
 
 CandidateGeneratorIncompleteReason =
@@ -2494,6 +2526,15 @@ retained outputs. The controller validates either variant, derives the one
 outer manifest outcome, and records the exact nested Generate completion
 boolean. Invalid typed inputs, a violated provider contract, or malformed
 returned data are errors rather than another incomplete reason.
+
+`owner_feedback` is optional, transient, and descriptor-owned. The central
+controller validates its canonical bytes against the exact typed invocation
+inputs but does not interpret, journal, cache, or persist it. A domain-specific
+alternating planner may consume it only during the same bounded in-process
+reopen. Terminal replay does not re-enter generation merely to recreate
+feedback. A workflow that must resume the feedback across invocations first
+defines an immutable Artifact under the Mapping or HardwareImplementation
+owner; generic feedback bytes never become a hidden persistent channel.
 
 `work_summary` is one dense row per descriptor-owned work unit, outside the
 outcome variant and never duplicated inside it. The descriptor is the sole
@@ -2709,6 +2750,23 @@ draft produces no child and no lineage edge; it cannot partially mutate the
 parent or leave a DSE-only Fabric form. A completed child carries one
 `CandidateDecision` lineage contribution whose payload is owned by that exact
 generator descriptor. Identity deduplication occurs only after finalization.
+
+The TechMapping providers may return
+`loom.mapping.tech_compute_context_hall_feedback.1.0`. It represents one exact
+Hall-deficient compute-cover relation observed by Mapping, not a proof that the
+entire bounded TechMapping domain is infeasible. Its canonical payload carries
+the cover demand and matching counts plus a canonical capability-to-demand
+multiplicity set. Compatible resident contexts and the resulting Hall gap are
+rebuilt from the exact Fabric through the same physical-demand projection used
+by Tech cover search. A hardware reopen may respond with existing typed FU or
+instruction-store decisions; the feedback neither mutates Fabric nor changes
+an overall `ProofNotEstablished` outcome into `ProvenInfeasible`.
+The initial consumer projects one `ResizeInstructionStoreDomain` per compatible
+Temporal PE, with the sole value equal to its current resident-context count
+plus the observed exact gap. The ordinary kind-14 generator materializes each
+one-parent child and owns its decision lineage. Switch, memory, FIFO, topology,
+and System resources are unchanged; any resulting pressure is left to their
+existing Mapping checks and later typed feedback.
 
 Kinds 19 and 20 are the only built-in cross-frontier adapters. A two-frontier
 join indexes both canonical input sets and visits pairs by increasing

@@ -12,6 +12,8 @@ namespace {
 
 llvm::StringRef spelling(InvocationDiagnosticStage stage) {
   switch (stage) {
+  case InvocationDiagnosticStage::DataflowLowering:
+    return "dataflow_lowering";
   case InvocationDiagnosticStage::TechMapping:
     return "tech_mapping";
   case InvocationDiagnosticStage::SpatialPnr:

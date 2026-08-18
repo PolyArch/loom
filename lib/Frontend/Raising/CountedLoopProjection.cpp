@@ -34,6 +34,53 @@ bool hasOrdinalIdentityFeedback(mlir::scf::WhileOp loop) {
   return true;
 }
 
+bool isZero(mlir::Value value) {
+  mlir::IntegerAttr constant = integerConstant(value);
+  return constant && constant.getValue().isZero();
+}
+
+bool comparisonProvesPositive(mlir::Value condition, mlir::Value value) {
+  if (auto conjunction = condition.getDefiningOp<mlir::arith::AndIOp>())
+    return comparisonProvesPositive(conjunction.getLhs(), value) ||
+           comparisonProvesPositive(conjunction.getRhs(), value);
+
+  auto compare = condition.getDefiningOp<mlir::arith::CmpIOp>();
+  if (!compare)
+    return false;
+  return (compare.getPredicate() == mlir::arith::CmpIPredicate::sgt &&
+          compare.getLhs() == value && isZero(compare.getRhs())) ||
+         (compare.getPredicate() == mlir::arith::CmpIPredicate::slt &&
+          compare.getRhs() == value && isZero(compare.getLhs()));
+}
+
+mlir::Value positiveSource(mlir::Value value) {
+  if (auto extension = value.getDefiningOp<mlir::arith::ExtSIOp>())
+    return extension.getIn();
+  if (auto extension = value.getDefiningOp<mlir::arith::ExtUIOp>())
+    return extension.getIn();
+  return value;
+}
+
+bool enclosingBranchProvesPositive(mlir::scf::WhileOp loop,
+                                   mlir::Value upperBound) {
+  const mlir::Value source = positiveSource(upperBound);
+  mlir::Operation *nested = loop.getOperation();
+  while (mlir::Operation *parent = nested->getParentOp()) {
+    if (auto branch = llvm::dyn_cast<mlir::scf::IfOp>(parent)) {
+      if (nested->getParentRegion() == &branch.getThenRegion() &&
+          comparisonProvesPositive(branch.getCondition(), source))
+        return true;
+    }
+    nested = parent;
+  }
+  return false;
+}
+
+bool isDefinedOutside(mlir::Value value, mlir::scf::WhileOp loop) {
+  mlir::Region *region = value.getParentRegion();
+  return !region || !loop.getRegion(0).isAncestor(region);
+}
+
 } // namespace
 
 std::optional<ExactPostTestedCountedLoopProjection>
@@ -80,20 +127,28 @@ projectExactPostTestedCountedLoop(mlir::scf::WhileOp loop) {
       upperBound = compare.getLhs();
     else
       continue;
-    mlir::IntegerAttr upper = integerConstant(upperBound);
-    if (!upper || upper.getType() != integer)
+    if (upperBound.getType() != integer ||
+        !isDefinedOutside(upperBound, loop))
       continue;
 
     const unsigned arithmeticWidth = integer.getWidth() + 1;
     llvm::APInt lowerValue = lower.getValue().sext(arithmeticWidth);
-    llvm::APInt upperValue = upper.getValue().sext(arithmeticWidth);
     llvm::APInt stepValue = stepAttr.getValue().sext(arithmeticWidth);
-    if (lowerValue.isNegative() || !stepValue.isStrictlyPositive() ||
-        !lowerValue.slt(upperValue))
+    if (lowerValue.isNegative() || !stepValue.isStrictlyPositive())
       continue;
-    llvm::APInt distance = upperValue - lowerValue;
-    if (!distance.srem(stepValue).isZero())
+
+    std::optional<llvm::APInt> upperValue;
+    if (mlir::IntegerAttr upper = integerConstant(upperBound)) {
+      if (upper.getType() != integer)
+        continue;
+      upperValue = upper.getValue().sext(arithmeticWidth);
+      if (!lowerValue.slt(*upperValue) ||
+          !((*upperValue - lowerValue).srem(stepValue).isZero()))
+        continue;
+    } else if (!lowerValue.isZero() || !stepValue.isOne() ||
+               !enclosingBranchProvesPositive(loop, upperBound)) {
       continue;
+    }
 
     ExactPostTestedCountedLoopProjection candidate{
         loop,       lane,     loop.getInits()[lane],

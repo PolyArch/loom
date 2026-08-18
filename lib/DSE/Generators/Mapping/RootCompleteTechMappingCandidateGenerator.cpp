@@ -9,6 +9,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
+#include "Mapping/Tech/TechMappingHardwareDemand.h"
 #include "PnR/SpatialRootSupplyAdmission.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -85,6 +86,49 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
+llvm::Error validateComputeContextFeedback(
+    llvm::ArrayRef<std::uint8_t> bytes,
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ArtifactStore &store) {
+  const ArtifactRootReference *fabricReference = nullptr;
+  for (const CandidateGeneratorInputBinding &binding : inputs) {
+    for (const ArtifactRootReference &artifact : binding.artifacts) {
+      if (artifact.schemaIdentity !=
+              ::loom::fabric::fabricArtifactSchema.identity ||
+          artifact.schemaVersion !=
+              ::loom::fabric::fabricArtifactSchema.version)
+        continue;
+      if (fabricReference)
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "tech_mapping_generator_feedback_invalid: input closure has "
+            "multiple Fabric roots");
+      fabricReference = &artifact;
+    }
+  }
+  if (!fabricReference)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "tech_mapping_generator_feedback_invalid: input closure has no "
+        "Fabric root");
+  auto fabric = ::loom::fabric::importEntireFabricRoot(*fabricReference, store);
+  if (!fabric)
+    return fabric.takeError();
+  if (fabric->view().rootKind() != ::loom::fabric::FabricRootKind::Module)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "tech_mapping_generator_feedback_invalid: target is not a Module");
+  auto adopted = ::loom::mapping::adoptTechMappingComputeContextHallFeedback(
+      bytes, fabric->view());
+  if (!adopted)
+    return adopted.takeError();
+  return llvm::Error::success();
+}
+
+const CandidateGeneratorOwnerFeedbackPayloadContract feedbackContract{
+    ::loom::mapping::techMappingComputeContextHallFeedbackSchemaBytes(),
+    validateComputeContextFeedback};
+
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
@@ -100,7 +144,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteTechMappingCandidateGeneratorKind,
     "mapping.root_complete_tech_mapping",
-    "loom.mapping.root_complete_tech_mapping.generator.v5",
+    "loom.mapping.root_complete_tech_mapping.generator.v6",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -110,12 +154,13 @@ const CandidateGeneratorDescriptor descriptor{
     workUnits,
     nullptr,
     ProviderForm::InProcess,
+    &feedbackContract,
 };
 
 const CandidateGeneratorDescriptor applicationGraphDescriptor{
     applicationGraphTechMappingCandidateGeneratorKind,
     "mapping.application_graph_tech_mapping",
-    "loom.mapping.application_graph_tech_mapping.generator.v8",
+    "loom.mapping.application_graph_tech_mapping.generator.v9",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -125,6 +170,7 @@ const CandidateGeneratorDescriptor applicationGraphDescriptor{
     workUnits,
     nullptr,
     ProviderForm::InProcess,
+    &feedbackContract,
 };
 
 llvm::Error accumulate(std::uint64_t source, std::uint64_t &target,
@@ -157,9 +203,25 @@ accumulate(const ::loom::mapping::TechMappingGenerationAccounting &source,
           accumulate(source.matchRowReplayVisits, target.matchRowReplayVisits,
                      "match-row replay visit"))
     return error;
+  if (llvm::Error error = accumulate(source.memoryRowFrontierLimits,
+                                     target.memoryRowFrontierLimits,
+                                     "memory-row frontier limit"))
+    return error;
   if (llvm::Error error =
           accumulate(source.partialCoverExpansions,
                      target.partialCoverExpansions, "partial-cover expansion"))
+    return error;
+  if (llvm::Error error = accumulate(source.constructiveCoverSearchInvocations,
+                                     target.constructiveCoverSearchInvocations,
+                                     "constructive-cover search invocation"))
+    return error;
+  if (llvm::Error error = accumulate(source.constructiveCoverCompletedChecks,
+                                     target.constructiveCoverCompletedChecks,
+                                     "constructive-cover completed check"))
+    return error;
+  if (llvm::Error error = accumulate(source.constructiveCoverPublications,
+                                     target.constructiveCoverPublications,
+                                     "constructive-cover publication"))
     return error;
   if (llvm::Error error = accumulate(source.computeContextProjectionWork,
                                      target.computeContextProjectionWork,
@@ -256,12 +318,53 @@ std::vector<CandidateGeneratorWorkUnitSummary> workSummary(
   };
 }
 
+std::optional<std::vector<std::uint8_t>> encodeFeedback(
+    const std::optional<::loom::mapping::TechMappingComputeContextHallDeficit>
+        &feedback) {
+  if (!feedback)
+    return std::nullopt;
+  return ::loom::mapping::encodeTechMappingComputeContextHallFeedback(
+      *feedback);
+}
+
+void emitFeedback(
+    const std::optional<::loom::mapping::TechMappingComputeContextHallDeficit>
+        &feedback) {
+  if (!feedback)
+    return;
+  ::loom::mapping_debug::emit(
+      ::loom::mapping_debug::Level::Summary,
+      ::loom::mapping_debug::Stage::TechMapping,
+      ::loom::mapping_debug::Event::MappingFailure,
+      [&](llvm::json::Object &fields) {
+        fields["failure_scope"] = "tech_cover_compute_context_hall_demand";
+        fields["closure_status"] = "proven_infeasible";
+        fields["proof_scope"] = "observed_cover_relation";
+        fields["cover_compute_demand_count"] = feedback->coverDemandCount();
+        fields["cover_compute_maximum_matching"] =
+            feedback->coverMaximumMatching();
+        fields["hall_demand_count"] = feedback->hallDemandCount();
+        fields["hall_context_value_count"] = feedback->hallContextValueCount();
+        fields["hall_deficit"] = feedback->deficit();
+        llvm::json::Array groups;
+        for (const auto &group : feedback->groups()) {
+          llvm::json::Object value;
+          value["demand_count"] = group.demandCount;
+          value["compatible_context_count"] = group.compatibleContexts.size();
+          groups.push_back(std::move(value));
+        }
+        fields["capability_groups"] = std::move(groups);
+      });
+}
+
 llvm::Expected<std::optional<CandidateGeneratorIncompleteReason>>
 consumeTechMappingOutcome(
     ::loom::mapping::TechMappingGenerationOutcome outcome,
     ::loom::mapping::TechMappingGenerationAccounting &accounting,
     std::vector<ArtifactRootReference> &outputs,
-    std::vector<CandidateGeneratorLineageEdge> &lineage) {
+    std::vector<CandidateGeneratorLineageEdge> &lineage,
+    std::optional<::loom::mapping::TechMappingComputeContextHallDeficit>
+        &feedback) {
   const auto &currentAccounting = std::visit(
       [](const auto &result)
           -> const ::loom::mapping::TechMappingGenerationAccounting & {
@@ -270,6 +373,15 @@ consumeTechMappingOutcome(
       outcome);
   if (llvm::Error error = accumulate(currentAccounting, accounting))
     return std::move(error);
+  const auto &currentFeedback = std::visit(
+      [](const auto &result)
+          -> const ::loom::mapping::TechMappingGenerationFeedback & {
+        return result.feedback;
+      },
+      outcome);
+  if (currentFeedback.computeContextHall)
+    ::loom::mapping::retainTechMappingComputeContextHallFeedback(
+        feedback, *currentFeedback.computeContextHall);
   if (auto *generated =
           std::get_if<::loom::mapping::GeneratedTechMappings>(&outcome)) {
     for (ArtifactRootReference &candidate : generated->candidates) {
@@ -341,6 +453,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
   std::vector<ArtifactRootReference> outputs;
   std::vector<CandidateGeneratorLineageEdge> lineage;
   ::loom::mapping::TechMappingGenerationAccounting accounting;
+  std::optional<::loom::mapping::TechMappingComputeContextHallDeficit> feedback;
   std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
   const auto rememberIncomplete =
       [&](CandidateGeneratorIncompleteReason reason) {
@@ -371,7 +484,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         consumeTechMappingOutcome(::loom::mapping::generateTechMappings(
                                       {*dataflow, completeCover, fabric->view(),
                                        *config, store, executionControl}),
-                                  accounting, outputs, lineage);
+                                  accounting, outputs, lineage, feedback);
     if (!incomplete)
       return incomplete.takeError();
     if (*incomplete)
@@ -381,18 +494,19 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
       break;
   }
 
+  emitFeedback(feedback);
   if (incompleteReason)
     return CandidateGeneratorProviderResult{
         IncompleteCandidateGeneratorResult{
             *incompleteReason,
             {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
             std::move(lineage)},
-        workSummary(accounting)};
+        workSummary(accounting), encodeFeedback(feedback)};
   return CandidateGeneratorProviderResult{
       CompletedCandidateGeneratorResult{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
           std::move(lineage)},
-      workSummary(accounting)};
+      workSummary(accounting), encodeFeedback(feedback)};
 }
 
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
@@ -488,8 +602,11 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
   ::loom::mapping::TechMappingGenerationAccounting accounting;
   std::uint64_t rootSupplyAdmissions = 0;
   std::uint64_t rootSupplyRejections = 0;
+  std::uint64_t admittedGraphCount = 0;
+  std::uint64_t unadmittedGraphCount = 0;
   std::uint64_t rootSupplyDeterministicWork = 0;
   std::uint64_t rootSupplyConstructionNanoseconds = 0;
+  std::optional<::loom::mapping::TechMappingComputeContextHallDeficit> feedback;
   std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
   const auto rememberIncomplete =
       [&](CandidateGeneratorIncompleteReason reason) {
@@ -649,6 +766,28 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
         });
     if (!enumeration)
       return enumeration.takeError();
+    if (admittedForGraph != 0) {
+      ++admittedGraphCount;
+    } else {
+      ++unadmittedGraphCount;
+      ::loom::mapping_debug::emit(
+          ::loom::mapping_debug::Level::Summary,
+          ::loom::mapping_debug::Stage::TechMapping,
+          ::loom::mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["failure_scope"] = "graph_root_supply_frontier";
+            fields["closure_status"] = enumeration->interruption
+                                           ? "cancelled_or_timeout"
+                                           : "proof_not_established";
+            fields["graph"] = graph.entity.value();
+            fields["candidate_evaluations"] =
+                enumeration->accounting.candidateEvaluations;
+            fields["root_supply_rejections"] = rootSupplyRejections;
+          });
+    }
+    if (enumeration->feedback.computeContextHall)
+      ::loom::mapping::retainTechMappingComputeContextHallFeedback(
+          feedback, *enumeration->feedback.computeContextHall);
     if (llvm::Error error = accumulate(enumeration->accounting, accounting))
       return std::move(error);
     if (llvm::Error error =
@@ -675,11 +814,22 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
       ::loom::mapping_debug::Event::Statistics,
       [&](llvm::json::Object &fields) {
         fields["statistics_kind"] = "application_tech_root_supply_frontier";
+        fields["required_graph_count"] = graphs.size();
+        fields["admitted_graph_count"] = admittedGraphCount;
+        fields["unadmitted_graph_count"] = unadmittedGraphCount;
         fields["root_supply_admissions"] = rootSupplyAdmissions;
         fields["root_supply_rejections"] = rootSupplyRejections;
         fields["root_supply_construction_time_ns"] =
             rootSupplyConstructionNanoseconds;
         fields["root_supply_deterministic_work"] = rootSupplyDeterministicWork;
+        fields["memory_row_frontier_limits"] =
+            accounting.memoryRowFrontierLimits;
+        fields["constructive_cover_search_invocations"] =
+            accounting.constructiveCoverSearchInvocations;
+        fields["constructive_cover_completed_checks"] =
+            accounting.constructiveCoverCompletedChecks;
+        fields["constructive_cover_publications"] =
+            accounting.constructiveCoverPublications;
         fields["compute_context_projection_work"] =
             accounting.computeContextProjectionWork;
         fields["compute_context_matching_checks"] =
@@ -715,18 +865,19 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationGraphProvider(
         fields["candidate_evaluations"] = accounting.candidateEvaluations;
         fields["candidate_publications"] = outputs.size();
       });
+  emitFeedback(feedback);
   if (incompleteReason)
     return CandidateGeneratorProviderResult{
         IncompleteCandidateGeneratorResult{
             *incompleteReason,
             {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
             std::move(lineage)},
-        workSummary(accounting)};
+        workSummary(accounting), encodeFeedback(feedback)};
   return CandidateGeneratorProviderResult{
       CompletedCandidateGeneratorResult{
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
           std::move(lineage)},
-      workSummary(accounting)};
+      workSummary(accounting), encodeFeedback(feedback)};
 }
 
 const CandidateGeneratorProvider provider{

@@ -1,8 +1,11 @@
 #include "Frontend/Compilation/StructuredSchedule.h"
 
+#include "Common/IndexWidth.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
+#include "Frontend/Compilation/OwnershipCandidateGenerator.h"
+#include "Frontend/Compilation/StructuredSpecialMathAccuracy.h"
 #include "Frontend/IR/LoomOps.h"
 #include "Frontend/Raising/Passes.h"
 
@@ -29,7 +32,7 @@ namespace loom::frontend {
 namespace {
 
 constexpr llvm::StringLiteral decisionSchema =
-    "loom.structured_schedule.decision.1.0";
+    "loom.structured_schedule.decision.2.0";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -89,10 +92,140 @@ bool hasInvariantNestedLoopBounds(mlir::scf::ForOp outer) {
   return !result.wasInterrupted();
 }
 
+llvm::SmallVector<mlir::scf::ForOp>
+rectangularParallelNest(mlir::scf::ForOp root) {
+  llvm::SmallVector<mlir::scf::ForOp> result;
+  mlir::scf::ForOp current = root;
+  while (current) {
+    result.push_back(current);
+
+    mlir::scf::ForOp child;
+    for (mlir::Operation &operation : current.getBody()->without_terminator()) {
+      if (auto nested = llvm::dyn_cast<mlir::scf::ForOp>(&operation)) {
+        if (child)
+          return {};
+        child = nested;
+      }
+    }
+    if (!child)
+      break;
+    current = child;
+  }
+  return raising::hasProvenIndependentIterations(result)
+             ? result
+             : llvm::SmallVector<mlir::scf::ForOp>{};
+}
+
+mlir::Value toIndex(mlir::OpBuilder &builder, mlir::Location location,
+                    mlir::Value value) {
+  if (llvm::isa<mlir::IndexType>(value.getType()))
+    return value;
+  return mlir::arith::IndexCastOp::create(builder, location,
+                                          builder.getIndexType(), value);
+}
+
+llvm::Expected<mlir::scf::ForallOp>
+applyParallelizeNest(mlir::scf::ForOp root) {
+  llvm::SmallVector<mlir::scf::ForOp> nest = rectangularParallelNest(root);
+  if (nest.size() < 2)
+    return invalid("parallel nest preconditions are not satisfied");
+
+  mlir::OpBuilder builder(root);
+  llvm::SmallVector<mlir::OpFoldResult> lowerBounds;
+  llvm::SmallVector<mlir::OpFoldResult> upperBounds;
+  llvm::SmallVector<mlir::OpFoldResult> steps;
+  lowerBounds.reserve(nest.size());
+  upperBounds.reserve(nest.size());
+  steps.reserve(nest.size());
+  for (mlir::scf::ForOp loop : nest) {
+    lowerBounds.push_back(
+        toIndex(builder, loop.getLoc(), loop.getLowerBound()));
+    upperBounds.push_back(
+        toIndex(builder, loop.getLoc(), loop.getUpperBound()));
+    steps.push_back(toIndex(builder, loop.getLoc(), loop.getStep()));
+  }
+
+  mlir::scf::ForallOp parallel = mlir::scf::ForallOp::create(
+      builder, root.getLoc(), lowerBounds, upperBounds, steps,
+      /*outputs=*/mlir::ValueRange{}, /*mapping=*/std::nullopt);
+  mlir::IRMapping mapping;
+  builder.setInsertionPointToStart(parallel.getBody());
+  for (auto [dimension, loop] : llvm::enumerate(nest)) {
+    mlir::Value induction = parallel.getInductionVar(dimension);
+    if (induction.getType() != loop.getInductionVar().getType())
+      induction = mlir::arith::IndexCastOp::create(
+          builder, loop.getLoc(), loop.getInductionVar().getType(), induction);
+    mapping.map(loop.getInductionVar(), induction);
+  }
+
+  auto cloneBody = [&](auto &&self, std::size_t depth) -> void {
+    mlir::Operation *child =
+        depth + 1 < nest.size() ? nest[depth + 1].getOperation() : nullptr;
+    for (mlir::Operation &operation :
+         nest[depth].getBody()->without_terminator()) {
+      if (&operation == child) {
+        self(self, depth + 1);
+        continue;
+      }
+      builder.clone(operation, mapping);
+    }
+  };
+  cloneBody(cloneBody, 0);
+  root.erase();
+  return parallel;
+}
+
 struct ActorMultiplicity final {
   mlir::Operation *representative = nullptr;
   std::uint64_t count = 0;
+  std::optional<std::uint64_t> resourceUpperBound;
 };
+
+struct AggregateUnrollActorProjection final {
+  CanonicalSemanticBytes key;
+  std::optional<std::uint64_t> resourceUpperBound;
+};
+
+llvm::Expected<AggregateUnrollActorProjection>
+projectAggregateUnrollActor(mlir::Operation *operation,
+                            const FabricCapabilityIndex &fabric) {
+  const std::optional<dataflow::OperationSchemaId> schema =
+      dataflow::operationSchemaOf(operation);
+  const bool unresolvedSpecialMath =
+      schema &&
+      dataflow::semanticsCase(*schema) ==
+          dataflow::OperationSemanticsCase::SpecialMathAccuracy &&
+      !operation->getDiscardableAttr(kSpecialMathAccuracyAttrName);
+  if (!unresolvedSpecialMath) {
+    auto key = dataflow::projectRegisteredActorSchemaProjectionBytes(operation);
+    if (!key)
+      return key.takeError();
+    return AggregateUnrollActorProjection{std::move(*key), std::nullopt};
+  }
+
+  auto projections = projectStructuredSpecialMathAccuracyDomain(operation);
+  if (!projections)
+    return projections.takeError();
+  if (projections->empty())
+    return invalid("unresolved special-math domain is empty");
+  auto key =
+      dataflow::encodeCanonicalActorSchemaProjection(projections->front());
+  if (!key)
+    return key.takeError();
+  auto indexBitWidth = getIndexBitWidth(operation);
+  if (!indexBitWidth)
+    return indexBitWidth.takeError();
+  std::uint64_t resourceUpperBound = 0;
+  for (const dataflow::CanonicalActorSchemaProjection &projection :
+       *projections) {
+    auto count =
+        fabric.admittingOperationResourceCount(projection, *indexBitWidth);
+    if (!count)
+      return count.takeError();
+    resourceUpperBound = std::max(resourceUpperBound, *count);
+  }
+  return AggregateUnrollActorProjection{std::move(*key), resourceUpperBound};
+}
 
 llvm::Expected<std::uint64_t>
 aggregateUnrollCapacity(mlir::scf::ForOp loop,
@@ -102,15 +235,20 @@ aggregateUnrollCapacity(mlir::scf::ForOp loop,
   loop.getRegion().walk([&](mlir::Operation *operation) {
     if (projectionError || !dataflow::operationSchemaOf(operation))
       return mlir::WalkResult::advance();
-    auto projection =
-        dataflow::projectRegisteredActorSchemaProjectionBytes(operation);
+    auto projection = projectAggregateUnrollActor(operation, fabric);
     if (!projection) {
       projectionError = projection.takeError();
       return mlir::WalkResult::interrupt();
     }
-    ActorMultiplicity &multiplicity = actors[projection->bytes().vec()];
-    if (!multiplicity.representative)
+    ActorMultiplicity &multiplicity = actors[projection->key.bytes().vec()];
+    if (!multiplicity.representative) {
       multiplicity.representative = operation;
+      multiplicity.resourceUpperBound = projection->resourceUpperBound;
+    } else if (multiplicity.resourceUpperBound !=
+               projection->resourceUpperBound) {
+      projectionError = invalid("actor-equivalent capacity bounds disagree");
+      return mlir::WalkResult::interrupt();
+    }
     const std::optional<std::uint64_t> next =
         llvm::checkedAddUnsigned(multiplicity.count, std::uint64_t{1});
     if (!next) {
@@ -131,6 +269,11 @@ aggregateUnrollCapacity(mlir::scf::ForOp loop,
     auto kind = dataflow::classifyCanonicalDataflowActor(actor);
     if (!kind)
       return invalid("registered actor lost its canonical kind");
+    if (entry.second.resourceUpperBound) {
+      capacity = std::min(capacity, *entry.second.resourceUpperBound /
+                                        entry.second.count);
+      continue;
+    }
     llvm::Expected<std::uint64_t> resources =
         *kind == dataflow::CanonicalDataflowActorKind::Memory
             ? fabric.admittingMemoryResourceCount(actor)
@@ -251,11 +394,13 @@ encodeStructuredScheduleDecision(const StructuredScheduleDecision &decision) {
   if (decision.loop.kind != StructuredEntityKind::Operation)
     return invalid("decision does not reference an operation");
   if (static_cast<std::uint32_t>(decision.kind) >
-      static_cast<std::uint32_t>(StructuredScheduleDecisionKind::Parallelize))
+      static_cast<std::uint32_t>(
+          StructuredScheduleDecisionKind::ParallelizeNest))
     return invalid("decision has an unknown kind");
   const bool factorless =
       decision.kind == StructuredScheduleDecisionKind::Interchange ||
-      decision.kind == StructuredScheduleDecisionKind::Parallelize;
+      decision.kind == StructuredScheduleDecisionKind::Parallelize ||
+      decision.kind == StructuredScheduleDecisionKind::ParallelizeNest;
   if ((factorless && decision.factor != 0) ||
       (!factorless && decision.factor <= 1))
     return invalid("decision has an invalid factor");
@@ -289,8 +434,8 @@ adoptStructuredScheduleDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes) {
   std::uint32_t kind = 0;
   for (std::uint8_t byte : suffix.take_front(4))
     kind = (kind << 8) | byte;
-  if (kind >
-      static_cast<std::uint32_t>(StructuredScheduleDecisionKind::Parallelize))
+  if (kind > static_cast<std::uint32_t>(
+                 StructuredScheduleDecisionKind::ParallelizeNest))
     return invalid("decision payload has an unknown kind");
   std::uint64_t factor = 0;
   for (std::uint8_t byte : suffix.drop_front(4))
@@ -298,7 +443,8 @@ adoptStructuredScheduleDecision(llvm::ArrayRef<std::uint8_t> canonicalBytes) {
   const auto typedKind = static_cast<StructuredScheduleDecisionKind>(kind);
   const bool factorless =
       typedKind == StructuredScheduleDecisionKind::Interchange ||
-      typedKind == StructuredScheduleDecisionKind::Parallelize;
+      typedKind == StructuredScheduleDecisionKind::Parallelize ||
+      typedKind == StructuredScheduleDecisionKind::ParallelizeNest;
   if ((factorless && factor != 0) || (!factorless && factor <= 1))
     return invalid("decision payload has an invalid factor");
   StructuredScheduleDecision decision{*loop, typedKind, factor};
@@ -372,6 +518,9 @@ enumerateStructuredScheduleDecisions(const StructuredProgramCandidate &parent,
         raising::hasProvenIndependentIterations(loop))
       decisions.push_back(
           {entity.reference, StructuredScheduleDecisionKind::Parallelize, 0});
+    if (rectangularParallelNest(loop).size() >= 2)
+      decisions.push_back({entity.reference,
+                           StructuredScheduleDecisionKind::ParallelizeNest, 0});
   }
   return StructuredScheduleDecisionDomain{std::move(decisions), expanded};
 }
@@ -416,6 +565,21 @@ materializeStructuredScheduleDecision(
       return invalid("parallelize decision carries a factor");
     if (mlir::failed(raising::materializeIndependentLoopAsForall(loop)))
       return invalid("SCF parallelization rejected the selected decision");
+    break;
+  case StructuredScheduleDecisionKind::ParallelizeNest:
+    if (decision.factor != 0)
+      return invalid("parallel-nest decision carries a factor");
+    if (auto parallel = applyParallelizeNest(loop)) {
+      const bool insideTrackedSpatial =
+          clonedSpatialRegion &&
+          clonedSpatialRegion->isAncestor(parallel->getOperation());
+      if (insideTrackedSpatial)
+        if (llvm::Error error =
+                materializeOwnedSpatialForallThreadDomain(*parallel))
+          return std::move(error);
+    } else {
+      return parallel.takeError();
+    }
     break;
   }
   if (mlir::failed(mlir::verify(**clone)))

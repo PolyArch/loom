@@ -342,6 +342,23 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
              .second)
       return invalid("CGRA register-FIFO transfer edge is duplicated");
   }
+  std::set<EdgeKey> selectedMemoryInternalEdges;
+  for (const ::loom::mapping::TechMemoryRealizationView &realization :
+       tech.memoryRealizations()) {
+    for (const ::loom::mapping::TechMemoryInternalEdgeView &edge :
+         realization.internalEdges) {
+      auto producerKey = dataflowBytes(dataflow, edge.producer);
+      auto consumerKey = dataflowBytes(dataflow, edge.consumer);
+      if (!producerKey)
+        return producerKey.takeError();
+      if (!consumerKey)
+        return consumerKey.takeError();
+      if (!selectedMemoryInternalEdges
+               .emplace(std::move(*producerKey), std::move(*consumerKey))
+               .second)
+        return invalid("CGRA memory internal edge is duplicated");
+    }
+  }
   struct ProducedUseBuilder final {
     ::dataflow::CanonicalGraphProducerEndpointRef endpoint;
     std::vector<std::uint64_t> actions;
@@ -641,6 +658,7 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
   };
   std::map<RefBytes, LocalTransferBuilder> localTransfers;
   std::set<EdgeKey> consumedLocalTransfers;
+  std::set<EdgeKey> consumedMemoryInternalEdges;
   if (llvm::Error error = dataflow.forEachGraphEdge(
           [&](const ::dataflow::CanonicalGraphProducerEndpointRef &producer,
               const ::dataflow::CanonicalGraphConsumerEndpointRef &consumer)
@@ -656,13 +674,22 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
             auto consumerKey = dataflowBytes(dataflow, consumer);
             if (!consumerKey)
               return consumerKey.takeError();
-            if (residualEdges.count({*producerKey, *consumerKey}))
+            const EdgeKey edge{*producerKey, *consumerKey};
+            if (selectedMemoryInternalEdges.count(edge)) {
+              if (residualEdges.count(edge))
+                return invalid("CGRA memory internal edge is also routed");
+              if (selectedLocalTransfers.count(edge))
+                return invalid(
+                    "CGRA memory internal edge also selects a register FIFO");
+              consumedMemoryInternalEdges.insert(edge);
+              return llvm::Error::success();
+            }
+            if (residualEdges.count(edge))
               return llvm::Error::success();
             transferProducers.insert(*producerKey);
             transferConsumers.insert(*consumerKey);
             auto [position, inserted] = localTransfers.try_emplace(
                 *producerKey, LocalTransferBuilder{producer, *graph, {}});
-            const EdgeKey edge{*producerKey, *consumerKey};
             auto selectedLocal = selectedLocalTransfers.find(edge);
             if (selectedLocal != selectedLocalTransfers.end()) {
               if (!inserted || !position->second.sinks.empty())
@@ -692,6 +719,9 @@ llvm::Expected<CgraTransportPlan> freezeCgraTransportPlan(
     return std::move(error);
   if (consumedLocalTransfers.size() != selectedLocalTransfers.size())
     return invalid("CGRA register-FIFO transfer is absent from Dataflow");
+  if (consumedMemoryInternalEdges.size() !=
+      selectedMemoryInternalEdges.size())
+    return invalid("CGRA memory internal edge is absent from Dataflow");
   result.localTransfers.reserve(localTransfers.size());
   for (auto &[key, transfer] : localTransfers) {
     (void)key;

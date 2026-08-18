@@ -80,7 +80,7 @@ void builtinPresetsExpandThroughPublicBuilder() {
   };
   const std::array<Expectation, 3> expectations{{
       {loom::adg::BuiltinTargetPreset::Small, 4, 12, 4, 1, 1, 4},
-      {loom::adg::BuiltinTargetPreset::Coverage, 8, 27, 9, 2, 2, 6},
+      {loom::adg::BuiltinTargetPreset::Coverage, 8, 27, 9, 4, 4, 6},
       {loom::adg::BuiltinTargetPreset::Large, 16, 48, 16, 4, 4, 8},
   }};
 
@@ -96,7 +96,7 @@ void builtinPresetsExpandThroughPublicBuilder() {
             descriptor.scale.spatialMemoryCount == expected.spatialMemories &&
             descriptor.scale.temporalMemoryCount == expected.temporalMemories,
         "builtin descriptor changed its scale contract");
-    require(test, descriptor.schemaMajor == 6 && descriptor.schemaMinor == 0,
+    require(test, descriptor.schemaMajor == 7 && descriptor.schemaMinor == 0,
             "builtin descriptor did not select the parameterized mesh recipe");
 
     auto target =

@@ -4,6 +4,7 @@
 #include "Common/ArtifactStore.h"
 #include "Config/ResolvedConfig.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StructuredSchedule.h"
 
 #include "Frontend/IR/StructuredProgramArtifact.h"
@@ -129,7 +130,7 @@ const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
 const CandidateGeneratorDescriptor descriptor{
     structuredScheduleCandidateGeneratorKind,
     "compiler.structured_schedule",
-    "loom.compiler.structured_schedule.generator.v2",
+    "loom.compiler.structured_schedule.generator.v3",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -216,8 +217,20 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeScheduleProvider(
          decisions->decisions) {
       auto child = frontend::materializeStructuredScheduleDecision(
           *parent, decision, trackedSpatialRegion, sourceProvenance);
-      if (!child)
-        return child.takeError();
+      if (!child) {
+        bool rejected = false;
+        llvm::Error unhandled = llvm::handleErrors(
+            child.takeError(),
+            [&](const frontend::SpatialOwnershipCandidateRejection &) {
+              rejected = true;
+            });
+        if (unhandled)
+          return std::move(unhandled);
+        if (!rejected)
+          return invalid("schedule candidate failed without a classified "
+                         "outcome");
+        continue;
+      }
       auto published =
           frontend::publishStructuredProgram(child->structuredProgram, store);
       if (!published)

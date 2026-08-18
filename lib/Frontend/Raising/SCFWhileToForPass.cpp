@@ -24,12 +24,13 @@
 // to prove it, and every other structural check stays with the utility.
 //
 // CFG-to-SCF also emits a post-tested shape whose body precedes the latch
-// comparison. The shared ExactPostTestedCountedLoopProjection accepts only a
-// closed finite subset: constant nonnegative lower bound, positive constant
-// step, exact landing on a greater constant upper bound, `next != upper`, and
-// ordinal identity feedback through an otherwise empty after-region. That
-// proof makes the body domain and every exit result exact, so this pass can
-// mechanically build scf.for. Every other post-tested shape stays scf.while.
+// comparison. The shared ExactPostTestedCountedLoopProjection accepts a closed
+// finite subset: either an exactly landing constant domain, or a zero-based
+// unit-step domain whose dynamic upper bound is proven strictly positive by an
+// enclosing true branch. Both require `next != upper` and ordinal identity
+// feedback through an otherwise empty after-region. That proof makes the body
+// domain and every exit result exact, so this pass can mechanically build
+// scf.for. Every other post-tested shape stays scf.while.
 
 #include "Frontend/Raising/CountedLoopProjection.h"
 #include "Frontend/Raising/Passes.h"

@@ -126,8 +126,10 @@ target_link_libraries(loom-dse-production-candidate-generator-registration-test 
 
 target_link_libraries(loom-dse-hardware-candidate-generator-test PRIVATE
   LoomADGBuilder
+  LoomDSEFeedback
   LoomDSEHardwareGenerator
   LoomFabricArtifact
+  LoomTechMapping
   LLVMSupport
 )
 

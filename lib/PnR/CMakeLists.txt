@@ -44,6 +44,7 @@ add_mlir_library(LoomPnR
   SpatialPnrMemoryIndex.cpp
   SpatialPnrPortIndex.cpp
   SpatialPnrProblem.cpp
+  SpatialPnrProblemIdentity.cpp
   SpatialPhysicalTiming.cpp
   SpatialProgressAnalysis.cpp
   SpatialRecurrenceTiming.cpp
@@ -82,6 +83,8 @@ add_mlir_library(LoomPnR
   System/SystemServiceRouter.cpp
   System/SystemMappingMaterializer.cpp
 
+  PARTIAL_SOURCES_INTENDED
+
   ADDITIONAL_HEADER_DIRS
   ${LOOM_SOURCE_DIR}/include/PnR
 
@@ -92,6 +95,7 @@ add_mlir_library(LoomPnR
   LoomFabricTemporalOperandBuffer
   LoomDSEObjective
   LoomMappingArtifact
+  LoomPnRDerivedContextSession
   MLIRPresburger
   LLVMSupport
 )

@@ -3,6 +3,7 @@ add_library(LoomTechMapping
   TechMappingComputeRows.cpp
   TechMappingConfig.cpp
   TechMappingGenerator.cpp
+  TechMappingHardwareDemand.cpp
   TechMappingMaterialization.cpp
   TechMappingMemoryRows.cpp
   TechMappingSearch.cpp

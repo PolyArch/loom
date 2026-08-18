@@ -33,6 +33,7 @@ namespace loom::pnr {
 namespace detail {
 class SpatialBindingRelationModel;
 class SpatialMemoryConstraintModel;
+class SpatialPnrProblemIdentity;
 class SpatialRouteConstraintModel;
 class SpatialRecurrenceTimingIndex;
 class SpatialSchedulePressureIndex;
@@ -1082,6 +1083,10 @@ struct FrozenSpatialMemoryOperationHandshakePlan final {
 /// only fragments selected by the current Mapping.
 class FrozenSpatialHandshakeIndex final {
 public:
+  const std::optional<::loom::fabric::FabricHandshakeContext> &
+  fabricContext() const {
+    return fabricContext_;
+  }
   llvm::ArrayRef<::loom::fabric::HandshakeOwnerModel> ownerModels() const {
     return ownerModels_;
   }
@@ -1144,6 +1149,7 @@ public:
   }
 
 private:
+  std::optional<::loom::fabric::FabricHandshakeContext> fabricContext_;
   std::vector<::loom::fabric::HandshakeOwnerModel> ownerModels_;
   std::vector<FrozenSpatialHandshakeFragment> fragments_;
   std::vector<PnrIndex> fixedFragments_;
@@ -1190,6 +1196,7 @@ private:
   Storage bytes_;
 
   friend class FrozenSpatialPnrProblemBuilder;
+  friend class detail::SpatialPnrProblemIdentity;
 };
 
 struct SpatialActiveProblemStatistics final {

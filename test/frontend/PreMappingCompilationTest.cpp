@@ -631,10 +631,11 @@ findStructuredLoop(const char *test,
   auto view = take(test, candidate.view());
   for (const loom::frontend::StructuredEntity &entity :
        view.entities(loom::frontend::StructuredEntityKind::Operation)) {
-    auto loop = llvm::dyn_cast_or_null<mlir::scf::WhileOp>(entity.operation);
-    if (!loop)
+    if (!llvm::isa_and_nonnull<mlir::scf::ForOp, mlir::scf::WhileOp>(
+            entity.operation))
       continue;
-    auto callable = loop->getParentOfType<mlir::LLVM::LLVMFuncOp>();
+    auto callable =
+        entity.operation->getParentOfType<mlir::LLVM::LLVMFuncOp>();
     if (callable && callable.getSymName() == callableName)
       return entity.reference;
   }
@@ -1208,7 +1209,7 @@ void explicitOperationSpatialOwnership() {
   dataflow::ThreadLaunchOp launch;
   mlir::LLVM::ReturnOp returnOp;
   for (mlir::Operation &operation : body) {
-    sawLoop |= llvm::isa<mlir::scf::WhileOp>(&operation);
+    sawLoop |= llvm::isa<mlir::scf::ForOp, mlir::scf::WhileOp>(&operation);
     if (llvm::isa<mlir::LLVM::LoadOp>(&operation) && loadOrder < 0)
       loadOrder = order;
     if (auto candidate = llvm::dyn_cast<dataflow::ThreadLaunchOp>(&operation)) {
@@ -1398,7 +1399,8 @@ void operationOwnershipScopesFollowCanonicalOrder() {
     if (!scope)
       continue;
     auto entity = take(test, view.resolve(scope->selection));
-    if (llvm::isa_and_nonnull<mlir::scf::WhileOp>(entity.operation)) {
+    if (llvm::isa_and_nonnull<mlir::scf::ForOp, mlir::scf::WhileOp>(
+            entity.operation)) {
       scopes.push_back(scope->selection);
       scopeOrdinals.push_back(domainOrdinal);
     }
@@ -1407,7 +1409,8 @@ void operationOwnershipScopesFollowCanonicalOrder() {
   std::vector<loom::frontend::StructuredEntityRef> expected;
   for (const loom::frontend::StructuredEntity &entity :
        view.entities(loom::frontend::StructuredEntityKind::Operation)) {
-    if (llvm::isa_and_nonnull<mlir::scf::WhileOp>(entity.operation))
+    if (llvm::isa_and_nonnull<mlir::scf::ForOp, mlir::scf::WhileOp>(
+            entity.operation))
       expected.push_back(entity.reference);
   }
   if (expected.size() != 2 || scopes != expected)

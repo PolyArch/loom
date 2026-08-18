@@ -11,6 +11,7 @@
 #include "Common/IndexWidth.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/DataflowSyncRendezvous.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -35,12 +36,15 @@
 #include "llvm/Support/Error.h"
 
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <vector>
 
 namespace {
+
+constexpr std::size_t maximumDirectEventJoinFan = 4;
 
 using ::loom::lowering::FixedParallelDomain;
 using ::loom::lowering::forEachParallelPoint;
@@ -844,6 +848,9 @@ private:
       return control;
 
     setInsertionPoint(loc);
+    if (rendezvous.size() > maximumDirectEventJoinFan)
+      return ::dataflow::buildCanonicalSyncRendezvousTree(
+          builder, loc, rendezvous, /*carrierLeaf=*/0);
     ::llvm::SmallVector<::mlir::Type, 4> types;
     for (::mlir::Value input : rendezvous)
       types.push_back(input.getType());

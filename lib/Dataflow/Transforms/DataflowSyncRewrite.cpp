@@ -1,10 +1,12 @@
 #include "DataflowRewriteInternal.h"
 
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/DataflowSyncRendezvous.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
@@ -137,25 +139,6 @@ std::optional<TreeAnalysis> analyzeCanonicalTree(SyncOp root) {
   return std::move(**analyzed);
 }
 
-mlir::Value buildCanonicalTree(mlir::OpBuilder &builder, mlir::Location loc,
-                               mlir::ValueRange inputs, std::size_t firstLeaf,
-                               std::size_t liveLeaf) {
-  if (inputs.size() == 1)
-    return inputs.front();
-  const std::size_t leftCount = (inputs.size() + 1) / 2;
-  mlir::Value left = buildCanonicalTree(
-      builder, loc, inputs.take_front(leftCount), firstLeaf, liveLeaf);
-  mlir::Value right =
-      buildCanonicalTree(builder, loc, inputs.drop_front(leftCount),
-                         firstLeaf + leftCount, liveLeaf);
-  auto sync = SyncOp::create(builder, loc,
-                             mlir::TypeRange{left.getType(), right.getType()},
-                             mlir::ValueRange{left, right});
-  const bool liveInRight =
-      liveLeaf >= firstLeaf + leftCount && liveLeaf < firstLeaf + inputs.size();
-  return sync.getOutputs()[liveInRight ? 1 : 0];
-}
-
 llvm::Expected<CanonicalActorView>
 resolveRoot(const CanonicalDataflowArtifact &parent, ActorId root) {
   auto view = parent.view();
@@ -176,6 +159,20 @@ enumerateSyncRendezvousDecisions(const CanonicalDataflowArtifact &parent) {
   auto view = parent.view();
   if (!view)
     return view.takeError();
+  llvm::DenseSet<mlir::Operation *> canonicalTreeRoots;
+  llvm::DenseSet<mlir::Operation *> nonMaximalTreeRoots;
+  for (const CanonicalActorView &actor : view->actors()) {
+    auto sync = llvm::dyn_cast<SyncOp>(actor.op);
+    if (!sync)
+      continue;
+    std::optional<TreeAnalysis> tree = analyzeCanonicalTree(sync);
+    if (!tree)
+      continue;
+    canonicalTreeRoots.insert(sync.getOperation());
+    for (TreeNode node : llvm::ArrayRef(tree->nodes).drop_back())
+      nonMaximalTreeRoots.insert(node.sync.getOperation());
+  }
+
   std::vector<DataflowRewriteDecision> decisions;
   for (const CanonicalActorView &actor : view->actors()) {
     auto sync = llvm::dyn_cast<SyncOp>(actor.op);
@@ -184,7 +181,8 @@ enumerateSyncRendezvousDecisions(const CanonicalDataflowArtifact &parent) {
     if (directLiveResult(sync))
       decisions.emplace_back(SyncRendezvousRewrite{
           actor.ref.entity, SyncRendezvousDirection::DirectToTree});
-    if (analyzeCanonicalTree(sync))
+    if (canonicalTreeRoots.contains(sync.getOperation()) &&
+        !nonMaximalTreeRoots.contains(sync.getOperation()))
       decisions.emplace_back(SyncRendezvousRewrite{
           actor.ref.entity, SyncRendezvousDirection::TreeToDirect});
   }
@@ -224,8 +222,8 @@ materializeSyncRendezvousRewriteProjection(
   mlir::OpBuilder builder(root);
 
   if (decision.direction == SyncRendezvousDirection::DirectToTree) {
-    mlir::Value replacement =
-        buildCanonicalTree(builder, root.getLoc(), root.getInputs(), 0, *live);
+    mlir::Value replacement = buildCanonicalSyncRendezvousTree(
+        builder, root.getLoc(), root.getInputs(), *live);
     root.getOutputs()[*live].replaceAllUsesWith(replacement);
     root.erase();
   } else {

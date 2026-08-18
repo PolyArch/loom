@@ -1,9 +1,14 @@
-#ifndef LOOM_FRONTEND_RAISING_MEMORYPROVENANCE_H
-#define LOOM_FRONTEND_RAISING_MEMORYPROVENANCE_H
+#ifndef LOOM_FRONTEND_ANALYSIS_MEMORYPROVENANCE_H
+#define LOOM_FRONTEND_ANALYSIS_MEMORYPROVENANCE_H
 
 #include "mlir/IR/Value.h"
 
-namespace loom::raising {
+namespace loom::frontend::analysis {
+
+/// Removes exact pointer and view derivations without crossing a region or
+/// callable input boundary. This is the root owned by an analysis local to the
+/// current SSA scope.
+mlir::Value projectMemoryDerivationRoot(mlir::Value value);
 
 /// Removes exact pointer/view derivations and transparent Spatial input
 /// boundaries, then returns the SSA value that owns the underlying memory
@@ -20,6 +25,6 @@ mlir::Value projectMemoryRoot(mlir::Value value);
 /// the proof.
 bool haveProvenDistinctMemoryRoots(mlir::Value lhs, mlir::Value rhs);
 
-} // namespace loom::raising
+} // namespace loom::frontend::analysis
 
-#endif // LOOM_FRONTEND_RAISING_MEMORYPROVENANCE_H
+#endif // LOOM_FRONTEND_ANALYSIS_MEMORYPROVENANCE_H

@@ -811,7 +811,8 @@ CgraMemoryRuntime::acceptPhysicalEvents(
 
 llvm::Error CgraMemoryRuntime::retireActor(std::uint64_t semanticActorOrdinal,
                                            std::uint64_t occurrenceOrdinal,
-                                           SpatialEventCoordinate coordinate) {
+                                           SpatialEventCoordinate coordinate,
+                                           bool reschedule) {
   if (!started_)
     return invalid("CGRA memory runtime has not started");
   if (!ownsActor(semanticActorOrdinal))
@@ -825,6 +826,10 @@ llvm::Error CgraMemoryRuntime::retireActor(std::uint64_t semanticActorOrdinal,
   if (activeActorCount_ == 0)
     return invalid("CGRA active memory actor count underflow");
   --activeActorCount_;
+  if (!reschedule) {
+    state_->plainMemoryCandidates.reset(semanticActorOrdinal);
+    return llvm::Error::success();
+  }
   state_->plainMemoryCandidates.set(semanticActorOrdinal);
   auto next = nextSpatialDelta(coordinate);
   if (!next)

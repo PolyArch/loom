@@ -181,6 +181,9 @@ enum class PromotionAcquisitionIncompleteReason : std::uint8_t {
 struct IncompletePromotionAcquisition final {
   PromotionAcquisitionIncompleteReason reason;
   std::vector<PromotionEvidence> retainedEvidence;
+  /// Present only when one instantiated candidate Evidence task owns the
+  /// incompleteness. Provider-wide resolution failures have no candidate.
+  std::optional<ArtifactRootReference> candidate;
 };
 
 using PromotionAcquisitionOutcome =

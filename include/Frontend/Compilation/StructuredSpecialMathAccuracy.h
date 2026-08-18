@@ -2,6 +2,7 @@
 #define LOOM_FRONTEND_COMPILATION_STRUCTUREDSPECIALMATHACCURACY_H
 
 #include "Common/SpecialMathAccuracy.h"
+#include "Dataflow/IR/OperationSchema.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -41,6 +42,12 @@ adoptStructuredSpecialMathAccuracyDecision(
 llvm::Expected<std::vector<StructuredSpecialMathAccuracyDecision>>
 enumerateStructuredSpecialMathAccuracyDecisions(
     const StructuredProgramCandidate &parent);
+
+/// Projects every currently legal typed actor form for one registered
+/// special-math operation without selecting a tier. Earlier soft capacity
+/// analysis consumes this domain; only the decision materializer closes it.
+llvm::Expected<std::vector<dataflow::CanonicalActorSchemaProjection>>
+projectStructuredSpecialMathAccuracyDomain(mlir::Operation *operation);
 
 llvm::Expected<MaterializedStructuredSpecialMathCandidate>
 materializeStructuredSpecialMathAccuracyDecision(

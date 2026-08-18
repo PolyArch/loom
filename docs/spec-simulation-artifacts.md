@@ -58,6 +58,11 @@ invocation record.
 
 The dense coordinate count must equal the root thread domain rank. Every
 coordinate must be inside any statically known bound.
+One Spatial workload identifies one logical point. A finite dense application
+launch therefore publishes one workload per Canonical Dataflow-enumerated
+coordinate tuple; Mapping still consumes the unique root and its logical
+domain rather than treating those workload artifacts as simultaneous copies
+of the graph.
 `loom.simulation_workload 1.0` admits only a
 dense rooted launch. A DynamicWork workload is `Unsupported`; a producer must
 not invent a string key, provisional occurrence, or channel correspondence to
@@ -1173,6 +1178,45 @@ resource-state and queue effects. `PhysicalRetired` closes the action. A
 prefix, `Halted`, or retained `StoppedByLimit` execution may end with a request
 or grant still open, but a `Retired` execution cannot retain an unretired
 required physical action.
+
+### CGRA Transport Activation
+
+A logical Dataflow net is a token-identity and completion domain, not one
+global handshake activation. CGRA execution derives its concrete publication
+instances from the complete SpatialMapping:
+
+* every ordinary sink is one publication instance; and
+* all logical operand queues matching one exact Temporal PE ingress and
+  Physical Tag form one atomic publication instance.
+
+Each instance independently owns terminal arrival, consumed ResourceUse
+actions, capacity reservation, commit, and sink publication. A blocked
+ordinary sink cannot prevent another routed branch from publishing. Conversely,
+members of one operand-queue match group cannot reserve, enqueue, or publish
+independently. A publication instance is physically accepted when each member
+has either entered its first selected durable FIFO/RegFIFO or completed sink
+publication. Once every instance is accepted, the producer transfer completes
+and its causal physical claim may retire. The source binding continues to
+apply backpressure to a later firing until the prior token finishes its full
+downstream route. Final delivery of every instance emits exactly one logical
+`TokenPublished` event.
+
+A buffered route traversal dequeues against the next durable boundaries, not
+against every final sink of the logical net. The frozen route DAG mechanically
+derives the first downstream storage nodes and the final sinks reachable
+without another storage boundary. Dequeue atomically reserves capacity in all
+such downstream storage nodes and checks readiness only for the unbuffered
+sink set. The reservation is consumed by the corresponding enqueue. Waiting
+for all final sinks would erase the FIFO's progress contract; dequeuing without
+the reservation would invent an implicit network buffer. Runtime state does
+not become another route or grouping authority.
+
+Physical acquisition is event-driven. A request denied by Fabric arbitration
+remains parked without scheduling empty reference-cycle polls. Releasing a
+claim envelope reactivates the exact parked request set at that release frame.
+If no resource, compute, memory, or transport event can reactivate a pending
+request, the execution is quiescent and must expose a closed-wait witness
+rather than consume its work budget with empty frames.
 
 ### Capture Levels
 

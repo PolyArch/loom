@@ -9,6 +9,7 @@
 #include "llvm/ADT/SmallBitVector.h"
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -35,6 +36,52 @@ struct CgraTransportFrame final {
   std::vector<std::uint64_t> blockedTransfers;
 };
 
+struct CgraPendingTransferDiagnostic final {
+  std::uint64_t bindingOrdinal = 0;
+  std::uint64_t occurrenceOrdinal = 0;
+  bool blocked = false;
+  bool arrivalScheduled = false;
+  bool publicationReady = false;
+  bool published = false;
+  bool consumedRequested = false;
+  bool operandCapacityReserved = false;
+  bool operandCapacityBlocked = false;
+  std::uint32_t producedPermitted = 0;
+  std::uint32_t producedRetired = 0;
+  std::uint32_t traversalPermitted = 0;
+  std::uint32_t traversalRetired = 0;
+  std::uint32_t traversalTerminalsPermitted = 0;
+  std::uint32_t consumedPermitted = 0;
+  std::uint32_t consumedRetired = 0;
+  std::uint32_t readySinkCount = 0;
+  std::uint32_t publishedSinkCount = 0;
+  std::uint32_t sinkCount = 0;
+  std::uint32_t publicationCount = 0;
+  std::uint32_t requestedPublicationCount = 0;
+  std::uint32_t publishedPublicationCount = 0;
+  std::vector<std::uint64_t> unpublishedActorOrdinals;
+  std::vector<std::uint32_t> unpublishedInputOrdinals;
+  std::vector<std::uint64_t> unpublishedReadyTokenCounts;
+  std::uint64_t blockingTraversalNodeOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t blockingStorageOrdinal = invalidCgraTransportOrdinal;
+  std::uint32_t blockingStorageOccupancy = 0;
+  std::uint32_t blockingStorageReservations = 0;
+  std::uint32_t blockingStorageCapacity = 0;
+  std::uint8_t blockingTraversalState = 0;
+  std::uint32_t blockingDownstreamStorageCount = 0;
+  std::uint32_t blockingUnbufferedSinkCount = 0;
+  std::uint64_t blockingDownstreamStorageOrdinal = invalidCgraTransportOrdinal;
+  std::uint32_t blockingDownstreamStorageOccupancy = 0;
+  std::uint32_t blockingDownstreamStorageReservations = 0;
+  std::uint32_t blockingDownstreamStorageCapacity = 0;
+  bool blockingDownstreamStorageReserved = false;
+  std::uint64_t blockingActorOrdinal = invalidCgraTransportOrdinal;
+  std::uint64_t blockingReadyTokenCount = 0;
+  std::uint64_t blockingQueueOccupancy = 0;
+  std::uint64_t blockingQueueReservations = 0;
+  std::uint64_t blockingQueueCapacity = 0;
+};
+
 /// Execution-local token transport for one mapped graph activation. It binds
 /// exact Dataflow endpoints to dense DFG channel slots once; dynamic events
 /// never search MLIR users or persistent-reference bytes.
@@ -54,11 +101,15 @@ public:
       const SpatialEventCoordinate &coordinate,
       llvm::MutableArrayRef<GraphIngressEmission> emissions);
 
+  llvm::Expected<bool> canAcceptGraphIngress(unsigned argumentOrdinal) const;
+
   /// Applies the exact logical-input removals of committed actor transitions
   /// to the Fabric-owned Temporal PE operand allocation units. Canonical actor
   /// handshake cases own the dequeue set; this runtime owns only occupancy.
   llvm::Error
   acceptActorCommits(llvm::ArrayRef<CgraActorLifecycleEvent> events);
+
+  bool actorSourcesAvailable(std::uint64_t semanticActorOrdinal) const;
 
   llvm::Expected<std::vector<CgraTransportCompletion>>
   acceptPhysicalEvents(const CgraPhysicalLifecycleFrame &physicalFrame);
@@ -79,6 +130,7 @@ public:
   }
   bool hasBlockedTransfers() const { return blocked_.any(); }
   std::uint64_t activeTransferCount() const { return activeTransferCount_; }
+  std::vector<CgraPendingTransferDiagnostic> pendingTransferDiagnostics() const;
 
 private:
   enum class SinkKind : std::uint8_t { Channel, Observation };
@@ -89,7 +141,19 @@ private:
     mlir::Value observation;
     std::uint64_t physicalUseOffset = 0;
     std::uint32_t physicalUseCount = 0;
+    std::uint32_t consumedLocalActionOffset = 0;
     std::uint64_t operandQueueBinding = invalidCgraTransportOrdinal;
+    std::uint64_t operandActivationOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t publicationBinding = invalidCgraTransportOrdinal;
+    std::uint64_t semanticActorOrdinal = invalidCgraTransportOrdinal;
+    std::uint32_t inputOrdinal = std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t traversalTerminalCount = 0;
+  };
+
+  struct PublicationBinding final {
+    std::uint64_t sinkOffset = 0;
+    std::uint32_t sinkCount = 0;
+    std::uint32_t consumedPhysicalUseCount = 0;
   };
 
   struct TransferBinding final {
@@ -102,6 +166,8 @@ private:
     std::uint32_t traversalNodeCount = 0;
     std::uint32_t traversalTerminalCount = 0;
     std::uint32_t consumedPhysicalUseCount = 0;
+    std::uint64_t publicationOffset = 0;
+    std::uint32_t publicationCount = 0;
     std::optional<std::uint64_t> semanticActorOrdinal;
     std::uint64_t nextProducerSequenceOrdinal = 0;
     bool discard = false;
@@ -126,9 +192,23 @@ private:
     std::uint32_t successorCount = 0;
     std::uint32_t predecessorCount = 0;
     bool terminal = false;
+    std::vector<std::uint32_t> descendantSinks;
+    std::vector<std::uint32_t> terminalSinks;
+    std::vector<std::uint64_t> downstreamStorageNodes;
+    std::vector<std::uint32_t> unbufferedDescendantSinks;
   };
 
   struct InFlight final {
+    struct PublicationState final {
+      bool consumedRequested = false;
+      bool capacityReserved = false;
+      bool capacityBlocked = false;
+      bool enqueueCommitted = false;
+      bool published = false;
+      std::uint32_t consumedPermitted = 0;
+      std::uint32_t consumedRetired = 0;
+    };
+
     bool active = false;
     std::uint64_t bindingOrdinal = 0;
     std::uint64_t occurrenceOrdinal = 0;
@@ -138,10 +218,16 @@ private:
     bool publicationScheduled = false;
     bool publicationReady = false;
     bool published = false;
-    std::uint64_t publicationGroup = invalidCgraTransportOrdinal;
     bool consumedRequested = false;
-    bool operandCapacityReserved = false;
-    bool operandCapacityBlocked = false;
+    std::vector<bool> publishedSinks;
+    std::uint32_t publishedSinkCount = 0;
+    std::vector<bool> acceptedSinks;
+    std::uint32_t acceptedSinkCount = 0;
+    bool producerCompletionReported = false;
+    std::vector<std::uint32_t> permittedSinkTerminals;
+    std::vector<bool> readySinks;
+    std::uint32_t readySinkCount = 0;
+    std::vector<PublicationState> publications;
     std::uint32_t producedPermitted = 0;
     std::uint32_t producedRetired = 0;
     std::uint32_t traversalPermitted = 0;
@@ -178,6 +264,7 @@ private:
     std::uint64_t traversalNodeOrdinal = invalidCgraTransportOrdinal;
     std::uint64_t secondaryTraversalNodeOrdinal = invalidCgraTransportOrdinal;
     std::uint64_t storageOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t publicationBinding = invalidCgraTransportOrdinal;
     ActionStage stage = ActionStage::Produced;
     StorageOperation storageOperation = StorageOperation::None;
     ActionLifecycleState state = ActionLifecycleState::Requested;
@@ -188,13 +275,13 @@ private:
     std::uint64_t bindingOrdinal = 0;
     std::uint64_t occurrenceOrdinal = 0;
     Token *token = nullptr;
-    std::uint64_t publicationGroup = invalidCgraTransportOrdinal;
   };
 
   struct PendingActionTransfer final {
     std::uint64_t transferSlot = 0;
     std::uint64_t bindingOrdinal = 0;
     std::uint64_t traversalNodeOrdinal = invalidCgraTransportOrdinal;
+    std::uint64_t publicationBinding = invalidCgraTransportOrdinal;
   };
 
   enum class TraversalNodeState : std::uint8_t {
@@ -223,6 +310,8 @@ private:
     bool independentReadWriteServices = false;
     bool eventScheduled = false;
     std::uint8_t activeActionCount = 0;
+    std::uint32_t reservations = 0;
+    std::vector<std::uint64_t> upstreamStorageOrdinals;
   };
 
   struct StorageFrameCommit final {
@@ -257,15 +346,12 @@ private:
     std::vector<Consumer> consumers;
   };
 
-  struct PublicationGroup final {
-    bool active = false;
-    std::vector<std::uint64_t> transferSlots;
-  };
-
   CgraTransportRuntime(
       const CgraFrozenExecutionPlan &plan, SimulatorState &state,
       CgraPhysicalActionRuntime &physical,
       std::vector<TransferBinding> bindings, std::vector<SinkBinding> sinks,
+      std::vector<PublicationBinding> publications,
+      std::vector<std::uint32_t> publicationSinks,
       std::vector<std::uint64_t> physicalUses,
       std::vector<TraversalNodeBinding> traversalNodes,
       std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversalTargets,
@@ -299,18 +385,32 @@ private:
   llvm::Error beginOperandQueueCycle(const SpatialEventCoordinate &coordinate);
   llvm::Expected<bool>
   reserveOperandQueueCapacity(std::uint64_t slot,
+                              std::uint64_t publicationBinding,
                               const SpatialEventCoordinate &coordinate);
-  llvm::Error commitOperandQueueEnqueue(std::uint64_t slot);
-  llvm::Expected<std::uint64_t>
-  allocatePublicationGroup(llvm::ArrayRef<std::uint64_t> slots);
-  llvm::Expected<bool> tryPublishPublicationGroup(std::uint64_t groupOrdinal,
-                                                  CgraTransportFrame &frame);
+  llvm::Error commitOperandQueueEnqueue(std::uint64_t slot,
+                                        std::uint64_t publicationBinding);
   std::optional<CgraTransportCompletion> maybeRelease(std::uint64_t slot);
+  llvm::Expected<std::optional<CgraTransportCompletion>>
+  maybeCompleteProducer(std::uint64_t slot);
+  llvm::Error acceptDurableSinks(std::uint64_t slot,
+                                 llvm::ArrayRef<std::uint32_t> localSinks);
+  llvm::Expected<bool> markDirectSinksReady(std::uint64_t slot);
+  llvm::Expected<bool> markTerminalSinksReady(std::uint64_t slot,
+                                              std::uint64_t nodeOrdinal);
   void scheduleAt(std::uint64_t slot,
                   const SpatialEventCoordinate &publicationCoordinate);
-  bool canPublish(const TransferBinding &binding,
-                  bool operandCapacityReserved) const;
-  void publish(std::uint64_t slot, CgraTransportFrame &frame);
+  bool canPublish(std::uint64_t slot, std::uint64_t publicationBinding) const;
+  bool canPublishSinks(const TransferBinding &binding,
+                       bool operandCapacityReserved,
+                       llvm::ArrayRef<std::uint32_t> localSinkOrdinals) const;
+  bool canPublishSink(const SinkBinding &sink,
+                      bool operandCapacityReserved) const;
+  bool canAdvanceBufferedStorage(std::uint64_t slot,
+                                 std::uint64_t nodeOrdinal) const;
+  llvm::Error reserveDownstreamStorage(std::uint64_t slot,
+                                       std::uint64_t nodeOrdinal);
+  llvm::Error publish(std::uint64_t slot, std::uint64_t publicationBinding,
+                      CgraTransportFrame &frame);
   std::optional<CgraTransportCompletion> release(std::uint64_t slot);
 
   const CgraFrozenExecutionPlan *plan_ = nullptr;
@@ -318,6 +418,8 @@ private:
   CgraPhysicalActionRuntime *physical_ = nullptr;
   std::vector<TransferBinding> bindings_;
   std::vector<SinkBinding> sinks_;
+  std::vector<PublicationBinding> publications_;
+  std::vector<std::uint32_t> publicationSinks_;
   std::vector<std::uint64_t> physicalUses_;
   std::vector<TraversalNodeBinding> traversalNodes_;
   std::vector<::loom::fabric::FabricPhysicalTraversalRef> traversalTargets_;
@@ -325,13 +427,12 @@ private:
   std::vector<StorageBinding> storages_;
   std::vector<OperandQueueUnitBinding> operandQueueUnits_;
   std::vector<OperandQueueBinding> operandQueues_;
-  std::vector<PublicationGroup> publicationGroups_;
-  std::vector<std::uint64_t> freePublicationGroups_;
   std::vector<StorageFrameCommit> storageFrameCommits_;
   std::vector<std::uint64_t> touchedStorageFrameCommits_;
   std::vector<std::uint32_t> traversalRemainingPredecessors_;
   std::vector<TraversalNodeState> traversalNodeStates_;
   std::vector<std::uint64_t> traversalNodeTransferSlots_;
+  std::vector<bool> traversalStorageReserved_;
   llvm::DenseMap<std::pair<std::uint64_t, unsigned>, std::uint64_t>
       actorSourceBindings_;
   llvm::DenseMap<unsigned, std::uint64_t> ingressSourceBindings_;

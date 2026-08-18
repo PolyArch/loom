@@ -63,6 +63,19 @@ config.substitutions.append(("%PATH%", config.environment["PATH"]))
 config.substitutions.append(("%shlibext", config.llvm_shlib_ext))
 # %python expands to the interpreter running lit.
 config.substitutions.append(("%python", sys.executable))
+product_acceleration_profile = lit_config.params.get(
+    "loom_product_acceleration_profile", "")
+if product_acceleration_profile:
+    product_acceleration_profile = os.path.abspath(
+        product_acceleration_profile)
+    if not os.path.isfile(product_acceleration_profile):
+        lit_config.fatal(
+            "product acceleration profile does not exist: {}".format(
+                product_acceleration_profile))
+    product_acceleration_profile = (
+        "--loom-accel-profile=" + product_acceleration_profile)
+config.substitutions.append(
+    ("%loom-product-acceleration-profile", product_acceleration_profile))
 # %loom_include is the tracked include root, so a generator anchor can name
 # the one canonical registry source without a relative path walk.
 config.substitutions.append(
@@ -238,6 +251,7 @@ tools = [
     "loom-source-backed-attention-channel-test",
     "loom-system-execution-matrix-test",
     "loom-heterogeneous-system-anchor-test",
+    "loom-product-mapping-inspection-test",
     "loom-structured-memory-layout-test",
     "loom-structured-memory-pipeline-test",
     "loom-structured-execution-shape-generator-test",

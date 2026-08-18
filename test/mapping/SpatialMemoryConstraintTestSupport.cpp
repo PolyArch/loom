@@ -112,6 +112,40 @@ bool dispatchMatchesTarget(
 
 } // namespace
 
+bool loom::test::admitsCanonicalSpatialCandidate(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric, const ArtifactStore &store) {
+  auto constraints = mapping::finalizeEmptySpatialMappingConstraintSet(
+      dataflow, techMapping, fabric, store);
+  if (!constraints) {
+    llvm::consumeError(constraints.takeError());
+    return false;
+  }
+  auto config =
+      pnr::projectResolvedSpatialPnrConfigView(loom::defaultResolvedConfig());
+  if (!config) {
+    llvm::consumeError(config.takeError());
+    return false;
+  }
+  auto problem = pnr::freezeSpatialPnrProblem(dataflow, techMapping, fabric,
+                                              *config, constraints->view());
+  if (!problem) {
+    llvm::consumeError(problem.takeError());
+    return false;
+  }
+  auto candidate = pnr::createCanonicalSpatialCandidate(*problem);
+  if (!candidate) {
+    llvm::consumeError(candidate.takeError());
+    return false;
+  }
+  if (llvm::Error error = (*candidate)->verify()) {
+    llvm::consumeError(std::move(error));
+    return false;
+  }
+  return true;
+}
+
 void loom::test::exerciseSpatialMemoryOperationPortRelations(
     mlir::MLIRContext &context,
     const dataflow::CanonicalDataflowProgramView &dataflow,

@@ -381,6 +381,13 @@ void graphActivationCoordinatesComputeAndTransport() {
   seedBlockArgument(state, entry.getArgument(2),
                     take(tokenFromBitPattern(llvm::APInt(32, 9),
                                              entry.getArgument(2).getType())));
+  seedBlockArgument(state, entry.getArgument(0), noneToken());
+  seedBlockArgument(state, entry.getArgument(1),
+                    take(tokenFromBitPattern(llvm::APInt(32, 2),
+                                             entry.getArgument(1).getType())));
+  seedBlockArgument(state, entry.getArgument(2),
+                    take(tokenFromBitPattern(llvm::APInt(32, 5),
+                                             entry.getArgument(2).getType())));
   state.graphIngressCapture = nullptr;
 
   auto runtime = take(CgraGraphActivationRuntime::create(
@@ -407,19 +414,22 @@ void graphActivationCoordinatesComputeAndTransport() {
   }
 
   require(!runtime.hasPendingEvents(), "graph activation did not quiesce");
-  require(committed == 2 && retired == 2,
-          "graph activation did not commit and retire both actors once");
-  require(publications == 6,
+  require(committed == 4 && retired == 4,
+          "graph activation did not commit and retire both actor occurrences");
+  require(publications == 12,
           "graph activation did not publish every ingress and actor result");
-  require(physicalEvents >= 12,
+  require(physicalEvents >= 24,
           "graph activation bypassed selected physical lifecycles");
   auto output =
       state.observedOutputs.find(graph.getBody().front().back().getOperand(0));
-  require(output != state.observedOutputs.end() && output->second.size() == 1 &&
+  require(output != state.observedOutputs.end() && output->second.size() == 2 &&
               take(tokenBitPattern(output->second.front(),
                                    mlir::IntegerType::get(&context(), 32))) ==
-                  llvm::APInt(32, 16),
-          "graph activation produced the wrong functional value");
+                  llvm::APInt(32, 16) &&
+              take(tokenBitPattern(output->second.back(),
+                                   mlir::IntegerType::get(&context(), 32))) ==
+                  llvm::APInt(32, 7),
+          "graph activation lost or reordered repeated ingress values");
 }
 
 void graphActivationExecutesSelectedLocalMemory() {

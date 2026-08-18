@@ -308,8 +308,11 @@ atomicActivationKey(const ArtifactIdentity &dataflowIdentity,
   auto context = encodeExecutionContextKey(activation.context);
   if (!context)
     return context.takeError();
+  if (activation.relationRoot.artifact != dataflowIdentity)
+    return invalid("resource activation has a foreign relation root");
   std::string result;
   appendSized(result, *context);
+  appendU64(result, activation.relationRoot.entity.value());
   std::vector<std::string> cells;
   cells.reserve(activation.relationDomain.size());
   for (const SystemPresburgerCell &cell : activation.relationDomain) {
@@ -344,6 +347,7 @@ atomicActivationKey(const ArtifactIdentity &dataflowIdentity,
 
 struct ProgressActivationGroup final {
   std::vector<std::uint64_t> activationOrdinals;
+  std::optional<::dataflow::RootThreadLaunchRef> relationRoot;
   std::vector<SystemPresburgerCell> relationDomain;
   std::vector<std::uint32_t> triggers;
   std::vector<std::vector<std::uint32_t>> releases;
@@ -381,6 +385,10 @@ relationDomainsIntersect(const ProgressActivationGroup &lhs,
                          const ProgressActivationGroup &rhs) {
   if (lhs.relationDomain.empty() || rhs.relationDomain.empty())
     return invalid("resource activation relation domain is empty");
+  if (!lhs.relationRoot || !rhs.relationRoot)
+    return invalid("resource activation relation root is absent");
+  if (lhs.relationRoot != rhs.relationRoot)
+    return true;
   for (const SystemPresburgerCell &left : lhs.relationDomain)
     for (const SystemPresburgerCell &right : rhs.relationDomain) {
       auto intersects = systemPresburgerCellsIntersect(left, right);
@@ -542,7 +550,9 @@ struct ActorDependencyGraph final {
   /// The actor DAG after initialized-feedback edges have been removed.
   std::vector<std::size_t> offsets;
   std::vector<std::uint32_t> destinations;
+  std::vector<::dataflow::ActorRef> actorRefs;
   std::vector<InitializedFeedbackEdge> initializedFeedbackEdges;
+  std::vector<::dataflow::ActorRef> postInitializationCycle;
   bool acyclic = false;
   bool postInitializationAcyclic = false;
 };
@@ -638,6 +648,7 @@ llvm::Expected<ActorDependencyGraph> buildActorDependencyGraph(
 
   ActorDependencyGraph result;
   result.actorOrdinals.reserve(actors.size());
+  result.actorRefs.reserve(actors.size());
   std::vector<std::vector<std::uint32_t>> initializedFeedbackInputs;
   initializedFeedbackInputs.reserve(actors.size());
   for (const auto [ordinal, actor] : llvm::enumerate(actors))
@@ -647,6 +658,7 @@ llvm::Expected<ActorDependencyGraph> buildActorDependencyGraph(
              .second) {
       return invalid("canonical actor inventory contains a duplicate");
     } else {
+      result.actorRefs.push_back(actor.ref);
       auto inputs = initializedFeedbackInputOrdinals(actor);
       if (!inputs)
         return inputs.takeError();
@@ -700,6 +712,19 @@ llvm::Expected<ActorDependencyGraph> buildActorDependencyGraph(
   if (!postInitializationAcyclic)
     return postInitializationAcyclic.takeError();
   result.postInitializationAcyclic = *postInitializationAcyclic;
+  if (!result.postInitializationAcyclic) {
+    std::vector<std::vector<std::uint32_t>> edges(actors.size());
+    for (std::uint32_t source = 0; source != actors.size(); ++source)
+      edges[source].assign(result.destinations.begin() + result.offsets[source],
+                           result.destinations.begin() +
+                               result.offsets[source + 1]);
+    std::vector<std::uint32_t> cycle = findDirectedCycle(edges);
+    if (!cycle.empty() && cycle.front() == cycle.back())
+      cycle.pop_back();
+    result.postInitializationCycle.reserve(cycle.size());
+    for (std::uint32_t ordinal : cycle)
+      result.postInitializationCycle.push_back(result.actorRefs[ordinal]);
+  }
   if (result.postInitializationAcyclic)
     for (ActorDependencyGraph::InitializedFeedbackEdge &edge :
          result.initializedFeedbackEdges)
@@ -747,7 +772,7 @@ llvm::Expected<bool> dependentBranchHasDurableBoundary(
   if (dependent.nodeOrdinal >= route.nodes.size())
     return invalid("route progress dependency names an absent node");
   auto localBoundary = deriveSpatialSinkDurableProgressBoundary(
-      techMapping, fabric, computeBindings, dependent);
+      techMapping, fabric, computeBindings, route, dependent);
   if (!localBoundary)
     return localBoundary.takeError();
   if (*localBoundary)
@@ -862,7 +887,40 @@ llvm::Expected<MappingDataflowProgressBasis> deriveMappingDataflowProgressBasis(
     kind = MappingDataflowProgressBasisKind::Acyclic;
   else if (graph->postInitializationAcyclic)
     kind = MappingDataflowProgressBasisKind::InitializedFeedback;
-  return MappingDataflowProgressBasis{kind};
+  return MappingDataflowProgressBasis{
+      kind, graph->actorRefs.size(), graph->initializedFeedbackEdges.size(),
+      std::move(graph->postInitializationCycle)};
+}
+
+void emitMappingDataflowProgressBasisDiagnostic(
+    const MappingDataflowProgressBasis &basis,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    mapping_debug::Stage stage) {
+  if (basis.kind != MappingDataflowProgressBasisKind::Cyclic)
+    return;
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, stage,
+      mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+        fields["failure_scope"] = "dataflow_progress_basis";
+        fields["closure_status"] = "proof_not_established";
+        fields["covered_actor_count"] = basis.coveredActorCount;
+        fields["initialized_feedback_edge_count"] =
+            basis.initializedFeedbackEdgeCount;
+        llvm::json::Array cycle;
+        for (const ::dataflow::ActorRef actor : basis.residualCycle) {
+          llvm::json::Object member;
+          member["actor"] = actor.entity.value();
+          auto resolved = dataflow.resolve(actor);
+          if (resolved) {
+            member["operation"] = resolved->op->getName().getStringRef().str();
+          } else {
+            llvm::consumeError(resolved.takeError());
+            member["operation"] = "<unresolved>";
+          }
+          cycle.push_back(std::move(member));
+        }
+        fields["residual_cycle"] = std::move(cycle);
+      });
 }
 
 llvm::Expected<FrozenMappingProgressModel> freezeMappingProgressModel(
@@ -926,8 +984,22 @@ llvm::Expected<MappingProgressProjection> projectSystemMappingProgress(
         ::loom::fabric::canonicalFabricBytes(activation.physicalOwner);
     const std::string ownerKey(
         reinterpret_cast<const char *>(ownerBytes.data()), ownerBytes.size());
+    if (activation.triggerAlternatives.empty())
+      return invalid("System activation has no relation-root event");
+    auto relationRoot =
+        dataflow.eventRootThreadLaunch(activation.triggerAlternatives.front());
+    if (!relationRoot)
+      return relationRoot.takeError();
+    for (const auto &trigger : activation.triggerAlternatives) {
+      auto root = dataflow.eventRootThreadLaunch(trigger);
+      if (!root)
+        return root.takeError();
+      if (*root != *relationRoot)
+        return invalid("System activation crosses relation-root spaces");
+    }
     MappingProgressActivationProjection projected{
         activation.context,
+        *relationRoot,
         activation.relationDomain,
         activation.triggerAlternatives,
         {},
@@ -1016,8 +1088,10 @@ deriveMappingProgressClosure(const FrozenMappingProgressModel &model,
       groups.emplace_back();
     ProgressActivationGroup &group = groups[position->second];
     group.activationOrdinals.push_back(activationOrdinal);
-    if (inserted)
+    if (inserted) {
+      group.relationRoot = activation.relationRoot;
       group.relationDomain = activation.relationDomain;
+    }
     for (const auto &trigger : activation.triggerAlternatives) {
       auto ordinal = eventOrdinal(trigger);
       if (!ordinal)
@@ -1368,6 +1442,16 @@ deriveSpatialRouteProgressDependencies(
     return prerequisiteKey(lhs.prerequisite) <
            prerequisiteKey(rhs.prerequisite);
   });
+  result.erase(std::unique(result.begin(), result.end(),
+                           [&](const auto &lhs, const auto &rhs) {
+                             return lhs.logicalNetOrdinal ==
+                                        rhs.logicalNetOrdinal &&
+                                    lhs.dependentSinkOrdinal ==
+                                        rhs.dependentSinkOrdinal &&
+                                    prerequisiteKey(lhs.prerequisite) ==
+                                        prerequisiteKey(rhs.prerequisite);
+                           }),
+               result.end());
   return result;
 }
 

@@ -520,6 +520,19 @@ llvm::Error verifyTargetCompatibility(
       bool intersects = false;
       for (const auto &graphCell : graphClause.cells)
         for (const auto &threadCell : threadClause.cells) {
+          if (graphCell.dimensionCount != threadCell.dimensionCount ||
+              graphCell.symbolCount != threadCell.symbolCount)
+            return invalid(
+                "graph/thread compatibility crosses Presburger spaces for "
+                "thread root " +
+                llvm::Twine(thread.key.entity.value()) + ", graph root " +
+                llvm::Twine(graph.key.rootThreadLaunch.entity.value()) +
+                ", graph launch " +
+                llvm::Twine(graph.key.staticGraphLaunch.entity.value()) +
+                ": thread (dims=" + llvm::Twine(threadCell.dimensionCount) +
+                ", symbols=" + llvm::Twine(threadCell.symbolCount) +
+                "), graph (dims=" + llvm::Twine(graphCell.dimensionCount) +
+                ", symbols=" + llvm::Twine(graphCell.symbolCount) + ")");
           auto overlap = systemPresburgerCellsIntersect(graphCell, threadCell);
           if (!overlap)
             return overlap.takeError();

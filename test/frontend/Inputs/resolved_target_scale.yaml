@@ -1,6 +1,6 @@
 hardware_target:
   template_identity: loom.adg.builtin.general_purpose
-  schema_major: 6
+  schema_major: 7
   schema_minor: 0
   parameters:
     acc_core_count: 8
@@ -28,6 +28,7 @@ hardware_target:
     spatial_memory_count: 2
     temporal_memory_count: 2
     temporal_resident_contexts: 4
+    local_memory_port_variant: shared_element_vector
     cross_schedule_boundary_lanes_per_temporal_pe: 5
     gateway_count: 4
     memory_capacity_bytes: 262144

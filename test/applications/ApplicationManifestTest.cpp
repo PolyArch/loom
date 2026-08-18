@@ -358,19 +358,24 @@ void exerciseRepositoryManifest(llvm::StringRef manifestPath,
   ApplicationManifest manifest = take(loadApplicationManifest(manifestPath));
   const std::vector<std::string> smoke =
       selectApplicationIdentities(manifest, ExecutionSelection::Smoke);
-  if (smoke != std::vector<std::string>{"loom-multisensor-attention"})
+  if (smoke != std::vector<std::string>{"gapbs-pagerank", "llama2c-kernels",
+                                        "loom-multisensor-attention",
+                                        "mlperf-tiny-anomaly-detection",
+                                        "mlperf-tiny-keyword-spotting",
+                                        "mlperf-tiny-visual-wake-words"})
     fail("repository manifest changed the admitted smoke inventory");
 
   auto outcomes =
       take(admitApplicationSources(manifest, smoke, repositoryRoot));
-  if (outcomes.size() != 1)
+  if (outcomes.size() != 6)
     fail("repository manifest source admission changed cardinality");
-  const auto *admitted =
-      std::get_if<AdmittedApplicationSource>(&outcomes.front());
-  if (!admitted ||
-      admitted->applicationIdentity != "loom-multisensor-attention" ||
-      !std::filesystem::path(admitted->sourceRoot).is_absolute())
-    fail("repository multisensor attention source was not admitted");
+  for (auto [index, identity] : llvm::enumerate(smoke)) {
+    const auto *admitted =
+        std::get_if<AdmittedApplicationSource>(&outcomes[index]);
+    if (!admitted || admitted->applicationIdentity != identity ||
+        !std::filesystem::path(admitted->sourceRoot).is_absolute())
+      fail("repository application source was not admitted");
+  }
 }
 
 } // namespace

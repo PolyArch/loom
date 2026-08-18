@@ -80,30 +80,20 @@ fabric::FinalizedFabricRoot buildSpatialCore(ArtifactStore &store,
 
 fabric::FinalizedFabricRoot
 buildLineageSpatialCore(ArtifactStore &store, std::uint32_t payloadWidth) {
+  constexpr std::size_t vectorUnitCount = 8;
+  constexpr std::size_t tokenUnitCount = 2;
   const adg::PortType payloadType = take(adg::PortType::bits(payloadWidth));
   const std::vector<adg::PortType> types(4, payloadType);
   const std::vector<adg::PortType> tokenInputTypes(5, payloadType);
   adg::DesignBuilder builder(store);
-  auto spatial = take(builder.createSpatialCore("lineage-sync", types, types));
-  auto network = take(
-      spatial.addMeshSwitchNetwork(take(adg::MeshSwitchNetworkSpec::spatial(
-          2, 2, 2, payloadType,
-          {{0, 0, {payloadType, payloadType}, {payloadType, payloadType}},
-           {0, 1, {payloadType, payloadType}, {payloadType, payloadType}},
-           {1, 0, types, types},
-           {1, 1, tokenInputTypes, types}}))));
 
-  auto upperBoundary = take(network.attachment(0));
-  auto lowerBoundary = take(network.attachment(1));
-  auto vectorCompute = take(network.attachment(2));
-  auto tokenControl = take(network.attachment(3));
-  requireSuccess(upperBoundary.connectOutputs(
-      {take(spatial.input(0)), take(spatial.input(1))}));
-  requireSuccess(lowerBoundary.connectOutputs(
-      {take(spatial.input(2)), take(spatial.input(3))}));
-
-  auto vectorPe = take(spatial.addPe(vectorCompute.inputs(),
-                                     adg::PeSpec::spatial(types, types)));
+  auto vectorUnit =
+      take(builder.createSpatialCore("lineage-vector-unit", types, types));
+  std::vector<adg::SpatialValue> vectorUnitInputs;
+  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
+    vectorUnitInputs.push_back(take(vectorUnit.input(ordinal)));
+  auto vectorPe = take(vectorUnit.addPe(
+      vectorUnitInputs, adg::PeSpec::spatial(types, types)));
   std::vector<adg::PeValue> vectorInputs;
   for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
     vectorInputs.push_back(take(vectorPe.input(ordinal)));
@@ -127,23 +117,91 @@ buildLineageSpatialCore(ArtifactStore &store, std::uint32_t payloadWidth) {
       vectorPe, llvm::ArrayRef<adg::PeValue>(vectorInputs).take_front(2),
       structural));
   requireSuccess(vectorPe.close());
-  std::vector<adg::SpatialValue> vectorOutputs;
+  std::vector<adg::SpatialValue> vectorUnitOutputs;
   for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
-    vectorOutputs.push_back(take(vectorPe.output(ordinal)));
-  requireSuccess(vectorCompute.connectOutputs(vectorOutputs));
+    vectorUnitOutputs.push_back(take(vectorPe.output(ordinal)));
+  requireSuccess(vectorUnit.close(vectorUnitOutputs));
+  const auto vectorClocks =
+      take(vectorUnit.domainSlots(fabric::FabricClockResetKind::Clock));
+  const auto vectorResets =
+      take(vectorUnit.domainSlots(fabric::FabricClockResetKind::Reset));
 
-  auto tokenPe = take(spatial.addPe(
-      tokenControl.inputs(), adg::PeSpec::spatial(tokenInputTypes, types)));
+  auto tokenUnit = take(
+      builder.createSpatialCore("lineage-token-unit", tokenInputTypes, types));
+  std::vector<adg::SpatialValue> tokenUnitInputs;
+  for (std::size_t ordinal = 0; ordinal != tokenInputTypes.size(); ++ordinal)
+    tokenUnitInputs.push_back(take(tokenUnit.input(ordinal)));
+  auto tokenPe = take(tokenUnit.addPe(
+      tokenUnitInputs, adg::PeSpec::spatial(tokenInputTypes, types)));
   std::vector<adg::PeValue> tokenInputs;
   for (std::size_t ordinal = 0; ordinal != tokenInputTypes.size(); ++ordinal)
     tokenInputs.push_back(take(tokenPe.input(ordinal)));
   requireSuccess(adg::addTokenControlFu(
       tokenPe, tokenInputs, {payloadWidth, std::min(payloadWidth, 64U)}));
   requireSuccess(tokenPe.close());
-  std::vector<adg::SpatialValue> tokenOutputs;
+  std::vector<adg::SpatialValue> tokenUnitOutputs;
   for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
-    tokenOutputs.push_back(take(tokenPe.output(ordinal)));
-  requireSuccess(tokenControl.connectOutputs(tokenOutputs));
+    tokenUnitOutputs.push_back(take(tokenPe.output(ordinal)));
+  requireSuccess(tokenUnit.close(tokenUnitOutputs));
+  const auto tokenClocks =
+      take(tokenUnit.domainSlots(fabric::FabricClockResetKind::Clock));
+  const auto tokenResets =
+      take(tokenUnit.domainSlots(fabric::FabricClockResetKind::Reset));
+
+  auto spatial = take(builder.createSpatialCore("lineage-sync", types, types));
+  const auto spatialClock =
+      take(spatial.declareDomainSlot(fabric::FabricClockResetKind::Clock));
+  const auto spatialReset =
+      take(spatial.declareDomainSlot(fabric::FabricClockResetKind::Reset));
+  std::vector<adg::MeshCellAttachmentSpec> attachments = {
+      {0, 0, {payloadType, payloadType}, {payloadType, payloadType}},
+      {0, 1, {payloadType, payloadType}, {payloadType, payloadType}}};
+  for (std::size_t ordinal = 0; ordinal != vectorUnitCount; ++ordinal)
+    attachments.push_back(
+        {1, ordinal < vectorUnitCount / 2 ? 0U : 1U, types, types});
+  for (std::size_t ordinal = 0; ordinal != tokenUnitCount; ++ordinal)
+    attachments.push_back({1, 1, tokenInputTypes, types});
+  auto network = take(
+      spatial.addMeshSwitchNetwork(take(adg::MeshSwitchNetworkSpec::spatial(
+          2, 2, 2, payloadType, std::move(attachments)))));
+
+  auto upperBoundary = take(network.attachment(0));
+  auto lowerBoundary = take(network.attachment(1));
+  requireSuccess(upperBoundary.connectOutputs(
+      {take(spatial.input(0)), take(spatial.input(1))}));
+  requireSuccess(lowerBoundary.connectOutputs(
+      {take(spatial.input(2)), take(spatial.input(3))}));
+
+  for (std::size_t ordinal = 0; ordinal != vectorUnitCount; ++ordinal) {
+    auto attachment = take(network.attachment(2 + ordinal));
+    auto outputs = take(spatial.instantiate(
+        vectorUnit, attachment.inputs(),
+        {{vectorClocks.front(), spatialClock},
+         {vectorResets.front(), spatialReset}}));
+    requireSuccess(attachment.connectOutputs(outputs));
+  }
+  for (std::size_t ordinal = 0; ordinal != tokenUnitCount; ++ordinal) {
+    auto tokenControl =
+        take(network.attachment(2 + vectorUnitCount + ordinal));
+    auto tokenOutputs = take(spatial.instantiate(
+        tokenUnit, tokenControl.inputs(),
+        {{tokenClocks.front(), spatialClock},
+         {tokenResets.front(), spatialReset}}));
+    requireSuccess(tokenControl.connectOutputs(tokenOutputs));
+  }
+
+  for (const auto &member : network.domainMembers()) {
+    requireSuccess(spatial.assignDomainSlot(member, spatialClock));
+    requireSuccess(spatial.assignDomainSlot(member, spatialReset));
+  }
+  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal) {
+    const auto input = take(spatial.inputDomainMember(ordinal));
+    const auto output = take(spatial.outputDomainMember(ordinal));
+    requireSuccess(spatial.assignDomainSlot(input, spatialClock));
+    requireSuccess(spatial.assignDomainSlot(input, spatialReset));
+    requireSuccess(spatial.assignDomainSlot(output, spatialClock));
+    requireSuccess(spatial.assignDomainSlot(output, spatialReset));
+  }
 
   std::vector<adg::SpatialValue> outputs(upperBoundary.inputs().begin(),
                                          upperBoundary.inputs().end());
@@ -151,10 +209,12 @@ buildLineageSpatialCore(ArtifactStore &store, std::uint32_t payloadWidth) {
                  lowerBoundary.inputs().end());
   requireSuccess(spatial.close(outputs));
   auto design = take(std::move(builder).finalize());
-  if (design.roots().size() != 1)
-    fail("lineage SpatialCore fixture did not publish exactly one Fabric root");
-  auto root = design.roots().front();
-  if (root.view().fifoOccurrences().size() != 16 ||
+  if (design.roots().size() != 3)
+    fail("lineage SpatialCore fixture did not publish its unit and top roots");
+  auto root = design.roots().back();
+  if (root.view().peOccurrences().size() !=
+          vectorUnitCount + tokenUnitCount ||
+      root.view().fifoOccurrences().size() != 16 ||
       root.view().switchOccurrences().size() < 12)
     fail("lineage SpatialCore lost its finite multi-hop mesh topology");
   return root;

@@ -21,6 +21,7 @@ add_mlir_library(LoomFrontendLowering
 )
 
 target_link_libraries(LoomFrontendLowering PUBLIC
+  LoomFrontendAnalysis
   MLIRDataflow
   MLIRLoom
 )

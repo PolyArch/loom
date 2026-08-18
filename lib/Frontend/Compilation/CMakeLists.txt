@@ -24,6 +24,7 @@ target_link_libraries(LoomFrontendCompilation PUBLIC
   LLVM
   LoomFabricIdentity
   LoomFabricMemoryOperationPort
+  LoomFrontendAnalysis
   LoomFrontendLowering
   LoomFrontendRaising
   MLIRDataflow

@@ -238,9 +238,8 @@ bool augmentComputeContextSupply(
       continue;
     visited[value] = 1;
     if (!ownerByValue[value] ||
-        augmentComputeContextSupply(*ownerByValue[value], domains,
-                                    ownerByValue, visited,
-                                    deterministicWork)) {
+        augmentComputeContextSupply(*ownerByValue[value], domains, ownerByValue,
+                                    visited, deterministicWork)) {
       ownerByValue[value] = demand;
       return true;
     }
@@ -248,8 +247,7 @@ bool augmentComputeContextSupply(
   return false;
 }
 
-using MemoryExclusiveKey =
-    std::pair<std::uint8_t, std::vector<std::uint8_t>>;
+using MemoryExclusiveKey = std::pair<std::uint8_t, std::vector<std::uint8_t>>;
 
 MemoryExclusiveKey
 memoryExclusiveKey(const SpatialMemoryExclusiveResourceView &resource) {
@@ -269,8 +267,7 @@ bool memoryChoiceIsLegal(
     llvm::ArrayRef<std::set<MemoryExclusiveKey>> usedResources,
     std::uint64_t &deterministicWork) {
   saturatingIncrement(deterministicWork);
-  if (demand.residentDemand >
-      capacities[occurrence] - usedCapacity[occurrence])
+  if (demand.residentDemand > capacities[occurrence] - usedCapacity[occurrence])
     return false;
   for (const MemoryExclusiveKey &resource : demand.resources) {
     saturatingIncrement(deterministicWork);
@@ -318,8 +315,7 @@ bool searchMemoryOccurrenceAssignment(
     for (const MemoryExclusiveKey &resource : demand.resources)
       usedResources[occurrence].insert(resource);
     if (searchMemoryOccurrenceAssignment(demands, capacities, assignment,
-                                         usedCapacity, usedResources,
-                                         analysis))
+                                         usedCapacity, usedResources, analysis))
       return true;
     for (const MemoryExclusiveKey &resource : demand.resources)
       usedResources[occurrence].erase(resource);
@@ -351,8 +347,8 @@ deriveSpatialComputeContextPlacementDomain(
     if (!schedule)
       return invalid("a Fabric PE occurrence has no scheduling contract");
 
-    SpatialComputeContextPlacementDomainView placement{fu, *parent, *schedule,
-                                                       {}};
+    SpatialComputeContextPlacementDomainView placement{
+        fu, *parent, *schedule, {}};
     const std::uint64_t contextCount = fabric.peResidentContextCount(*parent);
     placement.contexts.reserve(contextCount);
     for (std::uint64_t ordinal = 0; ordinal != contextCount; ++ordinal)
@@ -399,8 +395,7 @@ deriveSpatialComputeContextDemands(
 
 llvm::Expected<SpatialComputeContextSupplyAnalysis>
 analyzeSpatialComputeContextSupply(
-    llvm::ArrayRef<std::vector<std::size_t>> domains,
-    std::size_t valueCount) {
+    llvm::ArrayRef<std::vector<std::size_t>> domains, std::size_t valueCount) {
   SpatialComputeContextSupplyAnalysis result;
   result.demandCount = domains.size();
   result.valueCount = valueCount;
@@ -410,8 +405,8 @@ analyzeSpatialComputeContextSupply(
       return invalid("compute-context domain is not a canonical set");
     if (!domain.empty() && domain.back() >= valueCount)
       return invalid("compute-context domain contains an unknown value");
-    if (domain.size() > std::numeric_limits<std::uint64_t>::max() -
-                            result.edgeCount)
+    if (domain.size() >
+        std::numeric_limits<std::uint64_t>::max() - result.edgeCount)
       result.edgeCount = std::numeric_limits<std::uint64_t>::max();
     else
       result.edgeCount += domain.size();
@@ -507,8 +502,8 @@ deriveSpatialMemoryOccurrenceDemand(
       return ingresses.takeError();
     for (const TechMemoryExternalIngressView &ingress : *ingresses) {
       saturatingIncrement(demand.projectionWork);
-      auto key = canonicalTechMemoryExternalIngressKey(ingress,
-                                                       dataflow.identity());
+      auto key =
+          canonicalTechMemoryExternalIngressKey(ingress, dataflow.identity());
       if (!key)
         return key.takeError();
       demand.exclusiveResources.push_back(
@@ -639,8 +634,8 @@ analyzeSpatialMemoryOccurrenceSupply(
       demand.resources.push_back(key);
       resourceUsers[key].push_back(demandOrdinal);
     }
-    engineUsers[::loom::fabric::canonicalFabricBytes(source->engine)]
-        .push_back(demandOrdinal);
+    engineUsers[::loom::fabric::canonicalFabricBytes(source->engine)].push_back(
+        demandOrdinal);
     prepared.push_back(std::move(demand));
   }
   analysis.occurrenceValueCount = occurrenceOrdinals.size();
@@ -653,11 +648,9 @@ analyzeSpatialMemoryOccurrenceSupply(
     for (const std::size_t demand : users)
       values.insert(prepared[demand].choices.begin(),
                     prepared[demand].choices.end());
-    analysis.deterministicWork +=
-        std::min<std::uint64_t>(
-            users.size() + values.size(),
-            std::numeric_limits<std::uint64_t>::max() -
-                analysis.deterministicWork);
+    analysis.deterministicWork += std::min<std::uint64_t>(
+        users.size() + values.size(),
+        std::numeric_limits<std::uint64_t>::max() - analysis.deterministicWork);
     if (users.size() <= values.size())
       continue;
     analysis.failure =
@@ -1345,18 +1338,21 @@ deriveSpatialSinkDurableProgressBoundary(
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
-    const SpatialRouteSinkView &sink) {
-  if (!sink.localTraversal)
-    return std::optional<SpatialDurableProgressBoundaryView>();
-
-  auto traversalOwned = classifySpatialAttachmentDurableProgressBoundary(
-      fabric, *sink.localTraversal, std::nullopt);
-  if (!traversalOwned)
-    return traversalOwned.takeError();
-  if (*traversalOwned == SpatialDurableProgressBoundaryKind::BufferedFifo)
-    return std::optional<SpatialDurableProgressBoundaryView>(
-        SpatialDurableProgressBoundaryView{*traversalOwned,
-                                           *sink.localTraversal, std::nullopt});
+    const SpatialRouteTreeView &route, const SpatialRouteSinkView &sink) {
+  if (sink.nodeOrdinal >= route.nodes.size())
+    return invalid("durable route sink names an unknown terminal node");
+  std::optional<::loom::fabric::FabricPhysicalTraversalRef> attachment =
+      sink.localTraversal;
+  if (attachment) {
+    auto traversalOwned = classifySpatialAttachmentDurableProgressBoundary(
+        fabric, *attachment, std::nullopt);
+    if (!traversalOwned)
+      return traversalOwned.takeError();
+    if (*traversalOwned == SpatialDurableProgressBoundaryKind::BufferedFifo)
+      return std::optional<SpatialDurableProgressBoundaryView>(
+          SpatialDurableProgressBoundaryView{*traversalOwned, *attachment,
+                                             std::nullopt});
+  }
 
   const auto *operand =
       std::get_if<::dataflow::ActorTokenOperandRef>(&sink.sink);
@@ -1376,8 +1372,20 @@ deriveSpatialSinkDurableProgressBoundary(
   const ::loom::fabric::FabricFuOccurrencePortRef port{
       binding->occurrence, ::loom::fabric::FabricPortDirection::Input,
       boundary->fabricPort.ordinal};
+  if (!attachment) {
+    const auto attachments = fabric.fuOccurrencePortAttachments(port);
+    for (const auto &candidate : attachments) {
+      if (candidate.endpoint != route.nodes[sink.nodeOrdinal].endpoint)
+        continue;
+      if (attachment)
+        return invalid("shared PE ingress resolves multiple FU attachments");
+      attachment = candidate.localTraversal;
+    }
+    if (!attachment)
+      return std::optional<SpatialDurableProgressBoundaryView>();
+  }
   auto kind = classifySpatialAttachmentDurableProgressBoundary(
-      fabric, *sink.localTraversal, port);
+      fabric, *attachment, port);
   if (!kind)
     return kind.takeError();
   if (*kind == SpatialDurableProgressBoundaryKind::None)
@@ -1403,7 +1411,7 @@ deriveSpatialSinkDurableProgressBoundary(
           std::distance(schema->layout().fus.begin(), shape));
   return std::optional<SpatialDurableProgressBoundaryView>(
       SpatialDurableProgressBoundaryView{
-          *kind, *sink.localTraversal,
+          *kind, *attachment,
           ::fabric::LogicalOperandQueueKey{binding->context, fuOrdinal,
                                            boundary->fabricPort.ordinal}});
 }
@@ -1421,7 +1429,7 @@ deriveSpatialPeOperandQueueMatchGroups(
   for (auto [routeOrdinal, route] : llvm::enumerate(routes)) {
     for (const SpatialRouteSinkView &sink : route.sinks) {
       auto boundary = deriveSpatialSinkDurableProgressBoundary(
-          techMapping, fabric, computeBindings, sink);
+          techMapping, fabric, computeBindings, route, sink);
       if (!boundary)
         return boundary.takeError();
       if (!*boundary ||
@@ -1475,8 +1483,8 @@ deriveSpatialPeOperandQueueMatchGroups(
     });
     for (auto &match : group.matches) {
       if (llvm::any_of(match.consumers, [](const auto &consumer) {
-            return !std::holds_alternative<
-                ::dataflow::ActorTokenOperandRef>(consumer);
+            return !std::holds_alternative<::dataflow::ActorTokenOperandRef>(
+                consumer);
           }))
         return invalid("PE operand queue has a non-actor consumer");
       llvm::sort(match.consumers, [](const auto &lhs, const auto &rhs) {

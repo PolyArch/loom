@@ -46,7 +46,7 @@ Resolution replaces that enum with the selected ADG template identity,
 template schema version, and complete typed parameter values. The enum spelling
 is recorded only as invocation provenance and is excluded from canonical
 ResolvedConfig bytes. All builtin presets resolve to
-`loom.adg.builtin.general_purpose` version `6.0`; only their default parameter
+`loom.adg.builtin.general_purpose` version `7.0`; only their default parameter
 values differ. Omitting hardware selection resolves the `Coverage` scale; it
 does not produce a target-less configuration.
 
@@ -101,7 +101,7 @@ compatible extension. The ResolvedConfig schema owns the canonical composition
 of component domains. Each domain owner defines its fields, types, units,
 defaults, validation rules, and semantic effect exactly once.
 
-The current schema is `loom.config.resolved 8.0`. Version 2.0 was an
+The current schema is `loom.config.resolved 9.0`. Version 2.0 was an
 incompatible replacement for the earlier provisional schema: it removed the
 authoring-only `config_id`, the free global `addr_bits`, `index_width`, and
 `mem_bus_width` knobs, the string `ranking_policy`, and the floating-point
@@ -206,6 +206,13 @@ counts may be zero and may not exceed the corresponding PE count. This is
 incompatible because version 7 delegated those multiplicities to an implicit
 PE-density formula, so it cannot reconstruct a resolved hardware candidate or
 its identity after one family is independently resized.
+
+Version 9.0 adds the required typed
+`hardware_target.parameters.local_memory_port_variant`. The value selects the
+element-only, vector-only, separate element/vector, or shared element/vector
+Operation Port relation materialized by the builtin Module. It is
+incompatible because version 8 always selected the shared relation and cannot
+reconstruct the identity or resource multiplicity of another variant.
 
 `dse.evaluation_and_objective_catalogs` materializes exactly the owner tables
 of the [Resolved Configuration View](spec-dse-feedback.md#resolved-configuration-view):

@@ -6,6 +6,7 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Common/MappingDebugLog.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowOps.h"
 #include "Evaluation/ModelProvider.h"
@@ -840,6 +841,14 @@ evaluate(const EvaluationRequest &request, const CaseArtifactResolution &,
     }
   }
   if (!metrics) {
+    mapping_debug::emit(
+        mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+        mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+          fields["failure_scope"] = "structured_fabric_analytic";
+          fields["closure_status"] = "proven_infeasible";
+          fields["diagnostic"] =
+              "candidate demand has no admitting Fabric resource";
+        });
     return EvaluationModelResult{
         {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
   }
@@ -1127,7 +1136,6 @@ llvm::Error primeStructuredFabricAnalyticResult(
                                  candidate.spatialGraphs);
   if (!metrics)
     return metrics.takeError();
-
   const detail::StructuredAnalyticCacheKey key = metricCacheKey(
       structuredProgramReference, fabricRoot.reference(), invocation.workload,
       invocation.runtimeInput, configView->digest());

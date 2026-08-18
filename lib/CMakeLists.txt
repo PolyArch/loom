@@ -1,4 +1,5 @@
 add_subdirectory(Common)
+add_subdirectory(PnR/Session)
 add_subdirectory(Application)
 add_subdirectory(Evaluation)
 add_subdirectory(DSE/Policy)

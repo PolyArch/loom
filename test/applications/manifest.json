@@ -3,6 +3,93 @@
   "version": "1.0",
   "applications": [
     {
+      "identity": "gapbs-pagerank",
+      "source": {
+        "kind": "gitlink",
+        "root": "externals/gapbs"
+      },
+      "build": {
+        "entry": "src/pr.cc",
+        "language": "c++",
+        "sources": [
+          "src/pr.cc"
+        ],
+        "compiler_options": [
+          "-O1",
+          "-ffp-contract=off",
+          "-fno-exceptions",
+          "-fno-rtti",
+          "-Wno-return-type-c-linkage",
+          "-Wno-unknown-pragmas",
+          "-Iexternals/gapbs/src",
+          "-Itest/applications/gapbs-pagerank-include",
+          "-include=test/applications/gapbs-pagerank-smoke.h"
+        ],
+        "link_options": []
+      },
+      "cached_inputs": [],
+      "inputs": [
+        {
+          "name": "smoke",
+          "workload": "gapbs-pagerank-smoke",
+          "runtime_input": "gapbs-pagerank-smoke-input",
+          "cached_inputs": [],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/gapbs-pagerank-expected-smoke.txt"
+          }
+        }
+      ],
+      "selections": [
+        "smoke",
+        "validation",
+        "scale_eda"
+      ]
+    },
+    {
+      "identity": "llama2c-kernels",
+      "source": {
+        "kind": "gitlink",
+        "root": "externals/llama2.c"
+      },
+      "build": {
+        "entry": "run.c",
+        "language": "c",
+        "sources": [
+          "run.c"
+        ],
+        "compiler_options": [
+          "-O1",
+          "-ffp-contract=off",
+          "-fno-math-errno",
+          "-Wno-unknown-pragmas",
+          "-Itest/applications/llama2c-kernels-include",
+          "-include=test/applications/llama2c-kernels-smoke.h"
+        ],
+        "link_options": [
+          "-lm"
+        ]
+      },
+      "cached_inputs": [],
+      "inputs": [
+        {
+          "name": "smoke",
+          "workload": "llama2c-kernels-smoke",
+          "runtime_input": "llama2c-kernels-smoke-input",
+          "cached_inputs": [],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/llama2c-kernels-expected-smoke.txt"
+          }
+        }
+      ],
+      "selections": [
+        "smoke",
+        "validation",
+        "scale_eda"
+      ]
+    },
+    {
       "identity": "loom-multisensor-attention",
       "source": {
         "kind": "repository",
@@ -33,6 +120,140 @@
           "oracle": {
             "kind": "exact",
             "entry": "test/applications/loom-multisensor-attention/expected-smoke.txt"
+          }
+        }
+      ],
+      "selections": [
+        "smoke",
+        "validation",
+        "scale_eda"
+      ]
+    },
+    {
+      "identity": "mlperf-tiny-anomaly-detection",
+      "source": {
+        "kind": "gitlink",
+        "root": "externals/mlperf-tiny"
+      },
+      "build": {
+        "entry": "benchmark/reference_submissions/anomaly_detection/submitter_implemented.cpp",
+        "language": "c++",
+        "sources": [
+          "benchmark/reference_submissions/anomaly_detection/submitter_implemented.cpp"
+        ],
+        "compiler_options": [
+          "-O1",
+          "-ffp-contract=off",
+          "-fno-exceptions",
+          "-fno-rtti",
+          "-Wno-unknown-pragmas",
+          "-Iexternals/mlperf-tiny/benchmark",
+          "-Iexternals/mlperf-tiny/benchmark/reference_submissions/anomaly_detection",
+          "-Itest/applications/mlperf-tiny-anomaly-include",
+          "-include=test/applications/mlperf-tiny-anomaly-smoke.h"
+        ],
+        "link_options": []
+      },
+      "cached_inputs": [],
+      "inputs": [
+        {
+          "name": "smoke",
+          "workload": "mlperf-tiny-anomaly-smoke",
+          "runtime_input": "mlperf-tiny-anomaly-smoke-input",
+          "cached_inputs": [],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/mlperf-tiny-anomaly-expected-smoke.txt"
+          }
+        }
+      ],
+      "selections": [
+        "smoke",
+        "validation",
+        "scale_eda"
+      ]
+    },
+    {
+      "identity": "mlperf-tiny-keyword-spotting",
+      "source": {
+        "kind": "gitlink",
+        "root": "externals/mlperf-tiny"
+      },
+      "build": {
+        "entry": "benchmark/reference_submissions/keyword_spotting/submitter_implemented.cpp",
+        "language": "c++",
+        "sources": [
+          "benchmark/reference_submissions/keyword_spotting/submitter_implemented.cpp"
+        ],
+        "compiler_options": [
+          "-O1",
+          "-ffp-contract=off",
+          "-fno-exceptions",
+          "-fno-rtti",
+          "-Wno-unknown-pragmas",
+          "-Iexternals/mlperf-tiny/benchmark",
+          "-Iexternals/mlperf-tiny/benchmark/reference_submissions/keyword_spotting",
+          "-Itest/applications/mlperf-tiny-anomaly-include",
+          "-Itest/applications/mlperf-tiny-classification-include",
+          "-include=test/applications/mlperf-tiny-kws-smoke.h"
+        ],
+        "link_options": []
+      },
+      "cached_inputs": [],
+      "inputs": [
+        {
+          "name": "smoke",
+          "workload": "mlperf-tiny-kws-smoke",
+          "runtime_input": "mlperf-tiny-kws-smoke-input",
+          "cached_inputs": [],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/mlperf-tiny-kws-expected-smoke.txt"
+          }
+        }
+      ],
+      "selections": [
+        "smoke",
+        "validation",
+        "scale_eda"
+      ]
+    },
+    {
+      "identity": "mlperf-tiny-visual-wake-words",
+      "source": {
+        "kind": "gitlink",
+        "root": "externals/mlperf-tiny"
+      },
+      "build": {
+        "entry": "benchmark/reference_submissions/person_detection/submitter_implemented.cpp",
+        "language": "c++",
+        "sources": [
+          "benchmark/reference_submissions/person_detection/submitter_implemented.cpp"
+        ],
+        "compiler_options": [
+          "-O1",
+          "-ffp-contract=off",
+          "-fno-exceptions",
+          "-fno-rtti",
+          "-Wno-unknown-pragmas",
+          "-Iexternals/mlperf-tiny/benchmark",
+          "-Iexternals/mlperf-tiny/benchmark/reference_submissions/person_detection",
+          "-Itest/applications/mlperf-tiny-anomaly-include",
+          "-Itest/applications/mlperf-tiny-classification-include",
+          "-include=test/applications/mlperf-tiny-vww-smoke.h"
+        ],
+        "link_options": []
+      },
+      "cached_inputs": [],
+      "inputs": [
+        {
+          "name": "smoke",
+          "workload": "mlperf-tiny-vww-smoke",
+          "runtime_input": "mlperf-tiny-vww-smoke-input",
+          "cached_inputs": [],
+          "oracle": {
+            "kind": "exact",
+            "entry": "test/applications/mlperf-tiny-vww-expected-smoke.txt"
           }
         }
       ],

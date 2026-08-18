@@ -4,11 +4,14 @@
 // Start/done remain explicit launch protocol endpoints, and graph.return owns
 // the segmented payload boundary plus retirement frontier.
 
+#include "Frontend/Analysis/MemoryProvenance.h"
 #include "Frontend/Lowering/GraphParallelLowering.h"
 #include "Frontend/Lowering/Passes.h"
 #include "GraphMemoryLowering.h"
 #include "GraphRegionLowering.h"
 
+#include "Common/BlobDigest.h"
+#include "Common/InvocationDiagnosticLog.h"
 #include "Dataflow/IR/DataflowActorSemantics.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowGraphValidation.h"
@@ -27,8 +30,10 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Dialect.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -37,18 +42,28 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Rewrite/FrozenRewritePatternSet.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <deque>
+#include <memory>
 #include <optional>
 
 namespace {
+
+using MonotonicClock = std::chrono::steady_clock;
+
+constexpr ::llvm::StringLiteral canonicalizationContextDescriptor =
+    "loom.dataflow_lowering.canonicalization_context.1.0";
 
 using ::loom::lowering::FixedParallelDomain;
 using ::loom::lowering::forEachParallelPoint;
@@ -911,7 +926,83 @@ struct LowerForToGraphPass
                     ::loom::LoomDialect>();
   }
 
+  ::mlir::LogicalResult initialize(::mlir::MLIRContext *context) final {
+    const auto constructionBegin = MonotonicClock::now();
+    const std::array<::mlir::Dialect *, 9> dialects = {
+        context->getLoadedDialect<::mlir::arith::ArithDialect>(),
+        context->getLoadedDialect<::mlir::func::FuncDialect>(),
+        context->getLoadedDialect<::mlir::LLVM::LLVMDialect>(),
+        context->getLoadedDialect<::mlir::math::MathDialect>(),
+        context->getLoadedDialect<::mlir::memref::MemRefDialect>(),
+        context->getLoadedDialect<::mlir::scf::SCFDialect>(),
+        context->getLoadedDialect<::mlir::ub::UBDialect>(),
+        context->getLoadedDialect<::dataflow::DataflowDialect>(),
+        context->getLoadedDialect<::loom::LoomDialect>(),
+    };
+    if (::llvm::is_contained(dialects, nullptr))
+      return ::mlir::failure();
+
+    ::llvm::DenseSet<::mlir::TypeID> allowedDialects;
+    ::mlir::RewritePatternSet patterns(context);
+    for (::mlir::Dialect *dialect : dialects) {
+      allowedDialects.insert(dialect->getTypeID());
+      dialect->getCanonicalizationPatterns(patterns);
+    }
+    for (::mlir::RegisteredOperationName operation :
+         context->getRegisteredOperations()) {
+      ++registeredOperationInspections;
+      if (!allowedDialects.contains(operation.getDialect().getTypeID()))
+        continue;
+      ++eligibleRegisteredOperations;
+      operation.getCanonicalizationPatterns(patterns, context);
+    }
+    retainedCanonicalizationPatterns = patterns.getNativePatterns().size();
+    canonicalizationPatterns =
+        std::make_shared<::mlir::FrozenRewritePatternSet>(std::move(patterns));
+    canonicalizationConstructionNanoseconds =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            MonotonicClock::now() - constructionBegin)
+            .count();
+    return ::mlir::success();
+  }
+
   void runOnOperation() final {
+    ::llvm::scope_exit emitStatistics([&] {
+      ::loom::emitInvocationDiagnostic(
+          ::loom::DiagnosticVerbosity::Detail,
+          ::loom::InvocationDiagnosticStage::DataflowLowering,
+          ::loom::InvocationDiagnosticEvent::DerivedContext,
+          [&]() -> ::llvm::json::Value {
+            const auto descriptorBytes = ::llvm::ArrayRef<std::uint8_t>(
+                reinterpret_cast<const std::uint8_t *>(
+                    canonicalizationContextDescriptor.data()),
+                canonicalizationContextDescriptor.size());
+            ::llvm::json::Object fields;
+            fields["context_kind"] = "canonicalization_patterns";
+            fields["context_key"] = ::loom::formatBlobDigestHex(
+                ::loom::computeBlobDigest(descriptorBytes));
+            fields["cache_requests"] = canonicalizationApplications;
+            fields["cache_hits"] = canonicalizationApplications == 0
+                                       ? 0
+                                       : canonicalizationApplications - 1;
+            fields["cache_misses"] = 1;
+            fields["construction_count"] = 1;
+            fields["construction_time_ns"] =
+                canonicalizationConstructionNanoseconds;
+            fields["registered_operation_inspections"] =
+                registeredOperationInspections;
+            fields["eligible_registered_operations"] =
+                eligibleRegisteredOperations;
+            fields["retained_pattern_count"] = retainedCanonicalizationPatterns;
+            fields["minimum_retained_bytes"] =
+                sizeof(::mlir::FrozenRewritePatternSet) +
+                retainedCanonicalizationPatterns * sizeof(void *);
+            fields["deterministic_work"] =
+                registeredOperationInspections + eligibleRegisteredOperations +
+                retainedCanonicalizationPatterns + canonicalizationApplications;
+            return fields;
+          });
+    });
     ::mlir::ModuleOp module = getOperation();
     ::mlir::MLIRContext *ctx = &getContext();
     ::mlir::OwningOpRef<::mlir::ModuleOp> scratch(
@@ -925,6 +1016,11 @@ struct LowerForToGraphPass
 
     module->setAttrs((*scratch)->getAttrs());
     module.getBodyRegion().takeBody(scratch->getBodyRegion());
+  }
+
+  void canonicalize(::mlir::Operation *operation) {
+    ++canonicalizationApplications;
+    (void)::mlir::applyPatternsGreedily(operation, *canonicalizationPatterns);
   }
 
   // Finalization applies to graphs that are not canonical Dataflow yet: the
@@ -1116,13 +1212,14 @@ struct LowerForToGraphPass
     // already in the body, which keeps one canonical set of index constants
     // instead of a second set per expanded copy. Both precede the graph-memory
     // owner, which consumes graph accesses.
-    ::mlir::PassManager lowerer(module.getContext());
-    lowerer.enableVerifier(false);
-    lowerer.addPass(::mlir::createCanonicalizerPass());
-    lowerer.addPass(::loom::lowering::createExpandGraphMemrefCopyPass());
-    lowerer.addPass(::mlir::createCanonicalizerPass());
-    if (::mlir::failed(lowerer.run(module)) ||
-        ::mlir::failed(
+    canonicalize(module);
+    ::mlir::PassManager expander(module.getContext());
+    expander.enableVerifier(false);
+    expander.addPass(::loom::lowering::createExpandGraphMemrefCopyPass());
+    if (::mlir::failed(expander.run(module)))
+      return ::mlir::failure();
+    canonicalize(module);
+    if (::mlir::failed(
             ::loom::lowering::lowerGraphMemory(module, &projections)) ||
         ::mlir::failed(verify(module)))
       return ::mlir::failure();
@@ -1130,9 +1227,19 @@ struct LowerForToGraphPass
     ::mlir::PassManager finalizer(module.getContext());
     finalizer.enableVerifier(true);
     finalizer.addPass(::loom::lowering::createLowerGraphConstantsPass());
-    finalizer.addPass(::mlir::createCanonicalizerPass());
-    return finalizer.run(module);
+    if (::mlir::failed(finalizer.run(module)))
+      return ::mlir::failure();
+    canonicalize(module);
+    return verify(module);
   }
+
+  std::shared_ptr<const ::mlir::FrozenRewritePatternSet>
+      canonicalizationPatterns;
+  std::uint64_t registeredOperationInspections = 0;
+  std::uint64_t eligibleRegisteredOperations = 0;
+  std::uint64_t retainedCanonicalizationPatterns = 0;
+  std::uint64_t canonicalizationApplications = 0;
+  std::uint64_t canonicalizationConstructionNanoseconds = 0;
 
   ::mlir::LogicalResult publishSpatialRegions(::mlir::ModuleOp module,
                                               ::mlir::OpBuilder &builder) {
@@ -1234,19 +1341,29 @@ struct LowerForToGraphPass
                                                functionType, segmentAttrs);
       graph.setSymVisibilityAttr(builder.getStringAttr("private"));
 
-      ::llvm::SmallVector<::mlir::Value, 8> memoryRoots(
-          graphInputs.memories.size());
+      auto isMemoryRootCarrier = [](::mlir::Value value) {
+        return value && ::llvm::isa<::mlir::LLVM::LLVMPointerType,
+                                    ::mlir::BaseMemRefType>(value.getType());
+      };
+      ::llvm::SmallVector<::mlir::Value, 8> inputRoots(inputTypes.size());
       ::llvm::DenseMap<::mlir::Value, unsigned> capturedRootCounts;
       bool hasUnknownMemoryRoot = false;
-      for (auto [index, memory] : ::llvm::enumerate(graphInputs.memories)) {
-        ::mlir::Value root =
-            findGraphPublicationMemoryRoot(memory, threadEntry);
-        memoryRoots[index] = root;
+      auto recordInputRoot = [&](unsigned index, ::mlir::Value input) {
+        if (!isMemoryRootCarrier(input))
+          return;
+        ::mlir::Value root = findGraphPublicationMemoryRoot(input, threadEntry);
+        inputRoots[index] = root;
         if (root)
           ++capturedRootCounts[root];
         else
           hasUnknownMemoryRoot = true;
-      }
+      };
+      for (auto [index, input] : ::llvm::enumerate(graphInputs.values))
+        recordInputRoot(index, input);
+      const unsigned memoryInputOffset =
+          graphInputs.values.size() + spatial.getStreamInputs().size();
+      for (auto [index, memory] : ::llvm::enumerate(graphInputs.memories))
+        recordInputRoot(memoryInputOffset + index, memory);
 
       auto getThreadArgAttrs = [&](::mlir::Value value) {
         if (!value)
@@ -1259,27 +1376,39 @@ struct LowerForToGraphPass
             thread, argument.getArgNumber());
       };
 
-      ::llvm::SmallVector<::mlir::DictionaryAttr, 8> graphArgAttrs;
-      graphArgAttrs.reserve(inputTypes.size());
-      for (::mlir::Value input : graphInputs.values) {
+      auto getGraphInputAttrs = [&](unsigned index, ::mlir::Value input) {
         ::mlir::NamedAttrList attrs(getThreadArgAttrs(input));
-        graphArgAttrs.push_back(attrs.getDictionary(builder.getContext()));
-      }
-      for ([[maybe_unused]] ::mlir::Value channel : spatial.getStreamInputs())
-        graphArgAttrs.push_back(builder.getDictionaryAttr({}));
-      for (auto [index, memory] : ::llvm::enumerate(graphInputs.memories)) {
-        ::mlir::NamedAttrList attrs(getThreadArgAttrs(memory));
-        ::mlir::Value root = memoryRoots[index];
+        if (!isMemoryRootCarrier(input))
+          return attrs.getDictionary(builder.getContext());
+        ::mlir::Value root = inputRoots[index];
         ::mlir::DictionaryAttr rootAttrs = getThreadArgAttrs(root);
         ::mlir::Attribute noAlias =
             rootAttrs ? rootAttrs.get("llvm.noalias") : ::mlir::Attribute{};
         bool uniqueKnownRoot = !hasUnknownMemoryRoot && root &&
                                capturedRootCounts.lookup(root) == 1;
-        if (uniqueKnownRoot && noAlias)
-          attrs.set("llvm.noalias", noAlias);
+        bool distinctFromEveryCapturedRoot =
+            uniqueKnownRoot &&
+            ::llvm::all_of(inputRoots, [&](::mlir::Value other) {
+              return !other || other == root ||
+                     ::loom::frontend::analysis::haveProvenDistinctMemoryRoots(
+                         root, other);
+            });
+        if (uniqueKnownRoot && (noAlias || distinctFromEveryCapturedRoot))
+          attrs.set("llvm.noalias", builder.getUnitAttr());
         else
           attrs.erase("llvm.noalias");
-        graphArgAttrs.push_back(attrs.getDictionary(builder.getContext()));
+        return attrs.getDictionary(builder.getContext());
+      };
+
+      ::llvm::SmallVector<::mlir::DictionaryAttr, 8> graphArgAttrs;
+      graphArgAttrs.reserve(inputTypes.size());
+      for (auto [index, input] : ::llvm::enumerate(graphInputs.values))
+        graphArgAttrs.push_back(getGraphInputAttrs(index, input));
+      for ([[maybe_unused]] ::mlir::Value channel : spatial.getStreamInputs())
+        graphArgAttrs.push_back(builder.getDictionaryAttr({}));
+      for (auto [index, memory] : ::llvm::enumerate(graphInputs.memories)) {
+        graphArgAttrs.push_back(
+            getGraphInputAttrs(memoryInputOffset + index, memory));
       }
       ::mlir::function_interface_impl::setAllArgAttrDicts(graph, graphArgAttrs);
 

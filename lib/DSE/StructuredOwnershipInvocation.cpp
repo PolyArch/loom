@@ -1420,24 +1420,15 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeFunctionalReplay(
       impl.materialized.try_emplace(candidate, std::move(*materialized));
   if (!inserted)
     return invalid("functional candidate was materialized twice");
-  std::vector<frontend::StructuredExecutionShapeDecision>
-      executionShapeDecisions;
-  executionShapeDecisions.reserve(lineage->executionShape.size());
-  for (const StructuredExecutionShapeDerivation &derivation :
-       lineage->executionShape)
-    executionShapeDecisions.push_back(derivation.decision);
-  for (const StructuredOwnershipDerivation &derivation : lineage->ownership) {
-    if (llvm::Error error =
-            evaluation::models::primeStructuredProgramFunctionalReplay(
-                candidate,
-                {*impl.workloadReference, *impl.runtimeInputReference,
-                 impl.generationParent, impl.sourceProgram, derivation.scope,
-                 derivation.decision, executionShapeDecisions, found->second,
-                 impl.workload, impl.runtimeInput, *impl.sourceObservations,
-                 impl.functionalReplayLimits},
-                store))
-      return error;
-  }
+  if (llvm::Error error =
+          evaluation::models::primeStructuredProgramFunctionalReplay(
+              candidate,
+              {*impl.workloadReference, *impl.runtimeInputReference,
+               impl.sourceProgram, found->second, impl.workload,
+               impl.runtimeInput, *impl.sourceObservations,
+               impl.functionalReplayLimits},
+              store))
+    return error;
   impl.primedCandidates.insert(candidate);
   return llvm::Error::success();
 }
@@ -1486,9 +1477,6 @@ detail::StructuredOwnershipInvocationAccess::primeDataflowFunctionalReplay(
   auto parentState = impl.materialized.find(structuredParent);
   if (parentState == impl.materialized.end())
     return invalid("Dataflow candidate has no selected Structured parent");
-  auto lineage = impl.resolveLineage(structuredParent);
-  if (!lineage)
-    return lineage.takeError();
   auto structured = frontend::importStructuredProgram(structuredParent, store);
   if (!structured)
     return structured.takeError();
@@ -1513,24 +1501,14 @@ detail::StructuredOwnershipInvocationAccess::primeDataflowFunctionalReplay(
       parentState->second.ownedSpatialRegion,
       parentState->second.blockActivityLineage,
       parentState->second.sourceProvenance};
-  std::vector<frontend::StructuredExecutionShapeDecision>
-      executionShapeDecisions;
-  executionShapeDecisions.reserve(lineage->executionShape.size());
-  for (const StructuredExecutionShapeDerivation &derivation :
-       lineage->executionShape)
-    executionShapeDecisions.push_back(derivation.decision);
-  for (const StructuredOwnershipDerivation &derivation : lineage->ownership) {
-    if (llvm::Error error =
-            evaluation::models::primeCanonicalDataflowFunctionalReplay(
-                dataflowCandidate, structuredParent,
-                {*impl.workloadReference, *impl.runtimeInputReference,
-                 impl.generationParent, impl.sourceProgram, derivation.scope,
-                 derivation.decision, executionShapeDecisions, candidate,
-                 impl.workload, impl.runtimeInput, *impl.sourceObservations,
-                 impl.functionalReplayLimits},
-                store))
-      return error;
-  }
+  if (llvm::Error error =
+          evaluation::models::primeCanonicalDataflowFunctionalReplay(
+              dataflowCandidate, structuredParent,
+              {*impl.workloadReference, *impl.runtimeInputReference,
+               impl.sourceProgram, candidate, impl.workload, impl.runtimeInput,
+               *impl.sourceObservations, impl.functionalReplayLimits},
+              store))
+    return error;
   impl.primedDataflowCandidates.insert(key);
   return llvm::Error::success();
 }

@@ -1,4 +1,6 @@
 #include "Frontend/Lowering/GraphParallelLowering.h"
+#include "Frontend/Analysis/DenseParallelMemoryProjection.h"
+#include "Frontend/Analysis/MemoryProvenance.h"
 #include "Frontend/Lowering/GraphMemoryAddressing.h"
 #include "GraphRegionLowering.h"
 
@@ -12,14 +14,15 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Matchers.h"
-#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
 
@@ -304,76 +307,54 @@ std::optional<::mlir::Value> mapSpatialArgument(::mlir::Value value) {
   return value;
 }
 
-class MemoryRootResolver {
+class MemoryAliasPartition {
 public:
-  std::optional<::mlir::Value> resolve(::mlir::Value value) {
-    ::llvm::DenseSet<::mlir::Value> visited;
-    while (value && visited.insert(value).second) {
-      if (auto mapped = mapSpatialArgument(value)) {
-        value = *mapped;
-        continue;
-      }
-      if (auto argument = ::llvm::dyn_cast<::mlir::BlockArgument>(value))
-        return resolveBoundaryArgument(argument);
+  explicit MemoryAliasPartition(
+      ::llvm::ArrayRef<ParallelMemoryAccess> accesses) {
+    ::llvm::SetVector<::mlir::Value> roots;
+    for (const ParallelMemoryAccess &access : accesses)
+      roots.insert(
+          ::loom::frontend::analysis::projectMemoryRoot(access.memory));
 
-      ::mlir::Operation *def = value.getDefiningOp();
-      if (!def)
-        return std::nullopt;
-      if (::llvm::isa<::mlir::memref::AllocOp, ::mlir::memref::AllocaOp>(def))
-        return value;
-      if (auto global = ::llvm::dyn_cast<::mlir::memref::GetGlobalOp>(def))
-        return globalRoots.try_emplace(global.getNameAttr(), value)
-            .first->second;
-      if (auto view = ::llvm::dyn_cast<::mlir::ViewLikeOpInterface>(def)) {
-        value = view.getViewSource();
-        continue;
+    ::llvm::SmallVector<unsigned, 8> parents;
+    parents.reserve(roots.size());
+    for (unsigned index = 0; index < roots.size(); ++index)
+      parents.push_back(index);
+    auto find = [&](unsigned index) {
+      while (parents[index] != index) {
+        parents[index] = parents[parents[index]];
+        index = parents[index];
       }
-      if (auto gep = ::llvm::dyn_cast<::mlir::LLVM::GEPOp>(def)) {
-        value = gep.getBase();
-        continue;
+      return index;
+    };
+    for (unsigned lhs = 0; lhs < roots.size(); ++lhs) {
+      for (unsigned rhs = lhs + 1; rhs < roots.size(); ++rhs) {
+        if (::loom::frontend::analysis::haveProvenDistinctMemoryRoots(
+                roots[lhs], roots[rhs]))
+          continue;
+        unsigned lhsRoot = find(lhs);
+        unsigned rhsRoot = find(rhs);
+        if (lhsRoot == rhsRoot)
+          continue;
+        if (lhsRoot > rhsRoot)
+          std::swap(lhsRoot, rhsRoot);
+        parents[rhsRoot] = lhsRoot;
       }
-      return std::nullopt;
     }
-    return std::nullopt;
+    for (unsigned index = 0; index < roots.size(); ++index)
+      representatives.try_emplace(roots[index], roots[find(index)]);
+  }
+
+  std::optional<::mlir::Value> resolve(::mlir::Value value) {
+    value = ::loom::frontend::analysis::projectMemoryRoot(value);
+    auto found = representatives.find(value);
+    if (found == representatives.end())
+      return std::nullopt;
+    return found->second;
   }
 
 private:
-  ::llvm::DenseMap<::mlir::Operation *, ::mlir::Value> sharedBoundaryRoots;
-  ::llvm::DenseMap<::mlir::FlatSymbolRefAttr, ::mlir::Value> globalRoots;
-
-  std::optional<::mlir::Value>
-  resolveBoundaryArgument(::mlir::BlockArgument argument) {
-    ::mlir::Operation *owner = argument.getOwner()->getParentOp();
-    unsigned inputIndex = argument.getArgNumber();
-    ::mlir::DictionaryAttr attrs;
-
-    if (auto graph = ::llvm::dyn_cast_or_null<::dataflow::GraphOp>(owner)) {
-      if (inputIndex == 0 ||
-          inputIndex > graph.getFunctionType().getNumInputs())
-        return std::nullopt;
-      --inputIndex;
-      attrs =
-          ::mlir::function_interface_impl::getArgAttrDict(graph, inputIndex);
-    } else if (auto thread =
-                   ::llvm::dyn_cast_or_null<::dataflow::ThreadOp>(owner)) {
-      if (inputIndex >= thread.getFunctionType().getNumInputs())
-        return std::nullopt;
-      attrs =
-          ::mlir::function_interface_impl::getArgAttrDict(thread, inputIndex);
-    } else if (auto function =
-                   ::llvm::dyn_cast_or_null<::mlir::LLVM::LLVMFuncOp>(owner)) {
-      if (inputIndex >= function.getFunctionType().getNumParams())
-        return std::nullopt;
-      attrs =
-          ::mlir::function_interface_impl::getArgAttrDict(function, inputIndex);
-    } else {
-      return std::nullopt;
-    }
-
-    if (attrs && attrs.contains("llvm.noalias"))
-      return argument;
-    return sharedBoundaryRoots.try_emplace(owner, argument).first->second;
-  }
+  ::llvm::DenseMap<::mlir::Value, ::mlir::Value> representatives;
 };
 
 struct LinearExpression {
@@ -838,6 +819,38 @@ bool hasDynamicByteLaneSeparation(const ByteAccessExpression &address,
   return !stride.isZero() && stride.abs().uge(accessBytes);
 }
 
+bool hasDynamicDenseByteLaneSeparation(
+    const ParallelMemoryAccess &access,
+    const ResolvedLinearMemoryAddress &address, ::mlir::scf::ForallOp forall,
+    unsigned indexWidth) {
+  const bool initialShape =
+      forall && forall.getRank() >= 2 &&
+      address.terms.size() == static_cast<std::size_t>(forall.getRank());
+  if (!initialShape)
+    return false;
+  for (auto [lower, step] : ::llvm::zip_equal(
+           forall.getMixedLowerBound(), forall.getMixedStep()))
+    if (getConstantIndex(lower) != 0 || getConstantIndex(step) != 1)
+      return false;
+
+  const std::int64_t byteStride = address.terms.front().byteStride;
+  const bool uniformByteStride =
+      byteStride > 0 &&
+      static_cast<std::uint64_t>(byteStride) >= address.accessByteCount &&
+      !::llvm::any_of(address.terms, [&](const LinearByteTerm &term) {
+        return term.byteStride != byteStride;
+      });
+  if (!uniformByteStride)
+    return false;
+
+  ::llvm::SmallVector<::mlir::Value, 4> coordinates;
+  ::llvm::append_range(coordinates, forall.getInductionVars());
+  ::llvm::SmallVector<::mlir::OpFoldResult, 4> upperBounds;
+  ::llvm::append_range(upperBounds, forall.getMixedUpperBound());
+  return ::loom::frontend::analysis::hasExactDenseCoordinateStoreProjection(
+      access.op, coordinates, upperBounds, indexWidth);
+}
+
 struct ByteInterval {
   ::llvm::APInt begin;
   ::llvm::APInt end;
@@ -887,7 +900,7 @@ struct ParallelCheckInfo {
       ::llvm::all_of(info.accesses, [](const ParallelMemoryAccess &access) {
         return access.atomic;
       });
-  MemoryRootResolver roots;
+  MemoryAliasPartition roots(info.accesses);
   ::llvm::DenseMap<::mlir::Value,
                    ::llvm::SmallVector<const ParallelMemoryAccess *, 4>>
       accessesByRoot;
@@ -928,6 +941,12 @@ struct ParallelCheckInfo {
         ::llvm::all_of(rootAccesses, [](const ParallelMemoryAccess *access) {
           return access->atomic;
         });
+
+    // Parallel reads may overlap freely. Fully atomic roots carry their own
+    // ordering contract. Only a root with a non-atomic write needs a
+    // cross-lane address-disjointness proof.
+    if (!rootWrites || rootAtomic)
+      continue;
 
     bool hasLlvmAccess =
         ::llvm::any_of(rootAccesses, [](const ParallelMemoryAccess *access) {
@@ -981,6 +1000,12 @@ struct ParallelCheckInfo {
         return info.op->emitError(
             "loom-lower-graph-memory: parallel byte-address comparison width "
             "is invalid");
+      if (!info.domain && rootAccesses.size() == 1)
+        if (auto forall = ::llvm::dyn_cast<::mlir::scf::ForallOp>(info.op);
+            forall && hasDynamicDenseByteLaneSeparation(
+                          *rootAccesses.front(), resolvedAddresses.front(),
+                          forall, *indexBits))
+          continue;
       const unsigned comparisonWidth = addressBitWidth * 2 + 1;
       LinearAddressBuilder expressions(info.op, inductionVars, addressBitWidth,
                                        provenParallelOps);
@@ -1097,8 +1122,6 @@ struct ParallelCheckInfo {
         return info.op->emitError(
             "loom-lower-graph-memory: LLVM element address exceeds the "
             "selected canonical index width");
-      if (!rootWrites || rootAtomic)
-        continue;
       ::llvm::sort(intervals,
                    [](const ByteInterval &lhs, const ByteInterval &rhs) {
                      if (lhs.begin != rhs.begin)
@@ -1131,9 +1154,6 @@ struct ParallelCheckInfo {
             "memory byte ranges");
       continue;
     }
-
-    if (!rootWrites || rootAtomic)
-      continue;
 
     LinearAddressBuilder expressions(info.op, inductionVars, *indexBits,
                                      provenParallelOps);
@@ -1426,6 +1446,33 @@ checkLogicalThreadParallelPreconditions(::mlir::Operation *forall) {
     return ::mlir::failure();
   return checkParallelPreconditions({forall}, /*requireFixedDomain=*/false,
                                     /*selectedOwnership=*/true);
+}
+
+std::optional<std::string>
+explainSpatialCarrierParallelRejection(::mlir::Operation *spatialCarrier) {
+  if (!spatialCarrier)
+    return "Spatial carrier is absent";
+
+  ::llvm::SmallVector<::mlir::Operation *, 8> parallelOps;
+  spatialCarrier->walk([&](::mlir::Operation *operation) {
+    if (::llvm::isa<::mlir::scf::ParallelOp, ::mlir::scf::ForallOp>(operation))
+      parallelOps.push_back(operation);
+  });
+  if (parallelOps.empty())
+    return std::nullopt;
+
+  std::optional<std::string> diagnostic;
+  ::mlir::ScopedDiagnosticHandler capture(
+      spatialCarrier->getContext(), [&](::mlir::Diagnostic &value) {
+        if (!diagnostic)
+          diagnostic = value.str();
+        return ::mlir::success();
+      });
+  if (::mlir::succeeded(checkGraphOwnedParallelPreconditions(parallelOps)))
+    return std::nullopt;
+  if (diagnostic)
+    return diagnostic;
+  return "Spatial carrier failed graph-owned parallel legality";
 }
 
 } // namespace lowering

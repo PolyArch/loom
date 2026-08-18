@@ -35,6 +35,7 @@ using ::dataflow::semantics::ServiceValueRole;
 
 enum class CatalogMemoryDomain { Hybrid32, General64 };
 enum class AccessProjectionDomain { Direct, Indexed, All };
+enum class ElementVectorProjection { ElementOnly, VectorOnly, Both };
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -101,8 +102,7 @@ elementAccess(bool reads, CatalogMemoryDomain domain,
       {{MemoryMaskForm::Absent,
         ::fabric::InactiveLaneSemantics::NotApplicable}},
       std::move(*alignments), std::move(*read), std::move(*write),
-      std::move(addressDomain),
-      ::loom::adg::detail::catalogPointerFormats());
+      std::move(addressDomain), ::loom::adg::detail::catalogPointerFormats());
 }
 
 llvm::Expected<::fabric::MemoryAccessClass>
@@ -132,8 +132,7 @@ vectorAccess(bool reads, MemoryAccessForm accessForm,
   return ::fabric::MemoryAccessClass::create(
       accessForm, std::move(*widths), std::move(*lanes), masks,
       std::move(*alignments), std::move(*read), std::move(*write),
-      std::move(addressDomain),
-      ::loom::adg::detail::catalogPointerFormats());
+      std::move(addressDomain), ::loom::adg::detail::catalogPointerFormats());
 }
 
 struct IndexedRootRelativeDomain final {
@@ -186,10 +185,8 @@ partitionIndexedPointerDomains(const ::fabric::PointerFormatRelation &formats,
                                std::uint64_t dataLaneCapacity) {
   std::map<std::uint64_t, ::fabric::PointerFormatRelation> byLanes;
   for (const ::fabric::PointerFormat &format : formats.formats()) {
-    const std::uint64_t lanes =
-        std::min<std::uint64_t>(dataLaneCapacity,
-                                addressPayloadBits /
-                                    format.representationBits);
+    const std::uint64_t lanes = std::min<std::uint64_t>(
+        dataLaneCapacity, addressPayloadBits / format.representationBits);
     if (lanes < 2)
       continue;
     if (!byLanes[lanes].insert(format))
@@ -203,10 +200,11 @@ partitionIndexedPointerDomains(const ::fabric::PointerFormatRelation &formats,
   return result;
 }
 
-llvm::Expected<::fabric::ParameterizedMemoryAccessDomain>
-accessDomain(bool reads, CatalogMemoryDomain domain,
-             const MemoryAccessDomainParameters &parameters,
-             AccessProjectionDomain projection) {
+llvm::Expected<::fabric::ParameterizedMemoryAccessDomain> accessDomain(
+    bool reads, CatalogMemoryDomain domain,
+    const MemoryAccessDomainParameters &parameters,
+    AccessProjectionDomain projection,
+    ElementVectorProjection elementVector = ElementVectorProjection::Both) {
   using dataflow::semantics::MemoryAddressForm;
   if (parameters.dataPayloadBits == 0 || parameters.maskPayloadBits == 0)
     return invalid("memory access-domain widths must be positive");
@@ -228,7 +226,8 @@ accessDomain(bool reads, CatalogMemoryDomain domain,
     return invalid("indexed memory domain requires an indexed address width");
 
   std::vector<::fabric::MemoryAccessClass> classes;
-  if (projection != AccessProjectionDomain::Indexed) {
+  if (projection != AccessProjectionDomain::Indexed &&
+      elementVector != ElementVectorProjection::VectorOnly) {
     auto rootElement = elementAccess(reads, domain, *rootAddress);
     if (!rootElement)
       return rootElement.takeError();
@@ -269,48 +268,50 @@ accessDomain(bool reads, CatalogMemoryDomain domain,
     return llvm::Error::success();
   };
 
-  for (std::uint32_t width : catalogElementWidths(domain)) {
-    const std::uint64_t dataLanes = parameters.dataPayloadBits / width;
-    if (projection != AccessProjectionDomain::Indexed) {
-      if (llvm::Error error = appendVectorClasses(
-              MemoryAccessForm::Contiguous, *rootAddress, width, dataLanes))
-        return std::move(error);
-      if (llvm::Error error = appendVectorClasses(
-              MemoryAccessForm::Contiguous, *pointerAddress, width, dataLanes))
-        return std::move(error);
-    }
-    if (projection != AccessProjectionDomain::Direct) {
-      auto rootDomains = partitionIndexedRootRelativeDomains(
-          *parameters.rootRelativeIndexWidths,
-          *parameters.indexedAddressPayloadBits, dataLanes);
-      if (!rootDomains)
-        return rootDomains.takeError();
-      for (IndexedRootRelativeDomain &root : *rootDomains) {
-        auto address = ::fabric::MemoryAddressDomain::rootRelative(
-            std::move(root.indexWidths));
-        if (!address)
-          return address.takeError();
+  if (elementVector != ElementVectorProjection::ElementOnly)
+    for (std::uint32_t width : catalogElementWidths(domain)) {
+      const std::uint64_t dataLanes = parameters.dataPayloadBits / width;
+      if (projection != AccessProjectionDomain::Indexed) {
         if (llvm::Error error = appendVectorClasses(
-                MemoryAccessForm::Indexed, std::move(*address), width,
-                root.maximumLanes))
+                MemoryAccessForm::Contiguous, *rootAddress, width, dataLanes))
+          return std::move(error);
+        if (llvm::Error error =
+                appendVectorClasses(MemoryAccessForm::Contiguous,
+                                    *pointerAddress, width, dataLanes))
           return std::move(error);
       }
-      auto pointerDomains = partitionIndexedPointerDomains(
-          pointerFormats, *parameters.indexedAddressPayloadBits, dataLanes);
-      if (!pointerDomains)
-        return pointerDomains.takeError();
-      for (IndexedPointerDomain &pointer : *pointerDomains) {
-        auto address = ::fabric::MemoryAddressDomain::pointerAddressed(
-            std::move(pointer.pointerFormats));
-        if (!address)
-          return address.takeError();
-        if (llvm::Error error = appendVectorClasses(
-                MemoryAccessForm::Indexed, std::move(*address), width,
-                pointer.maximumLanes))
-          return std::move(error);
+      if (projection != AccessProjectionDomain::Direct) {
+        auto rootDomains = partitionIndexedRootRelativeDomains(
+            *parameters.rootRelativeIndexWidths,
+            *parameters.indexedAddressPayloadBits, dataLanes);
+        if (!rootDomains)
+          return rootDomains.takeError();
+        for (IndexedRootRelativeDomain &root : *rootDomains) {
+          auto address = ::fabric::MemoryAddressDomain::rootRelative(
+              std::move(root.indexWidths));
+          if (!address)
+            return address.takeError();
+          if (llvm::Error error = appendVectorClasses(MemoryAccessForm::Indexed,
+                                                      std::move(*address),
+                                                      width, root.maximumLanes))
+            return std::move(error);
+        }
+        auto pointerDomains = partitionIndexedPointerDomains(
+            pointerFormats, *parameters.indexedAddressPayloadBits, dataLanes);
+        if (!pointerDomains)
+          return pointerDomains.takeError();
+        for (IndexedPointerDomain &pointer : *pointerDomains) {
+          auto address = ::fabric::MemoryAddressDomain::pointerAddressed(
+              std::move(pointer.pointerFormats));
+          if (!address)
+            return address.takeError();
+          if (llvm::Error error = appendVectorClasses(
+                  MemoryAccessForm::Indexed, std::move(*address), width,
+                  pointer.maximumLanes))
+            return std::move(error);
+        }
       }
     }
-  }
   if (classes.empty())
     return invalid("memory recipe admits no access class");
   return ::fabric::ParameterizedMemoryAccessDomain::create(classes);
@@ -354,9 +355,8 @@ operationPortResourceContract(std::optional<std::uint32_t> indexedLaneCount) {
          ::fabric::EligibilityKey(ordinal),
          ::fabric::EventKey(0),
          ::fabric::EventKey(1),
-         ::fabric::CommitDeclaration{
-             ::fabric::EventKey(0),
-             ::fabric::ResourceTransitionKey(ordinal)},
+         ::fabric::CommitDeclaration{::fabric::EventKey(0),
+                                     ::fabric::ResourceTransitionKey(ordinal)},
          ::fabric::TimingContractKey(0),
          {{::fabric::ClaimKey(0), ::fabric::StateKey(0),
            ::fabric::CapacityDimensionKey(0), ::fabric::CapacityUnits(1)}},
@@ -405,20 +405,20 @@ struct MemoryEndpointLayout final {
   std::vector<std::uint32_t> outputWidths;
   std::uint64_t readScalarAddress = 0;
   std::optional<std::uint64_t> readIndexedAddress;
-  std::uint64_t readMask = 0;
+  std::optional<std::uint64_t> readMask;
   std::uint64_t readControl = 0;
   std::uint64_t writeScalarAddress = 0;
   std::optional<std::uint64_t> writeIndexedAddress;
   std::uint64_t writeData = 0;
-  std::uint64_t writeMask = 0;
+  std::optional<std::uint64_t> writeMask;
   std::uint64_t writeControl = 0;
   std::uint64_t readData = 0;
   std::uint64_t readCompletion = 0;
   std::uint64_t writeCompletion = 0;
 };
 
-MemoryEndpointLayout
-endpointLayout(const MemoryInterfaceParameters &interface) {
+MemoryEndpointLayout endpointLayout(const MemoryInterfaceParameters &interface,
+                                    bool includeMask, bool includeIndexed) {
   MemoryEndpointLayout layout;
   auto addInput = [&](std::uint32_t width) {
     const std::uint64_t ordinal = layout.inputWidths.size();
@@ -426,17 +426,19 @@ endpointLayout(const MemoryInterfaceParameters &interface) {
     return ordinal;
   };
   layout.readScalarAddress = addInput(interface.scalarAddressPayloadBits);
-  if (interface.accessDomain.indexedAddressPayloadBits)
+  if (includeIndexed && interface.accessDomain.indexedAddressPayloadBits)
     layout.readIndexedAddress =
         addInput(*interface.accessDomain.indexedAddressPayloadBits);
-  layout.readMask = addInput(interface.accessDomain.maskPayloadBits);
+  if (includeMask)
+    layout.readMask = addInput(interface.accessDomain.maskPayloadBits);
   layout.readControl = addInput(0);
   layout.writeScalarAddress = addInput(interface.scalarAddressPayloadBits);
-  if (interface.accessDomain.indexedAddressPayloadBits)
+  if (includeIndexed && interface.accessDomain.indexedAddressPayloadBits)
     layout.writeIndexedAddress =
         addInput(*interface.accessDomain.indexedAddressPayloadBits);
   layout.writeData = addInput(interface.accessDomain.dataPayloadBits);
-  layout.writeMask = addInput(interface.accessDomain.maskPayloadBits);
+  if (includeMask)
+    layout.writeMask = addInput(interface.accessDomain.maskPayloadBits);
   layout.writeControl = addInput(0);
 
   const std::uint64_t outputBase = layout.inputWidths.size();
@@ -467,8 +469,8 @@ llvm::Expected<std::uint32_t> maximumIndexedLaneCount(
       continue;
     if (access.flattenedLaneCounts().intervals().empty())
       return invalid("indexed memory access has no lane-count interval");
-    maximum = std::max(
-        maximum, access.flattenedLaneCounts().intervals().back().upper);
+    maximum = std::max(maximum,
+                       access.flattenedLaneCounts().intervals().back().upper);
   }
   if (maximum > std::numeric_limits<std::uint32_t>::max())
     return invalid("indexed memory lane count exceeds u32");
@@ -477,34 +479,46 @@ llvm::Expected<std::uint32_t> maximumIndexedLaneCount(
 
 std::vector<::fabric::MemoryRoleEndpointBindingRecord>
 roleBindings(bool reads, std::uint64_t address,
-             const MemoryEndpointLayout &layout) {
-  if (reads)
-    return {{ServiceValueRole::Address, address},
-            {ServiceValueRole::Data, layout.readData},
-            {ServiceValueRole::Mask, layout.readMask},
-            {ServiceValueRole::Control, layout.readControl},
-            {ServiceValueRole::Completion, layout.readCompletion}};
-  return {{ServiceValueRole::Address, address},
-          {ServiceValueRole::Data, layout.writeData},
-          {ServiceValueRole::Mask, layout.writeMask},
-          {ServiceValueRole::Control, layout.writeControl},
-          {ServiceValueRole::Completion, layout.writeCompletion}};
+             const MemoryEndpointLayout &layout, bool includeMask) {
+  std::vector<::fabric::MemoryRoleEndpointBindingRecord> bindings{
+      {ServiceValueRole::Address, address},
+      {ServiceValueRole::Data, reads ? layout.readData : layout.writeData}};
+  if (includeMask)
+    bindings.push_back(
+        {ServiceValueRole::Mask, reads ? *layout.readMask : *layout.writeMask});
+  bindings.push_back({ServiceValueRole::Control,
+                      reads ? layout.readControl : layout.writeControl});
+  bindings.push_back({ServiceValueRole::Completion,
+                      reads ? layout.readCompletion : layout.writeCompletion});
+  return bindings;
+}
+
+bool hasDynamicMask(const ::fabric::ParameterizedMemoryAccessDomain &domain) {
+  return llvm::any_of(domain.accessClasses(), [](const auto &access) {
+    return llvm::any_of(access.maskInactivePairs(), [](const auto &pair) {
+      return pair.mask == MemoryMaskForm::Dynamic;
+    });
+  });
 }
 
 llvm::Expected<::fabric::MemoryOperationPortDeclaration> operationPort(
     mlir::MLIRContext &context, ::fabric::Schedule schedule,
     llvm::ArrayRef<::fabric::MemoryTransportEndpointDescriptor> endpoints,
     const MemoryEndpointLayout &layout, bool reads, CatalogMemoryDomain domain,
-    const MemoryAccessDomainParameters &parameters) {
-  auto directAccesses =
-      accessDomain(reads, domain, parameters, AccessProjectionDomain::Direct);
+    const MemoryAccessDomainParameters &parameters,
+    ElementVectorProjection elementVector) {
+  auto directAccesses = accessDomain(
+      reads, domain, parameters, AccessProjectionDomain::Direct, elementVector);
   if (!directAccesses)
     return directAccesses.takeError();
   std::optional<::fabric::ParameterizedMemoryAccessDomain> indexedAccesses;
   std::optional<std::uint32_t> indexedLanes;
-  if (parameters.indexedAddressPayloadBits) {
+  const bool supportsIndexed =
+      parameters.indexedAddressPayloadBits &&
+      elementVector != ElementVectorProjection::ElementOnly;
+  if (supportsIndexed) {
     auto indexed = accessDomain(reads, domain, parameters,
-                                AccessProjectionDomain::Indexed);
+                                AccessProjectionDomain::Indexed, elementVector);
     if (!indexed)
       return indexed.takeError();
     auto maximum = maximumIndexedLaneCount(*indexed);
@@ -525,17 +539,21 @@ llvm::Expected<::fabric::MemoryOperationPortDeclaration> operationPort(
   const std::uint64_t scalarAddress =
       reads ? layout.readScalarAddress : layout.writeScalarAddress;
   std::vector<::fabric::MemoryCapabilityAlternativeRecord> alternatives;
-  alternatives.push_back({*actors,
-                          roleBindings(reads, scalarAddress, layout),
-                          std::move(*directAccesses),
-                          {::fabric::UsePatternKey(0)}});
-  if (parameters.indexedAddressPayloadBits) {
+  const bool directMask = hasDynamicMask(*directAccesses);
+  alternatives.push_back(
+      {*actors,
+       roleBindings(reads, scalarAddress, layout, directMask),
+       std::move(*directAccesses),
+       {::fabric::UsePatternKey(0)}});
+  if (supportsIndexed) {
     const std::uint64_t indexedAddress =
         reads ? *layout.readIndexedAddress : *layout.writeIndexedAddress;
-    alternatives.push_back({std::move(*actors),
-                            roleBindings(reads, indexedAddress, layout),
-                            std::move(*indexedAccesses),
-                            {::fabric::UsePatternKey(1)}});
+    const bool indexedMask = hasDynamicMask(*indexedAccesses);
+    alternatives.push_back(
+        {std::move(*actors),
+         roleBindings(reads, indexedAddress, layout, indexedMask),
+         std::move(*indexedAccesses),
+         {::fabric::UsePatternKey(1)}});
   }
 
   std::vector<std::uint64_t> inventory;
@@ -547,7 +565,7 @@ llvm::Expected<::fabric::MemoryOperationPortDeclaration> operationPort(
                   inventory.end());
   std::vector<::fabric::MemoryOperationPatternRecord> patterns = {
       {::fabric::MemoryPortTransactionProjection::Direct}};
-  if (parameters.indexedAddressPayloadBits)
+  if (supportsIndexed)
     patterns.push_back(
         {::fabric::MemoryPortTransactionProjection::ActiveLanesRowMajor});
   ::fabric::MemoryOperationPortDeclaration declaration{
@@ -568,7 +586,8 @@ llvm::Expected<::fabric::MemoryOperationPortDeclaration> operationPort(
 llvm::Expected<::fabric::MemoryServiceContractRecord>
 localServiceContract(mlir::MLIRContext &context, std::uint64_t capacityBytes,
                      CatalogMemoryDomain domain,
-                     const MemoryInterfaceParameters &interface) {
+                     const MemoryInterfaceParameters &interface,
+                     ElementVectorProjection elementVector) {
   const std::uint64_t maximumPayloadBits =
       interface.accessDomain.dataPayloadBits / 8 * 8;
   const std::uint64_t maximumBeatCount =
@@ -583,21 +602,24 @@ localServiceContract(mlir::MLIRContext &context, std::uint64_t capacityBytes,
     auto actors = actorDomain(reads);
     if (!actors)
       return actors.takeError();
-    auto accesses =
-        accessDomain(reads, domain, interface.accessDomain,
-                     interface.accessDomain.indexedAddressPayloadBits
-                         ? AccessProjectionDomain::All
-                         : AccessProjectionDomain::Direct);
+    auto accesses = accessDomain(
+        reads, domain, interface.accessDomain,
+        interface.accessDomain.indexedAddressPayloadBits &&
+                elementVector != ElementVectorProjection::ElementOnly
+            ? AccessProjectionDomain::All
+            : AccessProjectionDomain::Direct,
+        elementVector);
     if (!accesses)
       return accesses.takeError();
-    capabilities.push_back({std::move(*actors),
-                            std::move(*accesses),
-                            {0},
-                            interface.serviceBeatWidthBits,
-                            {::fabric::UsePatternKey(reads ? 0 : 1)},
-                            ::fabric::LocalProviderConsistency{
-                                ::fabric::ReleaseVisibilityPoint::AtLinearization,
-                                ::fabric::LocalBoundedCompletionCycles{1}}});
+    capabilities.push_back(
+        {std::move(*actors),
+         std::move(*accesses),
+         {0},
+         interface.serviceBeatWidthBits,
+         {::fabric::UsePatternKey(reads ? 0 : 1)},
+         ::fabric::LocalProviderConsistency{
+             ::fabric::ReleaseVisibilityPoint::AtLinearization,
+             ::fabric::LocalBoundedCompletionCycles{1}}});
   }
   return ::fabric::MemoryServiceContractRecord::create(
       &context, ::fabric::MemoryServiceOwnerKind::Local,
@@ -621,20 +643,21 @@ llvm::Expected<MemorySpec>
 makeMemoryEngine(MemoryInterfaceParameters interface,
                  std::optional<TemporalMemoryParameters> temporal,
                  std::optional<std::uint64_t> localCapacityBytes,
-                 bool managerEndpoint, CatalogMemoryDomain domain) {
+                 bool managerEndpoint, CatalogMemoryDomain domain,
+                 LocalMemoryPortVariant portVariant) {
   if (!localCapacityBytes && !managerEndpoint)
     return invalid("memory engine requires a dispatch target");
   if (localCapacityBytes && *localCapacityBytes == 0)
     return invalid("local memory capacity must be positive");
-  if (localCapacityBytes &&
-      *localCapacityBytes > (std::uint64_t(1) << 32))
+  if (localCapacityBytes && *localCapacityBytes > (std::uint64_t(1) << 32))
     return invalid("local memory exceeds its 32-bit address capacity");
   const std::uint32_t requiredDataWidth =
       domain == CatalogMemoryDomain::General64 ? 64 : 32;
   if (interface.accessDomain.dataPayloadBits < requiredDataWidth)
     return invalid("memory engine data endpoint cannot carry its scalar floor");
   if (interface.scalarAddressPayloadBits < 32)
-    return invalid("memory engine scalar address endpoint is narrower than i32");
+    return invalid(
+        "memory engine scalar address endpoint is narrower than i32");
   if (interface.accessDomain.maskPayloadBits == 0)
     return invalid("memory engine mask endpoint must be positive");
   if (interface.serviceBeatWidthBits == 0)
@@ -671,7 +694,11 @@ makeMemoryEngine(MemoryInterfaceParameters interface,
     inputs.push_back(std::move(*manager));
     managerOrdinals.push_back(0);
   }
-  const MemoryEndpointLayout layout = endpointLayout(interface);
+  const MemoryEndpointLayout layout =
+      endpointLayout(interface,
+                     portVariant != LocalMemoryPortVariant::ElementOnly &&
+                         interface.accessDomain.maskPayloadBits >= 2,
+                     portVariant != LocalMemoryPortVariant::ElementOnly);
   for (std::uint32_t width : layout.inputWidths) {
     auto type = channelPort(width, tagWidth);
     if (!type)
@@ -689,17 +716,49 @@ makeMemoryEngine(MemoryInterfaceParameters interface,
   mlir::MLIRContext context(mlir::MLIRContext::Threading::DISABLED);
   const auto endpoints = endpointInventory(layout, tagWidth);
   std::vector<::fabric::MemoryOperationPortDeclaration> operationPorts;
-  for (bool reads : {true, false}) {
-    auto port = operationPort(context, schedule, endpoints, layout, reads,
-                              domain, interface.accessDomain);
-    if (!port)
-      return port.takeError();
-    operationPorts.push_back(std::move(*port));
+  const auto appendPortPair =
+      [&](ElementVectorProjection elementVector) -> llvm::Error {
+    for (bool reads : {true, false}) {
+      auto port = operationPort(context, schedule, endpoints, layout, reads,
+                                domain, interface.accessDomain, elementVector);
+      if (!port)
+        return port.takeError();
+      operationPorts.push_back(std::move(*port));
+    }
+    return llvm::Error::success();
+  };
+  switch (portVariant) {
+  case LocalMemoryPortVariant::ElementOnly:
+    if (llvm::Error error =
+            appendPortPair(ElementVectorProjection::ElementOnly))
+      return std::move(error);
+    break;
+  case LocalMemoryPortVariant::VectorOnly:
+    if (llvm::Error error = appendPortPair(ElementVectorProjection::VectorOnly))
+      return std::move(error);
+    break;
+  case LocalMemoryPortVariant::SeparateElementVector:
+    if (llvm::Error error =
+            appendPortPair(ElementVectorProjection::ElementOnly))
+      return std::move(error);
+    if (llvm::Error error = appendPortPair(ElementVectorProjection::VectorOnly))
+      return std::move(error);
+    break;
+  case LocalMemoryPortVariant::SharedElementVector:
+    if (llvm::Error error = appendPortPair(ElementVectorProjection::Both))
+      return std::move(error);
+    break;
   }
   std::optional<LocalMemoryServiceSpec> service;
   if (localCapacityBytes) {
+    const ElementVectorProjection serviceProjection =
+        portVariant == LocalMemoryPortVariant::ElementOnly
+            ? ElementVectorProjection::ElementOnly
+        : portVariant == LocalMemoryPortVariant::VectorOnly
+            ? ElementVectorProjection::VectorOnly
+            : ElementVectorProjection::Both;
     auto serviceContract = localServiceContract(
-        context, *localCapacityBytes, domain, interface);
+        context, *localCapacityBytes, domain, interface, serviceProjection);
     if (!serviceContract)
       return serviceContract.takeError();
     auto local =
@@ -725,6 +784,13 @@ makeMemoryEngine(MemoryInterfaceParameters interface,
     }
     connectivityDeclaration.operationPorts.push_back(std::move(dispatch));
   }
+  connectivityDeclaration.internalConnections = {
+      {layout.readData, layout.writeData},
+      {layout.readCompletion, layout.readControl},
+      {layout.readCompletion, layout.writeControl},
+      {layout.writeCompletion, layout.readControl},
+      {layout.writeCompletion, layout.writeControl},
+  };
   auto connectivity =
       MemoryConnectivitySpec::create(std::move(connectivityDeclaration));
   if (!connectivity)
@@ -742,18 +808,18 @@ makeMemoryEngine(MemoryInterfaceParameters interface,
 }
 
 llvm::Expected<MemorySpec> makeLocalMemory(LocalMemoryParameters parameters,
-                                           CatalogMemoryDomain domain) {
+                                           CatalogMemoryDomain domain,
+                                           LocalMemoryPortVariant variant) {
   return makeMemoryEngine(
       std::move(parameters.interface), std::move(parameters.temporal),
-      parameters.capacityBytes, parameters.managerEndpoint, domain);
+      parameters.capacityBytes, parameters.managerEndpoint, domain, variant);
 }
 
-llvm::Expected<MemorySpec>
-makeManagerMemory(ManagerMemoryParameters parameters,
-                  CatalogMemoryDomain domain) {
+llvm::Expected<MemorySpec> makeManagerMemory(ManagerMemoryParameters parameters,
+                                             CatalogMemoryDomain domain) {
   return makeMemoryEngine(std::move(parameters.interface),
                           std::move(parameters.temporal), std::nullopt, true,
-                          domain);
+                          domain, LocalMemoryPortVariant::SharedElementVector);
 }
 
 llvm::Expected<SystemMemorySpec>
@@ -862,12 +928,28 @@ makeSystemMemory(SystemMemoryParameters parameters,
 
 llvm::Expected<MemorySpec>
 makeHybrid32LocalMemory(LocalMemoryParameters parameters) {
-  return makeLocalMemory(std::move(parameters), CatalogMemoryDomain::Hybrid32);
+  return makeVariant32LocalMemory(std::move(parameters),
+                                  LocalMemoryPortVariant::SharedElementVector);
+}
+
+llvm::Expected<MemorySpec>
+makeVariant32LocalMemory(LocalMemoryParameters parameters,
+                         LocalMemoryPortVariant variant) {
+  return makeLocalMemory(std::move(parameters), CatalogMemoryDomain::Hybrid32,
+                         variant);
 }
 
 llvm::Expected<MemorySpec>
 makeGeneral64LocalMemory(LocalMemoryParameters parameters) {
-  return makeLocalMemory(std::move(parameters), CatalogMemoryDomain::General64);
+  return makeVariant64LocalMemory(std::move(parameters),
+                                  LocalMemoryPortVariant::SharedElementVector);
+}
+
+llvm::Expected<MemorySpec>
+makeVariant64LocalMemory(LocalMemoryParameters parameters,
+                         LocalMemoryPortVariant variant) {
+  return makeLocalMemory(std::move(parameters), CatalogMemoryDomain::General64,
+                         variant);
 }
 
 llvm::Expected<MemorySpec>

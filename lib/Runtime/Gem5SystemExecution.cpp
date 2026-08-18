@@ -28,6 +28,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
+#include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Runtime/Gem5BridgeWire.h"
 #include "Runtime/Gem5BuiltinModels.h"
 #include "Runtime/Gem5SimulationBinding.h"
@@ -180,9 +181,14 @@ verifyReadiness(const Gem5SystemFacts &facts,
     return observed.takeError();
   if (*observed != *fingerprint)
     return invalid("resolved gem5 executable differs from its readiness stamp");
-  for (const Gem5SpatialLaunchProjection &launch : facts.spatialLaunches)
-    if (launch.launchPayload.size() > launch.bridge.maximumMessageBytes)
+  for (const Gem5SpatialLaunchProjection &launch : facts.spatialLaunches) {
+    if (launch.bridgeSessionOrdinal >= facts.spatialBridgeSessions.size())
+      return invalid("Spatial launch names an absent bridge session");
+    if (launch.launchPayload.size() >
+        facts.spatialBridgeSessions[launch.bridgeSessionOrdinal]
+            .bridge.maximumMessageBytes)
       return invalid("Deployment launch image exceeds a bridge message limit");
+  }
   return ReadinessIdentity{binarySha->str(), std::move(*fingerprint)};
 }
 
@@ -212,6 +218,21 @@ renderProjection(const Gem5SystemFacts &facts,
     }
     processorOperationClasses.push_back(std::move(operationClasses));
   }
+  std::vector<std::string> accCoreReferences;
+  std::vector<std::string> executionContextKeys;
+  accCoreReferences.reserve(facts.spatialBridgeSessions.size());
+  executionContextKeys.reserve(facts.spatialLaunches.size());
+  for (const Gem5SpatialBridgeSession &session : facts.spatialBridgeSessions)
+    accCoreReferences.push_back(formatArtifactLocalPayloadHex(
+        fabric::canonicalFabricBytes(session.accCore)));
+  for (const Gem5SpatialLaunchProjection &launch : facts.spatialLaunches) {
+    auto contextBytes = mapping::encodeExecutionContextKey(
+        mapping::ExecutionContextKey(launch.context));
+    if (!contextBytes)
+      return contextBytes.takeError();
+    executionContextKeys.push_back(
+        formatArtifactLocalPayloadHex(*contextBytes));
+  }
   std::string output;
   llvm::raw_string_ostream stream(output);
   llvm::json::OStream json(stream, 0);
@@ -221,7 +242,7 @@ renderProjection(const Gem5SystemFacts &facts,
                                  ? kDfgEnginePath.str()
                                  : kCgraEnginePath.str();
   json.object([&] {
-    json.attribute("schema", "loom.gem5_system_projection.6");
+    json.attribute("schema", "loom.gem5_system_projection.8");
     json.attribute("gem5_binary_sha256", readiness.binarySha256);
     json.attribute("clock", std::to_string(ticksPerCycle) + "ps");
     json.attributeObject("memory", [&] {
@@ -348,14 +369,26 @@ renderProjection(const Gem5SystemFacts &facts,
       }
     });
     json.attributeArray("bridges", [&] {
-      for (const auto indexed : llvm::enumerate(facts.spatialLaunches)) {
-        const Gem5SpatialLaunchProjection &launch = indexed.value();
+      for (const auto indexed :
+           llvm::enumerate(facts.spatialBridgeSessions)) {
+        const Gem5SpatialBridgeSession &session = indexed.value();
         const std::string socket = spatialBridgeSocketPath(indexed.index());
         json.object([&] {
-          json.attribute("pio_address", launch.bridge.pioAddress);
-          json.attribute("pio_size", launch.bridge.pioSize);
+          json.attributeArray("dispatch_target_ordinals", [&] {
+            for (std::size_t launchOrdinal : session.launchOrdinals)
+              json.value(launchOrdinal);
+          });
+          json.attribute("acc_core_ref",
+                         accCoreReferences[indexed.index()]);
+          json.attributeArray("execution_context_keys", [&] {
+            for (std::size_t launchOrdinal : session.launchOrdinals)
+              json.value(executionContextKeys[launchOrdinal]);
+          });
+          json.attribute("pio_address", session.bridge.pioAddress);
+          json.attribute("pio_size", session.bridge.pioSize);
           json.attribute("pio_latency",
-                         std::to_string(launch.bridge.pioLatencyTicks) + "ps");
+                         std::to_string(session.bridge.pioLatencyTicks) +
+                             "ps");
           json.attribute("engine_socket", socket);
           json.attributeArray("engine_command", [&] {
             if (facts.engine == Gem5SystemEngine::Rtl)
@@ -365,18 +398,30 @@ renderProjection(const Gem5SystemFacts &facts,
             json.value(kPackageObjectPath);
             json.value("--socket");
             json.value(socket);
-            json.value("--expected-launch");
-            json.value(spatialLaunchPath(indexed.index()));
-            json.value("--workload");
-            json.value(
-                formatArtifactIdentityHex(launch.spatialWorkload.artifact));
-            if (launch.spatialRuntimeInput) {
-              json.value("--runtime-input");
+            for (std::size_t launchOrdinal : session.launchOrdinals) {
+              const Gem5SpatialLaunchProjection &launch =
+                  facts.spatialLaunches[launchOrdinal];
+              json.value("--expected-launch");
+              json.value(spatialLaunchPath(launchOrdinal));
+              json.value("--workload");
               json.value(formatArtifactIdentityHex(
-                  launch.spatialRuntimeInput->artifact));
+                  launch.spatialWorkload.artifact));
+              json.value("--runtime-input");
+              json.value(launch.spatialRuntimeInput
+                             ? formatArtifactIdentityHex(
+                                   launch.spatialRuntimeInput->artifact)
+                             : "none");
+              json.value("--channel-projection");
+              json.value(launch.channelProjectionPath);
+              if (facts.engine == Gem5SystemEngine::Cgra) {
+                json.value("--fabric");
+                json.value(
+                    formatArtifactIdentityHex(launch.fabric.artifact));
+                json.value("--spatial-mapping");
+                json.value(formatArtifactIdentityHex(
+                    launch.spatialMapping.artifact));
+              }
             }
-            json.value("--channel-projection");
-            json.value(launch.channelProjectionPath);
             json.value("--dataflow");
             json.value(formatArtifactIdentityHex(facts.dataflow.artifact));
             json.value("--maximum-work");
@@ -384,21 +429,15 @@ renderProjection(const Gem5SystemFacts &facts,
             json.value("--ticks-per-cycle");
             json.value(std::to_string(ticksPerCycle));
             json.value("--maximum-invocations");
-            json.value(std::to_string(kMaximumDynamicSpatialInvocations));
-            if (facts.engine == Gem5SystemEngine::Cgra) {
-              json.value("--fabric");
-              json.value(formatArtifactIdentityHex(launch.fabric.artifact));
-              json.value("--spatial-mapping");
-              json.value(
-                  formatArtifactIdentityHex(launch.spatialMapping.artifact));
-            }
+            json.value(
+                std::to_string(gem5MaximumDynamicSpatialInvocations));
           });
           json.attribute("result_path",
                          spatialBridgeResultPath(indexed.index()));
           json.attribute("maximum_message_bytes",
-                         launch.bridge.maximumMessageBytes);
+                         session.bridge.maximumMessageBytes);
           json.attribute("maximum_invocations",
-                         kMaximumDynamicSpatialInvocations);
+                         gem5MaximumDynamicSpatialInvocations);
         });
       }
     });
@@ -436,7 +475,8 @@ ExternalToolInvocationImportExpectation makeExpectation(
         {"gem5_binary", std::move(*gem5Binary)});
   expectation.declaredOutputs = {kSystemResultPath.str(),
                                  kMemoryResultPath.str()};
-  for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
+  for (std::size_t ordinal = 0;
+       ordinal != facts.spatialBridgeSessions.size();
        ++ordinal)
     expectation.declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
   if (facts.engine == Gem5SystemEngine::Rtl)
@@ -675,6 +715,12 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
     return EvaluationModelProviderPreparation{*unsupported};
   Gem5SystemFacts facts =
       std::get<Gem5SystemFacts>(std::move(*factsOrUnsupported));
+  if (facts.engine == Gem5SystemEngine::Rtl &&
+      llvm::any_of(facts.spatialBridgeSessions, [](const auto &session) {
+        return session.launchOrdinals.size() != 1;
+      }))
+    return EvaluationModelProviderPreparation{
+        UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
 
   auto subjects = systemSubjects(request);
   if (!subjects)
@@ -824,7 +870,7 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
       std::vector<std::string> engineCommand{
           rtl.simulatorExecutablePath,
           "--socket",
-          spatialBridgeSocketPath(indexed.index()),
+          spatialBridgeSocketPath(launch.bridgeSessionOrdinal),
           "--expected-launch",
           spatialLaunchPath(indexed.index()),
           "--mapped-result",
@@ -865,9 +911,13 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
     commands.push_back(std::move(primaryCommand));
     std::vector<std::string> declaredOutputs{kSystemResultPath.str(),
                                              kMemoryResultPath.str()};
-    for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
+    for (std::size_t ordinal = 0;
+         ordinal != facts.spatialBridgeSessions.size();
          ++ordinal) {
       declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
+    }
+    for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
+         ++ordinal) {
       declaredOutputs.push_back(resultPaths[ordinal]);
     }
     ExternalToolInvocationBundleSpec specification{
@@ -935,7 +985,8 @@ llvm::Expected<EvaluationModelProviderPreparation> prepareGem5SystemInvocation(
       {gem5ExternalFile},
       {},
       {}};
-  for (std::size_t ordinal = 0; ordinal != facts.spatialLaunches.size();
+  for (std::size_t ordinal = 0;
+       ordinal != facts.spatialBridgeSessions.size();
        ++ordinal)
     specification.declaredOutputs.push_back(spatialBridgeResultPath(ordinal));
   llvm::sort(specification.declaredOutputs);
@@ -1017,8 +1068,9 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
   if (!llvm::StringRef(systemResult->cause).contains("m5_exit"))
     return terminalResult(
         CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
-  for (const auto indexed : llvm::enumerate(facts.spatialLaunches)) {
-    const Gem5SpatialLaunchProjection &launch = indexed.value();
+  for (const auto indexed :
+       llvm::enumerate(facts.spatialBridgeSessions)) {
+    const Gem5SpatialBridgeSession &session = indexed.value();
     auto bridgeText = readExternalToolInvocationDeclaredOutput(
         imported, spatialBridgeResultPath(indexed.index()));
     if (!bridgeText)
@@ -1030,30 +1082,10 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
     if (!decodeGem5BridgeResultCollection(bridgeBytes, bridgeResults,
                                           bridgeDiagnostic))
       return invalid("bridge result is invalid: " + bridgeDiagnostic);
-    if (bridgeResults.results.empty() ||
-        bridgeResults.results.size() > kMaximumDynamicSpatialInvocations)
-      return invalid("bridge result count is outside the session bound");
-    std::optional<sim::ImportedSpatialSimulationWorkload> spatialWorkload;
-    if (facts.engine != Gem5SystemEngine::Rtl) {
-      auto loaded = sim::importSpatialSimulationWorkload(launch.spatialWorkload,
-                                                         artifacts);
-      if (!loaded)
-        return loaded.takeError();
-      spatialWorkload.emplace(std::move(*loaded));
-    } else {
-      if (bridgeResults.results.size() != 1)
-        return invalid("gem5 RTL bridge published multiple invocations");
-      if (indexed.index() >= rtlClosures.size())
-        return invalid("gem5 RTL import lost its exact mapped RTL closure");
-    }
-    std::optional<sim::CanonicalSimulationRuntimeInput> staticRuntime;
-    if (spatialWorkload && launch.spatialRuntimeInput) {
-      auto loaded = sim::importSpatialSimulationRuntimeInput(
-          *launch.spatialRuntimeInput, *spatialWorkload, artifacts);
-      if (!loaded)
-        return loaded.takeError();
-      staticRuntime.emplace(std::move(*loaded));
-    }
+    if (session.launchOrdinals.empty() || bridgeResults.results.empty() ||
+        bridgeResults.results.size() > gem5MaximumDynamicSpatialInvocations)
+      return invalid("bridge result count is outside its session limits");
+    std::vector<bool> observedSessionEntries(session.launchOrdinals.size());
     std::uint64_t previousCompletionTick = systemResult->entryTick;
     for (const auto resultIndexed : llvm::enumerate(bridgeResults.results)) {
       const Gem5BridgeResult &bridgeResult = resultIndexed.value();
@@ -1069,17 +1101,51 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
               bridgeResult.result, invocationResult, invocationDiagnostic))
         return invalid("bridge invocation result is invalid: " +
                        invocationDiagnostic);
-
+      if (invocationResult.sessionEntryOrdinal >=
+          session.launchOrdinals.size())
+        return invalid("bridge result names an absent session entry");
+      const std::size_t sessionEntryOrdinal =
+          static_cast<std::size_t>(invocationResult.sessionEntryOrdinal);
+      observedSessionEntries[sessionEntryOrdinal] = true;
+      const std::size_t launchOrdinal =
+          session.launchOrdinals[sessionEntryOrdinal];
+      if (launchOrdinal >= facts.spatialLaunches.size())
+        return invalid("bridge session names an absent Spatial launch");
+      const Gem5SpatialLaunchProjection &launch =
+          facts.spatialLaunches[launchOrdinal];
+      if (launch.bridgeSessionOrdinal != indexed.index())
+        return invalid("Spatial launch and bridge session disagree");
+      std::optional<sim::ImportedSpatialSimulationWorkload> spatialWorkload;
+      if (facts.engine != Gem5SystemEngine::Rtl) {
+        auto loaded = sim::importSpatialSimulationWorkload(
+            launch.spatialWorkload, artifacts);
+        if (!loaded)
+          return loaded.takeError();
+        spatialWorkload.emplace(std::move(*loaded));
+      } else {
+        if (session.launchOrdinals.size() != 1 ||
+            launchOrdinal >= rtlClosures.size())
+          return invalid("gem5 RTL import lost its exact mapped RTL closure");
+      }
+      std::optional<sim::CanonicalSimulationRuntimeInput> staticRuntime;
+      if (spatialWorkload && launch.spatialRuntimeInput) {
+        auto loaded = sim::importSpatialSimulationRuntimeInput(
+            *launch.spatialRuntimeInput, *spatialWorkload, artifacts);
+        if (!loaded)
+          return loaded.takeError();
+        staticRuntime.emplace(std::move(*loaded));
+      }
       std::optional<sim::SpatialEngineBoundaryResult> spatialResult;
       if (facts.engine == Gem5SystemEngine::Rtl) {
         auto mappedText = readExternalToolInvocationDeclaredOutput(
-            imported, mappedRtlLaunchResultPath(indexed.index()));
+            imported, mappedRtlLaunchResultPath(launchOrdinal));
         if (!mappedText)
           return mappedText.takeError();
         const llvm::ArrayRef<std::uint8_t> mappedBytes(
             reinterpret_cast<const std::uint8_t *>(mappedText->data()),
             mappedText->size());
         if (!invocationResult.invocation.empty() ||
+            invocationResult.runtimeInput ||
             mappedBytes != llvm::ArrayRef<std::uint8_t>(
                                invocationResult.spatialBoundaryResult))
           return invalid("bridge payload differs from the mapped RTL result");
@@ -1098,7 +1164,7 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
           return invalid("bridge status disagrees with the RTL terminal");
         auto boundary =
             eda::open_source::projectMappedRtlSpatialEngineBoundaryResult(
-                rtlClosures[indexed.index()], *mappedResult, artifacts, blobs);
+                rtlClosures[launchOrdinal], *mappedResult, artifacts, blobs);
         if (!boundary)
           return boundary.takeError();
         spatialResult = std::move(*boundary);
@@ -1106,9 +1172,9 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
         llvm::Expected<sim::SpatialEngineBoundaryResult> boundary =
             [&]() -> llvm::Expected<sim::SpatialEngineBoundaryResult> {
           if (invocationResult.invocation.empty()) {
-            if (!staticRuntime)
+            if (!staticRuntime || invocationResult.runtimeInput)
               return invalid(
-                  "static bridge result has no Spatial runtime input");
+                  "static bridge result has inconsistent runtime input");
             return sim::decodeSpatialEngineBoundaryResult(
                 invocationResult.spatialBoundaryResult, *spatialWorkload,
                 *staticRuntime);
@@ -1116,15 +1182,30 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
           if (staticRuntime)
             return invalid(
                 "dynamic bridge result has a competing static runtime input");
+          if (!invocationResult.runtimeInput)
+            return invalid(
+                "dynamic bridge result omits its effective runtime input");
           SpatialInvocationWire wire;
           std::string diagnostic;
           if (!decodeSpatialInvocationWire(invocationResult.invocation, wire,
                                            diagnostic))
             return invalid(diagnostic);
-          auto runtime = sim::materializeSpatialInvocationRuntimeInput(
-              *spatialWorkload, wire);
+          auto runtimeIdentity = ArtifactIdentity::fromBytes(
+              invocationResult.runtimeInput->identity);
+          if (!runtimeIdentity)
+            return runtimeIdentity.takeError();
+          auto view = spatialWorkload->dataflow.view();
+          if (!view)
+            return view.takeError();
+          auto runtime = sim::importSimulationRuntimeInput(
+              invocationResult.runtimeInput->canonicalBytes,
+              spatialWorkload->workload, *view, *runtimeIdentity);
           if (!runtime)
             return runtime.takeError();
+          if (llvm::Error error =
+                  sim::validateEffectiveSpatialInvocationRuntimeInput(
+                      *spatialWorkload, wire, *runtime))
+            return std::move(error);
           auto decoded = sim::decodeSpatialEngineBoundaryResult(
               invocationResult.spatialBoundaryResult, *spatialWorkload,
               *runtime);
@@ -1151,6 +1232,8 @@ llvm::Expected<EvaluationModelResult> importGem5SystemInvocation(
         return terminalResult(
             CancelledOrTimeoutEvidence{OutcomeReason::ExecutionLimitReached});
     }
+    if (llvm::is_contained(observedSessionEntries, false))
+      return invalid("bridge results omit a declared session entry");
   }
 
   auto memoryText =

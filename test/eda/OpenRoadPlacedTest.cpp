@@ -196,7 +196,7 @@ endmodule
 
 constexpr llvm::StringLiteral kBlackBoxContract = "BUF_X1 input A output Y\n";
 constexpr llvm::StringLiteral kSyntheticOpenRoadBuild =
-    "OpenROAD synthetic b9a38929e342";
+    "OpenROAD synthetic cbc7678e45cc";
 
 OpenRoadPlacementParameters parameters();
 
@@ -838,8 +838,8 @@ void realOpenRoadPlacedSmoke(const std::filesystem::path &root,
   version = version.trim();
   require(__func__, std::filesystem::path(executable.str()).is_absolute(),
           "real OpenROAD executable is not absolute");
-  require(__func__, version.contains("b9a38929e"),
-          "real OpenROAD version is not the 2026-08-06 build");
+  require(__func__, version.contains("cbc7678e45"),
+          "real OpenROAD version is not the 2026-08-16 build");
   std::filesystem::create_directories(root / "artifacts");
   std::filesystem::create_directories(root / "blobs");
   const loom::ArtifactStore artifacts((root / "artifacts").string());
@@ -849,12 +849,12 @@ void realOpenRoadPlacedSmoke(const std::filesystem::path &root,
   requireSuccess(__func__,
                  registerOpenRoadPlacedCandidateGeneratorDescriptor());
 
-  constexpr llvm::StringLiteral module = "openroad/2026.08.06-b9a38929e342";
+  constexpr llvm::StringLiteral module = "openroad/2026.08.16-cbc7678e45cc";
   loom::external_tool::ExternalToolProviderDescriptor provider{
       loom::external_tool::ToolProviderDescriptor{
           "openroad", {"openroad"}, {}, {module.str()}},
       loom::external_tool::ToolVersionProbe{
-          {"-version"}, "b9a38929e", {0}, std::nullopt},
+          {"-version"}, "cbc7678e45", {0}, std::nullopt},
       loom::external_tool::ToolRuntimeCompatibility{}};
   loom::external_tool::ResolvedToolBinding resolvedTool{
       "openroad",

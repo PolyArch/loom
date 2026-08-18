@@ -381,15 +381,17 @@ expandBuiltinSpatialCoreImpl(DesignBuilder &design,
   if (!memoryInterface)
     return memoryInterface.takeError();
 
-  auto spatialMemory = makeGeneral64LocalMemory(
-      {scale.memoryCapacityBytes, *memoryInterface, std::nullopt, true});
+  auto spatialMemory = makeVariant64LocalMemory(
+      {scale.memoryCapacityBytes, *memoryInterface, std::nullopt, true},
+      scale.localMemoryPortVariant);
   if (!spatialMemory)
     return spatialMemory.takeError();
-  auto temporalMemory = makeGeneral64LocalMemory(
+  auto temporalMemory = makeVariant64LocalMemory(
       {scale.memoryCapacityBytes, *memoryInterface,
        TemporalMemoryParameters{temporalTagWidth,
                                 scale.temporalResidentContexts},
-       true});
+       true},
+      scale.localMemoryPortVariant);
   if (!temporalMemory)
     return temporalMemory.takeError();
 

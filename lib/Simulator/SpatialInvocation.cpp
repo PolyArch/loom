@@ -178,9 +178,6 @@ materializeSpatialInvocationRuntimeInput(
   auto memoryInputs = view->graphMemoryInputs(spatial->launchRef);
   if (!memoryInputs)
     return memoryInputs.takeError();
-  if (!shapes->streamInputs.empty() ||
-      !spatial->observableContract.streamOutputs.empty())
-    return invalid("dynamic invocation currently admits no stream boundary");
   auto writableRoots =
       projectSpatialInvocationWritableMemoryRoots(*view, spatial->launchRef);
   if (!writableRoots)
@@ -204,6 +201,7 @@ materializeSpatialInvocationRuntimeInput(
     return invalid("invocation values are not total over graph value inputs");
 
   SpatialSimulationRuntimeInputDraft draft{workload.workload.identity()};
+  draft.runtimeStreams.resize(shapes->streamInputs.size());
   draft.memoryObjects.reserve(wire.memoryObjects.size());
   for (const runtime::SpatialInvocationMemoryObject &object :
        wire.memoryObjects) {
@@ -292,6 +290,41 @@ materializeSpatialInvocationRuntimeInput(
   if (llvm::Error error = validateResultDestinations(wire, *spatial, *shapes))
     return std::move(error);
   return finalizeSimulationRuntimeInput(draft, workload.workload, *view);
+}
+
+llvm::Error validateEffectiveSpatialInvocationRuntimeInput(
+    const ImportedSpatialSimulationWorkload &workload,
+    const runtime::SpatialInvocationWire &wire,
+    const CanonicalSimulationRuntimeInput &runtimeInput) {
+  const SpatialSimulationRuntimeInput *effective = runtimeInput.spatial();
+  if (!effective)
+    return invalid("effective invocation runtime input is not Spatial");
+  auto view = workload.dataflow.view();
+  if (!view)
+    return view.takeError();
+
+  SpatialSimulationRuntimeInputDraft normalized{effective->workloadIdentity};
+  normalized.runtimeValues = effective->runtimeValues;
+  normalized.runtimeStreams.resize(effective->runtimeStreams.size());
+  normalized.memoryObjects = effective->memoryObjects;
+  normalized.memoryRootBindings.reserve(effective->memoryRootBindings.size());
+  for (const MemoryRootBindingEntry &binding : effective->memoryRootBindings)
+    normalized.memoryRootBindings.push_back({binding.root,
+                                             binding.binding.objectOrdinal,
+                                             binding.binding.byteOffset});
+  auto normalizedInput =
+      finalizeSimulationRuntimeInput(normalized, workload.workload, *view);
+  if (!normalizedInput)
+    return normalizedInput.takeError();
+  auto invocationInput =
+      materializeSpatialInvocationRuntimeInput(workload, wire);
+  if (!invocationInput)
+    return invocationInput.takeError();
+  if (normalizedInput->canonicalBytes().bytes() !=
+      invocationInput->canonicalBytes().bytes())
+    return invalid("effective invocation runtime input changes guest-owned "
+                   "values or memory");
+  return llvm::Error::success();
 }
 
 llvm::Expected<ImportedSpatialSimulationInputs>

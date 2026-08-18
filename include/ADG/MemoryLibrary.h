@@ -45,6 +45,44 @@ struct LocalMemoryParameters final {
   bool managerEndpoint = false;
 };
 
+/// Closed physical Operation Port variants for the local-memory catalog.
+/// Separate ports own independent ResourceContracts while the shared variant
+/// admits both access shapes through each read/write port.
+enum class LocalMemoryPortVariant : std::uint8_t {
+  ElementOnly,
+  VectorOnly,
+  SeparateElementVector,
+  SharedElementVector,
+};
+
+inline llvm::StringRef
+localMemoryPortVariantSpelling(LocalMemoryPortVariant variant) {
+  switch (variant) {
+  case LocalMemoryPortVariant::ElementOnly:
+    return "element_only";
+  case LocalMemoryPortVariant::VectorOnly:
+    return "vector_only";
+  case LocalMemoryPortVariant::SeparateElementVector:
+    return "separate_element_vector";
+  case LocalMemoryPortVariant::SharedElementVector:
+    return "shared_element_vector";
+  }
+  return {};
+}
+
+inline std::optional<LocalMemoryPortVariant>
+parseLocalMemoryPortVariant(llvm::StringRef spelling) {
+  if (spelling == "element_only")
+    return LocalMemoryPortVariant::ElementOnly;
+  if (spelling == "vector_only")
+    return LocalMemoryPortVariant::VectorOnly;
+  if (spelling == "separate_element_vector")
+    return LocalMemoryPortVariant::SeparateElementVector;
+  if (spelling == "shared_element_vector")
+    return LocalMemoryPortVariant::SharedElementVector;
+  return std::nullopt;
+}
+
 /// Parameters for an Operation Engine whose only storage target is an
 /// external service reached through its manager endpoint.
 struct ManagerMemoryParameters final {
@@ -75,11 +113,21 @@ struct SystemMemorySpec final {
 llvm::Expected<MemorySpec>
 makeHybrid32LocalMemory(LocalMemoryParameters parameters);
 
+/// Builds one exact 32-bit local-memory port variant through the same
+/// canonical Fabric memory owners used by makeHybrid32LocalMemory.
+llvm::Expected<MemorySpec>
+makeVariant32LocalMemory(LocalMemoryParameters parameters,
+                         LocalMemoryPortVariant variant);
+
 /// Builds the general-purpose catalog memory domain. Its exact operation
 /// endpoint and service widths come only from `parameters`; the recipe adds
 /// the registered 64-bit element domain and optional indexed-address form.
 llvm::Expected<MemorySpec>
 makeGeneral64LocalMemory(LocalMemoryParameters parameters);
+
+llvm::Expected<MemorySpec>
+makeVariant64LocalMemory(LocalMemoryParameters parameters,
+                         LocalMemoryPortVariant variant);
 
 /// Builds the same Hybrid32 Operation Engine without a Local Memory Service.
 /// Every admitted operation dispatches through the single manager endpoint.

@@ -50,5 +50,6 @@ target_link_libraries(LoomDSEPolicy PUBLIC
   LoomDSECandidateGenerator
   LoomDSEObjective
   LoomEvaluation
+  LoomPnRDerivedContextSession
   LLVMSupport
 )

@@ -6,7 +6,6 @@ add_mlir_library(LoomFrontendRaising
   LLVMArithToArithPass.cpp
   LLVMCfToCfPass.cpp
   MaterializeFMulAddPass.cpp
-  MemoryProvenance.cpp
   NormalizeLiftedSCFExitPass.cpp
   Pipeline.cpp
   SCFForToForallPass.cpp
@@ -18,7 +17,10 @@ add_mlir_library(LoomFrontendRaising
 
 )
 
-target_link_libraries(LoomFrontendRaising PUBLIC MLIRLoom)
+target_link_libraries(LoomFrontendRaising PUBLIC
+  LoomFrontendAnalysis
+  MLIRLoom
+)
 mlir_target_link_libraries(LoomFrontendRaising PUBLIC
   MLIRArithDialect
   MLIRControlFlowDialect

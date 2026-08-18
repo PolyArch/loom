@@ -29,6 +29,15 @@ materializeSpatialInvocationRuntimeInput(
     const ImportedSpatialSimulationWorkload &workload,
     const runtime::SpatialInvocationWire &wire);
 
+/// Proves that an effective runtime input retains the exact value, memory,
+/// and result-destination semantics carried by the guest invocation. Stream
+/// inputs may differ because System channel binding supplies them after the
+/// guest launch has been decoded.
+llvm::Error validateEffectiveSpatialInvocationRuntimeInput(
+    const ImportedSpatialSimulationWorkload &workload,
+    const runtime::SpatialInvocationWire &wire,
+    const CanonicalSimulationRuntimeInput &runtimeInput);
+
 llvm::Expected<ImportedSpatialSimulationInputs>
 materializeSpatialInvocationInputs(ImportedSpatialSimulationWorkload workload,
                                    const runtime::SpatialInvocationWire &wire);

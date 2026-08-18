@@ -52,7 +52,10 @@ public:
   ~SystemStaticContext() = default;
 
   const ArtifactIdentity &systemIdentity() const;
+  llvm::ArrayRef<std::uint8_t> cacheKey() const;
   const SystemStaticContextStatistics &statistics() const;
+  const ::loom::fabric::FabricTopologyQualityReport *
+  topologyQualityDiagnostic() const;
 
 private:
   explicit SystemStaticContext(
@@ -62,7 +65,8 @@ private:
   std::shared_ptr<const detail::SystemStaticContextStorage> storage_;
 
   friend llvm::Expected<SystemStaticContext>
-  buildSystemStaticContext(const ::loom::fabric::FabricSystemRootView &);
+  buildSystemStaticContext(const ::loom::fabric::FabricSystemRootView &,
+                           DerivedContextCacheAccess *);
   friend llvm::Error
   revalidateSystemStaticContext(const SystemStaticContext &,
                                 const ::loom::fabric::FabricSystemRootView &);
@@ -71,7 +75,8 @@ private:
 };
 
 llvm::Expected<SystemStaticContext>
-buildSystemStaticContext(const ::loom::fabric::FabricSystemRootView &system);
+buildSystemStaticContext(const ::loom::fabric::FabricSystemRootView &system,
+                         DerivedContextCacheAccess *access = nullptr);
 
 llvm::Error revalidateSystemStaticContext(
     const SystemStaticContext &context,
@@ -119,6 +124,7 @@ public:
   const ArtifactIdentity &dataflowIdentity() const;
   const ArtifactIdentity &systemIdentity() const;
   const ArtifactIdentity &constraintIdentity() const;
+  llvm::ArrayRef<std::uint8_t> cacheKey() const;
   llvm::ArrayRef<ArtifactRootReference> spatialMappings() const;
   const SystemActiveContextStatistics &statistics() const;
 
@@ -135,7 +141,8 @@ private:
       const ::loom::fabric::FabricSystemRootView &,
       llvm::ArrayRef<::loom::fabric::FabricPhysicalTimingProfileView>,
       const ::loom::mapping::FinalizedSystemMappingConstraintSet &,
-      llvm::ArrayRef<ArtifactRootReference>, const ArtifactStore &);
+      llvm::ArrayRef<ArtifactRootReference>, const ArtifactStore &,
+      DerivedContextCacheAccess *);
   friend llvm::Error revalidateSystemActiveContext(
       const SystemActiveContext &, const SystemStaticContext &,
       const ::dataflow::CanonicalDataflowProgramView &,
@@ -155,7 +162,7 @@ llvm::Expected<SystemActiveContext> buildSystemActiveContext(
         physicalTimingProfiles,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
     llvm::ArrayRef<ArtifactRootReference> spatialMappings,
-    const ArtifactStore &store);
+    const ArtifactStore &store, DerivedContextCacheAccess *access = nullptr);
 
 llvm::Error revalidateSystemActiveContext(
     const SystemActiveContext &context,

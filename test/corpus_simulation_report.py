@@ -12,6 +12,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class DseExecutionMetrics:
+    search_complete: bool
     plan_executions: int
     generate_invocations: int
     incomplete_generate_invocations: int
@@ -23,10 +24,11 @@ class DseExecutionMetrics:
 
     @staticmethod
     def zero() -> "DseExecutionMetrics":
-        return DseExecutionMetrics(0, 0, 0, 0, 0, 0, 0, 0)
+        return DseExecutionMetrics(True, 0, 0, 0, 0, 0, 0, 0, 0)
 
     def combine(self, other: "DseExecutionMetrics") -> "DseExecutionMetrics":
         return DseExecutionMetrics(
+            search_complete=self.search_complete and other.search_complete,
             plan_executions=self.plan_executions + other.plan_executions,
             generate_invocations=(
                 self.generate_invocations + other.generate_invocations
@@ -44,8 +46,9 @@ class DseExecutionMetrics:
             ),
         )
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, bool | int]:
         return {
+            "search_complete": self.search_complete,
             "generate_invocations": self.generate_invocations,
             "generate_lineage_edges": self.generate_lineage_edges,
             "incomplete_generate_invocations": (self.incomplete_generate_invocations),
@@ -63,8 +66,11 @@ def parse_dse_execution_projection(value: object) -> DseExecutionMetrics:
     expected_fields = set(DseExecutionMetrics.__dataclass_fields__)
     if set(value) != expected_fields:
         raise ValueError("DSE execution summary field inventory changed")
+    search_complete = value["search_complete"]
+    if not isinstance(search_complete, bool):
+        raise ValueError("DSE execution summary has invalid search_complete")
     counts: dict[str, int] = {}
-    for field in expected_fields:
+    for field in expected_fields - {"search_complete"}:
         count = value[field]
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             raise ValueError(f"DSE execution summary has invalid {field}")
@@ -73,11 +79,11 @@ def parse_dse_execution_projection(value: object) -> DseExecutionMetrics:
         raise ValueError("DSE execution summary has no plan execution")
     if counts["generate_invocations"] == 0:
         raise ValueError("DSE execution summary has no Generate invocation")
-    if counts["incomplete_generate_invocations"] != 0:
-        raise ValueError("DSE execution summary retains incomplete Generate")
+    if search_complete and counts["incomplete_generate_invocations"] != 0:
+        raise ValueError("DSE execution summary has inconsistent search status")
     if counts["generate_lineage_edges"] == 0:
         raise ValueError("DSE execution summary has no Generate lineage")
-    return DseExecutionMetrics(**counts)
+    return DseExecutionMetrics(search_complete=search_complete, **counts)
 
 
 @dataclass(frozen=True)

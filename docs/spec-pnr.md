@@ -203,6 +203,51 @@ arcs, affected-node visits, and affected rank span.
 
 ## Invocation Contracts
 
+### TechMapping Hardware Demand Feedback
+
+Tech cover search applies the same exact all-different compute-context relation
+to partial and complete covers. When that relation has no complete matching,
+the canonical alternating-tree Hall subset is the Mapping-owned demand
+witness. Search retains at most one deterministic maximally actionable
+observation: larger positive gap, then larger Hall demand set, then canonical
+payload order.
+
+The transient feedback groups Hall demands by typed FU capability and demand
+multiplicity. It does not serialize compatible context lists. Adoption against
+the exact Fabric re-runs `deriveSpatialComputeContextPlacementDomain`, forms
+the context union, and requires a positive Hall gap. Therefore generator,
+feedback consumer, diagnostics, and any hardware-candidate response cannot
+maintain independent capability or resident-context interpretations.
+
+An observed partial-cover Hall deficit is exact for that relation but is not a
+global infeasibility proof. If bounds prevent exhausting alternate covers, the
+TechMapping outcome remains `ProofNotEstablished`. Summary diagnostics report
+both `proof_scope=observed_cover_relation` and the typed counts. The payload is
+invocation-local and cannot replace final Mapping verification or be restored
+by rerunning search during terminal replay.
+
+Memory-row construction charges every prospective row that reaches a physical
+compatibility decision, including rows rejected by occurrence-global resident
+capacity, operation-port exclusivity, boundary correspondence, or Temporal
+external-ingress uniqueness. Spatial operation-port conflicts and Temporal
+resident-count overflow are pruned while forming the selection domain. A
+memory family retains a deterministic row frontier bounded by the resolved
+row, evaluation, and publication limits. Reaching that frontier makes the
+domain non-exhaustive; it never becomes an infeasibility proof.
+
+When the rectangular actor-by-row search surface exceeds the resolved partial
+cover budget, Tech cover search uses a bounded constructive exact-cover
+frontier. It selects the uncovered actor with the smallest current row domain,
+prefers rows that cover more actors, prefers Temporal memory supply and wider
+physical occurrence domains, and validates every completed cover with the
+same exact compute-context and memory-occurrence relations. An empty bounded
+frontier is `ProofNotEstablished`; exhaustive best-first search is not entered
+after the bound has already shown that its search surface cannot fit the
+invocation budget. Final TechMapping and downstream Mapping verifiers remain
+independent and authoritative. Summary diagnostics expose memory-row frontier
+limits, constructive-search invocations, completed-cover checks, publications,
+and the existing deterministic row and cover work counters.
+
 ### Spatial PnR
 
 One Spatial invocation has the exact tuple:
@@ -458,6 +503,15 @@ configured projection. RTL lowering consumes the configured Fabric mechanism
 and configuration fields; it does not depend on Mapping or call a Spatial
 projection. No layer may regroup by a broad owner, endpoint, input, tag, or
 route-tree shape and invent another interpretation.
+
+Distinct graph-boundary tokens cannot select the same untagged Spatial-switch
+endpoint. The frozen attachment relation derives endpoint exclusivity only
+when the incident switch traversal retains a Mapping-resident Fabric claim;
+Temporal-switch traversals expose runtime-service occupancy and remain
+shareable through their tag and packed-row projection. This is a physical
+admission relation, not a generic port-dispersion heuristic. Its Hall witness
+reports the exact boundary-token and endpoint cardinalities before routing,
+while final RouteTree and capacity verification remain independent.
 
 ### Edge Disposition
 

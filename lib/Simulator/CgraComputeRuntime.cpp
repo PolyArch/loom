@@ -32,8 +32,7 @@ bool isAt(const std::optional<SpatialEventCoordinate> &candidate,
 
 llvm::Expected<SpatialEventCoordinate> projectCgraTemporalDispatchCoordinate(
     const CgraTemporalDispatchDomainPlan &domain,
-    std::uint32_t candidatePosition,
-    const SpatialEventCoordinate &coordinate) {
+    std::uint32_t candidatePosition, const SpatialEventCoordinate &coordinate) {
   if (domain.candidateCount == 0 ||
       candidatePosition >= domain.candidateCount ||
       domain.resetPosition >= domain.candidateCount)
@@ -224,7 +223,9 @@ llvm::Expected<std::uint64_t> CgraComputeRuntime::allocateFiring(
   firing.committed = false;
   firing.actionCount = transition.physicalUseCount;
   firing.permittedCount = 0;
+  firing.completedCount = 0;
   firing.retiredCount = 0;
+  firing.completionReported = false;
   binding.commitPending = true;
   binding.retirementPending = true;
   binding.activeOccurrenceOrdinal = firing.actorOccurrenceOrdinal;
@@ -380,6 +381,8 @@ llvm::Error CgraComputeRuntime::processPhysicalEvent(
   Firing &firing = firings_[index.firingSlot];
   const bool requiresOwnerCommit =
       plan_->physicalUseTimings[event.actionOrdinal].commitRank.has_value();
+  const bool requiresCausalRelease =
+      plan_->physicalUseTimings[event.actionOrdinal].requiresCausalRelease;
   switch (event.kind) {
   case CgraPhysicalLifecycleKind::Requested:
     llvm_unreachable("request lifecycle rejected above");
@@ -387,15 +390,22 @@ llvm::Error CgraComputeRuntime::processPhysicalEvent(
     if (!requiresOwnerCommit) {
       if (++firing.permittedCount > firing.actionCount)
         return invalid("CGRA physical permit count exceeds its action count");
+      if (requiresCausalRelease && ++firing.completedCount > firing.actionCount)
+        return invalid(
+            "CGRA physical completion count exceeds its action count");
     }
     break;
   case CgraPhysicalLifecycleKind::Committed:
     if (!requiresOwnerCommit || ++firing.permittedCount > firing.actionCount)
       return invalid("CGRA physical owner transition is inconsistent");
+    if (requiresCausalRelease && ++firing.completedCount > firing.actionCount)
+      return invalid("CGRA physical completion count exceeds its action count");
     break;
   case CgraPhysicalLifecycleKind::Retired:
     if (++firing.retiredCount > firing.actionCount)
       return invalid("CGRA physical retire count exceeds its action count");
+    if (!requiresCausalRelease && ++firing.completedCount > firing.actionCount)
+      return invalid("CGRA physical completion count exceeds its action count");
     actionToFiring_.erase(indexed);
     break;
   }
@@ -451,7 +461,8 @@ void CgraComputeRuntime::releaseFiring(std::uint64_t firingSlot) {
 
 llvm::Error CgraComputeRuntime::retireActor(std::uint64_t semanticActorOrdinal,
                                             std::uint64_t occurrenceOrdinal,
-                                            SpatialEventCoordinate coordinate) {
+                                            SpatialEventCoordinate coordinate,
+                                            bool reschedule) {
   if (!started_)
     return invalid("CGRA compute runtime has not started");
   if (semanticActorOrdinal >= bindingBySemanticActor_.size())
@@ -468,6 +479,10 @@ llvm::Error CgraComputeRuntime::retireActor(std::uint64_t semanticActorOrdinal,
   if (activeActorCount_ == 0)
     return invalid("CGRA active actor count underflow");
   --activeActorCount_;
+  if (!reschedule) {
+    readyCandidates_.reset(bindingOrdinal);
+    return llvm::Error::success();
+  }
   readyCandidates_.set(bindingOrdinal);
   auto next = nextSpatialDelta(coordinate);
   if (!next)
@@ -530,14 +545,18 @@ llvm::Error CgraComputeRuntime::satisfyCausalRelease(
 void CgraComputeRuntime::maybeComplete(std::uint64_t firingSlot,
                                        CgraComputeLifecycleFrame &frame) {
   Firing &firing = firings_[firingSlot];
-  if (!firing.active || !firing.committed ||
-      firing.retiredCount != firing.actionCount)
+  if (!firing.active)
     return;
-  const ActorBinding &binding = bindings_[firing.bindingOrdinal];
-  frame.physicalCompletions.push_back({binding.semanticActorOrdinal,
-                                       firing.actorOccurrenceOrdinal,
-                                       firing.transitionCaseOrdinal});
-  releaseFiring(firingSlot);
+  if (!firing.completionReported && firing.committed &&
+      firing.completedCount == firing.actionCount) {
+    const ActorBinding &binding = bindings_[firing.bindingOrdinal];
+    frame.physicalCompletions.push_back({binding.semanticActorOrdinal,
+                                         firing.actorOccurrenceOrdinal,
+                                         firing.transitionCaseOrdinal});
+    firing.completionReported = true;
+  }
+  if (firing.completionReported && firing.retiredCount == firing.actionCount)
+    releaseFiring(firingSlot);
 }
 
 llvm::Expected<std::optional<CgraComputeLifecycleFrame>>

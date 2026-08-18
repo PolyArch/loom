@@ -7,6 +7,8 @@
 # RUN: FileCheck %s --input-file=%t.mlir --check-prefix=DATAFLOW
 # RUN: %python %S/check_source_to_dataflow_anchor.py --report=%t.json \
 # RUN:   --source=%S/../app/stencil3d/main_func.c
+# RUN: FileCheck %s --input-file=%t.json --check-prefix=BOUNDED
 
 # DATAFLOW: dataflow.graph private
 # DATAFLOW: dataflow.graph.launch
+# BOUNDED: "search_complete": false

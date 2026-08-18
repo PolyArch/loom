@@ -33,6 +33,7 @@ struct HandshakeActiveDemandStatistics final {
   std::uint64_t activeFragmentCount = 0;
   std::uint64_t materializedNodeCount = 0;
   std::uint64_t materializedArcCount = 0;
+  std::uint64_t fabricUnconditionalArcCount = 0;
   std::uint64_t materializedContributionCount = 0;
   std::uint64_t transactionClosureCount = 0;
   std::uint64_t transactionInsertedArcCount = 0;

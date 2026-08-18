@@ -328,6 +328,7 @@ std::vector<std::string> projectDriverArguments(
   result.push_back("-Wl,--fat-lto-objects");
   result.push_back("-Wl,--save-temps=resolution");
   result.push_back("-Wl,--save-temps=precodegen");
+  result.push_back("-Wl,--unresolved-symbols=ignore-all");
   result.push_back("-Wl,--lto-O1");
   if (!target.ltoFeatures.empty()) {
     result.push_back("-Xlinker");
@@ -392,7 +393,8 @@ importProductFinalLink(llvm::LLVMContext &context) {
 llvm::Expected<loom::application::PreparedApplicationBuild>
 prepareMappedApplication(const llvm::Module &module,
                          PreparedProductTarget &target) {
-  constexpr std::uint64_t kSoftwareFrontierLimit = 4;
+  constexpr std::uint64_t kSoftwareFrontierLimit = 8;
+  constexpr std::uint64_t kSpatialMappingFrontierLimit = 32;
   const llvm::Function *entry = module.getFunction("main");
   if (!entry || entry->isDeclaration())
     return productError("loom_application_entry_unsupported",
@@ -403,7 +405,8 @@ prepareMappedApplication(const llvm::Module &module,
         "the initial product entry supports only a nullary main function");
 
   auto jointPolicy = loom::dse::JointDesignPolicy::get(
-      kSoftwareFrontierLimit, 1, kSoftwareFrontierLimit, 1);
+      kSoftwareFrontierLimit, 1, kSoftwareFrontierLimit,
+      kSpatialMappingFrontierLimit);
   if (!jointPolicy)
     return jointPolicy.takeError();
   loom::frontend::PreMappingCompilationOptions compilationOptions;
@@ -423,9 +426,9 @@ prepareMappedApplication(const llvm::Module &module,
       {std::move(sourceInvocation),
        std::vector<std::string>(operatorProtocolSymbols.begin(),
                                 operatorProtocolSymbols.end()),
-       target.system.reference(),
-       target.physicalTimingProfiles, target.config, std::move(*jointPolicy),
-       std::move(compilationOptions), std::move(preMappingOptions)},
+       target.system.reference(), target.physicalTimingProfiles, target.config,
+       std::move(*jointPolicy), std::move(compilationOptions),
+       std::move(preMappingOptions)},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!outcome)
     return outcome.takeError();
@@ -446,9 +449,20 @@ prepareMappedApplication(const llvm::Module &module,
                         "no verified software candidate was selected");
   const auto &unsupported =
       std::get<loom::application::UnsupportedApplicationBuild>(*outcome);
-  return productError("loom_application_unsupported",
-                      "root coordinate rank is not supported for launch " +
-                          llvm::Twine(unsupported.root.entity.value()));
+  switch (unsupported.kind) {
+  case loom::application::ApplicationBuildUnsupportedKind::RootCoordinates:
+    return productError("loom_application_unsupported",
+                        "root coordinates are not statically enumerable for "
+                        "launch " +
+                            llvm::Twine(unsupported.root.entity.value()));
+  case loom::application::ApplicationBuildUnsupportedKind::
+      DirectInvocationBoundary:
+    return productError("loom_application_unsupported",
+                        "root has no replaceable direct invocation boundary "
+                        "for launch " +
+                            llvm::Twine(unsupported.root.entity.value()));
+  }
+  llvm_unreachable("closed ApplicationBuildUnsupportedKind");
 }
 
 llvm::Expected<loom::dse::JointDesignExecution> executeProductMapping(

@@ -803,6 +803,32 @@ solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
                                     endpointExpansions, negotiationIterations};
 }
 
+std::vector<PnrIndex>
+balancedInitializerPreferences(const FrozenSystemPnrProblem &problem) {
+  const std::size_t threadCount = problem.threadDecisions().size();
+  std::vector<PnrIndex> preferences(
+      threadCount + problem.graphDecisions().size(), getInvalidPnrIndex());
+  std::vector<std::uint64_t> coreLoads(problem.accCores().size(), 0);
+  for (PnrIndex decision = 0; decision < threadCount; ++decision) {
+    const auto domain = problem.threadChoiceCatalogOrdinals(decision);
+    PnrIndex preferred = 0;
+    for (PnrIndex choice = 1; choice < domain.size(); ++choice) {
+      const PnrIndex candidateCore = domain[choice];
+      const PnrIndex preferredCore = domain[preferred];
+      if (coreLoads[candidateCore] < coreLoads[preferredCore] ||
+          (coreLoads[candidateCore] == coreLoads[preferredCore] &&
+           candidateCore < preferredCore))
+        preferred = choice;
+    }
+    preferences[decision] = preferred;
+    ++coreLoads[domain[preferred]];
+  }
+  for (PnrIndex decision = 0; decision < problem.graphDecisions().size();
+       ++decision)
+    preferences[threadCount + decision] = 0;
+  return preferences;
+}
+
 } // namespace
 
 llvm::Expected<InitializedSystemCandidate>
@@ -823,8 +849,9 @@ loom::pnr::initializeSystemCandidateAttempt(
       problem, [&](detail::InitializerRelationSolver &solver,
                    auto validateCompleteAssignment) {
         if (attemptOrdinal == 0)
-          return solver.solveCanonical(
+          return solver.solveCanonicalWithPreferredChoices(
               policy.search.initializer.assignmentAttemptLimitPerSeed,
+              balancedInitializerPreferences(*problem),
               validateCompleteAssignment);
         auto stream = DeterministicPnrRandomStream::create(
             policy.determinism.masterSeed, attemptOrdinal,

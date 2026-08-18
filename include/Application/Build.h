@@ -31,7 +31,7 @@ class BlobStore;
 namespace loom::application {
 
 inline constexpr llvm::StringLiteral applicationBuildProducerIdentity{
-    "loom.application.build.v1"};
+    "loom.application.build.v2"};
 
 struct ApplicationPointerMemoryObservable final {
   std::uint64_t argumentOrdinal = 0;
@@ -110,6 +110,7 @@ struct ApplicationMappingExecutionRequest final {
 
 enum class ApplicationBuildUnsupportedKind : std::uint8_t {
   RootCoordinates,
+  DirectInvocationBoundary,
 };
 
 struct UnsupportedApplicationBuild final {

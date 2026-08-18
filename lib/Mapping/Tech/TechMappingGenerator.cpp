@@ -246,8 +246,16 @@ generateTechMappings(const TechMappingGenerationInputs &inputs) {
           fields["match_row_cursor_resumptions"] =
               accounting.matchRowCursorResumptions;
           fields["match_row_replay_visits"] = accounting.matchRowReplayVisits;
+          fields["memory_row_frontier_limits"] =
+              accounting.memoryRowFrontierLimits;
           fields["partial_cover_expansions"] =
               accounting.partialCoverExpansions;
+          fields["constructive_cover_search_invocations"] =
+              accounting.constructiveCoverSearchInvocations;
+          fields["constructive_cover_completed_checks"] =
+              accounting.constructiveCoverCompletedChecks;
+          fields["constructive_cover_publications"] =
+              accounting.constructiveCoverPublications;
           fields["compute_context_projection_work"] =
               accounting.computeContextProjectionWork;
           fields["compute_context_matching_checks"] =
@@ -326,16 +334,22 @@ generateTechMappings(const TechMappingGenerationInputs &inputs) {
                inputs.config.candidatePublicationLimit()),
       inputs.executionControl);
   std::vector<ArtifactRootReference> candidates;
-  if (search.interrupted)
-    return finish(TechMappingGenerationOutcome(interrupted(
+  if (search.interrupted) {
+    auto outcome = interrupted(
         TechMappingInterruptionStage::CoverSearch, std::move(candidates),
         accounting, search.covers.empty() ? domain->actors.size() : 0,
-        resources)));
+        resources);
+    outcome.feedback = std::move(search.feedback);
+    return finish(TechMappingGenerationOutcome(std::move(outcome)));
+  }
   for (const auto &cover : search.covers) {
-    if (inputs.executionControl.stopRequested())
-      return finish(TechMappingGenerationOutcome(
+    if (inputs.executionControl.stopRequested()) {
+      auto outcome =
           interrupted(TechMappingInterruptionStage::CandidateFinalization,
-                      std::move(candidates), accounting, 0, resources)));
+                      std::move(candidates), accounting, 0, resources);
+      outcome.feedback = std::move(search.feedback);
+      return finish(TechMappingGenerationOutcome(std::move(outcome)));
+    }
     if (accounting.publicationSlots >=
         inputs.config.candidatePublicationLimit()) {
       search.exhausted = false;
@@ -359,10 +373,13 @@ generateTechMappings(const TechMappingGenerationInputs &inputs) {
     }
   }
 
-  if (inputs.executionControl.stopRequested())
-    return finish(TechMappingGenerationOutcome(
+  if (inputs.executionControl.stopRequested()) {
+    auto outcome =
         interrupted(TechMappingInterruptionStage::CandidateFinalization,
-                    std::move(candidates), accounting, 0, resources)));
+                    std::move(candidates), accounting, 0, resources);
+    outcome.feedback = std::move(search.feedback);
+    return finish(TechMappingGenerationOutcome(std::move(outcome)));
+  }
 
   const bool exhausted = domain->exhausted && search.exhausted;
   if (!candidates.empty())
@@ -370,12 +387,13 @@ generateTechMappings(const TechMappingGenerationInputs &inputs) {
         std::move(candidates),
         exhausted ? TechMappingGenerationTermination::SearchExhausted
                   : TechMappingGenerationTermination::SemanticLimitReached,
-        accounting}));
+        accounting, std::move(search.feedback)}));
   if (exhausted)
-    return finish(
-        TechMappingGenerationOutcome(ProvenInfeasibleTechMapping{accounting}));
+    return finish(TechMappingGenerationOutcome(
+        ProvenInfeasibleTechMapping{accounting, std::move(search.feedback)}));
   return finish(TechMappingGenerationOutcome(IncompleteTechMappingGeneration{
-      IncompleteTechMappingGenerationReason::ProofNotEstablished, accounting}));
+      IncompleteTechMappingGenerationReason::ProofNotEstablished, accounting,
+      std::move(search.feedback)}));
 }
 
 llvm::Expected<TechMappingCandidateEnumerationResult>
@@ -421,7 +439,8 @@ enumerateTechMappingCandidates(
         TechMappingGenerationTermination::SemanticLimitReached, accounting, 0,
         interruptionSnapshot(
             TechMappingInterruptionStage::CoverSearch, accounting, std::nullopt,
-            search.covers.empty() ? domain->actors.size() : 0, 0, resources)};
+            search.covers.empty() ? domain->actors.size() : 0, 0, resources),
+        std::move(search.feedback)};
   std::set<ArtifactRootReference, decltype(&artifactRootReferenceLess)> seen(
       artifactRootReferenceLess);
   std::uint64_t visited = 0;
@@ -434,7 +453,8 @@ enumerateTechMappingCandidates(
           interruptionSnapshot(
               TechMappingInterruptionStage::CandidateFinalization, accounting,
               visited == 0 ? std::nullopt : std::optional<std::uint64_t>(0), 0,
-              visited, resources)};
+              visited, resources),
+          std::move(search.feedback)};
     auto candidate = detail::materializeTechMappingCandidate(inputs, cover);
     if (!candidate)
       return candidate.takeError();
@@ -457,13 +477,14 @@ enumerateTechMappingCandidates(
         interruptionSnapshot(
             TechMappingInterruptionStage::CandidateFinalization, accounting,
             visited == 0 ? std::nullopt : std::optional<std::uint64_t>(0), 0,
-            visited, resources)};
+            visited, resources),
+        std::move(search.feedback)};
   const bool exhausted = domain->exhausted && search.exhausted &&
                          !visitorStopped && visited == seen.size();
   return TechMappingCandidateEnumerationResult{
       exhausted ? TechMappingGenerationTermination::SearchExhausted
                 : TechMappingGenerationTermination::SemanticLimitReached,
-      accounting, visited, std::nullopt};
+      accounting, visited, std::nullopt, std::move(search.feedback)};
 }
 
 } // namespace loom::mapping

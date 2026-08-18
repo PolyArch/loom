@@ -235,9 +235,38 @@ llvm::Error SpatialNetRouterScratch::collectTargetFrontier(
         {candidate.logicalNetSinkEndpoint(logicalNet, sink), sink,
          requiresBufferedTraversal});
   }
-  if (targetCandidates_.empty())
-    return netRouterError(
-        "unresolved sink dependencies contain no routable frontier");
+  if (targetCandidates_.empty()) {
+    std::string witness =
+        "unresolved sink dependencies contain no routable frontier for net " +
+        std::to_string(logicalNet) + ":";
+    const FrozenSpatialLogicalNet &net =
+        candidate.problem().transfers().logicalNets()[logicalNet];
+    for (PnrIndex sink = 0; sink < sinkCount; ++sink) {
+      if (!unresolvedSinks_[sink])
+        continue;
+      auto prerequisites = spatialSinkProgressDependencies(candidate.problem(),
+                                                           logicalNet, sink);
+      if (!prerequisites)
+        return prerequisites.takeError();
+      auto localBoundary = spatialTerminalProvidesLocalProgressBoundary(
+          candidate, candidate.problem()
+                         .transfers()
+                         .logicalNetSinkBindings()[net.sinkOffset + sink]);
+      if (!localBoundary)
+        return localBoundary.takeError();
+      witness += " sink=" + std::to_string(sink) +
+                 " local=" + std::to_string(*localBoundary);
+      for (const FrozenSpatialProgressPrerequisite &prerequisite :
+           *prerequisites)
+        if (const auto *external =
+                std::get_if<FrozenSpatialExternalSinkPrerequisite>(
+                    &prerequisite))
+          witness += "<-" + std::to_string(external->sink);
+        else
+          witness += "<-internal";
+    }
+    return netRouterError(witness);
+  }
   llvm::sort(targetCandidates_,
              [](const TargetCandidate &lhs, const TargetCandidate &rhs) {
                return std::make_tuple(lhs.endpoint, !lhs.requiresTraversal,
@@ -537,10 +566,9 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
       bool hasLocalBoundary = false;
       if (!prerequisites->empty()) {
         auto localBoundary = spatialTerminalProvidesLocalProgressBoundary(
-            candidate,
-            candidate.problem()
-                .transfers()
-                .logicalNetSinkBindings()[net.sinkOffset + sink]);
+            candidate, candidate.problem()
+                           .transfers()
+                           .logicalNetSinkBindings()[net.sinkOffset + sink]);
         if (!localBoundary)
           return localBoundary.takeError();
         hasLocalBoundary = *localBoundary;
@@ -553,8 +581,7 @@ llvm::Expected<RouteCost> SpatialNetRouterScratch::routeSelectedSinks(
         if (external && external->sink >= net.sinkCount)
           return netRouterError(
               "external sink progress prerequisite is out of range");
-        if (!hasLocalBoundary && external &&
-            unresolvedSinks_[external->sink]) {
+        if (!hasLocalBoundary && external && unresolvedSinks_[external->sink]) {
           progressSatisfied = false;
           break;
         }

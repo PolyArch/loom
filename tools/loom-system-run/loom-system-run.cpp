@@ -17,8 +17,10 @@
 #include "ExternalTool/LocalConfig.h"
 #include "ExternalTool/Provider.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Hardware/Configuration/ConfigurationDiagnostics.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Runtime/FabricModelPlatform.h"
 #include "Runtime/Gem5BridgeWire.h"
 #include "Runtime/Gem5SimulationBinding.h"
@@ -378,7 +380,12 @@ buildResolution(const loom::deployment::FinalizedDeployment &deployment,
 enum class Engine : std::uint8_t { Dfg, Cgra };
 
 struct ObservedSpatialInvocation final {
+  std::uint64_t dispatchTargetOrdinal = 0;
+  std::string accCoreReference;
+  std::string executionContextKey;
+  loom::ArtifactRootReference workload;
   std::vector<std::uint8_t> invocation;
+  loom::runtime::SpatialInvocationRuntimeInputSnapshot runtimeInput;
   std::vector<std::uint8_t> boundaryResult;
 };
 
@@ -403,20 +410,81 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
   const llvm::json::Object *object = projection->getAsObject();
   const llvm::json::Array *bridges =
       object ? object->getArray("bridges") : nullptr;
-  if (!bridges || bridges->empty())
+  const llvm::json::Object *dispatch =
+      object ? object->getObject("dispatch") : nullptr;
+  const llvm::json::Array *dispatchTargets =
+      dispatch ? dispatch->getArray("targets") : nullptr;
+  const auto schema = object ? object->getString("schema") : std::nullopt;
+  if (!schema || *schema != "loom.gem5_system_projection.8" || !bridges ||
+      bridges->empty() || !dispatchTargets || dispatchTargets->empty())
     return invalid("gem5 projection contains no Spatial bridge");
 
   std::vector<ObservedSpatialInvocation> invocations;
-  invocations.reserve(bridges->size());
+  invocations.reserve(dispatchTargets->size());
+  std::vector<bool> claimedTargets(dispatchTargets->size(), false);
   for (const auto indexed : llvm::enumerate(*bridges)) {
     const llvm::json::Object *bridge = indexed.value().getAsObject();
     if (!bridge)
       return invalid("gem5 projection contains a non-object bridge");
+    const llvm::json::Array *dispatchTargetOrdinals =
+        bridge->getArray("dispatch_target_ordinals");
+    const auto accCoreReference = bridge->getString("acc_core_ref");
+    const llvm::json::Array *executionContextKeys =
+        bridge->getArray("execution_context_keys");
+    if (!dispatchTargetOrdinals || dispatchTargetOrdinals->empty() ||
+        !accCoreReference || accCoreReference->empty() ||
+        !executionContextKeys ||
+        executionContextKeys->size() != dispatchTargetOrdinals->size())
+      return invalid("gem5 bridge has no canonical execution target identity");
+    std::vector<std::uint64_t> targetOrdinals;
+    std::vector<std::string> contextKeys;
+    targetOrdinals.reserve(dispatchTargetOrdinals->size());
+    contextKeys.reserve(executionContextKeys->size());
+    for (std::size_t ordinal = 0; ordinal != dispatchTargetOrdinals->size();
+         ++ordinal) {
+      const auto target = (*dispatchTargetOrdinals)[ordinal].getAsInteger();
+      const auto context = (*executionContextKeys)[ordinal].getAsString();
+      if (!target || *target < 0 ||
+          static_cast<std::uint64_t>(*target) >= dispatchTargets->size() ||
+          claimedTargets[static_cast<std::size_t>(*target)] || !context ||
+          context->empty() ||
+          (!targetOrdinals.empty() &&
+           targetOrdinals.back() >= static_cast<std::uint64_t>(*target)))
+        return invalid("gem5 bridge target table is not canonical");
+      claimedTargets[static_cast<std::size_t>(*target)] = true;
+      targetOrdinals.push_back(static_cast<std::uint64_t>(*target));
+      contextKeys.push_back(context->str());
+    }
     const auto resultPath = bridge->getString("result_path");
     const std::string expectedPath =
         "outputs/spatial-bridge-" + std::to_string(indexed.index()) + ".result";
     if (!resultPath || *resultPath != expectedPath)
       return invalid("gem5 projection has a noncanonical bridge result path");
+    const llvm::json::Array *engineCommand = bridge->getArray("engine_command");
+    std::vector<loom::ArtifactRootReference> workloadReferences;
+    if (engineCommand) {
+      for (std::size_t argument = 0; argument < engineCommand->size();
+           ++argument) {
+        const auto value = (*engineCommand)[argument].getAsString();
+        if (!value || *value != "--workload")
+          continue;
+        if (argument + 1 == engineCommand->size())
+          return invalid("gem5 bridge has an ambiguous workload argument");
+        const auto workloadIdentityText =
+            (*engineCommand)[++argument].getAsString();
+        if (!workloadIdentityText)
+          return invalid("gem5 bridge workload argument is not a string");
+        auto workloadIdentity =
+            loom::parseArtifactIdentityHex(*workloadIdentityText);
+        if (!workloadIdentity)
+          return workloadIdentity.takeError();
+        workloadReferences.push_back(
+            {loom::sim::simulationWorkloadSchema.identity.str(),
+             loom::sim::simulationWorkloadSchema.version, *workloadIdentity});
+      }
+    }
+    if (workloadReferences.size() != targetOrdinals.size())
+      return invalid("gem5 bridge omits its exact Spatial workload");
     auto resultText = readText(child(prepared.bundleRoot, expectedPath));
     if (!resultText)
       return resultText.takeError();
@@ -429,7 +497,8 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
       return invalid("cannot decode verified gem5 bridge result: " +
                      llvm::Twine(diagnostic));
     if (bridgeResults.results.empty())
-      return invalid("gem5 bridge published no Spatial invocation");
+      return invalid("gem5 bridge did not execute a declared target");
+    std::vector<bool> observedSessionEntries(targetOrdinals.size());
     for (const auto resultIndexed : llvm::enumerate(bridgeResults.results)) {
       const loom::runtime::Gem5BridgeResult &bridgeResult =
           resultIndexed.value();
@@ -441,13 +510,27 @@ llvm::Expected<std::vector<ObservedSpatialInvocation>> readSpatialInvocations(
               bridgeResult.result, invocationResult, diagnostic))
         return invalid("cannot decode verified Spatial invocation result: " +
                        llvm::Twine(diagnostic));
-      if (invocationResult.invocation.empty())
-        return invalid("public execution matrix requires a dynamic invocation");
+      if (invocationResult.sessionEntryOrdinal >= targetOrdinals.size())
+        return invalid("gem5 bridge result names an absent target entry");
+      const std::size_t sessionEntryOrdinal =
+          static_cast<std::size_t>(invocationResult.sessionEntryOrdinal);
+      observedSessionEntries[sessionEntryOrdinal] = true;
+      if (invocationResult.invocation.empty() || !invocationResult.runtimeInput)
+        return invalid("public execution matrix requires a complete dynamic "
+                       "invocation");
       invocations.push_back(
-          {std::move(invocationResult.invocation),
+          {targetOrdinals[sessionEntryOrdinal], accCoreReference->str(),
+           contextKeys[sessionEntryOrdinal],
+           workloadReferences[sessionEntryOrdinal],
+           std::move(invocationResult.invocation),
+           std::move(*invocationResult.runtimeInput),
            std::move(invocationResult.spatialBoundaryResult)});
     }
+    if (llvm::is_contained(observedSessionEntries, false))
+      return invalid("gem5 bridge results omit a declared target entry");
   }
+  if (llvm::is_contained(claimedTargets, false))
+    return invalid("gem5 bridge sessions omit a dispatch target");
   return invocations;
 }
 
@@ -522,7 +605,9 @@ execute(Engine engine, llvm::StringRef workspace,
     return evidence.takeError();
   if (evidence->outcomeKind() !=
       loom::evaluation::EvidenceOutcomeKind::Completed)
-    return invalid(engineName + " did not publish completed Evidence");
+    return invalid(engineName + " published " +
+                   loom::evaluation::toString(evidence->outcomeKind()) +
+                   " Evidence");
   auto evidenceRef =
       loom::evaluation::publishEvaluationEvidence(*evidence, artifacts);
   if (!evidenceRef)
@@ -550,6 +635,10 @@ execute(Engine engine, llvm::StringRef workspace,
 
 struct SpatialInvocationCase final {
   std::size_t ordinal = 0;
+  std::uint64_t dispatchTargetOrdinal = 0;
+  std::string accCoreReference;
+  std::string executionContextKey;
+  std::vector<std::uint64_t> denseCoordinates;
   loom::ArtifactRootReference dataflow;
   loom::ArtifactRootReference workload;
   loom::ArtifactRootReference runtimeInput;
@@ -582,8 +671,14 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
     const ObservedSpatialInvocation &cgra,
     const loom::deployment::FinalizedDeployment &deployment,
     const loom::ArtifactStore &artifacts, const loom::BlobStore &blobs) {
-  if (dfg.invocation != cgra.invocation)
-    return invalid("System DFG and CGRA observed different invocations");
+  if (dfg.dispatchTargetOrdinal != cgra.dispatchTargetOrdinal ||
+      dfg.accCoreReference != cgra.accCoreReference ||
+      dfg.executionContextKey != cgra.executionContextKey ||
+      dfg.invocation != cgra.invocation || dfg.workload != cgra.workload ||
+      dfg.runtimeInput.identity != cgra.runtimeInput.identity ||
+      dfg.runtimeInput.canonicalBytes != cgra.runtimeInput.canonicalBytes)
+    return invalid("System DFG and CGRA observed different effective "
+                   "invocations");
   loom::runtime::SpatialInvocationWire wire;
   std::string diagnostic;
   if (!loom::runtime::decodeSpatialInvocationWire(dfg.invocation, wire,
@@ -597,73 +692,68 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
   loom::ArtifactRootReference dataflowReference{
       dataflow::canonicalDataflowSchema.identity.str(),
       dataflow::canonicalDataflowSchema.version, *dataflowIdentity};
-  auto dataflow =
-      dataflow::importCanonicalDataflow(dataflowReference, artifacts);
-  if (!dataflow)
-    return dataflow.takeError();
-  auto dataflowView = dataflow->view();
-  if (!dataflowView)
-    return dataflowView.takeError();
-  const dataflow::RootedGraphLaunchRef graph{
-      {dataflowReference.artifact,
-       dataflow::RootThreadLaunchId(wire.rootThreadLaunchEntity)},
-      {dataflowReference.artifact,
-       dataflow::StaticGraphLaunchId(wire.graphLaunchEntity)}};
-  auto shapes =
-      loom::sim::projectSpatialSimulationBoundaryShapes(*dataflowView, graph);
-  if (!shapes)
-    return shapes.takeError();
-
-  loom::sim::SpatialSimulationWorkload workloadDraft{graph};
-  workloadDraft.denseCoordinates = wire.denseCoordinates;
-  workloadDraft.valueInputPlan.assign(shapes->valueInputs.size(),
-                                      loom::sim::RuntimeValueInput{});
-  workloadDraft.observableContract.valueResults.resize(
-      shapes->valueResults.size());
-  std::iota(workloadDraft.observableContract.valueResults.begin(),
-            workloadDraft.observableContract.valueResults.end(), 0);
-  auto writableRoots = loom::sim::projectSpatialInvocationWritableMemoryRoots(
-      *dataflowView, graph);
-  if (!writableRoots)
-    return writableRoots.takeError();
-  for (dataflow::LogicalMemoryRootRef memory : *writableRoots)
-    workloadDraft.observableContract.memories.push_back(
-        {dataflow::LogicalMemoryRootOrViewRef{memory},
-         loom::sim::MemoryObservationForm::DiffFromRuntimeInput});
   auto workload =
-      loom::sim::finalizeSimulationWorkload(workloadDraft, *dataflowView);
+      loom::sim::importSpatialSimulationWorkload(dfg.workload, artifacts);
   if (!workload)
     return workload.takeError();
-  auto workloadReference =
-      loom::sim::publishSimulationWorkload(*workload, artifacts);
-  if (!workloadReference)
-    return workloadReference.takeError();
-  auto inputs = loom::sim::materializeSpatialInvocationInputs(
-      {std::move(*dataflow), std::move(*workload)}, wire);
-  if (!inputs)
-    return inputs.takeError();
+  auto dataflowView = workload->dataflow.view();
+  if (!dataflowView)
+    return dataflowView.takeError();
+  if (workload->dataflow.identity() != dataflowReference.artifact)
+    return invalid("System invocation workload has a foreign Dataflow owner");
+  const auto *spatialWorkload = workload->workload.spatial();
+  if (!spatialWorkload)
+    return invalid("System invocation workload is not Spatial");
+  const dataflow::RootedGraphLaunchRef graph = spatialWorkload->launchRef;
+  auto runtimeIdentity =
+      loom::ArtifactIdentity::fromBytes(dfg.runtimeInput.identity);
+  if (!runtimeIdentity)
+    return runtimeIdentity.takeError();
+  auto runtime = loom::sim::importSimulationRuntimeInput(
+      dfg.runtimeInput.canonicalBytes, workload->workload, *dataflowView,
+      *runtimeIdentity);
+  if (!runtime)
+    return runtime.takeError();
+  if (llvm::Error error =
+          loom::sim::validateEffectiveSpatialInvocationRuntimeInput(
+              *workload, wire, *runtime))
+    return std::move(error);
+  loom::sim::ImportedSpatialSimulationInputs inputs{
+      std::move(workload->dataflow), std::move(workload->workload),
+      std::move(*runtime)};
   auto runtimeReference =
-      loom::sim::publishSimulationRuntimeInput(inputs->runtimeInput, artifacts);
+      loom::sim::publishSimulationRuntimeInput(inputs.runtimeInput, artifacts);
   if (!runtimeReference)
     return runtimeReference.takeError();
   auto selection = loom::deployment::resolveDeploymentSpatialLaunchSelection(
       deployment, graph, wire.denseCoordinates, artifacts, blobs);
   if (!selection)
     return selection.takeError();
+  const std::string selectedAccCoreReference =
+      loom::formatArtifactLocalPayloadHex(
+          loom::fabric::canonicalFabricBytes(selection->context.accCore));
+  auto selectedContextBytes = loom::mapping::encodeExecutionContextKey(
+      loom::mapping::ExecutionContextKey(selection->context));
+  if (!selectedContextBytes)
+    return selectedContextBytes.takeError();
+  const std::string selectedContextKey =
+      loom::formatArtifactLocalPayloadHex(*selectedContextBytes);
+  if (dfg.accCoreReference != selectedAccCoreReference ||
+      dfg.executionContextKey != selectedContextKey)
+    return invalid("gem5 target differs from the Deployment execution context");
   auto cgraCase = loom::evaluation::models::resolveCgraSimulationCase(
-      selection->spatialMapping, *workloadReference, *runtimeReference,
-      artifacts);
+      selection->spatialMapping, dfg.workload, *runtimeReference, artifacts);
   if (!cgraCase)
     return cgraCase.takeError();
   if (cgraCase->canonicalDataflow != dataflowReference)
     return invalid("Deployment selected a foreign Dataflow owner");
 
   auto dfgBoundary =
-      loom::sim::decodeSpatialEngineBoundaryResult(dfg.boundaryResult, *inputs);
+      loom::sim::decodeSpatialEngineBoundaryResult(dfg.boundaryResult, inputs);
   if (!dfgBoundary)
     return dfgBoundary.takeError();
-  auto cgraBoundary = loom::sim::decodeSpatialEngineBoundaryResult(
-      cgra.boundaryResult, *inputs);
+  auto cgraBoundary =
+      loom::sim::decodeSpatialEngineBoundaryResult(cgra.boundaryResult, inputs);
   if (!cgraBoundary)
     return cgraBoundary.takeError();
   if (!std::holds_alternative<loom::sim::RetiredExecution>(
@@ -675,19 +765,23 @@ llvm::Expected<SpatialInvocationCase> materializeSpatialInvocationCase(
           cgraBoundary->functionalObservations))
     return invalid("System Spatial DFG and CGRA observations differ");
   auto dfgWrites = loom::sim::projectSpatialInvocationResultWrites(
-      wire, *inputs, dfgBoundary->functionalObservations);
+      wire, inputs, dfgBoundary->functionalObservations);
   if (!dfgWrites)
     return dfgWrites.takeError();
   auto cgraWrites = loom::sim::projectSpatialInvocationResultWrites(
-      wire, *inputs, cgraBoundary->functionalObservations);
+      wire, inputs, cgraBoundary->functionalObservations);
   if (!cgraWrites)
     return cgraWrites.takeError();
   if (!sameWrites(*dfgWrites, *cgraWrites))
     return invalid("System Spatial engines projected different guest writes");
 
   return SpatialInvocationCase{ordinal,
+                               dfg.dispatchTargetOrdinal,
+                               dfg.accCoreReference,
+                               dfg.executionContextKey,
+                               std::move(wire.denseCoordinates),
                                std::move(dataflowReference),
-                               std::move(*workloadReference),
+                               dfg.workload,
                                std::move(*runtimeReference),
                                std::move(selection->hardwareImplementation),
                                std::move(cgraCase->fabric),
@@ -707,7 +801,9 @@ completeSpatialRun(Engine engine, std::size_t invocationOrdinal,
       engine == Engine::Dfg ? "spatial-dfg" : "spatial-cgra";
   if (evidence.outcomeKind() !=
       loom::evaluation::EvidenceOutcomeKind::Completed)
-    return invalid(engineName + " did not publish completed Evidence");
+    return invalid(engineName + " published " +
+                   loom::evaluation::toString(evidence.outcomeKind()) +
+                   " Evidence");
   auto requestReference =
       loom::evaluation::publishEvaluationRequest(request, artifacts);
   if (!requestReference)
@@ -832,7 +928,7 @@ writeManifest(llvm::StringRef workspace,
   llvm::raw_string_ostream stream(body);
   llvm::json::OStream json(stream, 2);
   json.object([&] {
-    json.attribute("schema", "loom.execution_matrix_workspace.1.0");
+    json.attribute("schema", "loom.execution_matrix_workspace.1.2");
     json.attributeObject("deployment", [&] {
       loom::writeArtifactRootReferenceJsonFields(json, deployment.reference());
     });
@@ -876,6 +972,15 @@ writeManifest(llvm::StringRef workspace,
           json.attribute("scope", "spatial");
           json.attribute("engine", run.engine == Engine::Dfg ? "dfg" : "cgra");
           json.attribute("invocation_ordinal", run.invocationOrdinal);
+          json.attribute("dispatch_target_ordinal",
+                         invocation.dispatchTargetOrdinal);
+          json.attribute("acc_core_ref", invocation.accCoreReference);
+          json.attribute("execution_context_key",
+                         invocation.executionContextKey);
+          json.attributeArray("dense_coordinates", [&] {
+            for (std::uint64_t coordinate : invocation.denseCoordinates)
+              json.value(coordinate);
+          });
           json.attributeObject("dataflow", [&] {
             loom::writeArtifactRootReferenceJsonFields(json,
                                                        invocation.dataflow);

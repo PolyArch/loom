@@ -23,18 +23,47 @@ inline constexpr llvm::StringLiteral applicationHostEntrySymbol{
     "__loom_host_entry"};
 
 struct ApplicationSpatialInvocationPlan final {
-  struct Site final {
-    sim::DirectCallSimulationInputCapturePlan capture;
-    runtime::SpatialInvocationWireLayout wireLayout;
+  struct MemoryObjectSource final {
+    std::uint64_t dispatchArgumentOrdinal = 0;
+    std::uint64_t byteOffset = 0;
+    mlir::Value base;
   };
 
-  dataflow::RootThreadLaunchRef root;
-  dataflow::RootedGraphLaunchRef graph;
-  std::string sourceCallableSymbol;
-  std::uint64_t dispatchTargetOrdinal = 0;
-  std::vector<std::uint32_t> valueBitCounts;
-  std::vector<std::uint32_t> resultBitCounts;
-  std::vector<Site> sites;
+  struct MemoryRootSource final {
+    std::uint64_t dispatchArgumentOrdinal = 0;
+    std::uint64_t objectIndex = 0;
+  };
+
+  struct Site final {
+    sim::OperationSimulationInputCapturePlan capture;
+    std::vector<MemoryObjectSource> memoryObjectSources;
+    std::vector<MemoryRootSource> memoryRootSources;
+    std::vector<runtime::SpatialInvocationWireLayout> pointWireLayouts;
+  };
+
+  struct Launch final {
+    struct Point final {
+      std::uint64_t dispatchTargetOrdinal = 0;
+      std::vector<std::uint64_t> denseCoordinates;
+    };
+
+    dataflow::RootThreadLaunchRef root;
+    dataflow::RootedGraphLaunchRef graph;
+    std::vector<Point> points;
+    std::vector<std::uint64_t> dispatchRootOperandOrdinals;
+    std::vector<std::uint32_t> valueBitCounts;
+    std::vector<std::uint32_t> resultBitCounts;
+    std::vector<std::uint64_t> resultRootOperandOrdinals;
+    std::vector<Site> sites;
+  };
+
+  struct Callable final {
+    std::string sourceCallableSymbol;
+    std::vector<std::uint64_t> launchOrdinals;
+  };
+
+  std::vector<Launch> launches;
+  std::vector<Callable> callables;
 };
 
 llvm::Expected<ApplicationSpatialInvocationPlan>
@@ -42,10 +71,11 @@ deriveApplicationSpatialInvocationPlan(
     const dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::StringRef entrySymbol);
 
-llvm::Expected<std::unique_ptr<llvm::Module>>
-materializeHostDispatchModule(const llvm::Module &finalLinkedModule,
-                              llvm::StringRef applicationEntry,
-                              const ApplicationSpatialInvocationPlan &plan);
+llvm::Expected<std::unique_ptr<llvm::Module>> materializeHostDispatchModule(
+    const llvm::Module &finalLinkedModule,
+    const dataflow::CanonicalDataflowArtifact &dataflow,
+    llvm::StringRef applicationEntry,
+    const ApplicationSpatialInvocationPlan &plan);
 
 llvm::Expected<std::unique_ptr<llvm::Module>>
 materializeInstructionDispatchModule(const llvm::Module &finalLinkedModule,

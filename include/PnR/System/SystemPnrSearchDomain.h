@@ -254,6 +254,12 @@ projectWholeDomainPresburgerPartitionPlan(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     llvm::ArrayRef<::dataflow::RootThreadLaunchRef> rootThreadLaunches);
 
+llvm::Expected<SystemBindingPartitionPlan>
+projectCyclicPresburgerPartitionPlan(
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    llvm::ArrayRef<::dataflow::RootThreadLaunchRef> rootThreadLaunches,
+    std::size_t partitionCount);
+
 llvm::Expected<SystemPnrSearchDomainView> projectSystemPnrSearchDomain(
     const ::dataflow::CanonicalDataflowProgramView &dataflow,
     const ::loom::fabric::FabricSystemRootView &fabric,

@@ -40,3 +40,11 @@ add_executable(loom-heterogeneous-system-anchor-test
 target_link_libraries(loom-heterogeneous-system-anchor-test PRIVATE
   LoomExecutionMatrixTestSupport
 )
+
+add_executable(loom-product-mapping-inspection-test
+  ProductMappingInspection.cpp
+)
+
+target_link_libraries(loom-product-mapping-inspection-test PRIVATE
+  LoomMappingInspection
+)

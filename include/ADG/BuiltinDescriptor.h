@@ -1,6 +1,8 @@
 #ifndef LOOM_ADG_BUILTINDESCRIPTOR_H
 #define LOOM_ADG_BUILTINDESCRIPTOR_H
 
+#include "ADG/MemoryLibrary.h"
+
 #include "llvm/ADT/StringRef.h"
 
 #include <algorithm>
@@ -68,6 +70,7 @@ struct BuiltinTargetScale final {
   std::uint32_t spatialMemoryCount;
   std::uint32_t temporalMemoryCount;
   std::uint32_t temporalResidentContexts;
+  LocalMemoryPortVariant localMemoryPortVariant;
   std::uint32_t crossScheduleBoundaryLanesPerTemporalPe;
   std::uint32_t gatewayCount;
   std::uint64_t memoryCapacityBytes;
@@ -99,28 +102,31 @@ inline constexpr BuiltinTargetDescriptor builtinSmallTarget{
     BuiltinTargetPreset::Small,
     "small",
     "loom.adg.builtin.general_purpose",
-    6,
+    7,
     0,
     {4, 4, 12, 4, builtinBalancedFuOccurrences(12),
-     builtinBalancedFuOccurrences(4), 1, 1, 2, 5, 2, 64 * 1024}};
+     builtinBalancedFuOccurrences(4), 1, 1, 2,
+     LocalMemoryPortVariant::SharedElementVector, 5, 2, 64 * 1024}};
 
 inline constexpr BuiltinTargetDescriptor builtinCoverageTarget{
     BuiltinTargetPreset::Coverage,
     "coverage",
     "loom.adg.builtin.general_purpose",
-    6,
+    7,
     0,
     {8, 6, 27, 9, builtinCoverageSpatialFuOccurrences(),
-     builtinBalancedFuOccurrences(9), 2, 2, 4, 5, 4, 256 * 1024}};
+     builtinBalancedFuOccurrences(9), 4, 4, 4,
+     LocalMemoryPortVariant::SharedElementVector, 5, 4, 256 * 1024}};
 
 inline constexpr BuiltinTargetDescriptor builtinLargeTarget{
     BuiltinTargetPreset::Large,
     "large",
     "loom.adg.builtin.general_purpose",
-    6,
+    7,
     0,
     {16, 8, 48, 16, builtinBalancedFuOccurrences(48),
-     builtinBalancedFuOccurrences(16), 4, 4, 8, 5, 8, 1024 * 1024}};
+     builtinBalancedFuOccurrences(16), 4, 4, 8,
+     LocalMemoryPortVariant::SharedElementVector, 5, 8, 1024 * 1024}};
 
 constexpr const BuiltinTargetDescriptor &
 getBuiltinTargetDescriptor(BuiltinTargetPreset preset) {

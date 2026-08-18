@@ -219,7 +219,8 @@ void causalReleaseConjoinsWithIntrinsicRelease() {
           loom::sim::detail::CgraPhysicalLifecycleKind::Committed)
     fail("causally released action did not commit");
   frame = take(runtime.advance());
-  if (!frame || !frame->events.empty() || !runtime.hasPendingActions())
+  if (!frame || !frame->events.empty() || !runtime.hasPendingActions() ||
+      runtime.nextCoordinate())
     fail("intrinsic release bypassed the causal release condition");
 
   if (llvm::Error error = runtime.satisfyCausalRelease(0, 4, coordinate(9)))

@@ -17,6 +17,10 @@
 #include <variant>
 #include <vector>
 
+namespace mlir::scf {
+class ForallOp;
+}
+
 namespace loom::frontend {
 
 /// Exact one-generation dynamic-activity correspondence created by an
@@ -368,6 +372,15 @@ materializeStructuredSpatialOwnershipDecision(
     const SpatialOwnershipScope &scope,
     const SpatialOwnershipDecisionPoint &decision,
     llvm::ArrayRef<StructuredOperationSourceProvenance> sourceProvenance = {});
+
+/// Promotes one effect-form forall inside an already materialized rank-zero
+/// Spatial ownership carrier into that carrier's dense logical thread domain.
+/// Every exact launch receives mechanically projected extents, the thread and
+/// Spatial ABIs receive coordinate suffixes, and the forall body is restated
+/// using reconstructed source inductions. Semantic inapplicability is returned
+/// as a SpatialOwnershipCandidateRejection; malformed IR remains an error.
+llvm::Error materializeOwnedSpatialForallThreadDomain(
+    mlir::scf::ForallOp forall);
 
 /// Mechanically derives D0 and applies exact-Fabric hard-negative admission
 /// after all required Structured decisions are explicit.

@@ -16,8 +16,6 @@ struct ResolvedConfig;
 
 namespace loom::frontend {
 struct MaterializedOwnershipCandidate;
-struct SpatialOwnershipDecisionPoint;
-struct SpatialOwnershipScope;
 class StructuredProgramCandidate;
 } // namespace loom::frontend
 
@@ -43,12 +41,7 @@ struct PreparedStructuredProgramFunctionalEvaluation final {
 struct StructuredProgramFunctionalReplayInvocation final {
   const ::loom::ArtifactRootReference &workload;
   const ::loom::ArtifactRootReference &runtimeInput;
-  const ::loom::frontend::StructuredProgramCandidate &generationParent;
   const ::loom::frontend::StructuredProgramCandidate &sourceProgram;
-  const ::loom::frontend::SpatialOwnershipScope &scope;
-  const ::loom::frontend::SpatialOwnershipDecisionPoint &decision;
-  llvm::ArrayRef<::loom::frontend::StructuredExecutionShapeDecision>
-      executionShapeDecisions;
   const ::loom::frontend::MaterializedOwnershipCandidate &candidate;
   const ::loom::sim::CanonicalSimulationWorkload &simulationWorkload;
   const ::loom::sim::CanonicalSimulationRuntimeInput &simulationRuntimeInput;

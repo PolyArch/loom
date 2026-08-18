@@ -1,7 +1,6 @@
 #ifndef LOOM_RUNTIME_GEM5SPATIALCHANNEL_H
 #define LOOM_RUNTIME_GEM5SPATIALCHANNEL_H
 
-#include "Common/Artifact.h"
 #include "Runtime/Gem5SpatialChannelPlan.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -15,8 +14,6 @@
 namespace loom::runtime {
 
 struct Gem5SpatialChannelInput final {
-  ArtifactRootReference producerWorkload;
-  ArtifactRootReference producerRuntimeInput;
   std::uint64_t producerStreamOutputOrdinal = 0;
   std::uint64_t consumerStreamInputOrdinal = 0;
   std::uint64_t address = 0;

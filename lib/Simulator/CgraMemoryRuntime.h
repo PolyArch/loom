@@ -55,7 +55,7 @@ public:
 
   llvm::Error retireActor(std::uint64_t semanticActorOrdinal,
                           std::uint64_t occurrenceOrdinal,
-                          SpatialEventCoordinate coordinate);
+                          SpatialEventCoordinate coordinate, bool reschedule);
 
   llvm::Expected<std::optional<CgraMemoryLifecycleFrame>> advance();
 

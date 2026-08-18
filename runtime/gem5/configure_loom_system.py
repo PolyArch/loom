@@ -31,7 +31,7 @@ from m5.objects import (
 )
 
 
-CONFIG_SCHEMA = "loom.gem5_system_projection.6"
+CONFIG_SCHEMA = "loom.gem5_system_projection.8"
 
 PROCESSOR_FIELDS = {
     "cpu_id",
@@ -119,13 +119,19 @@ def verify_running_binary(expected_sha256: str) -> None:
         raise RuntimeError("running gem5 binary differs from the exact binding")
 
 
-def start_engines(bridges: list[dict]) -> list[subprocess.Popen]:
+def start_engines(
+    bridges: list[dict], dispatch_target_count: int
+) -> list[subprocess.Popen]:
     processes: list[subprocess.Popen] = []
+    claimed_targets: set[int] = set()
     try:
         for ordinal, bridge in enumerate(bridges):
             require_keys(
                 bridge,
                 {
+                    "dispatch_target_ordinals",
+                    "acc_core_ref",
+                    "execution_context_keys",
                     "pio_address",
                     "pio_size",
                     "pio_latency",
@@ -137,6 +143,34 @@ def start_engines(bridges: list[dict]) -> list[subprocess.Popen]:
                 },
                 f"bridge {ordinal}",
             )
+            targets = bridge["dispatch_target_ordinals"]
+            contexts = bridge["execution_context_keys"]
+            if (
+                not isinstance(targets, list)
+                or not targets
+                or targets != sorted(set(targets))
+                or any(
+                    not isinstance(target, int)
+                    or target < 0
+                    or target >= dispatch_target_count
+                    for target in targets
+                )
+                or not isinstance(contexts, list)
+                or len(contexts) != len(targets)
+            ):
+                raise ValueError(f"bridge {ordinal} target table is invalid")
+            if claimed_targets.intersection(targets):
+                raise ValueError("dispatch target is claimed by multiple bridges")
+            claimed_targets.update(targets)
+            encoded_references = [bridge["acc_core_ref"], *contexts]
+            for encoded in encoded_references:
+                if (
+                    not isinstance(encoded, str)
+                    or not encoded
+                    or len(encoded) % 2 != 0
+                    or any(character not in "0123456789abcdef" for character in encoded)
+                ):
+                    raise ValueError(f"bridge {ordinal} reference is invalid")
             command = bridge["engine_command"]
             if not isinstance(command, list) or not all(
                 isinstance(item, str) and item for item in command
@@ -162,6 +196,8 @@ def start_engines(bridges: list[dict]) -> list[subprocess.Popen]:
                         f"bridge {ordinal} engine did not publish its socket"
                     )
                 time.sleep(0.01)
+        if claimed_targets != set(range(dispatch_target_count)):
+            raise ValueError("bridge sessions do not cover every dispatch target")
         return processes
     except BaseException:
         stop_engines(processes)
@@ -442,7 +478,9 @@ def main() -> None:
     arguments = parse_arguments()
     projection = load_projection(pathlib.Path(arguments.projection))
     verify_running_binary(projection["gem5_binary_sha256"])
-    engines = start_engines(projection["bridges"])
+    engines = start_engines(
+        projection["bridges"], len(projection["dispatch"]["targets"])
+    )
     try:
         system = build_system(projection)
         Root(full_system=True, system=system)

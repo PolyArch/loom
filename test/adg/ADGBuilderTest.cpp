@@ -159,9 +159,9 @@ integerCapability(::fabric::ImplementationFamilyId family,
 }
 
 ::fabric::MemoryAddressDomain rootRelativeAddress(std::uint64_t indexBits) {
-  return take("root-relative address domain",
-              ::fabric::MemoryAddressDomain::rootRelative(
-                  singleton(indexBits)));
+  return take(
+      "root-relative address domain",
+      ::fabric::MemoryAddressDomain::rootRelative(singleton(indexBits)));
 }
 
 ::fabric::ResourceContract singleUseResourceContract(llvm::StringRef test) {
@@ -358,15 +358,14 @@ systemMemoryCapabilities(llvm::StringRef test,
       take("memory write semantics",
            ::fabric::ClosedEnumDomain<::fabric::WriteSubwordSemantics>::
                fromCanonical({::fabric::WriteSubwordSemantics::NotApplicable}));
-  auto access =
-      take("memory access class",
-           ::fabric::MemoryAccessClass::create(
-               ::dataflow::semantics::MemoryAccessForm::Element, singleton(32),
-               singleton(1),
-               {{::dataflow::semantics::MemoryMaskForm::Absent,
-                 ::fabric::InactiveLaneSemantics::NotApplicable}},
-               std::move(alignment), std::move(read), std::move(write),
-               rootRelativeAddress(32)));
+  auto access = take("memory access class",
+                     ::fabric::MemoryAccessClass::create(
+                         ::dataflow::semantics::MemoryAccessForm::Element,
+                         singleton(32), singleton(1),
+                         {{::dataflow::semantics::MemoryMaskForm::Absent,
+                           ::fabric::InactiveLaneSemantics::NotApplicable}},
+                         std::move(alignment), std::move(read),
+                         std::move(write), rootRelativeAddress(32)));
   auto accessDomain = take(
       "memory access domain",
       ::fabric::ParameterizedMemoryAccessDomain::create({std::move(access)}));
@@ -1153,14 +1152,94 @@ void publicMemoryLibraryBuildsHybridLocalMemories() {
           "memory library did not preserve the requested manager form");
 }
 
+void publicMemoryLibraryBuildsPortVariants() {
+  const llvm::StringRef test = __func__;
+  TemporaryDirectory directory(test);
+  loom::ArtifactStore store(directory.path());
+  DesignBuilder design(store);
+  const loom::adg::MemoryInterfaceParameters interface{
+      loom::adg::MemoryAccessDomainParameters{128, std::nullopt, 4,
+                                              singleton(64)},
+      64, 128};
+  const std::array<loom::adg::LocalMemoryPortVariant, 4> variants = {
+      loom::adg::LocalMemoryPortVariant::ElementOnly,
+      loom::adg::LocalMemoryPortVariant::VectorOnly,
+      loom::adg::LocalMemoryPortVariant::SeparateElementVector,
+      loom::adg::LocalMemoryPortVariant::SharedElementVector};
+  for (auto [ordinal, variant] : llvm::enumerate(variants)) {
+    auto variantMemory = loom::adg::makeVariant32LocalMemory(
+        {4096, interface, std::nullopt, false}, variant);
+    if (!variantMemory)
+      fail(test, "variant " + std::to_string(ordinal) + ": " +
+                     llvm::toString(variantMemory.takeError()));
+    MemorySpec memory = std::move(*variantMemory);
+    auto spatial =
+        take(test, design.createSpatialCore(
+                       "memory-port-variant-" + std::to_string(ordinal),
+                       memory.inputTypes(), memory.outputTypes()));
+    std::vector<SpatialValue> inputs;
+    for (std::size_t input = 0; input < memory.inputTypes().size(); ++input)
+      inputs.push_back(take(test, spatial.input(input)));
+    auto outputs = take(test, spatial.addMemory(inputs, memory));
+    if (llvm::Error error = spatial.close(outputs.values()))
+      fail(test, llvm::toString(std::move(error)));
+  }
+
+  auto finalized = take(test, std::move(design).finalize());
+  require(test, finalized.roots().size() == variants.size(),
+          "memory port variants did not finalize independently");
+  std::uint64_t elementOnly = 0;
+  std::uint64_t vectorOnly = 0;
+  std::uint64_t separate = 0;
+  std::uint64_t shared = 0;
+  for (const auto &root : finalized.roots()) {
+    const auto &view = root.view();
+    const loom::fabric::FabricMemoryOccurrenceRef memory(uniqueEntity(
+        test, view, loom::fabric::FabricEntityKind::FabricMemoryOccurrence));
+    const auto ports = view.memoryOperationPorts(memory);
+    std::uint64_t elementPorts = 0;
+    std::uint64_t vectorPorts = 0;
+    std::uint64_t sharedPorts = 0;
+    for (const auto port : ports) {
+      const auto *alternative = view.memoryCapabilityAlternative({port, 0});
+      require(test, alternative && alternative->accessDomain,
+              "memory port variant has no access domain");
+      bool hasElement = false;
+      bool hasVector = false;
+      for (const auto &access : alternative->accessDomain->accessClasses()) {
+        hasElement |= access.accessForm() ==
+                      ::dataflow::semantics::MemoryAccessForm::Element;
+        hasVector |= access.accessForm() !=
+                     ::dataflow::semantics::MemoryAccessForm::Element;
+      }
+      elementPorts += hasElement && !hasVector;
+      vectorPorts += hasVector && !hasElement;
+      sharedPorts += hasElement && hasVector;
+    }
+    if (ports.size() == 2 && elementPorts == 2)
+      ++elementOnly;
+    else if (ports.size() == 2 && vectorPorts == 2)
+      ++vectorOnly;
+    else if (ports.size() == 4 && elementPorts == 2 && vectorPorts == 2)
+      ++separate;
+    else if (ports.size() == 2 && sharedPorts == 2)
+      ++shared;
+    else
+      fail(test, "memory port variant has an unexpected physical contract");
+  }
+  require(test,
+          elementOnly == 1 && vectorOnly == 1 && separate == 1 && shared == 1,
+          "memory port variant inventory is not complete");
+}
+
 void publicMemoryRecipeKeepsIndependentEndpointWidths() {
   const llvm::StringRef test = __func__;
   TemporaryDirectory directory(test);
   loom::ArtifactStore store(directory.path());
   DesignBuilder design(store);
 
-  auto indexWidths = take(
-      test, ::fabric::UnsignedDomain::fromCanonical({{48, 48}, {64, 64}}));
+  auto indexWidths =
+      take(test, ::fabric::UnsignedDomain::fromCanonical({{48, 48}, {64, 64}}));
   const loom::adg::MemoryInterfaceParameters interface{
       loom::adg::MemoryAccessDomainParameters{192, 256, 8,
                                               std::move(indexWidths)},
@@ -1208,6 +1287,24 @@ void publicMemoryRecipeKeepsIndependentEndpointWidths() {
   const auto *engine = view.memoryEngineTemplate(*definition);
   require(test, engine && engine->operationPorts.size() == 2,
           "general memory lost its load/store operation ports");
+  const std::array<::fabric::MemoryInternalConnectionDeclaration, 5>
+      expectedConnections{{
+          {9, 6},
+          {10, 3},
+          {10, 8},
+          {11, 3},
+          {11, 8},
+      }};
+  require(test,
+          engine &&
+              llvm::equal(engine->internalConnections, expectedConnections,
+                          [](const auto &actual, const auto &expected) {
+                            return actual.sourceEndpointOrdinal ==
+                                       expected.sourceEndpointOrdinal &&
+                                   actual.sinkEndpointOrdinal ==
+                                       expected.sinkEndpointOrdinal;
+                          }),
+          "general memory changed its internal forwarding relation");
   for (const auto &port : engine->operationPorts) {
     bool sawDirect = false;
     bool sawIndexed = false;
@@ -1227,14 +1324,12 @@ void publicMemoryRecipeKeepsIndependentEndpointWidths() {
             !access.elementWidths().contains(8))
           continue;
         if (const auto *widths = access.rootRelativeIndexWidths()) {
-          sawIndex48Lanes5 |=
-              widths->contains(48) && !widths->contains(64) &&
-              access.flattenedLaneCounts().contains(5) &&
-              !access.flattenedLaneCounts().contains(6);
-          sawIndex64Lanes4 |=
-              widths->contains(64) && !widths->contains(48) &&
-              access.flattenedLaneCounts().contains(4) &&
-              !access.flattenedLaneCounts().contains(5);
+          sawIndex48Lanes5 |= widths->contains(48) && !widths->contains(64) &&
+                              access.flattenedLaneCounts().contains(5) &&
+                              !access.flattenedLaneCounts().contains(6);
+          sawIndex64Lanes4 |= widths->contains(64) && !widths->contains(48) &&
+                              access.flattenedLaneCounts().contains(4) &&
+                              !access.flattenedLaneCounts().contains(5);
           continue;
         }
         if (const auto *formats = access.addressPointerFormats()) {
@@ -1242,14 +1337,14 @@ void publicMemoryRecipeKeepsIndependentEndpointWidths() {
               0, 32, 32, ::loom::PointerLayoutKind::StableIntegral};
           const ::fabric::PointerFormat p64{
               0, 64, 64, ::loom::PointerLayoutKind::StableIntegral};
-          sawPointer32Lanes8 |=
-              formats->contains(p32) && !formats->contains(p64) &&
-              access.flattenedLaneCounts().contains(8) &&
-              !access.flattenedLaneCounts().contains(9);
-          sawPointer64Lanes4 |=
-              formats->contains(p64) && !formats->contains(p32) &&
-              access.flattenedLaneCounts().contains(4) &&
-              !access.flattenedLaneCounts().contains(5);
+          sawPointer32Lanes8 |= formats->contains(p32) &&
+                                !formats->contains(p64) &&
+                                access.flattenedLaneCounts().contains(8) &&
+                                !access.flattenedLaneCounts().contains(9);
+          sawPointer64Lanes4 |= formats->contains(p64) &&
+                                !formats->contains(p32) &&
+                                access.flattenedLaneCounts().contains(4) &&
+                                !access.flattenedLaneCounts().contains(5);
         }
       }
       require(test, alternative.admissibleUsePatterns.size() == 1,
@@ -1291,6 +1386,7 @@ void runBuilderTests() {
   fuCapabilityRowsCorrelateRoutes();
   typedMemoryFormsFinalize();
   publicMemoryLibraryBuildsHybridLocalMemories();
+  publicMemoryLibraryBuildsPortVariants();
   publicMemoryRecipeKeepsIndependentEndpointWidths();
 }
 

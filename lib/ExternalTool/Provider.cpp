@@ -75,14 +75,14 @@ const std::vector<BackendToolCatalogEntry> &catalogStorage() {
                {"openroad"},
                {{"OPENROAD_ROOT", "bin/openroad"},
                 {"OPENROAD_HOME", "bin/openroad"}},
-               {"openroad/2026.08.06-b9a38929e342", "openroad"},
+               {"openroad/2026.08.16-cbc7678e45cc", "openroad"},
            },
-           ToolVersionProbe{{"-version"}, "b9a38929e", {0}, "b9a38929e"},
+           ToolVersionProbe{{"-version"}, "cbc7678e45", {0}, "cbc7678e45"},
            edaContainerCompatibility(),
        },
        {release(
-           "openroad-2026-08-06", "openroad/2026.08.06-b9a38929e342",
-           ToolVersionProbe{{"-version"}, "b9a38929e", {0}, "b9a38929e"})}},
+           "openroad-2026-08-16", "openroad/2026.08.16-cbc7678e45cc",
+           ToolVersionProbe{{"-version"}, "cbc7678e45", {0}, "cbc7678e45"})}},
       {"gem5",
        ExternalToolProviderDescriptor{
            ToolProviderDescriptor{

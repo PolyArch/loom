@@ -73,6 +73,11 @@ loom::mapping::detail::TechMatchRow memoryRow(
 void assignIndependentComputeContextSupply(
     loom::mapping::detail::TechMatchDomain &domain) {
   domain.computeContextValueCount = domain.rows.size();
+  domain.computeContexts.reserve(domain.computeContextValueCount);
+  for (std::size_t ordinal = 0; ordinal != domain.computeContextValueCount;
+       ++ordinal)
+    domain.computeContexts.push_back(
+        {loom::fabric::FabricPeOccurrenceRef(ordinal), 0});
   for (auto [ordinal, candidate] : llvm::enumerate(domain.rows))
     candidate.computeContextValues = {ordinal};
 }
@@ -208,6 +213,10 @@ void exactComputeContextSupplyShapesFrontier() {
   for (std::uint64_t ordinal = 0; ordinal < 4; ++ordinal)
     domain.actors.push_back(actor(owner, ordinal));
   domain.computeContextValueCount = 4;
+  for (std::size_t ordinal = 0; ordinal != domain.computeContextValueCount;
+       ++ordinal)
+    domain.computeContexts.push_back(
+        {loom::fabric::FabricPeOccurrenceRef(ordinal), 0});
   domain.rows = {
       row(0, {0}, {0, 1, 3}), row(1, {0}, {2}),       row(2, {1}, {0, 1, 3}),
       row(3, {2}, {0, 1, 3}), row(4, {3}, {0, 1, 3}),
@@ -224,6 +233,14 @@ void exactComputeContextSupplyShapesFrontier() {
           accounting.computeContextRejectedChecks ||
       accounting.computeContextMatchingWork == 0)
     fail("compute-context matching work was not accounted exactly");
+  const auto &feedback = result.feedback.computeContextHall;
+  if (!feedback || feedback->deficit() != 1 ||
+      feedback->hallDemandCount() != 4 ||
+      feedback->hallContextValueCount() != 3 ||
+      feedback->groups().size() != 1 ||
+      feedback->groups().front().demandCount != 4 ||
+      feedback->groups().front().compatibleContexts.size() != 3)
+    fail("partial-cover pruning lost its typed Hall deficit");
 }
 
 void exactMemoryOccurrenceSupplyShapesFrontier() {

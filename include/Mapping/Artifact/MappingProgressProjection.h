@@ -62,6 +62,9 @@ enum class MappingDataflowProgressBasisKind : std::uint8_t {
 struct MappingDataflowProgressBasis final {
   MappingDataflowProgressBasisKind kind =
       MappingDataflowProgressBasisKind::Cyclic;
+  std::uint64_t coveredActorCount = 0;
+  std::uint64_t initializedFeedbackEdgeCount = 0;
+  std::vector<::dataflow::ActorRef> residualCycle;
 };
 
 enum class MappingResourceGrantPolicyKind : std::uint8_t {
@@ -93,6 +96,7 @@ struct MappingProgressCausalReleaseProjection final {
 
 struct MappingProgressActivationProjection final {
   ExecutionContextKey context;
+  ::dataflow::RootThreadLaunchRef relationRoot;
   std::vector<SystemPresburgerCell> relationDomain;
   std::vector<::dataflow::EventFamilyKey> triggerAlternatives;
   std::vector<MappingProgressCapacityClaimProjection> capacityClaims;

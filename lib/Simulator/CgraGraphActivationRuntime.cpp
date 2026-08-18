@@ -1,5 +1,6 @@
 #include "CgraGraphActivationRuntime.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
@@ -50,9 +51,9 @@ llvm::Expected<CgraGraphActivationRuntime> CgraGraphActivationRuntime::create(
                                                    execution, state, *physical);
   if (!computeRuntime)
     return computeRuntime.takeError();
-  auto memoryRuntime = CgraMemoryRuntime::create(plan, dataflow, launch, graph,
-                                                 execution, state, *physical,
-                                                 externalMemoryProvider);
+  auto memoryRuntime =
+      CgraMemoryRuntime::create(plan, dataflow, launch, graph, execution, state,
+                                *physical, externalMemoryProvider);
   if (!memoryRuntime)
     return memoryRuntime.takeError();
   auto transportRuntime = CgraTransportRuntime::create(
@@ -78,7 +79,18 @@ llvm::Error CgraGraphActivationRuntime::start(
   if (llvm::Error error = memory_->start(coordinate))
     return error;
   state_->nextActorCandidates.reset();
-  return transport_->acceptGraphIngressEmissions(coordinate, ingress);
+  llvm::DenseMap<unsigned, std::uint64_t> nextOccurrence;
+  pendingGraphIngress_.reserve(ingress.size());
+  for (GraphIngressEmission &emission : ingress) {
+    std::uint64_t &next = nextOccurrence[emission.argumentOrdinal];
+    if (emission.occurrenceOrdinal != next)
+      return invalid("CGRA graph ingress sequence is not dense");
+    if (next == std::numeric_limits<std::uint64_t>::max())
+      return invalid("CGRA graph ingress sequence exceeds u64");
+    ++next;
+    pendingGraphIngress_.push_back(std::move(emission));
+  }
+  return schedulePendingGraphIngress(coordinate);
 }
 
 std::optional<SpatialEventCoordinate>
@@ -96,7 +108,7 @@ bool CgraGraphActivationRuntime::hasPendingEvents() const {
          memory_->hasPendingEvents() || memory_->hasActiveActors() ||
          transport_->hasPendingEvents() || transport_->hasBlockedTransfers() ||
          physical_->hasPendingActions() || !firingByOccurrence_.empty() ||
-         !physicalTraceBindings_.empty();
+         !physicalTraceBindings_.empty() || !pendingGraphIngress_.empty();
 }
 
 std::uint64_t CgraGraphActivationRuntime::pendingActorFiringCount() const {
@@ -109,6 +121,44 @@ std::uint64_t CgraGraphActivationRuntime::pendingTransferCount() const {
 
 std::uint64_t CgraGraphActivationRuntime::pendingPhysicalActionCount() const {
   return physical_->pendingActionCount();
+}
+
+std::vector<CgraPendingActorFiringDiagnostic>
+CgraGraphActivationRuntime::pendingActorFiringDiagnostics() const {
+  std::vector<CgraPendingActorFiringDiagnostic> result;
+  result.reserve(firingByOccurrence_.size());
+  for (const ActorFiring &firing : firings_) {
+    if (!firing.active)
+      continue;
+    result.push_back({firing.semanticActorOrdinal, firing.occurrenceOrdinal,
+                      firing.transitionCaseOrdinal, firing.expectedTransfers,
+                      firing.completedTransfers, firing.physicalComplete,
+                      firing.causalReleaseSatisfied});
+  }
+  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.semanticActorOrdinal, lhs.occurrenceOrdinal) <
+           std::tie(rhs.semanticActorOrdinal, rhs.occurrenceOrdinal);
+  });
+  return result;
+}
+
+std::vector<CgraPendingTransferDiagnostic>
+CgraGraphActivationRuntime::pendingTransferDiagnostics() const {
+  return transport_->pendingTransferDiagnostics();
+}
+
+std::vector<CgraPendingGraphPhysicalActionDiagnostic>
+CgraGraphActivationRuntime::pendingPhysicalActionDiagnostics() const {
+  std::vector<CgraPendingGraphPhysicalActionDiagnostic> result;
+  for (CgraPendingPhysicalActionDiagnostic action :
+       physical_->pendingActionDiagnostics()) {
+    if (action.actionOrdinal >= plan_->physicalUseClients.size())
+      continue;
+    const CgraPhysicalUseClientKind client =
+        plan_->physicalUseClients[action.actionOrdinal];
+    result.push_back({std::move(action), client});
+  }
+  return result;
 }
 
 llvm::Expected<std::uint64_t> CgraGraphActivationRuntime::addCommittedFiring(
@@ -171,11 +221,14 @@ llvm::Error CgraGraphActivationRuntime::maybeRetire(
        firing.occurrenceOrdinal, firing.transitionCaseOrdinal, 0, coordinate});
   if (computeOwner) {
     if (llvm::Error error = compute_->retireActor(
-            firing.semanticActorOrdinal, firing.occurrenceOrdinal, coordinate))
+            firing.semanticActorOrdinal, firing.occurrenceOrdinal, coordinate,
+            transport_->actorSourcesAvailable(firing.semanticActorOrdinal)))
       return error;
   } else if (llvm::Error error =
                  memory_->retireActor(firing.semanticActorOrdinal,
-                                      firing.occurrenceOrdinal, coordinate)) {
+                                      firing.occurrenceOrdinal, coordinate,
+                                      transport_->actorSourcesAvailable(
+                                          firing.semanticActorOrdinal))) {
     return error;
   }
   releaseFiring(firingSlot);
@@ -399,9 +452,38 @@ llvm::Error CgraGraphActivationRuntime::schedulePublishedCandidates(
     return next.takeError();
   llvm::SmallBitVector candidates = state_->nextActorCandidates;
   state_->nextActorCandidates.reset();
+  for (int actor = candidates.find_first(); actor >= 0;
+       actor = candidates.find_next(actor))
+    if (!transport_->actorSourcesAvailable(actor))
+      candidates.reset(actor);
   if (llvm::Error error = compute_->acceptReadyCandidates(*next, candidates))
     return error;
   return memory_->acceptReadyCandidates(std::move(*next), candidates);
+}
+
+llvm::Error CgraGraphActivationRuntime::schedulePendingGraphIngress(
+    const SpatialEventCoordinate &coordinate) {
+  if (pendingGraphIngress_.empty())
+    return llvm::Error::success();
+  llvm::SmallDenseSet<unsigned, 8> visitedArguments;
+  llvm::SmallVector<GraphIngressEmission, 8> selected;
+  std::vector<GraphIngressEmission> remaining;
+  remaining.reserve(pendingGraphIngress_.size());
+  for (GraphIngressEmission &emission : pendingGraphIngress_) {
+    if (!visitedArguments.insert(emission.argumentOrdinal).second) {
+      remaining.push_back(std::move(emission));
+      continue;
+    }
+    auto ready = transport_->canAcceptGraphIngress(emission.argumentOrdinal);
+    if (!ready)
+      return ready.takeError();
+    if (*ready)
+      selected.push_back(std::move(emission));
+    else
+      remaining.push_back(std::move(emission));
+  }
+  pendingGraphIngress_ = std::move(remaining);
+  return transport_->acceptGraphIngressEmissions(coordinate, selected);
 }
 
 llvm::Expected<std::optional<CgraGraphActivationFrame>>
@@ -411,7 +493,7 @@ CgraGraphActivationRuntime::advance() {
   const std::optional<SpatialEventCoordinate> coordinate = nextCoordinate();
   if (!coordinate)
     return std::optional<CgraGraphActivationFrame>{};
-  CgraGraphActivationFrame result{*coordinate, {}, {}, {}, {}, {}};
+  CgraGraphActivationFrame result{*coordinate, {}, {}, {}, {}, {}, 0};
 
   while (true) {
     bool progressed = false;
@@ -423,6 +505,7 @@ CgraGraphActivationRuntime::advance() {
         return invalid("CGRA compute calendar lost its next frame");
       if (llvm::Error error = consumeComputeFrame(std::move(**frame), result))
         return std::move(error);
+      result.sourceMask |= 1;
       progressed = true;
     }
     if (isAt(memory_->nextCoordinate(), *coordinate)) {
@@ -433,6 +516,7 @@ CgraGraphActivationRuntime::advance() {
         return invalid("CGRA memory calendar lost its next frame");
       if (llvm::Error error = consumeMemoryFrame(std::move(**frame), result))
         return std::move(error);
+      result.sourceMask |= 2;
       progressed = true;
     }
     if (isAt(transport_->nextCoordinate(), *coordinate)) {
@@ -443,6 +527,7 @@ CgraGraphActivationRuntime::advance() {
         return invalid("CGRA transport calendar lost its next frame");
       if (llvm::Error error = consumeTransportFrame(std::move(**frame), result))
         return std::move(error);
+      result.sourceMask |= 4;
       progressed = true;
     }
     if (isAt(physical_->nextCoordinate(), *coordinate)) {
@@ -476,6 +561,7 @@ CgraGraphActivationRuntime::advance() {
       if (llvm::Error error = consumeTransportCompletions(
               *completions, (*physicalFrame)->coordinate, result))
         return std::move(error);
+      result.sourceMask |= 8;
       progressed = true;
     }
     if (!progressed || (!isAt(compute_->nextCoordinate(), *coordinate) &&
@@ -487,6 +573,13 @@ CgraGraphActivationRuntime::advance() {
 
   if (llvm::Error error = schedulePublishedCandidates(*coordinate))
     return std::move(error);
+  if (!pendingGraphIngress_.empty()) {
+    auto next = nextSpatialDelta(*coordinate);
+    if (!next)
+      return next.takeError();
+    if (llvm::Error error = schedulePendingGraphIngress(*next))
+      return std::move(error);
+  }
   llvm::sort(result.physicalEvents, [](const CgraPhysicalLifecycleEvent &lhs,
                                        const CgraPhysicalLifecycleEvent &rhs) {
     return std::tie(lhs.actionOrdinal, lhs.occurrenceOrdinal, lhs.kind,

@@ -2,10 +2,13 @@
 #include "DSE/StructuredOwnershipInvocationInternal.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/MappingDebugLog.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/StructuredSpecialMathAccuracy.h"
+#include "Frontend/IR/LoomOps.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Frontend/Lowering/GraphParallelLowering.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Error.h"
@@ -152,22 +155,52 @@ finalizeCandidate(
     frontend::MaterializedStructuredOwnershipCandidate candidate,
     const fabric::FinalizedFabricRoot &fabric,
     const lowering::CanonicalDataflowLoweringOptions &loweringOptions) {
+  if (candidate.ownedSpatialRegion) {
+    auto view = candidate.structuredProgram.view();
+    if (!view)
+      return view.takeError();
+    auto owner = view->resolve(*candidate.ownedSpatialRegion);
+    if (!owner)
+      return owner.takeError();
+    if (!llvm::isa_and_nonnull<loom::SpatialRegionOp>(owner->operation))
+      return invalid("candidate Spatial owner does not resolve to its carrier");
+    if (std::optional<std::string> rejection =
+            lowering::explainSpatialCarrierParallelRejection(
+                owner->operation)) {
+      return std::optional<frontend::MaterializedOwnershipCandidate>{};
+    }
+  }
+
   auto finalized = frontend::finalizeSpatialOwnershipCandidate(
       std::move(candidate), fabric, loweringOptions);
   if (finalized)
     return std::optional<frontend::MaterializedOwnershipCandidate>(
         std::move(*finalized));
 
-  bool rejected = false;
+  std::optional<frontend::SpatialOwnershipCandidateRejectionKind> rejectionKind;
+  std::string rejectionMessage;
   llvm::Error unhandled = llvm::handleErrors(
       finalized.takeError(),
       [&](const frontend::SpatialOwnershipCandidateRejection &rejection) {
-        rejected = true;
+        rejectionKind = rejection.kind();
+        rejectionMessage = rejection.message();
       });
   if (unhandled)
     return std::move(unhandled);
-  if (!rejected)
+  if (!rejectionKind)
     return invalid("candidate failed without a classified rejection");
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::MappingFailure, [&](llvm::json::Object &fields) {
+        fields["failure_scope"] = "structured_candidate_finalization";
+        fields["closure_status"] = "proven_infeasible";
+        fields["rejection_kind"] =
+            *rejectionKind == frontend::SpatialOwnershipCandidateRejectionKind::
+                                  NonFinalizable
+                ? "non_finalizable"
+                : "exact_fabric_inadmissible";
+        fields["diagnostic"] = rejectionMessage;
+      });
   return std::optional<frontend::MaterializedOwnershipCandidate>{};
 }
 

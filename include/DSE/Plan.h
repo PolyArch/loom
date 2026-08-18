@@ -240,6 +240,15 @@ using DsePlanIncompleteReason =
 
 llvm::StringRef toString(const DsePlanIncompleteReason &reason);
 
+/// Invocation-local transfer record for a plan that published usable outputs
+/// without exhausting every candidate or Evidence domain. The resolved view
+/// digest disambiguates PlanNodeRef across composed compiler selections.
+struct RetainedDsePlanIncompleteness final {
+  ComponentViewDigest resolvedDseConfigViewDigest;
+  std::uint64_t nodeOrdinal = 0;
+  DsePlanIncompleteReason reason;
+};
+
 class IncompleteDsePlanExecution final {
 public:
   IncompleteDsePlanExecution(IncompleteDsePlanExecution &&) = default;

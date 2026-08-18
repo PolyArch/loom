@@ -69,14 +69,49 @@ bool provesPostTestedInductionDomain(mlir::Value value, unsigned targetWidth) {
 
   std::optional<loom::raising::ExactPostTestedCountedLoopProjection>
       projection = loom::raising::projectExactPostTestedCountedLoop(loop);
-  if (!projection || projection->inductionLane != induction.getArgNumber())
+  if (!projection || projection->inductionLane != induction.getArgNumber() ||
+      !projection->lowerBoundValue || !projection->upperBoundValue ||
+      !projection->stepValue)
     return false;
 
   auto sourceType = llvm::dyn_cast<mlir::IntegerType>(induction.getType());
   if (!sourceType || sourceType.getWidth() <= targetWidth)
     return false;
-  llvm::APInt last = projection->upperBoundValue - projection->stepValue;
-  return projection->lowerBoundValue.isSignedIntN(targetWidth) &&
+  llvm::APInt last = *projection->upperBoundValue - *projection->stepValue;
+  return projection->lowerBoundValue->isSignedIntN(targetWidth) &&
+         last.isSignedIntN(targetWidth);
+}
+
+bool provesForInductionDomain(mlir::Value value, unsigned targetWidth) {
+  auto induction = llvm::dyn_cast<mlir::BlockArgument>(value);
+  if (!induction)
+    return false;
+  auto loop = llvm::dyn_cast_or_null<mlir::scf::ForOp>(
+      induction.getOwner()->getParentOp());
+  if (!loop || induction.getOwner() != loop.getBody() ||
+      induction != loop.getInductionVar())
+    return false;
+
+  auto sourceType = llvm::dyn_cast<mlir::IntegerType>(induction.getType());
+  if (!sourceType || sourceType.getWidth() <= targetWidth)
+    return false;
+  mlir::IntegerAttr lower = integerConstant(loop.getLowerBound());
+  mlir::IntegerAttr upper = integerConstant(loop.getUpperBound());
+  mlir::IntegerAttr step = integerConstant(loop.getStep());
+  if (!lower || !upper || !step || lower.getType() != sourceType ||
+      upper.getType() != sourceType || step.getType() != sourceType)
+    return false;
+
+  const unsigned arithmeticWidth = sourceType.getWidth() + 1;
+  llvm::APInt lowerValue = lower.getValue().sext(arithmeticWidth);
+  llvm::APInt upperValue = upper.getValue().sext(arithmeticWidth);
+  llvm::APInt stepValue = step.getValue().sext(arithmeticWidth);
+  if (lowerValue.isNegative() || !stepValue.isStrictlyPositive() ||
+      !lowerValue.slt(upperValue))
+    return false;
+  llvm::APInt last =
+      lowerValue + ((upperValue - lowerValue - 1).sdiv(stepValue) * stepValue);
+  return lowerValue.isSignedIntN(targetWidth) &&
          last.isSignedIntN(targetWidth);
 }
 
@@ -114,7 +149,8 @@ bool provesSignedFit(mlir::Value value, unsigned targetWidth) {
     return provesSignedFit(cast.getIn(), targetWidth);
   }
 
-  return provesPostTestedInductionDomain(value, targetWidth);
+  return provesPostTestedInductionDomain(value, targetWidth) ||
+         provesForInductionDomain(value, targetWidth);
 }
 
 struct ThreadDomainSignedRange final {

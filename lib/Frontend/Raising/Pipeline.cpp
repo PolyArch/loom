@@ -7,6 +7,7 @@
 //     loom-normalize-lifted-scf-exit
 //     loom-deduplicate-scf-while-state
 //     loom-scf-while-to-for
+//     cse
 //
 // Every pass walks callable regions in place. An imported llvm.func stays
 // the sole callable and ABI owner of its LLVM function; nothing is copied
@@ -19,6 +20,8 @@
 //   * arith-to-arith runs after structuring so that CFG recovery decisions
 //     are not confused by spurious arith.* ops in the comparison and
 //     induction position.
+//   * CSE runs after loop recovery so equivalent pure bounds and address
+//     factors retain one SSA owner before ownership boundaries isolate them.
 //
 // loom-materialize-fmuladd is registered but deliberately absent from this
 // pipeline: choosing a fused or split multiply-add is candidate lineage, not
@@ -28,6 +31,7 @@
 
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
+#include "mlir/Transforms/Passes.h"
 
 namespace loom {
 namespace raising {
@@ -60,6 +64,7 @@ void buildRaisingPipeline(::mlir::PassManager &pm) {
   pm.addPass(createNormalizeLiftedSCFExitPass());
   pm.addPass(createDeduplicateSCFWhileStatePass());
   pm.addPass(createSCFWhileToForPass());
+  pm.addPass(::mlir::createCSEPass());
 }
 
 } // namespace raising

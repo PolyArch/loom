@@ -58,6 +58,8 @@ void emitActiveHandshakeStatistics(
         fields["active_fragment_count"] = statistics.activeFragmentCount;
         fields["materialized_node_count"] = statistics.materializedNodeCount;
         fields["materialized_arc_count"] = statistics.materializedArcCount;
+        fields["fabric_unconditional_arc_count"] =
+            statistics.fabricUnconditionalArcCount;
         fields["materialized_contribution_count"] =
             statistics.materializedContributionCount;
         fields["transaction_closure_count"] =
@@ -924,8 +926,10 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   std::optional<FabricDerivedContextBundle> ownedContexts;
   const FabricDerivedContextBundle *derivedContexts = inputs.derivedContexts;
   if (!derivedContexts) {
-    auto built =
-        buildFabricDerivedContextBundle(inputs.fabric, inputs.physicalTiming);
+    DerivedContextCacheAccess staticAccess;
+    DerivedContextCacheAccess timingAccess;
+    auto built = buildFabricDerivedContextBundle(
+        inputs.fabric, inputs.physicalTiming, &staticAccess, &timingAccess);
     if (!built) {
       FreezeFailure failure = classifyFreezeFailure(built.takeError());
       switch (failure.kind) {
@@ -945,7 +949,8 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     ownedContexts.emplace(std::move(*built));
     derivedContexts = &*ownedContexts;
     emitFabricDerivedContextStatistics(
-        *derivedContexts, mapping_debug::Stage::SpatialPnr, 0, 1, 0, 1);
+        *derivedContexts, mapping_debug::Stage::SpatialPnr, staticAccess.hits,
+        staticAccess.misses, timingAccess.hits, timingAccess.misses);
   } else {
     emitFabricDerivedContextStatistics(
         *derivedContexts, mapping_debug::Stage::SpatialPnr, 1, 0, 1, 0);
@@ -956,13 +961,8 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
     emitFabricTopologyQuality(*inputs.topologyQualityDiagnostic,
                               mapping_debug::Stage::SpatialPnr);
   } else if (inputs.emitTopologyQualityDiagnostic) {
-    auto topology = analyzeFabricTopologyQualityForDiagnostics(inputs.fabric);
-    if (!topology)
-      return InvalidSpatialPnrGeneration{
-          InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
-          llvm::toString(topology.takeError())};
-    if (*topology)
-      emitFabricTopologyQuality(**topology, mapping_debug::Stage::SpatialPnr);
+    if (const auto *topology = derivedContexts->topologyQualityDiagnostic())
+      emitFabricTopologyQuality(*topology, mapping_debug::Stage::SpatialPnr);
   }
   llvm::Expected<FrozenSpatialPnrProblemHandle> problem =
       inputs.preparedActiveProblem
@@ -996,10 +996,10 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
           InvalidSpatialPnrGenerationReason::FrozenInput, accounting,
           llvm::toString(std::move(error))};
   }
-  emitSpatialActiveProblemStatistics(
-      **problem, mapping_debug::Stage::SpatialPnr,
-      inputs.preparedActiveProblem ? 1 : 0,
-      inputs.preparedActiveProblem ? 0 : 1);
+  emitSpatialActiveProblemStatistics(**problem,
+                                     mapping_debug::Stage::SpatialPnr,
+                                     inputs.preparedActiveProblem ? 1 : 0,
+                                     inputs.preparedActiveProblem ? 0 : 1);
   if (inputs.executionControl.stopRequested())
     return interruptedOutcome(
         SpatialPnrInterruptionStage::FrozenModelConstruction, std::nullopt,
@@ -1022,6 +1022,9 @@ generateSpatialMappings(const SpatialPnrGenerationInputs &inputs) {
   case ::loom::mapping::MappingDataflowProgressBasisKind::InitializedFeedback:
     break;
   case ::loom::mapping::MappingDataflowProgressBasisKind::Cyclic:
+    ::loom::mapping::emitMappingDataflowProgressBasisDiagnostic(
+        (*problem)->progressBasis(), inputs.dataflow,
+        mapping_debug::Stage::SpatialPnr);
     return IncompleteSpatialPnrGeneration{
         IncompleteSpatialPnrGenerationReason::ProofNotEstablished, accounting,
         "proof_not_established: cyclic Dataflow basis requires a typed "

@@ -21,7 +21,9 @@
 #include "Hardware/Configuration/PackedConfigurationABI.h"
 #include "Hardware/Implementation/FabricModel.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
+#include "PnR/PnrDerivedContext.h"
 #include "Runtime/FabricModelPlatform.h"
+#include "Runtime/Gem5DispatchABI.h"
 #include "Simulator/SpatialInvocation.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -274,7 +276,7 @@ llvm::Expected<FinalizedInstructionCoreBinary> buildInstructionBinary(
     const ArtifactRootReference &dataflowReference,
     const FinalizedCompilerTargetBinding &target,
     llvm::ArrayRef<dataflow::RootThreadLaunchRef> roots,
-    std::optional<dataflow::RootedGraphLaunchRef> spatialInvocation,
+    llvm::ArrayRef<dataflow::RootedGraphLaunchRef> spatialInvocations,
     std::uint64_t imageBase, const CompilerTargetLinkWorkspace &workspace,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (roots.empty())
@@ -291,16 +293,21 @@ llvm::Expected<FinalizedInstructionCoreBinary> buildInstructionBinary(
   table.reserve(roots.size());
   for (const auto indexed : llvm::enumerate(roots)) {
     std::optional<ThreadEntrySpatialInvocationBinding> invocation;
-    if (spatialInvocation &&
-        spatialInvocation->rootThreadLaunch == indexed.value())
-      invocation = ThreadEntrySpatialInvocationBinding{*spatialInvocation};
+    for (dataflow::RootedGraphLaunchRef graph : spatialInvocations) {
+      if (graph.rootThreadLaunch != indexed.value())
+        continue;
+      if (invocation)
+        return invalid("InstructionCore root has multiple invocation graphs");
+      invocation = ThreadEntrySpatialInvocationBinding{graph};
+    }
     table.push_back({indexed.value(), indexed.index(), std::move(invocation)});
   }
-  if (spatialInvocation &&
-      llvm::none_of(table, [](const ThreadEntryBinding &entry) {
-        return entry.spatialInvocation.has_value();
-      }))
-    return invalid("InstructionCore invocation graph has no selected root");
+  for (dataflow::RootedGraphLaunchRef graph : spatialInvocations)
+    if (llvm::none_of(table, [&](const ThreadEntryBinding &entry) {
+          return entry.rootThreadLaunch == graph.rootThreadLaunch &&
+                 entry.spatialInvocation.has_value();
+        }))
+      return invalid("InstructionCore invocation graph has no selected root");
   auto object = emitCompilerTargetObject(std::move(*module), target.binding());
   if (!object)
     return object.takeError();
@@ -380,56 +387,79 @@ publishApplicationWorkloads(
     return roots.takeError();
 
   std::vector<ArtifactRootReference> workloads;
-  llvm::Error workloadError = llvm::Error::success();
   for (dataflow::RootThreadLaunchRef root : *roots) {
-    auto domain = view->projectRootThreadLogicalDomain(root);
-    if (!domain)
-      return domain.takeError();
-    if (domain->coordinateRank != 0)
+    auto invocationPaths =
+        view->projectRootThreadInvocationPathsFromAbiEntry(entrySymbol, root);
+    if (!invocationPaths)
+      return invocationPaths.takeError();
+    if (llvm::any_of(*invocationPaths,
+                     [](const auto &path) { return path.calls.empty(); }))
       return std::variant<std::vector<ArtifactRootReference>,
                           UnsupportedApplicationBuild>{
           UnsupportedApplicationBuild{
-              ApplicationBuildUnsupportedKind::RootCoordinates,
+              ApplicationBuildUnsupportedKind::DirectInvocationBoundary,
               published.canonicalDataflow, root}};
+    llvm::Error workloadError = llvm::Error::success();
+    bool unsupportedCoordinates = false;
     view->forEachRootedGraphLaunch([&](dataflow::RootedGraphLaunchRef launch) {
-      if (workloadError || launch.rootThreadLaunch != root)
+      if (workloadError || unsupportedCoordinates ||
+          launch.rootThreadLaunch != root)
         return;
+      auto coordinates = view->enumerateStaticDenseCoordinates(
+          launch, runtime::gem5MaximumDynamicSpatialInvocations, entrySymbol);
+      if (!coordinates) {
+        workloadError = coordinates.takeError();
+        return;
+      }
+      if (!*coordinates) {
+        unsupportedCoordinates = true;
+        return;
+      }
       auto shapes = sim::projectSpatialSimulationBoundaryShapes(*view, launch);
       if (!shapes) {
         workloadError = shapes.takeError();
         return;
       }
-      sim::SpatialSimulationWorkload workloadDraft{launch};
-      workloadDraft.valueInputPlan.assign(shapes->valueInputs.size(),
-                                          sim::RuntimeValueInput{});
-      workloadDraft.observableContract.valueResults.resize(
-          shapes->valueResults.size());
-      std::iota(workloadDraft.observableContract.valueResults.begin(),
-                workloadDraft.observableContract.valueResults.end(), 0);
       auto writableRoots =
           sim::projectSpatialInvocationWritableMemoryRoots(*view, launch);
       if (!writableRoots) {
         workloadError = writableRoots.takeError();
         return;
       }
-      for (dataflow::LogicalMemoryRootRef memory : *writableRoots)
-        workloadDraft.observableContract.memories.push_back(
-            {dataflow::LogicalMemoryRootOrViewRef{memory},
-             sim::MemoryObservationForm::DiffFromRuntimeInput});
-      auto workload = sim::finalizeSimulationWorkload(workloadDraft, *view);
-      if (!workload) {
-        workloadError = workload.takeError();
-        return;
+      for (const std::vector<std::uint64_t> &point : **coordinates) {
+        sim::SpatialSimulationWorkload workloadDraft{launch};
+        workloadDraft.denseCoordinates = point;
+        workloadDraft.valueInputPlan.assign(shapes->valueInputs.size(),
+                                            sim::RuntimeValueInput{});
+        workloadDraft.observableContract.valueResults.resize(
+            shapes->valueResults.size());
+        std::iota(workloadDraft.observableContract.valueResults.begin(),
+                  workloadDraft.observableContract.valueResults.end(), 0);
+        for (dataflow::LogicalMemoryRootRef memory : *writableRoots)
+          workloadDraft.observableContract.memories.push_back(
+              {dataflow::LogicalMemoryRootOrViewRef{memory},
+               sim::MemoryObservationForm::DiffFromRuntimeInput});
+        auto workload = sim::finalizeSimulationWorkload(workloadDraft, *view);
+        if (!workload) {
+          workloadError = workload.takeError();
+          return;
+        }
+        auto reference = sim::publishSimulationWorkload(*workload, artifacts);
+        if (!reference) {
+          workloadError = reference.takeError();
+          return;
+        }
+        workloads.push_back(std::move(*reference));
       }
-      auto reference = sim::publishSimulationWorkload(*workload, artifacts);
-      if (!reference) {
-        workloadError = reference.takeError();
-        return;
-      }
-      workloads.push_back(std::move(*reference));
     });
     if (workloadError)
       return std::move(workloadError);
+    if (unsupportedCoordinates)
+      return std::variant<std::vector<ArtifactRootReference>,
+                          UnsupportedApplicationBuild>{
+          UnsupportedApplicationBuild{
+              ApplicationBuildUnsupportedKind::RootCoordinates,
+              published.canonicalDataflow, root}};
   }
   llvm::sort(workloads, artifactRootReferenceLess);
   workloads.erase(std::unique(workloads.begin(), workloads.end()),
@@ -509,6 +539,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
 
   std::vector<PreparedApplicationSoftware> preparedSoftware;
   std::vector<PreparedApplicationMappingAlternative> mappingAlternatives;
+  std::optional<UnsupportedApplicationBuild> firstUnsupported;
   preparedSoftware.reserve(completed.selected.size());
   mappingAlternatives.reserve(completed.selected.size());
   auto alternativePolicy = dse::JointDesignPolicy::get(
@@ -526,8 +557,11 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
     if (!workloads)
       return workloads.takeError();
     if (auto *unsupported =
-            std::get_if<UnsupportedApplicationBuild>(&*workloads))
-      return ApplicationBuildPreparationOutcome{std::move(*unsupported)};
+            std::get_if<UnsupportedApplicationBuild>(&*workloads)) {
+      if (!firstUnsupported)
+        firstUnsupported = std::move(*unsupported);
+      continue;
+    }
     auto roots =
         std::get<std::vector<ArtifactRootReference>>(std::move(*workloads));
     auto mappingPlan = dse::buildJointDesignExplorationPlan(
@@ -536,10 +570,16 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
     if (!mappingPlan)
       return mappingPlan.takeError();
     const ArtifactRootReference dataflow = published->canonicalDataflow;
+    const std::uint64_t preferenceRank = mappingAlternatives.size();
     mappingAlternatives.push_back(
-        {selected.preferenceRank, dataflow, std::move(*mappingPlan)});
+        {preferenceRank, dataflow, std::move(*mappingPlan)});
     preparedSoftware.push_back(
-        {selected.preferenceRank, std::move(*published), std::move(roots)});
+        {preferenceRank, std::move(*published), std::move(roots)});
+  }
+  if (mappingAlternatives.empty()) {
+    if (!firstUnsupported)
+      return invalid("pre-Mapping selection produced no workload outcome");
+    return ApplicationBuildPreparationOutcome{std::move(*firstUnsupported)};
   }
   return ApplicationBuildPreparationOutcome{PreparedApplicationBuild{
       std::move(request.sourceInvocation), std::move(preparedSoftware),
@@ -572,7 +612,9 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   auto scheduler = dse::SiteScheduler::create(std::move(request.siteCapacity));
   if (!scheduler)
     return scheduler.takeError();
+  pnr::PnrDerivedContextSession derivedContextSession;
 
+  std::optional<dse::JointDesignExecution> firstRetainedIncomplete;
   std::optional<dse::JointDesignExecution> lastCompletedNoFeasible;
   for (const PreparedApplicationMappingAlternative &alternative :
        prepared.mappingAlternatives) {
@@ -617,11 +659,19 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       mappingCount += pair.systemMappings.size();
     if (mappingCount != 0)
       return std::move(*execution);
-    if (std::holds_alternative<dse::IncompleteDsePlanExecution>(
-            execution->planExecution))
-      return std::move(*execution);
+    if (const auto *incomplete =
+            std::get_if<dse::IncompleteDsePlanExecution>(
+                &execution->planExecution)) {
+      if (incomplete->executionStopped())
+        return std::move(*execution);
+      if (!firstRetainedIncomplete)
+        firstRetainedIncomplete = std::move(*execution);
+      continue;
+    }
     lastCompletedNoFeasible = std::move(*execution);
   }
+  if (firstRetainedIncomplete)
+    return std::move(*firstRetainedIncomplete);
   return std::move(*lastCompletedNoFeasible);
 }
 
@@ -710,19 +760,29 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
       imported->dataflowView, prepared.sourceInvocation.entrySymbol);
   if (!invocationPlan)
     return invocationPlan.takeError();
-  std::optional<std::size_t> activeTargetGroup;
-  for (const auto indexed : llvm::enumerate(*roots)) {
-    if (indexed.value().empty())
-      continue;
-    if (activeTargetGroup || indexed.value().size() != 1 ||
-        indexed.value().front() != invocationPlan->root)
-      return invalid(
-          "initial dynamic dispatch requires one active InstructionCore "
-          "target containing the reachable root");
-    activeTargetGroup = indexed.index();
-  }
-  if (!activeTargetGroup)
+  std::vector<dataflow::RootThreadLaunchRef> mappedRoots;
+  for (llvm::ArrayRef<dataflow::RootThreadLaunchRef> groupRoots : *roots)
+    mappedRoots.insert(mappedRoots.end(), groupRoots.begin(), groupRoots.end());
+  llvm::sort(mappedRoots, [](const auto &lhs, const auto &rhs) {
+    return lhs.entity.value() < rhs.entity.value();
+  });
+  mappedRoots.erase(std::unique(mappedRoots.begin(), mappedRoots.end()),
+                    mappedRoots.end());
+  std::vector<dataflow::RootThreadLaunchRef> invocationRoots;
+  invocationRoots.reserve(invocationPlan->launches.size());
+  for (const detail::ApplicationSpatialInvocationPlan::Launch &launch :
+       invocationPlan->launches)
+    invocationRoots.push_back(launch.root);
+  llvm::sort(invocationRoots, [](const auto &lhs, const auto &rhs) {
+    return lhs.entity.value() < rhs.entity.value();
+  });
+  if (mappedRoots.empty())
     return invalid("SystemMapping selects no InstructionCore binary target");
+  if (std::adjacent_find(invocationRoots.begin(), invocationRoots.end()) !=
+          invocationRoots.end() ||
+      mappedRoots != invocationRoots)
+    return invalid(
+        "SystemMapping roots differ from the dynamic invocation roots");
 
   operationBegin = MonotonicClock::now();
   auto hostEntry = deriveHostProgramEntry(
@@ -731,7 +791,8 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
     return hostEntry.takeError();
   hostEntry->abiSymbol = detail::applicationHostEntrySymbol.str();
   auto hostModule = detail::materializeHostDispatchModule(
-      finalLinkedModule, prepared.sourceInvocation.entrySymbol,
+      finalLinkedModule, imported->dataflow,
+      prepared.sourceInvocation.entrySymbol,
       *invocationPlan);
   if (!hostModule)
     return hostModule.takeError();
@@ -773,9 +834,17 @@ llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(
   for (const auto indexed : llvm::enumerate(targets->instructionGroups())) {
     if ((*roots)[indexed.index()].empty())
       continue;
+    std::vector<dataflow::RootedGraphLaunchRef> invocationGraphs;
+    invocationGraphs.reserve((*roots)[indexed.index()].size());
+    for (const detail::ApplicationSpatialInvocationPlan::Launch &launch :
+         invocationPlan->launches)
+      if (llvm::is_contained((*roots)[indexed.index()], launch.root))
+        invocationGraphs.push_back(launch.graph);
+    if (invocationGraphs.size() != (*roots)[indexed.index()].size())
+      return invalid("InstructionCore target omits a dynamic invocation graph");
     auto binary = buildInstructionBinary(
         finalLinkedModule, dataflowReference, indexed.value().binding(),
-        (*roots)[indexed.index()], invocationPlan->graph, instructionImageBase,
+        (*roots)[indexed.index()], invocationGraphs, instructionImageBase,
         request.linkerWorkspace, artifacts, blobs);
     if (!binary)
       return binary.takeError();

@@ -418,6 +418,12 @@ release conjunction, execution context, and relation domain. Ordering and
 dense ordinals are derived only after canonical physical-key or complete
 member-byte sorting. The verifier, Deployment, Runtime, and simulator consume
 this one removable view instead of rebuilding independent capacity indexes.
+The trigger event family mechanically supplies the exact root-thread owner of
+the relation domain. Progress analysis intersects cells only within that same
+root-qualified Presburger space. Activations owned by distinct roots remain
+conservatively capable of overlapping, but their unrelated coordinate cells
+are never passed to a same-space intersection operation. Search and strict
+import independently rebuild and validate this root owner.
 
 Using that projection, the base verifier checks:
 

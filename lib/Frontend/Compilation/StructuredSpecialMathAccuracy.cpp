@@ -15,6 +15,7 @@
 #include "llvm/Support/Error.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <utility>
@@ -43,7 +44,8 @@ bool isSelectedSpatialOperation(mlir::Operation *operation) {
   return false;
 }
 
-llvm::Expected<bool> permitsApproximation(mlir::Operation *operation) {
+llvm::Expected<mlir::arith::FastMathFlags>
+specialMathFastMathFlags(mlir::Operation *operation) {
   auto fastMath =
       llvm::dyn_cast<mlir::arith::ArithFastMathInterface>(operation);
   if (!fastMath)
@@ -51,8 +53,15 @@ llvm::Expected<bool> permitsApproximation(mlir::Operation *operation) {
   mlir::arith::FastMathFlags flags = mlir::arith::FastMathFlags::none;
   if (mlir::arith::FastMathFlagsAttr attr = fastMath.getFastMathFlagsAttr())
     flags = attr.getValue();
+  return flags;
+}
+
+llvm::Expected<bool> permitsApproximation(mlir::Operation *operation) {
+  auto flags = specialMathFastMathFlags(operation);
+  if (!flags)
+    return flags.takeError();
   using Bits = std::underlying_type_t<mlir::arith::FastMathFlags>;
-  return (static_cast<Bits>(flags) &
+  return (static_cast<Bits>(*flags) &
           static_cast<Bits>(mlir::arith::FastMathFlags::afn)) != 0;
 }
 
@@ -251,6 +260,45 @@ enumerateStructuredSpecialMathAccuracyDecisions(
     return result;
   }
   return std::vector<StructuredSpecialMathAccuracyDecision>{};
+}
+
+llvm::Expected<std::vector<dataflow::CanonicalActorSchemaProjection>>
+projectStructuredSpecialMathAccuracyDomain(mlir::Operation *operation) {
+  if (!operation)
+    return invalid("special-math projection has no operation");
+  const std::optional<dataflow::OperationSchemaId> schema =
+      dataflow::operationSchemaOf(operation);
+  if (!schema || dataflow::semanticsCase(*schema) !=
+                     dataflow::OperationSemanticsCase::SpecialMathAccuracy)
+    return invalid("operation does not own special-math accuracy");
+  auto flags = specialMathFastMathFlags(operation);
+  if (!flags)
+    return flags.takeError();
+  auto approximation = permitsApproximation(operation);
+  if (!approximation)
+    return approximation.takeError();
+  auto selected = selectedAccuracy(operation, *approximation);
+  if (!selected)
+    return selected.takeError();
+
+  llvm::ArrayRef<SpecialMathAccuracyTier> tiers;
+  std::array<SpecialMathAccuracyTier, 1> selectedTier;
+  if (*selected) {
+    selectedTier.front() = **selected;
+    tiers = selectedTier;
+  } else {
+    tiers = *approximation ? specialMathAccuracyTiers()
+                           : specialMathAccuracyTiers().take_front(1);
+  }
+  const mlir::FunctionType type = mlir::FunctionType::get(
+      operation->getContext(), operation->getOperandTypes(),
+      operation->getResultTypes());
+  std::vector<dataflow::CanonicalActorSchemaProjection> result;
+  result.reserve(tiers.size());
+  for (SpecialMathAccuracyTier tier : tiers)
+    result.push_back(
+        {*schema, type, dataflow::SpecialMathPayload{*flags, tier}});
+  return result;
 }
 
 llvm::Expected<MaterializedStructuredSpecialMathCandidate>

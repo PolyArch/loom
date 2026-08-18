@@ -47,21 +47,15 @@ struct SourceBackedDfgValidationLimits final {
       std::chrono::steady_clock::duration::max();
 };
 
-/// Reapply one exact parent-local Structured ownership decision, capture every
-/// selected-region activation under the common source workload, replay the
-/// mechanically derived Canonical Dataflow graph, and compare value, memory,
-/// and retirement semantics. The source workload/runtime pair remains the
-/// sole persistent input identity; activation-specific Spatial inputs are
-/// derived transiently. A production semantic gate may provide its already
-/// computed source observation so the selected execution also proves the
-/// whole-program transformation without executing the candidate twice.
+/// Capture every activation of the finalized Structured candidate's selected
+/// Spatial boundary under the common source workload, replay the mechanically
+/// derived Canonical Dataflow graph, and compare value, stream, memory, and
+/// retirement semantics. The candidate's immutable thread/Spatial ABI is the
+/// sole activation-boundary authority. A production semantic gate may provide
+/// its already computed source observation so the same execution also proves
+/// the whole-program transformation.
 llvm::Expected<SourceBackedDfgValidationResult> validateSourceBackedDfgReplay(
-    const frontend::StructuredProgramCandidate &generationParent,
     const frontend::StructuredProgramCandidate &sourceProgram,
-    const frontend::SpatialOwnershipScope &scope,
-    const frontend::SpatialOwnershipDecisionPoint &decision,
-    llvm::ArrayRef<frontend::StructuredExecutionShapeDecision>
-        executionShapeDecisions,
     const frontend::MaterializedOwnershipCandidate &candidate,
     const CanonicalSimulationWorkload &workload,
     const CanonicalSimulationRuntimeInput &runtimeInput,

@@ -541,7 +541,7 @@ BuiltinTargetPreset = Small | Coverage | Large
 ```
 
 Every preset resolves to the single template identity
-`loom.adg.builtin.general_purpose` at schema version `6.0`. Their prior recipes
+`loom.adg.builtin.general_purpose` at schema version `7.0`. Their prior recipes
 are not retained as compatibility expansions.
 Version 3 replaced runtime tag-token gateway inputs with Mapping-configured tag
 writers, derived the minimum positive tag width from resident route capacity,
@@ -575,6 +575,15 @@ positive scale parameter. It owns the uniform number of independently routed
 single-stream converter lanes in each direction at every Temporal PE site, so
 Hardware DSE may trade mixed-schedule routability against Fabric size without
 changing the mapper or the template identity.
+Version 6.1 extends every catalog local Memory Operation Engine with the exact
+internal forwarding relation already owned by the Fabric memory contract:
+load data may feed store data, and load or store completion may feed either
+load or store control. These are optional Mapping dispositions, not implicit
+edges; an unselected software dependency remains an external routed net.
+Version 7 makes the local-memory Operation Port variant a required typed scale
+parameter. The selected element, vector, separate, or shared relation changes
+the exact memory template, resource owners, and Mapping domain; an older
+template version cannot infer it.
 
 The public builtin boundary is:
 
@@ -716,8 +725,8 @@ The initial scale anchors are:
 | mesh width and height            |       4 |         6 |       8 |
 | PE occurrences per SpatialCore   |      16 |        36 |      64 |
 | Spatial : Temporal PE ratio      |    12:4 |      27:9 |   48:16 |
-| memory occurrences per core      |       2 |         4 |       8 |
-| Spatial : Temporal memory ratio  |     1:1 |       2:2 |     4:4 |
+| memory occurrences per core      |       2 |         8 |       8 |
+| Spatial : Temporal memory ratio  |     1:1 |       4:4 |     4:4 |
 | Temporal resident-context anchor |       2 |         4 |       8 |
 | cross-schedule lanes / Temporal PE |     5 |         5 |       5 |
 | Module transport gateway anchor  |       2 |         4 |       8 |
@@ -733,6 +742,13 @@ Helper resource tables reference normative
 `ImplementationFamilyId` values; operation-family membership remains owned by
 the HSG registry. They do not duplicate member lists, spell operation names as
 dispatch keys, or define backend modes.
+
+The Coverage memory anchor exposes four Spatial read ports and four independent
+Temporal ingress match domains. This is the minimum balanced occurrence supply
+that can bind eight load rows sharing one launch-control producer while
+preserving Temporal Memory's unique row-and-role input match. Smaller resolved
+scales remain valid DSE candidates; they require the software frontier to retain
+or introduce temporal reuse instead of weakening the Fabric input contract.
 
 Each preset also owns one System memory service at base address zero. Its
 capacity is derived exactly as `AccCore occurrences * memoryCapacityBytes`, it
@@ -893,6 +909,18 @@ and scalar subword writes use the declared byte-enable guarantee.
 Equal-payload `vector<2xf64>` is not admitted because its 64-bit element lies
 outside this recipe's exact element domain.
 
+`makeVariant32LocalMemory` constructs the four closed Operation Port forms
+through these same owners. `ElementOnly` emits one element load port and one
+element store port and omits an unused mask endpoint. `VectorOnly` emits one
+vector load port and one vector store port. `SeparateElementVector` emits
+independent element and vector read/write port pairs, each with its own
+ResourceContract. `SharedElementVector` emits the two read/write ports above
+with both access domains and is exactly the form returned by
+`makeHybrid32LocalMemory`. The Local Memory Service advertises the union
+actually reachable through the selected ports. The enum and helper remain
+authoring inputs; finalized operation ports, access domains, resources, and
+service capabilities are the only persistent facts.
+
 The spatial form uses untagged operation-channel ports. Supplying the typed
 temporal parameters replaces every operation-channel port with the exact
 tagged form and requires positive tag width and resident-context count. The
@@ -905,6 +933,12 @@ advertises no atomic, fence, volatile, MMIO, or coherence behavior. Users
 needing another exact memory
 contract construct the same public `MemorySpec`, operation-port, service, and
 connectivity types directly; there is no parallel recipe schema.
+
+Both local-memory recipes declare the same five optional internal forwarding
+connections: `load.data -> store.data`, both completion outputs to
+`load.ctrl`, and both completion outputs to `store.ctrl`. TechMapping selects
+an exact software edge and one of these template-relative connections. The
+recipe does not absorb a dependency merely because two actors use one engine.
 
 `makeHybrid32SystemMemory` is the matching System-level convenience recipe.
 It returns one `SystemMemorySpec` containing the exact System

@@ -379,6 +379,10 @@ llvm::Error validateDescriptor(const CandidateGeneratorDescriptor &descriptor) {
       (descriptor.ownerLineagePayload->schemaDescriptorBytes.empty() ||
        !descriptor.ownerLineagePayload->validateCanonical))
     return invalid("descriptor has an incomplete owner lineage contract");
+  if (descriptor.ownerFeedbackPayload &&
+      (descriptor.ownerFeedbackPayload->schemaDescriptorBytes.empty() ||
+       !descriptor.ownerFeedbackPayload->validateCanonical))
+    return invalid("descriptor has an incomplete owner feedback contract");
   if (static_cast<std::uint32_t>(descriptor.determinism) >
       static_cast<std::uint32_t>(
           CandidateGeneratorDeterminism::IndependentReplicates))
@@ -483,6 +487,13 @@ llvm::Error validateProviderResult(
   if (llvm::Error error = validateCandidateGeneratorWorkSummary(
           binding.descriptorRef(), result.workSummary))
     return error;
+  if (result.ownerFeedback) {
+    if (!descriptor.ownerFeedbackPayload)
+      return invalid("provider returned feedback without an owner contract");
+    if (llvm::Error error = descriptor.ownerFeedbackPayload->validateCanonical(
+            *result.ownerFeedback, inputBindings, store))
+      return error;
+  }
   if (auto *completed =
           std::get_if<CompletedCandidateGeneratorResult>(&result.outcome)) {
     if (llvm::Error error = canonicalizeOutputBindings(

@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace loom::lowering {
 
@@ -34,6 +35,15 @@ void forEachParallelPoint(
 /// parallel lowering.
 ::mlir::LogicalResult
 checkLogicalThreadParallelPreconditions(::mlir::Operation *forall);
+
+/// Applies the graph-owned parallel legality proof to every parallel domain
+/// inside one just-materialized Spatial carrier. Diagnostics are captured and
+/// returned as a candidate-local explanation instead of being emitted. This
+/// lets ownership search reject a non-finalizable coordinate before graph
+/// publication while the lowering pass retains the same proof as its strict
+/// verifier.
+std::optional<std::string>
+explainSpatialCarrierParallelRejection(::mlir::Operation *spatialCarrier);
 
 } // namespace loom::lowering
 

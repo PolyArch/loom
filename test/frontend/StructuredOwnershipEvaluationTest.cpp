@@ -1250,8 +1250,7 @@ void runEvaluationAnchor() {
       store, blobs));
 
   auto spatialReplay = take(loom::sim::validateSourceBackedDfgReplay(
-      compiled.structuredProgram, compiled.structuredProgram, spatialScope,
-      spatialDecision, {}, spatial, inputs.workload, inputs.runtimeInput,
+      compiled.structuredProgram, spatial, inputs.workload, inputs.runtimeInput,
       {100000, 1000000, 256ULL * 1024ULL * 1024ULL}, &inputs.observations));
   if (spatialReplay.status !=
           loom::sim::SourceBackedDfgValidationStatus::Equivalent ||
@@ -1259,8 +1258,7 @@ void runEvaluationAnchor() {
       spatialReplay.wavefrontSteps == 0 || spatialReplay.eventCount == 0)
     fail("functional replay did not execute the selected graph activation");
   auto coldReplay = take(loom::sim::validateSourceBackedDfgReplay(
-      compiled.structuredProgram, compiled.structuredProgram, coldScope,
-      coldDecision, {}, cold, inputs.workload, inputs.runtimeInput,
+      compiled.structuredProgram, cold, inputs.workload, inputs.runtimeInput,
       {100000, 1000000, 256ULL * 1024ULL * 1024ULL}, &inputs.observations));
   if (coldReplay.status !=
           loom::sim::SourceBackedDfgValidationStatus::Inapplicable ||
@@ -1273,10 +1271,6 @@ void runEvaluationAnchor() {
           {inputs.workloadReference,
            inputs.runtimeInputReference,
            compiled.structuredProgram,
-           compiled.structuredProgram,
-           spatialScope,
-           spatialDecision,
-           {},
            spatial,
            inputs.workload,
            inputs.runtimeInput,
@@ -1294,10 +1288,6 @@ void runEvaluationAnchor() {
               {inputs.workloadReference,
                inputs.runtimeInputReference,
                compiled.structuredProgram,
-               compiled.structuredProgram,
-               spatialScope,
-               spatialDecision,
-               {},
                spatial,
                inputs.workload,
                inputs.runtimeInput,
@@ -1311,10 +1301,6 @@ void runEvaluationAnchor() {
               {inputs.workloadReference,
                inputs.runtimeInputReference,
                compiled.structuredProgram,
-               compiled.structuredProgram,
-               tinyScope,
-               tinyDecision,
-               {},
                tiny,
                inputs.workload,
                inputs.runtimeInput,
@@ -1328,10 +1314,6 @@ void runEvaluationAnchor() {
               {inputs.workloadReference,
                inputs.runtimeInputReference,
                compiled.structuredProgram,
-               compiled.structuredProgram,
-               coldScope,
-               coldDecision,
-               {},
                cold,
                inputs.workload,
                inputs.runtimeInput,

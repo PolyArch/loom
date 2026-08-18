@@ -1,6 +1,7 @@
 #include "TechMappingCandidate.h"
 
 #include "Common/MappingDebugLog.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -196,15 +197,58 @@ void emitMemorySupplyRejection(
       });
 }
 
+TechMappingComputeContextHallDeficit projectComputeContextHallDeficit(
+    llvm::ArrayRef<const TechMatchRow *> rows, const TechMatchDomain &domain,
+    const SpatialComputeContextSupplyAnalysis &analysis) {
+  std::vector<const TechMatchRow *> computeRows;
+  for (const TechMatchRow *row : rows)
+    if (std::holds_alternative<TechComputeRealizationView>(row->realization))
+      computeRows.push_back(row);
+
+  std::map<std::vector<std::uint8_t>, TechMappingComputeContextHallDemandGroup>
+      grouped;
+  for (const std::uint64_t demand : analysis.hallDemands) {
+    const TechMatchRow &row = *computeRows[demand];
+    const auto &realization =
+        std::get<TechComputeRealizationView>(row.realization);
+    const std::vector<std::uint8_t> key =
+        ::loom::fabric::canonicalFabricBytes(realization.capabilityTemplate);
+    auto [found, inserted] =
+        grouped.try_emplace(key, TechMappingComputeContextHallDemandGroup{
+                                     realization.capabilityTemplate, 0, {}});
+    ++found->second.demandCount;
+    if (!inserted)
+      continue;
+    for (const std::size_t value : row.computeContextValues)
+      found->second.compatibleContexts.push_back(domain.computeContexts[value]);
+  }
+  std::vector<TechMappingComputeContextHallDemandGroup> groups;
+  groups.reserve(grouped.size());
+  for (auto &[key, group] : grouped) {
+    (void)key;
+    groups.push_back(std::move(group));
+  }
+  return llvm::cantFail(TechMappingComputeContextHallDeficit::get(
+      analysis.demandCount, analysis.maximumMatching, groups));
+}
+
 bool rootSupplyAdmissible(llvm::ArrayRef<const TechMatchRow *> rows,
                           const TechMatchDomain &domain,
-                          TechMappingGenerationAccounting &accounting) {
+                          TechMappingGenerationAccounting &accounting,
+                          TechMappingGenerationFeedback &feedback) {
   const std::size_t computeCount = llvm::count_if(rows, [](const auto *row) {
     return std::holds_alternative<TechComputeRealizationView>(row->realization);
   });
-  if (computeCount > 1 &&
-      !analyzeComputeContextSupply(rows, domain, accounting).admissible())
-    return false;
+  if (computeCount > 1) {
+    SpatialComputeContextSupplyAnalysis analysis =
+        analyzeComputeContextSupply(rows, domain, accounting);
+    if (!analysis.admissible()) {
+      retainTechMappingComputeContextHallFeedback(
+          feedback.computeContextHall,
+          projectComputeContextHallDeficit(rows, domain, analysis));
+      return false;
+    }
+  }
   const std::size_t memoryCount = llvm::count_if(rows, [](const auto *row) {
     return std::holds_alternative<TechMemoryRealizationView>(row->realization);
   });
@@ -244,6 +288,177 @@ bool coversMask(const ActorMask &covered, const ActorMask &required) {
       return false;
   return true;
 }
+
+std::uint64_t saturatingMultiply(std::uint64_t lhs, std::uint64_t rhs) {
+  if (lhs == 0 || rhs == 0)
+    return 0;
+  if (lhs > std::numeric_limits<std::uint64_t>::max() / rhs)
+    return std::numeric_limits<std::uint64_t>::max();
+  return lhs * rhs;
+}
+
+struct ConstructiveCoverFrontier final {
+  std::vector<std::vector<const TechMatchRow *>> covers;
+  bool interrupted = false;
+};
+
+class ConstructiveCoverSearch final {
+public:
+  ConstructiveCoverSearch(const TechMatchDomain &domain,
+                          llvm::ArrayRef<std::vector<std::size_t>> rowsByActor,
+                          const ResolvedTechMappingConfigView &config,
+                          TechMappingGenerationAccounting &accounting,
+                          TechMappingGenerationFeedback &feedback,
+                          std::uint64_t coverLimit,
+                          ExecutionControlView executionControl)
+      : domain_(domain), rowsByActor_(rowsByActor), config_(config),
+        accounting_(accounting), feedback_(feedback), coverLimit_(coverLimit),
+        executionControl_(executionControl), covered_(domain.actors.size()) {
+    const std::uint64_t remaining =
+        accounting_.partialCoverExpansions >=
+                config_.partialCoverExpansionLimit()
+            ? 0
+            : config_.partialCoverExpansionLimit() -
+                  accounting_.partialCoverExpansions;
+    const std::uint64_t scaled = saturatingMultiply(
+        saturatingMultiply(domain_.actors.size(),
+                           std::max<std::uint64_t>(coverLimit_, 1)),
+        16);
+    const std::uint64_t localBudget = std::min<std::uint64_t>(
+        remaining, std::max<std::uint64_t>(4096, scaled));
+    expansionLimit_ =
+        saturatingAdd(accounting_.partialCoverExpansions, localBudget);
+  }
+
+  ConstructiveCoverFrontier run() {
+    explore(0);
+    llvm::sort(result_.covers, [](const auto &lhs, const auto &rhs) {
+      if (lhs.size() != rhs.size())
+        return lhs.size() < rhs.size();
+      const std::uint64_t lhsBreadth = coverSupplyBreadth(lhs);
+      const std::uint64_t rhsBreadth = coverSupplyBreadth(rhs);
+      if (lhsBreadth != rhsBreadth)
+        return lhsBreadth > rhsBreadth;
+      return std::lexicographical_compare(
+          lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+          [](const TechMatchRow *lhsRow, const TechMatchRow *rhsRow) {
+            return lhsRow->key < rhsRow->key;
+          });
+    });
+    result_.covers.erase(std::unique(result_.covers.begin(),
+                                     result_.covers.end(),
+                                     [](const auto &lhs, const auto &rhs) {
+                                       return llvm::equal(lhs, rhs);
+                                     }),
+                         result_.covers.end());
+    return std::move(result_);
+  }
+
+private:
+  bool rowAvailable(std::size_t row) const {
+    return llvm::none_of(domain_.rows[row].actorSlots,
+                         [&](std::size_t actor) { return covered_[actor]; });
+  }
+
+  std::vector<std::size_t> optionsFor(std::size_t actor) const {
+    std::vector<std::size_t> options;
+    for (const std::size_t row : rowsByActor_[actor])
+      if (rowAvailable(row))
+        options.push_back(row);
+    llvm::sort(options, [&](std::size_t lhs, std::size_t rhs) {
+      const TechMatchRow &lhsRow = domain_.rows[lhs];
+      const TechMatchRow &rhsRow = domain_.rows[rhs];
+      if (lhsRow.actorSlots.size() != rhsRow.actorSlots.size())
+        return lhsRow.actorSlots.size() > rhsRow.actorSlots.size();
+      const bool lhsTemporalMemory = lhsRow.memoryOccurrenceDemand &&
+                                     lhsRow.memoryOccurrenceDemand->schedule ==
+                                         ::fabric::Schedule::Temporal;
+      const bool rhsTemporalMemory = rhsRow.memoryOccurrenceDemand &&
+                                     rhsRow.memoryOccurrenceDemand->schedule ==
+                                         ::fabric::Schedule::Temporal;
+      if (lhsTemporalMemory != rhsTemporalMemory)
+        return lhsTemporalMemory;
+      const std::uint64_t lhsBreadth = rowSupplyBreadth(lhsRow);
+      const std::uint64_t rhsBreadth = rowSupplyBreadth(rhsRow);
+      if (lhsBreadth != rhsBreadth)
+        return lhsBreadth > rhsBreadth;
+      return lhsRow.key < rhsRow.key;
+    });
+    return options;
+  }
+
+  bool consumeExpansion() {
+    if (accounting_.partialCoverExpansions >= expansionLimit_)
+      return false;
+    ++accounting_.partialCoverExpansions;
+    return true;
+  }
+
+  void explore(std::size_t coveredCount) {
+    if (result_.interrupted || result_.covers.size() >= coverLimit_ ||
+        completedChecks_ >= config_.candidateEvaluationLimit() ||
+        accounting_.partialCoverExpansions >= expansionLimit_)
+      return;
+    if (executionControl_.stopRequested()) {
+      result_.interrupted = true;
+      return;
+    }
+    if (coveredCount == covered_.size()) {
+      ++completedChecks_;
+      ++accounting_.constructiveCoverCompletedChecks;
+      if (!detail::rootSupplyAdmissible(selected_, domain_, accounting_,
+                                        feedback_))
+        return;
+      std::vector<const TechMatchRow *> cover = selected_;
+      llvm::sort(cover, [](const TechMatchRow *lhs, const TechMatchRow *rhs) {
+        return lhs->key < rhs->key;
+      });
+      result_.covers.push_back(std::move(cover));
+      return;
+    }
+
+    std::vector<std::size_t> options;
+    for (std::size_t actor = 0; actor < covered_.size(); ++actor) {
+      if (covered_[actor])
+        continue;
+      std::vector<std::size_t> candidate = optionsFor(actor);
+      if (candidate.empty())
+        return;
+      if (options.empty() || candidate.size() < options.size())
+        options = std::move(candidate);
+      if (options.size() == 1)
+        break;
+    }
+
+    for (const std::size_t row : options) {
+      if (!consumeExpansion())
+        return;
+      const TechMatchRow &candidate = domain_.rows[row];
+      for (const std::size_t actor : candidate.actorSlots)
+        covered_[actor] = true;
+      selected_.push_back(&candidate);
+      explore(coveredCount + candidate.actorSlots.size());
+      selected_.pop_back();
+      for (const std::size_t actor : candidate.actorSlots)
+        covered_[actor] = false;
+      if (result_.interrupted || result_.covers.size() >= coverLimit_)
+        return;
+    }
+  }
+
+  const TechMatchDomain &domain_;
+  llvm::ArrayRef<std::vector<std::size_t>> rowsByActor_;
+  const ResolvedTechMappingConfigView &config_;
+  TechMappingGenerationAccounting &accounting_;
+  TechMappingGenerationFeedback &feedback_;
+  std::uint64_t coverLimit_ = 0;
+  ExecutionControlView executionControl_;
+  std::vector<bool> covered_;
+  std::vector<const TechMatchRow *> selected_;
+  std::uint64_t expansionLimit_ = 0;
+  std::uint64_t completedChecks_ = 0;
+  ConstructiveCoverFrontier result_;
+};
 
 struct IncidenceComponent final {
   std::vector<std::size_t> actors;
@@ -330,11 +545,12 @@ public:
                        llvm::ArrayRef<std::size_t> actorLocalSlots,
                        const ResolvedTechMappingConfigView &config,
                        TechMappingGenerationAccounting &accounting,
+                       TechMappingGenerationFeedback &feedback,
                        ExecutionControlView executionControl)
       : domain_(domain), component_(component), rowsByActor_(rowsByActor),
         rowMasks_(rowMasks), actorLocalSlots_(actorLocalSlots),
         componentMask_(actorMaskWordCount(component.actors.size()), 0),
-        config_(config), accounting_(accounting),
+        config_(config), accounting_(accounting), feedback_(feedback),
         executionControl_(executionControl) {
     for (std::size_t actor = 0; actor < component_.actors.size(); ++actor)
       setActor(componentMask_, actor);
@@ -445,7 +661,7 @@ private:
     rows.reserve(state.selectedRows.size());
     for (const std::size_t row : state.selectedRows)
       rows.push_back(&domain_.rows[row]);
-    return detail::rootSupplyAdmissible(rows, domain_, accounting_);
+    return detail::rootSupplyAdmissible(rows, domain_, accounting_, feedback_);
   }
 
   bool consumeExpansion() {
@@ -603,6 +819,7 @@ private:
   ActorMask componentMask_;
   const ResolvedTechMappingConfigView &config_;
   TechMappingGenerationAccounting &accounting_;
+  TechMappingGenerationFeedback &feedback_;
   ExecutionControlView executionControl_;
   std::priority_queue<ComponentSearchState, std::vector<ComponentSearchState>,
                       ComponentStateGreater>
@@ -775,13 +992,49 @@ TechCoverSearchResult searchTechMatchCovers(
     }
   }
 
+  std::uint64_t rectangularSearchWork = 0;
+  for (const IncidenceComponent &component : incidence)
+    rectangularSearchWork = std::max(
+        rectangularSearchWork,
+        saturatingMultiply(component.rows.size(), component.actors.size()));
+  constexpr std::uint64_t minimumConstructiveSearchSurface = 4096;
+  constexpr std::size_t minimumConstructiveComponentActorCount = 128;
+  const bool hasLargeComponent =
+      llvm::any_of(incidence, [&](const IncidenceComponent &component) {
+        return component.actors.size() >=
+               minimumConstructiveComponentActorCount;
+      });
+  if (hasLargeComponent &&
+      rectangularSearchWork > minimumConstructiveSearchSurface &&
+      rectangularSearchWork > config.partialCoverExpansionLimit()) {
+    ++accounting.constructiveCoverSearchInvocations;
+    ConstructiveCoverSearch constructive(domain, rowsByActor, config,
+                                         accounting, result.feedback,
+                                         coverLimit, executionControl);
+    ConstructiveCoverFrontier frontier = constructive.run();
+    accounting.constructiveCoverPublications = saturatingAdd(
+        accounting.constructiveCoverPublications, frontier.covers.size());
+    if (frontier.interrupted) {
+      result.exhausted = false;
+      result.interrupted = true;
+      return result;
+    }
+    if (!frontier.covers.empty()) {
+      result.covers = std::move(frontier.covers);
+      result.exhausted = false;
+      return result;
+    }
+    result.exhausted = false;
+    return result;
+  }
+
   std::vector<LazyComponentCovers> components;
   components.reserve(incidence.size());
   for (const IncidenceComponent &component : incidence) {
     LazyComponentCovers lazy;
     lazy.cursor = std::make_unique<ComponentCoverCursor>(
         domain, component, rowsByActor, rowMasks, actorLocalSlots, config,
-        accounting, executionControl);
+        accounting, result.feedback, executionControl);
     ComponentAdvance first = lazy.cursor->next();
     if (first.kind == ComponentAdvanceKind::Interrupted) {
       result.exhausted = false;
@@ -856,8 +1109,12 @@ TechCoverSearchResult searchTechMatchCovers(
       const SpatialComputeContextSupplyAnalysis supply =
           analyzeComputeContextSupply(currentCover, domain, accounting);
       supplyAdmissible = supply.admissible();
-      if (!supplyAdmissible)
+      if (!supplyAdmissible) {
+        retainTechMappingComputeContextHallFeedback(
+            result.feedback.computeContextHall,
+            projectComputeContextHallDeficit(currentCover, domain, supply));
         emitComputeContextRejection(fullSupplyChecks - 1, currentCover, supply);
+      }
     }
     const std::size_t memoryCount =
         llvm::count_if(currentCover, [](const auto *row) {

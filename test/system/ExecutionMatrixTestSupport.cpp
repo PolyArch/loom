@@ -9,6 +9,7 @@
 #include "Dataflow/IR/DataflowOps.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Deployment/Deployment.h"
+#include "Deployment/DeploymentSpatialLaunchSelection.h"
 #include "EDA/Adapters/OpenSource/MappedRtlSimulation.h"
 #include "Evaluation/ModelProvider.h"
 #include "Evaluation/Models/CgraSimulation.h"
@@ -70,6 +71,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -723,7 +725,6 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ArtifactStore &artifacts,
   const ArtifactRootReference interconnect = *hardware.interconnect;
   require(test, !hardware.implementations.empty(),
           "System fixture omitted SpatialCore implementations");
-  auto implementation = hardware.implementations.front();
   const auto systemView =
       take(test, fabric::requireSystemRoot(hardware.system.view()));
   const auto cores = systemView.artifact().accCoreOccurrences();
@@ -750,6 +751,24 @@ SharedFixture buildSharedFixture(llvm::StringRef test, ArtifactStore &artifacts,
       std::move(programs), artifacts, blobs, tree);
   const auto [spatialWorkload, spatialRuntimeInput] =
       publishSpatialInputs(test, dataflow, artifacts);
+  auto spatialInputs =
+      take(test, sim::importSpatialSimulationInputs(
+                     spatialWorkload, spatialRuntimeInput, artifacts));
+  const sim::SpatialSimulationWorkload *spatial =
+      spatialInputs.workload.spatial();
+  require(test, spatial != nullptr,
+          "System fixture Spatial workload has no launch selection");
+  auto launchSelection =
+      take(test, deployment::resolveDeploymentSpatialLaunchSelection(
+                     deployment, spatial->launchRef, spatial->denseCoordinates,
+                     artifacts, blobs));
+  const auto selectedImplementation =
+      llvm::find_if(hardware.implementations, [&](const auto &candidate) {
+        return candidate.reference() == launchSelection.hardwareImplementation;
+      });
+  require(test, selectedImplementation != hardware.implementations.end(),
+          "Deployment selected an implementation outside the fixture");
+  auto implementation = *selectedImplementation;
   auto systemInputs = publishSystemInputs(test, deployment, artifacts);
   return {std::move(context),
           std::move(dataflow),
@@ -899,6 +918,13 @@ struct ToolBinding final {
   external_tool::LocalToolConfig local;
   external_tool::ResolvedToolBinding resolved;
 };
+
+std::uint64_t qualificationBuildJobs() {
+  const std::uint64_t concurrency = std::thread::hardware_concurrency();
+  if (concurrency <= 1)
+    return 1;
+  return concurrency > 4 ? concurrency - 4 : concurrency;
+}
 
 ToolBinding
 resolveHostTool(llvm::StringRef test,
@@ -1080,6 +1106,8 @@ CompletedRun runSpatialCell(llvm::StringRef test, ExecutionMatrixCell cell,
       test, fixture, verilator.resolved.version, resolution, artifacts, blobs);
   verilator.local.tools[external_tool::verilatorProvider().binding.key]
       .providerOptions["max_cycles"] = 128;
+  verilator.local.tools[external_tool::verilatorProvider().binding.key]
+      .providerOptions["build_jobs"] = qualificationBuildJobs();
   return runExternal(test, request, resolution, std::move(verilator.local),
                      tree.path("spatial-rtl-bundle"), artifacts, blobs);
 }
@@ -1116,6 +1144,8 @@ CompletedRun runSystemCell(llvm::StringRef test, ExecutionMatrixCell cell,
         verilator->local.tools[external_tool::verilatorProvider().binding.key]);
     local.tools[external_tool::verilatorProvider().binding.key]
         .providerOptions["max_cycles"] = 128;
+    local.tools[external_tool::verilatorProvider().binding.key]
+        .providerOptions["build_jobs"] = qualificationBuildJobs();
   }
   CompletedRun completed =
       runExternal(test, request, resolution, std::move(local),

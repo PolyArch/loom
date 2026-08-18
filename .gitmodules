@@ -22,3 +22,12 @@
 [submodule "externals/or-tools"]
 	path = externals/or-tools
 	url = https://github.com/google/or-tools.git
+[submodule "externals/gapbs"]
+	path = externals/gapbs
+	url = https://github.com/sbeamer/gapbs.git
+[submodule "externals/mlperf-tiny"]
+	path = externals/mlperf-tiny
+	url = https://github.com/mlcommons/tiny.git
+[submodule "externals/llama2.c"]
+	path = externals/llama2.c
+	url = https://github.com/karpathy/llama2.c.git

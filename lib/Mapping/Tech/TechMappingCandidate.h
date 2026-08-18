@@ -34,6 +34,7 @@ struct TechMatchDomain final {
   std::vector<::dataflow::ActorRef> actors;
   std::vector<TechMatchRow> rows;
   std::size_t computeContextValueCount = 0;
+  std::vector<::loom::fabric::InstructionContextRef> computeContexts;
   bool exhausted = true;
   bool interrupted = false;
 };
@@ -68,6 +69,7 @@ struct TechCoverSearchResult final {
   std::vector<std::vector<const TechMatchRow *>> covers;
   bool exhausted = true;
   bool interrupted = false;
+  TechMappingGenerationFeedback feedback = {};
 };
 
 TechCoverSearchResult

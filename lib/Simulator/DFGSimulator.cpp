@@ -680,7 +680,7 @@ void seedBlockArgument(SimulatorState &state, mlir::BlockArgument arg,
                        const Token &token) {
   const std::uint64_t occurrence = state.seededTokenCounts[arg]++;
   state.observedOutputs[arg].push_back(token);
-  if (state.graphIngressCapture) {
+  if (state.graphIngressCapture && !arg.use_empty()) {
     state.graphIngressCapture->push_back(
         GraphIngressEmission{arg.getArgNumber(), occurrence, token});
     return;

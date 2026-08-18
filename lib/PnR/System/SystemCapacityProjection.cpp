@@ -620,6 +620,7 @@ llvm::Error appendResourceProgressActivation(
     const FrozenResourceCapacityIndex &resources,
     llvm::ArrayRef<std::string> patternPhysicalOwnerKeys,
     std::size_t patternOrdinal, ::loom::mapping::ExecutionContextKey context,
+    ::dataflow::RootThreadLaunchRef relationRoot,
     std::vector<::loom::mapping::SystemPresburgerCell> relationDomain,
     std::vector<::dataflow::EventFamilyKey> triggerAlternatives,
     std::vector<::loom::mapping::MappingProgressCausalReleaseProjection>
@@ -636,6 +637,7 @@ llvm::Error appendResourceProgressActivation(
   arbitration.physicalOwnerKey = patternPhysicalOwnerKeys[patternOrdinal];
   ::loom::mapping::MappingProgressActivationProjection activation{
       std::move(context),
+      relationRoot,
       std::move(relationDomain),
       std::move(triggerAlternatives),
       {},
@@ -701,8 +703,8 @@ projectMutableResourceDemand(
     if (llvm::Error error = appendResourceProgressActivation(
             resources, patternPhysicalOwnerKeys, *pattern,
             ::loom::mapping::InstructionExecutionContextKey{use.context.core},
-            domain->second.cells, {events.trigger}, {{{events.release}}},
-            result.progressActivations))
+            use.root, domain->second.cells, {events.trigger},
+            {{{events.release}}}, result.progressActivations))
       return std::move(error);
   }
 
@@ -753,6 +755,7 @@ projectMutableResourceDemand(
     result.uses.push_back({*pattern, serviceActivationKey(use)});
     if (llvm::Error error = appendResourceProgressActivation(
             resources, patternPhysicalOwnerKeys, *pattern, std::move(context),
+            problem.threadDecisions()[serviceContext.threadDecision].root,
             serviceContext.cells, {std::move(*trigger)}, {},
             result.progressActivations))
       return std::move(error);
@@ -853,6 +856,7 @@ SystemCapacityModel::projectWithCache(
 
   struct SpatialContextProjection final {
     std::string graphKey;
+    ::dataflow::RootThreadLaunchRef relationRoot;
     PnrIndex core = getInvalidPnrIndex();
     PnrIndex mapping = getInvalidPnrIndex();
     std::vector<::loom::mapping::SystemPresburgerCell> cells;
@@ -875,7 +879,16 @@ SystemCapacityModel::projectWithCache(
       const PnrIndex core = cores[candidate.threadChoices[thread]];
       auto [position, inserted] = spatialContexts.try_emplace(
           std::make_tuple(graphKeys_[graph], core, mapping),
-          SpatialContextProjection{graphKeys_[graph], core, mapping, {}});
+          SpatialContextProjection{
+              graphKeys_[graph],
+              problem.graphDecisions()[graph].launch.rootThreadLaunch,
+              core,
+              mapping,
+              {}});
+      if (!inserted &&
+          position->second.relationRoot !=
+              problem.graphDecisions()[graph].launch.rootThreadLaunch)
+        return invalid("one Spatial context crosses relation-root spaces");
       position->second.cells.push_back(problem.graphDecisions()[graph].cell);
       routedMappings.emplace(core, mapping);
     }
@@ -929,8 +942,8 @@ SystemCapacityModel::projectWithCache(
               ::loom::mapping::SpatialExecutionContextKey{
                   problem.accCores()[context.core],
                   problem.spatialMappings()[context.mapping].artifact},
-              context.cells, use.triggerAlternatives, use.causalRelease,
-              nonRoute->progressActivations))
+              context.relationRoot, context.cells, use.triggerAlternatives,
+              use.causalRelease, nonRoute->progressActivations))
         return std::move(error);
     }
   }

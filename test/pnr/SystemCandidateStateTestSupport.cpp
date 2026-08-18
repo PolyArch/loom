@@ -94,6 +94,7 @@ void verifyProgressGrantPolicyContrast(
           projection.resourceActivations.push_back(
               {loom::mapping::InstructionExecutionContextKey{
                    candidate.problem().accCores().front()},
+               root,
                {},
                {trigger},
                {},
@@ -124,6 +125,7 @@ void verifyProgressGrantPolicyContrast(
         projection.capacityCells.push_back({1, 0});
         projection.resourceActivations.push_back(
             {context,
+             root,
              {loom::mapping::SystemPresburgerCell{}},
              {holderTrigger},
              {{0, 1}},
@@ -132,6 +134,7 @@ void verifyProgressGrantPolicyContrast(
               loom::mapping::MappingResourceGrantPolicyKind::None}});
         projection.resourceActivations.push_back(
             {context,
+             root,
              {loom::mapping::SystemPresburgerCell{}},
              {trigger},
              {{0, 1}},

@@ -12,6 +12,11 @@ class MLIRContext;
 
 namespace loom::test {
 
+bool admitsCanonicalSpatialCandidate(
+    const dataflow::CanonicalDataflowProgramView &dataflow,
+    const mapping::TechMappingView &techMapping,
+    const fabric::FabricArtifactView &fabric, const ArtifactStore &store);
+
 void exerciseSpatialMemoryOperationPortRelations(
     mlir::MLIRContext &context,
     const dataflow::CanonicalDataflowProgramView &dataflow,

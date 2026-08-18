@@ -21,6 +21,23 @@ struct CgraGraphActivationFrame final {
   std::vector<CgraTokenPublication> publications;
   std::vector<MemoryLinearizedTraceEvent> memoryLinearizations;
   std::vector<SpatialTraceEvent> physicalTraceEvents;
+  std::uint8_t sourceMask = 0;
+};
+
+struct CgraPendingActorFiringDiagnostic final {
+  std::uint64_t semanticActorOrdinal = 0;
+  std::uint64_t occurrenceOrdinal = 0;
+  std::uint32_t transitionCaseOrdinal = 0;
+  std::uint32_t expectedTransfers = 0;
+  std::uint32_t completedTransfers = 0;
+  bool physicalComplete = false;
+  bool causalReleaseSatisfied = false;
+};
+
+struct CgraPendingGraphPhysicalActionDiagnostic final {
+  CgraPendingPhysicalActionDiagnostic action;
+  CgraPhysicalUseClientKind client =
+      CgraPhysicalUseClientKind::ComputeTransition;
 };
 
 /// One execution-local coordinator for a mapped graph activation. It alone
@@ -46,6 +63,11 @@ public:
   std::uint64_t pendingActorFiringCount() const;
   std::uint64_t pendingTransferCount() const;
   std::uint64_t pendingPhysicalActionCount() const;
+  std::vector<CgraPendingActorFiringDiagnostic>
+  pendingActorFiringDiagnostics() const;
+  std::vector<CgraPendingTransferDiagnostic> pendingTransferDiagnostics() const;
+  std::vector<CgraPendingGraphPhysicalActionDiagnostic>
+  pendingPhysicalActionDiagnostics() const;
 
 private:
   struct ActorFiring final {
@@ -94,6 +116,8 @@ private:
   llvm::Error
   schedulePublishedCandidates(const SpatialEventCoordinate &coordinate);
   llvm::Error
+  schedulePendingGraphIngress(const SpatialEventCoordinate &coordinate);
+  llvm::Error
   registerPhysicalRequests(llvm::ArrayRef<CgraPhysicalLifecycleEvent> events,
                            CgraGraphActivationFrame &result);
   llvm::Error
@@ -113,6 +137,7 @@ private:
   llvm::DenseMap<std::pair<std::uint64_t, std::uint64_t>,
                  CgraPhysicalTraceBinding>
       physicalTraceBindings_;
+  std::vector<GraphIngressEmission> pendingGraphIngress_;
   bool captureMicroarchitecture_ = false;
   bool started_ = false;
 };

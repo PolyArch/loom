@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -62,8 +63,8 @@ mlir::MLIRContext &context() {
   static mlir::MLIRContext *result = [] {
     mlir::DialectRegistry registry;
     registry.insert<mlir::arith::ArithDialect, mlir::DLTIDialect,
-                    mlir::func::FuncDialect, mlir::memref::MemRefDialect,
-                    mlir::scf::SCFDialect>();
+                    mlir::func::FuncDialect, mlir::math::MathDialect,
+                    mlir::memref::MemRefDialect, mlir::scf::SCFDialect>();
     auto *created =
         new mlir::MLIRContext(registry, mlir::MLIRContext::Threading::DISABLED);
     created->loadAllAvailableDialects();
@@ -137,6 +138,20 @@ forallCount(const loom::frontend::StructuredProgramCandidate &candidate,
   std::size_t count = 0;
   function.walk([&](mlir::scf::ForallOp) { ++count; });
   return count;
+}
+
+std::size_t
+maximumForallRank(const loom::frontend::StructuredProgramCandidate &candidate,
+                  llvm::StringRef functionName) {
+  mlir::func::FuncOp function =
+      candidate.module().lookupSymbol<mlir::func::FuncOp>(functionName);
+  if (!function)
+    fail("candidate lost function " + functionName.str());
+  std::size_t rank = 0;
+  function.walk([&](mlir::scf::ForallOp forall) {
+    rank = std::max(rank, static_cast<std::size_t>(forall.getRank()));
+  });
+  return rank;
 }
 
 bool hasUnrollAndJamShape(
@@ -433,13 +448,17 @@ module attributes {dlti.dl_spec = #layout} {
     fail("proven-independent nested loops produced no unroll-and-jam child");
 
   bool sawParallel = false;
+  bool sawRankTwoParallel = false;
   for (const loom::ArtifactRootReference &reference : safeOutputs) {
     auto candidate =
         take(loom::frontend::importStructuredProgram(reference, store));
     sawParallel |= forallCount(candidate, "kernel") != 0;
+    sawRankTwoParallel |= maximumForallRank(candidate, "kernel") >= 2;
   }
   if (!sawParallel)
     fail("proven-independent loop produced no parallel child");
+  if (!sawRankTwoParallel)
+    fail("rectangular independent nest produced no rank-two parallel child");
 
   auto dependent = parseProgram(R"mlir(
 #layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
@@ -504,6 +523,26 @@ module attributes {dlti.dl_spec = #layout} {
     fail("Fabric-admitted loop produced no unroll child");
   if (maximumReplication > admittedCapacity)
     fail("unroll replication exceeded exact aggregate Fabric capacity");
+
+  auto unresolvedSpecialMath = parseProgram(R"mlir(
+#layout = #dlti.dl_spec<#dlti.dl_entry<index, 32>>
+module attributes {dlti.dl_spec = #layout} {
+  func.func @kernel(%out: memref<4xf32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.for %i = %c0 to %c4 step %c1 {
+      %integer = arith.index_cast %i : index to i32
+      %value = arith.sitofp %integer : i32 to f32
+      %exponential = math.exp %value fastmath<afn> : f32
+      memref.store %exponential, %out[%i] : memref<4xf32>
+    }
+    return
+  }
+}
+)mlir");
+  if (generated(unresolvedSpecialMath, fabric, store, blobs).empty())
+    fail("unresolved special math disappeared before its terminal owner");
 
   llvm::sys::fs::remove_directories(directory);
 }

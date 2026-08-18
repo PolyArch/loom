@@ -5,8 +5,11 @@
 #include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
 #include "DSE/SpatialTopologyCandidateGenerator.h"
 #include "DSE/SystemCompositionCandidateGenerator.h"
+#include "DSE/TechMappingHardwareFeedback.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Mapping/Artifact/SpatialPhysicalDemandProjection.h"
+#include "Mapping/Tech/TechMappingHardwareDemand.h"
 
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -227,6 +230,77 @@ void strictConfigAdmission() {
       loom::dse::resolveSpatialTopologyRewriteConfig(emptyConnections, 1)
           .takeError(),
       "nonempty");
+}
+
+void computeContextFeedbackRoundTrip(
+    Fixture &fixture, const loom::fabric::FinalizedFabricRoot &module) {
+  require(!module.view().fuOccurrences().empty(),
+          "builtin Module has no FU occurrence for Hall feedback");
+  const auto definition =
+      module.view().fuTemplateOf(module.view().fuOccurrences().front());
+  require(definition.has_value(), "FU occurrence has no template");
+  const auto capabilities = module.view().fuCapabilityTemplates(*definition);
+  require(!capabilities.empty(), "FU template has no capability");
+  const loom::fabric::FabricFuCapabilityTemplateRef capability{*definition, 0};
+  auto placements =
+      take(loom::mapping::deriveSpatialComputeContextPlacementDomain(
+          capability, module.view()));
+  std::vector<loom::fabric::InstructionContextRef> contexts;
+  for (const auto &placement : placements)
+    contexts.insert(contexts.end(), placement.contexts.begin(),
+                    placement.contexts.end());
+  require(!contexts.empty(), "FU capability has no compatible context");
+
+  const std::uint64_t demandCount = contexts.size() + 1;
+  const std::vector<loom::mapping::TechMappingComputeContextHallDemandGroup>
+      groups = {{capability, demandCount, contexts}};
+  auto feedback = take(loom::mapping::TechMappingComputeContextHallDeficit::get(
+      demandCount, contexts.size(), groups));
+  std::vector<std::uint8_t> bytes =
+      loom::mapping::encodeTechMappingComputeContextHallFeedback(feedback);
+  auto adopted = take(loom::mapping::adoptTechMappingComputeContextHallFeedback(
+      bytes, module.view()));
+  require(adopted.deficit() == 1 && adopted.hallDemandCount() == demandCount &&
+              adopted.hallContextValueCount() == contexts.size(),
+          "Hall feedback did not rebuild its Fabric context relation");
+
+  auto domains = take(loom::dse::projectTechMappingComputeContextGrowthDomains(
+      adopted, module.view()));
+  require(!domains.empty(),
+          "Hall feedback produced no Temporal PE growth action");
+  for (const auto &domain : domains) {
+    const auto *resize =
+        std::get_if<loom::dse::ResizeInstructionStoreDomain>(&domain);
+    require(resize && !resize->capacities.empty(),
+            "Hall feedback produced a non-context growth action");
+    const std::uint64_t current =
+        module.view().peResidentContextCount(resize->target);
+    require(resize->capacities.front() == current + 1 &&
+                resize->capacities.back() == current + adopted.deficit(),
+            "Hall feedback did not order minimal-to-complete growth");
+  }
+  auto growthConfig =
+      take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(
+          domains, domains.size()));
+  auto growthInputs =
+      take(loom::dse::bindSpatialMicroarchitectureCandidateGeneratorInputs(
+          {module.reference()}));
+  auto growthBinding =
+      take(loom::dse::resolveSpatialMicroarchitectureCandidateGeneratorBinding(
+          growthConfig));
+  auto growth = take(loom::dse::invokeCandidateGenerator(
+      growthInputs, growthBinding, fixture.store, fixture.blobs));
+  require(!completed(growth).outputBindings.front().artifacts.empty(),
+          "Hall feedback growth actions produced no Module child");
+  require(completed(growth).lineageEdges.size() ==
+              completed(growth).outputBindings.front().artifacts.size(),
+          "Hall feedback growth child lost typed decision lineage");
+
+  bytes.push_back(0);
+  requireError(loom::mapping::adoptTechMappingComputeContextHallFeedback(
+                   bytes, module.view())
+                   .takeError(),
+               "trailing bytes");
 }
 
 void topologyRewrite(Fixture &fixture,
@@ -663,6 +737,7 @@ int main() {
   auto system = generateBuiltinSystem(fixture);
   parameterizedTemplateScale(fixture, system);
   auto module = importBuiltinModule(system, fixture);
+  computeContextFeedbackRoundTrip(fixture, module);
   topologyRewrite(fixture, module);
   occurrenceInventoryRewrite(fixture, module);
   auto replacementModule = microarchitectureRewrite(fixture, module);

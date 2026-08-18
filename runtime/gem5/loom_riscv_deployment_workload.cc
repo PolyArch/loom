@@ -10,7 +10,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
-#include <set>
+#include <map>
 #include <utility>
 
 namespace gem5 {
@@ -71,7 +71,7 @@ LoomRiscvDeploymentWorkload::LoomRiscvDeploymentWorkload(const Params &params)
                params.target_launch_addresses.size() != count ||
                params.target_launch_sizes.size() != count,
            "Loom Thread Dispatch target arrays differ in cardinality");
-  std::set<std::uint64_t> cpuIds;
+  std::map<std::uint64_t, std::uint64_t> imageByCpu;
   targets.reserve(count);
   for (std::size_t ordinal = 0; ordinal < count; ++ordinal) {
     const std::uint64_t imageOrdinal = params.target_image_ordinals[ordinal];
@@ -81,8 +81,10 @@ LoomRiscvDeploymentWorkload::LoomRiscvDeploymentWorkload(const Params &params)
              "Loom dispatch target %d has an empty entry symbol", ordinal);
     fatal_if(params.target_launch_sizes[ordinal] == 0,
              "Loom dispatch target %d has an empty Spatial launch", ordinal);
-    fatal_if(!cpuIds.insert(params.target_cpu_ids[ordinal]).second,
-             "Loom dispatch targets repeat CPU id %d",
+    auto [image, inserted] = imageByCpu.try_emplace(
+        params.target_cpu_ids[ordinal], imageOrdinal);
+    fatal_if(!inserted && image->second != imageOrdinal,
+             "Loom dispatch targets for CPU id %d use different images",
              params.target_cpu_ids[ordinal]);
     targets.push_back({params.target_cpu_ids[ordinal], imageOrdinal,
                        params.target_entry_symbols[ordinal],

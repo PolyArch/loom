@@ -141,6 +141,8 @@ const EvaluationModelDescriptor modelDescriptor{
     {},
     ProviderForm::InProcess};
 
+std::optional<std::uint8_t> unsupportedFunctionalCandidate;
+
 llvm::Expected<EvaluationModelResult> evaluate(const EvaluationRequest &request,
                                                const CaseArtifactResolution &,
                                                const ArtifactStore &store,
@@ -170,6 +172,11 @@ llvm::Expected<EvaluationModelResult> evaluate(const EvaluationRequest &request,
                      PointObservation{take(DecimalValue::get(value, 0))},
                      {}});
   }
+  if (unsupportedFunctionalCandidate &&
+      value == *unsupportedFunctionalCandidate &&
+      !request.findingRequests().empty())
+    return EvaluationModelResult{
+        {}, UnsupportedEvidence{OutcomeReason::RuntimeCapabilityUnavailable}};
   std::vector<FindingResult> findings;
   findings.reserve(request.findingRequests().size());
   for (const FindingRequest &finding : request.findingRequests()) {
@@ -507,7 +514,7 @@ void exactTemplateDrivesProductionAcquisition() {
     fail(error.message());
 }
 
-void topKAcquiresOnlyTheRequiredFunctionalPrefix() {
+void topKRetainsCandidateLocalIncompletenessAndRefillsPrefix() {
   llvm::SmallString<128> directory;
   if (std::error_code error = llvm::sys::fs::createUniqueDirectory(
           "loom-staged-promotion-acquisition", directory))
@@ -587,10 +594,18 @@ void topKAcquiresOnlyTheRequiredFunctionalPrefix() {
 
   resolvedTaskCounts = {};
   ResolvedDseConfigView view = take(projectResolvedDseConfigView(config));
+  unsupportedFunctionalCandidate = 0x11;
   DsePlanExecutionOutcome outcome = take(executeDsePlan(view, store, blobs));
-  const auto *completed = std::get_if<CompletedDsePlanExecution>(&outcome);
-  if (!completed)
-    fail("TopK execution did not complete");
+  unsupportedFunctionalCandidate.reset();
+  const auto *incomplete = std::get_if<IncompleteDsePlanExecution>(&outcome);
+  const auto *incompleteReason =
+      incomplete ? std::get_if<IncompleteSelectionReason>(&incomplete->reason())
+                 : nullptr;
+  if (!incomplete || incomplete->executionStopped() || !incompleteReason ||
+      *incompleteReason != IncompleteSelectionReason::UnsupportedEvidence)
+    fail("TopK did not retain typed candidate-local incompleteness");
+  const CompletedDsePlanExecution *completed =
+      &incomplete->availableExecution();
   std::array<ArtifactRootReference, 2> expected = {second, third};
   std::sort(expected.begin(), expected.end(), artifactRootReferenceLess);
   if (completed->resolve({0, 0}) !=
@@ -696,7 +711,7 @@ void taskLocalInputSelectionIsVerified() {
 
 int main() {
   exactTemplateDrivesProductionAcquisition();
-  topKAcquiresOnlyTheRequiredFunctionalPrefix();
+  topKRetainsCandidateLocalIncompletenessAndRefillsPrefix();
   taskLocalInputSelectionIsVerified();
   return 0;
 }

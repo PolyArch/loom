@@ -62,8 +62,7 @@ struct CgraComputeLifecycleFrame final {
 /// commit remain separate concerns.
 llvm::Expected<SpatialEventCoordinate> projectCgraTemporalDispatchCoordinate(
     const CgraTemporalDispatchDomainPlan &domain,
-    std::uint32_t candidatePosition,
-    const SpatialEventCoordinate &coordinate);
+    std::uint32_t candidatePosition, const SpatialEventCoordinate &coordinate);
 
 /// Execution-local compute/resource state for one mapped graph activation.
 /// Canonical actor semantics remain in PreparedGraphExecution, while physical
@@ -90,7 +89,7 @@ public:
 
   llvm::Error retireActor(std::uint64_t semanticActorOrdinal,
                           std::uint64_t occurrenceOrdinal,
-                          SpatialEventCoordinate coordinate);
+                          SpatialEventCoordinate coordinate, bool reschedule);
 
   llvm::Error satisfyCausalRelease(std::uint64_t semanticActorOrdinal,
                                    std::uint64_t occurrenceOrdinal,
@@ -134,7 +133,9 @@ private:
     bool committed = false;
     std::uint32_t actionCount = 0;
     std::uint32_t permittedCount = 0;
+    std::uint32_t completedCount = 0;
     std::uint32_t retiredCount = 0;
+    bool completionReported = false;
   };
 
   struct FiringActionIndex final {
@@ -149,9 +150,9 @@ private:
                      CgraPhysicalActionRuntime &physical);
 
   llvm::Error scheduleReady(SpatialEventCoordinate coordinate);
-  llvm::Expected<SpatialEventCoordinate> dispatchCoordinate(
-      const ActorBinding &binding,
-      const SpatialEventCoordinate &coordinate) const;
+  llvm::Expected<SpatialEventCoordinate>
+  dispatchCoordinate(const ActorBinding &binding,
+                     const SpatialEventCoordinate &coordinate) const;
   llvm::Expected<std::uint64_t>
   allocateFiring(std::uint64_t bindingOrdinal,
                  const CgraComputeTransitionPlan &transition);

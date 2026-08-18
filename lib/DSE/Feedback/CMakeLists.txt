@@ -1,5 +1,6 @@
 add_library(LoomDSEFeedback
   SpatialMappingFeedbackCandidateGenerator.cpp
+  TechMappingHardwareFeedback.cpp
 )
 
 target_include_directories(LoomDSEFeedback PUBLIC
@@ -9,9 +10,11 @@ target_include_directories(LoomDSEFeedback PUBLIC
 target_link_libraries(LoomDSEFeedback PUBLIC
   LoomDSE
   LoomDSECompilerGenerator
+  LoomDSEHardwareGenerator
   LoomFabricArtifact
   LoomFrontendCompilation
   LoomMappingArtifact
+  LoomTechMapping
   LoomPnR
   MLIRDataflowTransforms
   LLVMSupport

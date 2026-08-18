@@ -753,10 +753,12 @@ int main(int argc, char **argv) {
     std::cerr << "could not publish a Spatial channel output\n";
     return 12;
   }
-  if (!sendCompletion(connection, launch.sequence,
-                      cycles * options.ticksPerCycle, retired ? 0U : 1U,
-                      loom::runtime::encodeSpatialInvocationResultWire(
-                          {launchEnvelope.invocation, std::move(result)}))) {
+  if (!sendCompletion(
+          connection, launch.sequence, cycles * options.ticksPerCycle,
+          retired ? 0U : 1U,
+          loom::runtime::encodeSpatialInvocationResultWire(
+              {0, launchEnvelope.invocation, std::nullopt,
+               std::move(result)}))) {
     ::close(connection);
     if (!options.peer)
       stopChild(gem5);

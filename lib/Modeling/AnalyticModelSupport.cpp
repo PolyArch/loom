@@ -3,11 +3,12 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/IndexWidth.h"
+#include "Common/MappingDebugLog.h"
 #include "Common/VectorWidth.h"
 #include "Config/ResolvedConfig.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
-#include "Dataflow/IR/DataflowStaticScheduleAnalysis.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Dataflow/IR/DataflowStaticScheduleAnalysis.h"
 #include "Dataflow/IR/OperationSchema.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Evaluation/NumericValue.h"
@@ -17,9 +18,9 @@
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Error.h"
-#include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -733,8 +734,8 @@ projectCanonicalDataflowWorkloadImpl(
 
   frontend::FabricCapabilityIndex capabilities(fabricRoot.view());
   AnalyticWorkloadEstimate workload;
-  for (const auto &[key, demand] : actorDemands) {
-    (void)key;
+  for (const auto &entry : actorDemands) {
+    const ActorDemand &demand = entry.second;
     llvm::Expected<std::uint64_t> capacity =
         dataflow::isCanonicalDataflowActor(
             demand.representative, dataflow::CanonicalDataflowActorKind::Memory)
@@ -743,8 +744,19 @@ projectCanonicalDataflowWorkloadImpl(
                   demand.representative);
     if (!capacity)
       return capacity.takeError();
-    if (*capacity == 0)
+    if (*capacity == 0) {
+      mapping_debug::emit(
+          mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["failure_scope"] = "structured_fabric_capability";
+            fields["closure_status"] = "proven_infeasible";
+            fields["operation"] =
+                demand.representative->getName().getStringRef();
+            fields["demand_count"] = demand.count;
+          });
       return std::optional<AnalyticWorkloadEstimate>{};
+    }
     const std::uint64_t pressure =
         demand.count / *capacity + (demand.count % *capacity != 0 ? 1 : 0);
     workload.schedulingPressure =
@@ -784,8 +796,7 @@ projectCanonicalDataflowWorkloadImpl(
     for (const dataflow::CanonicalStaticGraphLaunchView &launch :
          program.staticGraphLaunches()) {
       const std::optional<std::uint64_t> updated = llvm::checkedAddUnsigned(
-          criticalPathPressure,
-          schedule->graphCriticalLength(launch.callee));
+          criticalPathPressure, schedule->graphCriticalLength(launch.callee));
       if (!updated)
         return llvm::createStringError(
             llvm::inconvertibleErrorCode(),
@@ -795,8 +806,7 @@ projectCanonicalDataflowWorkloadImpl(
   } else {
     for (dataflow::GraphRef graph : coveredGraphs)
       criticalPathPressure =
-          std::max(criticalPathPressure,
-                   schedule->graphCriticalLength(graph));
+          std::max(criticalPathPressure, schedule->graphCriticalLength(graph));
   }
   workload.schedulingPressure =
       std::max(workload.schedulingPressure, criticalPathPressure);

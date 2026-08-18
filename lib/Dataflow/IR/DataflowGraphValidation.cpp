@@ -3,6 +3,7 @@
 #include "DataflowGraphCausality.h"
 
 #include "Dataflow/IR/DataflowActorSemantics.h"
+#include "Dataflow/IR/DataflowCanonicalEntity.h"
 #include "Dataflow/IR/OperationSchema.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -21,6 +22,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <string>
 #include <tuple>
 
 namespace {
@@ -1704,9 +1706,15 @@ llvm::Error dataflow::validateFinalizedGraph(GraphOp graph) {
   for (mlir::Operation &op : entry.without_terminator()) {
     if (auto gate = llvm::dyn_cast<dataflow::GateOp>(op)) {
       bool covered = coversFalseClose(gate.getAfterCond(), ret.getComplete());
-      if (!covered)
-        return graphError("retirement frontier does not cover close/reset of "
-                          "'dataflow.gate'");
+      if (!covered) {
+        std::string message =
+            "retirement frontier does not cover close/reset of "
+            "'dataflow.gate'";
+        if (auto entity = gate->getAttrOfType<dataflow::EntityIdAttr>(
+                dataflow::kEntityIdAttrName))
+          message += " actor #" + std::to_string(entity.getId());
+        return graphError(message);
+      }
       continue;
     }
     mlir::Value closeSignal = statefulCloseSignal(&op);

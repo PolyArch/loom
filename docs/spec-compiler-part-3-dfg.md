@@ -267,8 +267,14 @@ The eight rules have these exact legality boundaries:
   input ordinal. An ancestor containing the live input therefore selects that
   descendant's carrier, while every original input remains a prerequisite
   even when its local result is dead. The reverse direction accepts only that
-  exact carrier choice and tree, with no side use of an internal result. This
-  is an optional topology alternative, not mandatory wide-to-binary lowering.
+  exact carrier choice and tree, with no side use of an internal result. Only
+  a maximal canonical tree root is a normalized reverse decision; a proper
+  subtree of another recognized tree is not independently enumerated. This is
+  an optional topology alternative, not mandatory wide-to-binary lowering.
+  Graph lowering publishes a pure event join with more than four prerequisites
+  directly in this canonical tree form when only its control carrier is live.
+  The maximal reverse decision still exposes the equivalent wide rendezvous to
+  later exploration.
 * `PackUnpackRoundTripEliminate` removes exact `unpack(pack(vector))` or
   `pack(unpack(bits))` round trips only when source and outer result have the
   same complete type, total bit width, lane order, and bit representation and

@@ -767,6 +767,8 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
   const auto attachmentOptions = ports.attachmentOptions();
   const auto placementDomains = ports.placementDomains();
   std::map<PnrIndex, std::uint64_t> endpointSelectionCounts;
+  std::map<std::pair<PnrIndex, PnrIndex>, std::uint64_t>
+      logicalNetEndpointSelectionCounts;
   const auto countEndpoint = [&](PnrIndex option) -> llvm::Error {
     if (option >= attachmentOptions.size())
       return initializerError(
@@ -777,6 +779,20 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       return initializerError("attachment preference count overflows u64");
     result.maximumEndpointSelections =
         std::max(result.maximumEndpointSelections, ++count);
+    return llvm::Error::success();
+  };
+  const auto countLogicalNetEndpoint =
+      [&](PnrIndex logicalNet, PnrIndex option) -> llvm::Error {
+    if (option >= attachmentOptions.size())
+      return initializerError(
+          "logical-net preference selected a foreign attachment option");
+    const auto key =
+        std::make_pair(logicalNet, attachmentOptions[option].endpoint);
+    std::uint64_t &count = logicalNetEndpointSelectionCounts[key];
+    if (count == std::numeric_limits<std::uint64_t>::max())
+      return initializerError(
+          "logical-net endpoint preference count overflows u64");
+    ++count;
     return llvm::Error::success();
   };
   const auto selectedPlacement =
@@ -804,18 +820,20 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
   };
 
   for (PnrIndex demand = 0; demand < ports.portDemands().size(); ++demand) {
+    const FrozenSpatialPortDemand &demandRecord = ports.portDemands()[demand];
     const PnrIndex decision = bindings.portDecisionOffset() + demand;
     const auto choices = bindings.portAttachmentChoices(demand);
     const PnrIndex baselineChoice = result.choices[decision];
     if (choices.empty() || baselineChoice >= choices.size())
       return initializerError(
           "port preference baseline choice is out of range");
-    auto placement = selectedPlacement(ports.portDemands()[demand]);
+    auto placement = selectedPlacement(demandRecord);
     if (!placement)
       return placement.takeError();
 
     PnrIndex selected = getInvalidPnrIndex();
-    auto selectedScore = std::make_pair(
+    auto selectedScore = std::make_tuple(
+        true, std::numeric_limits<std::uint64_t>::max(),
         std::numeric_limits<std::uint64_t>::max(), choices.size());
     const PnrIndex origin = preferenceOrigin(baselineChoice);
     for (std::size_t rank = 0; rank < choices.size(); ++rank) {
@@ -836,7 +854,15 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
       const auto found = endpointSelectionCounts.find(record.endpoint);
       const std::uint64_t count =
           found == endpointSelectionCounts.end() ? 0 : found->second;
-      const auto score = std::make_pair(count, rank);
+      const auto netEndpoint = logicalNetEndpointSelectionCounts.find(
+          {demandRecord.logicalNet, record.endpoint});
+      const std::uint64_t netCount =
+          netEndpoint == logicalNetEndpointSelectionCounts.end()
+              ? 0
+              : netEndpoint->second;
+      const auto score = std::make_tuple(
+          netCount == 0,
+          std::numeric_limits<std::uint64_t>::max() - netCount, count, rank);
       if (score < selectedScore) {
         selected = local;
         selectedScore = score;
@@ -848,6 +874,9 @@ llvm::Expected<PreferredRootAssignment> preferScheduleAwareRootPlacements(
     fixedChoices[decision] = selected;
     result.changedPortAttachments += selected != baselineChoice;
     if (llvm::Error error = countEndpoint(choices[selected]))
+      return std::move(error);
+    if (llvm::Error error =
+            countLogicalNetEndpoint(demandRecord.logicalNet, choices[selected]))
       return std::move(error);
   }
 

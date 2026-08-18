@@ -1180,15 +1180,24 @@ operationValueInputCapture(detail::ResolvedLaunchContext &context,
 
   mlir::Value boundaryValue;
   std::optional<std::uint64_t> boundaryOrdinal;
+  std::optional<std::uint64_t> coordinateDimension;
   if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(graphSource)) {
-    if (argument.getOwner()->getParentOp() != context.thread.getOperation() ||
-        argument.getArgNumber() >=
-            context.thread.getFunctionType().getNumInputs())
-      return invalid("graph value input is not a thread value formal");
-    boundaryOrdinal = argument.getArgNumber();
-    if (*boundaryOrdinal >= boundaryInputs.size())
-      return invalid("thread value formal exceeds source boundary inputs");
-    boundaryValue = boundaryInputs[*boundaryOrdinal];
+    const std::uint64_t inputCount =
+        context.thread.getFunctionType().getNumInputs();
+    if (argument.getOwner()->getParentOp() != context.thread.getOperation())
+      return invalid("graph value input is not a thread body formal");
+    if (argument.getArgNumber() < inputCount) {
+      boundaryOrdinal = argument.getArgNumber();
+      if (*boundaryOrdinal >= boundaryInputs.size())
+        return invalid("thread value formal exceeds source boundary inputs");
+      boundaryValue = boundaryInputs[*boundaryOrdinal];
+    } else {
+      if (argument.getArgNumber() <= inputCount ||
+          argument.getArgNumber() - inputCount - 1 >= context.threadRank)
+        return invalid("graph value input is not a dense coordinate formal");
+      coordinateDimension = argument.getArgNumber() - inputCount - 1;
+      boundaryValue = graphSource;
+    }
   } else {
     boundaryValue = graphSource;
   }
@@ -1197,9 +1206,10 @@ operationValueInputCapture(detail::ResolvedLaunchContext &context,
       fixedValueOf(boundaryValue, *shape);
   if (!fixed)
     return fixed.takeError();
-  if (!*fixed && !boundaryOrdinal)
+  if (!*fixed && !boundaryOrdinal && !coordinateDimension)
     return unsupported(
-        "graph value input is neither fixed nor a boundary formal");
+        "graph value input is neither fixed nor a boundary or coordinate "
+        "formal");
 
   std::uint64_t byteCount = 0;
   if (!*fixed) {
@@ -1216,7 +1226,8 @@ operationValueInputCapture(detail::ResolvedLaunchContext &context,
   return SimulationValueInputCapture{valueInputOrdinal,   boundaryOrdinal,
                                      boundaryValue,       shape->lanesPerToken,
                                      shape->laneBitWidth, byteCount,
-                                     std::move(*fixed),   std::nullopt};
+                                     std::move(*fixed),   std::nullopt,
+                                     coordinateDimension};
 }
 
 llvm::Expected<SimulationValueResultCapture>
@@ -1305,7 +1316,7 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
     return SimulationValueInputCapture{
         valueInputOrdinal,    std::nullopt,        callableSource,
         shape->lanesPerToken, shape->laneBitWidth, 0,
-        std::move(*fixed),    std::nullopt};
+        std::move(*fixed),    std::nullopt,        std::nullopt};
 
   if (llvm::isa<mlir::LLVM::LLVMPointerType>(callableSource.getType()) &&
       callableSource.getDefiningOp<mlir::LLVM::AddressOfOp>()) {
@@ -1317,7 +1328,8 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
       return invalid("runtime global pointer does not fit its storage extent");
     return SimulationValueInputCapture{
         valueInputOrdinal,   std::nullopt, callableSource, shape->lanesPerToken,
-        shape->laneBitWidth, *bytes,       std::nullopt,   std::nullopt};
+        shape->laneBitWidth, *bytes,       std::nullopt,   std::nullopt,
+        std::nullopt};
   }
 
   llvm::Expected<unsigned> callableArgument =
@@ -1335,7 +1347,7 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
     return SimulationValueInputCapture{
         valueInputOrdinal,    std::nullopt,        hostOperand,
         shape->lanesPerToken, shape->laneBitWidth, 0,
-        std::move(*fixed),    std::nullopt};
+        std::move(*fixed),    std::nullopt,        std::nullopt};
 
   llvm::Expected<std::uint64_t> bytes = fixedTypeByteCount(
       hostOperand.getDefiningOp() ? hostOperand.getDefiningOp()
@@ -1350,7 +1362,8 @@ llvm::Expected<SimulationValueInputCapture> directCallValueInputCapture(
   return SimulationValueInputCapture{valueInputOrdinal,   *callableArgument,
                                      hostOperand,         shape->lanesPerToken,
                                      shape->laneBitWidth, *bytes,
-                                     std::nullopt,        std::nullopt};
+                                     std::nullopt,        std::nullopt,
+                                     std::nullopt};
 }
 
 llvm::Expected<SimulationValueResultCapture> directCallValueResultCapture(

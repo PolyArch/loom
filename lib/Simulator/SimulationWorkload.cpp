@@ -10,7 +10,6 @@
 
 #include "Common/ArtifactFinalizer.h"
 
-#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Value.h"
 
 #include <algorithm>
@@ -120,15 +119,16 @@ validateSpatialWorkload(const SpatialSimulationWorkload &workload,
   if (workload.denseCoordinates.size() != context.threadRank)
     return invalid("simulation workload: dense coordinate count does not "
                    "equal the root thread domain rank");
-  dataflow::ThreadLaunchOp rootLaunchOp = context.rootLaunchOp;
-  mlir::ValueRange gridBounds = rootLaunchOp.getGridUpperBounds();
-  for (std::size_t dimension = 0; dimension < workload.denseCoordinates.size();
-       ++dimension) {
-    llvm::APInt bound;
-    if (matchPattern(gridBounds[dimension], m_ConstantInt(&bound)) &&
-        workload.denseCoordinates[dimension] >= bound.getLimitedValue())
-      return invalid("simulation workload: dense coordinate outside the "
-                     "static grid bound");
+  auto extents = view.projectStaticDenseExtents(workload.launchRef);
+  if (!extents)
+    return extents.takeError();
+  if (*extents) {
+    for (std::size_t dimension = 0;
+         dimension < workload.denseCoordinates.size(); ++dimension) {
+      if (workload.denseCoordinates[dimension] >= (**extents)[dimension])
+        return invalid("simulation workload: dense coordinate outside the "
+                       "static grid bound");
+    }
   }
 
   // Total Fixed/Runtime classification with exact lane states.

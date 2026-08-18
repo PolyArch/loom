@@ -1,8 +1,6 @@
 #include "Runtime/Gem5SpatialChannel.h"
 #include "Runtime/Gem5SpatialChannelPlan.h"
 
-#include "Common/ArtifactText.h"
-
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -32,18 +30,9 @@ template <typename T> T take(llvm::Expected<T> value) {
   return std::move(*value);
 }
 
-ArtifactRootReference root(std::uint8_t seed) {
-  ArtifactIdentity::Storage bytes{};
-  for (std::size_t index = 0; index != bytes.size(); ++index)
-    bytes[index] = static_cast<std::uint8_t>(seed + index);
-  return {
-      "loom.test.channel", {1, 0}, take(ArtifactIdentity::fromBytes(bytes))};
-}
-
 void strictProjectionRoundTrips() {
   Gem5SpatialChannelProjection projection{
-      {{root(1), root(2), 4, 1, 0x5000, 4096},
-       {root(3), root(4), 2, 0, 0x3000, 4096}},
+      {{4, 1, 0x5000, 4096}, {2, 0, 0x3000, 4096}},
       {{7, 0x9000, 4096}, {3, 0x7000, 4096}}};
   const std::vector<std::uint8_t> encoded =
       take(encodeGem5SpatialChannelProjection(projection));

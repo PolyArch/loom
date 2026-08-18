@@ -826,6 +826,14 @@ launch parameters, and stable logical-item components. Stable-key lookup uses
 a Dataflow-owned stable-key tuple projection and finite exact key rows. A
 relation is total and single-valued over its legal may-domain.
 
+Every Presburger space is qualified by its exact
+`RootThreadLaunchRef`. A graph binding uses the same root-qualified space as
+its parent thread binding. Cells from distinct roots are not intersected merely
+because their dimension and symbol counts match; cross-root analyses carry the
+typed root owner and apply their own conservative concurrency rule. The root
+reference is already present in each binding key and event family, so no
+Mapping-local space identifier is persisted.
+
 Presburger cells must be disjoint and lookup keys unique. A default denotes
 the legal-domain complement: it is required exactly when that complement is
 non-empty and forbidden when the complement is empty. Canonicalization

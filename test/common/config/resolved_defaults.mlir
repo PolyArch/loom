@@ -13,12 +13,15 @@
 
 // JSON-DAG: "hardware_target"
 // JSON-DAG: "template_identity": "loom.adg.builtin.general_purpose"
-// JSON-DAG: "schema_major": 6
+// JSON-DAG: "schema_major": 7
 // JSON-DAG: "schema_minor": 0
 // JSON-DAG: "acc_core_count": 8
 // JSON-DAG: "mesh_dimension": 6
 // JSON-DAG: "spatial_pe_count": 27
 // JSON-DAG: "temporal_pe_count": 9
+// JSON-DAG: "spatial_memory_count": 4
+// JSON-DAG: "temporal_memory_count": 4
+// JSON-DAG: "local_memory_port_variant": "shared_element_vector"
 // JSON-DAG: "spatial_fu_occurrences"
 // JSON-DAG: "token_control": 8
 // JSON-DAG: "temporal_fu_occurrences"

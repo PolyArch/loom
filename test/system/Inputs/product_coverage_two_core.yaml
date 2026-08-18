@@ -1,0 +1,34 @@
+hardware_target:
+  template_identity: loom.adg.builtin.general_purpose
+  schema_major: 7
+  schema_minor: 0
+  parameters:
+    acc_core_count: 2
+    mesh_dimension: 6
+    spatial_pe_count: 27
+    temporal_pe_count: 9
+    spatial_fu_occurrences:
+      dedicated_scalar_add: 4
+      mac: 14
+      vector_compute: 7
+      loop_control: 7
+      token_control: 8
+      vector_adapter: 4
+      vector_structural: 4
+      special_math: 2
+    temporal_fu_occurrences:
+      dedicated_scalar_add: 2
+      mac: 5
+      vector_compute: 3
+      loop_control: 3
+      token_control: 3
+      vector_adapter: 2
+      vector_structural: 2
+      special_math: 1
+    spatial_memory_count: 4
+    temporal_memory_count: 4
+    temporal_resident_contexts: 4
+    local_memory_port_variant: shared_element_vector
+    cross_schedule_boundary_lanes_per_temporal_pe: 5
+    gateway_count: 4
+    memory_capacity_bytes: 262144

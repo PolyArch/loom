@@ -70,8 +70,7 @@ struct SpatialComputeContextSupplyAnalysis final {
 
 llvm::Expected<SpatialComputeContextSupplyAnalysis>
 analyzeSpatialComputeContextSupply(
-    llvm::ArrayRef<std::vector<std::size_t>> domains,
-    std::size_t valueCount);
+    llvm::ArrayRef<std::vector<std::size_t>> domains, std::size_t valueCount);
 
 /// One Fabric occurrence that can host a Tech memory realization. Temporal
 /// capacity is occurrence-global; Spatial occurrences carry zero here because
@@ -340,13 +339,16 @@ classifySpatialAttachmentDurableProgressBoundary(
     std::optional<::loom::fabric::FabricFuOccurrencePortRef> fuPort);
 
 /// Rebuilds the exact durable boundary selected by a persistent route sink.
-/// A Temporal PE operand queue includes its Fabric-owned logical queue key.
+/// The terminal attachment may be sink-local or mechanically recovered from
+/// the terminal endpoint and the concrete FU port when several logical
+/// consumers share one routed PE ingress. A Temporal PE operand queue includes
+/// its Fabric-owned logical queue key.
 llvm::Expected<std::optional<SpatialDurableProgressBoundaryView>>
 deriveSpatialSinkDurableProgressBoundary(
     const TechMappingView &techMapping,
     const ::loom::fabric::FabricArtifactView &fabric,
     llvm::ArrayRef<SpatialComputeBindingView> computeBindings,
-    const SpatialRouteSinkView &sink);
+    const SpatialRouteTreeView &route, const SpatialRouteSinkView &sink);
 
 llvm::Expected<std::vector<SpatialPeOperandQueueMatchGroupView>>
 deriveSpatialPeOperandQueueMatchGroups(

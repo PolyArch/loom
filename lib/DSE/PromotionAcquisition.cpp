@@ -407,7 +407,9 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
   }
   if (!resolve)
     return PromotionAcquisitionOutcome{IncompletePromotionAcquisition{
-        PromotionAcquisitionIncompleteReason::ProviderUnavailable, {}}};
+        PromotionAcquisitionIncompleteReason::ProviderUnavailable,
+        {},
+        std::nullopt}};
 
   auto resolution = resolve(binding, providerInputs, tasks, store, blobs);
   if (!resolution)
@@ -419,7 +421,7 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
             PromotionAcquisitionIncompleteReason::Unsupported))
       return invalid("provider returned an invalid Incomplete reason");
     return PromotionAcquisitionOutcome{
-        IncompletePromotionAcquisition{incomplete->reason, {}}};
+        IncompletePromotionAcquisition{incomplete->reason, {}, std::nullopt}};
   }
 
   auto &completed =
@@ -472,8 +474,8 @@ llvm::Expected<PromotionAcquisitionOutcome> invokePromotionAcquisition(
     PromotionEvidenceExecutionResult &result = (*executionResults)[index];
     if (auto *incomplete =
             std::get_if<PromotionAcquisitionIncompleteReason>(&result))
-      return PromotionAcquisitionOutcome{
-          IncompletePromotionAcquisition{*incomplete, std::move(evidence)}};
+      return PromotionAcquisitionOutcome{IncompletePromotionAcquisition{
+          *incomplete, std::move(evidence), task.candidate}};
     evidence.emplace_back(
         std::move(task.request),
         std::get<evaluation::EvaluationEvidence>(std::move(result)),

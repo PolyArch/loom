@@ -18,6 +18,7 @@ enum class StructuredScheduleDecisionKind : std::uint32_t {
   Interchange = 2,
   UnrollAndJam = 3,
   Parallelize = 4,
+  ParallelizeNest = 5,
 };
 
 /// One atomic schedule decision over an exact parent-local loop. A zero factor

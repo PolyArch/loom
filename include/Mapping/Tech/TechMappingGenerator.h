@@ -4,6 +4,7 @@
 #include "Common/ExecutionControl.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Tech/TechMappingConfig.h"
+#include "Mapping/Tech/TechMappingHardwareDemand.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
@@ -27,7 +28,11 @@ struct TechMappingGenerationAccounting final {
   std::uint64_t matchRowFirstVisits = 0;
   std::uint64_t matchRowCursorResumptions = 0;
   std::uint64_t matchRowReplayVisits = 0;
+  std::uint64_t memoryRowFrontierLimits = 0;
   std::uint64_t partialCoverExpansions = 0;
+  std::uint64_t constructiveCoverSearchInvocations = 0;
+  std::uint64_t constructiveCoverCompletedChecks = 0;
+  std::uint64_t constructiveCoverPublications = 0;
   std::uint64_t computeContextProjectionWork = 0;
   std::uint64_t computeContextMatchingChecks = 0;
   std::uint64_t computeContextRejectedChecks = 0;
@@ -54,7 +59,14 @@ struct TechMappingGenerationAccounting final {
            lhs.matchRowFirstVisits == rhs.matchRowFirstVisits &&
            lhs.matchRowCursorResumptions == rhs.matchRowCursorResumptions &&
            lhs.matchRowReplayVisits == rhs.matchRowReplayVisits &&
+           lhs.memoryRowFrontierLimits == rhs.memoryRowFrontierLimits &&
            lhs.partialCoverExpansions == rhs.partialCoverExpansions &&
+           lhs.constructiveCoverSearchInvocations ==
+               rhs.constructiveCoverSearchInvocations &&
+           lhs.constructiveCoverCompletedChecks ==
+               rhs.constructiveCoverCompletedChecks &&
+           lhs.constructiveCoverPublications ==
+               rhs.constructiveCoverPublications &&
            lhs.computeContextProjectionWork ==
                rhs.computeContextProjectionWork &&
            lhs.computeContextMatchingChecks ==
@@ -87,14 +99,20 @@ struct TechMappingGenerationAccounting final {
   }
 };
 
+struct TechMappingGenerationFeedback final {
+  std::optional<TechMappingComputeContextHallDeficit> computeContextHall;
+};
+
 struct GeneratedTechMappings final {
   std::vector<ArtifactRootReference> candidates;
   TechMappingGenerationTermination termination;
   TechMappingGenerationAccounting accounting;
+  TechMappingGenerationFeedback feedback = {};
 };
 
 struct ProvenInfeasibleTechMapping final {
   TechMappingGenerationAccounting accounting;
+  TechMappingGenerationFeedback feedback = {};
 };
 
 enum class IncompleteTechMappingGenerationReason : std::uint8_t {
@@ -104,6 +122,7 @@ enum class IncompleteTechMappingGenerationReason : std::uint8_t {
 struct IncompleteTechMappingGeneration final {
   IncompleteTechMappingGenerationReason reason;
   TechMappingGenerationAccounting accounting;
+  TechMappingGenerationFeedback feedback = {};
 };
 
 enum class TechMappingInterruptionStage : std::uint8_t {
@@ -141,6 +160,7 @@ struct InterruptedTechMappingGeneration final {
   std::vector<ArtifactRootReference> candidates;
   TechMappingGenerationAccounting accounting;
   TechMappingInterruptionSnapshot snapshot;
+  TechMappingGenerationFeedback feedback = {};
 };
 
 enum class InvalidTechMappingGenerationReason : std::uint8_t {
@@ -155,6 +175,7 @@ struct InvalidTechMappingGeneration final {
   InvalidTechMappingGenerationReason reason;
   TechMappingGenerationAccounting accounting;
   std::string diagnostic;
+  TechMappingGenerationFeedback feedback = {};
 };
 
 enum class InternalTechMappingGenerationReason : std::uint8_t {
@@ -166,6 +187,7 @@ struct InternalTechMappingGeneration final {
   InternalTechMappingGenerationReason reason;
   TechMappingGenerationAccounting accounting;
   std::string diagnostic;
+  TechMappingGenerationFeedback feedback = {};
 };
 
 using TechMappingGenerationOutcome =
@@ -196,6 +218,7 @@ struct TechMappingCandidateEnumerationResult final {
   TechMappingGenerationAccounting accounting;
   std::uint64_t visitedCandidates = 0;
   std::optional<TechMappingInterruptionSnapshot> interruption;
+  TechMappingGenerationFeedback feedback = {};
 };
 
 /// Materializes and visits the canonical TechMapping stream until its domain,

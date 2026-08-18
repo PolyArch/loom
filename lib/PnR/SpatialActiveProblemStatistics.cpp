@@ -1,5 +1,7 @@
 #include "SpatialActiveProblemStatistics.h"
 
+#include "llvm/ADT/StringExtras.h"
+
 #include <cstdint>
 #include <limits>
 
@@ -124,6 +126,8 @@ void emitSpatialActiveProblemStatistics(const FrozenSpatialPnrProblem &problem,
       mapping_debug::Level::Summary, stage,
       mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
         fields["context_kind"] = "spatial_active";
+        fields["context_key"] = llvm::toHex(problem.cacheKey().bytes(),
+                                             /*LowerCase=*/true);
         fields["cache_hits"] = hits;
         fields["cache_misses"] = misses;
         fields["construction_count"] = statistics.context.constructionCount;

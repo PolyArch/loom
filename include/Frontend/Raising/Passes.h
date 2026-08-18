@@ -3,6 +3,8 @@
 
 #include "mlir/Pass/Pass.h"
 
+#include "llvm/ADT/ArrayRef.h"
+
 #include <memory>
 
 namespace mlir {
@@ -80,9 +82,11 @@ std::unique_ptr<::mlir::Pass> createDeduplicateSCFWhileStatePass();
 // The shared exact post-tested projection owns the finite latch-tested subset:
 // constant nonnegative lower bound, positive constant step, exact landing on a
 // greater constant upper bound, next != upper, and ordinal identity feedback
-// through an empty after-region. Every exit value is then exact, including the
-// final induction value. Unsupported or dynamic shapes remain legal scf.while.
-// Each existing operation is offered the transform once.
+// through an empty after-region. It also accepts the guarded dynamic subset
+// with zero lower bound, unit step, and an upper bound proven positive by an
+// enclosing true branch. Every exit value is then exact, including the final
+// induction value. Unsupported dynamic shapes remain legal scf.while. Each
+// existing operation is offered the transform once.
 std::unique_ptr<::mlir::Pass> createSCFWhileToForPass();
 
 // The closed set of execution shapes an `llvm.intr.fmuladd` can be
@@ -141,6 +145,12 @@ std::unique_ptr<::mlir::Pass> createSCFForToForallPass();
 /// conservative memory, control, and effect analysis consumed by the
 /// parallelization transform. Unknown facts return false.
 bool hasProvenIndependentIterations(::mlir::scf::ForOp loop);
+
+/// Proves that the complete rectangular loop nest has independent iterations.
+/// This recognizes only zero-based unit-step nests whose writes use an exact
+/// dense coordinate projection across every dimension. Unknown layout,
+/// aliasing, or coordinate facts return false.
+bool hasProvenIndependentIterations(::llvm::ArrayRef<::mlir::scf::ForOp> nest);
 
 /// Materializes the same exact conservative parallelization recognized by
 /// hasProvenIndependentIterations as one scf.for-to-scf.forall rewrite.

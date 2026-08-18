@@ -1,5 +1,7 @@
 #include "SystemPnrDerivedContextInternal.h"
 
+#include "../PnrDerivedContextInternal.h"
+#include "../PnrDerivedContextSessionInternal.h"
 #include "../SpatialPhysicalTiming.h"
 
 #include "Common/ArtifactLocalReference.h"
@@ -7,6 +9,8 @@
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/SHA256.h"
 
 #include <algorithm>
@@ -304,6 +308,15 @@ const SystemStaticContextStatistics &SystemStaticContext::statistics() const {
   return storage_->statistics;
 }
 
+llvm::ArrayRef<std::uint8_t> SystemStaticContext::cacheKey() const {
+  return storage_->key;
+}
+
+const FabricTopologyQualityReport *
+SystemStaticContext::topologyQualityDiagnostic() const {
+  return storage_->topologyQuality ? &*storage_->topologyQuality : nullptr;
+}
+
 const ArtifactIdentity &SystemActiveContext::dataflowIdentity() const {
   return storage_->dataflowIdentity;
 }
@@ -316,6 +329,10 @@ const ArtifactIdentity &SystemActiveContext::constraintIdentity() const {
   return storage_->constraintIdentity;
 }
 
+llvm::ArrayRef<std::uint8_t> SystemActiveContext::cacheKey() const {
+  return storage_->key;
+}
+
 llvm::ArrayRef<ArtifactRootReference>
 SystemActiveContext::spatialMappings() const {
   return storage_->spatialMappings;
@@ -326,10 +343,47 @@ const SystemActiveContextStatistics &SystemActiveContext::statistics() const {
 }
 
 llvm::Expected<SystemStaticContext>
-loom::pnr::buildSystemStaticContext(const FabricSystemRootView &system) {
+loom::pnr::buildSystemStaticContext(const FabricSystemRootView &system,
+                                    DerivedContextCacheAccess *access) {
   if (system.artifact().rootKind() != FabricRootKind::System)
     return invalid("SystemStaticContext requires one System root");
+  if (access)
+    *access = {};
+  const auto key = deriveSystemStaticContextKey(system);
   const auto begin = std::chrono::steady_clock::now();
+  auto session = detail::currentPnrDerivedContextSession();
+  bool reserved = false;
+  llvm::scope_exit abandon([&] {
+    if (session && reserved)
+      session->abandon(detail::PnrDerivedContextDomain::SystemStatic, key,
+                       static_cast<std::uint64_t>(
+                           std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - begin)
+                               .count()));
+  });
+  if (session) {
+    auto lookup = session->lookupOrReserve(
+        detail::PnrDerivedContextDomain::SystemStatic, key);
+    if (!lookup)
+      return lookup.takeError();
+    if (lookup->entry) {
+      auto storage =
+          detail::contextFromEntry<detail::SystemStaticContextStorage>(
+              lookup->entry);
+      SystemStaticContext context(std::move(storage));
+      if (llvm::Error error = revalidateSystemStaticContext(context, system))
+        return std::move(error);
+      session->recordRevalidation();
+      if (access)
+        access->hits = 1;
+      return context;
+    }
+    reserved = lookup->reservedConstruction;
+    if (access)
+      access->misses = 1;
+  } else if (access) {
+    access->misses = 1;
+  }
 
   std::vector<AccCoreOccurrenceRef> cores(
       system.artifact().accCoreOccurrences().begin(),
@@ -389,6 +443,13 @@ loom::pnr::buildSystemStaticContext(const FabricSystemRootView &system) {
   if (!instructionPatterns)
     return instructionPatterns.takeError();
   auto consistencyPatterns = buildConsistencyUsePatterns(system);
+  std::optional<FabricTopologyQualityReport> topologyQuality;
+  if (mapping_debug::enabled(mapping_debug::Level::Summary)) {
+    auto analyzed = analyzeFabricTopologyQuality(system.artifact());
+    if (!analyzed)
+      return analyzed.takeError();
+    topologyQuality.emplace(std::move(*analyzed));
+  }
 
   auto topologyOwner = std::make_shared<const FrozenEndpointRoutingTopology>(
       std::move(*topology));
@@ -431,6 +492,9 @@ loom::pnr::buildSystemStaticContext(const FabricSystemRootView &system) {
           *instructionOwner) +
       patternDomainBytes<FrozenSystemConsistencyUsePatternDomain>(
           *consistencyOwner);
+  if (topologyQuality)
+    statistics.context.retainedBytes +=
+        detail::topologyQualityRetainedBytes(*topologyQuality);
   if (llvm::Error error = addWork(statistics.context.deterministicWork,
                                   statistics.accCoreCount))
     return std::move(error);
@@ -450,15 +514,28 @@ loom::pnr::buildSystemStaticContext(const FabricSystemRootView &system) {
                                   statistics.instructionUsePatternCount +
                                       statistics.consistencyUsePatternCount))
     return std::move(error);
+  if (topologyQuality)
+    if (llvm::Error error = addWork(
+            statistics.context.deterministicWork,
+            detail::topologyQualityDeterministicWork(*topologyQuality)))
+      return std::move(error);
 
   auto storage =
       std::make_shared<const loom::pnr::detail::SystemStaticContextStorage>(
           loom::pnr::detail::SystemStaticContextStorage{
-              deriveSystemStaticContextKey(system),
-              system.artifact().identity(), std::move(topologyOwner),
+              key, system.artifact().identity(), std::move(topologyOwner),
               std::move(targetClassOwner), std::move(coreOwner),
               std::move(coreClassOwner), std::move(instructionOwner),
-              std::move(consistencyOwner), statistics});
+              std::move(consistencyOwner), std::move(topologyQuality),
+              statistics});
+  if (session) {
+    auto entry = session->complete(
+        detail::PnrDerivedContextDomain::SystemStatic, key, storage,
+        statistics.context.constructionNanoseconds,
+        statistics.context.retainedBytes, statistics.context.deterministicWork);
+    storage = detail::contextFromEntry<detail::SystemStaticContextStorage>(entry);
+    reserved = false;
+  }
   return SystemStaticContext(std::move(storage));
 }
 
@@ -485,6 +562,8 @@ void loom::pnr::emitSystemStaticContextStatistics(
       mapping_debug::Level::Summary, stage,
       mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
         fields["context_kind"] = "system_static";
+        fields["context_key"] =
+            llvm::toHex(context.cacheKey(), /*LowerCase=*/true);
         fields["cache_hits"] = hits;
         fields["cache_misses"] = misses;
         fields["construction_count"] = statistics.context.constructionCount;
@@ -523,7 +602,9 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
     llvm::ArrayRef<FabricPhysicalTimingProfileView> physicalTimingProfiles,
     const ::loom::mapping::FinalizedSystemMappingConstraintSet &constraints,
     llvm::ArrayRef<ArtifactRootReference> spatialMappings,
-    const ArtifactStore &store) {
+    const ArtifactStore &store, DerivedContextCacheAccess *access) {
+  if (access)
+    *access = {};
   if (llvm::Error error = revalidateSystemStaticContext(staticContext, system))
     return std::move(error);
   if (constraints.view().dataflowIdentity() != dataflow.identity() ||
@@ -536,9 +617,55 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
       return invalid(
           "SystemActiveContext omits a constraint-owned SpatialMapping");
 
+  std::vector<ArtifactRootReference> requestedMappings(spatialMappings.begin(),
+                                                       spatialMappings.end());
+  llvm::sort(requestedMappings, artifactRootReferenceLess);
+  if (std::adjacent_find(requestedMappings.begin(), requestedMappings.end()) !=
+      requestedMappings.end())
+    return invalid("SystemActiveContext input contains duplicate mappings");
+  const auto &staticStorage =
+      loom::pnr::detail::systemStaticContextStorage(staticContext);
+  const auto key = deriveSystemActiveContextKey(
+      staticStorage, dataflow, physicalTimingProfiles, constraints,
+      requestedMappings);
   const auto begin = std::chrono::steady_clock::now();
+  auto session = detail::currentPnrDerivedContextSession();
+  bool reserved = false;
+  llvm::scope_exit abandon([&] {
+    if (session && reserved)
+      session->abandon(detail::PnrDerivedContextDomain::SystemActive, key,
+                       static_cast<std::uint64_t>(
+                           std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               std::chrono::steady_clock::now() - begin)
+                               .count()));
+  });
+  if (session) {
+    auto lookup = session->lookupOrReserve(
+        detail::PnrDerivedContextDomain::SystemActive, key);
+    if (!lookup)
+      return lookup.takeError();
+    if (lookup->entry) {
+      auto storage =
+          detail::contextFromEntry<detail::SystemActiveContextStorage>(
+              lookup->entry);
+      SystemActiveContext context(std::move(storage));
+      if (llvm::Error error = revalidateSystemActiveContext(
+              context, staticContext, dataflow, system, physicalTimingProfiles,
+              constraints, requestedMappings))
+        return std::move(error);
+      session->recordRevalidation();
+      if (access)
+        access->hits = 1;
+      return context;
+    }
+    reserved = lookup->reservedConstruction;
+    if (access)
+      access->misses = 1;
+  } else if (access) {
+    access->misses = 1;
+  }
   auto validated =
-      buildValidatedSpatialCatalog(dataflow, system, spatialMappings, store);
+      buildValidatedSpatialCatalog(dataflow, system, requestedMappings, store);
   if (!validated)
     return validated.takeError();
   auto &canonicalMappings = validated->canonicalMappings;
@@ -576,8 +703,6 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
     return invalid("SystemActiveContext omits an attached Module timing "
                    "profile");
 
-  const auto &staticStorage =
-      loom::pnr::detail::systemStaticContextStorage(staticContext);
   std::map<std::string, PnrIndex> classOrdinals;
   for (const auto &[ordinal, targetClass] :
        llvm::enumerate(*staticStorage.targetClasses)) {
@@ -680,13 +805,19 @@ llvm::Expected<SystemActiveContext> loom::pnr::buildSystemActiveContext(
   auto storage =
       std::make_shared<const loom::pnr::detail::SystemActiveContextStorage>(
           loom::pnr::detail::SystemActiveContextStorage{
-              deriveSystemActiveContextKey(staticStorage, dataflow,
-                                           physicalTimingProfiles, constraints,
-                                           canonicalMappings),
+              key,
               dataflow.identity(), system.artifact().identity(),
               constraints.view().identity(), std::move(canonicalMappings),
               std::move(importOwner), std::move(catalogOwner),
               std::move(classOwner), statistics});
+  if (session) {
+    auto entry = session->complete(
+        detail::PnrDerivedContextDomain::SystemActive, key, storage,
+        statistics.context.constructionNanoseconds,
+        statistics.context.retainedBytes, statistics.context.deterministicWork);
+    storage = detail::contextFromEntry<detail::SystemActiveContextStorage>(entry);
+    reserved = false;
+  }
   return SystemActiveContext(std::move(storage));
 }
 
@@ -743,6 +874,8 @@ void loom::pnr::emitSystemActiveContextStatistics(
       mapping_debug::Level::Summary, stage,
       mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
         fields["context_kind"] = "system_active";
+        fields["context_key"] =
+            llvm::toHex(context.cacheKey(), /*LowerCase=*/true);
         fields["cache_hits"] = hits;
         fields["cache_misses"] = misses;
         fields["construction_count"] = statistics.context.constructionCount;

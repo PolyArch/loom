@@ -28,6 +28,7 @@ add_mlir_dialect_library(MLIRDataflow
   DataflowDialect.cpp
   DataflowGraphCausality.cpp
   DataflowGraphValidation.cpp
+  DataflowInvocationPathProjection.cpp
   DataflowLogicalDomainProjection.cpp
   DataflowInterfaces.cpp
   DataflowProgramValidation.cpp
@@ -38,6 +39,7 @@ add_mlir_dialect_library(MLIRDataflow
   DataflowServiceSchema.cpp
   DataflowStaticScheduleAnalysis.cpp
   DataflowStructuralView.cpp
+  DataflowSyncRendezvous.cpp
   OperationSchema.cpp
   OperationSchemaAtomCodec.cpp
   OperationSchemaCodec.cpp

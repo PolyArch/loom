@@ -1,6 +1,7 @@
 #include "DSE/StructuredOwnership.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/MappingDebugLog.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/StructuredOwnershipInvocationInternal.h"
 #include "Evaluation/Models/StructuredEvaluationInvocationCache.h"
@@ -176,6 +177,23 @@ generateStructuredOwnershipCandidatesImpl(
     return scopeActivity.takeError();
   if (scopeActivity->size() != domain->size())
     return invalid("scope activity projection is not total");
+
+  mapping_debug::emit(
+      mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+      mapping_debug::Event::DerivedContext, [&](llvm::json::Object &fields) {
+        llvm::json::Array scopes;
+        for (auto [ordinal, activity] : llvm::enumerate(*scopeActivity)) {
+          llvm::json::Object scope;
+          scope["domain_ordinal"] = ordinal;
+          scope["scope_ordinal"] = activity.scope.ordinal;
+          scope["dynamic_activations"] = activity.dynamicActivations;
+          scope["dynamic_leaf_executions"] = activity.dynamicLeafExecutions;
+          scopes.push_back(std::move(scope));
+        }
+        fields["context_kind"] = "structured_scope_activity";
+        fields["scope_count"] = scopeActivity->size();
+        fields["scopes"] = std::move(scopes);
+      });
 
   std::vector<bool> activeScopes(domain->size(), false);
   std::vector<std::vector<std::size_t>> childScopes(domain->size());

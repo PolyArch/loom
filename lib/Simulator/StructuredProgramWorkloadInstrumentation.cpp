@@ -2,6 +2,7 @@
 
 #include "Common/PointerLayout.h"
 #include "Dataflow/IR/DataflowOps.h"
+#include "Frontend/IR/LoomOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -181,6 +182,14 @@ pointerRootHint(mlir::Value value,
   for (auto [ordinal, root] : llvm::enumerate(plan.memoryRoots))
     if (root.boundaryPointer == value)
       return ordinal;
+
+  if (auto argument = llvm::dyn_cast<mlir::BlockArgument>(value)) {
+    auto spatial = llvm::dyn_cast_or_null<loom::SpatialRegionOp>(
+        argument.getOwner()->getParentOp());
+    if (spatial && argument.getArgNumber() < spatial->getNumOperands())
+      return pointerRootHint(spatial->getOperand(argument.getArgNumber()), plan,
+                             visited);
+  }
 
   if (auto gep = value.getDefiningOp<mlir::LLVM::GEPOp>())
     return pointerRootHint(gep.getBase(), plan, visited);

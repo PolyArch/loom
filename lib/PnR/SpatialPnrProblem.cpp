@@ -2,6 +2,7 @@
 #include "PnR/RoutingNegotiation.h"
 
 #include "PnrDerivedContextInternal.h"
+#include "PnrDerivedContextSessionInternal.h"
 #include "SpatialActiveProblemStatistics.h"
 #include "SpatialActiveRoutingDomain.h"
 #include "SpatialBindingRelationModel.h"
@@ -11,6 +12,7 @@
 #include "SpatialPnrHandshakeIndex.h"
 #include "SpatialPnrMemoryIndex.h"
 #include "SpatialPnrPortIndex.h"
+#include "SpatialPnrProblemIdentity.h"
 #include "SpatialPnrResourceIndex.h"
 #include "SpatialPnrTransferIndex.h"
 #include "SpatialRecurrenceTimingInternal.h"
@@ -18,16 +20,16 @@
 #include "SpatialTagConstraintModel.h"
 #include "StaticSchedulePressure.h"
 
-#include "Common/ComponentViewDigest.h"
+#include "Fabric/Artifact/FabricTopologyQuality.h"
 #include "Fabric/Identity/FabricRefBytes.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/SHA256.h"
 
 #include <algorithm>
 #include <chrono>
@@ -126,31 +128,6 @@ constexpr PnrCapacityContext traversalArcCountContext{
 constexpr PnrCapacityContext arcIndexContext{
     frozenArtifact, "routing_arcs", "routing_arcs", PnrCapacityMeasure::Index};
 
-constexpr char cacheKeyDomain[] = "loom.spatial_pnr.frozen_model.key.v2.21\0";
-constexpr std::size_t cacheKeyDomainSize = sizeof(cacheKeyDomain) - 1;
-constexpr std::uint32_t cacheSchemaMajor = 2;
-constexpr std::uint32_t cacheSchemaMinor = 21;
-constexpr llvm::StringLiteral freezeSemanticIdentity =
-    "loom.spatial_pnr.freeze.2.21";
-constexpr llvm::StringLiteral importerSemanticIdentity =
-    "loom.spatial_pnr.importers.2.1";
-constexpr llvm::StringLiteral nativeLayoutAbi =
-    "loom.spatial_pnr.native_layout.2.10";
-
-enum class CacheField : std::uint32_t {
-  DataflowIdentity = 1,
-  TechMappingIdentity = 2,
-  FabricIdentity = 3,
-  ConstraintSetIdentity = 4,
-  ConfigViewDescriptor = 5,
-  ConfigViewDigest = 6,
-  FreezeSemanticIdentity = 7,
-  ImporterSemanticIdentity = 8,
-  NativeLayoutAbi = 9,
-  PnrIndexWidth = 10,
-  PhysicalTimingProfileDigest = 11,
-};
-
 void appendU32Be(std::vector<std::uint8_t> &bytes, std::uint32_t value) {
   bytes.push_back(static_cast<std::uint8_t>(value >> 24));
   bytes.push_back(static_cast<std::uint8_t>(value >> 16));
@@ -162,29 +139,6 @@ void appendU64Be(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
   for (unsigned shift = 56; shift != 0; shift -= 8)
     bytes.push_back(static_cast<std::uint8_t>(value >> shift));
   bytes.push_back(static_cast<std::uint8_t>(value));
-}
-
-void appendField(std::vector<std::uint8_t> &bytes, CacheField field,
-                 llvm::ArrayRef<std::uint8_t> value) {
-  appendU32Be(bytes, static_cast<std::uint32_t>(field));
-  appendU64Be(bytes, value.size());
-  bytes.insert(bytes.end(), value.begin(), value.end());
-}
-
-void appendField(std::vector<std::uint8_t> &bytes, CacheField field,
-                 llvm::StringRef value) {
-  appendField(
-      bytes, field,
-      llvm::ArrayRef<std::uint8_t>(
-          reinterpret_cast<const std::uint8_t *>(value.data()), value.size()));
-}
-
-void appendU32Field(std::vector<std::uint8_t> &bytes, CacheField field,
-                    std::uint32_t value) {
-  std::vector<std::uint8_t> encoded;
-  encoded.reserve(4);
-  appendU32Be(encoded, value);
-  appendField(bytes, field, encoded);
 }
 
 std::string byteKey(llvm::ArrayRef<std::uint8_t> bytes) {
@@ -287,33 +241,6 @@ bool matchesSwitchOwner(const FabricTraversalRequesterGroupView &requester,
          requester.owner == FabricInventoryOwnerRef::of(payload.owner);
 }
 
-llvm::Error
-validateInputs(const dataflow::CanonicalDataflowProgramView &dataflow,
-               const TechMappingView &techMapping,
-               const FabricArtifactView &fabric,
-               const ResolvedPnrConfigView &config,
-               const SpatialMappingConstraintSetView &constraintSet) {
-  if (config.domain() != PnrConfigDomain::Spatial)
-    return invalid("Spatial PnR requires the Spatial config projection");
-  if (techMapping.dataflowIdentity() != dataflow.identity())
-    return invalid("TechMapping is bound to a different Dataflow artifact");
-  if (techMapping.fabricIdentity() != fabric.identity())
-    return invalid("TechMapping is bound to a different Fabric artifact");
-  if (constraintSet.dataflowIdentity() != dataflow.identity() ||
-      constraintSet.techMappingIdentity() != techMapping.identity() ||
-      constraintSet.fabricIdentity() != fabric.identity())
-    return invalid("MappingConstraintSet is bound to a different D/T/F tuple");
-  if (fabric.rootKind() != FabricRootKind::Module)
-    return invalid("Spatial PnR requires one fully elaborated Module root");
-  if (llvm::Error error = validateComponentViewDigest(
-          config.schemaDescriptorBytes(), config.canonicalViewBytes(),
-          config.digest()))
-    return llvm::joinErrors(
-        invalid("PnR config component-view digest is invalid"),
-        std::move(error));
-  return llvm::Error::success();
-}
-
 } // namespace
 
 class loom::pnr::FrozenSpatialPnrProblemBuilder final {
@@ -325,8 +252,8 @@ public:
         const ResolvedPnrConfigView &config,
         const SpatialMappingConstraintSetView &constraintSet,
         const FabricDerivedContextBundle *derivedContexts) {
-    if (llvm::Error error = validateInputs(dataflow, techMapping, fabric,
-                                           config, constraintSet))
+    if (llvm::Error error = detail::SpatialPnrProblemIdentity::validateInputs(
+            dataflow, techMapping, fabric, config, constraintSet))
       return std::move(error);
     if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
             fabric, physicalTiming))
@@ -404,7 +331,7 @@ public:
     if (!routeConstraints)
       return routeConstraints.takeError();
     auto handshake = detail::buildFrozenSpatialHandshakeIndex(
-        dataflow, techMapping, fabric, staticContext.handshake.ownerModels(),
+        dataflow, techMapping, fabric, staticContext.handshake,
         *realizations, *resources, *routing, *activeRouting);
     if (!handshake)
       return handshake.takeError();
@@ -428,8 +355,9 @@ public:
       return std::move(error);
 
     FrozenSpatialPnrCacheKey cacheKey =
-        deriveCacheKey(dataflow, techMapping, fabric, config, constraintSet,
-                       physicalTiming.digest());
+        detail::SpatialPnrProblemIdentity::deriveCacheKey(
+            dataflow, techMapping, fabric, config, constraintSet,
+            physicalTiming.digest());
     std::vector<DeterministicWorkBudgetEntry> workBudget =
         deriveDeterministicWorkBudgetView(config);
     SpatialActiveProblemStatistics statistics =
@@ -450,42 +378,6 @@ public:
         std::move(*bindingRelations), std::move(*memoryConstraints),
         std::move(*tagConstraints), std::move(*routeConstraints), cacheKey,
         std::move(statistics)));
-  }
-
-  static FrozenSpatialPnrCacheKey
-  deriveCacheKey(const dataflow::CanonicalDataflowProgramView &dataflow,
-                 const TechMappingView &techMapping,
-                 const FabricArtifactView &fabric,
-                 const ResolvedPnrConfigView &config,
-                 const SpatialMappingConstraintSetView &constraintSet,
-                 const ComponentViewDigest &physicalTimingDigest) {
-    std::vector<std::uint8_t> preimage;
-    preimage.reserve(cacheKeyDomainSize + 2 * sizeof(std::uint32_t) + 512);
-    preimage.insert(preimage.end(), cacheKeyDomain,
-                    cacheKeyDomain + cacheKeyDomainSize);
-    appendU32Be(preimage, cacheSchemaMajor);
-    appendU32Be(preimage, cacheSchemaMinor);
-    appendField(preimage, CacheField::DataflowIdentity,
-                dataflow.identity().bytes());
-    appendField(preimage, CacheField::TechMappingIdentity,
-                techMapping.identity().bytes());
-    appendField(preimage, CacheField::FabricIdentity,
-                fabric.identity().bytes());
-    appendField(preimage, CacheField::ConstraintSetIdentity,
-                constraintSet.identity().bytes());
-    appendField(preimage, CacheField::ConfigViewDescriptor,
-                config.schemaDescriptorBytes());
-    appendField(preimage, CacheField::ConfigViewDigest,
-                config.digest().bytes());
-    appendField(preimage, CacheField::FreezeSemanticIdentity,
-                freezeSemanticIdentity);
-    appendField(preimage, CacheField::ImporterSemanticIdentity,
-                importerSemanticIdentity);
-    appendField(preimage, CacheField::NativeLayoutAbi, nativeLayoutAbi);
-    appendU32Field(preimage, CacheField::PnrIndexWidth, getPnrIndexBits());
-    appendField(preimage, CacheField::PhysicalTimingProfileDigest,
-                physicalTimingDigest.bytes());
-    return FrozenSpatialPnrCacheKey(llvm::SHA256::hash(preimage));
   }
 
   static llvm::Error
@@ -1204,76 +1096,120 @@ public:
     return llvm::Error::success();
   }
 
-  static llvm::Error revalidateCacheHit(
-      const FrozenSpatialPnrProblem &problem,
-      const dataflow::CanonicalDataflowProgramView &dataflow,
-      const TechMappingView &techMapping, const FabricArtifactView &fabric,
-      const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
-      const ResolvedPnrConfigView &config,
-      const SpatialMappingConstraintSetView &constraintSet) {
-    if (llvm::Error error = validateInputs(dataflow, techMapping, fabric,
-                                           config, constraintSet))
-      return error;
-    if (problem.dataflowIdentity() != dataflow.identity() ||
-        problem.techMappingIdentity() != techMapping.identity() ||
-        problem.fabricIdentity() != fabric.identity() ||
-        problem.constraintSetIdentity() != constraintSet.identity())
-      return invalid("cache hit does not bind the exact artifact inputs");
-    if (problem.config().schemaDescriptorBytes() !=
-            config.schemaDescriptorBytes() ||
-        problem.config().canonicalViewBytes() != config.canonicalViewBytes() ||
-        problem.config().digest() != config.digest())
-      return invalid("cache hit does not bind the exact PnR config view");
-    if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
-            fabric, physicalTiming))
-      return error;
-    if (problem.cacheKey() != deriveCacheKey(dataflow, techMapping, fabric,
-                                             config, constraintSet,
-                                             physicalTiming.digest()))
-      return invalid("cache key does not match its dependency closure");
-    return llvm::Error::success();
-  }
-
   static llvm::Expected<FabricDerivedContextBundle> buildDerivedContexts(
       const FabricArtifactView &fabric,
-      const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming) {
+      const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
+      DerivedContextCacheAccess *staticAccess,
+      DerivedContextCacheAccess *timingAccess) {
     if (fabric.rootKind() != FabricRootKind::Module)
       return invalid("FabricStaticContext requires one Module root");
     if (llvm::Error error = ::loom::fabric::validateFabricPhysicalTimingProfile(
             fabric, physicalTiming))
       return std::move(error);
 
-    FabricDerivedContextStatistics statistics;
+    if (staticAccess)
+      *staticAccess = {};
+    if (timingAccess)
+      *timingAccess = {};
+    auto session = detail::currentPnrDerivedContextSession();
+    const auto staticKey = detail::deriveFabricStaticContextKey(fabric);
     const auto staticBegin = std::chrono::steady_clock::now();
-    auto resources = detail::buildFrozenSpatialResourceIndex(fabric);
-    if (!resources)
-      return resources.takeError();
-    auto topology = freezeEndpointRoutingTopology(fabric);
-    if (!topology)
-      return topology.takeError();
-    auto tagContinuity = freezeSpatialTagContinuityIndex(fabric);
-    if (!tagContinuity)
-      return tagContinuity.takeError();
-    auto handshake = buildFabricHandshakeContext(fabric);
-    if (!handshake)
-      return handshake.takeError();
+    bool staticReserved = false;
+    llvm::scope_exit abandonStatic([&] {
+      if (session && staticReserved)
+        session->abandon(detail::PnrDerivedContextDomain::FabricStatic,
+                         staticKey, detail::elapsedNanoseconds(staticBegin));
+    });
+    std::shared_ptr<const detail::FabricStaticContext> staticContext;
+    DerivedContextConstructionStatistics staticStatistics;
+    if (session) {
+      auto lookup = session->lookupOrReserve(
+          detail::PnrDerivedContextDomain::FabricStatic, staticKey);
+      if (!lookup)
+        return lookup.takeError();
+      if (lookup->entry) {
+        staticContext =
+            detail::contextFromEntry<detail::FabricStaticContext>(lookup->entry);
+        staticStatistics = {1, lookup->entry->constructionNanoseconds,
+                            lookup->entry->retainedBytes,
+                            lookup->entry->deterministicWork};
+        if (staticAccess)
+          staticAccess->hits = 1;
+      } else {
+        staticReserved = lookup->reservedConstruction;
+        if (staticAccess)
+          staticAccess->misses = 1;
+      }
+    } else if (staticAccess) {
+      staticAccess->misses = 1;
+    }
 
-    auto resourcesOwner = std::make_shared<const FrozenSpatialResourceIndex>(
-        std::move(*resources));
-    auto topologyOwner = std::make_shared<const FrozenEndpointRoutingTopology>(
-        std::move(*topology));
-    auto tagOwner = std::make_shared<const FrozenSpatialTagContinuityIndex>(
-        std::move(*tagContinuity));
-    auto staticContext = std::make_shared<const detail::FabricStaticContext>(
-        detail::FabricStaticContext{
-            detail::deriveFabricStaticContextKey(fabric), fabric.identity(),
-            resourcesOwner, topologyOwner, tagOwner, std::move(*handshake)});
+    if (!staticContext) {
+      auto resources = detail::buildFrozenSpatialResourceIndex(fabric);
+      if (!resources)
+        return resources.takeError();
+      auto topology = freezeEndpointRoutingTopology(fabric);
+      if (!topology)
+        return topology.takeError();
+      auto tagContinuity = freezeSpatialTagContinuityIndex(fabric);
+      if (!tagContinuity)
+        return tagContinuity.takeError();
+      auto handshake = buildFabricHandshakeContext(fabric);
+      if (!handshake)
+        return handshake.takeError();
+      std::optional<FabricTopologyQualityReport> topologyQuality;
+      if (mapping_debug::enabled(mapping_debug::Level::Summary)) {
+        auto analyzed = analyzeFabricTopologyQuality(fabric);
+        if (!analyzed)
+          return analyzed.takeError();
+        topologyQuality.emplace(std::move(*analyzed));
+      }
 
-    statistics.staticContext.constructionCount = 1;
-    statistics.staticContext.constructionNanoseconds =
-        detail::elapsedNanoseconds(staticBegin);
-    statistics.staticContext.retainedBytes = detail::staticContextRetainedBytes(
-        *resourcesOwner, *topologyOwner, *tagOwner, staticContext->handshake);
+      auto resourcesOwner = std::make_shared<const FrozenSpatialResourceIndex>(
+          std::move(*resources));
+      auto topologyOwner =
+          std::make_shared<const FrozenEndpointRoutingTopology>(
+              std::move(*topology));
+      auto tagOwner = std::make_shared<const FrozenSpatialTagContinuityIndex>(
+          std::move(*tagContinuity));
+      staticContext = std::make_shared<const detail::FabricStaticContext>(
+          detail::FabricStaticContext{staticKey, fabric.identity(),
+                                      resourcesOwner, topologyOwner, tagOwner,
+                                      std::move(*handshake),
+                                      std::move(topologyQuality)});
+      staticStatistics.constructionCount = 1;
+      staticStatistics.constructionNanoseconds =
+          detail::elapsedNanoseconds(staticBegin);
+      staticStatistics.retainedBytes = detail::staticContextRetainedBytes(
+          *resourcesOwner, *topologyOwner, *tagOwner, staticContext->handshake,
+          staticContext->topologyQuality);
+      const FabricHandshakeContextStatistics &handshakeStatistics =
+          staticContext->handshake.statistics();
+      staticStatistics.deterministicWork =
+          resourcesOwner->resourceOwners().size() +
+          topologyOwner->endpoints().size() +
+          topologyOwner->traversals().size() + topologyOwner->arcs().size() +
+          handshakeStatistics.deterministicWork;
+      if (staticContext->topologyQuality)
+        staticStatistics.deterministicWork +=
+            detail::topologyQualityDeterministicWork(
+                *staticContext->topologyQuality);
+      if (session) {
+        auto entry = session->complete(
+            detail::PnrDerivedContextDomain::FabricStatic, staticKey,
+            staticContext, staticStatistics.constructionNanoseconds,
+            staticStatistics.retainedBytes,
+            staticStatistics.deterministicWork);
+        staticContext =
+            detail::contextFromEntry<detail::FabricStaticContext>(entry);
+        staticReserved = false;
+      }
+    }
+
+    FabricDerivedContextStatistics statistics;
+    statistics.staticContext = staticStatistics;
+    const auto &resourcesOwner = staticContext->resources;
+    const auto &topologyOwner = staticContext->routingTopology;
     statistics.resourceOwnerCount = resourcesOwner->resourceOwners().size();
     statistics.endpointCount = topologyOwner->endpoints().size();
     statistics.traversalCount = topologyOwner->traversals().size();
@@ -1296,38 +1232,86 @@ public:
     statistics.handshakeNodeCount = handshakeStatistics.nodeCount;
     statistics.handshakeArcCount = handshakeStatistics.arcCount;
     statistics.handshakeFragmentCount = handshakeStatistics.fragmentCount;
-    statistics.staticContext.deterministicWork =
-        statistics.resourceOwnerCount + statistics.endpointCount +
-        statistics.traversalCount + statistics.routingArcCount +
-        handshakeStatistics.deterministicWork;
-
+    const auto timingKey =
+        detail::deriveFabricTimingContextKey(staticContext->key, physicalTiming);
     const auto timingBegin = std::chrono::steady_clock::now();
-    auto routing = buildRouting(fabric, physicalTiming, *resourcesOwner,
-                                topologyOwner, tagOwner);
-    if (!routing)
-      return routing.takeError();
-    auto routingOwner =
-        std::make_shared<const FrozenSpatialRoutingGraph>(std::move(*routing));
-    auto timingContext = std::make_shared<const detail::FabricTimingContext>(
-        detail::FabricTimingContext{detail::deriveFabricTimingContextKey(
-                                        staticContext->key, physicalTiming),
-                                    fabric.identity(),
-                                    physicalTiming.digest().bytes(),
-                                    staticContext, routingOwner});
-    statistics.timingContext.constructionCount = 1;
-    statistics.timingContext.constructionNanoseconds =
-        detail::elapsedNanoseconds(timingBegin);
-    statistics.timingContext.retainedBytes =
-        detail::timingContextRetainedBytes(*routingOwner);
-    statistics.timingContext.deterministicWork =
-        routingOwner->traversals().size() + routingOwner->routeClaims().size() +
-        routingOwner->traversalClaimKeys().size() +
-        routingOwner->traversalArcs().size();
+    bool timingReserved = false;
+    llvm::scope_exit abandonTiming([&] {
+      if (session && timingReserved)
+        session->abandon(detail::PnrDerivedContextDomain::FabricTiming,
+                         timingKey, detail::elapsedNanoseconds(timingBegin));
+    });
+    std::shared_ptr<const detail::FabricTimingContext> timingContext;
+    DerivedContextConstructionStatistics timingStatistics;
+    if (session) {
+      auto lookup = session->lookupOrReserve(
+          detail::PnrDerivedContextDomain::FabricTiming, timingKey);
+      if (!lookup)
+        return lookup.takeError();
+      if (lookup->entry) {
+        timingContext =
+            detail::contextFromEntry<detail::FabricTimingContext>(lookup->entry);
+        timingStatistics = {1, lookup->entry->constructionNanoseconds,
+                            lookup->entry->retainedBytes,
+                            lookup->entry->deterministicWork};
+        if (timingAccess)
+          timingAccess->hits = 1;
+      } else {
+        timingReserved = lookup->reservedConstruction;
+        if (timingAccess)
+          timingAccess->misses = 1;
+      }
+    } else if (timingAccess) {
+      timingAccess->misses = 1;
+    }
+    if (!timingContext) {
+      auto routing = buildRouting(fabric, physicalTiming, *resourcesOwner,
+                                  topologyOwner,
+                                  staticContext->tagContinuity);
+      if (!routing)
+        return routing.takeError();
+      auto routingOwner =
+          std::make_shared<const FrozenSpatialRoutingGraph>(std::move(*routing));
+      timingContext = std::make_shared<const detail::FabricTimingContext>(
+          detail::FabricTimingContext{timingKey, fabric.identity(),
+                                      physicalTiming.digest().bytes(),
+                                      staticContext, routingOwner});
+      timingStatistics.constructionCount = 1;
+      timingStatistics.constructionNanoseconds =
+          detail::elapsedNanoseconds(timingBegin);
+      timingStatistics.retainedBytes =
+          detail::timingContextRetainedBytes(*routingOwner);
+      timingStatistics.deterministicWork =
+          routingOwner->traversals().size() +
+          routingOwner->routeClaims().size() +
+          routingOwner->traversalClaimKeys().size() +
+          routingOwner->traversalArcs().size();
+      if (session) {
+        auto entry = session->complete(
+            detail::PnrDerivedContextDomain::FabricTiming, timingKey,
+            timingContext, timingStatistics.constructionNanoseconds,
+            timingStatistics.retainedBytes,
+            timingStatistics.deterministicWork);
+        timingContext =
+            detail::contextFromEntry<detail::FabricTimingContext>(entry);
+        timingReserved = false;
+      }
+    }
+    statistics.timingContext = timingStatistics;
 
     auto storage = std::make_shared<const detail::FabricDerivedContextStorage>(
         detail::FabricDerivedContextStorage{staticContext, timingContext,
                                             statistics});
-    return FabricDerivedContextBundle(std::move(storage));
+    FabricDerivedContextBundle result(std::move(storage));
+    if ((staticAccess && staticAccess->hits != 0) ||
+        (timingAccess && timingAccess->hits != 0)) {
+      if (llvm::Error error =
+              revalidateDerivedContexts(result, fabric, physicalTiming))
+        return std::move(error);
+      if (session)
+        session->recordRevalidation();
+    }
+    return result;
   }
 
   static llvm::Error revalidateDerivedContexts(
@@ -1933,9 +1917,13 @@ loom::pnr::freezeSpatialPnrProblem(
 llvm::Expected<FabricDerivedContextBundle>
 loom::pnr::buildFabricDerivedContextBundle(
     const FabricArtifactView &fabric,
-    const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming) {
+    const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
+    DerivedContextCacheAccess *staticAccess,
+    DerivedContextCacheAccess *timingAccess) {
   return FrozenSpatialPnrProblemBuilder::buildDerivedContexts(fabric,
-                                                              physicalTiming);
+                                                              physicalTiming,
+                                                              staticAccess,
+                                                              timingAccess);
 }
 
 llvm::Error loom::pnr::revalidateFabricDerivedContextBundle(
@@ -1952,7 +1940,7 @@ llvm::Error loom::pnr::revalidateFrozenSpatialPnrCacheHit(
     const ::loom::fabric::FabricPhysicalTimingProfileView &physicalTiming,
     const ResolvedPnrConfigView &config,
     const SpatialMappingConstraintSetView &constraints) {
-  return FrozenSpatialPnrProblemBuilder::revalidateCacheHit(
+  return detail::SpatialPnrProblemIdentity::revalidateCacheHit(
       problem, dataflow, techMapping, fabric, physicalTiming, config,
       constraints);
 }

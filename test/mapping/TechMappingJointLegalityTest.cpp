@@ -6,11 +6,8 @@
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Fabric/IR/OperationResourceContract.h"
-#include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Tech/TechMappingConfig.h"
 #include "Mapping/Tech/TechMappingGenerator.h"
-#include "PnR/PnrConfig.h"
-#include "PnR/SpatialPnrGenerator.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -29,7 +26,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdlib>
-#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -223,15 +219,15 @@ buildBroadcastFabric(loom::ArtifactStore &store) {
   std::vector<loom::adg::SpatialValue> spatialInputs;
   for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
     spatialInputs.push_back(take(spatial.input(ordinal)));
-  auto pe =
+  auto computePe =
       take(spatial.addPe(spatialInputs, PeSpec::spatial(inputs, outputs)));
   std::vector<loom::adg::PeValue> peInputs;
   for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
-    peInputs.push_back(take(pe.input(ordinal)));
+    peInputs.push_back(take(computePe.input(ordinal)));
   const std::vector<PortType> fuInputs(2, bits32);
   const std::vector<PortType> fuOutputs(2, bits128);
-  auto fu =
-      take(pe.addFu({peInputs[0], peInputs[1]}, FuSpec{fuInputs, fuOutputs}));
+  auto fu = take(computePe.addFu({peInputs[0], peInputs[1]},
+                                 FuSpec{fuInputs, fuOutputs}));
   const auto first = take(fu.addOperation(
       {take(fu.input(0)), take(fu.input(1))}, integerAddCapability(bits32)));
   const auto second = take(fu.addOperation(
@@ -242,12 +238,22 @@ buildBroadcastFabric(loom::ArtifactStore &store) {
   if (llvm::Error error =
           fu.close({take(first.output(0)), take(second.output(0))}))
     fail(llvm::toString(std::move(error)));
-  addTokenSyncFu(pe, peInputs, bits128);
-  if (llvm::Error error = pe.close())
+  if (llvm::Error error = computePe.close())
+    fail(llvm::toString(std::move(error)));
+  std::vector<loom::adg::SpatialValue> computeOutputs;
+  for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal)
+    computeOutputs.push_back(take(computePe.output(ordinal)));
+  auto tokenPe =
+      take(spatial.addPe(computeOutputs, PeSpec::spatial(inputs, outputs)));
+  std::vector<loom::adg::PeValue> tokenInputs;
+  for (std::size_t ordinal = 0; ordinal < inputs.size(); ++ordinal)
+    tokenInputs.push_back(take(tokenPe.input(ordinal)));
+  addTokenSyncFu(tokenPe, tokenInputs, bits128);
+  if (llvm::Error error = tokenPe.close())
     fail(llvm::toString(std::move(error)));
   std::vector<loom::adg::SpatialValue> spatialOutputs;
   for (std::size_t ordinal = 0; ordinal < outputs.size(); ++ordinal)
-    spatialOutputs.push_back(take(pe.output(ordinal)));
+    spatialOutputs.push_back(take(tokenPe.output(ordinal)));
   if (llvm::Error error = spatial.close(spatialOutputs))
     fail(llvm::toString(std::move(error)));
   auto design = take(std::move(builder).finalize());
@@ -308,51 +314,19 @@ void memoryScheduleOwnsJointAdmission() {
   }
 }
 
-void spatialMemoryRowsAreOccurrenceUnique() {
+void spatialMemoryRowsAreRejectedBeforePnr() {
   TemporaryDirectory directory;
   loom::ArtifactStore store(directory.path());
   mlir::MLIRContext context = makeContext();
   auto dataflowArtifact = buildTwoLoadDataflow(context);
   const auto fabric = buildMemoryFabric(store, false);
   const auto outcome = generate(dataflowArtifact, fabric, store);
-  const auto *generated =
-      std::get_if<loom::mapping::GeneratedTechMappings>(&outcome);
-  if (!generated)
-    fail("Spatial memory fixture produced no TechMapping candidates");
-
-  std::optional<loom::mapping::FinalizedTechMapping> selected;
-  for (const auto &reference : generated->candidates) {
-    auto candidate = take(loom::mapping::importTechMapping(reference, store));
-    const auto realizations = candidate.view().memoryRealizations();
-    if (realizations.size() != 2 ||
-        !llvm::all_of(realizations,
-                      [](const auto &row) { return row.actors.size() == 1; }))
-      continue;
-    selected.emplace(std::move(candidate));
-    break;
-  }
-  if (!selected)
-    fail("Spatial memory fixture has no two-row TechMapping candidate");
-
-  const auto dataflow = take(dataflowArtifact.view());
-  auto constraints =
-      take(loom::mapping::finalizeEmptySpatialMappingConstraintSet(
-          dataflow, selected->view(), fabric.view(), store));
-  const auto config = take(loom::pnr::projectResolvedSpatialPnrConfigView(
-      loom::defaultResolvedConfig()));
-  const auto physicalTiming =
-      take(loom::fabric::projectNormalizedFabricPhysicalTimingProfile(
-          fabric.view()));
-  auto spatial = loom::pnr::generateSpatialMappings(
-      {dataflow, selected->view(), fabric.view(), physicalTiming, config,
-       constraints.view(), store, 1});
   const auto *infeasible =
-      std::get_if<loom::pnr::ProvenInfeasibleSpatialMapping>(&spatial);
-  if (!infeasible)
-    fail("two static memory rows shared one physical configuration row");
-  if (infeasible->accounting.endpointExpansionSlots != 0 ||
-      infeasible->accounting.negotiationIterationSlots != 0)
-    fail("static memory row conflict reached transport search");
+      std::get_if<loom::mapping::ProvenInfeasibleTechMapping>(&outcome);
+  if (!infeasible ||
+      infeasible->accounting.memorySupplySpatialPortRejections == 0 ||
+      infeasible->accounting.candidateEvaluations != 0)
+    fail("static memory row conflict was not rejected by Tech root supply");
 }
 
 void broadcastPreservesProducerIdentity() {
@@ -377,7 +351,7 @@ void broadcastPreservesProducerIdentity() {
 
 int main() {
   memoryScheduleOwnsJointAdmission();
-  spatialMemoryRowsAreOccurrenceUnique();
+  spatialMemoryRowsAreRejectedBeforePnr();
   broadcastPreservesProducerIdentity();
   llvm::outs() << "tech mapping joint legality tests passed\n";
   return 0;

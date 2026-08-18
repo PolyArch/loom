@@ -77,6 +77,13 @@ struct CanonicalRootThreadLogicalDomainView {
   std::vector<mlir::Value> launchParameters;
 };
 
+/// One root-to-leaf direct-call path from an application ABI entry to the
+/// LLVM callable that owns a root thread launch. Operations borrow the
+/// imported canonical program and remain invocation-local derived state.
+struct CanonicalDirectInvocationPathView {
+  std::vector<mlir::Operation *> calls;
+};
+
 struct CanonicalStaticGraphLaunchView {
   StaticGraphLaunchRef ref;
   mlir::Operation *op = nullptr; // the dataflow.graph.launch site
@@ -170,6 +177,32 @@ public:
   /// Canonical Dataflow.
   llvm::Expected<std::optional<CanonicalRootThreadLogicalDomainView>>
   projectWholeRootedGraphLogicalDomain(RootedGraphLaunchRef ref) const;
+
+  /// Project one direct rooted graph's dense extents when every bound is a
+  /// closed, side-effect-free integer expression. A non-dense, nested, or
+  /// dynamically bounded domain returns std::nullopt.
+  llvm::Expected<std::optional<std::vector<std::uint64_t>>>
+  projectStaticDenseExtents(RootedGraphLaunchRef ref) const;
+
+  /// Project dense extents in the context of one exact application ABI entry.
+  /// Callable arguments may be closed by direct call operands. Every reachable
+  /// invocation path must produce the same extents; indirect, recursive,
+  /// dynamic, or path-dependent domains return std::nullopt or an error.
+  llvm::Expected<std::optional<std::vector<std::uint64_t>>>
+  projectStaticDenseExtents(RootedGraphLaunchRef ref,
+                            llvm::StringRef entrySymbol) const;
+
+  /// Enumerate one direct rooted graph's statically bounded dense domain in
+  /// canonical row-major order. A non-dense, nested, dynamic-bound, or
+  /// caller-bounded domain returns std::nullopt; a statically empty domain
+  /// returns an empty vector.
+  llvm::Expected<std::optional<std::vector<std::vector<std::uint64_t>>>>
+  enumerateStaticDenseCoordinates(RootedGraphLaunchRef ref,
+                                  std::uint64_t maximumPoints) const;
+  llvm::Expected<std::optional<std::vector<std::vector<std::uint64_t>>>>
+  enumerateStaticDenseCoordinates(RootedGraphLaunchRef ref,
+                                  std::uint64_t maximumPoints,
+                                  llvm::StringRef entrySymbol) const;
   llvm::Expected<CanonicalStaticGraphLaunchView>
   resolve(StaticGraphLaunchRef ref) const;
   llvm::Expected<CanonicalLogicalMemoryRootView>
@@ -194,6 +227,13 @@ public:
   llvm::Expected<std::vector<RootThreadLaunchRef>>
   projectRootThreadLaunchesReachableFromAbiEntry(
       llvm::StringRef entrySymbol) const;
+
+  /// Enumerate the complete direct, nonrecursive invocation paths from one
+  /// exact ABI entry to the callable that owns `root`. Paths are in execution
+  /// order and each call operation borrows the canonical program.
+  llvm::Expected<std::vector<CanonicalDirectInvocationPathView>>
+  projectRootThreadInvocationPathsFromAbiEntry(llvm::StringRef entrySymbol,
+                                               RootThreadLaunchRef root) const;
 
   //== Closed structural-reference generation, validation, and resolution ==//
 
@@ -329,6 +369,13 @@ public:
   /// rejected rather than widened to the whole root domain.
   llvm::Expected<EventLogicalProjection>
   eventLogicalProjection(const EventFamilyKey &event) const;
+
+  /// Derive the one root-thread coordinate-space owner of an event family.
+  /// This is the canonical domain identity used before comparing Presburger
+  /// cells; cells owned by different roots are not in the same space even
+  /// when their dimension counts happen to match.
+  llvm::Expected<RootThreadLaunchRef>
+  eventRootThreadLaunch(const EventFamilyKey &event) const;
 
   /// The canonical root-local view inventory of one logical memory root: a
   /// range into the prebuilt view inventory (every admitted root-preserving

@@ -5,10 +5,12 @@
 #include "PnR/SpatialPnrProblem.h"
 
 #include "Fabric/Identity/FabricHandshake.h"
+#include "Fabric/Artifact/FabricTopologyQuality.h"
 
 #include <array>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace loom::pnr::detail {
@@ -25,6 +27,7 @@ struct FabricStaticContext final {
   std::shared_ptr<const FrozenEndpointRoutingTopology> routingTopology;
   std::shared_ptr<const FrozenSpatialTagContinuityIndex> tagContinuity;
   ::loom::fabric::FabricHandshakeContext handshake;
+  std::optional<::loom::fabric::FabricTopologyQualityReport> topologyQuality;
 };
 
 struct FabricTimingContext final {
@@ -54,7 +57,14 @@ std::uint64_t staticContextRetainedBytes(
     const FrozenSpatialResourceIndex &resources,
     const FrozenEndpointRoutingTopology &topology,
     const FrozenSpatialTagContinuityIndex &tags,
-    const ::loom::fabric::FabricHandshakeContext &handshake);
+    const ::loom::fabric::FabricHandshakeContext &handshake,
+    const std::optional<::loom::fabric::FabricTopologyQualityReport> &quality);
+
+std::uint64_t topologyQualityDeterministicWork(
+    const ::loom::fabric::FabricTopologyQualityReport &report);
+
+std::uint64_t topologyQualityRetainedBytes(
+    const ::loom::fabric::FabricTopologyQualityReport &report);
 
 std::uint64_t
 timingContextRetainedBytes(const FrozenSpatialRoutingGraph &routing);

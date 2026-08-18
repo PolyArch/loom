@@ -473,19 +473,32 @@ observations agree, each standalone observation agrees with its originating
 System observation, and any requested independent oracle agrees. It may not
 reconstruct an invocation from source constants, select another Mapping, or
 accept a hand-authored Spatial runtime input beside the Deployment.
-Each static bridge publishes one bounded collection whose invocation sequence
-starts at zero and is dense. The driver must replay and independently validate
-every collection member; selecting only the first or final activation is not a
-valid System execution.
+Each physical bridge session publishes one bounded collection whose dynamic
+invocation sequence starts at zero and is dense. The session owns the ordered
+set of Deployment dispatch targets assigned to one AccCore. Every collection
+member carries the session-entry ordinal selected by the Spatial engine, so
+one target may produce multiple dynamic members and multiple targets may share
+one physical bridge without acquiring duplicate PIO ranges. The driver must
+recover the exact target, replay and independently validate every member, and
+prove that every declared session entry occurred; selecting only the first or
+final activation, or assuming one member per target, is not valid System
+execution.
 
-The driver's `loom.execution_matrix_workspace.1.0` manifest is a nonsemantic
+The driver's `loom.execution_matrix_workspace.1.2` manifest is a nonsemantic
 workspace projection. It records the exact Deployment, binding, workload,
 runtime-input, Request, Evidence, SimulationExecution, Dataflow,
 SpatialMapping, and HardwareImplementation references that already own the
-run. It does not acquire an Artifact identity, cache a mutable execution, or
-replace independent import and verification. Repeating the command in a new
-workspace therefore revalidates the package and result closure even when
-immutable implementation or tool caches are reused.
+run. Each Spatial cell also records the dense coordinate tuple decoded from
+the actual System invocation wire; the DFG and CGRA cells for one invocation
+must agree on that tuple. It also records the dispatch target ordinal,
+canonical AccCore reference, and canonical Spatial execution-context key from
+the actual gem5 launch bundle. The driver must rederive the same context from
+the Deployment selection for the observed logical point before publishing the
+workspace. These fields are execution evidence, not another Mapping or
+Deployment authority. The workspace does not acquire an Artifact identity,
+cache a mutable execution, or replace independent import and verification.
+Repeating the command in a new workspace therefore revalidates the package and
+result closure even when immutable implementation or tool caches are reused.
 
 DFG-sim executes canonical Dataflow semantics without Fabric resource limits.
 CGRA-sim executes mapped SpatialCore behavior using exact Dataflow, Fabric,

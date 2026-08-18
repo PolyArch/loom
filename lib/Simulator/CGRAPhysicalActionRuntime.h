@@ -54,10 +54,20 @@ struct CgraPhysicalActionRequest final {
   std::uint64_t occurrenceOrdinal = 0;
 };
 
+struct CgraPendingPhysicalActionDiagnostic final {
+  std::uint64_t actionOrdinal = 0;
+  std::uint64_t occurrenceOrdinal = 0;
+  bool granted = false;
+  bool hasCommit = false;
+  bool requiresCausalRelease = false;
+  bool intrinsicReleaseReached = false;
+  bool causalReleaseReached = false;
+};
+
 /// Execution-local lifecycle of selected physical ResourceUses. Resource
 /// capacity and arbitration remain in CgraResourceRuntime; this layer only
-/// applies owner-relative timing, retries blocked requests at reference-clock
-/// boundaries, and closes the exact claim envelope on release.
+/// applies owner-relative timing, reactivates blocked requests when a claim
+/// envelope releases, and closes the exact claim envelope on release.
 class CgraPhysicalActionRuntime final {
 public:
   enum class InternalKind : std::uint8_t {
@@ -93,6 +103,8 @@ public:
 
   bool hasPendingActions() const { return activeActionCount_ != 0; }
   std::uint64_t pendingActionCount() const { return activeActionCount_; }
+  std::vector<CgraPendingPhysicalActionDiagnostic>
+  pendingActionDiagnostics() const;
 
 private:
   enum class ActionState : std::uint8_t { Requested, Granted, Retired };
@@ -104,6 +116,7 @@ private:
     std::optional<CgraClaimEnvelope> envelope;
     bool intrinsicReleaseReached = false;
     bool causalReleaseReached = false;
+    bool acquisitionParked = false;
   };
 
   CgraPhysicalActionRuntime(std::vector<CgraPhysicalUseTiming> uses,

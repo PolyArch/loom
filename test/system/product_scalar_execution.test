@@ -1,6 +1,6 @@
 # REQUIRES: gem5-25.1.0.1
 # RUN: rm -rf %t.deployment %t.execution
-# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc -std=c11 -O1 -ffp-contract=off \
+# RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc %loom-product-acceleration-profile -std=c11 -O1 -ffp-contract=off \
 # RUN:   -fno-math-errno %S/Inputs/product_scalar.c -o %t.elf \
 # RUN:   --loom-deploy-output=%t.deployment > %t.build.stdout \
 # RUN:   2> %t.build.stderr

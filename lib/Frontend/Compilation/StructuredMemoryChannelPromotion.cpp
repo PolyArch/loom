@@ -2,7 +2,7 @@
 
 #include "Dataflow/IR/DataflowOps.h"
 #include "Frontend/IR/LoomOps.h"
-#include "Frontend/Raising/MemoryProvenance.h"
+#include "Frontend/Analysis/MemoryProvenance.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -145,7 +145,7 @@ threadFormalForSpatialMemory(loom::SpatialRegionOp spatial,
 
 std::optional<unsigned>
 threadFormalForSpatialValue(loom::SpatialRegionOp spatial, mlir::Value value) {
-  value = raising::projectMemoryRoot(value);
+  value = analysis::projectMemoryDerivationRoot(value);
   auto argument = llvm::dyn_cast<mlir::BlockArgument>(value);
   if (!argument || argument.getOwner() != &spatial.getBody().front() ||
       argument.getArgNumber() >= spatial.getValueInputs().size())
@@ -368,7 +368,7 @@ analyzeSourceEndpoint(dataflow::ThreadLaunchOp launch, unsigned formalOrdinal,
       event = gep.getRes().use_begin()->getOwner();
     }
     if (!llvm::isa<mlir::LLVM::LoadOp, mlir::LLVM::StoreOp>(event) ||
-        raising::projectMemoryRoot(llvmMemoryAddress(event)) !=
+        analysis::projectMemoryDerivationRoot(llvmMemoryAddress(event)) !=
             pointerArgument) {
       return std::nullopt;
     }
@@ -815,7 +815,7 @@ bool haveIndependentRemainingEffects(const LhsPlan &lhs, const RhsPlan &rhs) {
     std::optional<mlir::Value> lhsRoot = launchOperand(lhs, lhsOrdinal);
     std::optional<mlir::Value> rhsRoot = launchOperand(rhs, rhsOrdinal);
     return lhsRoot && rhsRoot &&
-           raising::haveProvenDistinctMemoryRoots(*lhsRoot, *rhsRoot);
+           analysis::haveProvenDistinctMemoryRoots(*lhsRoot, *rhsRoot);
   };
   for (unsigned write : lhs.writeOrdinals) {
     for (unsigned read : rhs.readOrdinals)

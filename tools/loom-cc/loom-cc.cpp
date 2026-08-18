@@ -45,8 +45,8 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/IOSandbox.h"
 #include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -75,8 +75,7 @@ using namespace clang;
 using namespace clang::driver;
 using namespace llvm::opt;
 
-static const char *GetStableCStr(llvm::StringSet<> &Saved,
-                                 llvm::StringRef S);
+static const char *GetStableCStr(llvm::StringSet<> &Saved, llvm::StringRef S);
 
 namespace {
 
@@ -98,10 +97,11 @@ struct LoomDriverOptions final {
   }
 };
 
-llvm::Expected<bool> consumeLoomOption(
-    llvm::StringRef argument, llvm::StringRef name, std::size_t &index,
-    llvm::ArrayRef<const char *> arguments, std::set<std::string> &seen,
-    std::string &value) {
+llvm::Expected<bool> consumeLoomOption(llvm::StringRef argument,
+                                       llvm::StringRef name, std::size_t &index,
+                                       llvm::ArrayRef<const char *> arguments,
+                                       std::set<std::string> &seen,
+                                       std::string &value) {
   llvm::StringRef parsed;
   if (argument == name) {
     if (index + 1 == arguments.size() || arguments[index + 1] == nullptr)
@@ -134,9 +134,9 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
     if (arguments[index] == nullptr)
       continue;
     const llvm::StringRef argument(arguments[index]);
-    auto profile = consumeLoomOption(
-        argument, "--loom-accel-profile", index, arguments, seen,
-        options.accelerationProfile);
+    auto profile =
+        consumeLoomOption(argument, "--loom-accel-profile", index, arguments,
+                          seen, options.accelerationProfile);
     if (!profile)
       return profile.takeError();
     if (*profile)
@@ -147,30 +147,29 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
       return hardware.takeError();
     if (*hardware)
       continue;
-    auto visualization = consumeLoomOption(
-        argument, "--loom-viz-export", index, arguments, seen,
-        options.visualizationPath);
+    auto visualization =
+        consumeLoomOption(argument, "--loom-viz-export", index, arguments, seen,
+                          options.visualizationPath);
     if (!visualization)
       return visualization.takeError();
     if (*visualization)
       continue;
-    auto deployment = consumeLoomOption(
-        argument, "--loom-deploy-output", index, arguments, seen,
-        options.deploymentPath);
+    auto deployment =
+        consumeLoomOption(argument, "--loom-deploy-output", index, arguments,
+                          seen, options.deploymentPath);
     if (!deployment)
       return deployment.takeError();
     if (*deployment)
       continue;
     std::string protocolSymbol;
     std::set<std::string> protocolOptionSeen;
-    auto protocol = consumeLoomOption(
-        argument, "--loom-operator-protocol-symbol", index, arguments,
-        protocolOptionSeen, protocolSymbol);
+    auto protocol =
+        consumeLoomOption(argument, "--loom-operator-protocol-symbol", index,
+                          arguments, protocolOptionSeen, protocolSymbol);
     if (!protocol)
       return protocol.takeError();
     if (*protocol) {
-      if (llvm::is_contained(options.operatorProtocolSymbols,
-                             protocolSymbol))
+      if (llvm::is_contained(options.operatorProtocolSymbols, protocolSymbol))
         return productError("loom_driver_option_invalid",
                             "operator protocol symbol is duplicated");
       options.operatorProtocolSymbols.push_back(std::move(protocolSymbol));
@@ -179,8 +178,7 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
     retained.push_back(arguments[index]);
   }
   arguments.assign(retained.begin(), retained.end());
-  if (!options.hardwarePath.empty() &&
-      !options.accelerationProfile.empty())
+  if (!options.hardwarePath.empty() && !options.accelerationProfile.empty())
     return productError("loom_driver_option_invalid",
                         "external hardware and an acceleration profile are "
                         "mutually exclusive");
@@ -203,8 +201,8 @@ bool preventsFinalLink(llvm::ArrayRef<const char *> arguments) {
   return false;
 }
 
-llvm::Expected<std::vector<std::string>> readProductDriverArguments(
-    llvm::StringRef path) {
+llvm::Expected<std::vector<std::string>>
+readProductDriverArguments(llvm::StringRef path) {
   auto buffer = llvm::MemoryBuffer::getFile(path, false, false);
   if (!buffer)
     return productError("loom_product_driver_projection_invalid",
@@ -232,8 +230,7 @@ productHelperOptions(const LoomDriverOptions &options) {
   llvm::SmallVector<std::string, 8> result;
   result.push_back("--deployment-output=" + options.deploymentPath);
   if (!options.accelerationProfile.empty())
-    result.push_back("--acceleration-profile=" +
-                     options.accelerationProfile);
+    result.push_back("--acceleration-profile=" + options.accelerationProfile);
   if (!options.hardwarePath.empty())
     result.push_back("--hardware=" + options.hardwarePath);
   if (!options.visualizationPath.empty())
@@ -252,9 +249,9 @@ llvm::Error invokeProductHelper(const LoomDriverOptions &options,
     command.push_back(argument);
   std::string message;
   bool failed = false;
-  const int status = llvm::sys::ExecuteAndWait(
-      LOOM_APPLICATION_BUILD_PATH, command, std::nullopt, {}, 0, 0, &message,
-      &failed);
+  const int status =
+      llvm::sys::ExecuteAndWait(LOOM_APPLICATION_BUILD_PATH, command,
+                                std::nullopt, {}, 0, 0, &message, &failed);
   if (failed || status < 0)
     return productError("loom_product_helper_unavailable",
                         "cannot execute application build helper: " + message);
@@ -293,11 +290,10 @@ llvm::StringRef projectedValue(llvm::ArrayRef<std::string> projection,
   return {};
 }
 
-llvm::Error validateUserTargetArguments(
-    llvm::ArrayRef<const char *> arguments,
-    llvm::ArrayRef<std::string> projection) {
-  const llvm::StringRef targetTriple =
-      projectedValue(projection, "--target=");
+llvm::Error
+validateUserTargetArguments(llvm::ArrayRef<const char *> arguments,
+                            llvm::ArrayRef<std::string> projection) {
+  const llvm::StringRef targetTriple = projectedValue(projection, "--target=");
   const llvm::StringRef architecture = projectedValue(projection, "-march=");
   const llvm::StringRef abi = projectedValue(projection, "-mabi=");
   const llvm::StringRef codeModel = projectedValue(projection, "-mcmodel=");
@@ -327,8 +323,7 @@ llvm::Error validateUserTargetArguments(
                             "target triple disagrees with the System");
       continue;
     }
-    if (argument.starts_with("--target=") ||
-        argument.starts_with("-target=")) {
+    if (argument.starts_with("--target=") || argument.starts_with("-target=")) {
       const llvm::StringRef value = argument.drop_front(argument.find('=') + 1);
       if (llvm::Triple::normalize(value) != targetTriple)
         return productError("loom_product_target_conflict",
@@ -347,19 +342,18 @@ llvm::Error validateUserTargetArguments(
       continue;
     }
     if (argument.consume_front("-mcmodel=")) {
-      if (llvm::Error error =
-              requireEqual("code model", argument, codeModel))
+      if (llvm::Error error = requireEqual("code model", argument, codeModel))
         return error;
       continue;
     }
     if (argument.consume_front("-mcpu=")) {
-      if (llvm::Error error =
-              requireEqual("backend CPU", argument, backendCpu))
+      if (llvm::Error error = requireEqual("backend CPU", argument, backendCpu))
         return error;
       continue;
     }
     if (argument == "-fno-lto" || argument == "-fno-fat-lto-objects" ||
-        argument.starts_with("-Wl,--plugin-opt=-mattr="))
+        argument.starts_with("-Wl,--plugin-opt=-mattr=") ||
+        argument.starts_with("-Wl,--unresolved-symbols="))
       return productError("loom_product_target_conflict",
                           "option conflicts with exact final-link import");
     if (argument.starts_with("-flto=") && argument != "-flto=full")
@@ -480,15 +474,15 @@ static T checkEnvVar(const char *EnvOptSet, const char *EnvOptFile,
 static void SetBackdoorDriverOutputsFromEnvVars(Driver &D) {
   D.CCPrintOptions = checkEnvVar<bool>(
       "CC_PRINT_OPTIONS", "CC_PRINT_OPTIONS_FILE", D.CCPrintOptionsFilename);
-  D.CCLogDiagnostics = checkEnvVar<bool>(
-      "CC_LOG_DIAGNOSTICS", "CC_LOG_DIAGNOSTICS_FILE",
-      D.CCLogDiagnosticsFilename);
-  D.CCPrintProcessStats = checkEnvVar<bool>(
-      "CC_PRINT_PROC_STAT", "CC_PRINT_PROC_STAT_FILE",
-      D.CCPrintStatReportFilename);
-  D.CCPrintInternalStats = checkEnvVar<bool>(
-      "CC_PRINT_INTERNAL_STAT", "CC_PRINT_INTERNAL_STAT_FILE",
-      D.CCPrintInternalStatReportFilename);
+  D.CCLogDiagnostics =
+      checkEnvVar<bool>("CC_LOG_DIAGNOSTICS", "CC_LOG_DIAGNOSTICS_FILE",
+                        D.CCLogDiagnosticsFilename);
+  D.CCPrintProcessStats =
+      checkEnvVar<bool>("CC_PRINT_PROC_STAT", "CC_PRINT_PROC_STAT_FILE",
+                        D.CCPrintStatReportFilename);
+  D.CCPrintInternalStats =
+      checkEnvVar<bool>("CC_PRINT_INTERNAL_STAT", "CC_PRINT_INTERNAL_STAT_FILE",
+                        D.CCPrintInternalStatReportFilename);
 }
 
 static int ExecuteCC1Tool(llvm::SmallVectorImpl<const char *> &ArgV,
@@ -545,8 +539,7 @@ static int loom_main(int Argc, char **Argv,
       IsClangCL(getDriverMode(ProgName, llvm::ArrayRef(Args).slice(1)));
 
   auto VFS = llvm::vfs::getRealFileSystem();
-  if (llvm::Error Err =
-          expandResponseFiles(Args, ClangCLMode, A, VFS.get())) {
+  if (llvm::Error Err = expandResponseFiles(Args, ClangCLMode, A, VFS.get())) {
     llvm::errs() << toString(std::move(Err)) << '\n';
     return 1;
   }
@@ -593,10 +586,9 @@ static int loom_main(int Argc, char **Argv,
                    << llvm::toString(Projection.takeError()) << '\n';
       return 1;
     }
-    if (llvm::Error Error =
-            validateUserTargetArguments(Args, *Projection)) {
-      llvm::errs() << "loom-cc: error: "
-                   << llvm::toString(std::move(Error)) << '\n';
+    if (llvm::Error Error = validateUserTargetArguments(Args, *Projection)) {
+      llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(Error))
+                   << '\n';
       return 1;
     }
     ProductTargetArguments = std::move(*Projection);
@@ -613,8 +605,7 @@ static int loom_main(int Argc, char **Argv,
                            .Case("-fintegrated-cc1", false)
                            .Default(UseNewCC1Process);
 
-  std::unique_ptr<DiagnosticOptions> DiagOpts =
-      CreateAndPopulateDiagOpts(Args);
+  std::unique_ptr<DiagnosticOptions> DiagOpts = CreateAndPopulateDiagOpts(Args);
   DiagOpts->DiagnosticSuppressionMappingsFile.clear();
 
   TextDiagnosticPrinter *DiagClient =
@@ -642,8 +633,7 @@ static int loom_main(int Argc, char **Argv,
 
   insertTargetAndModeArgs(TargetAndMode, Args, SavedStrings);
   if (!ProductTargetArguments.empty())
-    insertProductTargetArguments(Args, SavedStrings,
-                                 ProductTargetArguments);
+    insertProductTargetArguments(Args, SavedStrings, ProductTargetArguments);
   insertRelocatablePayloadPass(Args, SavedStrings);
   SetBackdoorDriverOutputsFromEnvVars(TheDriver);
 
@@ -663,8 +653,8 @@ static int loom_main(int Argc, char **Argv,
   if (LoomOptions->requestsProductFlow() && C && !C->containsError()) {
     auto Output = findProductLinkOutput(*C);
     if (!Output) {
-      llvm::errs() << "loom-cc: error: "
-                   << llvm::toString(Output.takeError()) << '\n';
+      llvm::errs() << "loom-cc: error: " << llvm::toString(Output.takeError())
+                   << '\n';
       return 1;
     }
     ProductLinkOutput = std::move(*Output);
@@ -706,19 +696,18 @@ static int loom_main(int Argc, char **Argv,
 #if LLVM_ON_UNIX
       IsCrash |= CommandRes > 128;
 #endif
-      CommandStatus = IsCrash ? Driver::CommandStatus::Crash
-                              : Driver::CommandStatus::Error;
+      CommandStatus =
+          IsCrash ? Driver::CommandStatus::Crash : Driver::CommandStatus::Error;
       if (IsCrash)
         break;
     }
   }
 
   if (Res == 0 && ProductLinkOutput) {
-    const std::string action =
-        "--final-link-output=" + *ProductLinkOutput;
+    const std::string action = "--final-link-output=" + *ProductLinkOutput;
     if (llvm::Error Error = invokeProductHelper(*LoomOptions, action)) {
-      llvm::errs() << "loom-cc: error: "
-                   << llvm::toString(std::move(Error)) << '\n';
+      llvm::errs() << "loom-cc: error: " << llvm::toString(std::move(Error))
+                   << '\n';
       Res = 1;
     }
   }

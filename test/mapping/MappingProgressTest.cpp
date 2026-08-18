@@ -131,6 +131,7 @@ module {
       loom::fabric::AccCoreOccurrenceRef{}};
   eventProjection.resourceActivations.push_back(
       {contextKey,
+       launches.front().rootThreadLaunch,
        {loom::mapping::SystemPresburgerCell{}},
        {carryTransition},
        {{0, 1}},
@@ -139,6 +140,7 @@ module {
         loom::mapping::MappingResourceGrantPolicyKind::None}});
   eventProjection.resourceActivations.push_back(
       {contextKey,
+       launches.front().rootThreadLaunch,
        {loom::mapping::SystemPresburgerCell{}},
        {demuxTransition},
        {{0, 1}},

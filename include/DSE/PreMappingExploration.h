@@ -35,10 +35,16 @@ struct SelectedPreMappingCompilation final {
 };
 
 struct CompletedPreMappingSelection final {
+  /// A completed promotion can select a verified incumbent without exhausting
+  /// every Generate or Evidence domain. Retained plan records remain the sole
+  /// authority for search completeness.
   std::vector<SelectedPreMappingCompilation> selected;
   std::vector<ArtifactRootReference> satisfiedEvidence;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
+  std::vector<RetainedDsePlanIncompleteness> retainedPlanIncompleteness;
+
+  bool searchComplete() const { return retainedPlanIncompleteness.empty(); }
 };
 
 struct CompletedPreMappingNoFeasibleCandidate final {

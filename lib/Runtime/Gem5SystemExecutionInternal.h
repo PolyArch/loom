@@ -9,7 +9,9 @@
 #include "ExternalTool/ExternalFile.h"
 #include "ExternalTool/InvocationBundle.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Mapping/Artifact/SystemMappingIdentity.h"
 #include "Runtime/Gem5BuiltinModels.h"
+#include "Runtime/Gem5DispatchABI.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -58,14 +60,16 @@ inline constexpr llvm::StringLiteral kMemoryTablePath =
     "inputs/system-memory-table.bin";
 inline constexpr llvm::StringLiteral kHostResultPath = "inputs/host-result.bin";
 inline constexpr llvm::StringLiteral kHostReturnPath = "inputs/host-return.bin";
-inline constexpr std::uint64_t kMaximumGem5Ticks = 30'000'000;
+inline constexpr std::uint64_t kGem5StartupTickBudget = 30'000'000;
+inline constexpr std::uint64_t kGem5SpatialInvocationTickBudget = 15'000'000;
+inline constexpr std::uint64_t kMaximumGem5Ticks =
+    kGem5StartupTickBudget +
+    gem5MaximumDynamicSpatialInvocations * kGem5SpatialInvocationTickBudget;
 inline constexpr std::uint64_t kMaximumSpatialWork = 1'000'000;
 inline constexpr std::uint64_t kGem5PageBytes = 4096;
 inline constexpr std::uint64_t kGem5StackBytes = 64 * 1024;
 inline constexpr std::uint64_t kThreadDispatchApertureBytes = 4096;
 inline constexpr std::uint64_t kSpatialChannelBufferBytes = 1024 * 1024;
-inline constexpr std::uint64_t kMaximumDenseSpatialLaunches = 4096;
-inline constexpr std::uint64_t kMaximumDynamicSpatialInvocations = 4096;
 
 enum class Gem5SystemEngine { Dfg, Cgra, Rtl };
 enum class Gem5ProcessorModelKind { TimingSimple, O3 };
@@ -120,6 +124,7 @@ struct ReadinessIdentity final {
 };
 
 struct Gem5SpatialLaunchProjection final {
+  mapping::SpatialExecutionContextKey context;
   ArtifactRootReference fabric;
   ArtifactRootReference spatialMapping;
   ArtifactRootReference hardwareImplementation;
@@ -129,7 +134,13 @@ struct Gem5SpatialLaunchProjection final {
   std::string channelEnginePlanPath;
   std::vector<std::uint8_t> launchPayload;
   Gem5DispatchTarget dispatchTarget;
+  std::size_t bridgeSessionOrdinal = 0;
+};
+
+struct Gem5SpatialBridgeSession final {
+  fabric::AccCoreOccurrenceRef accCore;
   Gem5SpatialBridgeParameters bridge;
+  std::vector<std::size_t> launchOrdinals;
 };
 
 struct Gem5SystemFacts final {
@@ -138,6 +149,7 @@ struct Gem5SystemFacts final {
   ArtifactRootReference binding;
   ArtifactRootReference dataflow;
   std::vector<Gem5SpatialLaunchProjection> spatialLaunches;
+  std::vector<Gem5SpatialBridgeSession> spatialBridgeSessions;
   std::vector<external_tool::MaterializedBundleFile> semanticInputs;
   std::vector<Gem5ProcessorProjection> processors;
   std::string hostEntrySymbol;

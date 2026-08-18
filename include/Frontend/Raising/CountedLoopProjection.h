@@ -20,14 +20,16 @@ struct ExactPostTestedCountedLoopProjection final {
   mlir::Value lowerBound;
   mlir::Value upperBound;
   mlir::Value step;
-  llvm::APInt lowerBoundValue;
-  llvm::APInt upperBoundValue;
-  llvm::APInt stepValue;
+  std::optional<llvm::APInt> lowerBoundValue;
+  std::optional<llvm::APInt> upperBoundValue;
+  std::optional<llvm::APInt> stepValue;
 };
 
 /// Projects the closed post-tested shape emitted for a finite latch-tested
-/// counted loop. Unknown, dynamic, wrapping, non-landing, side-effecting
-/// after-region, or non-ordinal feedback shapes return no projection.
+/// counted loop. A dynamic upper bound is accepted only for the zero-based,
+/// unit-step shape when an enclosing true branch proves that bound strictly
+/// positive. Unknown, wrapping, non-landing, side-effecting after-region, or
+/// non-ordinal feedback shapes return no projection.
 std::optional<ExactPostTestedCountedLoopProjection>
 projectExactPostTestedCountedLoop(mlir::scf::WhileOp loop);
 

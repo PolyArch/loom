@@ -5,11 +5,13 @@
 #include "PnR/System/SystemPnrProblem.h"
 
 #include "PnR/EndpointRoutingTopology.h"
+#include "Fabric/Artifact/FabricTopologyQuality.h"
 
 #include "SystemSpatialCatalog.h"
 
 #include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -33,6 +35,7 @@ struct SystemStaticContextStorage final {
       instructionUsePatterns;
   std::shared_ptr<const std::vector<FrozenSystemConsistencyUsePatternDomain>>
       consistencyUsePatterns;
+  std::optional<::loom::fabric::FabricTopologyQualityReport> topologyQuality;
   SystemStaticContextStatistics statistics;
 };
 

@@ -414,6 +414,7 @@ int main(int argc, char **argv) {
   std::vector<loom::dse::DsePlanGenerateInvocationRecords>
       planGenerateInvocations;
   loom::dse::DsePlanGenerateInvocationSummary planGenerateSummary;
+  bool planSearchComplete = true;
   std::optional<loom::frontend::StructuredCompilation> explicitInput;
   std::optional<loom::frontend::MaterializedOwnershipCandidate> selected;
   if (!hasExplicitSelection) {
@@ -479,6 +480,11 @@ int main(int argc, char **argv) {
           ::llvm::inconvertibleErrorCode(),
           "TopK(1) returned %zu pre-Mapping candidates",
           completion.selected.size()));
+    planSearchComplete = completion.searchComplete();
+    if (planSearchComplete && generateSummary->incompleteInvocations != 0)
+      return reportError(::llvm::createStringError(
+          ::llvm::inconvertibleErrorCode(),
+          "exhaustive central DSE retained incomplete Generate work"));
     compiled.emplace(std::move(completion.selected.front().compilation));
     planGenerateInvocations = std::move(completion.planGenerateInvocations);
     planGenerateSummary = *generateSummary;
@@ -628,14 +634,16 @@ int main(int argc, char **argv) {
                    << "\n";
     return 1;
   }
-  if (!hasExplicitSelection && (planGenerateSummary.completedInvocations == 0 ||
-                                planGenerateSummary.incompleteInvocations != 0))
+  if (!hasExplicitSelection && planGenerateSummary.completedInvocations == 0 &&
+      planGenerateSummary.incompleteInvocations == 0)
     return reportError(::llvm::createStringError(
         ::llvm::inconvertibleErrorCode(),
         "completed DSE retained no Generate provenance"));
   countsFile->os() << "{\"actors\": " << view->actors().size()
                    << ", \"central_generate_invocations\": "
                    << planGenerateSummary.completedInvocations
+                   << ", \"central_incomplete_generate_invocations\": "
+                   << planGenerateSummary.incompleteInvocations
                    << ", \"central_generate_input_artifacts\": "
                    << planGenerateSummary.inputArtifacts
                    << ", \"central_generate_lineage_edges\": "
@@ -644,7 +652,9 @@ int main(int argc, char **argv) {
                    << planGenerateSummary.outputArtifacts
                    << ", \"central_plan_executions\": "
                    << planGenerateSummary.planExecutions
-                   << ", \"graphs\": " << view->graphs().size() << "}\n";
+                   << ", \"graphs\": " << view->graphs().size()
+                   << ", \"search_complete\": "
+                   << (planSearchComplete ? "true" : "false") << "}\n";
   countsFile->keep();
 
   std::optional<loom::ArtifactRootReference> dataflowReference;
@@ -663,8 +673,8 @@ int main(int argc, char **argv) {
   }
 
   if (!applicationWorkloadSetFilename.empty()) {
-    auto roots = view->projectRootThreadLaunchesReachableFromAbiEntry(
-        applicationEntry);
+    auto roots =
+        view->projectRootThreadLaunchesReachableFromAbiEntry(applicationEntry);
     if (!roots)
       return reportError(roots.takeError());
     std::vector<loom::ArtifactRootReference> workloads;
@@ -683,9 +693,8 @@ int main(int argc, char **argv) {
             if (workloadError || launch.rootThreadLaunch != root)
               return;
             loom::sim::SpatialSimulationWorkload draft{launch};
-            auto shapes =
-                loom::sim::projectSpatialSimulationBoundaryShapes(*view,
-                                                                   launch);
+            auto shapes = loom::sim::projectSpatialSimulationBoundaryShapes(
+                *view, launch);
             if (!shapes) {
               workloadError = shapes.takeError();
               return;
@@ -697,8 +706,8 @@ int main(int argc, char **argv) {
               workloadError = workload.takeError();
               return;
             }
-            auto reference = loom::sim::publishSimulationWorkload(*workload,
-                                                                   store);
+            auto reference =
+                loom::sim::publishSimulationWorkload(*workload, store);
             if (!reference) {
               workloadError = reference.takeError();
               return;

@@ -355,6 +355,9 @@ resolvedConfigJsonObject(const loom::ResolvedConfig &config) {
                 {"spatial_memory_count", scale.spatialMemoryCount},
                 {"temporal_memory_count", scale.temporalMemoryCount},
                 {"temporal_resident_contexts", scale.temporalResidentContexts},
+                {"local_memory_port_variant",
+                 loom::adg::localMemoryPortVariantSpelling(
+                     scale.localMemoryPortVariant)},
                 {"cross_schedule_boundary_lanes_per_temporal_pe",
                  scale.crossScheduleBoundaryLanesPerTemporalPe},
                 {"gateway_count", scale.gatewayCount},

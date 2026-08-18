@@ -30,6 +30,7 @@ def _dfg_projection(seed: int) -> dict[str, object]:
         },
         "dynamic_calls": 1,
         "dse_execution": {
+            "search_complete": True,
             "generate_invocations": 5,
             "generate_lineage_edges": 24,
             "incomplete_generate_invocations": 0,

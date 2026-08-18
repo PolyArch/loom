@@ -439,7 +439,7 @@ parseHardwareTarget(const ConfigSyntax *node) {
       {"acc_core_count", "mesh_dimension", "spatial_pe_count",
        "temporal_pe_count", "spatial_fu_occurrences", "temporal_fu_occurrences",
        "spatial_memory_count", "temporal_memory_count",
-       "temporal_resident_contexts",
+       "temporal_resident_contexts", "local_memory_port_variant",
        "cross_schedule_boundary_lanes_per_temporal_pe", "gateway_count",
        "memory_capacity_bytes"});
   if (!parametersOrErr)
@@ -466,6 +466,17 @@ parseHardwareTarget(const ConfigSyntax *node) {
   auto spatialMemories = positiveU32("spatial_memory_count");
   auto temporalMemories = positiveU32("temporal_memory_count");
   auto residentContexts = positiveU32("temporal_resident_contexts");
+  auto memoryPortVariantSpelling = requireScalarString(
+      parametersOrErr->at("local_memory_port_variant"),
+      "hardware_target.parameters.local_memory_port_variant");
+  if (!memoryPortVariantSpelling)
+    return memoryPortVariantSpelling.takeError();
+  auto memoryPortVariant =
+      loom::adg::parseLocalMemoryPortVariant(*memoryPortVariantSpelling);
+  if (!memoryPortVariant)
+    return diagnostic("config_unknown_enum",
+                      "hardware_target.parameters.local_memory_port_variant",
+                      *memoryPortVariantSpelling);
   auto crossScheduleBoundaryLanes =
       positiveU32("cross_schedule_boundary_lanes_per_temporal_pe");
   auto gateways = positiveU32("gateway_count");
@@ -502,8 +513,8 @@ parseHardwareTarget(const ConfigSyntax *node) {
       {*majorOrErr, *minorOrErr},
       {*accCores, *meshDimension, *spatialPes, *temporalPes,
        *spatialFuOccurrences, *temporalFuOccurrences, *spatialMemories,
-       *temporalMemories, *residentContexts, *crossScheduleBoundaryLanes,
-       *gateways, *memoryCapacity}};
+       *temporalMemories, *residentContexts, *memoryPortVariant,
+       *crossScheduleBoundaryLanes, *gateways, *memoryCapacity}};
 }
 
 enum class ParsedObjectiveSourceKind {
