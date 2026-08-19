@@ -24,6 +24,20 @@ projectTechMappingComputeContextGrowthDomains(
     const mapping::TechMappingComputeContextHallDeficit &feedback,
     const fabric::FabricArtifactView &module);
 
+struct TechMappingComputeContextJointGrowthPlan final {
+  std::vector<ResizeInstructionStore> decisions;
+  std::uint64_t addedContextCount = 0;
+};
+
+/// Closes the exact observed Hall relation with minimum total new context
+/// capacity. The returned parent-scoped PE resizes form one atomic kind-14
+/// ResizeInstructionStores decision; they must not be rebound through
+/// intermediate child identities.
+llvm::Expected<TechMappingComputeContextJointGrowthPlan>
+projectTechMappingComputeContextJointGrowthPlan(
+    const mapping::TechMappingComputeContextHallDeficit &feedback,
+    const fabric::FabricArtifactView &module);
+
 } // namespace loom::dse
 
 #endif // LOOM_DSE_TECHMAPPINGHARDWAREFEEDBACK_H

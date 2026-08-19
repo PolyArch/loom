@@ -22,7 +22,7 @@ namespace {
 constexpr llvm::StringLiteral topologySchema =
     "loom.spatial_topology_candidate_decision.1.0";
 constexpr llvm::StringLiteral microarchitectureSchema =
-    "loom.spatial_microarchitecture_candidate_decision.1.0";
+    "loom.spatial_microarchitecture_candidate_decision.2.0";
 constexpr llvm::StringLiteral systemSchema =
     "loom.system_composition_candidate_decision.1.0";
 
@@ -30,6 +30,26 @@ llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "hardware_candidate_decision_invalid: " +
                                      message);
+}
+
+llvm::Error
+validateInstructionStoreResizes(llvm::ArrayRef<ResizeInstructionStore> stores) {
+  if (stores.empty())
+    return invalid("instruction-store resize set is empty");
+  std::vector<std::uint8_t> previous;
+  bool first = true;
+  for (const ResizeInstructionStore &store : stores) {
+    if (store.instructionCapacity == 0)
+      return invalid("instruction capacity must be positive");
+    const std::vector<std::uint8_t> key =
+        loom::fabric::canonicalFabricBytes(store.target);
+    if (!first && !(previous < key))
+      return invalid(
+          "instruction-store resize targets are not canonical and unique");
+    first = false;
+    previous = key;
+  }
+  return llvm::Error::success();
 }
 
 class Writer final {
@@ -261,24 +281,33 @@ void writeMicroarchitectureBody(
   std::visit(
       [&](const auto &value) {
         using Value = std::decay_t<decltype(value)>;
-        writer.ref(value.target);
-        if constexpr (std::is_same_v<Value, ChangePeKind> ||
-                      std::is_same_v<Value, ChangeFuCapability> ||
-                      std::is_same_v<Value,
-                                     ChangeSwitchModeOrScheduleCapacity> ||
-                      std::is_same_v<Value, ChangeMemoryOperationTable>) {
-          writer.ref(value.prototype);
-        } else if constexpr (std::is_same_v<Value, ResizeInstructionStore>) {
-          writer.u32(value.instructionCapacity);
-        } else if constexpr (std::is_same_v<Value, ChangeFuInventory>) {
-          writeRefs(writer, llvm::ArrayRef<loom::fabric::FabricFuOccurrenceRef>(
-                                value.prototypes));
-        } else if constexpr (std::is_same_v<Value, ResizeMemory>) {
-          writer.u64(value.capacityBytes);
-        } else if constexpr (std::is_same_v<Value, ResizeFifo>) {
-          writer.u32(value.depth);
+        if constexpr (std::is_same_v<Value, ResizeInstructionStores>) {
+          writer.u64(value.stores.size());
+          for (const ResizeInstructionStore &store : value.stores) {
+            writer.ref(store.target);
+            writer.u32(store.instructionCapacity);
+          }
         } else {
-          writer.u8(value.bypassable ? 1 : 0);
+          writer.ref(value.target);
+          if constexpr (std::is_same_v<Value, ChangePeKind> ||
+                        std::is_same_v<Value, ChangeFuCapability> ||
+                        std::is_same_v<Value,
+                                       ChangeSwitchModeOrScheduleCapacity> ||
+                        std::is_same_v<Value, ChangeMemoryOperationTable>) {
+            writer.ref(value.prototype);
+          } else if constexpr (std::is_same_v<Value, ResizeInstructionStore>) {
+            writer.u32(value.instructionCapacity);
+          } else if constexpr (std::is_same_v<Value, ChangeFuInventory>) {
+            writeRefs(writer,
+                      llvm::ArrayRef<loom::fabric::FabricFuOccurrenceRef>(
+                          value.prototypes));
+          } else if constexpr (std::is_same_v<Value, ResizeMemory>) {
+            writer.u64(value.capacityBytes);
+          } else if constexpr (std::is_same_v<Value, ResizeFifo>) {
+            writer.u32(value.depth);
+          } else {
+            writer.u8(value.bypassable ? 1 : 0);
+          }
         }
       },
       decision);
@@ -386,6 +415,28 @@ readMicroarchitectureBody(Reader &reader) {
       return invalid("FIFO bypass flag is not canonical");
     return SpatialMicroarchitectureDecision(
         ChangeFifoBypassCapability{*target, *bypassable != 0});
+  }
+  case 9: {
+    auto count = reader.u64();
+    if (!count)
+      return count.takeError();
+    if (*count == 0 || *count > reader.remaining())
+      return invalid("instruction-store resize count is invalid");
+    std::vector<ResizeInstructionStore> stores;
+    stores.reserve(*count);
+    for (std::uint64_t ordinal = 0; ordinal != *count; ++ordinal) {
+      auto target = reader.ref<loom::fabric::FabricPeOccurrenceRef>();
+      if (!target)
+        return target.takeError();
+      auto capacity = reader.u32();
+      if (!capacity)
+        return capacity.takeError();
+      stores.push_back({*target, *capacity});
+    }
+    if (llvm::Error error = validateInstructionStoreResizes(stores))
+      return std::move(error);
+    return SpatialMicroarchitectureDecision(
+        ResizeInstructionStores{std::move(stores)});
   }
   default:
     return invalid("unknown Spatial microarchitecture decision tag");
@@ -730,8 +781,20 @@ expandSpatialMicroarchitectureDecisionDomains(
     llvm::ArrayRef<SpatialMicroarchitectureDecisionDomain> domains) {
   if (llvm::Error error =
           admitDomainKeys(domains, [](Writer &writer, const auto &domain) {
-            std::visit([&](const auto &value) { writer.ref(value.target); },
-                       domain);
+            std::visit(
+                [&](const auto &value) {
+                  using Value = std::decay_t<decltype(value)>;
+                  if constexpr (std::is_same_v<Value,
+                                               ResizeInstructionStoresDomain>) {
+                    for (const ResizeInstructionStore &store : value.stores) {
+                      writer.ref(store.target);
+                      writer.u32(store.instructionCapacity);
+                    }
+                  } else {
+                    writer.ref(value.target);
+                  }
+                },
+                domain);
           }))
     return std::move(error);
   std::vector<SpatialMicroarchitectureDecision> decisions;
@@ -748,6 +811,9 @@ expandSpatialMicroarchitectureDecisionDomains(
           else if constexpr (std::is_same_v<Value,
                                             ResizeInstructionStoreDomain>)
             return requireValues(value.capacities, "microarchitecture");
+          else if constexpr (std::is_same_v<Value,
+                                            ResizeInstructionStoresDomain>)
+            return validateInstructionStoreResizes(value.stores);
           else if constexpr (std::is_same_v<Value, ResizeMemoryDomain>)
             return requireValues(value.capacitiesBytes, "microarchitecture");
           else if constexpr (std::is_same_v<Value, ResizeFifoDomain>)
@@ -769,6 +835,9 @@ expandSpatialMicroarchitectureDecisionDomains(
             for (auto capacity : value.capacities)
               decisions.push_back(
                   ResizeInstructionStore{value.target, capacity});
+          else if constexpr (std::is_same_v<Value,
+                                            ResizeInstructionStoresDomain>)
+            decisions.push_back(ResizeInstructionStores{value.stores});
           else if constexpr (std::is_same_v<Value, ChangeFuInventoryDomain>)
             for (const auto &prototypes : value.values)
               decisions.push_back(ChangeFuInventory{value.target, prototypes});

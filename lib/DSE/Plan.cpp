@@ -695,9 +695,12 @@ public:
 
   static llvm::Error appendGenerate(CompletedDsePlanExecution &completed,
                                     GenerateInvocationRecord invocation,
-                                    GenerateInvocationWorkSummary workSummary) {
+                                    GenerateInvocationWorkSummary workSummary,
+                                    std::optional<std::vector<std::uint8_t>>
+                                        feedback) {
     return completed.appendGenerate(std::move(invocation),
-                                    std::move(workSummary));
+                                    std::move(workSummary),
+                                    std::move(feedback));
   }
 
   static void
@@ -985,7 +988,8 @@ bool CompletedDsePlanExecution::hasOutput(PlanOutputRef output) const {
 
 llvm::Error CompletedDsePlanExecution::appendGenerate(
     GenerateInvocationRecord invocation,
-    GenerateInvocationWorkSummary workSummary) {
+    GenerateInvocationWorkSummary workSummary,
+    std::optional<std::vector<std::uint8_t>> feedback) {
   if (invocation.planNodeOrdinal != nodeOutputs_.size())
     return invalid("Generate invocation ordinal does not follow plan order");
   if (workSummary.planNodeOrdinal != invocation.planNodeOrdinal)
@@ -994,8 +998,12 @@ llvm::Error CompletedDsePlanExecution::appendGenerate(
           invocation.generatorBinding.descriptorRef(), workSummary.units))
     return error;
   const std::size_t invocationOrdinal = generateInvocations_.size();
+  const std::uint64_t planNodeOrdinal = invocation.planNodeOrdinal;
   generateInvocations_.push_back(std::move(invocation));
   generateWorkSummaries_.push_back(std::move(workSummary));
+  if (feedback)
+    generateFeedback_.push_back(
+        {planNodeOrdinal, std::move(*feedback)});
   nodeOutputs_.push_back(GenerateNodeOutputs{invocationOrdinal});
   return llvm::Error::success();
 }
@@ -1303,7 +1311,7 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
               task.planNodeOrdinal, std::move(result.workSummary)};
           if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
                   completed, std::move(invocationRecord),
-                  std::move(workSummary)))
+                  std::move(workSummary), std::move(result.ownerFeedback)))
             return std::move(error);
           if (canContinue(incomplete->reason)) {
             if (!retainedIncompleteness)
@@ -1328,7 +1336,8 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
         GenerateInvocationWorkSummary workSummary{
             task.planNodeOrdinal, std::move(result.workSummary)};
         if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
-                completed, std::move(invocationRecord), std::move(workSummary)))
+                completed, std::move(invocationRecord), std::move(workSummary),
+                std::move(result.ownerFeedback)))
           return std::move(error);
       }
       if (blockingIncompleteness)
@@ -1386,7 +1395,8 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
             static_cast<std::uint64_t>(nodeIndex),
             std::move(result->workSummary)};
         if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
-                completed, std::move(invocationRecord), std::move(workSummary)))
+                completed, std::move(invocationRecord), std::move(workSummary),
+                std::move(result->ownerFeedback)))
           return std::move(error);
         if (canContinue(incomplete->reason)) {
           if (!retainedIncompleteness)
@@ -1413,7 +1423,8 @@ llvm::Expected<DsePlanExecutionOutcome> detail::executeDsePlanWithWorkExecutor(
           static_cast<std::uint64_t>(nodeIndex),
           std::move(result->workSummary)};
       if (llvm::Error error = DsePlanExecutionBuilder::appendGenerate(
-              completed, std::move(invocationRecord), std::move(workSummary)))
+              completed, std::move(invocationRecord), std::move(workSummary),
+              std::move(result->ownerFeedback)))
         return std::move(error);
       continue;
     }

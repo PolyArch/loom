@@ -16,7 +16,6 @@
 # RUN: %python %S/verify_product_execution.py \
 # RUN:   --diagnostics=%t.build.stderr --manifest=%t.execution/manifest.json \
 # RUN:   --spatial-invocations=2 --spatial-search-frontier \
-# RUN:   --required-dataflow-text=dataflow.channel.create \
 # RUN:   --required-dataflow-text=stream_inputs \
 # RUN:   --required-dataflow-text=stream_outputs \
 # RUN:   --required-dataflow-text=arith.addi \

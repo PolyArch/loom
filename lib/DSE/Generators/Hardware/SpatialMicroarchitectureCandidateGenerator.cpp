@@ -20,7 +20,7 @@ namespace loom::dse {
 namespace {
 
 constexpr llvm::StringLiteral configDescriptor =
-    "loom.spatial_microarchitecture_rewrite.config.1.0";
+    "loom.spatial_microarchitecture_rewrite.config.2.0";
 
 constexpr std::array<CandidateGeneratorInputSlotDescriptor, 1> inputSlots = {{
     {CandidateGeneratorInputSlotRef(0), "fabric_module_parent",
@@ -57,14 +57,22 @@ validateDecisionAgainstParent(const SpatialMicroarchitectureDecision &decision,
   return std::visit(
       [&](const auto &value) -> llvm::Error {
         using Value = std::decay_t<decltype(value)>;
-        if (llvm::Error error =
-                loom::fabric::validateFabricRef(parent, value.target))
+        if constexpr (std::is_same_v<Value, ResizeInstructionStores>) {
+          for (const ResizeInstructionStore &store : value.stores)
+            if (llvm::Error error =
+                    loom::fabric::validateFabricRef(parent, store.target))
+              return error;
+        } else if (llvm::Error error =
+                       loom::fabric::validateFabricRef(parent, value.target)) {
           return error;
-        if constexpr (std::is_same_v<Value, ChangePeKind> ||
-                      std::is_same_v<Value, ChangeFuCapability> ||
-                      std::is_same_v<Value,
-                                     ChangeSwitchModeOrScheduleCapacity> ||
-                      std::is_same_v<Value, ChangeMemoryOperationTable>)
+        }
+        if constexpr (std::is_same_v<Value, ResizeInstructionStores>) {
+          return llvm::Error::success();
+        } else if constexpr (std::is_same_v<Value, ChangePeKind> ||
+                             std::is_same_v<Value, ChangeFuCapability> ||
+                             std::is_same_v<
+                                 Value, ChangeSwitchModeOrScheduleCapacity> ||
+                             std::is_same_v<Value, ChangeMemoryOperationTable>)
           return loom::fabric::validateFabricRef(parent, value.prototype);
         else if constexpr (std::is_same_v<Value, ChangeFuInventory>) {
           if (value.prototypes.empty())
@@ -84,7 +92,13 @@ llvm::Error applyDecision(loom::adg::SpatialCoreBuilder &builder,
   return std::visit(
       [&](const auto &value) -> llvm::Error {
         using Value = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<Value, ChangePeKind>)
+        if constexpr (std::is_same_v<Value, ResizeInstructionStores>) {
+          for (const ResizeInstructionStore &store : value.stores)
+            if (llvm::Error error = builder.resizeInstructionStore(
+                    store.target, store.instructionCapacity))
+              return error;
+          return llvm::Error::success();
+        } else if constexpr (std::is_same_v<Value, ChangePeKind>)
           return builder.replacePeKind(value.target, value.prototype);
         else if constexpr (std::is_same_v<Value, ResizeInstructionStore>)
           return builder.resizeInstructionStore(value.target,
@@ -188,7 +202,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     spatialMicroarchitectureCandidateGeneratorKind,
     "spatial_microarchitecture_rewrite",
-    "loom.spatial_microarchitecture_rewrite.generator.v1",
+    "loom.spatial_microarchitecture_rewrite.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},

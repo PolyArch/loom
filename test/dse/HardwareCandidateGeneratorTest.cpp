@@ -279,6 +279,53 @@ void computeContextFeedbackRoundTrip(
                 resize->capacities.back() == current + adopted.deficit(),
             "Hall feedback did not order minimal-to-complete growth");
   }
+  auto joint = take(loom::dse::projectTechMappingComputeContextJointGrowthPlan(
+      adopted, module.view()));
+  require(joint.addedContextCount == adopted.deficit() &&
+              !joint.decisions.empty(),
+          "joint Hall growth did not close the exact minimum deficit");
+  std::uint64_t jointGrowth = 0;
+  for (const loom::dse::ResizeInstructionStore &decision : joint.decisions) {
+    const std::uint64_t current =
+        module.view().peResidentContextCount(decision.target);
+    require(decision.instructionCapacity > current,
+            "joint Hall growth contains a non-growth decision");
+    jointGrowth += decision.instructionCapacity - current;
+  }
+  require(jointGrowth == adopted.deficit(),
+          "joint Hall growth overprovisioned the observed relation");
+  auto jointConfig =
+      take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(
+          {loom::dse::ResizeInstructionStoresDomain{joint.decisions}}, 1));
+  auto jointInputs =
+      take(loom::dse::bindSpatialMicroarchitectureCandidateGeneratorInputs(
+          {module.reference()}));
+  auto jointBinding =
+      take(loom::dse::resolveSpatialMicroarchitectureCandidateGeneratorBinding(
+          jointConfig));
+  auto jointResult = take(loom::dse::invokeCandidateGenerator(
+      jointInputs, jointBinding, fixture.store, fixture.blobs));
+  const auto &jointCompleted = completed(jointResult);
+  require(jointCompleted.outputBindings.front().artifacts.size() == 1 &&
+              jointCompleted.lineageEdges.size() == 1,
+          "joint Hall growth did not publish one typed Module child");
+  auto jointLineage = take(loom::dse::adoptSpatialMicroarchitectureDecision(
+      jointCompleted.lineageEdges.front().ownerPayload));
+  const auto *jointDecision =
+      std::get_if<loom::dse::ResizeInstructionStores>(&jointLineage.decision);
+  require(jointDecision &&
+              jointDecision->stores.size() == joint.decisions.size(),
+          "joint Hall growth lineage lost its atomic resize set");
+  auto jointModule = take(loom::fabric::importEntireFabricRoot(
+      jointCompleted.outputBindings.front().artifacts.front(), fixture.store));
+  std::uint64_t parentContexts = 0;
+  std::uint64_t childContexts = 0;
+  for (const auto pe : module.view().peOccurrences())
+    parentContexts += module.view().peResidentContextCount(pe);
+  for (const auto pe : jointModule.view().peOccurrences())
+    childContexts += jointModule.view().peResidentContextCount(pe);
+  require(childContexts == parentContexts + adopted.deficit(),
+          "joint Hall growth child changed the requested total capacity");
   auto growthConfig =
       take(loom::dse::resolveSpatialMicroarchitectureRewriteConfig(
           domains, domains.size()));

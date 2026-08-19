@@ -2603,7 +2603,7 @@ kinds 0 through 11:
 | 13 | `spatial_topology_rewrite` | finalized `fabric.module` children |
 | 14 | `spatial_microarchitecture_rewrite` | finalized `fabric.module` children |
 | 15 | `system_composition_rewrite` | finalized `fabric.system` children |
-| 16 | `portable_spatial_core_rtl` | one finalized architecture-only portable RTL `loom.hardware_implementation 4.1` child per AccCore occurrence in the input System |
+| 16 | `portable_spatial_core_rtl` | one finalized portable RTL `loom.hardware_implementation 4.1` child per AccCore occurrence in the input System, architecture-only when the optional ImplementationPlatform input is absent and exact-platform-bound when present |
 | 17 | `fpa_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.fpa", 3.0, 0)` |
 | 18 | `system_runtime_gbdt_training` | exactly one finalized `loom.model_parameter_bundle 1.0` child for `ModelParameterContractRef("loom.system_runtime", 1.0, 0)` |
 | 19 | `joint_dataflow_frontier` | finalized Canonical Dataflow children produced for an explicit bounded Dataflow/System frontier |
@@ -2703,12 +2703,21 @@ module interface, but not an occurrence's internal implementation policy.
 
 The spatial-microarchitecture generator has the same finite-parent input and
 one-exact-parent decision rule. Its closed decision union is `ChangePeKind`,
-`ResizeInstructionStore`, `ChangeFuInventory`, `ChangeFuCapability`,
+`ResizeInstructionStore`, `ResizeInstructionStores`, `ChangeFuInventory`,
+`ChangeFuCapability`,
 `ChangeSwitchModeOrScheduleCapacity`, `ResizeMemory`,
 `ChangeMemoryOperationTable`, `ResizeFifo`, and
 `ChangeFifoBypassCapability`. The referenced Fabric owners define every typed
 parameter domain. The generator cannot create an operation capability, memory
 contract, scheduling rule, or bypass meaning outside those domains.
+`ResizeInstructionStores` is the only multi-owner member. It carries a
+nonempty canonical set of unique Temporal PE targets and positive capacities
+from one exact parent Module, applies the complete set to one fresh Builder
+draft, and finalizes one child. This atomicity is required because Fabric
+occurrence references are scoped to the exact parent artifact and canonical
+labeling may rename otherwise unchanged occurrences after the first resize.
+It cannot contain any other microarchitecture decision or be decomposed by
+rebinding stale parent references against an intermediate child.
 `ChangeFuInventory` may select FU prototypes from any PE in the exact parent
 Module; the ADG Builder admits only prototypes whose parent-PE input inventory
 can be mapped to the target PE exactly by ordinal and type. The decision thus
@@ -2743,8 +2752,10 @@ ordinary generators through explicit use-def edges. A generic implementation-
 flow wrapper would duplicate provider form, configuration, preparation,
 import, and work ownership, so none exists.
 
-Kinds 13 through 15 apply one owner-typed decision at a time to a fresh Builder
-draft derived from one exact parent. The ordinary Builder and Fabric finalizer
+Kinds 13 through 15 apply one owner-typed decision to a fresh Builder draft
+derived from one exact parent. The kind-14 `ResizeInstructionStores` decision
+is one atomic typed decision even though its closed payload names several PE
+targets. The ordinary Builder and Fabric finalizer
 must accept the complete child before it is published or returned. A rejected
 draft produces no child and no lineage edge; it cannot partially mutate the
 parent or leave a DSE-only Fabric form. A completed child carries one
@@ -2761,12 +2772,26 @@ rebuilt from the exact Fabric through the same physical-demand projection used
 by Tech cover search. A hardware reopen may respond with existing typed FU or
 instruction-store decisions; the feedback neither mutates Fabric nor changes
 an overall `ProofNotEstablished` outcome into `ProvenInfeasible`.
-The initial consumer projects one `ResizeInstructionStoreDomain` per compatible
-Temporal PE, with the sole value equal to its current resident-context count
-plus the observed exact gap. The ordinary kind-14 generator materializes each
-one-parent child and owns its decision lineage. Switch, memory, FIFO, topology,
-and System resources are unchanged; any resulting pressure is left to their
-existing Mapping checks and later typed feedback.
+The central joint DSE controller first projects a minimum-cost multi-PE
+instruction-store growth plan that closes the exact Hall relation. It then
+materializes that plan as one ordinary kind-14 `ResizeInstructionStores`
+one-parent child, followed by ordinary kind-15 System attachment children, and
+re-enters the normal three-level Mapping plan. The controller's finite
+portfolio and stopping policy come from the typed joint policy; there is no
+deficit-size threshold or Application-specific reopen heuristic. Switch,
+memory, FIFO, topology, and System resources remain unchanged unless a later
+typed Mapping witness asks for another owner. Every grown child retains
+ordinary generator lineage and must pass the independent Mapping verifier
+before it can be selected.
+
+Hardware reopen is ordered after the bounded current-hardware software/System
+frontier. The controller first visits those exact pairs in their declared
+preference order and returns the first verified Mapping. Only when every
+visited pair has no Mapping may it consume their transient typed feedback and
+visit hardware children in the same pair order. A repairable failure of an
+earlier software candidate cannot therefore grow hardware ahead of a later
+candidate that is already legal on the parent System. Cancellation or timeout
+still stops execution and is never converted into permission to reopen.
 
 Kinds 19 and 20 are the only built-in cross-frontier adapters. A two-frontier
 join indexes both canonical input sets and visits pairs by increasing

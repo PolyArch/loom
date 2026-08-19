@@ -58,8 +58,8 @@ llvm::Error registerMappingGenerators() {
 }
 
 llvm::Expected<std::vector<ArtifactRootReference>>
-targetModules(const ArtifactRootReference &systemReference,
-              const ArtifactStore &store) {
+projectTargetModules(const ArtifactRootReference &systemReference,
+                     const ArtifactStore &store) {
   auto artifact = fabric::importEntireFabricRoot(systemReference, store);
   if (!artifact)
     return artifact.takeError();
@@ -195,6 +195,12 @@ llvm::Expected<std::size_t> findSystem(llvm::ArrayRef<ImportedSystem> systems,
 
 } // namespace
 
+llvm::Expected<std::vector<ArtifactRootReference>>
+projectJointDesignTargetModules(const ArtifactRootReference &system,
+                                const ArtifactStore &artifactStore) {
+  return projectTargetModules(system, artifactStore);
+}
+
 llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     JointDesignInputs inputs,
     llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
@@ -238,7 +244,7 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
         publishScopeConstraints(pair.software, pair.system, artifactStore);
     if (!constraints)
       return constraints.takeError();
-    auto modules = targetModules(pair.system, artifactStore);
+    auto modules = projectJointDesignTargetModules(pair.system, artifactStore);
     if (!modules)
       return modules.takeError();
     if (modules->size() > policy.maximumSpatialMappingsPerPair())
@@ -261,6 +267,9 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
         return importedProfile.takeError();
       moduleTimingProfiles.push_back(profile->second);
     }
+    std::vector<ArtifactRootReference> systemTimingProfiles =
+        moduleTimingProfiles;
+    canonicalize(systemTimingProfiles);
     std::vector<PlanOutputRef> techOutputs;
     techOutputs.reserve(modules->size());
     for (const ArtifactRootReference &module : *modules) {
@@ -295,7 +304,7 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
          BoundedPlanOutputJoin{std::move(spatialOutputs),
                                policy.maximumSpatialMappingsPerPair()},
          ExactPlanArtifacts{{pair.system}},
-         ExactPlanArtifacts{moduleTimingProfiles},
+         ExactPlanArtifacts{std::move(systemTimingProfiles)},
          ExactPlanArtifacts{{*constraints}}},
         systemConfig->canonicalViewBytes().vec(),
         systemConfig->digest()});

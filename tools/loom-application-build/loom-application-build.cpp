@@ -394,6 +394,7 @@ llvm::Expected<loom::application::PreparedApplicationBuild>
 prepareMappedApplication(const llvm::Module &module,
                          PreparedProductTarget &target) {
   constexpr std::uint64_t kSoftwareFrontierLimit = 8;
+  constexpr std::uint64_t kHardwareFrontierLimit = 8;
   constexpr std::uint64_t kSpatialMappingFrontierLimit = 32;
   const llvm::Function *entry = module.getFunction("main");
   if (!entry || entry->isDeclaration())
@@ -405,7 +406,7 @@ prepareMappedApplication(const llvm::Module &module,
         "the initial product entry supports only a nullary main function");
 
   auto jointPolicy = loom::dse::JointDesignPolicy::get(
-      kSoftwareFrontierLimit, 1, kSoftwareFrontierLimit,
+      kSoftwareFrontierLimit, kHardwareFrontierLimit, kSoftwareFrontierLimit,
       kSpatialMappingFrontierLimit);
   if (!jointPolicy)
     return jointPolicy.takeError();
@@ -503,8 +504,12 @@ llvm::Expected<loom::dse::JointDesignExecution> executeProductMapping(
     const bool hasUsableBoundedResult =
         mappingCount != 0 && !incomplete->executionStopped() &&
         generationReason &&
-        *generationReason ==
-            loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached;
+        (*generationReason ==
+             loom::dse::CandidateGeneratorIncompleteReason::
+                 SemanticLimitReached ||
+         *generationReason ==
+             loom::dse::CandidateGeneratorIncompleteReason::
+                 ProofNotEstablished);
     if (!hasUsableBoundedResult)
       return productError("loom_mapping_incomplete",
                           "joint Mapping ended at node " +

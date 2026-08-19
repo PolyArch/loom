@@ -79,6 +79,10 @@ struct ResizeInstructionStore final {
   std::uint32_t instructionCapacity = 0;
 };
 
+struct ResizeInstructionStores final {
+  std::vector<ResizeInstructionStore> stores;
+};
+
 struct ChangeFuInventory final {
   loom::fabric::FabricPeOccurrenceRef target;
   std::vector<loom::fabric::FabricFuOccurrenceRef> prototypes;
@@ -118,7 +122,7 @@ using SpatialMicroarchitectureDecision =
     std::variant<ChangePeKind, ResizeInstructionStore, ChangeFuInventory,
                  ChangeFuCapability, ChangeSwitchModeOrScheduleCapacity,
                  ResizeMemory, ChangeMemoryOperationTable, ResizeFifo,
-                 ChangeFifoBypassCapability>;
+                 ChangeFifoBypassCapability, ResizeInstructionStores>;
 
 struct ChangePeKindDomain final {
   loom::fabric::FabricPeOccurrenceRef target;
@@ -128,6 +132,10 @@ struct ChangePeKindDomain final {
 struct ResizeInstructionStoreDomain final {
   loom::fabric::FabricPeOccurrenceRef target;
   std::vector<std::uint32_t> capacities;
+};
+
+struct ResizeInstructionStoresDomain final {
+  std::vector<ResizeInstructionStore> stores;
 };
 
 struct ChangeFuInventoryDomain final {
@@ -170,7 +178,8 @@ using SpatialMicroarchitectureDecisionDomain =
                  ChangeFuInventoryDomain, ChangeFuCapabilityDomain,
                  ChangeSwitchModeOrScheduleCapacityDomain, ResizeMemoryDomain,
                  ChangeMemoryOperationTableDomain, ResizeFifoDomain,
-                 ChangeFifoBypassCapabilityDomain>;
+                 ChangeFifoBypassCapabilityDomain,
+                 ResizeInstructionStoresDomain>;
 
 struct AddAccCore final {
   loom::fabric::AccCoreOccurrenceRef prototype;

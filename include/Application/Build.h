@@ -77,6 +77,7 @@ struct PreparedApplicationMappingAlternative final {
 
 struct PreparedApplicationBuild final {
   ApplicationSourceInvocation sourceInvocation;
+  dse::JointDesignPolicy jointPolicy;
   std::vector<PreparedApplicationSoftware> software;
   std::vector<ArtifactRootReference> satisfiedEvidence;
   std::vector<dse::DsePlanGenerateInvocationRecords>

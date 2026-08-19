@@ -118,6 +118,23 @@ def validate_mapping_work(
     events: list[dict[str, Any]], expected_system_active_contexts: int | None,
     spatial_search_frontier: bool,
 ) -> None:
+    reopen_attempts = [
+        payload
+        for payload in matching_payloads(
+            events, stage="system_pnr", event="candidate"
+        )
+        if payload.get("operation") == "hardware_reopen_mapping_attempt"
+    ]
+    hardware_reopen = bool(reopen_attempts)
+    if hardware_reopen:
+        require(
+            any(
+                row.get("added_temporal_contexts", 0) > 0
+                and row.get("system_mapping_count", 0) > 0
+                for row in reopen_attempts
+            ),
+            "hardware reopen published no verified grown-System Mapping",
+        )
     tech_rows = [
         payload
         for payload in matching_payloads(
@@ -135,9 +152,10 @@ def validate_mapping_work(
     require(selected_tech.get("candidate_publications", 0) >= 2,
             "product gate did not exercise multiple TechMapping candidates")
 
-    validate_context(events, "spatial_pnr", "fabric_static")
-    validate_context(events, "spatial_pnr", "fabric_timing")
-    validate_context(events, "system_pnr", "system_static")
+    context_count = None if hardware_reopen else 1
+    validate_context(events, "spatial_pnr", "fabric_static", context_count)
+    validate_context(events, "spatial_pnr", "fabric_timing", context_count)
+    validate_context(events, "system_pnr", "system_static", context_count)
     validate_context(
         events,
         "system_pnr",
@@ -165,24 +183,26 @@ def validate_mapping_work(
             require(row.get("seed_attempt_slots") == 1 and
                     row.get("prepared_seeds") == 1,
                     f"{name} search prepared unexpected restart work")
-            for field in (
-                "calibration_proposal_slots",
-                "annealing_base_proposal_slots",
-                "annealing_movable_proposal_slots",
-                "annealing_accepted_actions",
-                "exact_repair_invocations",
-            ):
-                require(row.get(field) == 0,
-                        f"{name} search performed {field}")
+            if name == "Spatial" or not hardware_reopen:
+                for field in (
+                    "calibration_proposal_slots",
+                    "annealing_base_proposal_slots",
+                    "annealing_movable_proposal_slots",
+                    "annealing_accepted_actions",
+                    "exact_repair_invocations",
+                ):
+                    require(row.get(field) == 0,
+                            f"{name} search performed {field}")
             require(row.get("final_closure_attempts") == 1,
                     f"{name} search skipped or repeated final closure")
             require(row.get("finalized_restarts") == 1 and
                     row.get("publication_slots") == 1,
                     f"{name} search did not finalize exactly one result")
-    require(system[0].get("final_verification_attempts") == 1,
+    require(all(row.get("final_verification_attempts") == 1 for row in system),
             "System search skipped independent candidate verification")
-    require(system[0].get("mutation_oracle_verification_attempts") == 0,
-            "first-verified System search entered mutation verification")
+    if not hardware_reopen:
+        require(system[0].get("mutation_oracle_verification_attempts") == 0,
+                "first-verified System search entered mutation verification")
     require(all(row.get("endpoint_expansion_slots", 0) > 0 for row in spatial),
             "a Spatial search did not exercise endpoint routing")
 

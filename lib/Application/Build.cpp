@@ -4,15 +4,15 @@
 
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
-#include "DSE/ExecutionJournal.h"
+#include "DSE/JointHardwareReopen.h"
 #include "DSE/ProductionOwners.h"
-#include "DSE/ResolvedConfigView.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/OperationSchemaCodec.h"
 #include "Deployment/DeploymentPipeline.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Fabric/IR/FabricDialect.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Executable/ExecutableElf.h"
@@ -21,7 +21,6 @@
 #include "Hardware/Configuration/PackedConfigurationABI.h"
 #include "Hardware/Implementation/FabricModel.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
-#include "PnR/PnrDerivedContext.h"
 #include "Runtime/FabricModelPlatform.h"
 #include "Runtime/Gem5DispatchABI.h"
 #include "Simulator/SpatialInvocation.h"
@@ -47,7 +46,6 @@
 #include <limits>
 #include <numeric>
 #include <optional>
-#include <system_error>
 #include <utility>
 
 namespace loom::application {
@@ -582,7 +580,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
     return ApplicationBuildPreparationOutcome{std::move(*firstUnsupported)};
   }
   return ApplicationBuildPreparationOutcome{PreparedApplicationBuild{
-      std::move(request.sourceInvocation), std::move(preparedSoftware),
+      std::move(request.sourceInvocation), request.jointPolicy,
+      std::move(preparedSoftware),
       std::move(completed.satisfiedEvidence),
       std::move(completed.planGenerateInvocations),
       std::move(mappingAlternatives)}};
@@ -595,84 +594,22 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
                           const BlobStore &blobs) {
   ApplicationBuildOperationTimer timer(
       ApplicationBuildOperation::MappingExecution);
-  if (llvm::Error error = dse::registerProductionDseOwners())
-    return std::move(error);
-  if (request.journalRoot.empty())
-    return invalid("Mapping execution requires a journal root");
   if (prepared.mappingAlternatives.empty())
     return invalid("Mapping execution has no software alternative");
-  for (std::size_t index = 0; index != prepared.mappingAlternatives.size();
-       ++index)
-    if (prepared.mappingAlternatives[index].preferenceRank != index)
-      return invalid("Mapping alternative preference ranks are not dense");
-
   std::vector<ArtifactRootReference> evidence = prepared.satisfiedEvidence;
   evidence.insert(evidence.end(), request.preexistingEvidence.begin(),
                   request.preexistingEvidence.end());
-  auto scheduler = dse::SiteScheduler::create(std::move(request.siteCapacity));
-  if (!scheduler)
-    return scheduler.takeError();
-  pnr::PnrDerivedContextSession derivedContextSession;
-
-  std::optional<dse::JointDesignExecution> firstRetainedIncomplete;
-  std::optional<dse::JointDesignExecution> lastCompletedNoFeasible;
+  std::vector<const dse::JointDesignExplorationPlan *> plans;
+  plans.reserve(prepared.mappingAlternatives.size());
   for (const PreparedApplicationMappingAlternative &alternative :
-       prepared.mappingAlternatives) {
-    const ResolvedConfig &config = alternative.plan.resolvedConfig;
-    auto publishedConfig = artifacts.put(ResolvedConfig::artifactSchema,
-                                         canonicalResolvedConfigBytes(config));
-    if (!publishedConfig)
-      return publishedConfig.takeError();
-    if (*publishedConfig != resolvedConfigIdentity(config))
-      return invalid("ResolvedConfig publication changed its identity");
-
-    std::vector<ArtifactRootReference> semanticInputs =
-        dse::projectJointDesignSemanticInputs(alternative.plan);
-    auto closure = dse::DseRunClosure::get(request.producer, semanticInputs,
-                                           config, evidence, artifacts);
-    if (!closure)
-      return closure.takeError();
-    auto configView = dse::projectResolvedDseConfigView(config);
-    if (!configView)
-      return configView.takeError();
-
-    llvm::SmallString<256> alternativeJournal(request.journalRoot);
-    llvm::sys::path::append(
-        alternativeJournal,
-        llvm::toHex(closure->runKey().bytes(), /*LowerCase=*/true));
-    if (std::error_code error =
-            llvm::sys::fs::create_directories(alternativeJournal))
-      return invalid("cannot create Mapping alternative journal: " +
-                     error.message());
-    auto journal =
-        dse::openExecutionJournal(alternativeJournal, *closure, *configView);
-    if (!journal)
-      return journal.takeError();
-    auto execution = dse::executeJointDesignExploration(
-        alternative.plan, *closure, *journal, *scheduler,
-        request.executionPolicy, artifacts, blobs);
-    if (!execution)
-      return execution.takeError();
-
-    std::size_t mappingCount = 0;
-    for (const dse::JointMappedPair &pair : execution->mappedPairs)
-      mappingCount += pair.systemMappings.size();
-    if (mappingCount != 0)
-      return std::move(*execution);
-    if (const auto *incomplete =
-            std::get_if<dse::IncompleteDsePlanExecution>(
-                &execution->planExecution)) {
-      if (incomplete->executionStopped())
-        return std::move(*execution);
-      if (!firstRetainedIncomplete)
-        firstRetainedIncomplete = std::move(*execution);
-      continue;
-    }
-    lastCompletedNoFeasible = std::move(*execution);
-  }
-  if (firstRetainedIncomplete)
-    return std::move(*firstRetainedIncomplete);
-  return std::move(*lastCompletedNoFeasible);
+       prepared.mappingAlternatives)
+    plans.push_back(&alternative.plan);
+  return dse::executeJointDesignWithHardwareReopen(
+      plans,
+      prepared.jointPolicy,
+      {request.producer, request.journalRoot, std::move(evidence),
+       std::move(request.siteCapacity), std::move(request.executionPolicy)},
+      artifacts, blobs);
 }
 
 llvm::Expected<ApplicationDeploymentArtifacts> buildApplicationDeployment(

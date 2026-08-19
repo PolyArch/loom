@@ -178,6 +178,13 @@ struct GenerateInvocationWorkSummary final {
   std::vector<CandidateGeneratorWorkUnitSummary> units;
 };
 
+/// Descriptor-owned transient feedback retained only for the active in-process
+/// plan result. It is deliberately absent from Journal and Manifest state.
+struct GenerateInvocationFeedback final {
+  std::uint64_t planNodeOrdinal;
+  std::vector<std::uint8_t> canonicalPayload;
+};
+
 class CompletedDsePlanExecution final {
 public:
   CompletedDsePlanExecution(CompletedDsePlanExecution &&) = default;
@@ -203,6 +210,9 @@ public:
   llvm::ArrayRef<GenerateInvocationWorkSummary> generateWorkSummaries() const {
     return generateWorkSummaries_;
   }
+  llvm::ArrayRef<GenerateInvocationFeedback> generateFeedback() const {
+    return generateFeedback_;
+  }
 
 private:
   struct GenerateNodeOutputs final {
@@ -219,7 +229,8 @@ private:
   explicit CompletedDsePlanExecution(ComponentViewDigest digest)
       : resolvedDseConfigViewDigest_(digest) {}
   llvm::Error appendGenerate(GenerateInvocationRecord invocation,
-                             GenerateInvocationWorkSummary workSummary);
+                             GenerateInvocationWorkSummary workSummary,
+                             std::optional<std::vector<std::uint8_t>> feedback);
   void
   appendPromote(std::vector<std::vector<ArtifactRootReference>> outputBindings,
                 std::vector<ArtifactRootReference> preferenceOrder = {});
@@ -227,6 +238,7 @@ private:
   std::vector<NodeOutputs> nodeOutputs_;
   std::vector<GenerateInvocationRecord> generateInvocations_;
   std::vector<GenerateInvocationWorkSummary> generateWorkSummaries_;
+  std::vector<GenerateInvocationFeedback> generateFeedback_;
   ComponentViewDigest resolvedDseConfigViewDigest_;
 
   friend class DsePlanExecutionBuilder;
