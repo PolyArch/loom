@@ -3,6 +3,8 @@
 
 #include "DSE/CandidateGenerator.h"
 
+#include <optional>
+
 namespace loom::dse {
 
 inline constexpr CandidateGeneratorKind
@@ -47,7 +49,9 @@ llvm::Error registerPortableSpatialCoreRtlCandidateGenerator();
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
 bindPortableSpatialCoreRtlCandidateGeneratorInputs(
     const ArtifactRootReference &system,
-    const ArtifactRootReference &configurationAbi);
+    const ArtifactRootReference &configurationAbi,
+    std::optional<ArtifactRootReference> implementationPlatform =
+        std::nullopt);
 llvm::Expected<ResolvedCandidateGeneratorBinding>
 resolvePortableSpatialCoreRtlCandidateGeneratorBinding(
     const ResolvedPortableSpatialCoreRtlConfigView &config);

@@ -690,8 +690,8 @@ SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
   const auto implementation = take(
       test,
       loom::hardware::rtl::finalizePortableSpatialCoreHardwareImplementation(
-          context, fabric.abi, fabric.spatialCore, providers, externalContracts,
-          store, blobs));
+          context, fabric.abi, fabric.spatialCore, std::nullopt, providers,
+          externalContracts, store, blobs));
   std::size_t dataInterfaces = 0;
   std::size_t memoryInterfaces = 0;
   for (const auto &interface : implementation.implementation().interfaces()) {
@@ -715,6 +715,25 @@ SpatialToolArtifact spatialHierarchyBuildsStructuralSkeleton() {
   require(test,
           dataInterfaces == expectedData && memoryInterfaces == expectedMemory,
           "SpatialCore HardwareImplementation omitted a local attachment");
+  const auto constraint = llvm::find_if(
+      implementation.implementation().representationRoot().payloads,
+      [](const auto &payload) {
+        return payload.role ==
+               loom::hardware::PayloadRole::GenerationConstraint;
+      });
+  require(test,
+          constraint !=
+              implementation.implementation().representationRoot().payloads
+                  .end(),
+          "SpatialCore HardwareImplementation omitted its clock constraint");
+  const auto constraintBytes = take(test, blobs.get(constraint->blobDigest));
+  require(test,
+          llvm::StringRef(
+              reinterpret_cast<const char *>(constraintBytes.data()),
+              constraintBytes.size()) ==
+              "create_clock -name loom_clock -period 0.001 -waveform {0 "
+              "0.0005} [get_ports {clock}]\n",
+          "SpatialCore clock constraint is not the exact Fabric projection");
   return result;
 }
 
@@ -988,7 +1007,7 @@ repeatedSpatialCoreBuildsOccurrenceLocalSkeleton() {
     auto implementation = take(
         test,
         loom::hardware::rtl::finalizePortableSpatialCoreHardwareImplementation(
-            systemContext, fabric.abi, subject, systemProviders,
+            systemContext, fabric.abi, subject, std::nullopt, systemProviders,
             systemContracts, store, blobs));
     require(test,
             implementation.implementation().subject() == subject &&

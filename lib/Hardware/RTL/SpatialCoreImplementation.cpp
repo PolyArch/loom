@@ -8,6 +8,7 @@
 
 #include "circt/Dialect/HW/HWOps.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -87,6 +88,72 @@ llvm::Expected<std::vector<ImplementationInterface>> deriveInterfaces(
   return interfaces;
 }
 
+std::string fixedDecimal(unsigned __int128 coefficient,
+                         std::size_t fractionalDigits) {
+  std::string digits;
+  do {
+    digits.push_back(static_cast<char>('0' + coefficient % 10));
+    coefficient /= 10;
+  } while (coefficient != 0);
+  std::reverse(digits.begin(), digits.end());
+  if (fractionalDigits == 0)
+    return digits;
+  if (digits.size() <= fractionalDigits)
+    digits.insert(0, fractionalDigits + 1 - digits.size(), '0');
+  digits.insert(digits.size() - fractionalDigits, 1, '.');
+  while (digits.back() == '0')
+    digits.pop_back();
+  if (digits.back() == '.')
+    digits.pop_back();
+  return digits;
+}
+
+llvm::Expected<std::string> deriveGenerationConstraint(
+    const FinalizedConfigurationABI &configurationAbi,
+    llvm::ArrayRef<ImplementationInterface> interfaces) {
+  const ImplementationInterface *clockInterface = nullptr;
+  for (const ImplementationInterface &interface : interfaces) {
+    if (!std::holds_alternative<ImplementationClockInterfaceRef>(
+            interface.semanticRef))
+      continue;
+    if (clockInterface)
+      return invalid("SpatialCore RTL has more than one clock interface");
+    clockInterface = &interface;
+  }
+  if (!clockInterface ||
+      clockInterface->representationLocator.kind !=
+          RepresentationObjectKind::Port)
+    return invalid("SpatialCore RTL has no exact clock port");
+  constexpr llvm::StringLiteral topPrefix = "loom_module.";
+  llvm::StringRef clockPort =
+      clockInterface->representationLocator.canonicalName;
+  if (!clockPort.consume_front(topPrefix) || clockPort.empty())
+    return invalid("SpatialCore clock locator is outside the top module");
+
+  const auto &semantic = std::get<ImplementationClockInterfaceRef>(
+      clockInterface->semanticRef);
+  const fabric::HardwareDomainContractRecord *domain =
+      configurationAbi.abi().fabricSystem().hardwareDomainContract(
+          semantic.domain);
+  const auto *clock =
+      domain ? std::get_if<fabric::ClockDomainContractRecord>(
+                   &domain->contract())
+             : nullptr;
+  if (!clock)
+    return invalid("SpatialCore clock interface has no clock-domain contract");
+
+  const std::string period = fixedDecimal(clock->periodFs(), 6);
+  const std::string rising = fixedDecimal(clock->phaseFs(), 6);
+  const unsigned __int128 fallingFemtosecondHalves =
+      static_cast<unsigned __int128>(clock->phaseFs()) * 2 +
+      clock->periodFs();
+  const std::string falling =
+      fixedDecimal(fallingFemtosecondHalves * 5, 7);
+  return "create_clock -name loom_clock -period " + period +
+         " -waveform {" + rising + " " + falling + "} [get_ports {" +
+         clockPort.str() + "}]\n";
+}
+
 } // namespace
 
 llvm::Expected<FinalizedHardwareImplementation>
@@ -94,6 +161,7 @@ finalizePortableSpatialCoreHardwareImplementation(
     mlir::MLIRContext &context,
     const FinalizedConfigurationABI &configurationAbi,
     fabric::SpatialCoreOccurrenceRef subject,
+    std::optional<ArtifactRootReference> implementationPlatform,
     const FabricOperationProviderRegistry &providers,
     const ExternalImplementationContractCatalog &externalContracts,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
@@ -129,6 +197,17 @@ finalizePortableSpatialCoreHardwareImplementation(
   auto digest = blobs.put(bytes);
   if (!digest)
     return digest.takeError();
+  auto interfaces = deriveInterfaces(configurationAbi, subject);
+  if (!interfaces)
+    return interfaces.takeError();
+  auto constraint = deriveGenerationConstraint(configurationAbi, *interfaces);
+  if (!constraint)
+    return constraint.takeError();
+  auto constraintDigest = blobs.put(llvm::ArrayRef<std::uint8_t>(
+      reinterpret_cast<const std::uint8_t *>(constraint->data()),
+      constraint->size()));
+  if (!constraintDigest)
+    return constraintDigest.takeError();
   auto format = RepresentationFormatDescriptorRef::get(
       RepresentationFormatKind::SystemVerilogRtl);
   if (!format)
@@ -136,16 +215,16 @@ finalizePortableSpatialCoreHardwareImplementation(
   auto representation = createImplementationRepresentationRoot(
       RepresentationRootVariant::Rtl, std::nullopt, *format,
       {RepresentationObjectKind::Module, "loom_module"},
-      {{PayloadRole::RtlSource, "rtl/loom_spatial_core.sv", *digest}});
+      {{PayloadRole::RtlSource, "rtl/loom_spatial_core.sv", *digest},
+       {PayloadRole::GenerationConstraint,
+        "constraints/loom_spatial_core.sdc", *constraintDigest}});
   if (!representation)
     return representation.takeError();
-  auto interfaces = deriveInterfaces(configurationAbi, subject);
-  if (!interfaces)
-    return interfaces.takeError();
   return finalizeHardwareImplementation(
       HardwareImplementationDraft{configurationAbi.abi().fabric(), subject,
                                   configurationAbi.reference(),
-                                  std::move(*representation), std::nullopt,
+                                  std::move(*representation),
+                                  std::move(implementationPlatform),
                                   std::move(*interfaces), {}, {}, {}},
       externalContracts, artifacts, blobs);
 }

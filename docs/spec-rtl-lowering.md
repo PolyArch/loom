@@ -43,6 +43,13 @@ workload-specific RTL design. Workload execution combines the reusable
 `HardwareImplementation` with an exact `Deployment`, configuration images, and
 runtime inputs.
 
+The `portable_spatial_core_rtl` generator accepts the System and
+ConfigurationABI plus zero or one exact ImplementationPlatform. Omitting the
+platform publishes architecture-only RTL. Supplying it publishes a distinct
+platform-bound HImpl for every SpatialCore occurrence; the generator does not
+infer a target from an external tool or rebind an existing HImpl downstream.
+Both forms retain the same Fabric-derived source and interface semantics.
+
 This explicit lowering is distinct from the payload-free `FabricModel`
 HardwareImplementation used by semantic DFG/CGRA execution. Constructing a
 Deployment or requesting core semantic execution must not invoke this lowering,
@@ -445,6 +452,18 @@ one enqueue and one dequeue service per allocation unit per local cycle, with
 the declared canonical round-robin policy where contention is possible. RTL
 must not substitute a default depth, extra port, global arrival-order head, or
 implementation-private priority.
+
+Synthesis preserves this semantic hierarchy. Each canonical `fabric.op`
+recipe, switch form, memory form, FIFO, operand queue, and other repeated leaf
+is compiled once per exact implementation dependency closure. A SpatialCore
+implementation composes those compiled blocks with its occurrence-independent
+local interconnect and top interfaces; occurrence qualification then binds the
+exact System subject, ConfigurationABI, platform, and external interfaces.
+Neither synthesis nor a provider adapter may flatten the complete SpatialCore
+as its primary implementation unit or recompile an identical leaf or Module
+representation for every occurrence. A required cross-boundary optimization
+must be an explicit bounded refinement whose result remains verifiable against
+the same Fabric contracts.
 
 ## Clocks, Reset, And Quiescence
 

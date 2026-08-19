@@ -1029,8 +1029,8 @@ buildImplementation(llvm::StringRef test,
     implementations.push_back(take(
         test,
         hardware::rtl::finalizePortableSpatialCoreHardwareImplementation(
-            context, abi, fabric::SpatialCoreOccurrenceRef{accCore}, providers,
-            contracts, artifacts, blobs)));
+            context, abi, fabric::SpatialCoreOccurrenceRef{accCore},
+            std::nullopt, providers, contracts, artifacts, blobs)));
   return implementations;
 }
 

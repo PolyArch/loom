@@ -4,6 +4,7 @@
 #include "Common/BlobStore.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Hardware/Implementation/HardwareImplementation.h"
+#include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "MappedRtlSimulationTestSupport.h"
 
@@ -117,6 +118,34 @@ int main() {
           "repeated portable derivation changed Artifact identity");
   require(repeated.workSummary == first.workSummary,
           "repeated portable derivation changed deterministic work");
+
+  auto platform = take(loom::platform::finalizeImplementationPlatform(
+      loom::platform::ImplementationPlatformDraft{
+          loom::platform::AsicTarget{"portable-rtl-test", "2026.08"},
+          {"typical"}},
+      artifacts));
+  auto platformInputs = take(
+      loom::dse::bindPortableSpatialCoreRtlCandidateGeneratorInputs(
+          expected.fabric(), expected.configurationAbi(),
+          platform.reference()));
+  auto platformResult = take(loom::dse::invokeCandidateGenerator(
+      platformInputs, binding, artifacts, blobs));
+  const auto &platformImplementations =
+      completed(platformResult).outputBindings.front().artifacts;
+  require(platformImplementations.size() == accCores.size() &&
+              platformImplementations != results,
+          "platform-bound derivation did not publish a distinct complete set");
+  for (const loom::ArtifactRootReference &result : platformImplementations) {
+    auto imported = take(loom::hardware::importHardwareImplementation(
+        result, artifacts, blobs));
+    require(imported.implementation().fabric() == expected.fabric() &&
+                imported.implementation().configurationAbi() ==
+                    expected.configurationAbi() &&
+                imported.implementation().implementationPlatform() ==
+                    std::optional<loom::ArtifactRootReference>(
+                        platform.reference()),
+            "platform-bound HImpl lost an exact semantic owner");
+  }
 
   auto wrongRoot =
       take(loom::dse::bindPortableSpatialCoreRtlCandidateGeneratorInputs(

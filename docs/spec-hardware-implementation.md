@@ -851,6 +851,16 @@ global floorplan or vendor-command DSL. FPGA uses the same immutable
 implementation family as ASIC; the first version produces a static full-device
 image and does not claim partial-reconfiguration support.
 
+ASIC physical implementation follows the same hierarchy as synthesis. Leaf
+operation, switch, memory, FIFO, and queue blocks publish exact physical views
+and boundary timing abstractions. SpatialCore placement and routing assemble
+those views, route only the owning hierarchy's interconnect, and perform
+top-level timing and physical-consistency checks. A provider must not flatten
+all leaf logic into one SpatialCore physical attempt as a substitute for this
+composition. Reused physical blocks are keyed by complete representation,
+platform, corner, constraint, and algorithm identities, never by path,
+application name, object address, or occurrence ordinal alone.
+
 Timing, power, area, thermal, DRC, and other observations are
 EvaluationEvidence over the exact HardwareImplementation. Negative slack or a
 physical violation may be reported for a completed implementation; a tool

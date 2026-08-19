@@ -11,6 +11,7 @@
 #include "Hardware/RTL/PortableProviders.h"
 #include "Hardware/RTL/SpatialCoreImplementation.h"
 #include "Hardware/RTL/Specialization.h"
+#include "ImplementationPlatform/ImplementationPlatform.h"
 
 #include "circt/Dialect/Comb/CombDialect.h"
 #include "circt/Dialect/HW/HWDialect.h"
@@ -33,15 +34,20 @@ constexpr llvm::StringLiteral configDescriptor =
 enum InputSlot : std::uint32_t {
   SystemInput = 0,
   ConfigurationAbiInput = 1,
+  ImplementationPlatformInput = 2,
 };
 
-constexpr std::array<CandidateGeneratorInputSlotDescriptor, 2> inputSlots = {{
+constexpr std::array<CandidateGeneratorInputSlotDescriptor, 3> inputSlots = {{
     {CandidateGeneratorInputSlotRef(SystemInput), "fabric_system",
      PlanValueRole::CandidateSet, &loom::fabric::fabricArtifactSchema,
      PlanValueCardinality::ExactlyOne},
     {CandidateGeneratorInputSlotRef(ConfigurationAbiInput), "configuration_abi",
      PlanValueRole::CandidateSet, &loom::hardware::configurationAbiSchema,
      PlanValueCardinality::ExactlyOne},
+    {CandidateGeneratorInputSlotRef(ImplementationPlatformInput),
+     "implementation_platform", PlanValueRole::CandidateSet,
+     &loom::platform::implementationPlatformSchema,
+     PlanValueCardinality::ZeroOrOne},
 }};
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {{
@@ -89,7 +95,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     portableSpatialCoreRtlCandidateGeneratorKind,
     "portable_spatial_core_rtl",
-    "loom.portable_spatial_core_rtl.generator.v1",
+    "loom.portable_spatial_core_rtl.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -124,6 +130,15 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
   if (configurationAbi->abi().fabric() != system->reference())
     return invalid("ConfigurationABI describes another Fabric System");
 
+  std::optional<ArtifactRootReference> implementationPlatform;
+  if (!inputs[ImplementationPlatformInput].artifacts.empty()) {
+    auto imported = loom::platform::importImplementationPlatform(
+        inputs[ImplementationPlatformInput].artifacts.front(), artifacts);
+    if (!imported)
+      return imported.takeError();
+    implementationPlatform = imported->reference();
+  }
+
   mlir::MLIRContext context;
   context.loadDialect<::dataflow::DataflowDialect, ::fabric::FabricDialect,
                       circt::comb::CombDialect, circt::hw::HWDialect,
@@ -142,8 +157,9 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     auto implementation =
         loom::hardware::rtl::finalizePortableSpatialCoreHardwareImplementation(
             context, *configurationAbi,
-            loom::fabric::SpatialCoreOccurrenceRef{accCore}, providers,
-            externalContracts, artifacts, blobs);
+            loom::fabric::SpatialCoreOccurrenceRef{accCore},
+            implementationPlatform, providers, externalContracts, artifacts,
+            blobs);
     if (!implementation) {
       bool unsupported = false;
       llvm::Error remainder = llvm::handleErrors(
@@ -227,13 +243,18 @@ llvm::Error registerPortableSpatialCoreRtlCandidateGenerator() {
 llvm::Expected<std::vector<CandidateGeneratorInputBinding>>
 bindPortableSpatialCoreRtlCandidateGeneratorInputs(
     const ArtifactRootReference &system,
-    const ArtifactRootReference &configurationAbi) {
+    const ArtifactRootReference &configurationAbi,
+    std::optional<ArtifactRootReference> implementationPlatform) {
   if (llvm::Error error = registerPortableSpatialCoreRtlCandidateGenerator())
     return std::move(error);
   std::vector<CandidateGeneratorInputBinding> bindings = {
       {CandidateGeneratorInputSlotRef(SystemInput), {system}},
       {CandidateGeneratorInputSlotRef(ConfigurationAbiInput),
        {configurationAbi}},
+      {CandidateGeneratorInputSlotRef(ImplementationPlatformInput),
+       implementationPlatform
+           ? std::vector<ArtifactRootReference>{*implementationPlatform}
+           : std::vector<ArtifactRootReference>{}},
   };
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           descriptor.reference(), bindings))

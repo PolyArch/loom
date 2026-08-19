@@ -6,6 +6,8 @@
 
 #include "llvm/Support/Error.h"
 
+#include <optional>
+
 namespace mlir {
 class MLIRContext;
 }
@@ -24,6 +26,7 @@ finalizePortableSpatialCoreHardwareImplementation(
     mlir::MLIRContext &context,
     const FinalizedConfigurationABI &configurationAbi,
     fabric::SpatialCoreOccurrenceRef subject,
+    std::optional<ArtifactRootReference> implementationPlatform,
     const FabricOperationProviderRegistry &providers,
     const ExternalImplementationContractCatalog &externalContracts,
     const ArtifactStore &artifacts, const BlobStore &blobs);
