@@ -771,6 +771,108 @@ public:
   std::shared_ptr<const SystemServiceRouteDemandProjection> serviceRoutes;
 };
 
+llvm::Expected<ResourceCapacityOveruseProjection>
+SystemCapacityModel::projectImportedCapacity(
+    const FrozenSystemPnrProblem &problem,
+    llvm::ArrayRef<PnrIndex> threadChoices,
+    llvm::ArrayRef<PnrIndex> graphChoices) const {
+  if (threadChoices.size() != problem.threadDecisions().size() ||
+      graphChoices.size() != problem.graphDecisions().size() ||
+      graphKeys_.size() != problem.graphDecisions().size())
+    return invalid("System imported-capacity choice closure is incomplete");
+
+  struct SpatialContextProjection final {
+    std::string graphKey;
+    PnrIndex core = getInvalidPnrIndex();
+    PnrIndex mapping = getInvalidPnrIndex();
+  };
+  std::map<std::tuple<std::string, PnrIndex, PnrIndex>,
+           SpatialContextProjection>
+      spatialContexts;
+  std::set<std::pair<PnrIndex, PnrIndex>> routedMappings;
+  for (PnrIndex graph = 0; graph < problem.graphDecisions().size(); ++graph) {
+    const auto mappings = problem.graphChoiceCatalogOrdinals(graph);
+    if (graphChoices[graph] >= mappings.size())
+      return invalid("System imported-capacity graph choice is out of range");
+    const PnrIndex mapping = mappings[graphChoices[graph]];
+    for (PnrIndex thread : problem.graphThreadOverlaps(graph)) {
+      if (thread >= threadChoices.size())
+        return invalid(
+            "System imported-capacity graph overlap is out of range");
+      const auto cores = problem.threadChoiceCatalogOrdinals(thread);
+      if (threadChoices[thread] >= cores.size())
+        return invalid(
+            "System imported-capacity thread choice is out of range");
+      const PnrIndex core = cores[threadChoices[thread]];
+      spatialContexts.try_emplace(
+          std::make_tuple(graphKeys_[graph], core, mapping),
+          SpatialContextProjection{graphKeys_[graph], core, mapping});
+      routedMappings.emplace(core, mapping);
+    }
+  }
+
+  const auto projection =
+      [&](PnrIndex core,
+          PnrIndex mapping) -> llvm::Expected<const ImportedProjection *> {
+    if (mapping >= importedProjections_.size() ||
+        mapping >= mappingTargetClasses_.size() ||
+        core >= coreTargetClasses_.size())
+      return invalid("imported capacity projection is out of range");
+    if (coreTargetClasses_[core] != mappingTargetClasses_[mapping])
+      return invalid("selected System execution has no capacity projection");
+    return &importedProjections_[mapping];
+  };
+
+  std::vector<FrozenResourceCapacityUseSelection> uses;
+  for (const auto &[key, context] : spatialContexts) {
+    (void)key;
+    auto imported = projection(context.core, context.mapping);
+    if (!imported)
+      return imported.takeError();
+    const std::string &selectedGraphKey = context.graphKey;
+    const auto graphProgress = llvm::find_if(
+        (*imported)->graphProgress, [&](const auto &candidateProgress) {
+          return candidateProgress.graphKey == selectedGraphKey;
+        });
+    if (graphProgress == (*imported)->graphProgress.end())
+      return invalid(
+          "selected SpatialMapping has no rooted capacity projection");
+    const std::size_t namespaceOrdinal =
+        static_cast<std::size_t>(context.core) + 1;
+    for (const auto &use : graphProgress->uses) {
+      auto pattern = resources_.patternOrdinal(namespaceOrdinal, use.pattern);
+      if (!pattern)
+        return pattern.takeError();
+      std::string activation;
+      appendSized(activation, context.graphKey);
+      appendSized(activation, (*imported)->mappingIdentity.bytes());
+      appendSized(activation, use.activationKey);
+      uses.push_back({*pattern, std::move(activation)});
+    }
+  }
+
+  std::vector<FrozenResourceCapacityRouteSelection> routes;
+  for (const auto &[core, mapping] : routedMappings) {
+    auto imported = projection(core, mapping);
+    if (!imported)
+      return imported.takeError();
+    const std::size_t namespaceOrdinal = static_cast<std::size_t>(core) + 1;
+    for (const auto &route : (*imported)->routes) {
+      FrozenResourceCapacityRouteSelection selected;
+      selected.payloadWidthBits = route.payloadWidthBits;
+      selected.traversalOrdinals.reserve(route.traversals.size());
+      for (const auto &traversal : route.traversals) {
+        auto ordinal = resources_.traversalOrdinal(namespaceOrdinal, traversal);
+        if (!ordinal)
+          return ordinal.takeError();
+        selected.traversalOrdinals.push_back(*ordinal);
+      }
+      routes.push_back(std::move(selected));
+    }
+  }
+  return deriveResourceCapacityOveruse(resources_, uses, routes);
+}
+
 namespace {
 
 llvm::Expected<SystemCandidatePhysicalDemandProjection>

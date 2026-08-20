@@ -136,13 +136,21 @@ void allDifferentCardinalityProvesInfeasibilityBeforeSearch() {
   if (canonical)
     fail("all-different cardinality contradiction produced an assignment");
   bool observedCanonicalProof = false;
+  bool observedCanonicalWitness = false;
   llvm::handleAllErrors(
       canonical.takeError(), [&](const InitializerRelationSolveFailure &error) {
         observedCanonicalProof =
             error.kind() ==
             InitializerRelationSolveFailureKind::ProvenInfeasible;
+        observedCanonicalWitness = error.hallWitness() &&
+                                   error.hallWitness()->relation == 0 &&
+                                   error.hallWitness()->memberDecisions ==
+                                       std::vector<PnrIndex>({0, 1, 2}) &&
+                                   error.hallWitness()->projectedValues ==
+                                       std::vector<PnrIndex>({0, 1});
       });
-  if (!observedCanonicalProof || solver.assignmentAttempts() != 0)
+  if (!observedCanonicalProof || !observedCanonicalWitness ||
+      solver.assignmentAttempts() != 0)
     fail("all-different cardinality proof entered canonical DFS");
 
   auto fixed = solver.solveCanonicalWithFixedChoices(
@@ -172,12 +180,19 @@ void allDifferentHallContradictionProvesInfeasibilityBeforeSearch() {
   if (result)
     fail("all-different Hall contradiction produced an assignment");
   bool observedProof = false;
+  bool observedWitness = false;
   llvm::handleAllErrors(
       result.takeError(), [&](const InitializerRelationSolveFailure &error) {
         observedProof = error.kind() ==
                         InitializerRelationSolveFailureKind::ProvenInfeasible;
+        observedWitness = error.hallWitness() &&
+                          error.hallWitness()->relation == 0 &&
+                          error.hallWitness()->memberDecisions ==
+                              std::vector<PnrIndex>({0, 1, 2}) &&
+                          error.hallWitness()->projectedValues ==
+                              std::vector<PnrIndex>({0, 1});
       });
-  if (!observedProof || solver.assignmentAttempts() != 0)
+  if (!observedProof || !observedWitness || solver.assignmentAttempts() != 0)
     fail("all-different Hall contradiction entered canonical DFS");
 }
 

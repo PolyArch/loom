@@ -395,8 +395,8 @@ protocolCallableSymbols(const frontend::StructuredProgramCandidate &source,
   auto view = source.view();
   if (!view)
     return view.takeError();
-  std::vector<std::string> symbols;
-  symbols.reserve(roots.size());
+  std::vector<std::pair<frontend::StructuredEntityRef, std::string>> rooted;
+  rooted.reserve(roots.size());
   for (const frontend::StructuredEntityRef &root : roots) {
     auto entity = view->resolve(root);
     if (!entity)
@@ -406,10 +406,23 @@ protocolCallableSymbols(const frontend::StructuredProgramCandidate &source,
     if (!function || function.isExternal())
       return invalid("operator protocol root is not a defined LLVM callable");
     const std::string symbol = function.getSymName().str();
-    if (llvm::is_contained(symbols, symbol))
+    if (llvm::any_of(rooted,
+                     [&](const auto &entry) { return entry.second == symbol; }))
       return invalid("operator protocol roots contain a duplicate callable");
-    symbols.push_back(symbol);
+    rooted.emplace_back(root, symbol);
   }
+  llvm::sort(rooted, [](const auto &lhs, const auto &rhs) {
+    if (lhs.first.parent.bytes() != rhs.first.parent.bytes())
+      return lhs.first.parent.bytes() < rhs.first.parent.bytes();
+    if (lhs.first.kind != rhs.first.kind)
+      return static_cast<std::uint32_t>(lhs.first.kind) <
+             static_cast<std::uint32_t>(rhs.first.kind);
+    return lhs.first.ordinal < rhs.first.ordinal;
+  });
+  std::vector<std::string> symbols;
+  symbols.reserve(rooted.size());
+  for (auto &entry : rooted)
+    symbols.push_back(std::move(entry.second));
   return symbols;
 }
 
@@ -833,7 +846,18 @@ exploreStructuredCompilationToPreMapping(
     std::vector<ArtifactRootReference> selected;
     std::vector<ArtifactRootReference> preferenceOrder;
   };
+  struct RetainedOwnershipAlternative final {
+    std::size_t generationIndex = 0;
+    std::vector<ArtifactRootReference> references;
+    std::vector<StructuredOwnershipDerivation> ownershipPrefix;
+    std::vector<StructuredExecutionShapeDerivation> executionShapePrefix;
+    std::vector<StructuredSpecialMathAccuracyDerivation> specialMathPrefix;
+    std::vector<StructuredScheduleDerivation> schedulePrefix;
+    std::vector<StructuredMemoryCommunicationDerivation> memoryPrefix;
+    bool derivationsIncluded = false;
+  };
   std::vector<RetainedOwnershipSelection> generations;
+  std::vector<RetainedOwnershipAlternative> semanticAlternatives;
   std::vector<ArtifactRootReference> satisfiedEvidence;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
@@ -859,15 +883,19 @@ exploreStructuredCompilationToPreMapping(
         parent.structuredProgram, artifactStore);
     if (!parentReference)
       return parentReference.takeError();
+    llvm::ArrayRef<std::string> generationSymbols = *callableSymbols;
+    if (options.ownership.selectionMode ==
+        StructuredOwnershipSelectionMode::SemanticConformance)
+      generationSymbols = llvm::ArrayRef<std::string>(*callableSymbols)
+                              .slice(transformationOrdinal, 1);
     auto protocolRoots = resolveProtocolCallableRoots(parent.structuredProgram,
-                                                      *callableSymbols);
+                                                      generationSymbols);
     if (!protocolRoots)
       return protocolRoots.takeError();
     StructuredOwnershipExplorationOptions generationOptions = options.ownership;
     generationOptions.protocolCallableRoots = std::move(*protocolRoots);
     if (options.ownership.selectionMode ==
-            StructuredOwnershipSelectionMode::SemanticConformance &&
-        transformationOrdinal + 1 != ownershipGenerationCount)
+        StructuredOwnershipSelectionMode::SemanticConformance)
       generationOptions.selection.k = 1;
     auto explored = exploreOwnershipCandidates(
         parent, *parentReference, sourceCompilation.structuredProgram,
@@ -925,6 +953,17 @@ exploreStructuredCompilationToPreMapping(
     priorSelectedGeneration = generationIndex;
     priorSelectedReference = generation.preferenceOrder.front();
     priorDerivationsIncluded = false;
+    if (options.ownership.selectionMode ==
+        StructuredOwnershipSelectionMode::SemanticConformance)
+      semanticAlternatives.push_back(
+          RetainedOwnershipAlternative{generationIndex,
+                                       {generation.preferenceOrder.front()},
+                                       ownershipPrefix,
+                                       executionShapePrefix,
+                                       specialMathPrefix,
+                                       schedulePrefix,
+                                       memoryPrefix,
+                                       false});
     if (transformationOrdinal + 1 == ownershipGenerationCount) {
       finalGeneration = generationIndex;
       finalReferences = generation.preferenceOrder;
@@ -970,17 +1009,38 @@ exploreStructuredCompilationToPreMapping(
   if (!finalGeneration || finalReferences.empty())
     return invalid("ownership exploration did not choose a terminal candidate");
 
-  RetainedOwnershipSelection &terminalGeneration =
-      generations[*finalGeneration];
-  auto assemble = [&](SelectedStructuredOwnershipCandidate candidate) {
-    std::vector<StructuredOwnershipDerivation> ownership = ownershipPrefix;
+  std::vector<RetainedOwnershipAlternative> alternatives;
+  if (options.ownership.selectionMode ==
+      StructuredOwnershipSelectionMode::SemanticConformance) {
+    const std::size_t retainedCount =
+        static_cast<std::size_t>(std::min<std::uint64_t>(
+            options.ownership.selection.k, semanticAlternatives.size()));
+    alternatives.reserve(retainedCount);
+    for (auto iterator = semanticAlternatives.rbegin();
+         iterator != semanticAlternatives.rend() &&
+         alternatives.size() != retainedCount;
+         ++iterator)
+      alternatives.push_back(*iterator);
+  } else {
+    alternatives.push_back(RetainedOwnershipAlternative{
+        *finalGeneration, std::move(finalReferences), ownershipPrefix,
+        executionShapePrefix, specialMathPrefix, schedulePrefix, memoryPrefix,
+        finalDerivationsIncluded});
+  }
+
+  auto assemble = [&](SelectedStructuredOwnershipCandidate candidate,
+                      const RetainedOwnershipAlternative &alternative) {
+    std::vector<StructuredOwnershipDerivation> ownership =
+        alternative.ownershipPrefix;
     std::vector<StructuredExecutionShapeDerivation> executionShape =
-        executionShapePrefix;
+        alternative.executionShapePrefix;
     std::vector<StructuredSpecialMathAccuracyDerivation> specialMath =
-        specialMathPrefix;
-    std::vector<StructuredScheduleDerivation> schedule = schedulePrefix;
-    std::vector<StructuredMemoryCommunicationDerivation> memory = memoryPrefix;
-    if (!finalDerivationsIncluded) {
+        alternative.specialMathPrefix;
+    std::vector<StructuredScheduleDerivation> schedule =
+        alternative.schedulePrefix;
+    std::vector<StructuredMemoryCommunicationDerivation> memory =
+        alternative.memoryPrefix;
+    if (!alternative.derivationsIncluded) {
       ownership.insert(ownership.end(),
                        std::make_move_iterator(candidate.derivations.begin()),
                        std::make_move_iterator(candidate.derivations.end()));
@@ -1020,55 +1080,62 @@ exploreStructuredCompilationToPreMapping(
   };
 
   std::vector<SelectedPreMappingCompilation> selected;
-  selected.reserve(finalReferences.size() * options.ownership.selection.k);
-  StructuredOwnershipInvocationScope terminalScope(
-      *terminalGeneration.invocation);
-  for (const ArtifactRootReference &reference : finalReferences) {
-    if (reference == *sourceReference) {
-      auto candidate =
-          terminalGeneration.invocation->materializeSelectedCandidate(
-              reference, artifactStore);
-      if (!candidate)
-        return candidate.takeError();
-      selected.push_back(assemble(std::move(*candidate)));
-      continue;
-    }
+  selected.reserve(static_cast<std::size_t>(options.ownership.selection.k));
+  StructuredOwnershipTopKSelection dataflowSelectionPolicy =
+      options.ownership.selection;
+  if (options.ownership.selectionMode ==
+      StructuredOwnershipSelectionMode::SemanticConformance)
+    dataflowSelectionPolicy.k = 1;
+  for (const RetainedOwnershipAlternative &alternative : alternatives) {
+    RetainedOwnershipSelection &generation =
+        generations[alternative.generationIndex];
+    StructuredOwnershipInvocationScope generationScope(*generation.invocation);
+    for (const ArtifactRootReference &reference : alternative.references) {
+      if (reference == *sourceReference) {
+        auto candidate = generation.invocation->materializeSelectedCandidate(
+            reference, artifactStore);
+        if (!candidate)
+          return candidate.takeError();
+        selected.push_back(assemble(std::move(*candidate), alternative));
+        continue;
+      }
 
-    auto d0 = terminalGeneration.invocation->prepareDataflowGeneration(
-        reference, artifactStore);
-    if (!d0)
-      return d0.takeError();
-    auto dataflowSelection = exploreDataflowCandidates(
-        *d0, reference, fabric, *workloadReference, *runtimeInputReference,
-        config, options.ownership.selection, options.ownership.selectionMode,
-        artifactStore, blobStore);
-    if (!dataflowSelection)
-      return dataflowSelection.takeError();
-    if (auto *incomplete =
-            std::get_if<IncompletePreMappingExploration>(&*dataflowSelection)) {
-      mergeReferences(incomplete->retainedEvidence, satisfiedEvidence);
-      incomplete->planGenerateInvocations.insert(
-          incomplete->planGenerateInvocations.begin(),
-          std::make_move_iterator(planGenerateInvocations.begin()),
-          std::make_move_iterator(planGenerateInvocations.end()));
-      return PreMappingExplorationOutcome{std::move(*incomplete)};
-    }
-    auto &dataflowCompleted =
-        std::get<CompletedDataflowSelection>(*dataflowSelection);
-    mergeReferences(satisfiedEvidence, dataflowCompleted.evidence);
-    planGenerateInvocations.push_back(
-        std::move(dataflowCompleted.generateInvocations));
-    if (dataflowCompleted.retainedIncompleteness)
-      retainedPlanIncompleteness.push_back(
-          std::move(*dataflowCompleted.retainedIncompleteness));
-    for (const ArtifactRootReference &dataflowReference :
-         dataflowCompleted.preferenceOrder) {
-      auto candidate =
-          terminalGeneration.invocation->materializeSelectedDataflowCandidate(
-              reference, dataflowReference, artifactStore);
-      if (!candidate)
-        return candidate.takeError();
-      selected.push_back(assemble(std::move(*candidate)));
+      auto d0 = generation.invocation->prepareDataflowGeneration(reference,
+                                                                 artifactStore);
+      if (!d0)
+        return d0.takeError();
+      auto dataflowSelection = exploreDataflowCandidates(
+          *d0, reference, fabric, *workloadReference, *runtimeInputReference,
+          config, dataflowSelectionPolicy, options.ownership.selectionMode,
+          artifactStore, blobStore);
+      if (!dataflowSelection)
+        return dataflowSelection.takeError();
+      if (auto *incomplete = std::get_if<IncompletePreMappingExploration>(
+              &*dataflowSelection)) {
+        mergeReferences(incomplete->retainedEvidence, satisfiedEvidence);
+        incomplete->planGenerateInvocations.insert(
+            incomplete->planGenerateInvocations.begin(),
+            std::make_move_iterator(planGenerateInvocations.begin()),
+            std::make_move_iterator(planGenerateInvocations.end()));
+        return PreMappingExplorationOutcome{std::move(*incomplete)};
+      }
+      auto &dataflowCompleted =
+          std::get<CompletedDataflowSelection>(*dataflowSelection);
+      mergeReferences(satisfiedEvidence, dataflowCompleted.evidence);
+      planGenerateInvocations.push_back(
+          std::move(dataflowCompleted.generateInvocations));
+      if (dataflowCompleted.retainedIncompleteness)
+        retainedPlanIncompleteness.push_back(
+            std::move(*dataflowCompleted.retainedIncompleteness));
+      for (const ArtifactRootReference &dataflowReference :
+           dataflowCompleted.preferenceOrder) {
+        auto candidate =
+            generation.invocation->materializeSelectedDataflowCandidate(
+                reference, dataflowReference, artifactStore);
+        if (!candidate)
+          return candidate.takeError();
+        selected.push_back(assemble(std::move(*candidate), alternative));
+      }
     }
   }
   std::vector<SelectedPreMappingCompilation> bounded;

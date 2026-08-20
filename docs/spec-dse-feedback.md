@@ -594,12 +594,17 @@ generator so the resolved objective can compare QoR alternatives.
 `SemanticConformance` is feasibility-only and makes no QoR-optimality claim.
 Multiple explicit protocol roots remain parent-local alternatives in one
 `BenefitQualified` generation; that intent does not greedily compose selected
-children. In `SemanticConformance`, the same root set requests one complete
-feasible source closure. The controller therefore applies `TopK(1)` and chains
-at most one immutable ownership child per root, re-resolving the defined
-callable in each child and stopping early when no next child exists. The
-generation bound is mechanically the protocol-root cardinality, not another
-policy field, CLI option, or execution limit. Every edge retains ordinary
+children. In `SemanticConformance`, the same root set defines a bounded chain
+of feasible source closures. The controller canonicalizes the exact callable
+references, applies `TopK(1)` to one root per generation, and retains the
+verified cumulative prefixes in decreasing ownership coverage. The complete
+closure remains first when it is available, while smaller prefixes let
+downstream Mapping select work that fits the exact Fabric without requiring
+every independent callable to reside at once. The frontier is bounded by the
+smaller of the protocol-root cardinality and the existing ownership `TopK`; it
+never enumerates root subsets or regenerates a root against sibling roots.
+Each generation re-resolves its one defined callable in the current immutable
+parent and stops when no next child exists. Every edge retains ordinary
 candidate lineage, while the original source workload and runtime input remain
 the sole functional oracle.
 After one selected Structured candidate lowers mechanically to D0, the
@@ -1729,12 +1734,12 @@ the ordinary TechMapping owner explicitly.
 
 The built-in root-complete Spatial PnR generator composes the next boundary in
 the same typed plan. Its implementation semantic identity is
-`loom.mapping.root_complete_spatial_pnr.generator.v13`; the direct constrained
-Spatial provider uses `loom.mapping.spatial_pnr.generator.v13`. Both identities
-select the Spatial 13.0 search semantics. It consumes the finite TechMapping
-output and the same exact Fabric Artifact. Each `T` already binds one unique Canonical Dataflow
-identity, so the descriptor strictly recovers `D` from `T` instead of accepting
-a second `D` slot. It mechanically publishes the exact empty Spatial
+`loom.mapping.root_complete_spatial_pnr.generator.v21`; the direct constrained
+Spatial provider uses `loom.mapping.spatial_pnr.generator.v14`. It consumes the
+finite TechMapping output and the same exact Fabric Artifact. Each `T` already
+binds one unique Canonical Dataflow identity, so the descriptor strictly
+recovers `D` from `T` instead of accepting a second `D` slot. It mechanically
+publishes the exact empty Spatial
 MappingConstraintSet for `D/T/F` through the constraint owner, then delegates
 to the ordinary Spatial PnR owner with the descriptor's resolved Spatial PnR
 config view. Its finite output contains only ordinary SpatialMapping
@@ -1742,10 +1747,25 @@ Artifacts. A constrained invocation remains a direct five-authority Spatial
 PnR call; the central plan does not interpret absent constraints as empty and
 does not acquire a constraint language, Mapping state, or search algorithm.
 
+The root-complete adapter preserves the resolved completion goal. Under
+`ExhaustConfiguredWork`, it may construct an initial routed candidate for each
+prepared `T`, rank those candidates through the selected Spatial objective,
+and traverse the resulting complete quality order. Under
+`FirstVerifiedCandidate`, candidate quality outside the verified prefix is not
+part of the requested result. The adapter therefore performs no speculative
+routing for ordering. It repeatedly selects the prepared `T` covering the
+greatest number of not-yet-covered graph references, breaks ties by canonical
+Artifact reference, and invokes ordinary Spatial PnR. A graph becomes covered
+only after that invocation publishes a finalized candidate; failure continues
+to the next alternative. Traversal stops when every graph represented by the
+input set has one verified SpatialMapping or when a typed limit, cancellation,
+or proven-infeasible frontier prevents closure. Work accounting includes only
+search actually executed for ranking or verification under the selected goal.
+
 The built-in root-complete System PnR generator composes the final Mapping
 boundary without widening the central plan. Its descriptor has kind 9,
 spelling `mapping.root_complete_system_pnr`, schema
-`loom.mapping.root_complete_system_pnr.generator.v8`, and exact input slots
+`loom.mapping.root_complete_system_pnr.generator.v9`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, and
 `fabric: ExactlyOne`. Its sole output slot is
 `system_mapping: CandidateSet<loom.mapping 6.0>, FiniteSet`; its resolved view
@@ -1776,7 +1796,7 @@ not registered.
 The built-in application-scoped System PnR generator is the strict-scope
 counterpart. Its descriptor has kind 22, spelling
 `mapping.application_system_pnr`, implementation semantic identity
-`loom.mapping.application_system_pnr.generator.v7`, and exact input slots
+`loom.mapping.application_system_pnr.generator.v8`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, `fabric: ExactlyOne`, and
 `system_constraints: ExactlyOne`. The constraint root must bind exactly that
 Dataflow and Fabric System. Its non-empty `root_thread_launches` is the sole
@@ -2772,17 +2792,64 @@ rebuilt from the exact Fabric through the same physical-demand projection used
 by Tech cover search. A hardware reopen may respond with existing typed FU or
 instruction-store decisions; the feedback neither mutates Fabric nor changes
 an overall `ProofNotEstablished` outcome into `ProvenInfeasible`.
-The central joint DSE controller first projects a minimum-cost multi-PE
-instruction-store growth plan that closes the exact Hall relation. It then
-materializes that plan as one ordinary kind-14 `ResizeInstructionStores`
-one-parent child, followed by ordinary kind-15 System attachment children, and
-re-enters the normal three-level Mapping plan. The controller's finite
-portfolio and stopping policy come from the typed joint policy; there is no
-deficit-size threshold or Application-specific reopen heuristic. Switch,
-memory, FIFO, topology, and System resources remain unchanged unless a later
-typed Mapping witness asks for another owner. Every grown child retains
-ordinary generator lineage and must pass the independent Mapping verifier
-before it can be selected.
+The root-complete Spatial provider may return
+`loom.mapping.spatial_graph_boundary_endpoint_hall_feedback.1.0`. It names the
+exact Module and TechMapping whose graph-boundary attachment relation is Hall
+deficient. Its canonical payload retains the independent input/output demand
+and Hall-neighbor endpoint counts; aggregate cardinalities are derived rather
+than serialized again. The directional split is necessary because one
+additional builtin gateway contributes one input and one output endpoint; the
+required gateway increment is the larger directional deficit. This feedback is
+not a routing failure, does not imply that another TechMapping has the same
+boundary demand, and cannot weaken endpoint exclusivity.
+
+The root-complete System provider may return
+`loom.mapping.system_acc_core_capacity_pressure.1.0` only after its exact
+thread/graph relation is completely exhausted under the configured assignment
+bound and every assignment retains imported Spatial capacity pressure. The
+payload names the exact System, complete SpatialMapping input frontier, target
+Module, compatible AccCore count, assignment attempts, and one occurrence-
+qualified usage/capacity witness. It requests one additional compatible
+AccCore candidate. It neither claims that child sufficient nor includes
+System service routing in its proof. A work-limit outcome has no such payload.
+
+The central joint DSE controller consumes all three feedback forms through the one
+resolved Fabric-template recipe that produced the current System. Compute
+feedback projects the minimum multi-PE instruction-store plan and raises the
+recipe's uniform resident-context count to the largest required resulting
+capacity. Spatial boundary feedback raises the recipe's gateway count by the
+exact directional deficit. System capacity feedback raises the recipe's
+AccCore count by exactly one only when every current occurrence targets the
+named Module; a heterogeneous recipe that cannot express the requested
+compatible occurrence is rejected rather than silently homogenized. If one
+failed Mapping execution contains several independent witnesses, their
+distinct recipe fields compose into one child. The
+ordinary Fabric-template provider then rematerializes the complete uniform
+System, including every AccCore occurrence and System transport resource, and
+the normal three-level Mapping plan and independent verifiers evaluate it.
+There is no mapper-side Fabric mutation, local occurrence exception, or stale
+attachment rewrite.
+
+When a child changes only the AccCore count, the target Module roots are
+identity-equal to the parent targets. The controller binds the already
+verified immutable SpatialMapping frontier directly to the new System
+provider, after rechecking each Mapping's exact Dataflow and Module owners.
+TechMapping and Spatial PnR are not repeated for a System-only composition
+change. A resident-context or gateway change creates a different Module and
+therefore runs the complete three-level Mapping plan; owner mismatch is an
+error and never triggers an implicit Mapping rewrite.
+
+Hardware reopen is a bounded feedback chain rather than a Cartesian hardware
+search. One failed execution produces at most one monotonically grown recipe
+child; a failed child may produce the next typed witness. The chain visits no
+more than `maximumSystemFrontier - 1` children after the parent System and
+stops immediately when no supported typed feedback remains, execution is
+cancelled, or a verified SystemMapping is published. Thus a second hardware
+dimension becomes eligible only after ordinary Mapping proves it necessary.
+The controller has no deficit-size threshold or Application-specific reopen
+heuristic. Switch, memory, FIFO, topology, and other System resources remain
+unchanged unless a later typed Mapping witness and its hardware owner define a
+corresponding recipe change.
 
 Hardware reopen is ordered after the bounded current-hardware software/System
 frontier. The controller first visits those exact pairs in their declared

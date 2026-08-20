@@ -85,6 +85,7 @@ constexpr bool isValidBuiltinTargetScale(const BuiltinTargetScale &scale) {
                                           scale.temporalPeCount) &&
          scale.spatialMemoryCount != 0 && scale.temporalMemoryCount != 0 &&
          scale.temporalResidentContexts != 0 &&
+         isValidLocalMemoryPortVariant(scale.localMemoryPortVariant) &&
          scale.crossScheduleBoundaryLanesPerTemporalPe != 0 &&
          scale.gatewayCount != 0 && scale.memoryCapacityBytes != 0;
 }

@@ -433,9 +433,16 @@ providers, not a separate testing semantics.
 QoR selection and feasibility composition deliberately treat multiple
 protocol roots differently. Greedily composing `BenefitQualified` winners
 would erase the alternatives needed for a global objective. A
-`SemanticConformance` request instead needs one program containing every
-explicit operator boundary. Chaining one `TopK(1)` child per root produces that
-closure without a powerset, and the root count already provides a finite bound.
+`SemanticConformance` request instead orders exact callable references once,
+forms one deterministic `TopK(1)` chain with one root per generation, and
+retains its semantically verified prefixes in decreasing ownership coverage.
+This preserves the complete closure when it fits while allowing an exact
+Fabric to select a smaller amount of independent Spatial ownership. A powerset
+would multiply equivalent search histories and make application latency
+exponential in its callable count; reconsidering every sibling root in every
+generation would add quadratic work without a new candidate. The single chain
+is linear and its published frontier is already bounded by the existing
+ownership `TopK`.
 Adding a second generation-limit knob would describe no new semantic fact and
 could silently disagree with the requested root set.
 

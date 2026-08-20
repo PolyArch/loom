@@ -47,6 +47,11 @@ struct SystemImportedRouteProjection final {
 
 class SystemCapacityModel final {
 public:
+  llvm::Expected<::loom::mapping::detail::ResourceCapacityOveruseProjection>
+  projectImportedCapacity(const FrozenSystemPnrProblem &problem,
+                          llvm::ArrayRef<PnrIndex> threadChoices,
+                          llvm::ArrayRef<PnrIndex> graphChoices) const;
+
   llvm::Expected<SystemCandidatePhysicalDemandProjection>
   project(const FrozenSystemPnrProblem &problem,
           SystemCandidateCapacityProjectionView candidate) const;

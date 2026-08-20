@@ -49,11 +49,22 @@ struct LocalMemoryParameters final {
 /// Separate ports own independent ResourceContracts while the shared variant
 /// admits both access shapes through each read/write port.
 enum class LocalMemoryPortVariant : std::uint8_t {
-  ElementOnly,
-  VectorOnly,
-  SeparateElementVector,
-  SharedElementVector,
+  ElementOnly = 0,
+  VectorOnly = 1,
+  SeparateElementVector = 2,
+  SharedElementVector = 3,
 };
+
+constexpr bool isValidLocalMemoryPortVariant(LocalMemoryPortVariant variant) {
+  switch (variant) {
+  case LocalMemoryPortVariant::ElementOnly:
+  case LocalMemoryPortVariant::VectorOnly:
+  case LocalMemoryPortVariant::SeparateElementVector:
+  case LocalMemoryPortVariant::SharedElementVector:
+    return true;
+  }
+  return false;
+}
 
 inline llvm::StringRef
 localMemoryPortVariantSpelling(LocalMemoryPortVariant variant) {

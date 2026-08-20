@@ -14,6 +14,7 @@ add_library(LoomMappingArtifact
   SpatialMappingCapacityVerification.cpp
   SpatialMappingArtifact.cpp
   SpatialMappingImportContext.cpp
+  SpatialMappingHardwareDemand.cpp
   MappingProgressAnalysis.cpp
   SpatialMappingTagAssignments.cpp
   SpatialMappingMemoryImport.cpp
@@ -27,6 +28,7 @@ add_library(LoomMappingArtifact
   SystemMappingClosureProjection.cpp
   SystemMappingConstraintAdmission.cpp
   SystemMappingExecutionProjection.cpp
+  SystemMappingHardwareDemand.cpp
   SystemMappingHandshakeVerification.cpp
   SystemMappingServiceTargetVerification.cpp
   SystemServiceBindingProjection.cpp

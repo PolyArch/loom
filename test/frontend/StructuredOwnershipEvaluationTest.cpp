@@ -1597,6 +1597,39 @@ void runEvaluationAnchor() {
   if (semanticOnlyView.graphs().empty() || semanticOnlyView.actors().empty())
     fail("semantic conformance selected a graph-free candidate");
 
+  auto semanticChainSource = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseModule(context), design.roots().front()));
+  auto semanticChainExploration = semanticOnlyExploration;
+  semanticChainExploration.ownership.selection.k = 2;
+  semanticChainExploration.ownership.protocolCallableRoots = {
+      findCallable(semanticChainSource.structuredProgram, "kernel"),
+      findCallable(semanticChainSource.structuredProgram, "warm")};
+  auto semanticChain = take(loom::dse::exploreStructuredCompilationToPreMapping(
+      std::move(semanticChainSource), inputs.workload, inputs.runtimeInput,
+      design.roots().front(), loom::defaultResolvedConfig(),
+      semanticChainExploration, store, blobs));
+  const auto *semanticChainSelection =
+      std::get_if<loom::dse::CompletedPreMappingSelection>(&semanticChain);
+  if (!semanticChainSelection || semanticChainSelection->selected.size() != 2)
+    fail("semantic conformance did not retain its bounded ownership chain");
+  if (semanticChainSelection->selected[0].derivations.size() != 2 ||
+      semanticChainSelection->selected[1].derivations.size() != 1)
+    fail("semantic conformance did not rank ownership coverage first");
+  if (semanticChainSelection->selected[0]
+          .compilation.structuredProgram.identity() != combinedRef.artifact)
+    fail("semantic conformance lost the complete ownership closure");
+  const loom::ArtifactIdentity prefixIdentity =
+      semanticChainSelection->selected[1]
+          .compilation.structuredProgram.identity();
+  if (prefixIdentity != spatialRef.artifact &&
+      prefixIdentity != warmRef.artifact)
+    fail("semantic conformance retained a non-prefix ownership alternative");
+  for (const auto &candidate : semanticChainSelection->selected)
+    if (!candidate.functionalReplay ||
+        candidate.functionalReplay->status !=
+            loom::sim::SourceBackedDfgValidationStatus::Equivalent)
+      fail("semantic conformance retained an unverified ownership prefix");
+
   auto parallelExploration = exploration;
   parallelExploration.ownership.candidateWorkerCount = 2;
   auto parallelSource = take(loom::frontend::raiseLlvmModuleToStructured(

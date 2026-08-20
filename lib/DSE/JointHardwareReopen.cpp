@@ -5,15 +5,17 @@
 #include "Common/BlobStore.h"
 #include "Common/MappingDebugLog.h"
 #include "DSE/ExecutionJournal.h"
+#include "DSE/FabricTemplateCandidateGenerator.h"
 #include "DSE/ProductionOwners.h"
 #include "DSE/ResolvedConfigView.h"
-#include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
-#include "DSE/SystemCompositionCandidateGenerator.h"
+#include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
 #include "DSE/TechMappingHardwareFeedback.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
-#include "Fabric/Identity/FabricRefText.h"
+#include "Mapping/Artifact/MappingArtifact.h"
+#include "Mapping/Artifact/SpatialMappingHardwareDemand.h"
+#include "Mapping/Artifact/SystemMappingHardwareDemand.h"
 #include "Mapping/Tech/TechMappingHardwareDemand.h"
 #include "PnR/PnrDerivedContext.h"
 
@@ -22,7 +24,7 @@
 #include "llvm/Support/Path.h"
 
 #include <algorithm>
-#include <map>
+#include <limits>
 #include <optional>
 #include <system_error>
 #include <utility>
@@ -42,9 +44,33 @@ struct TechHardwareFeedbackObservation final {
   mapping::TechMappingComputeContextHallDeficit feedback;
 };
 
-struct RankedHardwareCandidate final {
-  ArtifactRootReference reference;
+struct SpatialHardwareFeedbackObservation final {
+  mapping::SpatialGraphBoundaryEndpointHallDeficit feedback;
+};
+
+struct SystemHardwareFeedbackObservation final {
+  mapping::SystemAccCoreCapacityPressure feedback;
+};
+
+struct HardwareRecipeGrowth final {
+  ResolvedConfig config;
   std::uint64_t addedContexts = 0;
+  std::uint64_t resultingContexts = 0;
+  std::uint64_t addedGateways = 0;
+  std::uint64_t resultingGateways = 0;
+  std::uint64_t addedAccCores = 0;
+  std::uint64_t resultingAccCores = 0;
+};
+
+struct MaterializedHardwareCandidate final {
+  ArtifactRootReference reference;
+  ResolvedConfig config;
+  std::uint64_t addedContexts = 0;
+  std::uint64_t resultingContexts = 0;
+  std::uint64_t addedGateways = 0;
+  std::uint64_t resultingGateways = 0;
+  std::uint64_t addedAccCores = 0;
+  std::uint64_t resultingAccCores = 0;
 };
 
 const dse::CompletedDsePlanExecution &
@@ -66,6 +92,93 @@ std::size_t mappingCount(const dse::JointDesignExecution &execution) {
 void canonicalizeRoots(std::vector<ArtifactRootReference> &roots) {
   llvm::sort(roots, artifactRootReferenceLess);
   roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
+}
+
+llvm::Expected<std::vector<ArtifactRootReference>>
+resolveSpatialMappingFrontier(const JointDesignExplorationPlan &plan,
+                              const JointDesignExecution &execution) {
+  if (plan.pairOutputs.size() != 1)
+    return invalid("Spatial frontier reuse requires one exact Mapping pair");
+  const CompletedDsePlanExecution &available =
+      availableExecution(execution.planExecution);
+  std::vector<ArtifactRootReference> mappings;
+  for (const PlanOutputRef output : plan.pairOutputs.front().spatialMappings) {
+    if (!available.hasOutput(output))
+      return invalid("failed Mapping execution has no reusable Spatial "
+                     "frontier");
+    const auto roots = available.resolve(output);
+    mappings.insert(mappings.end(), roots.begin(), roots.end());
+  }
+  canonicalizeRoots(mappings);
+  if (mappings.empty())
+    return invalid("failed Mapping execution has an empty Spatial frontier");
+  return mappings;
+}
+
+llvm::Error bindImmutableSpatialMappingFrontier(
+    JointDesignExplorationPlan &plan,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+    const ArtifactStore &artifacts) {
+  constexpr std::size_t spatialMappingInputOrdinal = 1;
+  if (plan.pairOutputs.size() != 1 || spatialMappings.empty())
+    return invalid("Spatial frontier reuse requires one nonempty exact pair");
+  JointDesignPlanPair &pair = plan.pairOutputs.front();
+  if (pair.systemMappings.producerNodeOrdinal >=
+      plan.resolvedConfig.dse.planNodes.size())
+    return invalid("System Mapping output names a foreign plan node");
+  auto *systemNode = std::get_if<GeneratePlanNodeDefinition>(
+      &plan.resolvedConfig.dse
+           .planNodes[pair.systemMappings.producerNodeOrdinal]);
+  if (!systemNode ||
+      systemNode->descriptor !=
+          applicationSystemPnrCandidateGeneratorDescriptor().reference() ||
+      systemNode->inputBindings.size() <= spatialMappingInputOrdinal)
+    return invalid("joint plan has no canonical application System provider");
+
+  auto targetModules =
+      projectJointDesignTargetModules(pair.pair.system, artifacts);
+  if (!targetModules)
+    return targetModules.takeError();
+  std::vector<ArtifactRootReference> canonicalMappings(spatialMappings.begin(),
+                                                       spatialMappings.end());
+  const std::size_t originalCount = canonicalMappings.size();
+  canonicalizeRoots(canonicalMappings);
+  if (canonicalMappings.size() != originalCount)
+    return invalid("reused Spatial frontier contains a duplicate root");
+  const auto *join = std::get_if<BoundedPlanOutputJoin>(
+      &systemNode->inputBindings[spatialMappingInputOrdinal]);
+  if (!join || canonicalMappings.size() > join->maximumArtifacts)
+    return invalid("reused Spatial frontier exceeds its exact plan bound");
+  for (const ArtifactRootReference &reference : canonicalMappings) {
+    auto mapping = mapping::importSpatialMapping(reference, artifacts);
+    if (!mapping)
+      return mapping.takeError();
+    if (mapping->view().dataflowIdentity() !=
+        pair.pair.software.dataflow.artifact)
+      return invalid("reused SpatialMapping has a foreign Dataflow owner");
+    if (!llvm::any_of(*targetModules, [&](const auto &module) {
+          return module.artifact == mapping->view().fabricIdentity();
+        }))
+      return invalid("reused SpatialMapping has a foreign Module owner");
+  }
+
+  GeneratePlanNodeDefinition retainedSystemNode = *systemNode;
+  retainedSystemNode.inputBindings[spatialMappingInputOrdinal] =
+      ExactPlanArtifacts{canonicalMappings};
+  plan.resolvedConfig.dse.planNodes = {std::move(retainedSystemNode)};
+  pair.techMappings.clear();
+  pair.spatialMappings.clear();
+  pair.systemMappings = PlanOutputRef{0, 0};
+  auto admitted = projectResolvedDseConfigView(plan.resolvedConfig);
+  if (!admitted)
+    return admitted.takeError();
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+      mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+        fields["operation"] = "reuse_immutable_spatial_frontier";
+        fields["spatial_mapping_count"] = canonicalMappings.size();
+      });
+  return llvm::Error::success();
 }
 
 llvm::Expected<dse::DsePlanExecutionResult> executeResolvedGeneratePlan(
@@ -192,246 +305,262 @@ selectTechHardwareFeedback(const dse::JointDesignExecution &execution,
   return selected;
 }
 
-std::vector<RankedHardwareCandidate>
-boundedPortfolio(std::vector<RankedHardwareCandidate> candidates,
-                 std::uint64_t limit) {
-  llvm::sort(candidates, [](const auto &lhs, const auto &rhs) {
-    if (lhs.addedContexts != rhs.addedContexts)
-      return lhs.addedContexts < rhs.addedContexts;
-    return artifactRootReferenceLess(lhs.reference, rhs.reference);
-  });
-  if (candidates.size() <= limit)
-    return candidates;
-  std::vector<RankedHardwareCandidate> selected;
-  selected.reserve(static_cast<std::size_t>(limit));
-  if (limit == 1) {
-    selected.push_back(std::move(candidates.front()));
-    return selected;
-  }
-  for (std::uint64_t ordinal = 0; ordinal != limit; ++ordinal) {
-    const std::size_t index = static_cast<std::size_t>(
-        ordinal * (candidates.size() - 1) / (limit - 1));
-    selected.push_back(std::move(candidates[index]));
+llvm::Expected<std::optional<SpatialHardwareFeedbackObservation>>
+selectSpatialHardwareFeedback(const dse::JointDesignExecution &execution,
+                              const ArtifactStore &artifacts) {
+  const dse::CompletedDsePlanExecution &available =
+      availableExecution(execution.planExecution);
+  std::optional<SpatialHardwareFeedbackObservation> selected;
+  for (const dse::GenerateInvocationFeedback &feedback :
+       available.generateFeedback()) {
+    const auto invocation = llvm::find_if(
+        available.generateInvocations(), [&](const auto &candidate) {
+          return candidate.planNodeOrdinal == feedback.planNodeOrdinal;
+        });
+    if (invocation == available.generateInvocations().end())
+      return invalid("Generate feedback has no invocation owner");
+    const dse::CandidateGeneratorDescriptor *descriptor =
+        invocation->generatorBinding.descriptorRef().descriptor();
+    if (!descriptor || !descriptor->ownerFeedbackPayload ||
+        descriptor->ownerFeedbackPayload->schemaDescriptorBytes !=
+            mapping::spatialGraphBoundaryEndpointHallFeedbackSchemaBytes())
+      continue;
+
+    std::optional<ArtifactRootReference> moduleReference;
+    std::vector<ArtifactRootReference> techMappings;
+    for (const dse::CandidateGeneratorInputBinding &binding :
+         invocation->inputBindings)
+      for (const ArtifactRootReference &input : binding.artifacts) {
+        if (input.schemaIdentity == fabric::fabricArtifactSchema.identity &&
+            input.schemaVersion == fabric::fabricArtifactSchema.version) {
+          auto imported = fabric::importEntireFabricRoot(input, artifacts);
+          if (!imported)
+            return imported.takeError();
+          if (imported->view().rootKind() != fabric::FabricRootKind::Module)
+            continue;
+          if (moduleReference)
+            return invalid(
+                "SpatialMapping feedback names multiple Module inputs");
+          moduleReference = input;
+          continue;
+        }
+        if (input.schemaIdentity == mapping::mappingArtifactSchema.identity &&
+            input.schemaVersion == mapping::mappingArtifactSchema.version)
+          techMappings.push_back(input);
+      }
+    if (!moduleReference || techMappings.empty())
+      return invalid("SpatialMapping feedback lacks its exact Mapping inputs");
+    canonicalizeRoots(techMappings);
+    auto adopted = mapping::adoptSpatialGraphBoundaryEndpointHallFeedback(
+        feedback.canonicalPayload, *moduleReference, techMappings, artifacts);
+    if (!adopted)
+      return adopted.takeError();
+    SpatialHardwareFeedbackObservation candidate{std::move(*adopted)};
+    if (!selected ||
+        candidate.feedback.requiredBoundaryPairs() >
+            selected->feedback.requiredBoundaryPairs() ||
+        (candidate.feedback.requiredBoundaryPairs() ==
+             selected->feedback.requiredBoundaryPairs() &&
+         mapping::encodeSpatialGraphBoundaryEndpointHallFeedback(
+             candidate.feedback) <
+             mapping::encodeSpatialGraphBoundaryEndpointHallFeedback(
+                 selected->feedback)))
+      selected = std::move(candidate);
   }
   return selected;
 }
 
-llvm::Expected<RankedHardwareCandidate> generateJointModuleGrowth(
-    const TechHardwareFeedbackObservation &observation,
+llvm::Expected<std::optional<SystemHardwareFeedbackObservation>>
+selectSystemHardwareFeedback(const dse::JointDesignExecution &execution,
+                             const ArtifactStore &artifacts) {
+  const dse::CompletedDsePlanExecution &available =
+      availableExecution(execution.planExecution);
+  std::optional<SystemHardwareFeedbackObservation> selected;
+  for (const dse::GenerateInvocationFeedback &feedback :
+       available.generateFeedback()) {
+    const auto invocation = llvm::find_if(
+        available.generateInvocations(), [&](const auto &candidate) {
+          return candidate.planNodeOrdinal == feedback.planNodeOrdinal;
+        });
+    if (invocation == available.generateInvocations().end())
+      return invalid("Generate feedback has no invocation owner");
+    const dse::CandidateGeneratorDescriptor *descriptor =
+        invocation->generatorBinding.descriptorRef().descriptor();
+    if (!descriptor || !descriptor->ownerFeedbackPayload ||
+        descriptor->ownerFeedbackPayload->schemaDescriptorBytes !=
+            mapping::systemAccCoreCapacityPressureSchemaBytes())
+      continue;
+
+    std::optional<ArtifactRootReference> system;
+    std::vector<ArtifactRootReference> spatialMappings;
+    for (const dse::CandidateGeneratorInputBinding &binding :
+         invocation->inputBindings)
+      for (const ArtifactRootReference &input : binding.artifacts) {
+        if (input.schemaIdentity == fabric::fabricArtifactSchema.identity &&
+            input.schemaVersion == fabric::fabricArtifactSchema.version) {
+          auto imported = fabric::importEntireFabricRoot(input, artifacts);
+          if (!imported)
+            return imported.takeError();
+          if (imported->view().rootKind() != fabric::FabricRootKind::System)
+            continue;
+          if (system)
+            return invalid(
+                "SystemMapping feedback names multiple System inputs");
+          system = input;
+          continue;
+        }
+        if (input.schemaIdentity == mapping::mappingArtifactSchema.identity &&
+            input.schemaVersion == mapping::mappingArtifactSchema.version)
+          spatialMappings.push_back(input);
+      }
+    if (!system || spatialMappings.empty())
+      return invalid("SystemMapping feedback lacks its exact Mapping inputs");
+    auto adopted = mapping::adoptSystemAccCoreCapacityPressure(
+        feedback.canonicalPayload, *system, spatialMappings, artifacts);
+    if (!adopted)
+      return adopted.takeError();
+    SystemHardwareFeedbackObservation candidate{std::move(*adopted)};
+    const std::uint64_t candidateOveruse = candidate.feedback.witnessUsage() -
+                                           candidate.feedback.witnessCapacity();
+    const std::uint64_t selectedOveruse =
+        selected ? selected->feedback.witnessUsage() -
+                       selected->feedback.witnessCapacity()
+                 : 0;
+    if (!selected || candidateOveruse > selectedOveruse ||
+        (candidateOveruse == selectedOveruse &&
+         mapping::encodeSystemAccCoreCapacityPressure(candidate.feedback) <
+             mapping::encodeSystemAccCoreCapacityPressure(selected->feedback)))
+      selected = std::move(candidate);
+  }
+  return selected;
+}
+
+llvm::Expected<HardwareRecipeGrowth> deriveHardwareRecipeGrowth(
     const ResolvedConfig &baseConfig,
-    llvm::ArrayRef<ArtifactRootReference> evidence,
+    const std::optional<TechHardwareFeedbackObservation> &techObservation,
+    const std::optional<SpatialHardwareFeedbackObservation> &spatialObservation,
+    const std::optional<SystemHardwareFeedbackObservation> &systemObservation,
+    const ArtifactStore &artifacts) {
+  HardwareRecipeGrowth growth;
+  growth.config = baseConfig;
+  growth.resultingContexts =
+      baseConfig.hardwareTarget.parameters.temporalResidentContexts;
+  growth.resultingGateways = baseConfig.hardwareTarget.parameters.gatewayCount;
+  growth.resultingAccCores = baseConfig.hardwareTarget.parameters.accCoreCount;
+
+  if (techObservation) {
+    auto module =
+        fabric::importEntireFabricRoot(techObservation->module, artifacts);
+    if (!module)
+      return module.takeError();
+    auto plan = dse::projectTechMappingComputeContextJointGrowthPlan(
+        techObservation->feedback, module->view());
+    if (!plan)
+      return plan.takeError();
+    std::uint64_t requiredContexts = 0;
+    for (const dse::ResizeInstructionStore &decision : plan->decisions) {
+      const std::uint64_t currentCapacity =
+          module->view().peResidentContextCount(decision.target);
+      if (decision.instructionCapacity <= currentCapacity)
+        return invalid("joint Module growth contains a non-growth decision");
+      requiredContexts =
+          std::max(requiredContexts,
+                   static_cast<std::uint64_t>(decision.instructionCapacity));
+    }
+    const std::uint64_t currentContexts = growth.resultingContexts;
+    if (requiredContexts <= currentContexts ||
+        requiredContexts > std::numeric_limits<std::uint32_t>::max())
+      return invalid("joint Module growth has no representable uniform "
+                     "context growth");
+    growth.addedContexts = requiredContexts - currentContexts;
+    growth.resultingContexts = requiredContexts;
+    growth.config.hardwareTarget.parameters.temporalResidentContexts =
+        static_cast<std::uint32_t>(requiredContexts);
+  }
+
+  if (spatialObservation) {
+    const std::uint64_t addedGateways =
+        spatialObservation->feedback.requiredBoundaryPairs();
+    if (addedGateways == 0 ||
+        addedGateways > std::numeric_limits<std::uint32_t>::max() -
+                            growth.resultingGateways)
+      return invalid("graph-boundary Hall feedback has no representable "
+                     "gateway growth");
+    growth.addedGateways = addedGateways;
+    growth.resultingGateways += addedGateways;
+    growth.config.hardwareTarget.parameters.gatewayCount =
+        static_cast<std::uint32_t>(growth.resultingGateways);
+  }
+
+  if (systemObservation) {
+    if (systemObservation->feedback.compatibleAccCoreCount() !=
+        growth.resultingAccCores)
+      return invalid("uniform recipe cannot represent heterogeneous AccCore "
+                     "capacity growth");
+    if (growth.resultingAccCores == std::numeric_limits<std::uint32_t>::max())
+      return invalid("AccCore capacity growth exceeds the builtin recipe");
+    growth.addedAccCores = systemObservation->feedback.additionalAccCoreCount();
+    growth.resultingAccCores += growth.addedAccCores;
+    growth.config.hardwareTarget.parameters.accCoreCount =
+        static_cast<std::uint32_t>(growth.resultingAccCores);
+  }
+
+  if (growth.addedContexts == 0 && growth.addedGateways == 0 &&
+      growth.addedAccCores == 0)
+    return invalid("Mapping feedback requests no builtin recipe growth");
+  growth.config.dse.planNodes.clear();
+  return growth;
+}
+
+llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
+    HardwareRecipeGrowth growth, llvm::ArrayRef<ArtifactRootReference> evidence,
     const JointHardwareReopenRequest &request, dse::SiteScheduler &scheduler,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
-  auto module = fabric::importEntireFabricRoot(observation.module, artifacts);
-  if (!module)
-    return module.takeError();
-  auto plan = dse::projectTechMappingComputeContextJointGrowthPlan(
-      observation.feedback, module->view());
-  if (!plan)
-    return plan.takeError();
-  std::uint64_t maximumAddedContexts = 0;
-  std::uint64_t maximumResultingCapacity = 0;
-  for (const dse::ResizeInstructionStore &decision : plan->decisions) {
-    const std::uint64_t currentCapacity =
-        module->view().peResidentContextCount(decision.target);
-    if (decision.instructionCapacity <= currentCapacity)
-      return invalid("joint Module growth contains a non-growth decision");
-    maximumAddedContexts =
-        std::max(maximumAddedContexts,
-                 static_cast<std::uint64_t>(decision.instructionCapacity) -
-                     currentCapacity);
-    maximumResultingCapacity =
-        std::max(maximumResultingCapacity,
-                 static_cast<std::uint64_t>(decision.instructionCapacity));
-    mapping_debug::emit(
-        mapping_debug::Level::Detail, mapping_debug::Stage::TechMapping,
-        mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
-          fields["operation"] = "compute_context_joint_growth_decision";
-          fields["pe"] = fabric::printFabricRef(decision.target);
-          fields["current_contexts"] = currentCapacity;
-          fields["resulting_contexts"] = decision.instructionCapacity;
-          fields["added_contexts"] =
-              static_cast<std::uint64_t>(decision.instructionCapacity) -
-              currentCapacity;
-        });
-  }
   mapping_debug::emit(
       mapping_debug::Level::Summary, mapping_debug::Stage::TechMapping,
       mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
-        fields["operation"] = "compute_context_joint_growth";
-        fields["hall_deficit"] = observation.feedback.deficit();
-        fields["growth_pe_count"] = plan->decisions.size();
-        fields["added_context_count"] = plan->addedContextCount;
-        fields["maximum_pe_added_contexts"] = maximumAddedContexts;
-        fields["maximum_resulting_contexts"] = maximumResultingCapacity;
+        fields["operation"] = "mapping_feedback_recipe_growth";
+        fields["added_temporal_contexts"] = growth.addedContexts;
+        fields["temporal_resident_contexts"] = growth.resultingContexts;
+        fields["added_gateways"] = growth.addedGateways;
+        fields["gateway_count"] = growth.resultingGateways;
+        fields["added_acc_cores"] = growth.addedAccCores;
+        fields["acc_core_count"] = growth.resultingAccCores;
       });
-  auto rewriteConfig = dse::resolveSpatialMicroarchitectureRewriteConfig(
-      {dse::ResizeInstructionStoresDomain{plan->decisions}}, 1);
-  if (!rewriteConfig)
-    return rewriteConfig.takeError();
-  auto binding = dse::resolveSpatialMicroarchitectureCandidateGeneratorBinding(
-      *rewriteConfig);
+
+  auto templateConfig =
+      dse::projectResolvedFabricTemplateConfigView(growth.config);
+  if (!templateConfig)
+    return templateConfig.takeError();
+  auto binding =
+      dse::resolveFabricTemplateCandidateGeneratorBinding(*templateConfig);
   if (!binding)
     return binding.takeError();
-  ResolvedConfig config = baseConfig;
-  config.dse.planNodes = {dse::GeneratePlanNodeDefinition{
+  growth.config.dse.planNodes = {dse::GeneratePlanNodeDefinition{
       binding->descriptorRef(),
-      {dse::ExactPlanArtifacts{{observation.module}}},
-      rewriteConfig->canonicalViewBytes().vec(),
-      rewriteConfig->digest()}};
-  auto execution =
-      executeResolvedGeneratePlan(config, {observation.module}, evidence,
-                                  request, scheduler, artifacts, blobs);
+      {},
+      templateConfig->canonicalViewBytes().vec(),
+      templateConfig->digest()}};
+  auto execution = executeResolvedGeneratePlan(
+      growth.config, {}, evidence, request, scheduler, artifacts, blobs);
   if (!execution)
     return execution.takeError();
   const dse::CompletedDsePlanExecution &available =
       availableExecution(*execution);
   const auto outputs = available.resolve({0, 0});
-  if (outputs.size() != 1 || available.generateInvocations().size() != 1 ||
-      available.generateInvocations().front().lineageEdges.size() != 1)
-    return invalid("joint Module growth did not publish one typed child");
-  auto lineage =
-      dse::adoptSpatialMicroarchitectureDecision(available.generateInvocations()
-                                                     .front()
-                                                     .lineageEdges.front()
-                                                     .ownerPayload);
-  if (!lineage)
-    return lineage.takeError();
-  const auto *applied =
-      std::get_if<dse::ResizeInstructionStores>(&lineage->decision);
-  if (!applied || applied->stores.size() != plan->decisions.size())
-    return invalid("joint Module growth lineage changed its decision kind");
-  for (auto [actual, expected] :
-       llvm::zip_equal(applied->stores, plan->decisions))
-    if (actual.target != expected.target ||
-        actual.instructionCapacity != expected.instructionCapacity)
-      return invalid("joint Module growth lineage changed a PE resize");
-  if (outputs.front() == observation.module)
-    return invalid("joint Module growth retained its parent identity");
-  return RankedHardwareCandidate{outputs.front(), plan->addedContextCount};
-}
-
-llvm::Expected<std::vector<RankedHardwareCandidate>> generateModuleGrowth(
-    const TechHardwareFeedbackObservation &observation,
-    const ResolvedConfig &baseConfig, const dse::JointDesignPolicy &policy,
-    llvm::ArrayRef<ArtifactRootReference> evidence,
-    const JointHardwareReopenRequest &request, dse::SiteScheduler &scheduler,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
-  std::vector<RankedHardwareCandidate> result;
-  auto joint = generateJointModuleGrowth(observation, baseConfig, evidence,
-                                         request, scheduler, artifacts, blobs);
-  if (!joint)
-    return joint.takeError();
-  if (llvm::none_of(result, [&](const auto &candidate) {
-        return candidate.reference == joint->reference;
-      }))
-    result.push_back(std::move(*joint));
-  return boundedPortfolio(std::move(result), policy.maximumSystemFrontier());
-}
-
-llvm::Expected<std::vector<RankedHardwareCandidate>> generateSystemGrowth(
-    const ArtifactRootReference &parentSystem,
-    const ArtifactRootReference &parentModule,
-    llvm::ArrayRef<RankedHardwareCandidate> modules,
-    const ResolvedConfig &baseConfig, const dse::JointDesignPolicy &policy,
-    llvm::ArrayRef<ArtifactRootReference> evidence,
-    const JointHardwareReopenRequest &request, dse::SiteScheduler &scheduler,
-    const ArtifactStore &artifacts, const BlobStore &blobs) {
-  if (modules.empty())
-    return std::vector<RankedHardwareCandidate>{};
-  auto systemArtifact = fabric::importEntireFabricRoot(parentSystem, artifacts);
-  if (!systemArtifact)
-    return systemArtifact.takeError();
-  auto system = fabric::requireSystemRoot(systemArtifact->view());
+  if (outputs.size() != 1 || available.generateInvocations().size() != 1)
+    return invalid("uniform recipe growth did not publish one System");
+  auto system = fabric::importEntireFabricRoot(outputs.front(), artifacts);
   if (!system)
     return system.takeError();
-  std::optional<fabric::AccCoreOccurrenceRef> target;
-  for (fabric::AccCoreOccurrenceRef core :
-       system->artifact().accCoreOccurrences()) {
-    const auto selected = system->spatialCoreTarget(core);
-    if (!selected || selected->dependencyOrdinal >=
-                         system->artifact().importedModules().size())
-      return invalid("System AccCore has no exact Module target");
-    if (system->artifact()
-            .importedModules()[selected->dependencyOrdinal]
-            .identity() == parentModule.artifact) {
-      target = core;
-      break;
-    }
-  }
-  if (!target)
-    return invalid("System contains no AccCore for the feedback Module");
-  std::vector<ArtifactRootReference> moduleReferences;
-  moduleReferences.reserve(modules.size());
-  std::map<ArtifactRootReference, std::uint64_t,
-           decltype(&artifactRootReferenceLess)>
-      moduleGrowth(&artifactRootReferenceLess);
-  for (const RankedHardwareCandidate &module : modules) {
-    moduleReferences.push_back(module.reference);
-    moduleGrowth.emplace(module.reference, module.addedContexts);
-  }
-  std::vector<ArtifactRootReference> canonicalModules = moduleReferences;
-  canonicalizeRoots(canonicalModules);
-  auto rewriteConfig = dse::resolveSystemCompositionRewriteConfig(
-      {dse::ReplaceSpatialAttachmentDomain{*target, canonicalModules}},
-      canonicalModules.size());
-  if (!rewriteConfig)
-    return rewriteConfig.takeError();
-  auto binding =
-      dse::resolveSystemCompositionCandidateGeneratorBinding(*rewriteConfig);
-  if (!binding)
-    return binding.takeError();
-  ResolvedConfig config = baseConfig;
-  config.dse.planNodes = {dse::GeneratePlanNodeDefinition{
-      binding->descriptorRef(),
-      {dse::ExactPlanArtifacts{{parentSystem}},
-       dse::ExactPlanArtifacts{canonicalModules}},
-      rewriteConfig->canonicalViewBytes().vec(),
-      rewriteConfig->digest()}};
-  std::vector<ArtifactRootReference> semanticInputs{parentSystem};
-  semanticInputs.insert(semanticInputs.end(), canonicalModules.begin(),
-                        canonicalModules.end());
-  auto execution =
-      executeResolvedGeneratePlan(config, std::move(semanticInputs), evidence,
-                                  request, scheduler, artifacts, blobs);
-  if (!execution)
-    return execution.takeError();
-  const dse::CompletedDsePlanExecution &available =
-      availableExecution(*execution);
-  const auto outputs = available.resolve({0, 0});
-  if (outputs.empty())
-    return std::vector<RankedHardwareCandidate>{};
-  if (available.generateInvocations().size() != 1)
-    return invalid("System growth plan has the wrong invocation count");
-  std::map<ArtifactRootReference, std::uint64_t,
-           decltype(&artifactRootReferenceLess)>
-      growthBySystem(&artifactRootReferenceLess);
-  for (const dse::CandidateGeneratorLineageEdge &edge :
-       available.generateInvocations().front().lineageEdges) {
-    auto decoded = dse::adoptSystemCompositionDecision(edge.ownerPayload);
-    if (!decoded)
-      return decoded.takeError();
-    const auto *replace =
-        std::get_if<dse::ReplaceSpatialAttachment>(&decoded->decision);
-    if (!replace)
-      return invalid("System growth lineage contains a foreign decision");
-    const auto growth = moduleGrowth.find(replace->module);
-    if (growth == moduleGrowth.end())
-      return invalid("System growth selected an unknown Module child");
-    auto [found, inserted] =
-        growthBySystem.emplace(edge.output, growth->second);
-    if (!inserted)
-      found->second = std::min(found->second, growth->second);
-  }
-  std::vector<RankedHardwareCandidate> result;
-  result.reserve(outputs.size());
-  for (const ArtifactRootReference &output : outputs) {
-    const auto growth = growthBySystem.find(output);
-    if (growth == growthBySystem.end())
-      return invalid("System growth output has no typed decision lineage");
-    result.push_back({output, growth->second});
-  }
-  return boundedPortfolio(std::move(result), policy.maximumSystemFrontier());
+  if (system->view().rootKind() != fabric::FabricRootKind::System)
+    return invalid("uniform recipe growth published a non-System root");
+  growth.config.dse.planNodes.clear();
+  return MaterializedHardwareCandidate{
+      outputs.front(),      std::move(growth.config),
+      growth.addedContexts, growth.resultingContexts,
+      growth.addedGateways, growth.resultingGateways,
+      growth.addedAccCores, growth.resultingAccCores};
 }
 
 llvm::Expected<std::vector<ArtifactRootReference>>
@@ -460,79 +589,127 @@ normalizedTimingProfiles(const ArtifactRootReference &system,
 }
 
 llvm::Expected<std::optional<dse::JointDesignExecution>>
-tryHardwareFeedbackReopen(const JointDesignPolicy &policy,
-                          const JointDesignExplorationPlan &plan,
-                          const dse::JointDesignExecution &failedExecution,
-                          llvm::ArrayRef<ArtifactRootReference> evidence,
-                          const JointHardwareReopenRequest &request,
-                          dse::SiteScheduler &scheduler,
-                          const ArtifactStore &artifacts,
-                          const BlobStore &blobs) {
+tryHardwareFeedbackReopen(
+    const JointDesignPolicy &policy, const JointDesignExplorationPlan &plan,
+    const dse::JointDesignExecution &failedExecution,
+    std::optional<dse::JointDesignExecution> &lastFailedExecution,
+    llvm::ArrayRef<ArtifactRootReference> evidence,
+    const JointHardwareReopenRequest &request, dse::SiteScheduler &scheduler,
+    const ArtifactStore &artifacts, const BlobStore &blobs) {
   if (policy.maximumSystemFrontier() <= 1)
-    return std::optional<dse::JointDesignExecution>{};
-  auto observation = selectTechHardwareFeedback(failedExecution, artifacts);
-  if (!observation)
-    return observation.takeError();
-  if (!*observation)
     return std::optional<dse::JointDesignExecution>{};
   if (plan.frontier.systemFrontier.size() != 1 ||
       plan.frontier.softwareFrontier.size() != 1)
     return invalid("application hardware reopen requires one exact pair");
-  ResolvedConfig baseConfig = plan.resolvedConfig;
-  baseConfig.dse.planNodes.clear();
-  auto modules =
-      generateModuleGrowth(**observation, baseConfig, policy, evidence, request,
-                           scheduler, artifacts, blobs);
-  if (!modules)
-    return modules.takeError();
-  auto systems = generateSystemGrowth(
-      plan.frontier.systemFrontier.front(), (*observation)->module, *modules,
-      baseConfig, policy, evidence, request, scheduler, artifacts, blobs);
-  if (!systems)
-    return systems.takeError();
-  mapping_debug::emit(
-      mapping_debug::Level::Summary, mapping_debug::Stage::TechMapping,
-      mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
-        fields["operation"] = "compute_context_hardware_reopen";
-        fields["hall_deficit"] = (*observation)->feedback.deficit();
-        fields["module_candidate_count"] = modules->size();
-        fields["system_candidate_count"] = systems->size();
-      });
-
   const dse::JointSoftwareScope &software =
       plan.frontier.softwareFrontier.front();
-  for (const auto indexed : llvm::enumerate(*systems)) {
-    const std::size_t ordinal = indexed.index();
-    const RankedHardwareCandidate &system = indexed.value();
-    auto timing = normalizedTimingProfiles(system.reference, artifacts);
+  auto reopenPolicy = dse::JointDesignPolicy::get(
+      1, 1, 1, policy.maximumSpatialMappingsPerPair());
+  if (!reopenPolicy)
+    return reopenPolicy.takeError();
+
+  ResolvedConfig currentConfig = plan.resolvedConfig;
+  currentConfig.dse.planNodes.clear();
+  const std::uint64_t parentContexts =
+      currentConfig.hardwareTarget.parameters.temporalResidentContexts;
+  const std::uint64_t parentGateways =
+      currentConfig.hardwareTarget.parameters.gatewayCount;
+  const std::uint64_t parentAccCores =
+      currentConfig.hardwareTarget.parameters.accCoreCount;
+  const dse::JointDesignExecution *currentFailure = &failedExecution;
+  const dse::JointDesignExplorationPlan *currentPlan = &plan;
+  std::optional<dse::JointDesignExecution> latestFailed;
+  std::optional<dse::JointDesignExplorationPlan> latestFailedPlan;
+  std::optional<std::vector<ArtifactRootReference>> reusableSpatialMappings;
+  const std::uint64_t candidateLimit = policy.maximumSystemFrontier() - 1;
+  for (std::uint64_t candidateOrdinal = 0; candidateOrdinal != candidateLimit;
+       ++candidateOrdinal) {
+    auto techObservation =
+        selectTechHardwareFeedback(*currentFailure, artifacts);
+    if (!techObservation)
+      return techObservation.takeError();
+    auto spatialObservation =
+        selectSpatialHardwareFeedback(*currentFailure, artifacts);
+    if (!spatialObservation)
+      return spatialObservation.takeError();
+    auto systemObservation =
+        selectSystemHardwareFeedback(*currentFailure, artifacts);
+    if (!systemObservation)
+      return systemObservation.takeError();
+    if (!*techObservation && !*spatialObservation && !*systemObservation)
+      break;
+
+    auto growth = deriveHardwareRecipeGrowth(currentConfig, *techObservation,
+                                             *spatialObservation,
+                                             *systemObservation, artifacts);
+    if (!growth)
+      return growth.takeError();
+    auto system = materializeHardwareRecipeGrowth(
+        std::move(*growth), evidence, request, scheduler, artifacts, blobs);
+    if (!system)
+      return system.takeError();
+    auto timing = normalizedTimingProfiles(system->reference, artifacts);
     if (!timing)
       return timing.takeError();
-    auto reopenPolicy = dse::JointDesignPolicy::get(
-        1, 1, 1, policy.maximumSpatialMappingsPerPair());
-    if (!reopenPolicy)
-      return reopenPolicy.takeError();
-    auto plan = dse::buildJointDesignExplorationPlan(
-        {{software.workloads}, {system.reference}}, *timing, *reopenPolicy,
-        baseConfig, artifacts);
-    if (!plan)
-      return plan.takeError();
-    auto execution =
-        executeJointPlan(*plan, evidence, request, scheduler, artifacts, blobs);
+    auto reopenPlan = dse::buildJointDesignExplorationPlan(
+        {{software.workloads}, {system->reference}}, *timing, *reopenPolicy,
+        system->config, artifacts);
+    if (!reopenPlan)
+      return reopenPlan.takeError();
+    const bool accCoreOnlyGrowth = system->addedAccCores != 0 &&
+                                   system->addedContexts == 0 &&
+                                   system->addedGateways == 0;
+    if (accCoreOnlyGrowth) {
+      if (!reusableSpatialMappings) {
+        auto resolved =
+            resolveSpatialMappingFrontier(*currentPlan, *currentFailure);
+        if (!resolved)
+          return resolved.takeError();
+        reusableSpatialMappings = std::move(*resolved);
+      }
+      if (llvm::Error error = bindImmutableSpatialMappingFrontier(
+              *reopenPlan, *reusableSpatialMappings, artifacts))
+        return std::move(error);
+    } else {
+      reusableSpatialMappings.reset();
+    }
+    auto execution = executeJointPlan(*reopenPlan, evidence, request, scheduler,
+                                      artifacts, blobs);
     if (!execution)
       return execution.takeError();
+    const std::size_t systemMappingCount = mappingCount(*execution);
     mapping_debug::emit(
         mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
         mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
           fields["operation"] = "hardware_reopen_mapping_attempt";
-          fields["candidate_ordinal"] = ordinal;
-          fields["added_temporal_contexts"] = system.addedContexts;
+          fields["candidate_ordinal"] = candidateOrdinal;
+          fields["added_temporal_contexts"] =
+              system->resultingContexts - parentContexts;
+          fields["temporal_resident_contexts"] = system->resultingContexts;
+          fields["added_gateways"] = system->resultingGateways - parentGateways;
+          fields["gateway_count"] = system->resultingGateways;
+          fields["added_acc_cores"] =
+              system->resultingAccCores - parentAccCores;
+          fields["acc_core_count"] = system->resultingAccCores;
           fields["system"] =
-              formatArtifactIdentityHex(system.reference.artifact);
-          fields["system_mapping_count"] = mappingCount(*execution);
+              formatArtifactIdentityHex(system->reference.artifact);
+          fields["system_mapping_count"] = systemMappingCount;
         });
-    if (mappingCount(*execution) != 0)
+    if (systemMappingCount != 0)
       return std::optional<dse::JointDesignExecution>{std::move(*execution)};
+    if (const auto *incomplete =
+            std::get_if<IncompleteDsePlanExecution>(&execution->planExecution);
+        incomplete && incomplete->executionStopped())
+      return std::optional<dse::JointDesignExecution>{std::move(*execution)};
+
+    currentConfig = std::move(system->config);
+    latestFailed = std::move(*execution);
+    latestFailedPlan = std::move(*reopenPlan);
+    currentFailure = &*latestFailed;
+    currentPlan = &*latestFailedPlan;
   }
+  if (latestFailed)
+    lastFailedExecution = std::move(*latestFailed);
   return std::optional<dse::JointDesignExecution>{};
 }
 
@@ -581,19 +758,22 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
   // software frontier order and prevents repairable early failures from
   // hiding a later parent-hardware solution.
   for (FailedSoftwareAttempt &attempt : failedSoftwareAttempts) {
+    std::optional<JointDesignExecution> lastReopenedFailure;
     auto reopened = tryHardwareFeedbackReopen(
-        policy, *attempt.plan, attempt.execution, request.evidence, request,
-        *scheduler, artifacts, blobs);
+        policy, *attempt.plan, attempt.execution, lastReopenedFailure,
+        request.evidence, request, *scheduler, artifacts, blobs);
     if (!reopened)
       return reopened.takeError();
     if (*reopened)
       return std::move(**reopened);
+    JointDesignExecution &failed =
+        lastReopenedFailure ? *lastReopenedFailure : attempt.execution;
     if (std::holds_alternative<IncompleteDsePlanExecution>(
-            attempt.execution.planExecution)) {
+            failed.planExecution)) {
       if (!firstIncomplete)
-        firstIncomplete = std::move(attempt.execution);
+        firstIncomplete = std::move(failed);
     } else {
-      lastNoFeasible = std::move(attempt.execution);
+      lastNoFeasible = std::move(failed);
     }
   }
   if (firstIncomplete)

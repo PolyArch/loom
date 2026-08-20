@@ -449,6 +449,16 @@ bool admitsCapacityOveruse(const FrozenSystemPnrProblem &problem) {
       ResolvedPnrViolationKind::CapacityOveruse);
 }
 
+std::optional<SystemCapacityOveruseWitness> projectCapacityOveruseWitness(
+    const std::optional<::loom::mapping::detail::ResourceCapacityOveruseWitness>
+        &witness) {
+  if (!witness)
+    return std::nullopt;
+  return SystemCapacityOveruseWitness{
+      static_cast<std::uint64_t>(witness->namespaceOrdinal), witness->usage,
+      witness->capacity};
+}
+
 } // namespace
 
 llvm::Expected<SystemCandidateStateHandle>
@@ -560,6 +570,7 @@ llvm::Expected<SystemCandidateStateHandle> SystemCandidateState::createImpl(
           initialization.serviceTargets.end()),
       std::move(instructionUses), std::move(serviceUses),
       std::move(capacity->cache), capacity->demand.capacity.total,
+      projectCapacityOveruseWitness(capacity->demand.capacity.firstWitness),
       capacity->demand.progress, std::move(*recurrence),
       capacity->demand.timing.minimumInitiationIntervalCycles,
       capacity->demand.timing.transportBitCycleDemand, routeCapacity->total,
@@ -639,6 +650,9 @@ llvm::Error SystemCandidateState::verify() const {
     return capacity.takeError();
   if (capacity->capacity.total != capacityOveruse_)
     return invalid("cached CapacityOveruse projection diverged");
+  if (projectCapacityOveruseWitness(capacity->capacity.firstWitness) !=
+      capacityOveruseWitness_)
+    return invalid("cached CapacityOveruse witness diverged");
   if (capacity->progress.kind != progressClosure_.kind ||
       capacity->progress.reason != progressClosure_.reason)
     return invalid("cached progress projection diverged");
@@ -709,7 +723,8 @@ llvm::Expected<SystemCandidateStateHandle> initializeSystemCandidateWithClosure(
 
 template <typename Solve>
 llvm::Expected<InitializedSystemCandidate>
-solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
+solveSystemCandidate(FrozenSystemPnrProblemHandle problem,
+                     bool requireImportedCapacityClosure, Solve &&solve) {
   detail::InitializerRelationSolver solver(problem->initializerRelations());
   SystemCandidateStateHandle accepted;
   std::uint64_t endpointExpansions = 0;
@@ -737,6 +752,17 @@ solveSystemCandidate(FrozenSystemPnrProblemHandle problem, Solve &&solve) {
               fields["diagnostic"] = diagnostic;
           });
     };
+    if (requireImportedCapacityClosure) {
+      auto pressure = problem->capacityModel().projectImportedCapacity(
+          *problem, choices.take_front(threadCount),
+          choices.drop_front(threadCount));
+      if (!pressure)
+        return pressure.takeError();
+      if (pressure->total != 0) {
+        emitChoice("rejected", "imported Spatial capacity pressure");
+        return false;
+      }
+    }
     std::uint64_t candidateEndpointExpansions = 0;
     std::uint64_t candidateNegotiationIterations = 0;
     auto candidate = initializeSystemCandidateWithClosure(
@@ -837,17 +863,21 @@ loom::pnr::initializeCanonicalSystemCandidate(
   return initializeSystemCandidateAttempt(std::move(problem), 0);
 }
 
+namespace {
+
 llvm::Expected<InitializedSystemCandidate>
-loom::pnr::initializeSystemCandidateAttempt(
-    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal) {
+initializeSystemCandidateAttemptImpl(FrozenSystemPnrProblemHandle problem,
+                                     std::uint32_t attemptOrdinal,
+                                     bool requireImportedCapacityClosure) {
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
   const auto &policy = problem->config().policy();
   if (attemptOrdinal >= policy.search.initializer.seedAttemptCount)
     return invalid("System initializer attempt ordinal is out of range");
   return solveSystemCandidate(
-      problem, [&](detail::InitializerRelationSolver &solver,
-                   auto validateCompleteAssignment) {
+      problem, requireImportedCapacityClosure,
+      [&](detail::InitializerRelationSolver &solver,
+          auto validateCompleteAssignment) {
         if (attemptOrdinal == 0)
           return solver.solveCanonicalWithPreferredChoices(
               policy.search.initializer.assignmentAttemptLimitPerSeed,
@@ -862,6 +892,93 @@ loom::pnr::initializeSystemCandidateAttempt(
       });
 }
 
+} // namespace
+
+llvm::Expected<InitializedSystemCandidate>
+loom::pnr::initializeSystemCandidateAttempt(
+    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal) {
+  return initializeSystemCandidateAttemptImpl(std::move(problem),
+                                              attemptOrdinal, false);
+}
+
+llvm::Expected<InitializedSystemCandidate>
+loom::pnr::initializeSystemCandidateAttemptWithImportedCapacityClosure(
+    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal) {
+  return initializeSystemCandidateAttemptImpl(std::move(problem),
+                                              attemptOrdinal, true);
+}
+
+llvm::Expected<SystemImportedCapacitySearchResult>
+loom::pnr::searchSystemImportedCapacity(FrozenSystemPnrProblemHandle problem) {
+  if (!problem)
+    return invalid("FrozenSystemPnrProblem owner is null");
+  detail::InitializerRelationSolver solver(problem->initializerRelations());
+  std::optional<SystemCapacityOveruseWitness> retainedPressure;
+  bool observedNonOccurrencePressure = false;
+  const std::size_t threadCount = problem->threadDecisions().size();
+  auto solved = solver.solveCanonicalWithPreferredChoices(
+      problem->config()
+          .policy()
+          .search.initializer.assignmentAttemptLimitPerSeed,
+      balancedInitializerPreferences(*problem),
+      [&](llvm::ArrayRef<PnrIndex> choices) -> llvm::Expected<bool> {
+        auto pressure = problem->capacityModel().projectImportedCapacity(
+            *problem, choices.take_front(threadCount),
+            choices.drop_front(threadCount));
+        if (!pressure)
+          return pressure.takeError();
+        if (pressure->total == 0)
+          return true;
+        if (!pressure->firstWitness)
+          return invalid("imported CapacityOveruse has no physical witness");
+        SystemCapacityOveruseWitness candidate =
+            *projectCapacityOveruseWitness(pressure->firstWitness);
+        if (candidate.namespaceOrdinal == 0) {
+          observedNonOccurrencePressure = true;
+          return false;
+        }
+        const std::uint64_t candidateOveruse =
+            candidate.usage - candidate.capacity;
+        const std::uint64_t retainedOveruse =
+            retainedPressure
+                ? retainedPressure->usage - retainedPressure->capacity
+                : 0;
+        if (!retainedPressure || candidateOveruse > retainedOveruse ||
+            (candidateOveruse == retainedOveruse &&
+             candidate.namespaceOrdinal < retainedPressure->namespaceOrdinal))
+          retainedPressure = candidate;
+        return false;
+      });
+  if (solved)
+    return SystemImportedCapacityFit{solved->assignmentAttempts};
+
+  detail::InitializerRelationSolveFailureKind failureKind =
+      detail::InitializerRelationSolveFailureKind::ProvenInfeasible;
+  bool typedFailure = false;
+  std::string failureDiagnostic;
+  llvm::Error remaining = llvm::handleErrors(
+      solved.takeError(),
+      [&](const detail::InitializerRelationSolveFailure &failure) {
+        typedFailure = true;
+        failureKind = failure.kind();
+        llvm::raw_string_ostream stream(failureDiagnostic);
+        failure.log(stream);
+      });
+  if (remaining)
+    return std::move(remaining);
+  if (!typedFailure)
+    return invalid("imported-capacity search lost its failure cause");
+  if (failureKind == detail::InitializerRelationSolveFailureKind::WorkLimit)
+    return SystemImportedCapacitySearchLimit{solver.assignmentAttempts()};
+  if (!retainedPressure && !observedNonOccurrencePressure)
+    return SystemImportedCapacityRelationInfeasible{
+        solver.assignmentAttempts(), std::move(failureDiagnostic)};
+  if (observedNonOccurrencePressure || !retainedPressure)
+    return invalid("imported-capacity search found no occurrence witness");
+  return SystemImportedCapacityPressure{*retainedPressure,
+                                        solver.assignmentAttempts()};
+}
+
 llvm::Expected<InitializedSystemCandidate>
 loom::pnr::initializeSystemCandidateWithFixedChoices(
     FrozenSystemPnrProblemHandle problem,
@@ -869,8 +986,9 @@ loom::pnr::initializeSystemCandidateWithFixedChoices(
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
   return solveSystemCandidate(
-      problem, [&](detail::InitializerRelationSolver &solver,
-                   auto validateCompleteAssignment) {
+      problem, false,
+      [&](detail::InitializerRelationSolver &solver,
+          auto validateCompleteAssignment) {
         return solver.solveCanonicalWithFixedChoices(
             problem->config()
                 .policy()

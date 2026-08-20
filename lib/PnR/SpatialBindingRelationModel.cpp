@@ -611,6 +611,15 @@ SpatialBindingRelationModel::create(
 
   std::vector<InitializerRelationInput> relationInputs;
   std::vector<SpatialBindingRelationRole> relationRoles;
+  std::optional<PnrIndex> graphBoundaryEndpointRelation;
+  std::vector<::loom::fabric::FabricPortDirection> graphBoundaryDirections;
+  graphBoundaryDirections.reserve(ports.graphBoundaries().size());
+  for (const FrozenSpatialGraphBoundary &boundary : ports.graphBoundaries())
+    graphBoundaryDirections.push_back(
+        std::holds_alternative<::dataflow::GraphIngressTokenRef>(
+            boundary.terminal)
+            ? ::loom::fabric::FabricPortDirection::Input
+            : ::loom::fabric::FabricPortDirection::Output);
 
   // Distinct graph-boundary tokens cannot occupy the same untagged Spatial
   // switch endpoint. Temporal switch traversals carry RuntimeService uses and
@@ -738,6 +747,8 @@ SpatialBindingRelationModel::create(
           values.push_back(static_cast<PnrIndex>(found - universe.begin()));
         }
       }
+      graphBoundaryEndpointRelation =
+          static_cast<PnrIndex>(relationInputs.size());
       relationInputs.push_back(std::move(exclusiveSpatialBoundaryEndpoints));
       relationRoles.push_back(SpatialBindingRelationRole::Structural);
     }
@@ -1488,7 +1499,75 @@ SpatialBindingRelationModel::create(
           std::move(portAttachmentChoiceOffsets),
           std::move(graphBoundaryAttachmentChoiceOffsets),
           std::move(attachmentChoices),
-          std::move(attachmentOptionChoiceOrdinals), std::move(relationRoles)));
+          std::move(attachmentOptionChoiceOrdinals), std::move(relationRoles),
+          graphBoundaryEndpointRelation, std::move(graphBoundaryDirections)));
+}
+
+llvm::Expected<std::optional<SpatialGraphBoundaryHallProjection>>
+SpatialBindingRelationModel::projectGraphBoundaryHall(
+    const InitializerRelationHallWitness &witness) const {
+  if (!graphBoundaryEndpointRelation_ ||
+      witness.relation != *graphBoundaryEndpointRelation_)
+    return std::optional<SpatialGraphBoundaryHallProjection>();
+  if (witness.memberDecisions.empty() || witness.projectedValues.empty() ||
+      witness.projectedValues.size() >= witness.memberDecisions.size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "spatial_binding_relation_invalid: graph-boundary Hall witness is "
+        "not deficient");
+
+  SpatialGraphBoundaryHallProjection projection;
+  for (PnrIndex decision : witness.memberDecisions) {
+    if (decision < graphBoundaryDecisionOffset() ||
+        decision >=
+            graphBoundaryDecisionOffset() + graphBoundaryDecisionCount())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "spatial_binding_relation_invalid: graph-boundary Hall witness "
+          "contains a foreign decision");
+    const PnrIndex boundary = decision - graphBoundaryDecisionOffset();
+    if (graphBoundaryDirections_[boundary] ==
+        ::loom::fabric::FabricPortDirection::Input)
+      ++projection.inputDemandCount;
+    else
+      ++projection.outputDemandCount;
+  }
+
+  const InitializerRelationRecord &relation =
+      relations_.relations()[witness.relation];
+  const auto members = relations_.members(relation);
+  for (PnrIndex projectedValue : witness.projectedValues) {
+    std::optional<::loom::fabric::FabricPortDirection> direction;
+    for (const InitializerRelationMember &member : members) {
+      if (!llvm::is_contained(witness.memberDecisions, member.decision))
+        continue;
+      const PnrIndex boundary = member.decision - graphBoundaryDecisionOffset();
+      const auto memberDirection = graphBoundaryDirections_[boundary];
+      const PnrIndex choiceCount =
+          relations_.decisionChoiceOffsets()[member.decision + 1] -
+          relations_.decisionChoiceOffsets()[member.decision];
+      for (PnrIndex choice = 0; choice < choiceCount; ++choice) {
+        if (relations_.projectedValue(member, choice) != projectedValue)
+          continue;
+        if (direction && *direction != memberDirection)
+          return llvm::createStringError(
+              llvm::inconvertibleErrorCode(),
+              "spatial_binding_relation_invalid: graph-boundary Hall value "
+              "has inconsistent directions");
+        direction = memberDirection;
+      }
+    }
+    if (!direction)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "spatial_binding_relation_invalid: graph-boundary Hall value has "
+          "no witness member");
+    if (*direction == ::loom::fabric::FabricPortDirection::Input)
+      ++projection.inputEndpointCount;
+    else
+      ++projection.outputEndpointCount;
+  }
+  return std::optional<SpatialGraphBoundaryHallProjection>(projection);
 }
 
 llvm::ArrayRef<SpatialComputeBindingChoice>

@@ -183,6 +183,31 @@ void parameterizedTemplateScale(
           "resolved PE scale did not reach the Module context inventory");
 }
 
+void localMemoryPortVariantRoundTrip() {
+  for (const loom::adg::LocalMemoryPortVariant variant :
+       {loom::adg::LocalMemoryPortVariant::ElementOnly,
+        loom::adg::LocalMemoryPortVariant::VectorOnly,
+        loom::adg::LocalMemoryPortVariant::SeparateElementVector,
+        loom::adg::LocalMemoryPortVariant::SharedElementVector}) {
+    loom::ResolvedConfig resolved = loom::defaultResolvedConfig();
+    resolved.hardwareTarget.parameters.localMemoryPortVariant = variant;
+    auto projected =
+        take(loom::dse::projectResolvedFabricTemplateConfigView(resolved));
+    auto adopted = take(loom::dse::adoptResolvedFabricTemplateConfigView(
+        loom::dse::resolvedFabricTemplateConfigSchemaBytes(),
+        projected.canonicalViewBytes(), projected.digest()));
+    require(adopted.scale().localMemoryPortVariant == variant,
+            "template config changed the local-memory port variant");
+  }
+
+  loom::ResolvedConfig invalid = loom::defaultResolvedConfig();
+  invalid.hardwareTarget.parameters.localMemoryPortVariant =
+      static_cast<loom::adg::LocalMemoryPortVariant>(255);
+  requireError(
+      loom::dse::projectResolvedFabricTemplateConfigView(invalid).takeError(),
+      "template base scale is invalid");
+}
+
 void strictConfigAdmission() {
   requireError(
       loom::dse::resolveSpatialTopologyRewriteConfig({}, 1).takeError(),
@@ -780,6 +805,7 @@ void systemRelationalNoOps(Fixture &fixture,
 
 int main() {
   strictConfigAdmission();
+  localMemoryPortVariantRoundTrip();
   Fixture fixture;
   auto system = generateBuiltinSystem(fixture);
   parameterizedTemplateScale(fixture, system);

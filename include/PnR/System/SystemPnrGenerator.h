@@ -9,6 +9,7 @@
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrGeneration.h"
+#include "PnR/System/SystemCandidateState.h"
 #include "PnR/System/SystemPnrDerivedContext.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
@@ -87,6 +88,7 @@ struct IncompleteSystemPnrGeneration final {
   IncompleteSystemPnrGenerationReason reason;
   SystemPnrGenerationAccounting accounting;
   std::string diagnostic;
+  std::optional<SystemImportedCapacityPressure> importedCapacityPressure;
 };
 
 enum class SystemPnrInterruptionStage : std::uint8_t {

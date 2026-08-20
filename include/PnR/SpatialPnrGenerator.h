@@ -15,6 +15,7 @@
 
 #include "llvm/ADT/StringRef.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <optional>
@@ -73,9 +74,33 @@ struct GeneratedSpatialMappings final {
   SpatialPnrGenerationAccounting accounting;
 };
 
+/// Exact graph-boundary all-different deficit observed before Spatial search.
+/// Input and output counts remain separate because one bidirectional Fabric
+/// gateway contributes one value to each directional domain.
+struct SpatialGraphBoundaryEndpointHallDeficit final {
+  std::uint64_t inputDemandCount = 0;
+  std::uint64_t inputEndpointCount = 0;
+  std::uint64_t outputDemandCount = 0;
+  std::uint64_t outputEndpointCount = 0;
+
+  std::uint64_t requiredBoundaryPairs() const {
+    const std::uint64_t inputDeficit =
+        inputDemandCount > inputEndpointCount
+            ? inputDemandCount - inputEndpointCount
+            : 0;
+    const std::uint64_t outputDeficit =
+        outputDemandCount > outputEndpointCount
+            ? outputDemandCount - outputEndpointCount
+            : 0;
+    return std::max(inputDeficit, outputDeficit);
+  }
+};
+
 struct ProvenInfeasibleSpatialMapping final {
   SpatialPnrGenerationAccounting accounting;
   std::string diagnostic;
+  std::optional<SpatialGraphBoundaryEndpointHallDeficit>
+      graphBoundaryEndpointHall = std::nullopt;
 };
 
 enum class IncompleteSpatialPnrGenerationReason : std::uint8_t {

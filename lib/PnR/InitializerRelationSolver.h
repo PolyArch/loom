@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -117,22 +118,37 @@ enum class InitializerRelationSolveFailureKind : std::uint8_t {
   WorkLimit,
 };
 
+/// Exact Hall witness produced by the initializer's all-different solver.
+/// Members are decision ordinals and values are the relation's projected
+/// values, both in canonical order.
+struct InitializerRelationHallWitness final {
+  PnrIndex relation = 0;
+  std::vector<PnrIndex> memberDecisions;
+  std::vector<PnrIndex> projectedValues;
+};
+
 class InitializerRelationSolveFailure final
     : public llvm::ErrorInfo<InitializerRelationSolveFailure> {
 public:
   static char ID;
 
-  InitializerRelationSolveFailure(InitializerRelationSolveFailureKind kind,
-                                  std::string message)
-      : kind_(kind), message_(std::move(message)) {}
+  InitializerRelationSolveFailure(
+      InitializerRelationSolveFailureKind kind, std::string message,
+      std::optional<InitializerRelationHallWitness> hallWitness = std::nullopt)
+      : kind_(kind), message_(std::move(message)),
+        hallWitness_(std::move(hallWitness)) {}
 
   InitializerRelationSolveFailureKind kind() const { return kind_; }
+  const std::optional<InitializerRelationHallWitness> &hallWitness() const {
+    return hallWitness_;
+  }
   void log(llvm::raw_ostream &stream) const override;
   std::error_code convertToErrorCode() const override;
 
 private:
   InitializerRelationSolveFailureKind kind_;
   std::string message_;
+  std::optional<InitializerRelationHallWitness> hallWitness_;
 };
 
 struct InitializerRelationSolveResult final {
@@ -168,8 +184,7 @@ public:
                                      llvm::ArrayRef<PnrIndex> preferredChoices);
   llvm::Expected<InitializerRelationSolveResult>
   solveCanonicalWithPreferredChoices(
-      std::uint64_t assignmentLimit,
-      llvm::ArrayRef<PnrIndex> preferredChoices,
+      std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> preferredChoices,
       llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
           validateCompleteAssignment);
   llvm::Expected<InitializerRelationSolveResult>
@@ -212,6 +227,7 @@ private:
     PnrIndex memberCount = 0;
     std::size_t forcedDecisionCountOffset = 0;
     std::size_t valueOccurrenceOffset = 0;
+    std::size_t projectedValueOffset = 0;
     std::size_t valueMatchOffset = 0;
     PnrIndex valueCount = 0;
   };
@@ -276,6 +292,7 @@ private:
                                PnrIndex localChoice) const;
   bool activeRelationSatisfied(const InitializerRelationRecord &relation) const;
   std::string allDifferentHallFailureMessage() const;
+  InitializerRelationHallWitness allDifferentHallFailureWitness() const;
   bool propagate();
   llvm::Expected<SearchResult>
   search(std::uint64_t assignmentLimit,
@@ -319,6 +336,7 @@ private:
   std::vector<AllDifferentRelationSupport> allDifferentSupports_;
   std::vector<AllDifferentMemberSupport> allDifferentMembers_;
   std::vector<PnrIndex> allDifferentChoiceValues_;
+  std::vector<PnrIndex> allDifferentProjectedValues_;
   std::vector<PnrIndex> allDifferentActiveChoiceCounts_;
   std::vector<PnrIndex> allDifferentForcedDecisionCounts_;
   std::vector<std::size_t> allDifferentValueOccurrenceOffsets_;
@@ -343,9 +361,12 @@ private:
   PnrIndex allDifferentFailureMatched_ = 0;
   PnrIndex allDifferentFailureMemberCount_ = 0;
   PnrIndex allDifferentFailureValueCount_ = 0;
+  std::vector<PnrIndex> allDifferentFailureMemberDecisions_;
+  std::vector<PnrIndex> allDifferentFailureProjectedValues_;
   std::uint64_t propagationInvocationCount_ = 0;
   bool allDifferentFailureAtInitialPropagation_ = false;
   bool rootCardinalityContradiction_ = false;
+  std::optional<InitializerRelationHallWitness> rootCardinalityFailure_;
 };
 
 } // namespace loom::pnr::detail

@@ -442,7 +442,7 @@ void verifyRootCompleteSystemAdapter(
               descriptor.inputSlots.size() == 4 &&
               descriptor.outputSlots.size() == 1 &&
               descriptor.implementationSemanticIdentity ==
-                  "loom.mapping.root_complete_system_pnr.generator.v8" &&
+                  "loom.mapping.root_complete_system_pnr.generator.v9" &&
               descriptor.workUnits.size() ==
                   loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
               descriptor.inputSlots[0].semanticRole == "dataflow" &&
@@ -530,6 +530,7 @@ void verifyRootCompleteSystemAdapter(
 
   if (!spatialMappings.empty()) {
     loom::ResolvedConfig limited = resolved;
+    limited.dse.systemPnr.search.initializer.seedAttemptCount = 2;
     limited.dse.systemPnr.search.initializer.assignmentAttemptLimitPerSeed = 1;
     limited.dse.systemPnr.search.routing.endpointExpansionLimit = 1;
     const auto limitedConfig =
@@ -548,8 +549,8 @@ void verifyRootCompleteSystemAdapter(
                         SemanticLimitReached &&
                 limitedResult.workSummary.size() ==
                     loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
-                limitedResult.workSummary.front().consumed == 1,
-            "bounded System search did not report typed semantic exhaustion");
+                limitedResult.workSummary.front().consumed == 2,
+            "bounded System search stopped before its configured seeds");
   }
 }
 

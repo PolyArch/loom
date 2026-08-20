@@ -10,6 +10,7 @@
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/MappingConstraintSet.h"
+#include "Mapping/Artifact/SpatialMappingHardwareDemand.h"
 #include "PnR/FabricTopologyQualityDiagnostic.h"
 #include "PnR/MappingObjective.h"
 #include "PnR/SpatialCanonicalSeed.h"
@@ -76,6 +77,28 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
+llvm::Error validateGraphBoundaryFeedback(
+    llvm::ArrayRef<std::uint8_t> bytes,
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ArtifactStore &store) {
+  if (inputs.size() != InputSlotCount ||
+      inputs[FabricInput].artifacts.size() != 1)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "root_complete_spatial_pnr_generator_feedback_invalid: input "
+        "closure has no exact Module");
+  auto adopted = ::loom::mapping::adoptSpatialGraphBoundaryEndpointHallFeedback(
+      bytes, inputs[FabricInput].artifacts.front(),
+      inputs[TechMappingCandidatesInput].artifacts, store);
+  if (!adopted)
+    return adopted.takeError();
+  return llvm::Error::success();
+}
+
+const CandidateGeneratorOwnerFeedbackPayloadContract feedbackContract{
+    ::loom::mapping::spatialGraphBoundaryEndpointHallFeedbackSchemaBytes(),
+    validateGraphBoundaryFeedback};
+
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
@@ -85,7 +108,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSpatialPnrCandidateGeneratorKind,
     "mapping.root_complete_spatial_pnr",
-    "loom.mapping.root_complete_spatial_pnr.generator.v19",
+    "loom.mapping.root_complete_spatial_pnr.generator.v21",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -95,6 +118,7 @@ const CandidateGeneratorDescriptor descriptor{
     pnrCandidateGeneratorWorkUnits,
     nullptr,
     ProviderForm::InProcess,
+    &feedbackContract,
 };
 
 struct CachedDataflow final {
@@ -312,11 +336,41 @@ bool hasUncoveredGraph(llvm::ArrayRef<::dataflow::GraphRef> candidateGraphs,
   });
 }
 
+std::size_t
+uncoveredGraphCount(llvm::ArrayRef<::dataflow::GraphRef> candidateGraphs,
+                    llvm::ArrayRef<::dataflow::GraphRef> coveredGraphs) {
+  return llvm::count_if(candidateGraphs,
+                        [&](const ::dataflow::GraphRef &graph) {
+                          return !llvm::is_contained(coveredGraphs, graph);
+                        });
+}
+
 void addCoveredGraphs(llvm::ArrayRef<::dataflow::GraphRef> candidateGraphs,
                       std::vector<::dataflow::GraphRef> &coveredGraphs) {
   coveredGraphs.insert(coveredGraphs.end(), candidateGraphs.begin(),
                        candidateGraphs.end());
   canonicalizeGraphReferences(coveredGraphs);
+}
+
+std::size_t selectCandidateForFirstVerified(
+    llvm::ArrayRef<PreparedTechCandidate> candidates, std::size_t begin,
+    llvm::ArrayRef<::dataflow::GraphRef> coveredGraphs) {
+  assert(begin < candidates.size());
+  std::size_t selected = begin;
+  std::size_t selectedGain = uncoveredGraphCount(
+      candidates[selected].tech.view().covers(), coveredGraphs);
+  for (std::size_t index = begin + 1; index != candidates.size(); ++index) {
+    const std::size_t gain = uncoveredGraphCount(
+        candidates[index].tech.view().covers(), coveredGraphs);
+    if (gain > selectedGain ||
+        (gain == selectedGain &&
+         artifactRootReferenceLess(candidates[index].reference,
+                                   candidates[selected].reference))) {
+      selected = index;
+      selectedGain = gain;
+    }
+  }
+  return selected;
 }
 
 std::vector<CandidateGeneratorLineageEdge>
@@ -350,6 +404,15 @@ incomplete(CandidateGeneratorIncompleteReason reason,
   std::vector<CandidateGeneratorOutputBinding> bindings = {
       {CandidateGeneratorOutputSlotRef(0), std::move(outputs)}};
   return {reason, std::move(bindings), std::move(lineage)};
+}
+
+std::optional<std::vector<std::uint8_t>> encodeFeedback(
+    const std::optional<
+        ::loom::mapping::SpatialGraphBoundaryEndpointHallDeficit> &feedback) {
+  if (!feedback)
+    return std::nullopt;
+  return ::loom::mapping::encodeSpatialGraphBoundaryEndpointHallFeedback(
+      *feedback);
 }
 
 llvm::Error
@@ -422,6 +485,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   auto emitActiveProblemCacheStatisticsOnExit = llvm::scope_exit(
       [&] { emitActiveProblemCacheStatistics(activeProblemCacheStatistics); });
   std::vector<ArtifactRootReference> outputs;
+  std::optional<::loom::mapping::SpatialGraphBoundaryEndpointHallDeficit>
+      graphBoundaryFeedback;
   std::optional<CandidateGeneratorIncompleteReason> incompleteReason;
   const auto rememberIncomplete =
       [&](CandidateGeneratorIncompleteReason reason) {
@@ -436,6 +501,9 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       spatialPnrCandidateGeneratorWorkSummary({});
   const std::optional<std::uint64_t> maximumOutputs =
       invocation.maximumOutputArtifacts(CandidateGeneratorOutputSlotRef(0));
+  const bool firstVerifiedCandidate =
+      config->policy().search.completionGoal ==
+      ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
 
   std::vector<PreparedTechCandidate> preparedCandidates;
   std::vector<::dataflow::GraphRef> candidateGraphs;
@@ -560,46 +628,72 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     std::optional<::loom::pnr::SpatialCandidateInitializerPreference>
         preference;
     std::optional<ActiveRouteRank> routeRank;
-    ::loom::pnr::SpatialPathFinderSeedWorkSummary rankWork;
-    const auto rankBegin = std::chrono::steady_clock::now();
-    auto seed =
-        ::loom::pnr::createPathFinderSpatialSeed(*activeProblem, 0, rankWork);
-    saturatingAdd(activeProblemCacheStatistics.rankProjectionNanoseconds,
-                  static_cast<std::uint64_t>(
-                      std::chrono::duration_cast<std::chrono::nanoseconds>(
-                          std::chrono::steady_clock::now() - rankBegin)
-                          .count()));
-    ++activeProblemCacheStatistics.rankProjectionCount;
-    saturatingAdd(activeProblemCacheStatistics.rankAssignmentAttempts,
-                  rankWork.initializerAssignmentAttempts);
-    saturatingAdd(activeProblemCacheStatistics.rankEndpointExpansions,
-                  rankWork.endpointExpansions);
-    saturatingAdd(activeProblemCacheStatistics.rankNegotiationIterations,
-                  rankWork.negotiationIterations);
-    if (seed) {
-      preference = seed->initializerPreference;
-      std::array<std::uint64_t, ::loom::resolvedPnrViolationKindCount>
-          violations{};
-      llvm::Error violationError = llvm::Error::success();
-      for (std::uint32_t ordinal = 0; ordinal != violations.size(); ++ordinal) {
-        auto value = ::loom::pnr::spatialMappingViolationValue(
-            *seed->candidate,
-            static_cast<::loom::ResolvedPnrViolationKind>(ordinal));
-        if (!value) {
-          violationError = value.takeError();
-          break;
+    if (!firstVerifiedCandidate) {
+      ::loom::pnr::SpatialPathFinderSeedWorkSummary rankWork;
+      const auto rankBegin = std::chrono::steady_clock::now();
+      auto seed =
+          ::loom::pnr::createPathFinderSpatialSeed(*activeProblem, 0, rankWork);
+      saturatingAdd(activeProblemCacheStatistics.rankProjectionNanoseconds,
+                    static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - rankBegin)
+                            .count()));
+      ++activeProblemCacheStatistics.rankProjectionCount;
+      saturatingAdd(activeProblemCacheStatistics.rankAssignmentAttempts,
+                    rankWork.initializerAssignmentAttempts);
+      saturatingAdd(activeProblemCacheStatistics.rankEndpointExpansions,
+                    rankWork.endpointExpansions);
+      saturatingAdd(activeProblemCacheStatistics.rankNegotiationIterations,
+                    rankWork.negotiationIterations);
+      if (seed) {
+        preference = seed->initializerPreference;
+        std::array<std::uint64_t, ::loom::resolvedPnrViolationKindCount>
+            violations{};
+        llvm::Error violationError = llvm::Error::success();
+        for (std::uint32_t ordinal = 0; ordinal != violations.size();
+             ++ordinal) {
+          auto value = ::loom::pnr::spatialMappingViolationValue(
+              *seed->candidate,
+              static_cast<::loom::ResolvedPnrViolationKind>(ordinal));
+          if (!value) {
+            violationError = value.takeError();
+            break;
+          }
+          violations[ordinal] = *value;
         }
-        violations[ordinal] = *value;
-      }
-      if (violationError) {
-        const std::string diagnostic =
-            llvm::toString(std::move(violationError));
+        if (violationError) {
+          const std::string diagnostic =
+              llvm::toString(std::move(violationError));
+          ::loom::mapping_debug::emit(
+              ::loom::mapping_debug::Level::Summary,
+              ::loom::mapping_debug::Stage::SpatialPnr,
+              ::loom::mapping_debug::Event::MappingFailure,
+              [&](llvm::json::Object &fields) {
+                fields["failure_scope"] = "active_route_rank";
+                fields["closure_status"] = "not_ranked";
+                fields["tech_mapping_input_ordinal"] =
+                    static_cast<std::uint64_t>(inputOrdinal);
+                fields["tech_mapping"] =
+                    formatArtifactIdentityHex(techReference.artifact);
+                fields["diagnostic"] = diagnostic;
+              });
+        } else {
+          auto objective =
+              (*activeProblem)->objectiveProgram().evaluate(*seed->candidate);
+          if (!objective)
+            return objective.takeError();
+          routeRank.emplace(ActiveRouteRank{std::move(*objective), violations,
+                                            rankWork.endpointExpansions,
+                                            rankWork.negotiationIterations});
+        }
+      } else {
+        const std::string diagnostic = llvm::toString(seed.takeError());
         ::loom::mapping_debug::emit(
             ::loom::mapping_debug::Level::Summary,
             ::loom::mapping_debug::Stage::SpatialPnr,
             ::loom::mapping_debug::Event::MappingFailure,
             [&](llvm::json::Object &fields) {
-              fields["failure_scope"] = "active_route_rank";
+              fields["failure_scope"] = "active_demand_rank";
               fields["closure_status"] = "not_ranked";
               fields["tech_mapping_input_ordinal"] =
                   static_cast<std::uint64_t>(inputOrdinal);
@@ -607,30 +701,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                   formatArtifactIdentityHex(techReference.artifact);
               fields["diagnostic"] = diagnostic;
             });
-      } else {
-        auto objective =
-            (*activeProblem)->objectiveProgram().evaluate(*seed->candidate);
-        if (!objective)
-          return objective.takeError();
-        routeRank.emplace(ActiveRouteRank{std::move(*objective), violations,
-                                          rankWork.endpointExpansions,
-                                          rankWork.negotiationIterations});
       }
-    } else {
-      const std::string diagnostic = llvm::toString(seed.takeError());
-      ::loom::mapping_debug::emit(
-          ::loom::mapping_debug::Level::Summary,
-          ::loom::mapping_debug::Stage::SpatialPnr,
-          ::loom::mapping_debug::Event::MappingFailure,
-          [&](llvm::json::Object &fields) {
-            fields["failure_scope"] = "active_demand_rank";
-            fields["closure_status"] = "not_ranked";
-            fields["tech_mapping_input_ordinal"] =
-                static_cast<std::uint64_t>(inputOrdinal);
-            fields["tech_mapping"] =
-                formatArtifactIdentityHex(techReference.artifact);
-            fields["diagnostic"] = diagnostic;
-          });
     }
     preparedCandidates.push_back(PreparedTechCandidate{
         inputOrdinal, techReference, std::move(*tech), cached->second.get(),
@@ -653,18 +724,20 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
           spatialPnrCandidateGeneratorWorkSummary(rankAccounting), workSummary))
     return std::move(error);
 
-  if (llvm::Error error = orderPreparedCandidates(preparedCandidates))
-    return std::move(error);
+  if (!firstVerifiedCandidate)
+    if (llvm::Error error = orderPreparedCandidates(preparedCandidates))
+      return std::move(error);
   canonicalizeGraphReferences(candidateGraphs);
-  for (const auto ranked : llvm::enumerate(preparedCandidates)) {
-    const PreparedTechCandidate &candidate = ranked.value();
+  const auto emitCandidateOrder = [&](const PreparedTechCandidate &candidate,
+                                      std::size_t rank) {
     ::loom::mapping_debug::emit(
         ::loom::mapping_debug::Level::Summary,
         ::loom::mapping_debug::Stage::SpatialPnr,
         ::loom::mapping_debug::Event::Candidate,
         [&](llvm::json::Object &fields) {
-          fields["operation"] = "active_demand_rank";
-          fields["rank"] = static_cast<std::uint64_t>(ranked.index());
+          fields["operation"] =
+              firstVerifiedCandidate ? "coverage_order" : "active_demand_rank";
+          fields["rank"] = static_cast<std::uint64_t>(rank);
           fields["tech_mapping_input_ordinal"] =
               static_cast<std::uint64_t>(candidate.inputOrdinal);
           fields["tech_mapping"] =
@@ -709,14 +782,25 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
           fields["static_schedule_pressure"] =
               candidate.preference->staticSchedulePressure;
         });
-  }
+  };
+  if (!firstVerifiedCandidate)
+    for (const auto ranked : llvm::enumerate(preparedCandidates))
+      emitCandidateOrder(ranked.value(), ranked.index());
 
   std::vector<::dataflow::GraphRef> coveredGraphs;
   std::uint64_t attemptedTechMappings = 0;
   std::uint64_t skippedCoveredTechMappings = 0;
-  for (const auto rankedTech : llvm::enumerate(preparedCandidates)) {
-    const std::size_t techOrdinal = rankedTech.index();
-    PreparedTechCandidate &prepared = rankedTech.value();
+  for (std::size_t techOrdinal = 0; techOrdinal != preparedCandidates.size();
+       ++techOrdinal) {
+    if (firstVerifiedCandidate) {
+      const std::size_t selected = selectCandidateForFirstVerified(
+          preparedCandidates, techOrdinal, coveredGraphs);
+      if (selected != techOrdinal)
+        std::swap(preparedCandidates[techOrdinal],
+                  preparedCandidates[selected]);
+      emitCandidateOrder(preparedCandidates[techOrdinal], techOrdinal);
+    }
+    PreparedTechCandidate &prepared = preparedCandidates[techOrdinal];
     const ArtifactRootReference &techReference = prepared.reference;
     const ::dataflow::CanonicalDataflowProgramView &dataflow =
         prepared.dataflow->view;
@@ -777,6 +861,18 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     if (const auto *infeasible =
             std::get_if<::loom::pnr::ProvenInfeasibleSpatialMapping>(
                 &outcome)) {
+      if (infeasible->graphBoundaryEndpointHall) {
+        const auto &observed = *infeasible->graphBoundaryEndpointHall;
+        auto feedback =
+            ::loom::mapping::SpatialGraphBoundaryEndpointHallDeficit::get(
+                inputBindings[FabricInput].artifacts.front(), techReference,
+                observed.inputDemandCount, observed.inputEndpointCount,
+                observed.outputDemandCount, observed.outputEndpointCount);
+        if (!feedback)
+          return feedback.takeError();
+        ::loom::mapping::retainSpatialGraphBoundaryEndpointHallFeedback(
+            graphBoundaryFeedback, std::move(*feedback));
+      }
       ::loom::mapping_debug::emit(
           ::loom::mapping_debug::Level::Summary,
           ::loom::mapping_debug::Stage::SpatialPnr,
@@ -846,7 +942,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       return CandidateGeneratorProviderResult{
           incomplete(CandidateGeneratorIncompleteReason::Unsupported,
                      std::move(outputs)),
-          std::move(workSummary)};
+          std::move(workSummary), encodeFeedback(graphBoundaryFeedback)};
     if (const auto *invalid =
             std::get_if<::loom::pnr::InvalidSpatialPnrGeneration>(&outcome))
       return llvm::createStringError(
@@ -880,9 +976,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
   if (incompleteReason)
     return CandidateGeneratorProviderResult{
         incomplete(*incompleteReason, std::move(outputs)),
-        std::move(workSummary)};
-  return CandidateGeneratorProviderResult{completed(std::move(outputs)),
-                                          std::move(workSummary)};
+        std::move(workSummary), encodeFeedback(graphBoundaryFeedback)};
+  return CandidateGeneratorProviderResult{
+      completed(std::move(outputs)), std::move(workSummary),
+      encodeFeedback(graphBoundaryFeedback)};
 }
 
 const CandidateGeneratorProvider provider{

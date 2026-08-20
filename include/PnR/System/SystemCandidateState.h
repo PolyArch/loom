@@ -92,6 +92,45 @@ struct SystemRouteCapacityOveruseWitness final {
   }
 };
 
+struct SystemCapacityOveruseWitness final {
+  std::uint64_t namespaceOrdinal = 0;
+  std::uint64_t usage = 0;
+  std::uint64_t capacity = 0;
+
+  friend bool operator==(const SystemCapacityOveruseWitness &lhs,
+                         const SystemCapacityOveruseWitness &rhs) {
+    return lhs.namespaceOrdinal == rhs.namespaceOrdinal &&
+           lhs.usage == rhs.usage && lhs.capacity == rhs.capacity;
+  }
+  friend bool operator!=(const SystemCapacityOveruseWitness &lhs,
+                         const SystemCapacityOveruseWitness &rhs) {
+    return !(lhs == rhs);
+  }
+};
+
+struct SystemImportedCapacityFit final {
+  std::uint64_t assignmentAttempts = 0;
+};
+
+struct SystemImportedCapacityPressure final {
+  SystemCapacityOveruseWitness witness;
+  std::uint64_t assignmentAttempts = 0;
+};
+
+struct SystemImportedCapacitySearchLimit final {
+  std::uint64_t assignmentAttempts = 0;
+};
+
+struct SystemImportedCapacityRelationInfeasible final {
+  std::uint64_t assignmentAttempts = 0;
+  std::string diagnostic;
+};
+
+using SystemImportedCapacitySearchResult =
+    std::variant<SystemImportedCapacityFit, SystemImportedCapacityPressure,
+                 SystemImportedCapacitySearchLimit,
+                 SystemImportedCapacityRelationInfeasible>;
+
 struct SystemInstructionResourceUseSelection final {
   ::dataflow::RootThreadLaunchRef root;
   ::loom::fabric::InstructionCoreContextRef context;
@@ -170,6 +209,10 @@ public:
   }
   std::uint64_t routeCapacityOveruse() const { return routeCapacityOveruse_; }
   std::uint64_t capacityOveruse() const { return capacityOveruse_; }
+  const std::optional<SystemCapacityOveruseWitness> &
+  capacityOveruseWitness() const {
+    return capacityOveruseWitness_;
+  }
   const SpatialRecurrenceTimingProjection &recurrenceTiming() const {
     return recurrenceTiming_;
   }
@@ -224,6 +267,7 @@ private:
       std::shared_ptr<const detail::SystemCandidateProjectionCache>
           projectionCache,
       std::uint64_t capacityOveruse,
+      std::optional<SystemCapacityOveruseWitness> capacityOveruseWitness,
       ::loom::mapping::MappingProgressClosure progressClosure,
       SpatialRecurrenceTimingProjection recurrenceTiming,
       std::uint64_t resourceMinimumInitiationIntervalCycles,
@@ -239,7 +283,9 @@ private:
         instructionResourceUses_(std::move(instructionResourceUses)),
         serviceResourceUses_(std::move(serviceResourceUses)),
         projectionCache_(std::move(projectionCache)),
-        capacityOveruse_(capacityOveruse), progressClosure_(progressClosure),
+        capacityOveruse_(capacityOveruse),
+        capacityOveruseWitness_(std::move(capacityOveruseWitness)),
+        progressClosure_(progressClosure),
         recurrenceTiming_(std::move(recurrenceTiming)),
         resourceMinimumInitiationIntervalCycles_(
             resourceMinimumInitiationIntervalCycles),
@@ -260,6 +306,7 @@ private:
   std::shared_ptr<const detail::SystemCandidateProjectionCache>
       projectionCache_;
   std::uint64_t capacityOveruse_ = 0;
+  std::optional<SystemCapacityOveruseWitness> capacityOveruseWitness_;
   ::loom::mapping::MappingProgressClosure progressClosure_;
   SpatialRecurrenceTimingProjection recurrenceTiming_;
   std::uint64_t resourceMinimumInitiationIntervalCycles_ = 1;
@@ -316,6 +363,16 @@ initializeCanonicalSystemCandidate(FrozenSystemPnrProblemHandle problem);
 llvm::Expected<InitializedSystemCandidate>
 initializeSystemCandidateAttempt(FrozenSystemPnrProblemHandle problem,
                                  std::uint32_t attemptOrdinal);
+
+llvm::Expected<InitializedSystemCandidate>
+initializeSystemCandidateAttemptWithImportedCapacityClosure(
+    FrozenSystemPnrProblemHandle problem, std::uint32_t attemptOrdinal);
+
+/// Searches the exact execution-binding relation for an assignment whose
+/// imported SpatialMapping demand fits its selected AccCore occurrences.
+/// System service routing is deliberately absent from this projection.
+llvm::Expected<SystemImportedCapacitySearchResult>
+searchSystemImportedCapacity(FrozenSystemPnrProblemHandle problem);
 
 llvm::Expected<InitializedSystemCandidate>
 initializeSystemCandidateWithFixedChoices(

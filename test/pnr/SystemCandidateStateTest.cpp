@@ -14,6 +14,7 @@
 #include "Mapping/Artifact/MappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingHardwareDemand.h"
 #include "Mapping/IR/MappingAttrs.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "Mapping/Tech/TechMappingConfig.h"
@@ -678,9 +679,8 @@ void memoryServiceWorkflow() {
               selectedTargets->plansBySubject.size() ==
                   memoryContext.subjects.size(),
           "matching target rows did not retain per-subject domains");
-  for (const auto &[selected, domain] :
-       llvm::zip_equal(selectedTargets->plansBySubject,
-                       selectedDomains->plansBySubject))
+  for (const auto &[selected, domain] : llvm::zip_equal(
+           selectedTargets->plansBySubject, selectedDomains->plansBySubject))
     require(!domain.empty() && selected == domain.front() &&
                 selected.branches.size() == 1,
             "canonical candidate did not select each first exact target");
@@ -694,8 +694,7 @@ void memoryServiceWorkflow() {
   auto &foreignPlan = foreignSelection.plansBySubject.front();
   auto &foreignRegion = foreignPlan.branches.front().region;
   foreignRegion.ordinal += 1000;
-  foreignTargets[memoryContextOrdinals.front()] =
-      std::move(foreignSelection);
+  foreignTargets[memoryContextOrdinals.front()] = std::move(foreignSelection);
   requireFailureContains(
       loom::pnr::SystemCandidateState::create(
           bindingProblem,
@@ -747,8 +746,8 @@ void memoryServiceWorkflow() {
   std::size_t expectedServiceUseCount = 0;
   for (const auto &[subjectOrdinal, subject] :
        llvm::enumerate(memoryContext.subjects))
-    if (std::holds_alternative<
-            loom::pnr::SystemServiceMemberTargetSubject>(subject))
+    if (std::holds_alternative<loom::pnr::SystemServiceMemberTargetSubject>(
+            subject))
       expectedServiceUseCount +=
           selectedTargets->plansBySubject[subjectOrdinal].branches.size();
   require(supportedCandidate->serviceResourceUses().size() ==
@@ -1122,6 +1121,49 @@ void graphBindingWorkflow() {
   auto problem = take(loom::pnr::freezeSystemPnrProblem(
       dataflow, system, physicalTimingProfiles, searchDomain, config,
       constraints, store));
+
+  auto importedCapacitySearch =
+      take(loom::pnr::searchSystemImportedCapacity(problem));
+  const auto *capacityFit = std::get_if<loom::pnr::SystemImportedCapacityFit>(
+      &importedCapacitySearch);
+  require(capacityFit && capacityFit->assignmentAttempts != 0,
+          "exact imported-capacity search found no fitting binding");
+  auto capacityFitCandidate = take(
+      loom::pnr::initializeSystemCandidateAttemptWithImportedCapacityClosure(
+          problem, 0));
+  require(capacityFitCandidate.state->capacityOveruse() == 0,
+          "exact imported-capacity binding did not close capacity");
+  if (llvm::Error error = capacityFitCandidate.state->verify())
+    fail(llvm::toString(std::move(error)));
+
+  std::uint64_t primaryCompatibleCoreCount = 0;
+  for (const auto core : system.artifact().accCoreOccurrences()) {
+    const auto target = system.spatialCoreTarget(core);
+    require(target && target->dependencyOrdinal <
+                          system.artifact().importedModules().size(),
+            "System AccCore has no exact Module target");
+    if (system.artifact()
+            .importedModules()[target->dependencyOrdinal]
+            .identity() == primaryModule.reference().artifact)
+      ++primaryCompatibleCoreCount;
+  }
+  auto capacityFeedback =
+      take(loom::mapping::SystemAccCoreCapacityPressure::get(
+          systemRoot.reference(), primaryModule.reference(), spatialMappings,
+          primaryCompatibleCoreCount, capacityFit->assignmentAttempts, 2, 1));
+  const auto capacityFeedbackBytes =
+      loom::mapping::encodeSystemAccCoreCapacityPressure(capacityFeedback);
+  auto adoptedCapacityFeedback =
+      take(loom::mapping::adoptSystemAccCoreCapacityPressure(
+          capacityFeedbackBytes, systemRoot.reference(), spatialMappings,
+          store));
+  require(adoptedCapacityFeedback.system() == systemRoot.reference() &&
+              adoptedCapacityFeedback.targetModule() ==
+                  primaryModule.reference() &&
+              adoptedCapacityFeedback.compatibleAccCoreCount() ==
+                  primaryCompatibleCoreCount &&
+              adoptedCapacityFeedback.additionalAccCoreCount() == 1,
+          "System capacity feedback lost its exact hardware owner");
 
   require(problem->threadDecisions().size() == 2 &&
               problem->graphDecisions().size() == 4,

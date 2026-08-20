@@ -361,10 +361,24 @@ InitializerRelationSolver::InitializerRelationSolver(
     support.forcedDecisionCountOffset =
         allDifferentForcedDecisionCounts_.size();
     support.valueCount = static_cast<PnrIndex>(values.size());
+    support.projectedValueOffset = allDifferentProjectedValues_.size();
+    allDifferentProjectedValues_.insert(allDifferentProjectedValues_.end(),
+                                        values.begin(), values.end());
     support.valueMatchOffset = allDifferentValueMatches_.size();
     allDifferentValueMatches_.resize(allDifferentValueMatches_.size() +
                                      support.valueCount);
-    rootCardinalityContradiction_ |= support.memberCount > support.valueCount;
+    if (support.memberCount > support.valueCount) {
+      rootCardinalityContradiction_ = true;
+      if (!rootCardinalityFailure_) {
+        InitializerRelationHallWitness witness;
+        witness.relation = relation;
+        witness.projectedValues = values;
+        witness.memberDecisions.reserve(orderedMembers.size());
+        for (const InitializerRelationMember &member : orderedMembers)
+          witness.memberDecisions.push_back(member.decision);
+        rootCardinalityFailure_ = std::move(witness);
+      }
+    }
     loom::mapping_debug::emit(
         loom::mapping_debug::Level::Decision,
         loom::mapping_debug::Stage::SpatialPnr,
@@ -544,6 +558,8 @@ void InitializerRelationSolver::reset() {
   assignmentAttempts_ = 0;
   propagationInvocationCount_ = 0;
   allDifferentFailureRelation_ = getInvalidPnrIndex();
+  allDifferentFailureMemberDecisions_.clear();
+  allDifferentFailureProjectedValues_.clear();
   allDifferentFailureAtInitialPropagation_ = false;
   for (PnrIndex relation = 0; relation < model_->relations().size();
        ++relation) {
@@ -891,6 +907,20 @@ bool InitializerRelationSolver::allDifferentMatchingFeasible(
       allDifferentFailureMatched_ = matched;
       allDifferentFailureMemberCount_ = hallMemberCount;
       allDifferentFailureValueCount_ = hallValueCount;
+      allDifferentFailureMemberDecisions_.clear();
+      allDifferentFailureProjectedValues_.clear();
+      allDifferentFailureMemberDecisions_.reserve(hallMemberCount);
+      allDifferentFailureProjectedValues_.reserve(hallValueCount);
+      for (PnrIndex memberOrdinal = 0; memberOrdinal < support.memberCount;
+           ++memberOrdinal)
+        if (distances[memberOrdinal] != getInvalidPnrIndex())
+          allDifferentFailureMemberDecisions_.push_back(
+              members[memberOrdinal].decision);
+      for (PnrIndex value = 0; value < support.valueCount; ++value)
+        if (valueReachable[value] != 0)
+          allDifferentFailureProjectedValues_.push_back(
+              allDifferentProjectedValues_[support.projectedValueOffset +
+                                           value]);
       allDifferentFailureAtInitialPropagation_ = initialPropagation;
       if (!initialPropagation)
         return false;
@@ -1271,6 +1301,13 @@ std::string InitializerRelationSolver::allDifferentHallFailureMessage() const {
          std::to_string(allDifferentFailureValueCount_);
 }
 
+InitializerRelationHallWitness
+InitializerRelationSolver::allDifferentHallFailureWitness() const {
+  assert(allDifferentFailureRelation_ < allDifferentSupports_.size());
+  return {allDifferentFailureRelation_, allDifferentFailureMemberDecisions_,
+          allDifferentFailureProjectedValues_};
+}
+
 PnrIndex InitializerRelationSolver::soleChoice(PnrIndex decision) const {
   assert(domainCounts_[decision] == 1);
   const PnrIndex count =
@@ -1644,7 +1681,8 @@ InitializerRelationSolver::solveCanonicalWithFixedAndPreferredChoices(
     assignmentAttempts_ = 0;
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::ProvenInfeasible,
-        "initializer all-different relation has fewer values than members");
+        "initializer all-different relation has fewer values than members",
+        rootCardinalityFailure_);
   }
   reset();
   for (PnrIndex decision = 0; decision < fixedChoices.size(); ++decision) {
@@ -1674,7 +1712,7 @@ InitializerRelationSolver::solveCanonicalWithFixedAndPreferredChoices(
     if (allDifferentFailureAtInitialPropagation_)
       return llvm::make_error<InitializerRelationSolveFailure>(
           InitializerRelationSolveFailureKind::FixedRootInfeasible,
-          allDifferentHallFailureMessage());
+          allDifferentHallFailureMessage(), allDifferentHallFailureWitness());
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::FixedRootInfeasible,
         "Spatial initializer fixed choices are infeasible");
@@ -1717,7 +1755,8 @@ llvm::Expected<InitializerRelationSolveResult> InitializerRelationSolver::solve(
     assignmentAttempts_ = 0;
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::ProvenInfeasible,
-        "initializer all-different relation has fewer values than members");
+        "initializer all-different relation has fewer values than members",
+        rootCardinalityFailure_);
   }
   reset();
   auto result = search(assignmentLimit, diversificationStream, preferredChoices,
@@ -1732,7 +1771,7 @@ llvm::Expected<InitializerRelationSolveResult> InitializerRelationSolver::solve(
     if (allDifferentFailureAtInitialPropagation_)
       return llvm::make_error<InitializerRelationSolveFailure>(
           InitializerRelationSolveFailureKind::ProvenInfeasible,
-          allDifferentHallFailureMessage());
+          allDifferentHallFailureMessage(), allDifferentHallFailureWitness());
     return llvm::make_error<InitializerRelationSolveFailure>(
         InitializerRelationSolveFailureKind::ProvenInfeasible,
         "initializer assignment domain is infeasible");
@@ -1760,6 +1799,7 @@ std::size_t InitializerRelationSolver::retainedStorageBytes() const {
          retainedBytes(allDifferentSupports_) +
          retainedBytes(allDifferentMembers_) +
          retainedBytes(allDifferentChoiceValues_) +
+         retainedBytes(allDifferentProjectedValues_) +
          retainedBytes(allDifferentActiveChoiceCounts_) +
          retainedBytes(allDifferentForcedDecisionCounts_) +
          retainedBytes(allDifferentValueOccurrenceOffsets_) +

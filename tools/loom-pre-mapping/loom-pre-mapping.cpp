@@ -153,7 +153,7 @@ namespace {
             clEnumValN(loom::dse::StructuredOwnershipSelectionMode::
                            SemanticConformance,
                        "semantic-conformance",
-                       "compose one feasible closure over all protocol roots")),
+                       "rank a bounded chain of equivalent protocol closures")),
         ::llvm::cl::init(
             loom::dse::StructuredOwnershipSelectionMode::BenefitQualified));
 

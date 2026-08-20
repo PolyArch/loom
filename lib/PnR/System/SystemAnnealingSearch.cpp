@@ -6,12 +6,14 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <limits>
 #include <optional>
 #include <system_error>
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 using namespace loom;
 using namespace loom::pnr;
@@ -324,6 +326,69 @@ SystemAnnealingSearchScratch::run(SystemCandidateStateHandle &candidate,
     return std::move(error);
 
   SystemAnnealingStatistics statistics;
+  std::vector<std::uint64_t> threadCountByCore(problem.accCores().size(), 0);
+  for (PnrIndex decision = 0; decision < problem.threadDecisions().size();
+       ++decision) {
+    const auto cores = problem.threadChoiceCatalogOrdinals(decision);
+    if (candidate->threadChoice(decision) >= cores.size() ||
+        cores[candidate->threadChoice(decision)] >= threadCountByCore.size())
+      return invalid("initial thread binding is outside the AccCore catalog");
+    ++threadCountByCore[cores[candidate->threadChoice(decision)]];
+  }
+  std::vector<std::uint64_t> graphContextCountByCore(problem.accCores().size(),
+                                                     0);
+  for (PnrIndex graph = 0; graph < problem.graphDecisions().size(); ++graph) {
+    std::vector<PnrIndex> selectedCores;
+    for (PnrIndex thread : problem.graphThreadOverlaps(graph)) {
+      if (thread >= problem.threadDecisions().size())
+        return invalid("initial graph overlap names a foreign thread");
+      const auto cores = problem.threadChoiceCatalogOrdinals(thread);
+      if (candidate->threadChoice(thread) >= cores.size())
+        return invalid("initial graph overlap has an invalid core choice");
+      selectedCores.push_back(cores[candidate->threadChoice(thread)]);
+    }
+    llvm::sort(selectedCores);
+    selectedCores.erase(std::unique(selectedCores.begin(), selectedCores.end()),
+                        selectedCores.end());
+    for (PnrIndex core : selectedCores) {
+      if (core >= graphContextCountByCore.size())
+        return invalid("initial graph binding is outside the AccCore catalog");
+      ++graphContextCountByCore[core];
+    }
+  }
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+      mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+        fields["operation"] = "annealing_initial_candidate";
+        fields["seed_attempt"] = seedAttemptOrdinal;
+        fields["capacity_overuse"] = candidate->capacityOveruse();
+        fields["route_capacity_overuse"] = candidate->routeCapacityOveruse();
+        fields["route_capacity_witness_count"] = static_cast<std::uint64_t>(
+            candidate->routeCapacityOveruseWitnesses().size());
+        fields["recurrence_minimum_initiation_interval"] =
+            candidate->recurrenceTiming()
+                .recurrenceMinimumInitiationIntervalCycles;
+        fields["resource_minimum_initiation_interval"] =
+            candidate->resourceMinimumInitiationIntervalCycles();
+        fields["transport_bit_cycle_demand"] =
+            candidate->transportBitCycleDemand();
+        fields["thread_decision_count"] = problem.threadDecisions().size();
+        fields["graph_decision_count"] = problem.graphDecisions().size();
+        llvm::json::Array threadCounts;
+        for (std::uint64_t count : threadCountByCore)
+          threadCounts.push_back(count);
+        fields["thread_count_by_core"] = std::move(threadCounts);
+        llvm::json::Array graphContextCounts;
+        for (std::uint64_t count : graphContextCountByCore)
+          graphContextCounts.push_back(count);
+        fields["graph_context_count_by_core"] = std::move(graphContextCounts);
+        if (candidate->capacityOveruseWitness()) {
+          const auto &witness = *candidate->capacityOveruseWitness();
+          fields["capacity_witness_namespace"] = witness.namespaceOrdinal;
+          fields["capacity_witness_usage"] = witness.usage;
+          fields["capacity_witness_capacity"] = witness.capacity;
+        }
+      });
   if (candidate->capacityOveruse() == 0 &&
       policy.search.completionGoal ==
           ResolvedPnrCompletionGoal::FirstVerifiedCandidate) {

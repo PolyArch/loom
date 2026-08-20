@@ -305,6 +305,30 @@ for the removed shell. Cross-layer exploration must request another upstream
 candidate or apply invocation-local feedback; it must not mutate a published
 SpatialMapping inside System PnR.
 
+For `FirstVerifiedCandidate`, System PnR performs an exact imported-capacity
+preflight before System service routing. It enumerates the existing
+thread/graph initializer relation under the configured assignment bound and
+projects only the immutable ResourceUses and routes imported by each selected
+SpatialMapping into occurrence-qualified AccCore capacity namespaces. A
+capacity-closed assignment permits normal initialization; the initializer then
+uses the same projection to reject over-capacity assignments before routing and
+continues until one complete routed candidate is found or its ordinary bound
+is exhausted. The first capacity-closed assignment is not privileged and is
+not assumed routable.
+
+If every assignment in the complete bounded relation has imported capacity
+pressure, the outcome is `ProofNotEstablished` with one exact occurrence
+witness. Reaching the preflight's per-seed assignment bound without exhausting
+the relation produces no hardware demand and cannot suppress the remaining
+configured initializer seeds; ordinary capacity-closed initialization
+continues, and only its final bounded outcome may be `SemanticLimitReached`.
+Neither outcome proves global Mapping infeasibility. If the exact initializer
+relation has no assignment independently of imported capacity, its existing
+structural proof remains `ProvenInfeasible`. System service routes, targets,
+ResourceUses, progress, recurrence, and final legality remain outside the
+preflight and are constructed and independently verified by the ordinary
+System candidate path.
+
 Each published result must be a finalized SystemMapping that closes thread and
 graph binding, SpatialMapping selection, service realization, System transport,
 resource capacity, and progress for the exact root-launch closure. System RTL
@@ -917,6 +941,14 @@ provider's ordinary bounded work and is discarded when its candidate basis is
 invalidated. Exhausting that work before a reopened binding closes is
 `ProofNotEstablished`, not an internal error and not proof that every upstream
 SpatialMapping combination is infeasible.
+
+An imported-capacity witness may request hardware reconsideration only after
+the complete bounded execution-binding relation has been exhausted. The
+witness names the exact System, complete SpatialMapping input frontier, target
+Module, compatible AccCore occurrence count, assignment work, usage, and
+capacity. It requests one monotonic candidate extension; it does not claim one
+additional AccCore is sufficient, cannot exclude a software alternative, and
+cannot bypass ordinary System routing or verification on the child.
 
 Mutable search may cache and transactionally update a removable physical
 projection, but every transaction is defined by immutable before/after

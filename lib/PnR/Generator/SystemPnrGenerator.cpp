@@ -581,10 +581,73 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
     return IncompleteSystemPnrGeneration{
         IncompleteSystemPnrGenerationReason::ProofNotEstablished, accounting,
         "proof_not_established: cyclic System Dataflow progress basis requires "
-        "a typed cycle-breaking proof"};
+        "a typed cycle-breaking proof",
+        std::nullopt};
   }
 
   const auto &search = inputs.config.policy().search;
+  bool requireImportedCapacityClosure = false;
+  if (search.completionGoal ==
+      ResolvedPnrCompletionGoal::FirstVerifiedCandidate) {
+    auto capacityFit = searchSystemImportedCapacity(*problem);
+    if (!capacityFit)
+      return internal(
+          InternalSystemPnrGenerationReason::CandidateInitialization,
+          accounting, capacityFit.takeError());
+    const std::uint64_t assignmentAttempts =
+        std::visit([](const auto &value) { return value.assignmentAttempts; },
+                   *capacityFit);
+    if (llvm::Error error = checkedAdd(assignmentAttempts,
+                                       accounting.initializerAssignmentAttempts,
+                                       "imported-capacity assignment attempts"))
+      return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
+                      accounting, std::move(error));
+    if (const auto *pressure =
+            std::get_if<SystemImportedCapacityPressure>(&*capacityFit)) {
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["failure_scope"] = "imported_spatial_capacity";
+            fields["closure_status"] = "proof_not_established";
+            fields["assignment_attempts"] = pressure->assignmentAttempts;
+            fields["capacity_witness_namespace"] =
+                pressure->witness.namespaceOrdinal;
+            fields["capacity_witness_usage"] = pressure->witness.usage;
+            fields["capacity_witness_capacity"] = pressure->witness.capacity;
+          });
+      emitInvocationAccounting(
+          accounting, mapping_debug::ClosureStatus::ProofNotEstablished, 0);
+      return IncompleteSystemPnrGeneration{
+          IncompleteSystemPnrGenerationReason::ProofNotEstablished, accounting,
+          "proof_not_established: every bounded execution binding retains "
+          "imported Spatial capacity pressure",
+          *pressure};
+    }
+    if (std::holds_alternative<SystemImportedCapacitySearchLimit>(
+            *capacityFit)) {
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::MappingFailure,
+          [&](llvm::json::Object &fields) {
+            fields["failure_scope"] = "imported_spatial_capacity_preflight";
+            fields["closure_status"] = "semantic_limit_reached";
+            fields["assignment_attempts"] = assignmentAttempts;
+            fields["diagnostic"] =
+                "capacity preflight reached its per-seed assignment bound";
+          });
+    }
+    if (const auto *infeasible =
+            std::get_if<SystemImportedCapacityRelationInfeasible>(
+                &*capacityFit)) {
+      emitProvenInfeasibleFreeze("initializer_relation",
+                                 infeasible->diagnostic);
+      emitInvocationAccounting(
+          accounting, mapping_debug::ClosureStatus::ProvenInfeasible, 0);
+      return ProvenInfeasibleSystemMapping{accounting, infeasible->diagnostic};
+    }
+    requireImportedCapacityClosure = true;
+  }
   SystemAnnealingSearchScratch annealing;
   std::vector<ArtifactRootReference> candidates;
   bool semanticLimitReached = false;
@@ -608,7 +671,11 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
           SystemPnrInterruptionStage::CandidateInitialization, attempt,
           accounting, std::move(candidates), interruptionBest, resources);
     ++accounting.seedAttemptSlots;
-    auto initialized = initializeSystemCandidateAttempt(*problem, attempt);
+    auto initialized =
+        requireImportedCapacityClosure
+            ? initializeSystemCandidateAttemptWithImportedCapacityClosure(
+                  *problem, attempt)
+            : initializeSystemCandidateAttempt(*problem, attempt);
     if (!initialized) {
       InitializationFailure failure =
           classifyInitializationFailure(initialized.takeError());
@@ -828,7 +895,8 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
       accounting,
       firstIncompleteDiagnostic.empty()
           ? "no fixed System restart reached independent final verification"
-          : std::move(firstIncompleteDiagnostic)};
+          : std::move(firstIncompleteDiagnostic),
+      std::nullopt};
 }
 
 } // namespace loom::pnr

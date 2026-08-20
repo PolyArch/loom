@@ -1,3 +1,4 @@
+#include "ADG/Builder.h"
 #include "ADG/Builtin.h"
 #include "Common/ArtifactStore.h"
 #include "Common/BlobStore.h"
@@ -231,6 +232,58 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<index, 64>>} {
   if (!module)
     fail("cannot parse vector Dataflow fixture");
   return take(dataflow::finalizeCanonicalDataflow(*module));
+}
+
+loom::fabric::FinalizedFabricRoot
+buildAlternativeTechSpatialCore(loom::ArtifactStore &store) {
+  constexpr std::uint32_t payloadWidth = 128;
+  const loom::adg::PortType payloadType =
+      take(loom::adg::PortType::bits(payloadWidth));
+  const std::vector<loom::adg::PortType> types(8, payloadType);
+  loom::adg::DesignBuilder builder(store);
+  auto spatial =
+      take(builder.createSpatialCore("alternative-sync", types, types));
+  std::vector<loom::adg::SpatialValue> spatialInputs;
+  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
+    spatialInputs.push_back(take(spatial.input(ordinal)));
+  auto pe = take(
+      spatial.addPe(spatialInputs, loom::adg::PeSpec::spatial(types, types)));
+  std::vector<loom::adg::PeValue> peInputs;
+  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
+    peInputs.push_back(take(pe.input(ordinal)));
+  for (std::uint32_t ordinal = 0; ordinal != 2; ++ordinal) {
+    const std::size_t laneCount = ordinal == 0 ? 4 : 8;
+    const std::vector<loom::adg::PortType> fuTypes(laneCount, payloadType);
+    auto fu = take(pe.addFu(
+        llvm::ArrayRef<loom::adg::PeValue>(peInputs).take_front(laneCount),
+        loom::adg::FuSpec{fuTypes, fuTypes}));
+    std::vector<loom::adg::FuValue> fuInputs;
+    for (std::size_t input = 0; input != fuTypes.size(); ++input)
+      fuInputs.push_back(take(fu.input(input)));
+    auto operation = take(fu.addOperation(
+        fuInputs, loom::adg::OperationCapabilitySpec{
+                      ::fabric::ImplementationFamilyId::TokenSync,
+                      ::fabric::RoutedTokenParams{
+                          payloadWidth, static_cast<std::uint32_t>(laneCount)},
+                      {::dataflow::OperationSchemaId::DataflowSync},
+                      fuTypes,
+                      ::fabric::oneCycleElasticOperationResourceContract()}));
+    requireSuccess(fu.addCapabilityTemplate(
+        loom::adg::FuCapabilityTemplateSpec{{operation}, {}}));
+    std::vector<loom::adg::FuValue> outputs;
+    for (std::size_t output = 0; output != fuTypes.size(); ++output)
+      outputs.push_back(take(operation.output(output)));
+    requireSuccess(fu.close(outputs));
+  }
+  requireSuccess(pe.close());
+  std::vector<loom::adg::SpatialValue> outputs;
+  for (std::size_t ordinal = 0; ordinal != types.size(); ++ordinal)
+    outputs.push_back(take(pe.output(ordinal)));
+  requireSuccess(spatial.close(outputs));
+  auto design = take(std::move(builder).finalize());
+  if (design.roots().size() != 1)
+    fail("alternative Tech fixture did not publish one Fabric root");
+  return design.roots().front();
 }
 
 loom::ResolvedObjectiveCatalogs availableSpatialObjectiveCatalogs() {
@@ -924,6 +977,55 @@ void finiteSetTraversesEveryCanonicalTechMapping() {
   }
   if (!foundFirst || !foundSecond)
     fail("finite traversal skipped a canonical TechMapping input");
+}
+
+void firstVerifiedAvoidsSpeculativeRouteRanking() {
+  TemporaryDirectory directory;
+  loom::ArtifactStore store(directory.path());
+  llvm::SmallString<128> blobPath(directory.path());
+  llvm::sys::path::append(blobPath, "blobs");
+  if (std::error_code error = llvm::sys::fs::create_directories(blobPath))
+    fail("cannot create BlobStore directory: " + error.message());
+  const loom::BlobStore blobs(blobPath);
+  mlir::MLIRContext context = makeContext();
+  auto dataflow = buildDataflow(context);
+  const auto dataflowReference =
+      take(dataflow::publishCanonicalDataflow(dataflow, store));
+  auto fabric = buildAlternativeTechSpatialCore(store);
+  const auto physicalTiming =
+      normalizedTimingProfile(fabric.reference(), store);
+  const auto techMappings = generateTechMappingSet(
+      dataflowReference, fabric.reference(), store, blobs);
+  if (techMappings.size() < 2)
+    fail("fixture did not expose alternative TechMappings for one graph");
+
+  loom::ResolvedConfig resolved = buildSingleCandidateSpatialResolvedConfig();
+  resolved.dse.spatialPnr.search.completionGoal =
+      loom::ResolvedPnrCompletionGoal::FirstVerifiedCandidate;
+  const auto config =
+      take(loom::pnr::projectResolvedSpatialPnrConfigView(resolved));
+  auto inputs =
+      take(loom::dse::bindRootCompleteSpatialPnrCandidateGeneratorInputs(
+          techMappings, fabric.reference(), physicalTiming));
+  auto binding =
+      take(loom::dse::resolveRootCompleteSpatialPnrCandidateGeneratorBinding(
+          config));
+  auto outcome =
+      take(loom::dse::invokeCandidateGenerator(inputs, binding, store, blobs));
+  const auto *incomplete =
+      std::get_if<loom::dse::IncompleteCandidateGeneratorResult>(
+          &outcome.outcome);
+  if (!incomplete ||
+      incomplete->reason !=
+          loom::dse::CandidateGeneratorIncompleteReason::SemanticLimitReached ||
+      incomplete->retainedOutputBindings.size() != 1 ||
+      incomplete->retainedOutputBindings.front().artifacts.size() != 1 ||
+      outcome.workSummary.size() !=
+          loom::dse::pnrCandidateGeneratorWorkUnits.size() ||
+      outcome.workSummary.front().consumed != 1)
+    fail("first-verified root adapter performed speculative route ranking");
+  (void)take(loom::mapping::importSpatialMapping(
+      incomplete->retainedOutputBindings.front().artifacts.front(), store));
 }
 
 void candidateWorkerCountPreservesFormalResult() {
@@ -1904,6 +2006,8 @@ int main(int argc, char **argv) {
           .Case("descriptor-and-empty-set", descriptorAndEmptySetAreClosed)
           .Case("finite-set-traversal",
                 finiteSetTraversesEveryCanonicalTechMapping)
+          .Case("first-verified-lazy-ranking",
+                firstVerifiedAvoidsSpeculativeRouteRanking)
           .Case("worker-invariance", candidateWorkerCountPreservesFormalResult)
           .Case("first-verified-prefix",
                 firstVerifiedCandidateRetainsTypedPrefix)

@@ -24,10 +24,9 @@ struct JointHardwareReopenRequest final {
   PlanExecutionPolicy executionPolicy;
 };
 
-/// Executes one joint Mapping plan and, when its typed owner feedback reports
-/// a compute-context Hall deficit, performs the bounded kind-14/kind-15
-/// hardware reopen through the same central DSE controller. Mapping and the
-/// final independent verifiers remain the legality authority.
+/// Executes bounded software/System pairs before consuming typed Mapping
+/// feedback. Builtin hardware growth is rematerialized from its exact recipe;
+/// Mapping and the final independent verifiers remain the legality authority.
 llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     llvm::ArrayRef<const JointDesignExplorationPlan *> plans,
     const JointDesignPolicy &policy, JointHardwareReopenRequest request,

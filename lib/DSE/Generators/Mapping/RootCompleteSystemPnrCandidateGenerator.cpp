@@ -7,6 +7,7 @@
 #include "Fabric/Identity/FabricPhysicalTiming.h"
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
+#include "Mapping/Artifact/SystemMappingHardwareDemand.h"
 #include "PnR/System/SystemPnrDerivedContext.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
@@ -107,6 +108,52 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
+llvm::Error validateCapacityPressureFeedback(
+    llvm::ArrayRef<std::uint8_t> bytes,
+    llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
+    const ArtifactStore &store) {
+  std::optional<ArtifactRootReference> system;
+  std::vector<ArtifactRootReference> spatialMappings;
+  for (const CandidateGeneratorInputBinding &binding : inputs)
+    for (const ArtifactRootReference &input : binding.artifacts) {
+      if (input.schemaIdentity ==
+              ::loom::fabric::fabricArtifactSchema.identity &&
+          input.schemaVersion == ::loom::fabric::fabricArtifactSchema.version) {
+        auto imported = ::loom::fabric::importEntireFabricRoot(input, store);
+        if (!imported)
+          return imported.takeError();
+        if (imported->view().rootKind() !=
+            ::loom::fabric::FabricRootKind::System)
+          continue;
+        if (system)
+          return llvm::createStringError(
+              llvm::inconvertibleErrorCode(),
+              "system_pnr_generator_feedback_invalid: input closure has "
+              "multiple System roots");
+        system = input;
+        continue;
+      }
+      if (input.schemaIdentity ==
+              ::loom::mapping::mappingArtifactSchema.identity &&
+          input.schemaVersion == ::loom::mapping::mappingArtifactSchema.version)
+        spatialMappings.push_back(input);
+    }
+  if (!system || spatialMappings.empty())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "system_pnr_generator_feedback_invalid: input closure lacks its exact "
+        "System or SpatialMapping frontier");
+  auto adopted = ::loom::mapping::adoptSystemAccCoreCapacityPressure(
+      bytes, *system, spatialMappings, store);
+  if (!adopted)
+    return adopted.takeError();
+  return llvm::Error::success();
+}
+
+const CandidateGeneratorOwnerFeedbackPayloadContract feedbackContract{
+    ::loom::mapping::systemAccCoreCapacityPressureSchemaBytes(),
+    validateCapacityPressureFeedback};
+
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
@@ -122,7 +169,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSystemPnrCandidateGeneratorKind,
     "mapping.root_complete_system_pnr",
-    "loom.mapping.root_complete_system_pnr.generator.v8",
+    "loom.mapping.root_complete_system_pnr.generator.v9",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -132,12 +179,13 @@ const CandidateGeneratorDescriptor descriptor{
     pnrCandidateGeneratorWorkUnits,
     nullptr,
     ProviderForm::InProcess,
+    &feedbackContract,
 };
 
 const CandidateGeneratorDescriptor applicationDescriptor{
     applicationSystemPnrCandidateGeneratorKind,
     "mapping.application_system_pnr",
-    "loom.mapping.application_system_pnr.generator.v7",
+    "loom.mapping.application_system_pnr.generator.v8",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -147,6 +195,7 @@ const CandidateGeneratorDescriptor applicationDescriptor{
     pnrCandidateGeneratorWorkUnits,
     nullptr,
     ProviderForm::InProcess,
+    &feedbackContract,
 };
 
 std::vector<CandidateGeneratorLineageEdge>
@@ -181,6 +230,60 @@ incomplete(CandidateGeneratorIncompleteReason reason,
   return {reason,
           {{CandidateGeneratorOutputSlotRef(0), std::move(outputs)}},
           std::move(lineage)};
+}
+
+llvm::Expected<std::optional<std::vector<std::uint8_t>>>
+encodeCapacityPressureFeedback(
+    const ::loom::pnr::IncompleteSystemPnrGeneration &incomplete,
+    const ArtifactRootReference &systemReference,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+    const ::loom::fabric::FabricSystemRootView &system) {
+  if (!incomplete.importedCapacityPressure)
+    return std::optional<std::vector<std::uint8_t>>{};
+  const auto &pressure = *incomplete.importedCapacityPressure;
+  if (pressure.witness.namespaceOrdinal == 0 ||
+      pressure.witness.namespaceOrdinal >
+          system.artifact().accCoreOccurrences().size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "system_pnr_generator_feedback_invalid: capacity witness has no exact "
+        "AccCore occurrence");
+  const auto witnessCore =
+      system.artifact().accCoreOccurrences()[static_cast<std::size_t>(
+          pressure.witness.namespaceOrdinal - 1)];
+  const auto target = system.spatialCoreTarget(witnessCore);
+  if (!target ||
+      target->dependencyOrdinal >= system.artifact().importedModules().size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "system_pnr_generator_feedback_invalid: witness AccCore has no Module");
+  const auto &targetModule =
+      system.artifact().importedModules()[target->dependencyOrdinal];
+  std::uint64_t compatibleAccCoreCount = 0;
+  for (const auto core : system.artifact().accCoreOccurrences()) {
+    const auto coreTarget = system.spatialCoreTarget(core);
+    if (!coreTarget || coreTarget->dependencyOrdinal >=
+                           system.artifact().importedModules().size())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "system_pnr_generator_feedback_invalid: AccCore has no Module");
+    if (system.artifact()
+            .importedModules()[coreTarget->dependencyOrdinal]
+            .identity() == targetModule.identity())
+      ++compatibleAccCoreCount;
+  }
+  auto feedback = ::loom::mapping::SystemAccCoreCapacityPressure::get(
+      systemReference,
+      ArtifactRootReference{::loom::fabric::fabricArtifactSchema.identity.str(),
+                            ::loom::fabric::fabricArtifactSchema.version,
+                            targetModule.identity()},
+      spatialMappings.vec(), compatibleAccCoreCount,
+      pressure.assignmentAttempts, pressure.witness.usage,
+      pressure.witness.capacity);
+  if (!feedback)
+    return feedback.takeError();
+  return std::optional<std::vector<std::uint8_t>>(
+      ::loom::mapping::encodeSystemAccCoreCapacityPressure(*feedback));
 }
 
 llvm::Expected<std::vector<::loom::fabric::FabricPhysicalTimingProfileView>>
@@ -353,9 +456,15 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
                                SemanticLimitReached
             ? CandidateGeneratorIncompleteReason::SemanticLimitReached
             : CandidateGeneratorIncompleteReason::ProofNotEstablished;
+    auto feedback = encodeCapacityPressureFeedback(
+        *partial, inputBindings[FabricInput].artifacts.front(),
+        inputBindings[SpatialMappingCandidatesInput].artifacts, *system);
+    if (!feedback)
+      return feedback.takeError();
     return CandidateGeneratorProviderResult{
-        incomplete(reason), rootCompleteSystemPnrCandidateGeneratorWorkSummary(
-                                partial->accounting)};
+        incomplete(reason),
+        rootCompleteSystemPnrCandidateGeneratorWorkSummary(partial->accounting),
+        std::move(*feedback)};
   }
   if (auto *interrupted =
           std::get_if<::loom::pnr::InterruptedSystemPnrGeneration>(&outcome))
@@ -493,9 +602,16 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
                                SemanticLimitReached
             ? CandidateGeneratorIncompleteReason::SemanticLimitReached
             : CandidateGeneratorIncompleteReason::ProofNotEstablished;
+    auto feedback = encodeCapacityPressureFeedback(
+        *partial, inputBindings[ApplicationFabricInput].artifacts.front(),
+        inputBindings[ApplicationSpatialMappingCandidatesInput].artifacts,
+        *system);
+    if (!feedback)
+      return feedback.takeError();
     return CandidateGeneratorProviderResult{
-        incomplete(reason), rootCompleteSystemPnrCandidateGeneratorWorkSummary(
-                                partial->accounting)};
+        incomplete(reason),
+        rootCompleteSystemPnrCandidateGeneratorWorkSummary(partial->accounting),
+        std::move(*feedback)};
   }
   if (auto *interrupted =
           std::get_if<::loom::pnr::InterruptedSystemPnrGeneration>(&outcome))
