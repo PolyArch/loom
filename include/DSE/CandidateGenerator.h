@@ -195,7 +195,7 @@ struct CandidateGeneratorWorkUnitSummary final {
 struct CandidateGeneratorOwnerLineagePayloadContract final {
   llvm::ArrayRef<std::uint8_t> schemaDescriptorBytes;
   llvm::Error (*validateCanonical)(
-      llvm::ArrayRef<std::uint8_t>,
+      llvm::ArrayRef<std::uint8_t>, const ArtifactRootReference &output,
       llvm::ArrayRef<ArtifactRootReference> canonicalParents,
       const ArtifactStore &store);
 };

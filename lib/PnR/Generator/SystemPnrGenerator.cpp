@@ -2,7 +2,10 @@
 
 #include "Common/ArtifactLocalReference.h"
 #include "Common/MappingDebugLog.h"
+#include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
+#include "Mapping/Artifact/SystemMappingHardwareDemand.h"
 #include "Mapping/IR/MappingDialect.h"
 #include "PnR/FabricTopologyQualityDiagnostic.h"
 #include "PnR/System/SystemActionExecutor.h"
@@ -214,6 +217,20 @@ void emitInvocationAccounting(const SystemPnrGenerationAccounting &accounting,
         fields["closure_status"] =
             mapping_debug::closureStatusSpelling(closureStatus);
         fields["candidate_publications"] = candidatePublications;
+        fields["migration_seed_attempt_slots"] =
+            accounting.migrationSeedAttemptSlots;
+        fields["migration_seed_prepared"] = accounting.migrationSeedPrepared;
+        fields["migration_seed_fallbacks"] = accounting.migrationSeedFallbacks;
+        fields["migration_preserved_thread_bindings"] =
+            accounting.migrationPreservedThreadBindings;
+        fields["migration_preserved_graph_bindings"] =
+            accounting.migrationPreservedGraphBindings;
+        fields["migration_reopened_thread_bindings"] =
+            accounting.migrationReopenedThreadBindings;
+        fields["migration_reopened_graph_bindings"] =
+            accounting.migrationReopenedGraphBindings;
+        fields["migration_reopened_service_legs"] =
+            accounting.migrationReopenedServiceLegs;
         fields["seed_attempt_slots"] = accounting.seedAttemptSlots;
         fields["prepared_seeds"] = accounting.preparedSeeds;
         fields["initializer_assignment_attempts"] =
@@ -241,6 +258,56 @@ void emitInvocationAccounting(const SystemPnrGenerationAccounting &accounting,
         fields["finalized_restarts"] = accounting.finalizedRestarts;
         fields["publication_slots"] = accounting.publicationSlots;
       });
+}
+
+llvm::Expected<ArtifactRootReference>
+publishExecutionBindingCheckpoint(const FrozenSystemPnrProblem &problem,
+                                  llvm::ArrayRef<PnrIndex> choices,
+                                  const ArtifactStore &store) {
+  const std::size_t threadCount = problem.threadDecisions().size();
+  if (choices.size() != threadCount + problem.graphDecisions().size())
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "System capacity checkpoint has an incomplete choice vector");
+  std::vector<::loom::mapping::SystemThreadExecutionCheckpoint> threads;
+  threads.reserve(threadCount);
+  for (const auto &[decision, frozen] :
+       llvm::enumerate(problem.threadDecisions())) {
+    const auto domain = problem.threadChoiceCatalogOrdinals(decision);
+    if (choices[decision] >= domain.size() ||
+        domain[choices[decision]] >= problem.accCores().size())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "System capacity checkpoint has a foreign thread choice");
+    threads.push_back({frozen.root, frozen.cell,
+                       problem.accCores()[domain[choices[decision]]]});
+  }
+  std::vector<::loom::mapping::SystemGraphExecutionCheckpoint> graphs;
+  graphs.reserve(problem.graphDecisions().size());
+  for (const auto &[decision, frozen] :
+       llvm::enumerate(problem.graphDecisions())) {
+    const PnrIndex choice = choices[threadCount + decision];
+    const auto domain = problem.graphChoiceCatalogOrdinals(decision);
+    if (choice >= domain.size() ||
+        domain[choice] >= problem.spatialMappings().size())
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "System capacity checkpoint has a foreign graph choice");
+    graphs.push_back({frozen.launch, frozen.cell,
+                      problem.spatialMappings()[domain[choice]]});
+  }
+  ArtifactRootReference dataflow{
+      ::dataflow::canonicalDataflowSchema.identity.str(),
+      ::dataflow::canonicalDataflowSchema.version, problem.dataflowIdentity()};
+  ArtifactRootReference system{
+      ::loom::fabric::fabricArtifactSchema.identity.str(),
+      ::loom::fabric::fabricArtifactSchema.version, problem.fabricIdentity()};
+  auto finalized = ::loom::mapping::finalizeSystemExecutionBindingCheckpoint(
+      std::move(dataflow), std::move(system), std::move(threads),
+      std::move(graphs), store);
+  if (!finalized)
+    return finalized.takeError();
+  return finalized->reference();
 }
 
 struct SystemInterruptionBestProjection final {
@@ -302,6 +369,14 @@ projectInterruptionSnapshot(SystemPnrInterruptionStage stage,
   snapshot.stage = stage;
   snapshot.frontier = {
       restartOrdinal,
+      accounting.migrationSeedAttemptSlots,
+      accounting.migrationSeedPrepared,
+      accounting.migrationSeedFallbacks,
+      accounting.migrationPreservedThreadBindings,
+      accounting.migrationPreservedGraphBindings,
+      accounting.migrationReopenedThreadBindings,
+      accounting.migrationReopenedGraphBindings,
+      accounting.migrationReopenedServiceLegs,
       accounting.seedAttemptSlots,
       accounting.preparedSeeds,
       accounting.initializerAssignmentAttempts,
@@ -332,6 +407,21 @@ interruptionPayload(const SystemPnrInterruptionSnapshot &snapshot) {
     frontier["restart_ordinal"] = *snapshot.frontier.restartOrdinal;
   else
     frontier["restart_ordinal"] = nullptr;
+  frontier["migration_seed_attempt_slots"] =
+      snapshot.frontier.migrationSeedAttemptSlots;
+  frontier["migration_seed_prepared"] = snapshot.frontier.migrationSeedPrepared;
+  frontier["migration_seed_fallbacks"] =
+      snapshot.frontier.migrationSeedFallbacks;
+  frontier["migration_preserved_thread_bindings"] =
+      snapshot.frontier.migrationPreservedThreadBindings;
+  frontier["migration_preserved_graph_bindings"] =
+      snapshot.frontier.migrationPreservedGraphBindings;
+  frontier["migration_reopened_thread_bindings"] =
+      snapshot.frontier.migrationReopenedThreadBindings;
+  frontier["migration_reopened_graph_bindings"] =
+      snapshot.frontier.migrationReopenedGraphBindings;
+  frontier["migration_reopened_service_legs"] =
+      snapshot.frontier.migrationReopenedServiceLegs;
   frontier["seed_attempt_slots"] = snapshot.frontier.seedAttemptSlots;
   frontier["prepared_seeds"] = snapshot.frontier.preparedSeeds;
   frontier["initializer_assignment_attempts"] =
@@ -568,6 +658,57 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
         SystemPnrInterruptionStage::FrozenModelConstruction, std::nullopt,
         accounting, {}, interruptionBest, resources);
 
+  std::optional<SystemMappingMigrationProjection> migrationProjection;
+  if (inputs.migrationSeed && inputs.checkpointMigrationSeed)
+    return InvalidSystemPnrGeneration{
+        InvalidSystemPnrGenerationReason::FrozenInput, accounting,
+        "System PnR received two migration seed sources"};
+  if (inputs.migrationSeed || inputs.checkpointMigrationSeed) {
+    SystemMappingMigrationProjectionOutcome projected =
+        inputs.migrationSeed
+            ? projectSystemMappingMigrationSeed(*inputs.migrationSeed,
+                                                **problem)
+            : projectSystemMappingMigrationSeed(*inputs.checkpointMigrationSeed,
+                                                **problem);
+    if (const auto *fallback =
+            std::get_if<SystemMappingMigrationFallback>(&projected)) {
+      ++accounting.migrationSeedFallbacks;
+      mapping_debug::emit(
+          mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+            fields["operation"] = "system_mapping_migration_fallback";
+            fields["reason"] =
+                systemMappingMigrationFallbackReasonSpelling(fallback->reason);
+          });
+    } else {
+      migrationProjection =
+          std::get<SystemMappingMigrationProjection>(std::move(projected));
+      accounting.migrationPreservedThreadBindings =
+          migrationProjection->preservedThreadBindings;
+      accounting.migrationPreservedGraphBindings =
+          migrationProjection->preservedGraphBindings;
+      if (accounting.migrationPreservedThreadBindings >
+              (*problem)->threadDecisions().size() ||
+          accounting.migrationPreservedGraphBindings >
+              (*problem)->graphDecisions().size())
+        return internal(
+            InternalSystemPnrGenerationReason::CandidateInitialization,
+            accounting,
+            "System migration preservation exceeds the child decision domain");
+      accounting.migrationReopenedThreadBindings =
+          (*problem)->threadDecisions().size() -
+          accounting.migrationPreservedThreadBindings;
+      accounting.migrationReopenedGraphBindings =
+          (*problem)->graphDecisions().size() -
+          accounting.migrationPreservedGraphBindings;
+      // The current checkpoint deliberately owns no service target or route
+      // selection. Every child service leg therefore remains in the ordinary
+      // initializer/router domain and is reported as reopened work.
+      accounting.migrationReopenedServiceLegs =
+          (*problem)->serviceLegs().size();
+    }
+  }
+
   switch ((*problem)->progressBasis().kind) {
   case ::loom::mapping::MappingDataflowProgressBasisKind::Acyclic:
   case ::loom::mapping::MappingDataflowProgressBasisKind::InitializedFeedback:
@@ -582,7 +723,7 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
         IncompleteSystemPnrGenerationReason::ProofNotEstablished, accounting,
         "proof_not_established: cyclic System Dataflow progress basis requires "
         "a typed cycle-breaking proof",
-        std::nullopt};
+        std::nullopt, std::nullopt};
   }
 
   const auto &search = inputs.config.policy().search;
@@ -604,6 +745,12 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
                       accounting, std::move(error));
     if (const auto *pressure =
             std::get_if<SystemImportedCapacityPressure>(&*capacityFit)) {
+      auto checkpoint = publishExecutionBindingCheckpoint(
+          **problem, pressure->checkpointChoices, inputs.store);
+      if (!checkpoint)
+        return internal(
+            InternalSystemPnrGenerationReason::CandidateInitialization,
+            accounting, checkpoint.takeError());
       mapping_debug::emit(
           mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
           mapping_debug::Event::MappingFailure,
@@ -622,7 +769,7 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
           IncompleteSystemPnrGenerationReason::ProofNotEstablished, accounting,
           "proof_not_established: every bounded execution binding retains "
           "imported Spatial capacity pressure",
-          *pressure};
+          *pressure, std::move(*checkpoint)};
     }
     if (std::holds_alternative<SystemImportedCapacitySearchLimit>(
             *capacityFit)) {
@@ -664,18 +811,38 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
       firstIncompleteDiagnostic = diagnostic.str();
   };
 
-  for (std::uint32_t attempt = 0;
-       attempt != search.initializer.seedAttemptCount; ++attempt) {
+  const std::uint64_t attemptCount =
+      static_cast<std::uint64_t>(search.initializer.seedAttemptCount) +
+      (migrationProjection ? 1 : 0);
+  if (attemptCount > std::numeric_limits<std::uint32_t>::max())
+    return internal(InternalSystemPnrGenerationReason::AccountingOverflow,
+                    accounting, "migration plus fresh seed count exceeds u32");
+  for (std::uint32_t attempt = 0; attempt != attemptCount; ++attempt) {
+    const bool migrationAttempt = migrationProjection && attempt == 0;
+    const std::uint32_t freshAttempt =
+        migrationAttempt
+            ? 0
+            : attempt -
+                  static_cast<std::uint32_t>(migrationProjection.has_value());
     if (inputs.executionControl.stopRequested())
       return interruptedOutcome(
           SystemPnrInterruptionStage::CandidateInitialization, attempt,
           accounting, std::move(candidates), interruptionBest, resources);
     ++accounting.seedAttemptSlots;
+    if (migrationAttempt)
+      ++accounting.migrationSeedAttemptSlots;
     auto initialized =
-        requireImportedCapacityClosure
+        migrationAttempt
+            ? (migrationProjection->releasedChoices.empty()
+                   ? initializeSystemCandidateWithFixedChoices(
+                         *problem, migrationProjection->fixedChoices)
+                   : initializeSystemCandidateWithReleasedChoices(
+                         *problem, migrationProjection->fixedChoices,
+                         migrationProjection->releasedChoices))
+        : requireImportedCapacityClosure
             ? initializeSystemCandidateAttemptWithImportedCapacityClosure(
-                  *problem, attempt)
-            : initializeSystemCandidateAttempt(*problem, attempt);
+                  *problem, freshAttempt)
+            : initializeSystemCandidateAttempt(*problem, freshAttempt);
     if (!initialized) {
       InitializationFailure failure =
           classifyInitializationFailure(initialized.takeError());
@@ -686,6 +853,19 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
         return interruptedOutcome(
             SystemPnrInterruptionStage::CandidateInitialization, attempt,
             accounting, std::move(candidates), interruptionBest, resources);
+      if (migrationAttempt) {
+        ++accounting.migrationSeedFallbacks;
+        mapping_debug::emit(
+            mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+            mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+              fields["operation"] = "system_mapping_migration_fallback";
+              fields["reason"] = systemMappingMigrationFallbackReasonSpelling(
+                  SystemMappingMigrationFallbackReason::
+                      ChildInitializerRejected);
+              fields["diagnostic"] = failure.diagnostic;
+            });
+        continue;
+      }
       switch (failure.kind) {
       case SystemCandidateInitializationFailureKind::ProvenInfeasible:
         if (candidates.empty()) {
@@ -713,6 +893,8 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
                       accounting, std::move(error));
 
     ++accounting.preparedSeeds;
+    if (migrationAttempt)
+      ++accounting.migrationSeedPrepared;
     SystemCandidateStateHandle candidate = std::move(initialized->state);
     if (llvm::Error error =
             considerInterruptionCandidate(*candidate, interruptionBest))
@@ -723,7 +905,10 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
       return interruptedOutcome(SystemPnrInterruptionStage::Annealing, attempt,
                                 accounting, std::move(candidates),
                                 interruptionBest, resources);
-    auto annealed = annealing.run(candidate, attempt, inputs.executionControl);
+    const std::uint64_t annealingSeedOrdinal =
+        migrationAttempt ? 0 : freshAttempt;
+    auto annealed =
+        annealing.run(candidate, annealingSeedOrdinal, inputs.executionControl);
     if (!annealed)
       return internal(InternalSystemPnrGenerationReason::Annealing, accounting,
                       annealed.takeError());
@@ -896,7 +1081,7 @@ generateSystemMappings(const SystemPnrGenerationInputs &inputs) {
       firstIncompleteDiagnostic.empty()
           ? "no fixed System restart reached independent final verification"
           : std::move(firstIncompleteDiagnostic),
-      std::nullopt};
+      std::nullopt, std::nullopt};
 }
 
 } // namespace loom::pnr

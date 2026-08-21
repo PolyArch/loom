@@ -73,7 +73,7 @@ entry:
 }
 
 std::unique_ptr<llvm::Module>
-parseEmptyScopeModule(llvm::LLVMContext &context) {
+parseControlOnlyScopeModule(llvm::LLVMContext &context) {
   constexpr llvm::StringLiteral source = R"llvm(
 target datalayout = "e-m:e-p:64:64-i64:64-n32:64-S128"
 target triple = "riscv64-unknown-unknown"
@@ -88,7 +88,7 @@ merge:
 }
 )llvm";
   llvm::SMDiagnostic diagnostic;
-  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<empty-scope>");
+  auto buffer = llvm::MemoryBuffer::getMemBuffer(source, "<control-scope>");
   auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
   if (!module) {
     std::string message;
@@ -407,15 +407,15 @@ void requireDeterministicScopeExpansionBudget(
   }
 }
 
-void requireEmptyScopeIsCandidateRejection(
+void requireControlOnlyScopeProducesWork(
     const loom::fabric::FinalizedFabricRoot &fabric) {
   llvm::LLVMContext context;
   auto structured = take(loom::frontend::raiseLlvmModuleToStructured(
-      parseEmptyScopeModule(context), fabric));
+      parseControlOnlyScopeModule(context), fabric));
   auto domain = take(loom::frontend::enumerateSpatialOwnershipScopeDomain(
       structured.structuredProgram));
 
-  bool sawEmptyScope = false;
+  bool sawControlWork = false;
   for (const loom::frontend::SpatialOwnershipScopeDomainEntry &entry : domain) {
     const auto *scope =
         std::get_if<loom::frontend::SpatialOwnershipScope>(&entry);
@@ -428,8 +428,13 @@ void requireEmptyScopeIsCandidateRejection(
          decisions) {
       auto candidate = loom::frontend::materializeSpatialOwnershipDecision(
           structured.structuredProgram, *scope, decision, fabric);
-      if (candidate)
+      if (candidate) {
+        auto candidateView = take(candidate->canonicalDataflow.view());
+        if (candidateView.graphs().empty() || candidateView.actors().empty())
+          fail("control-only scope published an empty Spatial workload");
+        sawControlWork = true;
         continue;
+      }
       bool classified = false;
       llvm::Error unhandled = llvm::handleErrors(
           candidate.takeError(),
@@ -440,17 +445,17 @@ void requireEmptyScopeIsCandidateRejection(
                         NonFinalizable &&
                 error.message().find("no SpatialCore workload") !=
                     std::string::npos)
-              sawEmptyScope = true;
+              fail("control-only scope was misclassified as empty");
           });
       if (unhandled)
-        fail("empty Spatial scope escaped candidate rejection: " +
+        fail("control-only scope escaped candidate rejection: " +
              llvm::toString(std::move(unhandled)));
       if (!classified)
-        fail("empty Spatial scope failed without a typed rejection");
+        fail("control-only scope failed without a typed rejection");
     }
   }
-  if (!sawEmptyScope)
-    fail("empty Spatial scope did not produce a NonFinalizable disposition");
+  if (!sawControlWork)
+    fail("control-only scope produced no nonempty Spatial workload");
 }
 
 void requireUnsupportedNestedLeafIsPreflightRejection(
@@ -585,7 +590,7 @@ int main() {
   auto design = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
 
-  requireEmptyScopeIsCandidateRejection(design.roots().front());
+  requireControlOnlyScopeProducesWork(design.roots().front());
   requireUnsupportedNestedLeafIsPreflightRejection(design.roots().front());
   requireFirstClassPointerStateDoesNotHideInnerScope(design.roots().front());
   requireProtocolRootsExcludeHarnessScopes(design.roots().front());

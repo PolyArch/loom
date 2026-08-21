@@ -154,9 +154,8 @@ BoundarySpec BoundarySpec::s2t(const PortType &dataInput,
       ::fabric::BoundaryDirection::S2t, {dataInput, tagInput}, {taggedOutput}};
 }
 
-BoundarySpec
-BoundarySpec::s2tWithConfiguredTag(const PortType &dataInput,
-                                   const PortType &taggedOutput) {
+BoundarySpec BoundarySpec::s2tWithConfiguredTag(const PortType &dataInput,
+                                                const PortType &taggedOutput) {
   return {::fabric::BoundaryDirection::S2t, {dataInput}, {taggedOutput}};
 }
 
@@ -1583,8 +1582,7 @@ SpatialCoreBuilder::addPe(llvm::ArrayRef<SpatialValue> inputs,
       return bufferSize.takeError();
     operandBufferSize = *bufferSize;
     fuConfigurationMode = ::fabric::FuConfigModeAttr::get(
-        &(*state)->context,
-        fabricFuConfigMode(parameters.fuConfigurationMode));
+        &(*state)->context, fabricFuConfigMode(parameters.fuConfigurationMode));
     operandBufferMode = ::fabric::OperandBufferModeAttr::get(
         &(*state)->context, parameters.operandBufferMode);
 
@@ -1784,6 +1782,29 @@ llvm::Expected<FinalizedFabricDesign> DesignBuilder::finalize() && {
     finalized.push_back(std::move(*result));
   }
   return FinalizedFabricDesign(std::move(finalized));
+}
+
+llvm::Expected<loom::fabric::FinalizedFabricSystemProjection>
+DesignBuilder::finalizeDerivedSystemWithTrackedAccCores(
+    llvm::ArrayRef<loom::fabric::AccCoreOccurrenceRef> trackedAccCores) && {
+  if (!state_ || state_->consumed)
+    return invalid("DesignBuilder is already consumed");
+  if (!state_->spatialRoots.empty() || state_->systemRoots.size() != 1)
+    return invalid(
+        "tracked AccCore finalization requires one sole derived System");
+  const detail::SystemRootState &root = state_->systemRoots.front();
+  if (!root.closed)
+    return invalid("derived System is not closed");
+  if (!root.derivedParent)
+    return invalid("tracked AccCore finalization requires a derived System");
+
+  llvm::SmallVector<ArtifactRootReference, 4> importedModules;
+  importedModules.reserve(root.importedModules.size());
+  for (const detail::ImportedModuleState &module : root.importedModules)
+    importedModules.push_back(module.reference);
+  state_->consumed = true;
+  return loom::fabric::finalizeFabricSystemWithTrackedAccCores(
+      root.operation, importedModules, trackedAccCores, state_->store);
 }
 
 } // namespace loom::adg

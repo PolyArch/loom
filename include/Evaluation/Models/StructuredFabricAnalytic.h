@@ -84,6 +84,8 @@ private:
       const ArtifactStore &, const BlobStore &);
 };
 
+class StructuredEvaluationInvocationCache;
+
 /// Registers the exact low-fidelity StructuredProgram/Fabric analytic model.
 /// Repeated registration in one process is a no-op.
 llvm::Error registerStructuredFabricAnalyticModel();
@@ -193,6 +195,31 @@ llvm::Error primeStructuredFabricAnalyticResult(
     const ::loom::fabric::FinalizedFabricRoot &fabric,
     const ::loom::ResolvedConfig &config,
     const ::loom::ArtifactStore &artifactStore);
+
+/// Reads the exact invocation-local runtime estimate already produced by this
+/// model for one candidate. An absent value means either that the model was
+/// inapplicable or that no result was primed under the complete exact key; it
+/// is never interpreted as infeasibility. The lookup performs no evaluation
+/// and owns no ranking policy.
+llvm::Expected<std::optional<std::uint64_t>>
+lookupStructuredFabricAnalyticRuntimeEstimate(
+    const ::loom::ArtifactRootReference &structuredProgram,
+    const ::loom::ArtifactRootReference &fabric,
+    const ::loom::ArtifactRootReference &workload,
+    const ::loom::ArtifactRootReference &runtimeInput,
+    const ::loom::ResolvedConfig &config,
+    StructuredEvaluationInvocationCache &cache);
+
+/// Returns whether the exact analytic key has already been evaluated,
+/// including an inapplicable result. This permits an owner-side caller to
+/// avoid repeating candidate profiling before priming the same cache entry.
+llvm::Expected<bool> hasStructuredFabricAnalyticResult(
+    const ::loom::ArtifactRootReference &structuredProgram,
+    const ::loom::ArtifactRootReference &fabric,
+    const ::loom::ArtifactRootReference &workload,
+    const ::loom::ArtifactRootReference &runtimeInput,
+    const ::loom::ResolvedConfig &config,
+    StructuredEvaluationInvocationCache &cache);
 
 } // namespace loom::evaluation::models
 

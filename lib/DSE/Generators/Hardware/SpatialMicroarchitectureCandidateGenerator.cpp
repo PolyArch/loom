@@ -172,10 +172,9 @@ materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
       finalized->roots().front());
 }
 
-llvm::Error
-validateLineagePayload(llvm::ArrayRef<std::uint8_t> bytes,
-                       llvm::ArrayRef<ArtifactRootReference> parents,
-                       const ArtifactStore &store) {
+llvm::Error validateLineagePayload(
+    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &,
+    llvm::ArrayRef<ArtifactRootReference> parents, const ArtifactStore &store) {
   auto decision = adoptSpatialMicroarchitectureDecision(bytes);
   if (!decision)
     return decision.takeError();

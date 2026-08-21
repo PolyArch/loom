@@ -175,6 +175,12 @@ public:
   solveCanonicalWithReleasedChoices(std::uint64_t assignmentLimit,
                                     llvm::ArrayRef<PnrIndex> fixedChoices,
                                     llvm::ArrayRef<PnrIndex> releasedDecisions);
+  llvm::Expected<InitializerRelationSolveResult>
+  solveCanonicalWithReleasedChoices(
+      std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
+      llvm::ArrayRef<PnrIndex> releasedDecisions,
+      llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+          validateCompleteAssignment);
   llvm::Expected<InitializerRelationSolveResult> solveCanonicalWithFixedChoices(
       std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
       llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>

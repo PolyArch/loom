@@ -12,8 +12,8 @@
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricArtifactCodec.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
-#include "Fabric/Identity/FabricRefBytes.h"
 #include "Fabric/Identity/FabricPhysicalTiming.h"
+#include "Fabric/Identity/FabricRefBytes.h"
 #include "Mapping/Artifact/SystemMappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingExecutionProjection.h"
@@ -204,8 +204,8 @@ projectJointDesignTargetModules(const ArtifactRootReference &system,
 llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
     JointDesignInputs inputs,
     llvm::ArrayRef<ArtifactRootReference> physicalTimingProfiles,
-    const JointDesignPolicy &policy,
-    const ResolvedConfig &baseConfig, const ArtifactStore &artifactStore) {
+    const JointDesignPolicy &policy, const ResolvedConfig &baseConfig,
+    const ArtifactStore &artifactStore) {
   if (!baseConfig.dse.planNodes.empty())
     return invalid("base ResolvedConfig already owns a DSE invocation plan");
   if (llvm::Error error = registerMappingGenerators())
@@ -226,8 +226,8 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
 
   std::map<ArtifactIdentity::Storage, ArtifactRootReference> timingByModule;
   for (const ArtifactRootReference &profile : physicalTimingProfiles) {
-    auto owner = fabric::resolveFabricPhysicalTimingProfileOwner(
-        profile, artifactStore);
+    auto owner =
+        fabric::resolveFabricPhysicalTimingProfileOwner(profile, artifactStore);
     if (!owner)
       return owner.takeError();
     if (!timingByModule.emplace(owner->bytes(), profile).second)
@@ -257,8 +257,8 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
       if (profile == timingByModule.end())
         return invalid(
             "joint System target Module has no physical timing profile");
-      auto importedModule = fabric::importEntireFabricRoot(module,
-                                                           artifactStore);
+      auto importedModule =
+          fabric::importEntireFabricRoot(module, artifactStore);
       if (!importedModule)
         return importedModule.takeError();
       auto importedProfile = fabric::importFabricPhysicalTimingProfile(
@@ -305,7 +305,7 @@ llvm::Expected<JointDesignExplorationPlan> buildJointDesignExplorationPlan(
                                policy.maximumSpatialMappingsPerPair()},
          ExactPlanArtifacts{{pair.system}},
          ExactPlanArtifacts{std::move(systemTimingProfiles)},
-         ExactPlanArtifacts{{*constraints}}},
+         ExactPlanArtifacts{{*constraints}}, ExactPlanArtifacts{}},
         systemConfig->canonicalViewBytes().vec(),
         systemConfig->digest()});
     outputs.push_back({pair, std::move(techOutputs), retainedSpatialOutputs,
@@ -329,8 +329,7 @@ projectJointDesignSemanticInputs(const JointDesignExplorationPlan &plan) {
                 plan.frontier.systemFrontier.end());
   for (const DsePlanNodeDefinition &node : plan.resolvedConfig.dse.planNodes) {
     const auto &bindings = std::visit(
-        [](const auto &definition)
-            -> const std::vector<PlanInputBinding> & {
+        [](const auto &definition) -> const std::vector<PlanInputBinding> & {
           return definition.inputBindings;
         },
         node);

@@ -1445,6 +1445,17 @@ llvm::Expected<InitializerRelationSolveResult>
 InitializerRelationSolver::solveCanonicalWithReleasedChoices(
     std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
     llvm::ArrayRef<PnrIndex> releasedDecisions) {
+  return solveCanonicalWithReleasedChoices(
+      assignmentLimit, fixedChoices, releasedDecisions,
+      [](llvm::ArrayRef<PnrIndex>) -> llvm::Expected<bool> { return true; });
+}
+
+llvm::Expected<InitializerRelationSolveResult>
+InitializerRelationSolver::solveCanonicalWithReleasedChoices(
+    std::uint64_t assignmentLimit, llvm::ArrayRef<PnrIndex> fixedChoices,
+    llvm::ArrayRef<PnrIndex> releasedDecisions,
+    llvm::function_ref<llvm::Expected<bool>(llvm::ArrayRef<PnrIndex>)>
+        validateCompleteAssignment) {
   assignmentAttempts_ = 0;
   if (fixedChoices.size() != domainCounts_.size())
     return assignmentError(
@@ -1590,8 +1601,18 @@ InitializerRelationSolver::solveCanonicalWithReleasedChoices(
       std::move(reducedChoiceCounts), std::move(reducedRelations));
   if (!reducedModel)
     return reducedModel.takeError();
+  const auto projectChoices = [&](llvm::ArrayRef<PnrIndex> reducedChoices) {
+    std::vector<PnrIndex> projected(fixedChoices.begin(), fixedChoices.end());
+    for (auto [local, decision] : llvm::enumerate(released))
+      projected[decision] = reducedChoices[local];
+    return projected;
+  };
   InitializerRelationSolver reducedSolver(*reducedModel);
-  auto reducedResult = reducedSolver.solveCanonical(assignmentLimit);
+  auto reducedResult = reducedSolver.solveCanonical(
+      assignmentLimit,
+      [&](llvm::ArrayRef<PnrIndex> reducedChoices) -> llvm::Expected<bool> {
+        return validateCompleteAssignment(projectChoices(reducedChoices));
+      });
   assignmentAttempts_ = reducedSolver.assignmentAttempts();
   if (!reducedResult) {
     llvm::Error translated = llvm::handleErrors(
@@ -1610,9 +1631,7 @@ InitializerRelationSolver::solveCanonicalWithReleasedChoices(
   }
 
   InitializerRelationSolveResult solved;
-  solved.choices.assign(fixedChoices.begin(), fixedChoices.end());
-  for (auto [local, decision] : llvm::enumerate(released))
-    solved.choices[decision] = reducedResult->choices[local];
+  solved.choices = projectChoices(reducedResult->choices);
   if (llvm::Error error = model_->verifyChoices(
           llvm::ArrayRef(solved.choices).take_front(model_->decisionCount())))
     return std::move(error);

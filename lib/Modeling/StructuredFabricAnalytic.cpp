@@ -1153,4 +1153,40 @@ llvm::Error primeStructuredFabricAnalyticResult(
   return llvm::Error::success();
 }
 
+llvm::Expected<std::optional<std::uint64_t>>
+lookupStructuredFabricAnalyticRuntimeEstimate(
+    const ArtifactRootReference &structuredProgram,
+    const ArtifactRootReference &fabric, const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
+    StructuredEvaluationInvocationCache &cache) {
+  auto configView =
+      ResolvedModelConfigView::project(kModelDescriptor.reference(), config);
+  if (!configView)
+    return configView.takeError();
+  const detail::StructuredAnalyticCacheKey key = metricCacheKey(
+      structuredProgram, fabric, workload, runtimeInput, configView->digest());
+  auto &impl = detail::StructuredEvaluationCacheAccess::impl(cache);
+  std::lock_guard<std::mutex> lock(impl.mutex);
+  auto found = impl.analyticResults.find(key);
+  if (found == impl.analyticResults.end() || !*found->second)
+    return std::optional<std::uint64_t>{};
+  return std::optional<std::uint64_t>((**found->second).runtimePicoseconds);
+}
+
+llvm::Expected<bool> hasStructuredFabricAnalyticResult(
+    const ArtifactRootReference &structuredProgram,
+    const ArtifactRootReference &fabric, const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput, const ResolvedConfig &config,
+    StructuredEvaluationInvocationCache &cache) {
+  auto configView =
+      ResolvedModelConfigView::project(kModelDescriptor.reference(), config);
+  if (!configView)
+    return configView.takeError();
+  const detail::StructuredAnalyticCacheKey key = metricCacheKey(
+      structuredProgram, fabric, workload, runtimeInput, configView->digest());
+  auto &impl = detail::StructuredEvaluationCacheAccess::impl(cache);
+  std::lock_guard<std::mutex> lock(impl.mutex);
+  return impl.analyticResults.find(key) != impl.analyticResults.end();
+}
+
 } // namespace loom::evaluation::models

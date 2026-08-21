@@ -173,13 +173,11 @@ struct ChangeFifoBypassCapabilityDomain final {
   std::vector<bool> values;
 };
 
-using SpatialMicroarchitectureDecisionDomain =
-    std::variant<ChangePeKindDomain, ResizeInstructionStoreDomain,
-                 ChangeFuInventoryDomain, ChangeFuCapabilityDomain,
-                 ChangeSwitchModeOrScheduleCapacityDomain, ResizeMemoryDomain,
-                 ChangeMemoryOperationTableDomain, ResizeFifoDomain,
-                 ChangeFifoBypassCapabilityDomain,
-                 ResizeInstructionStoresDomain>;
+using SpatialMicroarchitectureDecisionDomain = std::variant<
+    ChangePeKindDomain, ResizeInstructionStoreDomain, ChangeFuInventoryDomain,
+    ChangeFuCapabilityDomain, ChangeSwitchModeOrScheduleCapacityDomain,
+    ResizeMemoryDomain, ChangeMemoryOperationTableDomain, ResizeFifoDomain,
+    ChangeFifoBypassCapabilityDomain, ResizeInstructionStoresDomain>;
 
 struct AddAccCore final {
   loom::fabric::AccCoreOccurrenceRef prototype;
@@ -310,15 +308,30 @@ adoptSpatialMicroarchitectureRewriteConfig(llvm::ArrayRef<std::uint8_t> bytes);
 llvm::Expected<std::pair<std::vector<SystemCompositionDecision>, std::uint64_t>>
 adoptSystemCompositionRewriteConfig(llvm::ArrayRef<std::uint8_t> bytes);
 
+/// Exact transformation lineage through System canonical relabeling. This is
+/// not a claim that the two cores are interchangeable; it only records that
+/// the child entity descends from the selected parent entity.
+struct SystemCompositionAccCoreCorrespondence final {
+  loom::fabric::AccCoreOccurrenceRef parent;
+  loom::fabric::AccCoreOccurrenceRef child;
+
+  friend bool operator==(const SystemCompositionAccCoreCorrespondence &lhs,
+                         const SystemCompositionAccCoreCorrespondence &rhs) {
+    return lhs.parent == rhs.parent && lhs.child == rhs.child;
+  }
+};
+
 std::vector<std::uint8_t>
 encodeSpatialTopologyDecision(const ArtifactRootReference &parent,
                               const SpatialTopologyDecision &decision);
 std::vector<std::uint8_t> encodeSpatialMicroarchitectureDecision(
     const ArtifactRootReference &parent,
     const SpatialMicroarchitectureDecision &decision);
-std::vector<std::uint8_t>
-encodeSystemCompositionDecision(const ArtifactRootReference &parent,
-                                const SystemCompositionDecision &decision);
+std::vector<std::uint8_t> encodeSystemCompositionDecision(
+    const ArtifactRootReference &parent,
+    const SystemCompositionDecision &decision,
+    llvm::ArrayRef<SystemCompositionAccCoreCorrespondence>
+        accCoreCorrespondence);
 
 struct SpatialTopologyCandidateDecision final {
   ArtifactRootReference parent;
@@ -333,6 +346,7 @@ struct SpatialMicroarchitectureCandidateDecision final {
 struct SystemCompositionCandidateDecision final {
   ArtifactRootReference parent;
   SystemCompositionDecision decision;
+  std::vector<SystemCompositionAccCoreCorrespondence> accCoreCorrespondence;
 };
 
 llvm::Expected<SpatialTopologyCandidateDecision>

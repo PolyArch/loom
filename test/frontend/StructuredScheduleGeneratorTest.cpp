@@ -377,8 +377,8 @@ module {
           .ownerLineagePayload;
   if (!contract)
     fail("schedule generator has no owner lineage contract");
-  llvm::Error validation =
-      contract->validateCanonical(encoded, {parentReference}, store);
+  llvm::Error validation = contract->validateCanonical(
+      encoded, parentReference, {parentReference}, store);
   if (!validation)
     fail("schedule lineage accepted an out-of-range parent-local loop");
   llvm::consumeError(std::move(validation));

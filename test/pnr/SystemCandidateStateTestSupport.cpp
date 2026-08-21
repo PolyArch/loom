@@ -1139,8 +1139,8 @@ void loom::pnr::test::verifySystemResourceAction(
   });
   const bool hasGlobalProposal =
       llvm::any_of(routingChoices, [](const auto &action) {
-    return std::holds_alternative<SystemGlobalRoutingAction>(action);
-  });
+        return std::holds_alternative<SystemGlobalRoutingAction>(action);
+      });
   require(single != routingChoices.end() && subtree != routingChoices.end(),
           "System routing domain omitted an incremental negotiated scope");
   require(!hasGlobalProposal,
@@ -1292,11 +1292,11 @@ void loom::pnr::test::verifySystemResourceAction(
   auto objective =
       take(candidate->problem().objectiveProgram().evaluate(*candidate));
   SystemActionProbeAccounting globalWork;
-  auto globalProbe = take(probeSystemAction(
-      candidate, objective,
-      SystemMappingAction{
-          SystemTransportRoutingAction{SystemGlobalRoutingAction{}}},
-      globalWork));
+  auto globalProbe =
+      take(probeSystemAction(candidate, objective,
+                             SystemMappingAction{SystemTransportRoutingAction{
+                                 SystemGlobalRoutingAction{}}},
+                             globalWork));
   require(globalWork.assignmentAttempts == 0 &&
               globalWork.negotiationIterations != 0,
           "Global routing Action did not consume negotiated routing work");
@@ -1519,4 +1519,101 @@ void loom::pnr::test::verifySystemResourceActionWorkflow(
   }
   fail("no finite-degree resource Action candidate is routable: " +
        lastDiagnostic);
+}
+
+loom::mapping::SystemAccCoreCapacityPressure
+loom::pnr::test::verifySystemCapacityPressureRoundTrip(
+    ArtifactStore &store, const fabric::FinalizedFabricRoot &parentSystemRoot,
+    const fabric::FabricSystemRootView &parentSystem,
+    const ArtifactRootReference &targetModule,
+    const mapping::FinalizedSystemExecutionBindingCheckpoint &checkpoint,
+    const ArtifactRootReference &dataflow,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+    std::uint64_t assignmentAttempts) {
+  std::uint64_t compatibleCoreCount = 0;
+  for (const auto core : parentSystem.artifact().accCoreOccurrences()) {
+    const auto target = parentSystem.spatialCoreTarget(core);
+    require(target && target->dependencyOrdinal <
+                          parentSystem.artifact().importedModules().size(),
+            "System AccCore has no exact Module target");
+    compatibleCoreCount += parentSystem.artifact()
+                               .importedModules()[target->dependencyOrdinal]
+                               .identity() == targetModule.artifact;
+  }
+  std::optional<fabric::AccCoreOccurrenceRef> witness;
+  for (const auto &binding : checkpoint.threadBindings()) {
+    const auto target = parentSystem.spatialCoreTarget(binding.target);
+    require(target && target->dependencyOrdinal <
+                          parentSystem.artifact().importedModules().size(),
+            "checkpoint AccCore has no exact Module target");
+    if (parentSystem.artifact()
+            .importedModules()[target->dependencyOrdinal]
+            .identity() == targetModule.artifact) {
+      witness = binding.target;
+      break;
+    }
+  }
+  require(witness.has_value(),
+          "checkpoint has no thread on the capacity-witness Module");
+  auto feedback = take(mapping::SystemAccCoreCapacityPressure::get(
+      parentSystemRoot.reference(), targetModule, *witness,
+      spatialMappings.vec(), compatibleCoreCount, assignmentAttempts, 2, 1,
+      checkpoint.reference()));
+  auto adopted = take(mapping::adoptSystemAccCoreCapacityPressure(
+      mapping::encodeSystemAccCoreCapacityPressure(feedback),
+      parentSystemRoot.reference(), dataflow, spatialMappings, store));
+  require(adopted.system() == parentSystemRoot.reference() &&
+              adopted.targetModule() == targetModule &&
+              adopted.witnessAccCore() == *witness &&
+              adopted.compatibleAccCoreCount() == compatibleCoreCount &&
+              adopted.executionBindingCheckpoint() == checkpoint.reference() &&
+              adopted.additionalAccCoreCount() == 1,
+          "System capacity feedback lost its exact hardware owner");
+  return adopted;
+}
+
+loom::pnr::SystemExecutionBindingCorrespondence
+loom::pnr::test::verifySystemAccCoreCorrespondence(
+    ArtifactStore &store, const fabric::FinalizedFabricRoot &parentSystemRoot,
+    const fabric::FabricSystemRootView &parentSystem,
+    const fabric::FinalizedFabricRoot &childSystemRoot,
+    std::vector<SystemAccCoreCorrespondence> correspondence) {
+  std::optional<std::pair<std::size_t, std::size_t>> unlikePair;
+  for (std::size_t lhs = 0; lhs != correspondence.size() && !unlikePair;
+       ++lhs) {
+    const auto lhsTarget =
+        parentSystem.spatialCoreTarget(correspondence[lhs].parent);
+    require(lhsTarget && lhsTarget->dependencyOrdinal <
+                             parentSystemRoot.directDependencies().size(),
+            "migration test parent has no exact Module target");
+    for (std::size_t rhs = lhs + 1; rhs != correspondence.size(); ++rhs) {
+      const auto rhsTarget =
+          parentSystem.spatialCoreTarget(correspondence[rhs].parent);
+      require(rhsTarget && rhsTarget->dependencyOrdinal <
+                               parentSystemRoot.directDependencies().size(),
+              "migration test parent has no exact Module target");
+      if (parentSystemRoot.directDependencies()[lhsTarget->dependencyOrdinal]
+              .root !=
+          parentSystemRoot.directDependencies()[rhsTarget->dependencyOrdinal]
+              .root) {
+        unlikePair = std::pair<std::size_t, std::size_t>{lhs, rhs};
+        break;
+      }
+    }
+  }
+  require(unlikePair.has_value(),
+          "migration test has no unlike AccCore target pair");
+  std::vector<SystemAccCoreCorrespondence> wrong = correspondence;
+  std::swap(wrong[unlikePair->first].child, wrong[unlikePair->second].child);
+  auto rejected = SystemExecutionBindingCorrespondence::get(
+      parentSystemRoot.reference(), childSystemRoot.reference(),
+      std::move(wrong), store);
+  require(!rejected,
+          "cross-Module AccCore correspondence unexpectedly succeeded");
+  const std::string diagnostic = llvm::toString(rejected.takeError());
+  require(llvm::StringRef(diagnostic).contains("changes an AccCore Module"),
+          "cross-Module correspondence diagnostic changed: " + diagnostic);
+  return take(SystemExecutionBindingCorrespondence::get(
+      parentSystemRoot.reference(), childSystemRoot.reference(),
+      std::move(correspondence), store));
 }

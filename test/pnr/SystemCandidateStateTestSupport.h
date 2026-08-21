@@ -3,9 +3,11 @@
 #include "Common/Artifact.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
+#include "Mapping/Artifact/SystemMappingHardwareDemand.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/IR/MappingOps.h"
 #include "PnR/System/SystemCandidateState.h"
+#include "PnR/System/SystemMappingMigration.h"
 
 #include "llvm/ADT/StringRef.h"
 
@@ -103,6 +105,21 @@ void verifySystemNegotiatedRoutingWorkflow(
 
 void verifySystemImportedCapacityWorkflow(
     const SystemCandidateState &candidate);
+
+mapping::SystemAccCoreCapacityPressure verifySystemCapacityPressureRoundTrip(
+    ArtifactStore &store, const fabric::FinalizedFabricRoot &parentSystemRoot,
+    const fabric::FabricSystemRootView &parentSystem,
+    const ArtifactRootReference &targetModule,
+    const mapping::FinalizedSystemExecutionBindingCheckpoint &checkpoint,
+    const ArtifactRootReference &dataflow,
+    llvm::ArrayRef<ArtifactRootReference> spatialMappings,
+    std::uint64_t assignmentAttempts);
+
+SystemExecutionBindingCorrespondence verifySystemAccCoreCorrespondence(
+    ArtifactStore &store, const fabric::FinalizedFabricRoot &parentSystemRoot,
+    const fabric::FabricSystemRootView &parentSystem,
+    const fabric::FinalizedFabricRoot &childSystemRoot,
+    std::vector<SystemAccCoreCorrespondence> correspondence);
 
 } // namespace pnr::test
 } // namespace loom

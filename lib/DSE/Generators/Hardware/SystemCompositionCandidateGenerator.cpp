@@ -2,8 +2,10 @@
 #include "HardwareTopologyQuality.h"
 
 #include "ADG/Builder.h"
+#include "Common/ArtifactText.h"
 #include "Common/ArtifactStore.h"
 #include "Fabric/Artifact/FabricArtifact.h"
+#include "Fabric/Artifact/FabricSystemRootView.h"
 #include "Fabric/Identity/FabricRefImport.h"
 
 #include <algorithm>
@@ -194,11 +196,36 @@ bool isRejectedDraftError(llvm::Error error, std::string &unexpected) {
   return false;
 }
 
-llvm::Expected<std::optional<loom::fabric::FinalizedFabricRoot>>
+struct MaterializedSystemChild final {
+  loom::fabric::FinalizedFabricRoot root;
+  std::vector<SystemCompositionAccCoreCorrespondence> accCoreCorrespondence;
+};
+
+std::vector<loom::fabric::AccCoreOccurrenceRef>
+preservedParentAccCores(const loom::fabric::FabricSystemRootView &parent,
+                        const SystemCompositionDecision &decision) {
+  std::optional<loom::fabric::AccCoreOccurrenceRef> removed;
+  if (const auto *remove = std::get_if<RemoveAccCore>(&decision))
+    removed = remove->target;
+  std::vector<loom::fabric::AccCoreOccurrenceRef> result;
+  result.reserve(parent.artifact().accCoreOccurrences().size());
+  for (loom::fabric::AccCoreOccurrenceRef core :
+       parent.artifact().accCoreOccurrences())
+    if (!removed || core != *removed)
+      result.push_back(core);
+  return result;
+}
+
+llvm::Expected<std::optional<MaterializedSystemChild>>
 materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
                  const SystemCompositionDecision &decision,
                  llvm::ArrayRef<loom::fabric::FinalizedFabricRoot> modules,
                  const ArtifactStore &store) {
+  auto parentView = loom::fabric::requireSystemRoot(parent.view());
+  if (!parentView)
+    return parentView.takeError();
+  std::vector<loom::fabric::AccCoreOccurrenceRef> trackedParentAccCores =
+      preservedParentAccCores(*parentView, decision);
   loom::adg::DesignBuilder design(store);
   auto builder = design.deriveSystem(parent, modules);
   if (!builder)
@@ -206,36 +233,40 @@ materializeChild(const loom::fabric::FinalizedFabricRoot &parent,
   if (llvm::Error error = applyDecision(*builder, decision, modules)) {
     std::string unexpected;
     if (isRejectedDraftError(std::move(error), unexpected))
-      return std::optional<loom::fabric::FinalizedFabricRoot>();
+      return std::optional<MaterializedSystemChild>();
     return llvm::createStringError(llvm::inconvertibleErrorCode(), unexpected);
   }
   if (llvm::Error error = builder->close()) {
     std::string unexpected;
     if (isRejectedDraftError(std::move(error), unexpected))
-      return std::optional<loom::fabric::FinalizedFabricRoot>();
+      return std::optional<MaterializedSystemChild>();
     return llvm::createStringError(llvm::inconvertibleErrorCode(), unexpected);
   }
-  auto finalized = std::move(design).finalize();
+  auto finalized = std::move(design).finalizeDerivedSystemWithTrackedAccCores(
+      trackedParentAccCores);
   if (!finalized) {
     std::string unexpected;
     if (isRejectedDraftError(finalized.takeError(), unexpected))
-      return std::optional<loom::fabric::FinalizedFabricRoot>();
+      return std::optional<MaterializedSystemChild>();
     return llvm::createStringError(llvm::inconvertibleErrorCode(), unexpected);
   }
-  if (finalized->roots().size() != 1)
-    return invalid(
-        "one System composition decision did not finalize one System child");
+  if (finalized->trackedAccCores.size() != trackedParentAccCores.size())
+    return invalid("System finalizer lost tracked AccCore correspondence");
   if (llvm::Error error =
-          validateHardwareTopologyQuality(finalized->roots().front().view()))
+          validateHardwareTopologyQuality(finalized->root.view()))
     return std::move(error);
-  return std::optional<loom::fabric::FinalizedFabricRoot>(
-      finalized->roots().front());
+  std::vector<SystemCompositionAccCoreCorrespondence> correspondence;
+  correspondence.reserve(trackedParentAccCores.size());
+  for (auto [parentCore, childCore] :
+       llvm::zip_equal(trackedParentAccCores, finalized->trackedAccCores))
+    correspondence.push_back({parentCore, childCore});
+  return std::optional<MaterializedSystemChild>(MaterializedSystemChild{
+      std::move(finalized->root), std::move(correspondence)});
 }
 
-llvm::Error
-validateLineagePayload(llvm::ArrayRef<std::uint8_t> bytes,
-                       llvm::ArrayRef<ArtifactRootReference> parents,
-                       const ArtifactStore &store) {
+llvm::Error validateLineagePayload(
+    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &output,
+    llvm::ArrayRef<ArtifactRootReference> parents, const ArtifactStore &store) {
   auto decision = adoptSystemCompositionDecision(bytes);
   if (!decision)
     return decision.takeError();
@@ -244,6 +275,15 @@ validateLineagePayload(llvm::ArrayRef<std::uint8_t> bytes,
   auto parent = loom::fabric::importEntireFabricRoot(decision->parent, store);
   if (!parent)
     return parent.takeError();
+  auto child = loom::fabric::importEntireFabricRoot(output, store);
+  if (!child)
+    return child.takeError();
+  auto parentView = loom::fabric::requireSystemRoot(parent->view());
+  if (!parentView)
+    return parentView.takeError();
+  auto childView = loom::fabric::requireSystemRoot(child->view());
+  if (!childView)
+    return childView.takeError();
   std::optional<ArtifactRootReference> selectedModule;
   std::visit(
       [&](const auto &value) {
@@ -262,8 +302,61 @@ validateLineagePayload(llvm::ArrayRef<std::uint8_t> bytes,
       return invalid("System decision selects a non-Module root");
     selectedModules.push_back(std::move(*module));
   }
-  return validateDecisionAgainstParent(decision->decision, parent->view(),
-                                       selectedModules);
+  if (llvm::Error error = validateDecisionAgainstParent(
+          decision->decision, parent->view(), selectedModules))
+    return error;
+  const auto expected =
+      preservedParentAccCores(*parentView, decision->decision);
+  if (decision->accCoreCorrespondence.size() != expected.size())
+    return invalid("System lineage does not cover every preserved AccCore");
+  const auto targetModule = [](const loom::fabric::FabricArtifactView &root,
+                               const loom::fabric::FabricSystemRootView &view,
+                               loom::fabric::AccCoreOccurrenceRef core)
+      -> llvm::Expected<ArtifactIdentity> {
+    const auto target = view.spatialCoreTarget(core);
+    if (!target || target->dependencyOrdinal >= root.importedModules().size())
+      return invalid("System lineage AccCore has no exact Module target");
+    return root.importedModules()[target->dependencyOrdinal].identity();
+  };
+  for (auto [ordinal, entry] :
+       llvm::enumerate(decision->accCoreCorrespondence)) {
+    if (entry.parent != expected[ordinal])
+      return invalid("System lineage changed canonical parent AccCore order");
+    if (llvm::Error error =
+            loom::fabric::validateFabricRef(child->view(), entry.child))
+      return error;
+    auto parentModule = targetModule(parent->view(), *parentView, entry.parent);
+    if (!parentModule)
+      return parentModule.takeError();
+    auto childModule = targetModule(child->view(), *childView, entry.child);
+    if (!childModule)
+      return childModule.takeError();
+    const auto *replacement =
+        std::get_if<ReplaceSpatialAttachment>(&decision->decision);
+    if (replacement && entry.parent == replacement->target) {
+      if (*childModule != replacement->module.artifact)
+        return invalid(
+            "System lineage replacement selects the wrong AccCore Module");
+    } else if (*parentModule != *childModule) {
+      return invalid("System lineage changes a preserved AccCore Module (parent=" +
+                     formatArtifactIdentityHex(*parentModule) + ", child=" +
+                     formatArtifactIdentityHex(*childModule) + ")");
+    }
+  }
+  const std::size_t parentCount =
+      parentView->artifact().accCoreOccurrences().size();
+  const std::size_t childCount =
+      childView->artifact().accCoreOccurrences().size();
+  if (std::holds_alternative<AddAccCore>(decision->decision)) {
+    if (childCount != parentCount + 1)
+      return invalid("AddAccCore lineage output has the wrong core count");
+  } else if (std::holds_alternative<RemoveAccCore>(decision->decision)) {
+    if (parentCount == 0 || childCount + 1 != parentCount)
+      return invalid("RemoveAccCore lineage output has the wrong core count");
+  } else if (childCount != parentCount) {
+    return invalid("System rewrite unexpectedly changed the AccCore count");
+  }
+  return llvm::Error::success();
 }
 
 const CandidateGeneratorOwnerLineagePayloadContract lineageContract{
@@ -281,7 +374,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 const CandidateGeneratorDescriptor descriptor{
     systemCompositionCandidateGeneratorKind,
     "system_composition_rewrite",
-    "loom.system_composition_rewrite.generator.v1",
+    "loom.system_composition_rewrite.generator.v2",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{descriptorBytes(), validateConfig},
@@ -339,7 +432,7 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
         return child.takeError();
       if (!*child)
         continue;
-      const ArtifactRootReference childReference = (*child)->reference();
+      const ArtifactRootReference childReference = (*child)->root.reference();
       if (childReference == parentReference)
         continue;
       if (llvm::none_of(outputs, [&](const auto &existing) {
@@ -351,7 +444,8 @@ invokeProvider(llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
           CandidateGeneratorOutputSlotRef(0),
           childReference,
           {parentReference},
-          encodeSystemCompositionDecision(parentReference, decision)});
+          encodeSystemCompositionDecision(parentReference, decision,
+                                          (*child)->accCoreCorrespondence)});
     }
   }
   return CandidateGeneratorProviderResult{

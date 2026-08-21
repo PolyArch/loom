@@ -339,6 +339,17 @@ void releasedDecisionProjectionPreservesTheCanonicalSolve() {
   if (solver.retainedStorageBytes() != retainedBytes)
     fail("released relation projection expanded retained solver storage");
 
+  std::uint64_t completeValidationCalls = 0;
+  const auto validatedProjection =
+      take(solver.solveCanonicalWithReleasedChoices(
+          /*assignmentLimit=*/16, fixed, {3, 1, 3},
+          [&](llvm::ArrayRef<PnrIndex> choices) -> llvm::Expected<bool> {
+            ++completeValidationCalls;
+            return choices.size() == fixed.size() && choices[3] == 2;
+          }));
+  if (validatedProjection.choices != expected || completeValidationCalls == 0)
+    fail("released relation projection skipped complete assignment validation");
+
   auto conflicting = solver.solveCanonicalWithReleasedChoices(
       /*assignmentLimit=*/16, {1, invalid, 2, invalid, 0, 0}, {1, 3});
   if (conflicting)

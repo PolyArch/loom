@@ -18,6 +18,7 @@
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/Models/StructuredProgramFunctional.h"
 #include "Evaluation/StandardFindings.h"
+#include "Frontend/Analysis/StructuredProtocolDependencies.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/Compilation/OwnershipCandidateGenerator.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
@@ -145,6 +146,46 @@ entry:
   if (llvm::InitializeNativeTarget() ||
       llvm::InitializeNativeTargetAsmPrinter())
     fail("cannot initialize the native target");
+  auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
+  module->setDataLayout(take(target.getDefaultDataLayoutForTarget()));
+  module->setTargetTriple(llvm::Triple("riscv64-unknown-unknown-elf"));
+  return module;
+}
+
+std::unique_ptr<llvm::Module>
+parseProtocolDependencyModule(llvm::LLVMContext &context) {
+  constexpr llvm::StringLiteral source = R"llvm(
+define internal void @produce(ptr %out) {
+entry:
+  store i32 7, ptr %out, align 4
+  ret void
+}
+
+define internal i32 @consume(ptr %in) {
+entry:
+  %value = load i32, ptr %in, align 4
+  ret i32 %value
+}
+
+define i32 @main() {
+entry:
+  %buffer = alloca [4 x i32], align 16
+  %element = getelementptr inbounds [4 x i32], ptr %buffer, i64 0, i64 0
+  call void @produce(ptr %element)
+  %value = call i32 @consume(ptr %element)
+  ret i32 %value
+}
+)llvm";
+  llvm::SMDiagnostic diagnostic;
+  auto buffer =
+      llvm::MemoryBuffer::getMemBuffer(source, "<protocol-dependency>");
+  auto module = llvm::parseIR(buffer->getMemBufferRef(), diagnostic, context);
+  if (!module) {
+    std::string message;
+    llvm::raw_string_ostream stream(message);
+    diagnostic.print("structuredOwnershipEvaluation", stream);
+    fail(stream.str());
+  }
   auto target = take(llvm::orc::JITTargetMachineBuilder::detectHost());
   module->setDataLayout(take(target.getDefaultDataLayoutForTarget()));
   module->setTargetTriple(llvm::Triple("riscv64-unknown-unknown-elf"));
@@ -870,6 +911,23 @@ void runEvaluationAnchor() {
       store, loom::adg::BuiltinTargetPreset::Small));
 
   llvm::LLVMContext context;
+  auto dependencyProgram = take(loom::frontend::raiseLlvmModuleToStructured(
+      parseProtocolDependencyModule(context),
+      design.roots().front().reference(), store));
+  const auto producer =
+      findCallable(dependencyProgram.structuredProgram, "produce");
+  const auto consumer =
+      findCallable(dependencyProgram.structuredProgram, "consume");
+  const auto dependencies =
+      take(loom::frontend::analysis::projectStructuredProtocolDependencies(
+          dependencyProgram.structuredProgram, {producer, consumer}));
+  if (dependencies.size() != 1 || dependencies.front().producer != producer ||
+      dependencies.front().consumer != consumer ||
+      dependencies.front().sharedMemoryObjectCount != 1 ||
+      dependencies.front().knownSharedMemoryBytes != 16 ||
+      dependencies.front().unknownSharedMemoryObjectCount != 0)
+    fail("protocol dependency projection lost its exact fixed payload");
+
   auto compiled = take(loom::frontend::raiseLlvmModuleToStructured(
       parseModule(context), design.roots().front().reference(), store));
   SourceSimulationInputs inputs =
@@ -1612,6 +1670,27 @@ void runEvaluationAnchor() {
       std::get_if<loom::dse::CompletedPreMappingSelection>(&semanticChain);
   if (!semanticChainSelection || semanticChainSelection->selected.size() != 2)
     fail("semantic conformance did not retain its bounded ownership chain");
+  std::size_t retainedPlanningCandidates = 0;
+  std::size_t budgetedPlanningCandidates = 0;
+  std::vector<std::uint64_t> planningRanks;
+  for (const auto &record : semanticChainSelection->candidateInventory) {
+    if (record.disposition ==
+        loom::dse::PreMappingCandidatePlanningDisposition::Retained) {
+      ++retainedPlanningCandidates;
+      if (!record.preferenceRank)
+        fail("retained planning candidate has no preference rank");
+      planningRanks.push_back(*record.preferenceRank);
+    } else {
+      ++budgetedPlanningCandidates;
+      if (record.preferenceRank)
+        fail("budgeted planning candidate retained a preference rank");
+    }
+  }
+  llvm::sort(planningRanks);
+  if (retainedPlanningCandidates != 2 || budgetedPlanningCandidates == 0 ||
+      planningRanks != std::vector<std::uint64_t>({0, 1}) ||
+      semanticChainSelection->protocolRootActivity.size() != 2)
+    fail("bounded ownership planning inventory is incomplete");
   if (semanticChainSelection->selected[0].derivations.size() != 2 ||
       semanticChainSelection->selected[1].derivations.size() != 1)
     fail("semantic conformance did not rank ownership coverage first");
@@ -1654,7 +1733,13 @@ void runEvaluationAnchor() {
           exploredSelection->selected.front().derivations ||
       parallelSelection->satisfiedEvidence !=
           exploredSelection->satisfiedEvidence ||
-      parallelSelection->dispositions != exploredSelection->dispositions)
+      parallelSelection->dispositions != exploredSelection->dispositions ||
+      parallelSelection->protocolRootActivity !=
+          exploredSelection->protocolRootActivity ||
+      parallelSelection->protocolDependencies !=
+          exploredSelection->protocolDependencies ||
+      parallelSelection->candidateInventory !=
+          exploredSelection->candidateInventory)
     fail("candidate worker count changed the formal DSE result");
 
   {
@@ -1764,8 +1849,8 @@ void ownershipLineageRejectsAnOutOfRangeScope() {
           .ownerLineagePayload;
   if (!contract)
     fail("ownership generator has no owner lineage contract");
-  llvm::Error validation =
-      contract->validateCanonical(encoded, {parentReference}, store);
+  llvm::Error validation = contract->validateCanonical(
+      encoded, parentReference, {parentReference}, store);
   if (!validation)
     fail("ownership lineage accepted an out-of-range parent-local scope");
   llvm::consumeError(std::move(validation));

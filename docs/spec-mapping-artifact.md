@@ -760,6 +760,34 @@ binding, and Deployment. Replacing an implementation while preserving the
 same architecture contract and ConfigurationABI neither changes this Mapping
 nor the derived configuration-image identity.
 
+### Incomplete Execution-Binding Checkpoint
+
+`loom.mapping.system_execution_binding_checkpoint` 1.0 is a persisted
+projection of one incomplete System PnR assignment. It has this exact semantic
+content:
+
+```text
+SystemExecutionBindingCheckpoint {
+  exact Canonical Dataflow Program D
+  exact parent Fabric System F
+  canonical thread rows (RootThreadLaunchRef, SystemPresburgerCell,
+                         AccCoreOccurrenceRef)
+  canonical graph rows (RootedGraphLaunchRef, SystemPresburgerCell,
+                        SpatialMapping ArtifactRootReference)
+}
+```
+
+The writer validates exact Dataflow and System ownership, canonical unique
+cells, target references, and SpatialMapping schema before publication. This
+root may be published only with typed imported-capacity feedback that names the
+exact overused AccCore occurrence observed in the same retained assignment
+after complete bounded execution-binding exhaustion. It is not a Mapping
+artifact, does not satisfy any Mapping coverage or legality contract, and
+contains no service realization, route tree, ResourceUse, progress,
+recurrence, or configuration claim. Its only supported consumer is a PnR-owned
+cross-hardware migration seed; the child invocation must rebuild every omitted
+relation and independently verify the complete SystemMapping.
+
 ### Exact SpatialMapping Imports
 
 The exact selected SpatialMapping set is the finite unique range of normalized

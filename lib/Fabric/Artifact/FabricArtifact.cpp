@@ -1638,11 +1638,31 @@ strictImportSystem(const ArtifactRootReference &reference,
 struct CanonicalSystemCandidate {
   OwningOpRef<ModuleOp> module;
   std::vector<FabricDirectDependency> dependencies;
+  std::vector<AccCoreOccurrenceRef> trackedAccCores;
 };
+
+llvm::Expected<std::vector<AccCoreOccurrenceRef>>
+projectTrackedAccCores(llvm::ArrayRef<Operation *> trackedOperations,
+                       const detail::FabricSystemCanonicalLabeling &labeling) {
+  std::vector<AccCoreOccurrenceRef> result;
+  result.reserve(trackedOperations.size());
+  for (Operation *operation : trackedOperations) {
+    auto carrier = llvm::find_if(
+        labeling.carriers, [&](const detail::FabricSystemEntityCarrier &row) {
+          return row.op == operation &&
+                 row.kind == FabricEntityKind::AccCoreOccurrence;
+        });
+    if (carrier == labeling.carriers.end())
+      return invalid("tracked AccCore is absent from canonical labeling");
+    result.emplace_back(carrier->id);
+  }
+  return result;
+}
 
 llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
     ::fabric::SystemOp source,
-    llvm::ArrayRef<ArtifactRootReference> importedModules) {
+    llvm::ArrayRef<ArtifactRootReference> importedModules,
+    llvm::ArrayRef<AccCoreOccurrenceRef> trackedAccCores) {
   auto sourceModule = source->getParentOfType<ModuleOp>();
   if (!sourceModule || source->getParentOp() != sourceModule.getOperation())
     return invalid("the selected Fabric System must be top-level");
@@ -1655,12 +1675,39 @@ llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
     sourceDependencies.push_back(
         {FabricDependencyRole::ImportedModule, module});
 
-  OwningOpRef<ModuleOp> scratch(cast<ModuleOp>(sourceModule->clone()));
+  IRMapping cloneMapping;
+  OwningOpRef<ModuleOp> scratch(
+      cast<ModuleOp>(sourceModule->clone(cloneMapping)));
   Operation *clonedOperation =
       SymbolTable::lookupSymbolIn(*scratch, source.getSymNameAttr());
   auto clonedRoot = dyn_cast_or_null<::fabric::SystemOp>(clonedOperation);
   if (!clonedRoot)
     return invalid("the selected Fabric System was not cloned");
+
+  std::vector<Operation *> trackedOperations;
+  trackedOperations.reserve(trackedAccCores.size());
+  std::set<FabricEntityId> trackedIds;
+  for (AccCoreOccurrenceRef tracked : trackedAccCores) {
+    if (!trackedIds.insert(tracked.id()).second)
+      return invalid("tracked AccCore set contains a duplicate reference");
+    Operation *sourceOperation = nullptr;
+    for (Operation &operation : source.getBody().front()) {
+      auto accCore = dyn_cast<::fabric::SystemAccCoreOp>(&operation);
+      if (!accCore)
+        continue;
+      auto id = accCore.getEntityIdAttr();
+      if (id && id.getId() == tracked.id()) {
+        sourceOperation = &operation;
+        break;
+      }
+    }
+    if (!sourceOperation)
+      return invalid("tracked AccCore does not resolve in the source System");
+    Operation *cloned = cloneMapping.lookupOrNull(sourceOperation);
+    if (!cloned || !isa<::fabric::SystemAccCoreOp>(cloned))
+      return invalid("tracked AccCore was not cloned with its System");
+    trackedOperations.push_back(cloned);
+  }
 
   for (Operation &operation :
        llvm::make_early_inc_range(scratch->getBody()->getOperations()))
@@ -1676,6 +1723,9 @@ llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
       clonedRoot, sourceDependencies);
   if (!labeling)
     return labeling.takeError();
+  auto projected = projectTrackedAccCores(trackedOperations, *labeling);
+  if (!projected)
+    return projected.takeError();
   if (llvm::Error error =
           detail::materializeFabricSystemCanonicalForm(clonedRoot, *labeling))
     return std::move(error);
@@ -1696,13 +1746,20 @@ llvm::Expected<CanonicalSystemCandidate> buildCanonicalSystemCandidate(
   if (canonicalLabeling->relationBytes.bytes() !=
       labeling->relationBytes.bytes())
     return invalid("System canonicalization changed the semantic relation");
+  auto canonicalProjection =
+      projectTrackedAccCores(trackedOperations, *canonicalLabeling);
+  if (!canonicalProjection)
+    return canonicalProjection.takeError();
+  if (*canonicalProjection != *projected)
+    return invalid("tracked AccCore projection changed after canonicalization");
   if (llvm::Error error = detail::materializeFabricSystemCanonicalForm(
           clonedRoot, *canonicalLabeling))
     return std::move(error);
   if (failed(verify(*scratch)))
     return invalid("canonical Fabric System produced invalid IR");
   return CanonicalSystemCandidate{std::move(scratch),
-                                  std::move(canonicalDependencies)};
+                                  std::move(canonicalDependencies),
+                                  std::move(*canonicalProjection)};
 }
 
 llvm::Expected<OwningOpRef<ModuleOp>> buildCanonicalCandidate(
@@ -1841,7 +1898,21 @@ llvm::Expected<FinalizedFabricRoot>
 finalizeFabricRoot(::fabric::SystemOp source,
                    llvm::ArrayRef<ArtifactRootReference> importedModules,
                    const ArtifactStore &store) {
-  auto candidate = buildCanonicalSystemCandidate(source, importedModules);
+  auto finalized = finalizeFabricSystemWithTrackedAccCores(
+      source, importedModules, {}, store);
+  if (!finalized)
+    return finalized.takeError();
+  return std::move(finalized->root);
+}
+
+llvm::Expected<FinalizedFabricSystemProjection>
+finalizeFabricSystemWithTrackedAccCores(
+    ::fabric::SystemOp source,
+    llvm::ArrayRef<ArtifactRootReference> importedModules,
+    llvm::ArrayRef<AccCoreOccurrenceRef> trackedAccCores,
+    const ArtifactStore &store) {
+  auto candidate =
+      buildCanonicalSystemCandidate(source, importedModules, trackedAccCores);
   if (!candidate)
     return candidate.takeError();
   auto bytecode = detail::writeCanonicalFabricBytecode(candidate->module.get());
@@ -1866,9 +1937,10 @@ finalizeFabricRoot(::fabric::SystemOp source,
     return stored.takeError();
   if (*stored != reference.artifact)
     return invalid("ArtifactStore returned a different Fabric identity");
-  return FinalizedFabricRoot(reference, std::move(*canonical),
-                             (*imported)->decoded.dependencies,
-                             (*imported)->view);
+  return FinalizedFabricSystemProjection{
+      FinalizedFabricRoot(reference, std::move(*canonical),
+                          (*imported)->decoded.dependencies, (*imported)->view),
+      std::move(candidate->trackedAccCores)};
 }
 
 llvm::Expected<FinalizedFabricRoot>

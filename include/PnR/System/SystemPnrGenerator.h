@@ -10,6 +10,7 @@
 #include "PnR/PnrConfig.h"
 #include "PnR/PnrGeneration.h"
 #include "PnR/System/SystemCandidateState.h"
+#include "PnR/System/SystemMappingMigration.h"
 #include "PnR/System/SystemPnrDerivedContext.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
@@ -25,6 +26,14 @@
 namespace loom::pnr {
 
 struct SystemPnrGenerationAccounting final {
+  std::uint64_t migrationSeedAttemptSlots = 0;
+  std::uint64_t migrationSeedPrepared = 0;
+  std::uint64_t migrationSeedFallbacks = 0;
+  std::uint64_t migrationPreservedThreadBindings = 0;
+  std::uint64_t migrationPreservedGraphBindings = 0;
+  std::uint64_t migrationReopenedThreadBindings = 0;
+  std::uint64_t migrationReopenedGraphBindings = 0;
+  std::uint64_t migrationReopenedServiceLegs = 0;
   std::uint64_t seedAttemptSlots = 0;
   std::uint64_t preparedSeeds = 0;
   std::uint64_t initializerAssignmentAttempts = 0;
@@ -45,7 +54,20 @@ struct SystemPnrGenerationAccounting final {
 
   friend bool operator==(const SystemPnrGenerationAccounting &lhs,
                          const SystemPnrGenerationAccounting &rhs) {
-    return lhs.seedAttemptSlots == rhs.seedAttemptSlots &&
+    return lhs.migrationSeedAttemptSlots == rhs.migrationSeedAttemptSlots &&
+           lhs.migrationSeedPrepared == rhs.migrationSeedPrepared &&
+           lhs.migrationSeedFallbacks == rhs.migrationSeedFallbacks &&
+           lhs.migrationPreservedThreadBindings ==
+               rhs.migrationPreservedThreadBindings &&
+           lhs.migrationPreservedGraphBindings ==
+               rhs.migrationPreservedGraphBindings &&
+           lhs.migrationReopenedThreadBindings ==
+               rhs.migrationReopenedThreadBindings &&
+           lhs.migrationReopenedGraphBindings ==
+               rhs.migrationReopenedGraphBindings &&
+           lhs.migrationReopenedServiceLegs ==
+               rhs.migrationReopenedServiceLegs &&
+           lhs.seedAttemptSlots == rhs.seedAttemptSlots &&
            lhs.preparedSeeds == rhs.preparedSeeds &&
            lhs.initializerAssignmentAttempts ==
                rhs.initializerAssignmentAttempts &&
@@ -89,6 +111,7 @@ struct IncompleteSystemPnrGeneration final {
   SystemPnrGenerationAccounting accounting;
   std::string diagnostic;
   std::optional<SystemImportedCapacityPressure> importedCapacityPressure;
+  std::optional<ArtifactRootReference> executionBindingCheckpoint;
 };
 
 enum class SystemPnrInterruptionStage : std::uint8_t {
@@ -106,6 +129,14 @@ systemPnrInterruptionStageSpelling(SystemPnrInterruptionStage stage);
 
 struct SystemPnrSearchFrontier final {
   std::optional<std::uint32_t> restartOrdinal;
+  std::uint64_t migrationSeedAttemptSlots = 0;
+  std::uint64_t migrationSeedPrepared = 0;
+  std::uint64_t migrationSeedFallbacks = 0;
+  std::uint64_t migrationPreservedThreadBindings = 0;
+  std::uint64_t migrationPreservedGraphBindings = 0;
+  std::uint64_t migrationReopenedThreadBindings = 0;
+  std::uint64_t migrationReopenedGraphBindings = 0;
+  std::uint64_t migrationReopenedServiceLegs = 0;
   std::uint64_t seedAttemptSlots = 0;
   std::uint64_t preparedSeeds = 0;
   std::uint64_t initializerAssignmentAttempts = 0;
@@ -185,6 +216,9 @@ struct SystemPnrGenerationInputs final {
   ExecutionControlView executionControl = {};
   const SystemStaticContext *staticContext = nullptr;
   const SystemActiveContext *activeContext = nullptr;
+  const FinalizedSystemMappingMigrationSeed *migrationSeed = nullptr;
+  const FinalizedSystemMappingCheckpointMigrationSeed *checkpointMigrationSeed =
+      nullptr;
 };
 
 /// Runs the canonical System PnR invocation for one exact D/F/R/H/C/K

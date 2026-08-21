@@ -51,6 +51,7 @@ target_link_libraries(loom-system-pnr-service-domain-test PRIVATE
 
 target_link_libraries(loom-system-candidate-state-test PRIVATE
   LoomADGBuilder
+  LoomDSEHardwareGenerator
   LoomPnR
   LoomPnRGenerator
   LoomTechMapping

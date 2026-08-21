@@ -502,6 +502,16 @@ llvm::Error primeStructuredProgramFunctionalReplay(
         llvm::inconvertibleErrorCode(),
         "structured_functional_model_invalid: replay invocation mismatch");
 
+  const detail::StructuredFunctionalCacheKey key = replayCacheKey(
+      candidateReference, invocation.workload, invocation.runtimeInput);
+  auto &cacheImpl = detail::StructuredEvaluationCacheAccess::impl(*cache);
+  {
+    std::lock_guard<std::mutex> lock(cacheImpl.mutex);
+    if (cacheImpl.functionalResults.find(key) !=
+        cacheImpl.functionalResults.end())
+      return llvm::Error::success();
+  }
+
   const ArtifactRootReference sourceReference{
       frontend::structuredProgramArtifactSchema.identity.str(),
       frontend::structuredProgramArtifactSchema.version,
@@ -538,19 +548,16 @@ llvm::Error primeStructuredProgramFunctionalReplay(
         fields["context_kind"] = "structured_functional_replay";
         fields["replay_kind"] = kind;
       });
-  const detail::StructuredFunctionalCacheKey key = replayCacheKey(
-      candidateReference, invocation.workload, invocation.runtimeInput);
-  auto &impl = detail::StructuredEvaluationCacheAccess::impl(*cache);
   auto value =
       std::make_shared<const CachedReplayResult>(std::move(*classified));
-  std::lock_guard<std::mutex> lock(impl.mutex);
-  auto [found, inserted] = impl.functionalResults.try_emplace(key, value);
+  std::lock_guard<std::mutex> lock(cacheImpl.mutex);
+  auto [found, inserted] = cacheImpl.functionalResults.try_emplace(key, value);
   if (!inserted && !(*found->second == *value))
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "structured_functional_model_invalid: nondeterministic replay");
   if (inserted)
-    impl.functionalPrimeCount.fetch_add(1, std::memory_order_relaxed);
+    cacheImpl.functionalPrimeCount.fetch_add(1, std::memory_order_relaxed);
   return llvm::Error::success();
 }
 

@@ -558,8 +558,8 @@ void lineageCodecRejectsAnOutOfRangeMemoryInput() {
           .ownerLineagePayload;
   if (!contract)
     fail("memory generator has no owner lineage contract");
-  llvm::Error validation =
-      contract->validateCanonical(encoded, {parentReference}, store);
+  llvm::Error validation = contract->validateCanonical(
+      encoded, parentReference, {parentReference}, store);
   if (!validation)
     fail("memory lineage accepted an out-of-range parent-local value");
   llvm::consumeError(std::move(validation));

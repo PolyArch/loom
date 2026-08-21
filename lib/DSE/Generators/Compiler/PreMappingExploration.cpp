@@ -17,8 +17,10 @@
 #include "Evaluation/Models/CanonicalDataflowFabricAnalytic.h"
 #include "Evaluation/Models/StructuredFabricAnalytic.h"
 #include "Evaluation/StandardFindings.h"
+#include "Frontend/Analysis/StructuredProtocolDependencies.h"
 #include "Frontend/Compilation/FabricCapabilityIndex.h"
 #include "Frontend/IR/StructuredProgramArtifact.h"
+#include "Simulator/NativeSimulationOracle.h"
 #include "Simulator/SimulationArtifacts.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -389,6 +391,108 @@ struct CompletedOwnershipSelection final {
 using OwnershipSelectionOutcome =
     std::variant<CompletedOwnershipSelection, IncompletePreMappingExploration>;
 
+struct ProtocolTraversalPlan final {
+  std::vector<std::vector<std::size_t>> paths;
+  std::vector<std::vector<std::uint64_t>> dependencyWeights;
+};
+
+llvm::Expected<ProtocolTraversalPlan> buildProtocolTraversalPlan(
+    llvm::ArrayRef<frontend::StructuredEntityRef> roots,
+    llvm::ArrayRef<frontend::analysis::StructuredProtocolDependency>
+        dependencies) {
+  ProtocolTraversalPlan plan;
+  plan.dependencyWeights.assign(roots.size(),
+                                std::vector<std::uint64_t>(roots.size(), 0));
+  const auto rootOrdinal = [&](const frontend::StructuredEntityRef &root)
+      -> std::optional<std::size_t> {
+    for (auto item : llvm::enumerate(roots))
+      if (item.value() == root)
+        return item.index();
+    return std::nullopt;
+  };
+  for (const auto &dependency : dependencies) {
+    std::optional<std::size_t> producer = rootOrdinal(dependency.producer);
+    std::optional<std::size_t> consumer = rootOrdinal(dependency.consumer);
+    if (!producer || !consumer || *producer == *consumer ||
+        dependency.sharedMemoryObjectCount == 0)
+      return invalid("protocol dependency is outside its exact root set");
+    std::uint64_t &weight = plan.dependencyWeights[*producer][*consumer];
+    if (std::numeric_limits<std::uint64_t>::max() - weight <
+        dependency.sharedMemoryObjectCount)
+      return invalid("protocol dependency weight overflows");
+    weight += dependency.sharedMemoryObjectCount;
+  }
+  if (roots.empty()) {
+    plan.paths.push_back({});
+    return plan;
+  }
+
+  const auto addPath = [&](std::vector<std::size_t> path) {
+    if (!llvm::is_contained(plan.paths, path))
+      plan.paths.push_back(std::move(path));
+  };
+  std::vector<std::size_t> canonical;
+  canonical.reserve(roots.size());
+  for (std::size_t ordinal = 0; ordinal != roots.size(); ++ordinal)
+    canonical.push_back(ordinal);
+  addPath(std::move(canonical));
+
+  for (std::size_t seed = 0; seed != roots.size(); ++seed) {
+    std::vector<bool> selected(roots.size(), false);
+    std::vector<std::size_t> path;
+    selected[seed] = true;
+    path.push_back(seed);
+    while (path.size() != roots.size()) {
+      std::optional<std::size_t> best;
+      std::uint64_t bestWeight = 0;
+      for (std::size_t candidate = 0; candidate != roots.size(); ++candidate) {
+        if (selected[candidate])
+          continue;
+        std::uint64_t weight = 0;
+        for (std::size_t member : path) {
+          const std::uint64_t forward =
+              plan.dependencyWeights[member][candidate];
+          const std::uint64_t reverse =
+              plan.dependencyWeights[candidate][member];
+          if (std::numeric_limits<std::uint64_t>::max() - weight < forward ||
+              std::numeric_limits<std::uint64_t>::max() - weight - forward <
+                  reverse)
+            return invalid("protocol cut weight overflows");
+          weight += forward + reverse;
+        }
+        if (weight > bestWeight) {
+          best = candidate;
+          bestWeight = weight;
+        }
+      }
+      if (!best || bestWeight == 0)
+        break;
+      selected[*best] = true;
+      path.push_back(*best);
+    }
+    addPath(std::move(path));
+  }
+  return plan;
+}
+
+std::pair<std::uint64_t, std::uint64_t> protocolDependencyPartition(
+    llvm::ArrayRef<std::size_t> selected,
+    llvm::ArrayRef<std::vector<std::uint64_t>> weights) {
+  std::vector<bool> owned(weights.size(), false);
+  for (std::size_t ordinal : selected)
+    owned[ordinal] = true;
+  std::uint64_t internal = 0;
+  std::uint64_t cut = 0;
+  for (std::size_t producer = 0; producer != weights.size(); ++producer)
+    for (std::size_t consumer = 0; consumer != weights.size(); ++consumer) {
+      if (owned[producer] && owned[consumer])
+        internal += weights[producer][consumer];
+      else if (owned[producer] != owned[consumer])
+        cut += weights[producer][consumer];
+    }
+  return {internal, cut};
+}
+
 llvm::Expected<std::vector<std::string>>
 protocolCallableSymbols(const frontend::StructuredProgramCandidate &source,
                         llvm::ArrayRef<frontend::StructuredEntityRef> roots) {
@@ -447,11 +551,14 @@ llvm::Expected<OwnershipSelectionOutcome> exploreOwnershipCandidates(
     const ArtifactRootReference &runtimeInputReference,
     const fabric::FinalizedFabricRoot &fabric, const ResolvedConfig &config,
     const StructuredOwnershipExplorationOptions &options,
-    const ArtifactStore &artifactStore, const BlobStore &blobStore) {
+    const ArtifactStore &artifactStore, const BlobStore &blobStore,
+    const StructuredOwnershipSharedEvaluation *sharedEvaluation) {
   auto invocation = std::make_unique<StructuredOwnershipInvocation>(
       generationParent.structuredProgram, sourceProgram, workload, runtimeInput,
       fabric, config, options.lowering, options.candidateWorkerCount,
-      options.functionalReplayLimits, generationParent.sourceProvenance);
+      options.functionalReplayLimits, generationParent.sourceProvenance,
+      sharedEvaluation);
+
   StructuredOwnershipInvocationScope invocationScope(*invocation);
   if (llvm::Error error = invocation->prepareInputs(
           generationParentReference, sourceReference, workloadReference,
@@ -827,19 +934,48 @@ exploreStructuredCompilationToPreMapping(
   if (!runtimeInputReference)
     return runtimeInputReference.takeError();
 
+  auto sourceObservations = sim::executeNativeStructuredProgram(
+      compilation.structuredProgram, workload, runtimeInput);
+  if (!sourceObservations)
+    return sourceObservations.takeError();
+  evaluation::models::StructuredEvaluationInvocationCache evaluationCache;
+  StructuredOwnershipSharedEvaluation sharedEvaluation(*sourceObservations,
+                                                       evaluationCache);
+
   auto callableSymbols = protocolCallableSymbols(
       compilation.structuredProgram, options.ownership.protocolCallableRoots);
   if (!callableSymbols)
     return callableSymbols.takeError();
-  const std::size_t ownershipGenerationCount =
-      options.ownership.selectionMode ==
-              StructuredOwnershipSelectionMode::SemanticConformance
-          ? std::max<std::size_t>(1, callableSymbols->size())
-          : 1;
-  std::vector<std::unique_ptr<frontend::StructuredCompilation>> parents;
-  parents.push_back(std::make_unique<frontend::StructuredCompilation>(
+  auto sourceProtocolRoots = resolveProtocolCallableRoots(
+      compilation.structuredProgram, *callableSymbols);
+  if (!sourceProtocolRoots)
+    return sourceProtocolRoots.takeError();
+  auto protocolDependencies =
+      frontend::analysis::projectStructuredProtocolDependencies(
+          compilation.structuredProgram, *sourceProtocolRoots);
+  if (!protocolDependencies)
+    return protocolDependencies.takeError();
+  auto projectedRootActivity =
+      evaluation::models::projectStructuredScopeActivity(
+          compilation.structuredProgram, *sourceObservations,
+          *sourceProtocolRoots);
+  if (!projectedRootActivity)
+    return projectedRootActivity.takeError();
+  std::vector<PreMappingProtocolRootActivity> protocolRootActivity;
+  protocolRootActivity.reserve(projectedRootActivity->size());
+  for (const auto &activity : *projectedRootActivity)
+    protocolRootActivity.push_back({activity.scope, activity.dynamicActivations,
+                                    activity.dynamicLeafExecutions});
+  auto traversalPlan =
+      buildProtocolTraversalPlan(*sourceProtocolRoots, *protocolDependencies);
+  if (!traversalPlan)
+    return traversalPlan.takeError();
+
+  std::vector<std::unique_ptr<frontend::StructuredCompilation>> parentStorage;
+  parentStorage.push_back(std::make_unique<frontend::StructuredCompilation>(
       std::move(compilation)));
-  const frontend::StructuredCompilation &sourceCompilation = *parents.front();
+  const frontend::StructuredCompilation &sourceCompilation =
+      *parentStorage.front();
 
   struct RetainedOwnershipSelection final {
     std::unique_ptr<StructuredOwnershipInvocation> invocation;
@@ -854,178 +990,356 @@ exploreStructuredCompilationToPreMapping(
     std::vector<StructuredSpecialMathAccuracyDerivation> specialMathPrefix;
     std::vector<StructuredScheduleDerivation> schedulePrefix;
     std::vector<StructuredMemoryCommunicationDerivation> memoryPrefix;
+    std::vector<std::size_t> ownedProtocolOrdinals;
+    std::uint64_t internalDependencyWeight = 0;
+    std::uint64_t cutDependencyWeight = 0;
+    std::optional<std::uint64_t> estimatedRuntimePicoseconds;
     bool derivationsIncluded = false;
   };
   std::vector<RetainedOwnershipSelection> generations;
   std::vector<RetainedOwnershipAlternative> semanticAlternatives;
+  std::vector<PreMappingCandidatePlanningRecord> candidateInventory;
   std::vector<ArtifactRootReference> satisfiedEvidence;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
   std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
   std::vector<RetainedDsePlanIncompleteness> retainedPlanIncompleteness;
-  std::vector<StructuredOwnershipDerivation> ownershipPrefix;
-  std::vector<StructuredExecutionShapeDerivation> executionShapePrefix;
-  std::vector<StructuredSpecialMathAccuracyDerivation> specialMathPrefix;
-  std::vector<StructuredScheduleDerivation> schedulePrefix;
-  std::vector<StructuredMemoryCommunicationDerivation> memoryPrefix;
-
-  std::optional<std::size_t> priorSelectedGeneration;
-  std::optional<ArtifactRootReference> priorSelectedReference;
-  bool priorDerivationsIncluded = false;
   std::optional<std::size_t> finalGeneration;
   std::vector<ArtifactRootReference> finalReferences;
+  std::vector<StructuredOwnershipDerivation> finalOwnershipPrefix;
+  std::vector<StructuredExecutionShapeDerivation> finalExecutionShapePrefix;
+  std::vector<StructuredSpecialMathAccuracyDerivation> finalSpecialMathPrefix;
+  std::vector<StructuredScheduleDerivation> finalSchedulePrefix;
+  std::vector<StructuredMemoryCommunicationDerivation> finalMemoryPrefix;
   bool finalDerivationsIncluded = false;
+  std::vector<std::vector<std::size_t>> paths;
+  if (options.ownership.selectionMode ==
+      StructuredOwnershipSelectionMode::SemanticConformance)
+    paths = traversalPlan->paths;
+  else
+    paths.push_back({});
 
-  for (std::size_t transformationOrdinal = 0;
-       transformationOrdinal != ownershipGenerationCount;
-       ++transformationOrdinal) {
-    frontend::StructuredCompilation &parent = *parents.back();
-    auto parentReference = frontend::publishStructuredProgram(
-        parent.structuredProgram, artifactStore);
-    if (!parentReference)
-      return parentReference.takeError();
-    llvm::ArrayRef<std::string> generationSymbols = *callableSymbols;
-    if (options.ownership.selectionMode ==
-        StructuredOwnershipSelectionMode::SemanticConformance)
-      generationSymbols = llvm::ArrayRef<std::string>(*callableSymbols)
-                              .slice(transformationOrdinal, 1);
-    auto protocolRoots = resolveProtocolCallableRoots(parent.structuredProgram,
-                                                      generationSymbols);
-    if (!protocolRoots)
-      return protocolRoots.takeError();
-    StructuredOwnershipExplorationOptions generationOptions = options.ownership;
-    generationOptions.protocolCallableRoots = std::move(*protocolRoots);
-    if (options.ownership.selectionMode ==
-        StructuredOwnershipSelectionMode::SemanticConformance)
-      generationOptions.selection.k = 1;
-    auto explored = exploreOwnershipCandidates(
-        parent, *parentReference, sourceCompilation.structuredProgram,
-        *sourceReference, workload, *workloadReference, runtimeInput,
-        *runtimeInputReference, fabric, config, generationOptions,
-        artifactStore, blobStore);
-    if (!explored)
-      return explored.takeError();
-    if (auto *incomplete =
-            std::get_if<IncompletePreMappingExploration>(&*explored)) {
-      mergeReferences(incomplete->retainedEvidence, satisfiedEvidence);
-      incomplete->planGenerateInvocations.insert(
-          incomplete->planGenerateInvocations.begin(),
-          std::make_move_iterator(planGenerateInvocations.begin()),
-          std::make_move_iterator(planGenerateInvocations.end()));
-      return PreMappingExplorationOutcome{std::move(*incomplete)};
-    }
-
-    auto completed =
-        std::get<CompletedOwnershipSelection>(std::move(*explored));
-    mergeReferences(satisfiedEvidence, completed.evidence);
-    dispositions.insert(dispositions.end(),
-                        std::make_move_iterator(completed.dispositions.begin()),
-                        std::make_move_iterator(completed.dispositions.end()));
-    planGenerateInvocations.push_back(std::move(completed.generateInvocations));
-    if (completed.retainedIncompleteness)
-      retainedPlanIncompleteness.push_back(
-          std::move(*completed.retainedIncompleteness));
-    generations.push_back(RetainedOwnershipSelection{
-        std::move(completed.invocation), std::move(completed.selected),
-        std::move(completed.preferenceOrder)});
-    const std::size_t generationIndex = generations.size() - 1;
-    RetainedOwnershipSelection &generation = generations.back();
-
-    if (generation.selected.empty()) {
-      if (!priorSelectedGeneration) {
-        if (options.ownership.selectionMode ==
-            StructuredOwnershipSelectionMode::SemanticConformance) {
-          emitOwnershipRejections(dispositions);
-          return PreMappingExplorationOutcome{
-              CompletedPreMappingNoFeasibleCandidate{
-                  std::move(satisfiedEvidence),
-                  std::move(planGenerateInvocations)}};
-        }
-        finalGeneration = generationIndex;
-        finalReferences = {*sourceReference};
-        break;
-      }
-      finalGeneration = *priorSelectedGeneration;
-      finalReferences = {*priorSelectedReference};
-      finalDerivationsIncluded = priorDerivationsIncluded;
-      break;
-    }
-
-    priorSelectedGeneration = generationIndex;
-    priorSelectedReference = generation.preferenceOrder.front();
-    priorDerivationsIncluded = false;
-    if (options.ownership.selectionMode ==
-        StructuredOwnershipSelectionMode::SemanticConformance)
-      semanticAlternatives.push_back(
-          RetainedOwnershipAlternative{generationIndex,
-                                       {generation.preferenceOrder.front()},
-                                       ownershipPrefix,
-                                       executionShapePrefix,
-                                       specialMathPrefix,
-                                       schedulePrefix,
-                                       memoryPrefix,
-                                       false});
-    if (transformationOrdinal + 1 == ownershipGenerationCount) {
-      finalGeneration = generationIndex;
-      finalReferences = generation.preferenceOrder;
-      break;
-    }
-
-    StructuredOwnershipInvocationScope generationScope(*generation.invocation);
-    auto selected = generation.invocation->materializeSelectedCandidate(
-        generation.preferenceOrder.front(), artifactStore);
-    if (!selected)
-      return selected.takeError();
-    ownershipPrefix.insert(
-        ownershipPrefix.end(),
-        std::make_move_iterator(selected->derivations.begin()),
-        std::make_move_iterator(selected->derivations.end()));
-    executionShapePrefix.insert(
-        executionShapePrefix.end(),
-        std::make_move_iterator(selected->executionShapeDerivations.begin()),
-        std::make_move_iterator(selected->executionShapeDerivations.end()));
-    specialMathPrefix.insert(
-        specialMathPrefix.end(),
-        std::make_move_iterator(
-            selected->specialMathAccuracyDerivations.begin()),
-        std::make_move_iterator(
-            selected->specialMathAccuracyDerivations.end()));
-    schedulePrefix.insert(
-        schedulePrefix.end(),
-        std::make_move_iterator(selected->scheduleDerivations.begin()),
-        std::make_move_iterator(selected->scheduleDerivations.end()));
-    memoryPrefix.insert(memoryPrefix.end(),
-                        std::make_move_iterator(
-                            selected->memoryCommunicationDerivations.begin()),
-                        std::make_move_iterator(
-                            selected->memoryCommunicationDerivations.end()));
-    parents.push_back(std::make_unique<frontend::StructuredCompilation>(
+  for (const std::vector<std::size_t> &path : paths) {
+    auto parentProgram = frontend::importStructuredProgram(
+        sourceCompilation.structuredProgram.identity(),
+        sourceCompilation.structuredProgram.canonicalBytes());
+    if (!parentProgram)
+      return parentProgram.takeError();
+    parentStorage.push_back(std::make_unique<frontend::StructuredCompilation>(
         frontend::StructuredCompilation{
             sourceCompilation.fabric, sourceCompilation.staticGlobalMemory,
-            std::move(selected->candidate.structuredProgram),
-            std::move(selected->candidate.sourceProvenance)}));
-    priorDerivationsIncluded = true;
-  }
+            std::move(*parentProgram), sourceCompilation.sourceProvenance}));
+    frontend::StructuredCompilation *parent = parentStorage.back().get();
 
-  if (!finalGeneration || finalReferences.empty())
-    return invalid("ownership exploration did not choose a terminal candidate");
+    std::vector<StructuredOwnershipDerivation> ownershipPrefix;
+    std::vector<StructuredExecutionShapeDerivation> executionShapePrefix;
+    std::vector<StructuredSpecialMathAccuracyDerivation> specialMathPrefix;
+    std::vector<StructuredScheduleDerivation> schedulePrefix;
+    std::vector<StructuredMemoryCommunicationDerivation> memoryPrefix;
+    std::vector<std::size_t> ownedOrdinals;
+    std::optional<std::size_t> priorSelectedGeneration;
+    std::optional<ArtifactRootReference> priorSelectedReference;
+    bool priorDerivationsIncluded = false;
+
+    const std::size_t generationCount =
+        options.ownership.selectionMode ==
+                StructuredOwnershipSelectionMode::SemanticConformance
+            ? std::max<std::size_t>(1, path.size())
+            : 1;
+    for (std::size_t transformationOrdinal = 0;
+         transformationOrdinal != generationCount; ++transformationOrdinal) {
+      auto parentReference = frontend::publishStructuredProgram(
+          parent->structuredProgram, artifactStore);
+      if (!parentReference)
+        return parentReference.takeError();
+      llvm::ArrayRef<std::string> generationSymbols = *callableSymbols;
+      if (options.ownership.selectionMode ==
+          StructuredOwnershipSelectionMode::SemanticConformance) {
+        if (path.empty())
+          generationSymbols = {};
+        else
+          generationSymbols = llvm::ArrayRef<std::string>(*callableSymbols)
+                                  .slice(path[transformationOrdinal], 1);
+      }
+      auto protocolRoots = resolveProtocolCallableRoots(
+          parent->structuredProgram, generationSymbols);
+      if (!protocolRoots)
+        return protocolRoots.takeError();
+      StructuredOwnershipExplorationOptions generationOptions =
+          options.ownership;
+      generationOptions.protocolCallableRoots = std::move(*protocolRoots);
+      if (options.ownership.selectionMode ==
+          StructuredOwnershipSelectionMode::SemanticConformance)
+        generationOptions.selection.k = 1;
+      auto explored = exploreOwnershipCandidates(
+          *parent, *parentReference, sourceCompilation.structuredProgram,
+          *sourceReference, workload, *workloadReference, runtimeInput,
+          *runtimeInputReference, fabric, config, generationOptions,
+          artifactStore, blobStore, &sharedEvaluation);
+      if (!explored)
+        return explored.takeError();
+      if (auto *incomplete =
+              std::get_if<IncompletePreMappingExploration>(&*explored)) {
+        mergeReferences(incomplete->retainedEvidence, satisfiedEvidence);
+        incomplete->planGenerateInvocations.insert(
+            incomplete->planGenerateInvocations.begin(),
+            std::make_move_iterator(planGenerateInvocations.begin()),
+            std::make_move_iterator(planGenerateInvocations.end()));
+        return PreMappingExplorationOutcome{std::move(*incomplete)};
+      }
+
+      auto completed =
+          std::get<CompletedOwnershipSelection>(std::move(*explored));
+      mergeReferences(satisfiedEvidence, completed.evidence);
+      dispositions.insert(
+          dispositions.end(),
+          std::make_move_iterator(completed.dispositions.begin()),
+          std::make_move_iterator(completed.dispositions.end()));
+      planGenerateInvocations.push_back(
+          std::move(completed.generateInvocations));
+      if (completed.retainedIncompleteness)
+        retainedPlanIncompleteness.push_back(
+            std::move(*completed.retainedIncompleteness));
+      generations.push_back(RetainedOwnershipSelection{
+          std::move(completed.invocation), std::move(completed.selected),
+          std::move(completed.preferenceOrder)});
+      const std::size_t generationIndex = generations.size() - 1;
+      RetainedOwnershipSelection &generation = generations.back();
+
+      if (generation.selected.empty()) {
+        if (options.ownership.selectionMode !=
+            StructuredOwnershipSelectionMode::SemanticConformance) {
+          finalGeneration = priorSelectedGeneration.value_or(generationIndex);
+          finalReferences =
+              priorSelectedReference
+                  ? std::vector<ArtifactRootReference>{*priorSelectedReference}
+                  : std::vector<ArtifactRootReference>{*sourceReference};
+          finalOwnershipPrefix = ownershipPrefix;
+          finalExecutionShapePrefix = executionShapePrefix;
+          finalSpecialMathPrefix = specialMathPrefix;
+          finalSchedulePrefix = schedulePrefix;
+          finalMemoryPrefix = memoryPrefix;
+          finalDerivationsIncluded = priorDerivationsIncluded;
+        }
+        break;
+      }
+
+      priorSelectedGeneration = generationIndex;
+      priorSelectedReference = generation.preferenceOrder.front();
+      priorDerivationsIncluded = false;
+      if (options.ownership.selectionMode ==
+          StructuredOwnershipSelectionMode::SemanticConformance) {
+        if (!path.empty())
+          ownedOrdinals.push_back(path[transformationOrdinal]);
+        auto estimate =
+            evaluation::models::lookupStructuredFabricAnalyticRuntimeEstimate(
+                generation.preferenceOrder.front(), fabric.reference(),
+                *workloadReference, *runtimeInputReference, config,
+                evaluationCache);
+        if (!estimate)
+          return estimate.takeError();
+        auto [internalWeight, cutWeight] = protocolDependencyPartition(
+            ownedOrdinals, traversalPlan->dependencyWeights);
+        semanticAlternatives.push_back(
+            RetainedOwnershipAlternative{generationIndex,
+                                         {generation.preferenceOrder.front()},
+                                         ownershipPrefix,
+                                         executionShapePrefix,
+                                         specialMathPrefix,
+                                         schedulePrefix,
+                                         memoryPrefix,
+                                         ownedOrdinals,
+                                         internalWeight,
+                                         cutWeight,
+                                         *estimate,
+                                         false});
+      }
+      if (transformationOrdinal + 1 == generationCount) {
+        if (options.ownership.selectionMode !=
+            StructuredOwnershipSelectionMode::SemanticConformance) {
+          finalGeneration = generationIndex;
+          finalReferences = generation.preferenceOrder;
+          finalOwnershipPrefix = ownershipPrefix;
+          finalExecutionShapePrefix = executionShapePrefix;
+          finalSpecialMathPrefix = specialMathPrefix;
+          finalSchedulePrefix = schedulePrefix;
+          finalMemoryPrefix = memoryPrefix;
+        }
+        break;
+      }
+
+      StructuredOwnershipInvocationScope generationScope(
+          *generation.invocation);
+      auto selected = generation.invocation->materializeSelectedCandidate(
+          generation.preferenceOrder.front(), artifactStore);
+      if (!selected)
+        return selected.takeError();
+      ownershipPrefix.insert(
+          ownershipPrefix.end(),
+          std::make_move_iterator(selected->derivations.begin()),
+          std::make_move_iterator(selected->derivations.end()));
+      executionShapePrefix.insert(
+          executionShapePrefix.end(),
+          std::make_move_iterator(selected->executionShapeDerivations.begin()),
+          std::make_move_iterator(selected->executionShapeDerivations.end()));
+      specialMathPrefix.insert(
+          specialMathPrefix.end(),
+          std::make_move_iterator(
+              selected->specialMathAccuracyDerivations.begin()),
+          std::make_move_iterator(
+              selected->specialMathAccuracyDerivations.end()));
+      schedulePrefix.insert(
+          schedulePrefix.end(),
+          std::make_move_iterator(selected->scheduleDerivations.begin()),
+          std::make_move_iterator(selected->scheduleDerivations.end()));
+      memoryPrefix.insert(memoryPrefix.end(),
+                          std::make_move_iterator(
+                              selected->memoryCommunicationDerivations.begin()),
+                          std::make_move_iterator(
+                              selected->memoryCommunicationDerivations.end()));
+      parentStorage.push_back(std::make_unique<frontend::StructuredCompilation>(
+          frontend::StructuredCompilation{
+              sourceCompilation.fabric, sourceCompilation.staticGlobalMemory,
+              std::move(selected->candidate.structuredProgram),
+              std::move(selected->candidate.sourceProvenance)}));
+      parent = parentStorage.back().get();
+      priorDerivationsIncluded = true;
+    }
+  }
 
   std::vector<RetainedOwnershipAlternative> alternatives;
   if (options.ownership.selectionMode ==
       StructuredOwnershipSelectionMode::SemanticConformance) {
+    if (semanticAlternatives.empty()) {
+      emitOwnershipRejections(dispositions);
+      return PreMappingExplorationOutcome{
+          CompletedPreMappingNoFeasibleCandidate{
+              std::move(satisfiedEvidence),
+              std::move(planGenerateInvocations)}};
+    }
+    const auto scoreLess = [](const RetainedOwnershipAlternative &lhs,
+                              const RetainedOwnershipAlternative &rhs) {
+      if (lhs.estimatedRuntimePicoseconds.has_value() !=
+          rhs.estimatedRuntimePicoseconds.has_value())
+        return lhs.estimatedRuntimePicoseconds.has_value();
+      if (lhs.estimatedRuntimePicoseconds != rhs.estimatedRuntimePicoseconds)
+        return lhs.estimatedRuntimePicoseconds <
+               rhs.estimatedRuntimePicoseconds;
+      if (lhs.cutDependencyWeight != rhs.cutDependencyWeight)
+        return lhs.cutDependencyWeight < rhs.cutDependencyWeight;
+      if (lhs.internalDependencyWeight != rhs.internalDependencyWeight)
+        return lhs.internalDependencyWeight > rhs.internalDependencyWeight;
+      if (lhs.ownedProtocolOrdinals != rhs.ownedProtocolOrdinals)
+        return lhs.ownedProtocolOrdinals < rhs.ownedProtocolOrdinals;
+      return artifactRootReferenceLess(lhs.references.front(),
+                                       rhs.references.front());
+    };
+    llvm::sort(semanticAlternatives, scoreLess);
+    std::vector<RetainedOwnershipAlternative> unique;
+    for (RetainedOwnershipAlternative &alternative : semanticAlternatives) {
+      auto duplicate = llvm::find_if(unique, [&](const auto &retained) {
+        return retained.references.front() == alternative.references.front();
+      });
+      if (duplicate == unique.end())
+        unique.push_back(std::move(alternative));
+    }
+
+    std::vector<std::size_t> diverseOrder;
+    const auto retainIndex = [&](std::size_t index) {
+      if (!llvm::is_contained(diverseOrder, index))
+        diverseOrder.push_back(index);
+    };
+    retainIndex(0);
+    const auto maximal = std::max_element(
+        unique.begin(), unique.end(), [](const auto &lhs, const auto &rhs) {
+          return lhs.ownedProtocolOrdinals.size() <
+                 rhs.ownedProtocolOrdinals.size();
+        });
+    if (maximal != unique.end())
+      retainIndex(std::distance(unique.begin(), maximal));
+    const auto minimal = std::min_element(
+        unique.begin(), unique.end(), [](const auto &lhs, const auto &rhs) {
+          return lhs.ownedProtocolOrdinals.size() <
+                 rhs.ownedProtocolOrdinals.size();
+        });
+    if (minimal != unique.end())
+      retainIndex(std::distance(unique.begin(), minimal));
+    for (std::size_t index = 0; index != unique.size(); ++index)
+      retainIndex(index);
+
     const std::size_t retainedCount =
         static_cast<std::size_t>(std::min<std::uint64_t>(
-            options.ownership.selection.k, semanticAlternatives.size()));
+            options.ownership.selection.k, diverseOrder.size()));
+    candidateInventory.reserve(unique.size());
+    for (std::size_t uniqueIndex = 0; uniqueIndex != unique.size();
+         ++uniqueIndex) {
+      std::optional<std::uint64_t> preferenceRank;
+      for (std::size_t rank = 0; rank != retainedCount; ++rank)
+        if (diverseOrder[rank] == uniqueIndex) {
+          preferenceRank = rank;
+          break;
+        }
+      std::vector<frontend::StructuredEntityRef> ownedRoots;
+      ownedRoots.reserve(unique[uniqueIndex].ownedProtocolOrdinals.size());
+      for (std::size_t ordinal : unique[uniqueIndex].ownedProtocolOrdinals) {
+        if (ordinal >= sourceProtocolRoots->size())
+          return invalid("candidate inventory owns a foreign protocol root");
+        ownedRoots.push_back((*sourceProtocolRoots)[ordinal]);
+      }
+      candidateInventory.push_back(PreMappingCandidatePlanningRecord{
+          unique[uniqueIndex].references.front(), std::move(ownedRoots),
+          unique[uniqueIndex].estimatedRuntimePicoseconds,
+          preferenceRank
+              ? PreMappingCandidatePlanningDisposition::Retained
+              : PreMappingCandidatePlanningDisposition::BoundedFrontierBudget,
+          preferenceRank});
+    }
+
     alternatives.reserve(retainedCount);
-    for (auto iterator = semanticAlternatives.rbegin();
-         iterator != semanticAlternatives.rend() &&
-         alternatives.size() != retainedCount;
-         ++iterator)
-      alternatives.push_back(*iterator);
+    for (std::size_t rank = 0; rank != retainedCount; ++rank) {
+      const std::size_t index = diverseOrder[rank];
+      mapping_debug::emit(
+          mapping_debug::Level::Detail, mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+            fields["operation"] = "retain_dependency_aware_candidate";
+            fields["preference_rank"] = rank;
+            fields["owned_region_count"] =
+                unique[index].ownedProtocolOrdinals.size();
+            fields["internal_dependency_weight"] =
+                unique[index].internalDependencyWeight;
+            fields["cut_dependency_weight"] = unique[index].cutDependencyWeight;
+            fields["analytic_runtime_supported"] =
+                unique[index].estimatedRuntimePicoseconds.has_value();
+            if (unique[index].estimatedRuntimePicoseconds)
+              fields["estimated_runtime_ps"] =
+                  *unique[index].estimatedRuntimePicoseconds;
+          });
+      alternatives.push_back(std::move(unique[index]));
+    }
   } else {
-    alternatives.push_back(RetainedOwnershipAlternative{
-        *finalGeneration, std::move(finalReferences), ownershipPrefix,
-        executionShapePrefix, specialMathPrefix, schedulePrefix, memoryPrefix,
-        finalDerivationsIncluded});
+    if (!finalGeneration || finalReferences.empty())
+      return invalid(
+          "ownership exploration did not choose a terminal candidate");
+    alternatives.push_back(
+        RetainedOwnershipAlternative{*finalGeneration,
+                                     std::move(finalReferences),
+                                     std::move(finalOwnershipPrefix),
+                                     std::move(finalExecutionShapePrefix),
+                                     std::move(finalSpecialMathPrefix),
+                                     std::move(finalSchedulePrefix),
+                                     std::move(finalMemoryPrefix),
+                                     {},
+                                     0,
+                                     0,
+                                     std::nullopt,
+                                     finalDerivationsIncluded});
+    for (std::size_t rank = 0; rank != alternatives.front().references.size();
+         ++rank)
+      candidateInventory.push_back(PreMappingCandidatePlanningRecord{
+          alternatives.front().references[rank],
+          {},
+          std::nullopt,
+          PreMappingCandidatePlanningDisposition::Retained,
+          rank});
   }
 
   auto assemble = [&](SelectedStructuredOwnershipCandidate candidate,
@@ -1167,7 +1481,9 @@ exploreStructuredCompilationToPreMapping(
         std::move(satisfiedEvidence), std::move(planGenerateInvocations)}};
   return PreMappingExplorationOutcome{CompletedPreMappingSelection{
       std::move(selected), std::move(satisfiedEvidence),
-      std::move(dispositions), std::move(planGenerateInvocations),
+      std::move(dispositions), std::move(protocolRootActivity),
+      std::move(*protocolDependencies), std::move(candidateInventory),
+      std::move(planGenerateInvocations),
       std::move(retainedPlanIncompleteness)}};
 }
 

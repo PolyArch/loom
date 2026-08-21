@@ -439,17 +439,20 @@ void verifyRootCompleteSystemAdapter(
       normalizedTimingProfileRoots(systemReference, store);
   require(descriptor.kind ==
                   loom::dse::rootCompleteSystemPnrCandidateGeneratorKind &&
-              descriptor.inputSlots.size() == 4 &&
+              descriptor.inputSlots.size() == 5 &&
               descriptor.outputSlots.size() == 1 &&
               descriptor.implementationSemanticIdentity ==
-                  "loom.mapping.root_complete_system_pnr.generator.v9" &&
+                  "loom.mapping.root_complete_system_pnr.generator.v10" &&
               descriptor.workUnits.size() ==
                   loom::dse::pnrCandidateGeneratorWorkUnits.size() &&
               descriptor.inputSlots[0].semanticRole == "dataflow" &&
               descriptor.inputSlots[1].semanticRole == "spatial_mapping" &&
               descriptor.inputSlots[2].semanticRole == "fabric" &&
               descriptor.inputSlots[3].semanticRole ==
-                  "physical_timing_profile",
+                  "physical_timing_profile" &&
+              descriptor.inputSlots[4].semanticRole == "migration_seed" &&
+              descriptor.inputSlots[4].cardinality ==
+                  loom::dse::PlanValueCardinality::ZeroOrOne,
           "root-complete System descriptor lost its exact timing-bound input "
           "shape");
   auto inputs =
@@ -513,7 +516,8 @@ void verifyRootCompleteSystemAdapter(
       {loom::dse::ExactPlanArtifacts{{dataflowReference}},
        loom::dse::ExactPlanArtifacts{spatialMappings.vec()},
        loom::dse::ExactPlanArtifacts{{systemReference}},
-       loom::dse::ExactPlanArtifacts{physicalTimingProfiles}},
+       loom::dse::ExactPlanArtifacts{physicalTimingProfiles},
+       loom::dse::ExactPlanArtifacts{}},
       config.canonicalViewBytes().vec(),
       config.digest()}};
   auto planView = take(loom::dse::projectResolvedDseConfigView(planned));

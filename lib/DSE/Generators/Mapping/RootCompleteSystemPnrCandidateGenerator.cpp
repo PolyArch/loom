@@ -8,6 +8,7 @@
 #include "Mapping/Artifact/MappingArtifact.h"
 #include "Mapping/Artifact/SystemMappingConstraintSet.h"
 #include "Mapping/Artifact/SystemMappingHardwareDemand.h"
+#include "PnR/System/SystemMappingMigration.h"
 #include "PnR/System/SystemPnrDerivedContext.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 
@@ -32,6 +33,7 @@ enum InputSlot : std::uint32_t {
   SpatialMappingCandidatesInput,
   FabricInput,
   PhysicalTimingProfilesInput,
+  MigrationSeedInput,
   InputSlotCount,
 };
 
@@ -41,6 +43,7 @@ enum ApplicationInputSlot : std::uint32_t {
   ApplicationFabricInput,
   ApplicationPhysicalTimingProfilesInput,
   ApplicationSystemConstraintsInput,
+  ApplicationMigrationSeedInput,
   ApplicationInputSlotCount,
 };
 
@@ -60,6 +63,10 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor, InputSlotCount>
          "physical_timing_profile", PlanValueRole::CandidateSet,
          &::loom::fabric::fabricPhysicalTimingProfileArtifactSchema,
          PlanValueCardinality::FiniteSet},
+        {CandidateGeneratorInputSlotRef(MigrationSeedInput), "migration_seed",
+         PlanValueRole::CandidateSet,
+         &::loom::pnr::systemMappingCheckpointMigrationSeedArtifactSchema,
+         PlanValueCardinality::ZeroOrOne},
     }};
 
 constexpr std::array<CandidateGeneratorInputSlotDescriptor,
@@ -84,6 +91,10 @@ constexpr std::array<CandidateGeneratorInputSlotDescriptor,
          "system_constraints", PlanValueRole::CandidateSet,
          &::loom::mapping::mappingConstraintSetSchema,
          PlanValueCardinality::ExactlyOne},
+        {CandidateGeneratorInputSlotRef(ApplicationMigrationSeedInput),
+         "migration_seed", PlanValueRole::CandidateSet,
+         &::loom::pnr::systemMappingCheckpointMigrationSeedArtifactSchema,
+         PlanValueCardinality::ZeroOrOne},
     }};
 
 constexpr std::array<CandidateGeneratorOutputSlotDescriptor, 1> outputSlots = {
@@ -113,6 +124,7 @@ llvm::Error validateCapacityPressureFeedback(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputs,
     const ArtifactStore &store) {
   std::optional<ArtifactRootReference> system;
+  std::optional<ArtifactRootReference> dataflow;
   std::vector<ArtifactRootReference> spatialMappings;
   for (const CandidateGeneratorInputBinding &binding : inputs)
     for (const ArtifactRootReference &input : binding.artifacts) {
@@ -134,17 +146,28 @@ llvm::Error validateCapacityPressureFeedback(
         continue;
       }
       if (input.schemaIdentity ==
+              ::dataflow::canonicalDataflowSchema.identity &&
+          input.schemaVersion == ::dataflow::canonicalDataflowSchema.version) {
+        if (dataflow)
+          return llvm::createStringError(
+              llvm::inconvertibleErrorCode(),
+              "system_pnr_generator_feedback_invalid: input closure has "
+              "multiple Dataflow roots");
+        dataflow = input;
+        continue;
+      }
+      if (input.schemaIdentity ==
               ::loom::mapping::mappingArtifactSchema.identity &&
           input.schemaVersion == ::loom::mapping::mappingArtifactSchema.version)
         spatialMappings.push_back(input);
     }
-  if (!system || spatialMappings.empty())
+  if (!system || !dataflow || spatialMappings.empty())
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "system_pnr_generator_feedback_invalid: input closure lacks its exact "
         "System or SpatialMapping frontier");
   auto adopted = ::loom::mapping::adoptSystemAccCoreCapacityPressure(
-      bytes, *system, spatialMappings, store);
+      bytes, *system, *dataflow, spatialMappings, store);
   if (!adopted)
     return adopted.takeError();
   return llvm::Error::success();
@@ -169,7 +192,7 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
 const CandidateGeneratorDescriptor descriptor{
     rootCompleteSystemPnrCandidateGeneratorKind,
     "mapping.root_complete_system_pnr",
-    "loom.mapping.root_complete_system_pnr.generator.v9",
+    "loom.mapping.root_complete_system_pnr.generator.v10",
     inputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -185,7 +208,7 @@ const CandidateGeneratorDescriptor descriptor{
 const CandidateGeneratorDescriptor applicationDescriptor{
     applicationSystemPnrCandidateGeneratorKind,
     "mapping.application_system_pnr",
-    "loom.mapping.application_system_pnr.generator.v8",
+    "loom.mapping.application_system_pnr.generator.v9",
     applicationInputSlots,
     outputSlots,
     ResolvedDseConfigViewContract{
@@ -240,6 +263,11 @@ encodeCapacityPressureFeedback(
     const ::loom::fabric::FabricSystemRootView &system) {
   if (!incomplete.importedCapacityPressure)
     return std::optional<std::vector<std::uint8_t>>{};
+  if (!incomplete.executionBindingCheckpoint)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "system_pnr_generator_feedback_invalid: capacity pressure has no "
+        "execution-binding checkpoint");
   const auto &pressure = *incomplete.importedCapacityPressure;
   if (pressure.witness.namespaceOrdinal == 0 ||
       pressure.witness.namespaceOrdinal >
@@ -277,9 +305,9 @@ encodeCapacityPressureFeedback(
       ArtifactRootReference{::loom::fabric::fabricArtifactSchema.identity.str(),
                             ::loom::fabric::fabricArtifactSchema.version,
                             targetModule.identity()},
-      spatialMappings.vec(), compatibleAccCoreCount,
+      witnessCore, spatialMappings.vec(), compatibleAccCoreCount,
       pressure.assignmentAttempts, pressure.witness.usage,
-      pressure.witness.capacity);
+      pressure.witness.capacity, *incomplete.executionBindingCheckpoint);
   if (!feedback)
     return feedback.takeError();
   return std::optional<std::vector<std::uint8_t>>(
@@ -334,6 +362,26 @@ importPhysicalTimingProfiles(llvm::ArrayRef<ArtifactRootReference> references,
   return profiles;
 }
 
+llvm::Expected<
+    std::optional<::loom::pnr::FinalizedSystemMappingCheckpointMigrationSeed>>
+importMigrationSeed(llvm::ArrayRef<ArtifactRootReference> references,
+                    const ArtifactStore &store) {
+  if (references.empty())
+    return std::optional<
+        ::loom::pnr::FinalizedSystemMappingCheckpointMigrationSeed>{};
+  if (references.size() != 1)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "System PnR migration seed input is not zero-or-one");
+  auto imported = ::loom::pnr::importSystemMappingCheckpointMigrationSeed(
+      references.front(), store);
+  if (!imported)
+    return imported.takeError();
+  return std::optional<
+      ::loom::pnr::FinalizedSystemMappingCheckpointMigrationSeed>(
+      std::move(*imported));
+}
+
 llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
     llvm::ArrayRef<CandidateGeneratorInputBinding> inputBindings,
     const ResolvedCandidateGeneratorBinding &binding,
@@ -372,6 +420,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       inputBindings[PhysicalTimingProfilesInput].artifacts, *system, store);
   if (!physicalTimingProfiles)
     return physicalTimingProfiles.takeError();
+  auto migrationSeed =
+      importMigrationSeed(inputBindings[MigrationSeedInput].artifacts, store);
+  if (!migrationSeed)
+    return migrationSeed.takeError();
 
   std::vector<::dataflow::RootThreadLaunchRef> roots;
   roots.reserve(dataflow->rootThreadLaunches().size());
@@ -432,7 +484,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeRootCompleteProvider(
       ::loom::pnr::generateSystemMappings(
           {*dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
            *constraints, store, invocation.executionControl(), &*staticContext,
-           &*activeContext});
+           &*activeContext, nullptr,
+           *migrationSeed ? &**migrationSeed : nullptr});
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
     auto reason = pnrGenerationIncompleteReason(generated->termination);
@@ -523,6 +576,10 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
       store);
   if (!physicalTimingProfiles)
     return physicalTimingProfiles.takeError();
+  auto migrationSeed = importMigrationSeed(
+      inputBindings[ApplicationMigrationSeedInput].artifacts, store);
+  if (!migrationSeed)
+    return migrationSeed.takeError();
   auto constraints = ::loom::mapping::importSystemMappingConstraintSet(
       inputBindings[ApplicationSystemConstraintsInput].artifacts.front(),
       store);
@@ -578,7 +635,8 @@ llvm::Expected<CandidateGeneratorProviderResult> invokeApplicationProvider(
       ::loom::pnr::generateSystemMappings(
           {*dataflow, *system, *physicalTimingProfiles, *searchDomain, *config,
            *constraints, store, invocation.executionControl(), &*staticContext,
-           &*activeContext});
+           &*activeContext, nullptr,
+           *migrationSeed ? &**migrationSeed : nullptr});
   if (auto *generated =
           std::get_if<::loom::pnr::GeneratedSystemMappings>(&outcome)) {
     auto reason = pnrGenerationIncompleteReason(generated->termination);
@@ -669,6 +727,7 @@ bindRootCompleteSystemPnrCandidateGeneratorInputs(
       {CandidateGeneratorInputSlotRef(FabricInput), {fabric}},
       {CandidateGeneratorInputSlotRef(PhysicalTimingProfilesInput),
        physicalTimingProfiles.vec()},
+      {CandidateGeneratorInputSlotRef(MigrationSeedInput), {}},
   };
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           descriptor.reference(), bindings))
@@ -715,6 +774,7 @@ bindApplicationSystemPnrCandidateGeneratorInputs(
        physicalTimingProfiles.vec()},
       {CandidateGeneratorInputSlotRef(ApplicationSystemConstraintsInput),
        {systemConstraints}},
+      {CandidateGeneratorInputSlotRef(ApplicationMigrationSeedInput), {}},
   };
   if (llvm::Error error = validateCandidateGeneratorInputBindings(
           applicationDescriptor.reference(), bindings))

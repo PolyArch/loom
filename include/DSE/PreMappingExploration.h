@@ -3,6 +3,7 @@
 
 #include "DSE/Plan.h"
 #include "DSE/StructuredOwnership.h"
+#include "Frontend/Analysis/StructuredProtocolDependencies.h"
 #include "Frontend/Compilation/PreMappingCompilation.h"
 
 #include "llvm/Support/Error.h"
@@ -34,6 +35,46 @@ struct SelectedPreMappingCompilation final {
   std::optional<sim::SourceBackedDfgValidationResult> functionalReplay;
 };
 
+enum class PreMappingCandidatePlanningDisposition : std::uint8_t {
+  Retained,
+  BoundedFrontierBudget,
+};
+
+struct PreMappingProtocolRootActivity final {
+  frontend::StructuredEntityRef root;
+  std::uint64_t dynamicActivations = 0;
+  std::uint64_t dynamicLeafExecutions = 0;
+
+  friend bool operator==(const PreMappingProtocolRootActivity &lhs,
+                         const PreMappingProtocolRootActivity &rhs) {
+    return lhs.root == rhs.root &&
+           lhs.dynamicActivations == rhs.dynamicActivations &&
+           lhs.dynamicLeafExecutions == rhs.dynamicLeafExecutions;
+  }
+};
+
+/// One invocation-local candidate planning record. Exact dependencies and
+/// source activity are stored once on CompletedPreMappingSelection and remain
+/// mechanically joinable through `ownedProtocolRoots`; this record does not
+/// duplicate cut projections or claim Mapping legality.
+struct PreMappingCandidatePlanningRecord final {
+  ArtifactRootReference structuredProgram;
+  std::vector<frontend::StructuredEntityRef> ownedProtocolRoots;
+  std::optional<std::uint64_t> estimatedRuntimePicoseconds;
+  PreMappingCandidatePlanningDisposition disposition =
+      PreMappingCandidatePlanningDisposition::BoundedFrontierBudget;
+  std::optional<std::uint64_t> preferenceRank;
+
+  friend bool operator==(const PreMappingCandidatePlanningRecord &lhs,
+                         const PreMappingCandidatePlanningRecord &rhs) {
+    return lhs.structuredProgram == rhs.structuredProgram &&
+           lhs.ownedProtocolRoots == rhs.ownedProtocolRoots &&
+           lhs.estimatedRuntimePicoseconds == rhs.estimatedRuntimePicoseconds &&
+           lhs.disposition == rhs.disposition &&
+           lhs.preferenceRank == rhs.preferenceRank;
+  }
+};
+
 struct CompletedPreMappingSelection final {
   /// A completed promotion can select a verified incumbent without exhausting
   /// every Generate or Evidence domain. Retained plan records remain the sole
@@ -41,6 +82,10 @@ struct CompletedPreMappingSelection final {
   std::vector<SelectedPreMappingCompilation> selected;
   std::vector<ArtifactRootReference> satisfiedEvidence;
   std::vector<StructuredOwnershipCandidateDisposition> dispositions;
+  std::vector<PreMappingProtocolRootActivity> protocolRootActivity;
+  std::vector<frontend::analysis::StructuredProtocolDependency>
+      protocolDependencies;
+  std::vector<PreMappingCandidatePlanningRecord> candidateInventory;
   std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
   std::vector<RetainedDsePlanIncompleteness> retainedPlanIncompleteness;
 

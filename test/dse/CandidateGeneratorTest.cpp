@@ -80,6 +80,7 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
 constexpr std::array<std::uint8_t, 4> decisionSchema = {0x44, 0x45, 0x43, 0x31};
 
 llvm::Error validateDecision(llvm::ArrayRef<std::uint8_t> bytes,
+                             const ArtifactRootReference &,
                              llvm::ArrayRef<ArtifactRootReference> parents,
                              const loom::ArtifactStore &) {
   if (bytes != llvm::ArrayRef<std::uint8_t>({0xaa}))

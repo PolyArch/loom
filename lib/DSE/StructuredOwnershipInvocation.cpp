@@ -122,6 +122,52 @@ struct DataflowRewriteLineageEdge final {
 
 } // namespace
 
+llvm::Expected<std::shared_ptr<const sim::NativeStructuredProgramObservations>>
+StructuredOwnershipSharedEvaluation::profiledObservations(
+    const ArtifactRootReference &candidate, const ArtifactRootReference &source,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput,
+    const frontend::StructuredProgramCandidate &candidateProgram,
+    const frontend::StructuredProgramCandidate &sourceProgram,
+    const sim::CanonicalSimulationWorkload &simulationWorkload,
+    const sim::CanonicalSimulationRuntimeInput &simulationRuntimeInput) const {
+  if (!sameRoot(candidate, frontend::structuredProgramArtifactSchema,
+                candidateProgram.identity()) ||
+      !sameRoot(source, frontend::structuredProgramArtifactSchema,
+                sourceProgram.identity()) ||
+      !sameRoot(workload, sim::simulationWorkloadSchema,
+                simulationWorkload.identity()) ||
+      !sameRoot(runtimeInput, sim::simulationRuntimeInputSchema,
+                simulationRuntimeInput.identity()))
+    return invalid("profile cache key differs from its exact inputs");
+  const auto matches = [&](const ProfileEntry &entry) {
+    return entry.candidate == candidate && entry.source == source &&
+           entry.workload == workload && entry.runtimeInput == runtimeInput;
+  };
+  {
+    std::lock_guard<std::mutex> lock(profileMutex_);
+    auto found = llvm::find_if(profiles_, matches);
+    if (found != profiles_.end())
+      return found->observations;
+  }
+
+  auto executed = sim::executeProfiledSelectedStructuredProgram(
+      candidateProgram, sourceProgram, simulationWorkload,
+      simulationRuntimeInput);
+  if (!executed)
+    return executed.takeError();
+  auto observations =
+      std::make_shared<const sim::NativeStructuredProgramObservations>(
+          std::move(*executed));
+  std::lock_guard<std::mutex> lock(profileMutex_);
+  auto found = llvm::find_if(profiles_, matches);
+  if (found != profiles_.end())
+    return found->observations;
+  profiles_.push_back(
+      {candidate, source, workload, runtimeInput, observations});
+  return observations;
+}
+
 class detail::StructuredOwnershipDataflowLineageIndex::Impl final {
 public:
   std::map<ArtifactRootReference, ArtifactRootReference,
@@ -360,13 +406,15 @@ public:
        std::uint32_t candidateWorkerCount,
        sim::SourceBackedDfgValidationLimits functionalReplayLimits,
        llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
-           sourceProvenance)
+           sourceProvenance,
+       const StructuredOwnershipSharedEvaluation *sharedEvaluation)
       : generationParent(generationParent), sourceProgram(sourceProgram),
         workload(workload), runtimeInput(runtimeInput), fabric(fabric),
         config(config), lowering(lowering),
         candidateWorkerCount(candidateWorkerCount),
         functionalReplayLimits(functionalReplayLimits),
         sourceProvenance(sourceProvenance.begin(), sourceProvenance.end()),
+        sharedEvaluation(sharedEvaluation),
         structuredCandidates(&artifactRootReferenceLess),
         materialized(&artifactRootReferenceLess),
         specialMathMechanicalParents(&artifactRootReferenceLess),
@@ -382,13 +430,20 @@ public:
   std::uint32_t candidateWorkerCount;
   sim::SourceBackedDfgValidationLimits functionalReplayLimits;
   std::vector<frontend::StructuredOperationSourceProvenance> sourceProvenance;
-  evaluation::models::StructuredEvaluationInvocationCache evaluationCache;
+  const StructuredOwnershipSharedEvaluation *sharedEvaluation = nullptr;
+  evaluation::models::StructuredEvaluationInvocationCache localEvaluationCache;
+
+  evaluation::models::StructuredEvaluationInvocationCache &evaluationCache() {
+    return sharedEvaluation ? sharedEvaluation->cache() : localEvaluationCache;
+  }
 
   std::optional<ArtifactRootReference> generationParentReference;
   std::optional<ArtifactRootReference> sourceReference;
   std::optional<ArtifactRootReference> workloadReference;
   std::optional<ArtifactRootReference> runtimeInputReference;
-  std::optional<sim::NativeStructuredProgramObservations> sourceObservations;
+  std::optional<sim::NativeStructuredProgramObservations>
+      ownedSourceObservations;
+  const sim::NativeStructuredProgramObservations *sourceObservations = nullptr;
   std::optional<sim::NativeStructuredProgramObservations>
       generationParentObservations;
   std::uint64_t sourceNativeExecutionCount = 0;
@@ -532,11 +587,12 @@ StructuredOwnershipInvocation::StructuredOwnershipInvocation(
     std::uint32_t candidateWorkerCount,
     sim::SourceBackedDfgValidationLimits functionalReplayLimits,
     llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
-        sourceProvenance)
+        sourceProvenance,
+    const StructuredOwnershipSharedEvaluation *sharedEvaluation)
     : impl_(std::make_unique<Impl>(generationParent, sourceProgram, workload,
                                    runtimeInput, fabric, config, lowering,
                                    candidateWorkerCount, functionalReplayLimits,
-                                   sourceProvenance)) {}
+                                   sourceProvenance, sharedEvaluation)) {}
 
 StructuredOwnershipInvocation::~StructuredOwnershipInvocation() = default;
 
@@ -569,13 +625,28 @@ llvm::Error StructuredOwnershipInvocation::prepareInputs(
                 impl.runtimeInput.identity()))
     return invalid("prepared roots differ from the bound invocation");
 
-  auto observations = sim::executeNativeStructuredProgram(
-      impl.sourceProgram, impl.workload, impl.runtimeInput);
-  if (!observations)
-    return observations.takeError();
+  std::optional<sim::NativeStructuredProgramObservations> observations;
+  const sim::NativeStructuredProgramObservations *sourceObservations = nullptr;
+  if (impl.sharedEvaluation) {
+    sourceObservations = &impl.sharedEvaluation->sourceObservations();
+  } else {
+    auto executed = sim::executeNativeStructuredProgram(
+        impl.sourceProgram, impl.workload, impl.runtimeInput);
+    if (!executed)
+      return executed.takeError();
+    observations.emplace(std::move(*executed));
+    sourceObservations = &*observations;
+  }
   std::optional<sim::NativeStructuredProgramObservations> parentObservations;
   if (impl.generationParent.identity() == impl.sourceProgram.identity()) {
-    parentObservations = *observations;
+    parentObservations = *sourceObservations;
+  } else if (impl.sharedEvaluation) {
+    auto profiled = impl.sharedEvaluation->profiledObservations(
+        generationParent, source, workload, runtimeInput, impl.generationParent,
+        impl.sourceProgram, impl.workload, impl.runtimeInput);
+    if (!profiled)
+      return profiled.takeError();
+    parentObservations = **profiled;
   } else {
     auto profiled = sim::executeProfiledSelectedStructuredProgram(
         impl.generationParent, impl.sourceProgram, impl.workload,
@@ -585,17 +656,17 @@ llvm::Error StructuredOwnershipInvocation::prepareInputs(
     parentObservations.emplace(std::move(*profiled));
   }
   evaluation::models::StructuredEvaluationInvocationCacheScope cacheScope(
-      impl.evaluationCache);
+      impl.evaluationCache());
   if (llvm::Error error =
           evaluation::models::primeStructuredProgramSourceObservations(
-              source, workload, runtimeInput, *observations))
+              source, workload, runtimeInput, *sourceObservations))
     return error;
   const evaluation::models::StructuredFabricAnalyticInvocation invocation{
       workload,          runtimeInput,       impl.workload,
-      impl.runtimeInput, impl.sourceProgram, *observations};
+      impl.runtimeInput, impl.sourceProgram, *sourceObservations};
   if (llvm::Error error =
           evaluation::models::primeStructuredFabricAnalyticResult(
-              source, {impl.sourceProgram, nullptr, {}, {}, &*observations},
+              source, {impl.sourceProgram, nullptr, {}, {}, sourceObservations},
               invocation, impl.fabric, impl.config, store))
     return error;
 
@@ -603,9 +674,14 @@ llvm::Error StructuredOwnershipInvocation::prepareInputs(
   impl.sourceReference.emplace(source);
   impl.workloadReference.emplace(workload);
   impl.runtimeInputReference.emplace(runtimeInput);
-  impl.sourceObservations.emplace(std::move(*observations));
+  if (observations) {
+    impl.ownedSourceObservations.emplace(std::move(*observations));
+    impl.sourceObservations = &*impl.ownedSourceObservations;
+    ++impl.sourceNativeExecutionCount;
+  } else {
+    impl.sourceObservations = sourceObservations;
+  }
   impl.generationParentObservations.emplace(std::move(*parentObservations));
-  ++impl.sourceNativeExecutionCount;
   return llvm::Error::success();
 }
 
@@ -616,7 +692,7 @@ StructuredOwnershipInvocation::sourceNativeExecutionCount() const {
 
 evaluation::models::StructuredEvaluationInvocationCacheStatistics
 StructuredOwnershipInvocation::evaluationCacheStatistics() const {
-  return impl_->evaluationCache.statistics();
+  return impl_->evaluationCache().statistics();
 }
 
 llvm::ArrayRef<StructuredOwnershipCandidateDisposition>
@@ -867,7 +943,7 @@ detail::StructuredOwnershipInvocationAccess::fabric(
 evaluation::models::StructuredEvaluationInvocationCache &
 detail::StructuredOwnershipInvocationAccess::evaluationCache(
     StructuredOwnershipInvocation &invocation) {
-  return invocation.impl_->evaluationCache;
+  return invocation.impl_->evaluationCache();
 }
 
 llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
@@ -1342,13 +1418,39 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeAnalyticCandidate(
   auto found = impl.finalCandidates.find(candidate);
   if (found == impl.finalCandidates.end())
     return llvm::Error::success();
-  auto &state = found->second;
-  auto observations = sim::executeProfiledSelectedStructuredProgram(
-      state.structuredProgram, impl.sourceProgram, impl.workload,
-      impl.runtimeInput);
-  if (!observations) {
-    llvm::consumeError(observations.takeError());
+  auto cached = evaluation::models::hasStructuredFabricAnalyticResult(
+      candidate, impl.fabric.reference(), *impl.workloadReference,
+      *impl.runtimeInputReference, impl.config, impl.evaluationCache());
+  if (!cached)
+    return cached.takeError();
+  if (*cached)
     return llvm::Error::success();
+  auto &state = found->second;
+  std::shared_ptr<const sim::NativeStructuredProgramObservations>
+      sharedObservations;
+  std::optional<sim::NativeStructuredProgramObservations> ownedObservations;
+  const sim::NativeStructuredProgramObservations *observations = nullptr;
+  if (impl.sharedEvaluation) {
+    auto profiled = impl.sharedEvaluation->profiledObservations(
+        candidate, *impl.sourceReference, *impl.workloadReference,
+        *impl.runtimeInputReference, state.structuredProgram,
+        impl.sourceProgram, impl.workload, impl.runtimeInput);
+    if (!profiled) {
+      llvm::consumeError(profiled.takeError());
+      return llvm::Error::success();
+    }
+    sharedObservations = std::move(*profiled);
+    observations = sharedObservations.get();
+  } else {
+    auto profiled = sim::executeProfiledSelectedStructuredProgram(
+        state.structuredProgram, impl.sourceProgram, impl.workload,
+        impl.runtimeInput);
+    if (!profiled) {
+      llvm::consumeError(profiled.takeError());
+      return llvm::Error::success();
+    }
+    ownedObservations.emplace(std::move(*profiled));
+    observations = &*ownedObservations;
   }
   const evaluation::models::StructuredFabricAnalyticInvocation analytic{
       *impl.workloadReference, *impl.runtimeInputReference,
@@ -1360,7 +1462,7 @@ llvm::Error detail::StructuredOwnershipInvocationAccess::primeAnalyticCandidate(
        &state.projected.artifact,
        state.projected.spatialGraphs,
        {},
-       &*observations},
+       observations},
       analytic, impl.fabric, impl.config, store);
 }
 

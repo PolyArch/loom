@@ -75,10 +75,9 @@ llvm::Error validateConfig(llvm::ArrayRef<std::uint8_t> bytes,
   return llvm::Error::success();
 }
 
-llvm::Error
-validateDecisionPayload(llvm::ArrayRef<std::uint8_t> bytes,
-                        llvm::ArrayRef<ArtifactRootReference> parents,
-                        const ArtifactStore &store) {
+llvm::Error validateDecisionPayload(
+    llvm::ArrayRef<std::uint8_t> bytes, const ArtifactRootReference &,
+    llvm::ArrayRef<ArtifactRootReference> parents, const ArtifactStore &store) {
   auto adopted = frontend::adoptStructuredSpecialMathAccuracyDecision(bytes);
   if (!adopted)
     return adopted.takeError();

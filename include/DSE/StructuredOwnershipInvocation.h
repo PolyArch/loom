@@ -9,17 +9,68 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <vector>
 
 namespace loom {
 class ArtifactStore;
 struct ResolvedConfig;
 } // namespace loom
 
+namespace loom::sim {
+struct NativeStructuredProgramObservations;
+}
+
 namespace loom::dse {
 
 namespace detail {
 class StructuredOwnershipInvocationAccess;
 }
+
+/// One build-local immutable source observation and exact-key Evaluation cache
+/// shared by independent ownership generations. It has no Artifact identity
+/// and cannot relax any model key or reuse a candidate result across builds.
+class StructuredOwnershipSharedEvaluation final {
+public:
+  StructuredOwnershipSharedEvaluation(
+      const sim::NativeStructuredProgramObservations &sourceObservations,
+      evaluation::models::StructuredEvaluationInvocationCache &cache)
+      : sourceObservations_(sourceObservations), cache_(cache) {}
+
+  const sim::NativeStructuredProgramObservations &sourceObservations() const {
+    return sourceObservations_;
+  }
+  evaluation::models::StructuredEvaluationInvocationCache &cache() const {
+    return cache_;
+  }
+
+  llvm::Expected<
+      std::shared_ptr<const sim::NativeStructuredProgramObservations>>
+  profiledObservations(
+      const ArtifactRootReference &candidate,
+      const ArtifactRootReference &source,
+      const ArtifactRootReference &workload,
+      const ArtifactRootReference &runtimeInput,
+      const frontend::StructuredProgramCandidate &candidateProgram,
+      const frontend::StructuredProgramCandidate &sourceProgram,
+      const sim::CanonicalSimulationWorkload &simulationWorkload,
+      const sim::CanonicalSimulationRuntimeInput &simulationRuntimeInput) const;
+
+private:
+  struct ProfileEntry final {
+    ArtifactRootReference candidate;
+    ArtifactRootReference source;
+    ArtifactRootReference workload;
+    ArtifactRootReference runtimeInput;
+    std::shared_ptr<const sim::NativeStructuredProgramObservations>
+        observations;
+  };
+
+  const sim::NativeStructuredProgramObservations &sourceObservations_;
+  evaluation::models::StructuredEvaluationInvocationCache &cache_;
+  mutable std::mutex profileMutex_;
+  mutable std::vector<ProfileEntry> profiles_;
+};
 
 /// Removable typed state shared by the compiler-owned Generate and Promote
 /// nodes of one synchronous Structured DSE invocation. Persistent candidate
@@ -36,7 +87,8 @@ public:
       std::uint32_t candidateWorkerCount,
       sim::SourceBackedDfgValidationLimits functionalReplayLimits,
       llvm::ArrayRef<frontend::StructuredOperationSourceProvenance>
-          sourceProvenance = {});
+          sourceProvenance = {},
+      const StructuredOwnershipSharedEvaluation *sharedEvaluation = nullptr);
   ~StructuredOwnershipInvocation();
 
   StructuredOwnershipInvocation(const StructuredOwnershipInvocation &) = delete;

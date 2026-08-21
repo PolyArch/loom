@@ -9,6 +9,7 @@
 #include "DSE/ProductionOwners.h"
 #include "DSE/ResolvedConfigView.h"
 #include "DSE/RootCompleteSystemPnrCandidateGenerator.h"
+#include "DSE/SystemCompositionCandidateGenerator.h"
 #include "DSE/TechMappingHardwareFeedback.h"
 #include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
@@ -18,6 +19,7 @@
 #include "Mapping/Artifact/SystemMappingHardwareDemand.h"
 #include "Mapping/Tech/TechMappingHardwareDemand.h"
 #include "PnR/PnrDerivedContext.h"
+#include "PnR/System/SystemMappingMigration.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/FileSystem.h"
@@ -54,6 +56,8 @@ struct SystemHardwareFeedbackObservation final {
 
 struct HardwareRecipeGrowth final {
   ResolvedConfig config;
+  std::optional<ArtifactRootReference> accCoreParent;
+  std::optional<ArtifactRootReference> accCoreTargetModule;
   std::uint64_t addedContexts = 0;
   std::uint64_t resultingContexts = 0;
   std::uint64_t addedGateways = 0;
@@ -65,6 +69,8 @@ struct HardwareRecipeGrowth final {
 struct MaterializedHardwareCandidate final {
   ArtifactRootReference reference;
   ResolvedConfig config;
+  std::optional<pnr::SystemExecutionBindingCorrespondence>
+      executionBindingCorrespondence;
   std::uint64_t addedContexts = 0;
   std::uint64_t resultingContexts = 0;
   std::uint64_t addedGateways = 0;
@@ -177,6 +183,53 @@ llvm::Error bindImmutableSpatialMappingFrontier(
       mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
         fields["operation"] = "reuse_immutable_spatial_frontier";
         fields["spatial_mapping_count"] = canonicalMappings.size();
+      });
+  return llvm::Error::success();
+}
+
+llvm::Error
+bindSystemMappingMigrationSeed(JointDesignExplorationPlan &plan,
+                               const ArtifactRootReference &migrationSeed,
+                               const ArtifactStore &artifacts) {
+  constexpr std::size_t migrationSeedInputOrdinal = 5;
+  if (migrationSeed.schemaIdentity !=
+          pnr::systemMappingCheckpointMigrationSeedArtifactSchema.identity ||
+      migrationSeed.schemaVersion !=
+          pnr::systemMappingCheckpointMigrationSeedArtifactSchema.version)
+    return invalid("System migration seed has a foreign schema");
+  auto imported =
+      pnr::importSystemMappingCheckpointMigrationSeed(migrationSeed, artifacts);
+  if (!imported)
+    return imported.takeError();
+  if (plan.pairOutputs.size() != 1)
+    return invalid("System migration requires one exact Mapping pair");
+  JointDesignPlanPair &pair = plan.pairOutputs.front();
+  if (pair.systemMappings.producerNodeOrdinal >=
+      plan.resolvedConfig.dse.planNodes.size())
+    return invalid("System migration output names a foreign plan node");
+  auto *systemNode = std::get_if<GeneratePlanNodeDefinition>(
+      &plan.resolvedConfig.dse
+           .planNodes[pair.systemMappings.producerNodeOrdinal]);
+  if (!systemNode ||
+      systemNode->descriptor !=
+          applicationSystemPnrCandidateGeneratorDescriptor().reference() ||
+      systemNode->inputBindings.size() <= migrationSeedInputOrdinal)
+    return invalid("joint plan has no canonical migration-seed input");
+  systemNode->inputBindings[migrationSeedInputOrdinal] =
+      ExactPlanArtifacts{{migrationSeed}};
+  auto admitted = projectResolvedDseConfigView(plan.resolvedConfig);
+  if (!admitted)
+    return admitted.takeError();
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+      mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+        fields["operation"] = "bind_system_mapping_migration_seed";
+        fields["checkpoint"] = formatArtifactIdentityHex(
+            imported->checkpoint().reference().artifact);
+        fields["migration_seed"] =
+            formatArtifactIdentityHex(migrationSeed.artifact);
+        fields["preserved_acc_core_correspondences"] =
+            imported->correspondence().accCores().size();
       });
   return llvm::Error::success();
 }
@@ -392,6 +445,7 @@ selectSystemHardwareFeedback(const dse::JointDesignExecution &execution,
       continue;
 
     std::optional<ArtifactRootReference> system;
+    std::optional<ArtifactRootReference> dataflow;
     std::vector<ArtifactRootReference> spatialMappings;
     for (const dse::CandidateGeneratorInputBinding &binding :
          invocation->inputBindings)
@@ -412,11 +466,21 @@ selectSystemHardwareFeedback(const dse::JointDesignExecution &execution,
         if (input.schemaIdentity == mapping::mappingArtifactSchema.identity &&
             input.schemaVersion == mapping::mappingArtifactSchema.version)
           spatialMappings.push_back(input);
+        if (input.schemaIdentity ==
+                ::dataflow::canonicalDataflowSchema.identity &&
+            input.schemaVersion ==
+                ::dataflow::canonicalDataflowSchema.version) {
+          if (dataflow)
+            return invalid(
+                "SystemMapping feedback names multiple Dataflow inputs");
+          dataflow = input;
+        }
       }
-    if (!system || spatialMappings.empty())
+    if (!system || !dataflow || spatialMappings.empty())
       return invalid("SystemMapping feedback lacks its exact Mapping inputs");
     auto adopted = mapping::adoptSystemAccCoreCapacityPressure(
-        feedback.canonicalPayload, *system, spatialMappings, artifacts);
+        feedback.canonicalPayload, *system, *dataflow, spatialMappings,
+        artifacts);
     if (!adopted)
       return adopted.takeError();
     SystemHardwareFeedbackObservation candidate{std::move(*adopted)};
@@ -503,6 +567,8 @@ llvm::Expected<HardwareRecipeGrowth> deriveHardwareRecipeGrowth(
     growth.resultingAccCores += growth.addedAccCores;
     growth.config.hardwareTarget.parameters.accCoreCount =
         static_cast<std::uint32_t>(growth.resultingAccCores);
+    growth.accCoreParent = systemObservation->feedback.system();
+    growth.accCoreTargetModule = systemObservation->feedback.targetModule();
   }
 
   if (growth.addedContexts == 0 && growth.addedGateways == 0 &&
@@ -556,11 +622,129 @@ llvm::Expected<MaterializedHardwareCandidate> materializeHardwareRecipeGrowth(
   if (system->view().rootKind() != fabric::FabricRootKind::System)
     return invalid("uniform recipe growth published a non-System root");
   growth.config.dse.planNodes.clear();
-  return MaterializedHardwareCandidate{
-      outputs.front(),      std::move(growth.config),
-      growth.addedContexts, growth.resultingContexts,
-      growth.addedGateways, growth.resultingGateways,
-      growth.addedAccCores, growth.resultingAccCores};
+  return MaterializedHardwareCandidate{outputs.front(),
+                                       std::move(growth.config),
+                                       std::nullopt,
+                                       growth.addedContexts,
+                                       growth.resultingContexts,
+                                       growth.addedGateways,
+                                       growth.resultingGateways,
+                                       growth.addedAccCores,
+                                       growth.resultingAccCores};
+}
+
+llvm::Expected<ArtifactRootReference>
+accCoreTargetModule(const fabric::FinalizedFabricRoot &system,
+                    const fabric::FabricSystemRootView &view,
+                    fabric::AccCoreOccurrenceRef core) {
+  const auto target = view.spatialCoreTarget(core);
+  if (!target ||
+      target->dependencyOrdinal >= system.directDependencies().size())
+    return invalid("AccCore has no exact imported Module target");
+  const fabric::FabricDirectDependency &dependency =
+      system.directDependencies()[target->dependencyOrdinal];
+  if (dependency.role != fabric::FabricDependencyRole::ImportedModule)
+    return invalid("AccCore target is not an ImportedModule dependency");
+  return dependency.root;
+}
+
+llvm::Expected<MaterializedHardwareCandidate>
+materializeTypedAccCoreGrowth(HardwareRecipeGrowth growth,
+                              const ArtifactStore &artifacts,
+                              const BlobStore &blobs) {
+  if (growth.addedContexts != 0 || growth.addedGateways != 0 ||
+      growth.addedAccCores != 1 || !growth.accCoreParent ||
+      !growth.accCoreTargetModule)
+    return invalid("typed AddAccCore materialization received a mixed change");
+  auto parent =
+      fabric::importEntireFabricRoot(*growth.accCoreParent, artifacts);
+  if (!parent)
+    return parent.takeError();
+  auto parentView = fabric::requireSystemRoot(parent->view());
+  if (!parentView)
+    return parentView.takeError();
+  std::optional<fabric::AccCoreOccurrenceRef> prototype;
+  for (fabric::AccCoreOccurrenceRef core :
+       parentView->artifact().accCoreOccurrences()) {
+    auto target = accCoreTargetModule(*parent, *parentView, core);
+    if (!target)
+      return target.takeError();
+    if (*target == *growth.accCoreTargetModule) {
+      prototype = core;
+      break;
+    }
+  }
+  if (!prototype)
+    return invalid("typed AddAccCore growth has no compatible prototype");
+
+  std::vector<SystemCompositionDecisionDomain> domains = {
+      AddAccCoreDomain{*prototype, {*growth.accCoreTargetModule}}};
+  auto config = resolveSystemCompositionRewriteConfig(domains, 1);
+  if (!config)
+    return config.takeError();
+  auto inputs = bindSystemCompositionCandidateGeneratorInputs(
+      {*growth.accCoreParent}, {*growth.accCoreTargetModule});
+  if (!inputs)
+    return inputs.takeError();
+  auto binding = resolveSystemCompositionCandidateGeneratorBinding(*config);
+  if (!binding)
+    return binding.takeError();
+  auto generated =
+      invokeCandidateGenerator(*inputs, *binding, artifacts, blobs);
+  if (!generated)
+    return generated.takeError();
+  const auto *completed =
+      std::get_if<CompletedCandidateGeneratorResult>(&generated->outcome);
+  if (!completed || completed->outputBindings.size() != 1 ||
+      completed->outputBindings.front().artifacts.size() != 1 ||
+      completed->lineageEdges.size() != 1)
+    return invalid("typed AddAccCore growth did not publish one exact child");
+  const ArtifactRootReference childReference =
+      completed->outputBindings.front().artifacts.front();
+  const CandidateGeneratorLineageEdge &lineage =
+      completed->lineageEdges.front();
+  if (lineage.kind != CandidateGeneratorLineageEdgeKind::CandidateDecision ||
+      lineage.output != childReference ||
+      lineage.parents !=
+          std::vector<ArtifactRootReference>{*growth.accCoreParent})
+    return invalid("typed AddAccCore child lost its CandidateDecision lineage");
+  auto decision = adoptSystemCompositionDecision(lineage.ownerPayload);
+  if (!decision)
+    return decision.takeError();
+  const auto *added = std::get_if<AddAccCore>(&decision->decision);
+  if (decision->parent != *growth.accCoreParent || !added ||
+      added->prototype != *prototype ||
+      added->module != *growth.accCoreTargetModule)
+    return invalid("typed AddAccCore lineage changed its exact decision");
+  auto child = fabric::importEntireFabricRoot(childReference, artifacts);
+  if (!child)
+    return child.takeError();
+  std::vector<pnr::SystemAccCoreCorrespondence> pairs;
+  pairs.reserve(decision->accCoreCorrespondence.size());
+  for (const auto &entry : decision->accCoreCorrespondence)
+    pairs.push_back({entry.parent, entry.child});
+  auto correspondence = pnr::SystemExecutionBindingCorrespondence::get(
+      parent->reference(), child->reference(), std::move(pairs), artifacts);
+  if (!correspondence)
+    return correspondence.takeError();
+  mapping_debug::emit(
+      mapping_debug::Level::Summary, mapping_debug::Stage::SystemPnr,
+      mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+        fields["operation"] = "typed_add_acc_core_growth";
+        fields["preserved_acc_core_correspondences"] =
+            correspondence->accCores().size();
+        fields["added_acc_cores"] = growth.addedAccCores;
+      });
+  growth.config.dse.planNodes.clear();
+  return MaterializedHardwareCandidate{childReference,
+                                       std::move(growth.config),
+                                       std::move(*correspondence),
+                                       growth.addedContexts,
+                                       growth.resultingContexts,
+                                       growth.addedGateways,
+                                       growth.resultingGateways,
+                                       growth.addedAccCores,
+                                       growth.resultingAccCores};
 }
 
 llvm::Expected<std::vector<ArtifactRootReference>>
@@ -644,8 +828,14 @@ tryHardwareFeedbackReopen(
                                              *systemObservation, artifacts);
     if (!growth)
       return growth.takeError();
-    auto system = materializeHardwareRecipeGrowth(
-        std::move(*growth), evidence, request, scheduler, artifacts, blobs);
+    const bool accCoreOnlyGrowth = growth->addedAccCores != 0 &&
+                                   growth->addedContexts == 0 &&
+                                   growth->addedGateways == 0;
+    auto system = accCoreOnlyGrowth ? materializeTypedAccCoreGrowth(
+                                          std::move(*growth), artifacts, blobs)
+                                    : materializeHardwareRecipeGrowth(
+                                          std::move(*growth), evidence, request,
+                                          scheduler, artifacts, blobs);
     if (!system)
       return system.takeError();
     auto timing = normalizedTimingProfiles(system->reference, artifacts);
@@ -656,9 +846,6 @@ tryHardwareFeedbackReopen(
         system->config, artifacts);
     if (!reopenPlan)
       return reopenPlan.takeError();
-    const bool accCoreOnlyGrowth = system->addedAccCores != 0 &&
-                                   system->addedContexts == 0 &&
-                                   system->addedGateways == 0;
     if (accCoreOnlyGrowth) {
       if (!reusableSpatialMappings) {
         auto resolved =
@@ -669,6 +856,18 @@ tryHardwareFeedbackReopen(
       }
       if (llvm::Error error = bindImmutableSpatialMappingFrontier(
               *reopenPlan, *reusableSpatialMappings, artifacts))
+        return std::move(error);
+      if (!*systemObservation || !system->executionBindingCorrespondence)
+        return invalid("typed AddAccCore reopen lost its Mapping checkpoint or "
+                       "parent-to-child correspondence");
+      auto migrationSeed = pnr::finalizeSystemMappingCheckpointMigrationSeed(
+          (*systemObservation)->feedback.executionBindingCheckpoint(),
+          *system->executionBindingCorrespondence,
+          (*systemObservation)->feedback.witnessAccCore(), artifacts);
+      if (!migrationSeed)
+        return migrationSeed.takeError();
+      if (llvm::Error error = bindSystemMappingMigrationSeed(
+              *reopenPlan, migrationSeed->reference(), artifacts))
         return std::move(error);
     } else {
       reusableSpatialMappings.reset();

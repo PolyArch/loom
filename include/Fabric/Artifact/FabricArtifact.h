@@ -25,6 +25,8 @@ class SystemOp;
 
 namespace loom::fabric {
 
+struct FinalizedFabricSystemProjection;
+
 namespace detail {
 class FabricArtifactImportSessionState;
 }
@@ -144,9 +146,25 @@ private:
   finalizeFabricRoot(::fabric::SystemOp source,
                      llvm::ArrayRef<ArtifactRootReference> importedModules,
                      const ArtifactStore &store);
+  friend llvm::Expected<FinalizedFabricSystemProjection>
+  finalizeFabricSystemWithTrackedAccCores(
+      ::fabric::SystemOp source,
+      llvm::ArrayRef<ArtifactRootReference> importedModules,
+      llvm::ArrayRef<AccCoreOccurrenceRef> trackedAccCores,
+      const ArtifactStore &store);
   friend llvm::Expected<FinalizedFabricRoot>
   importEntireFabricRoot(const ArtifactRootReference &reference,
                          const ArtifactStore &store);
+};
+
+/// Finalizer-owned ephemeral correspondence for caller-selected AccCore
+/// occurrences in one System authoring root. The references belong to `root`;
+/// the correspondence is not serialized and exists only to let the authoring
+/// transaction publish exact transformation lineage across canonical
+/// relabeling.
+struct FinalizedFabricSystemProjection final {
+  FinalizedFabricRoot root;
+  std::vector<AccCoreOccurrenceRef> trackedAccCores;
 };
 
 /// Finalizes one complete Module authoring root and publishes its single
@@ -167,6 +185,16 @@ llvm::Expected<FinalizedFabricRoot>
 finalizeFabricRoot(::fabric::SystemOp source,
                    llvm::ArrayRef<ArtifactRootReference> importedModules,
                    const ArtifactStore &store);
+
+/// Finalizes one System while carrying an ordered set of live authoring
+/// AccCore occurrences through the private clone and canonical-labeling
+/// transaction. Each result preserves the order of its source reference.
+llvm::Expected<FinalizedFabricSystemProjection>
+finalizeFabricSystemWithTrackedAccCores(
+    ::fabric::SystemOp source,
+    llvm::ArrayRef<ArtifactRootReference> importedModules,
+    llvm::ArrayRef<AccCoreOccurrenceRef> trackedAccCores,
+    const ArtifactStore &store);
 
 /// Resolves and strictly imports one exact published loom.fabric root.
 llvm::Expected<FinalizedFabricRoot>

@@ -154,7 +154,7 @@ llvm::Error canonicalizeLineageEdges(
     if (!descriptor.ownerLineagePayload)
       return invalid("descriptor does not own a lineage payload contract");
     if (llvm::Error error = descriptor.ownerLineagePayload->validateCanonical(
-            edge.ownerPayload, edge.parents, store))
+            edge.ownerPayload, edge.output, edge.parents, store))
       return error;
     for (const ArtifactRootReference &parent : edge.parents) {
       auto stored = store.get(parent);

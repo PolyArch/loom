@@ -913,7 +913,9 @@ loom::pnr::searchSystemImportedCapacity(FrozenSystemPnrProblemHandle problem) {
   if (!problem)
     return invalid("FrozenSystemPnrProblem owner is null");
   detail::InitializerRelationSolver solver(problem->initializerRelations());
-  std::optional<SystemCapacityOveruseWitness> retainedPressure;
+  std::optional<SystemCapacityOveruseWitness> checkpointWitness;
+  std::optional<std::uint64_t> checkpointOveruse;
+  std::vector<PnrIndex> checkpointChoices;
   bool observedNonOccurrencePressure = false;
   const std::size_t threadCount = problem->threadDecisions().size();
   auto solved = solver.solveCanonicalWithPreferredChoices(
@@ -937,16 +939,15 @@ loom::pnr::searchSystemImportedCapacity(FrozenSystemPnrProblemHandle problem) {
           observedNonOccurrencePressure = true;
           return false;
         }
-        const std::uint64_t candidateOveruse =
-            candidate.usage - candidate.capacity;
-        const std::uint64_t retainedOveruse =
-            retainedPressure
-                ? retainedPressure->usage - retainedPressure->capacity
-                : 0;
-        if (!retainedPressure || candidateOveruse > retainedOveruse ||
-            (candidateOveruse == retainedOveruse &&
-             candidate.namespaceOrdinal < retainedPressure->namespaceOrdinal))
-          retainedPressure = candidate;
+        if (!checkpointOveruse || pressure->total < *checkpointOveruse ||
+            (pressure->total == *checkpointOveruse &&
+             std::lexicographical_compare(choices.begin(), choices.end(),
+                                          checkpointChoices.begin(),
+                                          checkpointChoices.end()))) {
+          checkpointOveruse = pressure->total;
+          checkpointChoices.assign(choices.begin(), choices.end());
+          checkpointWitness = candidate;
+        }
         return false;
       });
   if (solved)
@@ -970,13 +971,16 @@ loom::pnr::searchSystemImportedCapacity(FrozenSystemPnrProblemHandle problem) {
     return invalid("imported-capacity search lost its failure cause");
   if (failureKind == detail::InitializerRelationSolveFailureKind::WorkLimit)
     return SystemImportedCapacitySearchLimit{solver.assignmentAttempts()};
-  if (!retainedPressure && !observedNonOccurrencePressure)
+  if (!checkpointWitness && !observedNonOccurrencePressure)
     return SystemImportedCapacityRelationInfeasible{
         solver.assignmentAttempts(), std::move(failureDiagnostic)};
-  if (observedNonOccurrencePressure || !retainedPressure)
+  if (observedNonOccurrencePressure || !checkpointWitness)
     return invalid("imported-capacity search found no occurrence witness");
-  return SystemImportedCapacityPressure{*retainedPressure,
-                                        solver.assignmentAttempts()};
+  if (!checkpointOveruse || checkpointChoices.empty())
+    return invalid("imported-capacity search retained no execution binding");
+  return SystemImportedCapacityPressure{*checkpointWitness,
+                                        solver.assignmentAttempts(),
+                                        std::move(checkpointChoices)};
 }
 
 llvm::Expected<InitializedSystemCandidate>
@@ -994,6 +998,26 @@ loom::pnr::initializeSystemCandidateWithFixedChoices(
                 .policy()
                 .search.initializer.assignmentAttemptLimitPerSeed,
             fixedChoices, validateCompleteAssignment);
+      });
+}
+
+llvm::Expected<InitializedSystemCandidate>
+loom::pnr::initializeSystemCandidateWithReleasedChoices(
+    FrozenSystemPnrProblemHandle problem, llvm::ArrayRef<PnrIndex> fixedChoices,
+    llvm::ArrayRef<PnrIndex> releasedChoices) {
+  if (!problem)
+    return invalid("FrozenSystemPnrProblem owner is null");
+  if (releasedChoices.empty())
+    return invalid("released System initializer choice set is empty");
+  return solveSystemCandidate(
+      problem, false,
+      [&](detail::InitializerRelationSolver &solver,
+          auto validateCompleteAssignment) {
+        return solver.solveCanonicalWithReleasedChoices(
+            problem->config()
+                .policy()
+                .search.initializer.assignmentAttemptLimitPerSeed,
+            fixedChoices, releasedChoices, validateCompleteAssignment);
       });
 }
 

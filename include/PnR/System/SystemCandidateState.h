@@ -115,6 +115,7 @@ struct SystemImportedCapacityFit final {
 struct SystemImportedCapacityPressure final {
   SystemCapacityOveruseWitness witness;
   std::uint64_t assignmentAttempts = 0;
+  std::vector<PnrIndex> checkpointChoices;
 };
 
 struct SystemImportedCapacitySearchLimit final {
@@ -378,6 +379,11 @@ llvm::Expected<InitializedSystemCandidate>
 initializeSystemCandidateWithFixedChoices(
     FrozenSystemPnrProblemHandle problem,
     llvm::ArrayRef<PnrIndex> fixedChoices);
+
+llvm::Expected<InitializedSystemCandidate>
+initializeSystemCandidateWithReleasedChoices(
+    FrozenSystemPnrProblemHandle problem, llvm::ArrayRef<PnrIndex> fixedChoices,
+    llvm::ArrayRef<PnrIndex> releasedChoices);
 
 llvm::Expected<SystemCandidateStateHandle>
 initializeSystemCandidate(FrozenSystemPnrProblemHandle problem,

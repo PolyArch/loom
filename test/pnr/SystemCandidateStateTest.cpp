@@ -2,7 +2,10 @@
 #include "ADG/Builtin.h"
 #include "Common/ArtifactLocalReference.h"
 #include "Common/ArtifactStore.h"
+#include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
+#include "DSE/CandidateGenerator.h"
+#include "DSE/SystemCompositionCandidateGenerator.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Dataflow/IR/DataflowDialect.h"
 #include "Dataflow/IR/DataflowReferenceCodec.h"
@@ -24,6 +27,8 @@
 #include "PnR/SpatialPhysicalTiming.h"
 #include "PnR/SpatialPnrGenerator.h"
 #include "PnR/System/SystemMappingMaterializer.h"
+#include "PnR/System/SystemMappingMigration.h"
+#include "PnR/System/SystemPnrGenerator.h"
 #include "PnR/System/SystemPnrProblem.h"
 #include "PnR/System/SystemPnrSearchDomain.h"
 #include "SystemCandidateStateTestSupport.h"
@@ -1070,7 +1075,8 @@ void graphBindingWorkflow() {
   mlir::MLIRContext context = makeContext();
 
   auto dataflowArtifact = buildDataflow(context);
-  take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
+  const auto dataflowReference =
+      take(dataflow::publishCanonicalDataflow(dataflowArtifact, store));
   auto dataflow = take(dataflowArtifact.view());
   auto baselineDesign = take(loom::adg::buildBuiltinTarget(
       store, loom::adg::BuiltinTargetPreset::Small));
@@ -1136,7 +1142,34 @@ void graphBindingWorkflow() {
   if (llvm::Error error = capacityFitCandidate.state->verify())
     fail(llvm::toString(std::move(error)));
 
-  std::uint64_t primaryCompatibleCoreCount = 0;
+  std::vector<loom::mapping::SystemThreadExecutionCheckpoint> checkpointThreads;
+  for (const auto &[decision, frozen] :
+       llvm::enumerate(problem->threadDecisions()))
+    checkpointThreads.push_back(
+        {frozen.root, frozen.cell,
+         capacityFitCandidate.state->selectedAccCore(decision)});
+  std::vector<loom::mapping::SystemGraphExecutionCheckpoint> checkpointGraphs;
+  for (const auto &[decision, frozen] :
+       llvm::enumerate(problem->graphDecisions()))
+    checkpointGraphs.push_back(
+        {frozen.launch, frozen.cell,
+         capacityFitCandidate.state->selectedSpatialMapping(decision)});
+  const auto checkpoint =
+      take(loom::mapping::finalizeSystemExecutionBindingCheckpoint(
+          dataflowReference, systemRoot.reference(),
+          std::move(checkpointThreads), std::move(checkpointGraphs), store));
+  const auto importedCheckpoint =
+      take(loom::mapping::importSystemExecutionBindingCheckpoint(
+          checkpoint.reference(), store));
+  require(importedCheckpoint.dataflow() == dataflowReference &&
+              importedCheckpoint.system() == systemRoot.reference() &&
+              importedCheckpoint.threadBindings().size() ==
+                  problem->threadDecisions().size() &&
+              importedCheckpoint.graphBindings().size() ==
+                  problem->graphDecisions().size(),
+          "System execution-binding checkpoint lost its exact owners");
+
+  std::optional<loom::fabric::AccCoreOccurrenceRef> primaryPrototype;
   for (const auto core : system.artifact().accCoreOccurrences()) {
     const auto target = system.spatialCoreTarget(core);
     require(target && target->dependencyOrdinal <
@@ -1144,26 +1177,148 @@ void graphBindingWorkflow() {
             "System AccCore has no exact Module target");
     if (system.artifact()
             .importedModules()[target->dependencyOrdinal]
-            .identity() == primaryModule.reference().artifact)
-      ++primaryCompatibleCoreCount;
+            .identity() == primaryModule.reference().artifact) {
+      if (!primaryPrototype)
+        primaryPrototype = core;
+    }
   }
-  auto capacityFeedback =
-      take(loom::mapping::SystemAccCoreCapacityPressure::get(
-          systemRoot.reference(), primaryModule.reference(), spatialMappings,
-          primaryCompatibleCoreCount, capacityFit->assignmentAttempts, 2, 1));
-  const auto capacityFeedbackBytes =
-      loom::mapping::encodeSystemAccCoreCapacityPressure(capacityFeedback);
-  auto adoptedCapacityFeedback =
-      take(loom::mapping::adoptSystemAccCoreCapacityPressure(
-          capacityFeedbackBytes, systemRoot.reference(), spatialMappings,
-          store));
-  require(adoptedCapacityFeedback.system() == systemRoot.reference() &&
-              adoptedCapacityFeedback.targetModule() ==
-                  primaryModule.reference() &&
-              adoptedCapacityFeedback.compatibleAccCoreCount() ==
-                  primaryCompatibleCoreCount &&
-              adoptedCapacityFeedback.additionalAccCoreCount() == 1,
-          "System capacity feedback lost its exact hardware owner");
+  require(primaryPrototype.has_value(),
+          "heterogeneous System has no primary AccCore prototype");
+  const auto capacityFeedback =
+      loom::pnr::test::verifySystemCapacityPressureRoundTrip(
+          store, systemRoot, system, primaryModule.reference(),
+          importedCheckpoint, dataflowReference, spatialMappings,
+          capacityFit->assignmentAttempts);
+  const auto witnessAccCore = capacityFeedback.witnessAccCore();
+
+  const loom::BlobStore blobs(directory.path());
+  std::vector<loom::dse::SystemCompositionDecisionDomain> growthDomains = {
+      loom::dse::AddAccCoreDomain{*primaryPrototype,
+                                  {primaryModule.reference()}}};
+  const auto growthConfig =
+      take(loom::dse::resolveSystemCompositionRewriteConfig(growthDomains, 1));
+  const auto growthInputs =
+      take(loom::dse::bindSystemCompositionCandidateGeneratorInputs(
+          {systemRoot.reference()}, {primaryModule.reference()}));
+  const auto growthBinding =
+      take(loom::dse::resolveSystemCompositionCandidateGeneratorBinding(
+          growthConfig));
+  const auto growthResult = take(loom::dse::invokeCandidateGenerator(
+      growthInputs, growthBinding, store, blobs));
+  const auto *growthCompleted =
+      std::get_if<loom::dse::CompletedCandidateGeneratorResult>(
+          &growthResult.outcome);
+  require(growthCompleted && growthCompleted->outputBindings.size() == 1 &&
+              growthCompleted->outputBindings.front().artifacts.size() == 1,
+          "typed AddAccCore did not publish one child System");
+  const auto childRoot = take(loom::fabric::importEntireFabricRoot(
+      growthCompleted->outputBindings.front().artifacts.front(), store));
+  const auto childSystem =
+      take(loom::fabric::requireSystemRoot(childRoot.view()));
+  require(childSystem.artifact().accCoreOccurrences().size() ==
+              system.artifact().accCoreOccurrences().size() + 1,
+          "typed AddAccCore child has the wrong occurrence count");
+  require(growthCompleted->lineageEdges.size() == 1 &&
+              growthCompleted->lineageEdges.front().output ==
+                  childRoot.reference(),
+          "typed AddAccCore child has no exact transformation lineage");
+  const auto growthLineage = take(loom::dse::adoptSystemCompositionDecision(
+      growthCompleted->lineageEdges.front().ownerPayload));
+  require(growthLineage.parent == systemRoot.reference() &&
+              growthLineage.accCoreCorrespondence.size() ==
+                  system.artifact().accCoreOccurrences().size(),
+          "typed AddAccCore lineage lost a parent AccCore");
+  std::vector<loom::pnr::SystemAccCoreCorrespondence> pairs;
+  for (const auto &entry : growthLineage.accCoreCorrespondence)
+    pairs.push_back({entry.parent, entry.child});
+  const auto correspondence =
+      loom::pnr::test::verifySystemAccCoreCorrespondence(
+          store, systemRoot, system, childRoot, std::move(pairs));
+  const auto migrationSeed =
+      take(loom::pnr::finalizeSystemMappingCheckpointMigrationSeed(
+          checkpoint.reference(), correspondence, witnessAccCore, store));
+  const auto importedMigrationSeed =
+      take(loom::pnr::importSystemMappingCheckpointMigrationSeed(
+          migrationSeed.reference(), store));
+  require(importedMigrationSeed.checkpoint().reference() ==
+                  checkpoint.reference() &&
+              importedMigrationSeed.correspondence().accCores().size() ==
+                  system.artifact().accCoreOccurrences().size() &&
+              importedMigrationSeed.reopenedParentAccCore() == witnessAccCore,
+          "System migration seed lost its exact checkpoint or correspondence");
+
+  auto childConstraints =
+      take(loom::mapping::finalizeEmptySystemMappingConstraintSet(
+          dataflow, childSystem, roots, store));
+  auto childPartition =
+      take(loom::pnr::projectWholeDomainPresburgerPartitionPlan(
+          dataflow, childConstraints.view().rootThreadLaunches()));
+  auto childSearchDomain = take(loom::pnr::projectSystemPnrSearchDomain(
+      dataflow, childSystem, config, childConstraints, childPartition,
+      loom::pnr::SystemHierarchicalGraphSearchInput{spatialMappings}, store));
+  auto childPhysicalTiming = take(
+      loom::fabric::projectNormalizedSystemPhysicalTimingProfiles(childSystem));
+  auto childProblem = take(loom::pnr::freezeSystemPnrProblem(
+      dataflow, childSystem, childPhysicalTiming, childSearchDomain, config,
+      childConstraints, store));
+  const auto migrated = loom::pnr::projectSystemMappingMigrationSeed(
+      importedMigrationSeed, *childProblem);
+  const auto *projection =
+      std::get_if<loom::pnr::SystemMappingMigrationProjection>(&migrated);
+  const std::uint64_t expectedReopenedThreads = static_cast<std::uint64_t>(
+      llvm::count_if(importedCheckpoint.threadBindings(), [&](const auto &row) {
+        return row.target == witnessAccCore;
+      }));
+  require(projection &&
+              projection->preservedThreadBindings ==
+                  childProblem->threadDecisions().size() -
+                      expectedReopenedThreads &&
+              projection->releasedChoices.size() == expectedReopenedThreads &&
+              expectedReopenedThreads != 0 &&
+              projection->preservedGraphBindings ==
+                  childProblem->graphDecisions().size(),
+          "System migration did not isolate its capacity-pressure cone");
+  auto migratedCandidate =
+      take(loom::pnr::initializeSystemCandidateWithReleasedChoices(
+          childProblem, projection->fixedChoices, projection->releasedChoices));
+  if (llvm::Error error = migratedCandidate.state->verify())
+    fail(llvm::toString(std::move(error)));
+
+  const auto generatedChild =
+      loom::pnr::generateSystemMappings({dataflow,
+                                         childSystem,
+                                         childPhysicalTiming,
+                                         childSearchDomain,
+                                         config,
+                                         childConstraints,
+                                         store,
+                                         {},
+                                         nullptr,
+                                         nullptr,
+                                         nullptr,
+                                         &importedMigrationSeed});
+  const auto *generatedMappings =
+      std::get_if<loom::pnr::GeneratedSystemMappings>(&generatedChild);
+  require(generatedMappings && !generatedMappings->candidates.empty() &&
+              generatedMappings->accounting.migrationSeedPrepared == 1 &&
+              generatedMappings->accounting.migrationSeedFallbacks == 0 &&
+              generatedMappings->accounting.migrationPreservedThreadBindings ==
+                  childProblem->threadDecisions().size() -
+                      expectedReopenedThreads &&
+              generatedMappings->accounting.migrationPreservedGraphBindings ==
+                  childProblem->graphDecisions().size() &&
+              generatedMappings->accounting.migrationReopenedThreadBindings ==
+                  expectedReopenedThreads &&
+              generatedMappings->accounting.migrationReopenedGraphBindings ==
+                  0 &&
+              generatedMappings->accounting.migrationReopenedServiceLegs ==
+                  childProblem->serviceLegs().size(),
+          "System PnR did not consume its preserve-first migration seed");
+  const auto migratedMapping = take(loom::mapping::importSystemMapping(
+      generatedMappings->candidates.front(), store));
+  require(migratedMapping.view().fabricIdentity() ==
+              childRoot.reference().artifact,
+          "migrated SystemMapping did not bind the child System");
 
   require(problem->threadDecisions().size() == 2 &&
               problem->graphDecisions().size() == 4,

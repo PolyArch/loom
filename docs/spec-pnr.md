@@ -329,6 +329,37 @@ ResourceUses, progress, recurrence, and final legality remain outside the
 preflight and are constructed and independently verified by the ordinary
 System candidate path.
 
+Complete exhaustion of the imported-capacity relation may persist one
+`loom.mapping.system_execution_binding_checkpoint` 1.0. That checkpoint binds
+the exact Dataflow and parent System and stores canonical thread and graph
+Presburger cells with their selected AccCore and SpatialMapping targets. It is
+not a SystemMapping and owns no service target, route, ResourceUse, progress,
+recurrence, or legality claim.
+
+One exact parent-to-child AccCore correspondence may combine that checkpoint
+with a child System into a
+`loom.pnr.system_mapping_checkpoint_migration_seed` 2.0. The seed also names
+the exact parent AccCore occurrence whose capacity witness caused the child.
+The correspondence must come from typed hardware lineage and must cover every
+preserved or reopened parent AccCore; Module equality and occurrence ordinal
+are not substitutes. System PnR releases precisely the checkpoint thread cells
+bound to the witness occurrence, validates every remaining thread and graph
+choice against the frozen child domain, and visits that impact-cone initializer
+before the ordinary fresh seed family. A finalized parent SystemMapping may
+supply the same
+invocation-local execution-binding preference through the direct PnR API.
+
+Migration is preference, never constraint or proof. Missing, ambiguous,
+unmatched, or empty impact cones produce one typed fallback and fresh search
+continues. Released choices are solved through the same hard relation and
+complete-candidate closure callbacks as cold initialization; they do not bypass
+capacity, routing, progress, or legality checks. The current checkpoint
+deliberately carries no service selection, so every child service leg is
+reopened and all targets and route trees are rebuilt. Work accounting separates
+preserved and reopened thread bindings, graph bindings, and service legs. Every
+migrated candidate still passes global closure, the cold Mapping verifier, and
+MappingConstraintSet admission before publication.
+
 Each published result must be a finalized SystemMapping that closes thread and
 graph binding, SpatialMapping selection, service realization, System transport,
 resource capacity, and progress for the exact root-launch closure. System RTL

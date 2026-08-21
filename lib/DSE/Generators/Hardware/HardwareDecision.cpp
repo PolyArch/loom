@@ -24,7 +24,7 @@ constexpr llvm::StringLiteral topologySchema =
 constexpr llvm::StringLiteral microarchitectureSchema =
     "loom.spatial_microarchitecture_candidate_decision.2.0";
 constexpr llvm::StringLiteral systemSchema =
-    "loom.system_composition_candidate_decision.1.0";
+    "loom.system_composition_candidate_decision.2.0";
 
 llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
@@ -573,6 +573,59 @@ llvm::Expected<SystemCompositionDecision> readSystemBody(Reader &reader) {
   }
 }
 
+llvm::Error validateAccCoreCorrespondence(
+    llvm::ArrayRef<SystemCompositionAccCoreCorrespondence> correspondence) {
+  std::vector<std::uint8_t> previousParent;
+  std::set<std::vector<std::uint8_t>> childKeys;
+  bool first = true;
+  for (const auto &entry : correspondence) {
+    std::vector<std::uint8_t> parentKey =
+        loom::fabric::canonicalFabricBytes(entry.parent);
+    if (!first && !(previousParent < parentKey))
+      return invalid(
+          "System AccCore lineage parents are not canonical and unique");
+    first = false;
+    previousParent = std::move(parentKey);
+    if (!childKeys.insert(loom::fabric::canonicalFabricBytes(entry.child))
+             .second)
+      return invalid("System AccCore lineage maps two parents to one child");
+  }
+  return llvm::Error::success();
+}
+
+void writeAccCoreCorrespondence(
+    Writer &writer,
+    llvm::ArrayRef<SystemCompositionAccCoreCorrespondence> correspondence) {
+  writer.u64(correspondence.size());
+  for (const auto &entry : correspondence) {
+    writer.ref(entry.parent);
+    writer.ref(entry.child);
+  }
+}
+
+llvm::Expected<std::vector<SystemCompositionAccCoreCorrespondence>>
+readAccCoreCorrespondence(Reader &reader) {
+  auto count = reader.u64();
+  if (!count)
+    return count.takeError();
+  if (*count > reader.remaining())
+    return invalid("System AccCore lineage count exceeds its payload");
+  std::vector<SystemCompositionAccCoreCorrespondence> result;
+  result.reserve(*count);
+  for (std::uint64_t ordinal = 0; ordinal != *count; ++ordinal) {
+    auto parent = reader.ref<loom::fabric::AccCoreOccurrenceRef>();
+    if (!parent)
+      return parent.takeError();
+    auto child = reader.ref<loom::fabric::AccCoreOccurrenceRef>();
+    if (!child)
+      return child.takeError();
+    result.push_back({*parent, *child});
+  }
+  if (llvm::Error error = validateAccCoreCorrespondence(result))
+    return std::move(error);
+  return result;
+}
+
 template <typename Decision, typename WriteBody>
 std::vector<std::uint8_t> encodeDecision(const ArtifactRootReference &parent,
                                          const Decision &decision,
@@ -1051,10 +1104,17 @@ std::vector<std::uint8_t> encodeSpatialMicroarchitectureDecision(
   return encodeDecision(parent, decision, writeMicroarchitectureBody);
 }
 
-std::vector<std::uint8_t>
-encodeSystemCompositionDecision(const ArtifactRootReference &parent,
-                                const SystemCompositionDecision &decision) {
-  return encodeDecision(parent, decision, writeSystemBody);
+std::vector<std::uint8_t> encodeSystemCompositionDecision(
+    const ArtifactRootReference &parent,
+    const SystemCompositionDecision &decision,
+    llvm::ArrayRef<SystemCompositionAccCoreCorrespondence>
+        accCoreCorrespondence) {
+  Writer writer;
+  writer.u32(2);
+  writer.root(parent);
+  writeSystemBody(writer, decision);
+  writeAccCoreCorrespondence(writer, accCoreCorrespondence);
+  return writer.take();
 }
 
 llvm::Expected<SpatialTopologyCandidateDecision>
@@ -1071,8 +1131,25 @@ adoptSpatialMicroarchitectureDecision(llvm::ArrayRef<std::uint8_t> bytes) {
 
 llvm::Expected<SystemCompositionCandidateDecision>
 adoptSystemCompositionDecision(llvm::ArrayRef<std::uint8_t> bytes) {
-  return adoptDecision<SystemCompositionCandidateDecision>(bytes,
-                                                           readSystemBody);
+  Reader reader(bytes);
+  auto version = reader.u32();
+  if (!version)
+    return version.takeError();
+  if (*version != 2)
+    return invalid("unsupported System candidate decision version");
+  auto parent = reader.root();
+  if (!parent)
+    return parent.takeError();
+  auto decision = readSystemBody(reader);
+  if (!decision)
+    return decision.takeError();
+  auto correspondence = readAccCoreCorrespondence(reader);
+  if (!correspondence)
+    return correspondence.takeError();
+  if (!reader.empty())
+    return invalid("System candidate decision has trailing bytes");
+  return SystemCompositionCandidateDecision{
+      std::move(*parent), std::move(*decision), std::move(*correspondence)};
 }
 
 llvm::ArrayRef<std::uint8_t> spatialTopologyDecisionSchemaBytes() {

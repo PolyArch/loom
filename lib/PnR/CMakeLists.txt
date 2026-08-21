@@ -79,6 +79,7 @@ add_mlir_library(LoomPnR
   System/SystemCandidateState.cpp
   System/SystemCandidateServiceResolver.cpp
   System/SystemCapacityProjection.cpp
+  System/SystemMappingMigration.cpp
   System/SystemNegotiatedRouter.cpp
   System/SystemServiceRouter.cpp
   System/SystemMappingMaterializer.cpp

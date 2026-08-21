@@ -594,19 +594,48 @@ generator so the resolved objective can compare QoR alternatives.
 `SemanticConformance` is feasibility-only and makes no QoR-optimality claim.
 Multiple explicit protocol roots remain parent-local alternatives in one
 `BenefitQualified` generation; that intent does not greedily compose selected
-children. In `SemanticConformance`, the same root set defines a bounded chain
-of feasible source closures. The controller canonicalizes the exact callable
-references, applies `TopK(1)` to one root per generation, and retains the
-verified cumulative prefixes in decreasing ownership coverage. The complete
-closure remains first when it is available, while smaller prefixes let
-downstream Mapping select work that fits the exact Fabric without requiring
-every independent callable to reside at once. The frontier is bounded by the
-smaller of the protocol-root cardinality and the existing ownership `TopK`; it
-never enumerates root subsets or regenerates a root against sibling roots.
-Each generation re-resolves its one defined callable in the current immutable
-parent and stops when no next child exists. Every edge retains ordinary
-candidate lineage, while the original source workload and runtime input remain
-the sole functional oracle.
+children.
+
+For `SemanticConformance`, one shared source observation projects an exact
+protocol-root activity count and a conservative direct dependency relation.
+A dependency exists only when two protocol roots are direct calls in the same
+source block, the earlier root may write a derived SSA memory object, and the
+later root may read that same object. Each relation records the number of such
+objects, the sum of statically known object extents in bytes, and the number of
+objects whose extent is unknown. A dynamic extent remains explicitly unknown;
+it is never guessed. Indirect calls, cross-block order, unknown aliasing,
+channel traffic, and downstream Mapping legality are outside this source
+projection and cannot be inferred from an absent edge.
+
+The controller materializes two deterministic path families from this
+projection. One is the canonical full-root path used when no dependency is
+known. The other starts at each root and greedily extends through the strongest
+known connection to the current path. Every successfully finalized prefix is
+a planning candidate. Candidate Structured identities deduplicate across
+paths, so this construction admits independent single-root closures and
+connected producer-consumer closures without enumerating the arbitrary root
+powerset.
+
+Every unique successfully materialized candidate receives one invocation-local
+planning record containing its exact owned roots, optional cached Structured
+analytic runtime, and typed `Retained` or `BoundedFrontierBudget` disposition.
+The shared root activity and dependency projections are returned once and are
+joined to those records by exact protocol-root reference. Ranking first uses
+the cached analytic runtime when both candidates have it, then prefers fewer
+cut dependency objects, more internal dependency objects, and canonical
+identity. The bounded retained frontier selects the best-ranked candidate plus
+maximal-coverage and minimal-coverage diversity representatives before filling
+the remaining ownership `TopK` budget. Dense preference ranks apply only to
+retained candidates; budget-excluded records remain inspectable evidence and
+are not misreported as infeasible.
+
+This is a dependency-aware bounded planning heuristic, not a complete software
+partitioner, a proof of QoR optimality, or a replacement for downstream
+Mapping. Its construction cost is quadratic in the explicit protocol-root
+count. A hierarchical or beam domain would require a separately specified
+owner rather than silently changing this finite domain. Every materialized
+edge retains ordinary candidate lineage, while the original source workload
+and runtime input remain the sole functional oracle.
 After one selected Structured candidate lowers mechanically to D0, the
 controller queries the exact Fabric capability index. If every D0 actor is
 admitted, the controller retains that exact input directly as D*, instantiates
@@ -1765,9 +1794,10 @@ search actually executed for ranking or verification under the selected goal.
 The built-in root-complete System PnR generator composes the final Mapping
 boundary without widening the central plan. Its descriptor has kind 9,
 spelling `mapping.root_complete_system_pnr`, schema
-`loom.mapping.root_complete_system_pnr.generator.v9`, and exact input slots
+`loom.mapping.root_complete_system_pnr.generator.v10`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, and
-`fabric: ExactlyOne`. Its sole output slot is
+`fabric: ExactlyOne`, `physical_timing_profile: FiniteSet`, and
+`migration_seed: ZeroOrOne`. Its sole output slot is
 `system_mapping: CandidateSet<loom.mapping 6.0>, FiniteSet`; its resolved view
 is the exact System PnR component view. The explicit Dataflow input remains
 necessary because an InstructionCore-only closure has no SpatialMapping from
@@ -1796,9 +1826,10 @@ not registered.
 The built-in application-scoped System PnR generator is the strict-scope
 counterpart. Its descriptor has kind 22, spelling
 `mapping.application_system_pnr`, implementation semantic identity
-`loom.mapping.application_system_pnr.generator.v8`, and exact input slots
+`loom.mapping.application_system_pnr.generator.v9`, and exact input slots
 `dataflow: ExactlyOne`, `spatial_mapping: FiniteSet`, `fabric: ExactlyOne`, and
-`system_constraints: ExactlyOne`. The constraint root must bind exactly that
+`physical_timing_profile: FiniteSet`, `system_constraints: ExactlyOne`, and
+`migration_seed: ZeroOrOne`. The constraint root must bind exactly that
 Dataflow and Fabric System. Its non-empty `root_thread_launches` is the sole
 coverage root. The adapter projects the whole-domain partition and
 hierarchical search domain from that exact set, supplies the finite
@@ -1806,7 +1837,9 @@ SpatialMapping candidates as the ordinary graph-search input, and invokes the
 unchanged System PnR owner. Output, work accounting, lineage, incomplete
 outcomes, and failures are identical to the root-complete adapter. It neither
 copies the root set into config nor derives another scope from the Dataflow
-catalog.
+catalog. The optional migration input in both descriptors is one exact
+PnR-owned checkpoint seed; its admission and fallback semantics remain owned
+by `docs/spec-pnr.md`.
 
 The built-in SpatialMapping CGRA acquisition consumes a finite SpatialMapping
 candidate set, a nonempty Canonical Dataflow owner set, one exact Fabric, one
@@ -2782,6 +2815,19 @@ parent or leave a DSE-only Fabric form. A completed child carries one
 `CandidateDecision` lineage contribution whose payload is owned by that exact
 generator descriptor. Identity deduplication occurs only after finalization.
 
+The kind-15 System-composition lineage payload
+`loom.system_composition_candidate_decision.2.0` also carries the exact
+parent-to-child `AccCoreOccurrenceRef` correspondence for every preserved
+parent AccCore. The System finalizer derives this one-to-one relation while it
+canonically relabels the child; the controller may not reconstruct it from
+Module equality or occurrence ordinal. `AddAccCore` and `RemoveAccCore`
+validate the expected cardinality delta, while every other System rewrite
+preserves the cardinality. Every unchanged descendant retains its exact Module
+target. The sole exception is the target of a typed
+`ReplaceSpatialAttachment`, which must select that decision's exact Module.
+This lineage records structural descent only and does not claim that parent and
+child resources are interchangeable.
+
 The TechMapping providers may return
 `loom.mapping.tech_compute_context_hall_feedback.1.0`. It represents one exact
 Hall-deficient compute-cover relation observed by Mapping, not a proof that the
@@ -2804,14 +2850,17 @@ not a routing failure, does not imply that another TechMapping has the same
 boundary demand, and cannot weaken endpoint exclusivity.
 
 The root-complete System provider may return
-`loom.mapping.system_acc_core_capacity_pressure.1.0` only after its exact
+`loom.mapping.system_acc_core_capacity_pressure.3.0` only after its exact
 thread/graph relation is completely exhausted under the configured assignment
 bound and every assignment retains imported Spatial capacity pressure. The
 payload names the exact System, complete SpatialMapping input frontier, target
-Module, compatible AccCore count, assignment attempts, and one occurrence-
-qualified usage/capacity witness. It requests one additional compatible
-AccCore candidate. It neither claims that child sufficient nor includes
-System service routing in its proof. A work-limit outcome has no such payload.
+Module, compatible AccCore count, assignment attempts, the exact witness
+AccCore occurrence, and its usage/capacity witness. It also names one exact
+`loom.mapping.system_execution_binding_checkpoint` 1.0 that retains the
+thread and graph choices of that exhausted assignment. It requests one
+additional compatible AccCore candidate. It neither claims that child
+sufficient nor includes System service routing in its proof. A work-limit
+outcome has no such payload or checkpoint.
 
 The central joint DSE controller consumes all three feedback forms through the one
 resolved Fabric-template recipe that produced the current System. Compute
@@ -2834,10 +2883,21 @@ When a child changes only the AccCore count, the target Module roots are
 identity-equal to the parent targets. The controller binds the already
 verified immutable SpatialMapping frontier directly to the new System
 provider, after rechecking each Mapping's exact Dataflow and Module owners.
-TechMapping and Spatial PnR are not repeated for a System-only composition
-change. A resident-context or gateway change creates a different Module and
-therefore runs the complete three-level Mapping plan; owner mismatch is an
-error and never triggers an implicit Mapping rewrite.
+For `AddAccCore`, it combines the capacity witness's checkpoint with the exact
+kind-15 AccCore correspondence and publishes one
+`loom.pnr.system_mapping_checkpoint_migration_seed` 2.0. The seed identifies
+the parent witness AccCore as its unique execution-binding reopen root. System
+PnR releases exactly the checkpoint thread cells selected on that parent,
+preserves all other admissible thread cells and every admissible graph cell,
+and solves the released relation before its unchanged fresh seed family. All
+service targets, service routes, ResourceUses, progress closure, and final
+legality are rebuilt. A typed migration fallback records why projection could
+not be used and does not suppress fresh search. TechMapping and Spatial PnR
+are not repeated for a System-only composition change. A resident-context or
+gateway change creates a different Module and therefore runs the complete
+three-level Mapping plan; owner mismatch is an error and never triggers an
+implicit Mapping rewrite. No equivalent reuse claim exists yet for arbitrary
+Module, topology, memory, or transport changes.
 
 Hardware reopen is a bounded feedback chain rather than a Cartesian hardware
 search. One failed execution produces at most one monotonically grown recipe

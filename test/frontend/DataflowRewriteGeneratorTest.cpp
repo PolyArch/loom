@@ -721,8 +721,8 @@ void lineageCodecRejectsAnOutOfRangeActor() {
           .ownerLineagePayload;
   if (!contract)
     fail("Dataflow generator has no owner lineage contract");
-  llvm::Error validation =
-      contract->validateCanonical(encoded, {parentReference}, store);
+  llvm::Error validation = contract->validateCanonical(
+      encoded, parentReference, {parentReference}, store);
   if (!validation)
     fail("Dataflow lineage accepted an out-of-range parent-local actor");
   llvm::consumeError(std::move(validation));
