@@ -5,7 +5,7 @@ Shared definitions, table columns, and simulator-comparison caveats live in
 reproducible helper output, and recommendation.
 
 Kernel: `tests/app/batchnorm/batchnorm.cpp`. The `main.cpp` smoke-test fixture
-uses `C=4`, `H=W=8` and the named `shared-spad-4k-r1w1-v4` analytical target.
+uses `C=4`, `H=W=8` and the fallback `shared-spad-4k-r2w2-v4` analytical target.
 
 Regenerate:
 
@@ -29,7 +29,7 @@ does not imply fusion or receive jam-specific sharing credit.
 ```text
 # Loom pragma DSE (analytic_prefilter): batchnorm  (6x6)
 
-Evidence: `analytic_prefilter`; target `shared-spad-4k-r1w1-v4`; one 4096-byte scratchpad shared across this kernel; R=1, W=1; 1-cycle non-pipelined access; fixed V=4.
+Evidence: `analytic_prefilter`; target `shared-spad-4k-r2w2-v4`; one 4096-byte scratchpad shared across this kernel; R=2, W=2; 1-cycle non-pipelined access; fixed V=4.
 Search: complete legal power-of-two factors through each trip count.
 Candidates: 1200 legal, 1200 deduplicated groups; `absolute_cgra_lb=29` is the profile-global floor.
 

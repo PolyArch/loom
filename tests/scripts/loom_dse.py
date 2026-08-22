@@ -69,6 +69,11 @@ from cgra_schedule import (Config, Dag, L, P, S, _ceil_div,
                            region_aggregate)
 
 V = 4  # 64-bit scalar elements per 256-bit vector memory op (spec convention)
+DEFAULT_SPAD_CAPACITY_BYTES = 4096
+DEFAULT_SPAD_LOAD_PORTS = 2
+DEFAULT_SPAD_STORE_PORTS = 2
+DEFAULT_SPAD_ACCESS_CYCLES = 1
+DEFAULT_SPAD_TARGET_NAME = "shared-spad-4k-r2w2-v4"
 
 # Marker appended to the ``kind`` of a load that is loop-INVARIANT: hoisted once
 # per chunk, its count independent of the wave exposure (e.g. axpy ``alpha``,
@@ -248,13 +253,13 @@ class JamPlanSpec:
 @dataclass(frozen=True)
 class AnalyticTargetSpec:
     """Named branch-local target assumptions for an extended DSE study."""
-    name: str = "shared-spad-4k-r1w1-v4"
-    capacity_bytes: int = 4096
-    load_ports: int = 1
-    store_ports: int = 1
+    name: str = DEFAULT_SPAD_TARGET_NAME
+    capacity_bytes: int = DEFAULT_SPAD_CAPACITY_BYTES
+    load_ports: int = DEFAULT_SPAD_LOAD_PORTS
+    store_ports: int = DEFAULT_SPAD_STORE_PORTS
     shared_across_kernel: bool = True
-    access_cycles: int = 1
-    vector_width: int = 4
+    access_cycles: int = DEFAULT_SPAD_ACCESS_CYCLES
+    vector_width: int = V
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -3876,9 +3881,11 @@ def _target_name(capacity_bytes: int, load_ports: int, store_ports: int,
             f"{latency}-v{vector_width}")
 
 
-def make_target(capacity_bytes: int = 4096, load_ports: int = 1,
-                store_ports: int = 1,
-                access_cycles: int = 1) -> AnalyticTargetSpec:
+def make_target(
+        capacity_bytes: int = DEFAULT_SPAD_CAPACITY_BYTES,
+        load_ports: int = DEFAULT_SPAD_LOAD_PORTS,
+        store_ports: int = DEFAULT_SPAD_STORE_PORTS,
+        access_cycles: int = DEFAULT_SPAD_ACCESS_CYCLES) -> AnalyticTargetSpec:
     return AnalyticTargetSpec(
         name=_target_name(
             capacity_bytes, load_ports, store_ports, access_cycles),
@@ -4035,17 +4042,22 @@ def main(argv: list[str]) -> int:
         "--exposure-cap", type=int,
         help="optional diagnostic cap on total parallel exposure; default is uncapped")
     parser.add_argument(
-        "--spad-capacity-bytes", type=int, default=4096,
-        help="shared scratchpad capacity for extended pilots (default: 4096)")
+        "--spad-capacity-bytes", type=int,
+        default=DEFAULT_SPAD_CAPACITY_BYTES,
+        help=("shared scratchpad capacity for extended pilots "
+              f"(default: {DEFAULT_SPAD_CAPACITY_BYTES})"))
     parser.add_argument(
-        "--spad-load-ports", type=int, default=1,
-        help="logical scratchpad load ports for extended pilots (default: 1)")
+        "--spad-load-ports", type=int, default=DEFAULT_SPAD_LOAD_PORTS,
+        help=("logical scratchpad load ports for extended pilots "
+              f"(default: {DEFAULT_SPAD_LOAD_PORTS})"))
     parser.add_argument(
-        "--spad-store-ports", type=int, default=1,
-        help="logical scratchpad store ports for extended pilots (default: 1)")
+        "--spad-store-ports", type=int, default=DEFAULT_SPAD_STORE_PORTS,
+        help=("logical scratchpad store ports for extended pilots "
+              f"(default: {DEFAULT_SPAD_STORE_PORTS})"))
     parser.add_argument(
-        "--spad-access-cycles", type=int, default=1,
-        help="non-pipelined scratchpad access latency (default: 1)")
+        "--spad-access-cycles", type=int, default=DEFAULT_SPAD_ACCESS_CYCLES,
+        help=("non-pipelined scratchpad access latency "
+              f"(default: {DEFAULT_SPAD_ACCESS_CYCLES})"))
     parser.add_argument("--top", type=int, default=24,
                         help="show the best N candidate groups (0 schedules all)")
     parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1),
@@ -4200,6 +4212,20 @@ def _run_extended_infrastructure_tests(errors: list[str]) -> None:
         except ValueError:
             return
         errors.append(f"{label}: expected ValueError")
+
+    default_target = AnalyticTargetSpec()
+    factory_default = make_target()
+    expected_default = ("shared-spad-4k-r2w2-v4", 4096, 2, 2, 1, V)
+    for label, target in (
+            ("AnalyticTargetSpec", default_target),
+            ("make_target", factory_default)):
+        observed = (
+            target.name, target.capacity_bytes, target.load_ports,
+            target.store_ports, target.access_cycles, target.vector_width)
+        if observed != expected_default:
+            errors.append(
+                f"{label} default target expected {expected_default}, got "
+                f"{observed}")
 
     # A source-only order declaration must preserve the legacy candidate set.
     legacy_spec = KernelSpec(
@@ -4605,11 +4631,11 @@ def _run_extended_pilot_tests(errors: list[str]) -> None:
         errors.append("GEMV i->j jam did not remove the expected x readers")
     gemv_outcome = search(gemv, cfg, jobs=1, target=target)
     if (gemv_outcome.recommendation.cand.jam_plan != "i-j-share-x"
-            or gemv_outcome.recommendation.cand.factors("i") != (1, 8)
-            or gemv_outcome.recommendation.pragma_exposure_aggregate != 100):
+            or gemv_outcome.recommendation.cand.factors("i") != (1, 4)
+            or gemv_outcome.recommendation.pragma_exposure_aggregate != 94):
         errors.append(
-            "GEMV family-knee selection must prefer i:P1U8 explicit jam at "
-            "p_agg=100 for the M=32, N=48 smoke fixture")
+            "GEMV family-knee selection must prefer i:P1U4 explicit jam at "
+            "p_agg=94 for the M=32, N=48 smoke fixture")
 
     gemv_capacity = gemv_columns * 4
     gemv_exact = derive_memory_plan(
@@ -4725,6 +4751,17 @@ def _run_extended_pilot_tests(errors: list[str]) -> None:
         errors.append(
             "Conv2d no-tile candidate count expected 1296 before jam variants "
             f"and 4374 total, got {conv_none_count}/{len(conv_candidates)}")
+    conv_default_candidate = Candidate(
+        (("co", 1, 4), ("oh", 1, 4),
+         ("ow", 1, 4), ("tap", 1, 1)),
+        order=("co", "oh", "ow", "tap"), jam_plan="share-all")
+    conv_default_result = evaluate_candidate(
+        conv2d, conv_default_candidate, cfg, schedule=False, target=target)
+    if (conv_default_result.plan_cgra_lb,
+            conv_default_result.pragma_exposure_aggregate) != (256, 265):
+        errors.append(
+            "Conv2d default 2R/2W share-all candidate expected "
+            "plan_lb/p_agg=256/265")
     scheduled_conv = Candidate((
         ("co", 1, 4), ("oh", 1, 4),
         ("ow", 1, 4), ("tap", 1, 1)))

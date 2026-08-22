@@ -415,14 +415,22 @@ cycle, and recommendation result rather than scaling an existing row. Legacy
 direct-memory reports retain their documented fixture policy until they migrate
 to an extended profile.
 
-The canonical extended-study profile is `shared-spad-4k-r1w1-v4`. It fixes one
-4096-byte scratchpad shared by all workers executing one mapped kernel, one
-logical scratchpad load port, one logical scratchpad store port, one-cycle
-modeled scratchpad access, and vector width `V = 4` source elements. Capacity,
+When no concrete hardware target is supplied, the fallback extended-study
+profile is `shared-spad-4k-r2w2-v4`. It fixes one 4096-byte scratchpad shared by
+all workers executing one mapped kernel, two logical scratchpad load ports, two
+logical scratchpad store ports, one-cycle modeled scratchpad access, and vector
+width `V = 4` source elements. The 2R/2W fallback is a modest analytical
+baseline, not a claim that residency must outperform direct memory. Capacity,
 load-port count, store-port count, and access latency are hardware parameters of
-the analytical target and **MAY** be overridden explicitly. Profile identity
-includes all of those values. The default does not assert a bank count, bank
-mapping, DMA engine, arbitration behavior, or particular hardware topology.
+the analytical target and **MAY** be overridden explicitly. If a concrete
+`fabric.memory` target matches the current analytical interface -- one
+kernel-shared scratchpad with positive `ldCount` and `stCount` -- a report that
+claims to model it **MUST** pass its static memref capacity and port counts as
+overrides. Other Fabric configurations, including read-only memories with
+`stCount = 0`, are outside this optional model's target interface and **MUST
+NOT** be represented silently by the fallback. Profile identity includes all of
+those values. The fallback does not assert a bank count, bank mapping, DMA
+engine, arbitration behavior, or particular hardware topology.
 
 **Objective.** Choose the pragma that minimizes modeled cycles subject to the hard
 `≤ L` load-lane / `≤ S` store-lane per-cycle limit (`L = S = 12` for `6x6`).
@@ -1083,7 +1091,7 @@ count, logical store-port count, access latency, and sharing scope. These values
 are hardware parameters, matching the role of `ldCount` and `stCount` on
 `fabric.memory`, but a DSE run receives them explicitly and does not infer them
 from a particular ADG, `is_private`, `numRegion`, or source
-`LOOM_MEMORY_BANK` annotation. Under `shared-spad-4k-r1w1-v4`, all workers of one
+`LOOM_MEMORY_BANK` annotation. Under `shared-spad-4k-r2w2-v4`, all workers of one
 mapped kernel share one logical scratchpad address space.
 
 Buffer intent is declared per kernel:

@@ -43,12 +43,17 @@ traffic, cycle, and recommendation results rather than scaled values. Legacy
 direct-memory reports keep their documented fixture policy until they migrate
 to an extended profile.
 
-The canonical study profile is `shared-spad-4k-r1w1-v4` with one 4096-byte
-scratchpad shared by the workers of one mapped kernel, one logical load port, one
-logical store port, one-cycle modeled access, and fixed vector width `V = 4`
-source elements. Capacity, load/store-port counts, and access latency are target
-parameters and part of profile identity. The default profile does not assert a
-bank topology or DMA engine.
+When no concrete hardware target is supplied, the fallback study profile is
+`shared-spad-4k-r2w2-v4` with one 4096-byte scratchpad shared by the workers of
+one mapped kernel, two logical load ports, two logical store ports, one-cycle
+modeled access, and fixed vector width `V = 4` source elements. This 2R/2W
+profile is an analytical baseline, not a guarantee that residency beats direct
+memory. Capacity, load/store-port counts, and access latency are target
+parameters and part of profile identity. A report modeling a compatible
+kernel-shared `fabric.memory` with positive `ldCount` and `stCount` must pass its
+capacity and port counts as overrides. Other Fabric memory configurations are
+outside this optional model and must not be represented silently by the
+fallback. The fallback profile does not assert a bank topology or DMA engine.
 
 ### Loop order, fixed width, and explicit jam
 
