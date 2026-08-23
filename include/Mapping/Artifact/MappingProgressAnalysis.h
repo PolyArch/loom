@@ -117,9 +117,10 @@ llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
 
 /// Qualifies one independently imported Mapping for resource-time endpoint
 /// publication. The ordinary Mapping verifier already proved route/resource
-/// closure. Until a token/occupancy proof is registered for initialized
-/// feedback, that narrower recurrence domain remains typed
-/// ProofNotEstablished rather than being inferred from finite replay.
+/// closure. The qualifier invokes the same exact Dataflow/Fabric capacity,
+/// arbitration, and causal-release kernel used by System verification; any
+/// missing token/occupancy witness remains typed ProofNotEstablished rather
+/// than being inferred from finite replay.
 llvm::Expected<MappingProgressClosure>
 qualifySystemMappingResourceTimeProgress(
     const FinalizedSystemMapping &mapping,
