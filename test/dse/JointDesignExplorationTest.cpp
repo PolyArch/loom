@@ -601,6 +601,38 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
     fail("typed local Spatial impact did not preserve and revalidate its "
          "selected cone");
 
+  auto impactSpatial =
+      take(loom::mapping::importSpatialMapping(*feedbackSpatialMapping, store));
+  std::optional<loom::fabric::FabricFifoOccurrenceRef> unusedFifo;
+  for (const auto fifo : targetModule.view().fifoOccurrences())
+    if (!loom::mapping::spatialMappingUsesFifoOccurrence(
+            impactSpatial.view(), fifo)) {
+      unusedFifo = fifo;
+      break;
+    }
+  if (!unusedFifo)
+    fail("mapping-reuse fixture has no unused FIFO for a zero-cone witness");
+  loom::dse::HardwareImpactProjection unusedImpact{
+      targetModules.front(), system, {}, {}, {}, {}};
+  unusedImpact.family = loom::dse::HardwareMutationFamily::SpatialFifo;
+  unusedImpact.locality = loom::dse::HardwareMutationLocality::LocalCone;
+  unusedImpact.tech.kind = loom::dse::HardwareMappingImpactKind::Rebase;
+  unusedImpact.spatial.kind = loom::dse::HardwareMappingImpactKind::Reopen;
+  unusedImpact.spatial.placementRoots.push_back(
+      take(loom::fabric::FabricModulePhysicalOwnerRef::create(*unusedFifo)));
+  unusedImpact.moduleEntities =
+      identityModuleEntityCorrespondence(targetModule.view());
+  const auto unusedFrontier =
+      take(loom::dse::rebaseJointMappingFrontier(
+          plan, parentExecution, system, identityModuleCorrespondence,
+          &unusedImpact, store));
+  if (unusedFrontier.disposition !=
+          loom::dse::JointMappingReuseDisposition::Preserved ||
+      unusedFrontier.accounting.invalidatedSpatialMappings != 0 ||
+      unusedFrontier.accounting.repairedSpatialMappings != 0 ||
+      unusedFrontier.seed.spatialMappings.empty())
+    fail("unused FIFO impact did not produce a zero-cone Spatial preserve");
+
   auto globalImpact = localSpatialImpact;
   globalImpact.family = loom::dse::HardwareMutationFamily::FuCapability;
   globalImpact.locality = loom::dse::HardwareMutationLocality::GlobalReopen;

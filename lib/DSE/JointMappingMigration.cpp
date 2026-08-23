@@ -82,57 +82,95 @@ std::uint64_t techDecisionCount(const mapping::TechMappingView &mapping) {
          mapping.memoryRealizations().size();
 }
 
-bool endpointUsesPe(const fabric::FabricTransportEndpointRef &endpoint,
-                    fabric::FabricPeOccurrenceRef pe) {
-  const auto *owner = std::get_if<fabric::FabricPeOccurrenceRef>(
-      &endpoint.owner.payload);
-  return owner && *owner == pe;
+template <typename Ref>
+bool physicalOwnerMatches(const fabric::FabricModulePhysicalOwnerRef &target,
+                          const Ref &reference) {
+  auto candidate = fabric::FabricModulePhysicalOwnerRef::create(reference);
+  return candidate && *candidate == target;
 }
 
-bool traversalUsesPe(const fabric::FabricPhysicalTraversalRef &traversal,
-                     fabric::FabricPeOccurrenceRef pe) {
+bool endpointUsesOwner(
+    const fabric::FabricTransportEndpointRef &endpoint,
+    const fabric::FabricModulePhysicalOwnerRef &target) {
+  return std::visit(
+      [&](const auto &owner) {
+        using Owner = std::decay_t<decltype(owner)>;
+        if constexpr (
+            std::is_same_v<Owner, fabric::FabricPeOccurrenceRef> ||
+            std::is_same_v<Owner, fabric::FabricFuOccurrenceRef> ||
+            std::is_same_v<Owner, fabric::FabricMemoryOccurrenceRef> ||
+            std::is_same_v<Owner, fabric::FabricSwitchOccurrenceRef> ||
+            std::is_same_v<Owner, fabric::FabricFifoOccurrenceRef> ||
+            std::is_same_v<Owner, fabric::FabricBoundaryOccurrenceRef>)
+          return physicalOwnerMatches(target, owner);
+        return false;
+      },
+      endpoint.owner.payload);
+}
+
+bool traversalUsesOwner(
+    const fabric::FabricPhysicalTraversalRef &traversal,
+    const fabric::FabricModulePhysicalOwnerRef &target) {
   return std::visit(
       [&](const auto &payload) {
         using Payload = std::decay_t<decltype(payload)>;
         if constexpr (std::is_same_v<Payload,
                                      fabric::FabricPointConnectionPayload>)
-          return endpointUsesPe(payload.source, pe) ||
-                 endpointUsesPe(payload.destination, pe);
+          return endpointUsesOwner(payload.source, target) ||
+                 endpointUsesOwner(payload.destination, target);
         if constexpr (std::is_same_v<Payload,
                                      fabric::FabricPeSelectorPayload>)
-          return payload.owner == pe || endpointUsesPe(payload.source, pe) ||
-                 endpointUsesPe(payload.destination, pe);
+          return physicalOwnerMatches(target, payload.owner) ||
+                 endpointUsesOwner(payload.source, target) ||
+                 endpointUsesOwner(payload.destination, target);
         if constexpr (std::is_same_v<Payload,
                                      fabric::FabricPeRegisterFifoPayload>)
-          return payload.owner == pe;
+          return physicalOwnerMatches(target, payload.owner);
+        if constexpr (std::is_same_v<Payload,
+                                     fabric::FabricSwitchTraversalPayload>)
+          return physicalOwnerMatches(target, payload.owner);
+        if constexpr (std::is_same_v<Payload,
+                                     fabric::FabricFifoTraversalPayload>)
+          return physicalOwnerMatches(target, payload.owner);
+        if constexpr (std::is_same_v<Payload,
+                                     fabric::FabricBoundaryTraversalPayload>)
+          return physicalOwnerMatches(target, payload.owner);
         return false;
       },
       traversal.payload);
 }
 
-bool spatialMappingUsesPe(const mapping::SpatialMappingView &mapping,
-                          const fabric::FabricArtifactView &fabric,
-                          fabric::FabricPeOccurrenceRef pe) {
+bool spatialMappingUsesOwner(
+    const mapping::SpatialMappingView &mapping,
+    const fabric::FabricArtifactView &fabric,
+    const fabric::FabricModulePhysicalOwnerRef &target) {
   for (const auto &binding : mapping.computeBindings()) {
+    if (physicalOwnerMatches(target, binding.occurrence))
+      return true;
     auto parent = fabric.parentPeOf(binding.occurrence);
-    if (parent && *parent == pe)
+    if (parent && physicalOwnerMatches(target, *parent))
       return true;
   }
+  for (const auto &binding : mapping.memoryEngineBindings())
+    if (physicalOwnerMatches(target, binding.occurrence))
+      return true;
   for (const auto &transfer : mapping.registerFifoTransfers())
-    if (transfer.pe == pe)
+    if (physicalOwnerMatches(target, transfer.pe))
       return true;
   for (const auto &route : mapping.routeTrees()) {
-    if (endpointUsesPe(route.rootEndpoint, pe) ||
-        (route.localTraversal && traversalUsesPe(*route.localTraversal, pe)))
+    if (endpointUsesOwner(route.rootEndpoint, target) ||
+        (route.localTraversal &&
+         traversalUsesOwner(*route.localTraversal, target)))
       return true;
     for (const auto &node : route.nodes) {
-      if (endpointUsesPe(node.endpoint, pe) ||
+      if (endpointUsesOwner(node.endpoint, target) ||
           (node.incomingTraversal &&
-           traversalUsesPe(*node.incomingTraversal, pe)))
+           traversalUsesOwner(*node.incomingTraversal, target)))
         return true;
     }
     for (const auto &sink : route.sinks)
-      if (sink.localTraversal && traversalUsesPe(*sink.localTraversal, pe))
+      if (sink.localTraversal &&
+          traversalUsesOwner(*sink.localTraversal, target))
         return true;
   }
   return false;
@@ -145,18 +183,8 @@ bool spatialMappingUsesImpact(
   if (placementRoots.empty())
     return true;
   bool used = false;
-  for (const auto &root : placementRoots) {
-    if (const auto *pe = std::get_if<fabric::FabricPeOccurrenceRef>(
-            &root.payload()))
-      used |= spatialMappingUsesPe(mapping, fabric, *pe);
-    else if (const auto *fifo = std::get_if<fabric::FabricFifoOccurrenceRef>(
-                 &root.payload()))
-      used |= mapping::spatialMappingUsesFifoOccurrence(mapping, *fifo);
-    else
-      return true;
-    // FU, memory, switch, and boundary changes retain conservative reopen
-    // behavior until each owner has a complete dependency projection.
-  }
+  for (const auto &root : placementRoots)
+    used |= spatialMappingUsesOwner(mapping, fabric, root);
   return used;
 }
 
