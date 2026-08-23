@@ -1314,16 +1314,14 @@ llvm::Error validateResourceTimeFrontierAccounting(
     if (counter->planned > counter->limit)
       return invalid("work ledger exceeds its limit");
   }
-  if (accounting.stateMemoMisses != accounting.states.consumed)
-    {
-      auto admitted = llvm::checkedAddUnsigned(
-          accounting.stateMemoMisses, accounting.stateMemoEnvelopeUpdates);
-      if (!admitted || *admitted != accounting.states.consumed)
-        return invalid("state memo admissions differ from consumed states");
-    }
-  if (accounting.stateMemoHits !=
-      accounting.stateMemoEnvelopeUpdates +
-          accounting.stateMemoDominatedStates)
+  auto admitted = llvm::checkedAddUnsigned(
+      accounting.stateMemoMisses, accounting.stateMemoEnvelopeUpdates);
+  if (!admitted || *admitted != accounting.states.consumed)
+    return invalid("state memo admissions differ from consumed states");
+  auto memoHits = llvm::checkedAddUnsigned(
+      accounting.stateMemoEnvelopeUpdates,
+      accounting.stateMemoDominatedStates);
+  if (!memoHits || accounting.stateMemoHits != *memoHits)
     return invalid("state memo hit accounting is not closed");
   return llvm::Error::success();
 }

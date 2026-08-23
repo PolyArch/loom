@@ -193,6 +193,14 @@ void budgetsAndExactRejectionsRemainTyped() {
   require(!loom::dse::validateResourceTimeFrontierAccounting(
               incomplete->accounting),
           "incomplete work accounting is not closed");
+  auto inconsistentMemoAccounting = incomplete->accounting;
+  ++inconsistentMemoAccounting.stateMemoEnvelopeUpdates;
+  llvm::Error inconsistentMemoError =
+      loom::dse::validateResourceTimeFrontierAccounting(
+          inconsistentMemoAccounting);
+  require(static_cast<bool>(inconsistentMemoError),
+          "state memo ledger accepted an unaccounted envelope update");
+  llvm::consumeError(std::move(inconsistentMemoError));
 
   auto impossible = fiveRegionFeatures(2);
   impossible.front().speedupCurve = {point(5, 10)};
