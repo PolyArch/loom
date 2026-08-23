@@ -35,6 +35,7 @@
 #include <set>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -132,6 +133,37 @@ publishApplicationWorkload(const dataflow::CanonicalDataflowArtifact &artifact,
 std::string key(llvm::ArrayRef<std::uint8_t> bytes) {
   return std::string(reinterpret_cast<const char *>(bytes.data()),
                      bytes.size());
+}
+
+std::vector<loom::fabric::FabricModuleEntityCorrespondence>
+identityModuleEntityCorrespondence(
+    const loom::fabric::FabricArtifactView &module) {
+  std::vector<loom::fabric::FabricModuleEntityCorrespondence> result;
+  const auto append = [&](auto occurrences,
+                          loom::fabric::FabricEntityKind kind) {
+    for (std::uint64_t ordinal = 0; ordinal != occurrences.size(); ++ordinal) {
+      const auto occurrence = occurrences[ordinal];
+      result.push_back({{kind, occurrence.id(), ordinal},
+                        {kind, occurrence.id(), ordinal}});
+    }
+  };
+  append(module.peOccurrences(),
+         loom::fabric::FabricEntityKind::FabricPeOccurrence);
+  append(module.fuOccurrences(),
+         loom::fabric::FabricEntityKind::FabricFuOccurrence);
+  append(module.memoryOccurrences(),
+         loom::fabric::FabricEntityKind::FabricMemoryOccurrence);
+  append(module.switchOccurrences(),
+         loom::fabric::FabricEntityKind::FabricSwitchOccurrence);
+  append(module.fifoOccurrences(),
+         loom::fabric::FabricEntityKind::FabricFifoOccurrence);
+  append(module.boundaryOccurrences(),
+         loom::fabric::FabricEntityKind::FabricBoundaryOccurrence);
+  llvm::sort(result, [](const auto &lhs, const auto &rhs) {
+    return std::tie(lhs.source.kind, lhs.source.occurrenceOrdinal) <
+           std::tie(rhs.source.kind, rhs.source.occurrenceOrdinal);
+  });
+  return result;
 }
 
 bool everyCoreIsUsed(const loom::ArtifactRootReference &systemReference,
@@ -450,6 +482,8 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
   localSpatialImpact.spatial.kind =
       loom::dse::HardwareMappingImpactKind::Reopen;
   localSpatialImpact.spatial.placementRoots.push_back(moduleRoot);
+  localSpatialImpact.moduleEntities =
+      identityModuleEntityCorrespondence(targetModule.view());
   const auto localRepairFrontier =
       take(loom::dse::rebaseJointMappingFrontier(
           plan, parentExecution, system, identityModuleCorrespondence,

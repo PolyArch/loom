@@ -401,9 +401,15 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
         *dataflow, childTech->child.view(), childModule->view(), artifacts);
     if (!constraints)
       return constraints.takeError();
+    const bool moduleRepair =
+        impact->parent.schemaIdentity == fabric::fabricArtifactSchema.identity &&
+        impact->parent.artifact == parent->view().fabricIdentity();
     auto child = mapping::rebaseSpatialMapping(
         *parent, childTech->child, childModule->view(), constraints->view(),
-        artifacts);
+        artifacts, nullptr,
+        moduleRepair ? llvm::ArrayRef<loom::fabric::FabricModuleEntityCorrespondence>(
+                            impact->moduleEntities)
+                     : llvm::ArrayRef<loom::fabric::FabricModuleEntityCorrespondence>());
     if (!child) {
       ++result.accounting.invalidatedSpatialMappings;
       result.accounting.reopenedSpatialDecisions += decisions;
@@ -414,9 +420,6 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
       continue;
     }
     result.seed.spatialMappings.push_back(child->reference());
-    const bool moduleRepair =
-        impact->parent.schemaIdentity == fabric::fabricArtifactSchema.identity &&
-        impact->parent.artifact == parent->view().fabricIdentity();
     if (moduleRepair)
       ++result.accounting.repairedSpatialMappings;
     else

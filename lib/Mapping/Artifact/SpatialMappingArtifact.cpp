@@ -124,25 +124,39 @@ class ModuleReferenceRemapper final {
 public:
   static llvm::Expected<ModuleReferenceRemapper> get(
       const ::loom::fabric::FabricArtifactView &parent,
-      const ::loom::fabric::FabricArtifactView &child) {
+      const ::loom::fabric::FabricArtifactView &child,
+      llvm::ArrayRef<::loom::fabric::FabricModuleEntityCorrespondence>
+          correspondence = {}) {
     ModuleReferenceRemapper result(parent, child);
-    if (llvm::Error error = result.add(parent.peOccurrences(),
-                                       child.peOccurrences(), result.pes_))
+    if (llvm::Error error = result.add(
+            parent.peOccurrences(), child.peOccurrences(),
+            ::loom::fabric::FabricEntityKind::FabricPeOccurrence,
+            correspondence, result.pes_))
       return std::move(error);
-    if (llvm::Error error = result.add(parent.fuOccurrences(),
-                                       child.fuOccurrences(), result.fus_))
+    if (llvm::Error error = result.add(
+            parent.fuOccurrences(), child.fuOccurrences(),
+            ::loom::fabric::FabricEntityKind::FabricFuOccurrence,
+            correspondence, result.fus_))
       return std::move(error);
-    if (llvm::Error error = result.add(parent.memoryOccurrences(),
-                                       child.memoryOccurrences(), result.memories_))
+    if (llvm::Error error = result.add(
+            parent.memoryOccurrences(), child.memoryOccurrences(),
+            ::loom::fabric::FabricEntityKind::FabricMemoryOccurrence,
+            correspondence, result.memories_))
       return std::move(error);
-    if (llvm::Error error = result.add(parent.switchOccurrences(),
-                                       child.switchOccurrences(), result.switches_))
+    if (llvm::Error error = result.add(
+            parent.switchOccurrences(), child.switchOccurrences(),
+            ::loom::fabric::FabricEntityKind::FabricSwitchOccurrence,
+            correspondence, result.switches_))
       return std::move(error);
-    if (llvm::Error error = result.add(parent.fifoOccurrences(),
-                                       child.fifoOccurrences(), result.fifos_))
+    if (llvm::Error error = result.add(
+            parent.fifoOccurrences(), child.fifoOccurrences(),
+            ::loom::fabric::FabricEntityKind::FabricFifoOccurrence,
+            correspondence, result.fifos_))
       return std::move(error);
-    if (llvm::Error error = result.add(parent.boundaryOccurrences(),
-                                       child.boundaryOccurrences(), result.boundaries_))
+    if (llvm::Error error = result.add(
+            parent.boundaryOccurrences(), child.boundaryOccurrences(),
+            ::loom::fabric::FabricEntityKind::FabricBoundaryOccurrence,
+            correspondence, result.boundaries_))
       return std::move(error);
     return result;
   }
@@ -410,7 +424,13 @@ private:
 
   template <typename Ref>
   llvm::Error add(llvm::ArrayRef<Ref> parent, llvm::ArrayRef<Ref> child,
+                  ::loom::fabric::FabricEntityKind kind,
+                  llvm::ArrayRef<
+                      ::loom::fabric::FabricModuleEntityCorrespondence>
+                      correspondence,
                   Map<Ref> &mapping) {
+    if (!correspondence.empty())
+      return addByCorrespondence(parent, child, kind, correspondence, mapping);
     if (parent.size() != child.size())
       return invalid("Module occurrence inventory changed during local rebase");
     for (std::size_t index = 0; index != parent.size(); ++index)
@@ -418,6 +438,51 @@ private:
                            child[index])
                .second)
         return invalid("Module occurrence correspondence is not unique");
+    return llvm::Error::success();
+  }
+
+  template <typename Ref>
+  llvm::Error addByCorrespondence(
+      llvm::ArrayRef<Ref> parent, llvm::ArrayRef<Ref> child,
+      ::loom::fabric::FabricEntityKind kind,
+      llvm::ArrayRef<::loom::fabric::FabricModuleEntityCorrespondence>
+          correspondence,
+      Map<Ref> &mapping) {
+    using Entry = ::loom::fabric::FabricModuleEntityCorrespondence;
+    std::map<std::uint64_t, const Entry *> bySourceOrdinal;
+    std::set<std::uint64_t> targetOrdinals;
+    for (const Entry &entry : correspondence) {
+      if (entry.source.kind != kind)
+        continue;
+      if (!bySourceOrdinal.emplace(entry.source.occurrenceOrdinal, &entry)
+               .second)
+        return invalid("Module correspondence repeats a source ordinal");
+      if (!targetOrdinals.insert(entry.target.occurrenceOrdinal).second)
+        return invalid("Module correspondence repeats a target ordinal");
+    }
+    if (bySourceOrdinal.size() != parent.size() ||
+        targetOrdinals.size() != child.size())
+      return invalid("Module correspondence does not cover an occurrence "
+                     "inventory");
+    for (std::size_t index = 0; index != parent.size(); ++index) {
+      auto source = bySourceOrdinal.find(index);
+      if (source == bySourceOrdinal.end() ||
+          source->second->source.id != parent[index].id())
+        return invalid("Module correspondence source does not match the "
+                       "parent occurrence inventory");
+      const std::uint64_t targetOrdinal =
+          source->second->target.occurrenceOrdinal;
+      if (targetOrdinal >= child.size() ||
+          child[targetOrdinal].id() != source->second->target.id)
+        return invalid("Module correspondence target does not match the "
+                       "child occurrence inventory");
+      auto inserted = mapping.emplace(
+          ::loom::fabric::canonicalFabricBytes(parent[index]),
+          child[targetOrdinal]);
+      if (!inserted.second && inserted.first->second != child[targetOrdinal])
+        return invalid("Module correspondence maps one parent reference to "
+                       "multiple child references");
+    }
     return llvm::Error::success();
   }
 
@@ -2208,7 +2273,10 @@ llvm::Expected<FinalizedSpatialMapping> rebaseSpatialMapping(
     const ::loom::fabric::FabricArtifactView &childFabric,
     const SpatialMappingConstraintSetView &childConstraints,
     const ArtifactStore &store,
-    const ::loom::fabric::FabricHandshakeContext *handshakeContext) {
+    const ::loom::fabric::FabricHandshakeContext *handshakeContext,
+    llvm::ArrayRef<
+        ::loom::fabric::FabricModuleEntityCorrespondence>
+        moduleCorrespondence) {
   auto parsed = parseSpatialRoot(parent.canonicalBytes());
   if (!parsed)
     return parsed.takeError();
@@ -2219,7 +2287,8 @@ llvm::Expected<FinalizedSpatialMapping> rebaseSpatialMapping(
       store);
   if (!parentFabric)
     return parentFabric.takeError();
-  auto remapper = ModuleReferenceRemapper::get(parentFabric->view(), childFabric);
+  auto remapper = ModuleReferenceRemapper::get(
+      parentFabric->view(), childFabric, moduleCorrespondence);
   if (!remapper)
     return remapper.takeError();
   if (llvm::Error error =

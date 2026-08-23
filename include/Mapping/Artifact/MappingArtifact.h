@@ -4,6 +4,7 @@
 #include "Common/Artifact.h"
 #include "Common/ArtifactStore.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
+#include "Fabric/Artifact/FabricArtifact.h"
 #include "Fabric/IR/UsePatternValue.h"
 #include "Fabric/Identity/FabricHandshake.h"
 #include "Fabric/Identity/FabricRefImport.h"
@@ -762,7 +763,10 @@ llvm::Expected<FinalizedSpatialMapping> rebaseSpatialMapping(
     const ::loom::fabric::FabricArtifactView &childFabric,
     const SpatialMappingConstraintSetView &childConstraints,
     const ArtifactStore &store,
-    const ::loom::fabric::FabricHandshakeContext *handshakeContext = nullptr);
+    const ::loom::fabric::FabricHandshakeContext *handshakeContext = nullptr,
+    llvm::ArrayRef<
+        ::loom::fabric::FabricModuleEntityCorrespondence>
+        moduleCorrespondence = {});
 
 } // namespace loom::mapping
 
