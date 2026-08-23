@@ -342,7 +342,15 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
       preservedFrontier.seed.techMappings.empty() ||
       preservedFrontier.seed.spatialMappings.empty() ||
       preservedFrontier.accounting.invalidatedTechMappings != 0 ||
-      preservedFrontier.accounting.invalidatedSpatialMappings != 0)
+      preservedFrontier.accounting.invalidatedSpatialMappings != 0 ||
+      preservedFrontier.accounting.parentThreadBindingCount == 0 ||
+      preservedFrontier.accounting.parentGraphBindingCount == 0 ||
+      preservedFrontier.accounting.preservedThreadBindingCount !=
+          preservedFrontier.accounting.parentThreadBindingCount ||
+      preservedFrontier.accounting.preservedGraphBindingCount !=
+          preservedFrontier.accounting.parentGraphBindingCount ||
+      preservedFrontier.accounting.reopenedThreadBindingCount != 0 ||
+      preservedFrontier.accounting.reopenedGraphBindingCount != 0)
     fail("System-only impact did not preserve lower Mapping layers");
 
   auto targetModule =

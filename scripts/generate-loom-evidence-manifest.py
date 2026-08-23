@@ -522,6 +522,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                         "invalidated_tech_mappings",
                         "invalidated_spatial_mappings",
                         "mapping_rebase_work",
+                        "system_mapping_rebase_work",
                         "joined_max_temporal_outcome_count",
                         "joined_max_spatial_outcome_count",
                         "joined_intermediate_outcome_count",

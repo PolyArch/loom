@@ -542,9 +542,46 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
     auto mapping = mapping::importSystemMapping(parentReference, artifacts);
     if (!mapping)
       return mapping.takeError();
+    const auto &systemView = mapping->view();
+    const std::uint64_t threadBindings =
+        systemView.executionBindings().threadBindings().size();
+    const std::uint64_t graphBindings =
+        systemView.executionBindings().graphBindings().size();
+    const std::uint64_t resourceUses = systemView.resourceUses().size();
+    const std::uint64_t serviceRealizations =
+        systemView.serviceRealizations().size();
+    result.accounting.parentThreadBindingCount += threadBindings;
+    result.accounting.parentGraphBindingCount += graphBindings;
+    result.accounting.parentResourceUseCount += resourceUses;
+    result.accounting.parentServiceRealizationCount += serviceRealizations;
+    const bool systemReopen =
+        impact->system.kind == HardwareMappingImpactKind::Reopen;
+    const bool bindingReopen =
+        systemReopen && !impact->system.executionRoots.empty();
+    const bool serviceReopen =
+        systemReopen &&
+        (!impact->system.executionRoots.empty() ||
+         !impact->system.transportRoots.empty() ||
+         !impact->system.routeRoots.empty() ||
+         !impact->system.serviceRoots.empty() ||
+         !impact->system.memoryRoots.empty());
+    if (bindingReopen) {
+      result.accounting.reopenedThreadBindingCount += threadBindings;
+      result.accounting.reopenedGraphBindingCount += graphBindings;
+    } else {
+      result.accounting.preservedThreadBindingCount += threadBindings;
+      result.accounting.preservedGraphBindingCount += graphBindings;
+    }
+    if (serviceReopen) {
+      result.accounting.reopenedResourceUseCount += resourceUses;
+      result.accounting.reopenedServiceRealizationCount += serviceRealizations;
+    } else {
+      result.accounting.preservedResourceUseCount += resourceUses;
+      result.accounting.preservedServiceRealizationCount += serviceRealizations;
+    }
     const std::uint64_t legs = systemServiceLegCount(mapping->view());
     result.accounting.parentServiceLegCount += legs;
-    if (impact->system.kind == HardwareMappingImpactKind::Reopen)
+    if (serviceReopen)
       result.accounting.reopenedServiceLegCount += legs;
     else
       result.accounting.preservedServiceLegCount += legs;

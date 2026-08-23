@@ -1183,6 +1183,27 @@ void emitApplicationMappingDiagnostics(
             {"parent_service_leg_count", summary.parentServiceLegCount},
             {"preserved_service_leg_count", summary.preservedServiceLegCount},
             {"reopened_service_leg_count", summary.reopenedServiceLegCount}};
+        payload["system_mapping_rebase_work"] = llvm::json::Object{
+            {"parent_thread_binding_count", summary.parentThreadBindingCount},
+            {"preserved_thread_binding_count",
+             summary.preservedThreadBindingCount},
+            {"reopened_thread_binding_count",
+             summary.reopenedThreadBindingCount},
+            {"parent_graph_binding_count", summary.parentGraphBindingCount},
+            {"preserved_graph_binding_count",
+             summary.preservedGraphBindingCount},
+            {"reopened_graph_binding_count",
+             summary.reopenedGraphBindingCount},
+            {"parent_resource_use_count", summary.parentResourceUseCount},
+            {"preserved_resource_use_count",
+             summary.preservedResourceUseCount},
+            {"reopened_resource_use_count", summary.reopenedResourceUseCount},
+            {"parent_service_realization_count",
+             summary.parentServiceRealizationCount},
+            {"preserved_service_realization_count",
+             summary.preservedServiceRealizationCount},
+            {"reopened_service_realization_count",
+             summary.reopenedServiceRealizationCount}};
         payload["verified_alternatives"] = summary.verifiedAlternatives;
         payload["quality_disposition"] = spelling(summary.qualityDisposition);
         payload["declared_work_exhausted"] = summary.declaredWorkExhausted;

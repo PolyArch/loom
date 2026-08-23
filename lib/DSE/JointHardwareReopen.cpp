@@ -2197,6 +2197,30 @@ tryHardwareFeedbackReopen(
                   execution->summary.spatialPnrJournalReplayCount);
     saturatingAdd(accounting.systemPnrJournalReplayCount,
                   execution->summary.systemPnrJournalReplayCount);
+    saturatingAdd(accounting.parentThreadBindingCount,
+                  execution->summary.parentThreadBindingCount);
+    saturatingAdd(accounting.preservedThreadBindingCount,
+                  execution->summary.preservedThreadBindingCount);
+    saturatingAdd(accounting.reopenedThreadBindingCount,
+                  execution->summary.reopenedThreadBindingCount);
+    saturatingAdd(accounting.parentGraphBindingCount,
+                  execution->summary.parentGraphBindingCount);
+    saturatingAdd(accounting.preservedGraphBindingCount,
+                  execution->summary.preservedGraphBindingCount);
+    saturatingAdd(accounting.reopenedGraphBindingCount,
+                  execution->summary.reopenedGraphBindingCount);
+    saturatingAdd(accounting.parentResourceUseCount,
+                  execution->summary.parentResourceUseCount);
+    saturatingAdd(accounting.preservedResourceUseCount,
+                  execution->summary.preservedResourceUseCount);
+    saturatingAdd(accounting.reopenedResourceUseCount,
+                  execution->summary.reopenedResourceUseCount);
+    saturatingAdd(accounting.parentServiceRealizationCount,
+                  execution->summary.parentServiceRealizationCount);
+    saturatingAdd(accounting.preservedServiceRealizationCount,
+                  execution->summary.preservedServiceRealizationCount);
+    saturatingAdd(accounting.reopenedServiceRealizationCount,
+                  execution->summary.reopenedServiceRealizationCount);
     if (llvm::Error error = recordJointAttempt(attemptRecords, planOrdinal,
                                                system->reference, *execution))
       return std::move(error);
@@ -2723,6 +2747,30 @@ llvm::Expected<TypedModuleHardwareRepair> executeTypedModuleHardwareReopen(
       rebased->accounting.preservedServiceLegCount;
   execution->summary.reopenedServiceLegCount =
       rebased->accounting.reopenedServiceLegCount;
+  execution->summary.parentThreadBindingCount =
+      rebased->accounting.parentThreadBindingCount;
+  execution->summary.preservedThreadBindingCount =
+      rebased->accounting.preservedThreadBindingCount;
+  execution->summary.reopenedThreadBindingCount =
+      rebased->accounting.reopenedThreadBindingCount;
+  execution->summary.parentGraphBindingCount =
+      rebased->accounting.parentGraphBindingCount;
+  execution->summary.preservedGraphBindingCount =
+      rebased->accounting.preservedGraphBindingCount;
+  execution->summary.reopenedGraphBindingCount =
+      rebased->accounting.reopenedGraphBindingCount;
+  execution->summary.parentResourceUseCount =
+      rebased->accounting.parentResourceUseCount;
+  execution->summary.preservedResourceUseCount =
+      rebased->accounting.preservedResourceUseCount;
+  execution->summary.reopenedResourceUseCount =
+      rebased->accounting.reopenedResourceUseCount;
+  execution->summary.parentServiceRealizationCount =
+      rebased->accounting.parentServiceRealizationCount;
+  execution->summary.preservedServiceRealizationCount =
+      rebased->accounting.preservedServiceRealizationCount;
+  execution->summary.reopenedServiceRealizationCount =
+      rebased->accounting.reopenedServiceRealizationCount;
   if (rebased->disposition == JointMappingReuseDisposition::ColdFallback)
     execution->summary.coldReopenWallTimeNanoseconds = elapsedNanoseconds;
   else
@@ -2755,6 +2803,30 @@ llvm::Expected<TypedModuleHardwareRepair> executeTypedModuleHardwareReopen(
             rebased->accounting.invalidatedTechMappings;
         fields["invalidated_spatial_mappings"] =
             rebased->accounting.invalidatedSpatialMappings;
+        fields["parent_thread_binding_count"] =
+            rebased->accounting.parentThreadBindingCount;
+        fields["preserved_thread_binding_count"] =
+            rebased->accounting.preservedThreadBindingCount;
+        fields["reopened_thread_binding_count"] =
+            rebased->accounting.reopenedThreadBindingCount;
+        fields["parent_graph_binding_count"] =
+            rebased->accounting.parentGraphBindingCount;
+        fields["preserved_graph_binding_count"] =
+            rebased->accounting.preservedGraphBindingCount;
+        fields["reopened_graph_binding_count"] =
+            rebased->accounting.reopenedGraphBindingCount;
+        fields["parent_resource_use_count"] =
+            rebased->accounting.parentResourceUseCount;
+        fields["preserved_resource_use_count"] =
+            rebased->accounting.preservedResourceUseCount;
+        fields["reopened_resource_use_count"] =
+            rebased->accounting.reopenedResourceUseCount;
+        fields["parent_service_realization_count"] =
+            rebased->accounting.parentServiceRealizationCount;
+        fields["preserved_service_realization_count"] =
+            rebased->accounting.preservedServiceRealizationCount;
+        fields["reopened_service_realization_count"] =
+            rebased->accounting.reopenedServiceRealizationCount;
         fields["rebase_failure_count"] = rebased->failures.size();
         fields["system_mapping_count"] = mappingCount(*execution);
         fields["wall_time_ns"] = elapsedNanoseconds;
@@ -3138,6 +3210,21 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     summary.parentServiceLegCount = accounting.parentServiceLegCount;
     summary.preservedServiceLegCount = accounting.preservedServiceLegCount;
     summary.reopenedServiceLegCount = accounting.reopenedServiceLegCount;
+    summary.parentThreadBindingCount = accounting.parentThreadBindingCount;
+    summary.preservedThreadBindingCount = accounting.preservedThreadBindingCount;
+    summary.reopenedThreadBindingCount = accounting.reopenedThreadBindingCount;
+    summary.parentGraphBindingCount = accounting.parentGraphBindingCount;
+    summary.preservedGraphBindingCount = accounting.preservedGraphBindingCount;
+    summary.reopenedGraphBindingCount = accounting.reopenedGraphBindingCount;
+    summary.parentResourceUseCount = accounting.parentResourceUseCount;
+    summary.preservedResourceUseCount = accounting.preservedResourceUseCount;
+    summary.reopenedResourceUseCount = accounting.reopenedResourceUseCount;
+    summary.parentServiceRealizationCount =
+        accounting.parentServiceRealizationCount;
+    summary.preservedServiceRealizationCount =
+        accounting.preservedServiceRealizationCount;
+    summary.reopenedServiceRealizationCount =
+        accounting.reopenedServiceRealizationCount;
     summary.verifiedAlternatives = verifiedMappingCount;
     summary.selectedPlanOrdinal = selectedPlanOrdinal;
     summary.selectedMapping = std::move(selectedMapping);
@@ -3363,6 +3450,30 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                   initial->summary.preservedServiceLegCount);
     saturatingAdd(accounting.reopenedServiceLegCount,
                   initial->summary.reopenedServiceLegCount);
+    saturatingAdd(accounting.parentThreadBindingCount,
+                  initial->summary.parentThreadBindingCount);
+    saturatingAdd(accounting.preservedThreadBindingCount,
+                  initial->summary.preservedThreadBindingCount);
+    saturatingAdd(accounting.reopenedThreadBindingCount,
+                  initial->summary.reopenedThreadBindingCount);
+    saturatingAdd(accounting.parentGraphBindingCount,
+                  initial->summary.parentGraphBindingCount);
+    saturatingAdd(accounting.preservedGraphBindingCount,
+                  initial->summary.preservedGraphBindingCount);
+    saturatingAdd(accounting.reopenedGraphBindingCount,
+                  initial->summary.reopenedGraphBindingCount);
+    saturatingAdd(accounting.parentResourceUseCount,
+                  initial->summary.parentResourceUseCount);
+    saturatingAdd(accounting.preservedResourceUseCount,
+                  initial->summary.preservedResourceUseCount);
+    saturatingAdd(accounting.reopenedResourceUseCount,
+                  initial->summary.reopenedResourceUseCount);
+    saturatingAdd(accounting.parentServiceRealizationCount,
+                  initial->summary.parentServiceRealizationCount);
+    saturatingAdd(accounting.preservedServiceRealizationCount,
+                  initial->summary.preservedServiceRealizationCount);
+    saturatingAdd(accounting.reopenedServiceRealizationCount,
+                  initial->summary.reopenedServiceRealizationCount);
     if (plan.frontier.systemFrontier.size() != 1)
       return invalid("application Mapping alternative has no exact System");
     if (llvm::Error error =

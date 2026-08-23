@@ -199,6 +199,18 @@ struct JointDesignExecutionSummary final {
   std::uint64_t parentServiceLegCount = 0;
   std::uint64_t preservedServiceLegCount = 0;
   std::uint64_t reopenedServiceLegCount = 0;
+  std::uint64_t parentThreadBindingCount = 0;
+  std::uint64_t preservedThreadBindingCount = 0;
+  std::uint64_t reopenedThreadBindingCount = 0;
+  std::uint64_t parentGraphBindingCount = 0;
+  std::uint64_t preservedGraphBindingCount = 0;
+  std::uint64_t reopenedGraphBindingCount = 0;
+  std::uint64_t parentResourceUseCount = 0;
+  std::uint64_t preservedResourceUseCount = 0;
+  std::uint64_t reopenedResourceUseCount = 0;
+  std::uint64_t parentServiceRealizationCount = 0;
+  std::uint64_t preservedServiceRealizationCount = 0;
+  std::uint64_t reopenedServiceRealizationCount = 0;
   std::uint64_t verifiedAlternatives = 0;
   std::optional<std::uint64_t> selectedPlanOrdinal;
   std::optional<ArtifactRootReference> selectedMapping;
