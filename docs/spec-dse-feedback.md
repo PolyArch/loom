@@ -3111,6 +3111,14 @@ preference. A resource-time transition remains `Unsupported` or
 and route deltas, live-state correspondence, and migration-time contract are
 all derived by their existing owners.
 
+The rebase ledger must account for the System layer separately from lower
+Mapping layers. For every parent SystemMapping it records parent, preserved,
+and reopened thread bindings, graph bindings, resource uses, service
+realizations, and service legs. An execution-root impact reopens the binding
+cone; a transport, route, service, or memory impact reopens the corresponding
+resource/service cone. Unaffected System relations remain preserved. Artifact
+counts alone are insufficient evidence for any of these classifications.
+
 Hardware reopen is a bounded feedback chain rather than a Cartesian hardware
 search. One failed execution produces at most one monotonically grown recipe
 child; a failed child may produce the next typed witness. Hardware-parent

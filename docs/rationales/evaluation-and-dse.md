@@ -235,6 +235,14 @@ The ordinary PnR owner therefore supplies the same typed work ordinals to both
 Mapping adapters; root-free execution is the all-zero instance of that
 catalog.
 
+The same ownership rule applies to hardware migration accounting. A child
+System can preserve lower Mapping artifacts while reopening a distinct
+execution, resource-use, or service cone; those facts must remain separate
+from artifact counts. Keeping parent/preserved/reopened counts for thread and
+graph bindings, resource uses, service realizations, and service legs in the
+existing rebase ledger prevents a System-only summary from becoming a second
+legality authority or from overstating schedule preservation.
+
 The adapter retains a canonical prefix only when valid search work terminates
 incompletely. A malformed later `T`, foreign owner tuple, or PnR invariant
 failure invalidates the whole invocation rather than converting already
