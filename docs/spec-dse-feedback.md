@@ -3376,6 +3376,15 @@ that admitted that plan plus the full frontier's exact concurrency bounds; it
 must not test every retained hint against a Mapping built for only the
 objective-best hint.
 
+An endpoint-focused invocation (`MaxTemporal`, `MaxSpatial`, or
+`intermediate`) changes only the bounded schedule-hint ordering. The ordinary
+pre-Mapping software frontier remains `Automatic` because it cannot consume a
+future SystemMapping proof. The product flow accepts the focused invocation
+only after the selected application Mapping outcome contains the requested
+class from the independent Spectrum verifier; otherwise it returns typed
+unsupported and publishes no Deployment. This prevents both pre-Mapping
+heuristics and a CLI flag from becoming endpoint-label authorities.
+
 One static schedule finalist may reuse a verified SystemMapping across changing
 active sets, but each region's allocation must remain constant while that
 Mapping is in force. If a hint changes one region's allocation, Application

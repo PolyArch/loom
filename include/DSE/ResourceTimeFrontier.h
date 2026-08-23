@@ -4,6 +4,7 @@
 #include "Common/Artifact.h"
 #include "Common/ComponentViewDigest.h"
 #include "Common/ExecutionControl.h"
+#include "DSE/PreMappingFrontier.h"
 #include "Dataflow/IR/DataflowCanonicalArtifact.h"
 #include "Fabric/Artifact/FabricSystemRootView.h"
 #include "PnR/System/SystemMappingMigration.h"
@@ -188,6 +189,10 @@ struct ResourceTimeFrontierPolicy final {
   std::uint64_t beamWidth = 32;
   std::uint64_t maximumFinalists = 8;
   std::uint64_t maximumMappingFinalists = 4;
+  /// Ranking focus for one bounded endpoint experiment. This is a hint only;
+  /// the Spectrum verifier still owns the final class.
+  PreMappingSpectrumEndpoint spectrumEndpoint =
+      PreMappingSpectrumEndpoint::Automatic;
 };
 
 struct ResourceTimeWorkCounter final {

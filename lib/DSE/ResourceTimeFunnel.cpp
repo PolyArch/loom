@@ -829,10 +829,34 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
       eligible.push_back({&evaluation, &hint, *digest});
     }
   }
-  const auto entryLess = [](const EligibleHint *lhs, const EligibleHint *rhs) {
-    if (hintLess(*lhs->hint, *rhs->hint))
+  const auto entryLess = [&](const EligibleHint *lhs,
+                             const EligibleHint *rhs) {
+    const auto endpointLess = [&](const ResourceTimeScheduleHint &left,
+                                  const ResourceTimeScheduleHint &right) {
+      switch (policy.spectrumEndpoint) {
+      case PreMappingSpectrumEndpoint::MaxSpatial:
+        return std::tuple(-left.peakConcurrentRegions,
+                          left.estimatedMakespanPicoseconds,
+                          left.totalAllocatedResourceTime) <
+               std::tuple(-right.peakConcurrentRegions,
+                          right.estimatedMakespanPicoseconds,
+                          right.totalAllocatedResourceTime);
+      case PreMappingSpectrumEndpoint::MaxTemporal:
+        return std::tie(left.peakConcurrentRegions,
+                        left.estimatedMakespanPicoseconds,
+                        left.totalAllocatedResourceTime) <
+               std::tie(right.peakConcurrentRegions,
+                        right.estimatedMakespanPicoseconds,
+                        right.totalAllocatedResourceTime);
+      case PreMappingSpectrumEndpoint::Intermediate:
+      case PreMappingSpectrumEndpoint::Automatic:
+        return hintLess(left, right);
+      }
+      llvm_unreachable("unknown resource-time spectrum endpoint");
+    };
+    if (endpointLess(*lhs->hint, *rhs->hint))
       return true;
-    if (hintLess(*rhs->hint, *lhs->hint))
+    if (endpointLess(*rhs->hint, *lhs->hint))
       return false;
     if (lhs->evaluation->candidateIdentity !=
         rhs->evaluation->candidateIdentity)

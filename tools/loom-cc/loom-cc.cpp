@@ -92,6 +92,7 @@ struct LoomDriverOptions final {
   std::string mappingTechCandidateLimit;
   std::string mappingWallTimeLimitMilliseconds;
   std::string mappingStoppingPolicy;
+  std::string mappingSpectrumEndpoint;
   std::vector<std::string> operatorProtocolSymbols;
 
   bool requestsProductFlow() const {
@@ -99,6 +100,7 @@ struct LoomDriverOptions final {
            !deploymentPath.empty() || !mappingTechCandidateLimit.empty() ||
            !mappingWallTimeLimitMilliseconds.empty() ||
            !mappingStoppingPolicy.empty() ||
+           !mappingSpectrumEndpoint.empty() ||
            !operatorProtocolSymbols.empty();
   }
 };
@@ -188,6 +190,13 @@ extractLoomDriverOptions(llvm::SmallVectorImpl<const char *> &arguments) {
       return mappingStoppingPolicy.takeError();
     if (*mappingStoppingPolicy)
       continue;
+    auto mappingSpectrumEndpoint = consumeLoomOption(
+        argument, "--loom-mapping-spectrum-endpoint", index, arguments, seen,
+        options.mappingSpectrumEndpoint);
+    if (!mappingSpectrumEndpoint)
+      return mappingSpectrumEndpoint.takeError();
+    if (*mappingSpectrumEndpoint)
+      continue;
     std::string protocolSymbol;
     std::set<std::string> protocolOptionSeen;
     auto protocol =
@@ -271,6 +280,9 @@ productHelperOptions(const LoomDriverOptions &options) {
   if (!options.mappingStoppingPolicy.empty())
     result.push_back("--mapping-stopping-policy=" +
                      options.mappingStoppingPolicy);
+  if (!options.mappingSpectrumEndpoint.empty())
+    result.push_back("--mapping-spectrum-endpoint=" +
+                     options.mappingSpectrumEndpoint);
   for (const std::string &symbol : options.operatorProtocolSymbols)
     result.push_back("--operator-protocol-symbol=" + symbol);
   return result;

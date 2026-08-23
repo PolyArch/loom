@@ -20,6 +20,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -114,6 +115,11 @@ llvm::cl::opt<std::string> mappingStoppingPolicy(
     llvm::cl::desc(
         "Mapping stopping policy: first_verified or bounded_quality"),
     llvm::cl::init("first_verified"));
+llvm::cl::opt<std::string> mappingSpectrumEndpoint(
+    "mapping-spectrum-endpoint",
+    llvm::cl::desc("Spectrum ranking focus: automatic, max_temporal, "
+                   "max_spatial, or intermediate"),
+    llvm::cl::init("automatic"));
 
 llvm::Error productError(llvm::StringRef kind, const llvm::Twine &message);
 
@@ -125,6 +131,21 @@ parseMappingStoppingPolicy() {
     return loom::dse::JointDesignStoppingPolicy::BoundedQuality;
   return productError("loom_mapping_stopping_policy_invalid",
                       "expected first_verified or bounded_quality");
+}
+
+llvm::Expected<loom::dse::PreMappingSpectrumEndpoint>
+parseMappingSpectrumEndpoint() {
+  if (mappingSpectrumEndpoint == "automatic")
+    return loom::dse::PreMappingSpectrumEndpoint::Automatic;
+  if (mappingSpectrumEndpoint == "max_temporal")
+    return loom::dse::PreMappingSpectrumEndpoint::MaxTemporal;
+  if (mappingSpectrumEndpoint == "max_spatial")
+    return loom::dse::PreMappingSpectrumEndpoint::MaxSpatial;
+  if (mappingSpectrumEndpoint == "intermediate")
+    return loom::dse::PreMappingSpectrumEndpoint::Intermediate;
+  return productError("loom_mapping_spectrum_endpoint_invalid",
+                      "expected automatic, max_temporal, max_spatial, or "
+                      "intermediate");
 }
 
 llvm::Error productError(llvm::StringRef kind, const llvm::Twine &message) {
@@ -496,7 +517,8 @@ llvm::Expected<loom::application::PreparedApplicationBuild>
 prepareMappedApplication(const llvm::Module &module,
                          PreparedProductTarget &target,
                          loom::ExecutionControlView executionControl,
-                         loom::dse::JointDesignStoppingPolicy stoppingPolicy) {
+                         loom::dse::JointDesignStoppingPolicy stoppingPolicy,
+                         loom::dse::PreMappingSpectrumEndpoint endpoint) {
   constexpr std::uint64_t kSoftwareFrontierLimit = 8;
   constexpr std::uint64_t kHardwareFrontierLimit = 8;
   constexpr std::uint64_t kSpatialMappingFrontierLimit = 32;
@@ -528,6 +550,8 @@ prepareMappedApplication(const llvm::Module &module,
   sourceInvocation.entrySymbol = "main";
   sourceInvocation.observeReturnValue = !entry->getReturnType()->isVoidTy();
 
+  loom::dse::ResourceTimeFrontierPolicy resourceTimePolicy;
+  resourceTimePolicy.spectrumEndpoint = endpoint;
   auto outcome = loom::application::prepareApplicationBuild(
       module,
       {std::move(sourceInvocation),
@@ -539,7 +563,7 @@ prepareMappedApplication(const llvm::Module &module,
        std::move(*jointPolicy),
        std::move(compilationOptions),
        std::move(preMappingOptions),
-       {}},
+       std::move(resourceTimePolicy)},
       target.workspace->artifacts(), target.workspace->blobs());
   if (!outcome)
     return outcome.takeError();
@@ -668,6 +692,37 @@ executeProductMapping(
   if (!execution->execution.summary.selectedMapping)
     return productError("loom_mapping_selection_incomplete",
                         "Mapping returned candidates without a selected root");
+  if (prepared.resourceTimePolicy.spectrumEndpoint !=
+      loom::dse::PreMappingSpectrumEndpoint::Automatic) {
+    const auto requestedClass = [&]() {
+      switch (prepared.resourceTimePolicy.spectrumEndpoint) {
+      case loom::dse::PreMappingSpectrumEndpoint::MaxTemporal:
+        return loom::dse::PreMappingSpectrumClass::MaxTemporal;
+      case loom::dse::PreMappingSpectrumEndpoint::MaxSpatial:
+        return loom::dse::PreMappingSpectrumClass::MaxSpatial;
+      case loom::dse::PreMappingSpectrumEndpoint::Intermediate:
+        return loom::dse::PreMappingSpectrumClass::Intermediate;
+      case loom::dse::PreMappingSpectrumEndpoint::Automatic:
+        llvm_unreachable("automatic spectrum endpoint was not requested");
+      }
+      llvm_unreachable("unknown spectrum endpoint");
+    }();
+    const bool verified = llvm::any_of(
+        execution->candidateOutcomes, [&](const auto &outcome) {
+          if (!outcome.resourceTimeSpectrum)
+            return false;
+          const auto *spectrum = std::get_if<loom::dse::VerifiedResourceTimeSpectrum>(
+              &outcome.resourceTimeSpectrum->verification);
+          return spectrum && llvm::any_of(
+                                 spectrum->scenarios, [&](const auto &scenario) {
+                                   return scenario.spectrumClass == requestedClass;
+                                 });
+        });
+    if (!verified)
+      return productError(
+          "loom_mapping_spectrum_endpoint_unsupported",
+          "requested endpoint has no verified SystemMapping schedule");
+  }
   return std::move(*execution);
 }
 
@@ -679,6 +734,9 @@ llvm::Error publishProductDeployment(const ProductFinalLinkArtifacts &finalLink,
   auto stoppingPolicy = parseMappingStoppingPolicy();
   if (!stoppingPolicy)
     return stoppingPolicy.takeError();
+  auto spectrumEndpoint = parseMappingSpectrumEndpoint();
+  if (!spectrumEndpoint)
+    return spectrumEndpoint.takeError();
   ProductMappingExecutionPolicyReporter reporter(*deadline);
   const loom::ExecutionControlView executionControl =
       *deadline
@@ -686,7 +744,8 @@ llvm::Error publishProductDeployment(const ProductFinalLinkArtifacts &finalLink,
                                        productMappingRemainingTime}
           : loom::ExecutionControlView{};
   auto prepared = prepareMappedApplication(*finalLink.linkedModule, target,
-                                           executionControl, *stoppingPolicy);
+                                           executionControl, *stoppingPolicy,
+                                           *spectrumEndpoint);
   if (!prepared)
     return prepared.takeError();
   auto mapping = executeProductMapping(
