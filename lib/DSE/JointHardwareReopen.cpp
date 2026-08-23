@@ -2636,6 +2636,15 @@ executeSpatialFifoHardwareFeedbackReopen(
       mapping::importSpatialMapping(feedback.spatialMapping, artifacts);
   if (!parentSpatial)
     return parentSpatial.takeError();
+  result.candidateLimit = 1;
+  if (dispatchDeadlineReached(request.executionPolicy)) {
+    result.candidatesPlanned = 1;
+    result.candidatesReserved = 1;
+    result.candidatesCancelled = 1;
+    return result;
+  }
+  result.candidatesPlanned = 1;
+  result.candidatesReserved = 1;
   ArtifactRootReference parentModule{
       fabric::fabricArtifactSchema.identity.str(),
       fabric::fabricArtifactSchema.version,
@@ -2658,6 +2667,10 @@ executeSpatialFifoHardwareFeedbackReopen(
       "spatial_fifo_hardware_repair", artifacts, blobs);
   if (!repaired)
     return repaired.takeError();
+  result.candidatesConsumed = 1;
+  if (result.candidatesConsumed + result.candidatesRejected !=
+      result.candidatesReserved)
+    return invalid("FIFO hardware repair candidate ledger is not closed");
   result.childSystems.push_back(childReference);
   result.reuseDispositions.push_back(repaired->disposition);
   result.executions.push_back(std::move(repaired->execution));

@@ -526,6 +526,14 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
         fifoHardwareRepair.reuseDispositions.size() != 1 ||
         fifoHardwareRepair.childSystems.front() == system)
       fail("exact FIFO feedback did not materialize one typed System child");
+    if (fifoHardwareRepair.candidateLimit != 1 ||
+        fifoHardwareRepair.candidatesPlanned !=
+            fifoHardwareRepair.candidatesReserved ||
+        fifoHardwareRepair.candidatesReserved !=
+            fifoHardwareRepair.candidatesConsumed +
+                fifoHardwareRepair.candidatesRejected +
+                fifoHardwareRepair.candidatesCancelled)
+      fail("FIFO hardware child budget ledger is not closed");
     std::vector<loom::ArtifactRootReference> fifoChildMappings;
     for (const auto &pair : fifoHardwareRepair.executions.front().mappedPairs)
       fifoChildMappings.insert(fifoChildMappings.end(),
