@@ -523,9 +523,14 @@ executeTechGate(const JointDesignExplorationPlan &plan,
     return planExecution.takeError();
   const CompletedDsePlanExecution &available =
       availableExecution(*planExecution);
-  for (std::size_t node = 0; node != config.dse.planNodes.size(); ++node) {
-    if (available.generateInvocationWasDispatched(node))
+  for (auto indexed : llvm::enumerate(available.generateInvocations())) {
+    ++summary.techMappingInvocationCount;
+    if (available.generateInvocationWasDispatched(indexed.index()))
       ++summary.techMappingDispatchCount;
+    else
+      ++summary.techMappingJournalReplayCount;
+  }
+  for (std::size_t node = 0; node != config.dse.planNodes.size(); ++node) {
     const PlanOutputRef output{node, 0};
     if (available.hasOutput(output)) {
       const auto roots = available.resolve(output);
@@ -1866,8 +1871,12 @@ tryHardwareFeedbackReopen(
               .count());
       if (!gate)
         return gate.takeError();
+      saturatingAdd(accounting.techMappingInvocationCount,
+                    gate->execution.summary.techMappingInvocationCount);
       saturatingAdd(accounting.techMappingDispatchCount,
                     gate->execution.summary.techMappingDispatchCount);
+      saturatingAdd(accounting.techMappingJournalReplayCount,
+                    gate->execution.summary.techMappingJournalReplayCount);
       if (mappingSeed)
         saturatingAdd(accounting.incrementalReopenWallTimeNanoseconds,
                       gateNanoseconds);
@@ -2038,12 +2047,24 @@ tryHardwareFeedbackReopen(
     if (!execution)
       return execution.takeError();
     ++accounting.hardwareRepairProbesConsumed;
+    saturatingAdd(accounting.techMappingInvocationCount,
+                  execution->summary.techMappingInvocationCount);
+    saturatingAdd(accounting.spatialPnrInvocationCount,
+                  execution->summary.spatialPnrInvocationCount);
+    saturatingAdd(accounting.systemPnrInvocationCount,
+                  execution->summary.systemPnrInvocationCount);
     saturatingAdd(accounting.techMappingDispatchCount,
                   execution->summary.techMappingDispatchCount);
     saturatingAdd(accounting.spatialPnrDispatchCount,
                   execution->summary.spatialPnrDispatchCount);
     saturatingAdd(accounting.systemPnrDispatchCount,
                   execution->summary.systemPnrDispatchCount);
+    saturatingAdd(accounting.techMappingJournalReplayCount,
+                  execution->summary.techMappingJournalReplayCount);
+    saturatingAdd(accounting.spatialPnrJournalReplayCount,
+                  execution->summary.spatialPnrJournalReplayCount);
+    saturatingAdd(accounting.systemPnrJournalReplayCount,
+                  execution->summary.systemPnrJournalReplayCount);
     if (llvm::Error error = recordJointAttempt(attemptRecords, planOrdinal,
                                                system->reference, *execution))
       return std::move(error);
@@ -2935,9 +2956,18 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
         accounting.hardwareRepairProbesRejected;
     summary.hardwareRepairProbesCancelled =
         accounting.hardwareRepairProbesCancelled;
+    summary.techMappingInvocationCount = accounting.techMappingInvocationCount;
+    summary.spatialPnrInvocationCount = accounting.spatialPnrInvocationCount;
+    summary.systemPnrInvocationCount = accounting.systemPnrInvocationCount;
     summary.techMappingDispatchCount = accounting.techMappingDispatchCount;
     summary.spatialPnrDispatchCount = accounting.spatialPnrDispatchCount;
     summary.systemPnrDispatchCount = accounting.systemPnrDispatchCount;
+    summary.techMappingJournalReplayCount =
+        accounting.techMappingJournalReplayCount;
+    summary.spatialPnrJournalReplayCount =
+        accounting.spatialPnrJournalReplayCount;
+    summary.systemPnrJournalReplayCount =
+        accounting.systemPnrJournalReplayCount;
     summary.coldReopenWallTimeNanoseconds =
         accounting.coldReopenWallTimeNanoseconds;
     summary.incrementalReopenWallTimeNanoseconds =
@@ -3008,12 +3038,24 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
               accounting.hardwareRepairProbesRejected;
           fields["hardware_repair_probes_cancelled"] =
               accounting.hardwareRepairProbesCancelled;
+          fields["tech_mapping_invocation_count"] =
+              accounting.techMappingInvocationCount;
+          fields["spatial_pnr_invocation_count"] =
+              accounting.spatialPnrInvocationCount;
+          fields["system_pnr_invocation_count"] =
+              accounting.systemPnrInvocationCount;
           fields["tech_mapping_dispatch_count"] =
               accounting.techMappingDispatchCount;
           fields["spatial_pnr_dispatch_count"] =
               accounting.spatialPnrDispatchCount;
           fields["system_pnr_dispatch_count"] =
               accounting.systemPnrDispatchCount;
+          fields["tech_mapping_journal_replay_count"] =
+              accounting.techMappingJournalReplayCount;
+          fields["spatial_pnr_journal_replay_count"] =
+              accounting.spatialPnrJournalReplayCount;
+          fields["system_pnr_journal_replay_count"] =
+              accounting.systemPnrJournalReplayCount;
           fields["cold_reopen_wall_time_ns"] =
               accounting.coldReopenWallTimeNanoseconds;
           fields["incremental_reopen_wall_time_ns"] =
@@ -3114,12 +3156,24 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
     // The initial parent execution is outside tryHardwareFeedbackReopen, so
     // carry its invocation-local accounting into the stopping summary here.
     // Reopen attempts are accounted at their dispatch boundary below.
+    saturatingAdd(accounting.techMappingInvocationCount,
+                  initial->summary.techMappingInvocationCount);
+    saturatingAdd(accounting.spatialPnrInvocationCount,
+                  initial->summary.spatialPnrInvocationCount);
+    saturatingAdd(accounting.systemPnrInvocationCount,
+                  initial->summary.systemPnrInvocationCount);
     saturatingAdd(accounting.techMappingDispatchCount,
                   initial->summary.techMappingDispatchCount);
     saturatingAdd(accounting.spatialPnrDispatchCount,
                   initial->summary.spatialPnrDispatchCount);
     saturatingAdd(accounting.systemPnrDispatchCount,
                   initial->summary.systemPnrDispatchCount);
+    saturatingAdd(accounting.techMappingJournalReplayCount,
+                  initial->summary.techMappingJournalReplayCount);
+    saturatingAdd(accounting.spatialPnrJournalReplayCount,
+                  initial->summary.spatialPnrJournalReplayCount);
+    saturatingAdd(accounting.systemPnrJournalReplayCount,
+                  initial->summary.systemPnrJournalReplayCount);
     saturatingAdd(accounting.coldReopenWallTimeNanoseconds,
                   initial->summary.coldReopenWallTimeNanoseconds);
     saturatingAdd(accounting.incrementalReopenWallTimeNanoseconds,
@@ -3396,12 +3450,24 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                 execution))
           return std::move(error);
         verifiedMappingCount += mappingCount(execution);
+        saturatingAdd(accounting.techMappingInvocationCount,
+                      execution.summary.techMappingInvocationCount);
+        saturatingAdd(accounting.spatialPnrInvocationCount,
+                      execution.summary.spatialPnrInvocationCount);
+        saturatingAdd(accounting.systemPnrInvocationCount,
+                      execution.summary.systemPnrInvocationCount);
         saturatingAdd(accounting.techMappingDispatchCount,
                       execution.summary.techMappingDispatchCount);
         saturatingAdd(accounting.spatialPnrDispatchCount,
                       execution.summary.spatialPnrDispatchCount);
         saturatingAdd(accounting.systemPnrDispatchCount,
                       execution.summary.systemPnrDispatchCount);
+        saturatingAdd(accounting.techMappingJournalReplayCount,
+                      execution.summary.techMappingJournalReplayCount);
+        saturatingAdd(accounting.spatialPnrJournalReplayCount,
+                      execution.summary.spatialPnrJournalReplayCount);
+        saturatingAdd(accounting.systemPnrJournalReplayCount,
+                      execution.summary.systemPnrJournalReplayCount);
         verifiedAlternatives.push_back(
             {parentPlanOrdinal, std::move(execution)});
       }

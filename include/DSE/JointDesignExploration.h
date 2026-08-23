@@ -155,11 +155,18 @@ struct JointDesignExecutionSummary final {
   std::uint64_t hardwareRepairProbesConsumed = 0;
   std::uint64_t hardwareRepairProbesRejected = 0;
   std::uint64_t hardwareRepairProbesCancelled = 0;
-  /// Count of System-PNR provider boundaries actually dispatched during this
-  /// execution. Terminal journal/cache replays are deliberately excluded.
+  /// Provider invocation and dispatch accounting. A journal replay is an
+  /// available invocation result without a provider dispatch; it remains
+  /// distinct from exact resource-time memoization.
+  std::uint64_t techMappingInvocationCount = 0;
+  std::uint64_t spatialPnrInvocationCount = 0;
+  std::uint64_t systemPnrInvocationCount = 0;
   std::uint64_t techMappingDispatchCount = 0;
   std::uint64_t spatialPnrDispatchCount = 0;
   std::uint64_t systemPnrDispatchCount = 0;
+  std::uint64_t techMappingJournalReplayCount = 0;
+  std::uint64_t spatialPnrJournalReplayCount = 0;
+  std::uint64_t systemPnrJournalReplayCount = 0;
   std::uint64_t coldReopenWallTimeNanoseconds = 0;
   std::uint64_t incrementalReopenWallTimeNanoseconds = 0;
   std::optional<std::uint64_t> timeToFirstFeasibleWallTimeNanoseconds;

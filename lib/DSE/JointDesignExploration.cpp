@@ -510,16 +510,29 @@ llvm::Expected<JointDesignExecution> executeJointDesignExploration(
   const CandidateGeneratorDescriptorRef techGenerator =
       applicationGraphTechMappingCandidateGeneratorDescriptor().reference();
   for (auto indexed : llvm::enumerate(completed->generateInvocations())) {
-    if (!completed->generateInvocationWasDispatched(indexed.index()))
-      continue;
     const CandidateGeneratorDescriptorRef descriptor =
         indexed.value().generatorBinding.descriptorRef();
-    if (descriptor == techGenerator)
-      ++summary.techMappingDispatchCount;
-    else if (descriptor == spatialGenerator)
-      ++summary.spatialPnrDispatchCount;
-    else if (descriptor == systemGenerator)
-      ++summary.systemPnrDispatchCount;
+    const bool dispatched =
+        completed->generateInvocationWasDispatched(indexed.index());
+    if (descriptor == techGenerator) {
+      ++summary.techMappingInvocationCount;
+      if (dispatched)
+        ++summary.techMappingDispatchCount;
+      else
+        ++summary.techMappingJournalReplayCount;
+    } else if (descriptor == spatialGenerator) {
+      ++summary.spatialPnrInvocationCount;
+      if (dispatched)
+        ++summary.spatialPnrDispatchCount;
+      else
+        ++summary.spatialPnrJournalReplayCount;
+    } else if (descriptor == systemGenerator) {
+      ++summary.systemPnrInvocationCount;
+      if (dispatched)
+        ++summary.systemPnrDispatchCount;
+      else
+        ++summary.systemPnrJournalReplayCount;
+    }
   }
   summary.coldReopenWallTimeNanoseconds =
       static_cast<std::uint64_t>(std::max<std::int64_t>(0, executionElapsed));

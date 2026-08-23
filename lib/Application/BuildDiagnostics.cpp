@@ -881,6 +881,18 @@ void emitApplicationMappingDiagnostics(
             summary.techMappingDispatchCount;
         payload["spatial_pnr_dispatch_count"] = summary.spatialPnrDispatchCount;
         payload["system_pnr_dispatch_count"] = summary.systemPnrDispatchCount;
+        payload["tech_mapping_invocation_count"] =
+            summary.techMappingInvocationCount;
+        payload["spatial_pnr_invocation_count"] =
+            summary.spatialPnrInvocationCount;
+        payload["system_pnr_invocation_count"] =
+            summary.systemPnrInvocationCount;
+        payload["tech_mapping_journal_replay_count"] =
+            summary.techMappingJournalReplayCount;
+        payload["spatial_pnr_journal_replay_count"] =
+            summary.spatialPnrJournalReplayCount;
+        payload["system_pnr_journal_replay_count"] =
+            summary.systemPnrJournalReplayCount;
         if (execution.provenance.resourceTimeFunnelAccounting) {
           const auto &resourceTime =
               *execution.provenance.resourceTimeFunnelAccounting;
@@ -930,6 +942,8 @@ void emitApplicationMappingDiagnostics(
               resourceTime.dataflowMaterializedCandidates;
           payload["resource_time_mapping_plan_candidates"] =
               resourceTime.mappingPlanCandidates;
+          payload["resource_time_mapping_plan_constructions_avoided_by_exact_memo"] =
+              resourceTime.mappingPlanConstructionsAvoidedByExactMemo;
           payload["resource_time_unsupported_before_mapping_schedule_hints"] =
               resourceTime.unsupportedBeforeMappingScheduleHints;
           payload["resource_time_application_promotion_accounting_complete"] =
