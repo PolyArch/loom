@@ -319,6 +319,14 @@ llvm::Error validateResourceTimeMappingFunnelAccounting(
           accounting.generatedCandidates)
     return invalid("resource-time application promotion counts exceed their "
                    "bounded domains");
+  if (accounting.analyticShadowFeasibleIntersection >
+          accounting.analyticShadowExactFeasibleCandidates ||
+      accounting.analyticShadowExactFeasibleCandidates >
+          accounting.analyticShadowComparedCandidates ||
+      accounting.analyticShadowAdmissibleCandidates >
+          accounting.analyticShadowComparedCandidates ||
+      accounting.analyticShadowLowerBoundViolations != 0)
+    return invalid("resource-time analytic shadow evidence is inconsistent");
   if (accounting.applicationPromotionAccountingComplete &&
       accounting.mappingPlanCandidates +
               accounting.unsupportedBeforeMappingScheduleHints !=
@@ -723,6 +731,60 @@ llvm::Expected<ResourceTimeMappingFunnel> selectResourceTimeMappingFinalists(
   for (auto &evaluation : evaluations)
     if (evaluation)
       result.evaluations.push_back(std::move(*evaluation));
+
+  const ResourceTimeCandidateFunnelEvaluation *exactBest = nullptr;
+  const ResourceTimeCandidateFunnelEvaluation *analyticBest = nullptr;
+  for (const ResourceTimeCandidateFunnelEvaluation &evaluation :
+       result.evaluations) {
+    if (!evaluation.detailedFrontierEvaluated)
+      continue;
+    ++result.accounting.analyticShadowComparedCandidates;
+    const bool outOfDomain =
+        evaluation.screeningSupport == ResourceTimeEstimateSupport::OutOfDomain;
+    if (outOfDomain)
+      ++result.accounting.analyticShadowOutOfDomainCandidates;
+    const bool admissible =
+        evaluation.disposition !=
+            ResourceTimeCandidateFunnelDisposition::SoundGateRejected &&
+        evaluation.screeningSupport != ResourceTimeEstimateSupport::Unsupported &&
+        !outOfDomain;
+    if (admissible)
+      ++result.accounting.analyticShadowAdmissibleCandidates;
+    if (evaluation.disposition !=
+            ResourceTimeCandidateFunnelDisposition::Estimated ||
+        !evaluation.bestHint)
+      continue;
+    ++result.accounting.analyticShadowExactFeasibleCandidates;
+    if (admissible)
+      ++result.accounting.analyticShadowFeasibleIntersection;
+    if (admissible &&
+        (!analyticBest ||
+         std::tuple(evaluation.screeningLowerBoundPicoseconds,
+                    evaluation.candidateIdentity.bytes()) <
+             std::tuple(analyticBest->screeningLowerBoundPicoseconds,
+                         analyticBest->candidateIdentity.bytes())))
+      analyticBest = &evaluation;
+    if (!exactBest ||
+        std::tuple(evaluation.bestHint->estimatedMakespanPicoseconds,
+                   evaluation.candidateIdentity.bytes()) <
+            std::tuple(exactBest->bestHint->estimatedMakespanPicoseconds,
+                       exactBest->candidateIdentity.bytes()))
+      exactBest = &evaluation;
+    if (evaluation.screeningLowerBoundPicoseconds >
+        evaluation.bestHint->estimatedMakespanPicoseconds) {
+      ++result.accounting.analyticShadowLowerBoundViolations;
+      continue;
+    }
+    const std::uint64_t gap =
+        evaluation.bestHint->estimatedMakespanPicoseconds -
+        evaluation.screeningLowerBoundPicoseconds;
+    result.accounting.analyticShadowMaximumLowerBoundGapPicoseconds =
+        std::max(result.accounting.analyticShadowMaximumLowerBoundGapPicoseconds,
+                 gap);
+  }
+  if (exactBest && analyticBest &&
+      exactBest->candidateIdentity == analyticBest->candidateIdentity)
+    result.accounting.analyticShadowBestRankMatches = 1;
 
   if (result.incompleteReason ==
       ResourceTimeFrontierIncompleteReason::CancelledOrTimeout) {
