@@ -19,6 +19,10 @@
 #include <variant>
 #include <vector>
 
+#ifndef LOOM_TEST_REPOSITORY_ROOT
+#define LOOM_TEST_REPOSITORY_ROOT ""
+#endif
+
 namespace {
 
 using namespace loom;
@@ -384,6 +388,9 @@ int main(int argc, char **argv) {
   if (argc != 4)
     fail("expected <temporary-directory> <manifest> <repository-root>");
   exerciseManifestAndAdmission(argv[1]);
-  exerciseRepositoryManifest(argv[2], argv[3]);
+  const llvm::StringRef configuredRepositoryRoot = LOOM_TEST_REPOSITORY_ROOT;
+  exerciseRepositoryManifest(
+      argv[2], configuredRepositoryRoot.empty() ? argv[3]
+                                                 : configuredRepositoryRoot);
   return 0;
 }
