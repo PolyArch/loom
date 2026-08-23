@@ -478,6 +478,17 @@ struct ResourceTimeMappingFunnelAccounting final {
   /// or typed-unsupported before PnR. The analytic funnel alone has no plan
   /// disposition to validate.
   bool applicationPromotionAccountingComplete = false;
+  /// Comparison of the cheap screening facts with the exact frontier results
+  /// already computed for the bounded detailed sample. These are evidence
+  /// counters, not legality or candidate identity.
+  std::uint64_t analyticShadowComparedCandidates = 0;
+  std::uint64_t analyticShadowExactFeasibleCandidates = 0;
+  std::uint64_t analyticShadowAdmissibleCandidates = 0;
+  std::uint64_t analyticShadowFeasibleIntersection = 0;
+  std::uint64_t analyticShadowBestRankMatches = 0;
+  std::uint64_t analyticShadowOutOfDomainCandidates = 0;
+  std::uint64_t analyticShadowMaximumLowerBoundGapPicoseconds = 0;
+  std::uint64_t analyticShadowLowerBoundViolations = 0;
   std::uint64_t mappingCallsAvoidedBySoundGate = 0;
   std::uint64_t mappingCallsDeferredByModel = 0;
   std::uint64_t mappingCallsWithheldByIncomplete = 0;

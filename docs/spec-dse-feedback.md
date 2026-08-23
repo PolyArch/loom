@@ -3498,6 +3498,17 @@ execution order, and cache warmth cannot change semantic candidate identity,
 formal work accounting, or the final selection for an identical evidence set.
 Timeout remains typed incomplete even when no finalist reached Mapping.
 
+For the detailed bounded sample already evaluated by one invocation, the same
+owner records an analytic-shadow comparison without another frontier or PnR
+call. It counts compared candidates, exact-complete feasible candidates,
+screening-admissible candidates, their feasible intersection, whether the
+analytic lower-bound order selected the exact-best candidate, out-of-domain
+rows, and the maximum exact-makespan minus screening-lower-bound gap. A lower
+bound that exceeds its exact completed makespan is a provider-contract error,
+not a calibration miss. These counters are evidence about the sampled detailed
+set; they do not generalize recall to deferred candidates and never establish
+Mapping legality.
+
 Application operation diagnostics may report `peak_resident_bytes` as the
 whole-process RSS high-water observed at that boundary. It is not a per-stage
 or per-candidate allocation attribution; such attribution is unsupported

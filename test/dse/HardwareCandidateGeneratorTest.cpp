@@ -2,6 +2,7 @@
 #include "Common/BlobStore.h"
 #include "Config/ResolvedConfig.h"
 #include "DSE/FabricTemplateCandidateGenerator.h"
+#include "DSE/HardwareDecision.h"
 #include "DSE/SpatialMicroarchitectureCandidateGenerator.h"
 #include "DSE/SpatialTopologyCandidateGenerator.h"
 #include "DSE/SystemCompositionCandidateGenerator.h"
@@ -689,6 +690,137 @@ void redistributeFuCapability(Fixture &fixture,
           "cross-PE FU inventory decision did not redistribute capability");
 }
 
+void hardwareImpactMatrix(
+    const loom::fabric::FinalizedFabricRoot &system,
+    const loom::fabric::FinalizedFabricRoot &module) {
+  const auto requireModuleImpact =
+      [&](loom::dse::SpatialMicroarchitectureDecision decision,
+          loom::dse::HardwareMutationFamily family,
+          loom::dse::HardwareMutationLocality locality,
+          loom::dse::HardwareMappingImpactKind techKind,
+          loom::dse::HardwareMappingImpactKind spatialKind) {
+        const loom::dse::SpatialMicroarchitectureCandidateDecision candidate{
+            module.reference(), std::move(decision), {}};
+        const auto impact = loom::dse::projectHardwareImpact(candidate);
+        require(impact.family == family && impact.locality == locality &&
+                    impact.tech.kind == techKind &&
+                    impact.spatial.kind == spatialKind &&
+                    !impact.spatial.placementRoots.empty(),
+                "hardware mutation matrix lost a typed Module impact");
+      };
+
+  if (!module.view().peOccurrences().empty()) {
+    const auto pe = module.view().peOccurrences().front();
+    requireModuleImpact(
+        loom::dse::ResizeInstructionStore{pe, 2},
+        loom::dse::HardwareMutationFamily::InstructionCapacity,
+        loom::dse::HardwareMutationLocality::LocalCone,
+        loom::dse::HardwareMappingImpactKind::Rebase,
+        loom::dse::HardwareMappingImpactKind::Rebase);
+    requireModuleImpact(
+        loom::dse::ResizeTemporalOperandBuffer{
+            pe, module.view().peOperandBufferSize(pe) + 1},
+        loom::dse::HardwareMutationFamily::TemporalOperandBuffer,
+        loom::dse::HardwareMutationLocality::LocalCone,
+        loom::dse::HardwareMappingImpactKind::Rebase,
+        loom::dse::HardwareMappingImpactKind::Rebase);
+    requireModuleImpact(
+        loom::dse::ChangeTemporalOperandBufferMode{
+            pe, ::fabric::OperandBufferMode::PerInstruction},
+        loom::dse::HardwareMutationFamily::TemporalOperandBuffer,
+        loom::dse::HardwareMutationLocality::LocalCone,
+        loom::dse::HardwareMappingImpactKind::Rebase,
+        loom::dse::HardwareMappingImpactKind::Reopen);
+  }
+  if (!module.view().memoryOccurrences().empty()) {
+    const auto memory = module.view().memoryOccurrences().front();
+    requireModuleImpact(
+        loom::dse::ResizeMemory{memory, 4096},
+        loom::dse::HardwareMutationFamily::SpatialMemory,
+        loom::dse::HardwareMutationLocality::LocalCone,
+        loom::dse::HardwareMappingImpactKind::Rebase,
+        loom::dse::HardwareMappingImpactKind::Rebase);
+    requireModuleImpact(
+        loom::dse::ChangeMemoryOperationTable{memory, memory},
+        loom::dse::HardwareMutationFamily::SpatialMemory,
+        loom::dse::HardwareMutationLocality::GlobalReopen,
+        loom::dse::HardwareMappingImpactKind::Reopen,
+        loom::dse::HardwareMappingImpactKind::Reopen);
+  }
+  if (!module.view().fifoOccurrences().empty()) {
+    const auto fifo = module.view().fifoOccurrences().front();
+    requireModuleImpact(
+        loom::dse::ResizeFifo{fifo, 2},
+        loom::dse::HardwareMutationFamily::SpatialFifo,
+        loom::dse::HardwareMutationLocality::LocalCone,
+        loom::dse::HardwareMappingImpactKind::Rebase,
+        loom::dse::HardwareMappingImpactKind::Rebase);
+    requireModuleImpact(
+        loom::dse::ChangeFifoBypassCapability{fifo, true},
+        loom::dse::HardwareMutationFamily::SpatialFifo,
+        loom::dse::HardwareMutationLocality::LocalCone,
+        loom::dse::HardwareMappingImpactKind::Rebase,
+        loom::dse::HardwareMappingImpactKind::Reopen);
+  }
+  if (!module.view().fuOccurrences().empty())
+    requireModuleImpact(
+        loom::dse::ChangeFuCapability{module.view().fuOccurrences().front(),
+                                      module.view().fuOccurrences().front()},
+        loom::dse::HardwareMutationFamily::FuCapability,
+        loom::dse::HardwareMutationLocality::GlobalReopen,
+        loom::dse::HardwareMappingImpactKind::Reopen,
+        loom::dse::HardwareMappingImpactKind::Reopen);
+  if (!module.view().switchOccurrences().empty())
+    requireModuleImpact(
+        loom::dse::ChangeSwitchModeOrScheduleCapacity{
+            module.view().switchOccurrences().front(),
+            module.view().switchOccurrences().front()},
+        loom::dse::HardwareMutationFamily::SpatialSwitch,
+        loom::dse::HardwareMutationLocality::GlobalReopen,
+        loom::dse::HardwareMappingImpactKind::Reopen,
+        loom::dse::HardwareMappingImpactKind::Reopen);
+
+  auto systemView = take(loom::fabric::requireSystemRoot(system.view()));
+  require(!system.view().accCoreOccurrences().empty() &&
+              !systemView.transportResources().empty(),
+          "hardware mutation matrix lacks System resources");
+  const auto core = system.view().accCoreOccurrences().front();
+  const auto transport = systemView.transportResources().front();
+  auto addImpact = loom::dse::projectHardwareImpact(
+      loom::dse::SystemCompositionCandidateDecision{
+          system.reference(),
+          loom::dse::AddAccCore{core, module.reference()},
+          {}, {}});
+  require(addImpact.family == loom::dse::HardwareMutationFamily::SystemAccCore &&
+              addImpact.system.kind ==
+                  loom::dse::HardwareMappingImpactKind::Rebase,
+          "AddAccCore lost its System rebase impact");
+  auto contextImpact = loom::dse::projectHardwareImpact(
+      loom::dse::SystemCompositionCandidateDecision{
+          system.reference(),
+          loom::dse::SelectInstructionCoreRealization{
+              loom::fabric::InstructionCoreContextRef{core},
+              loom::fabric::InstructionCoreContextRef{core}},
+          {}, {}});
+  require(contextImpact.family ==
+                  loom::dse::HardwareMutationFamily::SystemInstructionContext &&
+              contextImpact.locality ==
+                  loom::dse::HardwareMutationLocality::LocalCone &&
+              contextImpact.system.kind ==
+                  loom::dse::HardwareMappingImpactKind::Reopen,
+          "InstructionCore context lost its System reopen impact");
+  auto transportImpact = loom::dse::projectHardwareImpact(
+      loom::dse::SystemCompositionCandidateDecision{
+          system.reference(), loom::dse::ChangeTransportResource{transport,
+                                                                  transport},
+          {}, {}});
+  require(transportImpact.family ==
+                  loom::dse::HardwareMutationFamily::SystemTransport &&
+              transportImpact.system.kind ==
+                  loom::dse::HardwareMappingImpactKind::Reopen,
+          "System transport lost its typed reopen impact");
+}
+
 void systemCompositionRewrite(Fixture &fixture,
                               const loom::fabric::FinalizedFabricRoot &system,
                               const loom::fabric::FinalizedFabricRoot &module) {
@@ -935,6 +1067,7 @@ int main() {
   auto replacementModule = microarchitectureRewrite(fixture, module);
   temporalOperandBufferRewrite(fixture, module);
   redistributeFuCapability(fixture, module);
+  hardwareImpactMatrix(system, module);
   systemCompositionRewrite(fixture, system, module);
   spatialAttachmentRewrite(fixture, system, replacementModule);
   transportResourceRewrite(fixture, system, module);

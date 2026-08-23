@@ -449,9 +449,9 @@ selectFinalists(std::vector<ResourceTimeScheduleHint> hints,
 void retainBoundedTerminalHint(std::vector<ResourceTimeScheduleHint> &retained,
                                ResourceTimeScheduleHint hint,
                                std::uint64_t maximumFinalists) {
+  if (maximumFinalists == 0)
+    return;
   retained.push_back(std::move(hint));
-  const std::size_t objectiveLimit = static_cast<std::size_t>(
-      std::min<std::uint64_t>(maximumFinalists, retained.size()));
   std::vector<const ResourceTimeScheduleHint *> objective;
   objective.reserve(retained.size());
   for (const ResourceTimeScheduleHint &candidate : retained)
@@ -461,24 +461,32 @@ void retainBoundedTerminalHint(std::vector<ResourceTimeScheduleHint> &retained,
   });
 
   std::vector<ResourceTimeScheduleHint> bounded;
-  bounded.reserve(objectiveLimit + 2);
+  bounded.reserve(static_cast<std::size_t>(maximumFinalists));
   const auto append = [&](const ResourceTimeScheduleHint *candidate) {
-    if (!candidate || llvm::any_of(bounded, [&](const auto &existing) {
+    if (!candidate || bounded.size() >= maximumFinalists ||
+        llvm::any_of(bounded, [&](const auto &existing) {
           return existing.actions == candidate->actions;
         }))
       return;
     bounded.push_back(*candidate);
   };
-  for (std::size_t index = 0; index != objectiveLimit; ++index)
+  append(objective.front());
+  const auto temporal = *std::min_element(
+      objective.begin(), objective.end(), [](const auto *lhs, const auto *rhs) {
+        return temporalHintLess(*lhs, *rhs);
+      });
+  const auto spatial = *std::min_element(
+      objective.begin(), objective.end(), [](const auto *lhs, const auto *rhs) {
+        return spatialHintLess(*lhs, *rhs);
+      });
+  if (maximumFinalists > 1)
+    append(temporal);
+  if (maximumFinalists > 2)
+    append(spatial);
+  for (std::size_t index = 1;
+       index != objective.size() && bounded.size() < maximumFinalists;
+       ++index)
     append(objective[index]);
-  append(*std::min_element(objective.begin(), objective.end(),
-                           [](const auto *lhs, const auto *rhs) {
-                             return temporalHintLess(*lhs, *rhs);
-                           }));
-  append(*std::min_element(objective.begin(), objective.end(),
-                           [](const auto *lhs, const auto *rhs) {
-                             return spatialHintLess(*lhs, *rhs);
-                           }));
   retained = std::move(bounded);
 }
 

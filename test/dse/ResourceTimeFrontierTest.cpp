@@ -199,6 +199,18 @@ void fiveRegionCostAndReadinessAreEventDriven() {
 
 void budgetsAndExactRejectionsRemainTyped() {
   const std::array resourceClasses = {reference(20)};
+  auto singleFinalistPolicy = policy();
+  singleFinalistPolicy.maximumFinalists = 1;
+  const auto singleFinalistOutcome = take(loom::dse::exploreResourceTimeFrontier(
+      invocation(), resourceClasses, fiveRegionFeatures(2),
+      singleFinalistPolicy));
+  require(!std::holds_alternative<loom::dse::ProvenInfeasibleResourceTimeFrontier>(
+              singleFinalistOutcome) &&
+              !loom::dse::validateResourceTimeFrontierAccounting(
+                  std::visit(
+                      [](const auto &value) { return value.accounting; },
+                      singleFinalistOutcome)) ,
+          "single-finalist terminal inventory exceeded its hard bound");
   auto bounded = policy();
   bounded.maximumStatesGenerated = 1;
   const auto boundedOutcome = take(loom::dse::exploreResourceTimeFrontier(
@@ -362,6 +374,10 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
               selected.finalists.size() == 3 && selected.truncated,
           "resource-time funnel did not bound real Mapping finalists");
   require(selected.accounting.frontierAccounting.states.consumed != 0 &&
+              selected.accounting.analyticShadowComparedCandidates != 0 &&
+              selected.accounting.analyticShadowLowerBoundViolations == 0 &&
+              selected.accounting.analyticShadowFeasibleIntersection <=
+                  selected.accounting.analyticShadowExactFeasibleCandidates &&
               selected.accounting.frontierAccounting.stateMemoMisses -
                           selected.accounting.frontierAccounting
                               .stateMemoMissCapacityRejections +

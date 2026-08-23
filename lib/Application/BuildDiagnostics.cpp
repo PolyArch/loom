@@ -405,6 +405,20 @@ void emitApplicationPlanningDiagnostics(
             {"incomplete_candidates", resourceTime.incompleteCandidates},
             {"mapping_eligible_schedule_hints",
              resourceTime.mappingEligibleScheduleHints},
+            {"analytic_shadow_compared_candidates",
+             resourceTime.analyticShadowComparedCandidates},
+            {"analytic_shadow_exact_feasible_candidates",
+             resourceTime.analyticShadowExactFeasibleCandidates},
+            {"analytic_shadow_admissible_candidates",
+             resourceTime.analyticShadowAdmissibleCandidates},
+            {"analytic_shadow_feasible_intersection",
+             resourceTime.analyticShadowFeasibleIntersection},
+            {"analytic_shadow_best_rank_matches",
+             resourceTime.analyticShadowBestRankMatches},
+            {"analytic_shadow_out_of_domain_candidates",
+             resourceTime.analyticShadowOutOfDomainCandidates},
+            {"analytic_shadow_maximum_lower_bound_gap_picoseconds",
+             resourceTime.analyticShadowMaximumLowerBoundGapPicoseconds},
             {"mapping_finalists", resourceTime.mappingFinalists},
             {"functional_replay_candidates",
              resourceTime.functionalReplayCandidates},
@@ -871,6 +885,20 @@ void emitApplicationMappingDiagnostics(
               resourceTime.mappingFinalists;
           payload["resource_time_mapping_eligible_schedule_hints"] =
               resourceTime.mappingEligibleScheduleHints;
+          payload["resource_time_analytic_shadow_compared_candidates"] =
+              resourceTime.analyticShadowComparedCandidates;
+          payload["resource_time_analytic_shadow_exact_feasible_candidates"] =
+              resourceTime.analyticShadowExactFeasibleCandidates;
+          payload["resource_time_analytic_shadow_admissible_candidates"] =
+              resourceTime.analyticShadowAdmissibleCandidates;
+          payload["resource_time_analytic_shadow_feasible_intersection"] =
+              resourceTime.analyticShadowFeasibleIntersection;
+          payload["resource_time_analytic_shadow_best_rank_matches"] =
+              resourceTime.analyticShadowBestRankMatches;
+          payload["resource_time_analytic_shadow_out_of_domain_candidates"] =
+              resourceTime.analyticShadowOutOfDomainCandidates;
+          payload["resource_time_analytic_shadow_maximum_lower_bound_gap_picoseconds"] =
+              resourceTime.analyticShadowMaximumLowerBoundGapPicoseconds;
           payload["resource_time_functional_replay_candidates"] =
               resourceTime.functionalReplayCandidates;
           payload["resource_time_dataflow_projection_requests"] =
