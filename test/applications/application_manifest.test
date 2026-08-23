@@ -4,38 +4,38 @@
 # RUN: %t.attention | diff -u %S/loom-multisensor-attention/expected-smoke.txt -
 # RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
 # RUN:   -Wno-unknown-pragmas -Wno-return-type-c-linkage \
-# RUN:   -I%S/gapbs-pagerank-include -I%S/../../externals/gapbs/src \
+# RUN:   -I%S/gapbs-pagerank-include -I%loom_external/gapbs/src \
 # RUN:   -include %S/gapbs-pagerank-smoke.h \
-# RUN:   %S/../../externals/gapbs/src/pr.cc -o %t.pagerank
+# RUN:   %loom_external/gapbs/src/pr.cc -o %t.pagerank
 # RUN: %t.pagerank | diff -u %S/gapbs-pagerank-expected-smoke.txt -
 # RUN: clang -std=c11 -O1 -ffp-contract=off -fno-math-errno \
 # RUN:   -Wno-unknown-pragmas -I%S/llama2c-kernels-include \
 # RUN:   -include %S/llama2c-kernels-smoke.h \
-# RUN:   %S/../../externals/llama2.c/run.c -lm -o %t.llama2c
+# RUN:   %loom_external/llama2.c/run.c -lm -o %t.llama2c
 # RUN: %t.llama2c | diff -u %S/llama2c-kernels-expected-smoke.txt -
 # RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
 # RUN:   -Wno-unknown-pragmas -I%S/mlperf-tiny-anomaly-include \
-# RUN:   -I%S/../../externals/mlperf-tiny/benchmark \
-# RUN:   -I%S/../../externals/mlperf-tiny/benchmark/reference_submissions/anomaly_detection \
+# RUN:   -I%loom_external/mlperf-tiny/benchmark \
+# RUN:   -I%loom_external/mlperf-tiny/benchmark/reference_submissions/anomaly_detection \
 # RUN:   -include %S/mlperf-tiny-anomaly-smoke.h \
-# RUN:   %S/../../externals/mlperf-tiny/benchmark/reference_submissions/anomaly_detection/submitter_implemented.cpp \
+# RUN:   %loom_external/mlperf-tiny/benchmark/reference_submissions/anomaly_detection/submitter_implemented.cpp \
 # RUN:   -o %t.tinyml
 # RUN: %t.tinyml | diff -u %S/mlperf-tiny-anomaly-expected-smoke.txt -
 # RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
 # RUN:   -Wno-unknown-pragmas -I%S/mlperf-tiny-classification-include \
 # RUN:   -I%S/mlperf-tiny-anomaly-include \
-# RUN:   -I%S/../../externals/mlperf-tiny/benchmark \
-# RUN:   -I%S/../../externals/mlperf-tiny/benchmark/reference_submissions/keyword_spotting \
+# RUN:   -I%loom_external/mlperf-tiny/benchmark \
+# RUN:   -I%loom_external/mlperf-tiny/benchmark/reference_submissions/keyword_spotting \
 # RUN:   -include %S/mlperf-tiny-kws-smoke.h \
-# RUN:   %S/../../externals/mlperf-tiny/benchmark/reference_submissions/keyword_spotting/submitter_implemented.cpp \
+# RUN:   %loom_external/mlperf-tiny/benchmark/reference_submissions/keyword_spotting/submitter_implemented.cpp \
 # RUN:   -o %t.kws
 # RUN: %t.kws | diff -u %S/mlperf-tiny-kws-expected-smoke.txt -
 # RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
 # RUN:   -Wno-unknown-pragmas -I%S/mlperf-tiny-classification-include \
 # RUN:   -I%S/mlperf-tiny-anomaly-include \
-# RUN:   -I%S/../../externals/mlperf-tiny/benchmark \
-# RUN:   -I%S/../../externals/mlperf-tiny/benchmark/reference_submissions/person_detection \
+# RUN:   -I%loom_external/mlperf-tiny/benchmark \
+# RUN:   -I%loom_external/mlperf-tiny/benchmark/reference_submissions/person_detection \
 # RUN:   -include %S/mlperf-tiny-vww-smoke.h \
-# RUN:   %S/../../externals/mlperf-tiny/benchmark/reference_submissions/person_detection/submitter_implemented.cpp \
+# RUN:   %loom_external/mlperf-tiny/benchmark/reference_submissions/person_detection/submitter_implemented.cpp \
 # RUN:   -o %t.vww
 # RUN: %t.vww | diff -u %S/mlperf-tiny-vww-expected-smoke.txt -

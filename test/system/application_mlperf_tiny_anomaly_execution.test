@@ -2,20 +2,20 @@
 # RUN: rm -rf %t.deployment %t.execution
 # RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
 # RUN:   -Wno-unknown-pragmas -I%S/../applications/mlperf-tiny-anomaly-include \
-# RUN:   -I%S/../../externals/mlperf-tiny/benchmark \
-# RUN:   -I%S/../../externals/mlperf-tiny/benchmark/reference_submissions/anomaly_detection \
+# RUN:   -I%loom_external/mlperf-tiny/benchmark \
+# RUN:   -I%loom_external/mlperf-tiny/benchmark/reference_submissions/anomaly_detection \
 # RUN:   -include %S/../applications/mlperf-tiny-anomaly-smoke.h \
-# RUN:   %S/../../externals/mlperf-tiny/benchmark/reference_submissions/anomaly_detection/submitter_implemented.cpp \
+# RUN:   %loom_external/mlperf-tiny/benchmark/reference_submissions/anomaly_detection/submitter_implemented.cpp \
 # RUN:   -o %t.native
 # RUN: %t.native
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc \
 # RUN:   --loom-accel-profile=%S/Inputs/product_attention_dse_grown.yaml \
 # RUN:   -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
 # RUN:   -Wno-unknown-pragmas -I%S/../applications/mlperf-tiny-anomaly-include \
-# RUN:   -I%S/../../externals/mlperf-tiny/benchmark \
-# RUN:   -I%S/../../externals/mlperf-tiny/benchmark/reference_submissions/anomaly_detection \
+# RUN:   -I%loom_external/mlperf-tiny/benchmark \
+# RUN:   -I%loom_external/mlperf-tiny/benchmark/reference_submissions/anomaly_detection \
 # RUN:   -include %S/../applications/mlperf-tiny-anomaly-smoke.h \
-# RUN:   %S/../../externals/mlperf-tiny/benchmark/reference_submissions/anomaly_detection/submitter_implemented.cpp \
+# RUN:   %loom_external/mlperf-tiny/benchmark/reference_submissions/anomaly_detection/submitter_implemented.cpp \
 # RUN:   -o %t.elf --loom-deploy-output=%t.deployment \
 # RUN:   --loom-operator-protocol-symbol=mlperf_tiny_anomaly_mse_kernel \
 # RUN:   > %t.build.stdout 2> %t.build.stderr

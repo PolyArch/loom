@@ -80,6 +80,8 @@ config.substitutions.append(
 # the one canonical registry source without a relative path walk.
 config.substitutions.append(
     ("%loom_include", os.path.join(config.loom_src_root, "include")))
+config.substitutions.append(
+    ("%loom_external", config.loom_external_source_root))
 
 llvm_config.with_system_environment(
     ["HOME", "INCLUDE", "LIB", "TMP", "TEMP",

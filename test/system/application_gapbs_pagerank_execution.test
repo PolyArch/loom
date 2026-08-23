@@ -3,18 +3,18 @@
 # RUN: clang++ -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
 # RUN:   -Wno-unknown-pragmas -Wno-return-type-c-linkage \
 # RUN:   -I%S/../applications/gapbs-pagerank-include \
-# RUN:   -I%S/../../externals/gapbs/src \
+# RUN:   -I%loom_external/gapbs/src \
 # RUN:   -include %S/../applications/gapbs-pagerank-smoke.h \
-# RUN:   %S/../../externals/gapbs/src/pr.cc -o %t.native
+# RUN:   %loom_external/gapbs/src/pr.cc -o %t.native
 # RUN: %t.native
 # RUN: env LOOM_VERBOSE_LEVEL=1 %loom-cc \
 # RUN:   --loom-accel-profile=%S/Inputs/product_attention_dse_grown.yaml \
 # RUN:   -std=c++17 -O1 -ffp-contract=off -fno-exceptions -fno-rtti \
 # RUN:   -Wno-unknown-pragmas -Wno-return-type-c-linkage \
 # RUN:   -I%S/../applications/gapbs-pagerank-include \
-# RUN:   -I%S/../../externals/gapbs/src \
+# RUN:   -I%loom_external/gapbs/src \
 # RUN:   -include %S/../applications/gapbs-pagerank-smoke.h \
-# RUN:   %S/../../externals/gapbs/src/pr.cc -o %t.elf \
+# RUN:   %loom_external/gapbs/src/pr.cc -o %t.elf \
 # RUN:   --loom-deploy-output=%t.deployment \
 # RUN:   --loom-operator-protocol-symbol=gapbs_pagerank_kernel \
 # RUN:   > %t.build.stdout 2> %t.build.stderr
