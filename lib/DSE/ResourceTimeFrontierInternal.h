@@ -143,7 +143,6 @@ inline void appendResourceTimePolicy(std::vector<std::uint8_t> &bytes,
   appendU64(bytes, policy.maximumRetainedBytes);
   appendU64(bytes, policy.beamWidth);
   appendU64(bytes, policy.maximumFinalists);
-  appendU64(bytes, static_cast<std::uint64_t>(policy.spectrumEndpoint));
 }
 
 inline std::uint64_t

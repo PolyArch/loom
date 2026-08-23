@@ -556,6 +556,15 @@ void exactMemoSupportsWarmAndConcurrentReuse() {
               warmStatistics.entryCount == 1 &&
               warmStatistics.retainedBytes != 0,
           "warm exact memo session accounting is not closed");
+  auto endpointPolicy = bounded;
+  endpointPolicy.spectrumEndpoint =
+      loom::dse::PreMappingSpectrumEndpoint::MaxSpatial;
+  const auto focused = take(loom::dse::selectResourceTimeMappingFinalists(
+      {candidate}, endpointPolicy, {}, &warmSession));
+  require(focused.accounting.exactInvocationMemoHits == 1 &&
+              focused.accounting.exactInvocationMemoMisses == 0 &&
+              focused.accounting.frontierAccounting.states.consumed == 0,
+          "endpoint ranking changed the exact analytic frontier cache key");
 
   std::vector<loom::dse::ResourceTimeRegionFeature> concurrentRegions;
   for (std::uint64_t ordinal = 0; ordinal != 7; ++ordinal)
