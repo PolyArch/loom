@@ -13,6 +13,7 @@
 #include <map>
 #include <set>
 #include <system_error>
+#include <type_traits>
 
 namespace loom::dse {
 namespace {
@@ -79,6 +80,84 @@ std::uint64_t spatialRouteNodeCount(const mapping::SpatialMappingView &mapping) 
 std::uint64_t techDecisionCount(const mapping::TechMappingView &mapping) {
   return mapping.computeRealizations().size() +
          mapping.memoryRealizations().size();
+}
+
+bool endpointUsesPe(const fabric::FabricTransportEndpointRef &endpoint,
+                    fabric::FabricPeOccurrenceRef pe) {
+  const auto *owner = std::get_if<fabric::FabricPeOccurrenceRef>(
+      &endpoint.owner.payload);
+  return owner && *owner == pe;
+}
+
+bool traversalUsesPe(const fabric::FabricPhysicalTraversalRef &traversal,
+                     fabric::FabricPeOccurrenceRef pe) {
+  return std::visit(
+      [&](const auto &payload) {
+        using Payload = std::decay_t<decltype(payload)>;
+        if constexpr (std::is_same_v<Payload,
+                                     fabric::FabricPointConnectionPayload>)
+          return endpointUsesPe(payload.source, pe) ||
+                 endpointUsesPe(payload.destination, pe);
+        if constexpr (std::is_same_v<Payload,
+                                     fabric::FabricPeSelectorPayload>)
+          return payload.owner == pe || endpointUsesPe(payload.source, pe) ||
+                 endpointUsesPe(payload.destination, pe);
+        if constexpr (std::is_same_v<Payload,
+                                     fabric::FabricPeRegisterFifoPayload>)
+          return payload.owner == pe;
+        return false;
+      },
+      traversal.payload);
+}
+
+bool spatialMappingUsesPe(const mapping::SpatialMappingView &mapping,
+                          const fabric::FabricArtifactView &fabric,
+                          fabric::FabricPeOccurrenceRef pe) {
+  for (const auto &binding : mapping.computeBindings()) {
+    auto parent = fabric.parentPeOf(binding.occurrence);
+    if (parent && *parent == pe)
+      return true;
+  }
+  for (const auto &transfer : mapping.registerFifoTransfers())
+    if (transfer.pe == pe)
+      return true;
+  for (const auto &route : mapping.routeTrees()) {
+    if (endpointUsesPe(route.rootEndpoint, pe) ||
+        (route.localTraversal && traversalUsesPe(*route.localTraversal, pe)))
+      return true;
+    for (const auto &node : route.nodes) {
+      if (endpointUsesPe(node.endpoint, pe) ||
+          (node.incomingTraversal &&
+           traversalUsesPe(*node.incomingTraversal, pe)))
+        return true;
+    }
+    for (const auto &sink : route.sinks)
+      if (sink.localTraversal && traversalUsesPe(*sink.localTraversal, pe))
+        return true;
+  }
+  return false;
+}
+
+bool spatialMappingUsesImpact(
+    const mapping::SpatialMappingView &mapping,
+    const fabric::FabricArtifactView &fabric,
+    llvm::ArrayRef<fabric::FabricModulePhysicalOwnerRef> placementRoots) {
+  if (placementRoots.empty())
+    return true;
+  bool used = false;
+  for (const auto &root : placementRoots) {
+    if (const auto *pe = std::get_if<fabric::FabricPeOccurrenceRef>(
+            &root.payload()))
+      used |= spatialMappingUsesPe(mapping, fabric, *pe);
+    else if (const auto *fifo = std::get_if<fabric::FabricFifoOccurrenceRef>(
+                 &root.payload()))
+      used |= mapping::spatialMappingUsesFifoOccurrence(mapping, *fifo);
+    else
+      return true;
+    // FU, memory, switch, and boundary changes retain conservative reopen
+    // behavior until each owner has a complete dependency projection.
+  }
+  return used;
 }
 
 std::uint64_t systemServiceLegCount(
@@ -355,20 +434,6 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
     const std::uint64_t routes = spatialRouteNodeCount(parent->view());
     result.accounting.parentSpatialDecisions += decisions;
     result.accounting.parentRouteNodeCount += routes;
-    const bool impactedModule =
-        impact->parent.schemaIdentity == fabric::fabricArtifactSchema.identity &&
-        impact->parent.artifact == parent->view().fabricIdentity();
-    if (impactedModule &&
-        impact->spatial.kind == HardwareMappingImpactKind::Reopen) {
-      result.accounting.reopenedSpatialDecisions += decisions;
-      result.accounting.reopenedRouteNodeCount += routes;
-      ++result.accounting.invalidatedSpatialMappings;
-      result.failures.push_back(
-          {JointMappingRebaseFailureReason::SpatialImpactReopened,
-           parentReference,
-           "typed hardware delta reopens this SpatialMapping owner"});
-      continue;
-    }
     const TechRecord *childTech =
         findTechRecord(techRecords, parent->view().techMappingIdentity());
     if (!childTech) {
@@ -397,13 +462,25 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
         fabric::importEntireFabricRoot(module->second, artifacts);
     if (!childModule)
       return childModule.takeError();
+    const bool moduleRepair =
+        impact->parent.schemaIdentity == fabric::fabricArtifactSchema.identity &&
+        impact->parent.artifact == parent->view().fabricIdentity();
+    bool spatialImpactUsed = moduleRepair;
+    if (moduleRepair && impact->spatial.routeRoots.empty()) {
+      auto parentModule = fabric::importEntireFabricRoot(
+          {fabric::fabricArtifactSchema.identity.str(),
+           fabric::fabricArtifactSchema.version,
+           parent->view().fabricIdentity()},
+          artifacts);
+      if (!parentModule)
+        return parentModule.takeError();
+      spatialImpactUsed = spatialMappingUsesImpact(
+          parent->view(), parentModule->view(), impact->spatial.placementRoots);
+    }
     auto constraints = mapping::finalizeEmptySpatialMappingConstraintSet(
         *dataflow, childTech->child.view(), childModule->view(), artifacts);
     if (!constraints)
       return constraints.takeError();
-    const bool moduleRepair =
-        impact->parent.schemaIdentity == fabric::fabricArtifactSchema.identity &&
-        impact->parent.artifact == parent->view().fabricIdentity();
     auto child = mapping::rebaseSpatialMapping(
         *parent, childTech->child, childModule->view(), constraints->view(),
         artifacts, nullptr,
@@ -420,11 +497,12 @@ llvm::Expected<JointMappingRebaseResult> rebaseJointMappingFrontier(
       continue;
     }
     result.seed.spatialMappings.push_back(child->reference());
-    if (moduleRepair)
+    const bool mappingRepair = moduleRepair && spatialImpactUsed;
+    if (mappingRepair)
       ++result.accounting.repairedSpatialMappings;
     else
       ++result.accounting.preservedSpatialMappings;
-    if (moduleRepair) {
+    if (mappingRepair) {
       result.accounting.repairedSpatialDecisions += decisions;
       result.accounting.repairedRouteNodeCount += routes;
     } else {

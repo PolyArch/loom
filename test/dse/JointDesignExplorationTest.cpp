@@ -555,11 +555,9 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
     fail("probe-incomplete FIFO wait synthesized a hardware child");
   if (runFifoHardwareRepair)
     return;
-  if (targetModule.view().fuOccurrences().empty())
-    fail("mapping-reuse fixture has no FU impact root");
   const auto moduleRoot =
       take(loom::fabric::FabricModulePhysicalOwnerRef::create(
-          targetModule.view().fuOccurrences().front()));
+          *feedbackFifo));
   loom::dse::HardwareImpactProjection localSpatialImpact{
       targetModules.front(), system, {}, {}, {}, {}};
   localSpatialImpact.family = loom::dse::HardwareMutationFamily::SpatialFifo;
@@ -574,11 +572,13 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
       plan, parentExecution, system, identityModuleCorrespondence,
       &localSpatialImpact, store));
   if (localRepairFrontier.disposition !=
-          loom::dse::JointMappingReuseDisposition::LocalRepair ||
+          loom::dse::JointMappingReuseDisposition::Preserved ||
       localRepairFrontier.seed.techMappings.empty() ||
-      !localRepairFrontier.seed.spatialMappings.empty() ||
-      localRepairFrontier.accounting.invalidatedSpatialMappings == 0)
-    fail("typed local Spatial impact did not isolate layer repair");
+      localRepairFrontier.seed.spatialMappings.empty() ||
+      localRepairFrontier.accounting.invalidatedSpatialMappings != 0 ||
+      localRepairFrontier.accounting.repairedSpatialMappings == 0)
+    fail("typed local Spatial impact did not preserve and revalidate its "
+         "selected cone");
 
   auto globalImpact = localSpatialImpact;
   globalImpact.family = loom::dse::HardwareMutationFamily::FuCapability;
