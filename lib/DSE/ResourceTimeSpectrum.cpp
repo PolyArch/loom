@@ -99,9 +99,21 @@ importProjection(const ArtifactRootReference &reference,
   if (!contexts)
     return contexts.takeError();
 
-  ImportedMappingProjection result{
-      reference, dataflowReference, fabricReference, {},
-      ::loom::mapping::qualifySystemMappingResourceTimeProgress(*mapping)};
+  auto fabricArtifact =
+      ::loom::fabric::importEntireFabricRoot(fabricReference, store);
+  if (!fabricArtifact)
+    return fabricArtifact.takeError();
+  auto system = ::loom::fabric::requireSystemRoot(fabricArtifact->view());
+  if (!system)
+    return system.takeError();
+  auto resourceTimeProgress =
+      ::loom::mapping::qualifySystemMappingResourceTimeProgress(
+          *mapping, *dataflow, *system);
+  if (!resourceTimeProgress)
+    return resourceTimeProgress.takeError();
+  ImportedMappingProjection result{reference, dataflowReference,
+                                   fabricReference, {},
+                                   std::move(*resourceTimeProgress)};
   for (const ResourceTimeRegionMapping &region : regions) {
     if (region.root.artifact != dataflowReference.artifact)
       return invalid("region correspondence has a foreign Dataflow root");

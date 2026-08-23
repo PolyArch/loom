@@ -81,6 +81,10 @@ struct PreparedApplicationMappingAlternative final {
   std::size_t preMappingCandidateRecordOrdinal = 0;
   ComponentViewDigest candidateIdentity;
   ComponentViewDigest resourceTimeScheduleHintDigest;
+  /// Schedule provenance with identical static Mapping inputs shares the
+  /// canonical plan. Each digest remains independently checked by Spectrum;
+  /// this vector is derived application evidence, not candidate identity.
+  std::vector<ComponentViewDigest> equivalentScheduleHintDigests;
   ArtifactRootReference dataflow;
   std::vector<dse::ResourceTimeRegionFeature> resourceTimeRegions;
   std::vector<dse::ResourceTimeRegionResourceBound> resourceTimeRegionBounds;

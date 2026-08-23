@@ -182,7 +182,8 @@ verifyResourceTimeAlternative(
     const dse::ResourceTimeMappingFunnel &funnel,
     const PreparedApplicationMappingAlternative &alternative,
     llvm::ArrayRef<ArtifactRootReference> systemMappings,
-    const ArtifactStore &artifacts) {
+    const ArtifactStore &artifacts,
+    const ComponentViewDigest &scheduleHintDigest) {
   const auto evaluation =
       llvm::find_if(funnel.evaluations, [&](const auto &candidate) {
         return candidate.candidateIdentity == alternative.candidateIdentity;
@@ -190,7 +191,7 @@ verifyResourceTimeAlternative(
   if (evaluation == funnel.evaluations.end())
     return invalid("Mapping outcome has no resource-time evaluation");
   auto hint = findResourceTimeScheduleHint(
-      *evaluation, alternative.resourceTimeScheduleHintDigest);
+      *evaluation, scheduleHintDigest);
   if (!hint)
     return hint.takeError();
   auto verified = dse::verifyResourceTimeMappingFinalists(
@@ -853,6 +854,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
                accounting.mappingCallsDeferredByModel},
               {"mapping_calls_avoided_by_sound_gate",
                accounting.mappingCallsAvoidedBySoundGate},
+              {"mapping_plan_constructions_avoided_by_exact_memo",
+               accounting.mappingPlanConstructionsAvoidedByExactMemo},
               {"mapping_calls_withheld_by_incomplete",
                accounting.mappingCallsWithheldByIncomplete},
               {"exact_invocation_memo_hits",
@@ -1062,6 +1065,36 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
 
     const PreparedApplicationSoftware &software =
         preparedSoftware[softwareOrdinal];
+    // A schedule hint can differ in event timing while producing the exact
+    // same static System partition intent. Such a hint is not a new Mapping
+    // input: retain its provenance and verify it against the one real result.
+    // Resource-time transitions with a changed partition remain separate;
+    // this exact reuse must never be mistaken for remapping.
+    const auto exactAlternative = llvm::find_if(
+        mappingAlternatives, [&](const PreparedApplicationMappingAlternative
+                                     &alternative) {
+          return alternative.candidateIdentity == identity &&
+                 alternative.dataflow.artifact ==
+                     software.compilation.canonicalDataflow.artifact &&
+                 alternative.plan.systemBindingPartitions == **partitions;
+        });
+    if (exactAlternative != mappingAlternatives.end()) {
+      exactAlternative->equivalentScheduleHintDigests.push_back(
+          finalist.scheduleHintDigest);
+      ++resourceTimeFunnel->accounting
+            .mappingPlanConstructionsAvoidedByExactMemo;
+      mapping_debug::emit(
+          mapping_debug::Level::Summary,
+          mapping_debug::Stage::DataflowLowering,
+          mapping_debug::Event::Candidate, [&](llvm::json::Object &fields) {
+            fields["operation"] = "resource_time_exact_mapping_reuse";
+            fields["candidate_identity"] = identitySpelling;
+            fields["schedule_hint_digest"] =
+                formatComponentViewDigestHex(finalist.scheduleHintDigest);
+            fields["mapping_plan_rank"] = exactAlternative->preferenceRank;
+          });
+      continue;
+    }
     auto mappingPlan = dse::buildJointDesignExplorationPlan(
         {{software.workloads}, {request.system}}, request.physicalTimingProfiles,
         *alternativePolicy, request.resolvedConfig, artifacts, nullptr,
@@ -1072,7 +1105,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
     const std::uint64_t rank = mappingAlternatives.size();
     mappingAlternatives.push_back(
         {rank, pending->planningRecordOrdinal, identity,
-         finalist.scheduleHintDigest, software.compilation.canonicalDataflow,
+         finalist.scheduleHintDigest, {finalist.scheduleHintDigest},
+         software.compilation.canonicalDataflow,
          pending->projection->regions, pending->projection->regionBounds,
          std::move(*mappingPlan)});
   }
@@ -1256,32 +1290,36 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       if (alternative.preMappingCandidateRecordOrdinal >=
           prepared.candidateInventory.size())
         return invalid("Mapping outcome has a foreign planning-record ordinal");
-      std::optional<dse::ResourceTimeSpectrumFunnelResult> resourceTimeSpectrum;
-      if (!attempt.systemMappings.empty()) {
-        auto verified = verifyResourceTimeAlternative(
-            prepared.resourceTimeFunnel, alternative, attempt.systemMappings,
-            artifacts);
-        if (!verified)
-          return verified.takeError();
-        resourceTimeSpectrum = std::move(*verified);
+      for (const ComponentViewDigest &scheduleHintDigest :
+           alternative.equivalentScheduleHintDigests) {
+        std::optional<dse::ResourceTimeSpectrumFunnelResult>
+            resourceTimeSpectrum;
+        if (!attempt.systemMappings.empty()) {
+          auto verified = verifyResourceTimeAlternative(
+              prepared.resourceTimeFunnel, alternative, attempt.systemMappings,
+              artifacts, scheduleHintDigest);
+          if (!verified)
+            return verified.takeError();
+          resourceTimeSpectrum = std::move(*verified);
+        }
+        outcomes.push_back(ApplicationMappingCandidateOutcome{
+            alternative.preMappingCandidateRecordOrdinal,
+            planOrdinal,
+            scheduleHintDigest,
+            alternative.dataflow,
+            attempt.system,
+            attempt.disposition,
+            attempt.incompleteNodeOrdinal,
+            attempt.incompleteReason,
+            attempt.systemMappings,
+            prepared.candidateInventory
+                [alternative.preMappingCandidateRecordOrdinal],
+            alternative.plan.systemBindingPartitions,
+            ApplicationMappingRuntimeDisposition::NotRequested,
+            {},
+            {},
+            std::move(resourceTimeSpectrum)});
       }
-      outcomes.push_back(ApplicationMappingCandidateOutcome{
-          alternative.preMappingCandidateRecordOrdinal,
-          planOrdinal,
-          alternative.resourceTimeScheduleHintDigest,
-          alternative.dataflow,
-          attempt.system,
-          attempt.disposition,
-          attempt.incompleteNodeOrdinal,
-          attempt.incompleteReason,
-          attempt.systemMappings,
-          prepared
-              .candidateInventory[alternative.preMappingCandidateRecordOrdinal],
-          alternative.plan.systemBindingPartitions,
-          ApplicationMappingRuntimeDisposition::NotRequested,
-          {},
-          {},
-          std::move(resourceTimeSpectrum)});
       dse::JointDesignAttemptRecord adjusted = attempt;
       adjusted.planOrdinal = planOrdinal;
       attempts.push_back(std::move(adjusted));
@@ -1439,7 +1477,9 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         auto childSpectrum = verifyResourceTimeAlternative(
             prepared.resourceTimeFunnel,
             prepared.mappingAlternatives[selectedPlanOrdinal], childMappings,
-            artifacts);
+            artifacts,
+            prepared.mappingAlternatives[selectedPlanOrdinal]
+                .resourceTimeScheduleHintDigest);
         if (!childSpectrum)
           return childSpectrum.takeError();
         outcomes.push_back(ApplicationMappingCandidateOutcome{
@@ -1536,7 +1576,9 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         auto childSpectrum = verifyResourceTimeAlternative(
             prepared.resourceTimeFunnel,
             prepared.mappingAlternatives[selectedPlanOrdinal], childMappings,
-            artifacts);
+            artifacts,
+            prepared.mappingAlternatives[selectedPlanOrdinal]
+                .resourceTimeScheduleHintDigest);
         if (!childSpectrum)
           return childSpectrum.takeError();
         outcomes.push_back(ApplicationMappingCandidateOutcome{

@@ -120,8 +120,11 @@ llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
 /// closure. Until a token/occupancy proof is registered for initialized
 /// feedback, that narrower recurrence domain remains typed
 /// ProofNotEstablished rather than being inferred from finite replay.
-MappingProgressClosure qualifySystemMappingResourceTimeProgress(
-    const FinalizedSystemMapping &mapping);
+llvm::Expected<MappingProgressClosure>
+qualifySystemMappingResourceTimeProgress(
+    const FinalizedSystemMapping &mapping,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric);
 
 struct SpatialRouteExternalSinkPrerequisite final {
   std::uint64_t sinkOrdinal = 0;

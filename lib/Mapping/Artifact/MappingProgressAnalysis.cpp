@@ -1340,20 +1340,17 @@ llvm::Expected<MappingProgressClosure> deriveSystemMappingProgressClosure(
   return deriveMappingProgressClosure(*model, *projection);
 }
 
-MappingProgressClosure qualifySystemMappingResourceTimeProgress(
-    const FinalizedSystemMapping &mapping) {
-  const MappingDataflowProgressBasis &basis =
-      mapping.verifiedClosure().progressBasis;
-  if (basis.kind == MappingDataflowProgressBasisKind::InitializedFeedback)
-    return {MappingProgressClosureKind::ProofNotEstablished,
-            MappingProgressClosureReason::
-                FiniteBufferRecurrenceNotEstablished,
-            {}};
-  if (basis.kind == MappingDataflowProgressBasisKind::Cyclic)
-    return {MappingProgressClosureKind::ProofNotEstablished,
-            MappingProgressClosureReason::CyclicDataflowBasis, {}};
-  return {MappingProgressClosureKind::ProvenNoClosedWaitSet,
-          MappingProgressClosureReason::None, {}};
+llvm::Expected<MappingProgressClosure>
+qualifySystemMappingResourceTimeProgress(
+    const FinalizedSystemMapping &mapping,
+    const ::dataflow::CanonicalDataflowProgramView &dataflow,
+    const ::loom::fabric::FabricSystemRootView &fabric) {
+  // Resource-time qualification consumes the same strict closure projection
+  // as System Mapping verification. Initialized feedback is not rejected by
+  // category; the exact capacity/arbitration/causal-release kernel decides
+  // whether its finite recurrence is closed.
+  return deriveSystemMappingProgressClosure(dataflow, fabric,
+                                            mapping.verifiedClosure());
 }
 
 llvm::Expected<std::vector<SpatialRouteProgressDependency>>

@@ -281,6 +281,9 @@ llvm::Error validateResourceTimeMappingFunnelAccounting(
           accounting.soundGateRejectedCandidates)
     return invalid("resource-time Mapping avoidance accounting is not "
                    "closed");
+  if (accounting.mappingPlanConstructionsAvoidedByExactMemo >
+      accounting.mappingFinalists)
+    return invalid("resource-time exact Mapping reuse exceeds finalists");
   auto memoAttempts = llvm::checkedAddUnsigned(
       accounting.exactInvocationMemoHits, accounting.exactInvocationMemoMisses);
   if (memoAttempts)
@@ -329,6 +332,7 @@ llvm::Error validateResourceTimeMappingFunnelAccounting(
     return invalid("resource-time analytic shadow evidence is inconsistent");
   if (accounting.applicationPromotionAccountingComplete &&
       accounting.mappingPlanCandidates +
+              accounting.mappingPlanConstructionsAvoidedByExactMemo +
               accounting.unsupportedBeforeMappingScheduleHints !=
           accounting.mappingFinalists)
     return invalid("resource-time Mapping finalist disposition is not closed");

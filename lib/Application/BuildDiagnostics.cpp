@@ -447,6 +447,8 @@ void emitApplicationPlanningDiagnostics(
              resourceTime.applicationPromotionAccountingComplete},
             {"mapping_calls_avoided_by_sound_gate",
              resourceTime.mappingCallsAvoidedBySoundGate},
+            {"mapping_plan_constructions_avoided_by_exact_memo",
+             resourceTime.mappingPlanConstructionsAvoidedByExactMemo},
             {"mapping_calls_deferred_by_model",
              resourceTime.mappingCallsDeferredByModel},
             {"mapping_calls_withheld_by_incomplete",
@@ -578,6 +580,15 @@ void emitApplicationPlanningDiagnostics(
               });
           row["retained_mapping_schedule_count"] = retainedScheduleCount;
           row["retained_for_mapping"] = retainedScheduleCount != 0;
+          const auto alternative = llvm::find_if(
+              prepared.mappingAlternatives, [&](const auto &candidate) {
+                return candidate.candidateIdentity ==
+                       evaluation.candidateIdentity;
+              });
+          row["exact_static_mapping_schedule_count"] =
+              alternative == prepared.mappingAlternatives.end()
+                  ? 0
+                  : alternative->equivalentScheduleHintDigests.size();
           if (evaluation.bestHint) {
             row["estimated_makespan_picoseconds"] =
                 evaluation.bestHint->estimatedMakespanPicoseconds;

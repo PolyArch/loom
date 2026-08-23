@@ -4047,3 +4047,56 @@ drift, or an unmatched wait edge remains `ProofNotEstablished` or
 `Unsupported`. Only a capacity-blocked queue edge in the actual closed
 transfer/actor wait cycle is `ExactClosedWait`; aggregate occupancy, a finite
 halt, or analytic `LikelyRisk` cannot request a hardware child.
+
+## Resource-Time Evaluation Funnel
+
+Resource-time exploration is a correctness boundary as well as a performance
+boundary. A policy must not form a Cartesian product of active sets,
+per-region allocations, transformations, and transitions and then invoke
+complete Tech/Spatial/System Mapping for every row. The sole resource-time
+policy owner instead applies a cheap-to-expensive funnel:
+
+1. Freeze the immutable source/Dataflow dependency, event, token, and per-region
+   feature projection once for an invocation.
+2. Apply sound necessary bounds before materialization. Cache exact per-region
+   speedup, rate/FIFO, occupancy, communication, and configuration/live-state
+   features under the existing invocation-local sessions.
+3. Advance a bounded event frontier by typed state/action deltas. Ready sets,
+   active sets, resource allocation, cuts, traffic, and lower bounds are updated
+   incrementally; a successor is not allowed to rescan the complete graph.
+4. Use analytic or calibrated estimates only for beam/Pareto/dominance and
+   promotion ordering. They carry support, confidence, and out-of-domain
+   status and cannot prove general infeasibility or Mapping legality.
+5. Run functional replay, Dataflow materialization, and real
+   Tech/Spatial/System Mapping only for bounded survivors. Exact identical
+   inputs may share a derived result; a typed schedule delta may preserve the
+   unaffected Mapping cone; neither reuse path skips the owner verifier.
+
+These are three distinct reuse relations. Exact memoization requires byte-exact
+semantic inputs. Schedule-preserving incremental reuse requires a typed delta,
+safe point, parent Mapping/Deployment, and a mechanically derived transitive
+invalidation cone. Analytic prediction is never a legality result. Cache keys
+bind source/Dataflow lineage, event-relative ready/active/live state,
+token/live-state, per-region allocation, Fabric, workload/runtime, resolved
+configuration, model snapshot, parent Mapping/Deployment where applicable, safe
+point, delta, constraints, and algorithm identity. Frontier policy, rank,
+estimated time, witness, disposition, and cache state are provenance and do not
+change candidate identity.
+
+Every expensive owner reserves work before dispatch and closes planned,
+reserved, consumed, rejected, cancelled, cache-hit, cache-miss, and wait
+counts. Cache capacity, retained bytes, frontier width, worker count, and
+deadline are deterministic invocation inputs. Concurrent equal misses are
+single-flight; completion order, worker count, and warm versus cold state may
+not change identity or the final choice over the same evidence. A timeout,
+cancelled provider, or incomplete verifier is `Incomplete`, never
+`ProvenInfeasible`.
+
+The final `MaxSpatial`, `MaxTemporal`, or intermediate label is emitted only by
+an independently verified SystemMapping. A schedule hint can rank or gate a
+candidate but cannot supply that label. Evidence must report generated,
+screened, estimated, replayed, materialized, promoted, and actually dispatched
+candidates, along with exact/incremental/analytic reuse, cold-versus-incremental
+work, retained bytes, time-to-first-feasible, time-to-best, and bounded
+analytic-vs-exact recall/error. Missing evidence keeps the invocation typed
+incomplete rather than being replaced by a larger timeout or extra search.

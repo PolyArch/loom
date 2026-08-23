@@ -495,6 +495,10 @@ struct ResourceTimeMappingFunnelAccounting final {
   std::uint64_t analyticShadowMaximumLowerBoundGapPicoseconds = 0;
   std::uint64_t analyticShadowLowerBoundViolations = 0;
   std::uint64_t mappingCallsAvoidedBySoundGate = 0;
+  /// Exact static Mapping inputs may be shared by several schedule hints. This
+  /// counts avoided plan constructions, not skipped owner verification; the
+  /// shared plan still undergoes ordinary Mapping and Spectrum verification.
+  std::uint64_t mappingPlanConstructionsAvoidedByExactMemo = 0;
   std::uint64_t mappingCallsDeferredByModel = 0;
   std::uint64_t mappingCallsWithheldByIncomplete = 0;
   /// Exact memoization is invocation-local and only applies to a completely
