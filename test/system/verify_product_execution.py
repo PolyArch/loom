@@ -193,6 +193,10 @@ def validate_mapping_work(
         and all(character in "0123456789abcdef" for character in pair_identity),
         "pair-level decision has no stable identity",
     )
+    for root_key in ("source_program", "fabric", "workload", "runtime_input"):
+        root = pair_decision.get(root_key)
+        require(isinstance(root, str) and len(root) > 0,
+                "pair-level decision omitted " + root_key)
     manifest_run_key = pair_decision.get("invocation_manifest_run_key")
     require(
         isinstance(manifest_run_key, str)
@@ -219,6 +223,18 @@ def validate_mapping_work(
         for observation in pair_decision.get("selected_objective", [])
         if isinstance(observation, dict)
     }
+    baseline_values = {
+        observation.get("dimension"): observation
+        for observation in pair_decision.get("host_only_baseline", [])
+        if isinstance(observation, dict)
+    }
+    require(
+        isinstance(baseline_values.get("host_only_work"), dict)
+        and isinstance(baseline_values["host_only_work"].get("value"), int)
+        and baseline_values["host_only_work"].get("evidence")
+        in {"exact", "sound_bound", "analytic", "calibrated", "runtime_measured"},
+        "host-only baseline has no typed work observation",
+    )
     for dimension in ("dfg_cycles", "cgra_cycles"):
         require(
             isinstance(selected_values.get(dimension), dict)
@@ -248,6 +264,23 @@ def validate_mapping_work(
             and all(character in "0123456789abcdef" for character in candidate_identity),
             "semantic candidate is missing its stable identity",
         )
+        if candidate.get("entered_mapping"):
+            observations = candidate.get("mapping_observations")
+            require(isinstance(observations, list) and observations,
+                    "mapped candidate omitted its Mapping observations")
+            for observation in observations:
+                require(isinstance(observation, dict),
+                        "candidate Mapping observation is malformed")
+                hint = observation.get("schedule_hint_digest")
+                require(isinstance(hint, str) and len(hint) == 64,
+                        "candidate Mapping observation lacks schedule identity")
+                require(isinstance(observation.get("system"), str),
+                        "candidate Mapping observation lacks System identity")
+                require(isinstance(observation.get("system_mappings"), list),
+                        "candidate Mapping observation lacks Mapping witness list")
+                require(observation.get("mapping_disposition") in {
+                    "verified", "proven_no_feasible_candidate", "incomplete"
+                }, "candidate Mapping observation lacks typed disposition")
     objective_vectors = [pair_decision.get("host_only_baseline", [])]
     objective_vectors.extend(
         candidate.get("objective", [])

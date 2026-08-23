@@ -222,17 +222,45 @@ struct ApplicationObjectiveObservation final {
   bool outOfDistribution = false;
 };
 
+/// Compact derived join for one candidate's existing planning and Mapping
+/// observations. The detailed records and work ledgers remain owned by DSE;
+/// this view only makes their stable references mechanically available from a
+/// pair decision.
+struct ApplicationPairMappingObservation final {
+  std::uint64_t planOrdinal = 0;
+  ComponentViewDigest scheduleHintDigest;
+  ArtifactRootReference system;
+  dse::JointDesignAttemptDisposition mappingDisposition =
+      dse::JointDesignAttemptDisposition::Incomplete;
+  ApplicationMappingRuntimeDisposition runtimeDisposition =
+      ApplicationMappingRuntimeDisposition::NotRequested;
+  std::optional<dse::DsePlanIncompleteReason> incompleteReason;
+  std::vector<ArtifactRootReference> systemMappings;
+  std::vector<ArtifactRootReference> runtimeEvidence;
+  std::optional<dse::PreMappingSpectrumClass> verifiedSpectrum;
+};
+
 /// One identity-based reference into the existing candidate inventory and
 /// Mapping outcome vectors. It intentionally stores only derived application
 /// evidence; the planning record and JointDesignAttemptRecord remain the
 /// owners of detailed gates, witnesses, checkpoints, and work ledgers.
 struct ApplicationPairCandidateRecord final {
   std::optional<ComponentViewDigest> candidateIdentity;
+  std::optional<ArtifactRootReference> structuredProgram;
+  std::optional<ArtifactRootReference> canonicalDataflow;
+  std::optional<ComponentViewDigest> planningProjectionIdentity;
+  std::optional<ComponentViewDigest> materializedProjectionIdentity;
+  std::optional<dse::PreMappingCandidatePlanningDisposition>
+      planningDisposition;
+  std::optional<dse::PreMappingScheduleIntent> scheduleIntent;
+  std::optional<dse::DsePlanIncompleteReason> planningIncompleteReason;
+  std::optional<dse::PreMappingSpectrumClass> verifiedSpectrum;
   std::size_t planningRecordOrdinal = 0;
   std::optional<std::uint64_t> planOrdinal;
   bool enteredMapping = false;
   bool selected = false;
   std::vector<ApplicationObjectiveObservation> objective;
+  std::vector<ApplicationPairMappingObservation> mappingObservations;
 };
 
 /// Stable pair-level decision record. The pair identity is derived from the
@@ -246,6 +274,10 @@ struct ApplicationPairDecisionRecord final {
   std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
   ApplicationPairDecisionDisposition disposition =
       ApplicationPairDecisionDisposition::ImplementationFailure;
+  std::optional<ArtifactRootReference> sourceProgram;
+  std::optional<ArtifactRootReference> fabric;
+  std::optional<ArtifactRootReference> workload;
+  std::optional<ArtifactRootReference> runtimeInput;
   /// Planning records include budget/pruning bookkeeping that never became a
   /// semantic candidate. They remain owned by PreMapping; the pair candidate
   /// list contains only records with a complete stable candidate identity.

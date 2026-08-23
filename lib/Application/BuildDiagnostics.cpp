@@ -180,6 +180,9 @@ llvm::json::Object encodeObjectiveObservation(
 
 void addOptionalUnsigned(llvm::json::Object &object, llvm::StringRef key,
                          std::optional<std::uint64_t> value);
+void addOptionalRoot(
+    llvm::json::Object &object, llvm::StringRef key,
+    const std::optional<ArtifactRootReference> &value);
 std::string encodeRoot(const ArtifactRootReference &reference);
 
 llvm::json::Object encodePairDecision(
@@ -197,6 +200,10 @@ llvm::json::Object encodePairDecision(
   else
     result["invocation_manifest_run_key"] = nullptr;
   result["disposition"] = toString(decision.disposition);
+  addOptionalRoot(result, "source_program", decision.sourceProgram);
+  addOptionalRoot(result, "fabric", decision.fabric);
+  addOptionalRoot(result, "workload", decision.workload);
+  addOptionalRoot(result, "runtime_input", decision.runtimeInput);
   result["planning_record_count"] = decision.planningRecordCount;
   result["non_candidate_planning_record_count"] =
       decision.nonCandidatePlanningRecordCount;
@@ -225,6 +232,39 @@ llvm::json::Object encodePairDecision(
           formatComponentViewDigestHex(*candidate.candidateIdentity);
     else
       encoded["candidate_identity"] = nullptr;
+    addOptionalRoot(encoded, "structured_program",
+                    candidate.structuredProgram);
+    addOptionalRoot(encoded, "canonical_dataflow",
+                    candidate.canonicalDataflow);
+    if (candidate.planningProjectionIdentity)
+      encoded["planning_projection_identity"] =
+          formatComponentViewDigestHex(*candidate.planningProjectionIdentity);
+    else
+      encoded["planning_projection_identity"] = nullptr;
+    if (candidate.materializedProjectionIdentity)
+      encoded["materialized_projection_identity"] =
+          formatComponentViewDigestHex(
+              *candidate.materializedProjectionIdentity);
+    else
+      encoded["materialized_projection_identity"] = nullptr;
+    encoded["planning_disposition"] =
+        candidate.planningDisposition
+            ? llvm::json::Value(
+                  dse::toString(*candidate.planningDisposition))
+            : llvm::json::Value(nullptr);
+    encoded["schedule_intent"] =
+        candidate.scheduleIntent
+            ? llvm::json::Value(dse::toString(*candidate.scheduleIntent))
+            : llvm::json::Value(nullptr);
+    encoded["planning_incomplete_reason"] =
+        candidate.planningIncompleteReason
+            ? llvm::json::Value(dse::toString(
+                  *candidate.planningIncompleteReason))
+            : llvm::json::Value(nullptr);
+    encoded["verified_spectrum"] =
+        candidate.verifiedSpectrum
+            ? llvm::json::Value(dse::toString(*candidate.verifiedSpectrum))
+            : llvm::json::Value(nullptr);
     encoded["planning_record_ordinal"] = candidate.planningRecordOrdinal;
     addOptionalUnsigned(encoded, "plan_ordinal", candidate.planOrdinal);
     encoded["entered_mapping"] = candidate.enteredMapping;
@@ -234,6 +274,37 @@ llvm::json::Object encodePairDecision(
          candidate.objective)
       objective.push_back(encodeObjectiveObservation(observation));
     encoded["objective"] = std::move(objective);
+    llvm::json::Array mappingObservations;
+    for (const ApplicationPairMappingObservation &observation :
+         candidate.mappingObservations) {
+      llvm::json::Object mapping;
+      mapping["plan_ordinal"] = observation.planOrdinal;
+      mapping["schedule_hint_digest"] =
+          formatComponentViewDigestHex(observation.scheduleHintDigest);
+      mapping["system"] = encodeRoot(observation.system);
+      mapping["mapping_disposition"] = spelling(observation.mappingDisposition);
+      mapping["runtime_disposition"] =
+          spelling(observation.runtimeDisposition);
+      mapping["incomplete_reason"] =
+          observation.incompleteReason
+              ? llvm::json::Value(dse::toString(*observation.incompleteReason))
+              : llvm::json::Value(nullptr);
+      mapping["verified_spectrum"] =
+          observation.verifiedSpectrum
+              ? llvm::json::Value(
+                    dse::toString(*observation.verifiedSpectrum))
+              : llvm::json::Value(nullptr);
+      llvm::json::Array mappings;
+      for (const ArtifactRootReference &reference : observation.systemMappings)
+        mappings.push_back(encodeRoot(reference));
+      mapping["system_mappings"] = std::move(mappings);
+      llvm::json::Array runtimeEvidence;
+      for (const ArtifactRootReference &reference : observation.runtimeEvidence)
+        runtimeEvidence.push_back(encodeRoot(reference));
+      mapping["runtime_evidence"] = std::move(runtimeEvidence);
+      mappingObservations.push_back(std::move(mapping));
+    }
+    encoded["mapping_observations"] = std::move(mappingObservations);
     candidates.push_back(std::move(encoded));
   }
   result["candidates"] = std::move(candidates);

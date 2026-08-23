@@ -223,6 +223,10 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     const dse::JointDesignExecutionSummary &summary) {
   ApplicationPairDecisionRecord result;
   result.invocationRunKey = summary.invocationRunKey;
+  result.sourceProgram = prepared.preMappingSourceProgram;
+  result.fabric = prepared.preMappingFabric;
+  result.workload = prepared.preMappingWorkload;
+  result.runtimeInput = prepared.preMappingRuntimeInput;
   auto identity = deriveApplicationPairIdentity(
       prepared.preMappingSourceProgram, prepared.preMappingFabric,
       prepared.preMappingWorkload, prepared.preMappingRuntimeInput);
@@ -236,6 +240,18 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
   }
 
   result.hostOnlyBaseline = makeUnsupportedObjectiveVector();
+  for (const dse::PreMappingCandidatePlanningRecord &planning :
+       prepared.candidateInventory) {
+    if (!planning.estimatedRuntimePicoseconds)
+      continue;
+    setObjective(
+        result.hostOnlyBaseline[static_cast<std::size_t>(
+            ApplicationObjectiveDimension::HostOnlyWork)],
+        *planning.estimatedRuntimePicoseconds,
+        ApplicationObjectiveEvidence::Analytic, 250, true);
+    result.hostOnlyBaselineComplete = true;
+    break;
+  }
   result.planningRecordCount = prepared.candidateInventory.size();
   result.candidates.reserve(prepared.candidateInventory.size());
   for (std::size_t ordinal = 0; ordinal != prepared.candidateInventory.size();
@@ -249,6 +265,17 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
     ApplicationPairCandidateRecord candidate;
     candidate.planningRecordOrdinal = ordinal;
     candidate.candidateIdentity = planning.candidateIdentity;
+    candidate.structuredProgram = planning.structuredProgram;
+    candidate.canonicalDataflow = planning.canonicalDataflow;
+    if (planning.projection)
+      candidate.planningProjectionIdentity = planning.projection->identity;
+    if (planning.materializedProjection)
+      candidate.materializedProjectionIdentity =
+          planning.materializedProjection->identity;
+    candidate.planningDisposition = planning.disposition;
+    candidate.scheduleIntent = planning.scheduleIntent;
+    candidate.planningIncompleteReason = planning.incompleteReason;
+    candidate.verifiedSpectrum = planning.verifiedSpectrum;
     candidate.objective = makeUnsupportedObjectiveVector();
     if (planning.estimatedRuntimePicoseconds) {
       setObjective(candidate.objective[
@@ -262,6 +289,30 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
         continue;
       candidate.enteredMapping = true;
       candidate.planOrdinal = outcome.planOrdinal;
+      ApplicationPairMappingObservation mappingObservation{
+          outcome.planOrdinal,
+          outcome.resourceTimeScheduleHintDigest,
+          outcome.system,
+          outcome.disposition,
+          outcome.runtimeDisposition,
+          outcome.incompleteReason,
+          outcome.systemMappings,
+          outcome.runtimeEvidence,
+          std::nullopt};
+      if (outcome.resourceTimeSpectrum) {
+        if (const auto *verification = std::get_if<
+                dse::VerifiedResourceTimeSpectrum>(
+                &outcome.resourceTimeSpectrum->verification)) {
+          for (const dse::VerifiedResourceTimeSpectrumScenario &scenario :
+               verification->scenarios) {
+            if (!candidate.verifiedSpectrum)
+              candidate.verifiedSpectrum = scenario.spectrumClass;
+            if (!mappingObservation.verifiedSpectrum)
+              mappingObservation.verifiedSpectrum = scenario.spectrumClass;
+          }
+        }
+      }
+      candidate.mappingObservations.push_back(std::move(mappingObservation));
       if (summary.selectedPlanOrdinal &&
           *summary.selectedPlanOrdinal == outcome.planOrdinal &&
           summary.selectedMapping &&
@@ -318,17 +369,11 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
             ApplicationObjectiveDimension::DfgCycles)];
         const auto cgra = objective[static_cast<std::size_t>(
             ApplicationObjectiveDimension::CgraCycles)];
-        result.hostOnlyBaseline = makeUnsupportedObjectiveVector();
         if (dfg.value) {
-          setObjective(result.hostOnlyBaseline[
-                           static_cast<std::size_t>(
-                               ApplicationObjectiveDimension::HostOnlyWork)],
-                       *dfg.value, ApplicationObjectiveEvidence::RuntimeMeasured);
           setObjective(result.hostOnlyBaseline[
                            static_cast<std::size_t>(
                                ApplicationObjectiveDimension::DfgCycles)],
                        *dfg.value, ApplicationObjectiveEvidence::RuntimeMeasured);
-          result.hostOnlyBaselineComplete = true;
         }
         result.selectedObjective = objective;
         setObjective(result.selectedObjective[
@@ -339,7 +384,8 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
                          summary.systemPnrDispatchCount,
                      ApplicationObjectiveEvidence::RuntimeMeasured);
         result.finalApplicationQorComplete =
-            dfg.value.has_value() && cgra.value.has_value();
+            result.hostOnlyBaselineComplete && dfg.value.has_value() &&
+            cgra.value.has_value();
         if (outcome.runtimeDisposition !=
             ApplicationMappingRuntimeDisposition::Completed) {
           switch (outcome.runtimeDisposition) {
@@ -424,10 +470,23 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
   ApplicationPairDecisionRecord result;
   result.disposition = disposition;
   result.detail = detail.str();
+  result.sourceProgram = sourceProgram;
+  result.fabric = fabric;
+  result.workload = workload;
+  result.runtimeInput = runtimeInput;
   result.planningRecordCount = inventory.size();
+  result.hostOnlyBaseline = makeUnsupportedObjectiveVector();
   result.candidates.reserve(inventory.size());
   for (std::size_t ordinal = 0; ordinal != inventory.size(); ++ordinal) {
     const auto &record = inventory[ordinal];
+    if (!result.hostOnlyBaselineComplete && record.estimatedRuntimePicoseconds) {
+      setObjective(
+          result.hostOnlyBaseline[static_cast<std::size_t>(
+              ApplicationObjectiveDimension::HostOnlyWork)],
+          *record.estimatedRuntimePicoseconds,
+          ApplicationObjectiveEvidence::Analytic, 250, true);
+      result.hostOnlyBaselineComplete = true;
+    }
     if (!record.candidateIdentity) {
       ++result.nonCandidatePlanningRecordCount;
       continue;
@@ -435,6 +494,17 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
     ApplicationPairCandidateRecord candidate;
     candidate.planningRecordOrdinal = ordinal;
     candidate.candidateIdentity = record.candidateIdentity;
+    candidate.structuredProgram = record.structuredProgram;
+    candidate.canonicalDataflow = record.canonicalDataflow;
+    if (record.projection)
+      candidate.planningProjectionIdentity = record.projection->identity;
+    if (record.materializedProjection)
+      candidate.materializedProjectionIdentity =
+          record.materializedProjection->identity;
+    candidate.planningDisposition = record.disposition;
+    candidate.scheduleIntent = record.scheduleIntent;
+    candidate.planningIncompleteReason = record.incompleteReason;
+    candidate.verifiedSpectrum = record.verifiedSpectrum;
     candidate.objective = makeUnsupportedObjectiveVector();
     if (record.estimatedRuntimePicoseconds)
       setObjective(candidate.objective[
@@ -1767,6 +1837,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
       if (alternative.preMappingCandidateRecordOrdinal >=
           prepared.candidateInventory.size())
         return invalid("Mapping outcome has a foreign planning-record ordinal");
+      std::optional<dse::ResourceTimeSpectrumFunnelResult>
+          emptyScheduleSpectrum;
       for (const ComponentViewDigest &scheduleHintDigest :
            alternative.equivalentScheduleHintDigests) {
         std::optional<dse::ResourceTimeSpectrumFunnelResult>
@@ -1800,6 +1872,27 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             std::nullopt,
             std::nullopt});
       }
+      if (alternative.equivalentScheduleHintDigests.empty())
+        outcomes.push_back(ApplicationMappingCandidateOutcome{
+            alternative.preMappingCandidateRecordOrdinal,
+            planOrdinal,
+            alternative.resourceTimeScheduleHintDigest,
+            alternative.dataflow,
+            attempt.system,
+            attempt.disposition,
+            attempt.incompleteNodeOrdinal,
+            attempt.incompleteReason,
+            attempt.systemMappings,
+            prepared.candidateInventory
+                [alternative.preMappingCandidateRecordOrdinal],
+            alternative.plan.systemBindingPartitions,
+            ApplicationMappingRuntimeDisposition::NotRequested,
+            {},
+            {},
+            std::move(emptyScheduleSpectrum),
+            std::nullopt,
+            std::nullopt,
+            std::nullopt});
       dse::JointDesignAttemptRecord adjusted = attempt;
       adjusted.planOrdinal = planOrdinal;
       attempts.push_back(std::move(adjusted));
