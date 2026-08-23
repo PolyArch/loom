@@ -9,6 +9,8 @@ add_library(LoomDSE
   JointFrontier.cpp
   ResourceTimeFrontier.cpp
   ResourceTimeFrontierSession.cpp
+  ResourceTimeFunnel.cpp
+  ResourceTimeProjection.cpp
   ResourceTimeSpectrum.cpp
   SpatialMappingEvaluationAcquisition.cpp
   StructuredEvaluationAcquisition.cpp

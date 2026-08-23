@@ -208,9 +208,15 @@ struct ResourceTimeFrontierAccounting final {
   ResourceTimeWorkCounter finalists;
   std::uint64_t stateMemoHits = 0;
   std::uint64_t stateMemoMisses = 0;
-  std::uint64_t stateMemoEnvelopeUpdates = 0;
+  /// Existing semantic future states admitted as a non-dominated path point.
+  std::uint64_t stateMemoParetoInsertions = 0;
   std::uint64_t stateMemoDominatedStates = 0;
+  std::uint64_t stateMemoHitCapacityRejections = 0;
+  std::uint64_t stateMemoMissCapacityRejections = 0;
   std::uint64_t statesPrunedByBeam = 0;
+  std::uint64_t terminalHintsGenerated = 0;
+  std::uint64_t terminalHintsRetained = 0;
+  std::uint64_t terminalHintsPruned = 0;
   /// Number of admitted states whose lower bound was updated from the parent
   /// event/action delta rather than by rescanning the frozen graph.
   std::uint64_t incrementalLowerBoundUpdates = 0;

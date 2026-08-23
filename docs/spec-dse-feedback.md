@@ -3339,6 +3339,22 @@ frontier ledger reports full lower-bound evaluations separately from
 incremental updates, and both are part of the deterministic state-work
 reconciliation.
 
+Future-state memoization stores the semantic ready/active/live state once and
+retains a real Pareto set of path observations for that future. Two path
+observations with different peak concurrency are incomparable because they may
+support opposite spectrum endpoints. At equal peak concurrency, one path may
+discard another only when its lower bound, allocated resource-time, and model
+support are all no worse. Independent extrema from different paths must not be
+combined into a synthetic envelope and used as a dominance proof.
+
+The retained-byte limit applies to the state memo, the current and next beam,
+and the bounded terminal-hint inventory that are live at the same time. It is
+not cumulative generated-state work. Terminal hints are retained online as
+the objective-best inventory plus the temporal and spatial extrema needed by
+the final selector; the complete terminal set is never materialized merely to
+truncate it afterward. Generated, retained, and pruned terminal-hint counts
+are part of the frontier ledger.
+
 The application integration enforces this ordering as two distinct passes. It
 first consumes the already available Canonical Dataflow views only to build the
 resource-time invocation projection and analytic frontier. It publishes

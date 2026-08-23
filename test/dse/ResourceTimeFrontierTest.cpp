@@ -175,11 +175,24 @@ void fiveRegionCostAndReadinessAreEventDriven() {
           "low-cost work accounting is not closed");
   require(low->accounting.stateMemoHits != 0,
           "event frontier did not deduplicate equivalent admission orders");
+  require(low->accounting.stateMemoParetoInsertions != 0,
+          "event frontier did not retain non-dominated paths to one future "
+          "state");
   require(low->accounting.incrementalLowerBoundUpdates != 0 &&
               low->accounting.estimates.consumed <
                   low->accounting.states.consumed,
           "event frontier recomputed every lower bound instead of applying "
           "incremental updates");
+  require(low->accounting.estimates.consumed == 1 &&
+              low->accounting.incrementalLowerBoundUpdates ==
+                  low->accounting.actions.consumed &&
+              low->accounting.terminalHintsGenerated >=
+                  low->accounting.terminalHintsRetained &&
+              low->accounting.terminalHintsGenerated ==
+                  low->accounting.terminalHintsRetained +
+                      low->accounting.terminalHintsPruned,
+          "resource-time funnel did not bound lower-bound and terminal-hint "
+          "work at generation time");
 }
 
 void budgetsAndExactRejectionsRemainTyped() {
@@ -199,7 +212,7 @@ void budgetsAndExactRejectionsRemainTyped() {
               incomplete->accounting),
           "incomplete work accounting is not closed");
   auto inconsistentMemoAccounting = incomplete->accounting;
-  ++inconsistentMemoAccounting.stateMemoEnvelopeUpdates;
+  ++inconsistentMemoAccounting.stateMemoParetoInsertions;
   llvm::Error inconsistentMemoError =
       loom::dse::validateResourceTimeFrontierAccounting(
           inconsistentMemoAccounting);
@@ -344,9 +357,11 @@ void mappingFunnelAdmitsOnlyBoundedFinalists() {
               selected.preferenceOrder.size() == 3 && selected.truncated,
           "resource-time funnel did not bound real Mapping finalists");
   require(selected.accounting.frontierAccounting.states.consumed != 0 &&
-              selected.accounting.frontierAccounting.stateMemoMisses +
+              selected.accounting.frontierAccounting.stateMemoMisses -
+                          selected.accounting.frontierAccounting
+                              .stateMemoMissCapacityRejections +
                       selected.accounting.frontierAccounting
-                          .stateMemoEnvelopeUpdates ==
+                          .stateMemoParetoInsertions ==
                   selected.accounting.frontierAccounting.states.consumed &&
               !loom::dse::validateResourceTimeMappingFunnelAccounting(
                   selected.accounting),

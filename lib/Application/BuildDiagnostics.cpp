@@ -471,15 +471,30 @@ void emitApplicationPlanningDiagnostics(
                                    {"state_memo_misses",
                                     resourceTime.frontierAccounting
                                         .stateMemoMisses},
-                                   {"state_memo_envelope_updates",
+                                   {"state_memo_pareto_insertions",
                                     resourceTime.frontierAccounting
-                                        .stateMemoEnvelopeUpdates},
+                                        .stateMemoParetoInsertions},
                                    {"state_memo_dominated_states",
                                     resourceTime.frontierAccounting
                                         .stateMemoDominatedStates},
+                                   {"state_memo_hit_capacity_rejections",
+                                    resourceTime.frontierAccounting
+                                        .stateMemoHitCapacityRejections},
+                                   {"state_memo_miss_capacity_rejections",
+                                    resourceTime.frontierAccounting
+                                        .stateMemoMissCapacityRejections},
                                    {"states_pruned_by_beam",
                                     resourceTime.frontierAccounting
                                         .statesPrunedByBeam},
+                                   {"terminal_hints_generated",
+                                    resourceTime.frontierAccounting
+                                        .terminalHintsGenerated},
+                                   {"terminal_hints_retained",
+                                    resourceTime.frontierAccounting
+                                        .terminalHintsRetained},
+                                   {"terminal_hints_pruned",
+                                    resourceTime.frontierAccounting
+                                        .terminalHintsPruned},
                                    {"incremental_lower_bound_updates",
                                     resourceTime.frontierAccounting
                                         .incrementalLowerBoundUpdates},
@@ -900,12 +915,22 @@ void emitApplicationMappingDiagnostics(
                resourceTime.frontierAccounting.stateMemoHits},
               {"state_memo_misses",
                resourceTime.frontierAccounting.stateMemoMisses},
-              {"state_memo_envelope_updates",
-               resourceTime.frontierAccounting.stateMemoEnvelopeUpdates},
+              {"state_memo_pareto_insertions",
+               resourceTime.frontierAccounting.stateMemoParetoInsertions},
               {"state_memo_dominated_states",
                resourceTime.frontierAccounting.stateMemoDominatedStates},
+              {"state_memo_hit_capacity_rejections",
+               resourceTime.frontierAccounting.stateMemoHitCapacityRejections},
+              {"state_memo_miss_capacity_rejections",
+               resourceTime.frontierAccounting.stateMemoMissCapacityRejections},
               {"states_pruned_by_beam",
                resourceTime.frontierAccounting.statesPrunedByBeam},
+              {"terminal_hints_generated",
+               resourceTime.frontierAccounting.terminalHintsGenerated},
+              {"terminal_hints_retained",
+               resourceTime.frontierAccounting.terminalHintsRetained},
+              {"terminal_hints_pruned",
+               resourceTime.frontierAccounting.terminalHintsPruned},
               {"incremental_lower_bound_updates",
                resourceTime.frontierAccounting.incrementalLowerBoundUpdates},
               {"maximum_retained_bytes",
