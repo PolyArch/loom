@@ -430,6 +430,19 @@ void exerciseJointExploration(bool runFifoHardwareRepair) {
   if (separatedMode && operandRepair.childSystems.size() != 2)
     fail("exact operand-buffer feedback did not retain both bounded "
          "mode/depth alternatives");
+  const std::uint64_t expectedOperandCandidateLimit = separatedMode ? 2 : 1;
+  if (operandRepair.candidateLimit != expectedOperandCandidateLimit ||
+      operandRepair.candidatesPlanned != operandRepair.candidatesReserved ||
+      operandRepair.candidatesReserved != operandRepair.candidatesConsumed +
+                                               operandRepair.candidatesRejected +
+                                               operandRepair.candidatesCancelled)
+    fail("operand-buffer hardware child budget ledger is not closed: limit=" +
+         llvm::Twine(operandRepair.candidateLimit) +
+         " planned=" + llvm::Twine(operandRepair.candidatesPlanned) +
+         " reserved=" + llvm::Twine(operandRepair.candidatesReserved) +
+         " consumed=" + llvm::Twine(operandRepair.candidatesConsumed) +
+         " rejected=" + llvm::Twine(operandRepair.candidatesRejected) +
+         " cancelled=" + llvm::Twine(operandRepair.candidatesCancelled));
   bool operandMappingVerified = false;
   for (std::size_t ordinal = 0; ordinal != operandRepair.executions.size();
        ++ordinal) {

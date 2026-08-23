@@ -2736,9 +2736,17 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
         ChangeTemporalOperandBufferMode{target.pe, *target.separatedMode});
   decisions.push_back(ResizeTemporalOperandBuffer{
       target.pe, target.candidateEntriesPerAllocationUnit});
+  result.candidateLimit = decisions.size();
   for (std::size_t ordinal = 0; ordinal != decisions.size(); ++ordinal) {
-    if (dispatchDeadlineReached(request.executionPolicy))
+    if (dispatchDeadlineReached(request.executionPolicy)) {
+      const std::uint64_t remaining = decisions.size() - ordinal;
+      result.candidatesPlanned += remaining;
+      result.candidatesReserved += remaining;
+      result.candidatesCancelled += remaining;
       break;
+    }
+    ++result.candidatesPlanned;
+    ++result.candidatesReserved;
     HardwareRecipeGrowth growth;
     growth.config = parentPlan.resolvedConfig;
     growth.config.dse.planNodes.clear();
@@ -2766,6 +2774,7 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
         "spatial_operand_buffer_hardware_repair", artifacts, blobs);
     if (!repaired)
       return repaired.takeError();
+    ++result.candidatesConsumed;
     if (llvm::none_of(result.childSystems, [&](const auto &existing) {
           return existing == childReference;
         })) {
@@ -2774,6 +2783,15 @@ executeSpatialOperandBufferHardwareFeedbackReopen(
       result.executions.push_back(std::move(repaired->execution));
     }
   }
+  const std::uint64_t settled = result.candidatesConsumed +
+                                result.candidatesRejected +
+                                result.candidatesCancelled;
+  if (settled > result.candidatesReserved)
+    return invalid("operand-buffer hardware repair candidate ledger overflowed");
+  result.candidatesRejected += result.candidatesReserved - settled;
+  if (result.candidatesPlanned != result.candidatesReserved)
+    return invalid("operand-buffer hardware repair candidate ledger is not "
+                   "reserved");
   return result;
 }
 

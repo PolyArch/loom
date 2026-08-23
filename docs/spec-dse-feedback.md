@@ -3977,7 +3977,9 @@ stop publishes an incomplete outcome rather than infeasibility. Unknown or
 incomplete queue evidence is typed and cannot launch full PnR or become
 infeasibility. Exact invocation-local projections use the existing
 session/cache and work-ledger rules; repeated observations are deduplicated
-without recursive unbounded feedback.
+without recursive unbounded feedback. The child provider publishes its
+candidate limit and planned/reserved/consumed/rejected/cancelled counts; those
+counts join the enclosing hardware-repair ledger before Application selection.
 
 Runtime feedback carries one canonical ordered-head projection digest and the
 exact SystemMapping plus Dataflow/Fabric/Tech/Spatial owner references. The

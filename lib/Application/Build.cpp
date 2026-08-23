@@ -1881,6 +1881,12 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
           artifacts, blobs);
       if (!repaired)
         return repaired.takeError();
+      hardwareRepairProbeLimit += repaired->candidateLimit;
+      hardwareRepairProbesPlanned += repaired->candidatesPlanned;
+      hardwareRepairProbesReserved += repaired->candidatesReserved;
+      hardwareRepairProbesConsumed += repaired->candidatesConsumed;
+      hardwareRepairProbesRejected += repaired->candidatesRejected;
+      hardwareRepairProbesCancelled += repaired->candidatesCancelled;
       auto selected = consumeRepairedExecutions(repaired);
       if (!selected)
         return selected.takeError();

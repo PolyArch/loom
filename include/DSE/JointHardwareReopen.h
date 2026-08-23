@@ -32,6 +32,12 @@ struct JointSpatialOperandBufferHardwareRepair final {
   std::vector<ArtifactRootReference> childSystems;
   std::vector<JointDesignExecution> executions;
   std::vector<JointMappingReuseDisposition> reuseDispositions;
+  std::uint64_t candidateLimit = 0;
+  std::uint64_t candidatesPlanned = 0;
+  std::uint64_t candidatesReserved = 0;
+  std::uint64_t candidatesConsumed = 0;
+  std::uint64_t candidatesRejected = 0;
+  std::uint64_t candidatesCancelled = 0;
 };
 
 struct JointHardwareReopenRequest final {
