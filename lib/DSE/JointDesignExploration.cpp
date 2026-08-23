@@ -490,6 +490,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignExploration(
     mappedPairs.push_back({pair.pair, std::move(mappings)});
   }
   JointDesignExecutionSummary summary;
+  summary.invocationRunKey = closure.runKey().bytes();
   summary.eligibleJointPairCount = plan.frontier.eligiblePairCount;
   summary.analyticEvaluatedJointPairCount =
       plan.frontier.analyticEvaluatedPairCount;

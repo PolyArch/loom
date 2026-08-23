@@ -4,6 +4,7 @@
 #include "ExecutionGlue.h"
 
 #include "Common/ArtifactStore.h"
+#include "Common/ArtifactLocalReference.h"
 #include "Common/BlobStore.h"
 #include "Common/MappingDebugLog.h"
 #include "DSE/JointHardwareReopen.h"
@@ -108,6 +109,347 @@ llvm::Error invalid(const llvm::Twine &message) {
   return llvm::createStringError(
       std::make_error_code(std::errc::invalid_argument),
       "application_build_invalid: " + message);
+}
+
+constexpr llvm::StringLiteral applicationPairIdentityDescriptor{
+    "loom.application.pair.decision.identity.1"};
+
+void appendU64(std::vector<std::uint8_t> &bytes, std::uint64_t value) {
+  for (unsigned shift = 56; shift != 0; shift -= 8)
+    bytes.push_back(static_cast<std::uint8_t>(value >> shift));
+  bytes.push_back(static_cast<std::uint8_t>(value));
+}
+
+void appendFramedBytes(std::vector<std::uint8_t> &bytes,
+                       llvm::ArrayRef<std::uint8_t> value) {
+  appendU64(bytes, value.size());
+  bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
+llvm::Expected<ComponentViewDigest> deriveApplicationPairIdentity(
+    const ArtifactRootReference &sourceProgram,
+    const ArtifactRootReference &fabric,
+    const ArtifactRootReference &workload,
+    const ArtifactRootReference &runtimeInput) {
+  std::vector<std::uint8_t> bytes;
+  const std::array<ArtifactRootReference, 4> roots = {
+      sourceProgram, fabric, workload, runtimeInput};
+  appendU64(bytes, roots.size());
+  for (const ArtifactRootReference &root : roots)
+    appendFramedBytes(bytes, encodeArtifactRootReference(root));
+  return computeComponentViewDigest(
+      {reinterpret_cast<const std::uint8_t *>(
+           applicationPairIdentityDescriptor.data()),
+       applicationPairIdentityDescriptor.size()},
+      bytes);
+}
+
+ApplicationObjectiveObservation unsupportedObjective(
+    ApplicationObjectiveDimension dimension) {
+  return {dimension, std::nullopt, ApplicationObjectiveEvidence::Unsupported,
+          0, false};
+}
+
+std::vector<ApplicationObjectiveObservation> makeUnsupportedObjectiveVector() {
+  std::vector<ApplicationObjectiveObservation> result;
+  result.reserve(11);
+  for (std::uint8_t ordinal = 0; ordinal != 11; ++ordinal)
+    result.push_back(unsupportedObjective(
+        static_cast<ApplicationObjectiveDimension>(ordinal)));
+  return result;
+}
+
+void setObjective(ApplicationObjectiveObservation &observation,
+                  std::uint64_t value, ApplicationObjectiveEvidence evidence,
+                  std::uint16_t confidencePermille = 1000,
+                  bool outOfDistribution = false) {
+  observation.value = value;
+  observation.evidence = evidence;
+  observation.confidencePermille = confidencePermille;
+  observation.outOfDistribution = outOfDistribution;
+}
+
+ApplicationPairDecisionDisposition
+mapIncompleteReasonToPairDisposition(const dse::DsePlanIncompleteReason &reason) {
+  if (const auto *candidate =
+          std::get_if<dse::CandidateGeneratorIncompleteReason>(&reason)) {
+    switch (*candidate) {
+    case dse::CandidateGeneratorIncompleteReason::CancelledOrTimeout:
+      return ApplicationPairDecisionDisposition::CancelledOrTimeout;
+    case dse::CandidateGeneratorIncompleteReason::SemanticLimitReached:
+      return ApplicationPairDecisionDisposition::BudgetExhausted;
+    case dse::CandidateGeneratorIncompleteReason::ProviderUnavailable:
+    case dse::CandidateGeneratorIncompleteReason::ExecutionFailed:
+      return ApplicationPairDecisionDisposition::ImplementationFailure;
+    case dse::CandidateGeneratorIncompleteReason::Unsupported:
+      return ApplicationPairDecisionDisposition::UnsupportedSemantic;
+    case dse::CandidateGeneratorIncompleteReason::ProofNotEstablished:
+      return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+    }
+  }
+  if (const auto *promotion =
+          std::get_if<dse::PromotionAcquisitionIncompleteReason>(&reason)) {
+    switch (*promotion) {
+    case dse::PromotionAcquisitionIncompleteReason::CancelledOrTimeout:
+      return ApplicationPairDecisionDisposition::CancelledOrTimeout;
+    case dse::PromotionAcquisitionIncompleteReason::SemanticWorkLimit:
+      return ApplicationPairDecisionDisposition::BudgetExhausted;
+    case dse::PromotionAcquisitionIncompleteReason::ProviderUnavailable:
+      return ApplicationPairDecisionDisposition::ImplementationFailure;
+    case dse::PromotionAcquisitionIncompleteReason::Unsupported:
+    case dse::PromotionAcquisitionIncompleteReason::ObjectiveUnavailable:
+      return ApplicationPairDecisionDisposition::UnsupportedSemantic;
+    }
+  }
+  if (const auto *selection = std::get_if<dse::IncompleteSelectionReason>(&reason)) {
+    switch (*selection) {
+    case dse::IncompleteSelectionReason::CancelledOrTimeoutEvidence:
+      return ApplicationPairDecisionDisposition::CancelledOrTimeout;
+    case dse::IncompleteSelectionReason::MissingEvidence:
+    case dse::IncompleteSelectionReason::UnsupportedEvidence:
+    case dse::IncompleteSelectionReason::NonComparableEvidence:
+    case dse::IncompleteSelectionReason::ObjectiveUnavailable:
+      return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+    case dse::IncompleteSelectionReason::ExecutionFailedEvidence:
+      return ApplicationPairDecisionDisposition::ImplementationFailure;
+    }
+  }
+  return ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+}
+
+ApplicationPairDecisionRecord deriveApplicationPairDecision(
+    const PreparedApplicationBuild &prepared,
+    const std::vector<ApplicationMappingCandidateOutcome> &outcomes,
+    const dse::JointDesignExecutionSummary &summary) {
+  ApplicationPairDecisionRecord result;
+  result.invocationRunKey = summary.invocationRunKey;
+  auto identity = deriveApplicationPairIdentity(
+      prepared.preMappingSourceProgram, prepared.preMappingFabric,
+      prepared.preMappingWorkload, prepared.preMappingRuntimeInput);
+  if (!identity) {
+    // The roots were already admitted by the application preparation owner.
+    // Keep a deterministic zero-free record only if an internal corruption is
+    // encountered; the caller will retain the diagnostic error separately.
+    result.detail = llvm::toString(identity.takeError());
+  } else {
+    result.pairIdentity = *identity;
+  }
+
+  result.hostOnlyBaseline = makeUnsupportedObjectiveVector();
+  result.candidates.reserve(prepared.candidateInventory.size());
+  for (std::size_t ordinal = 0; ordinal != prepared.candidateInventory.size();
+       ++ordinal) {
+    const dse::PreMappingCandidatePlanningRecord &planning =
+        prepared.candidateInventory[ordinal];
+    ApplicationPairCandidateRecord candidate;
+    candidate.planningRecordOrdinal = ordinal;
+    candidate.candidateIdentity = planning.candidateIdentity;
+    candidate.objective = makeUnsupportedObjectiveVector();
+    if (planning.estimatedRuntimePicoseconds) {
+      setObjective(candidate.objective[
+                       static_cast<std::size_t>(
+                           ApplicationObjectiveDimension::HostOnlyWork)],
+                   *planning.estimatedRuntimePicoseconds,
+                   ApplicationObjectiveEvidence::Analytic, 250, true);
+    }
+    for (const ApplicationMappingCandidateOutcome &outcome : outcomes) {
+      if (outcome.preMappingCandidateRecordOrdinal != ordinal)
+        continue;
+      candidate.enteredMapping = true;
+      candidate.planOrdinal = outcome.planOrdinal;
+      if (summary.selectedPlanOrdinal &&
+          *summary.selectedPlanOrdinal == outcome.planOrdinal &&
+          summary.selectedMapping &&
+          llvm::is_contained(outcome.systemMappings, *summary.selectedMapping))
+        candidate.selected = true;
+      if (outcome.qualityObjectiveCodes.size() >= 3) {
+        const auto dfg = outcome.dfgCycles
+                             ? *outcome.dfgCycles
+                             : outcome.qualityObjectiveCodes[0];
+        const auto cgra = outcome.cgraCycles
+                              ? *outcome.cgraCycles
+                              : outcome.qualityObjectiveCodes[1];
+        const auto resource = outcome.resourceCoreCost
+                                  ? *outcome.resourceCoreCost
+                                  : outcome.qualityObjectiveCodes[2];
+        setObjective(candidate.objective[
+                         static_cast<std::size_t>(
+                             ApplicationObjectiveDimension::DfgCycles)],
+                     dfg, outcome.dfgCycles
+                              ? ApplicationObjectiveEvidence::RuntimeMeasured
+                              : ApplicationObjectiveEvidence::Exact);
+        setObjective(candidate.objective[
+                         static_cast<std::size_t>(
+                             ApplicationObjectiveDimension::CgraCycles)],
+                     cgra, outcome.cgraCycles
+                              ? ApplicationObjectiveEvidence::RuntimeMeasured
+                              : ApplicationObjectiveEvidence::Exact);
+        setObjective(candidate.objective[
+                         static_cast<std::size_t>(
+                             ApplicationObjectiveDimension::ResourceCoreCost)],
+                     resource, outcome.resourceCoreCost
+                                  ? ApplicationObjectiveEvidence::RuntimeMeasured
+                                  : ApplicationObjectiveEvidence::Exact);
+      }
+    }
+    // The current JointDesign summary owns invocation-wide Mapping work, not
+    // a candidate-local split. Keep this dimension explicitly unsupported on
+    // non-selected candidates instead of attributing the whole invocation to
+    // each plan.
+    candidate.objective[
+        static_cast<std::size_t>(ApplicationObjectiveDimension::MappingWork)] =
+        unsupportedObjective(ApplicationObjectiveDimension::MappingWork);
+    result.candidates.push_back(std::move(candidate));
+  }
+
+  const ApplicationPairCandidateRecord *selected = nullptr;
+  for (const ApplicationPairCandidateRecord &candidate : result.candidates)
+    if (candidate.selected) {
+      selected = &candidate;
+      break;
+    }
+  if (selected) {
+    result.selectedCandidateIdentity = selected->candidateIdentity;
+    for (const ApplicationMappingCandidateOutcome &outcome : outcomes)
+      if (outcome.planOrdinal == selected->planOrdinal &&
+          summary.selectedMapping &&
+          llvm::is_contained(outcome.systemMappings, *summary.selectedMapping)) {
+        result.selectedSystem = outcome.system;
+        const auto &objective = selected->objective;
+        const auto dfg = objective[static_cast<std::size_t>(
+            ApplicationObjectiveDimension::DfgCycles)];
+        const auto cgra = objective[static_cast<std::size_t>(
+            ApplicationObjectiveDimension::CgraCycles)];
+        result.hostOnlyBaseline = makeUnsupportedObjectiveVector();
+        if (dfg.value) {
+          setObjective(result.hostOnlyBaseline[
+                           static_cast<std::size_t>(
+                               ApplicationObjectiveDimension::HostOnlyWork)],
+                       *dfg.value, ApplicationObjectiveEvidence::RuntimeMeasured);
+          setObjective(result.hostOnlyBaseline[
+                           static_cast<std::size_t>(
+                               ApplicationObjectiveDimension::DfgCycles)],
+                       *dfg.value, ApplicationObjectiveEvidence::RuntimeMeasured);
+          result.hostOnlyBaselineComplete = true;
+        }
+        result.selectedObjective = objective;
+        setObjective(result.selectedObjective[
+                         static_cast<std::size_t>(
+                             ApplicationObjectiveDimension::MappingWork)],
+                     summary.techMappingDispatchCount +
+                         summary.spatialPnrDispatchCount +
+                         summary.systemPnrDispatchCount,
+                     ApplicationObjectiveEvidence::RuntimeMeasured);
+        result.finalApplicationQorComplete =
+            dfg.value.has_value() && cgra.value.has_value();
+        if (outcome.runtimeDisposition !=
+            ApplicationMappingRuntimeDisposition::Completed) {
+          switch (outcome.runtimeDisposition) {
+          case ApplicationMappingRuntimeDisposition::Unsupported:
+            result.disposition =
+                ApplicationPairDecisionDisposition::UnsupportedSemantic;
+            break;
+          case ApplicationMappingRuntimeDisposition::ProofNotEstablished:
+          case ApplicationMappingRuntimeDisposition::NotRequested:
+            result.disposition =
+                ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+            break;
+          case ApplicationMappingRuntimeDisposition::ExecutionFailed:
+            result.disposition =
+                ApplicationPairDecisionDisposition::ImplementationFailure;
+            break;
+          case ApplicationMappingRuntimeDisposition::CancelledOrTimeout:
+            result.disposition =
+                ApplicationPairDecisionDisposition::CancelledOrTimeout;
+            break;
+          case ApplicationMappingRuntimeDisposition::Completed:
+            llvm_unreachable("completed runtime disposition handled above");
+          }
+        } else if (outcome.system != prepared.preMappingFabric) {
+          result.disposition =
+              ApplicationPairDecisionDisposition::HardwareDseAlternative;
+        } else if (dfg.value && cgra.value && *cgra.value < *dfg.value) {
+          result.disposition =
+              ApplicationPairDecisionDisposition::VerifiedAcceleration;
+        } else if (dfg.value && cgra.value) {
+          result.disposition = ApplicationPairDecisionDisposition::
+              VerifiedFeasibleButNotBeneficial;
+        } else {
+          result.disposition =
+              ApplicationPairDecisionDisposition::MappingProofNotEstablished;
+        }
+        break;
+      }
+  }
+  if (!selected) {
+    const bool exactHardwareIncompatibility =
+        !summary.attempts.empty() &&
+        llvm::all_of(summary.attempts, [](const auto &attempt) {
+          return attempt.disposition ==
+                     dse::JointDesignAttemptDisposition::
+                         ProvenNoFeasibleCandidate &&
+                 attempt.systemMappings.empty();
+        }) &&
+        !summary.jointFrontierTruncated;
+    if (exactHardwareIncompatibility) {
+      result.disposition =
+          ApplicationPairDecisionDisposition::ExactHardwareIncompatible;
+      result.detail =
+          "all admitted System candidates published typed "
+          "ProvenNoFeasibleCandidate witnesses";
+    }
+    for (const dse::JointDesignAttemptRecord &attempt : summary.attempts)
+      if (attempt.incompleteReason) {
+        result.disposition =
+            mapIncompleteReasonToPairDisposition(*attempt.incompleteReason);
+        break;
+      }
+    if (result.disposition ==
+            ApplicationPairDecisionDisposition::ImplementationFailure &&
+        summary.declaredWorkExhausted)
+      result.disposition = ApplicationPairDecisionDisposition::BudgetExhausted;
+    if (summary.declaredWorkExhausted &&
+        result.disposition ==
+            ApplicationPairDecisionDisposition::MappingProofNotEstablished)
+      result.disposition = ApplicationPairDecisionDisposition::BudgetExhausted;
+  }
+  return result;
+}
+
+ApplicationPairDecisionRecord makePreparationPairDecision(
+    const std::optional<ArtifactRootReference> &sourceProgram,
+    const std::optional<ArtifactRootReference> &fabric,
+    const std::optional<ArtifactRootReference> &workload,
+    const std::optional<ArtifactRootReference> &runtimeInput,
+    llvm::ArrayRef<dse::PreMappingCandidatePlanningRecord> inventory,
+    ApplicationPairDecisionDisposition disposition, llvm::StringRef detail) {
+  ApplicationPairDecisionRecord result;
+  result.disposition = disposition;
+  result.detail = detail.str();
+  result.candidates.reserve(inventory.size());
+  for (std::size_t ordinal = 0; ordinal != inventory.size(); ++ordinal) {
+    const auto &record = inventory[ordinal];
+    ApplicationPairCandidateRecord candidate;
+    candidate.planningRecordOrdinal = ordinal;
+    candidate.candidateIdentity = record.candidateIdentity;
+    candidate.objective = makeUnsupportedObjectiveVector();
+    if (record.estimatedRuntimePicoseconds)
+      setObjective(candidate.objective[
+                       static_cast<std::size_t>(
+                           ApplicationObjectiveDimension::HostOnlyWork)],
+                   *record.estimatedRuntimePicoseconds,
+                   ApplicationObjectiveEvidence::Analytic, 250, true);
+    result.candidates.push_back(std::move(candidate));
+  }
+  if (sourceProgram && fabric && workload && runtimeInput) {
+    auto identity = deriveApplicationPairIdentity(
+        *sourceProgram, *fabric, *workload, *runtimeInput);
+    if (identity)
+      result.pairIdentity = *identity;
+    else
+      result.detail = llvm::toString(identity.takeError());
+  }
+  return result;
 }
 
 llvm::Expected<std::uint64_t> nextExecutableImageBase(std::uint64_t end) {
@@ -500,6 +842,32 @@ publishApplicationWorkloads(
 
 } // namespace
 
+llvm::StringRef toString(ApplicationPairDecisionDisposition value) {
+  switch (value) {
+  case ApplicationPairDecisionDisposition::VerifiedAcceleration:
+    return "verified_acceleration";
+  case ApplicationPairDecisionDisposition::VerifiedFeasibleButNotBeneficial:
+    return "verified_feasible_but_not_beneficial";
+  case ApplicationPairDecisionDisposition::NoPromisingCandidate:
+    return "no_promising_candidate";
+  case ApplicationPairDecisionDisposition::ExactHardwareIncompatible:
+    return "exact_hardware_incompatible";
+  case ApplicationPairDecisionDisposition::MappingProofNotEstablished:
+    return "mapping_proof_not_established";
+  case ApplicationPairDecisionDisposition::CancelledOrTimeout:
+    return "cancelled_or_timeout";
+  case ApplicationPairDecisionDisposition::BudgetExhausted:
+    return "budget_exhausted";
+  case ApplicationPairDecisionDisposition::UnsupportedSemantic:
+    return "unsupported_semantic";
+  case ApplicationPairDecisionDisposition::ImplementationFailure:
+    return "implementation_failure";
+  case ApplicationPairDecisionDisposition::HardwareDseAlternative:
+    return "hardware_dse_alternative";
+  }
+  llvm_unreachable("unknown application pair decision disposition");
+}
+
 llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
     const llvm::Module &finalLinkedModule, ApplicationBuildRequest request,
     const ArtifactStore &artifacts, const BlobStore &blobs) {
@@ -547,12 +915,38 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
   if (auto *incomplete =
           std::get_if<dse::IncompletePreMappingExploration>(&*preMapping)) {
     emitApplicationPreMappingIncompleteDiagnostics(*incomplete);
+    if (incomplete->checkpoint) {
+      const dse::PreMappingCheckpoint &checkpoint = *incomplete->checkpoint;
+      auto decision = makePreparationPairDecision(
+          checkpoint.sourceProgram, checkpoint.fabric, checkpoint.workload,
+          checkpoint.runtimeInput, checkpoint.candidateInventory,
+          mapIncompleteReasonToPairDisposition(incomplete->reason),
+          dse::toString(incomplete->reason));
+      emitApplicationPairDecisionDiagnostics(decision);
+    } else {
+      auto decision = makePreparationPairDecision(
+          std::nullopt, std::nullopt, std::nullopt, std::nullopt, {},
+          mapIncompleteReasonToPairDisposition(incomplete->reason),
+          dse::toString(incomplete->reason));
+      emitApplicationPairDecisionDiagnostics(decision);
+    }
     return ApplicationBuildPreparationOutcome{std::move(*incomplete)};
   }
   if (auto *noFeasible =
           std::get_if<dse::CompletedPreMappingNoFeasibleCandidate>(
-              &*preMapping))
+              &*preMapping)) {
+    auto decision = makePreparationPairDecision(
+        noFeasible->sourceProgram, noFeasible->fabric, noFeasible->workload,
+        noFeasible->runtimeInput, noFeasible->candidateInventory,
+        noFeasible->completeness.exactComplete()
+            ? ApplicationPairDecisionDisposition::NoPromisingCandidate
+            : ApplicationPairDecisionDisposition::BudgetExhausted,
+        noFeasible->completeness.exactComplete()
+            ? "bounded front-end retained no candidate"
+            : "front-end terminated before a complete candidate-domain proof");
+    emitApplicationPairDecisionDiagnostics(decision);
     return ApplicationBuildPreparationOutcome{std::move(*noFeasible)};
+  }
 
   auto completed =
       std::get<dse::CompletedPreMappingSelection>(std::move(*preMapping));
@@ -889,31 +1283,74 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
     emitResourceTimeFunnelTerminal("cancelled_or_timeout");
   if (resourceTimeFunnel->incompleteReason ==
       dse::ResourceTimeFrontierIncompleteReason::CancelledOrTimeout)
-    return ApplicationBuildPreparationOutcome{
-        IncompleteApplicationResourceTimePlanning{
-            *resourceTimeFunnel->incompleteReason,
-            std::move(*resourceTimeFunnel),
-            std::move(completed.candidateInventory), completed.sourceProgram,
-            completed.fabric, completed.workload, completed.runtimeInput,
-            completed.frontierPolicyDigest}};
+    {
+      auto decision = makePreparationPairDecision(
+          completed.sourceProgram, completed.fabric, completed.workload,
+          completed.runtimeInput, completed.candidateInventory,
+          ApplicationPairDecisionDisposition::CancelledOrTimeout,
+          "resource-time funnel cancelled or timed out");
+      emitApplicationPairDecisionDiagnostics(decision);
+      return ApplicationBuildPreparationOutcome{
+          IncompleteApplicationResourceTimePlanning{
+              *resourceTimeFunnel->incompleteReason,
+              std::move(*resourceTimeFunnel),
+              std::move(completed.candidateInventory), completed.sourceProgram,
+              completed.fabric, completed.workload, completed.runtimeInput,
+              completed.frontierPolicyDigest}};
+    }
   if (resourceTimeFunnel->finalists.empty())
     emitResourceTimeFunnelTerminal(resourceTimeFunnel->incompleteReason
                                        ? "incomplete"
                                        : "no_mapping_finalist");
   if (resourceTimeFunnel->finalists.empty() &&
       resourceTimeFunnel->incompleteReason)
-    return ApplicationBuildPreparationOutcome{
-        IncompleteApplicationResourceTimePlanning{
-            *resourceTimeFunnel->incompleteReason,
-            std::move(*resourceTimeFunnel),
-            std::move(completed.candidateInventory), completed.sourceProgram,
-            completed.fabric, completed.workload, completed.runtimeInput,
-            completed.frontierPolicyDigest}};
+    {
+      const auto disposition =
+          *resourceTimeFunnel->incompleteReason ==
+                  dse::ResourceTimeFrontierIncompleteReason::Unsupported
+              ? ApplicationPairDecisionDisposition::UnsupportedSemantic
+              : ApplicationPairDecisionDisposition::BudgetExhausted;
+      auto decision = makePreparationPairDecision(
+          completed.sourceProgram, completed.fabric, completed.workload,
+          completed.runtimeInput, completed.candidateInventory, disposition,
+          dse::resourceTimeFrontierIncompleteReasonSpelling(
+              *resourceTimeFunnel->incompleteReason));
+      emitApplicationPairDecisionDiagnostics(decision);
+      return ApplicationBuildPreparationOutcome{
+          IncompleteApplicationResourceTimePlanning{
+              *resourceTimeFunnel->incompleteReason,
+              std::move(*resourceTimeFunnel),
+              std::move(completed.candidateInventory), completed.sourceProgram,
+              completed.fabric, completed.workload, completed.runtimeInput,
+              completed.frontierPolicyDigest}};
+    }
   if (resourceTimeFunnel->finalists.empty())
-    return ApplicationBuildPreparationOutcome{
-        dse::CompletedPreMappingNoFeasibleCandidate{
-            std::move(completed.satisfiedEvidence),
-            std::move(completed.planGenerateInvocations)}};
+    {
+      const bool completeNoPromisingProof =
+          completed.completeness.exactComplete() &&
+          !resourceTimeFunnel->truncated;
+      auto decision = makePreparationPairDecision(
+          completed.sourceProgram, completed.fabric, completed.workload,
+          completed.runtimeInput, completed.candidateInventory,
+          completeNoPromisingProof
+              ? ApplicationPairDecisionDisposition::NoPromisingCandidate
+              : ApplicationPairDecisionDisposition::BudgetExhausted,
+          completeNoPromisingProof
+              ? "resource-time funnel retained no Mapping finalist"
+              : "resource-time funnel ended without a complete candidate proof");
+      emitApplicationPairDecisionDiagnostics(decision);
+      return ApplicationBuildPreparationOutcome{
+          dse::CompletedPreMappingNoFeasibleCandidate{
+              std::move(completed.satisfiedEvidence),
+              std::move(completed.planGenerateInvocations),
+              completed.sourceProgram,
+              completed.fabric,
+              completed.workload,
+              completed.runtimeInput,
+              std::move(completed.candidateInventory),
+              completed.completeness,
+              completed.frontierPolicyDigest}};
+    }
 
   std::vector<PreparedApplicationSoftware> preparedSoftware;
   std::vector<PreparedApplicationMappingAlternative> mappingAlternatives;
@@ -1116,21 +1553,57 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
     return std::move(error);
   if (mappingAlternatives.empty()) {
     emitResourceTimeFunnelTerminal("all_finalists_rejected_before_mapping");
-    if (firstUnsupported)
+    if (firstUnsupported) {
+      auto decision = makePreparationPairDecision(
+          completed.sourceProgram, completed.fabric, completed.workload,
+          completed.runtimeInput, completed.candidateInventory,
+          ApplicationPairDecisionDisposition::UnsupportedSemantic,
+          "all retained finalists were rejected at the application boundary");
+      emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{std::move(*firstUnsupported)};
+    }
     if (resourceTimeFunnel->accounting
             .unsupportedBeforeMappingScheduleHints != 0)
-      return ApplicationBuildPreparationOutcome{
-          IncompleteApplicationResourceTimePlanning{
-              dse::ResourceTimeFrontierIncompleteReason::Unsupported,
-              std::move(*resourceTimeFunnel),
-              std::move(completed.candidateInventory), completed.sourceProgram,
-              completed.fabric, completed.workload, completed.runtimeInput,
-              completed.frontierPolicyDigest}};
+      {
+        auto decision = makePreparationPairDecision(
+            completed.sourceProgram, completed.fabric, completed.workload,
+            completed.runtimeInput, completed.candidateInventory,
+            ApplicationPairDecisionDisposition::UnsupportedSemantic,
+            "resource-time finalists were unsupported before Mapping");
+        emitApplicationPairDecisionDiagnostics(decision);
+        return ApplicationBuildPreparationOutcome{
+            IncompleteApplicationResourceTimePlanning{
+                dse::ResourceTimeFrontierIncompleteReason::Unsupported,
+                std::move(*resourceTimeFunnel),
+                std::move(completed.candidateInventory), completed.sourceProgram,
+                completed.fabric, completed.workload, completed.runtimeInput,
+                completed.frontierPolicyDigest}};
+      }
+    const bool completeNoPromisingProof =
+        completed.completeness.exactComplete() &&
+        !resourceTimeFunnel->truncated &&
+        !resourceTimeFunnel->incompleteReason;
+    auto decision = makePreparationPairDecision(
+        completed.sourceProgram, completed.fabric, completed.workload,
+        completed.runtimeInput, completed.candidateInventory,
+        completeNoPromisingProof
+            ? ApplicationPairDecisionDisposition::NoPromisingCandidate
+            : ApplicationPairDecisionDisposition::BudgetExhausted,
+        completeNoPromisingProof
+            ? "bounded resource-time funnel retained no Mapping finalist"
+            : "resource-time funnel did not close its bounded candidate domain");
+    emitApplicationPairDecisionDiagnostics(decision);
     return ApplicationBuildPreparationOutcome{
         dse::CompletedPreMappingNoFeasibleCandidate{
             std::move(completed.satisfiedEvidence),
-            std::move(completed.planGenerateInvocations)}};
+            std::move(completed.planGenerateInvocations),
+            completed.sourceProgram,
+            completed.fabric,
+            completed.workload,
+            completed.runtimeInput,
+            std::move(completed.candidateInventory),
+            completed.completeness,
+            completed.frontierPolicyDigest}};
   }
   for (dse::PreMappingCandidatePlanningRecord &record :
        completed.candidateInventory) {
@@ -1171,7 +1644,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
       completed.fabric,
       completed.workload,
       completed.runtimeInput,
-      completed.frontierPolicyDigest};
+      completed.frontierPolicyDigest,
+      systemView->artifact().accCoreOccurrences().size()};
   emitApplicationPlanningDiagnostics(prepared);
   return ApplicationBuildPreparationOutcome{std::move(prepared)};
 }
@@ -1318,7 +1792,10 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             ApplicationMappingRuntimeDisposition::NotRequested,
             {},
             {},
-            std::move(resourceTimeSpectrum)});
+            std::move(resourceTimeSpectrum),
+            std::nullopt,
+            std::nullopt,
+            std::nullopt});
       }
       dse::JointDesignAttemptRecord adjusted = attempt;
       adjusted.planOrdinal = planOrdinal;
@@ -1436,6 +1913,9 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
         continue;
       outcome.runtimeDisposition = runtime->disposition;
       outcome.runtimeEvidence = runtime->evidence;
+      outcome.dfgCycles = runtime->dfgCycles;
+      outcome.cgraCycles = runtime->cgraCycles;
+      outcome.resourceCoreCost = prepared.preMappingFabricAccCoreCount;
       joined = true;
     }
     if (!joined)
@@ -1507,7 +1987,10 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             childRuntime->disposition,
             childRuntime->evidence,
             {},
-            std::move(*childSpectrum)});
+            std::move(*childSpectrum),
+            childRuntime->dfgCycles,
+            childRuntime->cgraCycles,
+            std::nullopt});
         if (childRuntime->disposition ==
             ApplicationMappingRuntimeDisposition::Completed) {
           childExecution.summary.selectedPlanOrdinal = selectedPlanOrdinal;
@@ -1606,7 +2089,10 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
             childRuntime->disposition,
             childRuntime->evidence,
             {},
-            std::move(*childSpectrum)});
+            std::move(*childSpectrum),
+            childRuntime->dfgCycles,
+            childRuntime->cgraCycles,
+            std::nullopt});
         if (childRuntime->disposition !=
             ApplicationMappingRuntimeDisposition::Completed)
           continue;
@@ -1762,6 +2248,8 @@ executeApplicationMapping(const PreparedApplicationBuild &prepared,
   provenance.preMappingCompleteness = prepared.preMappingCompleteness;
   provenance.requestedPlannerMode = prepared.preMappingRequestedPlannerMode;
   provenance.resolvedPlannerMode = prepared.preMappingResolvedPlannerMode;
+  provenance.pairDecision = deriveApplicationPairDecision(
+      prepared, outcomes, selectedExecution->summary);
   ApplicationMappingExecution result{std::move(*selectedExecution),
                                      std::move(outcomes),
                                      std::move(provenance)};

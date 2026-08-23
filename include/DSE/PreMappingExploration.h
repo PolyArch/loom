@@ -227,6 +227,17 @@ struct CompletedPreMappingSelection final {
 struct CompletedPreMappingNoFeasibleCandidate final {
   std::vector<ArtifactRootReference> satisfiedEvidence;
   std::vector<DsePlanGenerateInvocationRecords> planGenerateInvocations;
+  /// The application owner uses this retained context to publish a complete
+  /// pair-level decision even when the bounded front-end keeps no candidate.
+  /// These are provenance roots and planning records, not a second identity
+  /// or Mapping legality owner.
+  std::optional<ArtifactRootReference> sourceProgram;
+  std::optional<ArtifactRootReference> fabric;
+  std::optional<ArtifactRootReference> workload;
+  std::optional<ArtifactRootReference> runtimeInput;
+  std::vector<PreMappingCandidatePlanningRecord> candidateInventory;
+  PreMappingSearchCompleteness completeness;
+  std::optional<ComponentViewDigest> frontierPolicyDigest;
 };
 
 struct IncompletePreMappingExploration final {

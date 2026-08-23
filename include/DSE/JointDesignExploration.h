@@ -11,6 +11,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -134,6 +135,10 @@ struct JointPairAnalyticObservation final {
 };
 
 struct JointDesignExecutionSummary final {
+  /// Exact InvocationManifest run key for this joint execution. It is a
+  /// provenance join only; application decisions must not derive identity
+  /// from mutable ranking or cache state.
+  std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
   JointDesignStoppingPolicy stoppingPolicy =
       JointDesignStoppingPolicy::FirstVerified;
   /// Frontier accounting is kept separate from Mapping outcomes. Deferred

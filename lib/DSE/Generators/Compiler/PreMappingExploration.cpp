@@ -2145,7 +2145,14 @@ exploreStructuredCompilationToPreMapping(
     return PreMappingExplorationOutcome{
         CompletedPreMappingNoFeasibleCandidate{
             std::move(satisfiedEvidence),
-            std::move(planGenerateInvocations)}};
+            std::move(planGenerateInvocations),
+            *sourceReference,
+            fabric.reference(),
+            *workloadReference,
+            *runtimeInputReference,
+            std::move(candidateInventory),
+            {},
+            *frontierPolicyDigest}};
   }
     std::vector<PreMappingFrontierCandidate> rankedInputs;
     rankedInputs.reserve(semanticAlternatives.size());
@@ -2580,7 +2587,15 @@ exploreStructuredCompilationToPreMapping(
         std::move(planGenerateInvocations));
   if (selected.empty())
     return PreMappingExplorationOutcome{CompletedPreMappingNoFeasibleCandidate{
-        std::move(satisfiedEvidence), std::move(planGenerateInvocations)}};
+        std::move(satisfiedEvidence),
+        std::move(planGenerateInvocations),
+        *sourceReference,
+        fabric.reference(),
+        *workloadReference,
+        *runtimeInputReference,
+        std::move(candidateInventory),
+        {},
+        *frontierPolicyDigest}};
   const StructuredOwnershipSharedEvaluationStatistics sharedStatistics =
       sharedEvaluation.statistics();
   mapping_debug::emit(

@@ -182,6 +182,56 @@ def validate_mapping_work(
     require(len(join_rows) == 1,
             "expected one application Mapping join summary")
     join = join_rows[0]
+    pair_decision = join.get("pair_decision")
+    require(isinstance(pair_decision, dict),
+            "application Mapping join omitted the pair-level decision")
+    pair_identity = pair_decision.get("pair_identity")
+    require(
+        isinstance(pair_identity, str)
+        and len(pair_identity) == 64
+        and pair_identity == pair_identity.lower()
+        and all(character in "0123456789abcdef" for character in pair_identity),
+        "pair-level decision has no stable identity",
+    )
+    manifest_run_key = pair_decision.get("invocation_manifest_run_key")
+    require(
+        isinstance(manifest_run_key, str)
+        and len(manifest_run_key) == 64
+        and manifest_run_key == manifest_run_key.lower()
+        and all(character in "0123456789abcdef" for character in manifest_run_key),
+        "pair-level decision has no InvocationManifest run-key join",
+    )
+    require(
+        pair_decision.get("disposition")
+        in {
+            "verified_acceleration",
+            "verified_feasible_but_not_beneficial",
+            "hardware_dse_alternative",
+        },
+        "successful product Mapping published a non-success pair decision",
+    )
+    require(
+        isinstance(pair_decision.get("candidates"), list)
+        and pair_decision["candidates"],
+        "pair-level decision omitted its bounded candidate inventory",
+    )
+    objective_vectors = [pair_decision.get("host_only_baseline", [])]
+    objective_vectors.extend(
+        candidate.get("objective", [])
+        for candidate in pair_decision["candidates"]
+    )
+    selected_objective = pair_decision.get("selected_objective")
+    if isinstance(selected_objective, list) and selected_objective:
+        objective_vectors.append(selected_objective)
+    for vector in objective_vectors:
+        require(isinstance(vector, list) and len(vector) == 11,
+                "pair decision objective vector is not structurally complete")
+        for observation in vector:
+            require(isinstance(observation, dict),
+                    "pair decision objective observation is malformed")
+            if observation.get("evidence") == "unsupported":
+                require(observation.get("value") is None,
+                        "unsupported objective dimension was encoded as zero")
     require(
         join.get("verified_alternatives") == len(system)
         and isinstance(join.get("system_pnr_dispatch_count"), int)

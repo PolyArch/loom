@@ -3059,6 +3059,7 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
       }
     }
     JointDesignExecutionSummary summary;
+    summary.invocationRunKey = accounting.invocationRunKey;
     summary.stoppingPolicy = request.stoppingPolicy;
     if (!plans.empty() && plans.front()) {
       const BoundedJointFrontier &frontier = plans.front()->frontier;
@@ -3310,6 +3311,8 @@ llvm::Expected<JointDesignExecution> executeJointDesignWithHardwareReopen(
                   initial->summary.spatialPnrJournalReplayCount);
     saturatingAdd(accounting.systemPnrJournalReplayCount,
                   initial->summary.systemPnrJournalReplayCount);
+    if (!accounting.invocationRunKey && initial->summary.invocationRunKey)
+      accounting.invocationRunKey = initial->summary.invocationRunKey;
     saturatingAdd(accounting.coldReopenWallTimeNanoseconds,
                   initial->summary.coldReopenWallTimeNanoseconds);
     saturatingAdd(accounting.incrementalReopenWallTimeNanoseconds,

@@ -219,6 +219,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
     completeness: list[dict[str, Any]] = []
     candidates: list[dict[str, Any]] = []
     application_outcomes: list[dict[str, Any]] = []
+    application_pair_decisions: list[dict[str, Any]] = []
     quality_summaries: list[dict[str, Any]] = []
     quality_observations: list[dict[str, Any]] = []
     funnel_summaries: list[dict[str, Any]] = []
@@ -497,6 +498,12 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
             payload.get("evaluation_timing"), dict
         ):
             evaluation_timings.append(payload["evaluation_timing"])
+        if payload.get("domain") in {
+            "application_mapping_join",
+            "application_pair_decision",
+        }:
+            if isinstance(payload.get("pair_decision"), dict):
+                application_pair_decisions.append(payload["pair_decision"])
         if payload.get("domain") == "application_mapping_join":
             mapping_observations.append(
                 {
@@ -614,6 +621,9 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
                             "disposition",
                             "runtime_disposition",
                             "runtime_evidence",
+                            "dfg_cycles",
+                            "cgra_cycles",
+                            "resource_core_cost",
                             "quality_objective_codes",
                             "system_binding_partitions",
                             "resource_time_verified_scenarios",
@@ -846,6 +856,7 @@ def collect_facts(records: list[dict[str, Any]]) -> dict[str, Any]:
         "candidate_observations": candidates,
         "candidate_dispositions": dict(sorted(disposition_counts.items())),
         "application_mapping_outcomes": application_outcomes,
+        "application_pair_decisions": application_pair_decisions,
         "quality_summaries": quality_summaries,
         "quality_observations": quality_observations,
         "funnel_summaries": funnel_summaries,

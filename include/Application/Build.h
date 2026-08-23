@@ -14,8 +14,10 @@
 #include "Hardware/Configuration/ConfigurationABI.h"
 #include "Simulator/SimulationArtifacts.h"
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -129,6 +131,7 @@ struct PreparedApplicationBuild final {
   ArtifactRootReference preMappingWorkload;
   ArtifactRootReference preMappingRuntimeInput;
   ComponentViewDigest preMappingFrontierPolicyDigest;
+  std::uint64_t preMappingFabricAccCoreCount = 0;
 };
 
 struct ApplicationDeploymentRequest final {
@@ -162,6 +165,97 @@ enum class ApplicationMappingRuntimeDisposition : std::uint8_t {
   CancelledOrTimeout,
 };
 
+/// The terminal decision for one complete application/workload and
+/// Fabric/System pair. This is an application-level projection of the
+/// existing planning, Mapping, and runtime records; it is not a second
+/// Mapping legality or candidate identity authority.
+enum class ApplicationPairDecisionDisposition : std::uint8_t {
+  VerifiedAcceleration,
+  VerifiedFeasibleButNotBeneficial,
+  NoPromisingCandidate,
+  ExactHardwareIncompatible,
+  MappingProofNotEstablished,
+  CancelledOrTimeout,
+  BudgetExhausted,
+  UnsupportedSemantic,
+  ImplementationFailure,
+  HardwareDseAlternative,
+};
+
+llvm::StringRef toString(ApplicationPairDecisionDisposition value);
+
+/// Fixed application-QoR dimensions. The ordering is stable for reports, but
+/// the existing DSE ObjectiveProgram remains the sole ordering authority.
+enum class ApplicationObjectiveDimension : std::uint8_t {
+  HostOnlyWork,
+  DfgCycles,
+  CgraCycles,
+  HostResidualWork,
+  CutTransferWork,
+  LaunchSynchronizationWork,
+  ResourceCoreCost,
+  MappingWork,
+  Area,
+  Power,
+  Energy,
+};
+
+enum class ApplicationObjectiveEvidence : std::uint8_t {
+  Exact,
+  SoundBound,
+  Analytic,
+  Calibrated,
+  RuntimeMeasured,
+  Unsupported,
+};
+
+struct ApplicationObjectiveObservation final {
+  ApplicationObjectiveDimension dimension =
+      ApplicationObjectiveDimension::HostOnlyWork;
+  std::optional<std::uint64_t> value;
+  ApplicationObjectiveEvidence evidence =
+      ApplicationObjectiveEvidence::Unsupported;
+  /// A value in [0, 1000]. Exact and runtime-measured values use 1000;
+  /// unsupported values use 0. This is evidence metadata, not an objective
+  /// score and never participates in candidate identity.
+  std::uint16_t confidencePermille = 0;
+  bool outOfDistribution = false;
+};
+
+/// One identity-based reference into the existing candidate inventory and
+/// Mapping outcome vectors. It intentionally stores only derived application
+/// evidence; the planning record and JointDesignAttemptRecord remain the
+/// owners of detailed gates, witnesses, checkpoints, and work ledgers.
+struct ApplicationPairCandidateRecord final {
+  std::optional<ComponentViewDigest> candidateIdentity;
+  std::size_t planningRecordOrdinal = 0;
+  std::optional<std::uint64_t> planOrdinal;
+  bool enteredMapping = false;
+  bool selected = false;
+  std::vector<ApplicationObjectiveObservation> objective;
+};
+
+/// Stable pair-level decision record. The pair identity is derived from the
+/// exact source/workload/runtime/Fabric roots and is independent of frontier
+/// policy, ranking, cache state, and disposition. Detailed candidate facts
+/// remain in ApplicationMappingCandidateOutcome, JointDesignAttemptRecord,
+/// PreMappingCandidatePlanningRecord, checkpoints, and their ledgers.
+struct ApplicationPairDecisionRecord final {
+  std::optional<ComponentViewDigest> pairIdentity;
+  /// Exact DSE InvocationManifest run-key join for the Mapping attempt.
+  std::optional<std::array<std::uint8_t, 32>> invocationRunKey;
+  ApplicationPairDecisionDisposition disposition =
+      ApplicationPairDecisionDisposition::ImplementationFailure;
+  std::vector<ApplicationObjectiveObservation> hostOnlyBaseline;
+  std::vector<ApplicationPairCandidateRecord> candidates;
+  std::vector<ApplicationObjectiveObservation> selectedObjective;
+  std::optional<ComponentViewDigest> selectedCandidateIdentity;
+  std::optional<ArtifactRootReference> selectedSystem;
+  bool hostOnlyBaselineComplete = false;
+  bool finalApplicationQorComplete = false;
+  std::optional<std::string> detail;
+};
+
 /// Exact join between one bounded pre-Mapping planning record and one joint
 /// Mapping attempt. Verified outcomes name the independently imported
 /// SystemMapping roots; incomplete and infeasible outcomes remain distinct.
@@ -186,6 +280,12 @@ struct ApplicationMappingCandidateOutcome final {
   std::vector<ArtifactRootReference> runtimeEvidence;
   std::vector<std::uint64_t> qualityObjectiveCodes;
   std::optional<dse::ResourceTimeSpectrumFunnelResult> resourceTimeSpectrum;
+  /// Raw application runtime observations, when the existing replay provider
+  /// supplied them. Objective codes remain the DSE ordering projection and are
+  /// never treated as physical values when these observations are available.
+  std::optional<std::uint64_t> dfgCycles;
+  std::optional<std::uint64_t> cgraCycles;
+  std::optional<std::uint64_t> resourceCoreCost;
 };
 
 struct ApplicationMappingProvenance final {
@@ -204,6 +304,9 @@ struct ApplicationMappingProvenance final {
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
   dse::StructuredOwnershipSelectionMode resolvedPlannerMode =
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
+  /// Derived application decision view. All detailed evidence remains owned by
+  /// the records referenced above; this field only closes the pair-level join.
+  std::optional<ApplicationPairDecisionRecord> pairDecision;
 };
 
 struct ApplicationMappingExecution final {

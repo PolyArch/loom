@@ -11,6 +11,7 @@ namespace loom::application {
 
 struct PreparedApplicationBuild;
 struct ApplicationMappingExecution;
+struct ApplicationPairDecisionRecord;
 
 enum class ApplicationBuildOperation : std::uint8_t {
   ProductTargetPreparation,
@@ -62,6 +63,12 @@ void emitApplicationPreMappingIncompleteDiagnostics(
 /// distinct in the diagnostic representation.
 void emitApplicationMappingDiagnostics(
     const ApplicationMappingExecution &execution);
+
+/// Emits a pair-level decision when preparation terminates before a complete
+/// ApplicationMappingExecution exists. The detailed planning/checkpoint
+/// diagnostics remain emitted by their existing owners.
+void emitApplicationPairDecisionDiagnostics(
+    const ApplicationPairDecisionRecord &decision);
 
 } // namespace loom::application
 

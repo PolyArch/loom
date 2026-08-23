@@ -118,6 +118,134 @@ llvm::StringRef spelling(ApplicationMappingRuntimeDisposition value) {
   llvm_unreachable("unknown application runtime disposition");
 }
 
+llvm::StringRef spelling(ApplicationObjectiveDimension value) {
+  switch (value) {
+  case ApplicationObjectiveDimension::HostOnlyWork:
+    return "host_only_work";
+  case ApplicationObjectiveDimension::DfgCycles:
+    return "dfg_cycles";
+  case ApplicationObjectiveDimension::CgraCycles:
+    return "cgra_cycles";
+  case ApplicationObjectiveDimension::HostResidualWork:
+    return "host_residual_work";
+  case ApplicationObjectiveDimension::CutTransferWork:
+    return "cut_transfer_work";
+  case ApplicationObjectiveDimension::LaunchSynchronizationWork:
+    return "launch_synchronization_work";
+  case ApplicationObjectiveDimension::ResourceCoreCost:
+    return "resource_core_cost";
+  case ApplicationObjectiveDimension::MappingWork:
+    return "mapping_work";
+  case ApplicationObjectiveDimension::Area:
+    return "area";
+  case ApplicationObjectiveDimension::Power:
+    return "power";
+  case ApplicationObjectiveDimension::Energy:
+    return "energy";
+  }
+  llvm_unreachable("unknown application objective dimension");
+}
+
+llvm::StringRef spelling(ApplicationObjectiveEvidence value) {
+  switch (value) {
+  case ApplicationObjectiveEvidence::Exact:
+    return "exact";
+  case ApplicationObjectiveEvidence::SoundBound:
+    return "sound_bound";
+  case ApplicationObjectiveEvidence::Analytic:
+    return "analytic";
+  case ApplicationObjectiveEvidence::Calibrated:
+    return "calibrated";
+  case ApplicationObjectiveEvidence::RuntimeMeasured:
+    return "runtime_measured";
+  case ApplicationObjectiveEvidence::Unsupported:
+    return "unsupported";
+  }
+  llvm_unreachable("unknown application objective evidence");
+}
+
+llvm::json::Object encodeObjectiveObservation(
+    const ApplicationObjectiveObservation &observation) {
+  llvm::json::Object result;
+  result["dimension"] = spelling(observation.dimension);
+  if (observation.value)
+    result["value"] = *observation.value;
+  else
+    result["value"] = nullptr;
+  result["evidence"] = spelling(observation.evidence);
+  result["confidence_permille"] = observation.confidencePermille;
+  result["out_of_distribution"] = observation.outOfDistribution;
+  return result;
+}
+
+void addOptionalUnsigned(llvm::json::Object &object, llvm::StringRef key,
+                         std::optional<std::uint64_t> value);
+std::string encodeRoot(const ArtifactRootReference &reference);
+
+llvm::json::Object encodePairDecision(
+    const ApplicationPairDecisionRecord &decision) {
+  llvm::json::Object result;
+  if (decision.pairIdentity)
+    result["pair_identity"] =
+        formatComponentViewDigestHex(*decision.pairIdentity);
+  else
+    result["pair_identity"] = nullptr;
+  if (decision.invocationRunKey)
+    result["invocation_manifest_run_key"] =
+        llvm::toHex(llvm::ArrayRef<std::uint8_t>(*decision.invocationRunKey),
+                    /*LowerCase=*/true);
+  else
+    result["invocation_manifest_run_key"] = nullptr;
+  result["disposition"] = toString(decision.disposition);
+  result["host_only_baseline_complete"] = decision.hostOnlyBaselineComplete;
+  result["final_application_qor_complete"] =
+      decision.finalApplicationQorComplete;
+  if (decision.detail)
+    result["detail"] = *decision.detail;
+  else
+    result["detail"] = nullptr;
+  llvm::json::Array baseline;
+  for (const ApplicationObjectiveObservation &observation :
+       decision.hostOnlyBaseline)
+    baseline.push_back(encodeObjectiveObservation(observation));
+  result["host_only_baseline"] = std::move(baseline);
+  llvm::json::Array selectedObjective;
+  for (const ApplicationObjectiveObservation &observation :
+       decision.selectedObjective)
+    selectedObjective.push_back(encodeObjectiveObservation(observation));
+  result["selected_objective"] = std::move(selectedObjective);
+  llvm::json::Array candidates;
+  for (const ApplicationPairCandidateRecord &candidate : decision.candidates) {
+    llvm::json::Object encoded;
+    if (candidate.candidateIdentity)
+      encoded["candidate_identity"] =
+          formatComponentViewDigestHex(*candidate.candidateIdentity);
+    else
+      encoded["candidate_identity"] = nullptr;
+    encoded["planning_record_ordinal"] = candidate.planningRecordOrdinal;
+    addOptionalUnsigned(encoded, "plan_ordinal", candidate.planOrdinal);
+    encoded["entered_mapping"] = candidate.enteredMapping;
+    encoded["selected"] = candidate.selected;
+    llvm::json::Array objective;
+    for (const ApplicationObjectiveObservation &observation :
+         candidate.objective)
+      objective.push_back(encodeObjectiveObservation(observation));
+    encoded["objective"] = std::move(objective);
+    candidates.push_back(std::move(encoded));
+  }
+  result["candidates"] = std::move(candidates);
+  if (decision.selectedCandidateIdentity)
+    result["selected_candidate_identity"] =
+        formatComponentViewDigestHex(*decision.selectedCandidateIdentity);
+  else
+    result["selected_candidate_identity"] = nullptr;
+  if (decision.selectedSystem)
+    result["selected_system"] = encodeRoot(*decision.selectedSystem);
+  else
+    result["selected_system"] = nullptr;
+  return result;
+}
+
 std::string encodeRoot(const ArtifactRootReference &reference) {
   return llvm::toHex(encodeArtifactRootReference(reference),
                      /*LowerCase=*/true);
@@ -832,6 +960,11 @@ void emitApplicationMappingDiagnostics(
             execution.execution.summary;
         llvm::json::Object payload;
         payload["domain"] = "application_mapping_join";
+        if (execution.provenance.pairDecision)
+          payload["pair_decision"] =
+              encodePairDecision(*execution.provenance.pairDecision);
+        else
+          payload["pair_decision"] = nullptr;
         payload["stopping_policy"] =
             dse::jointDesignStoppingPolicySpelling(summary.stoppingPolicy);
         payload["eligible_joint_pair_count"] = summary.eligibleJointPairCount;
@@ -1194,6 +1327,10 @@ void emitApplicationMappingDiagnostics(
           payload["system"] = encodeRoot(outcome.system);
           payload["disposition"] = spelling(outcome.disposition);
           payload["runtime_disposition"] = spelling(outcome.runtimeDisposition);
+          addOptionalUnsigned(payload, "dfg_cycles", outcome.dfgCycles);
+          addOptionalUnsigned(payload, "cgra_cycles", outcome.cgraCycles);
+          addOptionalUnsigned(payload, "resource_core_cost",
+                              outcome.resourceCoreCost);
           llvm::json::Array qualityObjective;
           for (std::uint64_t code : outcome.qualityObjectiveCodes)
             qualityObjective.push_back(code);
@@ -1325,6 +1462,18 @@ void emitApplicationMappingDiagnostics(
           return llvm::json::Value(std::move(payload));
         });
   }
+}
+
+void emitApplicationPairDecisionDiagnostics(
+    const ApplicationPairDecisionRecord &decision) {
+  emitInvocationDiagnostic(
+      DiagnosticVerbosity::Summary, InvocationDiagnosticStage::DataflowLowering,
+      InvocationDiagnosticEvent::Statistics, [&] {
+        llvm::json::Object payload;
+        payload["domain"] = "application_pair_decision";
+        payload["pair_decision"] = encodePairDecision(decision);
+        return llvm::json::Value(std::move(payload));
+      });
 }
 
 } // namespace loom::application
