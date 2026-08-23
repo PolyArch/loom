@@ -53,6 +53,21 @@ llvm::Error invalid(const llvm::Twine &message) {
                                  "pre_mapping_exploration_invalid: " + message);
 }
 
+llvm::Expected<std::uint64_t> deriveSourceHostOnlyWork(
+    const sim::NativeStructuredProgramObservations &observations) {
+  std::uint64_t total = 0;
+  for (const sim::NativeStructuredBlockActivation &activation :
+       observations.blockActivations) {
+    if (activation.activations > std::numeric_limits<std::uint64_t>::max() -
+                                     total)
+      return llvm::createStringError(
+          std::errc::value_too_large,
+          "source host-only work overflows u64");
+    total += activation.activations;
+  }
+  return total;
+}
+
 class WorkTimer final {
 public:
   explicit WorkTimer(PreMappingWorkCounter &counter)
@@ -1320,6 +1335,7 @@ exploreStructuredCompilationToPreMapping(
     return frontierPolicyDigest.takeError();
   PreMappingWorkAccounting frontierAccounting =
       makePreMappingWorkAccounting(options.frontier.budget);
+  std::optional<std::uint64_t> sourceHostOnlyWork;
   const auto cancelledBeforePlanning = [&]() -> PreMappingExplorationOutcome {
     IncompletePreMappingExploration result;
     result.reason = DsePlanIncompleteReason{
@@ -1339,11 +1355,13 @@ exploreStructuredCompilationToPreMapping(
         {},
         {},
     };
+    result.sourceHostOnlyWork = sourceHostOnlyWork;
     return result;
   };
-  if (options.executionControl.stopRequested())
-    return cancelledBeforePlanning();
-
+  // The source-only baseline is a required pair-level decision input. It is
+  // deliberately collected once before the DSE deadline can cancel candidate
+  // exploration; the deadline still governs every subsequent frontier and
+  // provider dispatch.
   ++frontierAccounting.sourceObservations.planned;
   ++frontierAccounting.sourceObservations.reserved;
   auto sourceObservations = [&]() {
@@ -1353,6 +1371,10 @@ exploreStructuredCompilationToPreMapping(
   }();
   if (!sourceObservations)
     return sourceObservations.takeError();
+  auto derivedHostOnlyWork = deriveSourceHostOnlyWork(*sourceObservations);
+  if (!derivedHostOnlyWork)
+    return derivedHostOnlyWork.takeError();
+  sourceHostOnlyWork = *derivedHostOnlyWork;
   ++frontierAccounting.sourceObservations.consumed;
   if (options.executionControl.stopRequested())
     return cancelledBeforePlanning();
@@ -1465,6 +1487,7 @@ exploreStructuredCompilationToPreMapping(
         coordinatePlan->eligibleCoordinateCount, coordinatePlan->truncated,
         std::vector<ArtifactRootReference>(retained.begin(), retained.end()),
         candidateInventory};
+    result.sourceHostOnlyWork = sourceHostOnlyWork;
     return result;
   };
   std::vector<std::unique_ptr<frontend::StructuredCompilation>> parentStorage;
@@ -2152,7 +2175,8 @@ exploreStructuredCompilationToPreMapping(
             *runtimeInputReference,
             std::move(candidateInventory),
             {},
-            *frontierPolicyDigest}};
+            *frontierPolicyDigest,
+            sourceHostOnlyWork}};
   }
     std::vector<PreMappingFrontierCandidate> rankedInputs;
     rankedInputs.reserve(semanticAlternatives.size());
@@ -2595,7 +2619,8 @@ exploreStructuredCompilationToPreMapping(
         *runtimeInputReference,
         std::move(candidateInventory),
         {},
-        *frontierPolicyDigest}};
+        *frontierPolicyDigest,
+        sourceHostOnlyWork}};
   const StructuredOwnershipSharedEvaluationStatistics sharedStatistics =
       sharedEvaluation.statistics();
   mapping_debug::emit(
@@ -2761,7 +2786,7 @@ exploreStructuredCompilationToPreMapping(
       fabric.reference(), *workloadReference, *runtimeInputReference,
       *frontierPolicyDigest,
       requestedPlannerMode, plannerMode,
-      completeness, std::move(shadowRecall)}};
+      completeness, std::move(shadowRecall), sourceHostOnlyWork}};
 }
 
 } // namespace loom::dse

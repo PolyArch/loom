@@ -218,6 +218,9 @@ struct CompletedPreMappingSelection final {
       StructuredOwnershipSelectionMode::SemanticConformance;
   PreMappingSearchCompleteness completeness;
   std::optional<PreMappingShadowRecall> shadowRecall;
+  /// Exact source-only native work observed once by the pre-Mapping owner.
+  /// This is a derived baseline measure, not candidate identity or DSE rank.
+  std::optional<std::uint64_t> sourceHostOnlyWork;
 
   bool searchComplete() const {
     return completeness.exactComplete();
@@ -238,6 +241,7 @@ struct CompletedPreMappingNoFeasibleCandidate final {
   std::vector<PreMappingCandidatePlanningRecord> candidateInventory;
   PreMappingSearchCompleteness completeness;
   std::optional<ComponentViewDigest> frontierPolicyDigest;
+  std::optional<std::uint64_t> sourceHostOnlyWork;
 };
 
 struct IncompletePreMappingExploration final {
@@ -257,6 +261,7 @@ struct IncompletePreMappingExploration final {
   /// continuing independent coordinates.
   std::optional<ComponentViewDigest> resolvedDseConfigViewDigest =
       std::nullopt;
+  std::optional<std::uint64_t> sourceHostOnlyWork = std::nullopt;
 };
 
 using PreMappingExplorationOutcome =

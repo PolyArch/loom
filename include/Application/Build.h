@@ -126,6 +126,7 @@ struct PreparedApplicationBuild final {
       dse::StructuredOwnershipSelectionMode::SemanticConformance;
   dse::PreMappingSearchCompleteness preMappingCompleteness;
   std::optional<dse::PreMappingShadowRecall> preMappingShadowRecall;
+  std::optional<std::uint64_t> preMappingSourceHostOnlyWork;
   ArtifactRootReference preMappingSourceProgram;
   ArtifactRootReference preMappingFabric;
   ArtifactRootReference preMappingWorkload;
@@ -374,6 +375,7 @@ struct IncompleteApplicationResourceTimePlanning final {
   ArtifactRootReference workload;
   ArtifactRootReference runtimeInput;
   ComponentViewDigest frontierPolicyDigest;
+  std::optional<std::uint64_t> sourceHostOnlyWork;
 };
 
 using ApplicationBuildPreparationOutcome = std::variant<

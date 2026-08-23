@@ -240,8 +240,17 @@ ApplicationPairDecisionRecord deriveApplicationPairDecision(
   }
 
   result.hostOnlyBaseline = makeUnsupportedObjectiveVector();
+  if (prepared.preMappingSourceHostOnlyWork) {
+    setObjective(result.hostOnlyBaseline[static_cast<std::size_t>(
+                     ApplicationObjectiveDimension::HostOnlyWork)],
+                 *prepared.preMappingSourceHostOnlyWork,
+                 ApplicationObjectiveEvidence::RuntimeMeasured);
+    result.hostOnlyBaselineComplete = true;
+  }
   for (const dse::PreMappingCandidatePlanningRecord &planning :
        prepared.candidateInventory) {
+    if (result.hostOnlyBaselineComplete)
+      break;
     if (!planning.estimatedRuntimePicoseconds)
       continue;
     setObjective(
@@ -466,7 +475,8 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
     const std::optional<ArtifactRootReference> &workload,
     const std::optional<ArtifactRootReference> &runtimeInput,
     llvm::ArrayRef<dse::PreMappingCandidatePlanningRecord> inventory,
-    ApplicationPairDecisionDisposition disposition, llvm::StringRef detail) {
+    ApplicationPairDecisionDisposition disposition, llvm::StringRef detail,
+    std::optional<std::uint64_t> sourceHostOnlyWork = std::nullopt) {
   ApplicationPairDecisionRecord result;
   result.disposition = disposition;
   result.detail = detail.str();
@@ -476,6 +486,13 @@ ApplicationPairDecisionRecord makePreparationPairDecision(
   result.runtimeInput = runtimeInput;
   result.planningRecordCount = inventory.size();
   result.hostOnlyBaseline = makeUnsupportedObjectiveVector();
+  if (sourceHostOnlyWork) {
+    setObjective(result.hostOnlyBaseline[static_cast<std::size_t>(
+                     ApplicationObjectiveDimension::HostOnlyWork)],
+                 *sourceHostOnlyWork,
+                 ApplicationObjectiveEvidence::RuntimeMeasured);
+    result.hostOnlyBaselineComplete = true;
+  }
   result.candidates.reserve(inventory.size());
   for (std::size_t ordinal = 0; ordinal != inventory.size(); ++ordinal) {
     const auto &record = inventory[ordinal];
@@ -994,13 +1011,13 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
           checkpoint.sourceProgram, checkpoint.fabric, checkpoint.workload,
           checkpoint.runtimeInput, checkpoint.candidateInventory,
           mapIncompleteReasonToPairDisposition(incomplete->reason),
-          dse::toString(incomplete->reason));
+          dse::toString(incomplete->reason), incomplete->sourceHostOnlyWork);
       emitApplicationPairDecisionDiagnostics(decision);
     } else {
       auto decision = makePreparationPairDecision(
           std::nullopt, std::nullopt, std::nullopt, std::nullopt, {},
           mapIncompleteReasonToPairDisposition(incomplete->reason),
-          dse::toString(incomplete->reason));
+          dse::toString(incomplete->reason), incomplete->sourceHostOnlyWork);
       emitApplicationPairDecisionDiagnostics(decision);
     }
     return ApplicationBuildPreparationOutcome{std::move(*incomplete)};
@@ -1016,7 +1033,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
             : ApplicationPairDecisionDisposition::BudgetExhausted,
         noFeasible->completeness.exactComplete()
             ? "bounded front-end retained no candidate"
-            : "front-end terminated before a complete candidate-domain proof");
+            : "front-end terminated before a complete candidate-domain proof",
+        noFeasible->sourceHostOnlyWork);
     emitApplicationPairDecisionDiagnostics(decision);
     return ApplicationBuildPreparationOutcome{std::move(*noFeasible)};
   }
@@ -1361,7 +1379,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
           completed.sourceProgram, completed.fabric, completed.workload,
           completed.runtimeInput, completed.candidateInventory,
           ApplicationPairDecisionDisposition::CancelledOrTimeout,
-          "resource-time funnel cancelled or timed out");
+          "resource-time funnel cancelled or timed out",
+          completed.sourceHostOnlyWork);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{
           IncompleteApplicationResourceTimePlanning{
@@ -1369,7 +1388,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
               std::move(*resourceTimeFunnel),
               std::move(completed.candidateInventory), completed.sourceProgram,
               completed.fabric, completed.workload, completed.runtimeInput,
-              completed.frontierPolicyDigest}};
+              completed.frontierPolicyDigest, completed.sourceHostOnlyWork}};
     }
   if (resourceTimeFunnel->finalists.empty())
     emitResourceTimeFunnelTerminal(resourceTimeFunnel->incompleteReason
@@ -1387,7 +1406,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
           completed.sourceProgram, completed.fabric, completed.workload,
           completed.runtimeInput, completed.candidateInventory, disposition,
           dse::resourceTimeFrontierIncompleteReasonSpelling(
-              *resourceTimeFunnel->incompleteReason));
+              *resourceTimeFunnel->incompleteReason),
+          completed.sourceHostOnlyWork);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{
           IncompleteApplicationResourceTimePlanning{
@@ -1395,7 +1415,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
               std::move(*resourceTimeFunnel),
               std::move(completed.candidateInventory), completed.sourceProgram,
               completed.fabric, completed.workload, completed.runtimeInput,
-              completed.frontierPolicyDigest}};
+              completed.frontierPolicyDigest, completed.sourceHostOnlyWork}};
     }
   if (resourceTimeFunnel->finalists.empty())
     {
@@ -1408,9 +1428,10 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
           completeNoPromisingProof
               ? ApplicationPairDecisionDisposition::NoPromisingCandidate
               : ApplicationPairDecisionDisposition::BudgetExhausted,
-          completeNoPromisingProof
-              ? "resource-time funnel retained no Mapping finalist"
-              : "resource-time funnel ended without a complete candidate proof");
+        completeNoPromisingProof
+            ? "resource-time funnel retained no Mapping finalist"
+            : "resource-time funnel ended without a complete candidate proof",
+        completed.sourceHostOnlyWork);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{
           dse::CompletedPreMappingNoFeasibleCandidate{
@@ -1422,7 +1443,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
               completed.runtimeInput,
               std::move(completed.candidateInventory),
               completed.completeness,
-              completed.frontierPolicyDigest}};
+              completed.frontierPolicyDigest,
+              completed.sourceHostOnlyWork}};
     }
 
   std::vector<PreparedApplicationSoftware> preparedSoftware;
@@ -1631,7 +1653,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
           completed.sourceProgram, completed.fabric, completed.workload,
           completed.runtimeInput, completed.candidateInventory,
           ApplicationPairDecisionDisposition::UnsupportedSemantic,
-          "all retained finalists were rejected at the application boundary");
+          "all retained finalists were rejected at the application boundary",
+          completed.sourceHostOnlyWork);
       emitApplicationPairDecisionDiagnostics(decision);
       return ApplicationBuildPreparationOutcome{std::move(*firstUnsupported)};
     }
@@ -1642,7 +1665,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
             completed.sourceProgram, completed.fabric, completed.workload,
             completed.runtimeInput, completed.candidateInventory,
             ApplicationPairDecisionDisposition::UnsupportedSemantic,
-            "resource-time finalists were unsupported before Mapping");
+            "resource-time finalists were unsupported before Mapping",
+            completed.sourceHostOnlyWork);
         emitApplicationPairDecisionDiagnostics(decision);
         return ApplicationBuildPreparationOutcome{
             IncompleteApplicationResourceTimePlanning{
@@ -1650,7 +1674,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
                 std::move(*resourceTimeFunnel),
                 std::move(completed.candidateInventory), completed.sourceProgram,
                 completed.fabric, completed.workload, completed.runtimeInput,
-                completed.frontierPolicyDigest}};
+                completed.frontierPolicyDigest, completed.sourceHostOnlyWork}};
       }
     const bool completeNoPromisingProof =
         completed.completeness.exactComplete() &&
@@ -1664,7 +1688,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
             : ApplicationPairDecisionDisposition::BudgetExhausted,
         completeNoPromisingProof
             ? "bounded resource-time funnel retained no Mapping finalist"
-            : "resource-time funnel did not close its bounded candidate domain");
+            : "resource-time funnel did not close its bounded candidate domain",
+        completed.sourceHostOnlyWork);
     emitApplicationPairDecisionDiagnostics(decision);
     return ApplicationBuildPreparationOutcome{
         dse::CompletedPreMappingNoFeasibleCandidate{
@@ -1676,7 +1701,8 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
             completed.runtimeInput,
             std::move(completed.candidateInventory),
             completed.completeness,
-            completed.frontierPolicyDigest}};
+            completed.frontierPolicyDigest,
+            completed.sourceHostOnlyWork}};
   }
   for (dse::PreMappingCandidatePlanningRecord &record :
        completed.candidateInventory) {
@@ -1713,6 +1739,7 @@ llvm::Expected<ApplicationBuildPreparationOutcome> prepareApplicationBuild(
       completed.resolvedPlannerMode,
       completed.completeness,
       std::move(completed.shadowRecall),
+      completed.sourceHostOnlyWork,
       completed.sourceProgram,
       completed.fabric,
       completed.workload,
