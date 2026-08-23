@@ -2342,9 +2342,12 @@ llvm::Expected<ResourceTimeFrontierOutcome> exploreResourceTimeFrontier(
                 frozen->regions[active.region].speedupCurve[active.point];
             const std::uint64_t completedWork =
                 frozen->minimumResourceWork[active.region];
-            if (completedWork > child.minimumRemainingResourceWork)
-              return invalid("remaining resource-work underflowed");
-            child.minimumRemainingResourceWork -= completedWork;
+            if (child.minimumRemainingResourceWork !=
+                std::numeric_limits<std::uint64_t>::max()) {
+              if (completedWork > child.minimumRemainingResourceWork)
+                return invalid("remaining resource-work underflowed");
+              child.minimumRemainingResourceWork -= completedWork;
+            }
             for (std::size_t resource = 0;
                  resource != child.usedResources.size(); ++resource)
               child.usedResources[resource] -= point.resourceUnits[resource];
